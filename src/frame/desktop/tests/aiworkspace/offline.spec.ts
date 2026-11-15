@@ -1,5 +1,5 @@
 import { expect, editCell, grantPersistence, openCard, openDesktop, prepareOffline, saveSummary, serviceWorkerReady, test } from './offline-fixtures'
-import { chooseFromZone, closeWorkspace, mainMenu, openMock, openSide, openStatus, openWorkspacePage, backToList, workspacePage } from './fixtures'
+import { chooseFromZone, closeWorkspace, mainMenu, openSide, openStatus, openWorkspacePage, backToList, workspacePage } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -215,7 +215,7 @@ test('a reader without workspace-level read cannot prepare: the backend\'s refus
   await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'direct')
 })
 
-test('offline: undo removes an unsent submission without the network; Mock run and write locks say they need the backend', async ({ page, api, net }) => {
+test('offline: undo removes an unsent submission without the network; write locks say they need the backend', async ({ page, api, net }) => {
   const ws = await api.sample(ALICE, `offline-misc ${Date.now()}`)
   const meta = (await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'project-info' })).meta_rev
   expect((await api.commit(ALICE, ws, [{ op: 'entity.set_write_policy', entity_id: 'project-info', policy: 'lock_required', expect: { rev: meta } }])).status).toBe('accepted')
@@ -256,13 +256,6 @@ test('offline: undo removes an unsent submission without the network; Mock run a
   await expect(lock).toHaveAttribute('data-held', 'false')
   // the record form (UI 框架 PRD §7.3) offers no enabled input while it is read-only
   await expect(page.getByTestId('aiws-record-project-info').locator('input:not([disabled]), textarea:not([disabled]), select:not([disabled])')).toHaveCount(0)
-
-  // the Mock run happens on the backend: offline it says so and produces nothing
-  await openMock(page)
-  await page.getByTestId('aiws-mock-start').click()
-  await expect(page.getByTestId('aiws-mock-message')).toContainText('没有运行')
-  await expect(page.getByTestId('aiws-mock-run')).toHaveCount(0)
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
 
   // a URL query table opened offline: no rows are invented, the view says its data needs the backend
   await closeWorkspace(page)

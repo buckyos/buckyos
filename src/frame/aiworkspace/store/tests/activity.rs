@@ -185,7 +185,7 @@ fn runs_start_and_end_in_the_log_as_proc_get_shows_them() {
         let mut ws = h.lock().unwrap();
         env.advance(1_000);
         // a run of a wish shown on s1 (the folder `plan` stands for the wish: the log looks at its readability only)
-        let (run, _) = ws.wish_run_create(&bob(), "wish.mock@1", &json!({ "wish_id": "plan", "stage": "run" }), "k1", &json!(null)).unwrap();
+        let (run, _) = ws.wish_run_create(&bob(), "wish.xllm@1", &json!({ "wish_id": "plan", "stage": "run" }), "k1", &json!(null)).unwrap();
         env.advance(1_000);
         ws.wish_run_set(&run, Some("running"), None, None, None, None).unwrap();
         env.advance(1_000);
@@ -195,7 +195,7 @@ fn runs_start_and_end_in_the_log_as_proc_get_shows_them() {
         ws.wish_run_set(&run, None, None, None, None, Some(&json!({ "note": 1 }))).unwrap();
         // alice's run of the secret: bob sees nothing of it
         env.advance(1_000);
-        ws.wish_run_create(&alice(), "wish.mock@1", &json!({ "wish_id": "secret", "stage": "run" }), "k2", &json!(null)).unwrap();
+        ws.wish_run_create(&alice(), "wish.xllm@1", &json!({ "wish_id": "secret", "stage": "run" }), "k2", &json!(null)).unwrap();
     }
     let runs = |who: &Caller, filter: &str| -> Vec<Value> {
         log(&env, &id, who, json!({ "filter": filter }))["entries"].as_array().unwrap().iter().filter(|e| e["kind"] == "run").cloned().collect()
@@ -204,8 +204,7 @@ fn runs_start_and_end_in_the_log_as_proc_get_shows_them() {
     assert_eq!(bobs.len(), 2, "{bobs:?}");
     assert_eq!((bobs[0]["phase"].as_str(), bobs[0]["state"].as_str(), bobs[0]["error_code"].as_str()), (Some("end"), Some("failed"), Some("PROGRAM_FAILED")));
     assert_eq!((bobs[1]["phase"].as_str(), bobs[1]["actor"].as_str(), bobs[1]["actor_kind"].as_str()), (Some("start"), Some("bob"), Some("macro")));
-    // a run of the Mock executor runs no macro (UI 框架 PRD Q27): the log says so
-    assert!(bobs.iter().all(|r| r["simulated"] == json!(true)), "{bobs:?}");
+    assert!(bobs.iter().all(|r| r.get("simulated").is_none()), "no simulated runs any more: {bobs:?}");
     assert_eq!(bobs[0]["target"]["surface_id"], "s1", "{}", bobs[0]);
     let ended = bobs[0]["at"].as_str().unwrap();
     let started = bobs[1]["at"].as_str().unwrap();

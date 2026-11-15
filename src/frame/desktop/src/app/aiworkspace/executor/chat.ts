@@ -15,7 +15,9 @@ export type ChatMessage =
   /** `raw`: the assistant message exactly as the provider returned it (AICC keeps provider state in it), sent back as is. */
   | { role: 'system' | 'user' | 'assistant'; text: string; toolCalls?: ChatToolCall[]; raw?: unknown }
   | { role: 'tool'; callId: string; text: string; isError?: boolean }
-export interface ChatTurn { text: string; toolCalls: ChatToolCall[]; raw?: unknown }
+/** What one model turn used: its input and output tokens and the model that answered, as far as the provider said. */
+export interface ChatUsage { input_tokens?: number; output_tokens?: number; model?: string }
+export interface ChatTurn { text: string; toolCalls: ChatToolCall[]; raw?: unknown; usage: ChatUsage }
 
 export interface ChatClient {
   complete(model: string, messages: ChatMessage[], tools: ChatTool[], signal?: AbortSignal): Promise<ChatTurn>
@@ -23,6 +25,14 @@ export interface ChatClient {
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+}
+
+function count(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function usageOf(input: unknown, output: unknown, model: unknown): ChatUsage {
+  return { input_tokens: count(input), output_tokens: count(output), model: typeof model === 'string' && model ? model : undefined }
 }
 
 function parseArgs(raw: unknown): Record<string, Json> {
@@ -51,7 +61,9 @@ class AiccChat implements ChatClient {
     const content = Array.isArray(message.content) ? message.content.map(record) : []
     const text = content.filter((c) => c.type === 'text').map((c) => String(c.text ?? '')).join('\n')
     const calls = (Array.isArray(result.tool_calls) && result.tool_calls.length ? result.tool_calls : content.filter((c) => c.type === 'tool_use')).map(record)
-    return { text, toolCalls: calls.map((c, i) => ({ id: String(c.call_id ?? `call_${i}`), name: String(c.name ?? ''), args: parseArgs(c.args) })), raw: result.message }
+    // the route AICC took ends at the model that answered (`route_trace.final_model`)
+    const usage = usageOf(record(result.usage).input_tokens, record(result.usage).output_tokens, record(result.route_trace).final_model)
+    return { text, toolCalls: calls.map((c, i) => ({ id: String(c.call_id ?? `call_${i}`), name: String(c.name ?? ''), args: parseArgs(c.args) })), raw: result.message, usage }
   }
 }
 
@@ -75,7 +87,8 @@ class OpenAiChat implements ChatClient {
     if (!response.ok) throw new Error(String(record(json.error).message ?? `HTTP ${response.status}`))
     const message = record(record((json.choices as unknown[] | undefined)?.[0]).message)
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls.map(record) : []
-    return { text: typeof message.content === 'string' ? message.content : '', toolCalls: calls.map((c, i) => ({ id: String(c.id ?? `call_${i}`), name: String(record(c.function).name ?? ''), args: parseArgs(record(c.function).arguments) })) }
+    const usage = usageOf(record(json.usage).prompt_tokens, record(json.usage).completion_tokens, json.model)
+    return { text: typeof message.content === 'string' ? message.content : '', toolCalls: calls.map((c, i) => ({ id: String(c.id ?? `call_${i}`), name: String(record(c.function).name ?? ''), args: parseArgs(record(c.function).arguments) })), usage }
   }
 }
 

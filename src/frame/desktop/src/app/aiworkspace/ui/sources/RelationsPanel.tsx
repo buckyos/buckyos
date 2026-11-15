@@ -37,7 +37,7 @@ export function RelationsPanel({ entityId }: { entityId: string }) {
         <div className={`aiws-relations-freshness${freshness.status === 'current' ? '' : ' aiws-warning'}`} data-testid="aiws-relations-freshness" data-status={freshness.status}>
           <b>{FRESHNESS_LABEL[freshness.status]}</b> · {freshnessDetail(freshness)}
           {freshness.manual_modified && <div>{t('aiworkspace.data.relations.manual', { content: freshness.content_rev ?? '', generated: freshness.generated_rev ?? '' })}</div>}
-          {freshness.wish_id && <div className="aiws-muted">{tNode(freshness.simulated ? 'aiworkspace.data.relations.generatedBySimulated' : 'aiworkspace.data.relations.generatedBy', {
+          {freshness.wish_id && <div className="aiws-muted">{tNode('aiworkspace.data.relations.generatedBy', {
             wish: <button type="button" className="aiws-link" onClick={() => ui.openEntity(freshness.wish_id ?? '')}>{label(store.outline.get(freshness.wish_id ?? ''), freshness.wish_id ?? '')}</button>,
             run: freshness.run_id, executor: freshness.executor,
           })}</div>}

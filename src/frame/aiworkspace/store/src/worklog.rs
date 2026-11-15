@@ -11,13 +11,13 @@
 
 use crate::docdb::db_err;
 use crate::service::Service;
-use crate::wish::runs::{PROGRAM_MOCK, PROGRAM_XLLM};
+use crate::wish::runs::PROGRAM_XLLM;
 use crate::workspace::{Caller, Workspace};
 use aiworkspace_core::access::{Access, Cap};
 use aiworkspace_core::model::{ReadCtx, CANVAS_CONTENT_ID, DATA_ID, ROOT_ID, SHOWS_ID, SURFACES_ID, TYPE_CONTAINER};
 use aiworkspace_core::value::format_utc_ms;
 use aiworkspace_core::{WsError, WsResult};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -27,7 +27,7 @@ pub const MAX_LIMIT: usize = 200;
 const SCAN_CAP: usize = 1000;
 const BATCH: usize = 200;
 /// Run states in which the run is still being computed: no end entry yet.
-const RUNNING: &str = "'queued','snapshotting','running','validating'";
+const RUNNING: &str = "'queued','snapshotting','running','validating','applying'";
 /// The time a run's state last changed (`detail.state_at`, written by `wish_run_set`); a run the service start marked
 /// `interrupted` keeps the time of that marking.
 const RUN_ENDED: &str = "(CASE WHEN state = 'interrupted' THEN updated_at ELSE COALESCE(json_extract(result_json, '$.state_at'), updated_at) END)";
@@ -301,24 +301,15 @@ impl Workspace {
                     Some(id) => readable.target(&id)?,
                     None => Value::Null,
                 };
-                let mut v = json!({ "kind": if origin == "import" { "import" } else { "commit" }, "actor": principal, "actor_kind": actor_kind(&origin),
-                                    "origin": origin, "seq": seq, "commit_id": commit_id, "run_id": run_id, "undoes": undoes, "message": message,
-                                    "target": target, "targets": count, "mine": principal == me });
-                // a result of the Mock executor is no macro's (Q27)
-                if origin == "program" {
-                    if let Some(run) = run_id.as_deref() {
-                        let program: Option<String> = self.local.query_row("SELECT program FROM runs WHERE run_id = ?1", [run], |r| r.get(0)).optional().map_err(db_err)?;
-                        if program.is_some_and(|p| p == PROGRAM_MOCK || p.starts_with("mock.")) {
-                            v["simulated"] = json!(true);
-                        }
-                    }
-                }
+                let v = json!({ "kind": if origin == "import" { "import" } else { "commit" }, "actor": principal, "actor_kind": actor_kind(&origin),
+                                "origin": origin, "seq": seq, "commit_id": commit_id, "run_id": run_id, "undoes": undoes, "message": message,
+                                "target": target, "targets": count, "mine": principal == me });
                 Ok(Some(v))
             },
         )?);
 
         // wish runs: as `proc.get` shows them (one's own, or any with `update` / `manage` on the wish), on a readable wish
-        let mut run_entry = |phase_end: bool, principal: String, state: String, params_json: String, error: Option<String>, run_id: &str, program: &str| -> WsResult<Option<Value>> {
+        let mut run_entry = |phase_end: bool, principal: String, state: String, params_json: String, error: Option<String>, run_id: &str| -> WsResult<Option<Value>> {
             if q.filter == Filter::Mine && principal != me {
                 return Ok(None);
             }
@@ -341,10 +332,6 @@ impl Workspace {
             }
             let mut v = json!({ "kind": "run", "phase": if phase_end { "end" } else { "start" }, "actor": principal, "actor_kind": "macro", "run_id": run_id,
                                 "stage": params["stage"].as_str().unwrap_or("run"), "target": target, "mine": principal == me });
-            // the Mock executor's run runs no macro (UI 框架 PRD Q27): the log says so
-            if program == PROGRAM_MOCK {
-                v["simulated"] = json!(true);
-            }
             if phase_end {
                 v["state"] = json!(state);
                 v["error_code"] = json!(error);
@@ -355,12 +342,12 @@ impl Workspace {
             let sql = if end {
                 format!(
                     "SELECT run_id, principal, state, params_json, json_extract(result_json, '$.error.code'), {RUN_ENDED} AS t, program FROM runs \
-                     WHERE program IN (?4, ?5) AND state NOT IN ({RUNNING}) AND (?1 IS NULL OR t < ?1 OR (t = ?1 AND ('r:' || run_id || ':1') < ?2)) \
+                     WHERE program = ?4 AND state NOT IN ({RUNNING}) AND (?1 IS NULL OR t < ?1 OR (t = ?1 AND ('r:' || run_id || ':1') < ?2)) \
                      ORDER BY t DESC, run_id DESC LIMIT ?3"
                 )
             } else {
                 "SELECT run_id, principal, state, params_json, NULL, created_at AS t, program FROM runs \
-                 WHERE program IN (?4, ?5) AND (?1 IS NULL OR t < ?1 OR (t = ?1 AND ('r:' || run_id || ':0') < ?2)) ORDER BY t DESC, run_id DESC LIMIT ?3"
+                 WHERE program = ?4 AND (?1 IS NULL OR t < ?1 OR (t = ?1 AND ('r:' || run_id || ':0') < ?2)) ORDER BY t DESC, run_id DESC LIMIT ?3"
                     .to_string()
             };
             sources.push(scan(
@@ -370,7 +357,7 @@ impl Workspace {
                     let (at, id) = pos.unzip();
                     let mut st = self.local.prepare_cached(&sql).map_err(db_err)?;
                     let rows = st
-                        .query_map(params![at, id, n as i64, PROGRAM_XLLM, PROGRAM_MOCK], |r| {
+                        .query_map(params![at, id, n as i64, PROGRAM_XLLM], |r| {
                             let run_id: String = r.get(0)?;
                             let t: String = r.get(5)?;
                             let id = format!("r:{run_id}:{}", end as u8);
@@ -381,7 +368,7 @@ impl Workspace {
                         .map_err(db_err)?;
                     Ok(rows)
                 },
-                |_, _, (run_id, principal, state, params_json, error, program)| run_entry(end, principal, state, params_json, error, &run_id, &program),
+                |_, _, (run_id, principal, state, params_json, error, _program)| run_entry(end, principal, state, params_json, error, &run_id),
             )?);
         }
 

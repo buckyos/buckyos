@@ -362,6 +362,61 @@ impl Workspace {
         self.run_json(run_id)
     }
 
+    /// `proc.get` of a refresh run: one's own, or any with `run` on the Workspace.
+    pub fn source_run_get(&self, caller: &Caller, run_id: &str) -> WsResult<Value> {
+        let mut run = self.visible_source_run(caller, run_id)?;
+        run["ok"] = json!(true);
+        Ok(run)
+    }
+
+    /// `proc.cancel` of a refresh run. A refresh that already committed says so truthfully.
+    pub fn source_run_cancel(&mut self, caller: &Caller, run_id: &str) -> WsResult<Value> {
+        let run = self.visible_source_run(caller, run_id)?;
+        if run["state"] == json!("succeeded") {
+            return Ok(json!({ "ok": true, "state": "succeeded", "already_applied": true, "commit_id": run["result"]["commit_id"] }));
+        }
+        self.set_run(run_id, "cancelled", None)?;
+        Ok(json!({ "ok": true, "state": "cancelled", "already_applied": false }))
+    }
+
+    fn visible_source_run(&self, caller: &Caller, run_id: &str) -> WsResult<Value> {
+        let access = self.require_ws_any(caller)?;
+        let run = self.run_json(run_id)?;
+        if run["program"] != json!(SOURCE_PROGRAM) || (run["principal"] != json!(caller.principal) && !access.ws_caps.may_run()) {
+            return Err(WsError::not_found("run not found"));
+        }
+        Ok(run)
+    }
+
+    fn run_json(&self, run_id: &str) -> WsResult<Value> {
+        self.local
+            .query_row(
+                "SELECT run_id, program, principal, state, params_json, inputs_json, candidate_json, warnings_json, result_json, created_at, updated_at \
+                 FROM runs WHERE run_id = ?1",
+                [run_id],
+                |r| {
+                    let parse = |s: Option<String>| s.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null);
+                    Ok(json!({ "run_id": r.get::<_, String>(0)?, "program": r.get::<_, String>(1)?, "principal": r.get::<_, String>(2)?,
+                               "state": r.get::<_, String>(3)?, "params": parse(r.get(4)?), "inputs": parse(r.get(5)?),
+                               "candidate": parse(r.get(6)?), "warnings": parse(r.get(7)?), "result": parse(r.get(8)?),
+                               "created_at": r.get::<_, String>(9)?, "updated_at": r.get::<_, String>(10)? }))
+                },
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| WsError::not_found("run not found"))
+    }
+
+    fn set_run(&self, run_id: &str, state: &str, result: Option<&Value>) -> WsResult<()> {
+        self.local
+            .execute(
+                "UPDATE runs SET state = ?2, result_json = COALESCE(?3, result_json), updated_at = ?4 WHERE run_id = ?1",
+                params![run_id, state, result.map(Value::to_string), self.now()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     pub fn source_run_set(&self, run_id: &str, state: &str, result: Option<&Value>) -> WsResult<()> {
         self.set_run(run_id, state, result)
     }

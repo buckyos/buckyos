@@ -3,8 +3,8 @@
 //! the stage's brief — a model stage's prompts, tools and budget (analyze, code), or the stored macro with its manifest
 //! (run). It answers the stage tools (`ws_*`, `submit_analysis`, `check_results`, `finish`, the macro's `sql`, the
 //! `llm_cache`), judges each macro run the executor hands in (`proc.program`), and when the executor reports it is
-//! done, plans what the stage collected and leaves it waiting for confirmation. Failures and cancellation never touch
-//! the Workspace. The Mock executor's simulated results are planned here directly.
+//! done, plans what the stage collected and writes it with the run's record (许愿格交互升级 §3.3). A failure writes its
+//! record only; a cancellation nothing.
 
 use super::tools::Kind;
 use super::{ActiveRun, StageState, WishConfig, AIWS_JS, ANALYZE_SYSTEM, CODE_SYSTEM, GUIDE, HOST_JS, RUN_JS};
@@ -13,6 +13,7 @@ use aiworkspace_core::value::format_utc_ms;
 use aiworkspace_core::wish::{STAGE_ANALYZE, STAGE_CODE, STAGE_RUN};
 use aiworkspace_core::{Code, WsError, WsResult};
 use aiworkspace_store::wish::context::{Stage, StageKind, StageOptions};
+use aiworkspace_store::wish::history::failed_errors;
 use aiworkspace_store::wish::results::{code_changed, program_output, Collector};
 use aiworkspace_store::Caller;
 use serde_json::{json, Map, Value};
@@ -43,17 +44,17 @@ fn set_progress(active: &ActiveRun, phase: &str) {
     p["phase"] = json!(phase);
 }
 
-/// The worker of a run the service plans by itself (a Mock's simulated results, an analysis an executor reported):
-/// never panics into the service, always leaves a final state.
+/// The worker of a run the service plans by itself (an analysis an executor reported): never panics into the service,
+/// always leaves a final state.
 pub async fn drive(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: String, active: Arc<ActiveRun>) {
     let res = drive_inner(&state, &caller, &ws_id, &run_id, &active).await;
-    settle(&state, caller, &ws_id, &run_id, &active, res).await;
+    settle(&state, caller, &ws_id, &run_id, &active, res, String::new()).await;
     state.wish.unregister(&run_id);
 }
 
-/// The end of a worker: a failure or cancellation becomes the run's final state, a success leaves
-/// what the stage wrote.
-async fn settle(state: &Arc<AppState>, caller: Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>, res: WsResult<()>) {
+/// The end of a worker: a failure becomes the run's final state with its record (`log`: the last macro run's output),
+/// a cancellation its state alone, a success leaves what the stage wrote.
+async fn settle(state: &Arc<AppState>, caller: Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>, res: WsResult<()>, log: String) {
     let cancelled = active.cancelled.load(Ordering::SeqCst);
     let progress = active.progress.lock().unwrap().clone();
     let (rid, final_state) = (run_id.to_string(), if cancelled { "cancelled" } else { "failed" });
@@ -66,17 +67,27 @@ async fn settle(state: &Arc<AppState>, caller: Caller, ws_id: &str, run_id: &str
         let run = ws.wish_run(&caller, &rid)?;
         let mut detail = json!({ "progress": progress });
         match outcome {
-            None => ws.wish_run_set(&rid, None, None, None, None, Some(&detail)),
+            None => {
+                if let Some(s) = run["state"].as_str().filter(|s| *s == "succeeded") {
+                    detail["progress"]["phase"] = json!(s);
+                }
+                ws.wish_run_set(&rid, None, None, None, None, Some(&detail))
+            }
             Some(err) => {
-                // a run that reached waiting / applied keeps that state (cancel after the fact is honest)
+                // a run that wrote keeps that state (cancel after the fact is honest)
                 if matches!(run["state"].as_str(), Some("succeeded" | "applying")) {
                     return ws.wish_run_set(&rid, None, None, None, None, Some(&detail));
                 }
-                if let Some(log) = err.get("data").and_then(|d| d.get("program_log")).cloned() {
-                    detail["program_log"] = log;
+                match err.get("data").and_then(|d| d.get("program_log")).cloned() {
+                    Some(l) => detail["program_log"] = l,
+                    None if !log.is_empty() => detail["program_log"] = json!(log),
+                    None => {}
+                }
+                detail["progress"]["phase"] = json!(final_state);
+                if final_state == "failed" {
+                    return ws.wish_run_fail(&rid, &err, Some(&detail));
                 }
                 detail["error"] = err;
-                detail["progress"]["phase"] = json!(final_state);
                 ws.wish_run_set(&rid, Some(final_state), None, None, None, Some(&detail))
             }
         }
@@ -146,7 +157,6 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
     let wish_id = params["wish_id"].as_str().unwrap_or("").to_string();
     let workdir = ws_dir.join("runs").join(run_id).join("work");
     std::fs::create_dir_all(&workdir).map_err(|e| WsError::io(e.to_string()))?;
-    let mock = program == super::PROGRAM_MOCK;
     let kind = match stage_name.as_str() {
         STAGE_ANALYZE => StageKind::Analyze,
         STAGE_CODE => StageKind::Code,
@@ -157,7 +167,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
     let as_macro = Caller { macro_of: super::macro_scope(&run), ..caller.clone() };
     let snap = state.with_ws(ws_id, |ws| ws.wish_snapshot(&as_macro))?;
     // running the stored macro: only what its manifest declares is materialized
-    let manifest = if kind == StageKind::Run && !mock {
+    let manifest = if kind == StageKind::Run {
         snap.readable(&wish_id)?.payload.get("program").and_then(|p| p.get("manifest")).cloned().filter(|m| m.is_object())
     } else {
         None
@@ -170,7 +180,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         catalog: super::builtin_catalog(),
         controls: super::controls_catalog(),
         map_budget_chars: state.wish.config.map_budget_chars,
-        materialize: kind != StageKind::Analyze && !mock,
+        materialize: kind != StageKind::Analyze,
         manifest,
     };
     let stage = Stage::open(snap, &wish_id, run_id, &workdir, &opts)?;
@@ -206,7 +216,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         payload["analysis"]["context_prompt"].as_str().unwrap_or("").to_string(),
         feedback.clone().unwrap_or_default(),
     ];
-    let stored = if kind == StageKind::Run && !mock { stored_macro(&stage) } else { None };
+    let stored = if kind == StageKind::Run { stored_macro(&stage) } else { None };
     let st = Arc::new(StageState {
         runtime: state.wish.clone(),
         active: active.clone(),
@@ -221,6 +231,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         stored,
         failure: Mutex::new(None),
         budget: budget(&state.wish.config, &stage_name),
+        last_log: Mutex::new(String::new()),
         ai_user: run["detail"]["aicc"]["user_id"].as_str().unwrap_or("").to_string(),
         max_tool_rounds: run["detail"]["context"]["executor"]["limits"]["max_tool_iterations"].as_u64(),
         prompts,
@@ -233,14 +244,11 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
 
 async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>) -> WsResult<()> {
     let (st, c, w, r, a) = (state.clone(), caller.clone(), ws_id.to_string(), run_id.to_string(), active.clone());
-    let Opened { st, run, params, program, .. } = blocking(move || open_stage(&st, &c, &w, &r, &a, true)).await?;
+    let Opened { st, run, .. } = blocking(move || open_stage(&st, &c, &w, &r, &a, true)).await?;
     let provided = run["detail"]["exec"]["provided"].clone();
     if provided.get("analysis").is_some_and(Value::is_object) {
         // an executor reported an analysis made elsewhere (第一期 §2.9): validated like the model's own
         return provided_analysis(state, caller, ws_id, &st, &provided).await;
-    }
-    if program == super::PROGRAM_MOCK {
-        return mock(state, caller, ws_id, &st, &params["provided"], "mock").await;
     }
     Err(WsError::invalid_op("nothing to plan: the run's executor did not report"))
 }
@@ -272,12 +280,14 @@ fn refinement_lines(payload: &Value) -> String {
     payload["refinements"].as_array().map(|a| a.iter().filter_map(|r| r["text"].as_str()).map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n")).unwrap_or_default()
 }
 
+/// The stage is done: what it produced is written now, with the run's record ([`super::commit_stage`]).
 async fn finish_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, candidate: Value, evidence: Value, detail: Value) -> WsResult<()> {
     if st.cancelled() {
         return Ok(());
     }
     let (c, rid) = (caller.clone(), st.run_id.clone());
     let progress = st.active.progress.lock().unwrap().clone();
+    let log = st.last_log.lock().unwrap().clone();
     with_ws(state, ws_id, move |ws| {
         let run = ws.wish_run(&c, &rid)?;
         if run["state"] == json!("cancelled") {
@@ -285,13 +295,10 @@ async fn finish_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &
         }
         let mut d = detail;
         d["progress"] = progress;
-        d["progress"]["phase"] = json!("waiting_confirmation");
+        d["progress"]["phase"] = json!("applying");
         ws.wish_run_set(&rid, Some("validating"), Some(&candidate), Some(&evidence), None, Some(&d))?;
         let run = ws.wish_run(&c, &rid)?;
-        let identity = super::run_identity(ws, &c, &run)?;
-        let plan = super::plan_for(ws, &c, &run, &json!({}), &identity)?;
-        ws.wish_run_keep_plan(&rid, &plan)?;
-        ws.wish_run_set(&rid, Some("waiting_confirmation"), None, None, None, None)
+        super::commit_stage(ws, &c, &run, &log)
     })
     .await
 }
@@ -335,8 +342,19 @@ async fn analyze_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &
             x["error"]["message"].as_str().map(|m| format!(": {m}")).or_else(|| x["limit_reason"].as_str().map(|m| format!(": {m}"))).unwrap_or_default()))
             .with_data(json!({ "xllm": x })));
     };
+    finish_analysis(state, caller, ws_id, st, v, evidence).await
+}
+
+/// An accepted analysis is written — unless it found inputs missing: then the run fails and names them (D6).
+async fn finish_analysis(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, v: aiworkspace_store::wish::analysis::Validated, evidence: Value) -> WsResult<()> {
+    if v.analysis["status"] != json!("ready") {
+        let blockers = v.analysis["blockers"].clone();
+        let what: Vec<String> = blockers.as_array().into_iter().flatten().filter_map(|b| b["message"].as_str().map(str::to_string)).collect();
+        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_INPUT", format!("The analysis could not find its inputs: {}; bind them in the wish's properties and analyze again", what.join("; ")))
+            .with_data(json!({ "blockers": blockers })));
+    }
     let candidate = json!({ "wish_id": evidence["wish_id"], "analysis": v.analysis, "inputs": v.inputs, "basis": evidence["basis"], "executed_at": now() });
-    finish_stage(state, caller, ws_id, st, candidate, evidence, json!({ "xllm": x, "usage": x["usage"] })).await
+    finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
 }
 
 
@@ -461,8 +479,8 @@ fn candidate_from(st: &Arc<StageState>, stage: &Stage, c: &Collector) -> WsResul
     Ok((cand, stage.evidence()?))
 }
 
-/// The coding stage ended with `finish`: the last trial run is the candidate, with the macro version it ran (第一期
-/// §2.1: applying it writes the macro and the results in one Commit).
+/// The coding stage ended with `finish`: the macro version the last trial run ran is written (D1: its trial results
+/// only go into the record). An error-level check the trial run still fails ends the coding: no macro is kept (D2).
 async fn code_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>) -> WsResult<()> {
     if st.cancelled() {
         return Ok(());
@@ -470,6 +488,16 @@ async fn code_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc
     if st.collector.lock().unwrap().finished.is_none() {
         let tail = st.collector.lock().unwrap().program.as_ref().map(|p| p.logs.clone()).unwrap_or_default();
         return Err(WsError::new(Code::DependencyUnavailable, "The coding did not end with finish").with_data(json!({ "program_log": tail })));
+    }
+    {
+        let c = st.collector.lock().unwrap();
+        let checks = c.checks();
+        let failed = failed_errors(&checks);
+        if !failed.is_empty() {
+            let ids: Vec<&str> = failed.iter().filter_map(|x| x["id"].as_str()).collect();
+            return Err(WsError::sub(Code::InvalidOperation, "CHECKS_FAILED", format!("Error-level checks still fail in the last trial run ({}): the macro is not kept", ids.join(", ")))
+                .with_data(json!({ "checks": checks, "program_log": c.program.as_ref().map(|p| p.logs.clone()) })));
+        }
     }
     let (mut candidate, evidence) = {
         let stage = st.stage.lock().unwrap();
@@ -485,6 +513,7 @@ async fn code_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc
         }
         (cand, ev)
     };
+    // the trial's files are checked as a run's would be (a file the Workspace does not have is refused), never written
     stage_files(state, caller, ws_id, &mut candidate).await?;
     fill_candidate(&mut candidate, &evidence, "xllm", st, STAGE_CODE);
     finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
@@ -498,7 +527,6 @@ fn fill_candidate(c: &mut Value, ev: &Value, executor: &str, st: &Arc<StageState
     c["run_id"] = json!(st.run_id);
     c["executed_at"] = json!(now());
     c["mode"] = json!(mode);
-    c["simulated"] = json!(executor == "mock");
 }
 
 /// Files the results reference, and the program source, become staged assets (content addressed; bound
@@ -593,8 +621,9 @@ fn run_prepare(st: &Arc<StageState>) -> WsResult<(String, Value)> {
     Ok((src, manifest))
 }
 
-/// A run of the stored macro, judged: it must produce the contract with the code it fixed. A failure ends the run
-/// (`PROGRAM_FAILED`, `MACRO_CODE_CHANGED`: code it again), it is never repaired here.
+/// A run of the stored macro, judged: it must produce the contract with the code it fixed, and pass its error-level
+/// checks (D2). A failure ends the run (`PROGRAM_FAILED`, `MACRO_CODE_CHANGED`: code it again; `CHECKS_FAILED`), it is
+/// never repaired here.
 fn judge_run(st: &Arc<StageState>, results: Option<&Value>, log: &str) -> WsResult<String> {
     let fail = |code: &'static str, msg: String| WsError::sub(Code::InvalidOperation, code, msg).with_data(json!({ "program_log": log }));
     let raw = results.cloned().ok_or_else(|| fail("PROGRAM_FAILED", "The macro wrote no results".into()))?;
@@ -621,6 +650,14 @@ fn judge_run(st: &Arc<StageState>, results: Option<&Value>, log: &str) -> WsResu
     if !blocking.is_empty() {
         c.program = None;
         return Err(fail("PROGRAM_FAILED", format!("The macro's results are incomplete: {}", blocking.join("; "))));
+    }
+    let checks = c.checks();
+    let failed = failed_errors(&checks);
+    if !failed.is_empty() {
+        c.program = None;
+        let ids: Vec<&str> = failed.iter().filter_map(|x| x["id"].as_str()).collect();
+        return Err(WsError::sub(Code::InvalidOperation, "CHECKS_FAILED", format!("Error-level checks failed ({}): nothing was written", ids.join(", ")))
+            .with_data(json!({ "checks": checks, "program_log": log, "ai": ai })));
     }
     st.note_program_run(&ai);
     Ok("The macro ran; its results are collected.".into())
@@ -656,145 +693,6 @@ async fn run_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<
     finish_stage(state, caller, ws_id, st, candidate, evidence, json!({ "program_log": log })).await
 }
 
-// ---- the Mock executor's results (simulated): the browser executed, the service plans (§3)
-
-fn mock_slug(name: &str) -> String {
-    aiworkspace_store::wish::plan::slug(name)
-}
-
-/// Results of the Mock (phase two `ResultSpec`) → `wish.results.v2`.
-fn mock_results(st: &Arc<StageState>, provided: &Value) -> WsResult<Vec<Value>> {
-    let mut out = Vec::new();
-    for r in provided["results"].as_array().into_iter().flatten() {
-        let name = r["name"].as_str().unwrap_or("").to_string();
-        if !aiworkspace_core::wish::is_result_name(&name) {
-            return Err(WsError::invalid_op(format!("Mock result name {name:?} is invalid")));
-        }
-        let mut v = json!({ "name": name, "title": r.get("title").cloned().unwrap_or(json!(name)) });
-        let mut view = Map::new();
-        if let Some(x) = r.get("renderer") {
-            view.insert("renderer".into(), x.clone());
-        }
-        if let Some(x) = r.get("config") {
-            view.insert("config".into(), x.clone());
-        }
-        if let Some(x) = r.get("size") {
-            view.insert("size".into(), x.clone());
-        }
-        if view.contains_key("renderer") {
-            v["views"] = json!([Value::Object(view)]);
-        } else if let Some(sz) = r.get("size") {
-            v["size"] = sz.clone();
-        }
-        let c = &r["content"];
-        match r["type"].as_str().unwrap_or("") {
-            "richtext" => {
-                v["type"] = json!("richtext");
-                v["approach"] = json!("direct");
-                v["markdown"] = c["markdown"].clone();
-            }
-            "record" => {
-                v["type"] = json!("record");
-                v["approach"] = json!("direct");
-                let props_schema = c["schema"]["properties"].as_array().cloned().unwrap_or_default();
-                let mut props = Map::new();
-                let mut properties = Vec::new();
-                for p in &props_schema {
-                    let (key, nm) = (p["key"].as_str().unwrap_or(""), p["name"].as_str().unwrap_or(""));
-                    properties.push(json!({ "name": nm, "type": p["type"], "key": key }));
-                    if let Some(x) = c["props"].get(key) {
-                        props.insert(nm.to_string(), x.clone());
-                    }
-                }
-                v["record"] = json!({ "properties": properties, "props": props });
-            }
-            "table" => {
-                v["type"] = json!("table");
-                v["approach"] = json!("program");
-                let fields = c["fields"].as_array().cloned().unwrap_or_default();
-                let names: Map<String, Value> = fields.iter().map(|f| (f["field_id"].as_str().unwrap_or("").to_string(), f["name"].clone())).collect();
-                let rows: Vec<Value> = c["rows"].as_array().into_iter().flatten().map(|row| {
-                    Value::Object(row.as_object().into_iter().flatten().filter_map(|(k, x)| names.get(k).and_then(Value::as_str).map(|n| (n.to_string(), x.clone()))).collect())
-                }).collect();
-                v["table"] = json!({ "fields": fields.iter().map(|f| json!({ "name": f["name"], "type": f["type"] })).collect::<Vec<_>>(), "key": [], "rows": rows });
-            }
-            "image" => {
-                let path = st.workdir.join("output").join(format!("{}.svg", mock_slug(&name)));
-                write(&path, c["svg"].as_str().unwrap_or(""))?;
-                let bytes = std::fs::read(&path).map_err(|e| WsError::io(e.to_string()))?;
-                let (media, dims) = aiworkspace_store::wish::results::sniff_file(&bytes);
-                v["type"] = json!("image");
-                v["approach"] = json!("direct");
-                let w = c["width"].as_u64().or(dims.map(|d| d.0));
-                let h = c["height"].as_u64().or(dims.map(|d| d.1));
-                v["file"] = json!({ "path": path.display().to_string(), "media_type": media, "size": bytes.len(), "file_name": format!("{}.svg", mock_slug(&name)) });
-                if let (Some(w), Some(h)) = (w, h) {
-                    v["file"]["image"] = json!({ "width": w, "height": h });
-                }
-            }
-            "video" => {
-                v["type"] = json!("video");
-                v["approach"] = json!("direct");
-                let mut frames = Vec::new();
-                for (i, f) in c["frames"].as_array().into_iter().flatten().enumerate() {
-                    let path = st.workdir.join("output").join(format!("{}-f{i}.svg", mock_slug(&name)));
-                    write(&path, f["svg"].as_str().unwrap_or(""))?;
-                    frames.push(json!({ "path": path.display().to_string(), "duration_ms": f["durationMs"], "caption": f.get("caption").cloned().unwrap_or(json!("")) }));
-                }
-                v["frames"] = json!(frames);
-                v["video"] = json!({ "width": c["width"], "height": c["height"], "caption": c.get("caption").cloned().unwrap_or(json!("")) });
-                if v.get("views").is_none() {
-                    v["views"] = json!([{ "renderer": "sample.video" }]);
-                }
-            }
-            "control" => {
-                // checked like the model's: the tree and its bounds, `under` against this run's inputs
-                let stage = st.stage.lock().unwrap();
-                let collector = Collector { contract: json!({ "results": [], "dynamic": true }), inputs: stage.input_infos()?, composites: stage.composite_defs()?, ..Default::default() };
-                drop(stage);
-                let mut raw = json!({ "name": name, "type": "control", "title": v["title"] });
-                for k in ["kind", "config", "children", "under", "def", "slots"] {
-                    if let Some(x) = c.get(k) {
-                        raw[k] = x.clone();
-                    }
-                }
-                v = collector.normalize(&raw, "direct").map_err(|e| WsError::invalid_op(format!("Result {name}: {}", e.join("; "))))?;
-            }
-            t => return Err(WsError::invalid_op(format!("Mock result type {t} is not supported"))),
-        }
-        out.push(v);
-    }
-    Ok(out)
-}
-
-/// Values of a simulated result must still be values of their declared types (§8.6).
-fn check_mock(results: &[Value]) -> WsResult<()> {
-    use aiworkspace_store::wish::results::check_value;
-    let mut bad = Vec::new();
-    for r in results {
-        let name = r["name"].as_str().unwrap_or("");
-        for p in r["record"]["properties"].as_array().into_iter().flatten() {
-            let (n, t) = (p["name"].as_str().unwrap_or(""), p["type"].as_str().unwrap_or("text"));
-            if let Some(v) = r["record"]["props"].get(n) {
-                if !check_value(t, v) {
-                    bad.push(format!("\"{name}\": \"{n}\" is declared {t}, but its value is {v}"));
-                }
-            }
-        }
-        for f in r["table"]["fields"].as_array().into_iter().flatten() {
-            let (n, t) = (f["name"].as_str().unwrap_or(""), f["type"].as_str().unwrap_or("text"));
-            if let Some(v) = r["table"]["rows"].as_array().into_iter().flatten().filter_map(|row| row.get(n)).find(|v| !check_value(t, v)) {
-                bad.push(format!("\"{name}\": field \"{n}\" is declared {t}, but has the value {v}"));
-            }
-        }
-    }
-    if bad.is_empty() {
-        Ok(())
-    } else {
-        Err(WsError::invalid_schema(format!("The simulated results are invalid: {}", bad.join("; "))))
-    }
-}
-
 /// An executor's reported analysis (第一期 §2.9): validated exactly like the model's `submit_analysis`.
 async fn provided_analysis(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, provided: &Value) -> WsResult<()> {
     let (validated, evidence) = {
@@ -806,64 +704,7 @@ async fn provided_analysis(state: &Arc<AppState>, caller: &Caller, ws_id: &str, 
         Ok(v) => v,
         Err(problems) => return Err(WsError::invalid_op("the reported analysis was not accepted").with_data(json!({ "problems": problems }))),
     };
-    let candidate = json!({ "wish_id": evidence["wish_id"], "analysis": v.analysis, "inputs": v.inputs, "basis": evidence["basis"], "executed_at": now() });
-    finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
-}
-
-async fn mock(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, provided: &Value, executor: &str) -> WsResult<()> {
-    let provided = provided.clone();
-    let mut results = mock_results(st, &provided)?;
-    check_mock(&results)?;
-    // video frames: staged now, kept as a record of frame assets (the phase-two frame preview)
-    let mut frame_paths: Vec<(usize, usize, PathBuf)> = Vec::new();
-    for (i, r) in results.iter().enumerate() {
-        for (j, f) in r["frames"].as_array().into_iter().flatten().enumerate() {
-            frame_paths.push((i, j, PathBuf::from(f["path"].as_str().unwrap_or(""))));
-        }
-    }
-    if !frame_paths.is_empty() {
-        let c = caller.clone();
-        let fp = frame_paths.clone();
-        let staged = with_ws(state, ws_id, move |ws| {
-            fp.iter().map(|(_, _, p)| Ok(ws.stage_asset(&c, &std::fs::read(p).map_err(|e| WsError::io(e.to_string()))?)?)).collect::<WsResult<Vec<Value>>>()
-        })
-        .await?;
-        for ((i, j, _), s) in frame_paths.iter().zip(staged) {
-            results[*i]["frames"][*j]["object_id"] = s["object_id"].clone();
-            results[*i]["frames"][*j]["media_type"] = s["media_type"].clone();
-        }
-        for r in &mut results {
-            if r["type"] != json!("video") {
-                continue;
-            }
-            let frames: Vec<Value> = r["frames"].as_array().cloned().unwrap_or_default().iter()
-                .map(|f| json!({ "object_id": f["object_id"], "media_type": f["media_type"], "duration_ms": f["duration_ms"], "caption": f["caption"] })).collect();
-            let duration: u64 = frames.iter().filter_map(|f| f["duration_ms"].as_u64()).sum();
-            r["record"] = json!({
-                "properties": [{ "name": "Frames", "type": "text", "key": "frames" }, { "name": "Duration (ms)", "type": "number", "key": "duration" }, { "name": "Caption", "type": "text", "key": "caption" },
-                               { "name": "Width", "type": "number", "key": "width" }, { "name": "Height", "type": "number", "key": "height" }],
-                "props": { "Frames": serde_json::to_string(&frames).unwrap_or_default(), "Duration (ms)": duration, "Caption": r["video"]["caption"], "Width": r["video"]["width"], "Height": r["video"]["height"] },
-            });
-            r.as_object_mut().unwrap().remove("frames");
-            r.as_object_mut().unwrap().remove("video");
-        }
-    }
-    let evidence = {
-        let stage = st.stage.lock().unwrap();
-        let mut ev = stage.evidence()?;
-        // what the browser executor read is the read set of a simulated run
-        ev["read_set"] = provided.get("read_set").cloned().unwrap_or(json!([]));
-        ev["appended_inputs"] = json!([]);
-        ev
-    };
-    let mut candidate = json!({
-        "schema_version": aiworkspace_core::wish::RESULTS_SCHEMA, "results": results, "facts": {}, "checks": [],
-        "summary": provided.get("summary").cloned().unwrap_or(json!("")), "assumptions": provided.get("assumptions").cloned().unwrap_or(json!([])),
-        "warnings": provided.get("warnings").cloned().unwrap_or(json!([])), "external_data": [], "model_judgment": [], "refinements": [],
-    });
-    stage_files(state, caller, ws_id, &mut candidate).await?;
-    fill_candidate(&mut candidate, &evidence, executor, st, "run");
-    finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
+    finish_analysis(state, caller, ws_id, st, v, evidence).await
 }
 
 // ---- the stage host
@@ -879,6 +720,8 @@ pub fn host_open(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &s
         let cfg = &state.wish.config;
         let brief = match stage_name.as_str() {
             STAGE_ANALYZE => {
+                // the model a model stage runs on, for the status bar (running the macro has none)
+                active.progress.lock().unwrap()["model"] = json!(cfg.analyze_model);
                 let (user, _) = analyze_user(&st)?;
                 json!({ "kind": "model", "stage": stage_name, "system": ANALYZE_SYSTEM, "user": user, "tools": tool_specs(&ANALYZE_KINDS), "model": cfg.analyze_model,
                         "iterations": cfg.analyze_tool_iterations, "budget": st.budget })
@@ -888,6 +731,7 @@ pub fn host_open(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &s
                 json!({ "kind": "program", "stage": stage_name, "source": source, "manifest": manifest, "budget": st.budget })
             }
             _ => {
+                active.progress.lock().unwrap()["model"] = json!(cfg.execute_model);
                 let (mut user, existing) = code_prepare(state, caller, ws_id, &st, &params)?;
                 if let Some(src) = &existing {
                     user.push_str(&format!("\n\n## Current macro (program/main.js)\n\n```js\n{src}\n```\n"));
@@ -1066,6 +910,7 @@ pub fn host_program(st: &Arc<StageState>, source: &str, results: Option<&Value>,
         }
     }
     st.note_tool("run_program");
+    *st.last_log.lock().unwrap() = log.to_string();
     write(&st.workdir.join("program/main.js"), source)?;
     let out = st.workdir.join("output");
     for (path, content) in files.as_object().into_iter().flatten() {
@@ -1162,11 +1007,12 @@ fn walk_size(dir: &Path) -> u64 {
     total
 }
 
-/// The executor reported it is done (`proc.report { finished: true }`): what the stage collected becomes the
-/// candidate, planned and left waiting for confirmation; failures end the run.
+/// The executor reported it is done (`proc.report { finished: true }`): what the stage collected is planned and
+/// written with its record; failures end the run with theirs.
 pub async fn drive_host(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: String, st: Arc<StageState>) {
     let res = host_finish(&state, &caller, &ws_id, &st).await;
-    settle(&state, caller, &ws_id, &run_id, &st.active, res).await;
+    let log = st.last_log.lock().unwrap().clone();
+    settle(&state, caller, &ws_id, &run_id, &st.active, res, log).await;
     state.wish.drop_hosted(&run_id);
     state.wish.unregister(&run_id);
 }

@@ -211,7 +211,6 @@ fn entity_freshness_inner(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, vis
         // read from outside the Workspace by the program: that part cannot be confirmed (§9.3)
         "external_data": derived.get("external_data").cloned().unwrap_or(json!(false)),
         "model_judgment": derived.get("model_judgment").cloned().unwrap_or(json!(false)),
-        "simulated": derived.get("simulated").cloned().unwrap_or(json!(false)),
     }))
 }
 
@@ -398,35 +397,34 @@ fn run_code(run: &Value) -> Option<&str> {
     e.get("sub_code").and_then(Value::as_str).or_else(|| e.get("code").and_then(Value::as_str))
 }
 
-/// The one main state of a wish and its next action (PRD §5.8, 第一期 §2.7): the first that holds of
-/// needs_input, needs_analysis, needs_coding, waiting_data (no_access when the caller cannot read an input: nothing
-/// to wait for), cannot_run, in_progress, pending_confirmation, stale, current. `freshness` is `wish_freshness`; `runs` what the caller knows of the wish's runs: `{ active?: { stage,
-/// state }, waiting?: { stage, run_id }, last_failed?: { stage, error: { code, sub_code } } }`. `stale` stays true
-/// when an earlier state wins, so a running or failed run never hides that the applied results are out of date.
+/// The one main state of a wish and its next action (PRD §5.8, 第一期 §2.7, 许愿格交互升级 §2.6): the first that holds of
+/// needs_analysis, needs_coding, waiting_data (no_access when the caller cannot read an input: nothing to wait for),
+/// cannot_run, in_progress, stale, current. `freshness` is `wish_freshness`; `runs` what the caller knows of the wish's
+/// runs: `{ active?: { stage, state }, last_failed?: { stage, error: { code, sub_code } } }`. Every stage writes when it
+/// ends, so nothing waits for a confirmation. `stale` stays true when an earlier state wins, so a running or failed run
+/// never hides that the results are out of date.
 pub fn main_status(freshness: &Value, runs: &Value) -> Value {
     let f = freshness;
     let analysis = f.get("analysis_status").and_then(Value::as_str);
     let status = f.get("status").and_then(Value::as_str).unwrap_or("none");
     let stale = matches!(status, "stale" | "upstream_stale" | "unavailable") || f.get("config_changed") == Some(&json!(true));
-    let failed_code = runs.get("last_failed").and_then(run_code);
-    let stage_of = |k: &str| runs.get(k).filter(|r| !r.is_null()).and_then(|r| r.get("stage")).and_then(Value::as_str);
-    let (active, waiting) = (stage_of("active"), stage_of("waiting"));
+    let last_failed = runs.get("last_failed").filter(|r| !r.is_null());
+    let failed_code = last_failed.and_then(run_code);
+    let active = runs.get("active").filter(|r| !r.is_null());
     // a run of the stage that resolves a state (analysis for needs_analysis, coding for needs_coding) is that state's progress
-    let resolving = |stage: &str| active == Some(stage) || waiting == Some(stage);
+    let resolving = |stage: &str| active.and_then(|r| r.get("stage")).and_then(Value::as_str) == Some(stage);
     let mut reasons: Vec<Value> = Vec::new();
     let needs_analysis = analysis.is_none() || f.get("needs_analysis") == Some(&json!(true));
     let needs_coding = f.get("needs_coding").and_then(|n| n.get("reasons")).and_then(Value::as_array).is_some_and(|r| !r.is_empty());
     let (main, next) = if (needs_analysis && resolving(crate::wish::STAGE_ANALYZE)) || (!needs_analysis && needs_coding && resolving(crate::wish::STAGE_CODE)) {
-        if active.is_some() {
-            ("in_progress", "cancel")
-        } else {
-            ("pending_confirmation", "apply")
-        }
-    } else if analysis == Some("needs_input") {
-        ("needs_input", "answer")
+        ("in_progress", "cancel")
     } else if needs_analysis {
         if let Some(s) = f.get("analysis_sources_changed").and_then(Value::as_array).filter(|a| !a.is_empty()) {
             reasons.push(json!({ "code": "analysis_sources_changed", "sources": s }));
+        }
+        // the analysis itself failed (inputs not found…): written in its run record, never into the wish
+        if let Some(code) = failed_code.filter(|_| last_failed.and_then(|r| r.get("stage")).and_then(Value::as_str) == Some(crate::wish::STAGE_ANALYZE)) {
+            reasons.push(json!({ "code": "analysis_failed", "run_code": code }));
         }
         ("needs_analysis", "analyze")
     } else if let Some(r) = f.get("needs_coding").and_then(|n| n.get("reasons")).and_then(Value::as_array).filter(|r| !r.is_empty()) {
@@ -445,10 +443,8 @@ pub fn main_status(freshness: &Value, runs: &Value) -> Value {
     } else if let Some(code) = failed_code.filter(|c| CANNOT_RUN_CODES.contains(c)) {
         reasons.push(json!({ "code": code }));
         ("cannot_run", "fix")
-    } else if runs.get("active").is_some_and(|a| !a.is_null()) {
+    } else if active.is_some() {
         ("in_progress", "cancel")
-    } else if runs.get("waiting").is_some_and(|w| !w.is_null()) {
-        ("pending_confirmation", "apply")
     } else if stale || status == "none" {
         ("stale", "run")
     } else {
@@ -575,7 +571,6 @@ mod tests {
     fn main_status_takes_the_first_state_that_holds() {
         let none = json!({});
         let active = json!({ "active": { "stage": "run", "state": "running" } });
-        let waiting = json!({ "waiting": { "stage": "run", "run_id": "r2" } });
         // as `WsError::to_json` writes a run's error: `sub_code` only when there is one
         let failed = |code: &str, sub: Option<&str>| {
             let mut e = json!({ "code": code });
@@ -586,15 +581,12 @@ mod tests {
         };
         assert_eq!(main_of(&current(), &none), s("current", "none", false));
 
-        // 9 → 1, each state added on top of the ones after it
+        // 7 → 1, each state added on top of the ones after it
         let mut f = current();
         f["status"] = json!("stale");
-        assert_eq!(main_of(&f, &none), s("stale", "run", true), "8 stale");
-        assert_eq!(main_of(&f, &waiting), s("pending_confirmation", "apply", true), "7 pending confirmation over stale");
-        let mut both = waiting.clone();
-        both["active"] = active["active"].clone();
-        assert_eq!(main_of(&f, &both), s("in_progress", "cancel", true), "6 in progress over pending confirmation");
-        let mut runs = both.clone();
+        assert_eq!(main_of(&f, &none), s("stale", "run", true), "7 stale");
+        assert_eq!(main_of(&f, &active), s("in_progress", "cancel", true), "6 in progress over stale");
+        let mut runs = active.clone();
         runs["last_failed"] = failed("DEPENDENCY_UNAVAILABLE", Some("AI_QUOTA_EXHAUSTED"))["last_failed"].clone();
         assert_eq!(main_of(&f, &runs), s("cannot_run", "fix", true), "5 cannot run over in progress");
         assert_eq!(main_status(&f, &runs)["reasons"], json!([{ "code": "AI_QUOTA_EXHAUSTED" }]));
@@ -611,25 +603,26 @@ mod tests {
         f["analysis_sources_changed"] = json!([{ "entity_id": "rules" }]);
         assert_eq!(main_of(&f, &runs), s("needs_analysis", "analyze", true), "2 needs analysis over needs coding");
         assert_eq!(main_status(&f, &runs)["reasons"], json!([{ "code": "analysis_sources_changed", "sources": [{ "entity_id": "rules" }] }]));
-        f["analysis_status"] = json!("needs_input");
-        assert_eq!(main_of(&f, &runs), s("needs_input", "answer", true), "1 needs input over everything");
 
-        // a run of the stage that resolves the state is its progress: the first macro is stored only when its candidate is applied
+        // a run of the stage that resolves the state is its progress; nothing waits for a confirmation any more
         let mut f = current();
         f["needs_coding"] = json!({ "reasons": [{ "code": "no_macro" }] });
         assert_eq!(main_of(&f, &json!({ "active": { "stage": "code", "state": "running" } })).0, "in_progress");
-        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "code", "run_id": "r" } })).0, "pending_confirmation");
-        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "run", "run_id": "r" } })).0, "needs_coding");
+        assert_eq!(main_of(&f, &json!({ "active": { "stage": "run", "state": "running" } })).0, "needs_coding");
+        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "code", "run_id": "r" } })).0, "needs_coding", "waiting is no state of a run now");
         f["needs_analysis"] = json!(true);
-        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "analyze", "run_id": "r" } })).0, "pending_confirmation");
-        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "code", "run_id": "r" } })).0, "needs_analysis", "a coding candidate on a stale analysis does not hide it");
+        assert_eq!(main_of(&f, &json!({ "active": { "stage": "analyze", "state": "running" } })).0, "in_progress");
+        assert_eq!(main_of(&f, &json!({ "active": { "stage": "code", "state": "running" } })).0, "needs_analysis", "a coding run on a stale analysis does not hide it");
 
-        // needs analysis: no analysis at all, or one that no longer matches its basis
+        // needs analysis: no analysis at all, or one that no longer matches its basis; a failed analysis says why
         let mut f = current();
         f["analysis_status"] = Value::Null;
         f["status"] = json!("none");
         assert_eq!(main_of(&f, &none), s("needs_analysis", "analyze", false));
         assert_eq!(main_status(&f, &none)["reasons"], json!([]), "no sources changed: no reason listed");
+        let missing = json!({ "last_failed": { "stage": "analyze", "error": { "code": "INVALID_OPERATION", "sub_code": "NEEDS_INPUT" } } });
+        assert_eq!(main_status(&f, &missing)["reasons"], json!([{ "code": "analysis_failed", "run_code": "NEEDS_INPUT" }]));
+        assert_eq!(main_of(&f, &missing), s("needs_analysis", "analyze", false), "no needs_input state: bind the input, analyze again");
         let mut f = current();
         f["needs_analysis"] = json!(true);
         assert_eq!(main_of(&f, &none).0, "needs_analysis");
@@ -651,11 +644,11 @@ mod tests {
         for code in ["PERMISSION_DENIED", "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE"] {
             assert_eq!(main_of(&f, &failed(code, None)), s("cannot_run", "fix", false), "{code}");
         }
-        // any other failure leaves the state to what the wish is: here current
+        // any other failure (a failed error-level check included) leaves the state to what the wish is: here current
         assert_eq!(main_of(&f, &failed("INTERNAL", Some("TIMEOUT"))), s("current", "none", false));
+        assert_eq!(main_of(&f, &failed("INVALID_OPERATION", Some("CHECKS_FAILED"))), s("current", "none", false));
         let mut runs = failed("INTERNAL", None);
         runs["active"] = Value::Null;
-        runs["waiting"] = Value::Null;
         assert_eq!(main_of(&f, &runs), s("current", "none", false), "null runs are no runs");
 
         // stale: the results' state, their configuration, a gone input; a wish never run is to be run

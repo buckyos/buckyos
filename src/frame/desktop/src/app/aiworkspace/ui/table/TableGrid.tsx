@@ -370,8 +370,8 @@ function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate
       )}
       {!editing && formula && <span className="aiws-chip" data-testid="aiws-cell-formula" title={t('aiworkspace.table.cell.formulaTitle', { formula: formula.$formula.expr })}>{t('aiworkspace.table.record.formula')}</span>}
       {!editing && meta?.derived && !resultTable && (
-        <span className="aiws-chip aiws-chip-derived" data-testid="aiws-derived" title={meta.derived.program?.startsWith('mock.') ? t('aiworkspace.data.cell.derivedBySimulated', { program: meta.derived.program }) : t('aiworkspace.data.cell.derivedBy', { program: meta.derived.program ?? t('aiworkspace.data.cell.processingProgram') })}>
-          {meta.derived.program?.startsWith('mock.') ? t('aiworkspace.data.simulated') : t('aiworkspace.data.cell.derived')}
+        <span className="aiws-chip aiws-chip-derived" data-testid="aiws-derived" title={t('aiworkspace.data.cell.derivedBy', { program: meta.derived.program ?? t('aiworkspace.data.cell.processingProgram') })}>
+          {t('aiworkspace.data.cell.derived')}
         </span>
       )}
       {!editing && meta?.manual_override && <span className="aiws-chip aiws-chip-warn" data-testid="aiws-manual-override" title={t('aiworkspace.data.cell.manualOverrideTitle')}>{t('aiworkspace.data.cell.manualOverride')}</span>}

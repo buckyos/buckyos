@@ -6,7 +6,7 @@
  * with their messages and a wish run's start and end, newest first, filtered and paged. */
 
 import type { Page } from '@playwright/test'
-import { expect, openCanvas, openWorkspacePage, test, type Api } from './fixtures'
+import { expect, openCanvas, openWorkspacePage, test, wishThreeSteps, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -122,16 +122,8 @@ test('§15-6/§15-8 工作日志：提交带说明、许愿格运行的开始和
   await say(BOB, 'bob 补充了说明')
   await openCanvas(page, ALICE, ws.workspace_id)
 
-  // run the wish (the Mock executor): analysis, run, apply
-  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
-  await page.getByTestId('aiws-wish-next').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true')
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current', { timeout: 30_000 })
+  // the wish's three stages from its card (the scripted model): each writes when it ends
+  await wishThreeSteps(page, api, ALICE, ws.workspace_id, 'wish-analysis')
 
   // 全部: newest first; the run's start and end; the macro's Commit marked as such; the messages as written
   await expect.poll(async () => (await workLog(page, 'all')).state.entries.some((e) => e.kind === 'run' && e.phase === 'end' && e.state === 'succeeded'), { timeout: 20_000 }).toBe(true)
@@ -140,7 +132,7 @@ test('§15-6/§15-8 工作日志：提交带说明、许愿格运行的开始和
   const order = keys(all.entries)
   expect([...order].sort().reverse()).toEqual(order)
   const runs = all.entries.filter((e) => e.kind === 'run')
-  expect(runs.map((e) => e.phase)).toEqual(['end', 'start'])
+  expect(runs.map((e) => `${e.stage}:${e.phase}`)).toEqual(['run:end', 'run:start', 'code:end', 'code:start', 'analyze:end', 'analyze:start'])
   expect(runs[0]).toMatchObject({ actor: 'alice', actor_kind: 'macro', stage: 'run', state: 'succeeded', mine: true })
   expect(runs[0].target?.entity_id).toBe('wish-analysis')
   expect(text[all.entries.indexOf(runs[0])]).toMatch(/完成$/)
@@ -149,6 +141,9 @@ test('§15-6/§15-8 工作日志：提交带说明、许愿格运行的开始和
   expect(applied?.actor_kind).toBe('macro')
   expect(all.entries.indexOf(applied!)).toBeLessThan(all.entries.indexOf(runs[1]))
   expect(text[all.entries.indexOf(applied!)]).toBe('写入了许愿格的结果')
+  // the stages before it wrote the analysis and the macro, in the reader's language
+  expect(text[all.entries.indexOf(all.entries.find((e) => e.kind === 'commit' && e.run_id === runs[2].run_id)!)]).toBe('保存了许愿格的宏')
+  expect(text[all.entries.indexOf(all.entries.find((e) => e.kind === 'commit' && e.run_id === runs[4].run_id)!)]).toBe('写回了许愿格的分析')
   const said = all.entries.filter((e) => e.kind === 'commit' && e.message && /整理季度数据|bob 补充了说明/.test(e.message))
   expect(said.map((e) => [e.actor, e.message])).toEqual([['bob', 'bob 补充了说明'], ['alice', '整理季度数据']])
   expect(text).toContain('bob 补充了说明')

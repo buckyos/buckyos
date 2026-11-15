@@ -723,15 +723,12 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "proc.start" if wish::is_wish(s(p, "program")?) => {
             wish::start(state, caller, ws_id()?, s(p, "program")?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?)?
         }
-        "proc.start" => state.with_ws(ws_id()?, |ws| {
-            ws.proc_start(caller, s(p, "program")?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?)
-        })?,
-        "proc.get" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::get(state, caller, ws_id()?, s(p, "run_id")?, p.get("choices").unwrap_or(&Value::Null))?,
-        "proc.get" => state.with_ws(ws_id()?, |ws| ws.proc_get(caller, s(p, "run_id")?))?,
-        "proc.apply" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::apply(state, caller, ws_id()?, p)?,
-        "proc.apply" => state.with_ws(ws_id()?, |ws| ws.proc_apply(caller, s(p, "run_id")?, p.get("session_id").and_then(Value::as_str)))?,
+        "proc.start" => return Err(WsError::new(Code::MissingExtension, format!("unknown program {}", s(p, "program")?))),
+        "proc.get" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::get(state, caller, ws_id()?, s(p, "run_id")?)?,
+        "proc.get" => state.with_ws(ws_id()?, |ws| ws.source_run_get(caller, s(p, "run_id")?))?,
         "proc.cancel" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::cancel(state, caller, ws_id()?, s(p, "run_id")?)?,
-        "proc.cancel" => state.with_ws(ws_id()?, |ws| ws.proc_cancel(caller, s(p, "run_id")?))?,
+        "proc.cancel" => state.with_ws(ws_id()?, |ws| ws.source_run_cancel(caller, s(p, "run_id")?))?,
+        "proc.rollback" => wish::rollback(state, caller, ws_id()?, p)?,
         "proc.list" => wish::list(state, caller, ws_id()?, p)?,
         "proc.claim" => wish::exec::claim(state, caller, ws_id()?, p)?,
         "proc.heartbeat" => wish::exec::heartbeat(state, caller, ws_id()?, p)?,

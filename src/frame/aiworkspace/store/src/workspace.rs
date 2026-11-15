@@ -312,8 +312,10 @@ pub struct CommitOpts {
     /// Authorize with this instead of the caller's own permissions: a run's macro identity (权限需求 §4.5, R28). The
     /// caller must still be able to enter the Workspace.
     pub authorize_as: Option<aiworkspace_core::access::Access>,
-    /// Who did what, beside the writer (R16, R31): `judged_as`, `triggered_by`, `executed_by`, `applied_by`, `macro`.
+    /// Who did what, beside the writer (R16, R31): `judged_as`, `triggered_by`, `executed_by`, `macro`.
     pub attribution: Option<Value>,
+    /// The id the Commit takes when accepted (a wish run's record names its Commit in the same Commit).
+    pub commit_id: Option<String>,
 }
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -844,7 +846,7 @@ impl Workspace {
         let ops: Vec<Value> = ids.iter().map(|id| json!({ "op": "entity.purge", "entity_id": id })).collect();
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch,
                           "idempotency_key": format!("purge/{}", random_id("")), "session_id": session_id, "message": "purge deleted entities", "operations": ops });
-        let opts = CommitOpts { internal: true, import: false, undoes: None, as_principal: None, maintenance: true, as_source: false, as_build: false, as_session: false, authorize_as: None, attribution: None };
+        let opts = CommitOpts { internal: true, import: false, undoes: None, as_principal: None, maintenance: true, as_source: false, as_build: false, as_session: false, authorize_as: None, attribution: None, commit_id: None };
         let r = self.commit(&req, caller, &opts);
         if r["status"] != json!("accepted") {
             return Err(WsError::new(Code::InvalidOperation, "purge was not accepted").with_data(r));
@@ -1306,9 +1308,9 @@ impl Workspace {
         if self.session_events && !opts.internal && !opts.as_session && self.session_closed() {
             return Err(reject(WsError::sub(Code::PermissionDenied, "SESSION_CLOSED", "the session has ended: its workspace is a record now")));
         }
-        // a run's result reaches the document through proc.apply only, written as the run (权限需求 R32, E6)
+        // a run's result reaches the document only as the service writes it at the end of its stage, as the run (权限需求 R32, E6)
         if req.run_id.is_some() && !dry_run && opts.as_principal.is_none() && !opts.as_source && !opts.internal {
-            return Err(reject(WsError::invalid_op("a Commit naming a run_id is a run's result: apply it with proc.apply")));
+            return Err(reject(WsError::invalid_op("a Commit naming a run_id is a run's result: the service writes it when the run's stage ends")));
         }
         if let Some(run_id) = &req.run_id {
             let state: Option<String> = self
@@ -1400,7 +1402,7 @@ impl Workspace {
                 }
             }
         }
-        let commit_id = random_id("cm_");
+        let commit_id = opts.commit_id.clone().unwrap_or_else(|| random_id("cm_"));
         let touched: Vec<&Touched> = ops.iter().flat_map(|o| o.touched.iter()).collect();
         let visible_touched: Vec<Value> = {
             let ctx = self.ctx(&now);
@@ -1743,7 +1745,7 @@ impl Workspace {
                     "idempotency_key": idem, "session_id": req.get("session_id").cloned().unwrap_or(Value::Null),
                     "origin": "human", "message": format!("undo {target}"), "operations": ops })
         };
-        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()), as_principal: None, maintenance: false, as_source: false, as_build: false, as_session: false, authorize_as: None, attribution: None };
+        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()), as_principal: None, maintenance: false, as_source: false, as_build: false, as_session: false, authorize_as: None, attribution: None, commit_id: None };
         // applicability is the ordinary pipeline: every inverse carries `expect: { rev: S }`
         let dry = self.commit_inner(&build(&inverse), caller, &opts, true);
         let dry = match dry {

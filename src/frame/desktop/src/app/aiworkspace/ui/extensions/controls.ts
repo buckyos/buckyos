@@ -3,11 +3,10 @@
 
 import { z } from 'zod'
 import type { BlockDefPayload, ControlBinding, EntityEnvelope, Json } from '../../api/types'
-import { MOCK_WISH_DEF_ID } from '../wish/mockWishDef'
 
-/** The Workspace's control definitions (the Mock wish executor's is not a control). */
+/** The Workspace's control definitions. */
 export function controlDefinitions(entities: EntityEnvelope[]): EntityEnvelope[] {
-  return entities.filter((e) => !e.deleted && e.type_id === 'buckyos.block-def' && e.entity_id !== MOCK_WISH_DEF_ID)
+  return entities.filter((e) => !e.deleted && e.type_id === 'buckyos.block-def')
 }
 
 export interface PropSchema { type?: string | string[]; enum?: Json[]; default?: Json; title?: string; description?: string; minimum?: number; maximum?: number; minLength?: number; maxLength?: number }

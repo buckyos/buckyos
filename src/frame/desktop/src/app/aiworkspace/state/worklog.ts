@@ -140,20 +140,19 @@ export function useWorkLog({ filter = 'all', limit = WORK_LOG_PAGE, enabled = tr
 
 const targetText = (e: WorkLogEntry) => e.target?.title?.trim() || e.target?.name || (e.target ? e.target.entity_id : aiwsT('aiworkspace.activity.untitled'))
 
-/** Who did it, as the log shows it: a guest's short label, an Agent or a macro marked as such (the Mock executor is no
- * macro, Q27), the service as 系统. */
+/** Who did it, as the log shows it: a guest's short label, an Agent or a macro marked as such, the service as 系统. */
 export function workLogActor(entry: WorkLogEntry): string {
   const name = isGuestPrincipal(entry.actor) ? guestLabel(entry.actor) : entry.actor
   switch (entry.actor_kind) {
     case 'agent': return aiwsT('aiworkspace.activity.actor.agent', { name })
-    case 'macro': return aiwsT(entry.simulated ? 'aiworkspace.activity.actor.simulated' : 'aiworkspace.activity.actor.macro', { name })
+    case 'macro': return aiwsT('aiworkspace.activity.actor.macro', { name })
     case 'system': return aiwsT('aiworkspace.activity.actor.system')
     default: return name
   }
 }
 
 const RUN_END: Record<string, string> = {
-  succeeded: 'aiworkspace.activity.run.succeeded', waiting_confirmation: 'aiworkspace.activity.run.waiting', applying: 'aiworkspace.activity.run.applying',
+  succeeded: 'aiworkspace.activity.run.succeeded', applying: 'aiworkspace.activity.run.applying',
   cancelled: 'aiworkspace.activity.run.cancelled',
 }
 
@@ -168,7 +167,10 @@ const ACL: Record<string, string> = {
 /** The service's own Commit messages (English constants), said in the reader's language. */
 function serviceMessage(message: string): string | null {
   if (message === 'Write back wish block analysis') return aiwsT('aiworkspace.activity.commit.wishAnalysis')
-  if (message.startsWith('Apply wish block results') || / \(simulated result\)$/.test(message)) return aiwsT('aiworkspace.activity.commit.wishResults')
+  if (message === 'Write wish block results') return aiwsT('aiworkspace.activity.commit.wishResults')
+  if (message === 'Store wish block macro') return aiwsT('aiworkspace.activity.commit.wishMacro')
+  if (message === 'Record a failed wish run') return aiwsT('aiworkspace.activity.commit.wishFailed')
+  if (message.startsWith('Roll back wish run ')) return aiwsT('aiworkspace.activity.commit.wishRollback')
   if (message.startsWith('refresh from source')) return aiwsT('aiworkspace.activity.commit.sourceRefresh')
   if (message === 'purge deleted entities') return aiwsT('aiworkspace.activity.commit.purge')
   if (message === 'create from template') return aiwsT('aiworkspace.activity.commit.fromTemplate')
@@ -187,7 +189,7 @@ export function describeWorkLogEntry(entry: WorkLogEntry): string {
     case 'import':
       return entry.message?.trim() || aiwsT('aiworkspace.activity.import.package')
     case 'run': {
-      const what = aiwsT(`aiworkspace.activity.run.${entry.stage === 'analyze' || entry.stage === 'code' ? entry.stage : entry.simulated ? 'simulated' : 'run'}`, { target: targetText(entry) })
+      const what = aiwsT(`aiworkspace.activity.run.${entry.stage === 'analyze' || entry.stage === 'code' ? entry.stage : 'run'}`, { target: targetText(entry) })
       if (entry.phase === 'start') return aiwsT('aiworkspace.activity.run.started', { what })
       return aiwsT(RUN_END[entry.state ?? ''] ?? 'aiworkspace.activity.run.failed', { what })
     }

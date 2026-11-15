@@ -375,7 +375,7 @@ fn macro_identity_is_the_trigger_bounded_by_an_intersection_group() {
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
     ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "w1", "type_id": "buckyos.wish", "parent_id": "data", "order_key": "w", "name": "w1",
-        "payload": { "title": "许愿格", "prompt": "汇总", "executor": "mock", "output_mode": "overwrite" } }]));
+        "payload": { "title": "许愿格", "prompt": "汇总", "executor": "xllm", "output_mode": "overwrite" } }]));
     group(&mut ws, "signup", &[]);
     set(&mut ws, json!([{ "subject": "@signup", "resource": "/data/任务", "allow": ["read", "append"] }]));
     let now_caps = |ws: &Workspace, who: &Caller, at: &str| -> Vec<&'static str> {

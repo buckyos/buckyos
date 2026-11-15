@@ -42,6 +42,10 @@ import * as cover from '../../src/i18n/aiworkspace/cover.ts'
 import * as session from '../../src/i18n/aiworkspace/session.ts'
 import * as shell from '../../src/i18n/aiworkspace/shell.ts'
 import * as wish from '../../src/i18n/aiworkspace/wish.ts'
+import * as wishcard from '../../src/i18n/aiworkspace/wishcard.ts'
+import * as wishlinks from '../../src/i18n/aiworkspace/wishlinks.ts'
+import * as samplewish from '../../src/i18n/aiworkspace/samplewish.ts'
+import * as runlog from '../../src/i18n/aiworkspace/runlog.ts'
 
 type Table = Record<string, string>
 interface Part { name: string; prefixes: string[]; en: Table; zh: Table }
@@ -73,6 +77,10 @@ const PARTS: Part[] = [
   { name: 'phone', prefixes: ['phone'], ...phone },
   { name: 'pathnode', prefixes: ['pathnode'], ...pathnode },
   { name: 'cover', prefixes: ['cover'], ...cover },
+  { name: 'wishcard', prefixes: ['wishcard'], ...wishcard },
+  { name: 'wishlinks', prefixes: ['wishlinks'], ...wishlinks },
+  { name: 'samplewish', prefixes: ['samplewish'], ...samplewish },
+  { name: 'runlog', prefixes: ['runlog'], ...runlog },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname

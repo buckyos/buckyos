@@ -6,6 +6,7 @@ pub mod analysis;
 pub mod canvas;
 pub mod context;
 pub mod handles;
+pub mod history;
 pub mod outline;
 pub mod plan;
 pub mod profile;

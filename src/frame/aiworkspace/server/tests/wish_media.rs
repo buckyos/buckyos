@@ -4,7 +4,7 @@
 
 #[path = "common/wishkit.rs"]
 mod wishkit;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::atomic::Ordering;
 use wishkit::*;
 
@@ -60,36 +60,31 @@ fn generated_pictures_are_staged_assets_the_macro_writes_by_id() {
               "payload": { "title": "海报", "prompt": "画一张电影海报", "executor": "xllm", "output_mode": "overwrite",
                            "output": { "container_id": "sf-content", "surface_id": "sf", "name": "海报结果" } } },
         ])).await;
-        let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-poster", "stage": "analyze" })).await;
-        assert_eq!(a["state"], "waiting_confirmation", "{a}");
-        srv.apply(&a, json!({})).await;
+        srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-poster", "stage": "analyze" })).await);
 
-        // coding: the picture is generated once and is the candidate's image result, with its size and a file name
+        // coding: the picture is generated once in the trial run; the macro is written, the picture only by a run
         let c = srv.run("wish.xllm@1", json!({ "wish_id": "wish-poster", "stage": "code" })).await;
-        assert_eq!(c["state"], "waiting_confirmation", "{c}");
+        srv.done(&c);
         assert_eq!(m.image_calls.load(Ordering::SeqCst), 1);
         assert_eq!(m.budget.lock().unwrap()["image_model"], "image.txt2img", "the stage budget names the media models");
-        let poster = c["candidate"]["results"].as_array().unwrap().iter().find(|r| r["name"] == "poster").unwrap().clone();
-        assert_eq!(poster["type"], "image", "{poster}");
-        let id = poster["file"]["object_id"].as_str().unwrap().to_string();
-        assert!(id.starts_with("cyfile:"), "{poster}");
-        assert_eq!(poster["file"]["image"], json!({ "width": 64, "height": 48 }), "{poster}");
-        assert_eq!(poster["file"]["file_name"], "poster.png");
-        assert_eq!(c["candidate"]["program"]["manifest"]["ai"]["image"]["max_calls"], 2);
-        srv.apply(&c, json!({})).await;
+        assert_eq!(c["record"]["summary"]["trial"]["results"], 1);
         let w = srv.wish_of("wish-poster").await;
-        let asset = w["last_run"]["result_bindings"]["results"]["poster"]["entity_id"].as_str().unwrap().to_string();
-        let read = srv.rpc("doc.read", json!({ "entity_id": asset })).await;
-        assert_eq!(read["content"]["payload"]["object_id"], json!(id), "{read}");
-        assert_eq!(read["content"]["payload"]["image"], json!({ "width": 64, "height": 48 }));
-        assert!(srv.asset_bytes(&srv.ws, &id).await.starts_with(b"\x89PNG"));
+        assert_eq!(w["program"]["manifest"]["ai"]["image"]["max_calls"], 2);
+        assert_eq!(c["record"]["outputs"]["program"]["ai"], true);
 
         // running the stored macro: the same request is answered from the cache — the same picture, nothing generated
         let r = srv.run("wish.xllm@1", json!({ "wish_id": "wish-poster", "stage": "run" })).await;
-        assert_eq!(r["state"], "waiting_confirmation", "{r}");
+        srv.done(&r);
         assert_eq!(m.image_calls.load(Ordering::SeqCst), 1);
-        let again: Vec<Value> = r["candidate"]["results"].as_array().unwrap().clone();
-        assert_eq!(again[0]["file"]["object_id"], json!(id));
+        assert!(r["record"].get("usage").is_none(), "a cached picture is no AI call: {}", r["record"]);
+        let w = srv.wish_of("wish-poster").await;
+        let asset = w["last_run"]["result_bindings"]["results"]["poster"]["entity_id"].as_str().unwrap().to_string();
+        let read = srv.rpc("doc.read", json!({ "entity_id": asset })).await;
+        let id = read["content"]["payload"]["object_id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("cyfile:"), "{read}");
+        assert_eq!(read["content"]["payload"]["image"], json!({ "width": 64, "height": 48 }));
+        assert_eq!(read["content"]["payload"]["file_name"], "poster.png");
+        assert!(srv.asset_bytes(&srv.ws, &id).await.starts_with(b"\x89PNG"));
 
         // a macro cannot write an object of the store the Workspace does not have
         *m.execute.lock().unwrap() = coding(FOREIGN);

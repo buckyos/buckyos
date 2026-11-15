@@ -2,8 +2,8 @@
  * it started — analyze, code or run. It claims the run, keeps the lease alive, hosts the model loop of a model stage
  * (the stage's prompts and tools come from the service, every tool call goes back to it), runs the macro in a Worker on
  * the snapshot and answers its bridge with host.js (SQL through the service, AI with the user's own session, Zone
- * resources with the page's), and reports when done. The service validates, plans and waits for the user's confirmation
- * exactly as for any other executor; it calls no model.
+ * resources with the page's), and reports when done, with what the stage's model loop used. The service validates,
+ * plans and writes the stage's outcome exactly as for any other executor; it calls no model.
  *
  * The claim token of a run is kept in this browser (localStorage) so a reload can claim it again: a run
  * whose lease lapsed is `interrupted` and resumes as a new attempt. */
@@ -39,10 +39,17 @@ export const claims = {
   },
 }
 
+/** What a model stage used (`proc.report { usage }`): the model of its last turn (the stage's logical model when the
+ * provider did not say), the tokens of all its turns, how many turns. A macro's own AI calls are counted by the program
+ * host (`results.ai`). */
+export type RunUsage = { model?: string; input_tokens?: number; output_tokens?: number; calls?: number }
+/** How an executor ends a run: done, or failed with the reason; either with what the stage used. */
+export type RunReport = { finished: true; usage?: RunUsage } | { error: { code: string; detail: string }; usage?: RunUsage }
+
 export interface ExecutorSession {
   procClaim(runId: string, claimToken: string): Promise<WishClaim>
   procHeartbeat(runId: string, attempt: number, progress?: Json): Promise<void>
-  procReport(runId: string, attempt: number, body: Record<string, Json>): Promise<unknown>
+  procReport(runId: string, attempt: number, body: RunReport): Promise<unknown>
   procTool(runId: string, attempt: number, name: string, args: Json): Promise<WishToolAnswer>
   procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }): Promise<WishToolAnswer>
   procFiles(runId: string, attempt: number): Promise<WishStageFiles>
@@ -78,6 +85,7 @@ export class LocalExecutor {
   private phase = 'claimed'
   private budget: Partial<WishBudget> = {}
   private manifest: Json = null
+  private readonly usage: Required<Omit<RunUsage, 'model'>> & Pick<RunUsage, 'model'> = { input_tokens: 0, output_tokens: 0, calls: 0 }
   private readonly session: ExecutorSession
   private readonly chat: ChatClient
   private readonly infer: Infer
@@ -112,14 +120,14 @@ export class LocalExecutor {
       // running the stored macro: the service judges the run (a failure ends it with its own code), then plans it
       if (stage.kind === 'program') await this.program(stage.source ?? '')
       else await this.loop(stage)
-      await this.session.procReport(this.runId, this.attempt, { finished: true })
+      await this.session.procReport(this.runId, this.attempt, { finished: true, ...this.used() })
       return 'finished'
     } catch (error) {
       // stopped on purpose (cancel, the page going away) or revoked by the service: nothing to report
       if (this.abort.signal.aborted || codeOf(error) === 'RUN_REVOKED' || (error instanceof DOMException && error.name === 'AbortError')) return 'stopped'
       const detail = error instanceof Error ? error.message : String(error)
       const code = codeOf(error)?.startsWith('AI_') || codeOf(error) === 'SNAPSHOT_TOO_LARGE' ? codeOf(error)! : 'EXECUTOR_FAILED'
-      await this.session.procReport(this.runId, this.attempt, { error: { code, detail } }).catch(() => undefined)
+      await this.session.procReport(this.runId, this.attempt, { error: { code, detail }, ...this.used() }).catch(() => undefined)
       throw error
     } finally {
       window.clearInterval(heartbeat)
@@ -127,6 +135,11 @@ export class LocalExecutor {
   }
 
   cancel() { this.abort.abort() }
+
+  /** The report's `usage` when the stage's model was called (running a stored macro calls none). */
+  private used(): { usage?: RunUsage } {
+    return this.usage.calls > 0 ? { usage: { ...this.usage } } : {}
+  }
 
   private checkAborted() {
     if (this.abort.signal.aborted) throw new DOMException('aborted', 'AbortError')
@@ -169,6 +182,10 @@ export class LocalExecutor {
       this.checkAborted()
       this.phase = 'waiting_model'
       const turn = await this.chat.complete(stage.model ?? '', messages, tools, this.abort.signal).catch((error: unknown) => { throw classified(error) })
+      this.usage.calls += 1
+      this.usage.input_tokens += turn.usage.input_tokens ?? 0
+      this.usage.output_tokens += turn.usage.output_tokens ?? 0
+      this.usage.model = turn.usage.model ?? (stage.model || undefined)
       messages.push({ role: 'assistant', text: turn.text, toolCalls: turn.toolCalls, raw: turn.raw })
       if (turn.toolCalls.length === 0) return
       for (const call of turn.toolCalls) {

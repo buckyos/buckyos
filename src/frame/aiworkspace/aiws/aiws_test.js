@@ -158,8 +158,8 @@ export default async function main(aiws) {
 }`)
   const { code, results, stderr, calls } = await runBridged(dir, (op, req) => {
     if (op === 'sql') return { columns: ['月份', 's'], rows: [['2026-07-01', 150.5]], truncated: false }
-    if (op === 'ai.complete') return req.schema ? { value: { risk: 'low' }, cached: false, tokens: 5 } : { text: 'hi', cached: true, tokens: 0 }
-    if (op === 'llm.map') return { results: req.items.map((i) => ({ value: i > 1 ? 'big' : 'small' })), calls: 1, cached: 0 }
+    if (op === 'ai.complete') return req.schema ? { value: { risk: 'low' }, cached: false, tokens: 5, input_tokens: 40, model: 'gpt-6-astra' } : { text: 'hi', cached: true, tokens: 0, input_tokens: 0 }
+    if (op === 'llm.map') return { results: req.items.map((i) => ({ value: i > 1 ? 'big' : 'small' })), calls: 1, cached: 0, tokens: 3, input_tokens: 30, models: ['gpt-6-mini', 'gpt-6-astra'] }
     if (op === 'zone.fetch') return { status: 200, headers: {}, text: '{"ok":1}', url: 'https://zone.example/kapi/x' }
   })
   assertEquals(code, 0, stderr)
@@ -168,7 +168,11 @@ export default async function main(aiws) {
   assertEquals(calls[0].req.declare.inputs.sales, ['月份', '销售额'])
   assertEquals(results.results[0].rows, [{ 月份: '2026-07-01', s: 150.5 }])
   assertEquals(results.facts, { text: 'hi', risk: 'low', labels: ['small', 'big'], zone: { ok: 1 } })
-  assertEquals(results.ai, { complete: { calls: 1, cached: 1, tokens: 5 }, map: { calls: 1, items: 2, cached: 0 }, image: { calls: 0, cached: 0 }, video: { calls: 0, cached: 0 } })
+  // what the macro's AI calls used, for the run's record: output and input tokens, the models that answered (once each)
+  assertEquals(results.ai, {
+    complete: { calls: 1, cached: 1, tokens: 5, input_tokens: 40 }, map: { calls: 1, items: 2, cached: 0, tokens: 3, input_tokens: 30 },
+    image: { calls: 0, cached: 0 }, video: { calls: 0, cached: 0 }, models: ['gpt-6-astra', 'gpt-6-mini'],
+  })
   assertEquals(results.external, ['https://zone.example/kapi/x'])
   // a refusal keeps its code: the run fails with it
   const refused = await workdir(`export default async function main(aiws) { aiws.declare({ inputs: {}, ai: { complete: {} } }); await aiws.ai.complete({ prompt: 'x' }) }`)
@@ -186,15 +190,19 @@ Deno.test('host.js: complete is cached by content, budgeted and refused when und
     for (const { key, value } of args.put) cache.set(key, value)
     return { status: 'ok' }
   }
-  const infer = async (req) => { inferred += 1; return { text: req.schema ? '```json\n{"risk":"high"}\n```' : `answer ${inferred}`, tokens: 10 } }
+  const infer = async (req) => { inferred += 1; return { text: req.schema ? '```json\n{"risk":"high"}\n```' : `answer ${inferred}`, tokens: 10, input_tokens: 7, ...(req.schema ? {} : { model: 'gpt-6-astra' }) } }
   const budget = { complete_model: 'llm.chat', map_model: 'llm.chat', ai_max_calls: 2, ai_max_tokens: 100, llm_map_max_items: 3 }
   const host = createBridgeHost({ tool, infer, budget })
   const declare = { inputs: {}, ai: { complete: { max_calls: 5 } } }
   const a = await host.handle('ai.complete', { prompt: 'p', declare })
   const b = await host.handle('ai.complete', { prompt: 'p', declare })
   assertEquals([a.text, a.cached, b.text, b.cached], ['answer 1', false, 'answer 1', true])
+  // what a call used: a cached answer cost nothing and names no model
+  assertEquals([a.tokens, a.input_tokens, a.model], [10, 7, 'gpt-6-astra'])
+  assertEquals([b.tokens, b.input_tokens, b.model], [0, 0, undefined])
   const v = await host.handle('ai.complete', { prompt: 'q', schema: { type: 'object', properties: { risk: { enum: ['low', 'high'] } } }, declare })
   assertEquals(v.value, { risk: 'high' })
+  assertEquals(v.model, 'llm.chat', 'an executor that cannot tell the model: the logical one')
   const over = await host.handle('ai.complete', { prompt: 'r', declare })
   assertEquals(over.code, 'AI_BUDGET_EXCEEDED')
   assertEquals((await host.handle('ai.complete', { prompt: 'p', declare: { inputs: {} } })).code, 'AI_NOT_DECLARED')
@@ -319,9 +327,9 @@ Deno.test('host.js: llm.map batches, checks, retries and caches per item', async
     asked.push(user)
     if (user.includes('Input items')) {
       const items = JSON.parse(user.split('\n')[3])
-      return { text: JSON.stringify(items.map((i) => (i === 'bad' ? 'neither' : i.includes('好') ? '正面' : '负面'))) }
+      return { text: JSON.stringify(items.map((i) => (i === 'bad' ? 'neither' : i.includes('好') ? '正面' : '负面'))), tokens: 4, input_tokens: 20, model: 'm-exact' }
     }
-    return { text: '"负面"' }
+    return { text: '"负面"', tokens: 1, input_tokens: 9 }
   }
   const host = createBridgeHost({ tool, infer, budget: { map_model: 'm', llm_map_max_items: 10 } })
   const declare = { inputs: {}, ai: { map: { max_items: 6 } } }
@@ -329,8 +337,11 @@ Deno.test('host.js: llm.map batches, checks, retries and caches per item', async
   const first = await host.handle('llm.map', { items: ['很好', '太慢', 'bad'], instruction: '情感', schema, declare })
   assertEquals(first.results, [{ value: '正面' }, { value: '负面' }, { value: '负面' }])
   assertEquals([first.calls, first.cached], [2, 0])
+  // the batch and the single retry: their tokens summed, each model once (the logical one when the executor cannot tell)
+  assertEquals([first.tokens, first.input_tokens, first.models], [5, 29, ['m-exact', 'm']])
   const again = await host.handle('llm.map', { items: ['很好', '太慢'], instruction: '情感', schema, declare })
   assertEquals([again.calls, again.cached], [0, 2])
+  assertEquals([again.tokens, again.input_tokens, again.models], [0, 0, []])
   assertEquals((await host.handle('llm.map', { items: ['a', 'b'], instruction: '情感', schema, declare })).code, 'AI_BUDGET_EXCEEDED')
 })
 

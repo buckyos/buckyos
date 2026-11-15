@@ -2,7 +2,7 @@
 
 A wish's **macro** is the program that produces its results. It is written once, in the coding stage — by the model, an Agent or a person — and every later run of the wish runs it again on the current data, with no model loop: only the AI calls the macro itself makes. This guide is the one reference for all three; the coding prompt embeds it, the hosted run manual (`aiworkspace_run`) points to it.
 
-A macro is an ES module, `program/main.js`, whose default export is `async function main(aiws)`. It reads the run's snapshot and writes **candidate results**; it never writes the workspace. Use only JavaScript built-ins and `aiws`: no imports, no clock, no network outside the Zone.
+A macro is an ES module, `program/main.js`, whose default export is `async function main(aiws)`. It reads the run's snapshot and hands its **results** to the host; it never writes the workspace itself — the service writes what a run produced when it ends (a trial run while coding writes nothing). Use only JavaScript built-ins and `aiws`: no imports, no clock, no network outside the Zone.
 
 ## 1. Declare first
 
@@ -97,7 +97,7 @@ aiws.result.file('teaser', clip, { title: 'Teaser' })
 - Cached like text: the same request gives the same file without paying again, so a later run on unchanged inputs makes nothing new. Build prompts only from the inputs (never from the clock or random numbers). Start independent generations together with `Promise.all`; waiting for them does not count against the macro's time limit.
 - `ai.image.max_calls` / `ai.video.max_calls` count new generations per run; the stage caps them (`AI_BUDGET_EXCEEDED`). Video is the expensive medium: one clip per wish unless the user asks for more.
 
-## 5. Writing results (candidates only)
+## 5. Writing results (through the host)
 
 ```js
 aiws.result.table('monthly', rows, { key: ['Month'], fields: { Month: 'date', Sales: 'decimal', Orders: 'number' } })
@@ -115,7 +115,7 @@ aiws.result.control('board', { def: 'did:bns:alice#hello-board', config: { title
 
 - Result names, types and keys follow the output contract; a name is written once. A table's `key` (one or more columns) keeps record identity across runs.
 - Field types: `text | number | decimal | currency | boolean | date | datetime | select | multi_select`, inferred from the values when not declared. A `currency` value is `{ amount, currency: 'CNY' }` or a bare amount with `fields: [{ name: 'Price', type: 'currency', currency: 'CNY', scale: 2 }]`. `decimal` keeps up to 6 places; `fields: [{ name, type: 'decimal', scale: 4 }]` fixes them (round in the macro). A table shows in the order of `rows` (up to 1000 rows), so sort in the macro.
-- **HTML results**: their html, css and js belong to the macro version — fixed when it is coded, confirmed when the candidate is applied. A later run may only change the data the page is bound to: pass data through `bindings` (`input:<name>`, `result:<name>`; the page reads them with `aiws.input('<name>')`), never by writing values into the code. A run whose HTML code differs from the coded code fails (`MACRO_CODE_CHANGED`) and the wish needs coding again.
+- **HTML results**: their html, css and js belong to the macro version — fixed when it is coded. A later run may only change the data the page is bound to: pass data through `bindings` (`input:<name>`, `result:<name>`; the page reads them with `aiws.input('<name>')`), never by writing values into the code. A run whose HTML code differs from the coded code fails (`MACRO_CODE_CHANGED`) and the wish needs coding again.
 - A control result never carries coordinates or sizes: the control lays its nodes out. Each item becomes a text node (at most 256 characters); at most 2000 nodes and 32 levels. With `under` the items go below that node of a control input.
 
 ## 6. Checks
@@ -124,7 +124,7 @@ aiws.result.control('board', { def: 'did:bns:alice#hello-board', config: { title
 aiws.check('total', Math.abs(sumOfMonths - total) < 0.01, { sumOfMonths, total })   // a program check agreed in the analysis
 ```
 
-Report each program check of the contract truthfully: when the data does not satisfy it, report a failure with the violating rows; do not narrow it to make it pass.
+Report each program check of the contract truthfully: when the data does not satisfy it, report a failure with the violating rows; do not narrow it to make it pass. The analysis gave each program check a level: a failed `error` check fails the run and nothing is written (and a coding whose last trial run still fails one keeps no macro); a failed `warning` check is written and shown first in the run's record. A check the macro reports beyond the contract counts as a warning.
 
 ## 7. Zone resources
 

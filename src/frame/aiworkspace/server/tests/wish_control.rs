@@ -109,9 +109,8 @@ fn a_control_result_lands_as_a_tree_and_an_overwrite_replaces_it() {
         _ => text("ok"),
     });
     let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "analyze", "location": loc("blk-wish") })).await;
-    assert_eq!(a["state"], "waiting_confirmation", "{a}");
-    assert_eq!(a["candidate"]["analysis"]["output_contract"]["results"][0]["kind"], "mindmap");
-    srv.apply(&a, json!({})).await;
+    srv.done(&a);
+    assert_eq!(srv.wish_of("wish-mm").await["analysis"]["output_contract"]["results"][0]["kind"], "mindmap");
 
     // the macro: a wrong kind and an empty tree are answered in its trial runs; then the outline
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -122,16 +121,14 @@ fn a_control_result_lands_as_a_tree_and_an_overwrite_replaces_it() {
         step("finish", json!({ "summary": "a launch plan" })),
     ]);
     let e = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "code", "location": loc("blk-wish") })).await;
-    assert_eq!(e["state"], "waiting_confirmation", "{e}");
+    srv.done(&e);
     let answers = seen.lock().unwrap().clone();
     assert!(answers[0].contains("failed validation") && answers[0].contains("needs kind, a control of catalog/controls.json"), "{answers:?}");
     assert!(answers[1].contains("has no nodes"), "{answers:?}");
     assert!(answers[2].contains("The program ran successfully") && answers[2].contains("- Launch plan\\n  - Market"), "{answers:?}");
-    let r = &e["candidate"]["results"][0];
-    assert_eq!((r["type"].as_str(), r["control"]["kind"].as_str()), (Some("control"), Some("mindmap")));
-    assert_eq!(r["control"]["config"], json!({ "direction": "both" }), "only the control's attributes are kept");
-    assert_eq!(e["candidate"]["program"]["produces"], json!(["plan"]));
-    srv.apply(&e, json!({})).await;
+    assert_eq!(srv.wish_of("wish-mm").await["program"]["produces"], json!(["plan"]));
+    assert!(srv.wish_of("wish-mm").await.get("last_run").is_none(), "coding writes the macro only");
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "run", "location": loc("blk-wish") })).await);
 
     let w = srv.wish_of("wish-mm").await;
     let b = &w["last_run"]["result_bindings"];
@@ -140,6 +137,7 @@ fn a_control_result_lands_as_a_tree_and_an_overwrite_replaces_it() {
     assert_eq!((c["kind"].as_str(), c["title"].as_str(), c["parent_id"].as_str()), (Some("mindmap"), Some("Launch plan"), b["group"].as_str()));
     assert_eq!(c["layout"], json!({ "mode": "tree" }));
     assert_eq!(c["config"]["direction"], "both");
+    assert!(c["config"].get("x").is_none(), "only the control's attributes are kept: {c}");
     assert_eq!((c["placement"]["w"].as_str(), c["placement"]["h"].as_str()), (Some("auto"), Some("auto")), "the control's box is its layout's");
     let expected = json!([{ "text": "Launch plan", "children": [
         { "text": "Market", "children": [{ "text": "interviews", "children": [] }, { "text": "**competitors**", "children": [] }] },
@@ -157,9 +155,8 @@ fn a_control_result_lands_as_a_tree_and_an_overwrite_replaces_it() {
         control_macro("plan", json!({ "kind": "mindmap", "children": [{ "text": "Launch v2", "children": [{ "text": "Sales", "children": [] }] }] })),
         step("finish", json!({ "summary": "v2" })),
     ]);
-    let e2 = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "code", "location": loc("blk-wish") })).await;
-    assert_eq!(e2["state"], "waiting_confirmation", "{e2}");
-    srv.apply(&e2, json!({})).await;
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "code", "location": loc("blk-wish") })).await);
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "run", "location": loc("blk-wish") })).await);
     let w = srv.wish_of("wish-mm").await;
     let second = w["last_run"]["result_bindings"]["results"]["plan"]["entity_id"].as_str().unwrap().to_string();
     assert_ne!(second, first);
@@ -173,9 +170,8 @@ fn a_control_result_lands_as_a_tree_and_an_overwrite_replaces_it() {
     // running the stored macro (no model) overwrites it the same way
     let calls = m.calls.load(Ordering::SeqCst);
     let p = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "run", "location": loc("blk-wish") })).await;
-    assert_eq!((p["state"].as_str(), p["candidate"]["mode"].as_str()), (Some("waiting_confirmation"), Some("run")), "{p}");
+    srv.done(&p);
     assert_eq!(m.calls.load(Ordering::SeqCst), calls, "no model loop");
-    srv.apply(&p, json!({})).await;
     let third = srv.wish_of("wish-mm").await["last_run"]["result_bindings"]["results"]["plan"]["entity_id"].as_str().unwrap().to_string();
     assert!(entity(&srv, &second).await.is_none(), "the last control is deleted");
     let c3 = entity(&srv, &third).await.unwrap();
@@ -205,9 +201,9 @@ fn a_mind_map_node_input_is_read_as_its_branch_and_expanded_below_it() {
         _ => text("ok"),
     });
     let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "analyze", "location": loc("blk-ex") })).await;
-    assert_eq!(a["state"], "waiting_confirmation", "{a}");
-    assert_eq!(a["candidate"]["inputs"][0]["entity_id"], "n-market", "a node is kept as a Block input: {}", a["candidate"]);
-    srv.apply(&a, json!({})).await;
+    srv.done(&a);
+    let inputs = srv.wish_of("wish-ex").await["inputs"].clone();
+    assert_eq!(inputs[0]["entity_id"], "n-market", "a node is kept as a Block input: {inputs}");
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let script = |children: &str| vec![
@@ -218,16 +214,15 @@ fn a_mind_map_node_input_is_read_as_its_branch_and_expanded_below_it() {
     ];
     *m.execute.lock().unwrap() = recording(&seen, script("- Pricing\n- Channels\n  - Partners\n"));
     let e = srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "code", "location": loc("blk-ex") })).await;
-    assert_eq!(e["state"], "waiting_confirmation", "{e}");
+    srv.done(&e);
     let answers = seen.lock().unwrap().clone();
     assert!(answers[0].contains("is a node of a mindmap") && answers[0].contains("- Market\n  - interviews\n"), "{answers:?}");
     assert!(answers[1].contains("threw an error") && answers[1].contains("no input named \"nope\""), "{answers:?}");
-    assert!(answers[2].contains("The program ran successfully"), "{answers:?}");
     // the macro and the model read the branch as a file of the input
-    assert_eq!(e["candidate"]["facts"]["branch"], "- Market\n  - interviews\n");
+    assert!(answers[2].contains("The program ran successfully") && answers[2].contains(r#""branch":"- Market\n  - interviews\n""#), "{answers:?}");
     let outline = find(srv._dir.path(), "outline.md").expect("the branch is materialized");
     assert_eq!(std::fs::read_to_string(outline).unwrap(), "- Market\n  - interviews\n");
-    srv.apply(&e, json!({})).await;
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "run", "location": loc("blk-ex") })).await);
     let market = |extra: Value| {
         let mut kids = vec![json!({ "text": "interviews", "children": [] })];
         kids.extend(extra.as_array().cloned().unwrap());
@@ -240,19 +235,15 @@ fn a_mind_map_node_input_is_read_as_its_branch_and_expanded_below_it() {
 
     // an overwrite replaces what the last run added; its input no longer shows them
     *m.execute.lock().unwrap() = recording(&seen, script("- Pricing v2\n"));
-    let e2 = srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "code", "location": loc("blk-ex") })).await;
-    assert_eq!(e2["state"], "waiting_confirmation", "{e2}");
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "code", "location": loc("blk-ex") })).await);
     let answers = seen.lock().unwrap().clone();
     assert!(answers[0].contains("- Market\n  - interviews\n") && !answers[0].contains("Pricing"), "{answers:?}");
-    assert_eq!(e2["candidate"]["facts"]["branch"], "- Market\n  - interviews\n");
-    srv.apply(&e2, json!({})).await;
+    assert!(answers[2].contains(r#""branch":"- Market\n  - interviews\n""#), "{answers:?}");
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "run", "location": loc("blk-ex") })).await);
     let v2 = market(json!([{ "text": "Pricing v2", "children": [] }]));
     assert_eq!(tree(&srv, "n-market").await, v2);
     // so does running the stored macro: what it added is not its input, and is replaced rather than added again
-    let p = srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "run", "location": loc("blk-ex") })).await;
-    assert_eq!(p["state"], "waiting_confirmation", "{p}");
-    assert_eq!(p["candidate"]["facts"]["branch"], "- Market\n  - interviews\n");
-    srv.apply(&p, json!({})).await;
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-ex", "stage": "run", "location": loc("blk-ex") })).await);
     assert_eq!(tree(&srv, "n-market").await, v2);
     });
 }
@@ -269,8 +260,7 @@ fn an_executor_outside_the_service_hands_in_a_control() {
         0 => call("submit_analysis", analysis(json!([]), json!({ "name": "plan", "type": "control", "kind": "mindmap" }), "Write a mind map of a product launch plan.")),
         _ => text("ok"),
     });
-    let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "analyze", "location": loc("blk-wish") })).await;
-    srv.apply(&a, json!({})).await;
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "analyze", "location": loc("blk-wish") })).await);
     // an executor of its own (an Agent): it claims the coding stage, runs the macro itself and hands in what the program
     // host collected; its tools and the report go over the run token
     let ws = srv.ws.clone();
@@ -310,11 +300,12 @@ fn an_executor_outside_the_service_hands_in_a_control() {
     assert!(bad["error"]["detail"].as_str().unwrap_or("").contains("did not end with finish"), "{bad}");
     let (ran, fin, done) = coding("loc-ok", json!("- A\n  - B\n")).await;
     assert_eq!((ran["status"].as_str(), fin["status"].as_str()), (Some("ok"), Some("ok")), "{ran} {fin}");
-    assert_eq!(done["state"], "waiting_confirmation", "{done}");
-    assert_eq!(done["candidate"]["program"]["manifest"]["results"]["plan"]["type"], "control", "{done}");
-    srv.apply(&done, json!({})).await;
+    srv.done(&done);
     let w = srv.wish_of("wish-mm").await;
+    assert_eq!(w["program"]["manifest"]["results"]["plan"]["type"], "control", "{w}");
     assert_eq!(w["program"]["api_version"], 3, "the macro the executor ran is the wish's macro");
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "run", "location": loc("blk-wish") })).await);
+    let w = srv.wish_of("wish-mm").await;
     let id = w["last_run"]["result_bindings"]["results"]["plan"]["entity_id"].as_str().unwrap().to_string();
     assert_eq!(tree(&srv, &id).await, json!([{ "text": "A", "children": [{ "text": "B", "children": [] }] }]));
     assert_eq!(entity(&srv, &id).await.unwrap()["config"]["edge"], "elbow");
@@ -357,10 +348,8 @@ fn a_composite_result_puts_other_results_into_its_slots() {
                                                             "output_contract": contract.clone(), "checks": [], "blockers": [], "warnings": [] } })),
         _ => text("ok"),
     });
-    let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "analyze", "location": loc("blk-wish") })).await;
-    assert_eq!(a["state"], "waiting_confirmation", "{a}");
-    assert_eq!(a["candidate"]["analysis"]["output_contract"]["results"][1]["def"], "did:bns:alice#board");
-    srv.apply(&a, json!({})).await;
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "analyze", "location": loc("blk-wish") })).await);
+    assert_eq!(srv.wish_of("wish-mm").await["analysis"]["output_contract"]["results"][1]["def"], "did:bns:alice#board");
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let extra = json!({ "view": "richtext", "markdown": "Extra note" });
@@ -370,13 +359,12 @@ fn a_composite_result_puts_other_results_into_its_slots() {
         board_macro(json!({ "def": "did:bns:alice#board", "config": { "title": "Week 44" }, "slots": { "notes": ["result:summary", extra] } })),
         step("finish", json!({ "summary": "a board" })),
     ]);
-    let e = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "code", "location": loc("blk-wish") })).await;
-    assert_eq!(e["state"], "waiting_confirmation", "{e}");
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "code", "location": loc("blk-wish") })).await);
     let answers = seen.lock().unwrap().clone();
     assert!(answers[0].contains("not in this Workspace"), "{answers:?}");
     assert!(answers[1].contains("sides is not a slot"), "{answers:?}");
     assert!(answers[2].contains("The program ran successfully"), "{answers:?}");
-    srv.apply(&e, json!({})).await;
+    srv.done(&srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "run", "location": loc("blk-wish") })).await);
 
     let w = srv.wish_of("wish-mm").await;
     let b = &w["last_run"]["result_bindings"]["results"];

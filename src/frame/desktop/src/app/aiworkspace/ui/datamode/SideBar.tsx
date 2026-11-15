@@ -113,7 +113,7 @@ function Properties({ entity, focus }: { entity: EntityEnvelope; focus: { sectio
         <Section id="derived" title={t('aiworkspace.datamode.section.derived')} {...sectionProps}>
           <div data-testid="aiws-props-derived">
             <FreshnessBadge entityId={entity.entity_id} />
-            {entity.derived && <div className="aiws-muted">{t(entity.derived.simulated ? 'aiworkspace.data.props.derivedLineSimulated' : 'aiworkspace.data.props.derivedLine', { wish: entity.derived.wish_id, run: entity.derived.run_id, executor: entity.derived.executor, rev: entity.derived.generated_rev })}</div>}
+            {entity.derived && <div className="aiws-muted">{t('aiworkspace.data.props.derivedLine', { wish: entity.derived.wish_id, run: entity.derived.run_id, executor: entity.derived.executor, rev: entity.derived.generated_rev })}</div>}
             {entity.derived && <div className="aiws-muted">{t('aiworkspace.data.props.readSet', {
               inputs: entity.derived.inputs.map((i) => `${i.entity_id}${i.selector ? `/${i.selector.kind}${i.selector.field_id ? `:${i.selector.field_id}` : ''}` : ''}@${i.version.rev ?? i.version.hash ?? '?'}${i.version.mode === 'fixed' ? t('aiworkspace.data.props.fixed') : ''}`)
                 .join(t('aiworkspace.data.props.readSetSeparator')),
@@ -166,8 +166,6 @@ function Properties({ entity, focus }: { entity: EntityEnvelope; focus: { sectio
 // ---- 修改记录
 
 function originText(t: (key: string) => string, v: VersionInfo): string {
-  // the Mock executor's results are no macro's (Q27)
-  if (v.derived?.simulated) return t('aiworkspace.datamode.origin.simulated')
   if (v.run_id || v.derived || v.origin === 'program') return t('aiworkspace.datamode.origin.macro')
   switch (v.origin) {
     case 'agent': return t('aiworkspace.datamode.origin.agent')

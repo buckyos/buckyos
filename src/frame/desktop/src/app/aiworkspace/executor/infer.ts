@@ -7,12 +7,12 @@
 import { buckyos, getActiveSessionToken } from 'buckyos'
 import { AiccLlmClient, LLMComputeException, providerErrorFromRpc, type AiMessage, type LlmClient } from 'buckyos/xllm'
 import { OpenAiLlmClient } from 'buckyos/xllm/dev'
+import type { InferAnswer, InferRequest } from '../../../../../aiworkspace/aiws/host.js'
 import { toAiccRpcCallOptions } from '../../../api/aicc_rpc_options'
 import { devModelEndpoint } from '../api/transport'
 import { aiwsT } from '../i18n'
 
-export interface InferRequest { model: string; messages: { role: 'system' | 'user' | 'assistant'; text: string }[]; schema: unknown | null; max_tokens: number }
-export type Infer = (req: InferRequest) => Promise<{ text: string; tokens?: number }>
+export type Infer = (req: InferRequest) => Promise<InferAnswer>
 
 /** The run's sub-code of an AICC refusal (§7.4). */
 const REFUSALS: Record<string, string> = {
@@ -89,7 +89,9 @@ export function createInfer(signal?: AbortSignal): Infer {
         force_json: req.schema !== null, ...(req.schema !== null ? { json_schema: req.schema as never } : {}),
         disable_capabilities: [], tool_specs: [], allow_tool_calls: false, signal: signal ?? new AbortController().signal,
       })
-      return { text: textOf(r.message), tokens: r.usage?.output_tokens }
+      // both clients name the model that answered in `extra.model` (AICC: its route's final model)
+      const model = (r.extra as { model?: unknown } | undefined)?.model
+      return { text: textOf(r.message), tokens: r.usage?.output_tokens, input_tokens: r.usage?.input_tokens, model: typeof model === 'string' && model ? model : undefined }
     } catch (error) {
       throw classified(error)
     }

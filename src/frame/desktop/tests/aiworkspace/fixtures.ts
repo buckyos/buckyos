@@ -122,22 +122,46 @@ export class Api {
     return { workspace_id: ws.workspace_id, epoch: ws.epoch }
   }
 
-  /** One of the phase-two demos (§11), replayed through the public interface like the app does — with its wishes on
-   * the Mock executor (its definition added after the data): the test service has no model. */
+  /** One of the phase-two demos (§11), replayed through the public interface like the app does. Its wishes are on the
+   * real executor: a run started in the browser talks to the scripted model (mock-llm.mjs, the dev override's `llm`). */
   async demo(token: string, kind: 'quarterly' | 'film', title: string): Promise<{ workspace_id: string; epoch: string }> {
     const { quarterlyDemoCommits, filmDemoCommits } = await import('../../src/app/aiworkspace/api/demos')
-    const { mockWishDefOp } = await import('../../src/app/aiworkspace/ui/wish/mockWishDef')
     const { setAiwsLocale } = await import('../../src/app/aiworkspace/i18n')
     setAiwsLocale(SPEC_LOCALE)
-    const shipped = kind === 'quarterly' ? quarterlyDemoCommits() : filmDemoCommits()
-    const mocked = shipped.map((c) => ({ ...c, operations: c.operations.map((op) => (op.op === 'entity.create' && op.type_id === 'buckyos.wish' ? { ...op, payload: { ...(op.payload as Record<string, Json>), executor: 'mock' } } : op)) }))
-    const commits = [mocked[0], { message: 'Mock wish executor', operations: [mockWishDefOp('zzz') as Json] }, ...mocked.slice(1)]
+    const commits = kind === 'quarterly' ? quarterlyDemoCommits() : filmDemoCommits()
     const ws = await this.rpc(token, 'ws.create', { title })
     for (const [index, commit] of commits.entries()) {
       const result = await this.commit(token, ws, commit.operations as Json[], `demo/${index + 1}`)
       expect(result.status, JSON.stringify(result)).toBe('accepted')
     }
     return { workspace_id: ws.workspace_id, epoch: ws.epoch }
+  }
+
+  /** The "sample" template as the app creates it: the shared sample, then its "任务汇总" wish on the flow page
+   * (`wish-task-summary`, Block `cell-task-summary`; 许愿格交互升级 §3.10 D, D10). The wish's commit is the one of
+   * `api/sample.ts` `sampleWishCommit` (that module imports the fixture JSON, which the spec loader cannot). */
+  async sampleWithWish(token: string, title: string): Promise<{ workspace_id: string; epoch: string }> {
+    const ws = await this.sample(token, title)
+    const { aiwsText, setAiwsLocale } = await import('../../src/app/aiworkspace/i18n')
+    setAiwsLocale(SPEC_LOCALE)
+    const { t } = aiwsText()
+    const name = t('aiworkspace.samplewish.wish.title')
+    const result = await this.commit(token, ws, [
+      { op: 'entity.create', entity_id: 'wish-task-summary', type_id: 'buckyos.wish', parent_id: 'surface-main-content', order_key: 'a', name, payload: {
+        title: name, prompt: t('aiworkspace.samplewish.wish.prompt', { tasks: '任务' }), executor: 'xllm', output_mode: 'overwrite',
+        inputs: [{ entity_id: 'tasks', version: { mode: 'follow' } }],
+        output: { container_id: 'surface-main-content', surface_id: 'surface-main', name: t('aiworkspace.samplewish.wish.output') } } },
+      { op: 'entity.create', entity_id: 'cell-task-summary', type_id: 'buckyos.cell', parent_id: 'surface-main', order_key: 'gm', placement: { x: 0, y: 0, w: 420, h: 300 },
+        payload: { view: { type: 'wish' }, source_ref: { entity_id: 'wish-task-summary' }, title: t('aiworkspace.samplewish.block.wish') } },
+    ])
+    expect(result.status, JSON.stringify(result)).toBe('accepted')
+    return ws
+  }
+
+  /** A wish's history (许愿格交互升级 §2.2): its records by stage, newest first, and how many runs made results. */
+  async history(token: string, workspaceId: string, wishId: string): Promise<{ analyze: Json[]; code: Json[]; run: Json[]; results_count: number }> {
+    const h = (await this.read(token, workspaceId, wishId)).content.payload.history ?? {}
+    return { analyze: h.analyze ?? [], code: h.code ?? [], run: h.run ?? [], results_count: h.results_count ?? 0 }
   }
 
   async outline(token: string, workspaceId: string): Promise<Json[]> {
@@ -190,6 +214,11 @@ export class Api {
   }
 }
 
+/** The scripted OpenAI-format model of the suite (mock-llm.mjs): a wish run executed in the browser talks to it. */
+export function scriptedModel(): { baseUrl: string } {
+  return { baseUrl: `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1` }
+}
+
 /** A workspace's own origin on the dev server (T4-8): `http://aiws-<label>.localhost:<port>`. */
 export function workspaceOrigin(workspaceId: string, port: string | number = process.env.AIWS_E2E_WEB_PORT ?? ''): string {
   return `http://aiws-${workspaceId.replace(/^ws_/, '')}.localhost:${port}`
@@ -211,8 +240,8 @@ export async function openWorkspacePage(page: Page, who: string | { guest: true 
 /** Open the Desktop shell and the AI Workspace app in it, talking to the standalone backend as `token`, and
  * end on the workspace list (a normal start restores the last workspace: it is closed again here). */
 export async function openApp(page: Page, token: string) {
-  // keeps what an earlier init script put there (the local executor spec adds its model endpoint)
-  await page.addInitScript((value) => { let prev: Record<string, unknown> = {}; try { prev = JSON.parse(window.localStorage.getItem('aiworkspace.dev') ?? '{}') as Record<string, unknown> } catch { prev = {} }; window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ ...prev, token: value })) }, token)
+  // keeps what an earlier init script put there; wish runs in this browser talk to the scripted model (mock-llm.mjs)
+  await page.addInitScript(({ value, llm }) => { let prev: Record<string, unknown> = {}; try { prev = JSON.parse(window.localStorage.getItem('aiworkspace.dev') ?? '{}') as Record<string, unknown> } catch { prev = {} }; window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm, ...prev, token: value })) }, { value: token, llm: scriptedModel() })
   // the mock Desktop loads its scenario state after the first paint and resets the windows then: an icon clicked
   // before that is lost, so the click waits for the loading to settle
   await page.goto('/?scenario=normal', { waitUntil: 'networkidle' })
@@ -348,11 +377,6 @@ export async function treeMenu(page: Page, entityId: string | null, ...testIds: 
   }
 }
 
-/** Main menu → 帮助 → 开发工具 → 受控加工（Mock）. */
-export async function openMock(page: Page) {
-  await mainMenu(page, 'aiws-menu-help', 'aiws-menu-dev', 'aiws-side-mock')
-}
-
 export async function openWorkspace(page: Page, token: string, workspaceId: string) {
   await openApp(page, token)
   await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${workspaceId}"]`).getByTestId('aiws-open').click()
@@ -388,13 +412,60 @@ export async function hooks(page: Page): Promise<{ commits: number; canvas: { bl
   })
 }
 
+/** A wish's card (许愿格交互升级 §3.1), wherever it is shown. */
+export function wishCard(page: Page | Locator, wishId: string): Locator {
+  return page.getByTestId(`aiws-wish-card-${wishId}`)
+}
+
+type WishAction = 'analyze' | 'code' | 'repair' | 'run'
+const STAGE_OF: Record<WishAction, 'analyze' | 'code' | 'run'> = { analyze: 'analyze', code: 'code', repair: 'code', run: 'run' }
+
+/** Wait until a stage of a wish that was just started has ended: a record newer than `before` heads its stage's list in
+ * the wish's history, and the card shows nothing under way. Returns that record. */
+export async function wishStageEnded(page: Page, api: Api, token: string, workspaceId: string, wishId: string, stage: 'analyze' | 'code' | 'run', before: string | undefined, timeout = 60_000): Promise<Json> {
+  let record: Json
+  await expect.poll(async () => { record = (await api.history(token, workspaceId, wishId))[stage][0]; return Boolean(record && record.id !== before) }, { timeout }).toBe(true)
+  await expect(wishCard(page, wishId)).toHaveAttribute('data-running', '', { timeout: 15_000 })
+  return record
+}
+
+/** Click a wish card's next step — on `tab` when given — expecting it to be `action`, and wait for that stage to end
+ * (§3.3: it writes when it ends, nothing to apply). Returns the stage's new record. */
+export async function wishStep(page: Page, api: Api, token: string, workspaceId: string, wishId: string, action: WishAction, options: { tab?: 'prompt' | 'analysis' | 'macro' | 'results'; timeout?: number } = {}): Promise<Json> {
+  const card = wishCard(page, wishId)
+  if (options.tab) await card.getByTestId(`aiws-wish-tab-${options.tab}`).click()
+  const stage = STAGE_OF[action]
+  const before = (await api.history(token, workspaceId, wishId))[stage][0]?.id as string | undefined
+  const next = card.getByTestId('aiws-wish-next')
+  await expect(next).toHaveAttribute('data-action', action)
+  await expect(next).toBeEnabled()
+  await next.click()
+  return wishStageEnded(page, api, token, workspaceId, wishId, stage, before, options.timeout)
+}
+
+/** The card's run button (§3.6): run the stored macro and wait for the run to end. Returns its record. */
+export async function wishRun(page: Page, api: Api, token: string, workspaceId: string, wishId: string, timeout?: number): Promise<Json> {
+  const before = (await api.history(token, workspaceId, wishId)).run[0]?.id as string | undefined
+  const run = wishCard(page, wishId).getByTestId('aiws-wish-run')
+  await expect(run).toHaveAttribute('data-state', 'ready')
+  await run.click()
+  return wishStageEnded(page, api, token, workspaceId, wishId, 'run', before, timeout)
+}
+
+/** Analyze, code and run a wish from its card, the three steps of §3.3 (each written as it ends). */
+export async function wishThreeSteps(page: Page, api: Api, token: string, workspaceId: string, wishId: string): Promise<void> {
+  await wishStep(page, api, token, workspaceId, wishId, 'analyze', { tab: 'prompt' })
+  await wishStep(page, api, token, workspaceId, wishId, 'code', { tab: 'analysis' })
+  await wishStep(page, api, token, workspaceId, wishId, 'run', { tab: 'macro' })
+}
+
 /** Talk to the backend as `who` (`{ guest: true }` for nobody) in the specs' language, on every origin this page visits
  * (a workspace's own origin starts with an empty storage). */
 export async function asUser(page: Page, who: string | { guest: true }) {
-  await page.addInitScript(({ who, localeKey, locale }) => {
-    window.localStorage.setItem('aiworkspace.dev', JSON.stringify(typeof who === 'string' ? { token: who } : who))
+  await page.addInitScript(({ who, localeKey, locale, llm }) => {
+    window.localStorage.setItem('aiworkspace.dev', JSON.stringify(typeof who === 'string' ? { token: who, llm } : who))
     window.localStorage.setItem(localeKey, locale)
-  }, { who, localeKey: LOCALE_STORAGE_KEY, locale: SPEC_LOCALE })
+  }, { who, localeKey: LOCALE_STORAGE_KEY, locale: SPEC_LOCALE, llm: scriptedModel() })
 }
 
 /** The test accounts' preferences across Workspaces (UI 框架 PRD §4.6, §12: the tool zones' switches, the status bar,

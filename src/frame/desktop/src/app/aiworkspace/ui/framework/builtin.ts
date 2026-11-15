@@ -322,8 +322,6 @@ export const BUILTIN_ACTIONS: ActionDef[] = [
 
   // ---- 帮助
   { id: 'help.shortcuts', label: () => aiwsT('aiworkspace.shell.help.title'), menu: { group: 'help', order: 10, id: 'shortcuts' }, run: ({ shell }) => shell.openDialog({ kind: 'help' }) },
-  { id: 'help.dev', label: () => aiwsT('aiworkspace.shell.devTools'), visible: ({ shell }) => shell.devTools, menu: { group: 'help', order: 20, id: 'dev', submenu: true },
-    candidates: ({ shell }) => [{ id: 'mock', testId: 'aiws-side-mock', label: aiwsT('aiworkspace.shell.menu.mock'), run: () => shell.openDialog({ kind: 'mock' }) }] },
 ]
 
 for (const def of BUILTIN_ACTIONS) actionRegistry.register(def)

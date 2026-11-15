@@ -1,6 +1,6 @@
 //! 许愿格 under the permission model (权限需求 §4.5, Q31–Q33): a run is written as its macro identity, so one that could
-//! never be applied does not start; an editor's macro may write its page, trusted only when a manager writes or vouches
-//! for it; a macro bound with `intersection` reads no more than its group; a preview is judged as the apply will be; only
+//! never be written does not start; an editor's macro may write its page, trusted only when a manager writes or vouches
+//! for it; a macro bound with `intersection` reads no more than its group; a stage's end is judged as that identity; only
 //! changes of the macro itself are audited; the owner's hosted configuration shows to managers only; an input the
 //! viewer cannot read tells no story of its fields.
 
@@ -87,16 +87,9 @@ fn stage(name: &str) -> Value {
     json!({ "wish_id": "w", "stage": name, "location": loc() })
 }
 
-/// Preview and apply as `token`: `{ ready, problems, apply }` (`apply`: the raw answer).
-async fn apply_as(srv: &Srv, token: &str, run: &Value) -> Value {
-    let id = run["run_id"].as_str().unwrap();
-    let preview = srv.call_as(token, "proc.get", json!({ "run_id": id, "choices": {} })).await["result"]["preview"].clone();
-    let apply = srv.call_as(token, "proc.apply", json!({ "run_id": id, "plan_digest": preview["plan_digest"], "session_id": "s1" })).await;
-    json!({ "ready": preview["ready"], "problems": preview["summary"]["problems"], "apply": apply })
-}
-
+/// The run wrote what its stage produced (as its macro identity).
 fn accepted(r: &Value) -> bool {
-    r["apply"]["result"]["applied"]["status"] == json!("accepted")
+    r["state"] == json!("succeeded") && r["applied"]["status"] == json!("accepted")
 }
 
 async fn set_amount(srv: &Srv, value: &str) {
@@ -104,14 +97,14 @@ async fn set_amount(srv: &Srv, value: &str) {
     srv.commit(json!([{ "op": "table.set_values", "source_id": "orders", "values": [{ "record_id": "o1", "field_id": "amount", "value": value, "expect": { "rev": rev } }] }])).await;
 }
 
+/// Analyzed, coded and run once as `token`.
 async fn analyzed_and_coded(srv: &Srv, token: &str, html: bool, source: &'static str) {
     *srv.model.analyze.lock().unwrap() = analysis(html);
     *srv.model.execute.lock().unwrap() = coding(source);
-    let a = srv.run_as(token, "wish.xllm@1", stage("analyze")).await;
-    assert!(accepted(&apply_as(srv, token, &a).await), "{a}");
-    let c = srv.run_as(token, "wish.xllm@1", stage("code")).await;
-    let applied = apply_as(srv, token, &c).await;
-    assert!(accepted(&applied), "{applied}");
+    for name in ["analyze", "code", "run"] {
+        let r = srv.run_as(token, "wish.xllm@1", stage(name)).await;
+        assert!(accepted(&r), "{name}: {r}");
+    }
 }
 
 async fn dash_def(srv: &Srv) -> Value {
@@ -132,7 +125,7 @@ fn a_run_starts_only_when_its_macro_identity_could_write_and_an_editors_page_wai
             { "subject": "bob", "allow": ["read", "run"] },
             { "subject": "carol", "allow": ["read", "comment", "append", "update", "delete", "structure"] }] })).await;
 
-        // an editor without manage codes a page: it is written, but not trusted — a viewer's host shows its snapshot
+        // an editor without manage codes and runs a page: it is written, but not trusted — a viewer's host shows its snapshot
         analyzed_and_coded(&srv, "tok-carol", true, DASH).await;
         let def = dash_def(&srv).await;
         assert_eq!(def["html"]["html"], "<div id=n></div>");
@@ -147,24 +140,27 @@ fn a_run_starts_only_when_its_macro_identity_could_write_and_an_editors_page_wai
         srv.commit(json!([{ "op": "entity.set_keys", "entity_id": def_id, "keys": [{ "key": "trusted", "value": true, "expect": { "rev": rev } }] }])).await;
         assert_eq!(dash_def(&srv).await["trusted"]["by"], "alice");
 
-        // the owner codes another page: written and trusted as it is written
+        // the owner codes and runs another page: written and trusted as it is written
         *srv.model.execute.lock().unwrap() = coding(DASH_OWNER);
-        let c = srv.run("wish.xllm@1", stage("code")).await;
-        let applied = apply_as(&srv, "tok-alice", &c).await;
-        assert!(accepted(&applied), "{c}\n{applied}");
+        for name in ["code", "run"] {
+            let r = srv.run("wish.xllm@1", stage(name)).await;
+            assert!(accepted(&r), "{name}: {r}");
+        }
         let def = dash_def(&srv).await;
         assert_eq!((def["html"]["html"].as_str(), def["trusted"]["by"].as_str()), (Some("<div id=total></div>"), Some("alice")), "{def}");
         // the editor's next page drops the trust again
         *srv.model.execute.lock().unwrap() = coding(DASH);
-        let c = srv.run_as("tok-carol", "wish.xllm@1", stage("code")).await;
-        assert!(accepted(&apply_as(&srv, "tok-carol", &c).await));
+        for name in ["code", "run"] {
+            let r = srv.run_as("tok-carol", "wish.xllm@1", stage(name)).await;
+            assert!(accepted(&r), "{name}: {r}");
+        }
         assert!(dash_def(&srv).await.get("trusted").is_none());
         // running it moves only data: the page keeps its state, an editor's run included
         set_amount(&srv, "20.00").await;
         let r = srv.run_as("tok-carol", "wish.xllm@1", stage("run")).await;
-        assert!(accepted(&apply_as(&srv, "tok-carol", &r).await), "{r}");
+        assert!(accepted(&r), "{r}");
 
-        // holding only `run`: nothing it runs could ever be applied, so nothing starts — no run, no AI spent
+        // holding only `run`: nothing it runs could ever be written, so nothing starts — no run, no AI spent
         let calls = srv.model.calls.load(std::sync::atomic::Ordering::SeqCst);
         let refused = srv.run_as("tok-bob", "wish.xllm@1", stage("run")).await;
         assert_eq!((refused["state"].as_str(), refused["error"]["code"].as_str(), refused["error"]["sub_code"].as_str()),
@@ -178,7 +174,7 @@ fn a_run_starts_only_when_its_macro_identity_could_write_and_an_editors_page_wai
 }
 
 #[test]
-fn an_intersection_group_bounds_what_the_macro_reads_and_a_preview_is_judged_as_the_apply() {
+fn an_intersection_group_bounds_what_the_macro_reads_and_a_stage_is_written_as_its_identity_when_it_ends() {
     run_test(|| async move {
         let srv = start(json!({ "tok-alice": { "principal": "alice" } })).await;
         analyzed_and_coded(&srv, "tok-alice", false, TABLE).await;
@@ -194,17 +190,25 @@ fn an_intersection_group_bounds_what_the_macro_reads_and_a_preview_is_judged_as_
         assert_eq!((r["state"].as_str(), r["error"]["code"].as_str()), (Some("failed"), Some("DEPENDENCY_UNAVAILABLE")), "the macro read an input its group cannot: {r}");
         assert!(r["error"]["detail"].as_str().unwrap_or("").contains("not readable"), "{r}");
 
-        // unbound, the owner's run is ready; bound afterwards to a group that writes nothing, the preview says so
+        // unbound, the owner's run writes; bound while a run works to a group that writes nothing, its end is judged as that
         srv.rpc("acl.bind_macro", json!({ "wish": "~w", "group_id": null })).await;
-        let r = srv.run("wish.xllm@1", stage("run")).await;
-        assert_eq!(r["state"], "waiting_confirmation", "{r}");
+        assert!(accepted(&srv.run("wish.xllm@1", stage("run")).await));
+        set_amount(&srv, "30.00").await;
+        let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "late-bind", "params": stage("run") })).await;
+        let run_id = start["run_id"].as_str().unwrap().to_string();
+        let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": start["claim_token"] })).await;
+        let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.clone(), attempt: 1, manifest: claimed["stage"]["manifest"].clone(), turns: Default::default() };
+        ex.run_macro(claimed["stage"]["source"].as_str().unwrap()).await.unwrap();
         srv.rpc("acl.set_group", json!({ "group_id": "readers", "title": "只读" })).await;
         srv.rpc("acl.set", json!({ "changes": [{ "subject": "@readers", "resource": "/", "allow": ["read"] }] })).await;
         srv.rpc("acl.bind_macro", json!({ "wish": "~w", "group_id": "readers", "mode": "intersection" })).await;
-        let applied = apply_as(&srv, "tok-alice", &r).await;
-        assert_eq!(applied["ready"], false, "{applied}");
-        assert!(applied["problems"].to_string().contains("PERMISSION_DENIED"), "{applied}");
-        assert!(!accepted(&applied));
+        let last = srv.wish_of("w").await["last_run"].clone();
+        ex.call("proc.report", json!({ "finished": true })).await;
+        let r = srv.wait(&run_id).await;
+        assert_eq!((r["state"].as_str(), r["error"]["sub_code"].as_str()), (Some("failed"), Some("PLAN_PROBLEMS")), "{r}");
+        assert!(r["error"]["detail"].as_str().unwrap().contains("PERMISSION_DENIED"), "{r}");
+        assert!(!accepted(&r));
+        assert_eq!(srv.wish_of("w").await["last_run"], last, "nothing written");
         // and a new run does not start
         let refused = srv.run("wish.xllm@1", stage("run")).await;
         assert_eq!(refused["error"]["sub_code"], "MACRO_CANNOT_WRITE", "{refused}");
@@ -220,15 +224,12 @@ fn only_changes_of_the_macro_itself_are_audited() {
         srv.rpc("acl.bind_macro", json!({ "wish": "~w", "group_id": "g", "mode": "union" })).await;
         *srv.model.analyze.lock().unwrap() = analysis(false);
         *srv.model.execute.lock().unwrap() = coding(TABLE);
-        let a = srv.run("wish.xllm@1", stage("analyze")).await;
-        srv.apply(&a, json!({})).await;
+        srv.done(&srv.run("wish.xllm@1", stage("analyze")).await);
         assert_eq!(macro_audits(&srv).await, 0, "an analysis is no macro");
-        let c = srv.run("wish.xllm@1", stage("code")).await;
-        srv.apply(&c, json!({})).await;
+        srv.done(&srv.run("wish.xllm@1", stage("code")).await);
         assert_eq!(macro_audits(&srv).await, 1, "a new macro");
         set_amount(&srv, "30.00").await;
-        let r = srv.run("wish.xllm@1", stage("run")).await;
-        srv.apply(&r, json!({})).await;
+        srv.done(&srv.run("wish.xllm@1", stage("run")).await);
         let rev = srv.rpc("doc.read", json!({ "entity_id": "w" })).await["content"]["key_revs"]["prompt"].clone();
         srv.commit(json!([{ "op": "entity.set_keys", "entity_id": "w", "keys": [{ "key": "prompt", "value": "按月汇总", "expect": { "rev": rev } }] }])).await;
         assert_eq!(macro_audits(&srv).await, 1, "results and other keys are no change of the macro");

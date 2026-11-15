@@ -26,7 +26,7 @@ import { aiwsT, localizedLabels } from '../i18n'
 import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
-  type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type Touched, type WorkspaceInfo, type WishChoices,
+  type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type Touched, type WorkspaceInfo,
   type AnnotationContent, type ListAnnotationsParams, type ShowLockInfo, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
@@ -775,29 +775,25 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readRun'))
     return this.direct.procGet(runId)
   }
-  async procApply(runId: string) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.procApply'))
-    return this.direct.procApply(runId)
-  }
   async procCancel(runId: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.cancelRun'))
     return this.direct.procCancel(runId)
   }
 
-  // wish runs happen on the service: offline nothing is started, read or applied (许愿格 §14.2)
-  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>, idempotencyKey?: string) {
+  // wish runs happen on the service: offline nothing is started, read or rolled back (许愿格 §14.2)
+  async wishStart(program: 'wish.xllm@1', params: Record<string, Json>, idempotencyKey?: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
     // the service must see what this device saved first: a run never works from an older wish
     if (this.offline.pending().some((row) => row.state === 'queued' || row.state === 'sending' || row.state === 'unknown')) throw new ServiceFailure({ code: 'PENDING_LOCAL_EDITS', retryable: true, detail: aiwsT('aiworkspace.core.replica.pendingLocalEdits') })
     return this.direct.wishStart(program, params, idempotencyKey)
   }
-  async wishGet(runId: string, choices?: WishChoices) {
+  async wishGet(runId: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readRun'))
-    return this.direct.wishGet(runId, choices)
+    return this.direct.wishGet(runId)
   }
-  async wishApply(runId: string, planDigest: string) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishApply'))
-    return this.direct.wishApply(runId, planDigest)
+  async procRollback(runId: string, confirm?: boolean) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.wishcard.offline.rollback'))
+    return this.direct.procRollback(runId, confirm)
   }
   async wishList(wishId: string, limit?: number) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.listRuns'))

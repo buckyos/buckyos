@@ -1,25 +1,27 @@
 /* The status bar, bottom right of the work area (UI 框架 PRD §4.5; UI improvement §10): collapsed, the online count
  * (K2, while the service answers; it opens the online members — the way in on a phone) and the commit state (and,
- * first, the connection when it is not normal; the offline copy, a running offline action, uploads and macro runs under
- * way when there are). Clicking it opens the status panel in place, above it — at most half the work area, scrolling:
- * "需要处理" (the edits that need a decision, are unsaved or only saved on this device, with their actions; absent when
- * there are none), "连接与离线" (folded by default) and "最近工作日志" (K3, ui/framework/WorkLog.tsx). A new "needs
- * attention" opens the panel; open or closed is the person's preference across Workspaces (`status.expanded`). The
- * status bar is never hidden (Q28): no layer of the toolbar configuration hides it, App mode included (§4.6). Alerts
- * are not part of it: stopped sync, storage failures, read-only direct mode and the show lock stay stacked above the
- * status bar with their recovery actions, never folded, hidden or configured away. */
+ * first, the connection when it is not normal; the offline copy, a running offline action, uploads and the wish runs
+ * under way when there are — one run as a line of its progress, 许愿格交互升级 §3.8). Clicking it opens the status panel
+ * in place, above it — at most half the work area, scrolling: "需要处理" (the edits that need a decision, are unsaved or
+ * only saved on this device, with their actions; absent when there are none), "连接与离线" (folded by default), "运行中"
+ * (the wish runs of this window with their latest lines, ui/framework/RunningRuns.tsx; absent when there are none) and
+ * "最近工作日志" (K3, ui/framework/WorkLog.tsx). A new "needs attention" opens the panel; open or closed is the person's
+ * preference across Workspaces (`status.expanded`). The status bar is never hidden (Q28): no layer of the toolbar
+ * configuration hides it, App mode included (§4.6). Alerts are not part of it: stopped sync, storage failures,
+ * read-only direct mode and the show lock stay stacked above the status bar with their recovery actions, never folded,
+ * hidden or configured away. */
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { unwrap } from '../../api/client'
 import { describeError } from '../../api/session'
-import { useAppCache, useEdits, useOutlineVersion, useSessionStatus, useShowLock, useStore } from '../../state/hooks'
+import { useAppCache, useEdits, useSessionStatus, useShowLock, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
-import { isActive } from '../wish/WishService'
 import '../framework/framework.css'
 import { OnlineCount } from '../framework/members'
 import { useStatusExpanded } from '../framework/personal'
 import { useActiveUploads } from '../framework/activity'
+import { RunningSection, RunningStatus } from '../framework/RunningRuns'
 import { WorkLogSection } from '../framework/WorkLog'
 import { EditsPanel } from './panels'
 import { useShell } from './shellContext'
@@ -59,7 +61,6 @@ export function StatusSummary() {
   const clean = counts.unsaved === 0 && counts.saved_locally === 0 && counts.needs_attention === 0
   const [open, setOpen] = useStatusExpanded()
   const uploads = useActiveUploads()
-  const running = useRunningMacros()
   return (
     <button type="button" className={`aiws-panel aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-expanded={open} aria-controls="aiws-status-panel" aria-label={t('aiworkspace.shell.status.label')}
       title={t(open ? 'aiworkspace.framework.status.collapse' : 'aiworkspace.framework.status.expand')} data-testid="aiws-status" onClick={() => setOpen(!open)}>
@@ -84,19 +85,9 @@ export function StatusSummary() {
       {userSync === 'offline' && <span className="aiws-muted" data-testid="aiws-userstate-sync" data-sync={userSync} title={t('aiworkspace.shell.status.userSyncTitle')}>{t('aiworkspace.shell.status.userSync')}</span>}
       {shell.offlineBusy && <span className="aiws-muted" data-testid="aiws-offline-busy">{shell.offlineBusy}</span>}
       {uploads > 0 && <span className="aiws-status-progress" data-testid="aiws-status-uploads" data-count={uploads}>{t('aiworkspace.worklog.status.uploads', { count: uploads })}</span>}
-      {running > 0 && <span className="aiws-status-progress" data-testid="aiws-status-running" data-count={running}>{t('aiworkspace.worklog.status.running', { count: running })}</span>}
+      <RunningStatus />
     </button>
   )
-}
-
-/** Wish and macro runs of this window under way (their entries are in the work log). */
-function useRunningMacros(): number {
-  const store = useStore()
-  useSyncExternalStore(store.wish.subscribe, store.wish.snapshot)
-  useOutlineVersion()
-  let count = 0
-  for (const e of store.outline.all()) if (e.type_id === 'buckyos.wish' && !e.deleted && (isActive(store.wish.run(e.entity_id)) || store.wish.busy.has(e.entity_id))) count += 1
-  return count
 }
 
 /** The status bar: placed by the view that owns the work area (canvas, data source), clear of the side drawer. `info`:
@@ -131,7 +122,8 @@ export function StatusDock({ info }: { info?: ReactNode } = {}) {
   )
 }
 
-/** The status panel (§4.5): what needs attention, then the connection and offline details (folded by default). */
+/** The status panel (§4.5): what needs attention, the connection and offline details (folded by default), the runs
+ * under way, the work log. */
 function StatusPanel() {
   const { t } = useAiwsText()
   const counts = useSaveCounts()
@@ -158,6 +150,7 @@ function StatusPanel() {
         </section>
       )}
       <ConnectionDetail />
+      <RunningSection />
       <WorkLogSection />
     </div>
   )

@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import type {} from '../../src/app/aiworkspace/api/testHooks'
-import { expect, expectAllCommitted, openCanvas, openSide, openWorkspace, test, type Api, openMock } from './fixtures'
+import { expect, expectAllCommitted, openCanvas, openSide, openWorkspace, test, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -250,76 +250,6 @@ test('(e) Ctrl+Z undoes exactly one step: an editor step, then a cell commit, in
   await page.getByTestId('aiws-undo').click()
   await expect(page.getByTestId('aiws-undo-problem')).toContainText('REVISION_CONFLICT')
   expect(await owner('task-40')).toBe('后来者')
-})
-
-test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole application', async ({ page, api }) => {
-  const ws = await api.sample(ALICE, `f ${Date.now()}`)
-  await openWorkspace(page, ALICE, ws.workspace_id)
-  const all = page.getByTestId('aiws-table-cell-all-tasks')
-  await expect(all.getByTestId('aiws-cell-task-41-risk')).toBeVisible()
-  await openMock(page)
-  await expect(page.getByTestId('aiws-mock-simulated')).toHaveText('模拟结果')
-  await page.getByTestId('aiws-mock-today').fill('2026-10-13')
-  await page.getByTestId('aiws-mock-start').click()
-  const run = page.getByTestId('aiws-mock-run')
-  await expect(run).toHaveAttribute('data-state', 'waiting_confirmation')
-  await expect(page.getByTestId('aiws-mock-prepare')).toContainText('将影响 5 处')
-  await expect(page.getByTestId('aiws-mock-prepare')).toContainText('summary')
-  // a candidate is not an applied state
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(6)
-  expect(await api.outline(ALICE, ws.workspace_id)).toHaveLength(18)
-
-  await page.getByTestId('aiws-mock-apply').click()
-  await expect(run).toHaveAttribute('data-state', 'succeeded')
-  await expect(page.getByTestId('aiws-mock-result')).toContainText('模拟结果')
-  // risk column filled, each written cell marked as simulated
-  await expect(all.getByTestId('aiws-cell-task-41-risk')).toContainText('高')
-  await expect(all.getByTestId('aiws-cell-task-42-risk')).toContainText('中')
-  await expect(all.getByTestId('aiws-cell-task-44-risk')).toContainText('低')
-  await expect(all.getByTestId('aiws-cell-task-41-risk').getByTestId('aiws-derived')).toHaveText('模拟')
-  // the summary rich text and its cell appear, labelled as simulated
-  const summary = page.getByTestId('aiws-cell-frame-cell-summary')
-  await expect(summary).toContainText('Task summary (simulated)')
-  await expect(summary).toContainText('Tasks: 5 in total, 4 open, 1 overdue.')
-  expect(await api.outline(ALICE, ws.workspace_id)).toHaveLength(20)
-  expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-41', 'risk')).value).toBe('option-high')
-
-  // one application is one commit: one undo removes the summary, its cell and every risk value
-  await expect(page.getByTestId('aiws-undo')).toHaveText('撤销 1')
-  await page.getByTestId('aiws-undo').click()
-  await expect(page.getByTestId('aiws-cell-frame-cell-summary')).toHaveCount(0)
-  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).length).toBe(18)
-  await expect(all.getByTestId('aiws-cell-task-41-risk').getByTestId('aiws-derived')).toHaveCount(0)
-  expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-41', 'risk')).is_set).toBe(false)
-  // redo = undo of the compensating commit: everything is back
-  await page.getByTestId('aiws-redo').click()
-  await expect(page.getByTestId('aiws-cell-frame-cell-summary')).toContainText('Task summary (simulated)')
-  await expect(all.getByTestId('aiws-cell-task-41-risk')).toContainText('高')
-
-  // a human edit on a derived cell is marked as a manual override
-  await all.getByTestId('aiws-cell-task-42-risk').getByRole('button').first().click()
-  await page.getByLabel('风险 task-42', { exact: true }).selectOption('option-low')
-  await expect(all.getByTestId('aiws-cell-task-42-risk').getByTestId('aiws-manual-override')).toBeVisible()
-  await expectAllCommitted(page)
-  expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-42', 'risk')).meta.manual_override).toBe(true)
-
-  // the same input again: nothing to change, and the UI says so instead of offering an empty application
-  await page.getByTestId('aiws-mock-start').click()
-  await expect(run).toHaveAttribute('data-state', 'failed')
-  await expect(page.getByTestId('aiws-mock-failed')).toContainText('nothing to change')
-  await expect(page.getByTestId('aiws-mock-apply')).toHaveCount(0)
-
-  // another "today" gives a new candidate; the manually overridden cell is skipped with a warning; a cancelled run cannot be applied
-  await page.getByTestId('aiws-mock-today').fill('2026-12-15')
-  await page.getByTestId('aiws-mock-start').click()
-  await expect(run).toHaveAttribute('data-state', 'waiting_confirmation')
-  await expect(page.getByTestId('aiws-mock-warnings')).toContainText('task-42')
-  const head = await api.headSeq(ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-mock-cancel').click()
-  await expect(run).toHaveAttribute('data-state', 'cancelled')
-  await expect(page.getByTestId('aiws-mock-apply')).toHaveCount(0)
-  await expect(page.getByTestId('aiws-mock-message')).toContainText('已取消')
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
 })
 
 test('(g) one control instance, two people: A changes the colour, B the text — both kept, each a write of its own property', async ({ browser, api }) => {

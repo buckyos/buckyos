@@ -1569,7 +1569,7 @@ fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
 
 // ---- Wish (phase two §7.1) ----
 
-const WISH_KEYS: &[&str] = &["title", "prompt", "knowledge", "refinements", "analysis", "inputs", "executor", "output", "output_mode", "executor_config", "program", "last_run"];
+const WISH_KEYS: &[&str] = &["title", "prompt", "knowledge", "refinements", "analysis", "inputs", "executor", "output", "output_mode", "executor_config", "program", "last_run", "history"];
 pub const MAX_PROMPT_CHARS: usize = 20_000;
 
 /// Validator class: schema (selector and version shape); reference for the input target and its `table_view` cell.
@@ -1673,8 +1673,8 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
         return Err(bad("wish needs prompt"));
     }
     match e.payload.get("executor").and_then(Value::as_str) {
-        Some("mock" | "xllm" | "agent-work-session") => {}
-        _ => return Err(bad("executor must be mock, xllm or agent-work-session")),
+        Some("xllm" | "agent-work-session") => {}
+        _ => return Err(bad("executor must be xllm or agent-work-session")),
     }
     match e.payload.get("output_mode") {
         None => {
@@ -1729,8 +1729,9 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     if let Some(a) = e.payload.get("analysis") {
         crate::wish::check_analysis(a)?;
     }
-    if e.payload.contains_key("analysis") && is_changed("analysis") {
-        // the basis is the core's statement of what the analysis was made from, never the writer's
+    if e.payload.contains_key("analysis") && is_changed("analysis") && !p.env.internal {
+        // the basis is the core's statement of what the analysis was made from, never the writer's; an undo or a
+        // rollback (internal) restores an analysis as it was, basis included
         crate::wish::with_basis(&mut e.payload);
     }
     if let Some(out) = e.payload.get("output").filter(|v| !v.is_null()) {
@@ -1767,6 +1768,26 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     }
     if e.payload.get("analysis").is_some_and(|c| canonical_len(c) > MAX_CONFIG_BYTES * 2) {
         return Err(WsError::limit("analysis is limited to 128 KiB"));
+    }
+    if let Some(h) = e.payload.get("history") {
+        crate::wish::check_history(h)?;
+    }
+    // the run records are the service's (许愿格交互升级 §3.4): a run's own Commit, a rollback or an undo (internal), an
+    // import or a replay; nobody writes them by hand
+    if is_changed("history") && (changed.is_some() || e.payload.contains_key("history")) && !(p.env.origin == "program" || p.env.internal || p.env.replay) {
+        return Err(WsError::denied("a wish's history is written by its runs only"));
+    }
+    if is_changed("history") || importing {
+        let ids: Vec<String> = crate::wish::history_objects(&e.payload).into_iter().map(|(id, _)| id.to_string()).collect();
+        for id in ids {
+            match p.ov.asset(&id)? {
+                Some(info) => {
+                    p.ov.assets.insert(id, info);
+                }
+                None if importing => {}
+                None => return Err(WsError::new(Code::DependencyUnavailable, format!("history object {id} has not been uploaded"))),
+            }
+        }
     }
     Ok(())
 }
@@ -1996,7 +2017,7 @@ fn block_def_primitive(p: &Planner, e: &mut EntityRow, changed: Option<&[String]
     let code = html && HTML_CODE_KEYS.iter().any(|k| is_changed(k));
     let vouched = changed.is_some_and(|c| c.iter().any(|x| x == "trusted"));
     if code && !vouched && p.env.origin == "program" {
-        // a run's result (origin `program`: proc.apply only, R32) writes its macro's page without `manage` — the code was
+        // a run's result (origin `program`: written by the service when its stage ends, R32) writes its macro's page without `manage` — the code was
         // fixed when the macro was coded, and the run is written as its macro identity — but it is trusted only when that
         // identity may vouch for it (权限需求 Q32). A replay takes what history recorded: a created definition's stored
         // payload; a changed one carries `trusted` beside its code when it was trusted.
@@ -2245,7 +2266,7 @@ pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value
     for k in o.keys() {
         if !matches!(
             k.as_str(),
-            "wish_id" | "run_id" | "executor" | "inputs" | "generated_rev" | "simulated" | "at" | "output_mode" | "group" | "stale" | "stale_at_import" | "kept_manual"
+            "wish_id" | "run_id" | "executor" | "inputs" | "generated_rev" | "at" | "output_mode" | "group" | "stale" | "stale_at_import" | "kept_manual"
                 | "config_digest" | "result_key" | "approach" | "program_digest" | "model_judgment" | "external_data" | "mode"
         ) {
             return Err(bad(format!("derived: unknown key {k}")));
@@ -2281,7 +2302,7 @@ pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value
     }
     out.insert("inputs".into(), Value::Array(norm));
     out.insert("generated_rev".into(), json!(content_rev));
-    for k in ["simulated", "at", "output_mode", "group", "model_judgment", "external_data"] {
+    for k in ["at", "output_mode", "group", "model_judgment", "external_data"] {
         if let Some(x) = o.get(k) {
             out.insert(k.into(), x.clone());
         }
@@ -2879,8 +2900,16 @@ fn ref_edge(src: &str, selector: &str, kind: &str, reference: &Value) -> RefEdge
 /// bodies and rich text references are maintained by their own planners.)
 pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
     let mut out = BTreeSet::new();
+    // a wish's run logs may print what a reader of the wish cannot read: their own kind, read with `update` (D9)
+    let logs: BTreeSet<&str> = if e.type_id == TYPE_WISH {
+        let objects = crate::wish::history_objects(&e.payload);
+        let plain: BTreeSet<&str> = objects.iter().filter(|(_, log)| !log).map(|(id, _)| *id).chain(text_of(e.payload.get("program").and_then(|p| p.get("source")))).collect();
+        objects.iter().filter(|(id, log)| *log && !plain.contains(id)).map(|(id, _)| *id).collect()
+    } else {
+        BTreeSet::new()
+    };
     for object_id in asset_object_ids(&e.type_id, &e.payload) {
-        let mut edge = RefEdge::local(&e.entity_id, "", "asset", "");
+        let mut edge = RefEdge::local(&e.entity_id, "", if logs.contains(object_id) { "log" } else { "asset" }, "");
         edge.dst_object_id = object_id.to_string();
         out.insert(edge);
     }
@@ -2993,14 +3022,18 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
     Ok(out)
 }
 
-/// The stored content objects an entity's payload names: an AssetRef's file and its poster, a Block snapshot, a wish program,
-/// the Workspace's cover (the root's settings).
+fn text_of(v: Option<&Value>) -> Option<&str> {
+    v.and_then(Value::as_str)
+}
+
+/// The stored content objects an entity's payload names: an AssetRef's file and its poster, a Block snapshot, a wish program
+/// and the objects of its run records, the Workspace's cover (the root's settings).
 pub fn asset_object_ids<'a>(type_id: &str, payload: &'a JsonMap) -> Vec<&'a str> {
     let text = |v: Option<&'a Value>| v.and_then(Value::as_str);
     match type_id {
         TYPE_ASSET => [text(payload.get("object_id")), text(payload.get("poster"))].into_iter().flatten().collect(),
         TYPE_CELL => text(payload.get("config").and_then(|c| c.get("snapshot")).and_then(|s| s.get("object_id"))).into_iter().collect(),
-        TYPE_WISH => text(payload.get("program").and_then(|p| p.get("source"))).into_iter().collect(),
+        TYPE_WISH => text(payload.get("program").and_then(|p| p.get("source"))).into_iter().chain(crate::wish::history_objects(payload).into_iter().map(|(id, _)| id)).collect(),
         TYPE_CONTAINER if text(payload.get("kind")) == Some("root") => text(payload.get("config").and_then(|c| c.get("cover")).and_then(|c| c.get("object_id"))).into_iter().collect(),
         _ => vec![],
     }

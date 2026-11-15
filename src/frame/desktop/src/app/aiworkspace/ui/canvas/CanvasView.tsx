@@ -43,10 +43,8 @@ import { insertEntries, isAppMode } from '../framework/config'
 import { AppModeEntry } from '../framework/AppModeEntry'
 import { ContextZone } from '../framework/ContextZone'
 import { useToolbarLayout } from '../framework/hooks'
-import { OpenWishContext } from '../wish/wishBlock'
 import { GuideOverlay } from '../../presentation/GuideOverlay'
 import { PathEditor } from '../../presentation/PathEditor'
-import { WishPanel } from '../wish/WishPanel'
 import { ENTRY_ICONS, entryId, entrySize, registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
 import { ContextWindow } from '../phone/ContextWindow'
 import { ExpandView, type ExpandTarget } from '../phone/ExpandView'
@@ -91,6 +89,7 @@ import { RenderHost, type LayoutChange, type NodeMove } from './render/RenderHos
 import { useSurfaceConfig } from './surfaceManage'
 import { createSurfaceOps, surfacesOf } from './surfaceOps'
 import { useSurfaceLayout } from './useSurfaceLayout'
+import { WishLinks } from './wishLinks/WishLinks'
 import { ContextMenu, NearToolbar } from './tools'
 import { InkBar } from '../../ink/InkBar'
 import { InkControl } from '../../ink/input'
@@ -230,8 +229,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // the Editor of the Block being edited hands its tools to the near toolbar (标准对象的交互改进 §5.4)
   const [toolbarSink] = useState(() => new ToolbarSink())
   useSyncExternalStore(toolbarSink.subscribe, toolbarSink.snapshot)
-  /** The wish whose flow is open in the right panel (R6): its Block stays a card. */
-  const [wishOpen, setWishOpen] = useState<{ wishId: string; cellId: string } | null>(null)
   const phone = shell.phone
   // the tool zones as the toolbar configuration resolves them (UI 框架 PRD §4.6): built-in, this canvas, personal
   const toolbar = useToolbarLayout(surfaceLook.config.toolbar)
@@ -271,8 +268,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   // selection survives mode switches when the policy still allows it (§10.2); editors are released
   const setSelection = (next: Set<string>) => { const whole = wholeStrokes(next); setSelectionState(whole); pickForAnnotation(whole) }
-  // activating an editor brings its Block into view (§8.2: the active Block is never half off-screen);
-  // on a free canvas a wish opens in the right panel instead (its Block stays a card)
+  // activating an editor brings its Block into view (§8.2: the active Block is never half off-screen)
   const { setSide } = shell
   const setEditing = useCallback((id: string | null) => {
     typeAhead.delete('typed')
@@ -282,10 +278,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const l = id ? laid.get(id) : undefined
     // a Block inserted a moment ago may not be laid out yet: the outline knows what it is
     const entity = l?.entity ?? (id ? store.outline.get(id) : undefined)
-    if (id && isFree && entity?.view_type === 'wish' && entity.source_id) {
-      setWishOpen({ wishId: entity.source_id, cellId: id })
+    // a wish card has no editing state: its tabs and buttons work in place (许愿格交互升级 §3.1)
+    if (id && isFree && entity?.view_type === 'wish') {
       setSelectionState(new Set([id]))
-      setSide('wish')
       return
     }
     setEditingState(id)
@@ -294,7 +289,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const owner = l?.backing ? l.parentId : id
     if (id && owner) setSelectionState((current) => (current.size === 1 && (current.has(id) || current.has(owner)) ? current : new Set([owner])))
     if (l) camera.ensureVisible(l.bounds)
-  }, [laid, camera, isFree, setSide, store, typeAhead])
+  }, [laid, camera, isFree, store, typeAhead])
   const policyKey = `${policy.select}:${policy.editContent}:${policy.insert}`
   const [policySeen, setPolicySeen] = useState(policyKey)
   if (policySeen !== policyKey) {
@@ -564,12 +559,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
     if (isFree) setSelectionState(new Set([cellId]))
     if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) {
-      // a new wish opens its task in the right panel (it is not laid out yet when this runs)
-      if (isFree && definition.type === 'wish') { setWishOpen({ wishId: dataId, cellId }); setSide('wish') } else { requestIntent(cellId, 'end'); setEditing(cellId) }
+      requestIntent(cellId, 'end')
+      setEditing(cellId)
     }
     return true
     // eslint-disable-next-line react-hooks/exhaustive-deps -- centreSpot reads the camera at call time
-  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, noteReason, policy.editContent, setEditing, setSide, mode, ui.openEntity])
+  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, noteReason, policy.editContent, setEditing, mode, ui.openEntity])
 
   /** Add a note at `world` (null: the centre of the view) on a free canvas: written in place where content is edited,
    * else (view mode, a phone) written first in the annotations panel and placed when saved. */
@@ -602,7 +597,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (isFree) { setPlacing(request); setTool('select') } else void insert(request, null)
   }
   const pickEntry = (entry: CatalogEntry) => {
-    if (entry.definition.type === 'wish' && single?.view_type === 'wish' && policy.editContent) { setEditing(single.entity_id); return }
     // the connector entry is a tool: press and drag on the canvas draws a line (标准对象的交互改进 §6.1)
     if (entry.definition.type === 'connector') {
       if (insertReason) { store.notify('info', insertReason); return }
@@ -1388,7 +1382,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       ? { id: 'unlock', actionId: 'block.unlock', group: 'arrange', common: lockable, icon: LockOpen, label: t('aiworkspace.canvas.lock.unlock'), disabled: lockReason || (lockedHere ? false : t('aiworkspace.canvas.lock.groupLocked')), run: () => { void setLocked(topIds, false) } }
       : { id: 'lock', actionId: 'block.lock', group: 'arrange', common: lockable, icon: Lock, label: t('aiworkspace.canvas.lock.lock'), disabled: lockReason, run: () => { void setLocked(topIds, true) } })
   }
-  if (wishEntry && selection.size > 0 && policy.insert && insertReason === null && !allLocked) entries.push({ id: 'ai', actionId: 'block.ai', group: 'collab', common: true, icon: Sparkles, label: t(single?.view_type === 'wish' ? 'aiworkspace.canvas.wish.open' : 'aiworkspace.canvas.wish.forSelection'), ai: true, run: () => pickEntry(wishEntry) })
+  if (wishEntry && selection.size > 0 && single?.view_type !== 'wish' && policy.insert && insertReason === null && !allLocked) entries.push({ id: 'ai', actionId: 'block.ai', group: 'collab', common: true, icon: Sparkles, label: t('aiworkspace.canvas.wish.forSelection'), ai: true, run: () => pickEntry(wishEntry) })
   // clipboard (a phone has no copy and cut)
   if (selection.size > 0 && policy.select && !phone) {
     entries.push({ id: 'copy', actionId: 'block.copy', group: 'clipboard', label: t('aiworkspace.canvas.clipboard.copy'), key: 'Ctrl+C', run: copy.run })
@@ -1550,12 +1544,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       case 'inspector': return null
       case 'relations': return single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">{t('aiworkspace.canvas.side.noDataSelection')}</div>
       case 'annotations': return <AnnotationsPanel parentId={surface.content_folder_id ?? null} noteDraft={noteDraft ? { save: saveNoteDraft, cancel: () => setNoteDraft(null) } : null} />
-      case 'wish': return wishOpen && store.outline.get(wishOpen.wishId)
-        ? <WishPanel key={wishOpen.wishId} wishId={wishOpen.wishId} cellId={wishOpen.cellId} readOnly={readOnlyNow || !policy.writes} canvasSelection={[...selection].filter((id) => id !== wishOpen.cellId)} />
-        : <div className="aiws-muted">{t('aiworkspace.canvas.side.noWish')}</div>
     }
   }
-  const sideTabs = wishOpen ? [...CANVAS_SIDE_TABS, 'wish' as const] : CANVAS_SIDE_TABS
+  const sideTabs = CANVAS_SIDE_TABS
   const clipIds = clip?.kind === 'cut' && clip.surfaceId === surfaceId ? clip.ids.join(',') : ''
   const cutIds = useMemo(() => (clipIds ? new Set(clipIds.split(',')) : undefined), [clipIds])
 
@@ -1582,7 +1573,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             }}>
             {isFree ? (
               <EditorToolbarContext.Provider value={toolbarSink}>
-              <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
                 canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)} hidden={timedHidden.size ? timedHidden : undefined}
                 tool={tool} placing={placing ? { ...entrySize(placing.entry), label: placingTitle } : null}
@@ -1597,7 +1587,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
                 onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
                 cutIds={cutIds} renderNear={(bbox) => (phone ? contextWindow(bbox) : <NearToolbar bbox={bbox} items={nearItems} more={moreItems} viewport={viewportSize} insets={insets} />)}
                 background={surfaceLook.background} formOf={(id) => shapeBook.get(store.outline.get(id))} onConnectorCreate={policy.insert && insertReason === null ? createConnector : undefined} onConnectorChange={changeConnector} />
-              </OpenWishContext.Provider>
+              <WishLinks mode={mode} camera={camera} laid={laid} />
               </EditorToolbarContext.Provider>
             ) : (
               <div className="aiws-flow-host" data-testid="aiws-flow-host">

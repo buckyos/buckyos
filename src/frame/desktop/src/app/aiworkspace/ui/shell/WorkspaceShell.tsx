@@ -25,7 +25,7 @@ import { pathsOf } from '../../presentation/model'
 import { openShow, resumeShow } from '../../presentation/showSession'
 import { StartShowDialog } from '../../presentation/StartShowDialog'
 import { StageView, type ShowSession } from '../../presentation/StageView'
-import { ExportDialog, HelpDialog, ImportDialog, MockDialog, NewDialog } from './dialogs'
+import { ExportDialog, HelpDialog, ImportDialog, NewDialog } from './dialogs'
 import { ShareDialog } from './ShareDialog'
 import { LAYOUT_KEYS, PREF_KEYS, ShellContext, usePhone, type DialogRequest, type GuideState, type LayoutPrefs, type ShellApi, type SideTab, type SizeClass, type TopMode } from './shellContext'
 import { TableImportHost } from '../import/TableImportDialog'
@@ -338,7 +338,6 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
             {dialog?.kind === 'export' && <ExportDialog client={client} workspace={{ workspace_id: workspaceInfo.workspace_id, title: workspaceInfo.title }} onClose={() => setDialog(null)} />}
             {dialog?.kind === 'import' && <ImportDialog client={client} onClose={() => setDialog(null)} onOpenWorkspace={onOpenWorkspace} />}
             {dialog?.kind === 'help' && <HelpDialog onClose={() => setDialog(null)} />}
-            {dialog?.kind === 'mock' && <MockDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'extensions' && <ExtensionsDialog initialDefId={dialog.defId} phone={phone} onClose={() => setDialog(null)} />}
             {dialog?.kind === 'save-template' && <SaveTemplateDialog initialSurfaceId={activeSurface?.entity_id ?? null} onClose={() => setDialog(null)} />}
             {dialog?.kind === 'delete-surface' && <SurfaceDeleteDialog key={dialog.surface.entity_id} surface={dialog.surface} onClose={() => setDialog(null)} onDeleted={(next) => { if (next) selectSurface(next) }} />}

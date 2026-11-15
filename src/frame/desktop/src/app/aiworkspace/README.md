@@ -92,7 +92,7 @@ ui/
                           MainToolbar (icon, name, Surface switcher, data source, main menu, collaboration),
                           MainMenu (the function index), ViewToolbar (annotation, zoom and view navigation,
                           identity, share link), StatusSummary (the bottom-right status area: save / sync /
-                          connection, persistent alerts and notices; the 修改状态 panel), SidePanel, dialogs (New, export, import, help, Mock, leave check),
+                          connection, persistent alerts and notices; the 修改状态 panel), SidePanel, dialogs (New, export, import, help, leave check),
                           popover.tsx (popovers and keyboard menus), shellContext.ts, panels, annotations panel
   datamode/               the data mode (UI 框架 PRD §5; no tool-zone row above it): ObjectTree (its head holds 返回画布
                           and the main menu; data sources by default, filters, search, the 宏 folder and the 工作区权限
@@ -143,10 +143,11 @@ ink/                      pen handwriting (notepads/aiworkspace-handwriting-todo
                           HtmlBlockHost.tsx + htmlRuntime.ts + bridge.ts (HTML extension Blocks: same-origin iframe,
                           `window.aiws` v2 API — named bindings, watch, typed writes in one batch —, snapshots,
                           local fallback)
-  wish/                   WishService (service runs `wish.xllm@1` / `wish.mock@1`: analyze, execute, feedback,
-                          re-run / repair the program, preview with choices, apply by plan digest, history),
-                          WishPanel + WishCandidate + WishPreviews, wishBlock, mockWishDef (the Mock executor as an
-                          HTML definition entity)
+  wish/                   WishService (service runs of `wish.xllm@1`: analyze, code (repair), run the macro,
+                          cancel, resume, roll back a run record), WishCard (the card: four tabs, the next-step
+                          button, the run button), WishRecords + records.ts (run records from `payload.history`),
+                          dialogs (request, task contract, macro, log, a version), WishInspector (the properties),
+                          ProgramView, wishBlock
   TableViewCell.tsx       virtualised table view (database grid: type icons, pills, tick boxes, "+ 新建" line, "+"
                           field column, arrow keys between cells), inline editing, filter / sort, conflicts; also the
                           source mode; fieldOps.ts (adding a field, shared with FieldManager)
@@ -188,24 +189,22 @@ Desktop languages read English, like the rest of the Desktop.
 - **Where the language comes from.** The provider stores the choice before it re-renders (`src/i18n/provider.tsx`),
   so text produced outside React during that render is already in the new language. The Replica Worker has no
   page storage: every request carries the page's language (`WorkerRequest.locale`). HTML extensions get it as
-  `window.aiws.locale` and `<html lang>` (an extension shows English for a language it has no text for). The Mock
-  wish executor's script carries an English and a Chinese table, injected when its definition is created. The
+  `window.aiws.locale` and `<html lang>` (an extension shows English for a language it has no text for). The
   shared draw.io module (`@drawio/*`) stays language-free: it returns ids and codes, `ui/canvas/drawioText.ts`
   turns them into text. The offline start page of the service worker cannot read the Desktop's choice and says
   it in both languages, the browser's first.
 - **Text that becomes document data** — demo content, default names of new objects and canvases, edit and commit
-  labels, Mock wish results — is written in the language of the moment, like anything a user types.
-- **The backend speaks English** — its problem texts, the documents it writes (result group titles, the Mock
-  processing's output, commit messages), the data profile and the prompts it sends to models; it does not follow the
+  labels — is written in the language of the moment, like anything a user types. A wish's run records keep only
+  their material; `ui/wish/records.ts` writes them in the reader's language.
+- **The backend speaks English** — its problem texts, the documents it writes (result group titles, commit messages), the data profile and the prompts it sends to models; it does not follow the
   Desktop's language. `fixtures/project-workspace.commits.json` (byte-identical with the backend's fixture) is
   sample content and stays Chinese.
 - **Checks.** `deno test --allow-read --allow-env tests/datamodel/aiworkspace-i18n.test.ts [-- <path prefix>…]`
   (from `src/frame/desktop`): the two tables have the same keys and placeholders, no Chinese is left in string
-  literals or JSX text of this app or the draw.io module (a literal that must stay — Chinese words the Mock looks
-  for in user data — is marked `i18n-exempt: <reason>`), every key named in the source exists and every key is
+  literals or JSX text of this app or the draw.io module (a literal that must stay is marked `i18n-exempt: <reason>`), every key named in the source exists and every key is
   used. The e2e suite runs in zh-CN (`tests/aiworkspace/fixtures.ts` sets the stored language for every browser
   context) because its assertions match the Chinese UI; `i18n.spec.ts` runs the English UI — no Chinese on screen
-  through the list, a demo created in English, menus, panels, catalog, a Mock wish run, presentation and data
+  through the list, a demo created in English, menus, panels, catalog, a wish card, presentation and data
   sources — and switches the language live and back.
 
 ## Offline (design §6, first-phase document §7)
@@ -324,11 +323,12 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 - **Blocks**: a front-end registry decides which Renderer shows which data; unknown renderers, unsupported versions,
   unreadable data and thrown renderers fall back inside the Block. Declarative and HTML definitions are document
   entities. HTML Blocks run same-origin (no sandbox, D16) through `window.aiws`.
-- **Wishes** (许愿格 v0.2) run on the service: analyze (task description, named inputs, output contract, checks) →
-  execute (the model writes a program, the service runs it under Deno; candidate with previews and checks) →
-  feedback rounds → apply exactly the previewed plan (one commit: results, Blocks, program, refinements,
-  dependency records; manual edits ask keep / replace / new). "只重跑程序" needs no model. The Mock executor stays an
-  HTML definition entity; its results are planned and applied by the service (`wish.mock@1`) and labelled "模拟".
+- **Wishes** (许愿格交互升级, `notepads/aiws-wish-card-interaction-todo.md`): everything happens on the card —
+  analyze (task contract; a missing input fails the run) → write the macro (saved alone; its trial run is only in
+  the record) → run the macro (results, Blocks, `last_run`). The service writes at the end of each stage, one commit
+  with a run record in `payload.history`; there is no candidate and no apply. A run record's “回滚” takes that stage
+  back (`proc.rollback`). The run button runs the macro only; the next-step button follows the tab. Inputs, input
+  links (light blue) and result links (light orange) are drawn by `ui/canvas/wishLinks/`, never saved.
 - **Freshness** comes from `doc.freshness` (core) and is shown identically on wish Blocks, result Blocks, the data
   tree and the detail panels.
 
@@ -625,10 +625,9 @@ sent by reference (`assetUploader`, Q22).
   or re-edit), stop on `EPOCH_MISMATCH` / `BASE_TOO_OLD` / lost access with everything kept, export of
   unsaved inputs and of the pending queue as a JSON file, storage failures (quota, transaction error,
   dead Worker) shown as "未保存" with an export, "browser offline" told apart from "BuckyOS
-  unreachable", `lock_required` objects read-only without the backend, Mock runs / uploads / URL query
+  unreachable", `lock_required` objects read-only without the backend, wish runs / uploads / URL query
   tables saying that they need the backend.
 - Write locks: acquire, renew every 20 s, release, holder display, `LOCK_LOST`, policy toggle and break.
-- Mock run: candidate with `prepare` result and warnings, apply / cancel, everything labelled 模拟结果.
 
 ## What is not implemented (the UI says so or does not offer it)
 

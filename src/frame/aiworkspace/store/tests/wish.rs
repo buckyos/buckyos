@@ -157,7 +157,7 @@ fn map_tools_analysis_and_writeback() {
             { "name": "monthly", "type": "table", "title": "月度汇总", "key": ["月份"],
               "views": [{ "renderer": "table" }, { "renderer": "sample.bar-chart", "config": { "value": "销售额", "by": "月份" } }] },
             { "name": "commentary", "type": "richtext", "title": "解读" }] },
-        "checks": [{ "id": "total", "kind": "program", "text": "合计等于输入合计" }, { "id": "cited", "kind": "review", "text": "数字可追溯" }],
+        "checks": [{ "id": "total", "kind": "program", "level": "error", "text": "合计等于输入合计" }, { "id": "cited", "kind": "review", "text": "数字可追溯" }],
         "blockers": [], "warnings": []
     });
     let bad = st.validate_analysis(&analysis).unwrap().unwrap_err();
@@ -181,6 +181,16 @@ fn map_tools_analysis_and_writeback() {
     let mut wrong = fixed.clone();
     wrong["output_contract"]["results"][0]["views"][1]["renderer"] = json!("acme.pie");
     assert!(st.validate_analysis(&wrong).unwrap().unwrap_err().iter().any(|p| p.contains("acme.pie")));
+    // a program check is judged when the macro runs: the analysis gives its level
+    let mut wrong = fixed.clone();
+    wrong["checks"][0].as_object_mut().unwrap().remove("level");
+    assert!(st.validate_analysis(&wrong).unwrap().unwrap_err().iter().any(|p| p.contains("level")));
+    // inputs found missing: a conclusion, never written (the run fails with it)
+    let mut missing = fixed.clone();
+    missing["blockers"] = json!([{ "code": "NEEDS_INPUT", "message": "找不到成本表", "input_label": "成本", "candidates": [b_orders] }]);
+    let v = st.validate_analysis(&missing).unwrap().unwrap();
+    assert_eq!((v.analysis["status"].as_str(), v.analysis["blockers"][0]["candidates"][0].as_str()), (Some("needs_input"), Some("blk-orders")), "{}", v.analysis);
+    assert!(aiworkspace_core::wish::check_analysis(&v.analysis).is_err());
     let v = st.validate_analysis(&fixed).unwrap().unwrap();
     assert_eq!(v.inputs[0]["entity_id"], "orders");
     assert_eq!(v.inputs[0]["selector"], json!({ "kind": "table_view", "cell_id": "blk-orders" }));
@@ -235,7 +245,7 @@ fn code_collect_plan_apply_then_run_the_macro() {
     setup(&mut ws);
     // analysis written as the host would
     let analysis = json!({ "schema_version": "wish.analysis.v3", "status": "ready", "prompt": "分析左边那张只显示华东的表，按月汇总销售额",
-        "context_prompt": "读取输入 `sales`，按月汇总", "checks": [{ "id": "total", "kind": "program", "text": "合计一致" }], "blockers": [], "warnings": [],
+        "context_prompt": "读取输入 `sales`，按月汇总", "checks": [{ "id": "total", "kind": "program", "level": "error", "text": "合计一致" }], "blockers": [], "warnings": [],
         "output_contract": { "results": [
             { "name": "monthly", "type": "table", "title": "月度汇总", "key": ["月份"],
               "views": [{ "renderer": "table" }, { "renderer": "sample.bar-chart", "config": { "value": "销售额", "by": "月份" } }] },
@@ -319,7 +329,7 @@ fn code_collect_plan_apply_then_run_the_macro() {
     assert_eq!(candidate["model_judgment"], json!(["monthly", "commentary"]));
     drop(st);
     // preview → apply: the trial run is the first run, the macro is written with its results
-    let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &e1, candidate: &candidate, choices: &json!({}), location: &json!({ "cell_id": "blk-wish" }) }).unwrap();
+    let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &e1, candidate: &candidate, location: &json!({ "cell_id": "blk-wish" }) }).unwrap();
     assert!(plan.ready, "{}", plan.summary);
     let results = plan.summary["results"].as_array().unwrap();
     assert_eq!(results.iter().map(|r| r["action"].as_str().unwrap()).collect::<Vec<_>>(), ["create", "create"]);
@@ -386,7 +396,7 @@ fn code_collect_plan_apply_then_run_the_macro() {
     let cand2 = build_candidate(&mut ws, &c2, &st2, &p2, "run");
     assert!(cand2["program"].is_null(), "running never writes the macro");
     drop(st2);
-    let plan2 = ws.wish_plan(&alice(), &PlanRequest { run_id: &p2, candidate: &cand2, choices: &json!({}), location: &json!({}) }).unwrap();
+    let plan2 = ws.wish_plan(&alice(), &PlanRequest { run_id: &p2, candidate: &cand2, location: &json!({}) }).unwrap();
     assert!(plan2.ready, "{}", plan2.summary);
     assert_eq!(plan2.summary["program"], Value::Null);
     let rec_ids_before: Vec<String> = ids(&ws, &monthly);
@@ -410,7 +420,8 @@ fn code_collect_plan_apply_then_run_the_macro() {
     assert_eq!(f["items"][0]["status"], "current", "{f}");
     assert!(f["items"][0].get("direct_stale").is_none());
 
-    // a manual edit of the table: the next application asks keep / replace / new
+    // a manual edit of the table: the next run overwrites it and says so (D3), and deletes the row it no longer
+    // produces (D4)
     let r0 = ids(&ws, &monthly)[0].clone();
     let rev = ws.read(&alice(), &monthly, Some(&json!({ "kind": "table_cell", "record_id": r0, "field_id": "f3" }))).unwrap()["content"]["rev"].as_u64().unwrap();
     ok(&mut ws, &alice(), json!([{ "op": "table.set_values", "source_id": monthly, "values": [{ "record_id": r0, "field_id": "f3", "value": 99, "expect": { "rev": rev } }] }]));
@@ -419,24 +430,20 @@ fn code_collect_plan_apply_then_run_the_macro() {
     let st3 = stage(&ws, StageKind::Run, &p3, work3.path());
     let mut c3 = Collector { contract: analysis_contract(&ws), checks_def: analysis_checks(&ws), workdir: work3.path().join(&p3), inputs: st3.input_infos().unwrap(),
                              stored_manifest: Some(manifest.clone()), ..Default::default() };
-    // a row disappears this time: destructive, must be confirmed
+    // a row disappears this time
     let out = with_commentary(monthly_output(&[("2026-07-01", 1040.0, 8), ("2026-08-01", 1100.5, 7), ("2026-09-01", 1200.5, 7)], 3341.0), "## 解读\n\n合计 3,341。");
     c3.program = Some(program_output(&c3, &out, SOURCE, "").unwrap());
     let cand3 = build_candidate(&mut ws, &c3, &st3, &p3, "run");
     drop(st3);
-    let plan3 = ws.wish_plan(&alice(), &PlanRequest { run_id: &p3, candidate: &cand3, choices: &json!({}), location: &json!({}) }).unwrap();
-    assert!(!plan3.ready);
-    assert_eq!(plan3.summary["manual"][0]["name"], "monthly");
-    let plan3 = ws.wish_plan(&alice(), &PlanRequest { run_id: &p3, candidate: &cand3, choices: &json!({ "results": { "monthly": "replace" } }), location: &json!({}) }).unwrap();
-    assert!(!plan3.ready && plan3.summary["destructive"] == json!(true), "{}", plan3.summary);
-    let plan3 = ws.wish_plan(&alice(), &PlanRequest { run_id: &p3, candidate: &cand3, choices: &json!({ "results": { "monthly": "replace" }, "confirm_structure": true }), location: &json!({}) }).unwrap();
-    assert!(plan3.ready, "{}", plan3.summary);
+    let plan3 = ws.wish_plan(&alice(), &PlanRequest { run_id: &p3, candidate: &cand3, location: &json!({}) }).unwrap();
+    assert!(plan3.ready && plan3.summary["destructive"] == json!(true), "{}", plan3.summary);
+    assert_eq!(plan3.warnings, [json!({ "code": "overwrote_manual", "name": "monthly" }), json!({ "code": "deleted_rows", "name": "monthly", "count": 1 })], "{:?}", plan3.warnings);
     apply(&mut ws, &p3, &plan3);
     assert!(plan3.summary["results"].as_array().unwrap().iter().any(|r| r["name"] == "monthly" && r["reordered"] == false));
     assert_eq!(view_months(&ws, &table_cell), ["2026-09-01", "2026-08-01", "2026-07-01"], "the user's sort stays");
     assert_eq!(ids(&ws, &monthly).len(), 3);
     // the stale preview of an older run cannot be applied: the wish's last run moved on
-    let again = ws.wish_plan(&alice(), &PlanRequest { run_id: &p2, candidate: &cand2, choices: &json!({}), location: &json!({}) }).unwrap();
+    let again = ws.wish_plan(&alice(), &PlanRequest { run_id: &p2, candidate: &cand2, location: &json!({}) }).unwrap();
     assert!(!again.ready && again.summary["problems"].to_string().contains("another set of results"));
 }
 
@@ -453,7 +460,7 @@ fn derived_columns_are_owned_and_do_not_stale_themselves() {
     ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "wish-q3", "keys": [
         { "key": "analysis", "value": analysis, "expect": { "rev": 0 } },
         { "key": "inputs", "value": [{ "entity_id": "orders", "name": "sales" }], "expect": { "rev": 0 } }] }]));
-    let run = |ws: &mut Workspace, run: &str, choices: Value| -> aiworkspace_store::wish::plan::Plan {
+    let run = |ws: &mut Workspace, run: &str| -> aiworkspace_store::wish::plan::Plan {
         let run = &ws.wish_run_create(&alice(), PROGRAM_XLLM, &json!({ "wish_id": "wish-q3", "stage": "code", "k": run }), run, &json!(null)).unwrap().0.clone();
         let work = tempfile::tempdir().unwrap();
         let st = stage(ws, StageKind::Code, run, work.path());
@@ -476,9 +483,9 @@ fn derived_columns_are_owned_and_do_not_stale_themselves() {
         assert!(program_output(&c, &own, "src", "").is_err());
         let cand = build_candidate(ws, &c, &st, run, "code");
         drop(st);
-        ws.wish_plan(&alice(), &PlanRequest { run_id: run, candidate: &cand, choices: &choices, location: &json!({}) }).unwrap()
+        ws.wish_plan(&alice(), &PlanRequest { run_id: run, candidate: &cand, location: &json!({}) }).unwrap()
     };
-    let plan = run(&mut ws, "run-c1", json!({}));
+    let plan = run(&mut ws, "run-c1");
     assert!(plan.ready, "{}", plan.summary);
     let c1 = run_of(&plan);
     apply(&mut ws, &c1, &plan);
@@ -490,19 +497,18 @@ fn derived_columns_are_owned_and_do_not_stale_themselves() {
     assert!(cell["content"]["meta"]["derived"]["run_id"].is_string(), "{cell}");
     // writing its own column did not make the wish stale (the column is not in its read set)
     assert_eq!(ws.freshness(&alice(), &["wish-q3".into()]).unwrap()["items"][0]["status"], "current");
-    // a new record makes it stale; a re-run fills the new row and keeps the hand-edited cell when asked
+    // a new record makes it stale; a re-run fills the new row and overwrites the hand-edited cell, saying so
     let rev = cell["content"]["rev"].as_u64().unwrap();
     ok(&mut ws, &alice(), json!([{ "op": "table.set_values", "source_id": "orders", "values": [{ "record_id": "o0", "field_id": fid, "value": "1.00", "expect": { "rev": rev } }] }]));
     ok(&mut ws, &alice(), json!([{ "op": "table.insert_records", "source_id": "orders", "records": [{ "record_id": "o99", "values": { "month": "2026-09-01", "customer": "新客户", "region": "east", "amount": "500.00", "status": "done" } }] }]));
     assert_eq!(ws.freshness(&alice(), &["wish-q3".into()]).unwrap()["items"][0]["status"], "stale");
-    let plan = run(&mut ws, "run-c2", json!({}));
-    assert_eq!(plan.summary["manual"][0]["cells"], 1, "{}", plan.summary);
-    let plan = run(&mut ws, "run-c2", json!({ "results": { "差值": "keep" } }));
+    let plan = run(&mut ws, "run-c2");
     assert!(plan.ready, "{}", plan.summary);
+    assert_eq!(plan.warnings, [json!({ "code": "overwrote_manual_cells", "name": "差值", "count": 1 })], "{:?}", plan.warnings);
     let c2 = run_of(&plan);
     apply(&mut ws, &c2, &plan);
-    let kept = ws.read(&alice(), "orders", Some(&json!({ "kind": "table_cell", "record_id": "o0", "field_id": fid }))).unwrap();
-    assert_eq!(kept["content"]["value"].as_str().and_then(|v| v.parse::<f64>().ok()), Some(1.0), "{kept}");
+    let over = ws.read(&alice(), "orders", Some(&json!({ "kind": "table_cell", "record_id": "o0", "field_id": fid }))).unwrap();
+    assert_ne!(over["content"]["value"].as_str().and_then(|v| v.parse::<f64>().ok()), Some(1.0), "{over}");
     let filled = ws.read(&alice(), "orders", Some(&json!({ "kind": "table_cell", "record_id": "o99", "field_id": fid }))).unwrap();
     assert!(filled["content"]["value"].is_string());
     assert_eq!(ws.freshness(&alice(), &["wish-q3".into()]).unwrap()["items"][0]["status"], "current");
@@ -560,14 +566,23 @@ fn new_run(ws: &mut Workspace, stage: &str) -> String {
     ws.wish_run_create(&alice(), PROGRAM_XLLM, &json!({ "wish_id": "wish-q3", "stage": stage, "k": key }), &key, &json!(null)).unwrap().0
 }
 
-/// Preview kept, then applied through the run (one ordinary, idempotent commit).
+/// A minimal record of `run` (the service writes the full one, server/tests/wish.rs).
+fn record_of(ws: &Workspace, run: &str) -> Value {
+    let stage = ws.wish_run(&alice(), run).unwrap()["params"]["stage"].as_str().unwrap().to_string();
+    json!({ "id": run, "stage": stage, "action": if stage == "analyze" { "analyze" } else if stage == "code" { "code" } else { "run" }, "ok": true, "at": "2026-10-06T10:00:00.000Z" })
+}
+
+/// Written through the run as the service does when its stage ends (许愿格交互升级 §3.3): one ordinary Commit with the
+/// run's record in the wish's history, once.
 fn apply(ws: &mut Workspace, run: &str, plan: &aiworkspace_store::wish::plan::Plan) {
-    ws.wish_run_set(run, Some("waiting_confirmation"), None, Some(&json!({ "epoch": ws.epoch })), None, None).unwrap();
-    ws.wish_run_keep_plan(run, plan).unwrap();
-    let r = ws.wish_apply(&alice(), run, &plan.digest, Some("s1")).unwrap();
+    ws.wish_run_set(run, Some("validating"), None, Some(&json!({ "epoch": ws.epoch })), None, None).unwrap();
+    let record = record_of(ws, run);
+    let r = ws.wish_commit_stage(&alice(), run, plan, &record, None, None).unwrap();
     assert_eq!(r["status"], "accepted", "{r}");
-    // applying the same preview again is the same application
-    assert_eq!(ws.wish_apply(&alice(), run, &plan.digest, Some("s1")).unwrap()["commit"]["commit_id"], r["commit"]["commit_id"]);
+    let wish = ws.read(&alice(), "wish-q3", None).unwrap()["content"]["payload"].clone();
+    let stage = record["stage"].as_str().unwrap();
+    assert_eq!((wish["history"][stage][0]["id"].as_str(), wish["history"][stage][0]["commit_id"].as_str()), (Some(run), r["commit"]["commit_id"].as_str()), "the record names its Commit");
+    assert!(ws.wish_commit_stage(&alice(), run, plan, &record, None, None).is_err(), "a stage is written once");
 }
 
 /// W07: an input that (indirectly) comes from this wish's own results is refused; a folder holding
@@ -659,15 +674,18 @@ fn an_accepted_application_is_reconciled_after_a_crash() {
     let plan = ws.wish_analysis_plan(&alice(), &cand).unwrap();
     apply(&mut ws, &run, &plan);
     let head = ws.head_seq;
-    let key = format!("run/{run}/{}", &plan.digest[..plan.digest.len().min(32)]);
+    let record = ws.wish_run(&alice(), &run).unwrap()["detail"]["record"].clone();
     // the crash: the run record still says applying
-    ws.wish_run_set(&run, Some("applying"), None, None, None, Some(&json!({ "applied": Value::Null, "applying": { "plan_digest": plan.digest, "idempotency_key": key } }))).unwrap();
+    ws.wish_run_set(&run, Some("applying"), None, None, None, Some(&json!({ "applied": Value::Null, "record": Value::Null, "applying": { "idempotency_key": format!("run/{run}"), "record": record } }))).unwrap();
     assert_eq!(ws.wish_reconcile_apply(&run).unwrap().as_deref(), Some("succeeded"));
     let r = ws.wish_run(&alice(), &run).unwrap();
-    assert_eq!(r["state"], "succeeded");
-    assert_eq!(r["detail"]["applied"]["reconciled"], true);
-    // the client resends apply: the same application, no new commit
-    assert_eq!(ws.wish_apply(&alice(), &run, &plan.digest, Some("s1")).unwrap()["status"], "accepted");
+    assert_eq!((r["state"].as_str(), r["detail"]["applied"]["reconciled"].as_bool()), (Some("succeeded"), Some(true)));
+    assert_eq!(r["detail"]["record"]["id"], json!(run), "the record it wrote");
+    assert_eq!(ws.head_seq, head, "nothing written twice");
+    // a crash before the Commit: nothing was written, the stage's work is lost with the process
+    let lost = new_run(&mut ws, "analyze");
+    ws.wish_run_set(&lost, Some("applying"), None, None, None, Some(&json!({ "applying": { "idempotency_key": format!("run/{lost}"), "record": {} } }))).unwrap();
+    assert_eq!(ws.wish_reconcile_apply(&lost).unwrap().as_deref(), Some("interrupted"));
     assert_eq!(ws.head_seq, head);
 }
 
@@ -828,7 +846,7 @@ fn html_code_is_fixed_when_coding() {
     c.program = Some(run);
     let cand = build_candidate(&mut ws, &c, &st, &e1, "code");
     drop(st);
-    let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &e1, candidate: &cand, choices: &json!({}), location: &json!({}) }).unwrap();
+    let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &e1, candidate: &cand, location: &json!({}) }).unwrap();
     assert!(plan.ready, "{}", plan.summary);
     apply(&mut ws, &e1, &plan);
     let (html, version) = def_html(&ws);
@@ -850,7 +868,7 @@ fn html_code_is_fixed_when_coding() {
     };
     let (r2, cand2, changed) = run_with(&mut ws, "render(1)", &[("2026-07-01", 2.0, 1), ("2026-08-01", 3.0, 1)]);
     assert!(changed.is_empty());
-    let plan2 = ws.wish_plan(&alice(), &PlanRequest { run_id: &r2, candidate: &cand2, choices: &json!({}), location: &json!({}) }).unwrap();
+    let plan2 = ws.wish_plan(&alice(), &PlanRequest { run_id: &r2, candidate: &cand2, location: &json!({}) }).unwrap();
     assert!(plan2.ready, "{}", plan2.summary);
     let def_id = bindings(&ws)["page"]["entity_id"].as_str().unwrap().to_string();
     // its dependency record is re-recorded (`entity.set_derived`); its keys, the code among them, are not written
@@ -863,7 +881,7 @@ fn html_code_is_fixed_when_coding() {
     // other code: caught (MACRO_CODE_CHANGED), and even a plan made from it leaves the definition alone
     let (r3, cand3, changed) = run_with(&mut ws, "render(2)", &[("2026-07-01", 2.0, 1)]);
     assert_eq!(changed, ["page"]);
-    let plan3 = ws.wish_plan(&alice(), &PlanRequest { run_id: &r3, candidate: &cand3, choices: &json!({}), location: &json!({}) }).unwrap();
+    let plan3 = ws.wish_plan(&alice(), &PlanRequest { run_id: &r3, candidate: &cand3, location: &json!({}) }).unwrap();
     assert!(!writes_def(&plan3.operations), "running never rewrites the code: {:?}", plan3.operations);
 }
 
@@ -895,7 +913,7 @@ fn a_run_may_replace_every_block_of_a_text_result() {
         c.program = Some(program_output(&c, &out, SOURCE, "").unwrap());
         let cand = build_candidate(ws, &c, &st, &r, kind.as_str());
         drop(st);
-        let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &r, candidate: &cand, choices: &json!({}), location: &json!({}) }).unwrap();
+        let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &r, candidate: &cand, location: &json!({}) }).unwrap();
         assert!(plan.ready, "{}", plan.summary);
         apply(ws, &r, &plan);
     };
@@ -936,7 +954,7 @@ fn a_run_reads_the_fields_its_view_filters_on() {
     c.program = Some(program_output(&c, &out, SOURCE, "").unwrap());
     let cand = build_candidate(&mut ws, &c, &st, &run, "run");
     drop(st);
-    let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &run, candidate: &cand, choices: &json!({}), location: &json!({}) }).unwrap();
+    let plan = ws.wish_plan(&alice(), &PlanRequest { run_id: &run, candidate: &cand, location: &json!({}) }).unwrap();
     assert!(plan.ready, "{}", plan.summary);
     apply(&mut ws, &run, &plan);
     assert_eq!(ws.freshness(&alice(), &["wish-q3".into()]).unwrap()["items"][0]["status"], "current");

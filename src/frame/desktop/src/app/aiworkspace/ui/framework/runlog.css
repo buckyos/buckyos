@@ -1,0 +1,31 @@
+/* The wish runs under way in this window (许愿格交互升级 §3.8; RunningRuns.tsx): the collapsed status bar's one line,
+   and the status panel's "运行中" above the work log. */
+
+/* ---- the collapsed status bar: the line gives way to the commit state and ends in "…" (a phone's bar too) */
+.aiws-status .aiws-status-run { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- "运行中": a block for each run, its latest lines below it, the cancel on the right */
+.aiws-runlog { display: flex; flex-direction: column; gap: 4px; }
+.aiws-runlog > .aiws-panel-title { margin: 0; }
+.aiws-runlog-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.aiws-runlog-run { display: flex; align-items: flex-start; gap: 4px; }
+.aiws-root button.aiws-runlog-main {
+  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+  padding: 4px 6px; border: none; border-radius: 6px; background: none; text-align: left; font-size: 12px; min-height: 32px;
+}
+.aiws-root button.aiws-runlog-main:hover { background: var(--cp-surface-2); }
+.aiws-runlog-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.aiws-runlog-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-runlog-doing { color: var(--cp-accent); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-runlog-meta { color: var(--cp-muted); overflow-wrap: anywhere; }
+.aiws-runlog-lines { display: flex; flex-direction: column; margin-top: 2px; padding-left: 6px; border-left: 2px solid var(--cp-border); }
+.aiws-runlog-line { display: flex; gap: 8px; min-width: 0; }
+.aiws-runlog-at { flex: none; min-width: 40px; color: var(--cp-muted); font-variant-numeric: tabular-nums; }
+.aiws-runlog-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-runlog-line[data-kind='warning'] > .aiws-runlog-text { color: var(--cp-warning); }
+.aiws-runlog-line[data-kind='command'] > .aiws-runlog-text { font-family: var(--cp-mono, ui-monospace, monospace); }
+
+@media (pointer: coarse) {
+  .aiws-root button.aiws-runlog-main { min-height: 44px; }
+  .aiws-runlog-run > .aiws-tool { min-width: 44px; height: 44px; }
+}

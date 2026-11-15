@@ -101,12 +101,14 @@ export function quarterlyDemoCommits(): DemoCommit[] {
     { message: t('aiworkspace.demo.quarterly.commit.definitions'), operations: [kpi] },
     { message: t('aiworkspace.demo.quarterly.commit.surfaces'), operations: [...main, ...detail] },
     { message: t('aiworkspace.demo.quarterly.commit.analysis'), operations: [
+      // the wish's lines (许愿格交互升级 §3.9): the table it reads is its nearest Block of the sales data (the KPI card
+      // above it shows the same data, further away), and its results are placed right of it, inside the frame
       wishOp,
       cell('blk-intro', 'sf-analysis', k[0], 'richtext', 'intro', { x: 40, y: 40, w: 900, h: 120 }, { title: introName }),
       cell('blk-sales', 'sf-analysis', k[1], 'table', 'sales', { x: 40, y: 190, w: 900, h: 420 }, { title: salesName, fields: [{ field_id: 'region', width: 90 }, { field_id: 'product', width: 120 }, { field_id: 'revenue', width: 110 }, { field_id: 'cost', width: 100 }, { field_id: 'target', width: 100 }, { field_id: 'prev', width: 130 }] }),
-      cell('blk-wish', 'sf-analysis', k[2], 'wish', 'wish-analysis', { x: 980, y: 190, w: 420, h: 300 }, { title: t('aiworkspace.demo.quarterly.block.wish') }),
+      cell('blk-wish', 'sf-analysis', k[2], 'wish', 'wish-analysis', { x: 1040, y: 300, w: 420, h: 300 }, { title: t('aiworkspace.demo.quarterly.block.wish') }),
       cell('blk-kpi', 'sf-analysis', k[3], 'declarative', 'sales', { x: 980, y: 40, w: 420, h: 130 }, { title: t('aiworkspace.demo.quarterly.block.kpi'), def_ref: { entity_id: 'def-kpi' } }),
-      cell('blk-frame', 'sf-analysis', k[4], 'frame', undefined, { x: 960, y: 520, w: 1100, h: 820 }, { title: t('aiworkspace.demo.quarterly.block.frame'), config: { color: '#4f8df7' } }),
+      cell('blk-frame', 'sf-analysis', k[4], 'frame', undefined, { x: 1500, y: 240, w: 1240, h: 880 }, { title: t('aiworkspace.demo.quarterly.block.frame'), config: { color: '#4f8df7' } }),
     ] },
     { message: t('aiworkspace.demo.quarterly.commit.detail'), operations: [
       cell('blk-sales-2', 'sf-detail', k[0], 'table', 'sales', { x: 40, y: 40, w: 760, h: 360 }, { title: t('aiworkspace.demo.quarterly.block.eastDetail'), filter: { op: 'cmp', field_id: 'region', operator: 'eq', value: t('aiworkspace.demo.quarterly.region.east') } }),
@@ -157,26 +159,27 @@ export function filmDemoCommits(): DemoCommit[] {
   const howto: Operation = { op: 'entity.create', entity_id: 'howto', type_id: 'buckyos.richtext', parent_id: 'data', order_key: k[3], name: howtoName, payload: { content: doc([`# ${t('aiworkspace.demo.film.howto.title')}`, t('aiworkspace.demo.film.howto.text')], 'howto') } }
   const sf = surface('sf-film', t('aiworkspace.demo.film.surface'), k[0])
   const w1 = wish('wish-characters', 'sf-film-content', k[0], wish1Title, t('aiworkspace.demo.film.wish1.prompt', { characters: charactersName, style: styleName }), ['characters', 'style'], 'sf-film', sheetsName)
-  const w2 = wish('wish-storyboard', 'sf-film-content', k[1], wish2Title, t('aiworkspace.demo.film.wish2.prompt', { script: scriptName, sheets: sheetsName, style: styleName }), ['script', 'style', 'wish-characters-out-data'], 'sf-film', storyboardName)
-  const w3 = wish('wish-video', 'sf-film-content', k[2], wish3Title, t('aiworkspace.demo.film.wish3.prompt', { storyboard: storyboardName }), ['wish-storyboard-out-data'], 'sf-film', t('aiworkspace.demo.film.wish3.output'))
-  // the second and third wishes reference result folders that do not exist until the previous stage ran: the
-  // references are declared after the folders exist (see below), so the fixture declares them without inputs first
-  const stripInputs = (op: Operation) => ({ ...op, payload: { ...(op.payload as Record<string, Json>), inputs: ((op.payload as { inputs: { entity_id: string }[] }).inputs).filter((i) => !i.entity_id.startsWith('wish-')) } })
+  const w2 = wish('wish-storyboard', 'sf-film-content', k[1], wish2Title, t('aiworkspace.demo.film.wish2.prompt', { script: scriptName, sheets: sheetsName, style: styleName }), ['script', 'style'], 'sf-film', storyboardName)
+  const w3 = wish('wish-video', 'sf-film-content', k[2], wish3Title, t('aiworkspace.demo.film.wish3.prompt', { storyboard: storyboardName }), [], 'sf-film', t('aiworkspace.demo.film.wish3.output'))
+  // the second and third wishes read what the stage before them made, which does not exist until it ran: their
+  // analysis finds it by the name the prompt quotes (an input it cannot find fails the analysis, 许愿格交互升级 §3.3)
   return [
     { message: t('aiworkspace.demo.film.commit.data'), operations: [script, characters, rows, style, howto] },
     { message: t('aiworkspace.demo.film.commit.canvas'), operations: [
-      ...sf, w1, stripInputs(w2), stripInputs(w3),
+      ...sf, w1, w2, w3,
+      // stage by stage from left to right: each wish beside what it reads, its results right of it, the next stage past
+      // them, with room between for the lines and for the ghosts of inputs that have no Block here (§3.9)
       cell('blk-howto', 'sf-film', k[0], 'richtext', 'howto', { x: 60, y: 40, w: 1280, h: 130 }, { title: howtoName }),
       cell('blk-frame-in', 'sf-film', k[1], 'frame', undefined, { x: 40, y: 200, w: 600, h: 900 }, { title: t('aiworkspace.demo.film.frame.input'), config: { color: '#4f8df7' } }),
       cell('blk-script', 'sf-film', k[2], 'richtext', 'script', { x: 60, y: 240, w: 560, h: 380 }, { title: scriptName }),
       cell('blk-characters', 'sf-film', k[3], 'table', 'characters', { x: 60, y: 640, w: 560, h: 220 }, { title: charactersName }),
       cell('blk-style', 'sf-film', k[4], 'richtext', 'style', { x: 60, y: 880, w: 560, h: 180 }, { title: styleName }),
-      cell('blk-frame-a', 'sf-film', k[5], 'frame', undefined, { x: 680, y: 200, w: 1300, h: 900 }, { title: t('aiworkspace.demo.film.frame.sheets'), config: { color: '#22c55e' } }),
-      cell('blk-wish-1', 'sf-film', k[6], 'wish', 'wish-characters', { x: 700, y: 240, w: 420, h: 300 }, { title: wish1Title }),
-      cell('blk-frame-b', 'sf-film', k[7], 'frame', undefined, { x: 2020, y: 200, w: 1500, h: 1100 }, { title: t('aiworkspace.demo.film.frame.storyboard'), config: { color: '#f59e0b' } }),
-      cell('blk-wish-2', 'sf-film', k[8], 'wish', 'wish-storyboard', { x: 2040, y: 240, w: 420, h: 300 }, { title: wish2Title }),
-      cell('blk-frame-c', 'sf-film', k[9], 'frame', undefined, { x: 3560, y: 200, w: 1200, h: 900 }, { title: t('aiworkspace.demo.film.frame.video'), config: { color: '#ef4444' } }),
-      cell('blk-wish-3', 'sf-film', k[10], 'wish', 'wish-video', { x: 3580, y: 240, w: 420, h: 300 }, { title: wish3Title }),
+      cell('blk-frame-a', 'sf-film', k[5], 'frame', undefined, { x: 720, y: 200, w: 1760, h: 1100 }, { title: t('aiworkspace.demo.film.frame.sheets'), config: { color: '#22c55e' } }),
+      cell('blk-wish-1', 'sf-film', k[6], 'wish', 'wish-characters', { x: 780, y: 600, w: 420, h: 300 }, { title: wish1Title }),
+      cell('blk-frame-b', 'sf-film', k[7], 'frame', undefined, { x: 2520, y: 200, w: 1860, h: 1100 }, { title: t('aiworkspace.demo.film.frame.storyboard'), config: { color: '#f59e0b' } }),
+      cell('blk-wish-2', 'sf-film', k[8], 'wish', 'wish-storyboard', { x: 2680, y: 240, w: 420, h: 300 }, { title: wish2Title }),
+      cell('blk-frame-c', 'sf-film', k[9], 'frame', undefined, { x: 4420, y: 200, w: 1600, h: 900 }, { title: t('aiworkspace.demo.film.frame.video'), config: { color: '#ef4444' } }),
+      cell('blk-wish-3', 'sf-film', k[10], 'wish', 'wish-video', { x: 4580, y: 240, w: 420, h: 300 }, { title: wish3Title }),
     ] },
   ]
 }

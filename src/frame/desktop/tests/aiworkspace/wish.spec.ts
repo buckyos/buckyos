@@ -1,241 +1,676 @@
-/* Phase two §13.1 UI11–UI13, UI16, UI19, UI20, 许愿格 v0.2 and AI Native 第一期: the wish's stages (the Mock
- * in the browser; the real executor in the browser with a scripted model: analyze, code, run), the main state
- * and its next action, application of the previewed plan guarded by the read set, freshness that only input
- * changes move, failure keeping old results, manual-modification choices, versions and rollback, the
- * new-result mode, concurrent application, export/import, feedback rounds, running the stored macro without
- * a model, and the HTML extension API (v1 calls and `aiws` v2 bindings, typed writes, batch, watch). */
+/* 许愿格交互升级 §5: the wish card — four tabs, the next step and the run button on the card; each stage writes when it
+ * ends (no "apply"); records with their links, rollback, invalidation warnings, lines to the inputs and results, the
+ * run's lines in the status bar; history that travels with a clone. Every run executes in this browser with the scripted
+ * model (mock-llm.mjs; its marks inject warnings, failures and slowness). Also the HTML extension API (v1 calls and
+ * `aiws` v2 bindings), and the local executor's interrupted run resumed by this browser. */
 
-import { expandTree, expect, openCanvas, openWorkspace, test, closeWorkspace, fitAll } from './fixtures'
+import { devices, type Page } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+import { expect, fitAll, mainMenu, openCanvas, openProperties, openStatus, openWorkspacePage, scriptedModel, test, wishCard, wishRun, wishStageEnded, wishStep, wishThreeSteps, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
+const WISH = 'wish-analysis'
+const BLOCK = 'blk-wish'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = any
 
-async function runWish(page: import('@playwright/test').Page, blockId: string) {
-  await page.getByTestId(`aiws-canvas-block-${blockId}`).dblclick()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible({ timeout: 20_000 })
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 30_000 })
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('已应用', { timeout: 30_000 })
+async function derived(api: Api, ws: { workspace_id: string }, wishId = WISH): Promise<Json[]> {
+  return (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.derived?.wish_id === wishId)
 }
 
-test('UI11/UI20 analyze → run → apply writes results, Blocks and dependency records in one undoable commit; only input changes make them stale', async ({ page, api }) => {
+/** The demo's wish with its request replaced (the scripted model's marks go into it). */
+async function setPrompt(api: Api, ws: { workspace_id: string; epoch: string }, prompt: string, wishId = WISH) {
+  const wish = await api.read(ALICE, ws.workspace_id, wishId)
+  const r = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: wishId, keys: [{ key: 'prompt', value: prompt, expect: { rev: wish.content.key_revs.prompt } }] }])
+  expect(r.status, JSON.stringify(r)).toBe('accepted')
+}
+
+async function setRevenue(api: Api, ws: { workspace_id: string; epoch: string }, record: string, value: number) {
+  const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', record, 'revenue')).rev
+  const r = await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: record, field_id: 'revenue', value, expect: { rev } }] }])
+  expect(r.status, JSON.stringify(r)).toBe('accepted')
+}
+
+function records(page: Page, wishId = WISH) {
+  return wishCard(page, wishId).getByTestId('aiws-wish-record')
+}
+
+test('§5 1/2/5/6/7/14: a new wish — analyze, code and run from its card; each stage writes when it ends and its record says what it used; running the stored macro calls no model', async ({ page, api }) => {
+  test.slow()
   const ws = await api.demo(ALICE, 'quarterly', `wish ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  const next = card.getByTestId('aiws-wish-next')
+  // 1. a wish never analysed: only the request can be shown, the next step analyses, no run button
+  await expect(card).toHaveAttribute('data-tab', 'prompt')
+  await expect(card.getByTestId('aiws-wish-tab-prompt')).toBeEnabled()
+  for (const tab of ['analysis', 'macro', 'results']) await expect(card.getByTestId(`aiws-wish-tab-${tab}`)).toBeDisabled()
+  await expect(next).toHaveAttribute('data-action', 'analyze')
+  await expect(next).toHaveAttribute('data-primary', 'true')
+  await expect(next).toHaveText('分析需求')
+  await expect(card.getByTestId('aiws-wish-run')).toHaveCount(0)
+  await expect(card.getByTestId('aiws-wish-prompt')).toHaveValue(/原始销售数据/)
   const head = await api.headSeq(ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  await expect(page.getByTestId('aiws-wish-run')).toBeDisabled() // no analysis yet
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_analysis')
-  await expect(page.getByTestId('aiws-wish-code')).toHaveCount(0) // the Mock writes no macro
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-analysis')).toContainText('模拟执行器')
-  await expect(page.getByTestId('aiws-wish-input')).toHaveCount(1)
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1) // the analysis is written back
-  const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  expect(wish.content.payload.analysis.prompt).toBe(wish.content.payload.prompt)
-  expect(wish.content.payload.inputs.map((i: { entity_id: string }) => i.entity_id)).toEqual(['sales'])
-  // running does not write; application is one commit with the read set as preconditions
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
-  await page.getByTestId('aiws-wish-next').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
-  await expect(page.getByTestId('aiws-wish-result')).toHaveCount(4)
+
+  // 2. analyze: written as it ends (one commit), the card goes to "需求", its record says when, how long, what it used
+  const analysed = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze')
+  await expect(card).toHaveAttribute('data-tab', 'analysis')
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'pending_confirmation')
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 4 项')
+  expect(analysed).toMatchObject({ stage: 'analyze', action: 'analyze', ok: true, by: 'alice' })
+  expect(analysed.usage.model).toMatch(/@mock-llm$/)
+  expect(analysed.usage.input_tokens).toBeGreaterThan(0)
+  expect(analysed.usage.output_tokens).toBeGreaterThan(0)
+  expect(analysed.usage.calls).toBeGreaterThanOrEqual(2)
+  const payload = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload
+  expect(payload.analysis.status).toBe('ready')
+  expect(payload.analysis.checks.find((c: Json) => c.id === 'total').level).toBe('error')
+  expect(payload.inputs).toEqual([{ entity_id: 'sales', name: 'data', label: '原始销售数据', version: { mode: 'follow' } }])
+  const first = records(page).first()
+  await expect(first).toHaveAttribute('data-ok', 'true')
+  await expect(first).toHaveAttribute('data-expanded', 'true')
+  await expect(first).toHaveAttribute('data-current', 'true')
+  await expect(first).toContainText('执行“分析需求”')
+  await expect(first).toContainText(/输入 [\d,]+ \/ 输出 [\d,]+ token/)
+  await expect(first).toContainText('@mock-llm')
+  await expect(first).toContainText('要生成 2 项结果')
+  await expect(next).toHaveAttribute('data-action', 'code')
+  await expect(next).toHaveText('编写宏代码')
+  await expect(next).toHaveAttribute('data-primary', 'true')
+  // nothing to apply, anywhere
+  await expect(page.getByTestId('aiws-workspace').getByRole('button', { name: '应用', exact: true })).toHaveCount(0)
+  // its contract opens from the record: the checks with their level
+  await first.locator('[data-testid="aiws-wish-record-link"][data-kind="analysis"]').click()
+  const dialog = page.getByTestId('aiws-wish-dialog')
+  await expect(dialog).toHaveAttribute('data-kind', 'analysis')
+  await expect(dialog.getByTestId('aiws-wish-contract')).toContainText('summary')
+  await expect(dialog.getByTestId('aiws-wish-checkdefs')).toContainText('错误级')
+  await expect(dialog.getByTestId('aiws-wish-checkdefs')).toContainText('汇总合计等于输入合计')
+  await dialog.getByTestId('aiws-wish-dialog-close').click()
+  await expect(dialog).toHaveCount(0)
+
+  // 5. code: only the macro is written; the card goes to "宏", the run button appears (blue: no AI), no result yet
+  const coded = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'code')
+  await expect(card).toHaveAttribute('data-tab', 'macro')
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 2)
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current')
-  const outline = await api.outline(ALICE, ws.workspace_id)
-  const results = outline.filter((e: { derived?: { wish_id: string } }) => e.derived?.wish_id === 'wish-analysis')
-  expect(results).toHaveLength(4)
-  for (const r of results) {
-    expect(r.parent_id).toBe('wish-analysis-out-data')
-    expect(r.derived.executor).toBe('mock')
-    expect(r.derived.simulated).toBe(true)
-    expect(r.derived.inputs.some((i: { entity_id: string; selector?: { kind: string } }) => i.entity_id === 'sales' && i.selector?.kind === 'table_members')).toBe(true)
-  }
-  expect(outline.find((e: { entity_id: string }) => e.entity_id === 'wish-analysis-out')?.kind).toBe('group')
-  expect(outline.filter((e: { parent_id?: string }) => e.parent_id === 'wish-analysis-out')).toHaveLength(4)
-  const after = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  expect(after.content.payload.last_run.produced).toHaveLength(4)
-  // freshness: current everywhere
-  const summary = results.find((e: { type_id: string }) => e.type_id === 'buckyos.richtext').entity_id
-  await expect(page.getByTestId(`aiws-freshness-wish-analysis`).first()).toHaveAttribute('data-status', 'current')
-  let fresh = await api.rpc(ALICE, 'doc.freshness', { workspace_id: ws.workspace_id, entity_ids: [summary, 'wish-analysis'] })
-  expect(fresh.items.map((i: { status: string }) => i.status)).toEqual(['current', 'current'])
-  // moving the result Block and editing an unrelated note do not stale it
-  const summaryBlock = outline.find((e: { type_id: string; source_id?: string }) => e.type_id === 'buckyos.cell' && e.source_id === summary).entity_id
-  await api.commit(ALICE, ws, [{ op: 'tree.place', entity_id: summaryBlock, placement: { x: 10, y: 10, w: 300, h: 200 } }])
-  await api.commit(ALICE, ws, [{ op: 'entity.create', entity_id: 'note-unrelated', type_id: 'buckyos.annotation', parent_id: 'data', order_key: 'zz', payload: { kind: 'note', body: '无关' } }])
-  fresh = await api.rpc(ALICE, 'doc.freshness', { workspace_id: ws.workspace_id, entity_ids: [summary] })
-  expect(fresh.items[0].status).toBe('current')
-  // a relevant input change: stale, in both modes, naming the input
-  const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
-  await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 200000, expect: { rev } }] }])
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
-  await expect(page.getByTestId('aiws-wish-stale')).toContainText('已改变')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'stale')
-  await page.getByTestId('aiws-top-sources').click()
-  await expandTree(page, 'canvas-content', 'sf-analysis-content', 'wish-analysis-out-data')
-  await page.getByTestId(`aiws-tree-${summary}`).click()
-  await expect(page.getByTestId(`aiws-detail-${summary}`).getByTestId(`aiws-freshness-${summary}`)).toHaveAttribute('data-status', 'stale')
-  await expect(page.getByTestId('aiws-dm-side').getByTestId('aiws-relations-freshness')).toContainText('原始销售数据')
-  // reopened: the state is rebuilt from the persisted record
-  await page.reload()
-  await openWorkspace(page, ALICE, ws.workspace_id)
-  fresh = await api.rpc(ALICE, 'doc.freshness', { workspace_id: ws.workspace_id, entity_ids: [summary] })
-  expect(fresh.items[0].status).toBe('stale')
-  expect(fresh.items[0].changed_inputs[0].entity_id).toBe('sales')
+  expect(coded).toMatchObject({ stage: 'code', action: 'code', ok: true })
+  expect(coded.summary.trial).toEqual({ results: 2, checks_passed: 1, checks_total: 1 })
+  expect(coded.outputs.program.ai).toBe(false)
+  expect(await derived(api, ws)).toHaveLength(0)
+  const run = card.getByTestId('aiws-wish-run')
+  await expect(run).toBeVisible()
+  await expect(run).toHaveAttribute('data-ai', 'false')
+  await expect(run).toHaveAttribute('data-state', 'ready')
+  await expect(records(page).first()).toContainText('试运行产出 2 项，1/1 项检查通过')
+  await expect(next).toHaveAttribute('data-action', 'run')
+  await expect(next).toHaveText('执行宏')
+  // the macro opens from the record
+  await records(page).first().locator('[data-testid="aiws-wish-record-link"][data-kind="program"]').click()
+  await expect(dialog).toHaveAttribute('data-kind', 'program')
+  await expect(dialog.getByTestId('aiws-wish-code')).toContainText("aiws.result.table('summary'")
+  await dialog.getByTestId('aiws-wish-dialog-close').click()
+
+  // 6. run: the results and their Blocks are written as it ends; the card goes to "结果(1)"
+  const ran = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'run')
+  await expect(card).toHaveAttribute('data-tab', 'results')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 3)
+  expect(ran).toMatchObject({ stage: 'run', action: 'run', ok: true, summary: { created: 2, updated: 0 } })
+  expect(ran.usage).toBeUndefined() // the macro used no AI
+  const results = await derived(api, ws)
+  expect(results).toHaveLength(2)
+  const lastRun = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run
+  const cells: string[] = lastRun.result_bindings.results.summary.cells
+  expect(cells).toHaveLength(2)
+  await fitAll(page)
+  await expect(page.getByTestId(`aiws-canvas-block-${cells[0]}`)).toBeVisible()
+  await expect(records(page).first()).toContainText('新建 2 项，更新 0 项')
+  // the run joins this window's undo stack
+  await expect(page.getByTestId('aiws-undo')).toBeEnabled()
+
+  // the stored macro runs again from the run button: no model is called
+  let modelCalls = 0
+  await page.route(`${scriptedModel().baseUrl}/chat/completions`, (route) => { modelCalls += 1; return route.abort() })
+  await setRevenue(api, ws, 's-1', 500000)
+  await expect(card.getByTestId('aiws-wish-results-stale')).toBeVisible()
+  const again = await wishRun(page, api, ALICE, ws.workspace_id, WISH)
+  expect(again).toMatchObject({ ok: true, summary: { created: 0, updated: 2 } })
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(2)')
+  expect(modelCalls).toBe(0)
+  await page.unroute(`${scriptedModel().baseUrl}/chat/completions`)
+
+  // 14. the wish never used the side drawer: it has no wish tab, the view menu offers none
+  await expect(page.locator('[data-testid="aiws-side-panel"][data-tab="wish"]')).toHaveCount(0)
+  await mainMenu(page, 'aiws-menu-view', 'aiws-menu-panels')
+  await expect(page.getByTestId('aiws-menu-side-relations')).toBeVisible()
+  await expect(page.getByTestId('aiws-menu-side-wish')).toHaveCount(0)
+  await page.keyboard.press('Escape')
 })
 
-test('UI12/UI13 failure keeps old results; manual edits are protected; versions roll back; new-result mode makes comparable groups; cycles are refused', async ({ page, api }) => {
-  const ws = await api.demo(ALICE, 'quarterly', `wish2 ${Date.now()}`)
+test('§5 3/13: a warning of the analysis comes first, in bold, and coding still goes on; changing the request after it asks first — cancel keeps the text, going on makes the requirements and the macro out of date', async ({ page, api }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish warn ${Date.now()}`)
+  await setPrompt(api, ws, '按区域汇总「原始销售数据」的销售额，并写一段解读 #warn')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await runWish(page, 'blk-wish')
-  const outline = await api.outline(ALICE, ws.workspace_id)
-  const summary = outline.find((e: { derived?: { wish_id: string }; type_id: string }) => e.derived?.wish_id === 'wish-analysis' && e.type_id === 'buckyos.richtext')
-  const v1 = summary.content_rev
-  // a failing run (injected): nothing changes
-  const prompt = page.getByTestId('aiws-wish-prompt')
-  await prompt.fill(`${await prompt.inputValue()} #fail`)
-  await prompt.blur()
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toBeVisible()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
+  const card = wishCard(page, WISH)
+  const next = card.getByTestId('aiws-wish-next')
+  // 3. the analysis warns: its record says so first, in bold; the next step is still coding
+  const analysed = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze')
+  expect(analysed.warnings).toEqual(['没有找到成本列，利润率无法计算。'])
+  const warnings = records(page).first().getByTestId('aiws-wish-record-warnings')
+  await expect(warnings).toHaveText(/没有找到成本列，利润率无法计算。/)
+  expect(await warnings.evaluate((el) => el.tagName)).toBe('B')
+  // the warning precedes the outcome in the record's sentence
+  const sentence = await records(page).first().locator('.aiws-wr-sentence').innerText()
+  expect(sentence.indexOf('没有找到成本列')).toBeLessThan(sentence.indexOf('要生成 2 项结果'))
+  await expect(next).toHaveAttribute('data-action', 'code')
+  await expect(next).toBeEnabled()
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'code')
+  await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'ready')
+
+  // 13. the request changes after its requirements: the card asks first
+  await card.getByTestId('aiws-wish-tab-prompt').click()
+  const prompt = card.getByTestId('aiws-wish-prompt')
+  const before = await prompt.inputValue()
+  await prompt.fill(`${before}，按销售额从高到低`)
+  const ask = page.getByTestId('aiws-wish-invalidate')
+  await expect(ask).toContainText('该修改会让需求和宏失效。')
+  await page.getByTestId('aiws-wish-invalidate-cancel').click()
+  await expect(ask).toHaveCount(0)
+  await expect(prompt).toHaveValue(before)
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.prompt).toBe(before)
+  await expect(card.getByTestId('aiws-wish-tab-analysis')).toHaveAttribute('data-stale', 'false')
+  // going on: the edit is saved, the requirements carry the stale mark, coding and running wait for a new analysis
+  await prompt.fill(`${before}，按销售额从高到低`)
+  await page.getByTestId('aiws-wish-invalidate-ok').click()
+  await expect(ask).toHaveCount(0)
+  await card.getByTestId('aiws-wish-title').click()
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.prompt).toBe(`${before}，按销售额从高到低`)
+  await expect(card.getByTestId('aiws-wish-tab-analysis')).toHaveAttribute('data-stale', 'true')
+  await expect(card.getByTestId('aiws-wish-tab-macro')).toHaveAttribute('data-stale', 'true')
+  await expect(next).toHaveAttribute('data-action', 'analyze')
+  await expect(next).toHaveText('分析需求')
+  await card.getByTestId('aiws-wish-tab-analysis').click()
+  await expect(next).toHaveAttribute('data-action', 'code')
+  await expect(next).toBeDisabled()
+  await expect(card.getByTestId('aiws-wish-next-reason')).toHaveText('愿望已修改，先重新分析')
+  await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'disabled')
+  await expect(card.getByTestId('aiws-wish-run')).toBeDisabled()
+  // the edit is an ordinary commit: undone, the requirements are current again
+  await page.getByTestId('aiws-undo').click()
+  await expect(card.getByTestId('aiws-wish-tab-analysis')).toHaveAttribute('data-stale', 'false')
+  await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'ready')
+})
+
+test('§5 4: an analysis that finds no input fails, naming it, and coding waits; the input bound in the properties, analyzing again succeeds', async ({ page, api }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish noinput ${Date.now()}`)
+  const wish = await api.read(ALICE, ws.workspace_id, WISH)
+  expect((await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: WISH, keys: [
+    { key: 'inputs', value: [], expect: { rev: wish.content.key_revs.inputs } },
+    { key: 'prompt', value: '汇总「成本明细」里各项成本的合计 #noinput', expect: { rev: wish.content.key_revs.prompt } }] }])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
   const head = await api.headSeq(ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('模拟失败')
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
-  expect((await api.read(ALICE, ws.workspace_id, summary.entity_id)).content_rev).toBe(v1)
-  // an invalid candidate (injected) is refused by the service on the spot: no candidate, old results stay
-  await prompt.fill((await prompt.inputValue()).replace('#fail', '#invalid'))
-  await prompt.blur()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('The simulated results are invalid')
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveCount(0)
-  expect((await api.read(ALICE, ws.workspace_id, summary.entity_id)).content_rev).toBe(v1)
-  // a manual edit of the summary: detected, and the next application asks
-  await prompt.fill((await prompt.inputValue()).replace(' #invalid', ''))
-  await prompt.blur()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
-  const ast = await api.ast(ALICE, ws.workspace_id, summary.entity_id)
-  const first = ast.content[0]
-  const blocks = (await api.read(ALICE, ws.workspace_id, summary.entity_id)).content.blocks
-  await api.commit(ALICE, ws, [{ op: 'richtext.replace_block', entity_id: summary.entity_id, block_id: first.attrs.block_id, expect: { hash: blocks[first.attrs.block_id].hash }, node: { type: 'heading', attrs: { block_id: first.attrs.block_id, level: 1 }, content: [{ type: 'text', text: '人工改过的标题' }] } }])
-  await expect(page.getByTestId(`aiws-freshness-wish-analysis`).first()).toHaveAttribute('data-status', 'current')
-  const freshness = await api.rpc(ALICE, 'doc.freshness', { workspace_id: ws.workspace_id, entity_ids: [summary.entity_id] })
-  expect(freshness.items[0].manual_modified).toBe(true)
-  // change an input so a refresh is due, then run again: the choice is asked per modified result
-  const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-2', 'revenue')).rev
-  await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-2', field_id: 'revenue', value: 99000, expect: { rev } }] }])
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
-  await expect(page.getByTestId('aiws-wish-manual')).toBeVisible()
-  await expect(page.getByTestId('aiws-wish-apply')).toBeDisabled()
-  await page.getByTestId('aiws-wish-manual-摘要').getByLabel('保留人工修改').check()
-  await expect(page.getByTestId('aiws-wish-apply')).toBeEnabled()
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('保留 1 项')
-  expect((await api.ast(ALICE, ws.workspace_id, summary.entity_id)).content[0].content[0].text).toBe('人工改过的标题')
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'current')
-  // the other results were overwritten in place: same ids, new versions, one undo step for the whole application
-  const after = await api.outline(ALICE, ws.workspace_id)
-  expect(after.filter((e: { derived?: { wish_id: string } }) => e.derived?.wish_id === 'wish-analysis')).toHaveLength(4)
-  // version history of a generated record: list and roll back to run 1
-  const kpi = after.find((e: { derived?: { wish_id: string }; type_id: string }) => e.derived?.wish_id === 'wish-analysis' && e.type_id === 'buckyos.record')
-  const versions = await api.rpc(ALICE, 'doc.list_versions', { workspace_id: ws.workspace_id, entity_id: kpi.entity_id })
-  expect(versions.versions.length).toBeGreaterThanOrEqual(2)
-  expect(versions.versions[0].kind).toBe('generated')
-  const oldest = versions.versions[versions.versions.length - 1]
-  await page.getByTestId('aiws-top-sources').click()
-  await expandTree(page, 'canvas-content', 'sf-analysis-content', 'wish-analysis-out-data')
-  await page.getByTestId(`aiws-tree-${kpi.entity_id}`).click()
-  await page.getByTestId('aiws-dm-side-tab-history').click()
-  await expect(page.getByTestId('aiws-version')).toHaveCount(versions.versions.length)
-  await page.getByTestId(`aiws-restore-${oldest.content_rev}`).click()
-  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, kpi.entity_id)).content.props.revenue).toBe(oldest.derived ? '770000.00' : '770000.00')
-  expect((await api.read(ALICE, ws.workspace_id, kpi.entity_id)).derived.run_id).toBe(oldest.derived.run_id)
-  // new-result mode: a second group, old results untouched
-  // a wish without a macro is not a data source: the type filter shows it (UI 框架 PRD §5.2)
-  await page.getByTestId('aiws-dm-filter').click()
-  await page.getByTestId('aiws-dm-filter-type-wish').check()
-  await page.getByTestId('aiws-tree-wish-analysis').click()
-  await page.getByTestId('aiws-wish-mode').selectOption('new')
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 4 项')
-  const groups = (await api.outline(ALICE, ws.workspace_id)).filter((e: { kind?: string; parent_id?: string }) => e.kind === 'group' && e.parent_id === 'sf-analysis')
-  expect(groups.length).toBe(2)
-  expect((await api.ast(ALICE, ws.workspace_id, summary.entity_id)).content[0].content[0].text).toBe('人工改过的标题')
-  // a cycle: the wish's own result as its input is refused before execution
-  const read = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [{ key: 'inputs', value: [...read.content.payload.inputs, { entity_id: summary.entity_id, version: { mode: 'follow' } }], expect: { rev: read.content.key_revs.inputs } }] }])
-  // changed inputs need a new analysis first
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toBeVisible()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('成环')
+  const failed = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze')
+  expect(failed, JSON.stringify(failed.error)).toMatchObject({ ok: false, error: { code: 'INVALID_OPERATION', sub_code: 'NEEDS_INPUT' } })
+  expect(failed.error.missing_inputs).toEqual([{ label: '成本明细', message: '工作区里找不到「成本明细」表' }])
+  // only the record is written (one commit), not the requirements
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.analysis).toBeUndefined()
+  // the card shows the failure on "需求": what is missing, where to bind it; coding waits
+  await expect(card).toHaveAttribute('data-tab', 'analysis')
+  await expect(card.getByTestId('aiws-wish-status')).toHaveAttribute('data-kind', 'failed')
+  await expect(card.getByTestId('aiws-wish-status')).toContainText('上次分析失败')
+  await expect(card.getByTestId('aiws-wish-status')).toContainText('成本明细')
+  const record = records(page).first()
+  await expect(record).toHaveAttribute('data-ok', 'false')
+  await expect(record).toContainText('成本明细')
+  await expect(record).toContainText('在属性面板里绑定输入后重新分析。')
+  await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', 'code')
+  await expect(card.getByTestId('aiws-wish-next')).toBeDisabled()
+  await expect(card.getByTestId('aiws-wish-next-reason')).toHaveText('先分析需求')
+  // the input bound in the wish's properties
+  await card.getByTestId('aiws-wish-title').click()
+  await openProperties(page)
+  const props = page.getByTestId('aiws-wish-props')
+  await expect(props).toContainText('还没有输入')
+  await props.getByTestId('aiws-wish-props-add-input').selectOption('sales')
+  await expect(props.getByTestId('aiws-wish-props-input')).toHaveCount(1)
+  await expect(props.getByTestId('aiws-wish-props-input')).toContainText('原始销售数据')
+  await page.keyboard.press('Escape')
+  // analyzing again finds it
+  const ok = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze', { tab: 'prompt' })
+  expect(ok.ok).toBe(true)
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.analysis.status).toBe('ready')
+  await expect(card.getByTestId('aiws-wish-status')).not.toHaveAttribute('data-kind', 'failed')
+  await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', 'code')
+  await expect(card.getByTestId('aiws-wish-next')).toBeEnabled()
+  // both records are kept, newest first
+  await expect(records(page)).toHaveCount(2)
+  await expect(records(page).nth(1)).toHaveAttribute('data-ok', 'false')
 })
 
-test('UI20 two clients apply the same wish: only one application is accepted', async ({ page, api, browser }) => {
-  const ws = await api.demo(ALICE, 'quarterly', `wish3 ${Date.now()}`)
-  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'structure', 'append', 'delete', 'comment'] }] })
-  await openCanvas(page, ALICE, ws.workspace_id)
-  const other = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
-  const page2 = await other.newPage()
-  await openCanvas(page2, BOB, ws.workspace_id)
-  for (const p of [page, page2]) {
-    await p.getByTestId('aiws-canvas-block-blk-wish').dblclick()
+/** Roll a tab's current record back from the card, going on when the card asks because later changes would be lost
+ * (`lost`: what the question must name). Returns the rollback record. */
+async function rollback(page: Page, api: Api, ws: { workspace_id: string }, stage: 'analyze' | 'code' | 'run', lost?: string) {
+  const before = (await api.history(ALICE, ws.workspace_id, WISH))[stage][0]?.id
+  const current = wishCard(page, WISH).locator('[data-testid="aiws-wish-record"][data-current="true"]')
+  await current.getByTestId('aiws-wish-rollback').click()
+  if (lost) {
+    const ask = page.getByTestId('aiws-wish-rollback-confirm')
+    await expect(ask).toContainText(lost)
+    await page.getByTestId('aiws-wish-rollback-confirm-ok').click()
   }
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible()
-  await expect(page2.getByTestId('aiws-wish-analysis')).toBeVisible()
-  await page.getByTestId('aiws-wish-run').click()
-  await page2.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
-  await expect(page2.getByTestId('aiws-wish-candidate')).toBeVisible()
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('已应用')
-  await page2.getByTestId('aiws-wish-apply').click()
-  await expect(page2.getByTestId('aiws-wish-message')).toContainText('冲突')
-  expect((await api.outline(ALICE, ws.workspace_id)).filter((e: { derived?: { wish_id: string } }) => e.derived?.wish_id === 'wish-analysis')).toHaveLength(4)
-  // no client ran anything on its own because of the change events
-  await page2.waitForTimeout(800)
-  expect((await api.read(ALICE, ws.workspace_id, 'wish-analysis')).content.payload.last_run.run_id).toBeTruthy()
-  await other.close()
+  let record: Json
+  await expect.poll(async () => { record = (await api.history(ALICE, ws.workspace_id, WISH))[stage][0]; return record?.id !== before && record?.action === 'rollback' }).toBe(true)
+  return record
+}
+
+/** The text of a rich-text result (its paragraphs joined). */
+async function richText(api: Api, ws: { workspace_id: string }, entityId: string): Promise<string> {
+  const flat = (n: Json): string => (n.text ?? '') + (n.content ?? []).map(flat).join('')
+  return flat(await api.ast(ALICE, ws.workspace_id, entityId))
+}
+
+test('§5 8/9/10/11: records of every run — the newest result opens on the canvas, an earlier one as it was; an earlier macro as its code was; a run overwrites a manual edit and says so, its rollback brings it back; the macro rolls back and runs', async ({ page, api }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish history ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  const dialog = page.getByTestId('aiws-wish-dialog')
+  await wishThreeSteps(page, api, ALICE, ws.workspace_id, WISH)
+  const firstMacro = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.program.digest
+
+  // 9. coding again on the stored macro makes another version; the earlier record opens the code it wrote
+  await card.getByTestId('aiws-wish-tab-analysis').click()
+  await expect(card.getByTestId('aiws-wish-next')).toHaveText('重新编写')
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'code')
+  await expect(card).toHaveAttribute('data-tab', 'macro')
+  await expect(records(page)).toHaveCount(2)
+  await records(page).first().locator('[data-testid="aiws-wish-record-link"][data-kind="program"]').click()
+  await expect(dialog.getByTestId('aiws-wish-code')).toContainText('.sort((a, b) => b["合计"] - a["合计"])')
+  await dialog.getByTestId('aiws-wish-dialog-close').click()
+  const older = records(page).nth(1)
+  await expect(older).toHaveAttribute('data-expanded', 'false')
+  await older.getByTestId('aiws-wish-record-toggle').click()
+  await expect(older).toHaveAttribute('data-expanded', 'true')
+  await older.locator('[data-testid="aiws-wish-record-link"][data-kind="program"]').click()
+  await expect(dialog).toContainText('宏代码（当时的版本）')
+  await expect(dialog.getByTestId('aiws-wish-code')).toContainText("aiws.result.table('summary'")
+  await expect(dialog.getByTestId('aiws-wish-code')).not.toContainText('.sort(')
+  await dialog.getByTestId('aiws-wish-dialog-close').click()
+
+  // 11. the new macro rolled back: the earlier one is current again and runs at once
+  const rolled = await rollback(page, api, ws, 'code')
+  expect(rolled.ok).toBe(true)
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.program.digest).toBe(firstMacro)
+  await expect(records(page).first()).toHaveAttribute('data-action', 'rollback')
+  await expect(records(page).nth(1)).toHaveAttribute('data-rolled-back', 'true')
+  await expect(records(page).nth(1).getByTestId('aiws-wish-record-rolled-back')).toHaveText('已回滚')
+  await expect(records(page).nth(2)).toHaveAttribute('data-current', 'true')
+  await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'ready')
+  await setRevenue(api, ws, 's-1', 300000)
+  expect((await wishRun(page, api, ALICE, ws.workspace_id, WISH)).ok).toBe(true)
+  const commentaryId = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run.result_bindings.results.commentary.entity_id as string
+  const secondText = await richText(api, ws, commentaryId)
+
+  // 8. a third run: "结果(3)", three records; the newest names the result Block on this canvas, an earlier one its version
+  await setRevenue(api, ws, 's-1', 400000)
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'run', { tab: 'results' })
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(3)')
+  await expect(records(page)).toHaveCount(3)
+  const lastRun = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run
+  const summaryCell = lastRun.result_bindings.results.summary.cells[0] as string
+  const commentary = lastRun.result_bindings.results.commentary.entity_id as string
+  await records(page).first().locator('[data-testid="aiws-wish-record-link"][data-kind="result"]', { hasText: '汇总' }).click()
+  await expect(page.getByTestId(`aiws-canvas-block-${summaryCell}`)).toHaveClass(/is-selected/)
+  // (the camera went to that Block: the whole canvas again, the wish's card with it)
+  await fitAll(page)
+  const now = await richText(api, ws, commentary)
+  const earliest = records(page).nth(2)
+  await earliest.getByTestId('aiws-wish-record-toggle').click()
+  await earliest.locator('[data-testid="aiws-wish-record-link"][data-kind="result"]', { hasText: '解读' }).click()
+  await expect(dialog).toHaveAttribute('data-kind', 'version')
+  await expect(dialog).toContainText('解读（当时的版本）')
+  await expect(dialog).toContainText('合计')
+  await expect(dialog).not.toContainText(now.replace(/^## 解读/, '').trim())
+  await dialog.getByTestId('aiws-wish-dialog-close').click()
+
+  // 10. a manual edit of a result is overwritten by the next run, which says so first; its rollback brings the edit back
+  const read = await api.read(ALICE, ws.workspace_id, commentary)
+  const ast = read.content.content
+  const block = ast.content[0].attrs.block_id
+  expect((await api.commit(ALICE, ws, [{ op: 'richtext.replace_block', entity_id: commentary, block_id: block, expect: { hash: read.content.blocks[block].hash },
+    node: { type: 'heading', attrs: { block_id: block, level: 1 }, content: [{ type: 'text', text: '人工改过的标题' }] } }])).status).toBe('accepted')
+  const overwrote = await wishRun(page, api, ALICE, ws.workspace_id, WISH)
+  expect(overwrote.ok).toBe(true)
+  expect(overwrote.warnings[0]).toMatchObject({ code: 'overwrote_manual' })
+  expect(await richText(api, ws, commentary)).not.toContain('人工改过的标题')
+  await expect(records(page).first().getByTestId('aiws-wish-record-warnings')).toContainText('人工修改')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(4)')
+  await rollback(page, api, ws, 'run')
+  expect(await richText(api, ws, commentary)).toContain('人工改过的标题')
+  await expect(records(page).nth(1)).toHaveAttribute('data-rolled-back', 'true')
+  // the count of runs that made results does not go down
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(4)')
+  // rolling the run before back may lose that edit, made after it: the card names it and asks; the result is back to
+  // what it was before that run (a rich text is undone block by block: the edited heading was not that run's)
+  await rollback(page, api, ws, 'run', '解读：被修改过')
+  expect(await richText(api, ws, commentary)).toContain(secondText.replace(/^## 解读|^解读/, ''))
 })
 
-test('UI16 export and import carry Surfaces, Blocks, definitions, wishes and dependency records; staleness survives import', async ({ page, api }) => {
+test('§5 7/12: a macro that calls AI shows its run button in the AI colours and its records name the model; a warning-level check that fails is written, warning first; an error-level one fails the run and changes nothing', async ({ page, api }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish checks ${Date.now()}`)
+  await setPrompt(api, ws, '按区域汇总「原始销售数据」的销售额，并写一段解读 #checkwarn #ai')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze')
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'code')
+  // (new numbers: the macro's AI call is not answered from the cache its trial run filled)
+  await setRevenue(api, ws, 's-2', 99000)
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'run')
+  const payload = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload
+  expect(payload.analysis.checks.find((c: Json) => c.id === 'positive').level).toBe('warning')
+  // 7. the macro declares AI: the run button is the AI one, its run says what the macro's AI used
+  expect(payload.program.manifest.ai).toBeTruthy()
+  const run = card.getByTestId('aiws-wish-run')
+  await expect(run).toHaveAttribute('data-ai', 'true')
+  await expect(run).toHaveClass(/is-ai/)
+  const first = (await api.history(ALICE, ws.workspace_id, WISH)).run[0]
+  expect(first.usage.calls).toBe(1)
+  expect(first.usage.model).toMatch(/@mock-llm$/)
+  await expect(records(page).first()).toContainText('@mock-llm')
+
+  // 12. a warning-level check fails: the results are written, the failure heads the record's warnings
+  await setRevenue(api, ws, 's-1', -5)
+  const warned = await wishRun(page, api, ALICE, ws.workspace_id, WISH)
+  expect(warned.ok).toBe(true)
+  expect(warned.warnings[0]).toMatchObject({ code: 'check_failed', id: 'positive' })
+  expect(warned.checks.find((c: Json) => c.id === 'positive')).toMatchObject({ status: 'failed', level: 'warning' })
+  expect(warned.summary.updated).toBe(2)
+  await expect(records(page).first().getByTestId('aiws-wish-record-warnings')).toContainText('检查 positive 没通过')
+
+  // the same check at error level (analysed and coded again on data that passes it), then data that fails it: the run
+  // fails, nothing of the results changes
+  await setRevenue(api, ws, 's-1', 120000)
+  await setPrompt(api, ws, '按区域汇总「原始销售数据」的销售额，并写一段解读 #checkerror #ai')
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze', { tab: 'prompt' })
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.analysis.checks.find((c: Json) => c.id === 'positive').level).toBe('error')
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'code', { tab: 'analysis' })
+  const before = await derived(api, ws)
+  const lastRun = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run.run_id
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  await setRevenue(api, ws, 's-1', -5)
+  const failed = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'run', { tab: 'macro' })
+  expect(failed).toMatchObject({ ok: false, error: { sub_code: 'CHECKS_FAILED' } })
+  // only the failed record was written
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 2)
+  expect((await derived(api, ws)).map((e: Json) => e.content_rev)).toEqual(before.map((e: Json) => e.content_rev))
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run.run_id).toBe(lastRun)
+  await expect(card).toHaveAttribute('data-tab', 'results')
+  await expect(records(page).first()).toHaveAttribute('data-ok', 'false')
+  await expect(card.getByTestId('aiws-wish-status')).toHaveAttribute('data-kind', 'failed')
+  await expect(card.getByTestId('aiws-wish-status')).toContainText('上次运行失败')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(2)')
+})
+
+test('§5 15: a stage under way is a line of the status bar; the status panel shows its lines and cancels it — no record; a coding that never finishes fails and keeps no macro', async ({ page, api }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish status ${Date.now()}`)
+  await setPrompt(api, ws, '按区域汇总「原始销售数据」的销售额 #slow=2500')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  await card.getByTestId('aiws-wish-next').click()
+  // the collapsed status bar: one line for the one run
+  const line = page.getByTestId('aiws-status-run')
+  await expect(line).toHaveAttribute('data-wish', WISH, { timeout: 20_000 })
+  await expect(line).toHaveAttribute('data-stage', 'analyze')
+  await expect(card).toHaveAttribute('data-running', 'analyze')
+  await expect(card.getByTestId('aiws-wish-status')).toHaveAttribute('data-kind', 'running')
+  await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', 'cancel')
+  await expect(card.getByTestId('aiws-wish-working')).toBeVisible()
+  // the status panel: "运行中" above the work log, a block per run with its lines, and its cancel
+  await openStatus(page)
+  const block = page.getByTestId('aiws-status-runs').getByTestId('aiws-status-run-block')
+  await expect(block).toHaveAttribute('data-wish', WISH)
+  await expect(block.getByTestId('aiws-status-run-meta')).toBeVisible()
+  await expect(block.locator('[data-testid="aiws-status-run-line"][data-kind="tool"]').first()).toBeVisible({ timeout: 30_000 })
+  await block.getByTestId('aiws-status-run-cancel').click()
+  await expect(page.getByTestId('aiws-status-runs')).toHaveCount(0, { timeout: 20_000 })
+  await expect(line).toHaveCount(0)
+  await expect(card).toHaveAttribute('data-running', '')
+  await expect.poll(async () => (await api.runs(ALICE, ws.workspace_id, WISH))[0].state).toBe('cancelled')
+  // a cancelled run is not recorded
+  expect((await api.history(ALICE, ws.workspace_id, WISH)).analyze).toHaveLength(0)
+  await expect(card.getByTestId('aiws-wish-tab-analysis')).toBeDisabled()
+  await page.getByTestId('aiws-status').click()
+
+  // a coding that gives up: it fails, the macro tab shows why, no macro and no run button
+  await setPrompt(api, ws, '按区域汇总「原始销售数据」的销售额 #codefail')
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze', { tab: 'prompt' })
+  const failed = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'code')
+  expect(failed.ok).toBe(false)
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.program).toBeUndefined()
+  await expect(card).toHaveAttribute('data-tab', 'macro')
+  await expect(records(page).first()).toHaveAttribute('data-ok', 'false')
+  await expect(card.getByTestId('aiws-wish-status')).toContainText('上次编写宏失败')
+  await expect(card.getByTestId('aiws-wish-run')).toHaveCount(0)
+  await expect(card.getByTestId('aiws-wish-tab-results')).toBeDisabled()
+})
+
+test('§5 16: lines on a free canvas — the input Block to the wish, a ghost for an input not on it (it opens the input), the wish to its result Blocks; they follow a moved Block, take no pointer, are not exported; the properties hide them; rolling the first run back removes its Blocks', async ({ page, api }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish links ${Date.now()}`)
+  const wish = await api.read(ALICE, ws.workspace_id, WISH)
+  // a second input that has no Block on this canvas
+  expect((await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'memo', type_id: 'buckyos.richtext', parent_id: 'data', order_key: 'zz', name: '口径说明', payload: { content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: 'memo-1' }, content: [{ type: 'text', text: '销售额含税。' }] }] } } },
+    { op: 'entity.set_keys', entity_id: WISH, keys: [{ key: 'inputs', value: [...wish.content.payload.inputs, { entity_id: 'memo', version: { mode: 'follow' } }], expect: { rev: wish.content.key_revs.inputs } }] },
+  ])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await expect(page.getByTestId('aiws-wishlinks')).toBeAttached()
+  const links = page.getByTestId(`aiws-wishlinks-${BLOCK}`)
+  await expect(links).toHaveAttribute('data-wish-id', WISH)
+  const input = page.getByTestId(`aiws-wishlink-${BLOCK}-input-blk-sales`)
+  await expect(input).toBeAttached()
+  await expect(input).toHaveAttribute('data-kind', 'input')
+  expect(await input.evaluate((el) => getComputedStyle(el).pointerEvents)).toBe('none')
+  const ghost = page.getByTestId(`aiws-wishlink-ghost-${BLOCK}-memo`)
+  await expect(ghost).toHaveAttribute('data-state', 'ok')
+  // three steps: a line from the wish to each result Block
+  await wishThreeSteps(page, api, ALICE, ws.workspace_id, WISH)
+  const cells: string[] = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run.result_bindings.results.summary.cells
+  await fitAll(page)
+  for (const cell of cells) await expect(page.getByTestId(`aiws-wishlink-${BLOCK}-result-${cell}`)).toHaveAttribute('data-kind', 'result')
+  // the input Block moves: its line follows
+  const at = await input.evaluate((el) => `${(el as SVGElement).style.left},${(el as SVGElement).style.top}`)
+  // (a little: the table stays the input's Block nearest the wish, the KPI card shows the same data further away)
+  expect((await api.commit(ALICE, ws, [{ op: 'tree.place', entity_id: 'blk-sales', placement: { x: 40, y: 260, w: 900, h: 420 } }])).status).toBe('accepted')
+  await expect.poll(() => input.evaluate((el) => `${(el as SVGElement).style.left},${(el as SVGElement).style.top}`)).not.toBe(at)
+  // decorations, not entities: the draw.io export has no edge
+  const download = page.waitForEvent('download')
+  await mainMenu(page, 'aiws-menu-surface', 'aiws-menu-export-drawio')
+  const exported = readFileSync(await (await download).path(), 'utf8')
+  expect(exported).not.toContain('edge="1"')
+  expect((await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.view_type === 'connector')).toHaveLength(0)
+  // the ghost opens its input
+  await ghost.click()
+  await expect(page.getByTestId('aiws-detail-memo')).toBeVisible()
+  await page.getByTestId('aiws-top-canvas').click()
+  await expect(page.getByTestId('aiws-canvas-view')).toBeVisible()
+  // "显示连线" off in the wish Block's properties: its lines and ghosts are gone
+  await fitAll(page)
+  await wishCard(page, WISH).getByTestId('aiws-wish-title').click()
+  await openProperties(page)
+  const toggle = page.getByTestId('aiws-wish-field-show_links')
+  await expect(toggle).toBeChecked()
+  await toggle.uncheck()
+  await expect(links).toHaveCount(0)
+  await expect(ghost).toHaveCount(0)
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, BLOCK)).content.payload.config?.show_links).toBe(false)
+  await toggle.check()
+  await expect(links).toBeAttached()
+  await page.keyboard.press('Escape')
+  // the run that created the results rolled back: its results and their Blocks go, `last_run` with them
+  const rolled = await rollback(page, api, ws, 'run')
+  expect(rolled.ok).toBe(true)
+  await expect.poll(async () => (await derived(api, ws)).length).toBe(0)
+  for (const cell of cells) await expect(page.getByTestId(`aiws-canvas-block-${cell}`)).toHaveCount(0)
+  for (const cell of cells) await expect(page.getByTestId(`aiws-wishlink-${BLOCK}-result-${cell}`)).toHaveCount(0)
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run).toBeUndefined()
+  await expect(wishCard(page, WISH).getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+})
+
+test('§5 17: a clone carries the records; a member who may only read sees them but not the logs, and has no next step, run or rollback; a template made from the canvas has no history', async ({ page, api, browser }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish clone ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await wishThreeSteps(page, api, ALICE, ws.workspace_id, WISH)
+  const history = await api.history(ALICE, ws.workspace_id, WISH)
+  const cloned = await api.rpc(ALICE, 'ws.clone', { workspace_id: ws.workspace_id })
+  const copy = await api.history(ALICE, cloned.workspace_id, WISH)
+  expect(copy.results_count).toBe(1)
+  for (const stage of ['analyze', 'code', 'run'] as const) expect(copy[stage].map((r: Json) => r.id)).toEqual(history[stage].map((r: Json) => r.id))
+  // bob may only read the clone
+  await api.rpc(ALICE, 'acl.set', { workspace_id: cloned.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
+  const other = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
+  const reader = await other.newPage()
+  await openCanvas(reader, BOB, cloned.workspace_id)
+  const card = wishCard(reader, WISH)
+  await expect(card).toHaveAttribute('data-tab', 'results')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+  await expect(card.getByTestId('aiws-wish-next')).toHaveCount(0)
+  await expect(card.getByTestId('aiws-wish-rollback')).toHaveCount(0)
+  await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'disabled')
+  const run = records(reader).first()
+  await expect(run).toContainText('新建 2 项')
+  const log = run.locator('[data-testid="aiws-wish-record-link"][data-kind="log"]')
+  await expect(log).toHaveAttribute('data-gone', 'true')
+  await expect(log).toHaveAttribute('title', '要有许愿格的编辑权限才能看日志')
+  // the request a record names opens for a reader
+  await card.getByTestId('aiws-wish-tab-macro').click()
+  await records(reader).first().locator('[data-testid="aiws-wish-record-link"][data-kind="analysis"]').click()
+  await expect(reader.getByTestId('aiws-wish-dialog').getByTestId('aiws-wish-contract')).toContainText('summary')
+  await other.close()
+  // a template of the canvas: the wish comes without its history
+  const pkg = `wish-tpl-${Date.now()}`
+  const installed = await api.rpc(ALICE, 'ext.install', { from: { workspace_id: ws.workspace_id, templates: [{ surfaces: ['sf-analysis'], data: ['sales', 'intro', 'def-kpi'], template: { id: 'wish-tpl', title: '许愿格模板' } }] }, package: { name: pkg, version: '1.0.0' }, mode: 'dev' })
+  expect(installed.ok, JSON.stringify(installed)).toBe(true)
+  const made = await api.rpc(ALICE, 'ext.create_from_template', { pkg_id: installed.pkg_id, template_id: 'wish-tpl', title: `from template ${Date.now()}` })
+  expect(made.ok, JSON.stringify(made)).toBe(true)
+  const wishes = (await api.outline(ALICE, made.workspace_id)).filter((e: Json) => e.type_id === 'buckyos.wish')
+  expect(wishes).toHaveLength(1)
+  const fromTemplate = (await api.read(ALICE, made.workspace_id, wishes[0].entity_id)).content.payload
+  expect(fromTemplate.prompt).toBeTruthy()
+  expect(fromTemplate.history).toBeUndefined()
+})
+
+test('export and import carry Surfaces, Blocks, definitions, wishes with their records, and dependency records; staleness survives import', async ({ page, api }) => {
+  test.slow()
   const ws = await api.demo(ALICE, 'quarterly', `wish4 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  await runWish(page, 'blk-wish')
-  const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
-  await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 1, expect: { rev } }] }])
+  await wishThreeSteps(page, api, ALICE, ws.workspace_id, WISH)
+  await setRevenue(api, ws, 's-1', 1)
   const exported = await api.rpc(ALICE, 'doc.export', { workspace_id: ws.workspace_id, mode: 'share', self_contained: true })
   const imported = await api.importPackage(ALICE, await api.download(exported.download), 'new')
   expect(imported.ok).toBe(true)
   const outline = await api.outline(ALICE, imported.workspace_id)
   const ids = new Set(outline.map((e: { entity_id: string }) => e.entity_id))
-  for (const id of ['sf-analysis', 'sf-analysis-content', 'sf-detail', 'blk-sales', 'blk-kpi', 'def-kpi', 'def-mock-wish', 'wish-analysis', 'wish-analysis-out']) expect(ids.has(id), id).toBe(true)
-  const results = outline.filter((e: { derived?: { wish_id: string } }) => e.derived?.wish_id === 'wish-analysis')
-  expect(results).toHaveLength(4)
+  for (const id of ['sf-analysis', 'sf-analysis-content', 'sf-detail', 'blk-sales', 'blk-kpi', 'def-kpi', WISH, 'wish-analysis-out']) expect(ids.has(id), id).toBe(true)
+  const results = outline.filter((e: { derived?: { wish_id: string } }) => e.derived?.wish_id === WISH)
+  expect(results).toHaveLength(2)
   expect(outline.find((e: { entity_id: string }) => e.entity_id === 'blk-kpi').placement).toEqual({ x: 980, y: 40, w: 420, h: 130 })
   const fresh = await api.rpc(ALICE, 'doc.freshness', { workspace_id: imported.workspace_id, entity_ids: results.map((r: { entity_id: string }) => r.entity_id) })
   expect(fresh.items.every((i: { status: string }) => i.status === 'stale')).toBe(true)
-  // the imported workspace opens on the canvas with the result group in place
-  await closeWorkspace(page)
+  // the records travel with the wish, and their objects can be read there
+  const history = await api.history(ALICE, imported.workspace_id, WISH)
+  expect(history.results_count).toBe(1)
+  expect(history.code[0].objects.source).toBeTruthy()
+  // the imported workspace opens on the canvas with the result group in place and the results stale
   await openCanvas(page, ALICE, imported.workspace_id)
+  await expect(wishCard(page, WISH).getByTestId('aiws-wish-results-stale')).toBeVisible()
+  await records(page).first().locator('[data-testid="aiws-wish-record-link"][data-kind="log"]').click()
+  await expect(page.getByTestId('aiws-wish-dialog')).toHaveAttribute('data-kind', 'log')
+  await expect(page.getByTestId('aiws-wish-dialog-error')).toHaveCount(0)
+  await page.getByTestId('aiws-wish-dialog-close').click()
   await fitAll(page)
   await expect(page.getByTestId('aiws-canvas-block-wish-analysis-out')).toBeVisible()
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
+})
+
+test('the output mode in the properties: "新建一组" makes a second group beside the first, the first untouched', async ({ page, api }) => {
+  test.slow()
+  const ws = await api.demo(ALICE, 'quarterly', `wish new-group ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await wishThreeSteps(page, api, ALICE, ws.workspace_id, WISH)
+  const first = await derived(api, ws)
+  await wishCard(page, WISH).getByTestId('aiws-wish-title').click()
+  await openProperties(page)
+  await page.getByTestId('aiws-wish-props-output-mode').selectOption('new')
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.output_mode).toBe('new')
+  await page.keyboard.press('Escape')
+  const again = await wishRun(page, api, ALICE, ws.workspace_id, WISH)
+  expect(again.summary).toMatchObject({ created: 2 })
+  const groups = (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.kind === 'group' && e.parent_id === 'sf-analysis')
+  expect(groups.length).toBe(2)
+  const now = await derived(api, ws)
+  expect(now).toHaveLength(4)
+  for (const r of first) expect(now.find((e: Json) => e.entity_id === r.entity_id).content_rev).toBe(r.content_rev)
+})
+
+test.describe('phone', () => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the browser comes from the project, the rest is the phone
+  const { defaultBrowserType, ...pixel } = devices['Pixel 7']
+  test.use(pixel)
+
+  test('§5 20: the sample\'s "任务汇总" on a phone\'s flow page — the card in the column, no lines; analyze, code and run by taps; its records reach the results; dialogs fill the screen', async ({ page, api }) => {
+    test.slow()
+    const ws = await api.sampleWithWish(ALICE, `wish phone ${Date.now()}`)
+    await openWorkspacePage(page, ALICE, ws.workspace_id, 'surface-main')
+    await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+    await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-phone', 'true')
+    const wishId = 'wish-task-summary'
+    const card = wishCard(page, wishId)
+    await card.scrollIntoViewIfNeeded()
+    await expect(card).toHaveAttribute('data-tab', 'prompt')
+    const viewport = page.viewportSize()!
+    const box = (await card.boundingBox())!
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width)
+    // the tabs one row, the next step below them
+    const tabs = (await card.locator('.aiws-wc-tabs').boundingBox())!
+    const next = (await card.getByTestId('aiws-wish-next').boundingBox())!
+    expect(next.y).toBeGreaterThanOrEqual(tabs.y + tabs.height - 1)
+    await expect(page.getByTestId('aiws-wishlinks')).toHaveCount(0)
+    // the three steps by taps
+    for (const [action, stage, tab] of [['analyze', 'analyze', 'analysis'], ['code', 'code', 'macro'], ['run', 'run', 'results']] as const) {
+      const before = (await api.history(ALICE, ws.workspace_id, wishId))[stage][0]?.id
+      await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', action)
+      await card.getByTestId('aiws-wish-next').tap()
+      const record = await wishStageEnded(page, api, ALICE, ws.workspace_id, wishId, stage, before)
+      expect(record.ok, JSON.stringify(record.error)).toBe(true)
+      await expect(card).toHaveAttribute('data-tab', tab)
+    }
+    await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+    const lastRun = (await api.read(ALICE, ws.workspace_id, wishId)).content.payload.last_run
+    const summaryCells: string[] = lastRun.result_bindings.results.summary.cells
+    await expect(page.getByTestId(`aiws-cell-frame-${summaryCells[0]}`)).toBeAttached()
+    // the record's result reaches its Block on the page
+    await records(page, wishId).first().locator('[data-testid="aiws-wish-record-link"][data-kind="result"]').first().tap()
+    await expect(page.getByTestId(`aiws-cell-frame-${summaryCells[0]}`)).toBeInViewport()
+    // a record's window fills the screen
+    await card.scrollIntoViewIfNeeded()
+    await card.getByTestId('aiws-wish-tab-macro').tap()
+    await records(page, wishId).first().locator('[data-testid="aiws-wish-record-link"][data-kind="program"]').tap()
+    const dialog = page.getByTestId('aiws-wish-dialog')
+    await expect(dialog.getByTestId('aiws-wish-code')).toBeVisible()
+    const shown = (await dialog.boundingBox())!
+    expect(shown.width).toBeGreaterThanOrEqual(viewport.width - 2)
+    expect(shown.height).toBeGreaterThanOrEqual(viewport.height - 2)
+    await dialog.getByTestId('aiws-wish-dialog-close').tap()
+    await expect(dialog).toHaveCount(0)
+  })
 })
 
 test('UI19 an HTML extension Block reads data, submits through the store (undoable) and uploads; a crash falls back locally', async ({ page, api }) => {
@@ -294,101 +729,6 @@ test('UI19 an HTML extension Block reads data, submits through the store (undoab
   await expect(page.getByTestId('aiws-near-toolbar')).toBeVisible()
 })
 
-test('第一期: the real executor (scripted model, in this browser) analyses, codes the macro with a trial run, previews, applies macro and results in one commit; feedback is another coding round; running the stored macro needs no model', async ({ page, api }) => {
-  test.slow()
-  const llm = `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1`
-  await page.addInitScript((baseUrl) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm: { baseUrl } })), llm)
-  const ws = await api.demo(ALICE, 'quarterly', `xllm ${Date.now()}`)
-  const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [
-    { key: 'executor', value: 'xllm', expect: { rev: wish.content.key_revs.executor } },
-    { key: 'prompt', value: '按区域汇总「原始销售数据」的销售额，并写一段解读', expect: { rev: wish.content.key_revs.prompt } }] }])
-  await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  await expect(page.getByTestId('aiws-wish-executor')).toHaveValue('xllm')
-  // without hosted execution there is nowhere else to run: no choice is offered
-  await expect(page.getByTestId('aiws-wish-exec-mode')).toHaveCount(0)
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_analysis')
-  const head = await api.headSeq(ALICE, ws.workspace_id)
-  // analysis: bound by handle, written back by the click
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-contract')).toContainText('summary', { timeout: 30_000 })
-  await expect(page.getByTestId('aiws-wish-checkdefs')).toContainText('汇总合计等于输入合计')
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
-  const analysed = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  expect(analysed.content.payload.inputs).toEqual([{ entity_id: 'sales', name: 'data', label: '原始销售数据', version: { mode: 'follow' } }])
-  expect(analysed.content.payload.analysis.context_prompt).not.toContain('@')
-  // no macro yet: the wish needs coding, and running is not offered
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_coding')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'code')
-  await expect(page.getByTestId('aiws-wish-reasons')).toContainText('还没有宏')
-  await expect(page.getByTestId('aiws-wish-run')).toBeDisabled()
-  // coding: the macro's trial run is the candidate, with previews and checks; nothing written yet
-  await page.getByTestId('aiws-wish-next').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'code', { timeout: 60_000 })
-  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('编码候选')
-  await expect(page.getByTestId('aiws-wish-result')).toHaveCount(2)
-  await expect(page.getByTestId('aiws-wish-preview-table')).toContainText('华东')
-  await expect(page.getByTestId('aiws-wish-preview-text')).toContainText('合计')
-  await expect(page.locator('[data-testid="aiws-wish-check"][data-check="total"]')).toHaveAttribute('data-status', 'passed')
-  await expect(page.locator('[data-testid="aiws-wish-check"][data-check="cited"]')).toHaveAttribute('data-status', 'review')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'pending_confirmation')
-  await expect(page.getByTestId('aiws-wish-program-change')).toBeVisible()
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
-  const runs = await api.runs(ALICE, ws.workspace_id, 'wish-analysis')
-  expect((runs[0].execution as { mode: string }).mode).toBe('local')
-  // applying writes the macro and the results in one commit
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 2 项')
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 2)
-  const applied = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  const lastRun = applied.content.payload.last_run
-  expect(applied.content.payload.program.api_version).toBe(3)
-  expect(Object.keys(applied.content.payload.program.manifest.inputs)).toEqual(['data'])
-  expect(Object.keys(lastRun.result_bindings.results).sort()).toEqual(['commentary', 'summary'])
-  expect(lastRun.checks.passed).toBe(1)
-  const summary = lastRun.result_bindings.results.summary
-  expect(summary.cells).toHaveLength(2)
-  const outline = await api.outline(ALICE, ws.workspace_id)
-  expect(outline.find((e: { entity_id: string }) => e.entity_id === summary.cells[1]).view_type).toBe('sample.bar-chart')
-  // on the canvas next to the wish (mounted once the camera reaches it)
-  await expect(page.getByTestId(`aiws-canvas-block-${summary.cells[1]}`)).toBeAttached()
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current')
-  // undo takes the whole application back in one step
-  await expect(page.getByTestId('aiws-undo')).toBeEnabled()
-  // feedback: another coding round on the stored macro; applying it keeps the request as a refinement
-  await page.getByTestId('aiws-wish-code').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'code', { timeout: 60_000 })
-  await page.getByTestId('aiws-wish-feedback').fill('表格按合计从高到低排')
-  await page.getByTestId('aiws-wish-feedback-send').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('按反馈修改', { timeout: 60_000 })
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-refinement')).toHaveCount(1)
-  await expect(page.getByTestId('aiws-wish-refinement').locator('input')).toHaveValue('汇总表按合计降序排列')
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
-  // the data changes: stale; running the stored macro refreshes the table and the text together, and calls no model
-  const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
-  await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 500000, expect: { rev } }] }])
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'stale')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
-  let modelCalls = 0
-  await page.route(`${llm}/chat/completions`, (route) => { modelCalls += 1; return route.abort() })
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'run', { timeout: 60_000 })
-  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('运行结果')
-  await expect(page.getByTestId('aiws-wish-preview-text')).toContainText('合计')
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'current')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current')
-  expect(modelCalls).toBe(0)
-  await page.unroute(`${llm}/chat/completions`)
-  // the stored macro can be read
-  await page.getByTestId('aiws-wish-program').click()
-  await expect(page.getByTestId('aiws-wish-program-view')).toContainText("aiws.result.table('summary'")
-  await expect(page.getByTestId('aiws-wish-program-view')).toContainText('aiws.declare(')
-})
-
 test('aiws v2: an HTML Block reads by binding name, writes typed values in one batch (one undo step), and watches its data', async ({ page, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `aiws2 ${Date.now()}`)
   const js = `document.getElementById('out').textContent = 'ready ' + aiws.version + ' ' + Object.keys(aiws.bindings).join(','); window.__seen = 0; aiws.watch('orders', function () { window.__seen++; }); aiws.ready();`
@@ -431,58 +771,36 @@ test('aiws v2: an HTML Block reads by binding name, writes typed values in one b
   await expect.poll(() => frameDoc?.evaluate(() => (window as unknown as { __seen?: number }).__seen ?? 0)).toBeGreaterThan(0)
 })
 
-test('内核架构改进 T3-4: the local executor — this browser hosts the model loop and runs the macro in a Worker; the service plans; a reload leaves the run interrupted and the browser resumes it', async ({ page, api }) => {
+test('内核架构改进 T3-4: the local executor — this browser hosts the model loop and runs the macro in a Worker; the service writes each stage; a reload leaves the run interrupted and this browser resumes it', async ({ page, api }) => {
   test.slow()
-  const llm = `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1`
-  await page.addInitScript((baseUrl) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm: { baseUrl } })), llm)
+  const llm = scriptedModel().baseUrl
   const ws = await api.demo(ALICE, 'quarterly', `local ${Date.now()}`)
-  const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [
-    { key: 'executor', value: 'xllm', expect: { rev: wish.content.key_revs.executor } },
-    { key: 'prompt', value: '按区域汇总「原始销售数据」的销售额，并写一段解读', expect: { rev: wish.content.key_revs.prompt } }] }])
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  const head = await api.headSeq(ALICE, ws.workspace_id)
-  // analysis in the browser: the stage tools are answered by the service, the analysis is written back by the click
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-contract')).toContainText('summary', { timeout: 30_000 })
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
-  const analysed = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  expect(analysed.content.payload.inputs).toEqual([{ entity_id: 'sales', name: 'data', label: '原始销售数据', version: { mode: 'follow' } }])
+  const card = wishCard(page, WISH)
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'analyze')
   // coding: the macro's trial run is in the Worker on the fetched snapshot
-  await page.getByTestId('aiws-wish-code').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByTestId('aiws-wish-result')).toHaveCount(2)
-  await expect(page.getByTestId('aiws-wish-preview-table')).toContainText('华东')
-  await expect(page.locator('[data-testid="aiws-wish-check"][data-check="total"]')).toHaveAttribute('data-status', 'passed')
-  const runs = await api.runs(ALICE, ws.workspace_id, 'wish-analysis')
+  await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'code')
+  const runs = await api.runs(ALICE, ws.workspace_id, WISH)
   expect((runs[0].execution as { mode: string }).mode).toBe('local')
   expect(((runs[0].context as { executor: { kind: string } }).executor).kind).toBe('browser')
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 2 项')
-  const applied = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  expect(applied.content.payload.program.api_version).toBe(3)
-  // running the stored macro: the Worker again, no model; the text is refreshed with the table
-  const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
-  await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 500000, expect: { rev } }] }])
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'run', { timeout: 60_000 })
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'current')
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.program.api_version).toBe(3)
   // the executor dies with the page while the model is slow: the run's lease lapses (interrupted, AIWS_RUN_LEASE_MS);
   // this browser still holds the claim and resumes the run as a new attempt
+  const before = (await api.history(ALICE, ws.workspace_id, WISH)).code[0].id
   await page.route(`${llm}/chat/completions`, () => { /* the model never answers */ })
-  await page.getByTestId('aiws-wish-code').click()
-  await expect(page.getByTestId('aiws-wish-progress')).toBeVisible({ timeout: 30_000 })
-  await expect.poll(async () => (await api.runs(ALICE, ws.workspace_id, 'wish-analysis'))[0].state).toBe('running')
+  await card.getByTestId('aiws-wish-tab-analysis').click()
+  await card.getByTestId('aiws-wish-next').click()
+  await expect(card).toHaveAttribute('data-running', 'code')
+  await expect.poll(async () => (await api.runs(ALICE, ws.workspace_id, WISH))[0].state).toBe('running')
   await page.unroute(`${llm}/chat/completions`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
   // the lease lapses without the browser's heartbeats; the service notices on the next read
-  await expect.poll(async () => { const latest = (await api.runs(ALICE, ws.workspace_id, 'wish-analysis'))[0]; await api.rpc(ALICE, 'proc.get', { workspace_id: ws.workspace_id, run_id: latest.run_id }); const lease = (latest.execution as { lease_until?: string }).lease_until ?? ''; return `${latest.state} lease_ms=${Date.parse(lease) - Date.parse(latest.updated_at as string)} ahead_ms=${Date.parse(lease) - Date.now()}` }, { timeout: 30_000 }).toMatch(/^interrupted/)
-  await expect(page.getByTestId('aiws-wish-interrupted')).toBeVisible({ timeout: 30_000 })
-  await page.getByTestId('aiws-wish-resume').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 60_000 })
-  expect(((await api.runs(ALICE, ws.workspace_id, 'wish-analysis'))[0].execution as { attempt: number }).attempt).toBe(2)
+  await expect.poll(async () => { const latest = (await api.runs(ALICE, ws.workspace_id, WISH))[0]; await api.rpc(ALICE, 'proc.get', { workspace_id: ws.workspace_id, run_id: latest.run_id }); return latest.state }, { timeout: 30_000 }).toBe('interrupted')
+  const resume = card.getByTestId('aiws-wish-next')
+  await expect(resume).toHaveAttribute('data-action', 'resume', { timeout: 30_000 })
+  await expect(resume).toHaveText('继续')
+  await resume.click()
+  const resumed = await wishStageEnded(page, api, ALICE, ws.workspace_id, WISH, 'code', before)
+  expect(resumed.ok).toBe(true)
+  expect(((await api.runs(ALICE, ws.workspace_id, WISH))[0].execution as { attempt: number }).attempt).toBe(2)
 })

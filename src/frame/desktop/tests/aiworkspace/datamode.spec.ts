@@ -222,7 +222,13 @@ test('§15-13 three objects in three tabs: a preview is reused, switching keeps 
 
 test('§15-14 a macro in the “宏” folder opens on its code; “工作区权限” turns the editing area into the permission editor', async ({ page, api }) => {
   const ws = await workspaceWithExtras(api)
-  // a macro: the wish's saved program (the demo's wish is on the Mock executor here)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await dataMode(page)
+  const macros = page.getByTestId('aiws-dm-macros')
+  // Q27: a wish that has no program is no macro
+  await expect(macros).toHaveAttribute('data-count', '0')
+  await expect(macros.getByTestId('aiws-dm-macro-wish-analysis')).toHaveCount(0)
+  // a macro: the wish's saved program
   const source = "aiws.declare({ inputs: {}, results: {} })\nconst rows = aiws.input('sales')\naiws.result.table('summary', rows)\n"
   const uploaded = await api.uploadAsset(ALICE, ws.workspace_id, new TextEncoder().encode(source))
   const manifest = { inputs: {}, results: {} }
@@ -230,15 +236,6 @@ test('§15-14 a macro in the “宏” folder opens on its code; “工作区权
   const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
   const set = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [{ key: 'program', value: { language: 'js', api_version: 3, source: uploaded.object_id, digest, manifest, produces: [], edited_by: 'alice' }, expect: { rev: wish.content.key_revs?.program ?? 0 } }] }])
   expect(set.status, JSON.stringify(set)).toBe('accepted')
-  await openWorkspace(page, ALICE, ws.workspace_id)
-  await dataMode(page)
-  const macros = page.getByTestId('aiws-dm-macros')
-  // Q27: a Mock wish is no macro, even with a program in it; on the real executor it is
-  await expect(macros).toHaveAttribute('data-count', '0')
-  await expect(macros.getByTestId('aiws-dm-macro-wish-analysis')).toHaveCount(0)
-  const mock = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  const real = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [{ key: 'executor', value: 'xllm', expect: { rev: mock.content.key_revs.executor } }] }])
-  expect(real.status, JSON.stringify(real)).toBe('accepted')
   await expect(macros.getByTestId('aiws-dm-macro-wish-analysis')).toBeVisible()
   await macros.getByTestId('aiws-dm-macro-wish-analysis').click()
   const editor = page.getByTestId('aiws-dm-macro-editor-wish-analysis')
@@ -248,11 +245,12 @@ test('§15-14 a macro in the “宏” folder opens on its code; “工作区权
   await expect(code).toHaveAttribute('data-lines', String(source.split('\n').length))
   await expect(code.locator('.aiws-wish-code-no').first()).toHaveText('1')
   expect(await code.evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(/mono|Menlo|Consolas/i)
-  // the three pages
+  // the three pages: the task is the wish's card, the runs its records of all three stages (许愿格交互升级 §3.11)
   await editor.getByTestId('aiws-dm-macro-page-task').click()
-  await expect(page.getByTestId('aiws-wish-wish-analysis')).toBeVisible()
+  await expect(editor.getByTestId('aiws-wish-card-wish-analysis')).toBeVisible()
+  await expect(editor.getByTestId('aiws-wish-card-wish-analysis').getByTestId('aiws-wish-tab-prompt')).toBeVisible()
   await editor.getByTestId('aiws-dm-macro-page-runs').click()
-  await expect(editor.getByTestId('aiws-dm-runs').or(editor.getByTestId('aiws-dm-runs-empty'))).toBeVisible()
+  await expect(editor.locator('[data-testid="aiws-wish-records"][data-stage="all"]').getByTestId('aiws-wish-records-empty')).toBeVisible()
   // the Workspace's permissions: the editor in the editing area, the operation record as the sidebar's only tab
   await page.getByTestId('aiws-dm-perm-node').click()
   await expect(page.getByTestId('aiws-detail-permissions').getByTestId('aiws-permissions')).toHaveAttribute('data-complete', 'true')

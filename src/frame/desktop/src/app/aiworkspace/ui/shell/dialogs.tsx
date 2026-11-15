@@ -1,5 +1,5 @@
 /* Shell dialogs (UI improvement §6.2, §10, §11): the unified "New" dialog (canvas / workspace /
- * template), export, import, keyboard help, the developer Mock panel and the leave check. The New
+ * template), export, import, keyboard help and the leave check. The New
  * dialog also serves the workspace list, where only the workspace and template tabs exist. */
 
 import { useEffect, useState, type ReactNode } from 'react'
@@ -17,7 +17,6 @@ import { createSurfaceOps, surfacesOf } from '../canvas/surfaceOps'
 import { allFolders, isCanvasFolder, SURFACES_ROOT } from '../surfaces/tree'
 import { useFilePicker } from './filePicker'
 import { useWorkspacePackageExport, type PackageMode } from '../home/exportPackage'
-import { MockRunPanel } from './panels'
 import { useOverlayMounted } from './popover'
 import { usePhone } from './shellContext'
 
@@ -428,16 +427,6 @@ export function HelpDialog({ onClose }: { onClose: () => void }) {
       <div className="aiws-dialog-head"><b>{t('aiworkspace.shell.help.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" autoFocus onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
       <table className="aiws-shortcuts"><tbody>{shortcuts(t).map(([keys, text]) => <tr key={keys}><th scope="row"><kbd>{keys}</kbd></th><td>{text}</td></tr>)}</tbody></table>
       <div className="aiws-muted">{t('aiworkspace.shell.help.note')}</div>
-    </Modal>
-  )
-}
-
-export function MockDialog({ onClose }: { onClose: () => void }) {
-  const { t } = useAiwsText()
-  return (
-    <Modal label={t('aiworkspace.shell.mock.dialog')} testId="aiws-mock-dialog" onClose={onClose} modal={false} className="aiws-floating-dialog">
-      <div className="aiws-dialog-head"><b>{t('aiworkspace.shell.devTools')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
-      <MockRunPanel />
     </Modal>
   )
 }

@@ -5,7 +5,7 @@
  * use the framework's panels and the Block's menu instead of their own ⋯ (§7.5). Real backend. */
 
 import { devices, type CDPSession, type Page } from '@playwright/test'
-import { blockCenter, core, fitAll, openCanvas, openStatus, openWorkspacePage, setCanvasMode, test, expect, type Api } from './fixtures'
+import { blockCenter, core, fitAll, openCanvas, openStatus, openWorkspacePage, setCanvasMode, test, expect, wishCard, wishStep, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -152,22 +152,39 @@ test('§15-33/34 a mind map: the node\'s and the map\'s tools are actions and pr
   await expect(page.getByTestId('aiws-near-mindmap-direction-left')).toHaveAttribute('aria-checked', 'true')
 })
 
-test('§10.1 the wish\'s hover "run" is its action: on the toolbar and in the menu; outside edit mode it runs only a macro that can run, and says why not', async ({ page, api }) => {
+/** A stored macro for a wish (its program with a manifest), without an analysis: it holds a macro that cannot run yet. */
+async function giveMacro(api: Api, ws: { workspace_id: string; epoch: string }, wishId: string) {
+  const source = "export default async function main(aiws) { aiws.declare({ inputs: {} }) }\n"
+  const uploaded = await api.uploadAsset(ALICE, ws.workspace_id, new TextEncoder().encode(source))
+  const manifest = { inputs: {}, results: {} }
+  const wish = await api.read(ALICE, ws.workspace_id, wishId)
+  const set = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: wishId, keys: [{ key: 'program', value: { language: 'js', api_version: 3, source: uploaded.object_id, digest: 'e2e-macro', manifest, produces: [], edited_by: 'alice' }, expect: { rev: wish.content.key_revs?.program ?? 0 } }] }])
+  expect(set.status, JSON.stringify(set)).toBe('accepted')
+}
+
+test('§10.1 the wish\'s "run" is its action — the macro\'s run, on the toolbar and in the menu once it holds one; where it cannot run it is disabled and says why, in edit and view mode; hovering shows no run button', async ({ page, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `bc-wish ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  await fitAll(page)
-  await page.getByTestId('aiws-canvas-block-blk-wish').click()
-  await expect(toolbar(page).getByTestId('aiws-near-wish-run')).toBeEnabled()
-  await expect(toolbar(page).getByTestId('aiws-near-wish-open')).toBeAttached()
+  const title = wishCard(page, 'wish-analysis').getByTestId('aiws-wish-title')
+  // no macro: no run anywhere
+  await title.click()
+  await expect(toolbar(page)).toBeVisible()
+  await expect(toolbar(page).getByTestId('aiws-near-wish-run')).toHaveCount(0)
+  expect(await blockMenu(page)).not.toContain('aiws-menu-wish-run')
+  await page.keyboard.press('Escape')
+  // a macro that cannot run yet (no requirements): offered, disabled with the reason the card's run button gives
+  await giveMacro(api, ws, 'wish-analysis')
+  const run = toolbar(page).getByTestId('aiws-near-wish-run')
+  await title.click()
+  await expect(run).toBeDisabled()
+  await expect(run).toHaveAttribute('title', '需求已失效，先重新分析')
+  await expect(wishCard(page, 'wish-analysis').getByTestId('aiws-wish-run')).toHaveAttribute('title', '需求已失效，先重新分析')
   expect(await blockMenu(page)).toContain('aiws-menu-wish-run')
   await page.keyboard.press('Escape')
-  // view mode: offered, disabled with the reason (no macro yet); hovering shows no run button
+  // view mode: the same; hovering shows the name, no run button over the card
   await setCanvasMode(page, 'view')
-  await page.getByTestId('aiws-canvas-block-blk-wish').click()
-  const run = toolbar(page).getByTestId('aiws-near-wish-run')
+  await title.click()
   await expect(run).toBeDisabled()
-  await expect(run).toHaveAttribute('title', /还不能在这里运行/)
-  await expect(toolbar(page).getByTestId('aiws-near-wish-open')).toHaveCount(0)
   await page.mouse.move(5, 500)
   const card = (await page.getByTestId('aiws-canvas-block-blk-wish').boundingBox())!
   await page.mouse.move(card.x + card.width / 2, card.y + card.height / 2)
@@ -175,37 +192,23 @@ test('§10.1 the wish\'s hover "run" is its action: on the toolbar and in the me
   await expect(page.getByTestId('aiws-afford-wish-run')).toHaveCount(0)
 })
 
-test('§10.1 the wish\'s "run" in view mode runs its macro as the panel\'s run does — its start and end in the work log', async ({ page, api }) => {
+test('§10.1 the wish\'s "run" in view mode runs its macro as the card\'s run button does — written when it ends, its start and end in the work log', async ({ page, api }) => {
   test.slow()
-  // the scripted model (mock-llm.mjs) analyses and codes the real executor's wish in this browser
-  const llm = `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1`
-  await page.addInitScript((baseUrl) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm: { baseUrl } })), llm)
+  // the scripted model (mock-llm.mjs) analyses and codes the wish in this browser
   const ws = await api.demo(ALICE, 'quarterly', `bc-macro ${Date.now()}`)
-  const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  expect((await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [
-    { key: 'executor', value: 'xllm', expect: { rev: wish.content.key_revs.executor } },
-    { key: 'prompt', value: '按区域汇总「原始销售数据」的销售额，并写一段解读', expect: { rev: wish.content.key_revs.prompt } }] }])).status).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await fitAll(page)
-  // analysed and coded in edit mode (its macro and trial run), applied
-  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-contract')).toContainText('summary', { timeout: 30_000 })
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_coding')
-  await page.getByTestId('aiws-wish-next').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'code', { timeout: 60_000 })
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current', { timeout: 30_000 })
-  await page.getByTestId('aiws-side-close').click()
+  // analysed and coded from its card in edit mode
+  await wishStep(page, api, ALICE, ws.workspace_id, 'wish-analysis', 'analyze')
+  await wishStep(page, api, ALICE, ws.workspace_id, 'wish-analysis', 'code')
   // view mode: "run" is enabled and runs the macro (no panel opens)
   await setCanvasMode(page, 'view')
-  await fitAll(page)
-  await page.getByTestId('aiws-canvas-block-blk-wish').click()
+  await wishCard(page, 'wish-analysis').getByTestId('aiws-wish-title').click()
   const run = toolbar(page).getByTestId('aiws-near-wish-run')
   await expect(run).toBeEnabled({ timeout: 15_000 })
   await run.click()
   await expect.poll(async () => ((await api.runs(ALICE, ws.workspace_id, 'wish-analysis')) as { stage: string }[])[0]?.stage, { timeout: 30_000 }).toBe('run')
-  await expect(page.locator('[data-testid="aiws-side-panel"][data-tab="wish"]')).toHaveCount(0)
+  await expect.poll(async () => (await api.history(ALICE, ws.workspace_id, 'wish-analysis')).results_count, { timeout: 30_000 }).toBe(1)
+  await expect(page.getByTestId('aiws-side-panel')).toHaveCount(0)
   await openStatus(page)
   const entry = page.getByTestId('aiws-status-log').locator('[data-testid="aiws-status-log-entry"][data-kind="run"][data-phase="end"][data-target="wish-analysis"]')
   await expect(entry.first()).toBeVisible({ timeout: 30_000 })
@@ -338,7 +341,7 @@ test.describe('phone', () => {
   const { defaultBrowserType, ...pixel } = devices['Pixel 7']
   test.use(pixel)
 
-  test('§15-33 (phone) the context window shows the view-mode actions of the same declarations: a node\'s fold, a wish\'s run (disabled, with why); a line\'s properties sheet writes', async ({ page, api }) => {
+  test('§15-33 (phone) the context window shows the view-mode actions of the same declarations: a node\'s fold, a wish\'s run (its macro cannot run yet: disabled, with why); a line\'s properties sheet writes', async ({ page, api }) => {
     const ws = await contractWorkspace(api, `bc-phone ${Date.now()}`)
     const order = (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.parent_id === 'free-content').map((e: Json) => e.order_key as string).sort().at(-1)
     expect((await api.commit(ALICE, ws, [
@@ -346,6 +349,7 @@ test.describe('phone', () => {
         payload: { title: '许愿', prompt: '汇总', executor: 'xllm', output_mode: 'overwrite', output: { container_id: 'free-content', surface_id: 'free', name: '结果' } } },
       { op: 'entity.create', entity_id: 'blk-w1', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'w', placement: { x: 60, y: 560, w: 360, h: 220 }, payload: { view: { type: 'wish' }, source_ref: { entity_id: 'w1' } } },
     ])).status).toBe('accepted')
+    await giveMacro(api, ws, 'w1')
     await openOnPhone(page, ws.workspace_id)
     const fingers = await Fingers.of(page)
     const win = page.getByTestId('aiws-ctxwin')
@@ -356,13 +360,14 @@ test.describe('phone', () => {
     await expect(win.getByTestId('aiws-ctxwin-mindmap-add-child')).toHaveCount(0)
     await win.getByTestId('aiws-ctxwin-mindmap-fold').tap()
     await expect(page.getByTestId('aiws-canvas-block-n1a')).toHaveCount(0)
-    // a wish without a macro: "run" is there, disabled, and says why
+    // a wish holding a macro it cannot run yet: "run" is there, disabled, and says why (its title: the card's own controls
+    // take a tap, the rest of it selects)
     const wish = await settledBox(page, 'aiws-canvas-block-blk-w1')
-    await fingers.tap({ x: wish.x + wish.width / 2, y: wish.y + wish.height / 2 })
+    await fingers.tap({ x: wish.x + 40, y: wish.y + 14 })
     const run = win.getByTestId('aiws-ctxwin-wish-run')
     await expect(run).toBeVisible()
     await expect(run).toBeDisabled()
-    await expect(run).toHaveAttribute('title', /还不能在这里运行/)
+    await expect(run).toHaveAttribute('title', '需求已失效，先重新分析')
     // a line: its properties as a sheet, written from there (the phone's explicit way to write, Q12)
     const mid = await linePoint(page, 'ab', 0.5)
     await fingers.tap(mid)

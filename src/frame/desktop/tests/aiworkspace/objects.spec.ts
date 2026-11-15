@@ -2,7 +2,7 @@
  * selection box with rotation, the icon near toolbar, in-place editing, locking and the version check. */
 
 import { devices, type Page } from '@playwright/test'
-import { blockCenter, fitAll, openCanvas, setCanvasMode, test, expect, type Api } from './fixtures'
+import { blockCenter, fitAll, openCanvas, setCanvasMode, test, expect, wishCard, wishStageEnded, wishStep, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const SHOTS = 'test-results/aiworkspace-objects'
@@ -93,36 +93,46 @@ test('OX01 dark theme: resting, hovered and selected objects read on the dark ca
   await shot(page, 'ox06-selected-note-dark')
 })
 
-test('OX03/OX13 a wish opens in the right panel; "run" there or on hover performs its next action; the card stays a card', async ({ page, api }) => {
+test('OX03/OX13 a wish is its card: its tab, next step and request take the first click without selecting the Block; a press elsewhere on it selects it and a drag moves it; no side panel; the toolbar runs only a macro', async ({ page, api }) => {
   const ws = await objectsWorkspace(api, `ox03 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  await fitAll(page)
-  // hover → run: the panel opens and the analysis (first pass) runs at once
-  await hover(page, 'blk-wish')
-  await page.getByTestId('aiws-afford-wish-run').click()
-  await expect(page.locator('[data-testid="aiws-side-panel"][data-tab="wish"]')).toBeVisible()
-  await expect(page.getByTestId('aiws-wish-analysis')).toContainText('模拟执行器', { timeout: 20_000 })
-  // the Mock has no macro to code: its next action is running it
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
-  await expect(page.getByTestId('aiws-wish-card-state')).toContainText('正在右侧面板中编辑')
-  await expect(page.getByTestId('aiws-canvas-block-blk-wish').locator('[data-role="editor"]')).toHaveCount(0)
-  await shot(page, 'ox13-wish-panel')
-  // the canvas stays usable: picking an object offers it as an input
-  await page.getByTestId('aiws-canvas-block-blk-intro').click()
-  await expect(page.getByTestId('aiws-wish-add-selection')).toContainText('1 项')
-  await page.getByTestId('aiws-wish-add-selection').click()
-  await expect(page.getByTestId('aiws-wish-input')).toHaveCount(2)
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_analysis')
-  // the toolbar's run analyses first, then runs once the analysis is current again
-  await page.getByTestId('aiws-canvas-block-blk-wish').click()
+  const block = page.getByTestId('aiws-canvas-block-blk-wish')
+  const card = wishCard(page, 'wish-analysis')
+  await expect(block).not.toHaveClass(/is-selected/)
+  // the next step acts on the first click (the analysis runs) and selects nothing
+  await wishStep(page, api, ALICE, ws.workspace_id, 'wish-analysis', 'analyze')
+  await expect(block).not.toHaveClass(/is-selected/)
+  await expect(page.getByTestId('aiws-side-panel')).toHaveCount(0)
+  await shot(page, 'ox13-wish-card')
+  // so does a tab, and the request's field takes the caret
+  await card.getByTestId('aiws-wish-tab-prompt').click()
+  await expect(card).toHaveAttribute('data-tab', 'prompt')
+  await card.getByTestId('aiws-wish-prompt').click()
+  await expect(card.getByTestId('aiws-wish-prompt')).toBeFocused()
+  await expect(block).not.toHaveClass(/is-selected/)
+  await card.getByTestId('aiws-wish-prompt').press('Escape')
+  // its title is the card itself: a press selects the Block; the toolbar has no run before there is a macro
+  await card.getByTestId('aiws-wish-title').click()
+  await expect(block).toHaveClass(/is-selected/)
+  await expect(page.getByTestId('aiws-near-toolbar')).toBeVisible()
+  await expect(page.getByTestId('aiws-near-wish-run')).toHaveCount(0)
+  // a drag from there moves it
+  const at = (await api.read(ALICE, ws.workspace_id, 'blk-wish')).placement as { x: number; y: number }
+  const title = (await card.getByTestId('aiws-wish-title').boundingBox())!
+  await page.mouse.move(title.x + 20, title.y + title.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(title.x + 80, title.y + title.height / 2 + 40, { steps: 8 })
+  await page.mouse.up()
+  await expect.poll(async () => ((await api.read(ALICE, ws.workspace_id, 'blk-wish')).placement as { x: number }).x).toBeGreaterThan(at.x)
+  // coded: the toolbar's run is the card's run button, the macro and nothing else
+  await wishStep(page, api, ALICE, ws.workspace_id, 'wish-analysis', 'code', { tab: 'analysis' })
+  await card.getByTestId('aiws-wish-title').click()
+  await expect(page.getByTestId('aiws-near-wish-run')).toBeEnabled()
+  const before = (await api.history(ALICE, ws.workspace_id, 'wish-analysis')).run[0]?.id
   await page.getByTestId('aiws-near-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0, { timeout: 20_000 })
-  await page.getByTestId('aiws-near-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'pending_confirmation')
-  // closing the panel: the card is a plain card again
-  await page.getByTestId('aiws-side-close').click()
-  await expect(page.getByTestId('aiws-wish-card-state')).toHaveCount(0)
+  expect((await wishStageEnded(page, api, ALICE, ws.workspace_id, 'wish-analysis', 'run', before)).ok).toBe(true)
+  expect((await api.history(ALICE, ws.workspace_id, 'wish-analysis')).results_count).toBe(1)
+  await expect(page.getByTestId('aiws-side-panel')).toHaveCount(0)
 })
 
 test('OX04/OX12 the table: "+ row" on hover adds a record; filter, fields and new record are toolbar tools, not a bar in the Block', async ({ page, api }) => {

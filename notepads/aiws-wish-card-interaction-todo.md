@@ -1,6 +1,6 @@
 # AIWS 许愿格交互升级 TODO
 
-状态：立项，未实施。owner 2026-11-14 已答复 Q1–Q11（§6.1）和 D1–D10（§6.2），设计按两轮答复改过，没有待裁决的问题。D2、D3 的落实方式是我定的，写在 §6.2 表后。
+状态：2026-11-14/15 已实施（未提交），实施记录、偏差和验证见 §8。owner 2026-11-14 已答复 Q1–Q11（§6.1）和 D1–D10（§6.2），设计按两轮答复改过，没有待裁决的问题。D2、D3 的落实方式是我定的，写在 §6.2 表后。
 
 日期：2026-11-14。源码基线：buckyos `05f1deb0e`（工作区另有未提交的改动）。
 
@@ -514,3 +514,48 @@ D2、D3 的答复只给了原则，下面两点落实方式是我定的：
 - 删掉 `proc.apply` 是对已标为 stable 的接口做破坏性改动，契约 fixture、README、手册要一起改。
 - 连线多的画布（许愿格多、每个输入输出也多）的绘制开销没有估。
 - 跨仓库：用量上报要改 `buckyos-websdk` 的 CLI；Zone 里的 CLI 发行版要重新打包，托管执行才有用量。
+
+## 8. 实施记录（2026-11-14/15，未提交）
+
+起点 buckyos `31802dbdd`、websdk `23d78b2`。先定 M0 契约（§8.1），再分五个并行包实施（内核、卡片、连线与模板、状态栏、执行器用量与 websdk），第二阶段迁 e2e、跑全量回归。
+
+### 8.1 契约（M0 T0-1、T0-2）
+
+- 运行状态：`queued → snapshotting → running → validating → applying → succeeded | failed`，另有 `cancelled`、`interrupted`；去掉 `waiting_confirmation`、`conflict`、`rejected`。阶段结束由服务规划并提交，一次提交写入阶段产物和一条运行记录，幂等键 `run/<run_id>`；重启后 `applying` 的运行按幂等记录对账（已提交 → 成功并补记录，未提交 → 中断）。
+- `proc.apply` 删除；新增 `proc.rollback { run_id, confirm? }`（stable，需要对许愿格有 `update`）：只回滚该阶段当前生效的成功记录（否则 `NOT_CURRENT_RECORD`）；运行之后又有别人改过时答 `{ status: needs_confirm, lost: [{ entity_id, type_id, title?, what }], hidden_lost }`，确认后提交并答 `{ status: accepted, commit, record }`。运行视图去掉 `candidate`、`preview`、`simulated`，加 `record`；`proc.report` 收 `usage { model, input_tokens, output_tokens, calls }`。
+- 许愿格载荷 `history { analyze[], code[], run[], results_count }`：每阶段 20 条、最新在前、整体不超过 1 MiB，只许服务写（人手写入 `PERMISSION_DENIED`）。记录字段见 README “Run records”。大内容存成工作区资产：`objects.prompt`（当时的愿望原文）、`analysis`（`{ analysis, inputs }`）、`program`（写进载荷的 `program` 值）、`source`（宏源码资产本身）、`log`（宏的输出日志，最多 256 KiB）。
+- **历史对象怎么不被回收**（T0-2）：`core/src/types.rs` 的 `asset_object_ids` 列出 `history` 引用的对象，保留、导出、物化都走它；`log` 的引用种类是 `log` 而不是 `asset`，`can_read_asset` 对它要求对许愿格有 `update`（D9）。
+- **检查的级别**（T0-2 字段名）：`WishCheckDef.level: error | warning`，程序检查必须给，复核检查可省。
+- **回滚各类写入用什么退回**（T0-2）：结果用该次提交存下的逆操作（`commit_ops.inverse_json`，去掉对 `history` 的部分），确认后或没有后来改动时把 `expect` 换成 `"any"` 做内部提交——新建的结果、Block、分组、派生列的字段、控件实例都有逆操作；“后来的改动”按 `commit_ops.touched_json` 找，排除已回滚的运行提交和回滚提交本身。宏和需求按上一条成功记录存下的对象设回，当前值与记录不同算后来的改动。§7 里“派生列、控件实例能否按版本退回”的疑问由此解决。
+- **记录的警告**（T0-2 摘要文本规则）：模型给的是原文字符串；服务自己给的是 `{ code, …参数 }`（`check_failed check_not_run uncited_numbers overwrote_manual overwrote_manual_cells deleted_rows deleted_field changed_type changed_structure not_produced recreated_column discarded_edits`），Desktop 的 `ui/wish/records.ts`（`describeRecord`、`warningText`）按读者语言生成整条记录的文字。
+- **用量**：§7 第一条核对过，AICC 返回 `usage.input_tokens / output_tokens` 和 `route_trace.final_model`。模型阶段由执行器累加每轮、随 `proc.report` 上报（浏览器 `executor/chat.ts`、`localExecutor.ts`；托管时 Agent 用 `run-report --model --input-tokens --output-tokens --calls`）；宏的 AI 调用由 `aiws.js` 的 `aiStats` 计数（新增 `input_tokens`、`map.tokens`、`models`），服务写运行记录时汇总，宏没用 AI 时不写。运行中的进度里带阶段模型名（`progress.model`）和 `waiting_model`。
+- **未选中时的点击规则**（T0-2）：卡片上的 tab、下一步按钮、运行按钮、记录里的链接与回滚、愿望输入框第一次点击就生效，不改变选择（与标准对象的交互改进 §4.2 的悬停按钮一致）；卡片其余地方按普通对象，按下选中、拖动移动。许愿格没有编辑态。
+
+### 8.2 落点
+
+- 内核：`core/src/wish.rs`（`check_history`、检查级别、持久化的分析只能是 `ready`）、`core/src/types.rs`（`history` 键、`log` 引用、执行器只剩 `xllm` / `agent-work-session`）、`core/src/freshness.rs`（主状态按 §3.3 去掉“缺输入”“待确认”，新增原因 `analysis_failed`）、`core/src/materialize.rs` / `plan.rs`（模板与 `tree.clone` / `entity.clone` 去掉 `history`）；`store/src/wish/history.rs`（新：记录、对象、失败记录、回滚）、`store/src/wish/runs.rs`（`wish_commit_stage`）、`store/src/wish/plan.rs`（去掉选择、固定处理、`wish_macro_plan`）、`store/src/proc.rs` 删除（数据源刷新的 `proc.get` / `proc.cancel` 移到 `store/src/source.rs`）；`server/src/wish/{mod,stages,exec,tools}.rs`（`commit_stage`、`rollback`、失败记录、`CHECKS_FAILED`、`NEEDS_INPUT`）；`aiws/prompts/{analyze,code}.md`；README、`schemas/error-codes.json`、`fixtures/protocol/stable-methods.json`、授权表重录。WASM 已重建。
+- Desktop（`src/frame/desktop/src/app/aiworkspace/`）：`ui/wish/` 下 `WishCard.tsx`、`WishRecords.tsx`、`records.ts`、`dialogs.tsx`、`confirm.tsx`（弹窗、确认、失效提示）、`ProgramView.tsx`、`WishInspector.tsx`、`useWish.ts`、`wish.css`，重写 `wishBlock.tsx`、`WishService.ts`、`macro.ts`；删除 `WishPanel.tsx`、`WishCandidate.tsx`、`WishPreviews.tsx`、`mockWishDef.ts`、`MockRunPanel`、`MockDialog`、侧边栏许愿格页签；`ui/canvas/wishLinks/`（连线与虚格）；`state/runLog.ts` + `ui/framework/RunningRuns.tsx`（状态栏）；`executor/`（用量）；`api/`（类型与 `procRollback`）；模板 `api/demos.ts`、`api/sample.ts`。i18n 新文件 `wishcard`、`wishlinks`、`samplewish`、`runlog`。
+- websdk：`cli/modules/aiws.ts`（`run-report` 用量参数、`run-rollback`）、`src/aiworkspace_client.ts`（删 `runApply`、加 `runRollback`）。`dist` 未重建（§8.4）。
+- 手册：`aiworkspace_run`、`aiworkspace_template_dev`（T8-3）。
+- 文档（T0-3）：许愿格详细设计 §11、§13.1–§13.2、§14.1，UI 框架 PRD Q38 与面板相关几处，内核 08，AI Native PRD 的修订说明与主状态表，Desktop README。
+
+### 8.3 偏差（实施中定的，待 owner 过目）
+
+1. 编码记录的 `usage` 只算编码模型循环，不含试运行里宏的 AI 调用。
+2. 编码阶段仍暂存试运行的结果文件（用来当场拒绝工作区里没有的文件），但不写入文档。编码不再写结果之后，HTML 结果的代码由编码后的第一次执行宏写入，只写摘要与声明清单 `code_digest` 一致的代码。
+3. 失败记录的提交是以工作区 owner 身份的内部提交（记在运行的发起人名下），幂等键 `run/<id>/record`；回滚提交是按调用者授权的内部提交，幂等键 `rollback/<rb_id>`。克隆或导入的工作区里，旧记录的提交不在，回滚答 `NOT_UNDOABLE`。
+4. 内部写入 `analysis`（撤销、回滚）时保留它带的 basis，不重算；否则愿望改过之后回滚需求会被误判为“当前”。
+5. 回滚判断“后来的改动”时不算许愿格自身；编码追加补充要求后重述了分析，此时回滚需求算有改动、要确认。
+6. `proc.start` 的 `session_id` 作为阶段提交的会话（写锁按它判断），Desktop 已传。
+7. 连线：“+N”点开在原地展开全部虚格；读不到的输入即使画布上有 Block 也只画警告虚格；端点按矩形算；多选拖动时线在松手后更新。
+8. 单选许愿格时工具栏不再显示 AI 入口（原来是“打开许愿格”）。
+9. 卡片的最小尺寸没有强制（registry 没有按类型的最小尺寸），窄卡片（≤400px）tab 一行、按钮另起一行。
+10. 宏只生成图片 / 视频时，记录里有调用次数，没有模型名和 token（`ai.image` / `ai.video` 的答复不带）。
+
+### 8.4 验证与未做
+
+- 内核：`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace -- --test-threads=1` 全过（`activity.rs` 有一次服务进程没起来，重跑通过）；新增用例覆盖三阶段直接写入、缺输入失败、两种级别的检查、覆盖人工修改、结果 / 宏 / 需求回滚与 needs_confirm、20 条上限与累计次数、失败记录与取消不记、只读成员读不到日志、模板不带历史而克隆带。
+- `aiws/` `deno test -A aiws_test.js` 10 过；websdk `cli` deno test 176 过、相关 jest 20 过。
+- Desktop：`tsc -p tsconfig.app.json`、改过文件的 eslint 干净；连线纯计算单测 6 过；i18n 守卫除基线就失败的 “backend speaks English” 外全过。
+- e2e、真实 Zone DV：见 §8.5（第二阶段）。
+- 未做：websdk `dist` 重建（e2e 结束后做）；Zone 里 CLI 发行版重新打包（托管执行才有用量与 `run-rollback`）；真机。

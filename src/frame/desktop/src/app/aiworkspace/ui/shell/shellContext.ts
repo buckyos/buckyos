@@ -17,10 +17,9 @@ export type TopMode = 'sources' | 'canvas' | 'show'
 
 /** The side drawer shows one kind of content at a time (UI 框架 PRD §3.2): the collaboration content went to the
  * members and permissions entry, the change status to the status panel (§4.5). */
-export type SideTab = 'inspector' | 'relations' | 'annotations' | 'wish'
+export type SideTab = 'inspector' | 'relations' | 'annotations'
 export const SIDE_TAB_LABEL: Readonly<Record<SideTab, string>> = localizedLabels({
   inspector: 'aiworkspace.shell.side.inspector', relations: 'aiworkspace.shell.side.relations', annotations: 'aiworkspace.shell.side.annotations',
-  wish: 'aiworkspace.shell.side.wish',
 })
 /** Properties are the floating properties panel, not a tab (UI 框架 PRD §10.2). */
 export const CANVAS_SIDE_TABS: SideTab[] = ['relations', 'annotations']
@@ -31,7 +30,6 @@ export type DialogRequest =
   | { kind: 'export' }
   | { kind: 'import' }
   | { kind: 'help' }
-  | { kind: 'mock' }
   /** Workspace controls (扩展控件 P0): definitions, builds, library, export. */
   | { kind: 'extensions'; defId?: string }
   /** Export → Save as template… (扩展控件 P3, Q32). */
@@ -98,7 +96,7 @@ export interface ShellApi {
   /** A phone (§16): the canvas only, with one toolbar — a free canvas in view mode, a flow page in edit mode (§16.5);
    * nothing about it is written to the shared work state. */
   phone: boolean
-  /** The Mock processing panel and other developer tools are shown (dev server or dev override). */
+  /** Developer tools are shown (dev server or dev override). */
   devTools: boolean
   /** Who this window acts as; a dev-override identity has no login session to end; a guest came through a public link;
    * a restricted session (Limited account, External DID) owns no workspace (hybrid SSO, from the current identity). */

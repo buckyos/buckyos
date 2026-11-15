@@ -19,7 +19,7 @@ import {
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type SqlResult, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type DerivedRecord, type FreshnessInfo, type RelationsInfo,
-  type Subject, type VersionInfo, type NeedsCodingReason, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishClaim, type WishToolAnswer, type WishStageFiles, type HostedExecConfig, type Publication, type Referrer,
+  type Subject, type VersionInfo, type NeedsCodingReason, type WishRollbackResult, type WishRunView, type ShowLockInfo, type ServiceError, type WishClaim, type WishToolAnswer, type WishStageFiles, type HostedExecConfig, type Publication, type Referrer,
   type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtMigration, type ExtPackResult, type LibraryPackage, type TemplateSpec,
   type PresenceList, type WorkLogFilter, type WorkLogPage,
 } from './types'
@@ -252,15 +252,15 @@ export interface WorkspaceSession {
 
   procStart(program: string, params: Record<string, Json>): Promise<RunView>
   procGet(runId: string): Promise<RunView>
-  procApply(runId: string): Promise<RunView>
   procCancel(runId: string): Promise<{ state: string; already_applied: boolean; commit_id?: string }>
 
-  /** Wish runs on the service (need the backend): start a stage, read it (with a preview for `choices`), apply a previewed plan, list. */
+  /** Wish runs on the service (need the backend): start a stage (it writes its product when it ends), read it, list. */
   /** `idempotencyKey`: an event's run (扩展控件 P2) is keyed like its writes, so a repeat starts nothing new. */
-  wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>, idempotencyKey?: string): Promise<WishRunView>
-  wishGet(runId: string, choices?: WishChoices): Promise<WishRunView>
-  wishApply(runId: string, planDigest: string): Promise<WishRunView>
+  wishStart(program: 'wish.xllm@1', params: Record<string, Json>, idempotencyKey?: string): Promise<WishRunView>
+  wishGet(runId: string): Promise<WishRunView>
   wishList(wishId: string, limit?: number): Promise<WishRunView[]>
+  /** Roll a stage's current record back (许愿格交互升级 §2.1, §2.3); `confirm` accepts losing the later changes it named. */
+  procRollback(runId: string, confirm?: boolean): Promise<WishRollbackResult>
   /** The executor protocol (内核架构改进 T3-4): this browser as the executor of a local run. */
   procClaim(runId: string, claimToken: string): Promise<WishClaim>
   procHeartbeat(runId: string, attempt: number, progress?: Json): Promise<void>
@@ -362,7 +362,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     return session
   }
 
-  /** The direct-to-backend calls of a replica session (locks, uploads, Mock runs, commits of lock-protected
+  /** The direct-to-backend calls of a replica session (locks, uploads, runs, commits of lock-protected
    * objects, undo): no follower of its own, the host owns the change stream. */
   static hosted(client: AiwsClient, info: WorkspaceInfo, host: SessionHost): OnlineWorkspaceSession {
     return new OnlineWorkspaceSession(client, info, { kind: 'direct', reason: 'not_prepared', detail: '' }, host)
@@ -810,29 +810,29 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     return this.client.transport.call<T>(method, params)
   }
 
-  // ---- controlled processing (design §7)
+  // ---- processing runs (design §7)
 
   async procStart(program: string, params: Record<string, Json>) {
     return unwrap(await this.client.procStart(this.ws, program, params, `${this.sessionId}/run/${randomId()}`))
   }
   async procGet(runId: string) { return unwrap(await this.client.procGet(this.ws, runId)) }
-  async procApply(runId: string) {
-    const run = unwrap(await this.client.procApply(this.ws, runId, this.sessionId))
-    if (run.result && run.result.status === 'accepted') this.poke()
-    return run
-  }
   async procCancel(runId: string) { return unwrap(await this.client.procCancel(this.ws, runId)) }
 
-  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>, idempotencyKey?: string) {
+  async wishStart(program: 'wish.xllm@1', params: Record<string, Json>, idempotencyKey?: string) {
     return unwrap(await this.client.wishStart(this.ws, program, params, idempotencyKey ?? `${this.sessionId}/wish/${randomId()}`))
   }
-  async wishGet(runId: string, choices?: WishChoices) { return unwrap(await this.client.wishGet(this.ws, runId, choices)) }
-  async wishApply(runId: string, planDigest: string) {
-    const run = unwrap(await this.client.wishApply(this.ws, runId, planDigest, this.sessionId))
+  async wishGet(runId: string) {
+    const run = unwrap(await this.client.wishGet(this.ws, runId))
+    // the stage committed on the service: follow it at once
     if (run.applied?.status === 'accepted') this.poke()
     return run
   }
   async wishList(wishId: string, limit = 10) { return unwrap(await this.client.wishList(this.ws, wishId, limit)).runs }
+  async procRollback(runId: string, confirm = false) {
+    const result = unwrap(await this.client.procRollback(this.ws, runId, confirm, this.sessionId))
+    if (result.status === 'accepted') this.poke()
+    return result
+  }
   async submissionStatus(epoch: string, idempotencyKey: string) { try { return unwrap(await this.client.getSubmission(this.ws, epoch, idempotencyKey)) } catch (error) { return this.fail(error) } }
   async procClaim(runId: string, claimToken: string) { return unwrap(await this.client.procClaim(this.ws, runId, claimToken, { kind: 'browser', session_id: this.sessionId })) }
   async procHeartbeat(runId: string, attempt: number, progress?: Json) { unwrap(await this.client.procHeartbeat(this.ws, runId, attempt, progress)) }
@@ -926,9 +926,18 @@ export function needsCodingReasonText(reason: NeedsCodingReason): string {
   }
 }
 
-/** Wish runs refused or failed because of the macro or the place it runs (第一期 §2.1, §2.5; 浏览器优先 Q6), by sub-code. */
+/** Wish runs refused or failed because of the macro or the place it runs (第一期 §2.1, §2.5; 浏览器优先 Q6), or because
+ * of what a stage found (许愿格交互升级 §2.4–§2.5: inputs it could not find, error-level checks that failed), and a rollback
+ * of a record that is no longer the current one — by sub-code, or by code where the code is the reason. */
 export function wishRunCodeText(subCode: string | undefined, data: Record<string, unknown> | undefined): string | undefined {
   switch (subCode) {
+    case 'NEEDS_INPUT': {
+      const missing = Array.isArray(data?.missing_inputs) ? (data.missing_inputs as { label?: string; message?: string }[]) : []
+      const names = missing.map((m) => m.label || m.message || '').filter(Boolean)
+      return names.length ? aiwsT('aiworkspace.wishcard.error.needsInputNamed', { inputs: aiwsText().list(names) }) : aiwsT('aiworkspace.wishcard.error.needsInput')
+    }
+    case 'CHECKS_FAILED': return aiwsT('aiworkspace.wishcard.error.checksFailed')
+    case 'NOT_CURRENT_RECORD': return aiwsT('aiworkspace.wishcard.error.notCurrentRecord')
     case 'NEEDS_CODING': {
       const reasons = Array.isArray(data?.reasons) ? (data.reasons as NeedsCodingReason[]) : []
       return reasons.length ? aiwsT('aiworkspace.wish.error.needsCoding', { reasons: aiwsText().clauses(reasons.map(needsCodingReasonText)) }) : aiwsT('aiworkspace.wish.error.needsCodingNoMacro')
@@ -965,14 +974,14 @@ function formatBytes(n: number): string {
 }
 
 /** The failure of a run as shown to its viewer. */
-export function runErrorText(error: (ServiceError & { data?: unknown }) | null | undefined): string | undefined {
+export function runErrorText(error: (ServiceError & { data?: unknown; missing_inputs?: unknown }) | null | undefined): string | undefined {
   if (!error) return undefined
-  const data = error.data as Record<string, unknown> | undefined
-  return aiRefusalText(error.sub_code, data) ?? wishRunCodeText(error.sub_code, data) ?? errorCodeText(error.code, data) ?? error.detail
+  const data = { ...(error.missing_inputs ? { missing_inputs: error.missing_inputs } : {}), ...(error.data as Record<string, unknown> | undefined) }
+  return aiRefusalText(error.sub_code, data) ?? wishRunCodeText(error.sub_code, data) ?? wishRunCodeText(error.code, data) ?? errorCodeText(error.code, data) ?? error.detail
 }
 
 export function describeError(error: unknown): string {
-  if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? wishRunCodeText(error.subCode, error.data) ?? errorCodeText(error.code, error.data) ?? error.message
+  if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? wishRunCodeText(error.subCode, error.data) ?? wishRunCodeText(error.code, error.data) ?? errorCodeText(error.code, error.data) ?? error.message
   if (error instanceof TransportError) return aiwsT(browserOffline() ? 'aiworkspace.core.session.cannotConnectOffline' : 'aiworkspace.core.session.cannotConnect', { error: error.message })
   return error instanceof Error ? error.message : String(error)
 }

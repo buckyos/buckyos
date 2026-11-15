@@ -5,7 +5,7 @@ import type {
   AnnotationRead, BucketBinding, BucketDownload, ChangesPage, ClonedFrom, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, AclChange, AclEntryList, AclGroup, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
   QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Json,
   UserPrefsRead, WorkspaceListItem,
-  DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
+  DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishRollbackResult, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, WishStageFiles, HostedExecConfig, Publication, Referrer,
   ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
   AclAuditItem, AclEntityView, AclExplain, AclSubjectView,
@@ -201,25 +201,22 @@ export class AiwsClient {
     return this.call<Result<StagedAsset>>('asset.import_object', { ...ws, ...source })
   }
 
-  // ---- controlled processing (Mock)
+  // ---- processing runs other than a wish's (a data source's refresh)
   procStart(ws: Ws, program: string, params: Record<string, Json>, idempotency_key: string) {
     return this.call<Result<RunView>>('proc.start', { ...ws, program, params, idempotency_key })
   }
   procGet(ws: Ws, run_id: string) { return this.call<Result<RunView>>('proc.get', { ...ws, run_id }) }
-  procApply(ws: Ws, run_id: string, session_id: string) { return this.call<Result<RunView>>('proc.apply', { ...ws, run_id, session_id }) }
   procCancel(ws: Ws, run_id: string) { return this.call<Result<{ state: string; already_applied: boolean; commit_id?: string }>>('proc.cancel', { ...ws, run_id }) }
 
-  // ---- wish runs (wish.xllm@1 / wish.mock@1, 许愿格 §13.1)
+  // ---- wish runs (wish.xllm@1, 许愿格 §13.1): a stage writes its product when it ends; a record of it can be rolled back
   wishStart(ws: Ws, program: string, params: Record<string, Json>, idempotency_key: string) {
     return this.call<Result<WishRunView>>('proc.start', { ...ws, program, params, idempotency_key })
   }
-  wishGet(ws: Ws, run_id: string, choices?: WishChoices) {
-    return this.call<Result<WishRunView>>('proc.get', { ...ws, run_id, ...(choices ? { choices: choices as unknown as Json } : {}) })
-  }
-  wishApply(ws: Ws, run_id: string, plan_digest: string, session_id: string) {
-    return this.call<Result<WishRunView>>('proc.apply', { ...ws, run_id, plan_digest, session_id })
-  }
+  wishGet(ws: Ws, run_id: string) { return this.call<Result<WishRunView>>('proc.get', { ...ws, run_id }) }
   wishList(ws: Ws, wish_id: string, limit: number) { return this.call<Result<{ runs: WishRunView[] }>>('proc.list', { ...ws, wish_id, limit }) }
+  procRollback(ws: Ws, run_id: string, confirm: boolean, session_id: string) {
+    return this.call<Result<WishRollbackResult>>('proc.rollback', { ...ws, run_id, ...(confirm ? { confirm: true } : {}), session_id })
+  }
 
   // ---- the executor protocol of a run outside the service (内核架构改进 T3-2, T3-4)
   procClaim(ws: Ws, run_id: string, claim_token: string, executor: Json) { return this.call<Result<WishClaim>>('proc.claim', { ...ws, run_id, claim_token, executor }) }

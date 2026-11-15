@@ -7,7 +7,7 @@ use crate::ext::content_digest;
 use crate::workspace::{random_id, Caller, CommitOpts, Workspace};
 use aiworkspace_core::access::Cap;
 use aiworkspace_core::canonical::{obj_id_from_filename, obj_id_to_filename, parse_strict};
-use aiworkspace_core::materialize::{materialize_with, ObjectSource};
+use aiworkspace_core::materialize::{materialize_template, ObjectSource};
 use aiworkspace_core::model::*;
 use aiworkspace_core::{Code, WsError, WsResult};
 use serde_json::{json, Map, Value};
@@ -273,7 +273,7 @@ impl Workspace {
         set.retain(|id| !self.under(&ctx, id, SHOWS_ID).unwrap_or(false) || id == SHOWS_ID);
         let mut sink = crate::objects::StoreSink::new(&self.objects);
         let visible = |e: &EntityRow| Ok(set.contains(&e.entity_id));
-        let m = materialize_with(&ctx, &mut sink, &visible, &mut |_, _| None, true)?;
+        let m = materialize_template(&ctx, &mut sink, &visible)?;
         let (objects, chunks, missing) = crate::export::closure(&self.objects, &m.content_root, true)?;
         if !missing.is_empty() {
             return Err(WsError::new(Code::DependencyUnavailable, format!("{} asset(s) of the template are not available here", missing.len())).with_data(json!({ "missing": missing })));

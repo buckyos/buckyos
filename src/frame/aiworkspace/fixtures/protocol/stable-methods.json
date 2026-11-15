@@ -1723,7 +1723,6 @@
           "request": null,
           "stage": "string"
         },
-        "candidate": null,
         "claim_token": "string",
         "context": {
           "ai": {
@@ -1790,8 +1789,8 @@
         "progress": {
           "phase": "string"
         },
+        "record": null,
         "run_id": "string",
-        "simulated": "boolean",
         "stage": "string",
         "state": "string",
         "updated_at": "string",
@@ -1884,8 +1883,8 @@
             "progress": {
               "phase": "string"
             },
+            "record": null,
             "run_id": "string",
-            "simulated": "boolean",
             "stage": "string",
             "state": "string",
             "updated_at": "string",
@@ -2111,6 +2110,12 @@
         "attempt": "number",
         "finished": "boolean",
         "run_id": "string",
+        "usage": {
+          "calls": "number",
+          "input_tokens": "number",
+          "model": "string",
+          "output_tokens": "number"
+        },
         "workspace_id": "string"
       },
       "result": {
@@ -2192,15 +2197,21 @@
         "progress": {
           "activity": "string",
           "last_tool": "string",
+          "model": "string",
           "phase": "string",
           "tool_calls": "number"
         },
+        "record": null,
         "run_id": "string",
-        "simulated": "boolean",
         "stage": "string",
         "state": "string",
         "updated_at": "string",
-        "usage": null,
+        "usage": {
+          "calls": "number",
+          "input_tokens": "number",
+          "model": "string",
+          "output_tokens": "number"
+        },
         "warnings": [],
         "wish_id": "string"
       }
@@ -2217,170 +2228,8 @@
           "operator_id": "string",
           "user_id": "string"
         },
-        "brief": {
-          "analysis": null,
-          "inputs": null,
-          "knowledge": null,
-          "output": null,
-          "prompt": "string",
-          "refinements": null,
-          "request": null,
-          "stage": "string"
-        },
-        "candidate": {
-          "analysis": {
-            "basis": {
-              "reads": []
-            },
-            "blockers": [],
-            "checks": [],
-            "context_prompt": "string",
-            "executor": "string",
-            "output_contract": {
-              "results": [
-                {
-                  "name": "string",
-                  "title": "string",
-                  "type": "string"
-                }
-              ]
-            },
-            "prompt": "string",
-            "run_id": "string",
-            "schema_version": "string",
-            "status": "string",
-            "warnings": []
-          },
-          "basis": {
-            "config_digest": "string",
-            "key_revs": {
-              "analysis": "number",
-              "executor": "number",
-              "executor_config": "number",
-              "inputs": "number",
-              "knowledge": "number",
-              "last_run": "number",
-              "output": "number",
-              "output_mode": "number",
-              "program": "number",
-              "prompt": "number",
-              "refinements": "number"
-            }
-          },
-          "executed_at": "string",
-          "inputs": [],
-          "wish_id": "string"
-        },
-        "context": {
-          "ai": {
-            "mode": "string",
-            "operator_id": "string",
-            "user_id": "string"
-          },
-          "compute": {
-            "kind": "string",
-            "principal": "string"
-          },
-          "executor": {
-            "kind": "string",
-            "principal": "string"
-          },
-          "expires_at": "string",
-          "location": "string",
-          "outputs": {
-            "container_id": null,
-            "name": null,
-            "results": [],
-            "surface_id": null
-          },
-          "task": {
-            "digest": "string",
-            "wish_id": "string"
-          },
-          "trigger": "string",
-          "trigger_identity": {
-            "class": "string",
-            "did": null,
-            "kind": null,
-            "owner": null,
-            "principal": "string",
-            "restricted": "boolean"
-          }
-        },
-        "created_at": "string",
-        "dispatch": null,
-        "error": null,
-        "evidence": {
-          "appended_inputs": [],
-          "inputs": [],
-          "read_set": []
-        },
-        "execution": {
-          "attempt": "number",
-          "executor": {
-            "detail": null,
-            "kind": "string",
-            "principal": "string"
-          },
-          "lease_until": "string",
-          "mode": "string"
-        },
-        "feedback": null,
-        "ok": "boolean",
-        "params": {
-          "execution": {
-            "mode": "string"
-          },
-          "stage": "string",
-          "wish_id": "string"
-        },
-        "parent_run_id": null,
-        "preview": {
-          "plan_digest": "string",
-          "ready": "boolean",
-          "summary": {
-            "inputs": [],
-            "kind": "string",
-            "problems": [],
-            "status": "string"
-          }
-        },
-        "program": "string",
-        "program_log": null,
-        "progress": {
-          "activity": "string",
-          "last_tool": "string",
-          "phase": "string",
-          "tool_calls": "number"
-        },
-        "run_id": "string",
-        "simulated": "boolean",
-        "stage": "string",
-        "state": "string",
-        "updated_at": "string",
-        "usage": null,
-        "warnings": [],
-        "wish_id": "string"
-      }
-    },
-    {
-      "method": "proc.apply",
-      "params": {
-        "plan_digest": "string",
-        "run_id": "string",
-        "session_id": "string",
-        "workspace_id": "string"
-      },
-      "result": {
-        "aicc": {
-          "mode": "string",
-          "operator_id": "string",
-          "user_id": "string"
-        },
         "applied": {
-          "applied_by": "string",
           "attribution": {
-            "applied_by": "string",
             "executed_by": "string",
             "judged_as": "string",
             "macro": null,
@@ -2404,7 +2253,6 @@
               }
             ]
           },
-          "plan_digest": "string",
           "status": "string"
         },
         "brief": {
@@ -2416,50 +2264,6 @@
           "refinements": null,
           "request": null,
           "stage": "string"
-        },
-        "candidate": {
-          "analysis": {
-            "basis": {
-              "reads": []
-            },
-            "blockers": [],
-            "checks": [],
-            "context_prompt": "string",
-            "executor": "string",
-            "output_contract": {
-              "results": [
-                {
-                  "name": "string",
-                  "title": "string",
-                  "type": "string"
-                }
-              ]
-            },
-            "prompt": "string",
-            "run_id": "string",
-            "schema_version": "string",
-            "status": "string",
-            "warnings": []
-          },
-          "basis": {
-            "config_digest": "string",
-            "key_revs": {
-              "analysis": "number",
-              "executor": "number",
-              "executor_config": "number",
-              "inputs": "number",
-              "knowledge": "number",
-              "last_run": "number",
-              "output": "number",
-              "output_mode": "number",
-              "program": "number",
-              "prompt": "number",
-              "refinements": "number"
-            }
-          },
-          "executed_at": "string",
-          "inputs": [],
-          "wish_id": "string"
         },
         "context": {
           "ai": {
@@ -2525,23 +2329,52 @@
           "wish_id": "string"
         },
         "parent_run_id": null,
-        "preview": {
-          "plan_digest": "string",
-          "ready": "boolean",
-          "summary": {
-            "inputs": [],
-            "kind": "string",
-            "problems": [],
-            "status": "string"
-          }
-        },
         "program": "string",
         "program_log": null,
         "progress": {
           "activity": "string",
           "last_tool": "string",
+          "model": "string",
           "phase": "string",
           "tool_calls": "number"
+        },
+        "record": {
+          "action": "string",
+          "aicc": {
+            "mode": "string",
+            "user_id": "string"
+          },
+          "at": "string",
+          "basis": {},
+          "by": "string",
+          "commit_id": "string",
+          "duration_ms": "number",
+          "ended_at": "string",
+          "id": "string",
+          "inputs": [],
+          "objects": {
+            "analysis": "string",
+            "prompt": "string"
+          },
+          "ok": "boolean",
+          "outputs": {
+            "analysis": {
+              "checks": "number",
+              "results": "number"
+            }
+          },
+          "stage": "string",
+          "summary": {
+            "checks": "number",
+            "results": "number"
+          },
+          "usage": {
+            "calls": "number",
+            "input_tokens": "number",
+            "model": "string",
+            "output_tokens": "number"
+          },
+          "warnings": []
         },
         "result": {
           "commit_id": "string",
@@ -2562,13 +2395,67 @@
           ]
         },
         "run_id": "string",
-        "simulated": "boolean",
         "stage": "string",
         "state": "string",
         "updated_at": "string",
-        "usage": null,
+        "usage": {
+          "calls": "number",
+          "input_tokens": "number",
+          "model": "string",
+          "output_tokens": "number"
+        },
         "warnings": [],
         "wish_id": "string"
+      }
+    },
+    {
+      "method": "proc.rollback",
+      "params": {
+        "run_id": "string",
+        "session_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "commit": {
+          "commit_id": "string",
+          "replayed": "boolean",
+          "seq": "number",
+          "server_ops": [],
+          "status": "string",
+          "touched": [
+            {
+              "change": "string",
+              "entity_id": "string",
+              "rev": "number",
+              "selector": {
+                "key": "string",
+                "kind": "string"
+              }
+            }
+          ]
+        },
+        "ok": "boolean",
+        "record": {
+          "action": "string",
+          "at": "string",
+          "basis": {},
+          "by": "string",
+          "commit_id": "string",
+          "duration_ms": "number",
+          "ended_at": "string",
+          "id": "string",
+          "inputs": [],
+          "objects": {},
+          "ok": "boolean",
+          "outputs": {},
+          "rollback_of": "string",
+          "stage": "string",
+          "summary": {
+            "of": "string"
+          },
+          "warnings": []
+        },
+        "status": "string"
       }
     },
     {
@@ -2592,31 +2479,7 @@
           "user_id": "string"
         },
         "brief": {
-          "analysis": {
-            "at": "string",
-            "basis": {
-              "digest": "string",
-              "reads": []
-            },
-            "blockers": [],
-            "checks": [],
-            "context_prompt": "string",
-            "executor": "string",
-            "output_contract": {
-              "results": [
-                {
-                  "name": "string",
-                  "title": "string",
-                  "type": "string"
-                }
-              ]
-            },
-            "prompt": "string",
-            "run_id": "string",
-            "schema_version": "string",
-            "status": "string",
-            "warnings": []
-          },
+          "analysis": null,
           "inputs": [],
           "knowledge": null,
           "output": null,
@@ -2625,7 +2488,6 @@
           "request": null,
           "stage": "string"
         },
-        "candidate": null,
         "claim_token": "string",
         "context": {
           "ai": {
@@ -2646,12 +2508,7 @@
           "outputs": {
             "container_id": null,
             "name": null,
-            "results": [
-              {
-                "name": "string",
-                "type": "string"
-              }
-            ],
+            "results": [],
             "surface_id": null
           },
           "task": {
@@ -2697,8 +2554,8 @@
         "progress": {
           "phase": "string"
         },
+        "record": null,
         "run_id": "string",
-        "simulated": "boolean",
         "stage": "string",
         "state": "string",
         "updated_at": "string",

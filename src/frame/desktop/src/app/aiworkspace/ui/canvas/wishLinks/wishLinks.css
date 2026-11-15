@@ -1,0 +1,19 @@
+/* Wish lines and ghosts (许愿格交互升级 TODO §3.9): in the world layer under every Block frame (they start at z-index 1);
+ * world units, so they scale with the camera. Lines take no pointer; ghosts are buttons (the selectors outweigh the app's
+ * `.aiws-root button`). */
+.aiws-wishlinks { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; z-index: 0; pointer-events: none; --aiws-wishlink-input: #60a5fa; }
+.aiws-wishlinks-wish { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; }
+.aiws-wishlink { position: absolute; overflow: visible; pointer-events: none; }
+.aiws-wishlinks button.aiws-wishlink-ghost { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px; margin: 0;
+  border: 1.5px dashed var(--aiws-wishlink-input); border-radius: 10px; background: color-mix(in srgb, var(--cp-surface-opaque, var(--cp-bg)) 62%, transparent);
+  color: var(--cp-muted); font: inherit; font-size: 11px; line-height: 1.25; opacity: 0.78; cursor: pointer; pointer-events: auto; overflow: hidden; }
+.aiws-wishlinks button.aiws-wishlink-ghost:hover:not(:disabled), .aiws-wishlinks button.aiws-wishlink-ghost:focus-visible { opacity: 1; border-style: solid; color: var(--cp-text);
+  background: color-mix(in srgb, var(--cp-surface-opaque, var(--cp-bg)) 85%, transparent); }
+.aiws-wishlinks button.aiws-wishlink-ghost:focus-visible { outline: 2px solid var(--cp-focus-ring, var(--cp-accent)); outline-offset: 2px; }
+.aiws-wishlinks button.aiws-wishlink-ghost[data-state='unavailable'] { border-color: var(--cp-warning); color: var(--cp-warning); cursor: help; }
+.aiws-wishlinks button.aiws-wishlink-ghost[data-state='more'], .aiws-wishlinks button.aiws-wishlink-ghost[data-state='less'] { border-style: dotted; }
+.aiws-wishlink-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-align: center; word-break: break-all; }
+.aiws-wishlink-count { font-size: 18px; font-weight: 600; color: var(--cp-text); }
+/* writing on the canvas takes every press (手写笔 TODO D1) */
+.aiws-canvas.is-inking .aiws-wishlinks button.aiws-wishlink-ghost { pointer-events: none; }
+@media print { .aiws-wishlinks { display: none; } }

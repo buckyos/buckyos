@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 pub const MAX_TABLE_ROWS: usize = 50_000;
 pub const MAX_TABLE_FIELDS: usize = 100;
-/// Longest text a result may hold inline (a slot's text, a simulated result).
+/// Longest text a result may hold inline (a slot's text).
 pub const MAX_DIRECT_CHARS: usize = 20_000;
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_HTML_BYTES: usize = 256 * 1024;
@@ -24,7 +24,8 @@ pub struct ProgramRun {
     pub facts: Value,
     pub checks: Vec<Value>,
     pub external: Vec<String>,
-    /// AI calls of the run: `{ complete: { calls, cached, tokens }, map: { calls, items, cached } }`.
+    /// AI calls of the run (`aiws.js` `aiStats`): `{ complete: { calls, cached, tokens, input_tokens }, map: { calls, items, cached,
+    /// tokens, input_tokens }, image, video, models }`.
     pub ai: Value,
     /// The manifest of this macro version (resolved from `declare` while coding; the stored one when running).
     pub manifest: Option<Value>,
@@ -296,7 +297,7 @@ impl Collector {
         Ok(real)
     }
 
-    /// Normalize one raw result (the macro's, or a simulated one) into `wish.results.v2`.
+    /// Normalize one raw result (the macro's) into `wish.results.v2`.
     pub fn normalize(&self, raw: &Value, approach: &str) -> Result<Value, Vec<String>> {
         let mut errs = Vec::new();
         let name = raw["name"].as_str().unwrap_or("").to_string();
@@ -789,6 +790,9 @@ impl Collector {
         for d in &self.checks_def {
             let id = d["id"].as_str().unwrap_or("");
             let mut c = json!({ "id": id, "kind": d["kind"], "text": d["text"] });
+            if let Some(l) = d.get("level").filter(|l| l.is_string()) {
+                c["level"] = l.clone();
+            }
             match d["kind"].as_str() {
                 Some("program") => match reported.get(id) {
                     Some(r) => {

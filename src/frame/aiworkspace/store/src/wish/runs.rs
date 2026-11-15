@@ -1,8 +1,8 @@
-//! Wish runs in `local.sqlite.runs` (许愿格 §4.2, §13): progress, evidence, candidates and cached
-//! plans stay with this deployment and never enter the shared document. The columns are reused as
-//! JSON: `params_json` (the start request), `inputs_json` (evidence: read set, appended inputs,
-//! basis), `candidate_json` (the analysis or the result candidate), `result_json` (detail: progress,
-//! usage, error, plans by digest, the application).
+//! Wish runs in `local.sqlite.runs` (许愿格 §4.2, §13): progress, evidence and the stage's candidate stay with this
+//! deployment and never enter the shared document; what a stage produced is written when it ends, with its record in
+//! the wish's `history` (许愿格交互升级 §3.3). The columns are reused as JSON: `params_json` (the start request),
+//! `inputs_json` (evidence: read set, appended inputs, basis), `candidate_json` (the analysis or the result candidate),
+//! `result_json` (detail: progress, usage, error, the Commit and the record).
 
 use super::plan::Plan;
 use crate::docdb::db_err;
@@ -17,9 +17,6 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 pub const PROGRAM_XLLM: &str = "wish.xllm@1";
-pub const PROGRAM_MOCK: &str = "wish.mock@1";
-/// Plans kept per run (the latest previews).
-const PLANS_KEPT: usize = 4;
 
 /// States a worker owns; a run found in one of them without a worker was interrupted (`applying` is
 /// reconciled through its idempotency record instead of being marked, see `wish_reconcile_apply`).
@@ -31,7 +28,7 @@ pub fn active_states_sql() -> String {
 }
 
 pub fn is_wish_program(p: &str) -> bool {
-    p == PROGRAM_XLLM || p == PROGRAM_MOCK
+    p == PROGRAM_XLLM
 }
 
 fn parse(s: Option<String>) -> Value {
@@ -39,7 +36,7 @@ fn parse(s: Option<String>) -> Value {
 }
 
 impl Workspace {
-    fn wish_row(&self, run_id: &str) -> WsResult<Value> {
+    pub(crate) fn wish_row(&self, run_id: &str) -> WsResult<Value> {
         self.local
             .query_row(
                 "SELECT run_id, program, principal, state, params_json, inputs_json, candidate_json, warnings_json, result_json, created_at, updated_at, idem_key \
@@ -254,12 +251,12 @@ impl Workspace {
         let mut st = self
             .local
             .prepare(
-                "SELECT run_id FROM runs WHERE principal = ?1 AND program IN (?2, ?3) AND (?4 IS NULL OR json_extract(params_json, '$.wish_id') = ?4) \
-                 ORDER BY created_at DESC, run_id DESC LIMIT ?5",
+                "SELECT run_id FROM runs WHERE principal = ?1 AND program = ?2 AND (?3 IS NULL OR json_extract(params_json, '$.wish_id') = ?3) \
+                 ORDER BY created_at DESC, run_id DESC LIMIT ?4",
             )
             .map_err(db_err)?;
         let ids: Vec<String> = st
-            .query_map(params![caller.principal, PROGRAM_XLLM, PROGRAM_MOCK, wish_id, limit.clamp(1, 100) as i64], |r| r.get(0))
+            .query_map(params![caller.principal, PROGRAM_XLLM, wish_id, limit.clamp(1, 100) as i64], |r| r.get(0))
             .map_err(db_err)?
             .collect::<rusqlite::Result<_>>()
             .map_err(db_err)?;
@@ -282,84 +279,65 @@ impl Workspace {
     pub fn wish_runs_active(&self) -> WsResult<Vec<Value>> {
         let mut st = self
             .local
-            .prepare("SELECT run_id FROM runs WHERE program IN (?1, ?2) AND state IN ('queued','snapshotting','running','validating','applying')")
+            .prepare("SELECT run_id FROM runs WHERE program = ?1 AND state IN ('queued','snapshotting','running','validating','applying')")
             .map_err(db_err)?;
-        let ids: Vec<String> = st.query_map(params![PROGRAM_XLLM, PROGRAM_MOCK], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        let ids: Vec<String> = st.query_map(params![PROGRAM_XLLM], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
         ids.iter().map(|id| self.wish_row(id)).collect()
     }
 
-    /// Keep a plan the user previewed (by digest) for the application.
-    pub fn wish_run_keep_plan(&mut self, run_id: &str, plan: &Plan) -> WsResult<()> {
-        let row = self.wish_row(run_id)?;
-        let mut plans = row["detail"].get("plans").cloned().filter(Value::is_object).unwrap_or(json!({}));
-        let mut order: Vec<Value> = row["detail"].get("plan_order").and_then(Value::as_array).cloned().unwrap_or_default();
-        order.retain(|d| *d != json!(plan.digest));
-        order.push(json!(plan.digest));
-        while order.len() > PLANS_KEPT {
-            let old = order.remove(0);
-            plans.as_object_mut().unwrap().remove(old.as_str().unwrap_or(""));
-        }
-        plans[&plan.digest] = plan.to_json();
-        self.wish_run_set(run_id, None, None, None, None, Some(&json!({ "plans": plans, "plan_order": order })))
-    }
-
-    /// Commit a previewed plan (§11.4): one ordinary Commit as the caller, with the plan's preconditions,
-    /// idempotent by run and plan. Conflicts and rejections keep the candidate.
-    pub fn wish_apply(&mut self, caller: &Caller, run_id: &str, plan_digest: &str, session_id: Option<&str>) -> WsResult<Value> {
-        self.wish_apply_as(caller, run_id, plan_digest, session_id, None, None)
-    }
-
-    /// [`Self::wish_apply`] authorized as `identity` (the run's macro identity, 权限需求 R28) and recorded with who
-    /// triggered, executed and applied it (R31).
-    pub fn wish_apply_as(&mut self, caller: &Caller, run_id: &str, plan_digest: &str, session_id: Option<&str>, identity: Option<aiworkspace_core::access::Access>, attribution: Option<Value>) -> WsResult<Value> {
+    /// Write what a stage produced (许愿格交互升级 §3.3): one ordinary Commit written as the run (origin `program`),
+    /// authorized as `identity` (its macro identity, 权限需求 R28) with who triggered and executed it (R31), guarded by
+    /// the plan's preconditions, idempotent by run, in the session the run was started from (`params.session_id`: the write
+    /// locks it holds). The wish's operation carries `record` into `history`. `applying`
+    /// keeps the idempotency key and the record, so a crash between the Commit and the run's state is reconciled. A
+    /// Commit that is not accepted is the run's error.
+    pub fn wish_commit_stage(&mut self, caller: &Caller, run_id: &str, plan: &Plan, record: &Value, identity: Option<aiworkspace_core::access::Access>, attribution: Option<Value>) -> WsResult<Value> {
         let run = self.wish_run(caller, run_id)?;
-        let state = run["state"].as_str().unwrap_or("");
-        if state == "succeeded" {
-            if run["detail"]["applied"]["plan_digest"] == json!(plan_digest) {
-                return Ok(run["detail"]["applied"].clone());
-            }
-            return Err(WsError::invalid_op("this run was already applied"));
-        }
-        if state == "cancelled" {
-            return Err(WsError::new(Code::RunCancelled, "the run was cancelled"));
-        }
-        if !matches!(state, "waiting_confirmation" | "conflict" | "rejected" | "applying") {
-            return Err(WsError::invalid_op(format!("run is {state}")));
-        }
-        let plan = run["detail"]["plans"].get(plan_digest).cloned().ok_or_else(|| WsError::sub(Code::InvalidOperation, "PLAN_UNKNOWN", "this preview is no longer known: preview again"))?;
-        if plan["ready"] != json!(true) {
-            let problems = plan["summary"]["problems"].clone();
-            return Err(WsError::sub(Code::InvalidOperation, "PLAN_NOT_READY", "the preview still has open choices or problems").with_data(json!({ "problems": problems, "manual": plan["summary"]["manual"] })));
+        match run["state"].as_str().unwrap_or("") {
+            "cancelled" => return Err(WsError::new(Code::RunCancelled, "the run was cancelled")),
+            "validating" => {}
+            s => return Err(WsError::invalid_op(format!("run is {s}"))),
         }
         if run["evidence"]["epoch"].as_str().is_some_and(|e| e != self.epoch) {
-            self.wish_run_set(run_id, Some("conflict"), None, None, None, Some(&json!({ "error": { "code": "EPOCH_MISMATCH", "detail": "the Workspace history was replaced after the run" } })))?;
             return Err(WsError::new(Code::EpochMismatch, "the Workspace history was replaced after this run started"));
         }
-        let stage = run["params"]["stage"].as_str().unwrap_or("execute");
-        self.check_output_declaration(&run, plan["operations"].as_array().map(Vec::as_slice).unwrap_or(&[]))?;
-        let request = json!({
+        self.check_output_declaration(&run, &plan.operations)?;
+        let wish_id = run["params"]["wish_id"].as_str().unwrap_or("").to_string();
+        let now = self.now();
+        let wish = self.ctx(&now).entity(&wish_id)?.filter(|e| e.alive()).ok_or_else(|| WsError::deleted("the wish was deleted"))?;
+        let commit_id = random_id("cm_");
+        let mut record = record.clone();
+        record["commit_id"] = json!(commit_id);
+        let history = super::history::with_record(wish.payload.get("history"), &record);
+        let item = json!({ "key": "history", "value": history, "expect": { "rev": wish.key_rev("history") } });
+        let mut ops = plan.operations.clone();
+        match ops.iter_mut().rev().find(|o| o["op"] == json!("entity.set_keys") && o["entity_id"] == json!(wish_id)) {
+            Some(op) => op["keys"].as_array_mut().map(|k| k.push(item)).unwrap_or(()),
+            None => ops.push(json!({ "op": "entity.set_keys", "entity_id": wish_id, "keys": [item] })),
+        }
+        let stage = run["params"]["stage"].as_str().unwrap_or("run");
+        let message = match stage {
+            "analyze" => "Write back wish block analysis",
+            "code" => "Store wish block macro",
+            _ => "Write wish block results",
+        };
+        let mut request = json!({
             "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch,
-            "idempotency_key": format!("run/{run_id}/{}", &plan_digest[..plan_digest.len().min(32)]),
-            "origin": "program", "run_id": run_id,
-            "message": if stage == "analyze" { "Write back wish block analysis".to_string() } else { format!("Apply wish block results{}", if run["program"] == json!(PROGRAM_MOCK) { " (simulated)" } else { "" }) },
-            "preconditions": plan["preconditions"], "operations": plan["operations"],
+            "idempotency_key": format!("run/{run_id}"), "origin": "program", "run_id": run_id, "message": message,
+            "preconditions": plan.preconditions, "operations": ops,
         });
-        let mut request = request;
-        if let Some(s) = session_id {
+        if let Some(s) = run["params"]["session_id"].as_str() {
             request["session_id"] = json!(s);
         }
-        self.wish_run_set(run_id, Some("applying"), None, None, None, Some(&json!({ "applying": { "plan_digest": plan_digest, "idempotency_key": request["idempotency_key"] } })))?;
-        // written as the run's execution identity: every apply of this run meets one idempotency record (D08)
-        let opts = CommitOpts { as_principal: run["principal"].as_str().map(str::to_string), authorize_as: identity, attribution: attribution.clone(), ..CommitOpts::default() };
+        self.wish_run_set(run_id, Some("applying"), None, None, None, Some(&json!({ "applying": { "idempotency_key": request["idempotency_key"], "record": record } })))?;
+        let opts = CommitOpts { as_principal: run["principal"].as_str().map(str::to_string), authorize_as: identity, attribution: attribution.clone(), commit_id: Some(commit_id), ..CommitOpts::default() };
         let result = self.commit(&request, caller, &opts);
-        let status = result["status"].as_str().unwrap_or("rejected").to_string();
-        let applied = json!({ "plan_digest": plan_digest, "status": status, "commit": result, "applied_by": caller.principal, "attribution": attribution });
-        let next = match status.as_str() {
-            "accepted" => "succeeded",
-            "conflict" => "conflict",
-            _ => "rejected",
-        };
-        self.wish_run_set(run_id, Some(next), None, None, None, Some(&json!({ "applied": applied, "applying": Value::Null })))?;
+        if result["status"] != json!("accepted") {
+            self.wish_run_set(run_id, Some("validating"), None, None, None, Some(&json!({ "applying": Value::Null })))?;
+            return Err(super::history::commit_error(&result, "the stage's results were not written"));
+        }
+        let applied = json!({ "status": "accepted", "commit": result, "attribution": attribution });
+        self.wish_run_set(run_id, Some("succeeded"), None, None, None, Some(&json!({ "applied": applied, "record": record, "applying": Value::Null })))?;
         Ok(applied)
     }
 
@@ -454,8 +432,8 @@ impl Workspace {
         Ok(())
     }
 
-    /// A run left in `applying` (process exit, lost response): the commit either happened or not —
-    /// the idempotency record says which (§11.4).
+    /// A run left in `applying` (process exit): the Commit either happened or not — the idempotency record says which
+    /// (§11.4).
     pub fn wish_reconcile_apply(&mut self, run_id: &str) -> WsResult<Option<String>> {
         let run = self.wish_row(run_id)?;
         if run["state"] != json!("applying") {
@@ -468,9 +446,10 @@ impl Workspace {
             .query_row("SELECT result_json FROM commits WHERE principal = ?1 AND idem_key = ?2", params![principal, key], |r| r.get(0))
             .optional()
             .map_err(db_err)?;
+        // committed: its record is in the history already; not: the stage's work is lost with the process
         let (state, detail) = match row.and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-            Some(result) => ("succeeded", json!({ "applied": { "plan_digest": run["detail"]["applying"]["plan_digest"], "status": "accepted", "commit": result, "reconciled": true }, "applying": Value::Null })),
-            None => ("waiting_confirmation", json!({ "applying": Value::Null })),
+            Some(result) => ("succeeded", json!({ "applied": { "status": "accepted", "commit": result, "reconciled": true }, "record": run["detail"]["applying"]["record"], "applying": Value::Null })),
+            None => ("interrupted", json!({ "applying": Value::Null, "error": { "code": "INTERRUPTED", "detail": "The service stopped while writing the stage's results; nothing was written: run the stage again" } })),
         };
         self.wish_run_set(run_id, Some(state), None, None, None, Some(&detail))?;
         Ok(Some(state.to_string()))

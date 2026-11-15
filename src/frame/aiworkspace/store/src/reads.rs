@@ -526,12 +526,14 @@ impl Workspace {
         let access = self.require_ws_any(caller)?;
         let now = self.now();
         let ctx = self.ctx(&now);
-        let mut st = self.doc.prepare_cached("SELECT src_entity_id FROM refs WHERE dst_object_id = ?1 AND kind = 'asset'").map_err(db_err)?;
-        let ids: Vec<String> = st.query_map([object_id], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
-        for id in ids {
+        let mut st = self.doc.prepare_cached("SELECT src_entity_id, kind FROM refs WHERE dst_object_id = ?1 AND kind IN ('asset', 'log')").map_err(db_err)?;
+        let ids: Vec<(String, String)> = st.query_map([object_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        for (id, kind) in ids {
             if let Some(e) = ctx.entity(&id)? {
-                // the root references the Workspace's cover (its settings, UI 框架 PRD Q37): read by whoever enters, like them
-                if e.alive() && (e.entity_id == ROOT_ID || access.can_read(&ctx, &e)?) {
+                // the root references the Workspace's cover (its settings, UI 框架 PRD Q37): read by whoever enters, like them;
+                // a wish's run log may print what its readers cannot read: `update` on the wish (许愿格交互升级 D9)
+                let ok = if kind == "log" { access.can(&ctx, &id, Cap::Update)? } else { e.entity_id == ROOT_ID || access.can_read(&ctx, &e)? };
+                if e.alive() && ok {
                     return Ok(true);
                 }
             }

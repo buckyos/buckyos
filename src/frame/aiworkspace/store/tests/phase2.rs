@@ -40,7 +40,7 @@ fn generated_results_get_versions_that_can_be_restored() {
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
     let members = ws.read(&alice(), "tasks", None).unwrap()["content"]["members_rev"].clone();
-    let derived = |run: &str| json!({ "wish_id": "tasks", "run_id": run, "executor": "mock", "simulated": true,
+    let derived = |run: &str| json!({ "wish_id": "tasks", "run_id": run, "executor": "xllm",
         "inputs": [{ "entity_id": "tasks", "selector": { "kind": "table_members" }, "version": { "mode": "follow", "rev": members } }] });
     // run 1: a record result with its record
     let r1 = ok(&mut ws, &alice(), json!([
@@ -132,22 +132,17 @@ fn grants_as_seen_by_non_managers_and_canvas_permissions() {
 }
 
 #[test]
-fn mock_program_writes_data_and_block_into_the_two_trees() {
+fn a_run_request_is_idempotent_by_its_key() {
     let env = env();
     let id = project(&env);
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
-    let run = ws.proc_start(&alice(), "mock.task-summary@1", &json!({ "today": "2026-10-13" }), "run-p2").unwrap();
-    assert_eq!(run["state"], "waiting_confirmation", "{run}");
+    let params = json!({ "stage": "run", "request": { "today": "2026-10-13" } });
+    let (run, replayed) = ws.wish_run_create(&alice(), "wish.xllm@1", &params, "run-p2", &Value::Null).unwrap();
+    assert!(!replayed);
     // the same key replays the same request only; another request under it is refused (13.2)
-    assert_eq!(ws.proc_start(&alice(), "mock.task-summary@1", &json!({ "today": "2026-10-13" }), "run-p2").unwrap()["replayed"], true);
-    assert_eq!(ws.proc_start(&alice(), "mock.task-summary@1", &json!({ "today": "2026-10-14" }), "run-p2").unwrap_err().code, aiworkspace_core::Code::IdempotencyMismatch);
-    let applied = ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), None).unwrap();
-    assert_eq!(applied["state"], "succeeded", "{applied}");
-    let outline = ws.outline(&alice()).unwrap();
-    let parent = |eid: &str| outline["entities"].as_array().unwrap().iter().find(|e| e["entity_id"] == eid).map(|e| e["parent_id"].as_str().unwrap().to_string());
-    assert_eq!(parent("summary").as_deref(), Some("data"));
-    assert_eq!(parent("cell-summary").as_deref(), Some("surface-main"));
+    assert_eq!(ws.wish_run_create(&alice(), "wish.xllm@1", &params, "run-p2", &Value::Null).unwrap(), (run, true));
+    let other = json!({ "stage": "run", "request": { "today": "2026-10-14" } });
+    assert_eq!(ws.wish_run_create(&alice(), "wish.xllm@1", &other, "run-p2", &Value::Null).unwrap_err().code, aiworkspace_core::Code::IdempotencyMismatch);
     let _ = CommitOpts::default();
-    let _: Value = Value::Null;
 }

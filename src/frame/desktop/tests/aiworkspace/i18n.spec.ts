@@ -1,10 +1,10 @@
 /* The English UI (the Desktop's default language): AI Workspace shows no Chinese — the list, the workspace chrome,
- * menus, panels, dialogs, the insert catalog, data sources, presentation editing, and the demo content and Mock wish
- * output it creates in English. The rest of the suite runs in zh-CN (fixtures.ts); the source-level guard is
+ * menus, panels, dialogs, the insert catalog, data sources, presentation editing, the demo content it creates and the
+ * wish card in English. The rest of the suite runs in zh-CN (fixtures.ts); the source-level guard is
  * tests/datamodel/aiworkspace-i18n.test.ts. */
 
 import type { Page } from '@playwright/test'
-import { backToList, closePermissions, expect, LOCALE_STORAGE_KEY, openApp, openPermissions, openSide, openStatus, setCanvasMode, test } from './fixtures'
+import { backToList, closePermissions, expect, LOCALE_STORAGE_KEY, openApp, openPermissions, openSide, openStatus, setCanvasMode, test, wishThreeSteps } from './fixtures'
 
 const ALICE = 'tok-alice'
 const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]/
@@ -110,23 +110,14 @@ test('i18n: in English, the list, a demo created from a template, its chrome, pa
   }
   await page.keyboard.press('Escape')
 
-  // the Mock wish (the test service has no model: the template's wish is put on the Mock executor): analysis, candidate
-  // and applied results are English too
+  // the wish card (the scripted model answers an English request in English): its tabs, records and buttons through the
+  // three stages, each written as it ends
   const workspaceId = (await page.getByTestId('aiws-workspace').getAttribute('data-workspace-id'))!
-  const { mockWishDefOp } = await import('../../src/app/aiworkspace/ui/wish/mockWishDef')
-  const info = await api.rpc(ALICE, 'ws.get_info', { workspace_id: workspaceId })
-  const wish = await api.read(ALICE, workspaceId, 'wish-analysis')
-  expect((await api.commit(ALICE, { workspace_id: workspaceId, epoch: info.epoch }, [mockWishDefOp('zzz'),
-    { op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [{ key: 'executor', value: 'mock', expect: { rev: wish.content.key_revs.executor ?? 0 } }] }])).status).toBe('accepted')
-  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible()
-  await page.getByTestId('aiws-wish-run').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true', { timeout: 30_000 })
-  await expectEnglish(page, 'wish candidate')
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toBeVisible()
-  await expectEnglish(page, 'wish applied')
+  await wishThreeSteps(page, api, ALICE, workspaceId, 'wish-analysis')
+  await expect(page.getByTestId('aiws-wish-card-wish-analysis')).toHaveAttribute('data-tab', 'results')
+  await expectEnglish(page, 'wish card after its run')
+  await page.getByTestId('aiws-wish-card-wish-analysis').getByTestId('aiws-wish-tab-analysis').click()
+  await expectEnglish(page, 'wish records')
 
   // presentation path editing and view mode
   await setCanvasMode(page, 'presentation_edit')

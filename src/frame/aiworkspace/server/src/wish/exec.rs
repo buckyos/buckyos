@@ -1,7 +1,7 @@
 //! The execution model of a wish run (内核架构改进 §9, D14–D16, D22, D23, M3; 浏览器优先): every run binds an
 //! explicit execution context; an executor outside the service — the browser (local) or an Agent Work
 //! Session the Owner configured (hosted) — claims the run, keeps a lease alive, works on the service's
-//! stage and reports when done; the service plans what the stage collected and the user confirms it.
+//! stage and reports when done; the service plans what the stage collected and writes it (许愿格交互升级 §3.3).
 
 use super::stages;
 use crate::AppState;
@@ -127,7 +127,7 @@ pub fn claim(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
         match stages::host_open(state, &as_run, ws_id, run_id) {
             Ok(stage) => claimed["stage"] = stage,
             Err(e) => {
-                let _ = state.with_ws(ws_id, |ws| ws.wish_run_set(run_id, Some("failed"), None, None, None, Some(&json!({ "error": e.to_json(), "progress": { "phase": "failed" } }))));
+                let _ = state.with_ws(ws_id, |ws| ws.wish_run_fail(run_id, &e.to_json(), None));
                 return Err(e);
             }
         }
@@ -174,7 +174,7 @@ pub fn files(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
     let (stage, run_id, attempt) = hosted_stage(state, caller, ws_id, p)?;
     match stages::host_files(&stage) {
         Err(e) if e.sub == Some("SNAPSHOT_TOO_LARGE") => {
-            let _ = state.with_ws(ws_id, |ws| ws.wish_run_set(&run_id, Some("failed"), None, None, None, Some(&json!({ "error": e.to_json(), "progress": { "phase": "failed", "attempt": attempt } }))));
+            let _ = state.with_ws(ws_id, |ws| ws.wish_run_fail(&run_id, &e.to_json(), Some(&json!({ "progress": { "attempt": attempt } }))));
             state.wish.drop_hosted(&run_id);
             state.wish.unregister(&run_id);
             Err(e)
@@ -196,20 +196,27 @@ pub fn heartbeat(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value)
     Ok(v)
 }
 
-/// What the executor says about its progress also reaches the live view of a run with an open stage.
+/// What the executor says about its progress also reaches the live view of a run with an open stage. Whether it is
+/// waiting for its model is the executor's word each time: a report without it means it is not.
 fn note_progress(state: &Arc<AppState>, run_id: &str, progress: Option<&Value>) {
     if let (Some(active), Some(o)) = (state.wish.active(run_id), progress.and_then(Value::as_object)) {
         let mut p = active.progress.lock().unwrap();
         for (k, v) in o {
             p[k] = v.clone();
         }
+        if o.get("waiting_model") != Some(&json!(true)) {
+            if let Some(m) = p.as_object_mut() {
+                m.remove("waiting_model");
+            }
+        }
     }
 }
 
-/// `proc.report { run_id, attempt, progress? | error? | finished | analysis }`: the executor's word. `finished`: what
-/// the stage collected (the macro's trial or real run) becomes the candidate; an `analysis` (an analyze run whose
-/// analysis was made elsewhere, 第一期 §2.9) is validated like `submit_analysis`. The service plans it, the user
-/// confirms it. Results are never reported directly: they come from the macro (`proc.program`).
+/// `proc.report { run_id, attempt, progress? | error? | finished | analysis, usage? }`: the executor's word. `finished`:
+/// what the stage collected (the macro's trial or real run) is planned and written; an `analysis` (an analyze run whose
+/// analysis was made elsewhere, 第一期 §2.9) is validated like `submit_analysis`. `usage` (`{ model, input_tokens,
+/// output_tokens, calls }` of the executor's model loop, §2.9) goes into the run and its record. Results are never
+/// reported directly: they come from the macro (`proc.program`).
 pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
     let run_id = p.get("run_id").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("run_id required"))?.to_string();
     let attempt = p.get("attempt").and_then(Value::as_u64).ok_or_else(|| WsError::invalid_op("attempt required"))?;
@@ -217,6 +224,11 @@ pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) ->
         return Err(WsError::invalid_op("results come from the macro: hand in its run with proc.program, then report finished"));
     }
     let has_analysis = p.get("analysis").is_some_and(Value::is_object);
+    let usage = p.get("usage").filter(|u| u.is_object()).map(|u| {
+        let keep = |k: &str, ok: fn(&Value) -> bool| u.get(k).filter(|v| ok(v)).map(|v| (k.to_string(), v.clone()));
+        Value::Object([keep("model", |v| v.as_str().is_some_and(|s| s.len() <= 256)), keep("input_tokens", |v| v.as_u64().is_some()), keep("output_tokens", |v| v.as_u64().is_some()), keep("calls", |v| v.as_u64().is_some())]
+            .into_iter().flatten().collect())
+    });
     let (c, rid, body) = (caller.clone(), run_id.clone(), p.clone());
     let provided = state.with_ws(ws_id, move |ws| {
         let run = ws.wish_run(&c, &rid)?;
@@ -225,8 +237,11 @@ pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) ->
         if !matches!(run["state"].as_str(), Some("running")) {
             return Err(WsError::invalid_op(format!("run is {}", run["state"].as_str().unwrap_or("?"))));
         }
+        if let Some(u) = &usage {
+            ws.wish_run_set(&rid, None, None, None, None, Some(&json!({ "usage": u })))?;
+        }
         if let Some(err) = body.get("error").filter(|e| !e.is_null()) {
-            ws.wish_run_set(&rid, Some("failed"), None, None, None, Some(&json!({ "error": err, "progress": { "phase": "failed", "attempt": attempt } })))?;
+            ws.wish_run_fail(&rid, err, Some(&json!({ "progress": { "attempt": attempt } })))?;
             return Ok(None);
         }
         if body.get("finished") == Some(&json!(true)) {

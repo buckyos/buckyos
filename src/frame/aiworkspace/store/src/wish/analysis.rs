@@ -432,7 +432,13 @@ impl Stage {
         if analysis["summary"].is_null() {
             analysis.as_object_mut().unwrap().remove("summary");
         }
-        if let Err(e) = check_analysis(&analysis) {
+        // inputs found missing: the run fails with the blockers (D6), the rest is still checked as it would be written
+        let mut written = analysis.clone();
+        if status == "needs_input" {
+            written["status"] = json!("ready");
+            written["blockers"] = json!([]);
+        }
+        if let Err(e) = check_analysis(&written) {
             problems.push(e.detail);
         }
         if !problems.is_empty() {

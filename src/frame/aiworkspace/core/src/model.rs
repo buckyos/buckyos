@@ -266,6 +266,7 @@ pub const REF_KINDS: &[(&str, &str, &str, &str)] = &[
     ("body", "live", "strong", "a table record's body rich text"),
     ("def", "live", "strong", "a Block uses this Block definition"),
     ("asset", "fixed", "strong", "an AssetRef or a directory member names this content object"),
+    ("log", "fixed", "strong", "a wish's run record keeps this macro output log (read with update on the wish)"),
     ("member", "live", "strong", "a resource directory holds this child directory"),
     ("def_source", "live", "strong", "a Block definition's build source snapshot (a resource directory; extension controls P0)"),
     ("def_dep", "live", "strong", "a control definition builds on this definition (deps; extension controls P1)"),

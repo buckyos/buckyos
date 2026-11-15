@@ -1,9 +1,10 @@
 /* Macros (UI 框架 PRD §4.2, Q27): a macro is the runnable product of a wish — its program and declaration manifest,
- * made by the coding stage (`ui/wish/macro.ts` says which wishes hold one; the Mock executor's never do). The "宏" entry
+ * made by the coding stage (`ui/wish/macro.ts` says which wishes hold one). The "宏" entry
  * lists the wishes of the outline whose macro the current user can run now — they may update the wish, the analysis is
  * ready and the macro fits its inputs (not "needs coding"). The one used last comes first
  * (per workspace, user state), then the macros on the current canvas, then the rest. Running one is exactly the wish
- * panel's "运行" (`WishService.runMacro`): same identity, same result handling — a candidate waits in the wish. Its start,
+ * card's run button (`WishService.runMacro`): same identity, same result handling — the results are written when it ends
+ * (许愿格交互升级 §3.6). Its start,
  * progress and result are entries of the status bar's work log (K3), not notices; only a run the service never took (it
  * could not start) is said above the status bar, since the log has nothing of it. */
 
@@ -70,7 +71,8 @@ export function useMacroWatch() {
   }, [store, outlineVersion])
 }
 
-/** Run a macro as the wish panel's "运行" does; remember it as the last one used. What becomes of it is in the work log. */
+/** Run a macro as the wish card's run button does; remember it as the last one used. What becomes of it is in the work log
+ * and the wish's records. */
 export function runMacro(store: WorkspaceStore, macro: Macro, openEntity: (id: string) => void) {
   store.userState.set(RECENT_MACRO_KEY, macro.wishId)
   const name = macro.title

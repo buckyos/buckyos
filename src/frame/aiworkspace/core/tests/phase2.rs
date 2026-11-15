@@ -587,7 +587,7 @@ fn analysis(prompt: &str, context: &str) -> Value {
 
 fn wish(id: &str, parent: &str, inputs: Value) -> Value {
     json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_WISH, "parent_id": parent, "order_key": "w", "name": id,
-            "payload": { "title": "许愿格", "prompt": "总结表格", "executor": "mock", "inputs": inputs,
+            "payload": { "title": "许愿格", "prompt": "总结表格", "executor": "xllm", "inputs": inputs,
                          "output": { "container_id": parent, "name": "摘要", "type": TYPE_RICHTEXT }, "output_mode": "overwrite" } })
 }
 
@@ -621,7 +621,7 @@ fn wishes_dependency_records_freshness_and_relations() {
         { "entity_id": "t1", "selector": { "kind": "table_field_values", "field_id": "n" }, "version": { "mode": "follow", "rev": n_values } },
         { "entity_id": "r1", "selector": { "kind": "doc_key", "key": "p:owner" }, "version": { "mode": "fixed", "rev": owner_rev } }
     ]);
-    let derived = json!({ "wish_id": "w1", "run_id": "run-1", "executor": "mock", "simulated": true, "inputs": read_set });
+    let derived = json!({ "wish_id": "w1", "run_id": "run-1", "executor": "xllm", "inputs": read_set });
     let apply = ws.ok(json!([
         { "op": "entity.create", "entity_id": "sum-1", "type_id": TYPE_RICHTEXT, "parent_id": "s1-content", "order_key": "x", "name": "摘要",
           "payload": { "content": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "p1" }, "content": [{ "type": "text", "text": "共 1 行（模拟）" }] }] } } },
@@ -663,7 +663,7 @@ fn wishes_dependency_records_freshness_and_relations() {
     assert_eq!(f["changed_inputs"][0]["selector"]["field_id"], "n");
     assert_eq!(entity_freshness(&ws.store, &alice, "w1").unwrap()["status"], "stale");
     // the same stale result seen through an upstream dependency: upstream_stale, not current
-    let derived2 = json!({ "wish_id": "w1", "run_id": "run-2", "executor": "mock",
+    let derived2 = json!({ "wish_id": "w1", "run_id": "run-2", "executor": "xllm",
                            "inputs": [{ "entity_id": "sum-1", "version": { "mode": "follow", "rev": ws.store.entities["sum-1"].content_rev } }] });
     ws.ok(json!([record("r-down", "s1-content", "x"), { "op": "entity.set_derived", "entity_id": "r-down", "derived": derived2 }]));
     let f = entity_freshness(&ws.store, &alice, "r-down").unwrap();
@@ -756,7 +756,7 @@ fn packages_carry_dependency_records_and_refuse_old_formats() {
     let mut ws = MemWorkspace::new();
     ws.ok(json!(surface("s1", "free")));
     ws.ok(json!([table("t1", DATA_ID), record("r1", "s1-content", "林"),
-        { "op": "entity.set_derived", "entity_id": "r1", "derived": { "wish_id": "t1", "run_id": "run-9", "executor": "mock", "inputs": [{ "entity_id": "t1", "version": { "mode": "follow", "rev": 1 } }] } },
+        { "op": "entity.set_derived", "entity_id": "r1", "derived": { "wish_id": "t1", "run_id": "run-9", "executor": "xllm", "inputs": [{ "entity_id": "t1", "version": { "mode": "follow", "rev": 1 } }] } },
         cell("c1", "s1", Some("r1"), "record", json!({ "x": 1, "y": 2, "w": 3, "h": 4 }))]));
     let mut sink = Mem::default();
     let m = materialize(&ws.store, &mut sink, &|_| Ok(true), &mut |_, _| None).unwrap();

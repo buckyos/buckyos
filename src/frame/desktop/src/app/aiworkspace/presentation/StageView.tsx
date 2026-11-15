@@ -15,7 +15,6 @@ import { StoreContext, useLoad, useOutlineVersion, useVersion, WorkspaceUiContex
 import type { WorkspaceStore } from '../state/store'
 import { BlockHost } from '../ui/blocks/BlockHost'
 import type { Camera } from '../ui/canvas/render/camera'
-import { WishPanel } from '../ui/wish/WishPanel'
 import { ContextZone } from '../ui/framework/ContextZone'
 import { useAiwsText } from '../useAiwsText'
 import { command, ShowController } from './controller'
@@ -132,7 +131,6 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
   const nextTarget = useTarget(store, next)
   const rootRef = useRef<HTMLDivElement>(null)
   const [editing, setEditing] = useState<string | null>(null)
-  const [wish, setWish] = useState<{ wishId: string; cellId: string } | null>(null)
   const [tool, setTool] = useState<MarkTool>('none')
   const [ink, setInk] = useState<InkStroke[]>([])
   const [inkColor, setInkColor] = useState(INK_COLORS[0])
@@ -187,8 +185,8 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const el = event.target instanceof Element ? event.target : null
-      if (editing || wish) {
-        if (event.key === 'Escape' && !el?.closest('.aiws-show-drawer input, .aiws-show-drawer textarea')) { setEditing(null); if (wish) setWish(null) }
+      if (editing) {
+        if (event.key === 'Escape' && !el?.closest('.aiws-show-drawer input, .aiws-show-drawer textarea')) setEditing(null)
         return
       }
       if (event.isComposing || el?.closest('input, textarea, select, [contenteditable="true"], [data-role="editor"]')) return
@@ -213,14 +211,13 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [controller, editing, wish, panel, tool, exit, wake])
+  }, [controller, editing, panel, tool, exit, wake])
 
-  // ---- operable Blocks (§10.2): only `presentation.live`; a wish opens its panel beside the stage
+  // ---- operable Blocks (§10.2): only `presentation.live`; a wish is its card on the stage, worked with in place
   const onEditingChange = (id: string | null) => {
     if (!id) { setEditing(null); return }
     const entity = store.outline.get(id)
-    if (!entity?.live) return
-    if (entity.view_type === 'wish' && entity.source_id) { setWish({ wishId: entity.source_id, cellId: id }); return }
+    if (!entity?.live || entity.view_type === 'wish') return
     setEditing(id)
   }
 
@@ -336,12 +333,6 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
             <button type="button" className="is-primary" onClick={copyLink}>{copied ? t('aiworkspace.presentation.show.copied') : t('aiworkspace.presentation.show.copy')}</button>
             <button type="button" onClick={() => window.open(link, '_blank', 'noopener')}>{t('aiworkspace.presentation.show.openInWindow')}</button>
           </div>
-        </div>
-      )}
-      {wish && (
-        <div className="aiws-show-drawer aiws-panel aiws-stage-ui" data-testid="aiws-show-wish">
-          <div className="aiws-dialog-head"><b>{t('aiworkspace.presentation.show.wish')}</b><span className="aiws-grow" /><button type="button" onClick={() => setWish(null)}>{t('aiworkspace.common.close')}</button></div>
-          <WishPanel wishId={wish.wishId} cellId={wish.cellId} readOnly={!live} />
         </div>
       )}
     </div>

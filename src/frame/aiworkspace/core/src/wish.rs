@@ -37,6 +37,42 @@ pub const MAX_REFINEMENT_CHARS: usize = 2000;
 pub const MAX_CONTRACT_RESULTS: usize = 32;
 pub const MAX_CHECKS: usize = 32;
 pub const MAX_VIEWS: usize = 4;
+/// Records `history` keeps per stage (许愿格交互升级 D8): the newest first, the oldest dropped.
+pub const HISTORY_PER_STAGE: usize = 20;
+/// The largest `history`, in canonical bytes.
+pub const MAX_HISTORY_BYTES: usize = 1024 * 1024;
+/// A macro's output log kept with a record: its head, at most this many bytes.
+pub const HISTORY_LOG_MAX_BYTES: usize = 256 * 1024;
+/// Check levels (D2): a failed `error` check fails the run, a failed `warning` check is written and reported.
+pub const CHECK_LEVELS: &[&str] = &["error", "warning"];
+const HISTORY_ACTIONS: &[(&str, &[&str])] = &[(STAGE_ANALYZE, &["analyze", "rollback"]), (STAGE_CODE, &["code", "repair", "rollback"]), (STAGE_RUN, &["run", "rollback"])];
+const HISTORY_OBJECTS: &[&str] = &["prompt", "analysis", "program", "source", "log"];
+/// Warnings one record keeps.
+const MAX_RECORD_WARNINGS: usize = 32;
+
+/// A record's warning: a model's or an executor's own text, or the service's `{ code, …params }` (a short identifier and
+/// short texts, numbers or short lists of them) that the reader's client words in the reader's language.
+fn warning_ok(w: &Value) -> bool {
+    let scalar = |v: &Value, max: usize| match v {
+        Value::String(s) => s.chars().count() <= max,
+        Value::Number(_) | Value::Bool(_) | Value::Null => true,
+        _ => false,
+    };
+    match w {
+        Value::String(s) => s.chars().count() <= 2000,
+        Value::Object(o) => {
+            let code_ok = o.get("code").and_then(Value::as_str).is_some_and(|c| {
+                let b = c.as_bytes();
+                !b.is_empty() && b.len() <= 64 && b[0].is_ascii_lowercase() && b.iter().all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || *x == b'_')
+            });
+            code_ok && o.len() <= 16 && o.iter().filter(|(k, _)| k.as_str() != "code").all(|(k, v)| k.len() <= 64 && match v {
+                Value::Array(a) => a.len() <= 64 && a.iter().all(|x| scalar(x, 256)),
+                other => scalar(other, 1000),
+            })
+        }
+        _ => false,
+    }
+}
 /// Result types of `wish.results.v2`. A `control` result is a Block-control instance on the canvas (a mind map…):
 /// no data entity, its tree in the result.
 pub const RESULT_TYPES: &[&str] = &["richtext", "record", "table", "table_columns", "image", "asset", "html", "video", "control"];
@@ -383,8 +419,9 @@ pub fn check_analysis(v: &Value) -> WsResult<()> {
     if o.get("schema_version").and_then(Value::as_str) != Some(ANALYSIS_SCHEMA) {
         return Err(bad(format!("analysis.schema_version must be {ANALYSIS_SCHEMA}")));
     }
-    if !matches!(o.get("status").and_then(Value::as_str), Some("ready" | "needs_input")) {
-        return Err(bad("analysis.status must be ready or needs_input"));
+    // an analysis that found inputs missing is a failed run, never written (D6)
+    if o.get("status").and_then(Value::as_str) != Some("ready") {
+        return Err(bad("analysis.status must be ready"));
     }
     if !text_ok(o.get("prompt"), crate::types::MAX_PROMPT_CHARS) {
         return Err(bad("analysis.prompt (the prompt it was derived from) required"));
@@ -426,13 +463,20 @@ pub fn check_analysis(v: &Value) -> WsResult<()> {
     let mut ids = BTreeSet::new();
     for c in checks {
         let co = c.as_object().ok_or_else(|| bad("check must be an object"))?;
-        only(co, &["id", "kind", "text"], "check")?;
+        only(co, &["id", "kind", "level", "text"], "check")?;
         let id = co.get("id").and_then(Value::as_str).filter(|s| is_check_id(s)).ok_or_else(|| bad("check.id must be an identifier"))?;
         if !ids.insert(id) {
             return Err(bad(format!("duplicate check id {id}")));
         }
-        if !matches!(co.get("kind").and_then(Value::as_str), Some("program" | "review")) {
+        let kind = co.get("kind").and_then(Value::as_str);
+        if !matches!(kind, Some("program" | "review")) {
             return Err(bad("check.kind must be program or review"));
+        }
+        // a program check is judged mechanically when the macro runs, so its level is settled now; a review check may omit it
+        match co.get("level").and_then(Value::as_str) {
+            Some(l) if CHECK_LEVELS.contains(&l) => {}
+            None if kind == Some("review") && co.get("level").is_none() => {}
+            _ => return Err(bad(format!("check {id}: level must be error (a failure makes the result untrustworthy) or warning (the result is usable, with a caveat)"))),
         }
         if !text_ok(co.get("text"), 1000) {
             return Err(bad("check.text required"));
@@ -463,6 +507,64 @@ pub fn check_analysis(v: &Value) -> WsResult<()> {
         if let Some(r) = bo.get("reads") {
             if !r.as_array().is_some_and(|a| a.len() <= 200 && a.iter().all(Value::is_object)) {
                 return Err(bad("analysis.basis.reads must be a list of version cells"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The content objects `history` keeps, `(object_id, is_log)`: a log is read with `update` on the wish (D9).
+pub fn history_objects(payload: &JsonMap) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    for stage in STAGES {
+        for r in payload.get("history").and_then(|h| h.get(*stage)).and_then(Value::as_array).into_iter().flatten() {
+            for (k, v) in r.get("objects").and_then(Value::as_object).into_iter().flatten() {
+                if let Some(id) = v.as_str() {
+                    out.push((id, k == "log"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `history` (许愿格交互升级 §3.4): `{ analyze, code, run: [record…], results_count }`, each list newest first and at
+/// most [`HISTORY_PER_STAGE`] long. Written by the service only (the caller checks the origin); the shape of a record
+/// beyond its identity, stage, action and objects is the service's.
+pub fn check_history(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("history must be an object"))?;
+    only(o, &["analyze", "code", "run", "results_count"], "history")?;
+    if canonical_json(v).map(|s| s.len()).unwrap_or(usize::MAX) > MAX_HISTORY_BYTES {
+        return Err(WsError::limit(format!("history is limited to {} KiB", MAX_HISTORY_BYTES / 1024)));
+    }
+    if o.get("results_count").is_some_and(|n| n.as_u64().is_none()) {
+        return Err(bad("history.results_count must be a non-negative integer"));
+    }
+    for (stage, actions) in HISTORY_ACTIONS {
+        let Some(list) = o.get(*stage) else { continue };
+        let list = list.as_array().ok_or_else(|| bad(format!("history.{stage} must be an array")))?;
+        if list.len() > HISTORY_PER_STAGE {
+            return Err(WsError::limit(format!("history.{stage} keeps at most {HISTORY_PER_STAGE} records")));
+        }
+        for r in list {
+            let ro = r.as_object().ok_or_else(|| bad("a history record must be an object"))?;
+            if !text_ok(ro.get("id"), 128) || ro.get("stage").and_then(Value::as_str) != Some(*stage) || !text_ok(ro.get("at"), 64) || !ro.get("ok").is_some_and(Value::is_boolean) {
+                return Err(bad(format!("history.{stage}: a record needs id, stage {stage}, ok and at")));
+            }
+            if !ro.get("action").and_then(Value::as_str).is_some_and(|a| actions.contains(&a)) {
+                return Err(bad(format!("history.{stage}: action must be one of {}", actions.join(", "))));
+            }
+            if let Some(w) = ro.get("warnings") {
+                if !w.as_array().is_some_and(|a| a.len() <= MAX_RECORD_WARNINGS && a.iter().all(warning_ok)) {
+                    return Err(bad(format!("history.{stage}: warnings are at most {MAX_RECORD_WARNINGS} short texts or {{ code, … }} objects")));
+                }
+            }
+            if let Some(objs) = ro.get("objects") {
+                let oo = objs.as_object().ok_or_else(|| bad("history record objects must be an object"))?;
+                only(oo, HISTORY_OBJECTS, "history record objects")?;
+                if !oo.values().all(|x| x.as_str().is_some_and(is_obj_id)) {
+                    return Err(bad("history record objects are object ids"));
+                }
             }
         }
     }
@@ -563,7 +665,7 @@ mod tests {
             "inputs": [{ "entity_id": "sales", "name": "sales", "label": "Orders", "version": { "mode": "follow", "rev": 3 } }],
             "analysis": { "schema_version": ANALYSIS_SCHEMA, "status": "ready", "prompt": "p", "context_prompt": "c",
                           "output_contract": { "results": [{ "name": "monthly", "type": "table", "key": ["month"] }], "placement": "right_of_wish" },
-                          "checks": [{ "id": "total", "kind": "program", "text": "totals match" }], "blockers": [], "warnings": [] },
+                          "checks": [{ "id": "total", "kind": "program", "level": "error", "text": "totals match" }], "blockers": [], "warnings": [] },
             "output_mode": "overwrite",
         })
         .as_object()
@@ -612,6 +714,14 @@ mod tests {
         a["blockers"] = json!([{ "code": "MISSING_INPUT", "message": "no sales table found" }]);
         assert!(check_analysis(&a).is_err(), "ready with blockers");
         a["status"] = json!("needs_input");
+        assert!(check_analysis(&a).is_err(), "an analysis that found inputs missing is a failed run, never written");
+        // a program check carries its level; a review check may leave it out
+        let mut a = p["analysis"].clone();
+        a["checks"][0].as_object_mut().unwrap().remove("level");
+        assert!(check_analysis(&a).is_err(), "a program check without a level");
+        a["checks"][0]["level"] = json!("fatal");
+        assert!(check_analysis(&a).is_err(), "an unknown level");
+        a["checks"] = json!([{ "id": "cited", "kind": "review", "text": "cited" }, { "id": "w", "kind": "program", "level": "warning", "text": "w" }]);
         check_analysis(&a).unwrap();
         let mut a = p["analysis"].clone();
         a["output_contract"]["results"][0]["name"] = json!("../x");
@@ -620,6 +730,75 @@ mod tests {
         assert!(is_result_name("月度汇总") && !is_result_name("a/b") && !is_result_name(" a"));
         // i18n-exempt: input names must be ASCII identifiers, a Chinese one is refused
         assert!(is_input_name("sales_2") && !is_input_name("2sales") && !is_input_name("销售"));
+    }
+
+    fn record(stage: &str, action: &str, id: &str) -> Value {
+        json!({ "id": id, "stage": stage, "action": action, "ok": true, "at": "2026-11-14T08:00:00.000Z",
+                "objects": { "prompt": format!("mix256:{}", "a".repeat(64)), "log": format!("mix256:{}", "b".repeat(64)) } })
+    }
+
+    #[test]
+    fn history_shape() {
+        let h = json!({ "analyze": [record("analyze", "analyze", "r1")], "code": [record("code", "repair", "r2"), record("code", "rollback", "rb_1")],
+                        "run": [], "results_count": 3 });
+        check_history(&h).unwrap();
+        let bad = |edit: &dyn Fn(&mut Value), why: &str| {
+            let mut x = h.clone();
+            edit(&mut x);
+            assert!(check_history(&x).is_err(), "{why}: {x}");
+        };
+        bad(&|x| x["extra"] = json!([]), "unknown key");
+        bad(&|x| x["results_count"] = json!(-1), "a count");
+        bad(&|x| x["analyze"][0]["stage"] = json!("run"), "a record of another stage");
+        bad(&|x| x["analyze"][0]["action"] = json!("run"), "an action of another stage");
+        bad(&|x| { x["code"][0].as_object_mut().unwrap().remove("ok"); }, "ok required");
+        bad(&|x| x["code"][0]["objects"]["video"] = json!(format!("mix256:{}", "c".repeat(64))), "unknown object");
+        bad(&|x| x["code"][0]["objects"]["log"] = json!("not an id"), "objects are ids");
+        let mut ok = h.clone();
+        ok["code"][0]["warnings"] = json!(["the model's own text", { "code": "check_failed", "id": "soft", "text": "recent data" },
+                                          { "code": "uncited_numbers", "name": "commentary", "numbers": ["98,765"] }, { "code": "discarded_edits", "count": 2 }]);
+        check_history(&ok).unwrap();
+        bad(&|x| x["code"][0]["warnings"] = json!([{ "id": "soft" }]), "a warning object needs its code");
+        bad(&|x| x["code"][0]["warnings"] = json!([{ "code": "Check Failed" }]), "a code is an identifier");
+        bad(&|x| x["code"][0]["warnings"] = json!([{ "code": "x", "deep": { "a": 1 } }]), "params are short texts, numbers or lists of them");
+        bad(&|x| x["code"][0]["warnings"] = json!([1]), "a warning is a text or an object");
+        bad(&|x| x["code"][0]["warnings"] = json!(vec!["w"; MAX_RECORD_WARNINGS + 1]), "at most so many");
+        let mut full = h.clone();
+        full["run"] = json!((0..=HISTORY_PER_STAGE).map(|i| record("run", "run", &format!("r{i}"))).collect::<Vec<_>>());
+        assert_eq!(check_history(&full).unwrap_err().code, crate::Code::LimitExceeded);
+        // its objects, a log marked as one
+        let p = json!({ "history": h }).as_object().cloned().unwrap();
+        let objects = history_objects(&p);
+        assert_eq!(objects.len(), 6);
+        assert_eq!(objects.iter().filter(|(_, log)| *log).count(), 3);
+    }
+
+    /// `history` is written by runs only; its objects are kept like assets, a log under its own kind.
+    #[test]
+    fn history_is_the_services() {
+        use crate::model::{DATA_ID, TYPE_WISH};
+        let mut ws = crate::testkit::MemWorkspace::new();
+        let (prompt, log) = (format!("mix256:{}", "a".repeat(64)), format!("mix256:{}", "b".repeat(64)));
+        for id in [&prompt, &log] {
+            ws.store.assets.insert(id.clone(), crate::model::AssetInfo { object_id: id.clone(), media_type: "text/plain".into(), size: 1 });
+        }
+        let history = json!({ "analyze": [], "code": [record("code", "code", "r1")], "run": [], "results_count": 0 });
+        let wish = |h: &Value| json!([{ "op": "entity.create", "entity_id": "w1", "type_id": TYPE_WISH, "parent_id": DATA_ID, "order_key": "w",
+                                        "payload": { "prompt": "p", "executor": "xllm", "history": h } }]);
+        assert_eq!(ws.fail(wish(&history))["code"], "PERMISSION_DENIED", "a person never writes it");
+        let env = ws.env("alice", "program", Some("r1"), false);
+        assert!(ws.commit_with(&crate::access::Access::full("alice"), &env, &crate::testkit::MemWorkspace::request(wish(&history))).is_ok(), "a run writes it");
+        let refs: Vec<(String, String)> = ws.store.refs.iter().filter(|r| r.src_entity_id == "w1" && !r.dst_object_id.is_empty()).map(|r| (r.kind.clone(), r.dst_object_id.clone())).collect();
+        assert_eq!(refs, [("asset".to_string(), prompt.clone()), ("log".to_string(), log.clone())], "{refs:?}");
+        assert!(crate::types::asset_object_ids(TYPE_WISH, &ws.store.entities["w1"].payload).contains(&log.as_str()), "kept and exported");
+        let rev = ws.store.entities["w1"].key_rev("history");
+        assert_eq!(ws.fail(json!([{ "op": "entity.unset_keys", "entity_id": "w1", "keys": [{ "key": "history", "expect": { "rev": rev } }] }]))["code"], "PERMISSION_DENIED");
+        // an object that was never uploaded is refused
+        let mut missing = history.clone();
+        missing["code"][0]["objects"]["program"] = json!(format!("mix256:{}", "c".repeat(64)));
+        let env = ws.env("alice", "program", Some("r2"), false);
+        let req = crate::testkit::MemWorkspace::request(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "history", "value": missing, "expect": { "rev": rev } }] }]));
+        assert!(ws.commit_with(&crate::access::Access::full("alice"), &env, &req).is_err());
     }
 
     #[test]

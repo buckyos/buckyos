@@ -2,10 +2,12 @@
 export type BridgeOp = 'sql' | 'ai.complete' | 'llm.map' | 'zone.fetch' | 'ai.image' | 'ai.video'
 export interface InferMessage { role: 'system' | 'user' | 'assistant'; text: string }
 export interface InferRequest { model: string; messages: InferMessage[]; schema: unknown | null; max_tokens: number }
+/** One inference's answer: the output and input tokens and the model that answered, when the executor can tell. */
+export interface InferAnswer { text: string; tokens?: number; input_tokens?: number; model?: string }
 export interface ZoneAnswer { status: number; headers: Record<string, string>; text?: string; base64?: string }
 export interface BridgeHostOptions {
   tool(name: string, args: unknown): Promise<{ status?: string; text?: string; code?: string; [k: string]: unknown }>
-  infer(req: InferRequest): Promise<{ text: string; tokens?: number }>
+  infer(req: InferRequest): Promise<InferAnswer>
   zoneFetch?(url: string, init: { method: string; headers: Record<string, string>; body: string | null }): Promise<ZoneAnswer>
   /** One AICC call with the executor's session (a refusal throws with `code`, as `infer`). */
   aicc?(method: string, params: Record<string, unknown>): Promise<any> // eslint-disable-line @typescript-eslint/no-explicit-any

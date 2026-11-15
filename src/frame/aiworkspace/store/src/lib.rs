@@ -10,7 +10,6 @@ pub mod library;
 pub mod objects;
 pub mod pack;
 pub mod presence;
-pub mod proc;
 pub mod reads;
 pub mod schema;
 pub mod service;

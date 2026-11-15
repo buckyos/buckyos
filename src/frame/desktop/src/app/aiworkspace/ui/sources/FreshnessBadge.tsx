@@ -14,7 +14,6 @@ export function FreshnessBadge({ entityId, showManual = true }: { entityId: stri
     <span className="aiws-freshness" data-testid={`aiws-freshness-${entityId}`} data-status={info.status} data-manual={info.manual_modified ? 'true' : 'false'}>
       <span className={`aiws-chip ${tone}`} title={freshnessDetail(info)}>{FRESHNESS_LABEL[info.status]}</span>
       {showManual && info.manual_modified && <span className="aiws-chip aiws-chip-warn" title={t('aiworkspace.data.freshness.manualTitle')}>{t('aiworkspace.data.freshness.manual')}</span>}
-      {info.simulated && <span className="aiws-chip aiws-chip-derived">{t('aiworkspace.data.simulated')}</span>}
       {info.external_data && <span className="aiws-chip" title={t('aiworkspace.data.freshness.externalTitle')}>{t('aiworkspace.data.freshness.external')}</span>}
       {info.model_judgment && <span className="aiws-chip" title={t('aiworkspace.data.freshness.modelTitle')}>{t('aiworkspace.data.freshness.model')}</span>}
     </span>

@@ -12,8 +12,8 @@ core/      aiworkspace-core   pure logic, builds for wasm32-unknown-unknown (no 
                               anchor.rs: annotation anchors (target / range / quote) and per-type anchor adapters;
                               freshness.rs: dependency-based freshness and relation queries (shared with the replica);
                               wish.rs: wish v2 contracts and digests; markdown.rs: Markdown ⇄ rich text
-store/     aiworkspace-store  SQLite storage, objects in the named store retained by bucket bindings, packages, Mock runs, URL sources;
-                              wish/: snapshot, context map, read tools, result collector, planner, run records
+store/     aiworkspace-store  SQLite storage, objects in the named store retained by bucket bindings, packages, URL sources;
+                              wish/: snapshot, context map, read tools, result collector, planner, runs, run records (history)
 server/    aiworkspace        process entry, kRPC dispatch, upload/download routes, auth;
                               wish/: run orchestration, xllm adapter and host tools, Deno program runner, llm.map
 aiws/      aiws v2 package    program host (aiws.js, run.js), API doc for the model, prompts, renderer catalog (deno test)
@@ -70,7 +70,7 @@ Bytes the service produces itself (Source fetches, wish results and program sour
 ```bash
 cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors, phase2 (two trees, wishes, freshness),
                                     # tests/ink.rs: pen strokes (fixtures/ink) committed and read back, malformed ink refused
-cargo test -p aiworkspace-store     # V01–V22, V24, write locks, Mock — against real SQLite files; tests/sso.rs: caller classes,
+cargo test -p aiworkspace-store     # V01–V22, V24, write locks, a run's Commit — against real SQLite files; tests/sso.rs: caller classes,
                                     # group / contact subjects, share entries;
                                     # tests/replica.rs: the offline engine incl. the incremental rows a replica persists
 cargo test -p aiworkspace           # V23 + crash recovery — against the real process over HTTP; tests/sso.rs: the same
@@ -342,8 +342,7 @@ Every entry has `id`, `at`, `actor`, `actor_kind` (`agent` for origin `agent`, `
 `target` (`{ entity_id, type_id, name, title, kind, deleted, surface_id }`: the first readable non-system entity a Commit
 touched, a run's wish, a show's path; `surface_id` is the Surface it is on — itself, the Surface above a Block, or the one
 whose content folder holds it — when readable) or `null`; a Commit also has `targets` (how many readable entities it
-touched). A run of the Mock executor (`wish.mock@1`) and a Commit of its results (or of `mock.*`) carry `simulated:
-true`: no macro ran (UI 框架 PRD Q27), the client does not call it one. `filter: mine` keeps the caller's own entries; `automation` keeps Commits of origin `agent` / `program` and the
+touched). `filter: mine` keeps the caller's own entries; `automation` keeps Commits of origin `agent` / `program` and the
 runs. Pages: entries strictly older than `before` (the `next_before` of the previous page, `"<at>|<id>"`); each source
 looks at no more than 1 000 rows per call, so a page after a long stretch of unreadable rows may come back short (even
 empty) with `more: true` and a `next_before` to go on from. Commit messages are the author's text in the author's
@@ -958,42 +957,121 @@ outline projects `ink_stroke` (the `stroke` id) on an ink Cell's envelope. The f
 `fixtures/ink/strokes.json` (a mouse line, a pen tap, a pressure stroke with tilt, a three-segment stroke) is
 written by `desktop/tests/datamodel/aiworkspace-ink.test.ts` and committed and read back by `core/tests/ink.rs`.
 
-## Wish runs (许愿格; AI Native 第一期: analyze → code → run)
+## Wish runs (许愿格; AI Native 第一期: analyze → code → run; 许愿格交互升级)
 
-Two `proc` programs (design §13; `notepads/aiws-ai-native-phase1-todo.md` §2). Runs live in `local.sqlite` `runs` (never
-exported); stage folders in `<ws>/runs/<run_id>/work`, the AI answer cache in `<ws>/cache/llm_map/`. The service runs no
-model and no program: every stage of `wish.xllm@1` executes on an executor — the starter's browser (`local`) or the Owner's
-Agent (`hosted`). The service takes the stage snapshot, answers the stage's tools, judges what the executor hands in, plans the
-candidate and commits exactly the previewed plan.
+One `proc` program for wishes (design §13; `notepads/aiws-ai-native-phase1-todo.md` §2; `notepads/aiws-wish-card-interaction-todo.md`).
+Runs live in `local.sqlite` `runs` (the working record of this deployment: progress, claims, leases; never exported); stage
+folders in `<ws>/runs/<run_id>/work`, the AI answer cache in `<ws>/cache/llm_map/`. The service runs no model and no program: every
+stage of `wish.xllm@1` executes on an executor — the starter's browser (`local`) or the Owner's Agent (`hosted`). The service takes
+the stage snapshot, answers the stage's tools, judges what the executor hands in, and **when the stage ends plans what it produced
+and writes it in one Commit** (origin `program`, written as the run, idempotency key `run/<run_id>`) together with the run's record
+in the wish's `history`. Nothing waits for a confirmation; what a run wrote is undone with `proc.rollback`.
 
 | Program | `params` |
 | --- | --- |
-| `wish.xllm@1` | `wish_id`, `stage: analyze \| code \| run`, `parent_run_id?` (code: a failed run to repair, or the previous round) + `feedback?` (a feedback round), `location?` (`{ surface_id, cell_id, selection, viewport }`, the task location of the map), `request?` (`aiws.request`), `execution?: { mode: local \| hosted }` |
-| `wish.mock@1` | `wish_id`, `stage: run`, `provided` — the browser Mock executor's results, planned and applied like a real run |
+| `wish.xllm@1` | `wish_id`, `stage: analyze \| code \| run`, `parent_run_id?` (code: a failed run to repair, or the previous round) + `feedback?` (a feedback round), `location?` (`{ surface_id, cell_id, selection, viewport }`, the task location of the map), `request?` (`aiws.request`), `execution?: { mode: local \| hosted }`, `session_id?` (the session the stage's Commit is written in: write locks it holds count) |
 
-States: `queued → snapshotting → running → validating → waiting_confirmation → applying → succeeded`, or
-`failed | cancelled | interrupted | conflict | rejected`. An executor's lapsed lease makes its run `interrupted` (resumed as a new
-attempt); an `applying` run is reconciled through the Commit idempotency record `run/<run_id>/<plan_digest>`. `proc.get { run_id,
-choices? }` returns progress, the candidate and — while waiting — the preview of the plan for `choices` (`{ results: { <name>: keep |
-replace | new }, confirm_structure? }`); `proc.apply { run_id, plan_digest }` applies exactly that previewed plan in one Commit
-(origin `program`).
+States: `queued → snapshotting → running → validating → applying → succeeded`, or `failed | cancelled | interrupted` (active:
+`queued snapshotting running validating applying`). An executor's lapsed lease makes its run `interrupted` (resumed as a new
+attempt); an `applying` run found without its worker is reconciled through the Commit idempotency record `run/<run_id>`:
+`succeeded` when the Commit happened, else `interrupted` (nothing was written). `proc.get { run_id }` returns `state progress error
+usage aicc execution applied program_log record …`: `applied { status: accepted, commit: { commit_id, seq, … } }` once the stage
+wrote; `record` is the record it wrote into `history` (null before it ended, and for a cancelled or interrupted run). What the stage
+produced stays in the service.
 
 - **analyze** (`analyze_model`): the model reads `WORKSPACE.md` (the context map) and the read-only tools
   `ws_outline / ws_find / ws_profile / ws_neighbors / ws_read / ws_query`, and delivers through `submit_analysis` (checked on the
-  spot). Applying writes `analysis` (`wish.analysis.v3`, no `approach`: every result comes from the macro; `basis.digest` is
-  computed by core) and the named `inputs`. An analysis made elsewhere (Jarvis in a conversation) is handed in with
-  `proc.report { analysis }` on an analyze run the Agent started itself (`buckyos aiws run-start`).
-- **code** (`execute_model`): needs a current, ready analysis (`NEEDS_ANALYSIS`, `NEEDS_INPUT` otherwise). The read tools plus
-  `run_program { source }` (the executor runs the macro and hands it in with `proc.program`), `check_results`, `finish`; there is
-  no direct writing. `finish` needs a successful trial run with a manifest. The candidate is the trial run's: applying writes the
-  macro (`program`: `{ language: js, api_version: 3, source, digest, manifest, produces }`) and its results in one Commit. A repair
-  or a feedback round starts from the parent run's macro, else from the stored one.
+  spot). When it ends it writes `analysis` (`wish.analysis.v3`, no `approach`: every result comes from the macro; `basis.digest` is
+  computed by core) and the named `inputs`. An analysis that concludes inputs are missing (`status: needs_input` with `blockers`) is
+  not written: the run fails with `NEEDS_INPUT` and its record names them (`error.missing_inputs`); the user binds the input in the
+  wish's properties and analyzes again — a stored `analysis.status` is always `ready`. An analysis made elsewhere (Jarvis in a
+  conversation) is handed in with `proc.report { analysis }` on an analyze run the Agent started itself (`buckyos aiws run-start`).
+- **code** (`execute_model`): needs a current analysis (`NEEDS_ANALYSIS` otherwise). The read tools plus `run_program { source }` (the
+  executor runs the macro and hands it in with `proc.program`), `check_results`, `finish`; there is no direct writing. `finish` needs
+  a successful trial run with a manifest. When it ends only the macro is written (`program`: `{ language: js, api_version: 3, source,
+  digest, manifest, produces, run_id }`, with the refinements and appended inputs it brought and the analysis re-stated): the trial
+  run's results go into the record only (`summary.trial`, `checks`, `objects.log`). An error-level check the last trial run still
+  fails ends the coding with `CHECKS_FAILED` and no macro. A repair or a feedback round starts from the parent run's macro, else from
+  the stored one.
 - **run**: needs that and a stored macro that still fits its inputs — `macro_check` (core) on the manifest: a declared field
   deleted or of another type, an input gone or rebound, another program API → `NEEDS_CODING` with `data.reasons`; a renamed field
   or table is no reason. The brief is `{ kind: program, source, manifest, budget }`; no model loop. Only the declared inputs and
   fields are materialized, under the names they had when coded. A failed macro ends the run (`PROGRAM_FAILED`; an HTML result whose
-  code differs from the coded `code_digest`: `MACRO_CODE_CHANGED`; a refused AI call: its `AI_*` sub-code); running never
-  rewrites an HTML definition, only its bindings move.
+  code differs from the coded `code_digest`: `MACRO_CODE_CHANGED`; a refused AI call: its `AI_*` sub-code; a failed error-level
+  check: `CHECKS_FAILED`, nothing written). When it ends it writes the results and `last_run`; an HTML definition takes the code its
+  macro version fixed (the first run after a coding), later runs of that version move only its bindings.
+
+**What a stage's end decides, without asking (许愿格交互升级 §3.3).** A result edited by hand is overwritten; rows and fields the wish
+wrote and no longer produces are deleted; a result not produced this time stays as it was — each is a warning of the record. A plan
+with problems (an output place gone, a result whose type cannot change in place, over one Commit's limits) or a failed pre-check
+(`PLAN_PROBLEMS`, `data.problems`), a Commit conflict (the wish or its outputs changed while it ran: `COMMIT_CONFLICT`) and a
+delegation that no longer holds (`DELEGATION_STALE`, `RUN_REVOKED`, below) fail the run: only its record is written.
+
+**Check levels (D2).** Every program check of an analysis has `level: error | warning` (`submit_analysis` refuses one without it; a
+review check may leave it out): the analysis decides it, since running has no model in the loop. A failed `error` check fails a run
+(`CHECKS_FAILED`, nothing written) or a coding (no macro kept); a failed `warning` check is written and goes first in the record's
+warnings, so does an `error` check that did not run. A check the macro reports beyond the contract counts as a warning; review checks
+judge nothing.
+
+**Run records (`payload.history`, D7–D9).** Written by the service only — the stage's Commit, a Commit of the record alone when a run
+fails (not into any undo stack), a rollback; a person writing `history` is refused (`PERMISSION_DENIED`; core `check_history`).
+A cancelled or interrupted run has no record.
+
+```
+history: { analyze: [Record], code: [Record], run: [Record],   // newest first, at most 20 a stage (core HISTORY_PER_STAGE)
+           results_count }                                       // runs that wrote results; a rollback takes nothing off
+Record: { id (the run id; a rollback's rb_…), stage, action: analyze | code | repair | run | rollback, ok, at (the run's start),
+          ended_at, duration_ms, by, aicc?: { mode, user_id }, usage?: { model?, input_tokens?, output_tokens?, calls? },
+          error?: { code, sub_code?, detail, missing_inputs?: [{ label?, message, candidates? }] },
+          warnings: [string | { code, …params }] (failed warning checks first, then overwritten hand edits, deletions, the model's),
+          checks?: [{ id, kind, level?, status: passed | failed | not_run | review, text }],
+          summary: analyze { text?, results, checks } | code { text?, trial: { results, checks_passed, checks_total } }
+                   | run { created, updated } | rollback { of },
+          basis: { analysis?, program?, program_record? }, inputs: [{ entity_id, name?, label?, version?: { rev } }],
+          outputs: { analysis?: { results, checks }, program?: { digest, ai }, results?: [{ name, title?, type, entity_id, cells?, action: create | update }] },
+          objects: { prompt?, analysis?, program?, source?, log? }, commit_id?, rolled_back?: { id, by, at }, rollback_of? }
+```
+
+A warning the service gives is `{ code, …params }`, worded by the reader's client in the reader's language; what a model or an
+executor wrote (the analysis's and `finish`'s warnings) stays its own text. Codes: `check_failed { id, text }` (a warning-level
+check failed, or a check outside the contract), `check_not_run { id, text }` (an error-level check did not run),
+`uncited_numbers { name, numbers }` (numbers of a text result not among the macro's facts), `overwrote_manual { name }`,
+`overwrote_manual_cells { name, count }` (derived columns), `deleted_rows { name, count }`, `deleted_field { name, field }`,
+`changed_type { name, field, from, to }`, `changed_structure { name }`, `not_produced { name }` (its earlier version stays),
+`recreated_column { name, field }` (a derived column deleted by hand), `discarded_edits { count }` (a confirmed rollback). Core
+accepts at most 32 a record, a code `^[a-z][a-z0-9_]{0,63}$` with short texts, numbers or short lists of them.
+
+What is large is a content object of the Workspace a record names (`objects`): `prompt` the request as it was (analyze, code),
+`analysis` `{ analysis, inputs }` as the wish kept them, `program` the `program` value as written (`source` its source), `log` the
+macro's output (the last trial run, or the run; its first 256 KiB). They are referenced like assets (`core::types::asset_object_ids`:
+kept, exported and cloned with the wish); a `log` is a reference of kind `log`, readable with `update` on the wish only (it may print
+what a reader of the wish may not read); the others whoever reads the wish. History is at most 1 MiB (the oldest go first). A
+template (`ext.export_template`) leaves `history` out; `tree.clone` of a wish too. Summary text is the reader's: a record keeps
+materials, and the model's own summary as it wrote it.
+
+**Rollback (`proc.rollback { run_id, confirm?, session_id? }`, D3; `update` on the wish).** Only a stage's current record rolls back —
+the newest successful one not rolled back yet (else `NOT_CURRENT_RECORD`). A run's: the inverse of its Commit (`commit_ops`) without
+its `history` part, every expectation `any` — results it updated go back (hand edits it overwrote included), results and Blocks it
+created go, `last_run` goes back. A coding's: `program` back to the previous coding record's `objects.program`, or gone. An
+analysis's: `analysis` and `inputs` back to the previous analysis record's, or `analysis` gone (as it was, basis included: an
+internal write keeps the basis it restores). Edits made since that the rollback would discard (a Commit after the record's that
+touched what it wrote — rolled back runs and rollbacks aside; for a macro or an analysis, a value that differs from the record's)
+answer `{ status: needs_confirm, lost: [{ entity_id, title?, type_id, what: edited | deleted }], hidden_lost }` (only what the
+caller may read is named) and are discarded with `confirm: true`. Otherwise one Commit: `{ status: accepted, commit, record }` —
+the record is the new `rollback` one in front, the rolled back record is marked `rolled_back`. A cloned or imported Workspace keeps
+the records, not the Commits: a run record there does not roll back (`NOT_UNDOABLE`).
+
+**Usage (§2.9).** The model stages' usage is the executor's: `proc.report { …, usage: { model?, input_tokens?, output_tokens?,
+calls? } }` with `finished`, `error` or `analysis` (stored in the run's `usage`). A run's is its macro's AI calls (`results.ai`,
+`aiws.js` `aiStats`): `calls` = complete + map + image + video calls, `input_tokens` / `output_tokens` = complete + map, `model` the
+models joined with `, `; none when it called no model (cached answers are no calls).
+
+**Main status (core `freshness::main_status`, WASM `wish_main_status`).** From the wish's freshness and what the page knows of its
+runs (`{ active?: { stage, state }, last_failed?: { stage, error } }`), the first that holds of `needs_analysis` (next `analyze`;
+reasons `analysis_sources_changed`, `analysis_failed` with the failed analysis's code), `needs_coding` (`code`), `waiting_data`
+(`view_inputs`) / `no_access` (`none`), `cannot_run` (`fix`), `in_progress` (`cancel`), `stale` (`run`), `current` (`none`); a run of
+the stage that resolves the state is `in_progress` first. Nothing waits for a confirmation, and a missing input is a failed analysis,
+not a state.
 
 **The macro and its bridge.** The program host is `aiws/aiws.js` (API v3; guide: `aiws/README.md`). A macro starts with
 `aiws.declare({ inputs: { <name>: [fields] }, ai?, zone?, params?, resources? })`; reading anything undeclared throws. The
@@ -1028,7 +1106,7 @@ media_timeout_secs }`; `proc.files` answers `{ files, stage: { budget, manifest 
 `program/main.js` when there is one — and over `snapshot_download_max_bytes` fails the run with `SNAPSHOT_TOO_LARGE`
 (`data { bytes, limit }`). `proc.program { source, results, log, files }` judges a macro run: coding answers what the model reads
 (previews, checks, manifest, problems); running, a failure ends the run. `proc.report { finished | analysis | error | progress }`;
-results are never reported directly.
+`usage?` beside them; results are never reported directly.
 
 **Execution modes (内核架构改进 M3; 浏览器优先).** `proc.start { params: { …, execution: { mode: local | hosted } } }`
 (`wish.default_execution` when absent; any other configured value counts as `local`). Every run records its execution context
@@ -1038,8 +1116,8 @@ refused with `EXECUTION_CONTEXT_MISSING`. `local`: the starter is the executor �
 an Account, or an Agent that started the run itself; anybody else is `AI_ATTRIBUTION_UNAVAILABLE`). `hosted`: the Owner's Agent
 (`ws.set_hosted_exec`) is given a Goal with the run reference and claim token (`goals.create` + `goals.activate` on its OpenDAN
 service), uses the owner's AI resources and works through `buckyos aiws run-*`; without a Zone runtime the dispatch is recorded
-`unavailable` and the run waits to be claimed. Applying checks the delegation: a changed wish configuration is `DELEGATION_STALE`, a
-candidate of a superseded attempt or a cancelled run is `RUN_REVOKED`, and results may only land where the task declared
+`unavailable` and the run waits to be claimed. The stage's end checks the delegation: a changed wish configuration is `DELEGATION_STALE`,
+the work of a superseded attempt or a cancelled run is `RUN_REVOKED`, and results may only land where the task declared
 (`OUTPUT_NOT_DECLARED`). The hosted configuration's details in a run (`context.executor.limits`, `config_digest`, the Agent's goal
 in `dispatch`) show to managers only; `limits.max_tool_iterations` counts the model's stage tools, never a macro's `sql` /
 `llm_cache`.
@@ -1047,8 +1125,8 @@ in `dispatch`) show to managers only; `limits.max_tool_iterations` counts the mo
 **The macro identity (权限需求 §4.5, Q31–Q32).** Coding and running read and write as the macro identity: the trigger's permissions
 as they are now, bounded by the wish's group when it is bound with `intersection` (`acl.bind_macro`; `union` adds nothing until
 trusted executors). It bounds the stage snapshot, the macro's `sql`, the run token's reads (an input the group cannot read fails the
-run: `DEPENDENCY_UNAVAILABLE`), the preview's pre-check and the apply; an analysis is written as its analyst. A run is applied as
-that identity whoever clicks, and it always writes the wish (`last_run`, results) — so `proc.start` of `code` / `run` refuses with
+run: `DEPENDENCY_UNAVAILABLE`), the pre-check and the Commit at the stage's end — judged as it is then; an analysis is written as its
+analyst. A run is written as that identity, and it always writes the wish (`last_run`, results) — so `proc.start` of `code` / `run` refuses with
 `PERMISSION_DENIED` / `MACRO_CANNOT_WRITE` (`data { missing, group_id }`) when the identity cannot update the wish or write where its
 results go: someone holding only `run` cannot run anything yet. An HTML page a run writes (origin `program`) needs no `manage`, but is
 `trusted` only when the identity manages the definition; a manager vouches later (`entity.set_keys trusted: true`), which is no
@@ -1487,7 +1565,7 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | show-path | `validate_show_path` (Frame rule) | schema | a Frame target is on a free-layout Surface |
 | annotation | `validate_annotation` (fields) | schema | `kind` note / highlight, body ≤ 4000, `style` object, author fixed by the backend, only the author re-anchors |
 | annotation | `validate_annotation` (`target`, `anchor::check`) | reference | the target exists; range / quote anchors resolve on it (strict only outside import) |
-| wish | `validate_wish` (fields) | schema | prompt ≤ 20 000 chars, `executor`, `output_mode`, `output { container_id, surface_id, name, type }`, ≤ 200 inputs with unique names, size limits of `analysis` / `last_run` / `executor_config`, `knowledge` / `refinements` / `analysis` shapes (`wish.rs`) |
+| wish | `validate_wish` (fields) | schema | prompt ≤ 20 000 chars, `executor` (`xllm \| agent-work-session`), `output_mode`, `output { container_id, surface_id, name, type }`, ≤ 200 inputs with unique names, size limits of `analysis` / `last_run` / `executor_config`, `knowledge` / `refinements` / `analysis` (status `ready`, program checks with a `level`) / `history` shapes (`wish.rs`); `history` written by runs only (origin `program`, internal, replay), its objects uploaded |
 | wish | `check_input` (selector shape) | schema | a wish input is `entity`, `table_view { cell_id }` or `table_query { filter?, sorts?, fields? }`; `version { mode: follow \| fixed }` |
 | wish | `check_input` (targets), `validate_wish` (`program`) | reference | the input entity exists and a `table_view` cell is a table view of it; the program source object was uploaded |
 | block-def | `block_def_primitive` (`source_dir`, `deps`, `events`) | primitive, reference | `events` an object of ≤ 16 event names (each an object, ≤ 16 KiB), written by build / import / internal / replay Commits only; `deps` is `[{ ident, entity_id }]` (≤ 32, no repeats) and only build / import / internal / replay Commits change it; `source_dir` a live directory, each `deps` target a live definition, no cycle through `deps` (`REFERENCE_CYCLE`); judged when written |
@@ -1606,11 +1684,12 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `doc.checkpoint`, `doc.export` | experimental | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?`; `doc.export` → `export_id`, `manifest`, `download: { bucket_id, key, version, obj_id, token }` (the package in the owner's `exports` bucket, 7 days; `GET /bucket/v1/<bucket_id>/<key>?token=`) |
 | `asset.import_object` | stable | `workspace_id` and either `bucket_id` + `key` (the uploader's own binding in `user/aiworkspace/<user>/assets`) or `obj_id` (an unbound, ready NDM FileObject the caller may read) → `object_id`, `media_type`, `size`, `expires_at`, `bucket_id`, `key`, `version` (staged under `<workspace_id>/<object_id>` in the owner's `assets` bucket) |
 | `replica.bootstrap` | internal | → `replica_id`, `epoch`, `head_seq`, `principal`, `prepared_at`, `download` (as `doc.export`) |
-| `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | stable | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
+| `proc.start` / `proc.get` / `proc.cancel` | stable | `program` (`wish.xllm@1`, `source.refresh@1`), `params`, `idempotency_key`; `run_id` — wish programs below; another program is `MISSING_EXTENSION` |
+| `proc.rollback` | stable | `run_id`, `confirm?`, `session_id?` — rolls a wish stage's current record back (“Wish runs”) → `{ status: needs_confirm, lost, hidden_lost }` or `{ status: accepted, commit, record }`; another record is `INVALID_OPERATION` / `NOT_CURRENT_RECORD` |
 | `proc.list` | stable | `wish_id?`, `limit?` — wish runs, newest first |
 | `proc.claim` | stable | `run_id`, `claim_token`, `executor?` — an executor takes the run (M3): the next attempt, a `run_token` (bearer for `proc.heartbeat` / `proc.report` / reads of this Workspace), a lease (90 s), and the stage it works on: `{ kind: model, stage, system, user, tools, model, iterations, source?, budget }` (analyze, code) or `{ kind: program, stage: run, source, manifest, budget }` |
 | `proc.heartbeat` | stable | `run_id`, `attempt`, `progress?` — renews the lease; a lapsed lease makes the run `interrupted` (D15) |
-| `proc.report` | stable | `run_id`, `attempt`, then `progress?`, or `error` (`{ code, detail }`: `EXECUTOR_FAILED`, an `AI_*` refusal, …), or `finished: true` (what the stage collected becomes the candidate), or `analysis` (an analyze run whose analysis was made elsewhere). Results are never reported directly (they come from the macro). The service validates and plans; a superseded attempt or a cancelled run gets `RUN_REVOKED` |
+| `proc.report` | stable | `run_id`, `attempt`, then `progress?`, or `error` (`{ code, detail }`: `EXECUTOR_FAILED`, an `AI_*` refusal, …), or `finished: true` (what the stage collected is written), or `analysis` (an analyze run whose analysis was made elsewhere); with any of them `usage?: { model?, input_tokens?, output_tokens?, calls? }` (the executor's model loop). Results are never reported directly (they come from the macro). The service validates, plans and writes; a superseded attempt or a cancelled run gets `RUN_REVOKED` |
 | `proc.tool` | stable | `run_id`, `attempt`, `name`, `args` — one call of the run's executor: a stage tool (`ws_*`, `submit_analysis`, `check_results`, `finish`), `sql` (a macro's `aiws.sql`) or `llm_cache` (the AI answer cache) — see “Wish runs”. Answers `{ status: ok \| error, text?, code? }` — `error` is for the model to correct |
 | `proc.program` | stable | `run_id`, `attempt`, `source`, `results?` (what the program host wrote to `output/.aiws/results.json`), `log?`, `files?` (`{ "output/<path>": text \| { base64 } }`) — the executor ran the macro: a trial run while coding (the model reads the answer), the run itself when running (a failure ends it: `PROGRAM_FAILED`, `MACRO_CODE_CHANGED`) |
 | `proc.files` | stable | `run_id`, `attempt` — the stage directory (`context/`, `request.json`, `catalog/`, `lib/`, `program/main.js`) as `{ path: { text } \| { base64 } }` plus `stage: { budget, manifest }`; over `snapshot_download_max_bytes` the run fails with `SNAPSHOT_TOO_LARGE` |
@@ -1715,8 +1794,8 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `doc.export` | experimental | `export` on `/` |
 | `proc.start` | stable | a Source: `update` on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish |
 | `proc.get` | stable | one's own run, or `update` / `manage` on its wish |
-| `proc.apply` | stable | one's own run, or `update` / `manage` on its wish; written as the macro identity ∩ the declared outputs |
 | `proc.cancel` | stable | one's own run, or `update` / `manage` on its wish |
+| `proc.rollback` | stable | `update` on the run's wish; the Commit's operations as the caller |
 | `proc.list` | stable | may enter |
 | `proc.claim` | stable | the executor the run's context names, with its claim token |
 | `proc.heartbeat` | stable | the run's token, while its attempt is current and running |

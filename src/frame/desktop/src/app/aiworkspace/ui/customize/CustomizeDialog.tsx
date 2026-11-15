@@ -221,7 +221,7 @@ function AddObject({ value, onChange }: { value: DraftZone; onChange: (next: Dra
 }
 
 /** An action, or a macro, for the collaboration zone — with a name and an icon of its own if wanted. The macros are the
- * wishes holding one (Q27: not the Mock executor's), whether or not they can run at this moment. */
+ * wishes holding one (Q27), whether or not they can run at this moment. */
 function AddAction({ value, onChange }: { value: DraftZone; onChange: (next: DraftZone) => void }) {
   const store = useStore()
   const { t } = useAiwsText()

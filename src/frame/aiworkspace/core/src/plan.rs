@@ -1107,7 +1107,7 @@ fn entity_clone(p: &mut Planner, op: &Value) -> OpResult {
             Value::Object(payload)
         }
         TYPE_WISH => {
-            for k in ["last_run", "analysis", "program"] {
+            for k in ["last_run", "analysis", "program", "history"] {
                 payload.remove(k);
             }
             Value::Object(payload)

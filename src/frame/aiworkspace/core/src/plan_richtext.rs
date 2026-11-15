@@ -197,6 +197,10 @@ fn check_block(
         p.conflict(Code::TargetDeleted, item, entity_id, sel(block_sel(block_id)), expect.cloned().unwrap_or(Value::Null), Value::Null, None);
         return Ok(false);
     };
+    // an internal Commit (a rollback replaying the inverse of a run) writes whatever the block holds now
+    if expect == Some(&json!("any")) {
+        return if p.env.internal { Ok(true) } else { Err(WsError::invalid_op("expect: \"any\" is not available to this caller").at("/expect")) };
+    }
     let expect = expect.and_then(Value::as_object).ok_or_else(|| WsError::invalid_op("expect required").at("/expect"))?;
     let mut ok = true;
     if need_hash {

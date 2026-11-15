@@ -289,105 +289,102 @@ fn v09_migration_precheck_and_atomicity() {
     assert_eq!(ws.read(&alice(), "tasks", Some(&json!({ "kind": "table_cell", "record_id": "task-41", "field_id": "due_text" }))).unwrap()["content"]["value"], "下周五");
 }
 
-/// V18: the Mock's candidate goes through the same pipeline; read-set and manual edits are protected.
+/// V18: a run's Commit — as the service writes it when a stage ends (许愿格交互升级 §3.3) — goes through the same
+/// pipeline as any other: guarded by the read set it was computed from, all or nothing, one undo unit, and no way
+/// around a cancellation, the service's own path or a write lock.
 #[test]
 fn v18_controlled_processing() {
     let env = env();
     let id = project(&env);
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
-    let params = json!({ "today": "2026-10-13" });
-    let start = |ws: &mut Workspace, key: &str, p: &Value| ws.proc_start(&alice(), "mock.task-summary@1", p, key).unwrap();
     let risk = |ws: &Workspace, rec: &str| {
         ws.read(&alice(), "tasks", Some(&json!({ "kind": "table_cell", "record_id": rec, "field_id": "risk" }))).unwrap()["content"].clone()
     };
-    // 1. a candidate is data: nothing changed yet
-    let seq0 = ws.head_seq;
-    let run = start(&mut ws, "r1", &params);
-    assert_eq!((run["state"].as_str(), run["simulated"].as_bool()), (Some("waiting_confirmation"), Some(true)));
-    assert_eq!(run["prepare"]["status"], "ok");
-    assert_eq!(run["inputs"][0]["entity_id"], "tasks");
-    assert_eq!(ws.head_seq, seq0);
-    assert_eq!(start(&mut ws, "r1", &params)["run_id"], run["run_id"], "proc.start is idempotent");
-    // 2. unrelated edits (owner is outside the read set) do not invalidate the candidate
+    // what the run read: the membership and the columns that decided it, as version cells
+    let read_set = |ws: &Workspace| -> Vec<Value> {
+        ["table_members", "status", "due"].iter().map(|k| {
+            let sel = if *k == "table_members" { json!({ "kind": k }) } else { json!({ "kind": "table_field_values", "field_id": k }) };
+            let target = json!({ "entity_id": "tasks", "selector": sel });
+            let cur = ws.read_ctx(|ctx| aiworkspace_core::plan::resolve_cell(ctx, &target)).unwrap();
+            json!({ "target": target, "expect": { "rev": cur } })
+        }).collect()
+    };
+    let start = |ws: &mut Workspace, key: &str| ws.wish_run_create(&alice(), "wish.xllm@1", &json!({ "stage": "run", "k": key }), key, &Value::Null).unwrap().0;
+    let run_req = |ws: &Workspace, run: &str, pre: Vec<Value>, ops: Value| {
+        let mut r = request(ws, ops);
+        r["idempotency_key"] = json!(format!("run/{run}"));
+        r["run_id"] = json!(run);
+        r["preconditions"] = json!(pre);
+        r["session_id"] = json!("s1");
+        r
+    };
+    let as_run = CommitOpts { as_principal: Some("alice".into()), ..CommitOpts::default() };
+    let results = |ws: &Workspace| json!([
+        { "op": "table.set_values", "source_id": "tasks", "values": [{ "record_id": "task-41", "field_id": "risk", "value": "option-high", "expect": { "rev": cell_rev(ws, &alice(), "task-41", "risk") } }] },
+        { "op": "entity.create", "entity_id": "summary", "type_id": "buckyos.richtext", "parent_id": "data", "order_key": "y", "name": "Task summary",
+          "payload": { "content": { "type": "doc", "content": [para("sum-stats", "Tasks: 5 in total, 4 open, 1 overdue.")] } } },
+        { "op": "entity.create", "entity_id": "cell-summary", "type_id": "buckyos.cell", "parent_id": "surface-main", "order_key": "z",
+          "payload": { "source_ref": { "entity_id": "summary" }, "view": { "type": "richtext" }, "title": "Task summary" } }]);
+    // 1. unrelated edits (owner is outside the read set) do not invalidate the run's Commit; it is one Commit
+    let run = start(&mut ws, "r1");
+    let req = run_req(&ws, &run, read_set(&ws), results(&ws));
     let rv = cell_rev(&ws, &alice(), "task-41", "owner");
     ok(&mut ws, &alice(), set_cell("task-41", "owner", json!("换人"), rv));
-    let applied = ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap();
-    assert_eq!(applied["state"], "succeeded", "{applied}");
-    assert_eq!(ws.head_seq, seq0 + 2, "one application = one commit");
+    let seq0 = ws.head_seq;
+    let applied = ws.commit(&req, &alice(), &as_run);
+    assert_eq!(applied["status"], "accepted", "{applied}");
+    assert_eq!(ws.head_seq, seq0 + 1, "one stage = one commit");
     assert_eq!(risk(&ws, "task-41")["value"], "option-high");
-    assert_eq!(risk(&ws, "task-42")["value"], "option-medium");
-    assert_eq!(risk(&ws, "task-44")["value"], "option-low");
-    assert_eq!(risk(&ws, "task-43")["is_set"], false, "no due date → not set");
-    assert_eq!(risk(&ws, "task-41")["meta"]["derived"]["program"], "mock.task-summary@1");
-    assert_eq!(risk(&ws, "task-41")["meta"]["derived"]["run_id"], run["run_id"]);
-    let summary = ws.read(&alice(), "summary", None).unwrap();
-    assert_eq!(summary["content"]["content"]["content"][1]["content"][0]["text"], "Tasks: 5 in total, 4 open, 1 overdue.");
     assert!(ws.read(&alice(), "cell-summary", None).is_ok());
-    // 3. the whole application is one undo unit
-    let commit_id = applied["result"]["commit_id"].clone();
-    assert_eq!(undo(&mut ws, &commit_id, "u-run")["status"], "accepted");
+    assert_eq!(ws.commit(&req, &alice(), &as_run)["commit_id"], applied["commit_id"], "idempotent by run");
+    // 2. the whole Commit is one undo unit
+    assert_eq!(undo(&mut ws, &applied["commit_id"], "u-run")["status"], "accepted");
     assert_eq!(risk(&ws, "task-41")["is_set"], false);
     assert!(ws.read(&alice(), "summary", None).is_err());
     let redo = ws.get_changes(&alice(), &ws.epoch.clone(), ws.head_seq - 1, 1, false).unwrap()["changes"][0]["commit_id"].clone();
     assert_eq!(undo(&mut ws, &redo, "redo-run")["status"], "accepted");
-    // 4. the three read-set violations: changed due, new open task, done → open
+    // 3. the three read-set violations: changed due, new open task, done → open
     for (n, change) in [
         json!([{ "op": "table.set_values", "source_id": "tasks", "values": [{ "record_id": "task-44", "field_id": "due", "value": "2026-10-01", "expect": { "rev": 2 } }] }]),
         json!([{ "op": "table.insert_records", "source_id": "tasks", "records": [{ "record_id": "task-99", "values": { "title": "新任务", "status": "option-open", "due": "2026-10-01" } }] }]),
         json!([{ "op": "table.set_values", "source_id": "tasks", "values": [{ "record_id": "task-40", "field_id": "status", "value": "option-open", "expect": { "rev": 2 } }] }]),
     ].into_iter().enumerate() {
-        let run = start(&mut ws, &format!("stale-{n}"), &json!({ "today": "2026-10-21" }));
-        assert_eq!(run["state"], "waiting_confirmation", "{run}");
+        let run = start(&mut ws, &format!("stale-{n}"));
+        let rv = cell_rev(&ws, &alice(), "task-42", "risk");
+        let req = run_req(&ws, &run, read_set(&ws), json!([{ "op": "table.set_values", "source_id": "tasks", "values": [{ "record_id": "task-42", "field_id": "risk", "value": "option-high", "expect": { "rev": rv } }] }]));
         ok(&mut ws, &alice(), change);
         let before = ws.head_seq;
-        let r = ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap();
-        assert_eq!((r["state"].as_str(), code(&r["result"])), (Some("failed"), "REVISION_CONFLICT"), "case {n}: {r}");
-        assert_eq!(ws.head_seq, before, "case {n}: the old result stays, nothing was applied");
+        let r = ws.commit(&req, &alice(), &as_run);
+        assert_eq!(code(&r), "REVISION_CONFLICT", "case {n}: {r}");
+        assert_eq!(ws.head_seq, before, "case {n}: the old result stays, nothing was written");
     }
-    // 5. manual override: skipped with a warning; edited after the candidate was built → conflict
-    let run = start(&mut ws, "fresh", &json!({ "today": "2026-10-13" }));
-    ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap();
-    let rv = cell_rev(&ws, &alice(), "task-42", "risk");
-    ok(&mut ws, &alice(), set_cell("task-42", "risk", json!("option-low"), rv));
-    assert_eq!(risk(&ws, "task-42")["meta"]["manual_override"], true);
-    let run = start(&mut ws, "after-override", &json!({ "today": "2026-11-15" }));
-    assert_eq!(run["warnings"][0], json!({ "code": "MANUAL_OVERRIDE_SKIPPED", "record_id": "task-42", "field_id": "risk" }));
-    // a human rewrites a generated block after the candidate was built
-    let h = ws.read(&alice(), "summary", None).unwrap()["content"]["blocks"]["sum-stats"]["hash"].clone();
-    ok(&mut ws, &alice(), json!([{ "op": "richtext.replace_block", "entity_id": "summary", "block_id": "sum-stats", "expect": { "hash": h },
-        "node": para("sum-stats", "人工改写的统计") }]));
-    let r = ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap();
-    assert_eq!(code(&r["result"]), "REVISION_CONFLICT");
-    assert_eq!(risk(&ws, "task-42")["value"], "option-low", "the human value survives");
-    assert_eq!(ws.read(&alice(), "summary", None).unwrap()["content"]["content"]["content"][1]["content"][0]["text"], "人工改写的统计");
-    // 6. bad candidates are rejected as a whole by prepare and by commit
-    for inject in ["unknown_option", "dangling_ref", "over_limit"] {
-        let run = start(&mut ws, &format!("bad-{inject}"), &json!({ "today": "2026-12-01", "inject": inject }));
-        assert_eq!(run["prepare"]["status"], "rejected", "{inject}");
+    // 4. bad operations are rejected as a whole by prepare and by commit
+    let rv = cell_rev(&ws, &alice(), "task-41", "risk");
+    let n = ws.limits.max_ops + 1;
+    for (name, ops) in [
+        ("unknown_option", json!([{ "op": "table.set_values", "source_id": "tasks", "values": [{ "record_id": "task-41", "field_id": "risk", "value": "option-nope", "expect": { "rev": rv } }] }])),
+        ("dangling_ref", json!([{ "op": "richtext.insert_blocks", "entity_id": "summary", "position": { "end": true }, "blocks": [{ "type": "object_embed", "attrs": { "block_id": "sum-bad", "ref": { "entity_id": "no-such-cell" } } }] }])),
+        ("over_limit", json!((0..n).map(|i| json!({ "op": "entity.rename", "entity_id": format!("x{i}"), "name": "x", "expect": { "rev": 0 } })).collect::<Vec<_>>())),
+    ] {
+        let run = start(&mut ws, &format!("bad-{name}"));
+        let req = run_req(&ws, &run, Vec::new(), ops);
+        assert_eq!(ws.prepare_with(&req, &alice(), &as_run)["status"], "rejected", "{name}");
         let before = ws.checkpoint_ro();
-        let r = ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap();
-        assert_eq!(r["result"]["status"], "rejected", "{inject}");
+        assert_eq!(ws.commit(&req, &alice(), &as_run)["status"], "rejected", "{name}");
         assert_eq!(ws.checkpoint_ro(), before);
     }
-    // 7. cancel: a late application — even a direct commit of the candidate — is refused
-    let run = start(&mut ws, "to-cancel", &json!({ "today": "2027-01-01" }));
-    let candidate = run["candidate"].clone();
-    assert_eq!(ws.proc_cancel(&alice(), run["run_id"].as_str().unwrap()).unwrap()["state"], "cancelled");
-    assert_eq!(ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap_err().code.as_str(), "RUN_CANCELLED");
-    // a run's candidate never goes in as a plain Commit, cancelled or not (权限需求 R32)
-    assert_eq!(code(&ws.commit(&candidate, &alice(), &CommitOpts::default())), "INVALID_OPERATION");
-    // cancelling something that already applied says so
-    let run = start(&mut ws, "apply-then-cancel", &json!({ "today": "2027-01-01" }));
-    ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap();
-    let c = ws.proc_cancel(&alice(), run["run_id"].as_str().unwrap()).unwrap();
-    assert_eq!((c["already_applied"].as_bool(), c["commit_id"].is_string()), (Some(true), true));
-    // 8. the Mock has no way around write locks
+    // 5. cancelled: its Commit is refused; and a run's Commit never goes in as a plain one (权限需求 R32)
+    let run = start(&mut ws, "to-cancel");
+    let req = run_req(&ws, &run, read_set(&ws), json!([{ "op": "table.set_values", "source_id": "tasks", "values": [{ "record_id": "task-42", "field_id": "risk", "value": "option-low", "expect": { "rev": cell_rev(&ws, &alice(), "task-42", "risk") } }] }]));
+    assert_eq!(code(&ws.commit(&req, &alice(), &CommitOpts::default())), "INVALID_OPERATION");
+    ws.wish_run_set(&run, Some("cancelled"), None, None, None, None).unwrap();
+    assert_eq!(code(&ws.commit(&req, &alice(), &as_run)), "RUN_CANCELLED");
+    // 6. no way around write locks
     let meta = ws.read(&alice(), "summary", None).unwrap()["meta_rev"].clone();
     ok(&mut ws, &alice(), json!([{ "op": "entity.set_write_policy", "entity_id": "summary", "policy": "lock_required", "expect": { "rev": meta } }]));
-    let rv = cell_rev(&ws, &alice(), "task-43", "due");
-    ok(&mut ws, &alice(), set_cell("task-43", "due", json!("2027-06-01"), rv));
-    let run = start(&mut ws, "locked", &json!({ "today": "2028-01-01" }));
-    assert_eq!(run["state"], "waiting_confirmation", "{run}");
-    assert_eq!(code(&ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap()["result"]), "LOCK_REQUIRED");
+    let run = start(&mut ws, "locked");
+    let st = ws.read(&alice(), "summary", None).unwrap()["content"]["blocks"]["sum-stats"]["hash"].clone();
+    let req = run_req(&ws, &run, Vec::new(), json!([{ "op": "richtext.replace_block", "entity_id": "summary", "block_id": "sum-stats", "expect": { "hash": st }, "node": para("sum-stats", "Tasks: 6") }]));
+    assert_eq!(code(&ws.commit(&req, &alice(), &as_run)), "LOCK_REQUIRED");
 }

@@ -77,7 +77,7 @@ impl Kind {
                 json!({ "type": "object", "properties": { "analysis": { "type": "object", "description": "the wish.analysis.v3 object" } }, "required": ["analysis"] }),
             ),
             Kind::RunProgram => (
-                "Trial-run the macro exactly as every later run will run it: collect the results, facts, checks and manifest it writes, validate them against the output contract, and return each result's preview, the check results and the errors. Can be called several times; the last successful run is the candidate.",
+                "Trial-run the macro exactly as every later run will run it: collect the results, facts, checks and manifest it writes, validate them against the output contract, and return each result's preview, the check results and the errors. Can be called several times; the last successful run is the macro version that is kept.",
                 json!({ "type": "object", "properties": { "source": { "type": "string", "description": "The complete program/main.js (an ES module exporting `default async function main(aiws)` that starts with aiws.declare)" } }, "required": ["source"] }),
             ),
             Kind::CheckResults => (
@@ -85,7 +85,7 @@ impl Kind {
                 json!({ "type": "object", "properties": {} }),
             ),
             Kind::Finish => (
-                "End the coding. Refused, with the reason, until a trial run succeeded with a manifest, the contract is met and the program checks ran. review_notes holds the self-assessment of the review checks: [{\"id\":\"check id\",\"note\":\"…\"}]. When there is feedback, refinements holds the concise requirements distilled from the feedback that later re-runs must also follow.",
+                "End the coding: the macro of the last successful trial run is stored. Refused, with the reason, until a trial run succeeded with a manifest, the contract is met and the program checks ran; an error-level check that still fails ends the coding without a macro. review_notes holds the self-assessment of the review checks: [{\"id\":\"check id\",\"note\":\"…\"}]. When there is feedback, refinements holds the concise requirements distilled from the feedback that later re-runs must also follow.",
                 json!({ "type": "object", "properties": {
                     "summary": { "type": "string" },
                     "assumptions": { "type": "array", "items": { "type": "string" } },
@@ -197,13 +197,18 @@ fn finish(state: &Arc<StageState>, args: &Value) -> ToolAnswer {
     let texts = state.prompt_texts();
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let uncited = c.uncited_numbers(&refs);
-    let failed: Vec<String> = c.checks().iter().filter(|x| x["status"] == json!("failed")).map(|x| x["id"].as_str().unwrap_or("").to_string()).collect();
-    let mut msg = "Finished. The results go to the user as candidates to preview. Finish with one sentence; do not call any more tools.".to_string();
-    if !failed.is_empty() {
-        msg.push_str(&format!(" (Note: failed checks {} will be highlighted in the preview.)", failed.join(", ")));
+    let checks = c.checks();
+    let errors: Vec<String> = aiworkspace_store::wish::history::failed_errors(&checks).iter().map(|x| x["id"].as_str().unwrap_or("").to_string()).collect();
+    if !errors.is_empty() {
+        return ok(format!("Finished, but error-level checks {} still fail: this coding fails and the macro is not kept. Finish with one sentence; do not call any more tools.", errors.join(", ")));
+    }
+    let warned: Vec<String> = checks.iter().filter(|x| x["status"] == json!("failed")).map(|x| x["id"].as_str().unwrap_or("").to_string()).collect();
+    let mut msg = "Finished. The macro is stored and runs from now on; its record shows the user how the trial went. Finish with one sentence; do not call any more tools.".to_string();
+    if !warned.is_empty() {
+        msg.push_str(&format!(" (Note: the warning-level checks {} failed; the record shows them first.)", warned.join(", ")));
     }
     if !uncited.is_empty() {
-        msg.push_str(" (Note: some numbers cannot be traced to the facts; the preview will ask the user to verify them.)");
+        msg.push_str(" (Note: some numbers cannot be traced to the facts; the record asks the user to verify them.)");
     }
     ok(msg)
 }
@@ -239,6 +244,10 @@ pub fn judge_program(state: &Arc<StageState>, results: Option<&Value>, ended: &s
             let remaining = c.blocking();
             if !remaining.is_empty() {
                 text.push_str(&format!("\nNot done yet:\n- {}", remaining.join("\n- ")));
+            }
+            let errors: Vec<String> = aiworkspace_store::wish::history::failed_errors(&checks).iter().map(|x| x["id"].as_str().unwrap_or("").to_string()).collect();
+            if !errors.is_empty() {
+                text.push_str(&format!("\nError-level checks failed: {}. Fix the macro (or, when the data really violates a check, report it truthfully): finishing now fails the coding and keeps no macro.", errors.join(", ")));
             }
             if !stdout.trim().is_empty() {
                 text.push_str(&format!("\n\nProgram output:\n{}", stdout.chars().take(2000).collect::<String>()));

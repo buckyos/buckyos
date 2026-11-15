@@ -1,9 +1,9 @@
-//! Wish runs (许愿格详细设计 §3, §13; AI Native 第一期 §2): `proc.start` creates a run record and returns at once.
-//! Every stage of `wish.xllm@1` — analyze, code, run — executes on an executor outside the service: the browser that
-//! started it (local) or the Owner's Agent (hosted). The service keeps the stage snapshot, answers the stage tools
-//! (`ws_*`, the macro's `sql`, the `llm_cache`), validates what the executor hands in, plans the candidate and commits
-//! exactly the plan the user previewed (`proc.apply`). It calls no model and runs no program. Only the Mock executor's
-//! simulated results are planned here directly.
+//! Wish runs (许愿格详细设计 §3, §13; AI Native 第一期 §2; 许愿格交互升级 §3.3): `proc.start` creates a run record and
+//! returns at once. Every stage of `wish.xllm@1` — analyze, code, run — executes on an executor outside the service: the
+//! browser that started it (local) or the Owner's Agent (hosted). The service keeps the stage snapshot, answers the
+//! stage tools (`ws_*`, the macro's `sql`, the `llm_cache`), validates what the executor hands in, and when the stage
+//! ends plans what it produced and writes it in one Commit with the run's record in the wish's `history` — nothing
+//! waits for a confirmation; a record is rolled back instead (`proc.rollback`). It calls no model and runs no program.
 
 pub mod exec;
 pub mod stages;
@@ -17,7 +17,7 @@ use aiworkspace_core::{Code, WsError, WsResult};
 use aiworkspace_store::wish::context::Stage;
 use aiworkspace_store::wish::plan::{Plan, PlanRequest};
 use aiworkspace_store::wish::results::Collector;
-use aiworkspace_store::wish::runs::{is_wish_program, ACTIVE_STATES, PROGRAM_MOCK, PROGRAM_XLLM};
+use aiworkspace_store::wish::runs::{is_wish_program, ACTIVE_STATES, PROGRAM_XLLM};
 use aiworkspace_store::Caller;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -207,6 +207,8 @@ pub struct StageState {
     /// What ends a run of the stored macro that failed (`PROGRAM_FAILED`, `MACRO_CODE_CHANGED`).
     pub failure: Mutex<Option<WsError>>,
     pub budget: Value,
+    /// The log of the last macro run the executor handed in (a record keeps it).
+    pub last_log: Mutex<String>,
     /// Whose AI the run uses (its `aicc.user_id`): the AI answer cache is kept per that user, so one person's executor
     /// never answers another's runs from what it wrote (权限需求 R35).
     pub ai_user: String,
@@ -264,22 +266,20 @@ impl StageState {
     }
 }
 
-/// The readiness of a stage (第一期 §2.1): coding needs a current, confirmed, ready analysis; running needs that and a
-/// stored macro that still fits its inputs (`NEEDS_CODING` with the reasons otherwise).
+/// The readiness of a stage (第一期 §2.1): coding needs a current analysis; running needs that and a stored macro that
+/// still fits its inputs (`NEEDS_CODING` with the reasons otherwise).
 pub fn ready(ctx: &dyn ReadCtx, payload: &aiworkspace_core::model::JsonMap, stage: &str) -> WsResult<()> {
     if stage == STAGE_ANALYZE {
         return Ok(());
     }
-    let Some(a) = payload.get("analysis") else { return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "This wish has not been analyzed yet: analyze it first")) };
+    if payload.get("analysis").is_none() {
+        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "This wish has not been analyzed yet: analyze it first"));
+    }
     if aiworkspace_core::wish::needs_analysis(payload) {
         return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "The request, knowledge, refinements, inputs or execution configuration changed after the analysis: analyze again first"));
     }
     if !aiworkspace_core::freshness::analysis_sources_changed(ctx, payload)?.is_empty() {
         return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "Documents the task description relies on (definitions, rules) changed after the analysis: analyze again first"));
-    }
-    if a["status"] != json!("ready") {
-        let blockers: Vec<String> = a["blockers"].as_array().into_iter().flatten().filter_map(|b| b["message"].as_str().map(str::to_string)).collect();
-        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_INPUT", format!("The analysis concluded that inputs are missing: {}", blockers.join("; "))));
     }
     if stage == STAGE_RUN {
         let reasons = aiworkspace_core::wish::macro_check(ctx, payload)?;
@@ -301,13 +301,13 @@ fn progress_line(state: &str) -> Value {
     json!({ "phase": state })
 }
 
-/// The run as clients see it (`proc.get`, `proc.list`).
+/// The run as clients see it (`proc.get`, `proc.list`): `record` is the record the run wrote into its wish's
+/// `history` (null until it ended, and for a cancelled or interrupted run). What the stage produced stays here.
 pub fn run_view(rt: &WishRuntime, run: &Value, full: bool) -> Value {
     let mut v = json!({
         "ok": true, "run_id": run["run_id"], "program": run["program"], "state": run["state"],
         "stage": run["params"]["stage"], "wish_id": run["params"]["wish_id"], "params": run["params"],
-        "simulated": run["program"] == json!(PROGRAM_MOCK),
-        "created_at": run["created_at"], "updated_at": run["updated_at"],
+        "created_at": run["created_at"], "updated_at": run["updated_at"], "record": run["detail"]["record"],
         "warnings": run["warnings"], "error": run["detail"]["error"], "usage": run["detail"]["usage"],
         "aicc": run["detail"]["aicc"],
         "context": run["detail"]["context"], "dispatch": run["detail"]["dispatch"],
@@ -325,12 +325,7 @@ pub fn run_view(rt: &WishRuntime, run: &Value, full: bool) -> Value {
         v["result"] = app["commit"].clone();
     }
     if full {
-        v["candidate"] = run["candidate"].clone();
         v["evidence"] = json!({ "read_set": run["evidence"]["read_set"], "appended_inputs": run["evidence"]["appended_inputs"], "inputs": run["evidence"]["inputs"] });
-        if let Some(d) = run["detail"].get("plan_order").and_then(Value::as_array).and_then(|o| o.last()).and_then(Value::as_str) {
-            let plan = &run["detail"]["plans"][d];
-            v["preview"] = json!({ "plan_digest": d, "ready": plan["ready"], "summary": plan["summary"] });
-        }
         v["program_log"] = run["detail"]["program_log"].clone();
     }
     v
@@ -373,9 +368,9 @@ pub async fn delegated(state: &Arc<AppState>, ws_id: &str, run: &Value) -> Calle
     c
 }
 
-/// Whether a run of `wish_id` written as `identity` could be applied at all: its results and last run are kept on the
+/// Whether a run of `wish_id` written as `identity` could be written at all: its results and last run are kept on the
 /// wish (`update` there), and it writes where its results go — the output container, or a result it produced before.
-/// The Commit itself checks each operation; this only keeps a run nobody could apply from starting.
+/// The Commit itself checks each operation; this only keeps a run nobody could write from starting.
 fn macro_can_write(ctx: &dyn ReadCtx, identity: &Access, wish_id: &str, payload: &aiworkspace_core::model::JsonMap, group: Option<&str>) -> WsResult<()> {
     let refuse = |what: &str| {
         let within = group.map(|g| format!(", within the group @{g} its macro is bound to with intersection")).unwrap_or_default();
@@ -431,16 +426,12 @@ fn view_for(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, rt: &
     Ok(v)
 }
 
-/// `proc.start` for `wish.xllm@1` (stages `analyze`, `code`, `run`) and `wish.mock@1` (`run`).
+/// `proc.start` for `wish.xllm@1` (stages `analyze`, `code`, `run`).
 pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str, params: &Value, idem: &str) -> WsResult<Value> {
     let wish_id = s(params, "wish_id")?.to_string();
     let stage = s(params, "stage")?.to_string();
-    let allowed: &[&str] = if program == PROGRAM_XLLM { STAGES } else { &[STAGE_RUN] };
-    if !allowed.contains(&stage.as_str()) {
+    if !STAGES.contains(&stage.as_str()) {
         return Err(WsError::invalid_op(format!("{program} has no stage {stage}")));
-    }
-    if program == PROGRAM_MOCK && !params.get("provided").is_some_and(Value::is_object) {
-        return Err(WsError::invalid_op("wish.mock@1 needs params.provided (the Mock executor's results)"));
     }
     let run_id = state.with_ws(ws_id, |ws| {
         // the wish must exist and be writable by the caller: a run ends in writing it
@@ -460,7 +451,7 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
             return Err(WsError::denied(format!("the {stage} stage of a wish needs the {needed} capability on it")));
         }
         let executor = read["content"]["payload"]["executor"].as_str().unwrap_or("");
-        if (program == PROGRAM_XLLM && executor != "xllm") || (program == PROGRAM_MOCK && executor != "mock") {
+        if executor != "xllm" {
             return Err(WsError::invalid_op(format!("the wish's executor is {executor}, not the one of {program}")));
         }
         if let Some(parent) = params.get("parent_run_id").and_then(Value::as_str) {
@@ -469,12 +460,10 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
                 return Err(WsError::invalid_op("parent_run_id belongs to another wish"));
             }
         }
-        if program == PROGRAM_XLLM {
-            let payload = read["content"]["payload"].as_object().cloned().unwrap_or_default();
-            ws.read_ctx(|ctx| ready(ctx, &payload, &stage))?;
-        }
-        // a run is applied as its macro identity — this phase the trigger, bounded by an `intersection` group; only a
-        // trusted executor could write more (§4.5, Q12): a run that could never be applied does not start, and spends
+        let payload = read["content"]["payload"].as_object().cloned().unwrap_or_default();
+        ws.read_ctx(|ctx| ready(ctx, &payload, &stage))?;
+        // a run is written as its macro identity — this phase the trigger, bounded by an `intersection` group; only a
+        // trusted executor could write more (§4.5, Q12): a run that could never be written does not start, and spends
         // nobody's AI — a collaborator holding only `run` waits for trusted executors (权限需求 Q31)
         if stage != STAGE_ANALYZE {
             let identity = ws.macro_access(caller, &wish_id)?;
@@ -492,7 +481,7 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
             }
         }
         let context = exec::execution_context(ws, caller, &wish_id, &read["content"]["payload"], mode, &aicc, hosted.as_ref())?;
-        let (exec_record, claim) = if program == PROGRAM_MOCK { (json!({ "mode": "mock", "attempt": 0 }), None) } else { exec::new_exec_record(mode) };
+        let (exec_record, claim) = exec::new_exec_record(mode);
         let payload = &read["content"]["payload"];
         // what an executor starts from (inputs are read through the run token)
         let brief = json!({ "prompt": payload["prompt"], "knowledge": payload["knowledge"], "refinements": payload["refinements"], "analysis": payload["analysis"],
@@ -501,14 +490,7 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
         Ok((run_id, replayed, mode, claim, hosted, context))
     })?;
     let (run_id, replayed, mode, claim, hosted, context) = (run_id.0, run_id.1, run_id.2, run_id.3, run_id.4, run_id.5);
-    if !replayed && program == PROGRAM_MOCK {
-        let active = state.wish.register(&run_id);
-        let (st, c, ws, rid) = (state.clone(), caller.clone(), ws_id.to_string(), run_id.clone());
-        tokio::runtime::Handle::current().spawn(async move {
-            stages::drive(st, c, ws, rid, active).await;
-        });
-    }
-    if !replayed && program == PROGRAM_XLLM && mode == exec::Mode::Hosted {
+    if !replayed && mode == exec::Mode::Hosted {
         let (st, w, rid, token, cfg, ctx) = (state.clone(), ws_id.to_string(), run_id.clone(), claim.clone().unwrap_or_default(), hosted.clone().unwrap_or(Value::Null), context.clone());
         tokio::runtime::Handle::current().spawn(async move {
             // the claim token goes to the configured Agent only, never into the run's detail (权限需求 S6, R30): when the
@@ -517,7 +499,7 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
             let _ = st.with_ws(&w, |ws| ws.wish_run_set(&rid, None, None, None, None, Some(&json!({ "dispatch": dispatch }))));
         });
     }
-    let mut v = get(state, caller, ws_id, &run_id, &Value::Null)?;
+    let mut v = get(state, caller, ws_id, &run_id)?;
     if !replayed {
         if let Some(t) = claim.filter(|_| mode == exec::Mode::Local) {
             // whoever started a local run is its executor: the claim token goes to it, once
@@ -527,17 +509,9 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
     Ok(v)
 }
 
-/// `proc.get`: state, progress, candidate and — when waiting for confirmation — the preview of the
-/// plan for the given `choices` (kept for `proc.apply`).
-pub fn get(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, choices: &Value) -> WsResult<Value> {
+/// `proc.get`: state, progress, and — once it ended — its Commit and record.
+pub fn get(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str) -> WsResult<Value> {
     let rt = state.wish.clone();
-    // a preview is judged as the apply will be (R28): the trigger's identity, memberships settled outside the writer
-    let trigger = if choices.is_null() {
-        None
-    } else {
-        let seen = state.with_ws(ws_id, |ws| ws.wish_run(caller, run_id))?;
-        Some(tokio::runtime::Handle::current().block_on(delegated(state, ws_id, &seen)))
-    };
     state.with_ws(ws_id, |ws| {
         let mut run = ws.wish_run(caller, run_id)?;
         if exec::expire_if_due(ws, &run)? {
@@ -557,101 +531,130 @@ pub fn get(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, ch
             ws.wish_reconcile_apply(run_id)?;
             run = ws.wish_run(caller, run_id)?;
         }
-        if !choices.is_null() && matches!(run["state"].as_str(), Some("waiting_confirmation" | "conflict" | "rejected")) {
-            let identity = run_identity(ws, trigger.as_ref().unwrap_or(caller), &run)?;
-            let plan = plan_for(ws, caller, &run, choices, &identity)?;
-            ws.wish_run_keep_plan(run_id, &plan)?;
-            run = ws.wish_run(caller, run_id)?;
-        }
         view_for(ws, caller, &rt, &run, true)
     })
 }
 
-/// The plan of a waiting run (analysis write-back or results).
-/// `identity`: what the apply will write as ([`run_identity`]); the pre-check is judged as it, so a preview is ready only
-/// when the apply can go through.
-pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Caller, run: &Value, choices: &Value, identity: &Access) -> WsResult<Plan> {
+/// What a stage writes: the analysis write-back, the macro, or the results.
+/// `identity`: what the Commit is written as ([`run_identity`]); the pre-check of the results is judged as it.
+pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Caller, run: &Value, identity: &Access) -> WsResult<Plan> {
     let cand = &run["candidate"];
-    if run["params"]["stage"] == json!(STAGE_ANALYZE) {
-        return ws.wish_analysis_plan(caller, cand);
+    let run_id = run["run_id"].as_str().unwrap_or("");
+    match run["params"]["stage"].as_str() {
+        Some(STAGE_ANALYZE) => return ws.wish_analysis_plan(caller, cand),
+        Some(STAGE_CODE) => return ws.wish_macro_plan(caller, run_id, cand),
+        _ => {}
     }
-    let mut plan = ws.wish_plan(caller, &PlanRequest { run_id: run["run_id"].as_str().unwrap_or(""), candidate: cand, choices, location: &run["params"]["location"] })?;
+    let mut plan = ws.wish_plan(caller, &PlanRequest { run_id, candidate: cand, location: &run["params"]["location"] })?;
     if plan.ready {
         // a dry run of the very commit: validation the planner cannot see (values, permissions, locks)
         let req = json!({ "protocol_version": aiworkspace_core::model::PROTOCOL_VERSION, "workspace_id": ws.workspace_id, "epoch": ws.epoch,
-                          "idempotency_key": format!("precheck/{}", run["run_id"].as_str().unwrap_or("")), "origin": "program", "run_id": run["run_id"],
+                          "idempotency_key": format!("precheck/{run_id}"), "origin": "program", "run_id": run["run_id"], "session_id": run["params"]["session_id"],
                           "preconditions": plan.preconditions, "operations": plan.operations });
         let opts = aiworkspace_store::workspace::CommitOpts { as_principal: run["principal"].as_str().map(str::to_string), authorize_as: Some(identity.clone()), ..Default::default() };
         let pre = ws.prepare_with(&req, caller, &opts);
         if pre["status"] != json!("ok") {
             plan.ready = false;
             let detail = pre["errors"][0]["detail"].as_str().or(pre["code"].as_str()).unwrap_or("").to_string();
-            plan.summary["problems"].as_array_mut().map(|a| a.push(json!(format!("Pre-check failed ({}): {detail}", pre["code"].as_str().unwrap_or("")))));
+            if let Some(a) = plan.summary["problems"].as_array_mut() {
+                a.push(json!(format!("Pre-check failed ({}): {detail}", pre["code"].as_str().unwrap_or(""))));
+            }
             plan.summary["precheck"] = pre;
         }
     }
     Ok(plan)
 }
 
-/// `proc.apply`: re-stage the plan's assets (content-addressed: the same ids), then commit it.
-pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
-    let run_id = s(p, "run_id")?;
-    // the trigger, its memberships settled before the Workspace's writer is taken
-    let seen = state.with_ws(ws_id, |ws| ws.wish_run(caller, run_id))?;
-    let trigger = tokio::runtime::Handle::current().block_on(delegated(state, ws_id, &seen));
-    state.with_ws(ws_id, |ws| {
-        let run = ws.wish_run(caller, run_id)?;
-        // the delegation still holds (D16, §9.5): the task configuration the run bound, the attempt that
-        // produced the candidate, and the run itself
-        if run["state"] == json!("cancelled") {
-            return Err(WsError::new(Code::RunRevoked, "the run was cancelled"));
-        }
-        if let Some(bound) = run["detail"]["context"]["task"]["digest"].as_str() {
-            let wish_id = run["params"]["wish_id"].as_str().unwrap_or("");
-            let payload = ws.read(caller, wish_id, None)?["content"]["payload"].as_object().cloned().unwrap_or_default();
-            if aiworkspace_core::wish::basis_digest(&payload)[..32] != *bound {
-                return Err(WsError::new(Code::DelegationStale, "the wish configuration changed after the run was started; run it again under the current configuration").with_data(json!({ "bound": bound })));
-            }
-        }
-        // a hosted run still runs under the owner's configuration it was started with, within its context's life (R30)
-        if let Some(bound) = run["detail"]["context"]["executor"]["config_digest"].as_str() {
-            if ws.hosted_exec()?["digest"].as_str() != Some(bound) {
-                return Err(WsError::new(Code::DelegationStale, "the owner's hosted execution configuration changed after the run was started; run it again").with_data(json!({ "bound": bound })));
-            }
-        }
-        if run["detail"]["context"]["expires_at"].as_str().is_some_and(|e| e < ws.now().as_str()) {
-            return Err(WsError::new(Code::DelegationStale, "the run's execution context expired; run it again"));
-        }
-        if let (Some(produced), Some(current)) = (run["detail"]["exec"]["provided"]["attempt"].as_u64(), run["detail"]["exec"]["attempt"].as_u64()) {
-            if produced != current {
-                return Err(WsError::new(Code::RunRevoked, format!("the candidate came from attempt {produced}; attempt {current} superseded it")));
-            }
-        }
-        let digest = match p.get("plan_digest").and_then(Value::as_str) {
-            Some(d) => d.to_string(),
-            None => run["detail"]["plan_order"].as_array().and_then(|o| o.last()).and_then(Value::as_str).map(str::to_string).ok_or_else(|| WsError::invalid_op("plan_digest required: preview first"))?,
-        };
-        if let Some(plan) = run["detail"]["plans"].get(&digest) {
-            // the result files were staged when the candidate was collected: bound again for this Commit
-            for a in plan["assets"].as_array().into_iter().flatten() {
-                ws.stage_upload(caller, a["object_id"].as_str().unwrap_or(""), state.limits.max_asset_bytes, state.limits.max_media_bytes)?;
-            }
-        }
-        // written as the macro identity ∩ the declared outputs, not as whoever clicks apply (§4.5, R28): the trigger's
-        // permissions as they are now, bounded by the wish's group when it is bound with `intersection`
+/// The delegation a run was started under still holds (D16, §9.5): the task configuration it bound, the owner's hosted
+/// configuration, its context's life, and the attempt that produced what it hands in.
+fn delegation_holds(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, run: &Value) -> WsResult<()> {
+    if let Some(bound) = run["detail"]["context"]["task"]["digest"].as_str() {
         let wish_id = run["params"]["wish_id"].as_str().unwrap_or("");
-        let identity = run_identity(ws, &trigger, &run)?;
-        let attribution = json!({ "triggered_by": run["principal"], "executed_by": run["detail"]["exec"]["executor"]["principal"], "applied_by": caller.principal,
-                                  "judged_as": identity.principal, "macro": ws.macro_binding(wish_id)?.map(|(g, m)| json!({ "group_id": g, "mode": m })) });
-        let applied = ws.wish_apply_as(caller, run_id, &digest, p.get("session_id").and_then(Value::as_str), Some(identity), Some(attribution))?;
-        let run = ws.wish_run(caller, run_id)?;
-        let mut v = view_for(ws, caller, &state.wish, &run, true)?;
-        v["applied"] = applied;
-        Ok(v)
-    })
+        let payload = ws.read(caller, wish_id, None)?["content"]["payload"].as_object().cloned().unwrap_or_default();
+        if aiworkspace_core::wish::basis_digest(&payload)[..32] != *bound {
+            return Err(WsError::new(Code::DelegationStale, "the wish configuration changed after the run was started; run it again under the current configuration").with_data(json!({ "bound": bound })));
+        }
+    }
+    // a hosted run still runs under the owner's configuration it was started with, within its context's life (R30)
+    if let Some(bound) = run["detail"]["context"]["executor"]["config_digest"].as_str() {
+        if ws.hosted_exec()?["digest"].as_str() != Some(bound) {
+            return Err(WsError::new(Code::DelegationStale, "the owner's hosted execution configuration changed after the run was started; run it again").with_data(json!({ "bound": bound })));
+        }
+    }
+    if run["detail"]["context"]["expires_at"].as_str().is_some_and(|e| e < ws.now().as_str()) {
+        return Err(WsError::new(Code::DelegationStale, "the run's execution context expired; run it again"));
+    }
+    if let (Some(produced), Some(current)) = (run["detail"]["exec"]["provided"]["attempt"].as_u64(), run["detail"]["exec"]["attempt"].as_u64()) {
+        if produced != current {
+            return Err(WsError::new(Code::RunRevoked, format!("the stage's work came from attempt {produced}; attempt {current} superseded it")));
+        }
+    }
+    Ok(())
 }
 
-/// `proc.cancel`: the run's stage closes (its executor's next call is refused); an applied run says so.
+/// The end of a stage (许愿格交互升级 §3.3): what it produced, planned and written with its record in one Commit — as
+/// its macro identity ∩ the declared outputs (§4.5, R28), while the delegation holds. A plan with problems, a failed
+/// pre-check, a conflict or a stale delegation is the run's error: nothing but the failure's record is written.
+/// `log`: the last macro run's output, kept with the record (coding, running).
+pub fn commit_stage(ws: &mut aiworkspace_store::workspace::Workspace, trigger: &Caller, run: &Value, log: &str) -> WsResult<()> {
+    use aiworkspace_store::wish::history::log_head;
+    delegation_holds(ws, trigger, run)?;
+    let identity = run_identity(ws, trigger, run)?;
+    let plan = plan_for(ws, trigger, run, &identity)?;
+    if !plan.ready {
+        let problems: Vec<String> = plan.summary["problems"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        return Err(WsError::sub(Code::InvalidOperation, "PLAN_PROBLEMS", format!("The stage's results cannot be written: {}", problems.join("; ")))
+            .with_data(json!({ "problems": problems, "precheck": plan.summary["precheck"] })));
+    }
+    let (run_id, wish_id) = (run["run_id"].as_str().unwrap_or(""), run["params"]["wish_id"].as_str().unwrap_or(""));
+    let stage = run["params"]["stage"].as_str().unwrap_or(STAGE_RUN);
+    let payload = ws.read(trigger, wish_id, None)?["content"]["payload"].as_object().cloned().unwrap_or_default();
+    let cand = &run["candidate"];
+    let mut record = ws.wish_stage_record(run, cand, &run["evidence"], &plan, &payload)?;
+    // what is large is kept as content objects: the request, the task contract as written, the macro, its log
+    let written = |key: &str| plan.operations.iter().find(|o| o["op"] == json!("entity.set_keys")).and_then(|o| o["keys"].as_array()?.iter().find(|k| k["key"] == json!(key)).map(|k| k["value"].clone()));
+    let mut parts: Vec<(&str, Vec<u8>)> = Vec::new();
+    if stage != STAGE_RUN {
+        parts.push(("prompt", payload.get("prompt").and_then(Value::as_str).unwrap_or("").as_bytes().to_vec()));
+    }
+    let mut source = None;
+    match stage {
+        STAGE_ANALYZE => {
+            // as the wish keeps it: with the basis the core states for it, so a rollback restores it as it was
+            let mut after = payload.clone();
+            after.insert("analysis".into(), written("analysis").unwrap_or(Value::Null));
+            after.insert("inputs".into(), cand["inputs"].clone());
+            aiworkspace_core::wish::with_basis(&mut after);
+            parts.push(("analysis", json!({ "analysis": after.get("analysis"), "inputs": cand["inputs"] }).to_string().into_bytes()));
+        }
+        STAGE_CODE => {
+            let program = written("program").or_else(|| payload.get("program").cloned()).unwrap_or(Value::Null);
+            source = program["source"].as_str().map(str::to_string);
+            parts.push(("program", program.to_string().into_bytes()));
+        }
+        _ => {}
+    }
+    if stage != STAGE_ANALYZE && !log.is_empty() {
+        parts.push(("log", log_head(log).as_bytes().to_vec()));
+    }
+    let mut objects = ws.wish_stage_objects(parts)?;
+    if let Some(src) = source {
+        objects["source"] = json!(src);
+    }
+    record["objects"] = objects;
+    let attribution = json!({ "triggered_by": run["principal"], "executed_by": run["detail"]["exec"]["executor"]["principal"],
+                              "judged_as": identity.principal, "macro": ws.macro_binding(wish_id)?.map(|(g, m)| json!({ "group_id": g, "mode": m })) });
+    ws.wish_commit_stage(trigger, run_id, &plan, &record, Some(identity), Some(attribution))?;
+    Ok(())
+}
+
+/// `proc.rollback { run_id, confirm?, session_id? }` (§2.1): the stage's current record undone (`update` on its wish).
+pub fn rollback(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
+    let run_id = s(p, "run_id")?;
+    state.with_ws(ws_id, |ws| ws.wish_rollback(caller, run_id, p.get("confirm") == Some(&json!(true)), p.get("session_id").and_then(Value::as_str)))
+}
+
+/// `proc.cancel`: the run's stage closes (its executor's next call is refused); a run that wrote says so.
 pub fn cancel(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str) -> WsResult<Value> {
     let rt = state.wish.clone();
     state.with_ws(ws_id, |ws| {

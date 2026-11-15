@@ -100,15 +100,6 @@
 .aiws-root button.aiws-dm-folder-item:hover { background: var(--cp-surface-2); }
 .aiws-dm-path { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 
-/* the macro's code (WishPanel's ProgramView as a page) */
-.aiws-wish-program.is-page { display: flex; flex-direction: column; gap: 8px; }
-.aiws-wish-code { margin: 0; padding: 8px 0; overflow: auto; max-height: none; background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 8px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; }
-.aiws-wish-code code { display: block; font: inherit; }
-.aiws-wish-code-line { display: block; white-space: pre; padding-right: 12px; }
-.aiws-wish-code-no { display: inline-block; width: 3.5em; padding-right: 10px; margin-right: 10px; text-align: right; color: var(--cp-muted); border-right: 1px solid var(--cp-border); user-select: none; }
-.aiws-root textarea.aiws-wish-code-edit { font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; width: 100%; box-sizing: border-box; }
-.aiws-wish-program-reason { padding: 4px 8px; border-left: 3px solid var(--cp-border); }
-
 /* the properties, the versions */
 .aiws-dm-props { display: flex; flex-direction: column; gap: 2px; }
 .aiws-dm-section { border-bottom: 1px solid var(--cp-border); padding-bottom: 4px; }

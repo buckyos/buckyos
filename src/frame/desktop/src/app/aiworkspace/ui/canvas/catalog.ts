@@ -9,7 +9,6 @@ import { aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { blockRegistry, type BlockDefinition, type CatalogGroup, type CatalogInfo, type CatalogVariant } from '../blocks/registry'
 import { controlRegistry, type ContainerDefinition } from '../controls/registry'
-import { MOCK_WISH_DEF_ID } from '../wish/mockWishDef'
 import type { MediaFacts } from '../media/poster'
 
 export interface CatalogEntry {
@@ -98,8 +97,7 @@ export function registryEntries(): CatalogEntry[] {
 export function extensionEntries(store: WorkspaceStore): CatalogEntry[] {
   const out: CatalogEntry[] = []
   for (const entity of store.outline.all()) {
-    // the Mock wish executor's definition drives wishes; it is not a view to place on a canvas
-    if (entity.deleted || entity.type_id !== 'buckyos.block-def' || entity.entity_id === MOCK_WISH_DEF_ID) continue
+    if (entity.deleted || entity.type_id !== 'buckyos.block-def') continue
     const host = entity.def_kind === 'composite' ? compositeEntry() : entity.def_kind ? blockRegistry.get(entity.def_kind) : undefined
     if (!host?.catalog || !host.create) continue
     out.push({ key: `def:${entity.entity_id}`, definition: host, catalog: host.catalog, title: entity.title ?? entity.name ?? entity.entity_id, group: 'extension', defEntity: entity })

@@ -20,19 +20,26 @@ fn a_run_only_subject_starts_runs_but_cannot_commit() {
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
     assert!(ws.grant(&alice(), "bob", None, &["read".into(), "run".into()]).is_ok());
-    // bob writes nothing by hand, but runs the Mock
+    // bob writes nothing by hand, but starts runs
     let denied = commit(&mut ws, &bob(), json!([{ "op": "entity.rename", "entity_id": "tasks", "name": "x", "expect": { "rev": 1 } }]));
     assert_eq!(code(&denied), "PERMISSION_DENIED", "{denied}");
-    let run = ws.proc_start(&bob(), "mock.task-summary@1", &json!({ "today": "2026-10-13" }), "run-bob").unwrap();
-    assert_eq!(run["state"], "waiting_confirmation", "{run}");
+    let (run, _) = ws.wish_run_create(&bob(), "wish.xllm@1", &json!({ "stage": "run" }), "run-bob", &Value::Null).unwrap();
     // a reader without run cannot
     ws.grant(&alice(), "dave", None, &["read".into()]).unwrap();
-    assert_eq!(ws.proc_start(&Caller::user("dave"), "mock.task-summary@1", &json!({ "today": "2026-10-13" }), "run-dave").unwrap_err().code.as_str(), "PERMISSION_DENIED");
-    // two users applying the same run meet one accepted record, written as the run's identity (D08)
-    let applied = ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), None).unwrap();
-    assert_eq!(applied["state"], "succeeded", "{applied}");
-    let again = ws.proc_apply(&bob(), run["run_id"].as_str().unwrap(), None).unwrap();
-    assert_eq!(again["result"]["commit_id"], applied["result"]["commit_id"]);
+    assert_eq!(ws.wish_run_create(&Caller::user("dave"), "wish.xllm@1", &json!({ "stage": "run" }), "run-dave", &Value::Null).unwrap_err().code.as_str(), "PERMISSION_DENIED");
+    // a run's Commit is written as the run's identity (D08) whoever it is written for: one accepted record
+    let rev = ws.read(&alice(), "tasks", None).unwrap()["meta_rev"].as_u64().unwrap();
+    let mut req = request(&ws, json!([{ "op": "entity.rename", "entity_id": "tasks", "name": "by the run", "expect": { "rev": rev } }]));
+    req["idempotency_key"] = json!(format!("run/{run}"));
+    req["run_id"] = json!(run);
+    let refused = ws.commit(&req, &alice(), &CommitOpts::default());
+    assert_eq!(refused["status"], "rejected", "only the service writes a run's Commit: {refused}");
+    let opts = CommitOpts { as_principal: Some("bob".into()), ..CommitOpts::default() };
+    let applied = ws.commit(&req, &alice(), &opts);
+    assert_eq!(applied["status"], "accepted", "{applied}");
+    let again = ws.commit(&req, &alice(), &opts);
+    assert_eq!(again["commit_id"], applied["commit_id"]);
+    let run = json!({ "run_id": run });
     let sub = ws.get_submission(&bob(), &ws.epoch.clone(), &format!("run/{}", run["run_id"].as_str().unwrap())).unwrap();
     assert_eq!(sub["status"], "accepted", "the record is bob's (the run's principal)");
     let changes = ws.get_changes(&alice(), &ws.epoch.clone(), 0, 100, false).unwrap();

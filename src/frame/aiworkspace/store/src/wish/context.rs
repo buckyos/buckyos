@@ -469,8 +469,7 @@ impl Stage {
         let mut p = entity_profile(&ctx, e, &fh, &exclude)?;
         if let Some(d) = &e.derived {
             let f = aiworkspace_core::freshness::entity_freshness(&ctx, &self.snap.access, &e.entity_id).unwrap_or(Value::Null);
-            p["generated"] = json!({ "wish_id": d.get("wish_id"), "at": d.get("at"), "status": f["status"], "model_judgment": d.get("model_judgment"),
-                                     "simulated": d.get("simulated") });
+            p["generated"] = json!({ "wish_id": d.get("wish_id"), "at": d.get("at"), "status": f["status"], "model_judgment": d.get("model_judgment") });
         }
         Ok(p)
     }

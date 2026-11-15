@@ -3,8 +3,8 @@
 //! carries what is needed to find the right data, bindings are real ids and ranges, every result and
 //! every number comes from the macro (its text from the model, given the macro's facts), the macro's
 //! output is validated on the spot, identities stay stable, running needs no model, a macro that no
-//! longer fits its inputs is refused before it runs and repaired by coding, and nothing is written
-//! before the user applies.
+//! longer fits its inputs is refused before it runs and repaired by coding, and each stage writes when it ends
+//! (许愿格交互升级 §3.3), its record saying how it went.
 
 #[path = "common/wishkit.rs"]
 mod wishkit;
@@ -94,8 +94,7 @@ fn loc() -> Value {
 async fn analyzed(srv: &Srv, analysis: Value) -> Value {
     *srv.model.analyze.lock().unwrap() = submit(analysis);
     let a = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "analyze", "location": loc() })).await;
-    assert_eq!(a["state"], "waiting_confirmation", "{a}");
-    srv.apply(&a, json!({})).await;
+    srv.done(&a);
     a
 }
 
@@ -115,6 +114,24 @@ async fn fresh(srv: &Srv) -> Value {
     srv.rpc("doc.freshness", json!({ "entity_ids": ["w"] })).await["items"][0].clone()
 }
 
+/// A result of the wish's last run: its entity id and its fields by name.
+async fn result(srv: &Srv, name: &str) -> (String, Value) {
+    let b = srv.wish_of("w").await["last_run"]["result_bindings"]["results"][name].clone();
+    (b["entity_id"].as_str().unwrap_or_else(|| panic!("no result {name}: {b}")).to_string(), b["fields"].clone())
+}
+
+/// The rows of a table result by field name.
+async fn rows(srv: &Srv, name: &str) -> Vec<Value> {
+    let (id, fields) = result(srv, name).await;
+    srv.records(&id).await.iter().map(|r| {
+        Value::Object(fields.as_object().unwrap().iter().map(|(n, f)| (n.clone(), r["values"][f.as_str().unwrap()].clone())).collect())
+    }).collect()
+}
+
+fn statuses(record: &Value) -> Vec<(String, String)> {
+    record["checks"].as_array().unwrap().iter().map(|c| (c["id"].as_str().unwrap().to_string(), c["status"].as_str().unwrap().to_string())).collect()
+}
+
 fn monthly_analysis() -> Value {
     json!({ "status": "ready", "context_prompt": "读取 <<table view \"华东订单\">> 全部记录，排除 状态=未结算，按月汇总销售额；宏让模型按 facts 写解读",
         "inputs": [{ "name": "sales", "ref": "<<table view \"华东订单\">>" }],
@@ -122,7 +139,7 @@ fn monthly_analysis() -> Value {
             { "name": "monthly", "type": "table", "title": "月度汇总", "key": ["月份"],
               "views": [{ "renderer": "table" }, { "renderer": "sample.line-chart", "config": { "x": "月份", "y": "销售额" } }] },
             { "name": "commentary", "type": "richtext", "title": "解读" }] },
-        "checks": [{ "id": "total", "kind": "program", "text": "合计一致" }, { "id": "months", "kind": "program", "text": "覆盖三个月" }],
+        "checks": [{ "id": "total", "kind": "program", "level": "error", "text": "合计一致" }, { "id": "months", "kind": "program", "level": "error", "text": "覆盖三个月" }],
         "blockers": [], "warnings": [] })
 }
 
@@ -164,7 +181,8 @@ fn q01_q04_q06_q07_reference_rules_numbers_views() {
             text("看过了。")
         });
         let probe = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "analyze", "location": loc() })).await;
-        assert_eq!(probe["state"], "failed", "no analysis submitted: the run fails, nothing is written");
+        assert_eq!(probe["state"], "failed", "no analysis submitted: the run fails, only its record is written");
+        assert!(srv.wish_of("w").await.get("analysis").is_none());
         // Q07: a renderer outside the catalog is refused on the spot
         let mut bad = monthly_analysis();
         bad["output_contract"]["results"][0]["views"][1]["renderer"] = json!("acme.pie");
@@ -178,17 +196,17 @@ fn q01_q04_q06_q07_reference_rules_numbers_views() {
         *srv.model.complete.lock().unwrap() = Box::new(|_, prompt| format!("解读：{prompt}；约 98,765 元来自老客户。"));
         *srv.model.execute.lock().unwrap() = coding(monthly("销售额"));
         let e = code(&srv, json!({})).await;
-        assert_eq!(e["state"], "waiting_confirmation", "{e}");
-        assert_eq!(e["candidate"]["uncited_numbers"], json!([{ "result": "commentary", "numbers": ["98,765"] }]));
-        assert_eq!(e["candidate"]["model_judgment"], json!(["monthly", "commentary"]), "the macro called the model");
+        srv.done(&e);
+        assert_eq!(e["record"]["warnings"], json!([{ "code": "uncited_numbers", "name": "commentary", "numbers": ["98,765"] }]), "{}", e["record"]);
         assert_eq!(srv.model.complete_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(statuses(&e["record"]), [("total".to_string(), "passed".to_string()), ("months".into(), "passed".into())]);
+        let p = run(&srv).await;
+        srv.done(&p);
         // Q04: the rule was applied by the macro (no unsettled order counted)
-        let rows = e["candidate"]["results"][0]["table"]["rows"].as_array().unwrap().clone();
-        let count: u64 = rows.iter().map(|r| r["订单数"].as_u64().unwrap()).sum();
+        let count: u64 = rows(&srv, "monthly").await.iter().map(|r| r["订单数"].as_u64().unwrap()).sum();
         assert_eq!(count, 30 - 4, "30 east rows, 4 of them unsettled");
-        let checks: Vec<(&str, &str)> = e["candidate"]["checks"].as_array().unwrap().iter().map(|c| (c["id"].as_str().unwrap(), c["status"].as_str().unwrap())).collect();
-        assert_eq!(checks, [("total", "passed"), ("months", "passed")]);
-        srv.apply(&e, json!({})).await;
+        let (commentary, _) = result(&srv, "commentary").await;
+        assert_eq!(srv.rpc("doc.read", json!({ "entity_id": commentary })).await["derived"]["model_judgment"], true, "the macro called the model");
         // Q07: the chart Block stores field ids
         let w = srv.wish_of("w").await;
         let b = &w["last_run"]["result_bindings"]["results"]["monthly"];
@@ -204,7 +222,7 @@ fn q01_q04_q06_q07_reference_rules_numbers_views() {
     });
 }
 
-/// Q02 重名、缺失、无关数据: candidates instead of a guess; coding and running are refused.
+/// Q02 重名、缺失、无关数据: candidates instead of a guess; the analysis fails and nothing is bound.
 #[test]
 fn q02_ambiguity_is_a_blocker() {
     run_test(|| async move {
@@ -223,15 +241,14 @@ fn q02_ambiguity_is_a_blocker() {
             _ => text("需要用户选择。"),
         });
         let a = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "analyze", "location": loc() })).await;
-        assert_eq!(a["state"], "waiting_confirmation", "{a}");
-        let cands = a["candidate"]["analysis"]["blockers"][0]["candidates"].clone();
-        assert_eq!(cands, json!(["orders", "orders-old"]), "real ids");
-        srv.apply(&a, json!({})).await;
+        assert_eq!((a["state"].as_str(), a["error"]["sub_code"].as_str()), (Some("failed"), Some("NEEDS_INPUT")), "{a}");
+        let missing = &a["record"]["error"]["missing_inputs"][0];
+        assert_eq!((missing["candidates"].clone(), missing["message"].as_str()), (json!(["orders", "orders-old"]), Some("有两张名为「订单」的表")), "real ids: {missing}");
+        assert!(srv.wish_of("w").await.get("analysis").is_none());
         let calls = srv.model.calls.load(Ordering::SeqCst);
         for stage in ["code", "run"] {
             let e = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": stage, "location": loc() })).await;
-            assert_eq!((e["state"].as_str(), e["error"]["sub_code"].as_str()), (Some("refused"), Some("NEEDS_INPUT")), "{stage}: {e}");
-            assert!(e["error"]["detail"].as_str().unwrap().contains("有两张名为「订单」的表"), "the blocker is named: {e}");
+            assert_eq!((e["state"].as_str(), e["error"]["sub_code"].as_str()), (Some("refused"), Some("NEEDS_ANALYSIS")), "{stage}: {e}");
         }
         assert_eq!(srv.model.calls.load(Ordering::SeqCst), calls, "refused before any executor worked on it");
         // a handle that does not exist, or a pure UI Block, is never bound
@@ -261,7 +278,7 @@ fn q03_large_table_through_the_macro() {
         }
         analyzed(&srv, json!({ "status": "ready", "context_prompt": "按分组汇总 <<table \"流水\">> 的金额", "inputs": [{ "name": "flow", "ref": "<<table \"流水\">>" }],
             "output_contract": { "results": [{ "name": "groups", "type": "table", "title": "分组合计", "key": ["分组"] }] },
-            "checks": [{ "id": "rows", "kind": "program", "text": "读到全部 12000 行" }], "blockers": [], "warnings": [] })).await;
+            "checks": [{ "id": "rows", "kind": "program", "level": "error", "text": "读到全部 12000 行" }], "blockers": [], "warnings": [] })).await;
         *srv.model.execute.lock().unwrap() = coding(r#"
 export default async function main(aiws) {
   aiws.declare({ inputs: { flow: ['分组', '金额'] } })
@@ -272,14 +289,15 @@ export default async function main(aiws) {
 }"#.to_string());
         let started = std::time::Instant::now();
         let e = code(&srv, json!({})).await;
-        assert_eq!(e["state"], "waiting_confirmation", "{e}");
+        srv.done(&e);
         assert!(started.elapsed().as_secs() < 30, "took {:?}", started.elapsed());
-        assert_eq!(e["candidate"]["checks"][0]["status"], "passed", "{}", e["candidate"]["checks"]);
-        let got: std::collections::BTreeMap<String, i64> = e["candidate"]["results"][0]["table"]["rows"].as_array().unwrap().iter()
+        assert_eq!(statuses(&e["record"]), [("rows".to_string(), "passed".to_string())]);
+        let p = run(&srv).await;
+        srv.done(&p);
+        let got: std::collections::BTreeMap<String, i64> = rows(&srv, "groups").await.iter()
             .map(|r| (r["分组"].as_str().unwrap().to_string(), r["合计"].as_f64().unwrap() as i64)).collect();
         assert_eq!(got, expect, "independent computation agrees");
-        assert!(e["evidence"]["read_set"].as_array().unwrap().len() <= 200);
-        srv.apply(&e, json!({})).await;
+        assert!(p["evidence"]["read_set"].as_array().unwrap().len() <= 200);
     });
 }
 
@@ -292,7 +310,7 @@ fn q05_derived_column_and_run() {
         analyzed(&srv, json!({ "status": "ready", "context_prompt": "计算 <<table \"工资\">> 每人工资与平均工资的差值",
             "inputs": [{ "name": "salary", "ref": "<<table \"工资\">>" }],
             "output_contract": { "results": [{ "name": "差值", "type": "table_columns", "target": "salary" }] },
-            "checks": [{ "id": "zero", "kind": "program", "text": "差值之和约等于 0" }], "blockers": [], "warnings": [] })).await;
+            "checks": [{ "id": "zero", "kind": "program", "level": "error", "text": "差值之和约等于 0" }], "blockers": [], "warnings": [] })).await;
         *srv.model.execute.lock().unwrap() = coding(r#"
 export default async function main(aiws) {
   aiws.declare({ inputs: { salary: ['工资'] } })
@@ -302,9 +320,10 @@ export default async function main(aiws) {
   aiws.result.columns('差值', 'salary', values, { fields: { 差值: 'decimal' } })
   aiws.check('zero', Math.abs(Object.values(values).reduce((s, v) => s + v['差值'], 0)) < 0.05)
 }"#.to_string());
-        let e = code(&srv, json!({})).await;
-        assert_eq!(e["state"], "waiting_confirmation", "{e}");
-        srv.apply(&e, json!({})).await;
+        srv.done(&code(&srv, json!({})).await);
+        let schema = srv.rpc("doc.read", json!({ "entity_id": "salary" })).await;
+        assert_eq!(schema["content"]["fields"].as_array().unwrap().len(), 2, "coding writes no results");
+        srv.done(&run(&srv).await);
         let schema = srv.rpc("doc.read", json!({ "entity_id": "salary" })).await;
         assert_eq!(schema["content"]["fields"].as_array().unwrap().len(), 3);
         assert_eq!(fresh(&srv).await["status"], "current");
@@ -315,12 +334,9 @@ export default async function main(aiws) {
         srv.commit(json!([{ "op": "table.insert_records", "source_id": "salary", "records": [{ "record_id": "s4", "values": { "who": "丁", "pay": 14001 } }] }])).await;
         assert_eq!(fresh(&srv).await["status"], "stale");
         let calls = srv.model.calls.load(Ordering::SeqCst);
-        let p = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "run" })).await;
-        assert_eq!((p["state"].as_str(), p["candidate"]["mode"].as_str()), (Some("waiting_confirmation"), Some("run")), "{p}");
+        srv.done(&run(&srv).await);
         assert_eq!(srv.model.calls.load(Ordering::SeqCst), calls, "no model loop");
         // the average is 11000.25 now: the column is widened, never rounded
-        assert!(p["preview"]["summary"]["structure"].to_string().contains("widen_scale"), "{}", p["preview"]);
-        srv.apply(&p, json!({})).await;
         let cell = srv.rpc("doc.read", json!({ "entity_id": "salary", "selector": { "kind": "table_cell", "record_id": "s4", "field_id": fid } })).await;
         assert_eq!(cell["content"]["value"], "3000.75");
         assert_eq!(field(&srv.rpc("doc.read", json!({ "entity_id": "salary" })).await), 2);
@@ -337,10 +353,9 @@ fn q09_rename_runs_type_change_needs_coding() {
         base(&mut srv).await;
         analyzed(&srv, monthly_analysis()).await;
         *srv.model.execute.lock().unwrap() = coding(monthly("销售额"));
-        let e = code(&srv, json!({})).await;
-        assert_eq!(e["state"], "waiting_confirmation", "{e}");
-        let total = e["candidate"]["facts"]["total"].clone();
-        srv.apply(&e, json!({})).await;
+        srv.done(&code(&srv, json!({})).await);
+        srv.done(&run(&srv).await);
+        let monthly_rows = rows(&srv, "monthly").await;
 
         // a renamed field: no reason to code again, the run reads it under the name it was coded with
         let f = srv.rpc("doc.read", json!({ "entity_id": "orders", "selector": { "kind": "table_field", "field_id": "amount" } })).await;
@@ -348,11 +363,10 @@ fn q09_rename_runs_type_change_needs_coding() {
         assert!(fresh(&srv).await["needs_coding"].is_null());
         let calls = srv.model.calls.load(Ordering::SeqCst);
         let renamed = run(&srv).await;
-        assert_eq!((renamed["state"].as_str(), renamed["candidate"]["mode"].as_str()), (Some("waiting_confirmation"), Some("run")), "{renamed}");
-        assert_eq!(renamed["candidate"]["facts"]["total"], total);
-        assert_eq!(renamed["candidate"]["checks"][0]["status"], "passed");
+        srv.done(&renamed);
+        assert_eq!(rows(&srv, "monthly").await, monthly_rows);
+        assert_eq!(statuses(&renamed["record"])[0], ("total".to_string(), "passed".to_string()));
         assert_eq!(srv.model.calls.load(Ordering::SeqCst), calls, "no model loop");
-        srv.apply(&renamed, json!({})).await;
 
         // a declared field changes its type: the run is refused before it starts, naming the field
         let f = srv.rpc("doc.read", json!({ "entity_id": "orders", "selector": { "kind": "table_field", "field_id": "status" } })).await;
@@ -382,17 +396,15 @@ fn q09_rename_runs_type_change_needs_coding() {
             }
         });
         let r = code(&srv, json!({ "parent_run_id": renamed["run_id"] })).await;
-        assert_eq!(r["state"], "waiting_confirmation", "{r}");
-        assert_eq!(r["candidate"]["checks"][0]["status"], "passed");
-        assert_eq!(r["candidate"]["facts"]["total"], total, "the same data, the same result");
-        let declared: Vec<(&str, &str, &str)> = r["candidate"]["program"]["manifest"]["inputs"]["sales"]["fields"].as_array().unwrap().iter()
-            .map(|f| (f["field_id"].as_str().unwrap(), f["name"].as_str().unwrap(), f["type"].as_str().unwrap())).collect();
-        assert_eq!(declared, [("month", "月份", "date"), ("amount", "金额", "decimal"), ("status", "状态", "text")]);
-        srv.apply(&r, json!({})).await;
-        let fr = fresh(&srv).await;
-        assert_eq!((fr["status"].as_str(), fr["needs_coding"].is_null()), (Some("current"), true), "{fr}");
-        let again = run(&srv).await;
-        assert_eq!((again["state"].as_str(), &again["candidate"]["facts"]["total"]), (Some("waiting_confirmation"), &total), "{again}");
+        srv.done(&r);
+        assert_eq!((r["record"]["action"].as_str(), r["record"]["checks"][0]["status"].as_str()), (Some("repair"), Some("passed")));
+        let declared: Vec<(String, String, String)> = srv.wish_of("w").await["program"]["manifest"]["inputs"]["sales"]["fields"].as_array().unwrap().iter()
+            .map(|f| (f["field_id"].as_str().unwrap().to_string(), f["name"].as_str().unwrap().to_string(), f["type"].as_str().unwrap().to_string())).collect();
+        assert_eq!(declared, [("month".to_string(), "月份".to_string(), "date".to_string()), ("amount".into(), "金额".into(), "decimal".into()), ("status".into(), "状态".into(), "text".into())]);
+        assert!(fresh(&srv).await["needs_coding"].is_null());
+        srv.done(&run(&srv).await);
+        assert_eq!(fresh(&srv).await["status"], "current");
+        assert_eq!(rows(&srv, "monthly").await, monthly_rows, "the same data, the same result");
     });
 }
 
@@ -421,8 +433,8 @@ async fn set_amount(srv: &Srv, record: &str, value: &str) {
 }
 
 /// Q10 HTML 结果 + W24: the page comes from the macro (a definition with `aiws` v2 and a Block bound by name); its code is
-/// fixed when it is coded — a macro that writes data into the code fails the next run and is repaired by coding from
-/// that failed run; a run moves only the data, the definition keeps its version.
+/// fixed when it is coded — a macro that writes data into the code fails the next run on new data and is repaired by
+/// coding from that failed run; a run moves only the data, the definition keeps its version.
 #[test]
 fn q10_html_result_with_bindings() {
     run_test(|| async move {
@@ -434,17 +446,16 @@ fn q10_html_result_with_bindings() {
             { "name": "dash", "type": "html", "title": "看板" }]);
         a["checks"] = json!([]);
         analyzed(&srv, a).await;
-        // a page with the data written into its code: coded, applied, then the data changes
+        // a page with the data written into its code: coded and run, then the data changes
         *srv.model.execute.lock().unwrap() = coding(DASH_BAD.to_string());
-        let e = code(&srv, json!({})).await;
-        assert_eq!(e["state"], "waiting_confirmation", "{e}");
-        assert_eq!(e["candidate"]["program"]["manifest"]["results"]["dash"]["code_digest"].as_str().map(str::len), Some(64), "the page's code is part of the macro version");
-        srv.apply(&e, json!({})).await;
+        srv.done(&code(&srv, json!({})).await);
+        assert_eq!(srv.wish_of("w").await["program"]["manifest"]["results"]["dash"]["code_digest"].as_str().map(str::len), Some(64), "the page's code is part of the macro version");
+        srv.done(&run(&srv).await);
         set_amount(&srv, "o1", "1000.00").await;
-        let head = srv.rpc("ws.get_info", json!({})).await["head_seq"].clone();
+        let last = srv.wish_of("w").await["last_run"].clone();
         let failed = run(&srv).await;
         assert_eq!((failed["state"].as_str(), failed["error"]["sub_code"].as_str()), (Some("failed"), Some("MACRO_CODE_CHANGED")), "{failed}");
-        assert_eq!(srv.rpc("ws.get_info", json!({})).await["head_seq"], head, "a failed run writes nothing");
+        assert_eq!(srv.wish_of("w").await["last_run"], last, "a failed run writes nothing but its record");
 
         // repairing the failed run: the model is told why the macro failed and moves the data into bindings
         let good = DASH.to_string();
@@ -456,14 +467,13 @@ fn q10_html_result_with_bindings() {
                 _ => text("完成"),
             }
         });
-        let r = code(&srv, json!({ "parent_run_id": failed["run_id"] })).await;
-        assert_eq!(r["state"], "waiting_confirmation", "{r}");
-        srv.apply(&r, json!({})).await;
+        srv.done(&code(&srv, json!({ "parent_run_id": failed["run_id"] })).await);
+        srv.done(&run(&srv).await);
         let w = srv.wish_of("w").await;
         let dash = w["last_run"]["result_bindings"]["results"]["dash"].clone();
         let def = srv.rpc("doc.read", json!({ "entity_id": dash["entity_id"] })).await["content"]["payload"].clone();
         assert_eq!(def["html"]["api_version"], 2);
-        assert_eq!(def["version"], 2, "coding changed the page's code");
+        assert_eq!(def["version"], 2, "the repaired macro changed the page's code");
         let cell = srv.rpc("doc.read", json!({ "entity_id": dash["cells"][0] })).await;
         let monthly = w["last_run"]["result_bindings"]["results"]["monthly"]["entity_id"].as_str().unwrap().to_string();
         assert_eq!(cell["content"]["payload"]["bindings"]["monthly"]["entity_id"], json!(monthly));
@@ -475,10 +485,8 @@ fn q10_html_result_with_bindings() {
         let before = srv.records(&monthly).await;
         set_amount(&srv, "o2", "2000.00").await;
         let calls = srv.model.calls.load(Ordering::SeqCst);
-        let p = run(&srv).await;
-        assert_eq!((p["state"].as_str(), p["candidate"]["mode"].as_str()), (Some("waiting_confirmation"), Some("run")), "{p}");
+        srv.done(&run(&srv).await);
         assert_eq!(srv.model.calls.load(Ordering::SeqCst), calls, "no model loop");
-        srv.apply(&p, json!({})).await;
         let after = srv.rpc("doc.read", json!({ "entity_id": dash["entity_id"] })).await["content"]["payload"].clone();
         assert_eq!((&after["version"], &after["html"]), (&def["version"], &def["html"]), "the definition did not change");
         let w = srv.wish_of("w").await;
@@ -510,20 +518,26 @@ export default async function main(aiws) {
   aiws.result.text('commentary', '合计见表。')
 }"#;
 
-/// W05 / W08 / W12: configuration changes during a run, invalid macro output, two applications.
+/// W05 / W08 / W12: configuration changes during a run, invalid macro output, two codings from one base.
 #[test]
 fn w05_w08_w12_guards() {
     run_test(|| async move {
         let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
         base(&mut srv).await;
-        // W05: the prompt changes while the analysis waits: its write-back is refused
+        // W05: the prompt changes while the analysis runs: it is not written when it ends
         *srv.model.analyze.lock().unwrap() = submit(monthly_analysis());
-        let a = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "analyze", "location": loc() })).await;
-        let rev = srv.rpc("doc.read", json!({ "entity_id": "w" })).await["content"]["key_revs"]["prompt"].clone();
-        srv.commit(json!([{ "op": "entity.set_keys", "entity_id": "w", "keys": [{ "key": "prompt", "value": "换个需求", "expect": { "rev": rev } }] }])).await;
-        let p = srv.rpc("proc.get", json!({ "run_id": a["run_id"], "choices": {} })).await;
-        assert_eq!(p["preview"]["ready"], false);
-        assert!(p["preview"]["summary"]["problems"].to_string().contains("prompt"));
+        srv.model.delay_ms.store(800, Ordering::SeqCst);
+        let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "params": { "wish_id": "w", "stage": "analyze", "location": loc() }, "idempotency_key": "w05" })).await;
+        let (id, claim) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
+        tokio::join!(srv.execute("tok-alice", &id, &claim), async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let rev = srv.rpc("doc.read", json!({ "entity_id": "w" })).await["content"]["key_revs"]["prompt"].clone();
+            srv.commit(json!([{ "op": "entity.set_keys", "entity_id": "w", "keys": [{ "key": "prompt", "value": "换个需求", "expect": { "rev": rev } }] }])).await;
+        });
+        srv.model.delay_ms.store(0, Ordering::SeqCst);
+        let a = srv.wait(&id).await;
+        assert_eq!((a["state"].as_str(), a["error"]["code"].as_str()), (Some("failed"), Some("DELEGATION_STALE")), "{a}");
+        assert!(srv.wish_of("w").await.get("analysis").is_none());
         analyzed(&srv, monthly_analysis()).await;
         // W08: what a trial run produced is validated on the spot; the model corrects the macro in the same run
         let extra = monthly("销售额").replace("aiws.result.text('commentary', text)", "aiws.result.text('commentary', text)\n  aiws.result.text('extra', '多写一个')");
@@ -560,21 +574,22 @@ fn w05_w08_w12_guards() {
             8 => call("finish", json!({ "summary": "完成" })),
             _ => text("完成"),
         });
+        // W12: two codings from the same base: the one that ends first is written, the other one is refused
+        let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "params": { "wish_id": "w", "stage": "code", "location": loc() }, "idempotency_key": "w12" })).await;
+        let (id2, claim2) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
+        let claimed = srv.rpc("proc.claim", json!({ "run_id": id2, "claim_token": claim2 })).await;
         let e1 = code(&srv, json!({})).await;
-        assert_eq!(e1["state"], "waiting_confirmation", "{e1}");
-        assert!(e1["candidate"]["program"]["manifest"]["inputs"]["sales"].is_object(), "the candidate is the last successful trial run: {}", e1["candidate"]["program"]);
-        // W12: a second candidate from the same base; the first application wins, the second conflicts
-        *srv.model.execute.lock().unwrap() = coding(monthly("销售额"));
-        let e2 = code(&srv, json!({})).await;
-        assert_eq!(e2["state"], "waiting_confirmation", "{e2}");
-        srv.apply(&e1, json!({})).await;
-        let p2 = srv.rpc("proc.get", json!({ "run_id": e2["run_id"], "choices": {} })).await;
-        assert_eq!(p2["preview"]["ready"], false, "{}", p2["preview"]);
-        assert!(p2["preview"]["summary"]["problems"].to_string().contains("another set of results"));
-        // applying the stale preview it had before is a conflict, and the document keeps the first
-        let r = srv.rpc("proc.apply", json!({ "run_id": e2["run_id"], "plan_digest": e2["preview"]["plan_digest"], "session_id": "s1" })).await;
-        assert_eq!(r["applied"]["status"], "conflict", "{r}");
-        assert_eq!(srv.rpc("proc.get", json!({ "run_id": e2["run_id"] })).await["state"], "conflict");
+        srv.done(&e1);
+        let w = srv.wish_of("w").await;
+        assert!(w["program"]["manifest"]["inputs"]["sales"].is_object(), "the macro is the last successful trial run's: {}", w["program"]);
+        let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: id2.clone(), attempt: 1, manifest: Value::Null, turns: Default::default() };
+        ex.run_macro(&monthly("销售额")).await.unwrap();
+        ex.tool("finish", json!({ "summary": "完成" })).await.unwrap();
+        ex.call("proc.report", json!({ "finished": true })).await;
+        let e2 = srv.wait(&id2).await;
+        assert_eq!((e2["state"].as_str(), e2["error"]["sub_code"].as_str()), (Some("failed"), Some("PLAN_PROBLEMS")), "{e2}");
+        assert!(e2["error"]["detail"].as_str().unwrap().contains("program was modified during the coding"), "{e2}");
+        assert_eq!(srv.wish_of("w").await["program"], w["program"], "the document keeps the first");
     });
 }
 
@@ -596,16 +611,15 @@ export default async function main(aiws) {
   const status = await (await aiws.zone.fetch('/kapi/status')).text()
   aiws.result.record('hello', { 欢迎: '你好', 外部状态: status })
 }"#.to_string());
-        let e = code(&srv, json!({})).await;
-        assert_eq!(e["state"], "waiting_confirmation", "{e}");
-        assert_eq!(e["candidate"]["external_data"], json!(["https://zone.test/kapi/status"]));
-        assert_eq!(e["candidate"]["program"]["manifest"]["zone"], json!(["/kapi/status"]));
-        srv.apply(&e, json!({})).await;
+        srv.done(&code(&srv, json!({})).await);
+        assert_eq!(srv.wish_of("w").await["program"]["manifest"]["zone"], json!(["/kapi/status"]));
+        srv.done(&run(&srv).await);
         let w = srv.wish_of("w").await;
         let hello = w["last_run"]["result_bindings"]["results"]["hello"]["entity_id"].as_str().unwrap().to_string();
         let f = srv.rpc("doc.freshness", json!({ "entity_ids": [hello] })).await;
         assert_eq!((f["items"][0]["status"].as_str(), f["items"][0]["external_data"].as_bool()), (Some("current"), Some(true)));
-        // W18: a package carries the macro (its source asset, its manifest), the dependency records and the bindings
+        // W18: a package carries the macro (its source asset, its manifest), the dependency records, the bindings and the
+        // run records with their objects
         let ex = srv.rpc("doc.export", json!({ "mode": "share", "self_contained": true })).await;
         let pkg = srv.nfs.fetch(&ex["download"]).await;
         let package = srv.nfs.put("alice", "exports", "import/w18.bcanvas", pkg).await;
@@ -617,6 +631,9 @@ export default async function main(aiws) {
         let src = srv.http.get(format!("{}/asset/{}/{}", srv.base, ws2, w2["program"]["source"].as_str().unwrap())).bearer_auth("tok-alice").send().await.unwrap();
         assert!(src.status().is_success(), "the macro source travels with the package");
         assert!(String::from_utf8_lossy(&src.bytes().await.unwrap()).contains("aiws.result.record"));
+        assert_eq!(w2["history"], w["history"], "the run records travel");
+        let prompt = srv.http.get(format!("{}/asset/{}/{}", srv.base, ws2, w2["history"]["analyze"][0]["objects"]["prompt"].as_str().unwrap())).bearer_auth("tok-alice").send().await.unwrap();
+        assert!(prompt.status().is_success(), "with their objects");
         let f2 = srv.rpc("doc.freshness", json!({ "workspace_id": ws2, "entity_ids": ["w", hello] })).await;
         assert_eq!(f2["items"][0]["status"], "current", "{f2}");
         assert_eq!(f2["items"][1]["external_data"], true);

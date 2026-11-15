@@ -1,13 +1,15 @@
-//! The result planner (许愿格 §10, §11): one candidate (`wish.results.v2`, from any executor) →
-//! the ordinary operations and preconditions of exactly one Commit, plus the preview the user
-//! confirms. Deterministic for a given document state, candidate and choices; the preview's
-//! `plan_digest` names the plan the user saw and is the only plan that can be applied.
+//! The result planner (许愿格 §10, §11; 许愿格交互升级 §3.3): one candidate (`wish.results.v2`) → the ordinary
+//! operations and preconditions of exactly one Commit, which the service writes when the stage ends. Deterministic for
+//! a given document state and candidate. Nothing is asked first: a result edited by hand is overwritten and rows or
+//! fields the wish wrote and no longer produces are deleted — each said in `warnings`, and undone by rolling the run
+//! back; what cannot be written (`problems`) fails the run.
 //!
 //! Identity rules: a logical result keeps its data entity through `last_run.result_bindings`
 //! (never inferred from titles); table rows keep their record ids through the logical key
 //! (`record_id_for_key`), fields through their names; a type change of a logical result is a
 //! conflict, not a silent conversion; results missing this time are listed, never deleted.
 
+use super::history::warning;
 use super::outline::{node_title, tree_of, OutlineNode};
 use crate::docdb::SqlCtx;
 use crate::workspace::{Caller, Workspace};
@@ -184,15 +186,18 @@ pub struct Plan {
     pub assets: Vec<String>,
     pub summary: Value,
     pub digest: String,
-    /// No blocking problem and every required choice was made.
+    /// No problem: the plan can be written.
     pub ready: bool,
+    /// What writing it does that a person may not expect (overwritten hand edits, deleted rows or fields, results not
+    /// produced this time), most important first: `{ code, … }` (README "Run records").
+    pub warnings: Vec<Value>,
 }
 
 impl Plan {
     pub fn to_json(&self) -> Value {
         json!({ "operations": self.operations, "preconditions": self.preconditions,
                 "assets": self.assets.iter().map(|o| json!({ "object_id": o })).collect::<Vec<_>>(),
-                "summary": self.summary, "plan_digest": self.digest, "ready": self.ready })
+                "summary": self.summary, "plan_digest": self.digest, "ready": self.ready, "warnings": self.warnings })
     }
 }
 
@@ -212,10 +217,9 @@ struct Planner<'a> {
     ctx: SqlCtx<'a>,
     ops: Vec<Value>,
     problems: Vec<String>,
-    manual: Vec<Value>,
+    warnings: Vec<Value>,
     structure: Vec<Value>,
     destructive: bool,
-    confirm_structure: bool,
     results_summary: Vec<Value>,
     assets: Vec<String>,
     /// result name → entity id (links between results and html bindings)
@@ -224,6 +228,8 @@ struct Planner<'a> {
     last_key: BTreeMap<String, String>,
     /// The author of the controls a wish generates (扩展控件 P0 identity): the Workspace itself, `did:aiws:<workspace_id>`.
     author_did: String,
+    /// HTML result name → the code digest the macro version written with these results fixed.
+    code_digests: Map<String, Value>,
 }
 
 impl<'a> Planner<'a> {
@@ -254,14 +260,74 @@ impl<'a> Planner<'a> {
     }
 }
 
-/// What the planner needs besides the candidate: the run, the user's choices and where it started.
+/// What the planner needs besides the candidate: the run and where it started.
 pub struct PlanRequest<'a> {
     pub run_id: &'a str,
     pub candidate: &'a Value,
-    /// `{ results: { <name>: keep | replace | new }, confirm_structure?: bool }`
-    pub choices: &'a Value,
     /// `{ cell_id?, surface_id? }`
     pub location: &'a Value,
+}
+
+/// What a candidate changes of the wish's configuration (§11.4): the inputs the coding appended, the refinements it
+/// distilled, the macro it wrote — and the analysis re-stated when its inputs or refinements moved, so its basis
+/// includes what the host sanctioned. `after` is the wish as it is once they are written.
+struct ConfigKeys {
+    after: JsonMap,
+    keys: Vec<Value>,
+    assets: Vec<String>,
+    program_change: Value,
+}
+
+fn config_keys(wish: &EntityRow, cand: &Value, run_id: &str) -> ConfigKeys {
+    let payload = &wish.payload;
+    let mut after = payload.clone();
+    let mut keys: Vec<Value> = Vec::new();
+    let mut assets = Vec::new();
+    let mut inputs_changed = false;
+    if let Some(app) = cand["appended_inputs"].as_array().filter(|a| !a.is_empty()) {
+        let mut list = payload.get("inputs").and_then(Value::as_array).cloned().unwrap_or_default();
+        for a in app {
+            if !list.iter().any(|i| i["entity_id"] == a["entity_id"] && i.get("selector").is_none()) {
+                list.push(a.clone());
+                inputs_changed = true;
+            }
+        }
+        if inputs_changed {
+            after.insert("inputs".into(), json!(list));
+            keys.push(json!({ "key": "inputs", "value": list, "expect": { "rev": wish.key_rev("inputs") } }));
+        }
+    }
+    let mut refinements_changed = false;
+    if let Some(add) = cand["refinements"].as_array().filter(|a| !a.is_empty()) {
+        let mut list = payload.get("refinements").and_then(Value::as_array).cloned().unwrap_or_default();
+        list.extend(add.iter().cloned());
+        let start = list.len().saturating_sub(aiworkspace_core::wish::MAX_REFINEMENTS);
+        let list: Vec<Value> = list[start..].to_vec();
+        after.insert("refinements".into(), json!(list));
+        keys.push(json!({ "key": "refinements", "value": list, "expect": { "rev": wish.key_rev("refinements") } }));
+        refinements_changed = true;
+    }
+    let mut program_change = Value::Null;
+    if let Some(prog) = cand.get("program").filter(|p| p.is_object() && p.get("digest").is_some()) {
+        let before = payload.get("program").and_then(|p| p.get("digest")).cloned();
+        if before.as_ref() != prog.get("digest") {
+            let stored = json!({ "language": "js", "api_version": aiworkspace_core::wish::PROGRAM_API_VERSION, "source": prog["object_id"], "digest": prog["digest"],
+                                 "manifest": prog.get("manifest").cloned().unwrap_or(json!({ "inputs": {}, "results": {} })),
+                                 "produces": prog.get("produces").cloned().unwrap_or(json!([])), "run_id": run_id });
+            if let Some(source) = prog.get("object_id").and_then(Value::as_str) {
+                assets.push(source.to_string());
+            }
+            after.insert("program".into(), stored.clone());
+            keys.push(json!({ "key": "program", "value": stored, "expect": { "rev": wish.key_rev("program") } }));
+            program_change = json!({ "from": before, "to": prog["digest"] });
+        }
+    }
+    if (inputs_changed || refinements_changed) && after.get("analysis").is_some() {
+        let a = after.get("analysis").cloned().unwrap_or(Value::Null);
+        with_basis(&mut after);
+        keys.push(json!({ "key": "analysis", "value": a, "expect": { "rev": wish.key_rev("analysis") } }));
+    }
+    ConfigKeys { after, keys, assets, program_change }
 }
 
 impl Workspace {
@@ -280,16 +346,16 @@ impl Workspace {
             ctx,
             ops: Vec::new(),
             problems: Vec::new(),
-            manual: Vec::new(),
+            warnings: Vec::new(),
             structure: Vec::new(),
             destructive: false,
-            confirm_structure: req.choices.get("confirm_structure") == Some(&json!(true)),
             results_summary: Vec::new(),
             assets: Vec::new(),
             ids: BTreeMap::new(),
             inputs: BTreeMap::new(),
             last_key: BTreeMap::new(),
             author_did: format!("did:aiws:{}", self.workspace_id),
+            code_digests: Map::new(),
         };
         let payload = &wish.payload;
         // the wish as it was when the run started: any change since means the candidate answers an old question
@@ -300,8 +366,8 @@ impl Workspace {
             preconditions.push(json!({ "target": { "entity_id": wish_id, "selector": { "kind": "doc_key", "key": k } }, "expect": { "rev": at_start } }));
             if wish.key_rev(k) != at_start {
                 p.problems.push(match *k {
-                    "last_run" => "This wish block has applied another set of results since this run started: run it again (or preview again and choose to create a new set)".to_string(),
-                    _ => format!("The wish block's {k} was modified after the run started: this candidate was made for the old configuration and cannot be applied"),
+                    "last_run" => "This wish block wrote another set of results since this run started: run it again".to_string(),
+                    _ => format!("The wish block's {k} was modified after the run started: the run was made for the old configuration; run it again"),
                 });
             }
         }
@@ -365,7 +431,6 @@ impl Workspace {
             }
             (make_id(&[&wish_id, &format!("run{n}")]), make_id(&[&wish_id, &format!("run{n}"), "data"]), format!("{out_name} #{n}"))
         };
-        let simulated = cand.get("simulated") == Some(&json!(true));
         let folder_exists = p.alive(&folder_id)?.is_some();
         if !folder_exists {
             let key = p.next_key(&container)?;
@@ -375,15 +440,12 @@ impl Workspace {
 
         // ---- results
         let results: Vec<Value> = cand["results"].as_array().cloned().unwrap_or_default();
-        let empty_choices = json!({});
-        let choices = req.choices.get("results").unwrap_or(&empty_choices);
         // pass 1: identities (links between results need them before content is built)
         let mut items = Vec::new();
         for r in &results {
             let name = r["name"].as_str().unwrap_or("").to_string();
             let ty = r["type"].as_str().unwrap_or("").to_string();
             let binding = if mode == "overwrite" { prev_bindings.get(&name).cloned() } else { None };
-            let choice = choices.get(&name).and_then(Value::as_str).map(str::to_string);
             if ty == "control" {
                 // a control is a new container each time (an overwrite deletes the last one), or nodes under a node
                 // the wish read; there is no data entity
@@ -398,7 +460,7 @@ impl Workspace {
                     p.problems.push(format!("The type of result \"{name}\" changed from {was} to control: it cannot be converted in place; use a different result name, or switch to \"Create a new set each time\""));
                 }
                 p.ids.insert(name.clone(), entity_id.clone());
-                items.push(Item { r: r.clone(), name, ty, entity_id, existing: None, binding, choice, new_copy: false });
+                items.push(Item { r: r.clone(), name, ty, entity_id, existing: None, binding });
                 continue;
             }
             let mut entity_id = match (&binding, ty.as_str()) {
@@ -406,7 +468,7 @@ impl Workspace {
                 (Some(b), _) => b["entity_id"].as_str().unwrap_or("").to_string(),
                 (None, _) => make_id(&[&group_id, &slug(&name)]),
             };
-            let mut existing = if ty == "table_columns" { None } else { p.alive(&entity_id)? };
+            let existing = if ty == "table_columns" { None } else { p.alive(&entity_id)? };
             if let (Some(b), Some(e)) = (&binding, &existing) {
                 let was = b["type"].as_str().unwrap_or("");
                 if was != ty && ty != "table_columns" {
@@ -426,78 +488,24 @@ impl Workspace {
                     }
                 }
             }
-            let mut new_copy = false;
             if let Some(e) = &existing {
-                let manual = e.derived.as_ref().is_some_and(|d| aiworkspace_core::freshness::hand_edited(e, d.get("generated_rev").and_then(Value::as_u64).unwrap_or(0)));
-                if manual {
-                    match choice.as_deref() {
-                        Some("keep") | Some("replace") => {}
-                        Some("new") => {
-                            new_copy = true;
-                            entity_id = make_id(&[&group_id, &slug(&name), &format!("m{seq}")]);
-                            existing = None;
-                        }
-                        _ => p.manual.push(json!({ "name": name, "entity_id": e.entity_id })),
-                    }
+                // a hand edit is overwritten (D3): the run's rollback brings it back
+                if e.derived.as_ref().is_some_and(|d| aiworkspace_core::freshness::hand_edited(e, d.get("generated_rev").and_then(Value::as_u64).unwrap_or(0))) {
+                    p.warnings.push(warning("overwrote_manual", json!({ "name": name })));
                 }
             }
             p.ids.insert(name.clone(), entity_id.clone());
-            items.push(Item { r: r.clone(), name, ty, entity_id, existing, binding, choice, new_copy });
+            items.push(Item { r: r.clone(), name, ty, entity_id, existing, binding });
         }
-        // the configuration the results are generated under: the wish as it is after this application
-        let mut after = payload.clone();
-        let mut wish_keys: Vec<Value> = Vec::new();
-        let mut inputs_changed = false;
-        if let Some(app) = cand["appended_inputs"].as_array().filter(|a| !a.is_empty()) {
-            let mut list = payload.get("inputs").and_then(Value::as_array).cloned().unwrap_or_default();
-            for a in app {
-                if !list.iter().any(|i| i["entity_id"] == a["entity_id"] && i.get("selector").is_none()) {
-                    list.push(a.clone());
-                    inputs_changed = true;
-                }
-            }
-            if inputs_changed {
-                after.insert("inputs".into(), json!(list));
-                wish_keys.push(json!({ "key": "inputs", "value": list, "expect": { "rev": wish.key_rev("inputs") } }));
-            }
-        }
-        let mut refinements_changed = false;
-        if let Some(add) = cand["refinements"].as_array().filter(|a| !a.is_empty()) {
-            let mut list = payload.get("refinements").and_then(Value::as_array).cloned().unwrap_or_default();
-            list.extend(add.iter().cloned());
-            let start = list.len().saturating_sub(aiworkspace_core::wish::MAX_REFINEMENTS);
-            let list: Vec<Value> = list[start..].to_vec();
-            after.insert("refinements".into(), json!(list));
-            wish_keys.push(json!({ "key": "refinements", "value": list, "expect": { "rev": wish.key_rev("refinements") } }));
-            refinements_changed = true;
-        }
-        let program_after = cand.get("program").filter(|p| p.is_object() && p.get("digest").is_some()).cloned();
-        let mut program_change = Value::Null;
-        if let Some(prog) = &program_after {
-            let before = payload.get("program").and_then(|p| p.get("digest")).cloned();
-            if before.as_ref() != prog.get("digest") {
-                let stored = json!({ "language": "js", "api_version": aiworkspace_core::wish::PROGRAM_API_VERSION, "source": prog["object_id"], "digest": prog["digest"],
-                                     "manifest": prog.get("manifest").cloned().unwrap_or(json!({ "inputs": {}, "results": {} })),
-                                     "produces": prog.get("produces").cloned().unwrap_or(json!([])), "run_id": req.run_id });
-                if let Some(source) = prog.get("object_id").and_then(Value::as_str) {
-                    p.assets.push(source.to_string());
-                }
-                after.insert("program".into(), stored.clone());
-                wish_keys.push(json!({ "key": "program", "value": stored, "expect": { "rev": wish.key_rev("program") } }));
-                program_change = json!({ "from": before, "to": prog["digest"] });
-            }
-        }
-        if (inputs_changed || refinements_changed) && after.get("analysis").is_some() {
-            // the host re-states the analysis so its basis includes the inputs / refinements it sanctioned
-            let a = after.get("analysis").cloned().unwrap_or(Value::Null);
-            with_basis(&mut after);
-            wish_keys.push(json!({ "key": "analysis", "value": a, "expect": { "rev": wish.key_rev("analysis") } }));
-        }
+        // the configuration the results are generated under: the wish as it is after this Commit
+        let ConfigKeys { after, keys: mut wish_keys, assets, program_change } = config_keys(&wish, cand, req.run_id);
+        p.assets.extend(assets);
+        p.code_digests = after.get("program").and_then(|g| g["manifest"]["results"].as_object()).map(|r| r.iter().map(|(n, x)| (n.clone(), x["code_digest"].clone())).collect()).unwrap_or_default();
         let config = config_digest(&after);
         let program_digest = after.get("program").and_then(|p| p.get("digest")).cloned();
         let derived_base = |name: &str, approach: &Value| {
             let mut d = json!({ "wish_id": wish_id, "run_id": req.run_id, "executor": cand["executor"], "inputs": cand["read_set"],
-                                "simulated": simulated, "at": cand["executed_at"], "output_mode": mode, "group": group_id,
+                                "at": cand["executed_at"], "output_mode": mode, "group": group_id,
                                 "config_digest": config, "result_key": name, "mode": cand.get("mode").cloned().unwrap_or(json!("generate")) });
             if approach.is_string() {
                 d["approach"] = approach.clone();
@@ -543,31 +551,15 @@ impl Workspace {
             let mut action = if it.existing.is_some() { "update" } else { "create" };
             let mut cells: Vec<String> = it.binding.as_ref().and_then(|b| b["cells"].as_array()).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             let mut binding = json!({ "type": it.ty, "entity_id": it.entity_id, "approach": approach, "title": it.r.get("title") });
-            if it.existing.is_some() && it.choice.as_deref() == Some("keep") && p.manual.iter().all(|m| m["name"] != json!(it.name)) {
-                let is_manual = it.existing.as_ref().is_some_and(|e| e.derived.as_ref().is_some_and(|d| aiworkspace_core::freshness::hand_edited(e, d.get("generated_rev").and_then(Value::as_u64).unwrap_or(0))));
-                if is_manual {
-                    // the user confirms keeping their version: re-recorded with this run's read set (§11.3)
-                    let mut d = derived_base(&it.name, &approach);
-                    d["kept_manual"] = json!(true);
-                    p.ops.push(json!({ "op": "entity.set_derived", "entity_id": it.entity_id, "derived": d }));
-                    if let Some(prev) = &it.binding {
-                        binding = prev.clone();
-                    }
-                    p.results_summary.push(json!({ "name": it.name, "type": it.ty, "entity_id": it.entity_id, "action": "keep_manual" }));
-                    produced.push(it.entity_id.clone());
-                    bindings_out.insert(it.name.clone(), binding);
-                    continue;
-                }
-            }
             let parent = folder_id.clone();
             let mut row_order: Option<Vec<String>> = None;
             let changed = match it.ty.as_str() {
                 "richtext" => plan_richtext(&mut p, it, &parent)?,
                 "record" | "video" => plan_record(&mut p, it, &parent)?,
                 "table" => plan_table(&mut p, it, &parent, &mut binding, &mut row_order)?,
-                "table_columns" => plan_columns(&mut p, it, &wish_id, req.run_id, it.choice.as_deref(), &mut binding)?,
+                "table_columns" => plan_columns(&mut p, it, &wish_id, req.run_id, &mut binding)?,
                 "image" | "asset" => plan_asset(&mut p, it, &parent)?,
-                "html" => plan_html(&mut p, it, &parent, &wish_id, &mut binding, cand.get("mode") == Some(&json!("run")))?,
+                "html" => plan_html(&mut p, it, &parent, &wish_id, &mut binding)?,
                 t => {
                     p.problems.push(format!("Result \"{}\" has unsupported type {t}", it.name));
                     false
@@ -575,9 +567,6 @@ impl Workspace {
             };
             if it.existing.is_some() && !changed {
                 action = "unchanged";
-            }
-            if it.new_copy {
-                action = "new_copy";
             }
             if it.ty != "table_columns" {
                 p.ops.push(json!({ "op": "entity.set_derived", "entity_id": it.entity_id, "derived": derived_base(&it.name, &approach) }));
@@ -747,7 +736,7 @@ impl Workspace {
                     p.ops.insert(
                         if folder_exists { 0 } else { 1 },
                         json!({ "op": "entity.create", "entity_id": group_id, "type_id": TYPE_CONTAINER, "parent_id": s, "order_key": key, "placement": rect,
-                                "payload": { "kind": "group", "layout": { "mode": "free" }, "title": format!("{title}{}", if simulated { " (simulated)" } else { "" }) } }),
+                                "payload": { "kind": "group", "layout": { "mode": "free" }, "title": title } }),
                     );
                     group_rect = rect;
                 }
@@ -761,17 +750,29 @@ impl Workspace {
         let check_summary = summarize_checks(&checks);
         let last = json!({
             "run_id": req.run_id, "state": "succeeded", "at": cand["executed_at"], "seq": seq, "mode": cand.get("mode").cloned().unwrap_or(json!("generate")),
-            "executor": cand["executor"], "simulated": simulated, "group": group_id,
+            "executor": cand["executor"], "group": group_id,
             "config_digest": config, "program_digest": program_digest, "read_set": cand["read_set"], "produced": produced,
             "missing": missing.iter().map(|m| m["entity_id"].clone()).collect::<Vec<_>>(), "checks": check_summary,
             "result_bindings": { "group": group_id, "folder": folder_id, "results": bindings_out },
         });
         wish_keys.push(json!({ "key": "last_run", "value": last, "expect": { "rev": wish.key_rev("last_run") } }));
         p.ops.push(json!({ "op": "entity.set_keys", "entity_id": wish_id, "keys": wish_keys }));
-        if p.destructive && !p.confirm_structure {
-            p.problems.push("Structure changes will delete rows or fields: confirm the structure differences in the preview before applying".into());
+        // rows and fields the wish no longer produces go (D4): said, not asked
+        for st in &p.structure {
+            let name = st["name"].as_str().unwrap_or("");
+            for c in st["changes"].as_array().into_iter().flatten().filter(|c| c["destructive"] == json!(true)) {
+                p.warnings.push(match c["kind"].as_str() {
+                    Some("delete_rows") => warning("deleted_rows", json!({ "name": name, "count": c["count"] })),
+                    Some("delete_field") => warning("deleted_field", json!({ "name": name, "field": c["field"] })),
+                    Some("change_type") => warning("changed_type", json!({ "name": name, "field": c["field"], "from": c["from"], "to": c["to"] })),
+                    _ => warning("changed_structure", json!({ "name": name })),
+                });
+            }
         }
-        let mut plan = Plan { operations: std::mem::take(&mut p.ops), preconditions, assets: std::mem::take(&mut p.assets), ..Default::default() };
+        for m in &missing {
+            p.warnings.push(warning("not_produced", json!({ "name": m["name"] })));
+        }
+        let mut plan = Plan { operations: std::mem::take(&mut p.ops), preconditions, assets: std::mem::take(&mut p.assets), warnings: std::mem::take(&mut p.warnings), ..Default::default() };
         let size = canonical_json(&json!({ "o": plan.operations })).map(|s| s.len()).unwrap_or(0);
         if size > MAX_PLAN_BYTES {
             p.problems.push(format!("The application is about {} MiB, over the limit for a single commit: reduce the size of the results", size / (1024 * 1024)));
@@ -779,14 +780,13 @@ impl Workspace {
         if plan.operations.len() > 9000 {
             p.problems.push("The application contains too many operations: reduce the size of the results".into());
         }
-        let blocking_checks = false; // failed checks need confirmation, not a block (§8.7)
         let failed_checks: Vec<Value> = checks.as_array().into_iter().flatten().filter(|c| c["status"] == json!("failed")).cloned().collect();
-        plan.ready = p.problems.is_empty() && p.manual.is_empty() && !blocking_checks;
+        plan.ready = p.problems.is_empty();
         plan.digest = sha256_hex(canonical_json(&json!({ "o": plan.operations, "p": plan.preconditions }))?.as_bytes())[..32].to_string();
         plan.summary = json!({
-            "mode": mode, "simulated": simulated,
+            "mode": mode,
             "group": { "group_id": group_id, "folder_id": folder_id, "surface_id": surface, "exists": group_exists, "rect": group_rect, "title": title },
-            "results": p.results_summary, "missing": missing, "manual": p.manual, "structure": p.structure, "destructive": p.destructive,
+            "results": p.results_summary, "missing": missing, "structure": p.structure, "destructive": p.destructive,
             "appended_inputs": cand["appended_inputs"], "program": program_change, "refinements": cand["refinements"],
             "checks": checks, "failed_checks": failed_checks.len(), "problems": p.problems, "operations": plan.operations.len(), "config_digest": config,
         });
@@ -873,8 +873,6 @@ struct Item {
     entity_id: String,
     existing: Option<EntityRow>,
     binding: Option<Value>,
-    choice: Option<String>,
-    new_copy: bool,
 }
 
 impl Item {
@@ -1321,7 +1319,7 @@ fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value, row
 }
 
 /// Derived columns on an input table (§10.4): only the wish's own fields are written.
-fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice: Option<&str>, binding: &mut Value) -> WsResult<bool> {
+fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, binding: &mut Value) -> WsResult<bool> {
     let c = &it.r()["columns"];
     let tid = c["target_id"].as_str().unwrap_or("").to_string();
     let Some(table) = p.alive(&tid)?.filter(|t| t.type_id == TYPE_TABLE) else {
@@ -1346,11 +1344,8 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
     let mut changes = Vec::new();
     for f in &mut fps {
         if owned.get(&f.name).is_some_and(|id| !fields.iter().any(|x| x.field_id == *id)) {
-            // the person deleted the wish's column: it is recreated only when they asked for it
-            if choice.is_none() {
-                p.manual.push(json!({ "name": it.name(), "entity_id": tid, "field_deleted": f.name }));
-                continue;
-            }
+            // the person deleted the wish's column: the run writes it again, and says so
+            p.warnings.push(warning("recreated_column", json!({ "name": it.name(), "field": f.name })));
             changes.push(json!({ "kind": "recreate_field", "field": f.name }));
         }
         if !f.exists {
@@ -1378,7 +1373,7 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
             }
         }
     }
-    // values; cells changed by hand need the user's decision (§11.3)
+    // values; cells changed by hand are overwritten and counted (D3)
     let mut sets = Vec::new();
     let mut manual_cells = 0;
     for (rid, vals) in &values {
@@ -1392,17 +1387,14 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
             }
             if r.meta.get(&f.field_id).is_some_and(|m| m["manual_override"] == json!(true)) {
                 manual_cells += 1;
-                if choice != Some("replace") {
-                    continue;
-                }
             }
             if let Some(v) = want {
                 sets.push(json!({ "record_id": rid, "field_id": f.field_id, "value": v, "expect": { "rev": r.value_rev(&f.field_id) } }));
             }
         }
     }
-    if manual_cells > 0 && choice.is_none() {
-        p.manual.push(json!({ "name": it.name(), "entity_id": tid, "cells": manual_cells }));
+    if manual_cells > 0 {
+        p.warnings.push(warning("overwrote_manual_cells", json!({ "name": it.name(), "count": manual_cells })));
     }
     if !sets.is_empty() {
         changes.push(json!({ "kind": "update_values", "count": sets.len() }));
@@ -1411,7 +1403,7 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
         }
     }
     if !changes.is_empty() {
-        p.structure.push(json!({ "name": it.name(), "entity_id": tid, "changes": changes, "kept_manual_cells": if choice == Some("replace") { 0 } else { manual_cells } }));
+        p.structure.push(json!({ "name": it.name(), "entity_id": tid, "changes": changes, "manual_cells": manual_cells }));
     }
     binding["entity_id"] = json!(tid);
     binding["target"] = c["target"].clone();
@@ -1454,7 +1446,7 @@ fn plan_asset(p: &mut Planner, it: &Item, parent: &str) -> WsResult<bool> {
 /// An HTML result: a Block definition (kind html, `aiws` v2) plus Blocks bound by name (§8.5, §9.4). Its code belongs
 /// to the macro version (AI Native 第一期 §2.5): coding writes it; running the stored macro only moves the data its
 /// Blocks are bound to, never the definition.
-fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &mut Value, running: bool) -> WsResult<bool> {
+fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &mut Value) -> WsResult<bool> {
     let h = &it.r()["html"];
     let def_id = format!("wish.{}", short_hash(&format!("{wish_id}/{}", it.name()), 12));
     let mut bindings = Map::new();
@@ -1477,7 +1469,9 @@ fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &
     let body = json!({ "html": h["html"], "css": h.get("css").cloned().unwrap_or(json!("")), "js": h.get("js").cloned().unwrap_or(json!("")), "api_version": aiworkspace_core::types::HTML_API_VERSION });
     match it.existing() {
         Some(e) => {
-            if e.payload.get("html") == Some(&body) || running {
+            // only the code the macro version fixed is written (the first run after a coding); other code never is
+            let coded = p.code_digests.get(it.name()).and_then(Value::as_str) == Some(super::results::html_code_digest(h).as_str());
+            if e.payload.get("html") == Some(&body) || !coded {
                 return Ok(false);
             }
             let version = e.payload.get("version").and_then(Value::as_u64).unwrap_or(1) + 1;
@@ -1837,12 +1831,45 @@ impl Workspace {
             { "key": "inputs", "value": candidate["inputs"], "expect": { "rev": wish.key_rev("inputs") } }] })];
         let digest = sha256_hex(canonical_json(&json!({ "o": operations, "p": preconditions }))?.as_bytes())[..32].to_string();
         Ok(Plan {
-            summary: json!({ "kind": "analysis", "status": candidate["analysis"]["status"], "inputs": candidate["inputs"], "problems": problems }),
+            summary: json!({ "kind": "analysis", "inputs": candidate["inputs"], "problems": problems }),
             ready: problems.is_empty(),
             operations,
             preconditions,
             assets: Vec::new(),
             digest,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// What a coding run writes (§3.3, D1): the macro and what it brought — refinements, appended inputs, the analysis
+    /// re-stated — never its trial results, guarded by the wish's configuration as the run found it.
+    pub fn wish_macro_plan(&self, caller: &Caller, run_id: &str, candidate: &Value) -> WsResult<Plan> {
+        let access = self.require_ws_any(caller)?;
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        let wish_id = candidate["wish_id"].as_str().ok_or_else(|| WsError::invalid_op("candidate.wish_id missing"))?;
+        let wish = aiworkspace_core::read::readable_entity(&ctx, &access, wish_id)?;
+        let basis = candidate.get("basis").and_then(|b| b.get("key_revs")).cloned().unwrap_or(json!({}));
+        let mut problems = Vec::new();
+        let mut preconditions = Vec::new();
+        for k in ANALYSIS_GUARDED_KEYS.iter().chain(["program", "output"].iter()) {
+            let at_start = basis.get(*k).and_then(Value::as_u64).unwrap_or(0);
+            preconditions.push(json!({ "target": { "entity_id": wish_id, "selector": { "kind": "doc_key", "key": k } }, "expect": { "rev": at_start } }));
+            if wish.key_rev(k) != at_start {
+                problems.push(format!("The wish block's {k} was modified during the coding: code it again"));
+            }
+        }
+        let ConfigKeys { keys, assets, program_change, .. } = config_keys(&wish, candidate, run_id);
+        let operations = if keys.is_empty() { Vec::new() } else { vec![json!({ "op": "entity.set_keys", "entity_id": wish_id, "keys": keys })] };
+        let digest = sha256_hex(canonical_json(&json!({ "o": operations, "p": preconditions }))?.as_bytes())[..32].to_string();
+        Ok(Plan {
+            summary: json!({ "kind": "macro", "program": program_change, "refinements": candidate["refinements"], "appended_inputs": candidate["appended_inputs"], "problems": problems }),
+            ready: problems.is_empty(),
+            operations,
+            preconditions,
+            assets,
+            digest,
+            warnings: Vec::new(),
         })
     }
 }

@@ -192,12 +192,13 @@ async fn v23_service_api_end_to_end() {
     assert_eq!(quiet["timed_out"], true);
     let changes = s.rpc("tok-alice", "doc.get_changes", json!({ "workspace_id": id, "epoch": epoch, "after_seq": 6 })).await;
     assert_eq!(changes["changes"][0]["ops"].as_array().unwrap().len(), 3);
-    // Mock run, URL table and undo through the API
-    let run = s.rpc("tok-alice", "proc.start", json!({ "workspace_id": id, "program": "mock.task-summary@1", "idempotency_key": "run-1", "params": { "today": "2026-10-13" } })).await;
-    assert_eq!(run["state"], "waiting_confirmation", "{run}");
-    let applied = s.rpc("tok-alice", "proc.apply", json!({ "workspace_id": id, "run_id": run["run_id"], "session_id": "s1" })).await;
-    assert_eq!(applied["state"], "succeeded", "{applied}");
-    let undone = s.rpc("tok-alice", "doc.undo", json!({ "workspace_id": id, "epoch": epoch, "commit_id": applied["result"]["commit_id"], "idempotency_key": "undo-run" })).await;
+    // an unknown program is no run; a URL table and undo through the API
+    let unknown = s.raw(Some("tok-alice"), "proc.start", json!({ "workspace_id": id, "program": "mock.task-summary@1", "idempotency_key": "run-1", "params": {} })).await;
+    assert!(format!("{unknown:?}").contains("MISSING_EXTENSION"), "{unknown:?}");
+    let applied = s.rpc("tok-alice", "doc.commit", commit_req(&id, &epoch, "summary", json!([{ "op": "entity.create", "entity_id": "summary", "type_id": "buckyos.richtext",
+        "parent_id": "data", "order_key": "y", "name": "Task summary", "payload": { "content": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "p1" } }] } } }]))).await;
+    assert_eq!(applied["status"], "accepted", "{applied}");
+    let undone = s.rpc("tok-alice", "doc.undo", json!({ "workspace_id": id, "epoch": epoch, "commit_id": applied["commit_id"], "idempotency_key": "undo-run" })).await;
     assert_eq!(undone["status"], "accepted", "{undone}");
     let r = s.rpc("tok-alice", "doc.commit", commit_req(&id, &epoch, "url", json!([{ "op": "entity.create", "entity_id": "events", "type_id": "buckyos.table-source",
         "parent_id": "data", "order_key": "v", "payload": { "data_mode": "url_query",

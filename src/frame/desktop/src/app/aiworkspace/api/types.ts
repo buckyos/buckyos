@@ -186,7 +186,6 @@ export interface DerivedRecord {
   executor: string
   inputs: DerivedInput[]
   generated_rev: number
-  simulated?: boolean
   at?: string
   output_mode?: 'overwrite' | 'new'
   group?: string
@@ -424,18 +423,21 @@ export interface CellPayload {
   slot?: string
 }
 
-export type WishExecutor = 'mock' | 'xllm' | 'agent-work-session'
+export type WishExecutor = 'xllm' | 'agent-work-session'
 /** A wish input: what is read (`entity`, a saved table view, a table query) and the stable name programs use (许愿格 §4.1). */
 export interface WishInput { entity_id: string; selector?: Selector; version?: { mode: 'follow' | 'fixed'; rev?: number; hash?: string }; label?: string; name?: string; appended_by?: string }
 export type WishResultType = 'richtext' | 'record' | 'table' | 'table_columns' | 'image' | 'asset' | 'html' | 'video' | 'control'
 export interface WishView { renderer: string; config?: Record<string, Json>; title?: string; size?: { w: number; h: number } }
 export interface WishContractResult { name: string; type: WishResultType; title?: string; approach: 'program' | 'direct'; key?: string[]; target?: string; views?: WishView[]; description?: string; fields?: string[] }
-export interface WishCheckDef { id: string; kind: 'program' | 'review'; text: string }
+/** An acceptance check (许愿格交互升级 D2): the analysis gives a program check its level — `error` fails the run, `warning`
+ * is written in front of the run's record; a review check may go without one. */
+export interface WishCheckDef { id: string; kind: 'program' | 'review'; level?: 'error' | 'warning'; text: string }
 export interface WishBlocker { code: string; message: string; input_label?: string; candidates?: string[] }
-/** `wish.analysis.v2` as persisted (handles already bound to ids; `basis.digest` computed by the core). */
+/** `wish.analysis.v2` as persisted (handles already bound to ids; `basis.digest` computed by the core); only a ready
+ * analysis is written (an analysis that misses inputs fails, 许愿格交互升级 §3.3). */
 export interface WishAnalysis {
   schema_version: 'wish.analysis.v2'
-  status: 'ready' | 'needs_input'
+  status: 'ready'
   prompt: string
   context_prompt: string
   output_contract: { results: WishContractResult[]; placement?: string; dynamic?: boolean }
@@ -464,13 +466,74 @@ export interface WishLastRun {
   /** Results of the previous group that were not generated this time (not deleted, §10.2). */
   missing?: string[]
   group?: string
-  simulated?: boolean
   config_digest?: string
   program_digest?: string
   checks?: WishCheckSummary
   result_bindings?: { group?: string; folder?: string; results: Record<string, WishResultBinding> }
   error?: string
 }
+
+/** What a stage's model loop or a macro's AI calls used (许愿格交互升级 §2.9): the model actually answering, tokens in and
+ * out, calls. */
+export interface WishUsage { model?: string; input_tokens?: number; output_tokens?: number; calls?: number }
+export type WishRecordAction = 'analyze' | 'code' | 'repair' | 'run' | 'rollback'
+/** One entry of a wish's history (许愿格交互升级 §2.2, §3.4): one stage run, or one rollback. Small facts inline, the large
+ * contents (the request, the task contract, the macro, its log) as asset objects of the Workspace; the text a reader
+ * sees is made from these in the reader's language (`ui/wish/records.ts`). Written by the service only. */
+/** A warning the service gives a run record, coded (许愿格交互升级 §2.2); see `warningText`. */
+export interface WishRecordNotice { code: string; [param: string]: Json }
+export type WishRecordWarning = string | WishRecordNotice
+
+export interface WishRecord {
+  /** The run id of a stage run; `rb_…` for a rollback. */
+  id: string
+  stage: WishStage
+  action: WishRecordAction
+  ok: boolean
+  /** When the run started (its `created_at`). */
+  at: string
+  ended_at: string
+  duration_ms: number
+  by: string
+  aicc?: { mode: WishAiccMode; user_id: string }
+  /** Running: only when the macro used AI. */
+  usage?: WishUsage
+  error?: { code: string; sub_code?: string; detail?: string; missing_inputs?: { label?: string; message: string; candidates?: string[] }[] }
+  /** The important ones first: failed warning checks, overwritten manual edits, deleted rows and fields, the model's warnings.
+   * The service's own are coded (`{ code, …params }`, said in the reader's language); the model's are its text. */
+  warnings: WishRecordWarning[]
+  checks?: { id: string; kind: 'program' | 'review'; level?: 'error' | 'warning'; status: 'passed' | 'failed' | 'not_run' | 'review'; text: string }[]
+  /** The material of the summary: analyze `{ text?, results, checks }`, code `{ text?, trial: { results, checks_passed,
+   * checks_total } }`, run `{ created, updated }`, rollback `{ of }`. */
+  summary: {
+    text?: string
+    results?: number
+    checks?: number
+    trial?: { results?: number; checks_passed?: number; checks_total?: number }
+    created?: number
+    updated?: number
+    of?: string
+    [key: string]: Json | undefined
+  }
+  basis: { analysis?: string; program?: string; program_record?: string }
+  inputs: { entity_id: string; name?: string; label?: string; version?: { rev?: number; hash?: string } }[]
+  outputs: {
+    analysis?: { results: number; checks: number }
+    program?: { digest: string; ai: boolean }
+    results?: { name: string; title?: string; type: WishResultType; entity_id: string; cells?: string[]; action: 'create' | 'update' }[]
+  }
+  /** Asset objects: the request as it was, the task contract (`{ analysis, inputs }`), the program value and its source, the
+   * macro's log (readable with `update` on the wish only). */
+  objects: { prompt?: string; analysis?: string; program?: string; source?: string; log?: string }
+  commit_id?: string
+  /** On a record that was rolled back. */
+  rolled_back?: { id: string; by: string; at: string }
+  /** On a rollback: the record it rolled back. */
+  rollback_of?: string
+}
+/** A wish's history (§2.2): each stage's records newest first (at most 20 each), and how many times a run built results. */
+export interface WishHistory { analyze: WishRecord[]; code: WishRecord[]; run: WishRecord[]; results_count: number }
+
 export interface WishPayload {
   title?: string
   prompt: string
@@ -484,13 +547,15 @@ export interface WishPayload {
   executor_config?: Record<string, Json>
   program?: WishProgram
   last_run?: WishLastRun
+  history?: WishHistory
 }
 
-// ---- wish runs on the service (proc.* with wish.xllm@1 / wish.mock@1)
+// ---- wish runs on the service (proc.* with wish.xllm@1)
 
 /** The three stages of a wish (AI Native 第一期 §2.1): the task contract, the macro (coding and its trial run), running the macro. */
 export type WishStage = 'analyze' | 'code' | 'run'
-export type WishRunState = 'queued' | 'snapshotting' | 'running' | 'validating' | 'waiting_confirmation' | 'applying' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'conflict' | 'rejected'
+/** A stage writes its product itself when it ends (许愿格交互升级 §3.3): nothing waits for a confirmation. */
+export type WishRunState = 'queued' | 'snapshotting' | 'running' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
 export interface WishRunProgress {
   phase?: string
   activity?: string
@@ -503,80 +568,23 @@ export interface WishRunProgress {
   llm_map?: { calls: number; cached: number; items: number }
   warning?: string
 }
-export interface WishResult {
-  name: string
-  type: WishResultType
-  title?: string
-  approach?: 'program' | 'direct'
-  views?: WishView[]
-  table?: { fields: { name: string; type?: string; options?: string[] }[]; key: string[]; rows: Record<string, Json>[] }
-  columns?: { target: string; target_id: string; fields: { name: string; type?: string }[]; values: Record<string, Record<string, Json>> }
-  record?: { properties: { name: string; type: string }[]; props: Record<string, Json> }
-  markdown?: string
-  file?: { media_type: string; size: number; image?: { width: number; height: number }; object_id?: string; file_name?: string }
-  html?: { html: string; css?: string; js?: string; bindings?: Record<string, string> }
-  /** A Block-control instance (a mind map, 脑图 TODO M3): its tree; `under` names the input node it grows. */
-  control?: { kind: string; config?: Record<string, Json>; nodes: { text: string; children: unknown[] }[]; under?: string }
-}
-export interface WishCheckResult { id: string; kind: 'program' | 'review'; text: string; status: 'passed' | 'failed' | 'not_run' | 'review'; detail?: Json; self_assessment?: Json }
-export interface WishCandidate {
-  results?: WishResult[]
-  facts?: Record<string, Json>
-  checks?: WishCheckResult[]
-  summary?: string
-  assumptions?: string[]
-  warnings?: string[]
-  review_notes?: Json[]
-  uncited_numbers?: { result: string; numbers: string[] }[]
-  external_data?: string[]
-  model_judgment?: string[]
-  refinements?: WishRefinement[]
-  program?: { digest: string; object_id?: string; produces?: string[] } | null
-  appended_inputs?: WishInput[]
-  mode?: 'code' | 'run'
-  simulated?: boolean
-  /** Analysis stage. */
-  analysis?: WishAnalysis
-  inputs?: WishInput[]
-}
-export interface WishPlanChange { kind: string; field?: string; count?: number; destructive?: boolean; from?: string; to?: string | number; type?: string }
-export interface WishPlanSummary {
-  kind?: 'analysis'
-  mode?: 'overwrite' | 'new'
-  simulated?: boolean
-  group?: { group_id: string; folder_id: string; surface_id: string | null; exists: boolean; rect: Placement | null; title: string }
-  results?: { name: string; type: WishResultType; title?: string; entity_id: string; action: 'create' | 'update' | 'unchanged' | 'keep_manual' | 'new_copy'; approach?: string; blocks?: number; reordered?: boolean }[]
-  missing?: { name: string; entity_id: string }[]
-  manual?: { name: string; entity_id: string; cells?: number; field_deleted?: string }[]
-  structure?: { name: string; entity_id: string; changes: WishPlanChange[]; rows_before?: number; rows_after?: number }[]
-  destructive?: boolean
-  appended_inputs?: WishInput[]
-  program?: { from: string | null; to: string } | null
-  refinements?: WishRefinement[]
-  checks?: WishCheckResult[]
-  failed_checks?: number
-  problems: string[]
-  operations?: number
-  status?: string
-  inputs?: WishInput[]
-}
 export interface WishRunView {
   run_id: string
-  program: 'wish.xllm@1' | 'wish.mock@1'
+  program: 'wish.xllm@1'
   state: WishRunState
   stage: WishStage
   wish_id: string
   params: Record<string, Json>
-  simulated: boolean
   created_at: string
   updated_at: string
   warnings?: Json
   error?: (ServiceError & { data?: Json }) | null
-  usage?: Json
+  usage?: WishUsage | null
   progress?: WishRunProgress | null
-  candidate?: WishCandidate | null
-  preview?: { plan_digest: string; ready: boolean; summary: WishPlanSummary }
-  applied?: { plan_digest: string; status: 'accepted' | 'conflict' | 'rejected'; commit: CommitResult }
+  /** The stage's commit, once it ended and wrote (into the undo stack of the window that started it). */
+  applied?: { status: 'accepted'; commit: CommitResult }
+  /** The record this run wrote into the wish's history. */
+  record?: WishRecord | null
   parent_run_id?: string | null
   feedback?: string | null
   program_log?: string | null
@@ -589,6 +597,12 @@ export interface WishRunView {
   /** Once, to the browser that started a local run: what claims it. */
   claim_token?: string
 }
+/** What a rollback would lose (许愿格交互升级 §2.1): later edits of what it puts back; entities the caller cannot read only count. */
+export interface WishRollbackLoss { entity_id: string; title?: string; type_id?: string; what: 'edited' | 'deleted' }
+/** `proc.rollback`: asks first when later changes would be lost, else one commit and the new `rollback` record. */
+export type WishRollbackResult =
+  | { ok: true; status: 'needs_confirm'; lost: WishRollbackLoss[]; hidden_lost?: number }
+  | { ok: true; status: 'accepted'; commit: CommitResult; record: WishRecord }
 
 /** What `proc.claim` opens for an executor outside the service (T3-4): a model stage, or the program to re-run. */
 /** The limits a stage's executor works under (浏览器优先 T1-4, 第一期 §2.3–§2.4); a macro declares less. */
@@ -630,13 +644,12 @@ export interface WishStageFiles { files: Record<string, { text?: string; base64?
 export interface NeedsCodingReason { code: 'no_macro' | 'api_version' | 'input_unbound' | 'input_changed' | 'input_missing' | 'field_deleted' | 'field_type_changed' | 'program_failed'; input?: string; field_id?: string; name?: string; from?: string; to?: string; run_code?: string }
 /** The one main state of a wish and its next action (PRD §5.8; core `main_status`). */
 export interface WishMainStatus {
-  main: 'needs_input' | 'needs_analysis' | 'needs_coding' | 'waiting_data' | 'no_access' | 'cannot_run' | 'in_progress' | 'pending_confirmation' | 'stale' | 'current'
-  next_action: 'answer' | 'analyze' | 'code' | 'view_inputs' | 'fix' | 'cancel' | 'apply' | 'run' | 'none'
+  main: 'needs_analysis' | 'needs_coding' | 'waiting_data' | 'no_access' | 'cannot_run' | 'in_progress' | 'stale' | 'current'
+  next_action: 'analyze' | 'code' | 'view_inputs' | 'fix' | 'cancel' | 'run' | 'none'
   reasons: Json[]
   /** The applied results are out of date, whatever the main state says. */
   stale: boolean
 }
-export interface WishChoices { results?: Record<string, 'keep' | 'replace' | 'new'>; confirm_structure?: boolean }
 
 export interface BlockDefPayload {
   def_id: string
@@ -777,7 +790,6 @@ export interface FreshnessInfo {
   wish_id?: string | null
   run_id?: string | null
   executor?: string | null
-  simulated?: boolean
   /** Generated under another configuration than the wish has now. */
   config_changed?: boolean
   approach?: 'program' | 'direct' | null
@@ -787,7 +799,7 @@ export interface FreshnessInfo {
   /** Wishes only. */
   wish?: boolean
   needs_analysis?: boolean
-  analysis_status?: 'ready' | 'needs_input' | null
+  analysis_status?: 'ready' | null
   input_problems?: { entity_id: string; reason: string }[]
   last_run?: WishLastRun | null
   produced?: string[]
@@ -1017,8 +1029,7 @@ export interface LockInfo { entity_id: string; lock_id?: string; principal: stri
 export interface RunView {
   run_id: string
   program: string
-  state: 'planning' | 'running' | 'validating' | 'waiting_confirmation' | 'applying' | 'succeeded' | 'failed' | 'cancelled'
-  simulated: boolean
+  state: 'planning' | 'running' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'cancelled'
   params: Record<string, Json>
   candidate: CommitRequest | null
   prepare: PrepareResult | null
@@ -1201,8 +1212,6 @@ export interface WorkLogEntry {
   stage?: WishStage
   state?: WishRunState
   error_code?: string | null
-  /** A run of the Mock executor, or a Commit of its results: no macro ran (UI 框架 PRD Q27). */
-  simulated?: boolean
   // permission changes
   action?: string
   detail?: Json

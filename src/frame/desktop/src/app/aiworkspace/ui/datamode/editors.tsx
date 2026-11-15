@@ -7,7 +7,7 @@
 import { createElement, useCallback, type ReactNode } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { ReadOk } from '../../api/session'
-import type { BlockDefRead, EntityEnvelope, Reference, ShowPathPayload, ViewportPayload, WishPayloadRead, WishRunView } from '../../api/types'
+import type { BlockDefRead, EntityEnvelope, Reference, ShowPathPayload, ViewportPayload, WishPayloadRead } from '../../api/types'
 import { useDirectReadOnly, useLoad, useReadOnlyReason, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { AssetCell, NoteEditor, RecordCell, RichTextCell } from '../blocks/editors'
@@ -17,7 +17,9 @@ import { useShell } from '../shell/shellContext'
 import { FreshnessBadge } from '../sources/FreshnessBadge'
 import { entityLabel } from '../sources/dataOps'
 import { StandardTableEditor } from '../table/StandardTableEditor'
-import { ProgramView, WishPanel } from '../wish/WishPanel'
+import { ProgramView } from '../wish/ProgramView'
+import { WishCard } from '../wish/WishCard'
+import { WishRecords } from '../wish/WishRecords'
 import { iconOf, nameOf, readOnlyReason, SESSION_TYPES, typeName } from './model'
 import { PERMISSIONS_TAB, type MacroPage } from './tabs'
 
@@ -115,50 +117,20 @@ function MacroEditor({ entity, readOnly, page, onPage }: { entity: EntityEnvelop
   const read = useLoad<ReadOk<WishPayloadRead>>(load, version)
   const payload = read.data?.content.payload
   const canUpdate = entity.capabilities.includes('update')
-  const codeReason = windowReason ?? (!canUpdate ? t('aiworkspace.datamode.code.noPermission')
-    : payload?.executor !== 'xllm' ? t('aiworkspace.datamode.code.mock') : null)
+  const codeReason = windowReason ?? (!canUpdate ? t('aiworkspace.datamode.code.noPermission') : null)
   return (
     <div className="aiws-dm-macro-editor" data-testid={`aiws-dm-macro-editor-${entity.entity_id}`} data-page={page}>
       <div className="aiws-dm-pages" role="tablist" aria-label={t('aiworkspace.datamode.macroPages')}>
         {PAGES.map((p) => <button key={p} type="button" role="tab" aria-selected={page === p} data-testid={`aiws-dm-macro-page-${p}`} onClick={() => onPage(p)}>{t(`aiworkspace.datamode.page.${p}`)}</button>)}
       </div>
       <div className="aiws-dm-page" role="tabpanel">
-        {page === 'task' && <WishPanel wishId={entity.entity_id} readOnly={readOnly} />}
+        {page === 'task' && <WishCard wishId={entity.entity_id} mode="edit" readOnly={readOnly} />}
         {page === 'code' && (payload && !payload.program
-          ? <div className="aiws-muted" data-testid="aiws-dm-code-none">{t(payload.executor === 'xllm' ? 'aiworkspace.datamode.code.none' : 'aiworkspace.datamode.code.mock')}</div>
-          : <ProgramView wishId={entity.entity_id} canEdit={!readOnly && codeReason === null} reason={codeReason} page />)}
-        {page === 'runs' && <RunList wishId={entity.entity_id} />}
+          ? <div className="aiws-muted" data-testid="aiws-dm-code-none">{t('aiworkspace.datamode.code.none')}</div>
+          : <ProgramView wishId={entity.entity_id} canEdit={!readOnly && codeReason === null} reason={codeReason} />)}
+        {page === 'runs' && <WishRecords wishId={entity.entity_id} stage="all" readOnly={readOnly} />}
       </div>
     </div>
-  )
-}
-
-const RUN_STATE = new Set(['queued', 'snapshotting', 'running', 'validating', 'waiting_confirmation', 'applying', 'succeeded', 'failed', 'cancelled', 'interrupted', 'conflict', 'rejected'])
-
-function RunList({ wishId }: { wishId: string }) {
-  const { t, dateTime } = useAiwsText()
-  const store = useStore()
-  const version = useVersion(`e:${wishId}`)
-  const load = useCallback(() => store.wish.history(wishId), [store, wishId])
-  const runs = useLoad<WishRunView[]>(load, version)
-  if (runs.error && !runs.data) return <div className="aiws-error" role="alert">{runs.error}</div>
-  if (!runs.data) return <div className="aiws-muted">{t('aiworkspace.wish.loading')}</div>
-  if (runs.data.length === 0) return <div className="aiws-muted" data-testid="aiws-dm-runs-empty">{t('aiworkspace.datamode.runs.none')}</div>
-  return (
-    <ol className="aiws-dm-runs" data-testid="aiws-dm-runs">
-      {runs.data.map((run) => (
-        <li key={run.run_id} className="aiws-dm-run" data-testid="aiws-dm-run" data-state={run.state} data-stage={run.stage}>
-          <b>{t(`aiworkspace.datamode.runs.stage.${run.stage}`)}</b>
-          <span className={`aiws-chip${run.state === 'failed' || run.state === 'rejected' || run.state === 'conflict' ? ' aiws-chip-warn' : run.state === 'succeeded' ? ' aiws-chip-ok' : ''}`}>
-            {RUN_STATE.has(run.state) ? t(`aiworkspace.datamode.runs.state.${run.state}`) : run.state}
-          </span>
-          {run.simulated && <span className="aiws-chip aiws-chip-derived">{t('aiworkspace.data.simulated')}</span>}
-          <span className="aiws-grow" />
-          <span className="aiws-muted">{dateTime(run.created_at)}</span>
-          {run.error && <div className="aiws-error aiws-dm-run-error">{run.error.detail ?? run.error.code}</div>}
-        </li>
-      ))}
-    </ol>
   )
 }
 

@@ -1271,7 +1271,7 @@ export function RenderHost(props: RenderHostProps) {
       // the camera stays put while a stroke runs (its points are where the pen was on the page)
       if (input.busy()) { event.preventDefault(); return }
       const target = event.target instanceof Element ? event.target : null
-      const scrollable = target?.closest<HTMLElement>('.aiws-table-scroll, .aiws-prose-host, textarea, .aiws-html-host')
+      const scrollable = target?.closest<HTMLElement>('.aiws-table-scroll, .aiws-prose-host, .aiws-wc-body, textarea, .aiws-html-host')
       const dx = event.shiftKey ? event.deltaY : event.deltaX
       const dy = event.shiftKey ? 0 : event.deltaY
       if (scrollable && !event.ctrlKey && !event.metaKey &&

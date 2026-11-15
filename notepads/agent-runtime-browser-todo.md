@@ -1,36 +1,31 @@
-# Agent 私有 runtime 的浏览器与「Agent 浏览器」App：TODO
+# Agent 浏览器：实施 TODO
 
-状态：owner 已答复 Q1–Q21（§5.1），设计按答复定稿，目前没有等裁决的问题。未实施，没有做过任何实测。先做 §4 的验证 B0–B2。
+状态：可以开工的实施 TODO。owner 的 Q1–Q26 已全部裁决（§2），目前没有待确认的问题。运行环境和 CDP 的选型已在容器里实测（§4）。代码未动。
 
-日期：2026-11-14 立项；同日按 PRD 方向修订，按 owner 的三点回复（D1–D3）再改，再按 owner 对 Q1–Q17（D4–D19）和 Q18–Q21（D20–D23）的答复定稿。源码基线：buckyos `3b75db8f1`。
+日期：2026-11-14 立项，同日四轮裁决；当晚做了代码落点核对和容器实测，升级为实施 TODO；随后 owner 答复了 Q22–Q26。源码基线：buckyos `3b75db8f1`。
 
 来源：
 
-- owner 2026-11-14 的要求（§1.1）。起因之一是[打印 TODO](aiws-print-pdf-export-todo.md) 里“集成无头浏览器要专门讨论，别的地方也有这个需求”。
-- [Agent 浏览器 PRD 方向](<../product/BuckyOS Agent浏览器 PRD方向.md>)（§1.2）：产品定位、三个需求来源、三种浏览模式。
-- owner 对本文的四轮答复（§5.1）。
+- owner 2026-11-14 的要求（§1.1）和对本文的六轮答复（§2）。
+- [Agent 浏览器 PRD 方向](<../product/BuckyOS Agent浏览器 PRD方向.md>)（§1.2）。
+- [打印 TODO](aiws-print-pdf-export-todo.md)、[渲染管线方案讨论](<../doc/workspace/BuckyOS AI Workspace 渲染管线方案讨论.md>)：系统渲染那部分的需求方。
 
-## 0. 结论
+## 0. 怎么用这份文档
 
-- 产品是「Agent 浏览器」：浏览器运行在 Personal Server 上，Personal Agent 主用，Owner 直接用的就是某个 Agent 的浏览器。首要场景是只有手机、没有桌面浏览器可借的用户。
-- 浏览器只做 Chromium，放进 ext-core，不另立扩展包。包里只放一份浏览器，安装后是两个软件：Playwright 测试环境和 Agent 浏览器。系统渲染函数也用这一份（§3.1）。
-- 三种用途：
-  - **开发测试**：Playwright 自己启动的无头浏览器。系统提供运行环境和一份预装的浏览器。
-  - **Agent 的常驻浏览器**：跑在 Agent 自己的私有 runtime 里，容器和原生运行都支持。带登录状态，Owner 和 Agent 轮流操作。用户只通过 BuckyOS 里的 App 使用，不直接打开浏览器窗口。
-  - **系统服务用的浏览器**：AIWS 导出 PDF、HTML 扩展 Block 的快照、只有 HTML 的 Block 的打印兼容路径。纳入本文，做成 Workflow Service 的内置函数，和 Agent 的浏览器是不同的进程和身份（§3.13）。
-- 画面用浏览器自己的调试协议（CDP）：页面截屏流加输入注入。不引入虚拟显示和 VNC。与传输无关的“屏幕”接口保留，RFB（VNC）留给以后的虚拟机（§3.3）。
-- 同一时刻只有一方操作，用户和 Agent 双向显式交接，Agent 也能请用户接手（§3.4）。
-- Agent 用最直接高效的方法操作浏览器：Playwright 经 CDP 直接连上常驻浏览器。不做 ComputerUse 的浏览器语义驱动（§3.6）。
-- 重排是一个选择器：有匹配的重排代码就用代码，否则用 LLM 兜底。重排库和浏览器绑定，不和某个 Agent 绑定，谁写的代码都可以放进去；Agent 是主要的作者，用户也可以自己写。重排页是 Zone 里固定地址上的页面，结果可以由 Agent 提前制作，界面显示制作时间（§3.7）。
-- “一件事”对应 MessageHub 里的一个会话（一个 UI Session）加它名下的一组标签页（§3.8）。
-- 安全上先能力再安全。第一期只管密码：遇到密码框交回用户填写。其余的能 Agent 填就 Agent 填，提交前不另行确认。由此留下的风险记在 §7。
-- 以后 Agent 的私有 Win11、macOS 共用屏幕接口、查看组件和交接规则，不放进「Agent 浏览器」App，另给入口（§3.11）。
+写给接手实施的 CodeAgent。
+
+- §2 的裁决是约束，不重新讨论。实施中发现裁决和代码现实冲突，停下来写进 §12，问 owner。
+- §3 的落点带行号，行号以基线 `3b75db8f1` 为准，动手前先核对。
+- §4 是已经测过的事实，不用重测。标了“没测”的才需要验证。
+- §5 是接口契约。名字和字段可以在实施中调整，调整后回写本文，并同步 §6 里引用它的任务。
+- §6 的任务每条都有落点、做法、验证。做完一条，在 §12 记一行：改了什么、跑了什么、结果。
+- 遵守仓库的 [AGENTS.md](../AGENTS.md)：不做兼容实现；改动范围小；新依赖要确认（已确认的是 D20、D28 里那几个）；手册和代码同一变更内更新；没跑的检查要写明。
+- 不要提交，除非 owner 要求。
+- 主体在 `buckyos` 仓库。RF5 可能要动 `cyfs-ndn`。
 
 ## 1. 需求
 
 ### 1.1 owner 的要求
-
-原话要点：
 
 1. 现在 Agent 做前端开发经常需要 Playwright。
 2. 希望 Agent 的私有 runtime 里默认有浏览器可用。
@@ -41,381 +36,665 @@
 
 ### 1.2 PRD 方向的要点
 
-| # | 要点 | PRD 位置 |
-| --- | --- | --- |
-| R1 | 浏览器运行在 Personal Server 上，网页资源由服务器加载。Personal Agent 主用，Owner 可以直接用。只有手机的用户也能从 BuckyOS 打开它 | 一、三 |
-| R2 | Desktop 版已经能经 Computer Use 借用 Owner 宿主上的浏览器和登录状态。Kiosk（类似 NAS 的无显示器盒子）上、只用手机的用户没有浏览器可借，这是要补的场景 | 二 |
-| R3 | 需求来源有三个：Kiosk 与手机用户、BuckyOS 应用开发（Agent 打开实际页面检查和调试）、AIWS 导出 PDF。前端调试和 PDF 导出由各自的工作入口触发，普通用户从「Agent 浏览器」App 进入三种模式 | 二 |
-| R4 | 原始页面模式：原网页，保留原布局和交互。用户直接操作，需要时交给 Agent，Agent 从当前页面接着做。手机网络弱时降低帧率，先保证看清和能操作 | 三 |
-| R5 | 重排模式：按用户为这个网站设定的偏好重新呈现，经常浏览的网站沿用设定。可以带着当前页面进对话调整。重排页直接在手机上显示，传输量少。依赖原网页交互的动作由 Agent 在原网页执行，结果带回重排页；也可以切回原始页面，沿用浏览进度 | 三 |
-| R6 | 对话模式：对话和网页共用一个 Work Session（口头说法，指用户在浏览器里办的这件事，D1）。Agent 找入口、操作网页，期间网页对用户只读。Agent 先用已有信息预填，缺项在聊天框里问（类似 Ask User），或只展示需要补填的几项 | 三 |
-| R7 | 按事情组织：一件事可以跨页面、跨网站。用户可以在几件事之间切换，回来接着办。改变显示方式、从用户交给 Agent，都要延续当前的页面和任务进度 | 四 |
-| R8 | 待定的产品选择：默认入口、首批场景、协作控制（谁在操作、Agent 在等什么、用户怎么接手） | 五 |
-
-### 1.3 目标分层
-
-| 层 | 目标 | 来源 |
-| --- | --- | --- |
-| 可用 | 私有 runtime 里 Playwright 开箱能跑，不用 Agent 自己想办法装浏览器 | 1.1 的 1–3；R3 的应用开发 |
-| 可见可控 | 用户在手机上看到并直接操作 Agent 的浏览器，和 Agent 互相交接 | 1.1 的 4、5；R1、R4 |
-| 读和办 | Agent 读懂页面，按用户的偏好重排，按用户的目标办事 | R5–R7 |
-| 系统渲染 | 系统服务能把一个页面输出成 PDF 或图片 | R3 的导出 PDF；D11 |
-| 可复用 | 屏幕接口和交接规则以后给私有 Win11、macOS 用 | 1.1 的 6 |
-
-## 2. 现状
-
-| 环节 | 现在的情况 | 位置 |
-| --- | --- | --- |
-| 私有 runtime | Agent Service 所在的环境。有容器的产品里它永远是 Agent 自己的容器；原生运行时是宿主上的进程 | `src/kernel/buckyos-api/src/app_schema.rs` 的 `PRIVATE_RUNTIME_ID` |
-| 工作镜像 | `paios/aios` 只装 `bash`、`ca-certificates`、`rsync` 三个系统包。Agent 的命令都来自工具卷上的扩展包 | [build_aios](../build_aios)、[paios容器需求](../doc/app_service/paios容器需求.md) §6.3 |
-| 扩展包 | 一种 pikg（`app_type = ext_tools`），node_daemon 装到 `$BUCKYOS_ROOT/tools`，容器里只读挂载，一个节点一份。`ext-core` 是第一个包，五个平台各一份：Linux x86_64 / aarch64、macOS arm64 / x86_64、Windows x86_64 | [扩展包 TODO](opendan-exttools-cross-platform-todo.md) §3.9、[ext-manifest.json](../publish/exttool/ext-core/ext-manifest.json) |
-| ext-core 的内容 | 版本 1.2.0，有 `node`、`npm`、`npx`、`deno`、`python3`、`soffice` 等 24 条命令，没有浏览器。带 Noto Sans CJK、Noto Serif CJK 字体和一份 fontconfig 配置。没有官方二进制的工具装在一个 conda-forge 前缀里 | `publish/exttool/ext-core/build.sh`、`conda-env.yml` |
-| ext-core 的清单规则 | 每条命令都要先写进 paios容器需求 §6.4 的表 B，写明支持的场景。实现需要的工具可以先放进 ext-core（owner 2026-11-06：机制优先于清单） | paios容器需求 §6.4 |
-| Playwright | 只是 Desktop 和 OpenDAN WebUI 的开发依赖，用来跑端到端测试。系统没有给 Agent 准备浏览器 | `src/frame/desktop/package.json` |
-| Agent 现在用 Playwright | 我没有在容器里实测。从镜像内容推断：`npx playwright install` 能下载浏览器，但 Chromium 依赖的系统库镜像里没有，Agent 也装不了系统包 | 推断，B0 验证 |
-| 系统服务调用扩展包里的工具 | Workflow Service 的内置媒体函数就是这样做的：`media.to_pdf` 用 `soffice`，工具从 `$BUCKYOS_ROOT/tools/bin` 等位置探测，版本进函数指纹，按车道限制并发，`soffice` 一次一个 | `src/kernel/workflow/src/functions/media/`、`src/kernel/workflow/src/native.rs` |
-| ComputerUse | Agent 操作人的电脑。Windows、macOS 有原生驱动，PRD 说的“Desktop 版借用宿主浏览器”走的就是这条。浏览器语义驱动没有实施。shell 命令把图片直接交给模型的桥接也还没交付 | [agent_daemon.md](../doc/arch/agent_daemon.md)、[ComputerUse 技术草案](<../doc/llm_context/BuckyOS Agent-Runtime 集成ComputerUse 技术草案.md>) §0、§8.1 |
-| 向用户提问 | websdk 命令 `ask_user` 发一条 `input` 通知，问题是 TaskMgr 上一个有过期时间（缺省 3 小时）的 `human.input/v1` 任务，回答作为任务结果交回 | [Session 架构设计](<../doc/opendan/OpenDAN Agent Session架构设计.md>) §5.6 |
-| Session 的种类 | UI Session 持续响应用户，能对着说话的是它。Work Session 执行一个已收敛的 Task，有界，没有消息输入 | Session 架构设计 §2.3、§6.3.1 |
-| 多会话 | MessageHub 是多会话的，界面上有“新建会话”；每个会话是一个 UI Session | [Agent UI 升级 TODO](done/agent-ui-upgrade-todo.md) SC9、MH6 |
-| 从 Zone 选文件 | 系统文件选择器 `sysdlg/select` 已有 | [系统对话框实现方案](<../doc/desktop/BuckyOS 系统对话框实现方案.md>) |
-| AIWS 导出 PDF | 立项未实施。页面模型、分页、PDF Frame、对话框不依赖渲染路线（T1–T6）；内容怎么变成 PDF 等渲染管线的裁决（T7–T9） | [打印 TODO](aiws-print-pdf-export-todo.md)、[渲染管线方案讨论](<../doc/workspace/BuckyOS AI Workspace 渲染管线方案讨论.md>) |
-| HTML 扩展 Block 的快照 | 不运行时显示实例上保存的一张快照图（`config.snapshot`），由页面自己保存 | `src/frame/desktop/src/app/aiworkspace/ui/extensions/HtmlBlockHost.tsx` |
-| 手册 | Agent 靠 skill 手册知道有什么命令。手册在 `commands` 里声明命令，系统反推需要哪个扩展包 | [AGENTS.md](../AGENTS.md)“cmd_skills 联动维护” |
-| 远程画面 | 仓库里没有 VNC、RDP、WebRTC 画面传输这类代码 | 全仓库搜索 |
-| 网关 | WebSocket 已经可以经网关转发。Agent 的服务挂在 `/kapi/<agent_id>` | [AIWS 第四期规划](<../doc/workspace/BuckyOS AI Workspace 第四期规划.md>)、`src/frame/opendan/README.md` |
-| Desktop 的 App | App 面板在 `registry.tsx` 登记；外部网页应用用 `web-frame` 承载 | `src/frame/desktop/src/app/registry.tsx` |
-
-## 3. 设计
-
-### 3.1 三种用途，一份浏览器
-
-| | 开发测试 | 常驻浏览器（Agent 浏览器） | 系统渲染 |
-| --- | --- | --- | --- |
-| 需求来源 | BuckyOS 应用开发 | Kiosk 与手机用户 | AIWS 导出 PDF、快照 |
-| 谁启动 | 项目里的 Playwright | Agent Service，按需启动 | Workflow Service 的内置函数，每次任务起一个 |
-| 跑在哪里 | Agent 的私有 runtime | Agent 的私有 runtime | 节点上，降权或在容器里（D21） |
-| 数量和寿命 | 多个并行，跑完就退出 | 每个 Agent 一个，长期保留 | 一次一个，输出完就退出 |
-| 状态 | 没有 | 有登录状态、历史、下载 | 没有 |
-| 画面 | 不需要 | 用户要看、要操作 | 不需要 |
-| 谁操作 | 项目的测试脚本 | Owner 和 Agent 轮流 | 没有人，只输出 |
-
-**一份浏览器，两个软件。** owner 问：从减少安装包大小的角度，有没有方案能尽量兼顾两者，安装后可以是两个独立的软件（D4）。有：
-
-- ext-core 里只放一份 Chromium 完整构建。选 Playwright 某个版本对应的那一份，按 Playwright 的浏览器目录布局存放。
-- 安装后是两个软件，指向同一份浏览器：
-  - **Playwright 测试环境**：包里带一个与这份浏览器匹配的 `playwright-core`，进程环境里用 `PLAYWRIGHT_BROWSERS_PATH` 指到浏览器目录。用这个版本的项目不用下载浏览器。
-  - **Agent 浏览器**：Agent Service 用同一个可执行文件，以无头模式加自己的用户数据目录启动。
-- 系统渲染函数（§3.13）也用这一份。
-- Linux 上的运行库尽量复用 ext-core 的 conda-forge 前缀里已有的，只补缺的。LibreOffice 也要图形和字体那一批库，应该有重叠，B1 量。macOS、Windows 的构建自带依赖。
-- 工具卷每个节点一份，所有 Agent 的容器共用，不随 Agent 的数量增加。
-
-owner 已确认（D20）：ext-core 里的东西 paios 里都有；带浏览器能解决三个需求，这份空间付出值得。Chromium 和 `playwright-core` 是随之确认的两个新依赖。
-
-项目用了别的 Playwright 版本时有两条路：把可执行文件路径指到系统这一份，版本差得不多时通常能用，不保证；或者照常下载它自己的那一份到 Agent 的实例卷，运行库已经齐了。手册建议新项目用系统的版本。
-
-有一处要在 B1 定：Playwright 新版本的无头测试默认用另一份精简构建（headless shell），不是完整构建。只带完整构建时，测试要指定用完整构建的新无头模式（`channel: 'chromium'`）。要完全不用配置，就得把精简构建也带上，体积再加一份。我倾向只带完整构建，由手册和项目模板写好配置。这是我对 Playwright 1.49 以后行为的了解，B0 核实。
-
-### 3.2 跑在哪里
-
-- **常驻浏览器和开发测试的浏览器都跑在 Agent 自己的私有 runtime 里（D5）。** 有容器时是 Agent 的容器，原生运行时是宿主上的进程。浏览器能直接访问 Agent 在 `localhost` 起的开发服务，文件也在同一个文件系统。
-- **原生运行也支持（D12）。** 浏览器当成普通工具，由 Agent Service 以无头模式启动。用户还是通过 BuckyOS 里的 App 使用，不会直接点开浏览器窗口。ext-core 本来就有五个平台，Chromium 要五个平台都带。
-- **系统渲染的浏览器不在 Agent 的 runtime 里**，由 Workflow Service 在节点上启动（§3.13）。
-- 以后要更强的隔离时，可以把常驻浏览器挪到伴随容器或虚拟机，“屏幕”接口（§3.3）不受影响。
-
-### 3.3 屏幕：画面和输入怎么传
-
-约束来自 PRD 和 D12：
-
-- 主要在手机上看和操作，弱网时降低帧率（R1、R4）。
-- 用户要输入中文。
-- 上传从 Zone 选文件，下载存到 Zone（产品原则：Zone 是主文件系统）。
-- App 要有自己的地址栏、事情列表、三种模式的切换和对话面板（R4–R6）。
-- 原生运行在 Windows、macOS 上也要能用，用户不直接看到浏览器窗口。
-
-已定用浏览器自己的调试协议（D7）：
-
-- **画面。** 页面截屏流。每帧要回确认才发下一帧，弱网时帧率自然降下来，还能调画质和尺寸。浏览器无头运行，不需要虚拟显示，五个平台做法一样。
-- **输入。** 触摸、鼠标、按键注入页面。文字可以整段插入，不经按键映射。
-- **视口（D19）。** 跟随正在看的设备：手机上按手机尺寸和触屏模拟，网站会给手机版布局；App 里可以切“桌面版”。Agent 操作时不改视口，免得页面在用户眼前变样。
-- **页面之外的界面。** 截屏流里只有页面内容。地址栏、标签、下拉框、权限请求、右键菜单由 App 自己做。文件对话框、下载、弹框、新窗口都有事件，交给 App 用自己的界面接住。
-- **屏幕接口。** 画面、输入、尺寸、剪贴板、谁在控制，再加一类“页面之外的请求”事件（选文件、下载、弹框、新窗口）。接口与传输无关。以后的虚拟机用 RFB（QEMU 的 VNC）实现同一个接口，那时不报“页面之外的请求”。查看组件按实现选解码方式，交接和权限共用。
-- **连接。** 用户端只连 Agent Service：经网关的 WebSocket 到 Desktop，沿用现有的会话令牌和权限，不另开端口。调试端点只在私有 runtime 内可达，Agent Service 和 Agent 都连它（§3.6），不经网关暴露。
-- WebRTC 留作以后跨公网体验不够时的升级，接口不变。
-
-要实测的（B1）：无头模式下下拉框、弹框、文件对话框、新窗口能不能都接住；手机上的帧率、延迟和流量；输入法组字；Agent Service 的截屏流和 Agent 的 Playwright 同时连着一个浏览器时互不干扰。
-
-### 3.4 Agent 和用户谁在操作
-
-已定（D8）：
-
-- 每块屏幕同一时刻只有一个操作方：用户或 Agent。另一方只看。
-- 交接都是显式的：
-  - **用户交给 Agent**：在原始页面里点“交给 Agent”，或在对话里交代一件事。Agent 收到交接时的页面（网址、标题），从这里接着做（R4）。
-  - **用户接手**：用户点“接手”，Agent 停手。用户交还后，Agent 重新读页面再继续。
-  - **Agent 请用户接手**：遇到密码框（§3.5），或者 Agent 自己过不了的验证（图形、滑块验证码等），Agent 把控制交给用户，状态是“等你接手”。
-- Agent 办完或停下后，控制回到用户。
-- 接手不等于暂停 Session：Agent 可以等交还，也可以先做别的。
-- 不检测人工输入，谁在操作由显式交接决定（沿用 ComputerUse 技术草案 §8.1 的思路）。
-- 界面上始终显示操作方和 Agent 的状态：操作中、等你回答、等你接手、已完成、卡住（附原因）。这是 PRD 待定的“协作控制”的技术底座，文案和样式归产品。
-- 交接、接手、交还都记进会话，Agent 才知道页面为什么变了。
-
-两侧的约束力不同：
-
-- **用户这一侧由 Agent Service 强制。** Agent 操作时，用户的输入不转发给页面。
-- **Agent 这一侧第一期靠手册。** Agent 直接连着浏览器（D16），Agent Service 拦不住它的动作。用户接手时，Agent Service 把“用户已接手”写进会话，并提供查询当前操作方的命令；手册要求 Agent 每段操作前先查操作方，被接手就停。以后需要强制时，在 Agent 和浏览器之间加一层代理。owner 已接受这个风险（D22）。
-
-### 3.5 登录状态、身份和安全
-
-- **登录状态（D9）。** 就是这个浏览器正常的登录状态，放在浏览器的用户数据目录里，目录在 Agent 的实例卷。不做额外的归属或隔离：谁能用这个浏览器，谁就有这些登录状态的权限。有清除登录状态的入口。
-- **谁能用。** 默认只有 Agent 的 owner 能看和操作。
-- **替 Agent 登录。** 用户接手时登录的账号留在浏览器里，之后 Agent 能以这个登录状态行动。这是主要用途之一，界面上要明示。
-- **Zone 内的身份。** Agent 的浏览器访问 Zone 里的应用时用 Agent 自己的身份，不自动带上用户的会话。
-- **密码交回用户（D3）。** 有些时候必须把浏览器的控制权交回用户，安全是主要原因。第一期只管密码：Agent 遇到密码框就请用户接手，用户直接在页面上填。密码不经对话，不进会话记录。
-- **其余的能 Agent 填就 Agent 填（D3、D18）。** 其他缺项，包括短信验证码、证件号，都在对话里问，用户回答后由 Agent 填进页面（owner：老网站的很多交互太灾难了）。PRD 说的“只展示需要补填的几项”是提问的一种呈现，回答照样交给 Agent 去填。提交前不另行确认（owner：填，先能力再安全）。
-- **重排页的隔离。** 重排页带着重排代码自己的脚本，内容来自第三方网站，却由 Zone 提供（§3.7）。用一个专用的主机名提供，和 Desktop 不同源，拿不到 Zone 的会话；App 在沙箱 iframe 里加载它。页面不带原网站的脚本，也不直接请求原网站，图片在制作时已经取回。结果里可能有登录后才看得到的内容，只有 owner 能访问。
-- **做不了的验证。** 网站看到的是 Personal Server 的出口地址和服务器上的浏览器，有的网站会因此要求额外验证。短信验证码发到用户手机，用户在对话里告诉 Agent。U 盾、客户端控件、人脸识别在远程浏览器里做不了，选首批场景时要避开（R8）。
-- **沙箱。** 容器里 Chromium 自身的沙箱能不能开，要实测。本机 PVE 宿主上 Docker 的 AppArmor 配置曾经让容器里的 unix socket 全部被拒，Chromium 的多进程依赖它，要一并验证。原生运行时浏览器以普通用户身份跑，自身的沙箱照常开。
-
-先能力再安全留下的风险集中记在 §7。
-
-### 3.6 Agent 怎么读和操作页面
-
-已定：用最直接高效的方法操作（D16）。
-
-- **Agent 用 Playwright 经 CDP 直接连上常驻浏览器。** 一段脚本里可以连着读页面、点、填、等待，比一步一观察省轮次。这也是 Agent 做前端时已经在用的工具。
-- **调试端点。** Agent Service 启动浏览器时给出，Agent 用一条命令或环境变量查到。只在私有 runtime 内可达。
-- **系统提供的东西。** 与浏览器匹配的 `playwright-core`（§3.1）；几个范本脚本：打开网址、读页面的可访问性快照、截图、列标签页、查当前操作方；一份手册。不加新的 tool。
-- **看截图。** Agent 把截图存成文件，用现有的看图命令（`llm_understand_media`）看。shell 命令把图片直接交给模型的桥接还没交付（§2）。
-- **不做 ComputerUse 的浏览器语义驱动。** Desktop 版借用宿主浏览器仍是 ComputerUse 的事，与这里无关。
-- **视口。** 手册要求 Agent 的脚本不改视口（D19）。
-
-### 3.7 重排
-
-PRD 的要求见 R5。已定的三点：
-
-- 重排是一个选择器：有匹配的重排代码就用代码，否则用 LLM 兜底（D2）。
-- 重排代码的存放和触发是独立的逻辑，谁写的都可以（D17）。
-- 重排库和浏览器绑定，不和某个 Agent 绑定。重排不必实时，Agent 可以提前刷新，界面上让用户看到“基于什么时间的网站制作”（D23）。
-
-owner 在 D23 里问：有了重排代码，用户访问 `www.facebook.com` 的时候，实际加载的是不是 `xxx.$zonehost/www-facebook-com/` 的代码。是的，而且既然不必实时，就应该这样做：
-
-- 每个站点的重排页是 Zone 里的一组页面，有固定的地址，形如 `<重排用的主机名>.$zonehost/www-facebook-com/`。
-- 用户在 App 的重排模式里访问 `www.facebook.com` 时，App 加载的是这个地址。地址栏仍显示原网址，旁边显示制作时间。
-- 用户的设备不连原网站。页面里的内容是 Agent 的浏览器此前在 Personal Server 上访问原网站取回来的。
-
-| 环节 | 设计 |
+| # | 要点 |
 | --- | --- |
-| 站点偏好 | 用户说的“这个网站我只看更新日期、标题和正文，按手机单栏显示”，按站点（域名，必要时加路径）保存，和重排库放在一起。它是代码重排和兜底重排共同的输入。在 App 里能查看和删除 |
-| 重排库 | 属于「Agent 浏览器」这个 App，挂在用户名下，不在任何 Agent 的目录里。删除 Agent 不影响它，用户名下的各个 Agent 都能读写。库只管存放和按地址提供，不问作者 |
-| 一个站点的包 | 匹配声明（域名和路径模式）；刷新脚本，在服务器的浏览器里对原网站运行，取回内容；页面代码（模板、样式和它自己的脚本），在用户设备上运行；最近一次制作的结果，带制作时间和由哪个 Agent 的浏览器制作 |
-| 触发 | 用户在重排模式打开一个网址时，按网址在库里找。有包并且有结果：直接加载，不调用模型，也不需要启动浏览器。没有包：用 LLM 按偏好兜底重排，结果同样带着制作时间存下来 |
-| 刷新 | 结果不是实时的。三种时机：用户点“刷新”；Agent 提前刷新，比如用户常看的站点，时机由 Agent 安排；用户打开一个还没有结果的页面。刷新时跑包里的刷新脚本。脚本失败（网站改版、页面类型不同）就退回 LLM 兜底，并由 Agent 修代码 |
-| 代码从哪里来 | 常访问的站点在兜底重排之后，由 Agent 写出包放进库里。用户在对话里调整偏好时，Agent 一并改。用户也可以自己写或改。Agent 在自己的工作目录里写和试，写好再放进库里 |
-| 显示 | 重排页直接发到手机，不走画面流。图片在制作时由服务器取回、压缩后存进结果，弱网时传输量小。隔离见 §3.5 |
-| 交互 | 普通链接：指向库里已有结果的页面就直接打开，否则按“触发”处理。依赖原网页的按钮：重排页记下它对应原网页的哪个元素，点击后由 Agent 的浏览器打开原网页执行，再刷新这一页；处理不了的交给 Agent。切回原始页面：每个重排页记着它的原网址，切换时在浏览器里打开它 |
+| R1 | 浏览器运行在 Personal Server 上，网页资源由服务器加载。Personal Agent 主用，Owner 可以直接用。只有手机的用户也能从 BuckyOS 打开它 |
+| R2 | Desktop 版已经能经 Computer Use 借用 Owner 宿主上的浏览器。Kiosk（无显示器盒子）上、只用手机的用户没有浏览器可借，这是要补的场景 |
+| R3 | 需求来源有三个：Kiosk 与手机用户、BuckyOS 应用开发、AIWS 导出 PDF |
+| R4 | 原始页面模式：原网页，原布局和交互。用户直接操作，需要时交给 Agent，Agent 从当前页面接着做。弱网时降低帧率 |
+| R5 | 重排模式：按用户为这个网站设定的偏好重新呈现，经常浏览的网站沿用设定。重排页直接在手机上显示，传输量少。依赖原网页交互的动作由 Agent 在原网页执行，也可以切回原始页面 |
+| R6 | 对话模式：对话和网页属于同一件事。Agent 找入口、操作网页，期间网页对用户只读。Agent 先预填，缺项在聊天框里问 |
+| R7 | 按事情组织：一件事可以跨页面、跨网站。用户可以在几件事之间切换，回来接着办 |
+| R8 | 待定的产品选择：默认入口、首批场景、协作控制的文案和样式 |
 
-落点是我的建议，细节实施时定：
+### 1.3 交付物
 
-- 按 [path_usage](../doc/path_usage.md) 的约定，新 App 的业务数据放在声明的应用对象桶里，按 URL 读取。重排库建议是「Agent 浏览器」的一个用户桶。
-- 重排页用一个专用的主机名提供，和 Desktop 不同源（§3.5）。
-- 包的格式等 B2 试做后定。
-
-不必实时带来的变化：重排模式不要求原标签页一直开着，也不要求常驻浏览器在运行。只有刷新、执行原网页的动作、切回原始页面时才用到浏览器。
-
-用户“带着当前页面进入对话”调整偏好时，Agent 拿到的是当前网址、当前偏好，以及这个站的包（如果有）。这走 §3.8 的对话办理。
-
-### 3.8 对话办理与“一件事”
-
-PRD 的要求见 R6、R7。PRD 里的“Work Session”是口头说法，指用户在浏览器里办的一件事（D1）。已定的对应（D15）：
-
-- **一件事 = MessageHub 里的一个会话（一个 UI Session）加它名下的一组标签页。** “新建会话”就是开始一件新事。
-- **还没交代事情时。** 用户在原始页面里自己浏览，这些标签页归 App 为这个 Agent 留的一个默认会话。交代事情时转到那件事。
-- **办理。** 短的由 UI Session 自己做；过程长的，UI Session 照常建 Work，Work 操作同一组标签页。用户看进度看的是这组标签页，在对话里看说明。
-- **切换。** 在几件事之间切换就是切换会话，浏览器视图跟着切到那组标签页。回来时页面和进度都在（R7）。
-- **跨网站。** 同一件事里新开的标签页（包括网站自己弹出的窗口）归到这件事。
-- **登录状态整个 Agent 共用。** 一个浏览器用户数据目录，各件事只是标签页分组。
-- **提问。** 缺项用现有的 `ask_user`，问题在 App 的对话面板里显示和回答，回答由 Agent 填进页面。密码按 §3.5 交回用户。
-- **预填。** 预填的信息来自 Agent 的 Memory 和用户资料。
-- **结果。** 办完或卡住，Agent 在对话里说明结果，或说清卡在哪一步（PRD §四 第 3 步）。
-
-### 3.9 接线清单
-
-| 接到哪里 | 内容 |
-| --- | --- |
-| ext-core | 加入 Chromium 和 `playwright-core`，五个平台；命令和场景写进 paios容器需求 §6.4 的表 B；升版；种子；`tools_check` 能报告 |
-| Playwright | 进程环境里给出预装浏览器的位置；运行库和字体可见；项目自带版本下载的浏览器也能跑 |
-| 手册 | 一份讲浏览器的手册：怎么跑 Playwright 测试（系统的版本、无头配置）；怎么连常驻浏览器、读页面、截图；操作前查操作方，被接手就停；遇到密码框请用户接手；不改视口；怎么写和修站点的重排代码。检查 `buckyos_app_dev` 等提到前端测试的手册 |
-| Agent 的命令 | 查调试端点和操作方、请用户接手、范本脚本。沿用 CLI 和 shell，不加新的 tool |
-| Agent Service | 常驻浏览器的生命周期；屏幕转发；操作方和交接记录；标签页归属哪件事；重排的刷新和 LLM 兜底 |
-| 重排库 | 「Agent 浏览器」名下、按用户分的存放处；用专用主机名提供重排页；放进和取出包的命令，Agent 和用户都能用 |
-| Agent UI 与 MessageHub | 会话里显示“Agent 正在使用浏览器”，带“查看”入口；交接、接手的记录；「Agent 浏览器」的对话面板复用会话组件 |
-| Desktop | 「Agent 浏览器」App（§3.10）；屏幕查看组件 |
-| 文件 | 文件对话框接系统文件选择器（从 Zone 选）；下载存到 Zone |
-| Workflow Service | 系统渲染函数（§3.13） |
-| AIWS | 导出 PDF 和扩展 Block 快照调用系统渲染函数，随打印 TODO 和渲染管线的裁决接入 |
-
-### 3.10 成为一个 App
-
-- 名称是「Agent 浏览器」（D14）。
-- Owner 直接用的就是某个 Agent 的浏览器（D10）。结构：先选一个 Agent，然后是地址栏、事情列表（每件事的标签页）、三种模式的切换和对话面板。按手机设计，桌面上用同一套。
-- 原生运行的 Agent 也从这个 App 进，用户不直接打开浏览器窗口（D12）。
-- 默认入口是 PRD 待定的产品选择（R8）。技术上两种都行：从原始页面进入要先开一个标签页，从对话进入要先有一个会话。
-- 文件：
-  - 上传：截下文件对话框，用系统文件选择器从 Zone 选，文件复制进 Agent 的工作目录再交给页面。
-  - 下载：落在 Agent 的工作目录，一步存到 Zone；手机上默认就存到 Zone。
-- 以后的私有 Win11、macOS 不放进这个 App：它们没有重排和对话模式。另给入口，共用屏幕查看组件和交接规则。
-
-### 3.11 泛化到私有 Win11、macOS
-
-- 屏幕接口与客体是什么无关。浏览器的画面来自 CDP；虚拟机的画面可以来自虚拟机管理程序（QEMU 的 VNC），也可以来自客体里的代理。
-- 客体里的代理已经有了：Agent Daemon 在 Windows、macOS 上能截图、输入、读语义树，并且能登记成 Agent 的一台 runtime。所以“Agent 的私有 Win11”在 Agent 这一侧，可以就是一台跑着 Agent Daemon 的虚拟机。
-- 缺的是虚拟机本身：创建、镜像、资源、系统授权。这些不在本文范围，本文只保证屏幕接口将来接得上。
-
-### 3.12 平台
-
-- **Linux 容器。** PRD 的主要场景（Kiosk、只用手机的用户）。
-- **原生运行**（Windows、macOS）。三种用途都支持（D12）。要验证的：macOS 上包里的 Chromium 能不能直接运行（签名和隔离属性）；Windows 和 macOS 上由后台服务启动无头浏览器是否正常（B1）。
-- PRD 说的“Desktop 版经 ComputerUse 借用宿主浏览器”继续存在，和 Agent 自己的浏览器是两回事：前者用的是 Owner 的浏览器和登录状态，后者是 Agent 自己的。
-
-### 3.13 系统服务用的浏览器
-
-已定纳入本文（D11）。
-
-要它的地方：
-
-| 需求 | 来源 |
-| --- | --- |
-| AIWS 导出 PDF：用户从手机发起，Personal Server 完成排版和渲染 | PRD R3、[打印 TODO](aiws-print-pdf-export-todo.md) |
-| 只有 HTML 的 Block 的兼容路径：把它输出成一段 PDF 或一张图 | [渲染管线方案讨论](<../doc/workspace/BuckyOS AI Workspace 渲染管线方案讨论.md>) §4.7、D9；打印 TODO T8 |
-| HTML 扩展 Block 的快照图 | 现在只能由打开页面的那台设备保存 |
-| Zone 内页面转 PDF、页面快照 | 本文 |
-
-形态（D21）：
-
-- **做成 Workflow Service 的内置函数**，和 `media.to_pdf` 同一路数：浏览器从 `$BUCKYOS_ROOT/tools/bin` 探测，版本进函数指纹，结果进缓存，单独一条并发车道，一次一个。暂名 `media.page_to_pdf` 和 `media.page_snapshot`。
-- **每次任务起一个无头 Chromium**，用一次性的用户数据目录。打开目标页面，等页面给出“排好了”的信号，再调浏览器的 PDF 输出（纸张尺寸、边距、页眉页脚、背景）或截图。产物存成文件，然后关掉浏览器。不留登录状态。
-- **和 Agent 的浏览器分开。** 不同的进程、不同的身份、不同的用户数据目录。共用的只有 ext-core 里的那份 Chromium。
-- **身份。** 函数不自己决定能看什么。调用方（AIWS）先做权限检查（`export`），再给任务一个只能读这次要输出的内容、很快过期的令牌。
-- **网络。** 只访问 Zone 内的地址，参照 `soffice` 已经切断联网的做法。外部网页转 PDF 不走这里，由 Agent 用自己的浏览器做。
-- **字体。** 用 ext-core 的 Noto CJK。Zone 字体库（打印 TODO Q16）有了以后接进同一份 fontconfig。
-- **沙箱和运行身份。** 这里渲染的内容包含扩展 Block 的 HTML，是第三方代码。Workflow Service 是 node_daemon 拉起的宿主进程，Linux 上 node_daemon 以 root 运行，而 Chromium 不肯以 root 带着沙箱运行。不能用 root 加关沙箱去渲染第三方代码。要么降权到专用账号并保持沙箱开启，要么放进容器跑。B1 验证后定。
-
-和 AIWS 导出 PDF 的关系：
-
-- 页面模型、取页、分页规则、PDF Frame、对话框、固定基线、权限都在打印 TODO（T1–T6），不在本文。
-- 本文提供的是“把一个页面变成 PDF”的函数。AIWS 怎么用它取决于渲染管线的裁决：
-
-  | 裁决 | 用法 |
-  | --- | --- |
-  | 不改管线 | 主路径。AIWS 提供一个打印视图页面，读固定基线、按页面模型排好，函数把它输出成 PDF |
-  | 给 Block 加第二份渲染，或改成节点树 | 兼容路径。只有 HTML 的 Block 由函数输出成一段 PDF 或图，拼进主输出 |
-
-- 哪种裁决都用得上，所以函数可以先做（B12），不等渲染管线。
-- 它满足打印 TODO 的几条要求：全程不出现浏览器的打印对话框；PDF 里的文字可选可搜；手机发起，服务器生成，存入 Zone。
-- 打印视图里要不要运行扩展 Block 的脚本由打印 TODO 定。运行的话，脚本拿到的是上面那个只读令牌。完成信号、超时、取消见渲染管线方案讨论 §13.9。
-
-## 4. 要做的
-
-先做验证，再实施。B3 以后是实施轮廓，细节在验证后展开。
-
-验证：
-
-- [ ] **B0 现状实测。** 在现在的私有 runtime 容器里跑一次 Playwright：能不能下载浏览器，启动时缺哪些库和字体，要哪些启动参数。核实新版本无头测试默认用哪份构建（§3.1）。结论写回本文。
-- [ ] **B1 选型验证。**
-  - 一份浏览器：同一份 Chromium 能否同时给 Playwright（经 `PLAYWRIGHT_BROWSERS_PATH`）、常驻浏览器和系统渲染用；精简构建带不带。
-  - 体积：五个平台的浏览器各多大；Linux 上运行库和 ext-core 的 conda-forge 前缀重叠多少；ext-core 加完以后多大。
-  - 字体：直接用 ext-core 已带的 Noto 中文字体和 fontconfig 配置是否可行。
-  - 沙箱：容器里 Chromium 的沙箱能否开启，本机 PVE 宿主一并测。
-  - 原生运行：macOS 上包里的 Chromium 能否直接运行；Windows、macOS 上由后台服务启动无头浏览器；调试端点能不能不占本机端口（§7）。
-  - CDP 截屏流：在手机浏览器上、限速的弱网下看帧率、延迟和流量；手机视口和触屏模拟；中文整段插入和输入法组字；无头模式下下拉框、弹框、文件对话框、下载、新窗口能不能都接住。
-  - 两个连接并存：Agent Service 的截屏流和 Agent 的 Playwright 同时连着同一个浏览器。
-  - 资源：一个常驻浏览器开几个标签页时的内存和 CPU，用来定空闲回收的阈值。
-  - 系统渲染：降权账号或容器里带沙箱运行；一个带中文的 Zone 页面输出成 PDF，看字体、纸张尺寸、页眉页脚、文字可选可搜。
-- [ ] **B2 重排试做。** 挑两三个旧网站（与 PRD 的首批场景一起选）。量 LLM 兜底重排每页的耗时和 token，看在手机弱网下能不能接受；再为其中一个站写一个包（刷新脚本加页面代码），看它能覆盖多少页面、网站改版时怎么失效。一并验证重排页从 Zone 的固定地址加载、在沙箱里运行、显示制作时间。结论用来定包的格式和重排库的落点（§3.7）。
-
-实施轮廓：
-
-- [ ] **B3 ext-core 加浏览器。** Chromium 和 `playwright-core`，五个平台；Linux 补运行库；表 B 写明命令和场景；升版和种子；进程环境约定；`tools_check`。
-- [ ] **B4 开发测试可用。** Playwright 在私有 runtime 里按手册的配置就能跑，容器和原生都验。
-- [ ] **B5 常驻浏览器。** Agent Service 管理它的生命周期：按需启动，空闲回收，再用时恢复各标签页和登录状态。用户数据目录和下载目录。调试端点只在私有 runtime 内。
-- [ ] **B6 屏幕接口与原始页面模式。** 屏幕接口；截屏流和输入经 Agent Service 转发；视口跟随设备；页面之外的请求（选文件、下载、弹框、新窗口）。
-- [ ] **B7 交接。** 操作方状态；用户交给 Agent、用户接手、Agent 请用户接手；用户输入的拦截；操作方和 Agent 状态的显示；会话里的记录。
-- [ ] **B8 Agent 的操作通道。** 调试端点的查询；范本脚本（打开网址、读页面、截图、列标签页、查操作方）；手册。
-- [ ] **B9 对话办理。** 会话和标签页的归属，默认会话；App 里的对话面板；`ask_user` 的显示，回答由 Agent 填进页面；遇到密码框请用户接手。
-- [ ] **B10 重排。** 站点偏好；重排库（按用户存放、专用主机名、放进和取出包的命令）；按网址触发；刷新（用户点、Agent 提前、首次打开）和制作时间的显示；LLM 兜底；隔离显示；链接和动作回写原网页。PRD 说“重排从阅读做起”，先做阅读，动作回写放后面。
-- [ ] **B11 App 与入口。** 「Agent 浏览器」App 的外壳（选 Agent、地址栏、事情列表、模式切换）；Agent UI 会话里的“查看”入口；下载存到 Zone，从 Zone 选文件上传。
-- [ ] **B12 系统渲染函数。** Workflow Service 的 `media.page_to_pdf`、`media.page_snapshot`；运行身份和沙箱；只读令牌；只访问 Zone。AIWS 一侧的接入在打印 TODO 的 T7、T8 里做。
-- [ ] **B13 文档、手册与测试。**
-  - paios容器需求（§6.4 表 B）、agent_daemon、OpenDAN 开发指南、Workflow 的函数文档。
-  - 打印 TODO 和渲染管线方案讨论里“无头浏览器另行讨论”“等浏览器引擎”的地方指到本文。
-  - 受影响的手册。
-  - 真实 Zone 和手机上的 DV，包括弱网；原生运行的 DV。
-
-顺序：B0–B2 → B3、B4（开发测试先可用）→ B12（只依赖 B3，可以和后面并行）→ B5–B7、B11（原始页面模式，它是另外两种模式的底座）→ B8 → B9、B10（都依赖 B8，可以并行）。
-
-## 5. 已定与待确认
-
-### 5.1 已定（owner 2026-11-14）
-
-第一轮，对修订稿的回复：
-
-| # | owner 的答复 | 落到设计上 |
+| 交付物 | 一句话 | 任务组 |
 | --- | --- | --- |
-| D1 | PRD 里的“Work Session”是讨论时的口头说法：用户在浏览器里干一件事。参加讨论的很多人不是 BuckyOS 的开发者 | 不是 OpenDAN 的 Work Session。对应见 D15 |
-| D2 | 重排就是一个选择器：优先用匹配好的代码重排，否则用兜底的 LLM 重排 | §3.7 |
-| D3 | 有些时候一定要把浏览器的控制权交回用户，安全要求就是原因。第一期原型的范围集中在密码上，其他的能 Agent 填就 Agent 填（老网站的很多交互太灾难了） | §3.5。原 Q15 由此定下，不做补填框 |
+| ext-core 里的浏览器 | 一份 Chromium、`playwright-core`、三条命令，五个平台 | EX |
+| 开发测试可用 | Agent 在私有 runtime 里跑 Playwright 测试，不用自己装浏览器和系统库 | DT |
+| Agent 的常驻浏览器 | Agent Service 管理一个无头 Chromium，带登录状态，容器和原生运行都支持 | BR |
+| 屏幕和原始页面模式 | 画面和输入经 WebSocket 到 Desktop，手机上能看能点能输中文 | SC、APP |
+| 交接 | 一方操作，双向显式交接，Agent 能请用户接手 | HO |
+| Agent 的操作命令 | `agent-browser`：连上常驻浏览器跑脚本、读页面、截图 | AB |
+| 「Agent 浏览器」App | 选 Agent、地址栏、事情列表、三种模式、对话面板 | APP、DG |
+| 重排 | 重排库、按网址触发、刷新、LLM 兜底、固定地址上的重排页 | RF |
+| 系统渲染 | Workflow 函数把页面输出成 PDF 或图片 | SR |
+| 文档和手册 | 表 B、协议文档、`browser` 手册、DV | DX |
 
-第二轮，写在文档里对 Q1–Q17 的答复：
+## 2. 裁决记录（owner 2026-11-14）
 
 | # | 原问题 | owner 的答复 | 落到设计上 |
 | --- | --- | --- | --- |
-| D4 | Q1 两种用途分开处理 | 从减少安装包大小的角度，有方案能尽量兼顾两者么？安装后可以是两个独立的软件 | 有。包里一份 Chromium，安装后是 Playwright 测试环境和 Agent 浏览器两个软件（§3.1）。体积数字等 B1 |
-| D5 | Q2 常驻浏览器跑在哪里 | 在 Agent 自己的 private runtime 里 | §3.2 |
-| D6 | Q3 怎么分发 | 实现后进 ext-core 包（paios 镜像） | 不另立扩展包，浏览器并入 ext-core（§3.1、B3）。D20 再次确认 |
-| D7 | Q4 远程画面用什么 | 按建议 | CDP 截屏流加输入注入；屏幕接口保留，RFB 留给虚拟机（§3.3） |
-| D8 | Q5 谁在操作 | 按建议 | 一方操作，双向显式交接（§3.4） |
-| D9 | Q6 登录状态和可见范围 | 按建议，登录态就是正常的跟浏览器，谁能用这个浏览器谁有权限 | §3.5 |
-| D10 | Q7 “用户可以直接使用”的范围 | Owner 直接用的就是某个 Agent 的浏览器 | §3.10 |
-| D11 | Q8 系统服务用的浏览器是否纳入本文 | 纳入本文，这也是一个实际需要完成的需求 | §3.13、B12 |
-| D12 | Q9 原生运行的 Agent | 原生运行也支持，当成普通工具。用户使用的方法还是通过 BuckyOS App，不会直接点开 | §3.2、§3.12。原话写的是“原始运行”，我按“原生运行”理解 |
+| D1 | PRD 的“Work Session” | 是讨论时的口头说法：用户在浏览器里干一件事。参加讨论的很多人不是 BuckyOS 的开发者 | 不是 OpenDAN 的 Work Session，对应见 D15 |
+| D2 | 重排怎么生成 | 重排就是一个选择器：优先用匹配好的代码重排，否则用兜底的 LLM 重排 | §5.6 |
+| D3 | 安全范围 | 有些时候一定要把浏览器的控制权交回用户，安全要求就是原因。第一期原型的范围集中在密码上，其他的能 Agent 填就 Agent 填（老网站的很多交互太灾难了） | §5.5。不做补填框 |
+| D4 | Q1 两种用途分开处理 | 从减少安装包大小的角度，有方案能尽量兼顾两者么？安装后可以是两个独立的软件 | 包里一份 Chromium，安装后是 Playwright 测试环境和 Agent 浏览器两个软件（§5.1） |
+| D5 | Q2 常驻浏览器跑在哪里 | 在 Agent 自己的 private runtime 里 | §5.2 |
+| D6 | Q3 怎么分发 | 实现后进 ext-core 包（paios 镜像） | 并入 ext-core，不另立扩展包 |
+| D7 | Q4 远程画面用什么 | 按建议 | CDP 截屏流加输入注入。屏幕接口保留，RFB 留给以后的虚拟机 |
+| D8 | Q5 谁在操作 | 按建议 | 一方操作，双向显式交接（§5.4） |
+| D9 | Q6 登录状态和可见范围 | 按建议，登录态就是正常的跟浏览器，谁能用这个浏览器谁有权限 | 不做额外的归属或隔离。默认只有 owner 能用 |
+| D10 | Q7 “用户可以直接使用”的范围 | Owner 直接用的就是某个 Agent 的浏览器 | 没有不属于 Agent 的浏览器 |
+| D11 | Q8 系统服务用的浏览器是否纳入本文 | 纳入本文，这也是一个实际需要完成的需求 | §5.7、SR |
+| D12 | Q9 原生运行的 Agent | 原生运行也支持，当成普通工具。用户使用的方法还是通过 BuckyOS App，不会直接点开 | 五个平台都带浏览器，都无头运行。原话写的是“原始运行”，按“原生运行”理解 |
 | D13 | Q10 浏览器种类 | 只做 Chromium | |
-| D14 | Q11 名称 | 好 | App 叫「Agent 浏览器」，接口叫“屏幕”。扩展包名 `ext-browser` 因 D6 不再需要 |
-| D15 | Q12 “一件事”怎么落到 OpenDAN 上 | 按你的建议 | 一个 MessageHub 会话加一组标签页；没交代事情时归默认会话（§3.8） |
-| D16 | Q13 Agent 怎么操作常驻浏览器 | 用最直接高效的方法操作即可 | Agent 用 Playwright 经 CDP 直连，不做 ComputerUse 的浏览器驱动（§3.6）。带出的风险见 D22 |
-| D17 | Q14 重排代码从哪里来、存在哪里 | 重排代码存放和触发是单独的逻辑，谁完成都可以（Agent 是主要的实现者，但用户自己写也行） | 重排库和触发独立于作者（§3.7）。落点见 D23 |
-| D18 | Q16 网页内容和提交前确认 | 填，先能力再安全 | 提交前不另行确认。风险记在 §7 |
-| D19 | Q17 视口 | 好，按你的建议 | 跟随正在看的设备，可切桌面版，Agent 不改视口（§3.3） |
+| D14 | Q11 名称 | 好 | App 叫「Agent 浏览器」，接口叫“屏幕” |
+| D15 | Q12 “一件事”怎么落到 OpenDAN 上 | 按你的建议 | 一件事 = 一个 MessageHub 会话（一个 UI Session）加一组标签页。没交代事情时归默认会话 |
+| D16 | Q13 Agent 怎么操作常驻浏览器 | 用最直接高效的方法操作即可 | Playwright 经 CDP 直连。不做 ComputerUse 的浏览器驱动（§5.3） |
+| D17 | Q14 重排代码从哪里来、存在哪里 | 重排代码存放和触发是单独的逻辑，谁完成都可以（Agent 是主要的实现者，但用户自己写也行） | 重排库和触发不问作者 |
+| D18 | Q16 网页内容和提交前确认 | 填，先能力再安全 | 提交前不另行确认。风险见 §10 |
+| D19 | Q17 视口 | 好，按你的建议 | 跟随正在看的设备，可切桌面版。Agent 不改视口 |
+| D20 | Q18 ext-core 加浏览器 | 按设计，ext-core 里的东西，paios 里都有的。带浏览器能解决 3 个需求，这个空间付出就是值得的了 | Chromium 和 `playwright-core` 两个新依赖随之确认 |
+| D21 | Q19 系统渲染的形态和运行身份 | 按你的建议 | Workflow Service 的内置函数。不用 root 加关沙箱。实测后选了降权（§5.7、D29） |
+| D22 | Q20 直连后密码和接手只靠手册 | 接受该风险 | §10 |
+| D23 | Q21 重排库的落点 | 这个目录最好是和浏览器绑定而不是和 Agent 绑定的。这样即使 Agent 删除了，这些重排代码还能跑。我理解重排代码的存在，有可能让会让用户访问 www.facebook.com 的时候，实际上加载的是 xxx.$zonehost/www-facebook-com/ 的代码？网站重排并不一定是要实时的，Agent 可以提前刷新得到结果，只需要用户在界面上能看到“基于什么时间的网站制作”即可 | 重排库挂在用户名下。重排页有 Zone 里的固定地址。结果可以提前制作，界面显示制作时间（§5.6） |
+| D24 | Q21 的落点建议（应用对象桶加专用主机名） | 按你的建议 | 桶见 RF1。主机名的做法见 D27 |
+| D25 | 下一步 | 把该文档升级成可以指导 CodeAgent 完成的整个需求的 TODO | 实施 TODO 的修订 |
+| D26 | Q22 Chromium 用哪份构建 | 打包 Chrome for Testing | ext-core 直接带 Chrome for Testing，和 Playwright 的版本对齐。再分发许可没查到权威说法，记在 §10 |
+| D27 | Q23 重排页的固定地址要不要分两步、要不要特殊隔离 | 重排页的代码都是我们生产的，安全边界可看作一致。按标准的 app 逻辑顶一个规则就好 | 不做沙箱加载那一步，也不做能力令牌。给重排定一个主机名规则 `reflow.<zone>`，和别的 App 一样用会话登录（§5.6、RF5）。“顶”按“定”理解 |
+| D28 | Q24 opendan 引用 `tokio-tungstenite`、`hyper`、`hyper-util`、`futures` | 可以引入 | BR1 |
+| D29 | Q25 系统渲染选降权到 `nobody`，不选容器 | 按你的建议，简单可靠的跑通就行 | §5.7、SR2。隔离只做必要的几样 |
+| D30 | Q26 给 Agent 容器加 `--init` | 启动方式保持现状 | 不动容器的启动参数。孤儿进程在浏览器模块里处理（BR2） |
 
-第三轮，写在文档里对 Q18–Q21 的答复：
+原 Q15 由 D3 定下，编号不复用。
 
-| # | 原问题 | owner 的答复 | 落到设计上 |
+## 3. 现状与落点
+
+行号以基线为准。路径不带前缀的都在 `buckyos` 仓库里。
+
+### 3.1 ext-core
+
+| 环节 | 落点 |
+| --- | --- |
+| 版本常量、选项 | `publish/exttool/ext-core/build.sh:22-35`、`:47-55`。主循环 `:627-654` |
+| 加一个官方归档 | `fetch`（`:71-89`，文件名必须在 `sources.sha256` 里）；解包到 `store/ext-core/<tool>/`（`install_official` `:342-411`）；`official-sources.json` 要有 `build_versions` 和 `components[]`（binaries 加 sources），由 `official_sources.py:23-34` 校验 |
+| 加 conda-forge 包 | `conda-env.yml:12-22`，按 `:2-3` 的命令重新生成 `conda-lock.yml`；安装在 `install_conda`（`:315-325`） |
+| 裁剪 | `prune_prefix`（`:186-313`）。`:211` 删掉了 `libatk-*`、`libatk-bridge-*`、`libatspi*`，Chromium 要用 |
+| 字体 | Noto CJK 的四个 `.ttc` 放在 LibreOffice 的字体目录里（`:456`、`:501-506`）。`conda/etc/fonts/fonts.conf` 只列了 `../../share/fonts` 和 `../../fonts`，没有 Noto 所在的目录，所以只有 LibreOffice 自己看得见这些字体。`64-ext-core-cjk.conf` 在 `:457-466` |
+| 启动器 | 是脚本，不是符号链接。Unix：`unix_launcher`（`:119-132`），环境文件 `unix_env_files`（`:135-167`），清单 `:590-598`。Windows：`windows_launcher`（`:169-181`），清单 `:601-625`。`soffice` 的环境文件在 `:162-166` |
+| 包的布局规则 | 顶层只许 `ext-manifest.json`、`bin/`、`smoke/`、`store/<id>/`。`bin/` 里的每个文件都要在 `provides` 里，反之亦然。`bin/` 的文件里不能有构建机的绝对路径。校验在 `src/kernel/buckyos-api/src/ext_tools.rs:185-238` |
+| 安装后的路径 | `store/ext-core` 是指向 `versions/ext-core/<版本>-<摘要>/store/ext-core` 的链接。稳定路径是 `$BUCKYOS_ROOT/tools/store/ext-core/<目录>`，容器里是 `/opt/buckyos/tools/store/ext-core/<目录>` |
+| 清单 | `publish/exttool/ext-core/ext-manifest.json`（版本 1.2.0，24 条 `provides`，五个平台）。类型 `ExtToolsManifest`：`src/kernel/buckyos-api/src/ext_tools.rs:66-85` |
+| 升版要改的地方 | `ext-manifest.json:4`、`dapp_meta/app.json:5`、`dapp_meta/pikg.json:4` |
+| 表 B 和守卫 | `doc/app_service/paios容器需求.md:289`（表题里的“24 条命令”）、`:295`（表头）、`:302`（soffice 行，可照抄格式）。`.github/scripts/ext_tools.py:23-54`（`CONDA_TOOLS`、`OFFICIAL_TOOLS`、`check-table`），测试 `.github/scripts/test_ext_tools.py`。`src/frame/lib_opendan/src/baseline.rs:157-194`（`EXTENDED_TOOLS`），测试 `:744-770`。`ExtToolCategory`（`:111-120`）没有浏览器这一类 |
+| 发布门禁 | 每个组件要有完整的对应源码和许可文本：`compliance.py:474-491`、`:510-513`，`release_manifest.py:91-93`、`:105-108` |
+| 平台 | linux 两个平台任何机器都能构建；darwin 只能在 Mac 上构建；windows 可以用 `msiextract` 在 Linux 上构建。CI：`.github/workflows/ext-core.yml:62-67`。Linux 冒烟在裸的 `ubuntu:24.04` 容器里跑，`--network none`，root，64 MiB 的 `/dev/shm`（`:102-109`） |
+| 现在的体积 | linux-x86_64 解压 1.8G（tar.gz 676 MiB），其中 conda 630M、libreoffice 510M。GitHub 的发布文件上限 2 GiB，超过只发 R2（`ext-core.yml:302`） |
+| Node | `store/ext-core/node/`。没有给捆绑的 npm 包准备全局目录，全仓库没有设 `NODE_PATH`。`NPM_CONFIG_PREFIX` 指向每个 Agent 自己的目录（`baseline.rs:225`） |
+| 本地迭代 | `build.sh --platform linux-x86_64` → `uv run src/tools/prepare_ext_tools.py --local <payload 目录>` → 删 `$BUCKYOS_ROOT/tools/installs/ext-core.json` → 重启 |
+
+### 3.2 Agent 容器和会话环境
+
+| 环节 | 落点 |
+| --- | --- |
+| 容器怎么起 | `src/kernel/node_daemon/src/app_loader.rs:1882-2015`（`run_worker_container`）。没有 `--user`（root）、没有 `--shm-size`（64 MiB）、没有 `--init`、没有能力和安全选项。测试用的预览 `preview_worker_start`（`:3441+`）要保持同步，断言在 `test_app_loader.rs:1143`、`:1262` |
+| 容器里谁是 PID 1 | opendan：`publish/aios/entrypoint.sh:307-317` 直接 `exec` |
+| PATH | 镜像 ENV（`build_aios:608`、`:624`、`:677-687`）和 `entrypoint.sh:70-74`。缓存类环境变量在 `entrypoint.sh:36-68` |
+| 会话的环境变量 | `src/frame/lib_opendan/src/runtime/mod.rs:1658-1694`（`session_env_vars`），路径层 `:1574-1594`。shell 继承进程环境，不清空（`src/frame/agent_tool/src/llm_bash.rs:1195-1214`） |
+| 找工具 | `baseline.rs:578-589`（`buckyos_root()`、`managed_tool_dirs()`），`resolve_locally`（`:521-534`） |
+| 原生运行 | node_daemon 的 `try_start_native_agent`（`app_loader.rs:1699-1760`），环境 `:1665-1693`。没有实例卷，缓存落在 `<AgentRoot>/.cache/…`（`runtime/mod.rs:1557-1570`）。Windows、macOS 上以桌面用户身份运行 |
+| AgentRoot 布局 | `doc/opendan/protocol/Agent State Protocol.md:11-33`。容器里实例卷是 `/opt/buckyos/instance` |
+
+### 3.3 Agent Service（opendan）
+
+| 环节 | 落点 |
+| --- | --- |
+| HTTP 服务和挂载 | `src/frame/opendan/src/loader.rs:431-513`。`/kapi/<agent_id>` 在 `:470-479` |
+| 请求入口 | `src/frame/opendan/src/service.rs:717-764`（`serve_request`）。POST 走 kRPC；其他 GET 一律返回 `{"app_id":…}`（`:743-759`），WebSocket 路由要插在 `:743` 之前 |
+| kRPC 分发 | `service.rs:343-523`（`call()` 的大 `match`）。`ui.*` 在 `:403-414`，`skills.*` 在 `:457-465` |
+| 方法分类 | `is_owner_only`（`:559-571`，Agent 自己的 App 身份也会被拒）、`is_read`（`:573-639`）、`is_operation`（`:642-666`），由 `authorize_agent_method`（`:526-555`）使用。单测 `:779-875` 枚举这些清单 |
+| 调用者身份 | `service.rs:144-187`（`caller()`）。现在的入参是 `&RPCRequest`，WebSocket 握手要复用它，得改成收 token、方法名、IP |
+| 模块的写法 | 字段 `ui: Option<Arc<UiModule>>`（`service.rs:112-126`）；模块登记 `src/frame/opendan/src/lib.rs:15-27`；配置段 `src/frame/opendan/src/config.rs:49-64`；状态 `loader.rs:278-285`；后台循环 `loader.rs:523-597`，停机 `:618-631`；进程级环境变量 `loader.rs:311-320` |
+| WebSocket 的现成写法 | opendan 里没有。同一套 HTTP 栈上的先例在 control_panel：分发 `src/frame/control_panel/src/main.rs:1448-1450`，升级 `src/frame/control_panel/src/agent_daemon.rs:732-819`，中继循环 `:1068-1096`，带真实升级的测试 `:1263-1342`。用到的 crate：`tokio-tungstenite`（workspace 里已有 0.29）、`hyper`、`hyper-util`、`futures`。opendan 的 `Cargo.toml` 现在没有引用它们 |
+| 首帧鉴权的先例 | AIWS：`src/frame/aiworkspace/server/src/session.rs:558-577`（10 秒内发 `hello{token}`） |
+| 子进程 | opendan 现在没有常驻子进程。按进程组杀：`src/frame/agent_tool/src/llm_bash.rs:760-797`、`:1202-1205`。Windows 的控制台标志：`src/kernel/buckyos-api/src/process_util.rs:13-60` |
+| 给会话写系统记录 | `post_input(sid, &PostedInput::event(…))`：`src/frame/lib_opendan/src/protocol/input.rs:630-646`，例子 `src/frame/lib_opendan/src/todos.rs:516-530`。半订阅的事件在下一次输入前呈现，不单独触发推理；同一来源只保留最新一条（`protocol/state.rs:464-500`）。`_notify` 的隐式半订阅是可抄的先例：`src/frame/lib_opendan/src/template.rs:220-238`、`protocol/config.rs:934-947`、`:1041-1050` |
+| 会话和 MessageHub | 一个 MessageHub 会话 = 一个 Agent 收件箱 = 一个 UI Session，可以同时有多个。UI Session 在第一条消息到达时才创建（`src/frame/opendan/src/ui.rs:707-801`）。`ui.conversation {peer_did, session_id?}` 在 `ui.rs:1053-1139` |
+| 网关 | `/kapi/<agent_id>` 的路由：`src/kernel/scheduler/src/system_config_agent.rs:1278-1311`、`src/rootfs/etc/boot_gateway.yaml:366`。网关不对 `/kapi/*` 做鉴权，服务自己查。WebSocket 升级能过（AIWS 已在用） |
+| 测试 | `src/frame/opendan/tests/loader.rs`（`rpc()` 在 `:639`，路由和权限的用例 `:936`，通知观察进 UI 会话 `:2618`） |
+
+### 3.4 Desktop
+
+路径都在 `src/frame/desktop/src/` 下。
+
+| 环节 | 落点 |
+| --- | --- |
+| 加一个内置 App 要改六处 | `app/registry.tsx:31-52`；`mock/data.ts:21`（`appCatalog`，名字叫 mock 但是真的目录，My Content 的条目在 `:379-404`）；`app/backend-apps.ts:6-23`（白名单，漏了 App 会被丢掉）；`components/DesktopVisuals.tsx:32-57`（图标）；新增 `i18n/<app>.ts` 并在 `i18n/dictionaries.ts:1764-1766` 合并；`models/desktopFolder.ts:119-133`（桌面快捷方式，可选） |
+| 模板 | 最新的 App 是 My Content（提交 `835b5bd44`）。带 store 的结构看 `app/workflow/`：`WorkflowAppPanel.tsx:8-19` |
+| 启动参数和深链 | 每个 App 一个 `launch.ts`（`app/settings/launch.ts:6-12`）。Desktop 的 URL 深链：`desktop/DesktopRoute.tsx:279-305`（`?settings=`、`?agent_setup=`） |
+| 手机 | 判定是 `useMediaQuery('(max-width:768px)')`（`DesktopRoute.tsx:259-261`），没有共用的 `useIsMobile`。全屏容器 `desktop/windows/MobileWindowSheet.tsx:16-95`，`contentPadding:'none'` 铺满。返回键 `desktop/windows/MobileNavContext.tsx:90` |
+| 列出我的 Agent | `api/user_mgr.ts:868-871`（`fetchAgentList`），按 `owner_user_id` 自己过滤（`app/agent-setup/model.ts:43-49`） |
+| 调 Agent Service | `app/messagehub/conversation/worklog/source.ts:10-25`（`agentServiceClient(agentDid)`），调用的例子 `app/messagehub/agentpanel/source.ts:33-70` |
+| WebSocket | 唯一的先例是 AIWS 的 `SessionChannel`：`app/aiworkspace/session/channel.ts:39-263`（首帧发 token、断线重连、心跳）。token 取法 `app/aiworkspace/api/transport.ts:239-249` |
+| 开发代理 | `src/frame/desktop/vite.config.ts:176-183` 的 `/kapi` 规则没有 `ws: true`，连真实 Zone 调试时要加 |
+| 聊天组件 | 整块的 `app/messagehub/ConversationView.tsx:58-116`。窄面板的先例是 `app/messagehub/guest/GuestRoute.tsx:234-297`（历史加输入框，自己接 reader 和动作）。`ask_user` 的问题在输入框里回答（`conversation/input/ConversationComposer.tsx:726-760`）。嵌入要提供 `WindowDialogProvider` 等几个上下文，并引入 `messagehub/messagehub.css` |
+| MessageHub 的 store | 接口 `app/messagehub/store/types.ts:58-188`：`sessions`（`:92`）、`ensureDefaultSession`（`:93-94`）、`create`（`:116`）、`reader`（`:96`）、`send`（`:127`）、`startSync`（`:77`）。实现 `app/messagehub/api/store.ts` |
+| 选文件和保存 | 要 Zone 路径：`sysdlg/index.tsx:88-95`（`useSelectContent`）。要字节：`sysdlg/select/pickFiles.ts:46-63`（`usePickFiles`）。保存：`components/saveToZone.ts:32-65`（`useSaveToZone`，要 objId） |
+| 网页应用的 iframe | Desktop 里跨源加载网页应用的做法：`app/web-frame/WebAppFramePanel.tsx:19-104`，登录 `app/web-frame/launch.ts:46-67`、`api/app_launch.ts:36-49`。带校验的消息桥可以参考 `app/aiworkspace/ui/extensions/htmlRuntime.ts:277-294` |
+| 画布和输入 | 尺寸 `app/aiworkspace/ink/paint.ts:19-31`；触摸手势 `app/aiworkspace/ui/canvas/render/touch.ts:1-60`；解码帧用 `createImageBitmap`（`presentation/imageFile.ts:62-73`）；软键盘高度 `app/aiworkspace/ui/table/EditBar.tsx:18-29` |
+| “查看浏览器”的入口 | `app/messagehub/agentpanel/AgentSessionPanel.tsx:126`、`:164`、`:196` |
+| e2e | `tests/e2e/pages/<app>.spec.ts`，夹具 `tests/e2e/fixtures/desktop.ts`，手机视口 `tests/e2e/flows/mobile.spec.ts:4-8`。默认跑 mock（`.env.development` 的 `VITE_CP_USE_MOCK=true`） |
+
+### 3.5 Workflow Service
+
+路径都在 `src/kernel/workflow/src/` 下。
+
+| 环节 | 落点 |
+| --- | --- |
+| 登记一个内置函数 | `functions/media/mod.rs:31-40`（名字）、`:98-181`（登记表，照抄 `TO_PDF` 的条目 `:164-171`）、`:212-245`（工具基线） |
+| 模板 | `functions/media/document.rs`：函数对象 `:13-38`，`invoke` `:66-121` |
+| 工具探测 | `functions/media/tools.rs:12-21`（名字和 `MEDIA_TOOLS`）、`:32-69`（查找目录）、`:148-158`（版本） |
+| 车道 | `native.rs:25-55`（`ExecutionLane`，现在五条） |
+| 运行工具 | `native.rs:481-576`（`run_tool`、`run_tool_env`）。不清空环境，不设进程组，只杀直接子进程 |
+| 继承的凭据 | node_daemon 把服务的会话令牌放进环境变量 `WORKFLOW_SESSION_TOKEN`（`src/kernel/node_daemon/src/kernel_mgr.rs:225-228`），工具进程会继承 |
+| 断网的先例 | 不在 workflow 里，在 nfs_server 的预览：`src/frame/nfs_server/src/preview/convert.rs:543-565`（`unshare --net`，不行就退到 `unshare --user --map-root-user --net`） |
+| 降权的先例 | 只有 Node Executor：`src/kernel/node_executor/src/spawn.rs:150-203`（`drop_privileges`）、`:166`（进程组）、`:238`（按组发信号）、`:398-402`（最小环境） |
+| 运行身份 | Linux 上是 root（node_daemon 拉起，`src/kernel/node_daemon/src/service_pkg.rs:414`） |
+| 系统定义 | `defs/media.document.json`，嵌入和校验 `system_defs.rs:15-75`。`server/tests.rs:292` 断言一共 4 个 |
+| 调用路径 | kRPC `/kapi/workflow`：`create_run`、`get_run_output`。Rust 客户端 `src/kernel/buckyos-api/src/workflow_service.rs:725`。调用的例子 `src/frame/agent_tool/src/llm_understand_media/pipeline.rs:810-870` |
+| 输入鉴权 | 带 `obj_id` 的输入用调用者自己的令牌查读权限（`server.rs:103-152`）。不带 `obj_id` 的输入不做任何鉴权（`server.rs:651-653`） |
+| 测试 | `functions/media/tests.rs:76-105` 断言正好 10 个函数和工具清单，都要改 |
+
+### 3.6 桶和网关
+
+| 环节 | 落点 |
+| --- | --- |
+| 系统服务声明桶 | `src/kernel/buckyos-api/src/control_panel.rs:23-69`（`control_panel_bucket_decls()`，现有 `wallpapers`）。scheduler 在 `src/kernel/scheduler/src/system_config_builder.rs:355` 写进规格 |
+| 桶的规则 | bucket_id 是 `user/<appid>/<user>/<name>`。key 可以带 `/`。`app_data` 档要写配额 |
+| 读写 | HTTP：`/bucket/v1/<bucket_id>/<key>`（`src/frame/nfs_server/src/bucket/http.rs:45-118`）。kRPC：`bucket.*`。websdk：`buckyos-websdk/src/bucket_client.ts`。CLI：`buckyos-websdk/cli/modules/bucket.ts`（一次一个文件，没有递归上传） |
+| HTML 被强制下载 | `/bucket/v1` 对图片、音视频、PDF、纯文本以外的类型一律当附件下发，并加沙箱 CSP（`cyfs-ndn/src/ndn-lib/src/content_safety.rs:24-29`、`:66-79`）。这是桶的数据面的设计：能执行的内容不走这个入口。重排页走自己的主机名（D27、RF5） |
+| Agent 能不能写 | 读写权限的 Agent 能读写 owner 名下任何 App 的用户桶；只读权限的 Agent 只能读（`src/kernel/buckyos-api/src/rbac_config.rs:92-93`、`:247-251`） |
+| 主机名 | 系统服务的主机名是硬编码的：`src/kernel/scheduler/src/system_config_agent.rs:1209-1251`（nfs-server 有 `share` 和 `s3`）。保留名有两份：`system_config_agent.rs:2112-2120`、`src/kernel/scheduler/src/install_plan_executor.rs:176-187` |
+| 按主机名分流的先例 | nfs-server：`src/frame/nfs_server/src/share/serving.rs:56-82`（`host_guard`）、`src/frame/nfs_server/src/bucket/s3.rs:101-114`（`host_route`），挂在 `server.rs:94-95`。网关里 `public.<zone>` 的提前返回：`src/rootfs/etc/boot_gateway.yaml:233-235` |
+
+## 4. 实测记录
+
+2026-11-14 晚，本机，一次性容器。镜像 `local/aios-test:latest-amd64`（Ubuntu 24.04，root，默认 seccomp，`/dev/shm` 64 MiB），工具卷只读挂载（本机装的 ext-core 是 1.1.0，没有 LibreOffice 和字体）。Playwright 1.65.1，它下载的是 Chrome for Testing 159.0.8154.6（revision 1255）。x86_64。
+
+运行环境：
+
+| # | 结论 |
+| --- | --- |
+| V1 | 工作镜像里 Chromium 缺 25 个系统库：libX11、libXcomposite、libXdamage、libXext、libXfixes、libXrandr、libasound、libatk-1.0、libatk-bridge-2.0、libatspi、libcairo、libcups、libdbus-1、libexpat、libgbm、libgio-2.0、libglib-2.0、libgobject-2.0、libnspr4、libnss3、libnssutil3、libpango-1.0、libsmime3、libxcb、libxkbcommon |
+| V2 | ext-core 的 conda 前缀里已经有其中 21 个。缺的 4 个是 libatk-1.0、libatk-bridge-2.0、libatspi（在锁文件里，被 `build.sh:211` 删了）和 libgbm（不在锁文件里） |
+| V3 | `LD_LIBRARY_PATH` 指到 `conda/lib`，再补上那 4 个库，Chromium 能启动、能渲染 |
+| V4 | 以 root 运行不带 `--no-sandbox` 会拒绝启动。换成普通用户，在默认的 Docker 配置下报 `No usable sandbox`。所以容器里必须带 `--no-sandbox` |
+| V5 | 环境里一个字体都没有时，渲染文字直接崩溃（`SkFontMgr_FontConfigInterface.cpp:163`）。装上字体后正常 |
+| V6 | 解压后的体积：完整构建 414 MB，无头精简构建（headless shell）282 MB，ffmpeg 5 MB |
+| V7 | Playwright 的无头测试默认用精简构建。只有完整构建时，默认的 `chromium.launch()` 报 `Executable doesn't exist … chromium_headless_shell-1255`；加 `channel: 'chromium'` 就能用完整构建。`PLAYWRIGHT_BROWSERS_PATH` 指向只读目录可以工作 |
+| V8 | 无头运行、开 3 个简单标签页时，容器里所有进程的 PSS 合计约 430 MiB |
+
+CDP（`--headless=new`，原始 WebSocket 客户端）：
+
+| # | 结论 |
+| --- | --- |
+| V9 | 手机模拟生效：`Emulation.setDeviceMetricsOverride`（412×915、`mobile`）加触屏和 UA 之后，媒体查询走手机分支，`innerWidth` 是 412。能切回 1280 的桌面视口 |
+| V10 | `Page.startScreencast`（jpeg、质量 50）：帧的尺寸是 CSS 像素（412×915），不随设备像素比变大。每帧 17–19 KB，不限速时 60 帧每秒。png 每帧约 38 KB |
+| V11 | 流量控制靠不住单一手段：完全不回确认时，再发约 3 帧就停；每帧延迟 200 ms 再确认，仍有 14 帧每秒。限速要靠服务端丢帧或 `everyNthFrame` |
+| V12 | `Input.insertText` 输入中文正确。`Input.imeSetComposition` 可用 |
+| V13 | 文件对话框：`Page.setInterceptFileChooserDialog` 之后能收到 `Page.fileChooserOpened`，用 `DOM.setFileInputFiles` 填入文件。必须先 `Page.enable` |
+| V14 | JS 弹框：能收到 `Page.javascriptDialogOpening`，没人处理时一直开着。触发弹框的那次输入命令在弹框关掉前不返回，不要等它 |
+| V15 | 新窗口有 `Target.targetCreated`（带 `openerId`）。下载有 `Browser.downloadWillBegin`（先 `Browser.setDownloadBehavior`） |
+| V16 | `<select>` 点开后，选项列表不在截屏帧里，也不在截图里。要由 App 自己显示 |
+| V17 | 两个连接并存：Playwright 用 `connectOverCDP` 连上以后，截屏流继续，视口不变 |
+| V18 | Playwright 连着、又没有注册弹框处理时，页面的弹框会在约 57 ms 内被它自动关掉。Agent 的连接不能在不操作时挂着 |
+| V19 | Playwright 读得到密码框的值（D22 的风险属实）。`locator.ariaSnapshot()` 可用 |
+| V20 | `Page.printToPDF`：A4、5 页，页眉、页脚、页码模板都生效，中文能用 `pdftotext` 抽出来 |
+
+其他：
+
+| # | 结论 |
+| --- | --- |
+| V21 | Playwright 从 1.57（2025-12）起下载的是 Google 的 Chrome for Testing，不再是它自己编译的 Chromium。Chrome for Testing 能不能再分发，没有查到权威说法；Chromium 的下载页说它带专有编解码器。owner 决定直接打包（D26） |
+| V22 | 坑：Chromium 输出的 JPEG，分量编号是 0、1、2。有的看图工具会把它解成花屏，CodeAgent 的读图也会。看帧之前先用 `magick x.jpg x.png` 转一下 |
+
+没测的：真机手机上的弱网体验；真实手机输入法的事件流；macOS、Windows；aarch64；conda 版的 atk 和 gbm；宿主机上降权后能不能开沙箱（Ubuntu 24.04 默认用 AppArmor 限制了非特权用户命名空间）。
+
+## 5. 设计
+
+### 5.1 ext-core 里的浏览器
+
+包里放的东西（都在 `store/ext-core/` 下）：
+
+| 目录 | 内容 |
+| --- | --- |
+| `chromium/` | 按 Playwright 的浏览器目录布局：`chromium-<revision>/<平台目录>/…`，带 `INSTALLATION_COMPLETE` 和 `DEPENDENCIES_VALIDATED` 两个标记文件 |
+| `playwright/node_modules/playwright-core/` | 和这份浏览器配套的版本 |
+| `browser/` | 我们自己的脚本：`agent-browser.mjs`、`page-render.mjs` 和共用的模块。源码放在 `publish/exttool/ext-core/browser/` |
+
+三条命令（`bin/` 下的启动器，写进 `provides`）：
+
+| 命令 | 是什么 | 谁用 |
+| --- | --- | --- |
+| `chromium` | 浏览器本体 | Agent Service 启动常驻浏览器；手册里的排查 |
+| `agent-browser` | Agent 操作常驻浏览器的命令（§5.3） | Agent |
+| `page-render` | 把一个页面输出成 PDF 或 PNG（§5.7） | Workflow 的系统渲染函数 |
+
+要点：
+
+- **只带完整构建，不带精简构建**（D4、D20）。测试要写 `channel: 'chromium'`（V7），由手册和项目模板写好。
+- **Linux 的运行库复用 conda 前缀**（V2、V3）。不再删 atk 和 atspi，给 conda 环境加上 libgbm。
+- **Linux 上浏览器可执行文件的位置放一个包装脚本。** Playwright 直接执行 `chromium-<revision>/chrome-linux64/chrome`，不经过 `bin/` 的启动器。所以把真正的二进制改名（比如 `chrome-bin`），原名放一个 sh 脚本：设好 `LD_LIBRARY_PATH`（`conda/lib`）和 `FONTCONFIG_FILE`（没设时指向前缀里的配置），再 `exec` 真正的二进制。脚本里不能有绝对路径。macOS、Windows 的构建自带依赖，不用包装。
+- **字体要让 fontconfig 找得到**（V5）。现在 Noto CJK 只有 LibreOffice 看得见，要在前缀的字体配置里加上它的目录。
+- **会话环境变量。** `PLAYWRIGHT_BROWSERS_PATH` 指到 `<工具目录>/store/ext-core/chromium`，`PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1`。项目用配套版本的 `@playwright/test` 时不用下载浏览器。
+- **项目用了别的 Playwright 版本。** 浏览器目录是只读的，它得把自己的浏览器下到别处，而且那份浏览器没有包装脚本。`agent-browser env` 打印出需要的环境变量（库路径、字体配置），手册教 Agent 这样做。手册建议新项目用系统的版本。
+- **工具卷每个节点一份**，所有 Agent 共用。
+
+### 5.2 常驻浏览器（Agent Service 的浏览器模块）
+
+**进程。**
+
+- Agent Service 按需启动一个 Chromium：`chromium --headless=new --user-data-dir=<profile> --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-dev-shm-usage`，再加缓存目录和下载目录。
+- Unix 上有效用户是 root 时加 `--no-sandbox`（V4）。不是 root 时先不加；如果启动后立刻因为 `No usable sandbox` 退出，加上重试一次，并记日志。
+- 端口从用户数据目录里的 `DevToolsActivePort` 文件读。调试端点只监听回环地址。
+- 目录：容器里是 `${BUCKYOS_INSTANCE_VOLUME}/browser/{profile,cache,downloads}`；原生运行和宿主调试是 `<AgentRoot>/.cache/browser/…`。
+- 停止时先让浏览器自己退出，不行再杀整个进程组，并回收它留下的子进程（BR2）。空闲回收：没有人看、没有 Agent 租约、超过配置的时间（默认 10 分钟）就停。停之前把各组标签页的网址存下来，下次按需重开。
+- 崩溃后退避重启。
+
+**分组。** 一件事一组标签页（D15）。
+
+- 组的标识就是 MessageHub 会话的 id。每个 Agent 有一个默认组，对应它的默认会话。
+- 新标签页归谁：页面自己弹出的（有 opener），归 opener 所在的组；Agent 持有租约时新开的，归租约的组；用户新开的，归他正在看的组。
+- 各组的标签页列表存在 `<AgentRoot>/state/browser/groups.json`。
+- 登录状态整个 Agent 共用，一个用户数据目录。
+
+**kRPC**（挂在 `/kapi/<agent_id>`）：
+
+| 方法 | 谁能调 | 作用 |
+| --- | --- | --- |
+| `browser.status {group_id?}` | owner、Agent | 是否启用、是否在运行、版本、各组的标签页、操作方、Agent 状态 |
+| `browser.ensure {}` | owner、Agent | 没在运行就启动 |
+| `browser.acquire {session_id}` | Agent | 取得所在组的操作租约。返回调试端点、组、标签页。用户正在操作时失败，错误码 `user_in_control` |
+| `browser.renew {lease_id}`、`browser.release {lease_id, state?, note?}` | Agent | 续租、释放。`state` 可以是 `done` 或 `stuck` |
+| `browser.request_handover {session_id, reason, note?}` | Agent | 请用户接手。`reason`：`password`、`captcha`、`other` |
+| `browser.take_over {group_id}`、`browser.hand_back {group_id}`、`browser.hand_to_agent {group_id}` | owner | 接手、交还、交给 Agent |
+| `browser.upload {request_id, zone_path}` | owner | 回应一次文件选择：服务端用调用者的令牌从 Zone 取文件，交给页面 |
+| `browser.download_export {download_id}` | owner | 把一个下载好的文件登记成对象，返回 objId，供 App 存到 Zone |
+| `browser.clear_profile {}` | owner | 停掉浏览器，清空用户数据目录 |
+| `browser.reflow_refresh {url}`、`browser.reflow_state {url}` | owner、Agent | 重排的刷新和状态（§5.6） |
+
+- “owner”的方法放进 `is_owner_only`。“Agent”的方法要保证 Agent 的 App 身份调得通，不受它对 owner 目录是只读还是读写的影响：用自己的浏览器是它自己的能力。
+- `session_id` 是 Agent 所在会话的 id。服务端从它找到所属的 UI Session（Work 会话顺着来源往上找），再对应到 MessageHub 会话，也就是组。
+- Agent 这边的入口：Agent Service 在进程环境里设 `OPENDAN_BROWSER_RPC`（本机回环上的 kRPC 地址），会话里的命令继承它，带着会话已有的 `BUCKYOS_APPCLIENT_SESSION_TOKEN` 调用。跑在其他节点上的会话没有这个变量，用不了常驻浏览器（D5）。
+- 标签页的打开、关闭、切换、导航走屏幕的 WebSocket（§5.4），不另设 kRPC。
+
+**配置。** `[loader.browser]`：`enabled`（默认开；找不到 `chromium` 时模块报“不可用”，其他功能照常）、`idle_stop_secs`、`max_tabs`。
+
+**给会话的记录。** 用一个隐式的半订阅 `_browser`，来源是 `system:browser:<group_id>`，同一组只保留最新一条。写进去的事件：用户已接手；用户已交还（带当前网址和标题，提示重新读页面）；用户请 Agent 接着做。它们不单独触发推理。需要叫醒 Agent 的时候，由 App 往会话里发一条普通消息（§5.5）。
+
+### 5.3 Agent 怎么操作：`agent-browser`
+
+D16：用最直接高效的方法。Agent 写一段 Playwright 脚本，一次跑完。
+
+| 用法 | 作用 |
+| --- | --- |
+| `agent-browser status [--json]` | 浏览器和本组的状态：谁在操作、有哪些标签页 |
+| `agent-browser run <脚本.mjs> [--arg k=v]…` | 取租约 → 连上 → 调脚本的默认导出 `async ({ page, context, args }) => 结果` → 把结果按 JSON 打印 → 断开 → 释放租约 |
+| `agent-browser open <网址>` | 在本组打开或导航 |
+| `agent-browser snapshot` | 当前页面的可访问性快照（文本） |
+| `agent-browser screenshot <文件.png>` | 截图存成文件，用 `llm_understand_media` 看 |
+| `agent-browser tabs` | 本组的标签页 |
+| `agent-browser handover --reason password [--note …]` | 请用户接手 |
+| `agent-browser done [--note …]`、`agent-browser stuck --note …` | 报告办完或卡住，控制回到用户 |
+| `agent-browser env` | 打印别的版本的浏览器需要的环境变量（§5.1） |
+| `agent-browser version` | 浏览器和 `playwright-core` 的版本 |
+
+要点：
+
+- 它是 Node 脚本，自带 `playwright-core`，所以 Agent 的脚本里不用解决模块查找的问题：`page` 直接传进来。
+- **每次操作连上、做完就断开**（V18）。连着的时候，给不属于本组的页面注册空的弹框处理，免得把用户那边的弹框自动关掉。
+- **操作前先取租约。** 用户在操作时命令直接失败，输出里说明“用户正在操作，等交还”。这是配合式的约束：Agent 绕开这条命令自己连调试端点，系统拦不住（D22）。
+- 脚本运行期间自动续租。脚本抛错也要断开和释放。
+- 不改视口（D19）。
+- 手册规定：遇到密码框，调 `handover --reason password`，不读也不填密码框（D3）。
+
+### 5.4 屏幕、交接和原始页面模式
+
+**连接。** `GET /kapi/<agent_id>/browser/screen` 升级成 WebSocket。5 秒内的第一帧是 `hello`，带用户的会话令牌、要看的组、视口。服务端按 owner 校验，通过后回 `ready`。
+
+**消息。** 文本帧是 JSON，二进制帧是一张 JPEG。
+
+| 方向 | 类型 | 内容 |
+| --- | --- | --- |
+| 上行 | `hello` | `token`、`group_id`、`viewport {width, height, mobile}` |
+| 上行 | `ack` | `seq`：收到并画完了这一帧 |
+| 上行 | `input` | `touch`、`mouse`、`wheel`、`key`、`text`（整段文字）、`composition`（输入法组字） |
+| 上行 | `nav` | `url`、`back`、`forward`、`reload` |
+| 上行 | `tab` | `open`、`close`、`activate` |
+| 上行 | `viewport` | 视口变了，或切到桌面版 |
+| 上行 | `respond` | 回应一个 `request`：选了哪个选项、弹框点了什么、文件用哪个 |
+| 上行 | `quality` | 帧率上限和画质 |
+| 下行 | `ready` | 当前状态 |
+| 下行 | `frame_meta` | 下一个二进制帧的 `seq` 和所属标签页 |
+| 下行 | （二进制） | JPEG |
+| 下行 | `state` | 操作方、Agent 状态、标签页列表、当前网址、标题、是否在加载 |
+| 下行 | `request` | 页面之外的请求：`select`、`dialog`、`file_chooser`、`download`、`permission` |
+| 下行 | `error` | 错误码和说明 |
+
+**帧的节奏**（V10、V11）。服务端手里最多有一帧没被确认；新帧来了而上一帧还没确认，就只留最新的一帧，旧的丢掉。再加一个帧率上限（默认每秒 15 帧）。弱网时自然降到每秒几帧。
+
+**视口**（D19、V9）。看的人是手机就按手机的尺寸、触屏和手机 UA 模拟；App 里可以切“桌面版”。视口由服务端这条连接设置，Agent 不改。
+
+**页面之外的界面**（V13–V16）：
+
+| 情况 | 做法 |
+| --- | --- |
+| `<select>` | 给每个页面注入一段脚本，拦下对下拉框的点按，把选项报上来；App 用自己的选择面板显示；选完后服务端设值并派发 `input`、`change` 事件 |
+| JS 弹框 | 转成 `request`，App 显示，回应后服务端关掉它 |
+| 文件对话框 | 转成 `request`。App 用系统文件选择器从 Zone 选，调 `browser.upload`；本机来源的文件走 `PUT /kapi/<agent_id>/browser/upload/<request_id>` 上传字节 |
+| 下载 | 存在下载目录里，完成后发 `request`。App 用 `browser.download_export` 拿到 objId，再用 `useSaveToZone` 存到 Zone |
+| 新窗口 | 在同一组里多一个标签页，`state` 里更新 |
+| 权限请求（定位、摄像头等） | 一律拒绝，并发一个 `request` 让用户知道 |
+| 日期、时间、颜色这类输入框 | 第一期按文本框处理，列为已知不足 |
+
+**谁在操作**（D8）。按组算：
+
+- Agent 持有有效租约、用户又没接手时，操作方是 Agent。其他时候是用户。
+- 操作方是 Agent 时，用户的 `input`、`nav`、`tab` 不送达页面（服务端强制）。
+- 用户“接手”：租约作废。Agent 之后的 `acquire` 失败，直到用户“交还”或“交给 Agent”。
+- Agent 调 `request_handover`：租约作废，Agent 状态变成“等你接手”。
+- 租约到期没续，或 Agent 调 `release`：操作方回到用户。
+- Agent 状态：`idle`、`working`、`waiting_answer`（有没回答的 `ask_user`）、`waiting_takeover`、`done`、`stuck`。App 始终显示操作方和这个状态。
+- 接手不暂停 Session。
+
+### 5.5 「Agent 浏览器」App 和对话办理
+
+**结构。** 先选一个自己的 Agent（D10），然后是：地址栏、事情列表、模式切换（原始页面、重排、对话）、状态条（谁在操作、Agent 在等什么）、对话面板。按手机设计，桌面上用同一套。
+
+**一件事**（D15）。
+
+- 事情列表就是和这个 Agent 的 MessageHub 会话。新建一件事 = 新建一个会话（创建时带上来源标记，以便只列出浏览器里建的）。默认会话对应“还没交代事情”时的浏览。
+- 切换事情 = 切换会话，屏幕跟着切到那一组标签页。
+- 对话面板复用 MessageHub 的历史和输入框组件，接 MessageHub 的 store。`ask_user` 的问题在输入框里回答，不另做。
+
+**交给 Agent。** 用户在原始页面里点“交给 Agent”：App 调 `browser.hand_to_agent`，再往这个会话发一条消息，内容是“从当前页面接着做”加当前网址、标题和用户补的话。Agent 被这条消息叫醒。
+
+**密码**（D3）。Agent 调 `agent-browser handover --reason password`，在对话里说明要用户填什么。App 的状态条显示“等你接手”，用户在原始页面里填完，点“交还”。App 调 `browser.hand_back`，并往会话发一条消息（默认文字“填好了，继续”，可以改），Agent 被叫醒后重新读页面。
+
+**其他缺项**（D3、D18）。包括短信验证码、证件号，都用 `ask_user` 在对话里问，Agent 填进页面，提交前不另行确认。
+
+**入口。** Desktop 的应用列表；MessageHub 的 Agent 面板里“Agent 正在使用浏览器 · 查看”；Desktop 的深链 `?agent_browser=<agent>&group=<会话>`，Agent 首页用它跳过来。
+
+**默认入口**是 PRD 待定的选择（R8）。先按“打开 App 进默认会话的原始页面，地址栏为空，对话面板收起”做，等产品定了再调。
+
+### 5.6 重排
+
+D2、D17、D23、D27：选择器；存放和触发不问作者；和浏览器绑定；有固定地址，按标准 App 的逻辑提供；不必实时，显示制作时间。
+
+**重排库。** 桶 `user/control-panel/<用户>/reflow`，声明在 control-panel 名下（Desktop 内置 App 的数据都这样放）。它属于用户，删除 Agent 不影响它。
+
+| key | 内容 |
+| --- | --- |
+| `<站点>/manifest.json` | 匹配声明、偏好、作者、更新时间 |
+| `<站点>/refresh.mjs` | 刷新脚本。在服务器的浏览器里对原网站运行，取回内容 |
+| `<站点>/index.html` 和它引用的样式、脚本 | 页面代码。在用户设备上运行 |
+| `<站点>/results/<页面>.json` | 一个页面最近一次制作的结果，带 `made_at`、`made_by`（哪个 Agent 的浏览器）、`source_url` |
+| `<站点>/fallback/<页面>.html` 和同名的 `.json` | 没有页面代码时 LLM 兜底重排的结果和它的元信息 |
+
+- key 和网址的路径一一对应：`reflow.<zone>/<key>`（见“显示”）。
+- `<站点>` 是主机名把点换成短横线，如 `www-facebook-com`；换完没有短横线的（单段主机名）加后缀 `-host`，免得和网关按路径分流的前缀（`kapi`、`bucket`、`home` 等）撞上。`<页面>` 是规范化网址的散列。
+- 包的格式第一版（`schema: "buckyos.reflow/1"`）：
+  - `manifest.json`：`site`、`match[]`（`host` 加路径通配）、`preference`（用户的偏好，自然语言）、`author {kind: agent|user, id}`、`updated_at`、`refresh {script, timeout_s}`。
+  - `refresh.mjs`：默认导出 `async ({ page, url, save }) => data`。`save.image(网址)` 把图片取回、压缩后放进结果，返回可内嵌的引用。
+  - 页面代码按网址参数里的原网址找到 `results/<页面>.json`，把里面的数据画出来。数据来自第三方网站，按文本渲染，不要当 HTML 直接插进页面（§10）。
+- RF0 试做之后可以改格式，改了回写这里。
+
+**触发。** 用户在重排模式打开一个网址：
+
+1. 按网址在库里找匹配的包。
+2. 有包也有结果：直接显示，带制作时间。不调用模型，不需要浏览器在运行。
+3. 有包没有结果：调 `browser.reflow_refresh`，显示“正在制作”，同时可以切到原始页面。
+4. 没有包：看有没有兜底结果，有就显示；没有就由 App 往默认会话发一条消息，请 Agent 做兜底重排，显示“正在制作”。
+
+**刷新。** `browser.reflow_refresh {url}`：Agent Service 在一个后台标签页里打开原网址，跑包里的 `refresh.mjs`，把结果写进桶。脚本失败就在状态里记下失败；用户在等的话，App 按第 4 步请 Agent 兜底，并让它修包。三种时机：用户点“刷新”；Agent 提前刷新（什么时候刷由 Agent 自己安排，命令是 `reflow refresh`）；用户打开一个还没有结果的页面。
+
+**兜底和写包**是 Agent 的工作，写在手册里：读原页面，按偏好生成一份结果；对常访问的站点写出包放进库里；用户调整偏好时一并改包。Agent 在自己的工作目录里写和试，写好用 `reflow put` 放进库里。只读权限的 Agent 写不了别的 App 的桶，这时它把包留在自己的目录里，请用户在 App 里导入。
+
+**`reflow` 命令**（Agent 的标准命令，TS，基于 websdk）：`reflow match <网址>`、`reflow ls`、`reflow get <站点> <目录>`、`reflow put <站点> <目录>`、`reflow rm <站点>`、`reflow result put <网址> <文件>`、`reflow refresh <网址>`。用户在 App 的管理页里也能查看、导入、删除。
+
+**显示**（D27）。重排页的代码是我们自己生产的，按标准 App 的逻辑提供，不做特殊隔离：
+
+- 主机名 `reflow.<zone>`，由 nfs-server 提供。它把路径直接当成重排桶里的 key：`reflow.<zone>/www-facebook-com/` 就是当前用户桶里的 `www-facebook-com/index.html`。目录补 `index.html`。HTML、脚本、样式按原类型下发，不强制下载。
+- 用户是谁由会话决定，登录走系统服务自有源的现成做法（AIWS 的 `aiws-<id>.<zone>` 就是这样）：Desktop 调 `auth.prepare_app_launch`，经一次性的 `/sso_callback` 在这个主机上种下会话。只有登录的用户能打开，看到的是自己的桶。
+- App 的重排模式用 iframe 加载 `https://reflow.<zone>/<站点>/?url=<原网址>`，做法同 Desktop 里别的网页应用。地址栏仍显示原网址，旁边显示制作时间。
+- 页面和 App 之间用 `postMessage` 通信（校验来源是 `reflow.<zone>`）：页面把“打开链接”“执行原网页上的动作”“刷新”交给 App，App 去调 Agent Service。
+
+**交互。** 普通链接：按“触发”处理。依赖原网页的按钮：结果里记下它对应原网页的哪个元素；点击后 App 请 Agent Service 在原网页上执行，再刷新这一页；处理不了的交给 Agent。切回原始页面：在浏览器里打开这个重排页的 `source_url`。
+
+**不必实时带来的性质。** 重排模式不要求原标签页开着，也不要求浏览器在运行。
+
+### 5.7 系统渲染
+
+D11、D21：Workflow Service 的内置函数。
+
+**`page-render`**（ext-core 的命令，Node 脚本，用 `playwright-core` 起一个一次性的 Chromium）：
+
+| 参数 | 含义 |
+| --- | --- |
+| `--html <文件或目录>` | 输入是本地的 HTML 文件，或带 `index.html` 的目录。渲染时不许访问网络 |
+| `--url <网址>` | 输入是一个网址。只许访问 `--allow-host` 列出的主机 |
+| `--allow-host <主机>` | 可重复 |
+| `--pdf <输出>` 或 `--png <输出>` | 输出 |
+| `--paper <A3\|A4\|A5\|Letter\|宽x高mm>`、`--landscape`、`--margin <mm>` | 纸张 |
+| `--header-html <文件>`、`--footer-html <文件>`、`--background` | 页眉页脚模板和背景 |
+| `--viewport <宽x高>`、`--scale <倍数>` | 截图用 |
+| `--wait-ready <表达式>`、`--wait-ms <毫秒>` | 等页面给出“排好了”的信号 |
+| `--timeout <秒>` | 总时限 |
+
+结束时在标准输出打印一行 JSON：`{pages, bytes, sandbox, warnings}`。
+
+**Workflow 的函数**：
+
+| 函数 | 输入 | 输出 | 性质 |
 | --- | --- | --- | --- |
-| D20 | Q18 ext-core 加浏览器 | 按设计，ext-core 里的东西，paios 里都有的。带浏览器能解决 3 个需求，这个空间付出就是值得的了 | 浏览器并入 ext-core，paios 里随之可用。Chromium 和 `playwright-core` 两个新依赖随之确认。体积在 B1 量出来记进本文 |
-| D21 | Q19 系统渲染函数的形态和运行身份 | 按你的建议 | Workflow Service 的内置函数，不新增服务。不用 root 加关沙箱：降权到专用账号，或者放进容器，B1 验证后选一种（§3.13） |
-| D22 | Q20 D3 和 D16 的交点 | 接受该风险 | “Agent 不读密码框的值”“用户接手时 Agent 停手”第一期靠手册，记在 §7 |
-| D23 | Q21 重排代码库的落点和格式 | 这个目录最好是和浏览器绑定而不是和 Agent 绑定的。这样即使 Agent 删除了，这些重排代码还能跑。我理解重排代码的存在，有可能让会让用户访问 www.facebook.com 的时候，实际上加载的是 xxx.$zonehost/www-facebook-com/ 的代码？网站重排并不一定是要实时的，Agent 可以提前刷新得到结果，只需要用户在界面上能看到“基于什么时间的网站制作”即可 | 重排库属于 App、挂在用户名下，不在 Agent 的目录里。问句的回答是“是的”：重排页有 Zone 里的固定地址。结果可以提前制作，界面显示制作时间（§3.7） |
+| `media.page_to_pdf` | `content_id`（一份 HTML，或 zip 里带 `index.html`），加纸张参数 | `media.derived_pdf`（和 `media.to_pdf` 同一个结果类型） | 纯函数，可缓存 |
+| `media.page_snapshot` | `content_id`，加视口参数 | PNG | 纯函数，可缓存 |
 
-原 Q15 已由 D3 定下，编号不复用。
+- 新车道 `Browser`，一次一个。
+- 系统定义 `media.page`：`capabilities` → `page_to_pdf` 或 `page_snapshot`。触发参数里用 `obj_id`，读权限按调用者自己的令牌查，和 `media.document` 一样。
+- **网址输入第一期不做成 Workflow 的入口。** `page-render` 支持 `--url`，但 Workflow 现在对不带 `obj_id` 的输入不做鉴权（§3.5），令牌也不能放进函数参数（会进缓存键和运行记录）。AIWS 导出 PDF 要用哪种输入，取决于渲染管线的裁决，在[打印 TODO](aiws-print-pdf-export-todo.md) 的 T7、T8 里定。
 
-### 5.2 待确认
+**隔离。** 渲染的内容可能包含扩展 Block 的 HTML，是第三方代码。Workflow 在 Linux 上是 root。新增一个隔离的启动方式，只给这条车道用：
 
-Q1–Q21 都已答复，目前没有等 owner 裁决的问题。
+- 清空环境，只留白名单（现在工具进程会继承 `WORKFLOW_SESSION_TOKEN`）。
+- 单独的进程组，超时或取消时杀整组（Chromium 有一串子进程）。
+- Linux 上有效用户是 root 时，降到 `nobody`。临时目录先交给这个账号。
+- 断网：HTML 输入时用 `unshare --net`，做法抄 nfs_server 的预览；另外在浏览器里拦掉所有网络请求。
+- Chromium 自身的沙箱：先带着沙箱起；宿主不支持时（V4 里的那种报错）去掉沙箱重试，结果里 `sandbox: false`，并记日志。
+- Windows、macOS 上 Workflow 以桌面用户运行，不降权，沙箱照常。
 
-实施时再定的细节，定了写回本文：
+和 AIWS 导出 PDF 的关系不变：页面模型、分页、PDF Frame、对话框都在打印 TODO；本文提供“把一个页面变成 PDF”的函数，哪种渲染管线的裁决都用得上。
 
-- ext-core 加完浏览器后的体积，五个平台各多少；无头精简构建最终带不带（B1，§3.1）。
-- 系统渲染函数用降权账号还是容器（B1，D21）。
-- 重排库用应用对象桶还是目录，专用主机名怎么提供，包的格式（B2，§3.7）。
-- 原生运行时调试端点能不能不占本机端口（B1，§7）。
+## 6. 任务
 
-PRD 待定的产品选择（R8），不在本文裁决，列出技术上的关系：
+每条：落点、做法、验证。没写落点的见 §3 对应小节。
 
-- **默认入口。** 技术上两种都行（§3.10）。
-- **首批场景。** 和 B2 一起选。建议避开要 U 盾、客户端控件、人脸识别的网站；短信验证码由用户在对话里告诉 Agent（D3）。
-- **协作控制。** §3.4 给出了操作方和 Agent 状态的集合，文案和样式归产品。
+### 6.1 EX：ext-core 加浏览器
 
-## 6. 验收
+- [ ] **EX0 定版本。** 选一个当时稳定的 Playwright 版本，记下它配的 Chrome for Testing 的 revision 和各平台的下载地址（`npx playwright install --dry-run chromium` 能看到）。在 `build.sh:22-35` 加常量，在 `official-sources.json` 的 `build_versions` 里登记。打包的就是这份 Chrome for Testing（D26）。
+- [ ] **EX1 装进包。** `build.sh` 加 `install_chromium`：五个平台各取对应的归档，解到 `store/ext-core/chromium/chromium-<revision>/`，放上两个标记文件。`sources.sha256`、`official-sources.json` 的 `components[]`、`.github/scripts/ext_tools.py` 的 `OFFICIAL_TOOLS` 都加上。macOS 的在 Mac 上解，注意别弄坏签名。
+  - 发布门禁要求每个组件有对应源码和许可文本（§3.1）。Chrome for Testing 是上游的二进制：`sources` 登记同版本的 Chromium 源码归档，许可文本用包里自带的。门禁因此过不去时，停下来问 owner，不要自己放宽门禁。
+  - 验证：`build.sh --platform linux-x86_64` 成功；`test_ext_tools.py` 通过。
+- [ ] **EX2 Linux 运行库。** `build.sh:211` 不再删 `libatk-*`、`libatk-bridge-*`、`libatspi*`。`conda-env.yml` 加提供 `libgbm.so.1` 的包，重新生成锁文件，`CONDA_TOOLS` 同步。仿照 `assert_soffice_loads`（`:559-575`）加一个检查：用 `LD_LIBRARY_PATH=conda/lib` 对浏览器二进制跑 `ldd`，不许有 `not found`。
+  - 验证：检查通过；V1 的 25 个库全部解析到 `conda/lib`。
+- [ ] **EX3 Linux 包装脚本。** 按 §5.1 做。
+  - 验证：不设任何环境变量，直接执行 `chromium-<revision>/chrome-linux64/chrome --version` 成功；Playwright 的 `chromium.launch({ channel: 'chromium' })` 成功。
+- [ ] **EX4 字体。** 让前缀的 fontconfig 配置能找到 Noto CJK（改 `build.sh:303-311`、`:457-466` 附近）。
+  - 验证：无头渲染一段中文输出成 PDF，`pdftotext` 能抽出中文；`soffice` 的冒烟照常通过。
+- [ ] **EX5 `playwright-core`。** 取 npm 的发布包，钉版本和 SHA256，解到 `store/ext-core/playwright/node_modules/playwright-core/`。登记来源和许可。
+- [ ] **EX6 我们的脚本和启动器。** 源码目录 `publish/exttool/ext-core/browser/`，构建时拷到 `store/ext-core/browser/`。在 Unix 和 Windows 的启动器清单里加 `chromium`、`agent-browser`、`page-render`。我们自己的文件在合规清单里怎么登记，照 `smoke/` 和 `env/` 的处理方式做。
+- [ ] **EX7 清单、基线、表 B、冒烟。**
+  - `ext-manifest.json` 加三条 `provides`，升版到 1.3.0，连同 `dapp_meta/app.json`、`dapp_meta/pikg.json`。
+  - `baseline.rs` 的 `EXTENDED_TOOLS` 同步。
+  - 表 B 加三行，改表题里的条数。每行写明支持的场景。
+  - 冒烟脚本 `smoke/chromium.sh`、`smoke/agent-browser.sh`、`smoke/page-render.sh` 和对应的 `.ps1`。要能在 root、断网、64 MiB 的 `/dev/shm`、180 秒内跑完。
+  - 验证：`cargo test -p libopendan baseline`；`test_ext_tools.py`；按 `ext-core.yml:102-109` 的方式在裸容器里跑冒烟。
+- [ ] **EX8 会话环境变量。** 在 `baseline.rs` 的 `managed_tool_dirs` 旁边加一个函数，浏览器目录存在时给出 `PLAYWRIGHT_BROWSERS_PATH` 和 `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS`，在 `session_env_vars` 里用上。容器、原生、宿主会话都要生效。
+  - 验证：加单测；在容器的会话里 `echo` 这两个变量。
+- [ ] **EX9 其他平台。** linux-aarch64、darwin 两个、windows。macOS 上确认包里的 Chromium 能直接运行（签名、隔离属性）；Windows、macOS 上确认由后台进程启动无头浏览器正常。
+  - 验证：CI 的冒烟门禁在五个平台都过。
+- [ ] **EX10 记体积。** 把五个平台加完浏览器后的解压体积和压缩体积记进 §12。压缩包超过 2 GiB 的平台只发 R2。
+
+### 6.2 DT：开发测试可用
+
+- [ ] **DT1 容器里跑通。** 新装的环境里，在私有 runtime 新建一个前端项目，装配套版本的 `@playwright/test`，配置里写 `channel: 'chromium'`，跑通一个测试。全程不下载浏览器，不装系统库。
+- [ ] **DT2 别的版本。** 项目用另一个 Playwright 版本时，按 `agent-browser env` 的输出设环境变量，下载它自己的浏览器并跑通。
+- [ ] **DT3 原生运行。** macOS 或 Windows 上重复 DT1。
+- [ ] **DT4 手册。** `buckyos_app_dev` 等提到前端测试的手册里写明：系统的 Playwright 版本怎么查、配置怎么写、别的版本怎么办。
+
+### 6.3 BR：Agent Service 的浏览器模块
+
+- [ ] **BR1 骨架。** 新模块 `src/frame/opendan/src/browser/`，在 `lib.rs` 登记，`StateService` 加字段，`[loader.browser]` 配置段，模块状态，后台循环和停机。opendan 的 `Cargo.toml` 加 `tokio-tungstenite`、`hyper`、`hyper-util`、`futures`（D28）。
+- [ ] **BR2 启动和停止。** 按 §5.2：找到 `chromium`，拼参数，读 `DevToolsActivePort`，进程组，空闲回收，崩溃退避，沙箱的判断。`entrypoint.sh` 里加浏览器目录的环境变量，原生运行走 `.cache` 的回退。Windows 用后台子进程的标志和 Job Object。
+  - 容器的启动方式不变（D30）。容器里 opendan 是 1 号进程，Chromium 的子进程被杀后会挂到它名下变成僵尸。所以停止分三步：先用 CDP 的 `Browser.close` 让浏览器自己退出；等不到再给进程组发终止信号，最后才强杀。强杀之前记下这个进程组里的进程号，之后逐个 `waitpid` 回收。只回收记下的这些，不要回收任意子进程，否则会抢走 shell 命令的退出状态。
+  - 验证：启动、停止后没有残留进程；杀掉 Chromium 后能自动重启；空闲到时间后停掉。
+- [ ] **BR3 CDP 客户端。** 用 `tokio-tungstenite` 连浏览器的调试端点。按 id 配对请求和回应，订阅事件，用扁平会话附着到每个标签页。只实现用得到的那些方法。
+  - 验证：对着假的 CDP 服务端写单测；真浏览器的用例标 `#[ignore]`。
+- [ ] **BR4 分组和标签页。** 按 §5.2：组、归属规则、持久化、恢复、上限。
+- [ ] **BR5 kRPC。** 按 §5.2 的表在 `call()` 里加 `browser.*`。每个方法放进正确的分类清单，补 `service.rs:779-875` 的单测。更新 opendan README 的 kRPC 表。
+- [ ] **BR6 Agent 侧入口。** 进程环境里设 `OPENDAN_BROWSER_RPC`。确认 Agent 的 App 身份调得通 Agent 那一列的方法，只读权限的 Agent 也行。
+- [ ] **BR7 给会话的记录。** 加隐式半订阅 `_browser`，按 §5.2 写事件。
+  - 验证：仿照 `tests/loader.rs:2618` 写用例：接手、交还后，UI 会话的下一次输入里能看到最新的一条。
+- [ ] **BR8 测试。** `cargo test -p opendan -- --test-threads=1`、`cargo test -p libopendan -- --test-threads=1`。
+
+### 6.4 SC：屏幕和原始页面模式（服务端）
+
+- [ ] **SC1 WebSocket 端点。** 在 `serve_request` 的 `:743` 之前匹配 `GET …/browser/screen`，升级的写法抄 control_panel。把 `caller()` 改成能收 token、方法名、IP，握手时用它按 owner 校验。
+  - 验证：仿照 `agent_daemon.rs:1263-1342` 写带真实升级的测试：没有 `hello`、令牌不对、不是 owner 都被拒。
+- [ ] **SC2 协议。** 按 §5.4 的表实现。
+- [ ] **SC3 截屏流和节奏。** `Page.startScreencast`；最多一帧在途、只留最新；帧率上限；切标签页；视口和 UA 的模拟。
+  - 验证：客户端不回 `ack` 时服务端不再发帧；慢客户端收到的总是最新画面。
+- [ ] **SC4 输入。** 触摸、鼠标、滚轮、按键、整段文字、输入法组字，映射到 CDP 的输入命令。坐标按 CSS 像素。操作方是 Agent 时丢弃。
+- [ ] **SC5 页面之外的界面。** 按 §5.4 的表：下拉框的注入脚本、弹框、文件对话框、下载、新窗口、权限请求。注意 V13、V14。
+- [ ] **SC6 上传和下载。** `browser.upload`（服务端用调用者的令牌从 Zone 取文件，取法参考 Desktop 的 `sysdlg/select/zoneFiles.ts:23-31` 用的接口）；本机文件的 `PUT` 上传，带大小上限；`browser.download_export`（登记对象参考 `src/frame/opendan/src/objects.rs`）。
+
+### 6.5 HO：交接
+
+- [ ] **HO1 状态。** 按 §5.4：每组的操作方、租约、Agent 状态、超时。
+- [ ] **HO2 用户这一侧。** `take_over`、`hand_back`、`hand_to_agent`；操作方是 Agent 时拦住用户的输入。
+- [ ] **HO3 Agent 这一侧。** `acquire`、`renew`、`release`、`request_handover`。
+- [ ] **HO4 可见。** 状态变化经 `state` 消息推给 App；交接写进会话（BR7）。
+  - 验证：用例覆盖：Agent 持租约时用户输入被丢；用户接手后 `acquire` 失败；交还后成功；租约过期后操作方回到用户。
+
+### 6.6 AB：`agent-browser`
+
+- [ ] **AB1 命令骨架。** `publish/exttool/ext-core/browser/agent-browser.mjs`：读 `OPENDAN_BROWSER_RPC` 和会话令牌，调 kRPC。没有这个变量或浏览器不可用时，给出明确的话。
+- [ ] **AB2 `run`。** 取租约、连接、调脚本、打印结果、断开、释放。运行中续租。给别组的页面挂空的弹框处理（V18）。脚本抛错时也要断开和释放。
+- [ ] **AB3 其余子命令。** 按 §5.3 的表。
+- [ ] **AB4 手册。** 新增 `src/apps/jarvis_agent/agent/cmd_skills/browser/SKILL.md`，`commands` 里写 `agent-browser`、`chromium`、`reflow`。内容：先 `status`；用 `run` 一次做完一段；被用户接手就停，等交还后重新 `snapshot`；遇到密码框调 `handover`，不读不填；不改视口；截图怎么看；兜底重排和写包（§5.6）。按 AGENTS.md“cmd_skills 联动维护”检查选择规则和受影响的手册。
+  - 验证：`cargo test -p libopendan --lib skills`、`--test xagent_cli skills_are`。
+- [ ] **AB5 测试。** 在容器里用真浏览器跑：`open`、`snapshot`、`run` 一段填表脚本、`handover` 之后 `run` 失败。
+
+### 6.7 APP：Desktop 的「Agent 浏览器」
+
+目录 `src/frame/desktop/src/app/agent-browser/`。
+
+- [ ] **APP1 登记。** §3.4 的六处。id 用 `agent-browser`。手机上铺满。
+- [ ] **APP2 数据层。** store：我的 Agent 列表、当前 Agent、当前组、屏幕状态。调 Agent Service 复用 `agentServiceClient`。mock 模式下有一套假的屏幕和标签页，供 e2e 用。
+- [ ] **APP3 屏幕通道。** 仿照 AIWS 的 `SessionChannel` 写 `ScreenChannel`：首帧 `hello`、心跳、断线重连。`vite.config.ts` 的 `/kapi` 代理加 `ws: true`。
+- [ ] **APP4 屏幕视图。** 画布显示帧（`createImageBitmap`），画完回 `ack`。触摸、鼠标、滚轮转成 `input`。文字输入：用一个隐藏的输入框接住软键盘和输入法，组字过程发 `composition`，上屏的文字发 `text`。软键盘弹出时让出高度。
+- [ ] **APP5 外壳。** 选 Agent、地址栏、事情列表、标签页、模式切换、状态条、桌面版开关。
+- [ ] **APP6 页面之外的界面。** 下拉框的选择面板、弹框、文件选择（`useSelectContent` 拿 Zone 路径；本机文件用 `usePickFiles` 再上传）、下载后存到 Zone（`useSaveToZone`）。
+- [ ] **APP7 对话面板。** 按 `GuestRoute.tsx:234-297` 的做法嵌入历史和输入框，接 MessageHub 的 store。新建事情、切换事情。
+- [ ] **APP8 入口。** MessageHub 的 Agent 面板；Desktop 的深链；OpenDAN WebUI 的 Agent 首页加一个跳到 Desktop 的链接（仿照 `src/frame/opendan/web/src/pages/Runtimes.tsx:146`）。
+- [ ] **APP9 清除登录状态。** 设置入口，带确认，调 `browser.clear_profile`。
+- [ ] **APP10 e2e。** `tests/e2e/pages/agent-browser.spec.ts`：打开 App、选 Agent、看到画面、输入、切换事情、交接的状态条。再加一份手机视口的。
+  - 验证：`pnpm check`、`pnpm lint`、`pnpm test:e2e`。基线就失败的用例见 §8.2。
+
+### 6.8 DG：对话办理
+
+- [ ] **DG1 事情和会话。** 新建会话时带来源标记；事情列表只列带标记的和默认会话。
+- [ ] **DG2 交给 Agent。** 按 §5.5。
+- [ ] **DG3 密码接手。** 按 §5.5，App 和手册两边。
+- [ ] **DG4 状态。** `waiting_answer` 从会话里未回答的 `ask_user` 得出；`done`、`stuck` 来自 Agent 的 `release`。
+- [ ] **DG5 DV。** 真实 Zone、真实模型：交代一件跨两个网站的事，看预填、提问、填写、密码接手、结果说明。
+
+### 6.9 RF：重排
+
+- [ ] **RF0 试做。** 挑两三个旧网站（和 PRD 的首批场景一起选）。手工走一遍：LLM 兜底重排一页，量耗时和 token；为一个站写包，看覆盖多少页面、改版时怎么失效。结论写进 §12，需要的话改 §5.6 的格式。
+- [ ] **RF1 桶。** 在 `control_panel_bucket_decls()` 加 `reflow`：用户桶、`app_data`、写上配额。
+  - 验证：`cargo test -p buckyos-api`；真实 Zone 上 Desktop 能读写，读写权限的 Agent 能写。
+- [ ] **RF2 `reflow` 命令。** `src/tools/buckyos-agent/commands/reflow.ts`，按 §5.6。它是标准命令，要同步 `baseline::STANDARD_TOOLS` 和表 A。websdk 的 `BucketClient` 没有递归上传，在命令里逐个文件放。
+- [ ] **RF3 触发和刷新。** Agent Service：`browser.reflow_state`（匹配包、查结果）、`browser.reflow_refresh`（后台标签页里跑 `refresh.mjs`，由 `agent-browser` 的内部子命令执行；写结果；记失败）。
+- [ ] **RF4 兜底。** App 在没有包或刷新失败时往默认会话发消息请 Agent 处理（§5.6）。手册里写清楚 Agent 该怎么做（AB4），包括页面代码要把取回的数据按文本渲染。
+- [ ] **RF5 主机名规则和提供。**
+  - scheduler：`system_config_agent.rs:1237-1251` 给 nfs-server 的主机列表（现在是 `share`、`s3`）加 `reflow`；两份保留名都加（`system_config_agent.rs:2112-2120`、`install_plan_executor.rs:176-187`）。
+  - nfs-server：在 `server.rs:94-95` 旁加一个按主机名分流的层（照 `share` 和 `s3` 的写法）。主机是 `reflow.<zone>` 时，把路径当成桶 `user/control-panel/<当前用户>/reflow` 的 key 读出来，目录补 `index.html`，按原类型下发。`/bucket/v1` 的读取路径会把 HTML 强制成下载（§3.6），这里不能直接复用它的响应头：要么在 nfs-server 里读出对象自己组响应，要么给 `cyfs-ndn` 的 `bucket_store/src/http.rs:174-190` 加一个不套内容策略的读取变体。选改动小的。
+  - 登录：照 AIWS 的做法。`src/kernel/buckyos-api/src/app_availability.rs:81-84` 的两份清单（能登录的系统目标、能免密码委托的系统目标）现在只有 aiworkspace 能委托，要把提供重排的服务加进去。Desktop 一侧参考 `src/frame/desktop/src/api/app_launch.ts:36-49`。
+  - 验证：`cargo test -p nfs_server`、`cargo test -p scheduler`、`cargo test -p buckyos-api`；网关的 `uv run src/test/test_boot_gatweay/run_debug_tests.py`；真实 Zone 上登录后能打开 `reflow.<zone>/<站点>/`，没登录的打不开，另一个用户看到的是他自己的桶。
+- [ ] **RF6 App 的重排视图。** iframe 加载重排页（参考 `src/frame/desktop/src/app/web-frame/WebAppFramePanel.tsx:19-104` 和 `web-frame/launch.ts:46-67`）；`postMessage` 的消息桥；制作时间；刷新按钮；“正在制作”；切回原始页面。
+- [ ] **RF7 管理页。** 偏好和包的列表、查看、删除、导入（上传一个 zip）。
+- [ ] **RF8 DV。** 真实 Zone、手机：设偏好、兜底重排、写包、再次访问走代码、刷新、删掉制作它的 Agent 后仍能打开。
+
+### 6.10 SR：系统渲染
+
+- [ ] **SR1 `page-render`。** `publish/exttool/ext-core/browser/page-render.mjs`，按 §5.7。HTML 输入时拦掉所有网络请求；网址输入时只放行 `--allow-host`。
+  - 验证：冒烟（EX7）；带中文的多页 HTML 输出 A4 的 PDF，页眉页脚页码正确，`pdftotext` 能抽出文字。
+- [ ] **SR2 隔离的启动方式。** `native.rs` 里在 `run_tool_env` 旁加一个：清空环境、进程组、降权、断网，按 §5.7。降权和进程组的写法抄 Node Executor，断网抄 nfs_server 的预览。owner 的要求是简单可靠地跑通（D29）：就做这四样，不加别的机制；宿主上 `unshare` 不可用时记一条警告，靠浏览器里的拦截继续。
+  - 验证：单测确认子进程的环境里没有 `WORKFLOW_SESSION_TOKEN`；超时后进程组里没有残留；Linux 上以 root 跑测试时子进程的有效用户不是 root。
+- [ ] **SR3 两个函数。** 新文件 `functions/media/page.rs`；`mod.rs` 登记；`tools.rs` 加 `page-render`；`native.rs` 加 `Browser` 车道；指纹包含 `page-render` 的版本、浏览器的版本和字体集。改 `tests.rs:76-105` 的断言。真工具的用例标 `#[ignore]`。
+- [ ] **SR4 系统定义。** `defs/media.page.json`，在 `system_defs.rs` 登记，改 `server/tests.rs:292`。
+- [ ] **SR5 DV。** `test/workflow_test` 加用例：用一份 HTML 对象跑 `media.page`，拿到 PDF；第二次命中缓存；没有读权限的调用者被拒。
+  - 验证：`cargo test -p workflow -- --test-threads=1`；`cargo test -p workflow -- --ignored --test-threads=1`；`uv run test/run.py -p workflow_test`。
+
+### 6.11 DX：文档和收尾
+
+- [ ] **DX1 ext-core 相关。** `doc/app_service/paios容器需求.md`（表 B，EX7 已做）、`doc/opendan/OpenDAN Agent-Session-Runtime.md:140`、`doc/pikg/format.md`。
+- [ ] **DX2 Agent Service 相关。** `src/frame/opendan/README.md`（kRPC、配置）、`doc/opendan/protocol/Agent State Protocol.md`（`state/browser/`）、`doc/path_usage.md`（浏览器目录、重排桶）。
+- [ ] **DX3 Workflow 相关。** `doc/workflow/media tool baseline.md`、`doc/workflow/executor list.md`、`doc/workflow/workflow service.md`、`doc/llm_context/LLM Understand Media.md` 里列函数的表。
+- [ ] **DX4 指回本文。** 打印 TODO 里“集成无头浏览器（另行讨论）”和渲染管线方案讨论里“等浏览器引擎”的地方，指到本文的 §5.7。
+- [ ] **DX5 手册回归。** 按 AGENTS.md“cmd_skills 联动维护”的表逐项检查并写明结论。
+- [ ] **DX6 总的 DV。** §8.3。
+
+## 7. 顺序
+
+| 阶段 | 任务 | 说明 |
+| --- | --- | --- |
+| M1 浏览器进包 | EX0–EX8、DT1、DT4 | 做完后开发测试就可用。EX9、EX10、DT2、DT3 可以跟在后面 |
+| M2 系统渲染 | SR1–SR5 | 只依赖 M1，可以和 M3 并行 |
+| M3 原始页面模式 | BR1–BR8、SC1–SC6、HO1–HO4、APP1–APP6、APP9、APP10 | 另外两种模式的底座。服务端和前端可以并行，按 §5.4 的协议对接 |
+| M4 Agent 能操作 | AB1–AB5、APP7、APP8、DG1–DG5 | 对话办理 |
+| M5 重排 | RF0–RF8 | RF0 可以提前到 M1 之后任何时候做 |
+| 收尾 | DX1–DX6 | 文档跟着各阶段写，最后统一检查 |
+
+M3 之内的先后：BR1–BR3 → BR4、BR5 → SC1–SC3 →（APP3、APP4 可以开始联调）→ SC4–SC6、HO。
+
+## 8. 验证
+
+### 8.1 命令
+
+Rust 的命令在 `src/` 下运行，Desktop 的在 `src/frame/desktop/` 下。包名以各自的 `Cargo.toml` 为准。
+
+| 范围 | 命令 |
+| --- | --- |
+| ext-core | `publish/exttool/ext-core/build.sh --platform linux-x86_64`；`.github/scripts/test_ext_tools.py`（跑法见 `ext-core.yml:47-49`） |
+| libopendan | `cargo test -p libopendan -- --test-threads=1` |
+| opendan | `cargo test -p opendan -- --test-threads=1` |
+| workflow | `cargo test -p workflow -- --test-threads=1`；真工具：加 `--ignored` |
+| buckyos-api | `cargo test -p buckyos-api -- --test-threads=1` |
+| nfs_server、scheduler（RF5） | `cargo test -p nfs_server -- --test-threads=1`、`cargo test -p scheduler -- --test-threads=1` |
+| Desktop | `pnpm check`、`pnpm lint`、`pnpm test:e2e` |
+| 镜像 | 仓库根目录：`./build_aios --local-test`，然后 `uv run src/start.py --skip-update` |
+| DV | 仓库根目录：`uv run src/check.py`；`uv run test/run.py -p workflow_test` |
+
+### 8.2 基线就失败的用例
+
+动手前先在没改动的树上跑一遍，记下当时的失败。已知的记录在：
+
+- [Agent UI 升级 TODO](done/agent-ui-upgrade-todo.md) §6.2：Desktop 的 `messagehub-agent-task.spec.ts`、`messagehub-group.spec.ts`、`messagehub-media.spec.ts` 等，以及 lint 的 4 个错误。
+- `notepads/opendan-primary-runtime-tools-todo.md:339`：Desktop 的 `pnpm lint` 有 5 个 react-hooks 错误。
+- mock 的一处不一致：`agent.list` 的 mock 返回的 Agent（`did:bns:assistant.alice`）在 MessageHub 的 mock 里不算“自己的 Agent”（那里只认 `did:buckyos:agent:codeassistant`）。写 e2e 时要处理。
+
+### 8.3 真实环境
+
+- **容器。** 重建镜像、重新播种 ext-core 后，在真实 Zone 上走一遍 §8.4。
+- **手机。** 真机，用浏览器的限速或真实的弱网：看帧率、延迟、流量；真实输入法输入中文。
+- **原生运行。** macOS 或 Windows 上的 Agent：同样从 App 使用，桌面上不出现浏览器窗口。
+- **网关。** 确认屏幕的 WebSocket 在正式的 443 入口上能通。
+- 看 Chromium 输出的 JPEG 帧之前先转成 PNG（V22）。
+
+### 8.4 验收
 
 开发测试：
 
@@ -424,21 +703,22 @@ PRD 待定的产品选择（R8），不在本文裁决，列出技术上的关�
 原始页面模式与交接：
 
 - 在手机上打开「Agent 浏览器」，选一个 Agent，打开一个网站：能看清、能点、能输入中文；限速的弱网下仍能用。
-- 在页面上从 Zone 选一个文件上传；下载一个文件并存到 Zone。
+- 下拉框、弹框能用。
+- 从 Zone 选一个文件上传；下载一个文件并存到 Zone。
 - 用户浏览到某一页后交给 Agent，Agent 从这一页接着做。
-- Agent 操作时页面对用户只读；用户接手后 Agent 停住；交还后 Agent 重新读页面再继续，并且知道中间发生过接手。
+- Agent 操作时页面对用户只读；用户接手后 Agent 的操作命令失败；交还后 Agent 重新读页面再继续，并且知道中间发生过接手。
 - 用户接手，登录一个网站，交还；Agent 之后能以登录状态继续操作。
-- 原生运行的 Agent（Windows 或 macOS）：同样从 App 使用，桌面上不出现浏览器窗口。
+- 原生运行的 Agent 同样从 App 使用，桌面上不出现浏览器窗口。
 
 重排：
 
-- 给一个旧网站设定“只看标题、日期和正文，手机单栏”，手机上按此阅读。这个站在库里有包时不调用模型；没有包的站由 LLM 兜底重排，同样按偏好显示。
-- 重排页上能看到“基于某个时间的网站制作”；点刷新后内容和时间都更新。
+- 给一个旧网站设定“只看标题、日期和正文，手机单栏”，手机上按此阅读。这个站在库里有包时不调用模型；没有包的站由 LLM 兜底重排。
+- 重排页上能看到制作时间；点刷新后内容和时间都更新。
 - 常驻浏览器没有运行时，已有结果的重排页照样能打开。
 - 删除制作它的 Agent 后，重排页仍能打开；用户名下的另一个 Agent 能刷新它。
 - 网站改版、刷新脚本失败时，页面仍能由兜底重排显示出来。
-- 用户自己写的一个包放进库里，打开匹配的网址时生效。
-- 在重排页点一个依赖原网页的按钮，结果回到重排页；切回原始页面，打开的是同一个网址。
+- 用户自己写的一个包导入后，打开匹配的网址时生效。
+- 没登录的人打不开重排页；另一个用户打开同一个地址，看到的是他自己的重排库。
 
 对话办理：
 
@@ -448,40 +728,63 @@ PRD 待定的产品选择（R8），不在本文裁决，列出技术上的关�
 
 系统渲染：
 
-- 一个带中文、多页的 Zone 内页面输出成 PDF：纸张尺寸正确，中文字体正常，文字可选可搜，全程没有打印对话框。
-- 函数拿不到令牌范围之外的内容，访问不了 Zone 外的地址。
-- 一个 HTML 扩展 Block 的快照图可以由它生成。
+- 一份带中文、多页的 HTML 输出成 PDF：纸张尺寸正确，中文字体正常，文字可选可搜。
+- 渲染进程拿不到 Workflow 的会话令牌，访问不了网络。
 - AIWS 导出 PDF 的整体验收在打印 TODO §7。
 
 通用：
 
-- 不是 owner 的人看不到这块屏幕。
+- 不是 owner 的人连不上屏幕。
 - 清除登录状态后，网站回到未登录。
 - 常驻浏览器空闲后被回收，再用时能恢复各标签页和登录状态。
-- 节点上没有装好 ext-core 或浏览器不可用时，系统其他部分照常工作，Agent 和导出入口都能得到“浏览器不可用”的明确答复。
+- 节点上浏览器不可用时，系统其他部分照常工作，Agent 和 App 都得到明确的“浏览器不可用”。
 
-## 7. 已知风险
+## 9. 待确认
 
-owner 定了先能力再安全（D18）。下面这些第一期不处理，记在这里：
+Q1–Q26 都已答复（§2），目前没有等 owner 裁决的问题。
+
+PRD 待定的产品选择（R8）不在本文裁决：默认入口先按 §5.5 的写法做；首批场景和 RF0 一起选，避开要 U 盾、客户端控件、人脸识别的网站；协作控制的文案和样式归产品。
+
+## 10. 已知风险
+
+owner 定了先能力再安全（D18）。下面这些第一期不处理：
 
 - **提交前不确认。** Agent 填完就提交，包括付款、对外发送、删除这类不可逆动作。
-- **网页内容是不可信输入。** 重排和代办时 Agent 读的是第三方网站的内容，而它带着浏览器里的登录状态。网页里的文字可能诱导 Agent 做交代之外的事。
-- **密码隔离和接手靠手册（D22，owner 已接受）。** Agent 直连浏览器，技术上读得到密码框的值，也能在用户接手时继续操作。
-- **原生运行时的调试端点。** 如果用本机回环端口，同一台机器上的其他进程也连得上，能操作带着登录状态的浏览器。容器里没有这个问题。B1 看能不能不占端口。
-- **容器里多半要关 Chromium 自身的沙箱。** 隔离边界是容器。
-- **Playwright 版本不一致。** 项目的 Playwright 版本和系统带的浏览器不匹配时，指到系统浏览器不保证能用。
+- **网页内容是不可信输入。** Agent 带着浏览器里的登录状态读第三方网页，网页里的文字可能诱导它做交代之外的事。
+- **密码隔离和接手靠手册**（D22，V19）。Agent 绕开 `agent-browser` 直接连调试端点时，读得到密码框的值，也能在用户接手时继续操作。
+- **Chrome for Testing 的再分发许可**没有查到权威说法（V21）。owner 决定直接打包（D26）。
+- **重排页运行在带会话的源上**（D27：代码是我们自己生产的，安全边界看作一致）。但页面里的数据来自第三方网站，页面代码把它当 HTML 直接插入的话，对方的脚本就跑在这个源上了。手册要求按文本渲染。
+- **容器里可能留下僵尸进程**（D30）。浏览器被强杀、又有没记到的子进程时，它们会一直挂在 1 号进程下，直到容器重启。只占进程号。
+- **原生运行时的调试端点**在本机回环地址上，同一台机器上的其他进程也连得上。容器里没有这个问题。
+- **容器里关着 Chromium 自身的沙箱**（V4）。隔离边界是容器。
+- **Agent 的 Playwright 连接会自动关掉弹框**（V18）。`agent-browser` 做了防护；Agent 自己写连接代码时没有。
+- **系统渲染在不支持沙箱的宿主上**以 `nobody` 身份、不带浏览器沙箱运行第三方 HTML。有断网和降权，没有文件系统隔离。
+- **Playwright 版本不一致**时指到系统浏览器不保证能用。
+- **日期、时间、颜色输入框**在原始页面模式下第一期只能当文本框用。
+- **内存。** 常驻浏览器开几个标签页就要 400 MiB 以上（V8）。低配的盒子上要靠空闲回收和标签页上限。
 
-## 8. 不在本期
+## 11. 不在本期
 
-- 虚拟机本身：创建、镜像、资源和系统授权。屏幕接口的 RFB 实现等有虚拟机时再做。
+- 虚拟机本身。屏幕接口的 RFB 实现等有虚拟机时再做。
 - WebRTC 画面传输。
 - 不属于任何 Agent 的浏览器。
-- Firefox、WebKit。
+- Firefox、WebKit。无头精简构建。
 - 独立的浏览器扩展包（D6）。
 - ComputerUse 的浏览器语义驱动（D16）。
-- 提交前确认、对 Agent 操作的强制拦截、绕过对话直接写进页面的补填框（D3、D18）。
-- 密码以外的敏感字段交回用户填写（D3）。
-- 外部网页由系统渲染函数转 PDF（由 Agent 的浏览器做）。
+- 提交前确认、对 Agent 操作的强制拦截、补填框、密码以外的敏感字段交回用户（D3、D18）。
+- 系统渲染的网址输入作为 Workflow 的入口；AIWS 一侧的接入（在打印 TODO）。
+- 重排页的沙箱隔离和能力令牌（D27）。给 Agent 容器加 `--init`（D30）。
+- 外部网页由系统渲染转 PDF（由 Agent 的浏览器做）。
 - 浏览器扩展、书签同步、从用户别的浏览器导入登录状态。
 - 同一块屏幕给 owner 以外的人看或操作。
-- PRD“长期判断”里超出重排模式的部分：所有网页内容先由 Agent 阅读再呈现。
+- 按固定周期自动刷新重排结果的调度。
+- PRD“长期判断”里超出重排模式的部分。
+
+## 12. 实施记录
+
+实施时在这里记。每条写：日期、任务号、改了什么、跑了什么验证和结果、和本文不一致的地方。
+
+| 日期 | 任务 | 记录 |
+| --- | --- | --- |
+| 2026-11-14 | 验证 | 容器实测，结果见 §4。测试脚本没有进仓库 |
+| 2026-11-14 | 裁决 | owner 答复 Q22–Q26（D26–D30）：打包 Chrome for Testing；重排页按标准 App 的主机名规则提供；系统渲染降权；容器启动方式不变 |

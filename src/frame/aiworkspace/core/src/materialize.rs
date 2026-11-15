@@ -258,6 +258,29 @@ pub fn materialize_with(
     cached: &mut dyn FnMut(&EntityRow, Option<&ObjId>) -> Option<ObjId>,
     strip_notes: bool,
 ) -> WsResult<Materialized> {
+    materialize_stripped(ctx, sink, visible, cached, &|e| strip_notes.then(|| without_notes(e)).flatten())
+}
+
+/// A template's content (README "Workspace templates"): without speaker notes, and without the run records of its
+/// wishes (许愿格交互升级 D8) — a new Workspace starts their history anew.
+pub fn materialize_template(ctx: &dyn ReadCtx, sink: &mut dyn ObjectSink, visible: &dyn Fn(&EntityRow) -> WsResult<bool>) -> WsResult<Materialized> {
+    materialize_stripped(ctx, sink, visible, &mut |_, _| None, &|e| {
+        let mut out = without_notes(e);
+        if e.type_id == TYPE_WISH && e.payload.contains_key("history") {
+            out.get_or_insert_with(|| e.clone()).payload.remove("history");
+        }
+        out
+    })
+}
+
+/// `strip` gives the entity as it is materialized when that differs from what it is (never through `cached`).
+fn materialize_stripped(
+    ctx: &dyn ReadCtx,
+    sink: &mut dyn ObjectSink,
+    visible: &dyn Fn(&EntityRow) -> WsResult<bool>,
+    cached: &mut dyn FnMut(&EntityRow, Option<&ObjId>) -> Option<ObjId>,
+    strip: &dyn Fn(&EntityRow) -> Option<EntityRow>,
+) -> WsResult<Materialized> {
     let mut included: BTreeSet<String> = BTreeSet::new();
     let (mut lines, mut objects, mut unresolved, mut excluded) = (Vec::new(), BTreeMap::new(), Vec::new(), 0);
     for (e, edge) in shared_entities(ctx)? {
@@ -267,7 +290,7 @@ pub fn materialize_with(
             continue;
         }
         included.insert(e.entity_id.clone());
-        let object_id = match (strip_notes.then(|| without_notes(&e)).flatten(), cached(&e, None)) {
+        let object_id = match (strip(&e), cached(&e, None)) {
             (Some(stripped), _) => content_object(ctx, &stripped, sink)?,
             (None, Some(id)) => id,
             (None, None) => {

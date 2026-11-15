@@ -2,7 +2,8 @@
 //! A wish test harness: the service in process, and a test executor playing the browser — it claims each run, drives
 //! a scripted model over the stage's tools (`proc.tool`), runs the macro with the local Deno exactly as every executor
 //! does (`lib/run.js --bridge`), answers the macro's bridge (`sql` through `proc.tool`, AI from the script with the
-//! `llm_cache`), hands the run in (`proc.program`) and reports (see wish.rs, quality.rs, wish_control.rs).
+//! `llm_cache`), hands the run in (`proc.program`) and reports with its model's usage (see wish.rs, quality.rs,
+//! wish_control.rs). A stage writes when it ends: a run is done when it leaves the working states.
 
 #[path = "nfs.rs"]
 pub mod nfs;
@@ -147,7 +148,7 @@ impl Srv {
     pub async fn wait_as(&self, token: &str, run_id: &str) -> Value {
         for _ in 0..600 {
             let r = self.call_as(token, "proc.get", json!({ "run_id": run_id })).await["result"].clone();
-            if !matches!(r["state"].as_str(), Some("queued" | "snapshotting" | "running" | "validating")) {
+            if !matches!(r["state"].as_str(), Some("queued" | "snapshotting" | "running" | "validating" | "applying")) {
                 return r;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -206,17 +207,20 @@ impl Srv {
             return;
         }
         let attempt = claimed["attempt"].as_u64().unwrap_or(1);
-        let ex = Exec { srv: self, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.to_string(), attempt, manifest: claimed["stage"]["manifest"].clone() };
+        let ex = Exec { srv: self, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.to_string(), attempt, manifest: claimed["stage"]["manifest"].clone(), turns: AtomicU64::new(0) };
         let stage = claimed["stage"].clone();
         *self.model.budget.lock().unwrap() = stage["budget"].clone();
         let outcome = if stage["kind"] == json!("program") { ex.run_macro(stage["source"].as_str().unwrap_or("")).await.map(|_| ()) } else { ex.model_loop(&stage).await };
+        // what the model loop spent, as a browser executor reports it: 100 tokens in and 10 out a turn
+        let n = ex.turns.load(Ordering::SeqCst);
+        let usage = (n > 0).then(|| json!({ "model": stage["model"], "input_tokens": n * 100, "output_tokens": n * 10, "calls": n }));
         match outcome {
             Ok(()) => {
-                ex.call("proc.report", json!({ "finished": true })).await;
+                ex.call("proc.report", json!({ "finished": true, "usage": usage })).await;
             }
             Err(Value::Null) => {}
             Err(e) => {
-                ex.call("proc.report", json!({ "error": e })).await;
+                ex.call("proc.report", json!({ "error": e, "usage": usage })).await;
             }
         }
     }
@@ -225,13 +229,21 @@ impl Srv {
         self.wait_as("tok-alice", run_id).await
     }
 
-    pub async fn apply(&self, run: &Value, choices: Value) -> Value {
-        let id = run["run_id"].as_str().unwrap();
-        let preview = self.rpc("proc.get", json!({ "run_id": id, "choices": choices })).await;
-        assert_eq!(preview["preview"]["ready"], true, "{}", preview["preview"]);
-        let r = self.rpc("proc.apply", json!({ "run_id": id, "plan_digest": preview["preview"]["plan_digest"], "session_id": "s1" })).await;
-        assert_eq!(r["applied"]["status"], "accepted", "{r}");
-        r
+    /// A run that ended well: it wrote what its stage produced, with its record.
+    pub fn done(&self, run: &Value) {
+        assert_eq!(run["state"], "succeeded", "{run}");
+        assert_eq!(run["applied"]["status"], "accepted", "{run}");
+        assert_eq!(run["record"]["id"], run["run_id"], "{run}");
+    }
+
+    /// The records of a wish's `stage`, newest first.
+    pub async fn records_of(&self, wish: &str, stage: &str) -> Vec<Value> {
+        self.wish_of(wish).await["history"][stage].as_array().cloned().unwrap_or_default()
+    }
+
+    /// `proc.rollback` as alice: the raw kRPC answer.
+    pub async fn rollback(&self, run_id: &Value, confirm: bool) -> Value {
+        self.rpc_raw("proc.rollback", json!({ "run_id": run_id, "confirm": confirm, "session_id": "s1" })).await
     }
 
     pub async fn wish(&self) -> Value {
@@ -272,6 +284,8 @@ pub struct Exec<'a> {
     pub run_id: String,
     pub attempt: u64,
     pub manifest: Value,
+    /// Turns of its model loop.
+    pub turns: AtomicU64,
 }
 
 fn key_of(v: &Value) -> String {
@@ -310,6 +324,7 @@ impl Exec<'_> {
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
             m.calls.fetch_add(1, Ordering::SeqCst);
+            self.turns.fetch_add(1, Ordering::SeqCst);
             let reply = if analyze { (m.analyze.lock().unwrap())(&turn) } else { (m.execute.lock().unwrap())(&turn) };
             let (name, args) = match reply {
                 Reply::Text(_) => return Ok(()),

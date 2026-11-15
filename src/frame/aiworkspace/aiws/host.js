@@ -13,13 +13,15 @@
 //                  Cached in `proc.tool llm_cache` by the request: the same request gives the same picture.
 //
 // The executor gives: `tool(name, args)` (its `proc.tool`), `infer({ model, messages, schema, max_tokens })` →
-// `{ text, tokens? }` (throws with `code` AI_QUOTA_EXHAUSTED / AI_QUOTA_BUDGET_EXCEEDED / AI_RESOURCE_NOT_PERMITTED /
-// AI_UNAVAILABLE on a refusal), `zoneFetch(url, { method, headers, body })` → `{ status, headers, text? | base64? }`,
-// `aicc(method, params)` (one AICC call; a refusal as for `infer`), `task(id)` (the task manager's record of an AICC
-// task), `importAsset(obj_id)` → `{ object_id, media_type, size }` (`asset.import_object` of this Workspace),
-// `zoneHosts` (the Zone's host names), `budget` (the stage's), and `manifest` (the stored macro's, when running it).
+// `{ text, tokens?, input_tokens?, model? }` (the output and input tokens, the model that answered; throws with `code`
+// AI_QUOTA_EXHAUSTED / AI_QUOTA_BUDGET_EXCEEDED / AI_RESOURCE_NOT_PERMITTED / AI_UNAVAILABLE on a refusal),
+// `zoneFetch(url, { method, headers, body })` → `{ status, headers, text? | base64? }`, `aicc(method, params)` (one
+// AICC call; a refusal as for `infer`), `task(id)` (the task manager's record of an AICC task), `importAsset(obj_id)`
+// → `{ object_id, media_type, size }` (`asset.import_object` of this Workspace), `zoneHosts` (the Zone's host names),
+// `budget` (the stage's), and `manifest` (the stored macro's, when running it).
 // What the macro declares is the request's `declare` while coding, the manifest when running; this takes the smaller
-// of each declared limit and the budget, and refuses what the macro did not declare.
+// of each declared limit and the budget, and refuses what the macro did not declare. `ai.complete` and `llm.map`
+// answer what they used (`tokens`, `input_tokens`, the model): the program host adds them up for the run's record.
 
 export const MAP_SYSTEM = 'You are an item-by-item judge. Judge each input item independently according to the instruction. Output only JSON, with no explanation.'
 const DEFAULT_COMPLETE_TOKENS = 4096
@@ -100,6 +102,11 @@ export function extractJson(text) {
     }
   }
   return undefined
+}
+
+/** The model that answered an inference, or the logical one it was asked of when the executor cannot tell. */
+function answeredBy(answer, asked) {
+  return typeof answer?.model === 'string' && answer.model ? answer.model : asked
 }
 
 function capped(declared, max) {
@@ -271,7 +278,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
     const want = Math.max(1, Number(req.max_tokens) || DEFAULT_COMPLETE_TOKENS)
     const key = await sha256Hex(canonical({ kind: 'complete', model, messages, schema: req.schema ?? null, max_tokens: want }))
     const hit = (await cacheGet([key]))[key]
-    if (hit && typeof hit === 'object') return { ...hit, cached: true, tokens: 0 }
+    if (hit && typeof hit === 'object') return { ...hit, cached: true, tokens: 0, input_tokens: 0 }
     if (spent.calls >= maxCalls) return { error: `the AI budget of this run is spent: at most ${maxCalls} calls`, code: 'AI_BUDGET_EXCEEDED' }
     const left = maxTokens - spent.tokens
     if (left <= 0) return { error: `the AI budget of this run is spent: at most ${maxTokens} tokens`, code: 'AI_BUDGET_EXCEEDED' }
@@ -294,7 +301,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       out = { text: String(answer?.text ?? '') }
     }
     await cachePut([{ key, value: out }])
-    return { ...out, cached: false, tokens }
+    return { ...out, cached: false, tokens, input_tokens: Number(answer?.input_tokens) || 0, model: answeredBy(answer, model) }
   }
 
   async function map(req) {
@@ -313,10 +320,16 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
     const results = items.map((_, i) => (keys[i] in hits ? { value: hits[keys[i]] } : null))
     const cached = results.filter(Boolean).length
     let calls = 0
+    const used = { tokens: 0, input_tokens: 0, models: new Set() }
     const put = []
     const ask = async (user) => {
       calls += 1
-      return infer({ model, messages: [{ role: 'system', text: MAP_SYSTEM }, { role: 'user', text: user }], schema: null, max_tokens: MAP_TOKENS })
+      const answer = await infer({ model, messages: [{ role: 'system', text: MAP_SYSTEM }, { role: 'user', text: user }], schema: null, max_tokens: MAP_TOKENS })
+      used.tokens += Number(answer?.tokens) || 0
+      used.input_tokens += Number(answer?.input_tokens) || 0
+      const by = answeredBy(answer, model)
+      if (typeof by === 'string' && by) used.models.add(by)
+      return answer
     }
     const schemaText = JSON.stringify(schema)
     const todo = results.map((r, i) => (r ? -1 : i)).filter((i) => i >= 0)
@@ -364,7 +377,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       return refusal(error)
     }
     await cachePut(put)
-    return { results, calls, cached }
+    return { results, calls, cached, tokens: used.tokens, input_tokens: used.input_tokens, models: [...used.models] }
   }
 
   /** One AICC call and, while its task runs, the task manager until it ends (at most the stage's media timeout). */

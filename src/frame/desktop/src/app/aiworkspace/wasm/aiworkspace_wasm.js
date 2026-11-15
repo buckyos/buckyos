@@ -1248,8 +1248,8 @@ export function wish_config_digest(payload_json) {
 
 /**
  * Whether a wish payload must be analysed before it can execute (§4.1).
- * The main state and next action of a wish (PRD §5.8): `freshness_json` is its freshness, `runs_json` what the
- * page knows of its runs (`{ active?, waiting?, last_failed? }`).
+ * The main state and next action of a wish (PRD §5.8, 许愿格交互升级 §2.6): `freshness_json` is its freshness, `runs_json`
+ * what the page knows of its runs (`{ active?: { stage, state }, last_failed?: { stage, error } }`).
  * @param {string} freshness_json
  * @param {string} runs_json
  * @returns {string}

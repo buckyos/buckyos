@@ -66,6 +66,11 @@ function media(v) {
   return Object.freeze(out)
 }
 
+/** Count a model that answered once: the run's record names the models a macro used. */
+function noteModel(stats, model) {
+  if (typeof model === 'string' && model && !stats.models.includes(model)) stats.models.push(model)
+}
+
 /** What the executor's bridge answered, or the error it gave (its `code` kept: AI_QUOTA_*, SQL_ERROR, ZONE_ONLY…). */
 async function bridge(op, req) {
   const call = globalThis.__aiwsBridge
@@ -262,7 +267,14 @@ export class ProgramHost {
     this.external = new Set()
     /** What `aiws.declare` said, as given (the service resolves it into the manifest). */
     this.declared = null
-    this.aiStats = { complete: { calls: 0, cached: 0, tokens: 0 }, map: { calls: 0, items: 0, cached: 0 }, image: { calls: 0, cached: 0 }, video: { calls: 0, cached: 0 } }
+    /** AI calls of the run (`results.ai`): `tokens` are output tokens; `models` the models that answered. */
+    this.aiStats = {
+      complete: { calls: 0, cached: 0, tokens: 0, input_tokens: 0 },
+      map: { calls: 0, items: 0, cached: 0, tokens: 0, input_tokens: 0 },
+      image: { calls: 0, cached: 0 },
+      video: { calls: 0, cached: 0 },
+      models: [],
+    }
     this.#trackFetch()
     this.aiws = this.#api()
   }
@@ -352,9 +364,14 @@ export class ProgramHost {
           if (typeof req.prompt !== 'string' && !Array.isArray(req.messages)) throw new Error('aiws.ai.complete: prompt (a string) or messages ([{ role, text }]) required')
           const body = await bridge('ai.complete', { system: req.system ?? null, prompt: req.prompt ?? null, messages: req.messages ?? null, schema: req.schema ?? null,
             model: req.model ?? null, max_tokens: req.max_tokens ?? null, declare: declared() })
-          if (body.cached) host.aiStats.complete.cached += 1
-          else host.aiStats.complete.calls += 1
-          host.aiStats.complete.tokens += body.tokens ?? 0
+          const stats = host.aiStats
+          if (body.cached) stats.complete.cached += 1
+          else {
+            stats.complete.calls += 1
+            noteModel(stats, body.model)
+          }
+          stats.complete.tokens += body.tokens ?? 0
+          stats.complete.input_tokens += body.input_tokens ?? 0
           return req.schema ? { value: body.value } : { text: body.text ?? '' }
         },
         /**
@@ -465,9 +482,13 @@ export class ProgramHost {
         async map(items, instruction, schema = { type: 'string' }, opts = {}) {
           if (!Array.isArray(items)) throw new Error('llm.map(items, instruction, schema): items must be an array')
           const body = await bridge('llm.map', { items, instruction, schema, batch: opts.batch ?? 20, declare: declared() })
-          host.aiStats.map.calls += body.calls ?? 0
-          host.aiStats.map.items += items.length
-          host.aiStats.map.cached += body.cached ?? 0
+          const stats = host.aiStats
+          stats.map.calls += body.calls ?? 0
+          stats.map.items += items.length
+          stats.map.cached += body.cached ?? 0
+          stats.map.tokens += body.tokens ?? 0
+          stats.map.input_tokens += body.input_tokens ?? 0
+          for (const m of Array.isArray(body.models) ? body.models : []) noteModel(stats, m)
           const failed = (body.results ?? []).filter((r) => r && r.error)
           if (failed.length && !opts.allowErrors) throw new Error(`llm.map: ${failed.length} of ${items.length} items failed (${failed[0].error}); pass { allowErrors: true } to receive them as { error }`)
           return (body.results ?? []).map((r) => (r && r.error ? r : r.value))
@@ -512,8 +533,10 @@ export class ProgramHost {
     for (const c of this.checks) lines.push(`check ${c.id}: ${c.passed ? 'passed' : 'FAILED'}${c.detail !== null ? ' — ' + JSON.stringify(c.detail) : ''}`)
     if (this.declared) lines.push('declare ' + JSON.stringify(this.declared))
     else lines.push('declare: none (the macro must start with aiws.declare)')
-    const { complete, map, image, video } = this.aiStats
-    if (complete.calls + complete.cached + map.items) lines.push(`ai: complete ${complete.calls} calls (${complete.cached} cached, ${complete.tokens} tokens), map ${map.items} items (${map.calls} calls, ${map.cached} cached)`)
+    const { complete, map, image, video, models } = this.aiStats
+    if (complete.calls + complete.cached + map.items) {
+      lines.push(`ai: complete ${complete.calls} calls (${complete.cached} cached, ${complete.input_tokens} in / ${complete.tokens} out tokens), map ${map.items} items (${map.calls} calls, ${map.cached} cached, ${map.input_tokens} in / ${map.tokens} out tokens)${models.length ? `, models ${models.join(', ')}` : ''}`)
+    }
     if (image.calls + image.cached + video.calls + video.cached) lines.push(`ai: image ${image.calls} generated (${image.cached} cached), video ${video.calls} generated (${video.cached} cached)`)
     if (this.external.size) lines.push('zone / external data: ' + [...this.external].join(', '))
     return lines.join('\n')
