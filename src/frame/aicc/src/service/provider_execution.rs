@@ -1884,7 +1884,7 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                                 output,
                             )
                             .await
-                            .map_err(NativeTaskResumeError::Protocol)?;
+                            .map_err(NativeTaskResumeError::ResultMaterialization)?;
                         let mut output = output;
                         Self::remember_provider_artifacts(
                             self.storage.as_ref(),

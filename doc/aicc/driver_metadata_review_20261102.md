@@ -116,3 +116,13 @@ Gateway 拒绝热加载 RTCP 安全策略变更，因此仅终止旧 Gateway，�
 - 独立比较确认原有 11 份本地 metadata 的 SHA256、权限、属主、inode 与回归前一致，目录原属主恢复，无隐藏备份；settings/runtime 无本轮 run ID 或测试挂载，system-config metadata 覆盖仍为空。最终系统检查保持已激活、核心服务可达，保留原有 Running With Warnings 告警。
 
 这是修复后的完整运行结果，先前各轮失败及定向重测报告原样保留。未运行真实 Provider T2/T3 或完整 workspace 测试。
+
+### 合并后任务恢复补强（2026-11-15）
+
+native 任务取得结果后，本地制品落盘或归属登记的可重试错误以独立的内部错误类型返回。驱动保留原上游任务 ID，带退避重取结果并完成本地登记，仍受原轮询期限约束；不会重新提交推理。普通 Provider 协议错误保持原处理，特别是 URL fallback 提交响应丢失时，不以重新轮询旧任务的方式再次提交 fallback。
+
+URL fallback 返回新任务 ID 后，保存 binding 的重试同时受总 deadline 和取消信号约束。取消时清理新任务的输入保留，并在支持时取消新任务；超时进入失败收尾。失败状态写入暂时不可用时，ExecutionLease 继续重试失败收尾，不重新驱动旧 binding。
+
+新增故障注入回归覆盖制品登记恢复、持续错误超时、fallback 保存超时及取消、超时收尾写入失败，以及 fallback 提交结果不确定时禁止重试。前四个新增测试在修复前均失败。未新增依赖，未修改公共 RPC、SDK、共享类型或存储 schema。已检查 `aigc_image`、`aigc_audio`、`aigc_video`：同幂等键重接、`resume_aicc_task` 和超时查询的现有操作仍适用，无需修改手册。
+
+验证：macOS 上 `cd src && cargo test -p aicc --lib -- --test-threads=1` 最终通过 794 项；`cargo check -p aicc --all-targets` 和 `git diff --check` 通过。未运行完整 workspace 测试、完整系统构建、在线 T1/T1.5、真实 Provider T2/T3 或 PostgreSQL 验证；本轮没有部署、重启服务或发起真实模型调用。

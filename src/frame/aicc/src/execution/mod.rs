@@ -1386,6 +1386,7 @@ pub(crate) struct ExecutionEngine {
 struct ExecutionLease {
     engine: ExecutionEngine,
     task_id: String,
+    terminal_error: Option<AiccError>,
 }
 
 impl Drop for ExecutionLease {
@@ -1402,8 +1403,29 @@ impl Drop for ExecutionLease {
         }
         let engine = self.engine.clone();
         let task_id = self.task_id.clone();
+        let terminal_error = self.terminal_error.clone();
         tokio::spawn(async move {
             let mut delay = Duration::from_millis(100);
+            if let Some(error) = terminal_error {
+                loop {
+                    tokio::time::sleep(delay).await;
+                    match engine.finish_failure(&task_id, error.clone()).await {
+                        Err(error) if error.retriable => {
+                            delay = (delay * 2).min(Duration::from_secs(3));
+                        }
+                        result => {
+                            if let Err(error) = result {
+                                log::error!(
+                                    "interrupted execution finalization failed: task_id={} error={}",
+                                    task_id,
+                                    error
+                                );
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
             let record = loop {
                 tokio::time::sleep(delay).await;
                 match engine.store.get_task(&task_id).await {
@@ -1597,7 +1619,11 @@ impl ExecutionEngine {
             .lock()
             .expect("active execution lock")
             .insert(record.task_id.clone(), ActiveExecution { cancel });
-        let _lease = ExecutionLease { engine:self.clone(), task_id:record.task_id.clone() };
+        let _lease = ExecutionLease {
+            engine: self.clone(),
+            task_id: record.task_id.clone(),
+            terminal_error: None,
+        };
         self.tasks
             .report_state(
                 &record.task_id,
@@ -1891,9 +1917,10 @@ impl ExecutionEngine {
         if already_active {
             return self.current_receipt(task_id).await;
         }
-        let _lease = ExecutionLease {
+        let mut lease = ExecutionLease {
             engine: self.clone(),
             task_id: task_id.to_string(),
+            terminal_error: None,
         };
         let result = async {
             let record = self.store.get_task(task_id).await?.ok_or_else(|| {
@@ -1959,20 +1986,18 @@ impl ExecutionEngine {
             let active_poll_elapsed_at_start_ms = resume.active_poll_elapsed_ms;
             let remaining_poll_duration = resume.remaining_active_poll_duration();
             let deadline = active_poll_started + remaining_poll_duration;
-            loop {
+            let mut retry_delay = Duration::from_millis(100);
+            'poll: loop {
                 if tokio::time::Instant::now() >= deadline {
+                    let error = aicc_error(
+                        AiccErrorCode::Timeout,
+                        "native Provider task exceeded its polling deadline",
+                        false,
+                    );
+                    lease.terminal_error = Some(error.clone());
                     self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
                         .await;
-                    return self
-                        .finish_failure(
-                            task_id,
-                            aicc_error(
-                                AiccErrorCode::Timeout,
-                                "native Provider task exceeded its polling deadline",
-                                false,
-                            ),
-                        )
-                        .await;
+                    return self.finish_failure(task_id, error).await;
                 }
                 if let Some(delay) = next_poll_after.take().filter(|delay| !delay.is_zero()) {
                     tokio::select! {
@@ -2002,25 +2027,20 @@ impl ExecutionEngine {
                         .await?;
                     return self.current_receipt(task_id).await;
                 }
+                if tokio::time::Instant::now() >= deadline {
+                    continue;
+                }
                 let polled = tokio::time::timeout_at(
                     deadline,
                     self.providers.poll_native(&binding, cancellation.clone()),
                 )
                 .await;
                 let Ok(polled) = polled else {
-                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
-                        .await;
-                    return self
-                        .finish_failure(
-                            task_id,
-                            aicc_error(
-                                AiccErrorCode::Timeout,
-                                "native Provider task exceeded its polling deadline",
-                                false,
-                            ),
-                        )
-                        .await;
+                    continue;
                 };
+                if polled.is_ok() {
+                    retry_delay = Duration::from_millis(100);
+                }
                 match polled {
                     Ok(NativeTaskPoll::Rebound(handle, resume)) => {
                         if let Err(error) = resume.validate() {
@@ -2031,14 +2051,39 @@ impl ExecutionEngine {
                         binding.cancel_supported = handle.cancel_supported;
                         binding.resume = Some(resume);
                         let state = ExecutionState::from(handle.state);
-                        let mut delay = Duration::from_millis(100);
-                        let persisted = loop {
-                            match self.store.set_running(task_id, state, binding.clone()).await {
-                                Err(error) if error.retriable => {
-                                    tokio::time::sleep(delay).await;
-                                    delay = (delay * 2).min(Duration::from_secs(3));
+                        let persist = async {
+                            let mut delay = Duration::from_millis(100);
+                            loop {
+                                match self
+                                    .store
+                                    .set_running(task_id, state, binding.clone())
+                                    .await
+                                {
+                                    Err(error) if error.retriable => {
+                                        tokio::time::sleep(delay).await;
+                                        delay = (delay * 2).min(Duration::from_secs(3));
+                                    }
+                                    result => break result,
                                 }
-                                result => break result?,
+                            }
+                        };
+                        let persisted = tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => {
+                                if binding.cancel_supported {
+                                    let _ = self.providers.cancel_native(&binding).await;
+                                }
+                                self.providers.release_native_inputs(&binding, true).await;
+                                return self.current_receipt(task_id).await;
+                            }
+                            result = tokio::time::timeout_at(deadline, persist) => {
+                                match result {
+                                    Ok(persisted) => persisted?,
+                                    Err(_) => {
+                                        self.providers.release_native_inputs(&binding, true).await;
+                                        continue 'poll;
+                                    }
+                                }
                             }
                         };
                         if !persisted {
@@ -2127,9 +2172,22 @@ impl ExecutionEngine {
                         return self.finish_failure(task_id, error.into()).await;
                     }
                     Err(error) => {
+                        let materialization_error =
+                            matches!(error, NativeTaskResumeError::ResultMaterialization(_));
+                        let error = error.into_aicc_error();
+                        if materialization_error && error.retriable {
+                            log::warn!(
+                                "native task result materialization deferred: task_id={} error={}",
+                                task_id,
+                                error
+                            );
+                            next_poll_after = Some(retry_delay);
+                            retry_delay = (retry_delay * 2).min(Duration::from_secs(3));
+                            continue;
+                        }
                         self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
                             .await;
-                        return self.finish_failure(task_id, error.into_aicc_error()).await;
+                        return self.finish_failure(task_id, error).await;
                     }
                 }
             }
@@ -2267,7 +2325,10 @@ impl ExecutionEngine {
                 self.finish_failure(task_id, error.clone()).await?;
                 return Err(error);
             }
-            Err(NativeTaskResumeError::Protocol(_)) => return Ok(false),
+            Err(
+                NativeTaskResumeError::Protocol(_)
+                | NativeTaskResumeError::ResultMaterialization(_),
+            ) => return Ok(false),
         };
         if !accepted || !self.store.try_cancel(task_id).await? {
             return Ok(false);
@@ -2734,6 +2795,8 @@ mod tests {
         scopes: Mutex<BTreeMap<IdempotencyScope, ExecutionRecord>>,
         tasks: Mutex<BTreeMap<String, IdempotencyScope>>,
         set_running_error: Mutex<Option<AiccError>>,
+        persistent_running_error: Mutex<Option<AiccError>>,
+        fail_error: Mutex<Option<AiccError>>,
     }
 
     #[async_trait]
@@ -2769,6 +2832,9 @@ mod tests {
             state: ExecutionState,
             binding: PinnedProviderTask,
         ) -> Result<bool, AiccError> {
+            if let Some(error) = self.persistent_running_error.lock().unwrap().clone() {
+                return Err(error);
+            }
             if let Some(error) = self.set_running_error.lock().unwrap().take() {
                 return Err(error);
             }
@@ -2812,6 +2878,9 @@ mod tests {
         }
 
         async fn try_fail(&self, task_id: &str, error: AiccError) -> Result<bool, AiccError> {
+            if let Some(error) = self.fail_error.lock().unwrap().take() {
+                return Err(error);
+            }
             self.mutate(task_id, |record| {
                 if record.state.is_terminal() {
                     return false;
@@ -3012,6 +3081,9 @@ mod tests {
         plans: Mutex<VecDeque<StartPlan>>,
         polls: Mutex<VecDeque<NativeTaskPoll>>,
         poll_error: Mutex<Option<NativeTaskResumeError>>,
+        poll_errors: Mutex<VecDeque<NativeTaskResumeError>>,
+        polled_ids: Mutex<Vec<Option<String>>>,
+        cancelled_ids: Mutex<Vec<Option<String>>>,
         cancel_result: Mutex<bool>,
         cancel_error: Mutex<Option<NativeTaskResumeError>>,
         completion_cost: Mutex<Option<AiCost>>,
@@ -3045,9 +3117,16 @@ mod tests {
 
         async fn poll_native(
             &self,
-            _binding: &PinnedProviderTask,
+            binding: &PinnedProviderTask,
             _cancellation: Cancellation,
         ) -> Result<NativeTaskPoll, NativeTaskResumeError> {
+            self.polled_ids
+                .lock()
+                .unwrap()
+                .push(binding.remote_task_id.clone());
+            if let Some(error) = self.poll_errors.lock().unwrap().pop_front() {
+                return Err(error);
+            }
             if let Some(error) = self.poll_error.lock().unwrap().clone() {
                 return Err(error);
             }
@@ -3056,8 +3135,12 @@ mod tests {
 
         async fn cancel_native(
             &self,
-            _binding: &PinnedProviderTask,
+            binding: &PinnedProviderTask,
         ) -> Result<bool, NativeTaskResumeError> {
+            self.cancelled_ids
+                .lock()
+                .unwrap()
+                .push(binding.remote_task_id.clone());
             if let Some(error) = self.cancel_error.lock().unwrap().clone() {
                 return Err(error);
             }
@@ -5091,6 +5174,279 @@ mod tests {
             );
             assert_eq!(tasks.failed.lock().unwrap().len(), usize::from(!retriable));
         }
+    }
+
+    #[tokio::test]
+    async fn native_result_registration_error_retries_same_remote_task() {
+        let providers = Arc::new(FakeProviders::default());
+        let handle = NativeTaskHandle::new("remote-artifact-retry").unwrap();
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
+        for _ in 0..2 {
+            providers.poll_errors.lock().unwrap().push_back(
+                NativeTaskResumeError::ResultMaterialization(ProtocolError::new(
+                    ProtocolErrorKind::Transport,
+                    "inline artifact ownership write failed",
+                )),
+            );
+        }
+        providers
+            .polls
+            .lock()
+            .unwrap()
+            .push_back(NativeTaskPoll::Complete(output("saved")));
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+
+        let completed = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.drive_native(&started.task_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(completed.state, ExecutionState::Succeeded);
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+        assert_eq!(
+            *providers.polled_ids.lock().unwrap(),
+            vec![Some("remote-artifact-retry".into()); 3]
+        );
+        assert_eq!(tasks.completed.lock().unwrap().len(), 1);
+        assert!(tasks.failed.lock().unwrap().is_empty());
+        assert_eq!(usage.writes.lock().unwrap().len(), 1);
+        assert_eq!(
+            store
+                .get_task(&started.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .output
+                .unwrap()
+                .value["text"],
+            "saved"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_result_materialization_retries_respect_deadline() {
+        let providers = Arc::new(FakeProviders::default());
+        let handle = NativeTaskHandle::new("remote-retry-timeout").unwrap();
+        let mut resume = resume_descriptor();
+        resume.max_poll_duration_ms = 50;
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume,
+            }));
+        *providers.poll_error.lock().unwrap() = Some(NativeTaskResumeError::ResultMaterialization(
+            ProtocolError::new(
+                ProtocolErrorKind::Transport,
+                "temporary result storage failure",
+            ),
+        ));
+        let (engine, _, tasks, usage) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+
+        let completed = tokio::time::timeout(
+            Duration::from_secs(1),
+            engine.drive_native(&started.task_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(completed.state, ExecutionState::Failed);
+        assert_eq!(completed.error.unwrap().code, AiccErrorCode::Timeout);
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+        assert_eq!(providers.polled_ids.lock().unwrap().len(), 1);
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+        assert!(usage.writes.lock().unwrap().is_empty());
+        assert!(engine.active.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_ambiguous_fallback_transport_error_is_not_retried() {
+        let providers = Arc::new(FakeProviders::default());
+        let handle = NativeTaskHandle::new("remote-url").unwrap();
+        let mut resume = resume_descriptor();
+        resume.url_fallback = Some(NativeTaskUrlFallback {
+            method: "image.img2img".into(),
+            canonical_params: json!({"exact_model":"image@test"}),
+            target: NativeTaskUrlFallbackTarget::Bytes,
+        });
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume,
+            }));
+        *providers.poll_error.lock().unwrap() =
+            Some(NativeTaskResumeError::Protocol(ProtocolError::new(
+                ProtocolErrorKind::Transport,
+                "fallback submission response lost",
+            )));
+        let (engine, _, tasks, _) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+
+        let receipt = tokio::time::timeout(
+            Duration::from_secs(1),
+            engine.drive_native(&started.task_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        assert_eq!(
+            *providers.polled_ids.lock().unwrap(),
+            vec![Some("remote-url".into())]
+        );
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn native_rebound_storage_retries_respect_deadline() {
+        for fail_terminal_write in [false, true] {
+            let providers = Arc::new(FakeProviders::default());
+            let first = NativeTaskHandle::new("remote-url").unwrap();
+            let mut resume = resume_descriptor();
+            resume.max_poll_duration_ms = 50;
+            providers
+                .plans
+                .lock()
+                .unwrap()
+                .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                    handle: first,
+                    resume: resume.clone(),
+                }));
+            let rebound = NativeTaskHandle::new("remote-bytes").unwrap();
+            providers
+                .polls
+                .lock()
+                .unwrap()
+                .push_back(NativeTaskPoll::Rebound(rebound, resume));
+            let (engine, store, tasks, _) = make_engine(providers.clone());
+            let started = engine.execute(request(call("primary"))).await.unwrap();
+            let storage_error =
+                aicc_error(AiccErrorCode::InternalError, "database is locked", true);
+            *store.persistent_running_error.lock().unwrap() = Some(storage_error.clone());
+            if fail_terminal_write {
+                *store.fail_error.lock().unwrap() = Some(storage_error);
+            }
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                engine.drive_native(&started.task_id),
+            )
+            .await
+            .expect("rebound persistence must honor the polling deadline");
+            assert_eq!(result.is_err(), fail_terminal_write);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while store
+                    .get_task(&started.task_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state
+                    != ExecutionState::Failed
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+
+            let record = store.get_task(&started.task_id).await.unwrap().unwrap();
+            assert_eq!(record.error.unwrap().code, AiccErrorCode::Timeout);
+            assert_eq!(providers.starts.lock().unwrap().len(), 1);
+            assert_eq!(
+                *providers.polled_ids.lock().unwrap(),
+                vec![Some("remote-url".into())]
+            );
+            assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+            assert!(providers
+                .released_inputs
+                .lock()
+                .unwrap()
+                .contains(&(Some("remote-bytes".into()), true)));
+            assert!(engine.active.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn native_rebound_storage_retries_stop_when_cancelled() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut first = NativeTaskHandle::new("remote-url").unwrap();
+        first.cancel_supported = true;
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle: first,
+                resume: resume_descriptor(),
+            }));
+        let mut rebound = NativeTaskHandle::new("remote-bytes").unwrap();
+        rebound.cancel_supported = true;
+        providers
+            .polls
+            .lock()
+            .unwrap()
+            .push_back(NativeTaskPoll::Rebound(rebound, resume_descriptor()));
+        *providers.cancel_result.lock().unwrap() = true;
+        let (engine, store, tasks, _) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+        *store.persistent_running_error.lock().unwrap() = Some(aicc_error(
+            AiccErrorCode::InternalError,
+            "database is locked",
+            true,
+        ));
+        let running = engine.clone();
+        let task_id = started.task_id.clone();
+        let driver = tokio::spawn(async move { running.drive_native(&task_id).await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while providers.polled_ids.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(engine.cancel("tenant-1", &started.task_id).await.unwrap());
+
+        let receipt = tokio::time::timeout(Duration::from_secs(1), driver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(receipt.state, ExecutionState::Cancelled);
+        assert!(providers
+            .cancelled_ids
+            .lock()
+            .unwrap()
+            .contains(&Some("remote-bytes".into())));
+        assert!(providers
+            .released_inputs
+            .lock()
+            .unwrap()
+            .contains(&(Some("remote-bytes".into()), true)));
+        assert_eq!(tasks.cancelled.lock().unwrap().len(), 1);
+        assert!(tasks.failed.lock().unwrap().is_empty());
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+        assert!(engine.active.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

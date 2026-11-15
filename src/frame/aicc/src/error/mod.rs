@@ -159,6 +159,7 @@ pub(crate) enum CloudUpdateError {
 pub(crate) enum NativeTaskResumeError {
     CredentialUnavailable,
     Protocol(crate::protocol::ProtocolError),
+    ResultMaterialization(crate::protocol::ProtocolError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -491,7 +492,7 @@ impl NativeTaskResumeError {
                 retriable: false,
                 details: None,
             },
-            Self::Protocol(error) => error.into(),
+            Self::Protocol(error) | Self::ResultMaterialization(error) => error.into(),
         }
     }
 }
