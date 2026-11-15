@@ -19,17 +19,20 @@ pnpm run build
 
 ## 开源软件清单
 
-设置 → 通用 → 开源软件展示实际解析的依赖版本、许可证标识、项目来源及随包提供的许可原文。清单位于 `public/open-source/`，由 [`src/tools/generate_open_source.py`](../../tools/generate_open_source.py) 生成；不要手改生成文件。列表先合并同一仓库的组件及同名软件的多个版本，再按名称前缀、npm 命名空间及明确的软件系列归组，例如 `serde`、`react`、`tokio`、`proc-macro`。跨项目归组显示“系列”标记，每个项目只归入一个系列，避免桥接包把多个系列串成一个大组。点击分组后可搜索组件、逐项查看确切版本、来源及许可原文；主列表搜索组件名也能找到所属分组。名称归组不代表来自同一上游项目或使用同一许可证，不删减生成清单的原始软件包记录。
+设置 → 通用 → 开源软件展示人工维护清单中的依赖版本、许可证标识、项目来源及随包提供的许可原文。清单位于 `public/open-source/`，按需使用 [`src/tools/generate_open_source.py`](../../tools/generate_open_source.py) 辅助生成，再由维护者核对、修订并提交。列表先合并同一仓库的组件及同名软件的多个版本，再按名称前缀、npm 命名空间及明确的软件系列归组，例如 `serde`、`react`、`tokio`、`proc-macro`。跨项目归组显示“系列”标记，每个项目只归入一个系列，避免桥接包把多个系列串成一个大组。点击分组后可搜索组件、逐项查看确切版本、来源及许可原文；主列表搜索组件名也能找到所属分组。名称归组不代表来自同一上游项目或使用同一许可证，不删减清单的原始软件包记录。
 
-`pnpm run build` 在更新 SDK 依赖后运行 `pnpm run licenses:generate`，刷新 Desktop 生产依赖（含传递依赖）与内置素材，其他模块保留仓库内快照并在“清单范围”中标注。完整系统构建在 Desktop 被本轮重建后再次汇总全部模块，并同步到 `dist/` 和 `rootfs/bin/control-panel/web/`。`--skip-web` 或只选择 Rust 模块不会刷新清单；这些开发构建保留上一次 Desktop 构建的清单。开源清单不进入 Desktop service worker 的预缓存，以便构建结束后的汇总可即时生效。
+`pnpm run build` 和系统构建均不生成或改写清单。Desktop 构建将当前 `public/open-source/` 内容作为静态资源复制到 `dist/`，系统构建再将 Web 产物汇总到 `rootfs/bin/control-panel/web/`。修改清单后需重新构建 Desktop 才会更新构建产物；`--skip-web` 或只选择 Rust 模块会保留已有 Web 产物。开源清单不进入 Desktop service worker 的预缓存。
 
 在本目录手动刷新完整清单：
 
 ```bash
-uv run python ../../tools/generate_open_source.py
+pnpm run licenses:generate
+git diff -- public/open-source/
 ```
 
-完整刷新需要 Rust/Cargo 及已准备的各 Web 模块、SDK 分发目录和扩展工具 payload。可加 `--offline` 使用 Cargo 本地缓存；`--fetch-metadata` 允许从 npm 官方 registry 或 Deno 上游补齐对应确切版本的许可证资料。未准备的模块会标为暂无资料，未声明许可证的条目不会猜测许可证。范围包括 Rust 服务依赖、多套 Web 界面和内置应用、SDK/CLI SBOM、可用扩展工具 payload 与素材，以及同级 `cyfs-gateway` 仓库的锁定依赖快照。网关独立构建，其条目始终标为快照，不代表已安装网关的版本核验；宿主操作系统、容器基础镜像及另行安装或运行时下载的组件未完整纳入。“清单范围”会显示收录状态，完整生成失败会使系统构建失败。
+该命令等价于 `uv run python ../../tools/generate_open_source.py`。只刷新 Desktop 生产依赖（含传递依赖）与内置素材时，运行 `pnpm run licenses:generate --scope desktop --scope assets`，其他模块保留已有快照。脚本会重写所选范围的条目；人工核对依赖版本、许可原文、收录范围和已有修订，确认后再提交 `public/open-source/` 的改动。
+
+完整刷新需要 Rust/Cargo 及已准备的各 Web 模块、SDK 分发目录和扩展工具 payload。可加 `--offline` 使用 Cargo 本地缓存；`--fetch-metadata` 允许从 npm 官方 registry 或 Deno 上游补齐对应确切版本的许可证资料。未准备的模块会标为暂无资料，未声明许可证的条目不会猜测许可证。范围包括 Rust 服务依赖、多套 Web 界面和内置应用、SDK/CLI SBOM、可用扩展工具 payload 与素材，以及同级 `cyfs-gateway` 仓库的锁定依赖快照。网关独立构建，其条目始终标为快照，不代表已安装网关的版本核验；宿主操作系统、容器基础镜像及另行安装或运行时下载的组件未完整纳入。“清单范围”会显示收录状态，生成结果需经人工确认后作为维护版本使用。
 
 ## E2E 入口
 

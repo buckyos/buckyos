@@ -38,9 +38,12 @@ buckyos auth whoami                                 # identity + zone actually u
 - An App builds with its own toolchain (vite/npm, cargo, `docker build`, python); `pikg` packages existing output and runs no build.
 - Built-in `text_editor` and `sys_test` refresh their Git `#main` SDK dependency before every `pnpm build`; Text Editor prefers a configured or sibling local SDK, which must already be built.
 - Build options: `uv run buckyos-build.py --help` (or `-h`) lists wrapper/devkit options and SDK/CLI environment inputs without preparing or building artifacts.
-- Desktop builds refresh their open-source catalog; the system wrapper regenerates the full inventory after a
-  successful Desktop rebuild and syncs it into the Web payload. Source: `src/tools/generate_open_source.py`;
-  standalone Web refresh: `pnpm run licenses:generate` in `src/frame/desktop` (other modules remain marked snapshots).
+- The open-source catalog in `src/frame/desktop/public/open-source/` is manually maintained. Desktop and
+  system builds package the existing files without regenerating them. For an intentional full refresh, run
+  `pnpm run licenses:generate` in `src/frame/desktop` (source: `src/tools/generate_open_source.py`). Add
+  `--scope desktop --scope assets` to refresh only Desktop dependencies and assets, preserving other snapshots.
+  Review and amend the generated changes, then commit the catalog after human confirmation; rebuild Desktop
+  to include the reviewed files in the Web payload.
   Inspect Settings → General → Open-source software → Catalog coverage for missing modules and license metadata.
   Full generation needs prepared dependency metadata; it does not inventory host OS or container base-image packages.
 - System, in `buckyos/src`: `uv run buckyos-build.py [-s <module>] [--skip-web]` (modules from `bucky_project.yaml`). It first prepares the SDK/Tool (sibling `buckyos-websdk` source, else npm `buckyos@latest`; prebuilt mode needs all four `BUCKYOS_SDK_TOOL_*`) and copies `tools/buckyos-agent` into `rootfs/libexec/buckyos-agent` with its SDK import pointing to the adjacent Tool, then runs devkit, which also packs the built-in PIKGs (`jarvis_agent`, `text_editor`, `buckyos_systest` → `rootfs/data/cache/<app_id>-<ver>.pikg`). On macOS it then moves node_daemon into `rootfs/bin/node-daemon/BuckyOS Runtime.app` (`tools/macos_runtime_bundle.py assemble`, ad-hoc signed unless `BUCKYOS_MACOS_CODESIGN_IDENTITY` is set). Use this wrapper for system builds so the installed payload includes these generated files.
