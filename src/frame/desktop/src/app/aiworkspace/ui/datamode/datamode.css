@@ -6,6 +6,9 @@
 .aiws-dm { position: relative; }
 .aiws-dm-work { flex-direction: column; }
 .aiws-dm-body { position: relative; display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; }
+/* the tab row over the editing area and the sidebar's tabs are one height, so their rules make one line across the body:
+ * a .aiws-tool and the 1px rule under it */
+.aiws-dm-body { --aiws-dm-bar-h: 37px; }
 
 /* the two side columns, their splitters and drawers */
 .aiws-dm-left { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--cp-border); background: var(--cp-bg); }
@@ -18,6 +21,7 @@
 .aiws-dm-side { flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--cp-border); background: var(--cp-bg); }
 .aiws-dm-side.is-drawer { position: absolute; top: 0; bottom: 0; right: 0; z-index: 46; width: min(360px, calc(100% - 40px)); box-shadow: var(--cp-shadow); background: var(--cp-surface-opaque, var(--cp-surface)); }
 .aiws-dm-side-tabs { display: flex; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--cp-border); }
+.aiws-dm-side > .aiws-dm-side-tabs { flex: none; height: var(--aiws-dm-bar-h); padding: 0 8px; }
 .aiws-root .aiws-dm-side-tabs button[role='tab'] { border: none; background: none; padding: 4px 10px; border-radius: 6px; }
 .aiws-root .aiws-dm-side-tabs button[role='tab'][aria-selected='true'] { background: var(--aiws-selected-bg); box-shadow: inset 0 0 0 1px var(--aiws-selected-border); font-weight: 600; }
 .aiws-dm-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 6px 10px 16px; }
@@ -56,7 +60,7 @@
 
 /* the editing area */
 .aiws-dm-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.aiws-dm-mainbar { display: flex; align-items: stretch; gap: 2px; border-bottom: 1px solid var(--cp-border); min-height: 36px; padding: 0 4px; }
+.aiws-dm-mainbar { flex: none; display: flex; align-items: stretch; gap: 2px; border-bottom: 1px solid var(--cp-border); height: var(--aiws-dm-bar-h); padding: 0 4px; }
 .aiws-dm-mainbar > .aiws-tool { align-self: center; }
 .aiws-dm-tabbar { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; }
 .aiws-dm-tabs { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: thin; }
@@ -181,9 +185,12 @@
 /* a phone's status bar is narrow: the Workspace's icon and name only */
 .aiws-dm.is-phone .aiws-dm-ws-more { display: none; }
 @media (pointer: coarse) {
+  .aiws-dm-body { --aiws-dm-bar-h: 45px; }
   .aiws-root button.aiws-dm-row-more { visibility: visible; width: 40px; height: 40px; }
   .aiws-dm-row { min-height: 44px; }
   .aiws-root button.aiws-dm-tab-close { opacity: 1; width: 32px; height: 32px; }
   .aiws-root .aiws-dm-side-tabs button[role='tab'], .aiws-root .aiws-dm-pages button[role='tab'] { min-height: 44px; }
+  /* the sidebar's tabs fill its row: the touch target keeps 44px, the pill is drawn 4px inside it */
+  .aiws-root .aiws-dm-side > .aiws-dm-side-tabs button[role='tab'] { border: 4px solid transparent; background-clip: padding-box; border-radius: 10px; padding: 0 6px; }
   .aiws-root button.aiws-dm-section-head { min-height: 44px; }
 }

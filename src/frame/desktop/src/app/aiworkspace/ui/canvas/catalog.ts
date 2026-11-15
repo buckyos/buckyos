@@ -61,7 +61,7 @@ export const entryId = (entry: CatalogEntry) => (entry.variant ? `${entry.defini
 
 /** The icons of the standard entries (object toolbar, insert catalog), by `entryId`. */
 export const ENTRY_ICONS: Record<string, LucideIcon> = {
-  richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, mindmap: Network, table: Table, asset: Image, wish: Sparkles,
+  richtext: LetterText, 'shape-text': Type, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, mindmap: Network, table: Table, asset: Image, wish: Sparkles,
   todo: ListTodo, calendar: CalendarDays, 'table-todo': ListChecks, 'table-calendar': CalendarRange,
 }
 /** The size an insertion of the entry takes. */

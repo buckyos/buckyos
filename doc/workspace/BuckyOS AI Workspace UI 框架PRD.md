@@ -1456,6 +1456,12 @@ owner 2026-11-14 答复了 16.3.1 的全部各项（Q19–Q33），下表已按�
 - 验证：`tsc -p tsconfig.app.json`、改过文件的 `eslint` 干净（类型跳转改用事件的 `timeStamp`，React 编译器规则不允许 `Date.now()`）。e2e `datamode.spec.ts` 11 条全部通过，第 11、14 条和键盘、手机两条加了断言（没有顶栏、导航在树头部且贴顶、树收起时导航在标签栏、主菜单“添加评论”随当前对象启用、“宏”是一级文件夹能折叠、“工作区权限”是最后一行且 End 能到、手机头部只有一行）。回归 19 个套件 138 条：中途工作区被重新提交触发 Vite 重载、后端随后断开，失败的 12 条单独重跑 11 条通过；`features.spec.ts:657`（断网时表格编辑）在当前工作树上两次都失败，在 `c9fc61ce4`（含本项、不含工作树里未提交的流式页改动）上两次都通过，与本项无关。
 - 没做：真机、真实 Zone。
 
+### 18.8 2026-11-14 对象树头部瘦身（§16.5）
+
+- 落点：`ui/datamode/StatusInfo.tsx`（新增 `WorkspaceInfo`：图标、名字、角色、数据对象个数；测试 ID `aiws-dm-workspace-title` 移到状态栏）、`ObjectTree.tsx`（头部只剩 `lead` 和 ＋；搜索框和筛选包在 `aiws-dm-search-row` 里）、`DataModeView.tsx`（“返回画布”换成 `ArrowLeft`；标签栏最左常驻 `aiws-dm-tree-hide` / `aiws-dm-tree-show`；窄窗口抽屉里保留收起按钮；状态栏左边先放 `WorkspaceInfo`）、`PhoneDataMode.tsx`（同样换返回箭头；对象树层的状态栏左边是 `WorkspaceInfo`，编辑器层仍是对象信息）、`datamode.css`（通栏状态栏撑满并从左排、搜索框去掉内层边框、手机只显示工作区名）、i18n `aiworkspace.datamode.info.objects`。
+- 验证：`tsc -p tsconfig.app.json`、改过文件的 `eslint` 干净。e2e：`datamode.spec.ts` 第 14 条改为断言工作区名在状态栏、筛选与搜索框同一行、收起按钮在编辑区最左；键盘一条改为搜索 → 筛选 → 树；手机一条改为头部有 ＋ 和筛选、工作区名在状态栏。basics / canvas / datamode / extensions / features / m5 / phone / ui / directory / wish 共 93 条：82 条一次通过，其余 11 条是中途后端被停掉（ECONNREFUSED）后连带失败，单独重跑全部通过。宽窗口、收起对象树、窄窗口抽屉、手机四种布局截图检查过。
+- 没做：真机、真实 Zone。
+
 ## 附录 A：owner 的框架思路（2026-11-13 原文）
 
 照录，没有改字。“添加入库”按“添加入口”理解。

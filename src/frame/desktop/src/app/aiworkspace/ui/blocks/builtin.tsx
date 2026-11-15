@@ -7,7 +7,7 @@
  * extension would be. */
 
 import { useCallback, type CSSProperties, type ReactNode } from 'react'
-import { ALargeSmall, ClipboardCopy, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, StickyNote, Table, Type } from 'lucide-react'
+import { ALargeSmall, ClipboardCopy, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, LetterText, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, StickyNote, Table } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
 import type { AnnotationContent, Json, KeyedContent, Operation, Reference, RichTextContent } from '../../api/types'
@@ -177,12 +177,12 @@ function firstText(node: { text?: string; content?: unknown[] } | undefined, lim
 
 const richtext: BlockDefinition = {
   type: 'richtext', version: 1, get title() { return aiwsT('aiworkspace.blocks.richtext.title') }, accepts: ['buckyos.richtext'], allowNoSource: false,
-  defaultSize: { w: 420, h: 220 }, cost: { editor: true, html: false }, icon: Type,
+  defaultSize: { w: 420, h: 220 }, cost: { editor: true, html: false }, icon: LetterText,
   traits: { typeToEdit: true, flowUntitled: true },
   Static: RichTextStatic, Simplified: RichTextSimplified, Editor: RichTextEditorView,
   catalog: { group: 'text', get description() { return aiwsT('aiworkspace.blocks.richtext.description') }, needs: 'none', editAfterInsert: true, standard: true, toolPicker: 2 },
   actions: [{ id: 'edit', get label() { return aiwsT('aiworkspace.blocks.action.editContent') }, modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
-  hover: (context) => sourceLabel(context, Type),
+  hover: (context) => sourceLabel(context, LetterText),
   // text size and colour of the whole Block: the Cell's configuration (§5.2), not its data
   configFields: [
     { key: 'text_size', id: 'text-size', get label() { return aiwsT('aiworkspace.blocks.fontSize') }, kind: 'select', quick: true, icon: ALargeSmall, default: 'm', get options() { return textSizes() } },
