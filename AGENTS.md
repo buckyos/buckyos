@@ -30,7 +30,7 @@ uv run buckyos-build.py --skip-web
 uv run start.py
 # 只重启，跳过安装文件更新
 uv run start.py --skip-update
-# 全新安装，生成 dev 配置并启动（devtest / test.buckyos.io）
+# 全新安装，生成 dev 配置并启动（devtest / test.buckyos.io）,非linux开发环境要加 --edition lite
 uv run start.py --all
 # 同上，并删除 data/ 与 storage/（用户文件、服务库、named store），得到空 Zone
 uv run start.py --all --wipe-data
