@@ -553,6 +553,7 @@ async fn an_agent_without_a_browser_says_so() {
     let status = b.module.status(None, None).await;
     assert_eq!((status["enabled"].clone(), status["running"].clone(), status["version"].clone()), (json!(false), json!(false), Value::Null));
     assert!(status["unavailable"].as_str().unwrap().contains("enabled = false"));
+    assert_eq!((status["unavailable_code"].clone(), status["available"].clone()), (json!("disabled"), json!(true)), "the browser is there, the agent may not use it");
     for error in [
         b.module.ensure().await.err(),
         b.module.acquire("s").await.err(),
@@ -561,7 +562,8 @@ async fn an_agent_without_a_browser_says_so() {
         b.module.bind_default("conv-1").err(),
         b.module.clear_profile().await.err(),
     ] {
-        assert_eq!(error.unwrap().code, "browser_unavailable");
+        let error = error.unwrap();
+        assert_eq!((error.code, error.unavailable_code), ("browser_unavailable", Some("disabled")));
     }
     assert_eq!(b.module.module_status().0, false);
 
@@ -570,18 +572,88 @@ async fn an_agent_without_a_browser_says_so() {
     let status = b.module.status(None, None).await;
     assert_eq!((status["enabled"].clone(), status["available"].clone(), status["version"].clone()), (json!(true), json!(false), Value::Null));
     assert!(status["unavailable"].as_str().unwrap().contains("chromium"));
-    assert_eq!(b.module.ensure().await.unwrap_err().code, "browser_unavailable");
-    assert_eq!(b.module.module_status(), (true, false, Some(status["unavailable"].as_str().unwrap().to_string())));
+    assert_eq!(status["unavailable_code"], "no_package");
+    let error = b.module.ensure().await.unwrap_err();
+    assert_eq!((error.code, error.unavailable_code), ("browser_unavailable", Some("no_package")));
+    let (enabled, usable, note) = b.module.module_status();
+    assert!(enabled && !usable && note.unwrap().starts_with(status["unavailable"].as_str().unwrap()));
 
     // A browser that does not start: the reason is kept for `status`.
     let b = Bench::new(section(12, 600), |_| {}).await;
     std::fs::remove_file(b.fake.root.join("fake_cdp_port")).unwrap();
     let error = b.module.ensure().await.unwrap_err();
-    assert_eq!(error.code, "browser_unavailable");
+    assert_eq!((error.code, error.unavailable_code), ("browser_unavailable", None));
     assert!(error.message.contains("ended while starting"), "{}", error.message);
     let status = b.module.status(None, None).await;
     assert_eq!((status["available"].clone(), status["running"].clone()), (json!(true), json!(false)));
     assert!(status["unavailable"].as_str().unwrap().contains("ended while starting"));
+    assert_eq!(status["unavailable_code"], Value::Null, "the browser is there: it did not start");
+}
+
+/// The extension package brings the `chromium` launcher; the browser it
+/// starts is the package's online item, downloaded by the node afterwards.
+/// What the node has is looked at on every call: once the download is
+/// ready the same service has a browser.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_browser_is_usable_as_soon_as_the_node_downloaded_it() {
+    let tools = tempfile::tempdir().unwrap();
+    let tools = tools.path();
+    let dirs = vec![tools.join("bin"), tools.join("agent-tools")];
+    let b = Bench::new(section(12, 600), |t| (t.chromium, t.tool_dirs) = (None, Some(dirs))).await;
+    let m = &b.module;
+    let record = |record: Value| {
+        std::fs::create_dir_all(tools.join("online")).unwrap();
+        std::fs::write(tools.join("online/chromium.json"), record.to_string()).unwrap();
+    };
+    async fn unavailable(m: &BrowserModule, unavailable_code: &str) -> String {
+        let status = m.status(None, None).await;
+        assert_eq!((status["enabled"].clone(), status["available"].clone(), status["running"].clone()), (json!(true), json!(false), json!(false)));
+        assert_eq!(status["unavailable_code"], unavailable_code);
+        let why = status["unavailable"].as_str().unwrap().to_string();
+        for error in [m.ensure().await.err(), m.acquire("s").await.err(), m.renew("l").err(), m.clear_profile().await.err()] {
+            let error = error.unwrap();
+            assert_eq!((error.code, error.unavailable_code, error.message.as_str()), ("browser_unavailable", Some(unavailable_code), why.as_str()));
+            let wire: Value = serde_json::from_str(&error.to_wire()).unwrap();
+            assert_eq!((wire["code"].as_str(), wire["unavailable_code"].as_str()), (Some("browser_unavailable"), Some(unavailable_code)));
+        }
+        why
+    }
+
+    // No extension package: no launcher.
+    assert!(unavailable(m, "no_package").await.contains("no `chromium` on this node"));
+    assert_eq!(m.status(None, None).await["version"], Value::Null);
+
+    // The package is installed; its browser is not downloaded yet.
+    std::fs::create_dir_all(tools.join("bin")).unwrap();
+    std::fs::copy(fake_browser::chromium(), tools.join("bin/chromium")).unwrap();
+    std::fs::create_dir_all(tools.join("store/ext-core/browser")).unwrap();
+    std::fs::write(tools.join("store/ext-core/browser/versions.json"), json!({ "playwright": "1.65.1", "chromium": "159.0.8154.6", "revision": "1255" }).to_string()).unwrap();
+    assert!(unavailable(m, "not_downloaded").await.contains("not downloaded on this node yet"));
+    assert_eq!(m.status(None, None).await["version"], json!({ "browser": "159.0.8154.6", "playwright": "1.65.1" }), "what the package will download");
+    assert_eq!(m.module_status().1, false);
+
+    // Being downloaded, and a download that failed.
+    record(json!({ "schema": "buckyos.ext_tools.online/1", "id": "chromium", "state": "downloading", "size_bytes": 200u64 << 20, "downloaded_bytes": 50u64 << 20 }));
+    assert!(unavailable(m, "not_downloaded").await.contains("being downloaded to this node (25% of 200 MiB)"));
+    record(json!({ "state": "failed", "error": "GET https://storage.googleapis.com/…: connection timed out", "size_bytes": 200u64 << 20, "downloaded_bytes": 0 }));
+    assert!(unavailable(m, "not_downloaded").await.contains("failed: GET https://storage.googleapis.com/…: connection timed out. Start it again"));
+    assert!(b.fake.pid().is_none(), "nothing was started");
+
+    // Downloaded: the same service starts it, nothing was remembered.
+    record(json!({ "state": "downloading", "size_bytes": 200u64 << 20, "downloaded_bytes": 199u64 << 20 }));
+    std::fs::create_dir_all(tools.join("online/chromium")).unwrap();
+    unavailable(m, "not_downloaded").await;
+    record(json!({ "state": "ready", "version": "159.0.8154.6", "size_bytes": 200u64 << 20, "downloaded_bytes": 200u64 << 20 }));
+    let status = m.status(None, None).await;
+    assert_eq!((status["available"].clone(), status["unavailable"].clone(), status["unavailable_code"].clone()), (json!(true), Value::Null, Value::Null));
+    assert_eq!(m.module_status().1, true);
+    let lease = m.acquire("s").await.unwrap();
+    assert!(b.fake.pid().is_some() && m.running(), "acquiring started it");
+    let status = m.status(None, None).await;
+    assert_eq!((status["running"].clone(), status["version"].clone()), (json!(true), json!({ "browser": "1.2.3.4", "playwright": "1.65.1" })));
+    assert!(b.fake.args().contains("--user-agent=") && b.fake.args().contains("Chrome/159.0.0.0"), "the package's browser gets a windowed browser's user agent");
+    m.release(&lease.lease_id, None, None).unwrap();
+    m.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

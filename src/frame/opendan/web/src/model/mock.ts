@@ -754,7 +754,8 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       version: 5, runtime_id: 'build-box', name: 'Build box',
       desc: 'A Linux machine in the closet, assigned to this agent for long builds.',
       runtime_host: 'build-host', connector: { type: 'node_executor', node_did: 'did:dev:build', executor_id: 'exec-build', profile_id: 'agent-0123456789ab' }, enabled: true,
-      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'standard' },
+      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'standard',
+        baseline_check: { checked_at_ms: ago(600), level: 'standard', missing: [], ok: true, ext: { status: 'ok', missing: [], system: [], waiting: ['chromium', 'page-render'] } } },
       grant: { ops: allOps, roots: ['/srv/build'], computer: 'none' },
       availability: 'available', builtin: false, default: false, lifecycle: 'active',
       usage: { sessions_total: 4, last_used_at_ms: ago(86400), last_session_id: WORK_PENDING, workspaces: 0 },
@@ -898,6 +899,9 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       requires: 'the extended environment (pandoc, tesseract)', baseline: 'extended', commands: ['pandoc', 'tesseract'], size: 3300,
     }),
     skill('work', 'win_registry', 'Read and repair Windows registry settings.', { platforms: ['windows'], requires: 'a Windows runtime', size: 1500 }),
+    skill('work', 'browser', 'Use this Agent’s own browser: open and read pages, fill in forms, get things done on websites.', {
+      requires: 'the private runtime with the ext-core extension package (agent-browser, chromium)', baseline: 'extended', commands: ['agent-browser', 'chromium'], size: 5200,
+    }),
     skill('work', 'yt_fetch', 'Download a video and its subtitles for offline summarising.', {
       origin: 'installed', commands: ['yt-dlp'], size: 2100,
       install: { package: 'media-skills', version: '0.2.0', digest: 'sha256:9a41c0de', installed_at_ms: ago(86400 * 3), installed_by: OWNER },
@@ -1651,7 +1655,8 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
           const unmet = s.platforms?.length && !s.platforms.includes(runtime.caps.os)
             ? `works on ${s.platforms.join(', ')} only (this runtime is ${runtime.caps.os})`
             : s.baseline === 'extended' && runtime.caps.baseline !== 'extended' ? 'needs the extended environment, and this runtime declares standard' : undefined
-          const commands = Object.fromEntries((s.commands ?? []).map((c) => [c, c === 'pandoc' || (!onPrivate && c === 'tesseract')
+          // chromium: its launcher is there, the browser it runs is not downloaded to the node yet.
+          const commands = Object.fromEntries((s.commands ?? []).map((c) => [c, c === 'pandoc' || c === 'chromium' || (!onPrivate && c === 'tesseract')
             ? { present: false }
             : { present: true, provided_by: c === 'ffmpeg' ? 'system' : 'exttools' }]))
           const missing = Object.entries(commands).filter(([, c]) => !c.present).map(([name]) => name)
@@ -1667,6 +1672,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
               commands,
               ...(missing.includes('pandoc') ? { recommended_packages: [{ id: 'ext-docs', version: '0.3.1', requires_chain: ['ext-core'], provides: ['pandoc'] }] } : {}),
               ...(missing.includes('tesseract') ? { no_package: ['tesseract'] } : {}),
+              ...(missing.includes('chromium') ? { waiting_online: [{ package: 'ext-core', item: 'chromium', commands: ['chromium'] }] } : {}),
             },
           }
         }),

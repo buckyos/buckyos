@@ -1,0 +1,7 @@
+/* The browser that is not there yet: why, and for an administrator the download of it */
+.ab-message.ab-unavailable { overflow-y: auto; justify-content: safe center; }
+.ab-download { display: flex; flex-direction: column; align-items: center; gap: 10px; width: min(100%, 22rem); }
+.ab-download-node { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.ab-download-state { color: var(--cp-text); font-weight: 600; }
+.ab-download-error { color: var(--cp-danger); overflow-wrap: anywhere; }
+.ab-download-hint { max-width: 36em; font-size: 13px; line-height: 1.5; }

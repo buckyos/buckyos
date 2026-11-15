@@ -11,11 +11,12 @@
 # Tools with an official archive are downloaded here, version and SHA256 pinned in the table below (§6.4 of
 # doc/app_service/paios容器需求.md: table B says which tool comes from where). The ones without go into a conda-forge
 # prefix locked by conda-lock.yml. A launcher in bin/ only ever points into store/ext-core, relative to itself, and never
-# falls back to the PATH.
+# falls back to the PATH. The browser is the exception: an online item, which the payload declares (ext-manifest.json
+# `online`) and a node downloads from Google into <tools>/online/chromium; its launcher points there.
 #
 # Needs: bash, curl, python3, tar (with xz), unzip, and micromamba (MICROMAMBA, or the one this script downloads).
 # darwin-* builds on a Mac: writing the install prefix into a Mach-O breaks its signature, and only macOS can sign it
-# again; LibreOffice comes out of its dmg with hdiutil and Chrome for Testing's app bundle out of its zip with ditto.
+# again; LibreOffice comes out of its dmg with hdiutil.
 # linux-* builds anywhere. windows-* builds on Windows (msiexec /a unpacks LibreOffice's msi) or anywhere with msiextract
 # (msitools).
 set -euo pipefail
@@ -113,6 +114,17 @@ cft_platform() {
   esac
 }
 
+# Chrome for Testing's own executable inside <tools>/online/chromium: what a downloaded browser has and the payload's
+# overlay has not. On Linux Playwright and bin/chromium run the script `chrome` beside it.
+chromium_binary() {
+  local dir="chromium-$CHROMIUM_REVISION/chrome-$(cft_platform "$1")"
+  case "$1" in
+    linux-*) echo "$dir/chrome-bin" ;;
+    darwin-*) echo "$dir/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" ;;
+    windows-*) echo "$dir/chrome.exe" ;;
+  esac
+}
+
 find_micromamba() {
   if [ -n "${MICROMAMBA:-}" ]; then echo "$MICROMAMBA"; return; fi
   if command -v micromamba >/dev/null 2>&1; then command -v micromamba; return; fi
@@ -142,6 +154,31 @@ unix_launcher() {
     echo 's="$here/../store/ext-core"'
     [ -n "$env_file" ] && echo ". \"\$s/env/$env_file\""
     echo "exec $target \"\$@\""
+  } > "$payload/bin/$command"
+  chmod 755 "$payload/bin/$command"
+}
+
+# Unix launcher of a file of an online item (ext-manifest.json `online`), which a node downloads into <tools>/online/<id>.
+# <tools> is the launcher's own package when that is unpacked as the tools directory, else the directory its staging or
+# version directory is in (the layout of buckyos-api's ext_tools_install.rs). `present` is a file the download brings and
+# the payload's overlay has not: without it the launcher says what is missing, as a command that is not there (127).
+unix_online_launcher() {
+  local payload="$1" command="$2" item="$3" present="$4" target="$5" what="$6"
+  {
+    echo '#!/bin/sh'
+    echo 'p="$0"'
+    echo 'while [ -h "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="${p%/*}/$l" ;; esac; done'
+    echo 'here="$(cd "${p%/*}" && pwd -P)"'
+    echo 't="${here%/*}"'
+    echo "if [ ! -e \"\$t/online/$item/$present\" ]; then"
+    echo '  case "${t%/*}" in */staging) t="${t%/*/*}" ;; *) case "${t%/*/*}" in */versions) t="${t%/*/*/*}" ;; esac ;; esac'
+    echo 'fi'
+    echo "o=\"\$t/online/$item\""
+    echo "if [ ! -e \"\$o/$present\" ]; then"
+    echo "  echo '$command: $what is not downloaded on this node yet: the owner downloads it in Desktop Settings > Extension tools, or with: buckyos ext-tools download ext-core $item' >&2"
+    echo '  exit 127'
+    echo 'fi'
+    echo "exec \"\$o/$target\" \"\$@\""
   } > "$payload/bin/$command"
   chmod 755 "$payload/bin/$command"
 }
@@ -592,74 +629,90 @@ assert_soffice_loads() {
 }
 
 # Chrome for Testing, the build playwright-core $PLAYWRIGHT_VERSION drives (revision $CHROMIUM_REVISION in its
-# browsers.json), laid out as a Playwright browser directory: PLAYWRIGHT_BROWSERS_PATH is store/ext-core/chromium. The full
-# build only, no headless shell, so a test says channel: 'chromium'. On Linux its system libraries and fonts are the
-# prefix's (conda-env.yml). Playwright runs chrome-linux*/chrome itself, not a launcher of bin/: that name is a script
-# which sets the two up, and the binary is chrome-bin next to it. fonts.conf includes conf.d by a relative name, which
-# fontconfig looks up in FONTCONFIG_PATH: without it that is where the prefix was built, and conf.d is not read.
-install_chromium() {
-  local platform="$2" store="$1/store/ext-core" cft dir file
+# browsers.json), is an online item (ext-manifest.json `online`): the payload does not carry it. A node downloads Google's
+# archive into <tools>/online/chromium, a Playwright browser directory (PLAYWRIGHT_BROWSERS_PATH), and lays the payload's
+# online/chromium over it. That overlay is Playwright's two marker files and, on Linux, the script that takes the place of
+# chrome-linux*/chrome, the archive's binary becoming chrome-bin beside it: Playwright runs that name itself, not a
+# launcher of bin/, and the official build takes its libraries and fonts from the system. The script gives it the prefix's
+# (conda-env.yml) of the package the node has in <tools>/store/ext-core. fonts.conf includes conf.d by a relative name,
+# which fontconfig looks up in FONTCONFIG_PATH: without it that is where the prefix was built, and conf.d is not read.
+# The full build only, no headless shell, so a test says channel: 'chromium'.
+install_chromium_overlay() {
+  local payload="$1" platform="$2" cft dir
   cft="$(cft_platform "$platform")"
-  dir="$store/chromium/chromium-$CHROMIUM_REVISION"
-  file="$(fetch "https://storage.googleapis.com/chrome-for-testing-public/$CHROMIUM_VERSION/$cft/chrome-$cft.zip" "chrome-for-testing-$CHROMIUM_VERSION-$cft.zip")"
-  rm -rf "$store/chromium"
+  dir="$payload/online/chromium/chromium-$CHROMIUM_REVISION"
   mkdir -p "$dir"
-  case "$platform" in
-    darwin-*)
-      # ditto unpacks the app bundle as it was packed: its symlinks, modes and extended attributes.
-      command -v ditto >/dev/null 2>&1 || { echo "[ext-core] $platform: Chrome for Testing's app bundle needs ditto (build on a Mac)" >&2; exit 1; }
-      ditto -x -k "$file" "$dir" ;;
-    *) unzip -q -o "$file" -d "$dir" ;;
-  esac
   : > "$dir/INSTALLATION_COMPLETE"
   : > "$dir/DEPENDENCIES_VALIDATED"
   case "$platform" in
     linux-*)
-      mv "$dir/chrome-$cft/chrome" "$dir/chrome-$cft/chrome-bin"
+      mkdir -p "$dir/chrome-$cft"
       cat > "$dir/chrome-$cft/chrome" <<'SH'
 #!/bin/sh
 p="$0"
 while [ -h "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="${p%/*}/$l" ;; esac; done
 here="$(cd "${p%/*}" && pwd -P)"
-c="$here/../../../conda"
+c="$(cd "$here/../../../../store/ext-core/conda" 2>/dev/null && pwd -P)" || { echo 'chrome: the ext-core package this browser belongs to is not installed' >&2; exit 127; }
 export LD_LIBRARY_PATH="$c/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 [ -n "${FONTCONFIG_FILE:-}${FONTCONFIG_PATH:-}" ] || export FONTCONFIG_FILE="$c/etc/fonts/fonts.conf" FONTCONFIG_PATH="$c/etc/fonts"
 exec "$here/chrome-bin" "$@"
 SH
       chmod 755 "$dir/chrome-$cft/chrome"
-      assert_chromium_loads "$store" "$dir/chrome-$cft" "$platform"
       ;;
   esac
+  check_chromium "$payload" "$platform"
 }
 
-# The official Linux build takes X11, NSS, glib, cairo, pango, cups, dbus, alsa, atk, at-spi and gbm from the system: here
-# they are the prefix's. Nothing it loads may be missing from the payload, save glibc.
-assert_chromium_loads() {
-  local store="$1" dir="$2" platform="$3" missing
-  case "$platform:$(uname -s)-$(uname -m)" in
-    linux-x86_64:Linux-x86_64|linux-aarch64:Linux-aarch64) ;;
-    *) return 0 ;;
-  esac
-  missing="$(for file in "$dir"/chrome-bin "$dir"/chrome_crashpad_handler "$dir"/*.so*; do
-    [ -f "$file" ] && LD_LIBRARY_PATH="$store/conda/lib" ldd "$file" 2>/dev/null | grep 'not found' | sed "s|^|$(basename "$file"): |"
-  done | sort -u || true)"
-  if [ -n "$missing" ]; then
-    echo "[ext-core] Chromium loads what the payload does not have:" >&2
-    echo "$missing" >&2
+# What a node has once it downloaded the browser, made from the same manifest entry (place_online.py) beside the payload's
+# store, looked at and thrown away. The archive is the one sources.sha256 pins, from the manifest's address. Where this
+# builder can run the loader: nothing the official Linux build takes from the system (X11, NSS, glib, cairo, pango, cups,
+# dbus, alsa, atk, at-spi, gbm) is missing from the prefix, save glibc, and the script starts the binary.
+check_chromium() {
+  local payload="$1" platform="$2" cft url file tools dir missing loaded
+  cft="$(cft_platform "$platform")"
+  url="$("$python_bin" -c 'import json, sys
+print(next(i for i in json.load(open(sys.argv[1]))["online"] if i["id"] == "chromium")["platforms"][sys.argv[2]]["url"])' "$manifest" "$platform")"
+  file="$(fetch "$url" "chrome-for-testing-$CHROMIUM_VERSION-$cft.zip")"
+  tools="$cache/online-check-$platform"
+  rm -rf "$tools"
+  mkdir -p "$tools"
+  "$python_bin" "$here/place_online.py" --payload "$payload" --tools "$tools" --platform "$platform" --archive "chromium=$file"
+  if [ ! -e "$tools/online/chromium/$(chromium_binary "$platform")" ]; then
+    echo "[ext-core] $platform: the manifest's chromium entry puts no browser at online/chromium/$(chromium_binary "$platform")" >&2
     exit 1
   fi
+  case "$platform:$(uname -s)-$(uname -m)" in
+    linux-x86_64:Linux-x86_64|linux-aarch64:Linux-aarch64)
+      dir="$tools/online/chromium/chromium-$CHROMIUM_REVISION/chrome-$cft"
+      missing="$(for loaded in "$dir"/chrome-bin "$dir"/chrome_crashpad_handler "$dir"/*.so*; do
+        [ -f "$loaded" ] && LD_LIBRARY_PATH="$payload/store/ext-core/conda/lib" ldd "$loaded" 2>/dev/null | grep 'not found' | sed "s|^|$(basename "$loaded"): |"
+      done | sort -u || true)"
+      if [ -n "$missing" ]; then
+        echo "[ext-core] Chromium loads what the payload does not have:" >&2
+        echo "$missing" >&2
+        exit 1
+      fi
+      ln -s "$(cd "$payload/store" && pwd)" "$tools/store"
+      if ! env -i "$dir/chrome" --version | grep -q -F "$CHROMIUM_VERSION"; then
+        echo "[ext-core] $platform: online/chromium's chrome does not start Chrome for Testing $CHROMIUM_VERSION" >&2
+        exit 1
+      fi
+      ;;
+  esac
+  rm -rf "$tools"
 }
 
 # playwright-core of the version this Chromium belongs to, as a node_modules directory, and on top of the two our own
-# agent-browser and page-render (the modules of browser/, not their tests) with the versions they were packed with.
+# agent-browser and page-render (the modules of browser/, not their tests) with the versions they were packed with and
+# where the browser's own executable is inside <tools>/online/chromium.
 install_playwright() {
-  local store="$1/store/ext-core" file
+  local store="$1/store/ext-core" platform="$2" file
   file="$(fetch "https://registry.npmjs.org/playwright-core/-/playwright-core-$PLAYWRIGHT_VERSION.tgz")"
   rm -rf "$store/playwright" "$store/browser"
   mkdir -p "$store/playwright/node_modules/playwright-core" "$store/browser"
   tar -xzf "$file" -C "$store/playwright/node_modules/playwright-core" --strip-components=1
   cp "$here"/browser/*.mjs "$store/browser/"
-  printf '{"playwright": "%s", "chromium": "%s", "revision": "%s"}\n' "$PLAYWRIGHT_VERSION" "$CHROMIUM_VERSION" "$CHROMIUM_REVISION" > "$store/browser/versions.json"
+  printf '{"playwright": "%s", "chromium": "%s", "revision": "%s", "binary": "%s"}\n' "$PLAYWRIGHT_VERSION" "$CHROMIUM_VERSION" "$CHROMIUM_REVISION" "$(chromium_binary "$platform")" > "$store/browser/versions.json"
 }
 
 unix_launchers() {
@@ -684,11 +737,9 @@ unix_launchers() {
     darwin-*) unix_launcher "$p" soffice "\"\$s/libreoffice/LibreOffice.app/Contents/MacOS/soffice\"" ;;
     *) unix_launcher "$p" soffice "\"\$s/libreoffice/program/soffice\"" soffice.sh ;;
   esac
-  local chrome="\$s/chromium/chromium-$CHROMIUM_REVISION/chrome-$(cft_platform "$platform")"
-  case "$platform" in
-    darwin-*) unix_launcher "$p" chromium "\"$chrome/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing\"" ;;
-    *) unix_launcher "$p" chromium "\"$chrome/chrome\"" ;;
-  esac
+  local binary
+  binary="$(chromium_binary "$platform")"
+  unix_online_launcher "$p" chromium chromium "$binary" "${binary%-bin}" 'Chrome for Testing'
   for c in agent-browser page-render; do unix_launcher "$p" "$c" "\"\$s/node/bin/node\" \"\$s/browser/$c.mjs\""; done
 }
 
@@ -716,8 +767,11 @@ windows_launchers() {
   windows_launcher "$p" tree '"%S%\python\python.exe" "%S%\tree\tree.py"'
   windows_launcher "$p" unzip '"%S%\busybox\busybox.exe" unzip'
   windows_launcher "$p" soffice '"%S%\libreoffice\program\soffice.com"'
-  # chrome.exe is a GUI program and does not answer --version on a console: the launcher does.
-  windows_launcher "$p" chromium "\"%S%\\chromium\\chromium-$CHROMIUM_REVISION\\chrome-win64\\chrome.exe\"" 'if "%~1"=="--version" (echo Google Chrome for Testing '"$CHROMIUM_VERSION"'& exit /b 0)\r\n'
+  # The browser is an online item, found as unix_online_launcher finds it. chrome.exe is a GUI program and does not answer
+  # --version on a console: the launcher does.
+  local chrome_exe
+  chrome_exe="$(chromium_binary windows-x86_64 | sed 's|/|\\\\|g')"
+  windows_launcher "$p" chromium '"%B%"' 'set "P=%~dp0.."\r\nset "T=%P%"\r\nset "E=online\\chromium\\'"$chrome_exe"'"\r\nif not exist "%P%\\%E%" for %%I in ("%P%\\..") do if /i "%%~nxI"=="staging" set "T=%P%\\..\\.."\r\nif not exist "%P%\\%E%" if "%T%"=="%P%" for %%I in ("%P%\\..\\..") do if /i "%%~nxI"=="versions" set "T=%P%\\..\\..\\.."\r\nset "B=%T%\\%E%"\r\nif not exist "%B%" (\r\n  >&2 echo chromium: Chrome for Testing is not downloaded on this node yet: the owner downloads it in Desktop Settings, Extension tools, or with: buckyos ext-tools download ext-core chromium\r\n  exit /b 127\r\n)\r\nif "%~1"=="--version" (echo Google Chrome for Testing '"$CHROMIUM_VERSION"'& exit /b 0)\r\n'
   for c in agent-browser page-render; do windows_launcher "$p" "$c" "\"%S%\\node\\node.exe\" \"%S%\\browser\\$c.mjs\""; done
 }
 
@@ -734,8 +788,8 @@ for platform in "${platforms[@]}"; do
   install_conda "$payload" "$platform"
   install_official "$payload" "$platform"
   install_soffice "$payload" "$platform"
-  install_chromium "$payload" "$platform"
-  install_playwright "$payload"
+  install_chromium_overlay "$payload" "$platform"
+  install_playwright "$payload" "$platform"
   "$python_bin" "$here/official_sources.py" --payload "$payload" --source-root "$source_out/$platform" \
     --platform "$platform" --cache "$cache/corresponding-source"
   case "$platform" in

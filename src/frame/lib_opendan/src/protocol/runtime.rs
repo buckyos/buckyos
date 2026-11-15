@@ -228,17 +228,27 @@ pub struct ExtCheck {
     /// Extended commands that are there but not from an extension package.
     #[serde(default)]
     pub system: Vec<String>,
+    /// Extended commands whose launcher is there while the online item it
+    /// runs (a download of its package, such as the browser) is not yet on
+    /// the node: not missing, not usable either.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<String>,
 }
 
 impl ExtCheck {
     /// `ok | partial(missing a, b) | none | system`: a segment of a runtime's
     /// line in the plan table.
     pub fn summary(&self) -> String {
-        match self.status {
+        let layer = match self.status {
             ExtStatus::Ok => "ok".to_string(),
             ExtStatus::Partial => format!("partial(missing {})", self.missing.join(", ")),
             ExtStatus::None => "none".to_string(),
             ExtStatus::System => "system".to_string(),
+        };
+        if self.waiting.is_empty() {
+            layer
+        } else {
+            format!("{layer}; not downloaded yet: {}", self.waiting.join(", "))
         }
     }
 }

@@ -137,6 +137,11 @@ pub struct ExtCommand {
     /// A no-network check, relative to the root of the package's payload.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smoke: Option<&'static str>,
+    /// The online item of the package it runs (`needs` in the package's
+    /// manifest): until the node has downloaded it, the launcher answers as a
+    /// stub and the command is waiting, not missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -148,7 +153,11 @@ pub struct ExtendedTool {
 }
 
 const fn ext_cmd(name: &'static str, version_probe: &'static str, smoke: Option<&'static str>) -> ExtCommand {
-    ExtCommand { name, version_probe, smoke }
+    ExtCommand { name, version_probe, smoke, online: None }
+}
+
+const fn ext_online_cmd(name: &'static str, version_probe: &'static str, smoke: Option<&'static str>, online: &'static str) -> ExtCommand {
+    ExtCommand { name, version_probe, smoke, online: Some(online) }
 }
 
 const fn core_tool(id: &'static str, category: ExtToolCategory, commands: &'static [ExtCommand]) -> ExtendedTool {
@@ -186,7 +195,7 @@ pub const EXTENDED_TOOLS: &[ExtendedTool] = &[
     ]),
     core_tool("deno", ExtToolCategory::JavaScript, &[ext_cmd("deno", "deno --version", Some("smoke/deno.sh"))]),
     core_tool("chromium", ExtToolCategory::Browser, &[
-        ext_cmd("chromium", "chromium --version", Some("smoke/chromium.sh")),
+        ext_online_cmd("chromium", "chromium --version", Some("smoke/chromium.sh"), "chromium"),
         ext_cmd("agent-browser", "agent-browser version", Some("smoke/agent-browser.sh")),
         ext_cmd("page-render", "page-render --version", Some("smoke/page-render.sh")),
     ]),
@@ -288,9 +297,15 @@ pub fn evaluate(level: RuntimeBaseline, overlay: bool, resolved: &BTreeMap<Strin
     }
     let mut ext_missing = Vec::new();
     let mut system = Vec::new();
+    let mut waiting = Vec::new();
     let mut found = 0usize;
     for tool in EXTENDED_TOOLS {
-        for name in tool.commands.iter().map(|c| c.name) {
+        for command in tool.commands {
+            let name = command.name;
+            if command.online.is_some() && resolved.get(name).is_some_and(|c| c.stub) {
+                waiting.push(name.to_string());
+                continue;
+            }
             match present(name) {
                 Some(c) => {
                     found += 1;
@@ -319,7 +334,7 @@ pub fn evaluate(level: RuntimeBaseline, overlay: bool, resolved: &BTreeMap<Strin
     BaselineFindings {
         missing,
         unmanaged,
-        ext: ExtCheck { status, missing: ext_missing, system },
+        ext: ExtCheck { status, missing: ext_missing, system, waiting },
     }
 }
 
@@ -483,7 +498,9 @@ pub fn parse_resolved(stdout: &str, asked: &[&str]) -> BTreeMap<String, ProbedCo
 }
 
 /// A command `exit_code` says does not run: not found or not executable by
-/// the shell (a stub explaining how to get the real tool exits 127).
+/// the shell (a stub explaining how to get the real tool exits 127, and so
+/// does a launcher whose online item the node has not downloaded yet:
+/// `chromium` of `ext-core`).
 pub fn is_stub_exit(exit_code: Option<i32>) -> bool {
     matches!(exit_code, Some(126 | 127))
 }
@@ -596,10 +613,11 @@ pub fn managed_tool_dirs() -> Vec<PathBuf> {
 }
 
 /// Points Playwright at the browser of `ext-core` under `root`, so that a project on the same Playwright version
-/// downloads none. That browser brings its own libraries: the host has nothing for Playwright to validate. Empty when
-/// the package is not installed.
+/// downloads none. The browser is an online item of the package: the node downloads it into `tools/online/chromium`,
+/// and it takes its libraries from the package, so the host has nothing for Playwright to validate. Empty until the
+/// node has downloaded it.
 pub fn playwright_env_in(root: &Path) -> Vec<(String, String)> {
-    let browsers = root.join("tools/store/ext-core/chromium");
+    let browsers = root.join("tools/online/chromium");
     if !browsers.is_dir() {
         return Vec::new();
     }
@@ -761,7 +779,9 @@ mod tests {
     fn playwright_is_pointed_at_the_installed_browser_only() {
         let root = tempfile::tempdir().unwrap();
         assert!(playwright_env_in(root.path()).is_empty(), "no ext-core browser, no opinion");
-        let browsers = root.path().join("tools/store/ext-core/chromium");
+        std::fs::create_dir_all(root.path().join("tools/store/ext-core/browser")).unwrap();
+        assert!(playwright_env_in(root.path()).is_empty(), "the package is there, its browser is not downloaded yet");
+        let browsers = root.path().join("tools/online/chromium");
         std::fs::create_dir_all(&browsers).unwrap();
         assert_eq!(
             playwright_env_in(root.path()),
@@ -895,6 +915,22 @@ mod tests {
         let stub = evaluate(RuntimeBaseline::Extended, false, &stubbed);
         assert_eq!(stub.missing, vec!["ffmpeg".to_string()]);
         assert!(stub.ext.summary().contains("missing ffmpeg"));
+
+        // the browser's launcher is there before the node has downloaded the browser: waiting, not missing
+        let mut waiting = all_standard();
+        waiting.extend(all_extended(ProvidedBy::Exttools));
+        let mut waiting = found(&waiting);
+        waiting.get_mut("chromium").unwrap().stub = true;
+        let not_yet = evaluate(RuntimeBaseline::Extended, false, &waiting);
+        assert!(not_yet.ok(), "{not_yet:?}");
+        assert_eq!(not_yet.ext.status, ExtStatus::Ok);
+        assert_eq!(not_yet.ext.waiting, vec!["chromium".to_string()]);
+        assert_eq!(not_yet.ext.summary(), "ok; not downloaded yet: chromium");
+        // without its launcher it is missing like any other
+        waiting.remove("chromium");
+        let gone = evaluate(RuntimeBaseline::Extended, false, &waiting);
+        assert_eq!(gone.missing, vec!["chromium".to_string()]);
+        assert!(gone.ext.waiting.is_empty());
 
     }
 

@@ -107,7 +107,8 @@ Use it for that project's commands only, for example: ( eval "$(agent-browser en
 
   version: `agent-browser version
 
-Prints the versions of the bundled browser and of playwright-core.`,
+Prints the version of the browser the package drives and of its playwright-core. The browser itself is downloaded
+by the node: \`agent-browser status\` says whether it is there.`,
 
   'reflow-run': `agent-browser reflow-run --cdp <cdp_url> --url <url> --package <dir> --out <file> [--click <selector>] [--timeout <seconds>]
 

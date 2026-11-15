@@ -3,11 +3,12 @@
  * Zone. A group has tabs showing the page of mock/page.ts; the Agent's side (lease, release, handover request) is
  * driven from `window.__agentBrowserMock`, which the e2e specs also read the received messages from. */
 
+import { mockOnlineInPlace, mockOnlineStatus, setMockOnline } from '../../../api/settings_mock'
 import { getMockEntityDid } from '../../messagehub/mock/data'
 import { ownReadyAgents, toBrowserAgent, type BrowserAgent, type BrowserBackend } from '../api/backend'
 import type { ScreenSocket } from '../api/channel'
 import { DEFAULT_GROUP, VIEWPORT_MAX, VIEWPORT_MIN } from '../api/types'
-import type { AgentState, BrowserGroup, BrowserStatus, BrowserTab, HandoverReason, RequestResult, ScreenDownstream, ScreenInput, ScreenRequest, ScreenState, ScreenUpstream, Viewport } from '../api/types'
+import type { AgentState, BrowserGroup, BrowserStatus, BrowserTab, HandoverReason, RequestResult, ScreenDownstream, ScreenInput, ScreenRequest, ScreenState, ScreenUpstream, UnavailableCode, Viewport } from '../api/types'
 import { MOCK_PAGE_HEIGHT, mockElementAt, mockPageRects, mockSelectOptions, newMockPage, renderMockPage, type MockElement, type MockPage } from './page'
 import { mockReflowCall, mockReflowControl } from './reflow'
 
@@ -35,6 +36,7 @@ interface MockGroup {
 
 interface MockBrowser {
   enabled: boolean
+  /** ext-core is on the node; the browser itself is ext-core's online item `chromium`, which the mock control panel downloads (api/settings_mock.ts). */
   available: boolean
   unavailable: string | null
   running: boolean
@@ -49,11 +51,16 @@ export interface MockUpload { agentId: string; requestId: string; name: string; 
 
 class MockError extends Error {
   readonly code: string
-  constructor(code: string, message = code) {
-    super(`RPC call error: Failed due to reason: ${JSON.stringify({ kind: 'browser', code, message })}`)
+  constructor(code: string, message = code, unavailableCode?: UnavailableCode) {
+    super(`RPC call error: Failed due to reason: ${JSON.stringify({ kind: 'browser', code, ...(unavailableCode ? { unavailable_code: unavailableCode } : {}), message })}`)
     this.code = code
   }
 }
+
+/** The node the mock Agents run on, and the online item that is their browser. */
+const MOCK_NODE = 'ood1'
+const BROWSER_ITEM = 'chromium'
+const DOWNLOAD_HINT = 'Settings › Extension tools, or with `buckyos ext-tools download ext-core chromium`'
 
 const browsers = new Map<string, MockBrowser>()
 const sockets = new Set<MockSocket>()
@@ -109,16 +116,34 @@ function wireGroup(group: MockGroup): BrowserGroup {
   }
 }
 
+/** Whether the node has the browser: ext-core is there and its `chromium` is downloaded (a download of it again leaves the one in use). */
+const browserThere = (browser: MockBrowser) => browser.available && mockOnlineInPlace(MOCK_NODE, BROWSER_ITEM)
+
+/** §2.1: the first of `disabled`, `no_package`, `not_downloaded` that holds, with the service's sentence for it. */
+function unavailability(browser: MockBrowser): { code: UnavailableCode; text: string } | null {
+  if (!browser.enabled) return { code: 'disabled', text: browser.unavailable ?? 'the browser is switched off for this agent ([loader.browser] enabled = false)' }
+  if (!browser.available) return { code: 'no_package', text: browser.unavailable ?? 'no `chromium` on this node (it comes with the ext-core extension tools)' }
+  if (browserThere(browser)) return null
+  const download = mockOnlineStatus(MOCK_NODE, BROWSER_ITEM)
+  const text = download?.state === 'downloading'
+    ? `the browser is being downloaded to this node${download.size_bytes ? ` (${Math.floor((download.downloaded_bytes * 100) / download.size_bytes)}% of ${Math.round(download.size_bytes / 1024 ** 2)} MiB)` : ''}`
+    : download?.state === 'failed'
+      ? `the browser's download to this node failed: ${download.error ?? 'no reason recorded'}. Start it again in ${DOWNLOAD_HINT}`
+      : `the browser is not downloaded on this node yet (the online item \`chromium\` of ext-core): download it in ${DOWNLOAD_HINT}`
+  return { code: 'not_downloaded', text }
+}
+
 function wireStatus(agentId: string, groupId?: string): BrowserStatus {
   const browser = browserOf(agentId)
-  const usable = browser.enabled && browser.available
+  const why = unavailability(browser)
   const groups = groupId ? [groupOf(agentId, groupId)] : [groupOf(agentId, DEFAULT_GROUP), ...[...browser.groups.values()].filter((group) => group.id !== DEFAULT_GROUP && (group.tabs.length > 0 || !!group.lease || group.userHold || agentStateOf(group) !== 'idle'))]
   return {
     enabled: browser.enabled,
-    available: browser.available,
-    running: usable && browser.running,
-    unavailable: usable ? null : browser.unavailable ?? (browser.enabled ? 'chromium was not found on this node' : 'the browser is turned off for this Agent'),
-    version: browser.available ? { browser: '159.0.8154.6', playwright: '1.65.1' } : null,
+    available: browserThere(browser),
+    running: !why && browser.running,
+    unavailable: why?.text ?? null,
+    unavailable_code: why?.code ?? null,
+    version: why?.code === 'disabled' || why?.code === 'no_package' ? null : { browser: '159.0.8154.6', playwright: '1.65.1' },
     default_session_id: browser.defaultSessionId,
     groups: groups.map(wireGroup),
   }
@@ -385,10 +410,14 @@ function receive(socket: MockSocket, message: ScreenUpstream) {
   const agentId = socket.agentId
   if (message.type === 'hello') {
     const browser = browserOf(agentId)
-    const refuse = (code: string) => { socket.deliver({ type: 'error', code, message: code }); window.setTimeout(() => socket.drop(), LATENCY_MS * 3) }
+    const refuse = (code: string, why?: { code: UnavailableCode; text: string }) => {
+      socket.deliver({ type: 'error', code, message: why?.text ?? code, ...(why ? { unavailable_code: why.code } : {}) })
+      window.setTimeout(() => socket.drop(), LATENCY_MS * 3)
+    }
     if (message.token !== TOKEN) { refuse('unauthorized'); return }
     if (!message.group_id || !message.viewport) { refuse('bad_hello'); return }
-    if (!browser.enabled || !browser.available) { refuse('browser_unavailable'); return }
+    const why = unavailability(browser)
+    if (why) { refuse('browser_unavailable', why); return }
     browser.running = true
     socket.groupId = message.group_id
     socket.viewport = clampViewport(message.viewport)
@@ -478,7 +507,8 @@ window.setInterval(() => {
 
 function requireUsable(agentId: string) {
   const browser = browserOf(agentId)
-  if (!browser.enabled || !browser.available) throw new MockError('browser_unavailable')
+  const why = unavailability(browser)
+  if (why) throw new MockError('browser_unavailable', why.text, why.code)
   return browser
 }
 
@@ -556,7 +586,7 @@ function call(agentId: string, method: string, params: Record<string, unknown>):
     case 'browser.reflow_state':
     case 'browser.reflow_refresh':
     case 'browser.reflow_action':
-      return mockReflowCall(method, params, browserOf(agentId))
+      return mockReflowCall(method, params, { enabled: browserOf(agentId).enabled, available: browserThere(browserOf(agentId)) })
     default:
       throw new MockError('invalid_argument', `unknown method ${method}`)
   }
@@ -638,8 +668,10 @@ const control = {
     changed(agentId, groupId)
     emitFocus(agentId, groupId)
   },
-  setAvailability(agentId: string, patch: { enabled?: boolean; available?: boolean; unavailable?: string | null }) {
+  /** `download`: where the node's `chromium` stands (shared by every Agent of the mock); it then moves only by `ext_tools.download`. */
+  setAvailability(agentId: string, { download, ...patch }: { enabled?: boolean; available?: boolean; unavailable?: string | null; download?: 'missing' | 'failed' | 'ready' }) {
     Object.assign(browserOf(agentId), patch)
+    if (download) setMockOnline(MOCK_NODE, BROWSER_ITEM, download)
   },
   dropConnections(agentId: string) {
     for (const socket of [...sockets]) if (socket.agentId === agentId) socket.drop()

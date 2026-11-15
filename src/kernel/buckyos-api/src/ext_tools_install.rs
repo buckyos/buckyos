@@ -8,13 +8,21 @@
 //! versions/<id>/<dir>.json            what that directory holds
 //! installs/<id>.json                  what is active
 //! current.json                        id -> version and digest of everything active
-//! staging/                            payloads being checked; nothing here is in use
+//! online/<item>/                      an online item: declared by an active package, downloaded here from its upstream
+//! online/<item>.json                  how far that download got
+//! staging/                            payloads and online items being checked; nothing here is in use
 //! journal.json                        the activation in progress
 //! ```
 //!
 //! A version directory never changes once made, so a running tool keeps its files while another version is activated
 //! and Windows file locks only ever hit `bin/`. Every failure before the pointer moves leaves the old version untouched;
 //! a failure after it moves is rolled back, and an interrupted activation is finished or undone by the next call.
+//! Online items live outside the version directories (`online.rs`): a package upgrade that keeps an item's version
+//! keeps what was downloaded, and only lays its own overlay over it again.
+//!
+//! Packages count on this layout. A launcher runs from `bin/`, from `staging/<name>/bin/` while its payload is checked
+//! and from `versions/<id>/<dir>/bin/`, and `store/<id>` resolves to `versions/<id>/<dir>/store/<id>`: from any of
+//! them it finds `online/` by these names and depths (`ext-core` does). Changing them changes what packages rely on.
 
 use crate::ext_tools::*;
 use serde::{Deserialize, Serialize};
@@ -37,6 +45,10 @@ const SMOKE_TIMEOUT: Duration = Duration::from_secs(180);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const JOURNAL_FILE: &str = "journal.json";
 const LOCK_FILE: &str = ".lock";
+const ONLINE_DIR: &str = "online";
+
+mod online;
+pub use online::*;
 
 pub type ExtToolsResult<T> = Result<T, String>;
 
@@ -71,6 +83,10 @@ pub struct ExtToolsInstall {
     pub dir: String,
     /// Commands of `provides`, each with what its `version_probe` printed.
     pub commands: BTreeMap<String, String>,
+    /// Commands that wait for online items, each with the items that are not ready. They are not probed and their smoke
+    /// is not run until then; the package is whole without them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waiting: BTreeMap<String, Vec<String>>,
     /// File names in `bin/`.
     pub launchers: Vec<String>,
     pub smoke: ExtToolsSmokeResult,
@@ -265,9 +281,12 @@ fn tail(output: &[u8]) -> String {
 }
 
 /// Run to completion or until `timeout`, with stdout and stderr in one captured file. Not next to the tool: a worker's
-/// tools root is read-only.
+/// tools root is read-only. Two runs of one process can be under way at once: an online item is probed when its download
+/// ends, whatever the reconciler is doing.
 fn run_bounded(mut command: Command, timeout: Duration) -> Result<(bool, Vec<u8>), String> {
-    let capture_path = std::env::temp_dir().join(format!(".ext-tools-capture-{}-{}", std::process::id(), now_ms()));
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let capture_path = std::env::temp_dir().join(format!(".ext-tools-capture-{}-{}-{run}", std::process::id(), now_ms()));
     let capture = fs::File::create(&capture_path).map_err(|e| format!("{}: {e}", capture_path.display()))?;
     let stderr = capture.try_clone().map_err(|e| e.to_string())?;
     command.stdin(Stdio::null()).stdout(Stdio::from(capture)).stderr(Stdio::from(stderr));
@@ -292,9 +311,8 @@ fn run_bounded(mut command: Command, timeout: Duration) -> Result<(bool, Vec<u8>
     }
 }
 
-fn with_bin_on_path(command: &mut Command, dir: &Path, also: Option<&Path>) {
-    let mut paths = vec![dir.join("bin")];
-    paths.extend(also.map(Path::to_path_buf));
+fn with_bin_on_path(command: &mut Command, bins: &[&Path]) {
+    let mut paths: Vec<PathBuf> = bins.iter().map(|bin| bin.to_path_buf()).collect();
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
     }
@@ -310,10 +328,13 @@ fn shell_command(windows: bool, line: &str) -> Command {
     command
 }
 
-/// Run a payload's smoke scripts with its own `bin/` first on the PATH. The launchers know where they are, so this works
-/// in staging, in a version directory and after a move.
-pub fn ext_tools_run_smoke(manifest: &ExtToolsManifest, dir: &Path, windows: bool, also_on_path: Option<&Path>) -> ExtToolsResult<()> {
-    let mut scripts: Vec<&str> = manifest.provides.iter().filter_map(|p| p.smoke.as_deref()).collect();
+/// Run the smoke scripts of the payload at `dir` with `bins` first on the PATH: a payload being checked puts its own
+/// `bin/` there, and its launchers know where they are, so this works in staging before anything is active. A script of
+/// a command that `skip` names is left out, and so is one it shares with another command: a command waiting for an
+/// online item has nothing to run yet. One whose item is here runs from staging too, and finds it from there.
+pub fn ext_tools_run_smoke(manifest: &ExtToolsManifest, dir: &Path, windows: bool, bins: &[&Path], skip: &dyn Fn(&ExtToolsCommand) -> bool) -> ExtToolsResult<()> {
+    let skipped: Vec<&str> = manifest.provides.iter().filter(|p| skip(p)).filter_map(|p| p.smoke.as_deref()).collect();
+    let mut scripts: Vec<&str> = manifest.provides.iter().filter_map(|p| p.smoke.as_deref()).filter(|s| !skipped.contains(s)).collect();
     scripts.sort();
     scripts.dedup();
     for script in scripts {
@@ -327,7 +348,7 @@ pub fn ext_tools_run_smoke(manifest: &ExtToolsManifest, dir: &Path, windows: boo
             command.arg(&path);
             command
         };
-        with_bin_on_path(&mut command, dir, also_on_path);
+        with_bin_on_path(&mut command, bins);
         let (ok, output) = run_bounded(command, SMOKE_TIMEOUT).map_err(|e| format!("smoke {script}: {e}"))?;
         if !ok {
             return Err(format!("smoke {script} failed: {}", tail(&output)));
@@ -368,7 +389,7 @@ impl ToolsRoot {
     /// Make the layout. This is where a root the node cannot write to turns into a precise error, and where nothing else
     /// happens: no sudo, no other location.
     pub fn prepare(&self) -> ExtToolsResult<()> {
-        for sub in ["bin", "store", "versions", "installs", "staging"] {
+        for sub in ["bin", "store", "versions", "installs", "staging", ONLINE_DIR] {
             let path = self.root.join(sub);
             fs::create_dir_all(&path).map_err(|e| format!("cannot create {} ({e}); give the BuckyOS account write access to {}", path.display(), self.root.display()))?;
             set_mode(&path, 0o755);
@@ -385,8 +406,29 @@ impl ToolsRoot {
         self.prepare()?;
         let path = self.root.join(LOCK_FILE);
         let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        file.try_lock().map_err(|e| format!("{} is being changed by another reconciler: {e}", self.root.display()))?;
+        // A process that another thread is starting holds every open file from its fork to its exec, the lock of a
+        // writer that just finished among them. That is no writer: give it the moment it takes.
+        let mut tries = 0;
+        while let Err(error) = file.try_lock() {
+            if tries == 10 || !matches!(error, fs::TryLockError::WouldBlock) {
+                return Err(format!("{} is being changed by another reconciler: {error}", self.root.display()));
+            }
+            tries += 1;
+            std::thread::sleep(Duration::from_millis(20));
+        }
         Ok(ToolsRootLock { _file: file })
+    }
+
+    /// The lock, waiting for a writer that is at work: an online item is put in place whenever its download ends.
+    fn lock_wait(&self, limit: Duration) -> ExtToolsResult<ToolsRootLock> {
+        let started = Instant::now();
+        loop {
+            match self.lock() {
+                Ok(lock) => return Ok(lock),
+                Err(error) if started.elapsed() >= limit || !self.root.join(LOCK_FILE).is_file() => return Err(error),
+                Err(_) => std::thread::sleep(Duration::from_millis(200)),
+            }
+        }
     }
 
     pub fn installed(&self) -> BTreeMap<String, ExtToolsInstall> {
@@ -519,19 +561,24 @@ impl ToolsRoot {
         Ok(names)
     }
 
-    /// What each command says about itself once active.
-    fn probe_versions(&self, manifest: &ExtToolsManifest, windows: bool) -> BTreeMap<String, String> {
+    /// What a command says about itself once active.
+    fn probe_version(&self, provided: &ExtToolsCommand, windows: bool) -> String {
+        let mut command = shell_command(windows, &provided.version_probe);
+        with_bin_on_path(&mut command, &[&self.bin_dir()]);
+        run_bounded(command, PROBE_TIMEOUT)
+            .ok()
+            .filter(|(ok, _)| *ok)
+            .map(|(_, output)| String::from_utf8_lossy(&output).lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("WARNING")).unwrap_or("").to_string())
+            .unwrap_or_default()
+    }
+
+    /// Every command with its version; one in `waiting` has none to tell yet.
+    fn probe_versions(&self, manifest: &ExtToolsManifest, windows: bool, waiting: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, String> {
         manifest
             .provides
             .iter()
             .map(|provided| {
-                let mut command = shell_command(windows, &provided.version_probe);
-                with_bin_on_path(&mut command, &self.root, None);
-                let version = run_bounded(command, PROBE_TIMEOUT)
-                    .ok()
-                    .filter(|(ok, _)| *ok)
-                    .map(|(_, output)| String::from_utf8_lossy(&output).lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("WARNING")).unwrap_or("").to_string())
-                    .unwrap_or_default();
+                let version = if waiting.contains_key(&provided.command) { String::new() } else { self.probe_version(provided, windows) };
                 (provided.command.clone(), version)
             })
             .collect()
@@ -580,6 +627,8 @@ impl ToolsRoot {
         self.switch_pointer(id, dir)?;
         let launchers = self.sync_launchers(id, dir, old_launchers)?;
         let previous = previous_dir.filter(|p| *p != dir).and_then(|p| self.read_sidecar(id, p).ok().map(|s| ExtToolsPreviousVersion { version: s.version, dir: p.to_string() }));
+        self.relay_online_overlays(id, dir, &manifest, &sidecar.platform);
+        let waiting = self.waiting_of(&manifest, &sidecar.platform);
         let install = ExtToolsInstall {
             schema: EXT_TOOLS_INSTALL_SCHEMA.to_string(),
             id: id.to_string(),
@@ -589,7 +638,8 @@ impl ToolsRoot {
             platform: sidecar.platform.clone(),
             origin,
             dir: dir.to_string(),
-            commands: self.probe_versions(&manifest, windows),
+            commands: self.probe_versions(&manifest, windows, &waiting),
+            waiting,
             launchers,
             smoke: ExtToolsSmokeResult::Passed,
             activated_at_ms: now_ms(),
@@ -611,6 +661,7 @@ impl ToolsRoot {
             Ok(install) => {
                 fs::remove_file(&journal_path).map_err(|e| format!("{}: {e}", journal_path.display()))?;
                 self.collect_versions(id);
+                self.collect_online();
                 Ok(install)
             }
             Err(error) => {
@@ -735,7 +786,8 @@ impl ToolsRoot {
         on_stage(ExtToolsStage::Checking);
         let mut smoke = ExtToolsSmokeResult::Skipped;
         if !apply.skip_smoke {
-            ext_tools_run_smoke(&manifest, staging, apply.platform.os == "windows", Some(&self.bin_dir()))?;
+            let waiting = self.waiting_of(&manifest, apply.platform.name);
+            ext_tools_run_smoke(&manifest, staging, apply.platform.os == "windows", &[&staging.join("bin"), &self.bin_dir()], &|provided| waiting.contains_key(&provided.command))?;
             smoke = ExtToolsSmokeResult::Passed;
         }
         let version_dir = self.version_dir(apply.id, &dir);
@@ -755,12 +807,14 @@ impl ToolsRoot {
         Ok(install)
     }
 
-    /// Run the smoke of what is active, for `ext-tools check --full`.
+    /// Run the smoke of what is active, for `ext-tools check --full`: against the launchers in `bin/`, and without the
+    /// commands whose online items are not here.
     pub fn check(&self, id: &str) -> ExtToolsResult<()> {
         self.health(id)?;
         let install = self.install_record(id).ok_or_else(|| format!("{id} is not installed"))?;
         let manifest = self.read_version_manifest(id, &install.dir)?;
-        ext_tools_run_smoke(&manifest, &self.version_dir(id, &install.dir), install.platform.starts_with("windows"), Some(&self.bin_dir()))
+        let waiting = self.waiting_of(&manifest, &install.platform);
+        ext_tools_run_smoke(&manifest, &self.version_dir(id, &install.dir), install.platform.starts_with("windows"), &[&self.bin_dir()], &|provided| waiting.contains_key(&provided.command))
     }
 
     /// Refresh the record's origin without touching the files: a seeded package the desired state names is the desired
@@ -801,6 +855,7 @@ impl ToolsRoot {
         fs::remove_file(self.install_path(id)).map_err(|e| format!("{}: {e}", self.install_path(id).display()))?;
         self.write_current()?;
         let _ = fs::remove_dir_all(self.root.join("versions").join(id));
+        self.collect_online();
         Ok(())
     }
 
@@ -843,13 +898,18 @@ impl ToolsRoot {
 }
 
 /// `opendan ext-tools <command>`: the engine for a tools root only a container can reach, namely the node's tools volume on
-/// a machine whose Docker runs in a VM. Prints one JSON line.
+/// a machine whose Docker runs in a VM. Prints one JSON line. For an online item the node downloads the archive and this
+/// only unpacks it (`online-begin`, `online-apply`, `online-fail`), so the container needs no network; `online-download`
+/// is the whole attempt in one, for a root at hand.
 pub fn ext_tools_cli_main(args: &[String]) -> i32 {
     fn value(args: &[String], name: &str) -> Option<String> {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
     }
     fn required(args: &[String], name: &str) -> ExtToolsResult<String> {
         value(args, name).ok_or_else(|| format!("{name} is required"))
+    }
+    fn request_ms(args: &[String]) -> ExtToolsResult<u64> {
+        value(args, "--request-ms").map_or(Ok(0), |raw| raw.parse().map_err(|_| format!("--request-ms `{raw}` is not a time in milliseconds")))
     }
     let run = || -> ExtToolsResult<serde_json::Value> {
         let command = args.first().map(String::as_str).unwrap_or("");
@@ -897,6 +957,19 @@ pub fn ext_tools_cli_main(args: &[String]) -> i32 {
                 root.check(&required(args, "--id")?)?;
                 Ok(serde_json::json!({}))
             }
+            "online" => Ok(to_json(&root.online())),
+            "online-begin" => Ok(to_json(&root.online_begin(&required(args, "--item")?, request_ms(args)?)?)),
+            "online-apply" => {
+                let archive = PathBuf::from(required(args, "--archive")?);
+                Ok(to_json(&root.online_apply(&required(args, "--item")?, &archive, request_ms(args)?)?))
+            }
+            "online-fail" => Ok(to_json(&root.online_fail(&required(args, "--item")?, &required(args, "--error")?, request_ms(args)?)?)),
+            "online-download" => {
+                let item = required(args, "--item")?;
+                let job = ExtToolsOnlineJob::new(request_ms(args)?);
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+                Ok(to_json(&runtime.block_on(ext_tools_online_install(root.path(), &item, &ExtToolsOnlineLimits::default(), &job))?))
+            }
             other => Err(format!("unknown command `{other}`")),
         }
     };
@@ -917,6 +990,9 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
+    mod online;
 
     struct Scratch(PathBuf);
 
@@ -945,11 +1021,12 @@ mod tests {
             version: version.to_string(),
             requires: requires.iter().map(|r| ExtToolsRequire { id: r.to_string(), version: "*".to_string() }).collect(),
             conflicts: vec![],
-            provides: commands.iter().map(|c| ExtToolsCommand { command: c.to_string(), version_probe: format!("{c} --version"), smoke: Some("smoke/all.sh".to_string()) }).collect(),
+            provides: commands.iter().map(|c| ExtToolsCommand { command: c.to_string(), version_probe: format!("{c} --version"), smoke: Some("smoke/all.sh".to_string()), needs: vec![] }).collect(),
             platforms: vec!["linux-x86_64".to_string()],
             size_bytes: BTreeMap::new(),
             license: String::new(),
             desc: String::new(),
+            online: vec![],
         }
     }
 

@@ -64,13 +64,14 @@ Script: same with `--kind script --source ./script/dist` (dir holding `main.py` 
 - Docker (host): `docker run --rm -p 8080:<inner_port> -e BUCKYOS_DATA_DIR=/data -v $PWD/data:/data <image>`. Installed (host): `docker logs buckyos-app-<web host>`, `docker port buckyos-app-<web host>`.
 
 #### Page tests (Playwright)
-The extended runtime brings one Chromium and the Playwright that matches it, and a session's `PLAYWRIGHT_BROWSERS_PATH` points at it: a project on that version downloads no browser and installs no system libraries.
+The extended runtime has one Chromium, which the node downloads once after ext-core is installed, and the Playwright that matches it; a session's `PLAYWRIGHT_BROWSERS_PATH` points at that browser: a project on that version downloads no browser and installs no system libraries.
 ```
 agent-browser version                       # chromium <version>, playwright-core <version>
 npm i -D @playwright/test@<that playwright-core version>
 npx playwright test
 ```
 - In the Playwright config write `use: { channel: 'chromium' }` (at the top level, or in every Chromium project). The package has the full browser only, no headless shell: without `channel` the launch fails with `Executable doesn't exist … chromium_headless_shell-…`. Do not run `npx playwright install` for it. A new project takes the system's version.
+- Not downloaded yet: `chromium --version` exits 127 and says so, the session has no `PLAYWRIGHT_BROWSERS_PATH`, and a test fails with `Executable doesn't exist … chromium-<the system's revision>`. Do not install a browser in its place (it would lack the libraries and fonts): the owner downloads it in Desktop Settings › Extension tools or with `buckyos ext-tools download ext-core chromium`, and sessions started after that have the variable.
 - A project pinned to another Playwright version needs a browser of its own (its launch says `Executable doesn't exist … chromium-<another revision>`), and on Linux that browser needs the package's libraries and fonts. Give them to that project's commands only, in a subshell, so that nothing else in the session sees them:
 ```
 ( eval "$(agent-browser env)"; npx playwright install chromium; npx playwright test )
@@ -95,4 +96,4 @@ Report: App DID, version, `pikg_digest`, task ids and outcome, URL, the request 
 Current repository contracts: [PIKG CLI](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md), [package format](https://github.com/buckyos/buckyos/blob/main/doc/pikg/format.md), [App configuration](https://github.com/buckyos/buckyos/blob/main/doc/sdk/app-package-config.md). This manual supplies the task recipe; schemas and historical proposals are maintained in those documents.
 Mounted CLI source `/opt/buckyos/libexec/buckyos-tool/cli/modules/{pikg,pikg_protocol,app}.ts`; samples in the BuckyOS repo `test/app_installer_test/pikg_samples/{static-web,script-host,docker}` and `src/apps/text_editor` (static-web App with SDK, NFSP and settings); websdk `examples/`. Extra scripts go to the project or `$OPENDAN_AGENT_ROOT/tools/`.
 
-Checked against: BuckyOS 0.7.0, Tool/SDK 0.7.131, static-web and Docker samples installed and upgraded, script sample installed, on test.buckyos.io from the host (not yet from an agent container), 2026-10-17. Page tests: the ext-core 1.3.0 payload mounted into a bare ubuntu:24.04 container, with @playwright/test 1.65.1 and 1.63.0, 2026-11-15 (not yet in an agent session).
+Checked against: BuckyOS 0.7.0, Tool/SDK 0.7.131, static-web and Docker samples installed and upgraded, script sample installed, on test.buckyos.io from the host (not yet from an agent container), 2026-10-17. Page tests: the ext-core 1.3.0 payload mounted into a bare ubuntu:24.04 container, with @playwright/test 1.65.1 and 1.63.0, 2026-11-15 (not yet in an agent session); with the browser as an online item, playwright-core 1.65.1 and `channel: 'chromium'` on a browser placed in `tools/online/chromium`, and `chromium` before the download (a node downloading it: not yet).

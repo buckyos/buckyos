@@ -519,7 +519,12 @@ fn hello(text: &str) -> Result<Hello, String> {
 }
 
 async fn refuse<W: Sink<Message> + Unpin>(sink: &mut W, code: &str, message: &str) {
-    let error = json!({ "type": "error", "code": code, "message": message });
+    refuse_with(sink, json!({ "code": code, "message": message })).await
+}
+
+/// End a connection that is not admitted with `error` (`{code, message, …}`).
+async fn refuse_with<W: Sink<Message> + Unpin>(sink: &mut W, mut error: Value) {
+    error["type"] = json!("error");
     let _ = tokio::time::timeout(SEND_WAIT, async {
         let _ = sink.send(Message::text(error.to_string())).await;
         let _ = sink.close().await;
@@ -550,7 +555,7 @@ where
     };
     let cdp = match module.ensure().await {
         Ok(cdp) => cdp,
-        Err(e) => return refuse(&mut sink, "browser_unavailable", &e.message).await,
+        Err(e) => return refuse_with(&mut sink, BrowserError { code: "browser_unavailable", ..e }.to_json()).await,
     };
     let version = cdp.send_within(None, "Browser.getVersion", json!({}), HISTORY_WAIT).await.unwrap_or(Value::Null);
     log::info!("browser: {who} looks at group {} ({}x{}{})", said.group_id, said.viewport.width, said.viewport.height, if said.viewport.mobile { ", phone" } else { "" });
@@ -630,7 +635,7 @@ where
                     }
                     screen.tell_state().await
                 }
-                Some(Told::Failed(e)) => screen.tell("error", json!({ "code": e.code, "message": e.message })).await,
+                Some(Told::Failed(e)) => screen.tell("error", e.to_json()).await,
                 None => Err(Gone),
             },
             _ = tokio::time::sleep_until(heard + timing.silence) => {
@@ -975,7 +980,7 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
         match action {
             "activate" => match self.module.activate_tab(&tab_id) {
                 Ok(_) => Ok(()),
-                Err(e) => self.fail(e.code, e.message).await,
+                Err(e) => self.tell("error", e.to_json()).await,
             },
             "close" => {
                 let (module, told) = (self.module.clone(), self.told.clone());

@@ -326,9 +326,22 @@ async fn a_screen_is_admitted_as_the_owner_after_its_hello() {
     let mut client = connect(&without.module, owner()).await;
     client.hello("default", phone()).await;
     let error = client.until("error").await;
-    assert_eq!(error["code"], "browser_unavailable");
+    assert_eq!((error["code"].as_str(), error["unavailable_code"].as_str()), (Some("browser_unavailable"), Some("no_package")));
     assert!(error["message"].as_str().unwrap().contains("chromium"));
     assert!(client.closes().await);
+
+    // The package is there, the browser it starts is not downloaded yet.
+    let tools = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tools.path().join("bin")).unwrap();
+    std::fs::copy(fake_browser::chromium(), tools.path().join("bin/chromium")).unwrap();
+    let dirs = vec![tools.path().join("bin")];
+    let waiting = Bench::new(|t| (t.chromium, t.tool_dirs) = (None, Some(dirs))).await;
+    let mut client = connect(&waiting.module, owner()).await;
+    client.hello("default", phone()).await;
+    let error = client.until("error").await;
+    assert_eq!((error["code"].as_str(), error["unavailable_code"].as_str()), (Some("browser_unavailable"), Some("not_downloaded")));
+    assert!(error["message"].as_str().unwrap().contains("not downloaded on this node yet"));
+    assert!(client.closes().await && waiting.fake.pid().is_none());
 
     // The owner: the browser is started for them, and they are told the group's state.
     let (mut client, state) = admitted(m, "default", json!({ "width": 100, "height": 915.4, "mobile": true })).await;

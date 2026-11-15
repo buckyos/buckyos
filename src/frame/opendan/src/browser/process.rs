@@ -21,17 +21,109 @@ const NO_SANDBOX_ERROR: &str = "No usable sandbox";
 /// (about 104 bytes): this much is left for `TMPDIR`.
 const MAX_TMPDIR: usize = 50;
 
+/// What this node has of the browser.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Chromium {
+    /// The executable to start.
+    Ready(PathBuf),
+    /// The extension package's launcher is there, the browser it starts is
+    /// not: why.
+    NotDownloaded { launcher: PathBuf, why: String },
+    /// No `chromium` at all: why.
+    NoPackage(String),
+}
+
+impl Chromium {
+    /// The node's `chromium`, whether or not it has a browser to start.
+    pub fn launcher(&self) -> Option<&Path> {
+        match self {
+            Self::Ready(launcher) | Self::NotDownloaded { launcher, .. } => Some(launcher),
+            Self::NoPackage(_) => None,
+        }
+    }
+}
+
 /// The browser's executable: `OPENDAN_CHROMIUM`, else `chromium` of the
 /// node's tool directories.
-pub fn find_chromium() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(ENV_CHROMIUM).filter(|p| !p.is_empty()) {
-        let path = PathBuf::from(path);
-        return path.is_file().then_some(path);
+pub fn find_chromium() -> Chromium {
+    match std::env::var_os(ENV_CHROMIUM).filter(|p| !p.is_empty()) {
+        Some(path) => named_chromium(Path::new(&path)),
+        None => chromium_in(&libopendan::baseline::managed_tool_dirs()),
     }
-    let dirs = std::env::join_paths(libopendan::baseline::managed_tool_dirs()).ok()?;
-    libopendan::baseline::resolve_locally(&["chromium"], &[], Some(&dirs), &[])
-        .remove("chromium")
-        .map(PathBuf::from)
+}
+
+/// An executable named outright (`OPENDAN_CHROMIUM`, a test's): started as
+/// it is, whatever the node has downloaded.
+pub fn named_chromium(path: &Path) -> Chromium {
+    if path.is_file() {
+        Chromium::Ready(path.to_path_buf())
+    } else {
+        Chromium::NoPackage(format!("no `chromium` at {} (`{ENV_CHROMIUM}`)", path.display()))
+    }
+}
+
+/// `chromium` of the tool directories `dirs`: the extension package's
+/// launcher, usable once the browser it starts is downloaded.
+pub fn chromium_in(dirs: &[PathBuf]) -> Chromium {
+    let launcher = std::env::join_paths(dirs)
+        .ok()
+        .filter(|_| !dirs.is_empty())
+        .and_then(|dirs| libopendan::baseline::resolve_locally(&["chromium"], &[], Some(&dirs), &[]).remove("chromium"))
+        .map(PathBuf::from);
+    let Some(launcher) = launcher else {
+        return Chromium::NoPackage("no `chromium` on this node (it comes with the ext-core extension tools)".to_string());
+    };
+    match not_downloaded(&launcher) {
+        Some(why) => Chromium::NotDownloaded { launcher, why },
+        None => Chromium::Ready(launcher),
+    }
+}
+
+/// Why the browser `launcher` starts is not on this node (`None`: it is).
+/// The browser is an online item of the extension package: not part of it,
+/// downloaded by the node to `online/chromium` beside the launcher's
+/// directory and recorded in `online/chromium.json` (no record: not
+/// downloaded). Read at every call: a download that ends is seen at once.
+fn not_downloaded(launcher: &Path) -> Option<String> {
+    const SETTINGS: &str = "Settings › Extension tools, or with `buckyos ext-tools download ext-core chromium`";
+    let online = launcher.parent()?.parent()?.join("online");
+    let (dir, file) = (online.join("chromium"), online.join("chromium.json"));
+    let unreadable = |why: &dyn std::fmt::Display| format!("the record of the browser's download ({}) is not readable: {why}", file.display());
+    let record: Value = match std::fs::read(&file) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(record) => record,
+            Err(e) => return Some(unreadable(&e)),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Some(format!(
+                "the browser is not downloaded on this node yet (the online item `chromium` of ext-core): download it in {SETTINGS}"
+            ));
+        }
+        Err(e) => return Some(unreadable(&e)),
+    };
+    match record["state"].as_str() {
+        Some("ready") if dir.is_dir() => None,
+        Some("ready") => Some(format!(
+            "the browser's download is recorded as ready, but {} is not there: download it again in {SETTINGS}",
+            dir.display()
+        )),
+        Some("downloading") => {
+            let progress = match (record["downloaded_bytes"].as_u64(), record["size_bytes"].as_u64().filter(|size| *size > 0)) {
+                (Some(done), Some(size)) => format!(" ({}% of {} MiB)", done.min(size) * 100 / size, size.div_ceil(1024 * 1024)),
+                _ => String::new(),
+            };
+            Some(format!("the browser is being downloaded to this node{progress}"))
+        }
+        Some("failed") => Some(format!(
+            "the browser's download to this node failed: {}. Start it again in {SETTINGS}",
+            record["error"].as_str().map(str::trim).filter(|e| !e.is_empty()).unwrap_or("no reason is recorded").trim_end_matches('.')
+        )),
+        state => Some(format!(
+            "the record of the browser's download ({}) has a state this service does not know: {}",
+            file.display(),
+            state.unwrap_or("none")
+        )),
+    }
 }
 
 /// `browser/versions.json` of the extension package the launcher belongs to
@@ -502,6 +594,61 @@ mod tests {
         assert!(agent.ends_with("Chrome/159.0.0.0 Safari/537.36") && !agent.contains("Headless"), "{agent}");
         assert!(arguments(&dirs, false, Some(&agent)).contains(&format!("--user-agent={agent}")));
         assert_eq!(user_agent(""), None);
+    }
+
+    /// The extension package brings the launcher; the browser itself is
+    /// its online item, there once its record says `ready`.
+    #[test]
+    fn the_browser_of_the_tool_directories_is_there_once_its_download_is_ready() {
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tmp.path().join("tools");
+        let dirs = [tools.join("bin"), tmp.path().join("bin/agent-tools")];
+        let launcher = tools.join("bin/chromium");
+        let why = |found: Chromium| match found {
+            Chromium::NotDownloaded { launcher: of, why } if of == launcher => why,
+            other => panic!("not waiting for its download: {other:?}"),
+        };
+        let record = |record: Value| std::fs::write(tools.join("online/chromium.json"), record.to_string()).unwrap();
+
+        // No extension package.
+        assert!(matches!(chromium_in(&dirs), Chromium::NoPackage(why) if why.contains("no `chromium` on this node")));
+        assert!(matches!(chromium_in(&[]), Chromium::NoPackage(_)));
+        assert_eq!(chromium_in(&dirs).launcher(), None);
+
+        // The package, whose online item is not there yet.
+        std::fs::create_dir_all(tools.join("bin")).unwrap();
+        std::fs::write(&launcher, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(why(chromium_in(&dirs)).contains("not downloaded on this node yet"));
+        assert_eq!(chromium_in(&dirs).launcher(), Some(launcher.as_path()));
+        std::fs::create_dir_all(tools.join("online")).unwrap();
+        record(json!({ "state": "downloading", "size_bytes": 200u64 << 20, "downloaded_bytes": 84u64 << 20 }));
+        assert_eq!(why(chromium_in(&dirs)), "the browser is being downloaded to this node (42% of 200 MiB)");
+        record(json!({ "state": "downloading" }));
+        assert_eq!(why(chromium_in(&dirs)), "the browser is being downloaded to this node");
+        record(json!({ "state": "failed", "error": "sha256 mismatch." }));
+        assert!(why(chromium_in(&dirs)).contains("failed: sha256 mismatch. Start it again in Settings"));
+        record(json!({ "state": "failed", "error": null }));
+        assert!(why(chromium_in(&dirs)).contains("failed: no reason is recorded."));
+        record(json!({ "state": "paused" }));
+        assert!(why(chromium_in(&dirs)).contains("does not know: paused"));
+        std::fs::write(tools.join("online/chromium.json"), "{ \"state\": \"rea").unwrap();
+        assert!(why(chromium_in(&dirs)).contains("is not readable"));
+        record(json!({ "state": "ready" }));
+        assert!(why(chromium_in(&dirs)).contains("recorded as ready, but"), "the record without what it records");
+
+        // Downloaded.
+        std::fs::create_dir_all(tools.join("online/chromium")).unwrap();
+        assert_eq!(chromium_in(&dirs), Chromium::Ready(launcher.clone()));
+        // Downloaded again: not there until that ends.
+        record(json!({ "state": "downloading", "size_bytes": 10, "downloaded_bytes": 0 }));
+        assert!(why(chromium_in(&dirs)).contains("0% of 1 MiB"));
+
+        // An executable named outright is started as it is.
+        assert_eq!(named_chromium(&launcher), Chromium::Ready(launcher.clone()));
+        assert!(matches!(named_chromium(Path::new("/nonexistent/chromium")), Chromium::NoPackage(why) if why.contains("/nonexistent/chromium")));
     }
 
     #[test]

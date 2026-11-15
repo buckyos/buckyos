@@ -107,6 +107,7 @@ ext-manifest.json     # 根上一份；工程根的同名文件是唯一来源�
 bin/<command>         # provides 的每个命令一个 launcher，且只能是 provides 里的（Windows 可带 .exe/.cmd/.bat/.ps1）
 smoke/...             # provides 引用的无网络检查脚本；Windows payload 里是同名的 .ps1
 store/<id>/...        # 工具本体，只写自己的 id
+online/<item>/...     # 在线项的 overlay（见下），只能是清单 online 里声明过的 item
 ```
 
 `bin/` 下的文件必须可执行（Windows 除外），不得出现构建机绝对路径（`/home/`、`/Users/`、`/root/`、`/tmp/`、`/opt/buckyos/` 或工程目录）；launcher 从自身位置定位 `store/<id>`。符号链接打包时读穿，指出 payload 的会被拒绝。
@@ -132,6 +133,52 @@ store/<id>/...        # 工具本体，只写自己的 id
 ```
 
 `id`、`version` 必须等于 AppDoc 的 `name`、`version`。标准层的命令（`baseline::STANDARD_TOOLS`）不能被任何包提供：`tools/bin` 在 PATH 上排在 `bin/agent-tools` 之前，会遮蔽 Agent 的身份与控制命令。`provides` 是系统对“哪个包提供哪个命令”的全部知识；同一命令被两个包提供时，至少一方要在 `conflicts` 里列出另一方，两者不能同时启用。`ext-core`（[publish/exttool/ext-core](../../publish/exttool/ext-core)）是第一个包，它的 `provides` 由单测与 `baseline::EXTENDED_TOOLS` 绑定。
+
+**在线项**（可选的 `online`，以及 `provides[].needs`）：包只声明、不携带的东西，节点在包装好以后从上游下载到 `$BUCKYOS_ROOT/tools/online/<id>/`（机制、状态和触发见 [paios 容器需求 §6.4 “在线项”](../app_service/paios容器需求.md)）。
+
+```json
+{
+  "online": [
+    {
+      "id": "chromium",
+      "version": "159.0.8154.6",
+      "desc": "Chrome for Testing",
+      "license": "上游的东西：从哪里来，按什么条款用",
+      "auto": true,
+      "platforms": {
+        "linux-x86_64": {
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/159.0.8154.6/linux64/chrome-linux64.zip",
+          "sha256": "<64 位十六进制>",
+          "size_bytes": 208987836,
+          "format": "zip",
+          "into": "chromium-1255",
+          "rename": [["chromium-1255/chrome-linux64/chrome", "chromium-1255/chrome-linux64/chrome-bin"]],
+          "overlay": "online/chromium"
+        }
+      }
+    }
+  ],
+  "provides": [
+    {"command": "chromium", "version_probe": "chromium --version", "smoke": "smoke/chromium.sh", "needs": ["chromium"]}
+  ]
+}
+```
+
+| 字段 | 规则 |
+| --- | --- |
+| `online[].id` | 小写字母、数字、短横线，清单内不重复。一个节点上同名的在线项只有一份 |
+| `online[].version` | 字母、数字和 `._+-`。版本或归档（`sha256`）变了，节点才重新下载 |
+| `online[].desc`、`license`、`auto` | 可选。`license` 一句话写明这是上游的东西、从哪里来、按什么条款用；`auto` 为 `true` 时包装好以后自动下载一次，缺省 `false` |
+| `online[].platforms` | 不能为空，键必须是包自己的 `platforms` 之一。没有某个平台的条目，就是这个平台上没有它 |
+| `url` | 必须是 `https://` 的上游官方地址。没有镜像字段，也没有可以覆盖的下载源 |
+| `sha256`、`size_bytes` | 归档的 SHA256（64 位十六进制）和字节数（大于 0） |
+| `format` | `zip` 或 `tar.gz`。`zip` 保留可执行位和符号链接（macOS 的 app 包靠它们） |
+| `into` | 可选。解到在线项目录下的这个相对路径里，归档自己的顶层目录保留 |
+| `rename` | 可选。`[from, to]` 的列表，解完以后在在线项目录里改名；`to` 不能已经存在 |
+| `overlay` | 可选。payload 里的一个目录，必须是 `online/<id>` 或它下面的目录，并且在该平台的 payload 里存在；解完、改完名之后把它的内容盖到在线项目录上 |
+| `provides[].needs` | 可选。这条命令离不开的在线项 id，必须在 `online` 里声明过，不重复 |
+
+`into`、`rename`、`overlay` 都是不含 `..`、不以 `/` 开头的相对路径。`needs` 了在线项的命令在它到 `ready` 之前记为“等在线项”：不算包损坏，版本探测和 smoke 都跳过；在线项到了以后补探测，smoke 由 `ext-tools check --full` 跑。在线项已经在的节点上（包升级而在线项的版本没变），安装检查照常跑这类命令的 smoke，这时 payload 还在 `tools/staging/<名字>/` 里。所以这类命令的 launcher 要能从三个位置找到 `tools/online/<item>`：装好以后的 `tools/bin/`（上一层）、检查时的 `tools/staging/<名字>/bin/`（上三层）、版本目录 `tools/versions/<id>/<目录>/bin/`（上四层），找不到时给出明确的话。同一个 `version` 下 `into`、`rename` 不能改（节点只在版本或归档变了时重新下载）；`overlay` 的内容可以随包改，包每次激活都会把它重新盖到已有的在线项上，overlay 里只能有普通文件和目录。Rust（`ExtToolsManifest::validate`、`ext_tools_payload_errors`）和 TypeScript（`extToolsManifestErrors`、`extToolsPayloadErrors`）两份校验一致。
 
 工程布局、`pikg init --kind ext-tools` 与 `pikg doctor [--catalog]` 见 [WebSDK PIKG CLI](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md)。
 

@@ -512,7 +512,7 @@ def finalize(payload: Path, source_root: Path, platform: str, version: str, dist
         if not component.get("metadata_only") and not any(p.is_file() for p in directory.rglob("*")):
             raise ComplianceError(f'{component["id"]}: license texts are missing')
     for name in ("build.sh", "compliance.py", "official_sources.py", "official-sources.json", "source-mirrors.json", "release_manifest.py",
-                 "conda-env.yml", "conda-lock.yml", "sources.sha256", "ext-manifest.json"):
+                 "place_online.py", "conda-env.yml", "conda-lock.yml", "sources.sha256", "ext-manifest.json"):
         source = HERE / name
         if not source.is_file():
             raise ComplianceError(f"build recipe missing: {source}")

@@ -31,6 +31,10 @@ const MAX_WAIT_READY_BYTES: usize = 2048;
 const MAX_ZIP_ENTRIES: usize = 10_000;
 /// How `page-render` exits when its own `--timeout` ran out.
 const EXIT_TIMED_OUT: i32 = 3;
+/// How `page-render` exits when the node has no browser for it to start: the
+/// browser is the online item `chromium` of ext-core, downloaded by the node
+/// after the package is installed.
+const EXIT_NO_BROWSER: i32 = 6;
 
 /// `is_pure` as for `media.to_pdf`: reusable, not byte-identical (Chromium
 /// stamps the creation time into every PDF).
@@ -264,6 +268,18 @@ async fn render(ctx: &NativeContext, work: &Path, mut args: Vec<String>, output:
         .rev()
         .find_map(|line| serde_json::from_str::<Value>(line.trim()).ok().filter(Value::is_object));
     let (Some(produced), Some(report)) = (produced.filter(|_| out.success), report) else {
+        if out.exit_code == Some(EXIT_NO_BROWSER) {
+            return Err(ThunkExecutionError::new(
+                error_codes::TOOLS_MISSING,
+                "this node has not downloaded the browser yet (the online item `chromium` of ext-core): download it in Settings › Extension tools",
+            )
+            .with_details(json!({
+                "tools_missing": ["chromium"],
+                "online_item": "chromium",
+                "tool": out.tool,
+                "stderr_tail": out.stderr_tail,
+            })));
+        }
         if out.exit_code == Some(EXIT_TIMED_OUT) {
             return Err(ThunkExecutionError::new(error_codes::TIMEOUT, "page-render: the page was not ready in time")
                 .with_details(json!({"tool": out.tool, "stderr_tail": out.stderr_tail})));
@@ -291,12 +307,15 @@ fn metrics(report: &Value) -> Value {
 
 /// A stand-in for `page-render` that keeps its contract without a browser: it
 /// records its arguments and environment in its working directory, writes a
-/// file of the kind asked for and prints the report line.
+/// file of the kind asked for and prints the report line. While a file
+/// `no-browser` is beside it, it is a `page-render` whose browser the node
+/// has not downloaded.
 #[cfg(all(test, unix))]
 pub(crate) fn stub_page_render(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     const STUB: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "page-render 0.0.0-stub chromium 0 playwright-core 0"; exit 0; fi
+if [ -e "${0%/*}/no-browser" ]; then echo "page-render: Chrome for Testing is not downloaded on this node yet" >&2; exit 6; fi
 printf '%s\n' "$@" > args.txt
 env > env.txt
 while [ $# -gt 0 ]; do

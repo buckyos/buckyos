@@ -23,7 +23,7 @@
 | `ffprobe` | ffmpeg ≥ 6.0 | `media.probe`（video）、`media.extract_frames`、`media.extract_audio` | 时长、流信息（有无音轨） | `ffprobe -hide_banner -version`，取 `ffprobe version <x>` |
 | `ffmpeg` | ≥ 6.0，带 `libmp3lame`（音轨输出）、PNG 编码 | `media.extract_frames`、`media.extract_audio`；`media.fit_image` 的可选依赖（`image` crate 解不了的格式先转 PNG） | 均匀抽帧、提取音轨、非常见图片格式解码 | `ffmpeg -hide_banner -version` |
 | `soffice`（LibreOffice headless：core、writer、impress、calc、draw；`ext-core` 带的是 26.8） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
-| `page-render`（`ext-core` 的命令：Node 脚本，用 `playwright-core` 起一个一次性的无头 Chromium；参数和输出见 [Agent 浏览器 TODO §5.7](../../notepads/agent-runtime-browser-todo.md)） | — | `media.page_to_pdf`、`media.page_snapshot` | HTML 页面（一份 HTML，或带 `index.html` 的 zip）输出成 PDF 或 PNG；Browser lane 并发 1，隔离运行（§3.1） | `page-render --version` 退出码为 0 时取第一行（`page-render <版本> chromium <版本> playwright-core <版本>`），整行就是它的版本 |
+| `page-render`（`ext-core` 的命令：Node 脚本，用 `playwright-core` 起一个一次性的无头 Chromium；浏览器本身不在包里，是包的在线项，由节点下载，见 §3.2；参数和输出见 [Agent 浏览器 TODO §5.7](../../notepads/agent-runtime-browser-todo.md)） | — | `media.page_to_pdf`、`media.page_snapshot` | HTML 页面（一份 HTML，或带 `index.html` 的 zip）输出成 PDF 或 PNG；Browser lane 并发 1，隔离运行（§3.1） | `page-render --version` 退出码为 0 时取第一行（`page-render <版本> chromium <版本> playwright-core <版本>`），整行就是它的版本；这一步不启动浏览器，浏览器没下载时照样取得到 |
 | 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体，Linux 上不读系统字体目录） | — | `media.to_pdf`（经 soffice）、`media.page_to_pdf`、`media.page_snapshot`（经 Chromium；一个字体都没有时渲染文字会崩溃） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf`、`page_to_pdf`、`page_snapshot` 的指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
 | locale：`C.UTF-8` 可用（glibc 自带；`ext-core` 的 soffice launcher 在环境没有 UTF-8 locale 时自己设 `LC_ALL=C.UTF-8`） | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
 | `tesseract`，带常用语言数据（`ext-core` 保留的 28 种加 `osd`，见 [paios容器需求.md](../app_service/paios容器需求.md) §6.4） | ≥ 5.0 | `media.ocr_pages`（软依赖：缺它时各页保留文字层，步骤输出 `status: tools_missing`，结果不进缓存） | 文字层缺失或乱码的页重新识别；按窗口抽样选语言（试各文字系统的代表模型比置信度，都不像时问 `osd`）；竖排中日韩用 `_vert` 模型 | `tesseract --version` 取第二个 token；`tesseract --list-langs` 的语言表进 `ocr_pages` 指纹（`env/ocr_langs`），增减语言包使旧结果失效 |
@@ -65,6 +65,18 @@
 Chromium 自身的沙箱由 `page-render` 处理：先带沙箱起，宿主不支持时去掉重试，报告行里 `sandbox: false`，workflow 记一条警告，并写进 Thunk 的 `metrics.native`。macOS 上不降权、不建网络命名空间，清环境和进程组照做。Windows 上也不降权：白名单是 `PATH`、`PATHEXT`、`ComSpec`、`SystemRoot`、`SystemDrive`、`windir`、`ProgramData`、`ProgramFiles`、`ProgramFiles(x86)`，另设 `USERPROFILE`、`APPDATA`、`LOCALAPPDATA` 指到 `page\home` 之下，`TEMP`、`TMP` 指到 `page\tmp`；没有进程组，超时、取消或调用被丢弃时用 `taskkill /F /T` 结束进程树。
 
 实测（2026-11-15，本机，Chrome for Testing 159.0.8154.6、playwright-core 1.65.1）：一次性容器里以 root 运行，默认配置下降到 `nobody`、没有网络命名空间、`sandbox: false`；加 `CAP_SYS_ADMIN` 并放开 seccomp / AppArmor（相当于宿主上的 root）时降到 `nobody`、有网络命名空间、`sandbox: true`。不是 root 的开发机上走 `unshare --user --map-root-user --net`，进程在命名空间里是 root，Chromium 因此不开沙箱（`sandbox: false`）。三种情况用的执行临时目录都和服务上一样深（超过 100 个字符）；`TMPDIR` 还放在里面时，同一条用例以 `Socket path too long` 失败。
+
+### 3.2 `page-render` 的浏览器是在线项
+
+Chrome for Testing 不随 `ext-core` 分发。包装好以后，节点从官方地址把它下载到 `$BUCKYOS_ROOT/tools/online/chromium/`，状态记在 `$BUCKYOS_ROOT/tools/online/chromium.json`；下载失败不自动重试，管理员在“设置 > 扩展工具”里或用 `buckyos ext-tools download ext-core chromium` 再次触发。`page-render` 的启动器和脚本仍然随包，所以有一段时间命令在、浏览器不在：
+
+| 环节 | 浏览器没下载时 |
+| --- | --- |
+| 探测（服务启动时的 `page-render --version`） | 照常。三个版本取自随包的 `browser/versions.json`，不启动浏览器：`page-render` 不进 `environment.missing`，`cmd/page-render` 指纹和下载之后的一样 |
+| 执行 `media.page_to_pdf`、`media.page_snapshot` | `page-render` 以退出码 6 结束（5 是浏览器在、没起来）。步骤以 `tools_missing` 失败，不重试，不进缓存：`message` 是 `this node has not downloaded the browser yet (the online item chromium of ext-core): download it in Settings › Extension tools`（`chromium` 带反引号），`details` 是 `{tools_missing: ["chromium"], online_item: "chromium", tool: "page-render", stderr_tail}`。和搜索路径上缺命令的 `tools_missing` 的区别：有 `online_item`，没有 `searched` |
+| 下载好之后 | 不用重启 workflow：启动器的路径和指纹都没变，下一次执行直接成功 |
+
+隔离运行降到 `nobody` 时（§3.1），`nobody` 要读得到 `tools/online/chromium/`，和读工具目录的要求相同。
 
 ## 4. 冒烟样例（宿主与镜像都要跑）
 

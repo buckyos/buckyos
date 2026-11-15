@@ -296,6 +296,8 @@ export interface ExtCheck {
   status: 'ok' | 'partial' | 'none' | 'system'
   missing: string[]
   system: string[]
+  /** Commands that are there and wait for their online item to be downloaded; not missing. */
+  waiting?: string[]
 }
 
 /** The last check of a runtime's tools against its declaration: a hint, never the declaration. */
@@ -1070,6 +1072,8 @@ export interface SkillCommandsStatus {
   commands: Record<string, { present: boolean; provided_by?: string | null }>
   recommended_packages?: { id: string; version: string; requires_chain?: string[]; provides: string[] }[]
   no_package?: string[]
+  /** Commands whose package is installed while the online item they run is not downloaded to the node yet. */
+  waiting_online?: { package: string; item: string; commands: string[] }[]
 }
 
 /** One work skill on one runtime (`skills.status`). */

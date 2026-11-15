@@ -146,6 +146,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "waiting": {
+          "default": [],
+          "description": "Extended commands whose launcher is there while the online item it runs (a download of its package, such as the browser) is not yet on the node: not missing, not usable either.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [

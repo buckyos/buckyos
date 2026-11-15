@@ -417,3 +417,12 @@ test('home on a wide screen', async ({ page }) => {
   await expect(page.getByTestId('model-row')).toHaveCount(3)
   await page.screenshot({ path: 'test-results/home-desktop.png', fullPage: true })
 })
+
+test('a runtime whose tool check found commands waiting for their online item says so after the extension line', async ({ page }) => {
+  const errors = await open(page)
+  await page.getByTestId('known-runtimes').getByTestId('runtime-build-box').getByRole('link').click()
+  const detail = page.getByTestId('runtime-page')
+  await expect(detail.getByTestId('runtime-ext')).toHaveText('Extension tools: complete · waiting for download: chromium, page-render')
+  await expect(detail.getByTestId('runtime-ext')).toHaveClass(/text-mute/)
+  expect(errors).toEqual([])
+})

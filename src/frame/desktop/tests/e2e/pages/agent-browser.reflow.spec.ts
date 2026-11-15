@@ -387,13 +387,16 @@ test('with the browser unavailable what was made still shows, and making says wh
   await page.getByTestId('ab-reflow-notice-dismiss').click()
   await expect(notice).toHaveCount(0)
 
-  // A browser that is turned off does not even answer what the library has: the App reads the library itself.
+  // A browser that is turned off still answers what the library has (protocol §5.3); making still says why it cannot.
   await page.evaluate((agent) => (window as unknown as MockWindow).__agentBrowserMock.setAvailability(agent, { enabled: false }), AGENT)
+  const read = (await rpc(page, 'browser.reflow_state')).length
   await go(page, 'old.example.org/about')
   await expect(frame(page).locator('#title')).toHaveText('About the old site')
   await expect(page.getByTestId('ab-reflow-made')).toHaveAttribute('data-kind', 'fallback')
-  await go(page, 'old.example.org/nothing')
-  await expect(page.getByTestId('ab-reflow-unmade')).toHaveAttribute('data-reason', 'browser_unavailable')
+  expect((await rpc(page, 'browser.reflow_state')).length).toBeGreaterThan(read)
+  await go(page, 'news.example.com/story/1')
+  await page.getByTestId('ab-reflow-refresh').click()
+  await expect(page.getByTestId('ab-reflow-notice')).toHaveAttribute('data-kind', 'browser_unavailable')
   expect(await asks(page)).toEqual([])
 })
 

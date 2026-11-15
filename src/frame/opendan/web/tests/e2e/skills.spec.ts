@@ -79,16 +79,16 @@ const open = async (page: Page, hash = '#/skills') => {
 test('home counts the skills and links to the page', async ({ page }) => {
   const errors = await open(page, '')
   const card = page.getByTestId('skills-card')
-  await expect(card.getByTestId('skills-card-summary')).toHaveText('7 available / 1 disabled')
+  await expect(card.getByTestId('skills-card-summary')).toHaveText('8 available / 1 disabled')
   await card.getByRole('link').click()
   await expect(page.getByTestId('skills-page')).toBeVisible()
-  await expect(page.getByTestId('skills-summary')).toHaveText('7 available / 1 disabled')
+  await expect(page.getByTestId('skills-summary')).toHaveText('8 available / 1 disabled')
   expect(errors).toEqual([])
 })
 
 test('skills are grouped by kind with the availability of the selected runtime', async ({ page }) => {
   const errors = await open(page)
-  await expect(page.getByTestId('skills-work').locator('tbody tr')).toHaveCount(7)
+  await expect(page.getByTestId('skills-work').locator('tbody tr')).toHaveCount(8)
   await expect(page.getByTestId('skills-plan').locator('tbody tr')).toHaveCount(1)
   await expect(page.getByTestId('skills-goal')).toHaveCount(0)
   await expect(page.getByTestId('skills-runtime-select')).toHaveValue('private')
@@ -123,6 +123,20 @@ test('skills are grouped by kind with the availability of the selected runtime',
   expect(errors).toEqual([])
 })
 
+test('a command waiting for its online item is not missing: it says what it waits for and where to download it', async ({ page }) => {
+  const errors = await open(page)
+  const browser = page.getByTestId('skill-availability-browser')
+  await expect(browser).toContainText('Some steps lack commands')
+  const waiting = browser.getByTestId('skill-waiting-online')
+  await expect(waiting).toContainText('Waiting for ext-core’s online item chromium to download (chromium)')
+  await expect(waiting).toContainText('Settings > Extension Tools')
+  await expect(waiting.getByTestId('skill-waiting-open')).toHaveAttribute('href', 'https://test.buckyos.io/?settings=ext-tools')
+  // Neither missing nor a package to enable: ext-core is there.
+  await expect(browser.getByTestId('skill-missing')).toHaveCount(0)
+  await expect(browser.getByTestId('skill-recommended')).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
 test('disable with a reason, enable, and remove an installed skill', async ({ page }) => {
   const errors = await open(page)
   const share = page.getByTestId('skill-work-share')
@@ -131,7 +145,7 @@ test('disable with a reason, enable, and remove an installed skill', async ({ pa
   await dialog.getByLabel('Reason (optional)').fill('not sharing for now')
   await dialog.getByRole('button', { name: 'Disable' }).click()
   await expect(share.getByTestId('skill-disabled-reason')).toContainText('not sharing for now')
-  await expect(page.getByTestId('skills-summary')).toHaveText('6 available / 2 disabled')
+  await expect(page.getByTestId('skills-summary')).toHaveText('7 available / 2 disabled')
   await share.getByRole('button', { name: 'Enable' }).click()
   await expect(share.getByTestId('skill-disabled-reason')).toHaveCount(0)
 

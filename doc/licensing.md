@@ -25,8 +25,10 @@
 
 MPL 部分保留文件级授权及源码提供安排；LGPL 部分还需满足适用的替换、修改和重新链接要求。GPL/AGPL 独立工具不因聚合分发而改用 BuckyOS 或安装器的许可证。
 
+扩展包的在线项（`ext-manifest.json` 的 `online`）不在我们的分发范围内：包里只写上游的官方地址、SHA-256 和大小，包装好以后由节点自己从上游下载到 `$BUCKYOS_ROOT/tools/online/<id>/`，运行包、`.pikg`、离线包和镜像都不带它，源码包和 `LICENSES/` 里也没有它的材料。目前只有 ext-core 的 `chromium`（Chrome for Testing，归档里带闭源的 Widevine CDM）是在线项；它的使用条款是节点的 owner 与 Google 之间的事。
+
 ## 发布核对
 
 先检查许可证与包元数据，再执行相关打包测试和实际归档检查。确保运行包中的许可证、来源记录和发行的对应源码包完整匹配。禁止发布缺少必需源码、许可证或补丁材料的扩展工具包。
 
-当前保留官方 Pandoc 二进制。其完整静态依赖源码记录尚未补齐，因此源码收集可运行，但最终归档和发行会失败；不会将只含 Pandoc 主仓库的源码标为完整。ext-core 1.3.0 起带的 Chrome for Testing 也有一条未解决项：Linux 和 macOS 的归档里带着 Widevine CDM，它的许可不允许再分发。缺口记录在 `publish/exttool/ext-core/official-sources.json` 的 `unresolved_source_requirements`，其他组件的缺口也受同一检查约束。
+当前保留官方 Pandoc 二进制。其完整静态依赖源码记录尚未补齐，因此源码收集可运行，但最终归档和发行会失败；不会将只含 Pandoc 主仓库的源码标为完整。缺口记录在 `publish/exttool/ext-core/official-sources.json` 的 `unresolved_source_requirements`，其他组件的缺口也受同一检查约束。

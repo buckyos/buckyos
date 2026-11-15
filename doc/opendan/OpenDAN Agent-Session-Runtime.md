@@ -158,7 +158,7 @@ host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，
 
 软件版本以 `xagent runtime ext-tools status` 和实际运行端的版本输出为准。保证的是命令存在、无网络 smoke 通过，不是所有编解码器、字体、语言包都具备：`tesseract` 只带 `eng`、`osd`；中文字幕需要可用的中文字库；Python 项目需要自己的依赖环境（`uv` 管理，解释器落到 Agent 的缓存，见 [path_usage.md](../path_usage.md)）。Windows PowerShell 5.1 里 `curl`、`compare` 是别名，要写 `curl.cmd`、`magick compare`。
 
-浏览器（`ext-core` 1.3.0 起）：包里有一份 Chromium（Chrome for Testing）和配套的 `playwright-core`，版本用 `agent-browser version` 查。只带完整构建，没有 headless shell，Playwright 的测试配置要写 `channel: 'chromium'`。这台机器装了 `ext-core` 的浏览器时，Session 的环境里有 `PLAYWRIGHT_BROWSERS_PATH`（指到 `$BUCKYOS_ROOT/tools/store/ext-core/chromium`）和 `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1`，项目用同一版本的 `@playwright/test` 时不用下载浏览器，也不用装系统库。浏览器目录只读、只有这一个版本：项目用别的 Playwright 版本时按 `agent-browser env` 的输出设环境变量，把它自己的浏览器下到别处。以 root 运行或在容器里启动 Chromium 要带 `--no-sandbox`。
+浏览器（`ext-core` 1.3.0 起）：包里有 `playwright-core` 和三条命令，浏览器本身（Chrome for Testing）是包的在线项，不随包分发，包装好以后节点联网从 Google 的官方地址下载一次，放在 `$BUCKYOS_ROOT/tools/online/chromium`；版本用 `agent-browser version` 查。还没下载（或下载失败）时 `chromium` 退 127 并说明原因，`baseline_check` 把它记成“等下载”，不算缺失（`ext.waiting`，plan 那一段显示 `ok; not downloaded yet: chromium`，`ok` 不受影响）；手册的命令状态把它列在 `waiting_online` 里，不再推荐启用 ext-core；其余扩展命令不受影响。owner 在 Desktop“设置 > 扩展工具”里下载或重试，或执行 `buckyos ext-tools download ext-core chromium`。只有完整构建，没有 headless shell，Playwright 的测试配置要写 `channel: 'chromium'`。浏览器下载好以后启动的 Session，环境里有 `PLAYWRIGHT_BROWSERS_PATH`（指到 `$BUCKYOS_ROOT/tools/online/chromium`）和 `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1`，项目用同一版本的 `@playwright/test` 时不用下载浏览器，也不用装系统库。浏览器目录只读、只有这一个版本：项目用别的 Playwright 版本时按 `agent-browser env` 的输出设环境变量，把它自己的浏览器下到别处。以 root 运行或在容器里启动 Chromium 要带 `--no-sandbox`。
 
 种子镜像（`paios/exttool`）另外带预热的 `uv-cache`、`deno-cache`：不能据此认定依赖已装进每个 Session 的项目环境。FreeCAD 不在默认镜像里，要用 `FREECAD_APPIMAGE_URL_*` 单独构建，之后成为 `ext-cad` 包（§6.4 表 C）。
 
@@ -265,7 +265,7 @@ agent-session runtime get host
 xagent runtime check host --commands ffmpeg,pandoc --full
 ```
 
-最后三条的 `host` 应替换为实际登记的 runtime ID。`runtime baseline --check` 检查命令所在机器；`runtime check <id>` 通过登记信息检查目标，两者不能混用。plan 全表每行多一段 `ext: ok | partial(missing …) | none | system`。
+最后三条的 `host` 应替换为实际登记的 runtime ID。`runtime baseline --check` 检查命令所在机器；`runtime check <id>` 通过登记信息检查目标，两者不能混用。plan 全表每行多一段 `ext: ok | partial(missing …) | none | system`，有命令在等包的在线项下载时后面再加 `; not downloaded yet: …`。
 
 镜像构建或 Session helper 尚未装配的同机环境可使用 `xagent runtime baseline --check --overlay`：它以 `xagent`、`agent_tool` 的存在替代检查后续由 Session overlay 提供的 `agent-session`、`llm_understand_media`。这只适用于会提供该 overlay 的环境；独立节点需要实际部署完整入口。
 

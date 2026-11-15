@@ -96,6 +96,10 @@
 | D28 | Q24 opendan 引用 `tokio-tungstenite`、`hyper`、`hyper-util`、`futures` | 可以引入 | BR1 |
 | D29 | Q25 系统渲染选降权到 `nobody`，不选容器 | 按你的建议，简单可靠的跑通就行 | §5.7、SR2。隔离只做必要的几样 |
 | D30 | Q26 给 Agent 容器加 `--init` | 启动方式保持现状 | 不动容器的启动参数。孤儿进程在浏览器模块里处理（BR2） |
+| D31 | Q27 Widevine 的再分发 | 这应该是一个通用机制：ext-tool 的基础机制要支持某个 item 是“用时下载”（安装完成触发 / 用户手工触发）。像 Agent 浏览器这种组件，对不能上网的环境没有意义（也不用进离线包），同时也能规避一些 CDM 的问题 | ext-tool 加“在线项”：包里只声明，装好以后在节点上从上游下载。Chromium 是第一个。我们不再分发 Chrome for Testing，Q27 和 D26 的再分发风险一起消掉（§5.9） |
+| D32 | 在线项从哪里下载 | 下载地址就写官方。我生活在硅谷，BuckyOS 的早期客户也主要在美欧日，连不上 Google 不是问题 | 清单里每个平台一个官方地址加 SHA256，不配镜像，不做可覆盖的下载源 |
+| D33 | 在线项怎么触发 | 装完自动下载；下载失败是可以接受的，可以在系统管理面板手工再次触发下载 | 包装好以后节点自动下载一次，失败就停在“失败”，不无限重试；“设置 > 扩展工具”和 `buckyos ext-tools` 里可以再次触发 |
+| D34 | 哪些东西做成在线项 | 这次只做 Chromium。后续再专门讨论一次哪些包可以在线化 | LibreOffice 等照旧随包 |
 
 原 Q15 由 D3 定下，编号不复用。
 
@@ -254,6 +258,8 @@ CDP（`--headless=new`，原始 WebSocket 客户端）：
 ## 5. 设计
 
 ### 5.1 ext-core 里的浏览器
+
+（2026-11-15 改：Chromium 不在包里，是包的在线项，见 §5.9。下表的 `chromium/` 一行作废，其余照旧。）
 
 包里放的东西（都在 `store/ext-core/` 下）：
 
@@ -567,6 +573,17 @@ D11、D21：Workflow Service 的内置函数。
 - 隔离：root 时断网用 `unshare(2)` 系统调用（降权在 `pre_exec` 里做，网络命名空间要在降权之前建）；`TMPDIR` 用 `/tmp` 下的短名私有目录（执行临时目录太深，Chromium 的套接字路径会超长）。
 - `page-render` 的退出码：0 成功，2 参数错误，3 超时，4 渲染失败，5 浏览器没起来。`--url` 的主机自己也要在 `--allow-host` 里。
 
+### 5.9 在线项（D31–D34）
+
+ext-tool 的基础机制加了“在线项”：包的清单里声明，包本身不带，节点装好包以后从上游的官方地址下载。离线包里没有它；我们不分发它，它的再分发条款（Chrome for Testing 带的 Widevine CDM）不再是发布阻塞项。机制的说明在 `doc/app_service/paios容器需求.md` §6.4 的“在线项”一节。
+
+- 清单：`online[]`（`id`、`version`、`desc`、`license`、`auto`，每个平台一条 `url`、`sha256`、`size_bytes`、`format`、`into`、`rename`、`overlay`），`provides[].needs` 写一条命令要哪个在线项。
+- 节点上：`$BUCKYOS_ROOT/tools/online/<id>/` 和记录 `tools/online/<id>.json`（`state`: `missing` / `downloading` / `ready` / `failed`）。在包的版本目录之外：包升级时在线项的版本没变就不重新下载，只重盖 overlay。
+- 触发：包装好以后自动下载一次；失败停在“失败”，不自动重试，重启也不重试（Q45）。手工再触发：Desktop“设置 > 扩展工具”、`buckyos ext-tools download <包> <在线项> [--node]`、kRPC `ext_tools.download`。对已就绪的在线项手工触发等于重新下载、整体替换（Q46）。手工请求记在 `nodes/<node>/ext_tools_online/<item>`。
+- 下载期间已有一份在用时，记录保持 `ready`，新版本记在 `next` 里，换名之后才切过去，浏览器不中断。
+- Chromium：`tools/online/chromium/chromium-1255/<平台目录>/…`，就是 Playwright 的浏览器目录；`PLAYWRIGHT_BROWSERS_PATH` 指这里。Linux 上的包装脚本、两个标记文件是 overlay，随包。`bin/chromium`、`agent-browser`、`page-render`、`playwright-core` 随包。
+- 浏览器还没下载时：`chromium` 退 127，`page-render` 退 6；Agent Service 的 `browser.status` 报 `unavailable_code: not_downloaded`，下载好以后不用重启就可用；Workflow 的 `media.page` 报 `tools_missing`（`details.online_item: "chromium"`）；运行时的基线检查把它记成“等下载”（`ext.waiting`），不算缺失；手册的命令状态列在 `waiting_online`，不再推荐启用 ext-core；「Agent 浏览器」App 给管理员一个下载按钮。
+
 ## 6. 任务
 
 每条：落点、做法、验证。没写落点的见 §3 对应小节。
@@ -808,8 +825,8 @@ Q1–Q26 都已答复（§2）。下面是实施和真实环境验证中新出�
 
 | # | 问题 | 现在的做法 |
 | --- | --- | --- |
-| Q27 | Chrome for Testing 的 Linux、macOS 归档里带着 Widevine CDM，它的 `LICENSE` 写明没有和 Google 的单独协议不得分发。比 D26 时知道的更明确。构建时删掉 `WidevineCdm/`，还是接受风险？ | 包里照带；登记成 `chromium` 组件的发布阻塞项，发布门禁没有放宽（`build.sh` 因此在最后的合规步骤失败，payload 本身完整）。Linux 上把这个目录遮住后三个浏览器冒烟照常通过；macOS 上它在 framework 里，要在 Mac 上验 |
-| Q28 | ext-core 升到 1.3.0 之后，`build-all.yml` 的 `resolve-ext-tools` 要求这个版本已经发布；发布被 pandoc（原有）和 Q27 拦着 | 没处理。开发机不受影响（`buckyos-build.py` 忽略这一步的失败，沿用本地种子） |
+| Q27 | Chrome for Testing 的 Linux、macOS 归档里带着 Widevine CDM，它的 `LICENSE` 写明没有和 Google 的单独协议不得分发 | **已裁决（D31–D34）**：ext-tool 加“在线项”，Chromium 不再随包，节点装好包以后从 Google 的官方地址下载。我们不分发它，这条阻塞项和 D26 的再分发风险一起消掉 |
+| Q28 | ext-core 升到 1.3.0 之后，`build-all.yml` 的 `resolve-ext-tools` 要求这个版本已经发布；发布被 pandoc（原有）拦着。另外 `ext-core.yml` 的 pikg 作业用 `npx buckyos@latest pikg doctor`，要等认得 `online` 字段的 websdk 发布后才能过 | 没处理。开发机不受影响（`buckyos-build.py` 忽略这一步的失败，沿用本地种子） |
 | Q29 | ext-core 里用 fontconfig 的工具装到别的路径后读不到 `conf.d`（原有的缺陷：简体字回退对 `soffice` 实际不生效）。要不要在 `env/*.sh` 和 Windows 启动器里统一加 `FONTCONFIG_PATH`？表 B 写的“不读系统字体目录”也和现实不符 | 只给浏览器的包装脚本和 `agent-browser env` 加了。别的工具没动：加了会改变它们看到的字体 |
 
 产品和交互：
@@ -832,6 +849,10 @@ Q1–Q26 都已答复（§2）。下面是实施和真实环境验证中新出�
 | Q38 | 重排的 `refresh.mjs` 以 Agent Service 的身份运行（容器里是 root），读得到服务的文件；能写 owner 重排桶的一方（owner、读写权限的 Agent）都能让它在这个 owner 的任一个 Agent 的容器里执行 | 子进程的环境是清空的，拿不到令牌；文件系统没有隔离（D27：重排的代码看作我们自己生产的） |
 | Q39 | 我加的一处收口：种在 `reflow.<zone>` 上的会话在 nfs-server 的文件、桶、NDM 接口上不算登录 | 已实现并验证。不加的话受限账号能借“nfs-server”这个新的登录目标用上文件接口 |
 | Q40 | 原生运行的 private runtime 默认声明的基线是 standard，`browser` 手册是 extended | 节点声明成 extended 之后手册才生效，和其他 extended 手册一样。原生运行没有实测（DT3） |
+| Q45 | 在线项下载到一半节点停了 | **owner 2026-11-15 认可。** 重启后记成失败（“下载时节点停了”），不自动重试，要手工再触发。照“失败不重试、重启也不重试”做的；另一种做法是中断后自动再试一次 |
+| Q46 | 对已经就绪的在线项手工触发下载 | **owner 2026-11-15 认可。** 重新下载并整体换掉，当作修复用；界面上要二次确认 |
+| Q47 | 在线项下载的超时和代理 | **owner 2026-11-15 认可。** 连接 30 秒、连续 60 秒没有数据、总共 2 小时；不做断点续传。走 HTTP 客户端的默认行为，会用环境变量里的系统代理（这不是可覆盖的下载源） |
+| Q48 | macOS 离线包的签名脚本（`pve-pack-system/bin/pack/sign_macos_ext_tools.py`）只认 payload 顶层的 `ext-manifest.json`、`bin`、`store`、`smoke`，并且会跑清单里所有的冒烟 | 没改（另一个仓库）。要放行 `online/`，并跳过要浏览器的冒烟（`chromium`、`page-render`），否则 mac 包签名那一步会失败。owner 2026-11-15：当前环境做不了，由 owner 后续验证 |
 | Q41 | 只读权限的 Agent 发起的重排刷新 | 照常跑，写结果时被桶拒绝，状态是失败。没有事先拦。只读 Agent 的两条验收没验：权限模式只能在创建 Agent 时定 |
 
 这次发现、不属于本需求、没有改的：
@@ -924,3 +945,9 @@ owner 定了先能力再安全（D18）。下面这些第一期不处理：
 | 2026-11-15 | 手机画面的清晰度（没做，Q32） | 实验数据（手机 412×780、画质 60）：现状帧 412×780，静止一帧 20.8 KB，全屏动画 309 KiB/s。`startScreencast` 的 `maxWidth/maxHeight` 调大不放大；模拟参数的 `scale` 会把 CDP 的输入坐标一起放大；`--force-device-scale-factor=2` 让所有标签页一直按 2 倍渲染；把视口放大会改掉页面布局。只有一种办法不改布局、设备像素比和输入坐标：启动参数 `--screen-info` 加一块 2 倍的屏，要高清时用 `Browser.setWindowBounds` 把标签页的窗口移过去，再重套一次视口；帧变成 824×1560，静止一帧 56.2 KB，动画 839 KiB/s，动画时浏览器的 CPU 从 0.29 核到 1.06 核；用 `maxWidth/maxHeight` 压到 1.5 倍是 618×1170、554 KiB/s。副作用：这期间 Agent 的 `page.screenshot()` 像素翻倍；每次切换页面收到一次 `resize`；`screen.isExtended` 恒为真。另外看到截屏流在服务端一直按每秒 60 帧编码，15 帧的上限只是丢帧，动画页面 1 倍下就占 0.3–0.5 核 |
 | 2026-11-15 | 重新部署后复验 | 全部修复合入后重新构建、重新播种 ext-core、重建镜像、重启。① 服务端口是 10080 的 agenty 容器里，`agent-browser status`、`open`、`snapshot`、`done` 正常，`reflow refresh` 连得上服务（修复前是 `bad port`）；`status` 只显示本会话的组。② 浏览器进程带着普通 Chrome 的 UA 和关闭光标闪烁的开关。③ 屏幕（经 443 入口）：桌面视口先连，手机视口加入后两端都报手机视口，手机断开后桌面端 42 ms 内拿回自己尺寸的帧；点进输入框后静置 5 秒 0 帧。④ `tests/dv/agent-browser.spec.ts` 8 条全过，`tests/dv/agent-browser.reflow.spec.ts` 9 过 1 跳过（跳过的是默认不开的真实模型兜底那条），都在部署的 Desktop 上。⑤ `test/agent_browser_dv/main.py` 的三项不花 token 的检查通过。⑥ 回归：Desktop `tsc` 通过、eslint 和基线相同、mock 上四个 spec 49 条全过；Rust 见下一行 |
 | 2026-11-15 | 最终回归（Rust） | 在 `src/target` 里 `cargo test -p opendan -p libopendan -p workflow -p nfs_server -p scheduler -p buckyos-api --no-fail-fast -- --test-threads=1`：73 个 target、1459 条通过、30 条 ignored、3 条失败，都在 libopendan，和这次改动无关：`concurrent_reservations_share_a_counter_and_reuse_the_same_key` 是负载下的偶发（当时同时在跑 Playwright），单独重跑通过；`xagent_cli` 的 2 条要求 `src/tools/bin` 和 `src/bin/agent-tools` 两个目录存在，临时建上后 15 条全过（建完已删） |
+| 2026-11-15 | 裁决 | owner 答复 Q27（D31–D34）：ext-tool 支持“在线项”，Chromium 是第一个；下载地址只写官方的；装完自动下载，失败可以接受、在管理面板手工重新触发；这次只做 Chromium。随后认可 Q45–Q47 的默认做法，Q48（mac 离线包签名）由 owner 后续验证 |
+| 2026-11-15 | 在线项：机制 | `buckyos-api`：`ext_tools.rs`（清单的 `online`、`needs` 和校验，payload 放行 `online/<id>/`，状态类型）、`ext_tools_install.rs` 和新的子模块 `ext_tools_install/online.rs`（下载、SHA256、zip 保留权限位和符号链接、`into` / `rename` / `overlay`、暂存后换名、原子写记录、`waiting`、包激活时重盖 overlay、孤儿清理、`opendan ext-tools online*` 子命令）；node_daemon 的 `plan_online`（下载在 reconciler 之外的任务里做）；control-panel 的 `ext_tools.download`、`ext_tools.status` 带在线项；websdk 的清单校验和 `buckyos ext-tools download`。顺带修了引擎原有的两处并发问题（探测的输出文件撞名、锁的误报）。验证：`buckyos-api`、`node_daemon`、`control_panel` 的用例全过，websdk 179 过；从 Google 官方地址真实下载一次（约 200 MB，下载 3.4 秒，解包换名探测 7 秒） |
+| 2026-11-15 | 在线项：打包 | `publish/exttool/ext-core/`：`build.sh` 不再把 Chromium 打进 payload，只生成 overlay（两个标记文件和 Linux 的包装脚本）；构建时仍从官方地址取归档、摆好后检查依赖库和能否启动，检查完删掉；启动器按新位置找浏览器；新增 `place_online.py`（CI 和本地照清单摆浏览器）；清单声明 `online`；合规材料去掉 Chromium 和 Widevine 那条阻塞项（`build.sh` 只剩原有的 pandoc 一项）；`ext-core.yml` 的冒烟先摆浏览器再跑。官方地址和 Playwright CDN 是同一个文件。体积（tar.gz）：linux-x86_64 687 MiB（带浏览器时 874，1.2.0 是 676），linux-aarch64 670，windows-x86_64 761。验证：裸容器里按节点布局 13 个冒烟、29 条脚本测试全过 |
+| 2026-11-15 | 在线项：使用方 | opendan 的浏览器模块区分 `no_package`、`not_downloaded`、`disabled`，每次现读记录、不缓存，下载好不用重启；Workflow 把 `page-render` 的退出码 6 映射成 `tools_missing`；协议文档同步。`baseline.rs` 和 `skills.rs`：浏览器没下载时 `chromium` 记成“等下载”（`ext.waiting`、`waiting_online`），不算缺失、不推荐启用 ext-core。Desktop“设置 > 扩展工具”显示在线项和进度，管理员可以下载、重试、重新下载；「Agent 浏览器」App 按三种原因说明，管理员能直接下载；OpenDAN WebUI 的 Skills 页、Runtimes 页显示“等下载”。验证：opendan、workflow、libopendan 的用例全过；Desktop mock e2e（Agent 浏览器和设置页）80 条、OpenDAN WebUI 58 条全过 |
+| 2026-11-15 | 在线项：真实 Zone | 全部合入后重新构建、重新播种（不带浏览器的 ext-core，种子 686 MiB）、重建镜像、部署。ext-core 在启动后 21 秒装好，`installs/ext-core.json` 的 `waiting` 是 `chromium`、`page-render`；节点随即自动从 Google 下载，29 秒时 `ready`（下载约 6 秒）；`waiting` 清空，三条命令都探测到版本；目录 0755、记录 0644。Agent 的 `browser.status` 可用，容器里 `chromium --version`、`agent-browser open`、`done` 正常。`buckyos ext-tools download ext-core chromium`（经 `--endpoint http://127.0.0.1:3180`）手工重新下载：记录保持 `ready`、新版本在 `next` 里走完 7 秒后换上，期间 Agent 的浏览器一直可用。部署的 Desktop 设置页显示“在线项 chromium 159.0.8154.6 199 MB · ood1 已就绪 · 重新下载”。重启一次让 Workflow 重新探测（Q43）后：`WF-DV-017`、`WF-DV-012` 通过，`tests/dv/agent-browser.spec.ts` 8 过，`tests/dv/agent-browser.reflow.spec.ts` 9 过 1 跳过，`test/agent_browser_dv/main.py` 通过。没在真实 Zone 上验的：“还没下载”时 App 里管理员点下载的那条路（mock 上验过；真实 Zone 上浏览器在 Agent 起来之前就下载好了），下载失败后重试 |
+| 2026-11-15 | 在线项之后的回归（Rust） | 在 `src/target` 里 `cargo test -p buckyos-api -p node_daemon -p control_panel -p opendan -p libopendan -p workflow --no-fail-fast -- --test-threads=1`（临时建了 `src/tools/bin`、`src/bin/agent-tools`，跑完已删）：61 个 target、1565 条通过、34 条 ignored、1 条失败。失败的是 `opendan` 的 `a_turn_is_a_task_and_a_slow_reply_replaces_its_placeholder`（期望回复已经替换占位，读到的还是“(working)”），是负载下的时序问题（TODO 之前的记忆里也记过它在负载下失败），单独连跑 3 次都通过 |

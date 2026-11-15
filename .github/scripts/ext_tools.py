@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep ext-core's facts in one piece and resolve its release (ExtTools TODO §3.10, T2a / T2b).
 
-check-table   doc/app_service/paios容器需求.md §6.4 table B <-> ext-manifest.json provides <-> what the build pins
+check-table   doc/app_service/paios容器需求.md §6.4 table B <-> ext-manifest.json provides <-> what the build pins,
+              and the manifest's online items <-> the build's versions and pins
 resolve       the release manifest of the pinned version from R2, every tar checked with HEAD, as bin/ext-tools/ext_tools.json
 latest        latest.json of a release, for ext-core-latest and R2
 """
@@ -51,6 +52,33 @@ def check_table(table_text, manifest, conda_env_text, sources_text):
     for tool, prefix in sorted(OFFICIAL_TOOLS.items()):
         if not re.search(rf"\s{re.escape(prefix)}", sources_text):
             errors.append(f"sources.sha256 pins nothing for {tool}")
+    return errors
+
+
+def check_online(manifest, build_text, sources_text):
+    """The online items a node downloads are the archives the build checked: the same version, layout and bytes."""
+    errors = []
+    pinned = {fields[0] for line in sources_text.splitlines() if (fields := line.split())}
+    versions = dict(re.findall(r"^([A-Z_]+)=(\S+)$", build_text, re.M))
+    items = {item["id"]: item for item in manifest.get("online", [])}
+    for name, item in sorted(items.items()):
+        for platform, entry in sorted(item["platforms"].items()):
+            if entry["sha256"] not in pinned:
+                errors.append(f"online {name} on {platform}: sources.sha256 does not pin the archive")
+    chromium = items.get("chromium")
+    if chromium is None:
+        return errors + ["ext-manifest.json declares no online item `chromium`"]
+    if chromium["version"] != versions.get("CHROMIUM_VERSION"):
+        errors.append(f"online chromium is {chromium['version']}, build.sh checks {versions.get('CHROMIUM_VERSION')}")
+    for platform in PLATFORMS:
+        entry = chromium["platforms"].get(platform)
+        if entry is None:
+            errors.append(f"online chromium has nothing for {platform}")
+            continue
+        if f"/{chromium['version']}/" not in entry["url"]:
+            errors.append(f"online chromium on {platform}: the address is not of {chromium['version']}")
+        if entry.get("into") != f"chromium-{versions.get('CHROMIUM_REVISION')}":
+            errors.append(f"online chromium on {platform}: not unpacked into chromium-{versions.get('CHROMIUM_REVISION')}, where Playwright looks")
     return errors
 
 
@@ -120,12 +148,10 @@ def main():
     latest_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "check-table":
-        errors = check_table(
-            TABLE_DOC.read_text(encoding="utf-8"),
-            json.loads((EXT_CORE / "ext-manifest.json").read_text()),
-            (EXT_CORE / "conda-env.yml").read_text(),
-            (EXT_CORE / "sources.sha256").read_text(),
-        )
+        manifest = json.loads((EXT_CORE / "ext-manifest.json").read_text())
+        sources = (EXT_CORE / "sources.sha256").read_text()
+        errors = check_table(TABLE_DOC.read_text(encoding="utf-8"), manifest, (EXT_CORE / "conda-env.yml").read_text(), sources)
+        errors += check_online(manifest, (EXT_CORE / "build.sh").read_text(encoding="utf-8"), sources)
         for error in errors:
             print(error, file=sys.stderr)
         return 1 if errors else 0

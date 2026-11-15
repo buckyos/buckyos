@@ -25,11 +25,15 @@ export interface BrowserGroup {
   tabs: BrowserTab[]
 }
 
+/** Why there is no browser (§2.1): turned off for the Agent, no ext-core on the node, or the browser not downloaded there yet. */
+export type UnavailableCode = 'disabled' | 'no_package' | 'not_downloaded'
+
 export interface BrowserStatus {
   enabled: boolean
   available: boolean
   running: boolean
   unavailable: string | null
+  unavailable_code: UnavailableCode | null
   version: { browser: string; playwright: string } | null
   /** The MessageHub session the default group is bound to (`browser.bind_default`). */
   default_session_id: string | null
@@ -113,7 +117,7 @@ export type ScreenDownstream =
   | ({ type: 'request' } & ScreenRequest)
   | { type: 'request_closed'; request_id: string }
   | ({ type: 'focus' } & ScreenFocus)
-  | { type: 'error'; code: string; message?: string }
+  | { type: 'error'; code: string; message?: string; unavailable_code?: UnavailableCode }
   | { type: 'pong' }
 
 export const MODIFIER = { alt: 1, ctrl: 2, meta: 4, shift: 8 } as const

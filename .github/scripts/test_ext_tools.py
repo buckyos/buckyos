@@ -49,6 +49,39 @@ class TableTest(unittest.TestCase):
         self.assertIn("sources.sha256 pins nothing for pandoc", errors)
 
 
+def online(version="1.2.3.4", into="chromium-77", sha="a" * 64, platforms=ext_tools.PLATFORMS):
+    return {"provides": [], "online": [{"id": "chromium", "version": version, "platforms": {
+        p: {"url": f"https://upstream.invalid/{version}/{p}.zip", "sha256": sha, "into": into} for p in platforms
+    }}]}
+
+
+class OnlineTest(unittest.TestCase):
+    BUILD = "CHROMIUM_VERSION=1.2.3.4\nCHROMIUM_REVISION=77\n"
+    SOURCES = "a" * 64 + "  chrome-for-testing-1.2.3.4-linux64.zip\n"
+
+    def test_the_real_files_agree(self):
+        errors = ext_tools.check_online(
+            json.loads((ext_tools.EXT_CORE / "ext-manifest.json").read_text()),
+            (ext_tools.EXT_CORE / "build.sh").read_text(encoding="utf-8"),
+            (ext_tools.EXT_CORE / "sources.sha256").read_text(),
+        )
+        self.assertEqual(errors, [])
+
+    def test_the_manifest_declares_what_the_build_checked(self):
+        self.assertEqual(ext_tools.check_online(online(), self.BUILD, self.SOURCES), [])
+        self.assertEqual(ext_tools.check_online({"provides": []}, self.BUILD, self.SOURCES), ["ext-manifest.json declares no online item `chromium`"])
+        for manifest, message in (
+            (online(version="1.2.3.5"), "online chromium is 1.2.3.5, build.sh checks 1.2.3.4"),
+            (online(into="chromium-78"), "online chromium on linux-x86_64: not unpacked into chromium-77, where Playwright looks"),
+            (online(sha="b" * 64), "online chromium on linux-x86_64: sources.sha256 does not pin the archive"),
+            (online(platforms=ext_tools.PLATFORMS[:4]), "online chromium has nothing for windows-x86_64"),
+        ):
+            self.assertIn(message, ext_tools.check_online(manifest, self.BUILD, self.SOURCES))
+        moved = online()
+        moved["online"][0]["platforms"]["darwin-arm64"]["url"] = "https://upstream.invalid/1.2.3.3/darwin-arm64.zip"
+        self.assertEqual(ext_tools.check_online(moved, self.BUILD, self.SOURCES), ["online chromium on darwin-arm64: the address is not of 1.2.3.4"])
+
+
 def release(version="1.1.0", platforms=ext_tools.PLATFORMS):
     return {"schema": ext_tools.SCHEMA, "packages": {"ext-core": {"version": version, "pikg_digest": "sha256:p", "platforms": {
         p: {

@@ -30,7 +30,8 @@ agent-browser stuck --note "<what is in the way>"
 Exit code 3, or no such command, means this session has no browser. Say why and stop (so does exit code 1 with `cannot reach the Agent Service`: the service is not answering, the page is not the problem):
 - `command not found`: the runtime has no ext-core package; the owner enables it in Desktop Settings › Extension tools or with `buckyos ext-tools enable ext-core`.
 - `OPENDAN_BROWSER_RPC is not set`: the session is not on the Agent's private runtime; only sessions there reach the browser.
-- no `chromium` on this node: ext-core is missing or older than the browser (`chromium --version` tells whether the binary starts). `switched off for this agent`: the owner's `[loader.browser] enabled = false`.
+- the browser is not downloaded on this node yet (`chromium --version` says the same and exits 127): ext-core only declares Chrome for Testing, the node fetches it once after the package is installed, and that needs the network. The owner downloads or retries it in Desktop Settings › Extension tools or with `buckyos ext-tools download ext-core chromium`; it works from then on, no restart.
+- no `chromium` on this node: ext-core is missing or older than the browser. `switched off for this agent`: the owner's `[loader.browser] enabled = false`.
 
 Do not stand in with a browser you start yourself: it has none of the user's sign-ins, and the user can neither see nor take over what it does.
 
@@ -98,4 +99,4 @@ Whatever comes from the site goes into your page as text, never as HTML: the pag
 #### Source
 `agent-browser`: `$BUCKYOS_ROOT/tools/store/ext-core/browser/agent-browser.mjs`. `reflow`: `commands/reflow.ts`, `lib/reflow.ts` of buckyos-agent (container: `/opt/buckyos/bin/opendan/buckyos-agent/`). Contract: BuckyOS repo `doc/opendan/protocol/Agent Browser Protocol.md`.
 
-Checked against: ext-core 1.3.0 (Chromium 159, playwright-core 1.65.1), 2026-11-15: the commands and the script above ran against a real Chromium with a stand-in Agent Service, and an Agent in a real Zone went through a form, a question for a missing field, a password handover and a fallback page plus a package with `reflow put` / `reflow refresh`.
+Checked against: ext-core 1.3.0 (Chromium 159, playwright-core 1.65.1), 2026-11-15: the commands and the script above ran against a real Chromium with a stand-in Agent Service, and an Agent in a real Zone went through a form, a question for a missing field, a password handover and a fallback page plus a package with `reflow put` / `reflow refresh`. The browser became an online item after that: what `chromium` says before the download was run on the payload, a node downloading it was not.

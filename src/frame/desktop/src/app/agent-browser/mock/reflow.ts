@@ -223,14 +223,13 @@ async function refresh(address: ReflowAddress, click?: string): Promise<ReflowSt
   return stateOf(address)
 }
 
-/** `browser.reflow_state`, `browser.reflow_refresh` and `browser.reflow_action` of the mock Agent Service. The state is read without a browser; making anything needs one, and a module that is turned off answers none of them. */
+/** `browser.reflow_state`, `browser.reflow_refresh` and `browser.reflow_action` of the mock Agent Service. The state is read without a browser, also with the module turned off (protocol §5.3); making anything needs one. */
 export async function mockReflowCall(method: string, params: Record<string, unknown>, browser: { enabled: boolean; available: boolean }): Promise<ReflowState> {
   await new Promise((resolve) => window.setTimeout(resolve, LATENCY_MS))
   await seeded
-  if (!browser.enabled) throw new MockReflowError('browser_unavailable')
   const address = await addressOf(typeof params.url === 'string' ? params.url : '')
   if (method === 'browser.reflow_state') return stateOf(address)
-  if (!browser.available) throw new MockReflowError('browser_unavailable')
+  if (!browser.enabled || !browser.available) throw new MockReflowError('browser_unavailable')
   if (method === 'browser.reflow_refresh') return refresh(address)
   if (typeof params.selector !== 'string' || !params.selector) throw new MockReflowError('invalid_argument', 'selector is missing')
   return refresh(address, params.selector)

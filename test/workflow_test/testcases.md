@@ -608,8 +608,10 @@ LibreOffice 每次转出的 PDF 字节不同（`CreationDate`、`/ID`、`DocChec
 
 ### 关键断言
 
-- `get_capabilities.environment.missing` 含 `page-render`（节点的 `ext-core` 不带浏览器）时：Run `failed`，
+- `get_capabilities.environment.missing` 含 `page-render`（节点没装 `ext-core`）时：Run `failed`，
   `node_errors.page_to_pdf.code == tools_missing`，用例记 Blocked。
+- `page-render` 在、浏览器还没下载到节点（`ext-core` 的在线项 `chromium`）时：Run `failed`，
+  `node_errors.page_to_pdf.code == tools_missing`、`details.tools_missing == ["chromium"]`、`details.online_item == "chromium"`，用例记 Blocked。
 - 上传 `dv-page.html`（三节，每节另起一页，中文），`create_run media.page {obj_id, paper:"A4", margin_mm:<本轮的值>}`：
   `completed`，`page_to_pdf` 为 `executed`，`page_snapshot` 保持 `pending`（只走请求的那条分支），`output.page_to_pdf.pages == 3`。
   `margin_mm` 每轮不同：Step cache 跨 Zone 重启保留，固定参数的话第一次就会命中上一轮的结果。

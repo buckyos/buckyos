@@ -1390,6 +1390,7 @@ impl ControlPanelServer {
             "ext_tools.status" => Box::pin(self.handle_ext_tools_status(req)),
             "ext_tools.plan" => Box::pin(self.handle_ext_tools_plan(req)),
             "ext_tools.set_desired" => Box::pin(self.handle_ext_tools_set_desired(req, principal)),
+            "ext_tools.download" => Box::pin(self.handle_ext_tools_download(req, principal)),
             "ext_tools.import" => Box::pin(self.handle_ext_tools_import(req, principal)),
             "apps.list" => Box::pin(self.handle_apps_list(req, principal)),
             "apps.details" => Box::pin(self.handle_app_detials(req, principal)),

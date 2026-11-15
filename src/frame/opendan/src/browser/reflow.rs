@@ -1099,9 +1099,23 @@ printf '{"headline":"%s","click":"%s","script":"%s"}' "$url" "$click" "$(cat "$p
         async fn without_a_browser_the_library_is_still_told() {
             let off = BrowserSection { enabled: false, idle_stop_secs: 600, max_tabs: 12 };
             let on = BrowserSection { enabled: true, ..off.clone() };
-            for (why, cfg, chromium) in [("switched off", off, None), ("no chromium on the node", on, Some("/nonexistent/chromium"))] {
-                let b = Bench::with(cfg, |t| t.chromium = chromium.map(PathBuf::from).or(t.chromium.take())).await;
-                assert_eq!(b.module.usable().unwrap_err().code, "browser_unavailable", "{why}");
+            let tools = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(tools.path().join("bin")).unwrap();
+            std::fs::copy(fake_browser::chromium(), tools.path().join("bin/chromium")).unwrap();
+            let tool_dirs = vec![tools.path().join("bin")];
+            for (why, cfg, chromium, code) in [
+                ("switched off", off, None, "disabled"),
+                ("no chromium on the node", on.clone(), Some("/nonexistent/chromium"), "no_package"),
+                ("the browser is not downloaded", on, None, "not_downloaded"),
+            ] {
+                let tool_dirs = tool_dirs.clone();
+                let b = Bench::with(cfg, |t| match code {
+                    "not_downloaded" => (t.chromium, t.tool_dirs) = (None, Some(tool_dirs)),
+                    _ => t.chromium = chromium.map(PathBuf::from).or(t.chromium.take()),
+                })
+                .await;
+                let unusable = b.module.usable().unwrap_err();
+                assert_eq!((unusable.code, unusable.unavailable_code), ("browser_unavailable", Some(code)), "{why}");
                 b.library.package("v1", 5);
                 b.library.put(&result_key(), json!({ "schema": RESULT_SCHEMA, "source_url": NORMALIZED, "made_at": 1794600000001u64, "made_by": AGENT, "data": {} }));
                 let state = b.state().await;
@@ -1112,7 +1126,8 @@ printf '{"headline":"%s","click":"%s","script":"%s"}' "$url" "$click" "$(cat "$p
                     ("browser.reflow_refresh", json!({ "url": URL })),
                     ("browser.reflow_action", json!({ "url": URL, "selector": "#more" })),
                 ] {
-                    assert_eq!(b.call("owner", method, params).await.unwrap_err().code, "browser_unavailable", "{why}: {method}");
+                    let refused = b.call("owner", method, params).await.unwrap_err();
+                    assert_eq!((refused.code, refused.unavailable_code), ("browser_unavailable", Some(code)), "{why}: {method}");
                 }
                 assert!(b.calls().is_empty() && b.fake.pid().is_none(), "{why}: nothing was started");
             }

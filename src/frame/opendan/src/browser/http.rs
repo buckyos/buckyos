@@ -84,7 +84,7 @@ fn failed(e: BrowserError) -> Response {
         code if code.starts_with("no_such_") => http::StatusCode::NOT_FOUND,
         _ => http::StatusCode::INTERNAL_SERVER_ERROR,
     };
-    json_response(status, json!({ "code": e.code, "message": e.message }))
+    json_response(status, e.to_json())
 }
 
 /// The screen: the request becomes a WebSocket, whose first message says

@@ -56,6 +56,7 @@ pub use sessions::Handed;
 
 use crate::config::BrowserSection;
 use groups::Groups;
+use process::Chromium;
 
 /// Where a command of a session reaches `browser.*`: the service's kRPC
 /// address on the loopback interface.
@@ -90,8 +91,11 @@ pub struct BrowserDeps {
 /// What tests and debugging change about the module.
 #[derive(Debug, Clone)]
 pub struct Tuning {
-    /// The browser's executable (default: [`process::find_chromium`]).
+    /// The browser's executable, started as it is (default: what
+    /// `tool_dirs` or [`process::find_chromium`] finds).
     pub chromium: Option<PathBuf>,
+    /// The node's tool directories (default: those of [`process::find_chromium`]).
+    pub tool_dirs: Option<Vec<PathBuf>>,
     /// The browser's directories (default: [`BrowserDirs::of`] the AgentRoot).
     pub dirs: Option<BrowserDirs>,
     /// Interval of the housekeeping loop.
@@ -114,6 +118,7 @@ impl Default for Tuning {
     fn default() -> Self {
         Self {
             chromium: None,
+            tool_dirs: None,
             dirs: None,
             tick: Duration::from_secs(1),
             lease_ttl_ms: groups::LEASE_TTL_MS,
@@ -333,27 +338,43 @@ impl BrowserModule {
         &self.dirs
     }
 
-    fn chromium(&self) -> Option<PathBuf> {
-        match &self.tuning.chromium {
-            Some(path) => path.is_file().then(|| path.clone()),
-            None => process::find_chromium(),
+    /// What the node has of the browser, as it is now: nothing of it is
+    /// remembered, so a browser that was installed or downloaded since the
+    /// last call is found.
+    fn chromium(&self) -> Chromium {
+        match (&self.tuning.chromium, &self.tuning.tool_dirs) {
+            (Some(path), _) => process::named_chromium(path),
+            (None, Some(dirs)) => process::chromium_in(dirs),
+            (None, None) => process::find_chromium(),
+        }
+    }
+
+    fn usable_with(&self, chromium: Chromium) -> Result<PathBuf, BrowserError> {
+        if !self.cfg.enabled {
+            return Err(BrowserError::no_browser(
+                "disabled",
+                "the browser is switched off for this agent ([loader.browser] enabled = false)",
+            ));
+        }
+        match chromium {
+            Chromium::Ready(exe) => Ok(exe),
+            Chromium::NotDownloaded { why, .. } => Err(BrowserError::no_browser("not_downloaded", why)),
+            Chromium::NoPackage(why) => Err(BrowserError::no_browser("no_package", why)),
         }
     }
 
     /// The browser's executable, or why this agent has no browser.
     pub fn usable(&self) -> Result<PathBuf, BrowserError> {
-        if !self.cfg.enabled {
-            return Err(BrowserError::unavailable("the browser is switched off for this agent ([loader.browser] enabled = false)"));
-        }
-        self.chromium()
-            .ok_or_else(|| BrowserError::unavailable("no `chromium` on this node (it comes with the ext-core extension tools)"))
+        self.usable_with(self.chromium())
     }
 
-    /// `(enabled, usable, note)` for `loader.status`.
+    /// `(enabled, usable, note)` for `loader.status`, which shows what the
+    /// service found when it started.
     pub fn module_status(&self) -> (bool, bool, Option<String>) {
         match self.usable() {
             Ok(exe) => (true, true, Some(format!("{}; started on demand", exe.display()))),
-            Err(e) => (self.cfg.enabled, false, Some(e.message)),
+            Err(e) if self.cfg.enabled => (true, false, Some(format!("{}; looked for again at every use", e.message))),
+            Err(e) => (false, false, Some(e.message)),
         }
     }
 
@@ -1087,7 +1108,6 @@ impl BrowserModule {
 
     /// `browser.status`: every group, the one named, or the one `session_id` works in.
     pub async fn status(&self, group_id: Option<&str>, session_id: Option<&str>) -> Value {
-        let exe = self.chromium();
         let of_session = match (group_id, session_id) {
             (None, Some(session_id)) => Some(self.group_of_session(session_id).await),
             _ => None,
@@ -1097,16 +1117,23 @@ impl BrowserModule {
             self.refresh_waiting().await;
             self.refresh_running().await;
         }
+        let chromium = self.chromium();
+        let available = matches!(chromium, Chromium::Ready(_));
+        // What the package says it brings, whether or not the browser is downloaded.
+        let package = chromium
+            .launcher()
+            .filter(|_| self.cfg.enabled)
+            .map(|launcher| process::package_versions(launcher).unwrap_or(Value::Null));
+        let usable = self.usable_with(chromium);
         let now = now_ms();
         let s = self.shared();
         let running = s.cdp.is_some();
-        let unavailable = match self.usable() {
-            Err(e) => Some(e.message),
-            Ok(_) if !running => s.last_error.clone(),
-            Ok(_) => None,
+        let (unavailable, unavailable_code) = match usable {
+            Err(e) => (Some(e.message), e.unavailable_code),
+            Ok(_) if !running => (s.last_error.clone(), None),
+            Ok(_) => (None, None),
         };
-        let version = exe.as_ref().filter(|_| self.cfg.enabled).map(|exe| {
-            let package = process::package_versions(exe).unwrap_or(Value::Null);
+        let version = package.map(|package| {
             json!({
                 "browser": s.browser_version.clone().map(Value::from).unwrap_or_else(|| package["chromium"].clone()),
                 "playwright": package["playwright"],
@@ -1118,9 +1145,10 @@ impl BrowserModule {
         };
         json!({
             "enabled": self.cfg.enabled,
-            "available": exe.is_some(),
+            "available": available,
             "running": running,
             "unavailable": unavailable,
+            "unavailable_code": unavailable_code,
             "version": version,
             "default_session_id": s.groups.default_session(),
             "groups": group_ids.iter().map(|id| s.groups.group(id, now)).collect::<Vec<_>>(),

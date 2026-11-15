@@ -15,15 +15,24 @@ use super::BrowserModule;
 pub struct BrowserError {
     pub code: &'static str,
     pub message: String,
+    /// Of a `browser_unavailable`: the lasting reason this agent has no
+    /// browser (`disabled`, `no_package`, `not_downloaded`); `None` when it
+    /// is none of them (the browser did not start, or went away).
+    pub unavailable_code: Option<&'static str>,
 }
 
 impl BrowserError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self { code, message: message.into(), unavailable_code: None }
     }
 
     pub fn unavailable(why: impl Into<String>) -> Self {
         Self::new("browser_unavailable", why)
+    }
+
+    /// `browser_unavailable` for a reason a caller can act on.
+    pub fn no_browser(unavailable_code: &'static str, why: impl Into<String>) -> Self {
+        Self { unavailable_code: Some(unavailable_code), ..Self::unavailable(why) }
     }
 
     pub fn invalid(why: impl Into<String>) -> Self {
@@ -63,9 +72,21 @@ impl BrowserError {
         }
     }
 
+    /// `{code, message}`, and `unavailable_code` when it has one: what the
+    /// screen and the upload entry answer with.
+    pub fn to_json(&self) -> Value {
+        let mut error = json!({ "code": self.code, "message": self.message });
+        if let Some(unavailable_code) = self.unavailable_code {
+            error["unavailable_code"] = json!(unavailable_code);
+        }
+        error
+    }
+
     /// The service's wire form of an error, with the `code`.
     pub fn to_wire(&self) -> String {
-        json!({ "kind": self.kind(), "code": self.code, "message": self.message }).to_string()
+        let mut error = self.to_json();
+        error["kind"] = json!(self.kind());
+        error.to_string()
     }
 }
 
@@ -206,7 +227,16 @@ mod tests {
             assert_eq!(wire["code"], error.code);
             assert_eq!(wire["kind"], kind, "{}", error.code);
             assert_eq!(wire["message"], error.message);
+            assert_eq!(wire.get("unavailable_code"), None, "{}", error.code);
         }
+        // Why the agent has no browser, when it is something a caller acts on.
+        let waiting = BrowserError::no_browser("not_downloaded", "the browser is being downloaded to this node (42% of 200 MiB)");
+        let wire: Value = serde_json::from_str(&waiting.to_wire()).unwrap();
+        assert_eq!(
+            wire,
+            json!({ "kind": "other", "code": "browser_unavailable", "unavailable_code": "not_downloaded", "message": waiting.message })
+        );
+        assert!(libopendan::state::krpc::error_from_wire(&waiting.to_wire()).to_string().contains("42% of 200 MiB"));
         // What a caller of the facade sees keeps the message.
         let seen = libopendan::state::krpc::error_from_wire(&BrowserError::user_in_control("default").to_wire());
         assert!(seen.to_string().contains("the user is operating the browser"), "{seen}");

@@ -274,13 +274,15 @@ buckyos system info                                 # BuckyOS version, build_ver
 Local tools every Agent of the Zone shares (ffmpeg, pandoc, python3… live in `ext-core`) are chosen for the whole Zone by an administrator and installed by each node on its own; no Agent installs them.
 ```bash
 buckyos ext-tools list                                 # what the Repo has, and the commands each package provides
-buckyos ext-tools status                               # package by node: what is asked for, stage, error
+buckyos ext-tools status                               # package by node: what is asked for, stage, error, and its online items
 buckyos ext-tools enable <id> [--version v] [--dry-run]    # brings what it requires; also how to upgrade or go back
 buckyos ext-tools disable <id>                         # refused while an enabled package requires it
+buckyos ext-tools download <id> <item> [--node n]      # have the nodes download an online item again, e.g. `ext-core chromium`
 buckyos ext-tools import <file.pikg>                   # an official release's .pikg (on R2, `pikg.path` in its manifest.json), unchanged
 buckyos skill status --agent <agent_id> [--runtime id] # the commands each skill relies on there, and which package would bring what is missing
 ```
 A node's reconciler retries a failed package with growing delays, and a failed upgrade leaves the old version running: read `error` under `nodes` in `ext-tools status`, then `log` for `node_daemon` (`ext_tools`). A package that came with the installer shows up with no `latest`: it needs `ext-tools import` before it can be upgraded.
+An online item is something a package only declares (the browser of `ext-core`): each node downloads it from its upstream once, after the package is installed. `ext-tools status` shows it per node under `nodes.<node>.online.<item>` (`state`: `missing | downloading | ready | failed`, with `downloaded_bytes` of `size_bytes` and `error`), and the commands that wait for it under `targets.<root>.waiting`. A `failed` download is never retried by the node, not after a restart either: fix the cause (usually the node cannot reach the upstream) and run `ext-tools download`.
 
 #### Change loop
 

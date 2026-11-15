@@ -1,16 +1,17 @@
 //! Extension packages of the Zone (ExtTools TODO §3.9.2, X2): the catalog is what the Repo has published, the desired state
 //! is what the administrator ticked, and the per-node status is what each node's reconciler reports. Nothing here installs:
-//! the scheduler multiplies the desired state with each node's platform and node_daemon converges on that.
+//! the scheduler multiplies the desired state with each node's platform and node_daemon converges on that. A package's
+//! online items are downloaded by the nodes themselves; from here the administrator can only ask a node to try again.
 
 use crate::user_mgr::require_control_panel_admin;
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::pikg::PikgReader;
 use buckyos_api::{
-    ext_tools_desired_key, ext_tools_node_status_key, ext_tools_plan_disable, ext_tools_plan_enable,
-    ext_tools_platform_of_device, ext_tools_sort_versions, get_buckyos_api_runtime, AppId, AppType,
-    ExtToolsCatalogEntry, ExtToolsDesired, ExtToolsManifest, ExtToolsNodeStatus, ExtToolsPlan, PikgStagingPurpose,
-    RepoListFilter, EXT_TOOLS_DESIRED_PREFIX, EXT_TOOLS_MANIFEST_FILE,
+    ext_tools_desired_key, ext_tools_node_status_key, ext_tools_online_request_key, ext_tools_plan_disable,
+    ext_tools_plan_enable, ext_tools_platform_of_device, ext_tools_sort_versions, get_buckyos_api_runtime, AppId, AppType,
+    ExtToolsCatalogEntry, ExtToolsDesired, ExtToolsManifest, ExtToolsNodeStatus, ExtToolsOnlineRequest, ExtToolsPlan,
+    PikgStagingPurpose, RepoListFilter, EXT_TOOLS_DESIRED_PREFIX, EXT_TOOLS_MANIFEST_FILE,
 };
 use name_lib::DeviceInfo;
 use ndn_lib::{load_named_obj_and_verify, FileObject, NamedObject, ObjId};
@@ -132,7 +133,46 @@ fn front_matter_commands(text: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The nodes to ask for online item `item` of package `id`: every node that reports having it, or the one named.
+fn online_request_nodes(reports: &BTreeMap<String, ExtToolsNodeStatus>, id: &str, item: &str, node: Option<&str>) -> Result<Vec<String>, String> {
+    let having: Vec<String> = reports.iter().filter(|(_, status)| status.online.contains_key(item)).map(|(node, _)| node.clone()).collect();
+    match node {
+        Some(node) if having.iter().any(|known| known == node) => Ok(vec![node.to_string()]),
+        Some(node) => Err(format!("node {node} has no online item {item} of {id}")),
+        None if having.is_empty() => Err(format!("no node has an online item {item} of {id}")),
+        None => Ok(having),
+    }
+}
+
 impl ControlPanelServer {
+    /// `ext_tools.download`: ask the nodes that have online item `item` of package `id` (or only `node`) to download it
+    /// again, whatever became of the last attempt. A node's reconciler takes the request on its next round, and a node
+    /// in the middle of that download answers it with the one under way.
+    pub(crate) async fn handle_ext_tools_download(&self, req: RPCRequest, principal: Option<&RpcAuthPrincipal>) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        require_control_panel_admin(principal)?;
+        let id = Self::require_param_str(&req, "id")?;
+        let item = Self::require_param_str(&req, "item")?;
+        let node = Self::param_str(&req, "node");
+        let client = get_buckyos_api_runtime()?.get_system_config_client().await?;
+        let mut reports: BTreeMap<String, ExtToolsNodeStatus> = BTreeMap::new();
+        for node in client.list("devices").await.map_err(reason)? {
+            if let Ok(value) = client.get(&ext_tools_node_status_key(&node, &id)).await {
+                if let Ok(status) = serde_json::from_str(&value.value) {
+                    reports.insert(node, status);
+                }
+            }
+        }
+        let nodes = online_request_nodes(&reports, &id, &item, node.as_deref()).map_err(reason)?;
+        let request_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let request = ExtToolsOnlineRequest { package: id.clone(), request_ms, by: principal.username.clone() };
+        let raw = serde_json::to_string(&request).map_err(reason)?;
+        for node in &nodes {
+            client.set(&ext_tools_online_request_key(node, &item), &raw).await.map_err(reason)?;
+        }
+        Ok(RPCResponse::new(RPCResult::Success(json!({"ok": true, "id": id, "item": item, "request_ms": request_ms, "nodes": nodes})), req.seq))
+    }
+
     pub(crate) async fn ext_tools_catalog_entries(&self) -> Result<Vec<ExtToolsCatalogEntry>, RPCErrors> {
         let repo = get_buckyos_api_runtime()?.get_repo_client().await.map_err(reason)?;
         let records = repo.list(Some(RepoListFilter { status: Some("pinned".to_string()), ..Default::default() })).await?;
@@ -158,7 +198,9 @@ impl ControlPanelServer {
         Ok(RPCResponse::new(RPCResult::Success(json!({"packages": catalog_json(&entries)})), req.seq))
     }
 
-    /// `ext_tools.status`: package × node, for the administration page.
+    /// `ext_tools.status`: package × node, for the administration page. A node's report carries the package's online
+    /// items (`nodes.<node>.online.<item>`: state, version, size, progress, error) and, per tools root, the commands that
+    /// wait for them.
     pub(crate) async fn handle_ext_tools_status(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
@@ -354,6 +396,19 @@ mod tests {
         assert_eq!(catalog_entry("file:1", &nested).unwrap(), entry);
         assert!(catalog_entry("file:2", &json!({"app_type": "dapp"})).is_none());
         assert!(catalog_entry("file:3", &json!({"app_type": "ext_tools"})).is_none(), "published before manifests were kept: nothing to resolve with");
+    }
+
+    #[test]
+    fn a_download_is_asked_of_the_nodes_that_have_the_online_item() {
+        let report = |items: Value| -> ExtToolsNodeStatus { serde_json::from_value(json!({"version": "1.4.0", "stage": "active", "online": items, "at_ms": 1})).unwrap() };
+        let chromium = json!({"chromium": {"state": "failed", "version": "159.0", "size_bytes": 10, "downloaded_bytes": 4, "error": "HTTP 404", "updated_at_ms": 1}});
+        let reports = BTreeMap::from([("ood1".to_string(), report(chromium.clone())), ("ood2".to_string(), report(chromium)), ("mac".to_string(), report(json!({})))]);
+        assert_eq!(serde_json::to_value(&reports["ood1"]).unwrap()["online"]["chromium"]["state"], "failed", "the status carries it through");
+        assert_eq!(online_request_nodes(&reports, "ext-core", "chromium", None).unwrap(), vec!["ood1".to_string(), "ood2".to_string()]);
+        assert_eq!(online_request_nodes(&reports, "ext-core", "chromium", Some("ood2")).unwrap(), vec!["ood2".to_string()]);
+        assert_eq!(online_request_nodes(&reports, "ext-core", "chromium", Some("mac")).unwrap_err(), "node mac has no online item chromium of ext-core");
+        assert_eq!(online_request_nodes(&reports, "ext-core", "firefox", None).unwrap_err(), "no node has an online item firefox of ext-core");
+        assert_eq!(buckyos_api::ext_tools_online_request_key("ood1", "chromium"), "nodes/ood1/ext_tools_online/chromium");
     }
 
     #[test]

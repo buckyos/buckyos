@@ -33,13 +33,18 @@ const roleLabel: Record<RuntimeRole, TextKey> = {
   assigned: 'runtimeRoleAssigned',
 }
 
-function extToolsLine(ext: ExtCheck): string {
+function extStatusLine(ext: ExtCheck): string {
   switch (ext.status) {
     case 'ok': return t('runtimeExtOk')
     case 'partial': return t('runtimeExtPartial', { tools: ext.missing.join(', ') })
     case 'none': return t('runtimeExtNone')
     case 'system': return t('runtimeExtSystem', { tools: ext.system.join(', ') })
   }
+}
+
+/** Commands waiting for their online item are there, not missing: said after the status. */
+function extToolsLine(ext: ExtCheck): string {
+  return ext.waiting?.length ? `${extStatusLine(ext)} · ${t('runtimeExtWaiting', { tools: ext.waiting.join(', ') })}` : extStatusLine(ext)
 }
 
 function ImpactSessions({ impact }: { impact: RuntimeImpact }) {

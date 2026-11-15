@@ -95,7 +95,7 @@ class ComplianceTests(unittest.TestCase):
         source.mkdir()
         builder.mkdir()
         for filename in ("build.sh", "compliance.py", "official_sources.py", "official-sources.json", "release_manifest.py",
-                         "conda-env.yml", "conda-lock.yml", "sources.sha256", "source-mirrors.json", "ext-manifest.json"):
+                         "place_online.py", "conda-env.yml", "conda-lock.yml", "sources.sha256", "source-mirrors.json", "ext-manifest.json"):
             (builder / filename).write_text("build input fixture\n")
         for directory in ("windows", "smoke", "browser"):
             (builder / directory).mkdir()

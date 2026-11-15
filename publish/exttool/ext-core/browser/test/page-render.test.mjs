@@ -9,7 +9,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
-import { close, listen, node, PAGE_RENDER, png, pngSize, tempDir } from './helpers.mjs';
+import { loadPlaywright, readVersions } from '../runtime.mjs';
+import { BROWSER_DIR, close, listen, node, PAGE_RENDER, png, pngSize, tempDir } from './helpers.mjs';
 
 let dir;
 let server;
@@ -223,4 +224,65 @@ test('a browser that does not start exits with 5 and Chromium\'s reason', { skip
   const result = await pageRender(['--html', 'book', '--pdf', path.join(dir, 'out', 'unstarted.pdf')], { TMPDIR: long });
   assert.equal(result.code, 5);
   assert.match(lastLine(result.stderr), /^page-render: the browser did not start: Socket path too long/);
+});
+
+test('a browser that is not on the machine exits with 6 before anything is started', async () => {
+  const nowhere = { PLAYWRIGHT_BROWSERS_PATH: path.join(dir, 'no-browsers') };
+  const out = path.join(dir, 'out', 'absent.pdf');
+  const result = await pageRender(['--html', 'book', '--pdf', out], nowhere);
+  assert.equal(result.code, 6);
+  assert.match(lastLine(result.stderr), /^page-render: Chrome for Testing is not downloaded on this node yet: .*buckyos ext-tools download ext-core chromium/);
+  assert.equal(result.stdout, '');
+  assert.ok(!fs.existsSync(out));
+  assert.equal((await pageRender(['--version'], nowhere)).code, 0);
+  assert.equal((await pageRender(['--html', 'book'], nowhere)).code, 2);
+});
+
+// As a node has it: the package unpacked as the tools directory, or in a staging or version directory of it and reached
+// through store/<id>, and the browser in <tools>/online/chromium, which the package's own online/chromium is not. A tools
+// directory may itself be in a directory called staging or versions.
+test('the packaged command finds the node\'s browser from wherever the package is', async () => {
+  const executable = loadPlaywright().chromium.executablePath();
+  let revision = executable;
+  while (!/^chromium-\d+$/.test(path.basename(revision))) {
+    assert.notEqual(revision, path.dirname(revision), `${executable} is not in a Playwright browser directory`);
+    revision = path.dirname(revision);
+  }
+  const browsers = path.dirname(revision);
+  const versions = { ...readVersions(), binary: path.relative(browsers, executable) };
+  const bundled = path.join(BROWSER_DIR, '..', 'playwright');
+  const link = process.platform === 'win32' ? 'junction' : 'dir';
+  const layouts = [
+    ['tools-0'],
+    ['tools-1', 'staging', 'ext-core-0123456789ab-1'],
+    ['tools-2', 'versions', 'ext-core', '1.0.0-0123456789ab'],
+    ['staging/tools-3'],
+    ['versions/ext-core/tools-4'],
+  ];
+  for (const [index, [root, ...inside]] of layouts.entries()) {
+    const tools = path.join(dir, root);
+    const store = path.join(tools, ...inside, 'store', 'ext-core');
+    fs.mkdirSync(store, { recursive: true });
+    fs.cpSync(BROWSER_DIR, path.join(store, 'browser'), { recursive: true, filter: (source) => path.basename(source) !== 'test' });
+    fs.writeFileSync(path.join(store, 'browser', 'versions.json'), JSON.stringify(versions));
+    if (fs.existsSync(bundled)) fs.symlinkSync(bundled, path.join(store, 'playwright'), link);
+    let packaged = path.join(store, 'browser', 'page-render.mjs');
+    if (inside[0] === 'versions') {
+      fs.mkdirSync(path.join(tools, 'store'));
+      fs.symlinkSync(store, path.join(tools, 'store', 'ext-core'), link);
+      packaged = path.join(tools, 'store', 'ext-core', 'browser', 'page-render.mjs');
+    }
+    const render = () => node(packaged, ['--html', 'book', '--pdf', path.join(dir, 'out', `layout-${index}.pdf`)], { cwd: dir, env: { PLAYWRIGHT_BROWSERS_PATH: '' } });
+
+    fs.mkdirSync(path.join(tools, ...inside, 'online', 'chromium', path.basename(revision)), { recursive: true });
+    const before = await render();
+    assert.equal(before.code, 6, `${root} ${inside.join('/')}: ${before.stderr}`);
+
+    fs.rmSync(path.join(tools, 'online'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(tools, 'online'));
+    fs.symlinkSync(browsers, path.join(tools, 'online', 'chromium'), link);
+    const after = await render();
+    assert.equal(after.code, 0, `${root} ${inside.join('/')}: ${after.stderr}`);
+    assert.equal(JSON.parse(after.stdout).pages, 3);
+  }
 });

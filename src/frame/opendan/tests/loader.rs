@@ -2868,6 +2868,7 @@ async fn the_agents_browser_is_served_over_krpc() {
 
     let status = rpc(port, "browser.status", json!({})).await.unwrap();
     assert_eq!((status["enabled"].clone(), status["available"].clone(), status["running"].clone()), (json!(true), json!(true), json!(false)));
+    assert_eq!(status["unavailable_code"], Value::Null, "an executable named by OPENDAN_CHROMIUM waits for no download");
     assert_eq!(status["groups"][0]["group_id"], "default");
     assert_eq!(status["default_session_id"], Value::Null);
     assert!(fake.pid().is_none(), "nothing is started for a status");
@@ -3091,6 +3092,44 @@ async fn the_browsers_screen_and_uploads_are_served_over_http() {
         http_request(port, &format!("PUT {SERVICE_PATH}/browser/upload/r1?name=a.txt HTTP/1.1\r\nAuthorization: Bearer not-a-session-token\r\nContent-Length: 1"), b"x").await;
     assert_eq!((status, error["code"].as_str()), (403, Some("unauthorized")));
     assert!(fake.pid().is_none() && loader.browser.viewers() == 0, "nobody was admitted");
+    loader.shutdown().await;
+}
+
+/// An agent without a browser says why on every entry: `browser.status`,
+/// the error of a kRPC call, the screen's handshake and the upload carry
+/// `unavailable_code` beside `browser_unavailable`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_without_a_browser_says_why_on_every_entry() {
+    let w = World::new();
+    std::fs::write(w.root.join("agent.toml"), format!("{AGENT_TOML}\n[loader.browser]\nenabled = false\n")).unwrap();
+    let fake = fake_browser_of(&w).await;
+    let port = free_port();
+    let loader = Loader::start(w.env(Llm::new(|_, _| "unused".into()), port).await).await.unwrap();
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+
+    let status = rpc(port, "browser.status", json!({})).await.unwrap();
+    assert_eq!((status["enabled"].clone(), status["available"].clone(), status["unavailable_code"].clone()), (json!(false), json!(true), json!("disabled")));
+    for (method, params) in [
+        ("browser.ensure", json!({})),
+        ("browser.acquire", json!({ "session_id": "s" })),
+        ("browser.take_over", json!({ "group_id": "default" })),
+        ("browser.reflow_refresh", json!({ "url": "https://example.com" })),
+    ] {
+        let error = rpc_wire(port, method, params).await.unwrap_err();
+        assert_eq!(
+            (error["kind"].as_str(), error["code"].as_str(), error["unavailable_code"].as_str()),
+            (Some("other"), Some("browser_unavailable"), Some("disabled")),
+            "{method}: {error}"
+        );
+        assert_eq!(error["message"], status["unavailable"], "{method}");
+    }
+    let mut ws = screen_hello(port, SERVICE_PATH, None).await;
+    let error = screen_message(&mut ws, "error").await.unwrap();
+    assert_eq!((error["code"].as_str(), error["unavailable_code"].as_str()), (Some("browser_unavailable"), Some("disabled")), "{error}");
+    assert!(screen_message(&mut ws, "ready").await.is_none(), "the connection is closed");
+    let (code, error) = http_request(port, &format!("PUT {SERVICE_PATH}/browser/upload/r1?name=a.txt HTTP/1.1\r\nContent-Length: 1"), b"x").await;
+    assert_eq!((code, error["code"].as_str(), error["unavailable_code"].as_str()), (503, Some("browser_unavailable"), Some("disabled")), "{error}");
+    assert!(fake.pid().is_none(), "nothing was started");
     loader.shutdown().await;
 }
 

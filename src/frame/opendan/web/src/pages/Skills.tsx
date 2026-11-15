@@ -18,6 +18,7 @@ import {
 } from '../model'
 import { pickFile } from '../pickFile'
 import { readSkillPikg } from '../pikg'
+import { outerTarget } from '../runtimes'
 import { Badge, ConfirmDialog, Empty, ErrorBox, Mono, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
 
 const PRIVATE = 'private'
@@ -67,12 +68,31 @@ export function SkillsCard() {
   )
 }
 
+/** Commands that wait for an online item: the node downloads it, an administrator starts that in Desktop. */
+function WaitingOnline({ waiting }: { waiting: NonNullable<SkillCommandsStatus['waiting_online']> }) {
+  const profile = useQuery(['agent.profile'], () => dataModel.profile())
+  const desktop = profile.data?.desktop_url
+  return (
+    <div data-testid="skill-waiting-online">
+      {waiting.map((w) => (
+        <div key={`${w.package}/${w.item}`} className="text-warn">{t('skWaitingOnline', { pkg: w.package, item: w.item, commands: w.commands.join(', ') })}</div>
+      ))}
+      <div className="text-mute">
+        {t('skWaitingOnlineHint')}
+        {desktop && <> <a className="text-accent hover:underline" href={`${desktop}/?settings=ext-tools`} target={outerTarget} data-testid="skill-waiting-open">{t('skWaitingOnlineOpen')}</a></>}
+      </div>
+    </div>
+  )
+}
+
 function CommandsDetail({ status }: { status: SkillCommandsStatus }) {
-  const missing = Object.entries(status.commands).filter(([, c]) => !c.present).map(([name]) => name)
+  const waiting = new Set(status.waiting_online?.flatMap((w) => w.commands) ?? [])
+  const missing = Object.entries(status.commands).filter(([name, c]) => !c.present && !waiting.has(name)).map(([name]) => name)
   const fromSystem = Object.entries(status.commands).filter(([, c]) => c.present && c.provided_by === 'system').map(([name]) => name)
   return (
     <>
       {missing.length > 0 && <div data-testid="skill-missing">{t('skMissingCommands', { commands: missing.join(', ') })}</div>}
+      {status.waiting_online?.length ? <WaitingOnline waiting={status.waiting_online} /> : null}
       {status.recommended_packages?.map((p) => (
         <div key={p.id} data-testid="skill-recommended">
           {t('skRecommendedPackage', { pkg: `${p.id} ${p.version}`.trim(), commands: p.provides.join(', ') })}

@@ -55,16 +55,41 @@ App 这样把会话换成组：`session.id === default_session_id || session.id.
 // Status
 {
   "enabled": true,                 // [loader.browser].enabled
-  "available": true,               // 找得到 chromium
+  "available": true,               // 这个节点上有浏览器可以启动：ext-core 装了，浏览器也下载好了。不看 enabled
   "running": false,
-  "unavailable": null,             // 不可用时的一句说明；可用但最近一次启动失败时是失败的原因
-  "version": { "browser": "159.0.8154.6", "playwright": "1.65.1" },   // 不可用时为 null
+  "unavailable": null,             // 不可用时的一句说明（英文，给人和 Agent 看）；可用但最近一次启动失败时是失败的原因
+  "unavailable_code": null,        // 不可用的原因：disabled | no_package | not_downloaded；其他时候为 null
+  "version": { "browser": "159.0.8154.6", "playwright": "1.65.1" },   // disabled、no_package 时为 null
   "default_session_id": null,      // 默认组绑定的 MessageHub 会话，没绑定时为 null
   "groups": [ /* Group */ ]        // 不带参数时：default，加上有标签页、租约、接手或状态要显示的组
 }
 ```
 
-- `version.browser`：浏览器在运行时取它自己报的版本，没在运行时取 ext-core 的 `browser/versions.json`；`version.playwright` 只来自 `versions.json`。取不到的那一项是 `null`（用 `OPENDAN_CHROMIUM` 指到别处的浏览器时没有 `versions.json`）。
+`unavailable_code` 是稳定的取值，调用方按它判断；`unavailable` 的措辞可以变。按这个顺序判定，取第一个成立的：
+
+| `unavailable_code` | 条件 |
+| --- | --- |
+| `disabled` | `[loader.browser] enabled = false` |
+| `no_package` | 工具目录里没有 `chromium` 启动器：这个节点没装 ext-core |
+| `not_downloaded` | 启动器在，浏览器本体没到 `ready`。浏览器是 ext-core 的在线项 `chromium`：不随包分发，包装好以后在节点上下载（§6）。还没下载、正在下载、下载失败都是这个值，`unavailable` 按记录文件区分 |
+| `null` | 上面都不成立。这时 `unavailable` 也是 `null`，除非浏览器在但最近一次启动失败、现在没在运行：那是失败的原因 |
+
+现在的 `unavailable`：
+
+```text
+disabled        the browser is switched off for this agent ([loader.browser] enabled = false)
+no_package      no `chromium` on this node (it comes with the ext-core extension tools)
+not_downloaded  the browser is not downloaded on this node yet (the online item `chromium` of ext-core): download it in Settings › Extension tools, or with `buckyos ext-tools download ext-core chromium`
+                the browser is being downloaded to this node (42% of 171 MiB)
+                the browser's download to this node failed: <记录里的原因>. Start it again in Settings › Extension tools, or with `buckyos ext-tools download ext-core chromium`
+```
+
+正在下载的百分比是记录里的 `downloaded_bytes / size_bytes`，记录没有大小时不带括号里那一段。`not_downloaded` 还有两种少见的说明：记录是 `ready` 而目录不在（`the browser's download is recorded as ready, but <目录> is not there: download it again in …`），记录读不出来或 `state` 不认识（`the record of the browser's download (<文件>) …`）。
+
+- 每次调用都现查磁盘，不记“不可用”的结论：浏览器下载好（或 ext-core 装好）之后，下一次 `status`、`ensure`、`acquire` 就可用，不用重启 Agent Service。反过来，记录离开 `ready`（管理员重新下载）期间这些方法回 `browser_unavailable`，已经在运行的浏览器不会因此被停掉。
+- `available` 不看 `enabled`：模块关着而浏览器在时是 `available: true`、`unavailable_code: "disabled"`。
+- 用 `OPENDAN_CHROMIUM` 指定了可执行文件时（调试和测试）不看在线项，指的文件在就是可用；不在按 `no_package` 报，`unavailable` 里写的是这个路径。
+- `version.browser`：浏览器在运行时取它自己报的版本，没在运行时取 ext-core 的 `browser/versions.json`；`version.playwright` 只来自 `versions.json`。取不到的那一项是 `null`（用 `OPENDAN_CHROMIUM` 指到别处的浏览器时没有 `versions.json`）。`versions.json` 随包，所以 `not_downloaded` 时 `version` 照旧有值：`version.browser` 是包声明的、将要下载的那个版本。
 - `Tab.title` 是读出来的，不是浏览器推过来的（无头模式下标题变了没有事件）：页面加载完、有人在看（每秒一次）、以及 `status`、`acquire`、交接之前各读一次。
 
 `agent_state` 的来源：
@@ -119,7 +144,7 @@ App 这样把会话换成组：`session.id === default_session_id || session.id.
 
 | `code` | 含义 |
 | --- | --- |
-| `browser_unavailable` | 模块关着，这个节点上找不到 `chromium`，或浏览器起不来、中途断了（`message` 里有原因） |
+| `browser_unavailable` | 这个 Agent 现在没有浏览器可用（`message` 里有原因）。模块关着、节点没装 ext-core、浏览器还没下载好这三种，错误的 JSON 另带 `unavailable_code`（`disabled`、`no_package`、`not_downloaded`，含义和 `message` 同 §2.1 的 Status）：`{"kind": "other", "code": "browser_unavailable", "unavailable_code": "not_downloaded", "message": "…"}`。浏览器起不来、中途断了、Agent Service 正在退出这些没有这个字段 |
 | `invalid_argument` | 参数缺失或取值不对，或浏览器拒绝了这条命令（比如打不开的网址） |
 | `user_in_control` | 用户接手着，`acquire` 失败 |
 | `lease_lost` | 租约过期或被作废 |
@@ -162,7 +187,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 
 `GET /kapi/<agent_id>/browser/screen` 升级成 WebSocket（`/kapi/opendan`、`/api/opendan` 两个挂载点下也有）。连上后 5 秒内客户端发 `hello`，服务端按 owner 校验令牌（和 kRPC 同一套判定，方法名按 `browser.screen` 算），通过后回 `ready`，否则回 `error` 并关闭。一条连接看一个组。不带 WebSocket 升级头的请求回 400。
 
-- 浏览器没在运行时，`hello` 通过后服务端先把它启动起来（等于 `browser.ensure`），起不来回 `browser_unavailable`。
+- 浏览器没在运行时，`hello` 通过后服务端先把它启动起来（等于 `browser.ensure`），起不来回 `browser_unavailable`（原因是 §2.1 那三种之一时带 `unavailable_code`，§3.3）。
 - 连接存在期间算“有人在看这个组”：浏览器不会因为空闲被停掉，用户新开的标签页归这个组，这个组的 JS 弹框留给屏幕（§3.4）。
 - 浏览器崩溃后重启、或者被停掉又启动，标签页的 `tab_id` 全都变了。连接不用重连：服务端先发一条 `running: false` 的 `state`，浏览器回来后发新的 `state`，画面换成新的当前标签页。
 - 这个组被绑定成默认会话（`browser.bind_default`）时，连接改看 `default` 组，`state.group.group_id` 跟着变。
@@ -251,6 +276,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - `focus`：当前标签页里获得焦点的元素变了。`editable` 为真表示它能输入文字（`input`、`textarea`、`contenteditable`），这时带 `input_type`（`input` 的 `type`，另有 `textarea`、`contenteditable`）和它在视口里的位置 `rect`（整数）；焦点离开可编辑元素时发 `editable: false`。App 据此弹出和收起软键盘。切换标签页、页面跳转后服务端重发一次。算作能输入文字的 `input` 类型：`text`、`search`、`url`、`tel`、`email`、`password`、`number`、`date`、`time`、`datetime-local`、`month`、`week`（日期时间这几种第一期当文本框用）；只读、禁用的不算。
 - 重连之后，还没处理完的 `select`、`dialog`、`file_chooser` 请求由服务端在 `ready` 之后重发；`download`、`permission` 不重发。
 - 握手阶段的 `error.code`：`hello_timeout`、`bad_hello`、`unauthorized`、`browser_unavailable`，发完就关闭连接。
+- `code` 是 `browser_unavailable` 的 `error`，握手阶段的和握手之后的一样，原因是模块关着、节点没装 ext-core、浏览器还没下载好时另带 `unavailable_code`（§2.1、§2.3）：`{ "type": "error", "code": "browser_unavailable", "unavailable_code": "not_downloaded", "message": "…" }`。别的原因没有这个字段。
 - 握手之后的 `error.code`，连接不关闭：`agent_in_control`；`bad_message`（不是 JSON、不认识的 `type`、字段不对）；以及做不成的 `nav`、`tab`、`respond` 带的 §2.3 的错误码（`no_such_tab`、`too_many_tabs`、`invalid_argument`、`browser_unavailable`、`no_such_request`）。
 - 客户端 30 秒没有任何上行帧，服务端关闭连接。客户端空闲时每 10 秒发 `ping`，服务端回 `pong`。服务端的一条消息 10 秒发不出去（客户端不收）也关闭连接。
 
@@ -329,7 +355,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 | 403 | `unauthorized` | 令牌不是 owner 的（包括 Agent 自己的 App 身份） |
 | 404 | `no_such_request` | 没有这个 `file_chooser` 请求，或它已经结束 |
 | 413 | `upload_too_large` | 超过上限 |
-| 503 | `browser_unavailable` | 这个 Agent 没有浏览器 |
+| 503 | `browser_unavailable` | 这个 Agent 没有浏览器；正文另带 `unavailable_code`（§2.3） |
 | 500 | `other` | 写盘失败 |
 
 ## 5. 重排
@@ -407,7 +433,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - `view`：有包也有结果时是 `<site>/?url=<编码后的规范化网址>&page=<page>`；否则有兜底结果时是 `<site>/fallback/<page>.html`；都没有是 `null`。`url` 的值按 `encodeURIComponent` 的规则编码（字母、数字和 `-_.!~*'()` 以外的字节都写成 `%XX`），向量里的 `view` 就是有包有结果时的值。
 - `package`：这个站点的包合规（§5.2）并且适用于这个网址时有值，否则是 `null`。`result`、`fallback` 取自 `results/<page>.json`、`fallback/<page>.json` 里的这三个字段，文件不在或不是 JSON 时是 `null`；有没有 `result` 不看有没有包。
 - `refresh`：这个网址的刷新。`running` 时 `at_ms` 是开始的时间；`failed` 表示最近一次刷新失败了，`error` 是原因，`at_ms` 是失败的时间；`idle` 时两项都是 `null`（没刷新过，或最近一次成功了，制作时间看 `result.made_at`）。这个状态只在 Agent Service 的内存里，服务重启后回到 `idle`。
-- 不需要浏览器：不启动它，模块关着（`enabled = false`）或这个节点上找不到 `chromium` 时也照常返回，已经做好的页面照样能显示。`reflow_refresh`、`reflow_action` 这时回 `browser_unavailable`。
+- 不需要浏览器：不启动它，模块关着（`enabled = false`）、这个节点没装 ext-core、浏览器还没下载好时也照常返回，已经做好的页面照样能显示。`reflow_refresh`、`reflow_action` 这时回 `browser_unavailable`（带 `unavailable_code`，§2.3）。
 - `refresh` 是读桶之前取的：刷新在读桶期间结束时，这一次返回的仍是 `running`（旁边是结束之前的 `result`），下一次才是 `idle` 和新的 `result`。不会出现 `idle` 而看不到这次结果的情况。
 - 只读 `manifest.json`、`results/<page>.json`、`fallback/<page>.json` 三个 key；`<site>/preference.json`（§5.2）不读，返回里也没有它。
 - 桶的读写用调用者的令牌，走 nfs-server 的 `/bucket/v1`：调用者在重排库里能做什么由 Zone 的权限决定。调用者没带令牌时（本机调试，回环地址上的调用）用 Agent Service 自己的身份。读写被拒或失败时回 `code: other`，`message` 是 `reflow library: <bucket_id>/<key>: <桶的错误码>: <说明>`。
@@ -495,11 +521,16 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 
 | 键 | 默认 | 含义 |
 | --- | --- | --- |
-| `enabled` | `true` | 关掉后所有 `browser.*`（`status`、`reflow_state` 除外）回 `browser_unavailable`，进程环境里也不设 `OPENDAN_BROWSER_RPC` |
+| `enabled` | `true` | 关掉后所有 `browser.*`（`status`、`reflow_state` 除外）回 `browser_unavailable`（`unavailable_code` 是 `disabled`），进程环境里也不设 `OPENDAN_BROWSER_RPC` |
 | `idle_stop_secs` | `600` | 没有人看、没有租约，超过这个时间停掉浏览器。停之前把各组标签页的网址存下来，下次启动时重开 |
 | `max_tabs` | `12` | 所有组的标签页总数上限。服务端到了上限不再开（`too_many_tabs`）；别处开出来的超出上限的标签页会被立刻关掉 |
 
-这个节点上找不到 `chromium` 时，模块报“不可用”（`browser.status` 的 `available: false`，`browser.reflow_state` 照常，其他方法回 `browser_unavailable`），Agent Service 的其他功能照常。
+这个节点上没有浏览器可以启动时，模块报“不可用”（`browser.status` 的 `available: false`，`browser.reflow_state` 照常，其他方法回 `browser_unavailable`），Agent Service 的其他功能照常。分两种，`unavailable_code` 不同（§2.1）：
+
+- 工具目录里没有 `chromium` 启动器（`no_package`）：这个节点没装 ext-core。
+- 启动器在，浏览器本体不在（`not_downloaded`）。浏览器（Chrome for Testing）是 ext-core 的在线项 `chromium`：不随包分发，包装好以后由节点从官方地址下载到工具目录的 `online/chromium/`，状态记在旁边的 `online/chromium.json`（`state`：`downloading`、`ready`、`failed`；没有这个文件就是还没下载）。记录是 `ready` 并且目录在才算下载好。下载失败后不会自动重试，管理员在“设置 > 扩展工具”里再次触发。
+
+两种都是每次调用现查，装好、下载好之后不用重启 Agent Service。
 
 目录：
 
@@ -507,14 +538,15 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 | --- | --- | --- |
 | 用户数据、缓存、下载、等着交给页面的上传文件 | `${BUCKYOS_INSTANCE_VOLUME}/browser/{profile,cache,downloads,uploads}` | `<AgentRoot>/.cache/browser/{profile,cache,downloads,uploads}` |
 | 各组的标签页 | `<AgentRoot>/state/browser/groups.json` | 同左 |
+| 浏览器本体（ext-core 的在线项，节点上只有一份，各 Agent 共用，只读）和它的下载记录 | `/opt/buckyos/tools/online/chromium/`、`/opt/buckyos/tools/online/chromium.json` | `$BUCKYOS_ROOT/tools/online/chromium/`、`$BUCKYOS_ROOT/tools/online/chromium.json` |
 
-环境变量 `OPENDAN_BROWSER_DIR` 可以指定第一行的位置（入口脚本在容器里设它）。`OPENDAN_CHROMIUM` 可以指定浏览器的可执行文件（调试和测试用），不设时在工具目录（`$BUCKYOS_ROOT/tools/bin`、`$BUCKYOS_ROOT/bin/agent-tools`）里找 `chromium`；设了但指的文件不存在，算找不到。`OPENDAN_AGENT_BROWSER` 同样指定 `agent-browser`（重排刷新由它执行，§5.3），不设时在同一组工具目录里找 `agent-browser`；找不到时只有 `reflow_refresh`、`reflow_action` 回 `browser_unavailable`。
+环境变量 `OPENDAN_BROWSER_DIR` 可以指定第一行的位置（入口脚本在容器里设它）。`OPENDAN_CHROMIUM` 可以指定浏览器的可执行文件（调试和测试用）：设了就直接启动它，不看在线项；指的文件不存在，按 `no_package` 报。不设时在工具目录（`$BUCKYOS_ROOT/tools/bin`、`$BUCKYOS_ROOT/bin/agent-tools`）里找 `chromium` 启动器，启动的也是它（启动器再去执行 `online/chromium/` 里的浏览器）；在线项按启动器的位置找：`<启动器所在目录>/../online/chromium{,.json}`。`OPENDAN_AGENT_BROWSER` 同样指定 `agent-browser`（重排刷新由它执行，§5.3），不设时在同一组工具目录里找 `agent-browser`；找不到时只有 `reflow_refresh`、`reflow_action` 回 `browser_unavailable`。
 
 第一行的位置下还有 `chromium.log`：最近一次启动的标准错误，启动失败时它的末尾会进 `unavailable`；以及 `reflow/<page>/`：一次重排刷新的临时目录（取出来的包、结果文件、子进程的 `HOME` 和 `TMPDIR`），刷新结束就删掉。`groups.json` 的格式见 [Agent State Protocol](Agent%20State%20Protocol.md) §1。
 
 进程：
 
-- 启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --disable-blink-features=CaretBlinking`。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。浏览器来自 ext-core（读得到 `browser/versions.json`）时再加 `--user-agent=<同版本有窗口的 Chrome 的 UA>`：无头模式默认的 UA 带 `HeadlessChrome`，很多网站会把它当机器人。Unix 上有效用户是 root 时加 `--no-sandbox`；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口从 `<profile>/DevToolsActivePort` 读，只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
+- 启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --disable-blink-features=CaretBlinking`。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。浏览器来自 ext-core（读得到 `browser/versions.json`）时再加 `--user-agent=<同版本有窗口的 Chrome 的 UA>`：无头模式默认的 UA 带 `HeadlessChrome`，很多网站会把它当机器人。`versions.json` 随包，按启动器的位置找（`<启动器所在目录>/../store/ext-core/browser/versions.json`），和浏览器本体下载到哪里无关。Unix 上有效用户是 root 时加 `--no-sandbox`；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口从 `<profile>/DevToolsActivePort` 读，只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
 - 浏览器没有自己的标签页（`--no-startup-window`）：每个标签页都属于某个组。
 - 用户数据目录上一次留下的锁（`SingletonLock` 等，记着主机名和进程号，容器每次重建主机名都会变）在启动前删掉；锁指着的进程还在、并且确实是用这个目录起的浏览器时，先把它结束。
 - Chromium 在 `TMPDIR` 下建一个套接字，路径太长（`TMPDIR` 超过约 60 字节）就起不来。Agent Service 自己的 `TMPDIR` 超过 50 字节时，浏览器进程改用 `/tmp`。

@@ -5,6 +5,10 @@ import type { bucket } from 'buckyos'
 import type {
   BuckyOSDevConfig,
   BuckyOSInfo,
+  ExtToolsCatalogEntry,
+  ExtToolsNodeStatus,
+  ExtToolsOnlineStatus,
+  ExtToolsStatusResponse,
   GatewayFileResponse,
   GatewayOverviewResponse,
   ZoneCertificatesResponse,
@@ -323,6 +327,8 @@ function handle(method: string, params: Record<string, unknown>): unknown {
     case 'ext_tools.set_desired':
       extToolsDesired[String(params.id)] = { version: extToolsCatalog[String(params.id)]?.manifest.version ?? '', enabled: params.enabled === true }
       return { ok: true, plan: extToolsPlan(String(params.id), params.enabled === true) }
+    case 'ext_tools.download':
+      return extToolsDownload(String(params.id), String(params.item), typeof params.node === 'string' ? params.node : undefined)
     case 'zone.devices.list':
       return devicesResponse()
     case 'zone.certificates.list':
@@ -357,7 +363,29 @@ export async function callMockSettings<T>(
   }
 }
 
-const extToolsCatalog: Record<string, { manifest: { id: string; version: string; desc: string; requires: Array<{ id: string; version: string }>; provides: Array<{ command: string }>; platforms: string[] }; pikg_digest: string; content_id: string }> = {
+const CHROMIUM_SIZE = 208_987_836
+
+const extToolsCatalog: Record<string, ExtToolsCatalogEntry> = {
+  'ext-core': {
+    manifest: {
+      id: 'ext-core',
+      version: '1.3.0',
+      desc: 'The shared local tools of every Agent: Python, Node, ffmpeg, pandoc and the Agent browser',
+      provides: [{ command: 'python3' }, { command: 'ffmpeg' }, { command: 'pandoc' }, { command: 'agent-browser' }, { command: 'chromium', needs: ['chromium'] }, { command: 'page-render', needs: ['chromium'] }],
+      platforms: ['linux-x86_64', 'linux-aarch64'],
+      size_bytes: { 'linux-x86_64': 720_800_000, 'linux-aarch64': 702_000_000 },
+      online: [{
+        id: 'chromium',
+        version: '159.0.8154.6',
+        desc: 'Chrome for Testing: the browser of the Agent Browser, of page tests and of page-render',
+        license: 'Chrome for Testing, downloaded by each node from Google\'s official address (storage.googleapis.com/chrome-for-testing-public) and used under its own terms; BuckyOS does not distribute it.',
+        auto: true,
+        platforms: { 'linux-x86_64': { size_bytes: CHROMIUM_SIZE }, 'linux-aarch64': { size_bytes: 199_000_000 } },
+      }],
+    },
+    pikg_digest: 'sha256:1',
+    content_id: 'file:1',
+  },
   'ext-media': {
     manifest: { id: 'ext-media', version: '1.2.0', desc: 'Audio and video editing', requires: [{ id: 'ext-core', version: '>=1.0' }], provides: [{ command: 'ffmpeg' }, { command: 'ffprobe' }], platforms: ['linux-x86_64'] },
     pikg_digest: 'sha256:0',
@@ -371,12 +399,99 @@ function extToolsPlan(id: string, enabled: boolean) {
   return { enable: extToolsCatalog[id] ? [extToolsCatalog[id]] : [], disable: [], errors: extToolsCatalog[id] ? [] : [`${id} is not in the Repo`] }
 }
 
-function extToolsStatus() {
+// ── Online items: what ext-core only declares and the node downloads (chromium), with a download that takes a few seconds ──
+
+/** The node takes a request on its next round; the download then runs this long. */
+const MOCK_PICKUP_MS = 700
+const MOCK_DOWNLOAD_MS = 4000
+
+interface MockOnline {
+  status: ExtToolsOnlineStatus
+  /** A download asked for: under way from `start`, ending with `failure` or ready. */
+  job?: { start: number; failure: string | null }
+}
+
+const readyChromium = (at: number): ExtToolsOnlineStatus => ({ state: 'ready', version: '159.0.8154.6', size_bytes: CHROMIUM_SIZE, downloaded_bytes: CHROMIUM_SIZE, updated_at_ms: at })
+
+const extToolsOnline: Record<string, Record<string, MockOnline>> = {
+  ood1: { chromium: { status: readyChromium(Date.now() - 3 * 86_400_000) } },
+}
+/** The next download of an item fails with this reason. */
+const failNext: Record<string, string> = {}
+
+function onlineNow(entry: MockOnline): ExtToolsOnlineStatus {
+  const { job, status } = entry
+  if (!job || Date.now() < job.start) return status
+  const fraction = Math.min(1, (Date.now() - job.start) / MOCK_DOWNLOAD_MS)
+  if (job.failure && fraction >= 0.4) {
+    entry.job = undefined
+    // Fetching again what is in place and failing keeps it in place.
+    entry.status = status.state === 'ready' ? { ...status, error: job.failure } : { ...status, state: 'failed', downloaded_bytes: 0, error: job.failure, updated_at_ms: Date.now() }
+    return entry.status
+  }
+  if (fraction >= 1) {
+    entry.job = undefined
+    entry.status = { state: 'ready', version: status.version, size_bytes: status.size_bytes, downloaded_bytes: status.size_bytes, updated_at_ms: Date.now() }
+    return entry.status
+  }
+  const step = Math.max(1, Math.floor(status.size_bytes / 100))
+  return { state: 'downloading', version: status.version, size_bytes: status.size_bytes, downloaded_bytes: Math.floor((status.size_bytes * fraction) / step) * step, updated_at_ms: Date.now() }
+}
+
+/** Where online item `item` stands on `node` now; the mock Agent Service reads it to tell whether its browser is there. */
+export function mockOnlineStatus(node: string, item: string): ExtToolsOnlineStatus | null {
+  const entry = extToolsOnline[node]?.[item]
+  return entry ? onlineNow(entry) : null
+}
+
+/** Whether the node has a copy of the item in place: downloading it again leaves the one in use there until that ends. */
+export function mockOnlineInPlace(node: string, item: string): boolean {
+  const entry = extToolsOnline[node]?.[item]
+  if (!entry) return false
+  onlineNow(entry)
+  return entry.status.state === 'ready'
+}
+
+/** Puts an online item in a state, as if the node had got there (`window.__extToolsMock.setOnline`). */
+export function setMockOnline(node: string, item: string, state: 'missing' | 'failed' | 'ready', error = 'connection to storage.googleapis.com timed out') {
+  const base = extToolsOnline[node]?.[item]?.status ?? readyChromium(0)
+  const status: ExtToolsOnlineStatus = state === 'ready'
+    ? { ...readyChromium(Date.now()), version: base.version, size_bytes: base.size_bytes, downloaded_bytes: base.size_bytes }
+    : state === 'failed'
+      ? { state, version: base.version, size_bytes: base.size_bytes, downloaded_bytes: 0, error, updated_at_ms: Date.now() - 60_000 }
+      : { state, version: base.version, size_bytes: base.size_bytes, downloaded_bytes: 0, updated_at_ms: 0 }
+  extToolsOnline[node] = { ...extToolsOnline[node], [item]: { status } }
+}
+
+function extToolsDownload(id: string, item: string, node?: string) {
+  const having = Object.keys(extToolsOnline).filter((name) => extToolsOnline[name][item])
+  if (node && !having.includes(node)) throw new Error(`node ${node} has no online item ${item} of ${id}`)
+  if (having.length === 0) throw new Error(`no node has an online item ${item} of ${id}`)
+  const nodes = node ? [node] : having
+  for (const name of nodes) {
+    const entry = extToolsOnline[name][item]
+    // A node in the middle of that download answers with the one under way.
+    if (onlineNow(entry).state === 'downloading') continue
+    entry.job = { start: Date.now() + MOCK_PICKUP_MS, failure: failNext[item] ?? null }
+    delete failNext[item]
+  }
+  return { ok: true, id, item, request_ms: Date.now(), nodes }
+}
+
+function coreOnNode(node: string): ExtToolsNodeStatus {
+  const online = Object.fromEntries(Object.entries(extToolsOnline[node] ?? {}).map(([item, entry]) => [item, onlineNow(entry)]))
+  const waiting = Object.fromEntries(extToolsCatalog['ext-core'].manifest.provides
+    .map((p) => [p.command, (p.needs ?? []).filter((item) => online[item] && online[item].state !== 'ready')] as const)
+    .filter(([, items]) => items.length > 0))
+  return { version: '1.3.0', stage: 'active', targets: { native: { stage: 'active', version: '1.3.0', online, waiting } }, online }
+}
+
+function extToolsStatus(): ExtToolsStatusResponse {
   const active = (version: string) => ({ version, stage: 'active' as const })
   return {
     nodes: [{ id: 'ood1', platform: 'linux-x86_64', containers: true }],
     packages: [
-      { id: 'ext-core', latest: null, versions: null, desired: null, nodes: { ood1: active('1.1.0') }, skills: { ffmpeg: ['aigc_video'] } },
+      { id: 'ext-core', latest: extToolsCatalog['ext-core'], versions: ['1.3.0'], desired: null, nodes: { ood1: coreOnNode('ood1') }, skills: { ffmpeg: ['aigc_video'], chromium: ['browser'] } },
       {
         id: 'ext-media',
         latest: extToolsCatalog['ext-media'],
@@ -387,3 +502,12 @@ function extToolsStatus() {
     ],
   }
 }
+
+Object.assign(window, {
+  __extToolsMock: {
+    setOnline: setMockOnline,
+    failNextDownload(item: string, error: string) {
+      failNext[item] = error
+    },
+  },
+})

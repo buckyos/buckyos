@@ -512,6 +512,37 @@ async fn page_to_pdf_hands_the_page_to_page_render_in_isolation() {
     }
 }
 
+/// The browser is no part of ext-core: the node downloads it once the
+/// package is installed. Until then `page-render` is there (probed, with the
+/// fingerprint it will have) and a page fails with `tools_missing`; when the
+/// browser is there the same service renders.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_page_is_not_rendered_until_the_node_downloaded_the_browser() {
+    let e = stub_page_env();
+    let no_browser = e.ctx.temp_dir.join("bin").join("no-browser");
+    std::fs::write(&no_browser, "").unwrap();
+    let (_, id) = e.io.add_file("page.html", b"<p>page</p>").await;
+    let fingerprint = page::PageToPdf.fingerprint(&e.ctx.env);
+    for err in [
+        invoke(&page::PageToPdf, &e, page_params(PDF_PAGE, &id, json!({}))).await.unwrap_err(),
+        invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({}))).await.unwrap_err(),
+    ] {
+        assert_eq!(err.code, error_codes::TOOLS_MISSING);
+        assert!(err.message.contains("has not downloaded the browser yet") && err.message.contains("Extension tools"), "{}", err.message);
+        assert_eq!(err.details["tools_missing"], json!(["chromium"]));
+        assert_eq!((&err.details["online_item"], &err.details["tool"]), (&json!("chromium"), &json!("page-render")));
+        assert!(err.details["stderr_tail"].as_str().unwrap().contains("not downloaded"), "{}", err.details);
+        assert!(!err.retryable);
+    }
+    assert!(!e.ctx.temp_dir.join("page/args.txt").exists(), "nothing was rendered");
+
+    std::fs::remove_file(&no_browser).unwrap();
+    let out = invoke(&page::PageToPdf, &e, page_params(PDF_PAGE, &id, json!({}))).await.unwrap();
+    assert_eq!(out.result["pages"], 3);
+    assert_eq!(page::PageToPdf.fingerprint(&e.ctx.env), fingerprint, "the download changes no fingerprint");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_zip_page_is_unpacked_around_its_index_and_stays_in_its_directory() {

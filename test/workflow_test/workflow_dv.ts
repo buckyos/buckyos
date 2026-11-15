@@ -1166,7 +1166,18 @@ async function runPageRenderCase(args: {
     assert.equal(doneA.graph.status, "failed");
     assert.equal(doneA.graph.node_errors?.page_to_pdf?.code, "tools_missing");
     throw new BlockedError(
-      "this node has no page-render (its ext-core carries no browser): media.page fails with tools_missing",
+      "this node has no page-render (ext-core is not installed, or it is one without page-render): media.page fails with tools_missing",
+    );
+  }
+  // page-render is there, the browser it starts is not: Chrome for Testing is the online item
+  // `chromium` of ext-core, which the node downloads once the package is installed.
+  const pageError = doneA.graph.node_errors?.page_to_pdf;
+  if ((pageError?.details as JsonObject | undefined)?.online_item === "chromium") {
+    assert.equal(doneA.graph.status, "failed");
+    assert.equal(pageError?.code, "tools_missing");
+    assert.deepEqual((pageError?.details as JsonObject).tools_missing, ["chromium"]);
+    throw new BlockedError(
+      `this node has not downloaded the browser (the online item chromium of ext-core): media.page fails with tools_missing: ${pageError?.message}`,
     );
   }
   assert.equal(doneA.graph.status, "completed", JSON.stringify(doneA.graph.node_errors));

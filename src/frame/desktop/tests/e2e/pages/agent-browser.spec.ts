@@ -530,7 +530,7 @@ test('a browser that is turned off or missing is explained, and comes back witho
   await page.evaluate((agent) => (window as unknown as MockWindow).__agentBrowserMock.setAvailability(agent, { available: false, unavailable: 'chromium was not found in /opt/buckyos/tools' }), AGENT)
   await page.getByTestId(`ab-agent-${AGENT}`).click()
   const notice = page.getByTestId('ab-unavailable')
-  await expect(notice).toHaveAttribute('data-reason', 'missing')
+  await expect(notice).toHaveAttribute('data-reason', 'no_package')
   await expect(notice).toContainText('The browser is not available on CodeAssistant')
   await expect(notice).toContainText('ext-core')
   await expect(page.getByTestId('ab-unavailable-detail')).toHaveText('chromium was not found in /opt/buckyos/tools')

@@ -61,6 +61,52 @@ pub struct ExtToolsCommand {
     /// A no-network check, relative to the payload root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smoke: Option<String>,
+    /// The online items the command cannot run without. Until all of them are there it is waiting, not broken.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
+}
+
+pub const EXT_TOOLS_ONLINE_FORMATS: [&str; 2] = ["zip", "tar.gz"];
+
+/// Where one platform gets an online item: the upstream's own address, and what to do with the archive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtToolsOnlineSource {
+    pub url: String,
+    /// Hex, of the archive.
+    pub sha256: String,
+    /// Of the archive.
+    pub size_bytes: u64,
+    /// `zip` or `tar.gz`.
+    pub format: String,
+    /// Unpack below this directory of the item instead of at its root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub into: Option<String>,
+    /// `[from, to]` inside the item, after unpacking.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rename: Vec<(String, String)>,
+    /// A directory of the payload, `online/<id>` or below, laid over the item last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<String>,
+}
+
+/// Something the package only declares: a node downloads it from the upstream after the package is installed, to
+/// `tools/online/<id>/`. The package neither carries nor distributes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtToolsOnlineItem {
+    pub id: String,
+    pub version: String,
+    #[serde(default)]
+    pub desc: String,
+    /// Whose it is, where it comes from and under what terms.
+    #[serde(default)]
+    pub license: String,
+    /// Download once the package is installed, without being asked.
+    #[serde(default)]
+    pub auto: bool,
+    /// By platform name; a platform without an entry has no such item.
+    pub platforms: BTreeMap<String, ExtToolsOnlineSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +128,52 @@ pub struct ExtToolsManifest {
     pub license: String,
     #[serde(default)]
     pub desc: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub online: Vec<ExtToolsOnlineItem>,
+}
+
+fn safe_version(version: &str) -> bool {
+    !version.is_empty() && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+}
+
+/// An online item comes from an `https` address and from nowhere else. The tests of this crate serve theirs from the
+/// loopback address.
+pub(crate) fn online_url_allowed(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw) else {
+        return false;
+    };
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return false;
+    }
+    parsed.scheme() == "https" || (cfg!(test) && parsed.scheme() == "http" && parsed.host_str() == Some("127.0.0.1"))
+}
+
+impl ExtToolsOnlineSource {
+    fn problem(&self, item: &str) -> Option<String> {
+        if !online_url_allowed(&self.url) {
+            return Some(format!("url `{}` must be an https address", self.url));
+        }
+        if self.sha256.len() != 64 || !self.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some("sha256 must be 64 hex digits".to_string());
+        }
+        if self.size_bytes == 0 {
+            return Some("size_bytes must be the size of the archive".to_string());
+        }
+        if !EXT_TOOLS_ONLINE_FORMATS.contains(&self.format.as_str()) {
+            return Some(format!("format `{}` must be zip or tar.gz", self.format));
+        }
+        if self.into.as_deref().is_some_and(|path| !safe_relative(path)) {
+            return Some("into must be a relative path inside the item".to_string());
+        }
+        if self.rename.iter().any(|(from, to)| !safe_relative(from) || !safe_relative(to) || from == to) {
+            return Some("rename must be [from, to] pairs of relative paths inside the item".to_string());
+        }
+        let root = format!("online/{item}");
+        if self.overlay.as_deref().is_some_and(|path| !safe_relative(path) || !(path == root || path.starts_with(&format!("{root}/")))) {
+            return Some(format!("overlay must be {root} or a directory below it"));
+        }
+        None
+    }
 }
 
 fn safe_id(id: &str) -> bool {
@@ -125,6 +217,29 @@ impl ExtToolsManifest {
         if self.provides.is_empty() {
             return fail("provides must not be empty".to_string());
         }
+        let mut items = BTreeSet::new();
+        for item in &self.online {
+            if !safe_id(&item.id) {
+                return fail(format!("online: id `{}` must be lowercase letters, digits and `-`", item.id));
+            }
+            if !items.insert(item.id.as_str()) {
+                return fail(format!("online: `{}` is listed twice", item.id));
+            }
+            if !safe_version(&item.version) {
+                return fail(format!("online `{}`: version `{}` must be letters, digits and `._+-`", item.id, item.version));
+            }
+            if item.platforms.is_empty() {
+                return fail(format!("online `{}`: platforms must not be empty", item.id));
+            }
+            for (platform, source) in &item.platforms {
+                if !self.platforms.contains(platform) {
+                    return fail(format!("online `{}`: `{platform}` is not a platform of the package", item.id));
+                }
+                if let Some(problem) = source.problem(&item.id) {
+                    return fail(format!("online `{}` on {platform}: {problem}", item.id));
+                }
+            }
+        }
         let mut commands = BTreeSet::new();
         for provided in &self.provides {
             if !safe_command(&provided.command) {
@@ -138,6 +253,15 @@ impl ExtToolsManifest {
             }
             if provided.smoke.as_deref().is_some_and(|s| !safe_relative(s)) {
                 return fail(format!("command `{}`: smoke must be a relative path inside the payload", provided.command));
+            }
+            let mut needed = BTreeSet::new();
+            for need in &provided.needs {
+                if !items.contains(need.as_str()) {
+                    return fail(format!("command `{}`: needs `{need}`, which is not an online item of the package", provided.command));
+                }
+                if !needed.insert(need.as_str()) {
+                    return fail(format!("command `{}`: needs `{need}` twice", provided.command));
+                }
             }
         }
         if self.platforms.is_empty() {
@@ -183,8 +307,8 @@ pub fn ext_tools_smoke_path(dir: &Path, smoke: &str, windows: bool) -> std::path
 }
 
 /// What is wrong with the payload directory of `platform`: the layout of a package (`ext-manifest.json`, `bin/`,
-/// `smoke/`, `store/<id>/` and nothing else), and a launcher in `bin/` for every command it provides and for nothing
-/// else: `provides` is all the system knows of which package provides a command.
+/// `smoke/`, `store/<id>/`, `online/<item>/` and nothing else), and a launcher in `bin/` for every command it provides
+/// and for nothing else: `provides` is all the system knows of which package provides a command.
 pub fn ext_tools_payload_errors(manifest: &ExtToolsManifest, platform: &ExtToolsPlatform, dir: &Path) -> Vec<String> {
     let mut errors = Vec::new();
     let manifest_path = dir.join(EXT_TOOLS_MANIFEST_FILE);
@@ -220,12 +344,27 @@ pub fn ext_tools_payload_errors(manifest: &ExtToolsManifest, platform: &ExtTools
     match read {
         Ok(entries) => {
             for name in entries {
-                if ![EXT_TOOLS_MANIFEST_FILE, "bin", "store", "smoke"].contains(&name.as_str()) {
-                    errors.push(format!("{name}: a package only holds {EXT_TOOLS_MANIFEST_FILE}, bin/, smoke/ and store/{}/", manifest.id));
+                if ![EXT_TOOLS_MANIFEST_FILE, "bin", "store", "smoke", "online"].contains(&name.as_str()) {
+                    errors.push(format!("{name}: a package only holds {EXT_TOOLS_MANIFEST_FILE}, bin/, smoke/, store/{}/ and online/<item>/", manifest.id));
                 }
             }
         }
         Err(e) => errors.push(format!("{}: {e}", dir.display())),
+    }
+    if let Ok(entries) = std::fs::read_dir(dir.join("online")) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !manifest.online.iter().any(|item| item.id == name) {
+                errors.push(format!("online/{name}: not an online item of the package"));
+            }
+        }
+    }
+    for item in &manifest.online {
+        if let Some(overlay) = item.platforms.get(platform.name).and_then(|source| source.overlay.as_ref()) {
+            if !dir.join(overlay).is_dir() {
+                errors.push(format!("{overlay}: the overlay of online item `{}` is missing", item.id));
+            }
+        }
     }
     if let Ok(entries) = std::fs::read_dir(dir.join("store")) {
         for entry in entries.flatten() {
@@ -258,6 +397,49 @@ pub fn ext_tools_desired_key(id: &str) -> String {
 /// What a node's reconciler reports: `nodes/<node>/ext_tools/<id>`.
 pub fn ext_tools_node_status_key(node_id: &str, id: &str) -> String {
     format!("nodes/{node_id}/ext_tools/{id}")
+}
+
+/// The administrator asking a node to download an online item again: `nodes/<node>/ext_tools_online/<item>`, written by
+/// control-panel only. A package the release seeded has no desired state to carry it, and a node reads its own keys only.
+pub fn ext_tools_online_request_prefix(node_id: &str) -> String {
+    format!("nodes/{node_id}/ext_tools_online")
+}
+
+pub fn ext_tools_online_request_key(node_id: &str, item: &str) -> String {
+    format!("{}/{item}", ext_tools_online_request_prefix(node_id))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtToolsOnlineRequest {
+    /// The package that declares the item.
+    pub package: String,
+    /// A node downloads again when this is later than the request its record answered.
+    pub request_ms: u64,
+    pub by: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtToolsOnlineState {
+    /// Never downloaded, or what is there is another version.
+    Missing,
+    Downloading,
+    Ready,
+    /// The one automatic download, or the last one asked for, did not work. Nothing retries it but a new request.
+    Failed,
+}
+
+/// One online item on one tools root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtToolsOnlineStatus {
+    pub state: ExtToolsOnlineState,
+    /// The version the package declares.
+    pub version: String,
+    pub size_bytes: u64,
+    pub downloaded_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,6 +497,12 @@ pub struct ExtToolsTargetStatus {
     pub digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The package's online items there.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub online: BTreeMap<String, ExtToolsOnlineStatus>,
+    /// Commands that wait for online items, each with the items it waits for.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waiting: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,6 +514,9 @@ pub struct ExtToolsNodeStatus {
     pub targets: BTreeMap<String, ExtToolsTargetStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Each online item across the node's roots, the one furthest from ready.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub online: BTreeMap<String, ExtToolsOnlineStatus>,
     pub at_ms: u64,
 }
 
@@ -540,11 +731,12 @@ mod tests {
             version: "1.2.0".to_string(),
             requires: vec![ExtToolsRequire { id: "ext-core".to_string(), version: ">=1.0".to_string() }],
             conflicts: vec![],
-            provides: vec![ExtToolsCommand { command: "ffmpeg".to_string(), version_probe: "ffmpeg -version".to_string(), smoke: Some("smoke/ffmpeg.sh".to_string()) }],
+            provides: vec![ExtToolsCommand { command: "ffmpeg".to_string(), version_probe: "ffmpeg -version".to_string(), smoke: Some("smoke/ffmpeg.sh".to_string()), needs: vec![] }],
             platforms: vec!["linux-x86_64".to_string()],
             size_bytes: BTreeMap::new(),
             license: "LGPL-2.1".to_string(),
             desc: String::new(),
+            online: vec![],
         }
     }
 
@@ -556,11 +748,12 @@ mod tests {
                 version: version.to_string(),
                 requires: requires.iter().map(|(id, version)| ExtToolsRequire { id: id.to_string(), version: version.to_string() }).collect(),
                 conflicts: vec![],
-                provides: commands.iter().map(|c| ExtToolsCommand { command: c.to_string(), version_probe: format!("{c} --version"), smoke: None }).collect(),
+                provides: commands.iter().map(|c| ExtToolsCommand { command: c.to_string(), version_probe: format!("{c} --version"), smoke: None, needs: vec![] }).collect(),
                 platforms: vec!["linux-x86_64".to_string()],
                 size_bytes: BTreeMap::new(),
                 license: String::new(),
                 desc: String::new(),
+                online: vec![],
             },
             pikg_digest: format!("sha256:{id}-{version}"),
             content_id: format!("file:{id}-{version}"),
@@ -704,6 +897,108 @@ mod tests {
             change(&mut bad);
             assert!(bad.validate().is_err(), "{bad:?}");
         }
+    }
+
+    fn online_manifest() -> ExtToolsManifest {
+        let mut manifest = manifest();
+        manifest.online = vec![ExtToolsOnlineItem {
+            id: "chromium".to_string(),
+            version: "159.0.8154.6".to_string(),
+            desc: "A browser".to_string(),
+            license: "Upstream's, from the upstream".to_string(),
+            auto: true,
+            platforms: BTreeMap::from([(
+                "linux-x86_64".to_string(),
+                ExtToolsOnlineSource {
+                    url: "https://storage.googleapis.com/chrome-for-testing-public/159.0.8154.6/linux64/chrome-linux64.zip".to_string(),
+                    sha256: "ab".repeat(32),
+                    size_bytes: 170_000_000,
+                    format: "zip".to_string(),
+                    into: Some("chromium-1255".to_string()),
+                    rename: vec![("chromium-1255/chrome-linux64/chrome".to_string(), "chromium-1255/chrome-linux64/chrome-bin".to_string())],
+                    overlay: Some("online/chromium".to_string()),
+                },
+            )]),
+        }];
+        manifest.provides[0].needs = vec!["chromium".to_string()];
+        manifest
+    }
+
+    #[test]
+    fn an_online_item_names_an_https_archive_and_stays_inside_its_directory() {
+        let manifest = online_manifest();
+        manifest.validate().unwrap();
+        let raw = serde_json::to_string(&manifest).unwrap();
+        assert_eq!(ExtToolsManifest::parse(&raw).unwrap(), manifest);
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["online"][0]["platforms"]["linux-x86_64"]["rename"][0], serde_json::json!(["chromium-1255/chrome-linux64/chrome", "chromium-1255/chrome-linux64/chrome-bin"]));
+        assert_eq!(value["provides"][0]["needs"], serde_json::json!(["chromium"]));
+        assert!(serde_json::to_value(self::manifest()).unwrap().get("online").is_none(), "a package without online items says nothing about them");
+
+        fn source(m: &mut ExtToolsManifest) -> &mut ExtToolsOnlineSource {
+            m.online[0].platforms.get_mut("linux-x86_64").unwrap()
+        }
+        for change in [
+            (|m: &mut ExtToolsManifest| m.online[0].id = "Chromium".to_string()) as fn(&mut ExtToolsManifest),
+            |m| m.online.push(m.online[0].clone()),
+            |m| m.online[0].version = "1 2".to_string(),
+            |m| m.online[0].platforms.clear(),
+            |m| {
+                let entry = m.online[0].platforms["linux-x86_64"].clone();
+                m.online[0].platforms.insert("darwin-arm64".to_string(), entry);
+            },
+            |m| source(m).url = "http://storage.googleapis.com/chrome.zip".to_string(),
+            |m| source(m).url = "https://".to_string(),
+            |m| source(m).url = "file:///etc/passwd".to_string(),
+            |m| source(m).sha256 = "abc".to_string(),
+            |m| source(m).sha256 = "zz".repeat(32),
+            |m| source(m).size_bytes = 0,
+            |m| source(m).format = "7z".to_string(),
+            |m| source(m).into = Some("../outside".to_string()),
+            |m| source(m).into = Some("/abs".to_string()),
+            |m| source(m).rename = vec![("a".to_string(), "../b".to_string())],
+            |m| source(m).rename = vec![("a".to_string(), "a".to_string())],
+            |m| source(m).overlay = Some("store/ext-media/overlay".to_string()),
+            |m| source(m).overlay = Some("online/chromium/../other".to_string()),
+            |m| source(m).overlay = Some("online/chromium-other".to_string()),
+            |m| m.provides[0].needs = vec!["firefox".to_string()],
+            |m| m.provides[0].needs = vec!["chromium".to_string(), "chromium".to_string()],
+        ] {
+            let mut bad = online_manifest();
+            change(&mut bad);
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+        let mut unknown: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        unknown["online"][0]["platforms"]["linux-x86_64"]["mirror"] = serde_json::json!("https://mirror.example/chrome.zip");
+        assert!(ExtToolsManifest::parse(&unknown.to_string()).is_err(), "the upstream's address is the only one");
+        assert!(online_url_allowed("http://127.0.0.1:1/x"), "this crate's own tests serve from the loopback address");
+        assert!(!online_url_allowed("http://localhost:1/x"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_payload_holds_the_overlays_of_its_online_items_and_of_no_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ext-tools-payload-online-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.as_path();
+        let manifest = online_manifest();
+        let linux = ext_tools_platform("linux-x86_64").unwrap();
+        for sub in ["bin", "smoke", "store/ext-media"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        std::fs::write(root.join(EXT_TOOLS_MANIFEST_FILE), serde_json::to_string(&manifest).unwrap()).unwrap();
+        std::fs::write(root.join("smoke/ffmpeg.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(root.join("bin/ffmpeg"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(root.join("bin/ffmpeg"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(ext_tools_payload_errors(&manifest, linux, root), vec!["online/chromium: the overlay of online item `chromium` is missing".to_string()]);
+
+        std::fs::create_dir_all(root.join("online/chromium/chromium-1255")).unwrap();
+        assert!(ext_tools_payload_errors(&manifest, linux, root).is_empty());
+
+        std::fs::create_dir_all(root.join("online/firefox")).unwrap();
+        assert_eq!(ext_tools_payload_errors(&manifest, linux, root), vec!["online/firefox: not an online item of the package".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

@@ -51,12 +51,34 @@ recipe and LibreOffice's `download.lst`, and font license texts. This collection
 does not by itself prove an arbitrary upstream binary's complete static source
 closure: explicit unresolved requirements block finalization and publishing.
 
+Chrome for Testing is not part of the payload. It is an online item, declared
+in `ext-manifest.json` (`online`) with Google's own address, SHA256 and size
+per platform: a node downloads it into `<tools>/online/chromium/` once the
+package is installed. Nothing we publish carries it, so it has no entry in
+`official-sources.json` and no license material here (see
+`OFFICIAL_SOURCES.md`). The build fetches the archive pinned in
+`sources.sha256`, lays it out as a node would with `place_online.py` and checks
+it against the payload's libraries, then discards it; the smoke jobs of CI use
+the same script to give an unpacked payload its browser before the network is
+cut.
+
+The manifest fields of an online item (`online[]`: `id`, `version`, `desc`,
+`license`, `auto`, and per platform `url`, `sha256`, `size_bytes`, `format`,
+`into`, `rename`, `overlay`) and `needs` on the commands that cannot run
+without it are specified in `doc/pikg/format.md` §5.1; what a node does with
+them (layout, record, the one automatic download, asking again) is in
+`doc/app_service/paios容器需求.md` §6.4. A command with `needs` has its probe
+and smoke skipped while its item is not on the node. Once it is, the smoke runs
+with `ext-tools check --full`, and also when a later version of the package is
+checked in `<tools>/staging/<name>/`: a launcher has to find
+`<tools>/online/<item>` from there and from `<tools>/versions/ext-core/<dir>/`
+as well as from `<tools>/bin`. The payload's overlay (`online/<item>/`) is laid
+over the item again each time the package is activated, without the archive
+being fetched again, so a changed script in it reaches a node with the package.
+
 Current release blockers are recorded in each official component's
 `unresolved_source_requirements`, rather than silently ignored. In particular,
-Pandoc's exact binary-specific Haskell dependency/build plan must be obtained,
-and Chrome for Testing bundles the closed-source Widevine CDM, whose license
-forbids distribution without an agreement with Google (see
-`OFFICIAL_SOURCES.md`);
+Pandoc's exact binary-specific Haskell dependency/build plan must be obtained;
 the manifest records the current status of every other component separately.
 A project source tarball alone is insufficient to clear these entries. Do not
 remove a blocker merely because a source download succeeded.

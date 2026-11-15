@@ -6,7 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { CliError, main, number, parse, usage } from './cli.mjs';
-import { loadPlaywright, readVersions } from './runtime.mjs';
+import { BROWSER_NOT_HERE, browserIsHere, loadPlaywright, readVersions } from './runtime.mjs';
 
 // Part of the fingerprint Workflow caches results under: raise it when the output of the same input changes.
 const VERSION = '1.0.0';
@@ -14,6 +14,7 @@ const VERSION = '1.0.0';
 const EXIT_TIMEOUT = 3;
 const EXIT_RENDER = 4;
 const EXIT_BROWSER = 5;
+const EXIT_NO_BROWSER = 6;
 
 const PAPERS = ['A3', 'A4', 'A5', 'Letter'];
 const MAX_WARNINGS = 50;
@@ -51,7 +52,8 @@ Readiness
 
 On success prints one line of JSON: {"pages": n, "bytes": n, "sandbox": bool, "warnings": [text...]}.
 pages is 1 for a PNG. Every request that was blocked is listed in warnings.
-Exit codes: 0 ok, 2 usage, 3 timed out, 4 rendering failed, 5 the browser did not start.
+Exit codes: 0 ok, 2 usage, 3 timed out, 4 rendering failed, 5 the browser did not start,
+6 the browser is not downloaded on this node yet (it is an online item of the ext-core package).
 The last line on stderr is the reason.`;
 
 function firstLine(text) {
@@ -197,7 +199,9 @@ async function render(values) {
   const timeout = number(values.timeout ?? '60', '--timeout', { min: 1 }) * 1000;
   const out = path.resolve(values.pdf ?? values.png);
 
-  const { chromium } = loadPlaywright();
+  const playwright = loadPlaywright();
+  if (!browserIsHere(playwright)) throw new CliError(BROWSER_NOT_HERE, EXIT_NO_BROWSER);
+  const { chromium } = playwright;
   const blocked = new Set();
   // Names outside the allowed hosts do not even resolve, for whatever the request interception does not see.
   const resolver = ['MAP * ~NOTFOUND', ...[...(input.hosts ?? [])].map((host) => `EXCLUDE ${host}`)].join(', ');

@@ -316,7 +316,7 @@ Agent 的常驻浏览器：一个无头 Chromium，跑在 Agent Service 所在�
 
 | method | params | 说明 | 谁能调 |
 |---|---|---|---|
-| `browser.status` | `{group_id?, session_id?}` | Status：是否启用、可用、在运行，版本，默认组绑定的会话，各组的操作方、Agent 状态和标签页。不启动浏览器 | owner、Agent |
+| `browser.status` | `{group_id?, session_id?}` | Status：是否启用、可用、在运行，不可用的原因（`unavailable_code`：`disabled`、`no_package`、`not_downloaded`，加一句说明 `unavailable`），版本，默认组绑定的会话，各组的操作方、Agent 状态和标签页。不启动浏览器 | owner、Agent |
 | `browser.ensure` | `{}` | 没在运行就启动；返回 Status | owner、Agent |
 | `browser.acquire` | `{session_id}` | 取得会话所在组的租约（默认 60 秒；没在运行就启动）：`{lease_id, group_id, ttl_ms, expires_at_ms, cdp_url, tabs, active_tab_id}`。用户接手着时 `user_in_control` | Agent |
 | `browser.renew` / `browser.release` | `{lease_id}` / `{lease_id, state?: done \| stuck, note?}` | 续租 `{expires_at_ms}`；释放 `{}` | Agent |
@@ -326,19 +326,20 @@ Agent 的常驻浏览器：一个无头 Chromium，跑在 Agent Service 所在�
 | `browser.clear_profile` | `{}` | 停掉浏览器，清空登录状态和缓存 | owner |
 | `browser.upload` | `{request_id, zone_path, done?}` | 回应屏幕上的一个 `file_chooser` 请求：用调用者的令牌从 Zone 读 `zone_path`（nfs-server 的 `stat` 加 `/nfs/v1/read`），存到 `<浏览器目录>/uploads/<request_id>/`；带 `done` 时把这个请求收到的文件一起交给页面的输入框。`{}` | owner |
 | `browser.download_export` | `{download_id}` | 把一个下载好的文件登记成命名对象（绑进 `artifacts` 桶，并交给调用者），供 App 存进 Zone：`{obj_id, name, size}` | owner |
-| `browser.reflow_state` | `{url}` | 重排库里这个网址有什么：`{url, site, page, package, result, fallback, refresh: {status: idle \| running \| failed, error, at_ms}, view}`（协议 §5.3）。只读桶，不需要浏览器：模块关着或节点上没有 `chromium` 时照常返回 | owner、Agent |
+| `browser.reflow_state` | `{url}` | 重排库里这个网址有什么：`{url, site, page, package, result, fallback, refresh: {status: idle \| running \| failed, error, at_ms}, view}`（协议 §5.3）。只读桶，不需要浏览器：模块关着、节点没装 ext-core 或浏览器还没下载好时照常返回 | owner、Agent |
 | `browser.reflow_refresh` | `{url}` | 按匹配的包在后台标签页里重新制作这一页的结果；立刻返回，结构同上，`refresh.status` 是 `running`。没有匹配的包时 `reflow_no_package` | owner、Agent |
 | `browser.reflow_action` | `{url, selector}` | 先在原网页上点一下 `selector`，再按包刷新这一页；返回同上 | owner |
 
 - 权限：“owner”的方法在 `is_owner_only` 里，任何 Agent 的 App 身份（含本 Agent 自己）调不通；“Agent”的方法本 Agent 的 App 身份不论对 owner 目录是只读还是读写都调得通。
-- 错误的 JSON 在 `kind`、`message` 之外带 `code`（`browser_unavailable`、`user_in_control`、`lease_lost`、`no_such_group`、`no_such_tab`、`no_such_request`、`no_such_download`、`too_many_tabs`、`upload_too_large`、`invalid_argument` 等）。
+- 错误的 JSON 在 `kind`、`message` 之外带 `code`（`browser_unavailable`、`user_in_control`、`lease_lost`、`no_such_group`、`no_such_tab`、`no_such_request`、`no_such_download`、`too_many_tabs`、`upload_too_large`、`invalid_argument` 等）。`browser_unavailable` 在原因是模块关着、节点没装 ext-core、浏览器还没下载好时另带 `unavailable_code`（取值同 `browser.status`）；屏幕握手的 `error` 和上传的 503 正文也带。
+- 浏览器在不在是每次调用现查的（`process.rs` 的 `find_chromium`），不记“不可用”的结论：ext-core 装好、浏览器下载好之后，下一次 `browser.status`、`ensure`、`acquire` 就可用，不用重启 Agent Service。`loader.status` 的 `modules` 里 `browser` 那一项是服务启动时看到的情况，之后不更新，当前状态看 `browser.status`。
 - 屏幕：`GET <挂载路径>/browser/screen` 升级成 WebSocket（协议 §3）。连上后 5 秒内的第一条消息是 `hello {token, group_id, viewport}`，按 owner 校验（和 kRPC 同一个 `caller`，方法名 `browser.screen`：Agent 自己的 App 身份连不上），通过后回 `ready`。一条连接看一个组：组的状态一变就收到全量的 `state`；当前标签页的画面是 JPEG 帧（`Page.startScreencast`），最多一帧没确认、只留最新、每秒最多 15 帧；用户的触摸、鼠标、按键、文字和输入法组字换成 DevTools 的输入命令送进页面，操作方是 Agent 时被丢弃（回 `agent_in_control`）。视口跟着连接：手机按手机模拟（尺寸、触屏、手机 UA），可以切桌面版。几条连接看同一个标签页时，标签页用最近设置视口的那一条的；它断开或不再看这个标签页，就换成剩下的连接里最近设置的那个，不重新加载；每条连接的 `state.viewport` 报的是生效的那个。Agent 的 Playwright 截图会让页面上的设备模拟失效，所以操作方从 Agent 回到用户时（租约释放、过期、被接手）给正在看的标签页重套一次视口，不重新加载。浏览器启动时关掉了光标闪烁（`--disable-blink-features=CaretBlinking`），有焦点的输入框不会每半秒出一帧。浏览器没在运行时连上会启动它；浏览器重启后连接自己换到新的标签页。客户端 30 秒不说话就断开。
 - 页面之外的界面（协议 §3.4）由屏幕显示：下拉框的选项、JS 弹框（60 秒没人回应就关掉）、文件选择、下载完成、被拒绝的权限请求，还有焦点是否落在可输入的元素上。等回应的请求记在模块里，屏幕重连后重发。为此每个标签页都开着 `Runtime` 域，带一个隔离环境里的脚本（`screen_page.js`，页面自己的脚本看不到）和一个页面环境里的脚本（`screen_permissions.js`，只包了几个会要权限的调用），并拦下文件选择框；会弹权限提示的权限在浏览器启动后一律设成拒绝。
 - 本机文件上传：`PUT <挂载路径>/browser/upload/<request_id>?name=<文件名>[&done=1]`，`Authorization: Bearer <令牌>`，请求体边收边写盘，单个文件上限 100 MiB（413 `upload_too_large`），失败时正文是 `{code, message}`（协议 §4）。
 - 下载：浏览器的下载落在 `<浏览器目录>/downloads/<download_id>`；模块记着最近 64 个、每个 24 小时，过了连文件一起删，服务重启后不认以前的 `download_id`。
 - 进程环境里的 `OPENDAN_BROWSER_RPC`（`http://127.0.0.1:<服务端口>/kapi/<agent_id>`）是会话里的命令（`agent-browser`）找到这组方法的地方；私有 runtime 的会话继承它，其他节点上的会话没有，也就没有常驻浏览器。
 - 重排（`browser/reflow.rs`，规则见协议 §5）：重排库是 owner 的桶 `user/control-panel/<owner>/reflow`，经 nfs-server 的 `/bucket/v1` 读写，带的是调用者的令牌（调用者没带令牌时用服务自己的）。所以只读权限的 Agent 能发起刷新，但结果写不进去：状态是 `failed`，`error` 里是桶的原话。刷新由 `agent-browser reflow-run` 执行，可执行文件是 `OPENDAN_AGENT_BROWSER`，否则是工具目录里的 `agent-browser`（ext-core 提供），找不到时 `browser_unavailable`。这个子进程不继承服务的环境：只留 `PATH`、语言环境和指到临时目录（`<浏览器目录>/reflow/<page>/`，刷新结束就删）里的 `HOME`、`TMPDIR`，服务的会话令牌到不了包的 `refresh.mjs` 手里。同一时刻只跑一个刷新，其余排队；刷新进行中算浏览器在用，不会被空闲回收。刷新状态只在内存里，服务重启后回到 `idle`。
-- 配置 `agent.toml` 的 `[loader.browser]`：`enabled`（默认 `true`）、`idle_stop_secs`（默认 600：没人看、没有租约这么久就停掉，标签页存进 `<AgentRoot>/state/browser/groups.json`，下次启动重开）、`max_tabs`（默认 12）。浏览器的可执行文件是 `OPENDAN_CHROMIUM`，否则是工具目录里的 `chromium`（ext-core 提供）；找不到时模块报不可用，其他功能照常。目录是 `OPENDAN_BROWSER_DIR`（容器里是 `/opt/buckyos/instance/browser`），否则 `<AgentRoot>/.cache/browser`。
+- 配置 `agent.toml` 的 `[loader.browser]`：`enabled`（默认 `true`）、`idle_stop_secs`（默认 600：没人看、没有租约这么久就停掉，标签页存进 `<AgentRoot>/state/browser/groups.json`，下次启动重开）、`max_tabs`（默认 12）。浏览器的可执行文件是 `OPENDAN_CHROMIUM`（调试和测试用，设了就不看在线项），否则是工具目录里的 `chromium` 启动器（ext-core 提供）。浏览器本体是 ext-core 的在线项，不随包分发，包装好以后由节点下载到 `$BUCKYOS_ROOT/tools/online/chromium/`（容器里 `/opt/buckyos/tools/online/chromium/`），记录在旁边的 `chromium.json`；启动器按自己的位置找它。没有启动器（`no_package`）或记录没到 `ready`（`not_downloaded`：还没下载、正在下载、下载失败）时模块报不可用，其他功能照常。目录是 `OPENDAN_BROWSER_DIR`（容器里是 `/opt/buckyos/instance/browser`），否则 `<AgentRoot>/.cache/browser`。
 
 ### Loader 状态
 

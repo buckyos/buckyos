@@ -362,15 +362,41 @@ export const requestLogDownload = async (
 
 export type ExtToolsStage = 'queued' | 'downloading' | 'verifying' | 'staging' | 'checking' | 'active' | 'removing' | 'removed' | 'failed' | 'unsupported'
 
+/** `missing`: never downloaded on that node, or what is there is another version. */
+export type ExtToolsOnlineState = 'missing' | 'downloading' | 'ready' | 'failed'
+
+/** An online item on one node: its tools roots, the one furthest from ready. A `ready` one with an `error` is still the
+ * copy in use, and downloading it again failed. */
+export interface ExtToolsOnlineStatus {
+  state: ExtToolsOnlineState
+  version: string
+  size_bytes: number
+  downloaded_bytes: number
+  error?: string | null
+  updated_at_ms: number
+}
+
+/** What a package declares of an online item it does not carry: a node downloads it from the upstream. */
+export interface ExtToolsOnlineItem {
+  id: string
+  version: string
+  desc?: string
+  license?: string
+  auto?: boolean
+  platforms: Record<string, { size_bytes: number }>
+}
+
 export interface ExtToolsManifest {
   id: string
   version: string
   requires?: Array<{ id: string; version: string }>
-  provides: Array<{ command: string }>
+  /** `needs`: the online items the command cannot run without. */
+  provides: Array<{ command: string; needs?: string[] }>
   platforms: string[]
   size_bytes?: Record<string, number>
   license?: string
   desc?: string
+  online?: ExtToolsOnlineItem[]
 }
 
 export interface ExtToolsCatalogEntry {
@@ -383,7 +409,9 @@ export interface ExtToolsNodeStatus {
   version: string
   stage: ExtToolsStage
   error?: string | null
-  targets?: Record<string, { stage: ExtToolsStage; version?: string | null; error?: string | null }>
+  /** By tools root (`native`, `container`); `waiting`: command -> the online items it waits for there. */
+  targets?: Record<string, { stage: ExtToolsStage; version?: string | null; error?: string | null; online?: Record<string, ExtToolsOnlineStatus>; waiting?: Record<string, string[]> }>
+  online?: Record<string, ExtToolsOnlineStatus>
 }
 
 export interface ExtToolsPackage {
@@ -415,3 +443,16 @@ export const fetchExtToolsPlan = async (id: string, enabled: boolean, version?: 
 
 export const setExtToolsDesired = async (id: string, enabled: boolean, version?: string): RpcResult<{ ok: boolean; plan: ExtToolsPlan }> =>
   callSettingsRpc<{ ok: boolean; plan: ExtToolsPlan }>('ext_tools.set_desired', { id, enabled, ...(version ? { version } : {}) })
+
+export interface ExtToolsDownloadResult {
+  ok: boolean
+  id: string
+  item: string
+  request_ms: number
+  /** The nodes asked; each takes the request on its next round. */
+  nodes: string[]
+}
+
+/** Asks `node` (or every node that has it) to download online item `item` of package `id` again (admin). */
+export const downloadExtToolsOnline = async (id: string, item: string, node?: string): RpcResult<ExtToolsDownloadResult> =>
+  callSettingsRpc<ExtToolsDownloadResult>('ext_tools.download', { id, item, ...(node ? { node } : {}) })

@@ -447,6 +447,34 @@ pub struct SkillCommandsStatus {
     /// Missing commands no package provides: the owner has to bring them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_package: Vec<String>,
+    /// Commands whose package is installed while the online item they run is not downloaded to the node yet: the
+    /// owner downloads it (Settings › Extension tools, `buckyos ext-tools download <package> <item>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_online: Vec<WaitingOnline>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingOnline {
+    pub package: String,
+    pub item: String,
+    pub commands: Vec<String>,
+}
+
+/// The online item a command runs, when its launcher answers as a stub: from the manifests of the catalog, else from
+/// what `ext-core` is known to provide.
+fn online_item_of(command: &str, catalog: &[buckyos_api::ExtToolsCatalogEntry]) -> Option<(String, String)> {
+    let declared = catalog.iter().find_map(|entry| {
+        let provided = entry.manifest.provides.iter().find(|p| p.command == command)?;
+        provided.needs.first().map(|item| (entry.manifest.id.clone(), item.clone()))
+    });
+    declared.or_else(|| {
+        crate::baseline::EXTENDED_TOOLS
+            .iter()
+            .flat_map(|tool| tool.commands.iter())
+            .find(|c| c.name == command)
+            .and_then(|c| c.online)
+            .map(|item| ("ext-core".to_string(), item.to_string()))
+    })
 }
 
 /// A skill's `commands` against what a runtime has and what the Zone's extension packages provide. A command several
@@ -459,6 +487,7 @@ pub fn commands_status(
 ) -> SkillCommandsStatus {
     let mut states = BTreeMap::new();
     let mut missing = Vec::new();
+    let mut waiting: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     let mut foreign = false;
     for command in commands {
         match resolved.get(command).filter(|r| !r.stub) {
@@ -467,8 +496,11 @@ pub fn commands_status(
                 states.insert(command.clone(), SkillCommandState { present: true, provided_by: Some(found.provided_by) });
             }
             None => {
-                missing.push(command.clone());
                 states.insert(command.clone(), SkillCommandState { present: false, provided_by: None });
+                match resolved.get(command).filter(|r| r.stub).and_then(|_| online_item_of(command, catalog)) {
+                    Some(key) => waiting.entry(key).or_default().push(command.clone()),
+                    None => missing.push(command.clone()),
+                }
             }
         }
     }
@@ -508,14 +540,20 @@ pub fn commands_status(
             None => no_package.push(command.clone()),
         }
     }
-    let state = if !missing.is_empty() {
+    let state = if !missing.is_empty() || !waiting.is_empty() {
         SkillCommandsState::Partial
     } else if foreign {
         SkillCommandsState::ReadySystem
     } else {
         SkillCommandsState::Ready
     };
-    SkillCommandsStatus { state, commands: states, recommended_packages: packages.into_values().collect(), no_package }
+    SkillCommandsStatus {
+        state,
+        commands: states,
+        recommended_packages: packages.into_values().collect(),
+        no_package,
+        waiting_online: waiting.into_iter().map(|((package, item), commands)| WaitingOnline { package, item, commands }).collect(),
+    }
 }
 
 /// A skill package, unpacked: `cmd_skills/<name>/…`, `plan_skills/<name>/…`, `goal_skills/<name>/…`, each `SKILL.md`
@@ -1272,11 +1310,12 @@ mod command_tests {
                 version: version.to_string(),
                 requires: requires.iter().map(|r| ExtToolsRequire { id: r.to_string(), version: "*".to_string() }).collect(),
                 conflicts: vec![],
-                provides: commands.iter().map(|c| ExtToolsCommand { command: c.to_string(), version_probe: format!("{c} -v"), smoke: None }).collect(),
+                provides: commands.iter().map(|c| ExtToolsCommand { command: c.to_string(), version_probe: format!("{c} -v"), smoke: None, needs: vec![] }).collect(),
                 platforms: vec!["linux-x86_64".to_string()],
                 size_bytes: BTreeMap::new(),
                 license: String::new(),
                 desc: String::new(),
+                online: vec![],
             },
             pikg_digest: format!("sha256:{id}{version}"),
             content_id: format!("file:{id}{version}"),
@@ -1304,6 +1343,17 @@ mod command_tests {
         let mut stubbed = found(&[("ffmpeg", ProvidedBy::Exttools)]);
         stubbed.get_mut("ffmpeg").unwrap().stub = true;
         assert_eq!(commands_status(&commands(&["ffmpeg"]), &stubbed, &[], &none).state, SkillCommandsState::Partial, "a stub is not a command");
+        // the browser's launcher is there, the browser is not downloaded yet: wait for it, do not offer the package again
+        let mut browser = found(&[("chromium", ProvidedBy::Exttools), ("agent-browser", ProvidedBy::Exttools)]);
+        browser.get_mut("chromium").unwrap().stub = true;
+        let status = commands_status(&commands(&["agent-browser", "chromium"]), &browser, &[], &none);
+        assert_eq!(status.state, SkillCommandsState::Partial);
+        assert!(status.recommended_packages.is_empty() && status.no_package.is_empty(), "{status:?}");
+        assert_eq!(status.waiting_online, vec![WaitingOnline { package: "ext-core".into(), item: "chromium".into(), commands: vec!["chromium".into()] }]);
+        // no launcher at all: the package is what is missing
+        let status = commands_status(&commands(&["chromium"]), &BTreeMap::new(), &[], &none);
+        assert!(status.waiting_online.is_empty());
+        assert_eq!(status.no_package, vec!["chromium".to_string()]);
     }
 
     #[test]
