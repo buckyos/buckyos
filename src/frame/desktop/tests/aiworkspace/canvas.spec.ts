@@ -150,7 +150,8 @@ test('UI05 a drag is one commit and one undo step; Esc cancels with zero commits
   expect((await hooks(page)).commits).toBe(0)
   // a completed drag of two selected Blocks: exactly one commit, both placements persisted
   await page.getByTestId('aiws-canvas-block-blk-kpi').click()
-  await page.getByTestId('aiws-canvas-block-blk-wish').click({ modifiers: ['Shift'] })
+  // (the wish by its title: its request field takes a click itself)
+  await page.getByTestId('aiws-wish-card-wish-analysis').getByTestId('aiws-wish-title').click({ modifiers: ['Shift'] })
   await expect(page.locator('[data-testid^="aiws-selection-"]')).toHaveCount(2)
   const from = await blockCenter(page, 'blk-kpi')
   await page.mouse.move(from.x, from.y)
@@ -164,7 +165,7 @@ test('UI05 a drag is one commit and one undo step; Esc cancels with zero commits
   const kpi = after.find((e: { entity_id: string }) => e.entity_id === 'blk-kpi').placement
   const wish = after.find((e: { entity_id: string }) => e.entity_id === 'blk-wish').placement
   expect(kpi.x).toBe(980 + 100)
-  expect(wish.y).toBe(190 + 60)
+  expect(wish.y).toBe(300 + 60)
   // undo restores both in one step
   await page.getByTestId('aiws-undo').click()
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-kpi').placement.x).toBe(980)

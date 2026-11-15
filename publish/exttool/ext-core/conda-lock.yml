@@ -13,8 +13,8 @@
 version: 1
 metadata:
   content_hash:
-    linux-64: c270f62a492c5e3b323d53f8b06d6f7fa9bceb25f6816c7e4e327f254219501e
-    linux-aarch64: fa0fa095b309aa6db2935d76cdd5b04a8a7691c38736dfb7df83eb70dea4c7e0
+    linux-64: 47f0fa1186ebe8a550888abb854f42a5b45c169f4c85643de2532e23f9649a43
+    linux-aarch64: 106d995081e720723915aeb67ba869e07be911d5f66546f56fa61ec88a5bb584
     osx-arm64: ead919f861096495029fe3dafc38d81dc9526da7f1a9169def633f5eabe7cbab
     osx-64: 9eec92631b9f6ac2d47c55cfa4e9000b99b0d740fe23b66c134bf52526717f04
     win-64: 895f958bcc0687c3c37710383e36fe40bf74abec37cdc8a8a13a4a7bc671351b
@@ -5316,6 +5316,35 @@ package:
   hash:
     md5: 8157483eb7ed3fcba71aad3b50a97131
     sha256: cbc650854003e434d4ff6c7b1a2667e38a4242ad8a391a1c5ff89721624065ce
+  category: main
+  optional: false
+- name: libgbm
+  version: 1.0.9
+  manager: conda
+  platform: linux-64
+  dependencies:
+    __glibc: '>=2.17,<3.0.a0'
+    libdrm: '>=2.4.129,<2.5.0a0'
+    libgcc: '>=15'
+    libstdcxx: '>=15'
+  url: https://conda.anaconda.org/conda-forge/linux-64/libgbm-1.0.9-hee9eb32_0.conda
+  hash:
+    md5: 5ddf43b0ad863524c54f55bec8c2bc09
+    sha256: c870f6177a0099ccf0301bf97e7c1e4706a3b34dd152b7974c6596ff25bc636c
+  category: main
+  optional: false
+- name: libgbm
+  version: 1.0.9
+  manager: conda
+  platform: linux-aarch64
+  dependencies:
+    libdrm: '>=2.4.129,<2.5.0a0'
+    libgcc: '>=15'
+    libstdcxx: '>=15'
+  url: https://conda.anaconda.org/conda-forge/linux-aarch64/libgbm-1.0.9-hfb11796_0.conda
+  hash:
+    md5: 21254abca160e4056a5e47abbd50f90a
+    sha256: 535b673681faadf1588ff77feb322843b9a0f527a2af0cb0e0d480c57d36bff1
   category: main
   optional: false
 - name: libgcc

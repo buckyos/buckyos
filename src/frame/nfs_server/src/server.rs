@@ -93,6 +93,7 @@ pub fn build_router(state: SharedState) -> Router {
     router
         .layer(axum::middleware::from_fn_with_state(state.clone(), crate::share::serving::host_guard))
         .layer(axum::middleware::from_fn_with_state(state.clone(), crate::bucket::s3::host_route))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::bucket::reflow::host_route))
         .with_state(state)
 }
 

@@ -196,6 +196,7 @@ skill 是 Agent 完成一类事的手册，是对应功能的交付物，不是�
 | SDK/Tool、PIKG/AppDoc、devkit、Installer/Repo/BNS、系统/镜像发布 | `buckyos_dev_release`、`buckyos_app_dev` 及相关场景：构建、包验证、测试安装、发布回读 |
 | AIWorkspace schema/RPC、对象/资源、renderer、Wish/Block 执行器、模板格式、`proc.*` 执行器协议 | `aiworkspace_run`：领取 run、读快照、跑程序、交结果、心跳；`aiworkspace_template_dev`：新建、导出导入、引用、运行和发布 |
 | skill 的 kRPC（`skills.*`：安装计划与确认、删除、禁用、UI 集合、导入、草稿）、`buckyos skill` / `agent-session skill` 子命令、PIKG 的 `agent_skills` 子包、AgentRoot 的 `cmd_skills/` / `plan_skills/` / `goal_skills/`（`<name>/SKILL.md` + `references/`）/ `skills_drafts/` 布局、front matter 字段与 lint | `skill_authoring`、`opendan_agent_dev`、`ui_core`（owner 才能安装的说法与命令）、`behaviors/{skill_import,skill_crystallize,skill_select_rule.inc}`、`doc/sdk/skill-dev-quickstart.md`、`test/skills_pikg_sample/` 及所有内置手册的打包位置：owner 安装（含草稿）、列表、选择、禁用、删除 |
+| Agent 浏览器：Agent Service 的 `browser.*` kRPC 与写给会话的 `[browser …]` 记录、`agent-browser` 的子命令 / 输出 / 退出码、`reflow` 命令与重排库规则（`doc/opendan/protocol/Agent Browser Protocol.md`）、ext-core 里浏览器和 `playwright-core` 的版本 | `browser`（含 `references/reflow.md`）、`buckyos_app_dev` 的 Page tests、`ui_core` 里对 `[browser …]` 记录的说明：手册里的命令和脚本对着 `--help` 与真浏览器重跑（`publish/exttool/ext-core/browser/test/`），真实 Zone 的做法见 `test/agent_browser_dv/` |
 | AgentRootFS、Loader、Session/Behavior、手册冻结/装配（含 `scope`、plan 的 `<skill_candidates>`）、PATH/helper、模板和扩展分发 | `opendan_agent_dev`、`ui_core`、三份内置 plan skill 及受影响的专项手册：发现/选择/执行、冻结与升级 |
 
 - **完成条件**：提交说明列出受影响的 skills、修改或无需修改的依据、验证命令与结果、尚未实测的 provider / 平台。删除失效命令，不用兼容说明掩盖当前版本不可用；同步生成来源与分发产物，不能只改打包副本。

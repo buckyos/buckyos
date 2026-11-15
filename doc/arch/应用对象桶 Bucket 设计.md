@@ -444,6 +444,7 @@ Public Zone 不是新的资源类型，也不只是 `public.<zone>` 这个主机
 | `https://<zone>/bucket/v1/<bucket_id>/<key>` | 桶权限（§4.4） | 只能带 `bkt_` 读；无令牌直接 403，不探测桶是否存在 | 只能用未绑定主体的 `bkt_`；会话校验不过按匿名继续 | G4、G6 已修 |
 | `https://<zone>/kapi/msg-center/objects/<id>` | msg-center（调用者能读的消息 + 该消息的绑定） | 401 | 群成员持宿主 Zone 会话，带 `context_path` 可读 | 本 Zone 用户和 Agent 可以只带 ObjId，见下文和 G2 |
 | `https://<zone>/s3/...`、`s3.<zone>` | SigV4 | 拒绝 | 无通路 | 无匿名 S3 |
+| `https://reflow.<zone>/<key>` | nfs-server（在这个主机上登录的用户） | 401 | 401 | Agent 浏览器的重排页：路径就是登录用户的桶 `user/control-panel/<user>/reflow` 里的 key，目录补 `index.html`。这是 D24 的例外：页面代码是系统自己生产的，按 App 页面提供，保留原类型、不强制下载、不加 `sandbox`。见 [Agent Browser Protocol](../opendan/protocol/Agent%20Browser%20Protocol.md) §5.4 |
 | `https://<zone>/ndm/...` | nfs-server NDM 网关 | 401 | 401 | 上传与内部读取，不是公开面 |
 | `https://<zone>/ndn/<obj_id>`、`cyfs://<objid>.<zone>` | nfs-server（公开桶或 `hint` 里的令牌） | 只读 Zone 公开提供的对象 | 同匿名，或凭 `bkt_` | 见 §4.6.5 |
 | `https://<app>.<zone>/` | App 自身 | 取决于 App 的 `guest` 规则 | 取决于 App | 不在本节范围 |
@@ -471,7 +472,7 @@ Public Zone 不是新的资源类型，也不只是 `public.<zone>` 这个主机
 | Z5 | **匿名不能枚举。** 匿名不能写桶，只能看入口已公开的列表（公开 Feed、`public` ACL 目录），不能枚举桶、key 或对象。拒绝响应不泄露目标是否存在 | 部分成立，见 G4、G7 |
 | Z6 | **令牌不是公开，也不依赖身份。** `bkt_` 仍是点对点能力（§4.4.5）。未绑定主体的令牌只看令牌本身，不因请求同时带了别的会话而失败 | 部分成立，见 G6 |
 | Z7 | **服务的权限不替访问者授权。** 服务对 `obj://ndm/objects` 的读权限只用来取字节。建立公开入口或绑定之前，要检查发起者本人的持有或读权（§6.4） | 成立。收到的消息不绑定（N1），本地重发复用引用要来源消息的绑定持有它（N18 后续） |
-| Z8 | **响应不扩大授权。** 活动内容不在持有 SSO 凭据的 origin 上执行；凭身份或令牌放行的响应不进共享缓存；URL 里的令牌不经 Referer 外泄 | 活动内容和 Referer 只有 `share.<zone>` 做了防护，见 G1、G5 |
+| Z8 | **响应不扩大授权。** 活动内容不在持有 SSO 凭据的 origin 上执行；凭身份或令牌放行的响应不进共享缓存；URL 里的令牌不经 Referer 外泄 | 活动内容和 Referer 只有 `share.<zone>` 做了防护，见 G1、G5。`reflow.<zone>` 是有意的例外（§4.6.2） |
 
 #### 4.6.4 桶内容如何对外可见
 

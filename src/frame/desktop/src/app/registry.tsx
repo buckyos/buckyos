@@ -43,6 +43,7 @@ const appLoaders: Record<string, AppContentLoader> = {
   messagehub: lazyPanel(() => import('./messagehub/MessageHubAppPanel'), (m) => m.MessageHubAppPanel),
   'my-network': lazyPanel(() => import('./my-network/MyNetworkAppPanel'), (m) => m.MyNetworkAppPanel),
   'my-content': lazyPanel(() => import('./my-content/MyContentAppPanel'), (m) => m.MyContentAppPanel),
+  'agent-browser': lazyPanel(() => import('./agent-browser/AgentBrowserAppPanel'), (m) => m.AgentBrowserAppPanel),
   preview: lazyPanel(() => import('./preview/PreviewAppPanel'), (m) => m.PreviewAppPanel),
   homestation: lazyPanel(() => import('./homestation/HomeStationAppPanel'), (m) => m.HomeStationAppPanel),
   systest: SystestAppPanel,

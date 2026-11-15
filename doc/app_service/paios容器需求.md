@@ -267,7 +267,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 - 版本锁在各自构建脚本顶部：`build_aios` 的 `NODE_VERSION`、`DENO_VERSION`（核心层自己钉死的 Deno）；`publish/exttool/ext-core/build.sh` 顶部的官方归档版本，SHA256 在同目录 `sources.sha256`；conda-forge 那组由同目录 `conda-env.yml` 声明、`conda-lock.yml` 锁定。
 - 非官方来源（Agent 自装、用户在 host 上自备、第三方扩展包）不在本表；它们由 runtime 的 `tools_check` 按实际探测记录（`provided_by: agent | system`）。
 
-**表 A：核心层（standard，`baseline::STANDARD_TOOLS`，31 条）** 随系统发布，三种形态（容器、Desktop Lite、node-daemon host）都必须有；依赖的 Deno、TS 源码与 SDK 由 launcher 钉在 `$BUCKYOS_ROOT` 下的绝对路径，不走 PATH。
+**表 A：核心层（standard，`baseline::STANDARD_TOOLS`，32 条）** 随系统发布，三种形态（容器、Desktop Lite、node-daemon host）都必须有；依赖的 Deno、TS 源码与 SDK 由 launcher 钉在 `$BUCKYOS_ROOT` 下的绝对路径，不走 PATH。
 
 | 命令 | 是什么 | 支持的场景（为什么要装） |
 | --- | --- | --- |
@@ -279,6 +279,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `ask_user` | 经 notify 向用户提问 | work / goal 需要人答时 |
 | `import_office`、`import_table` | 把 Office 文档 / 表格导入为对象 | 文档与数据导入、知识整理 |
 | `materialize_resource` | 把对象 / URL 物化成本地文件 | 任何要把 `obj://`、附件落成文件再加工的步骤 |
+| `reflow` | 用户的重排库（桶 `user/control-panel/<user>/reflow`）：按网址查匹配的包、列出、取回、校验并放入包、删除、存结果或兜底页、请常驻浏览器刷新 | Agent 浏览器的重排：`browser` 手册里写包、做兜底重排、提前刷新（[Agent Browser Protocol](../opendan/protocol/Agent%20Browser%20Protocol.md) §5）。只依赖 SDK，不依赖表 B 的浏览器；`reflow refresh` 要常驻浏览器可用 |
 | `resume_aicc_task` | 续接异步 AICC 任务 | `aigc_*` 的长任务跟进 |
 | `llm_understand_media` | 看图、读文档（PDF…）、听音视频，结果是文本 | `ui_core` 的媒体理解；`aigc_image` 的结果检查 |
 | `caption_image`、`detect_image`、`segment_image`、`ocr_image` | 图像理解：描述、检测、分割、OCR（走 Zone 模型） | 图像类任务的理解步骤；`ocr_image` 是 OCR 的主路径 |
@@ -286,7 +287,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `gen_video`、`edit_video`、`extend_video`、`upscale_video` | 视频生成与编辑（走 Zone 模型） | `aigc_video`；本地剪辑 / 合成另需表 B 的 ffmpeg |
 | `gen_music`、`text_to_speech`、`speech_to_text`、`enhance_audio` | 音频生成、TTS、ASR、增强（走 Zone 模型） | `aigc_audio`；本地转码 / 拼接另需表 B 的 ffmpeg |
 
-**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`，24 条命令）**
+**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`，27 条命令）**
 
 `ext-core` 是扩展包目录里的第一个包，五个平台（`linux-x86_64`、`linux-aarch64`、`darwin-arm64`、`darwin-x86_64`、`windows-x86_64`）各一个自包含 payload；装到 `$BUCKYOS_ROOT/tools/`，三种形态一套（容器节点是 `buckyos-tools` 卷）。发行、钉版与种子见 ExtTools TODO §3.10。工作镜像不再 apt 装这组命令，容器与原生一样从 `ext-core` payload 得到它们。
 
@@ -304,6 +305,9 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `uv` | `build.sh` | 官方 | 官方 | 官方 | Python 项目与解释器管理；`UV_CACHE_DIR` 等指到 Agent 缓存（ExtTools TODO §3.6） |
 | `node`、`npm`、`npx` | Node LTS，`build.sh`（与 `build_aios` 的 `NODE_VERSION` 同一个数） | 官方 | 官方 | 官方 | ScriptHost / aiws 项目构建；`buckyos_app_dev` 的 web 包 |
 | `deno` | `build.sh`（与 `build_aios` 的 `DENO_VERSION` 同一个数） | 官方 | 官方 | 官方 | ScriptHost TS、aiworkspace 程序宿主、`aiworkspace_run` 的 JSON 处理。核心命令用的是自己钉死的那份 Deno，不是它 |
+| `chromium` | Chrome for Testing 159.0.8154.6，`build.sh`：`playwright-core` 1.65.1 配的那一版（Playwright 的 revision 1255）。只带完整构建，不带 headless shell，所以 Playwright 测试要写 `channel: 'chromium'`。按 Playwright 的浏览器目录布局放在 `store/ext-core/chromium/chromium-1255/`，会话环境里 `PLAYWRIGHT_BROWSERS_PATH` 指到 `store/ext-core/chromium`。五个平台都无头运行。版本在 `build.sh` 顶部，SHA256 在 `sources.sha256` | 官方 zip。官方构建从系统取的库（X11 一族、NSS / NSPR、glib、cairo、pango、cups、dbus、alsa、atk、at-spi、gbm）全部来自 conda-forge 前缀，其中只有 `libgbm` 是为它新加的（`conda-env.yml`）。Playwright 直接执行 `chrome-linux64/chrome`（aarch64 是 `chrome-linux-arm64/chrome`），不经过 `bin/`，所以这个名字是一个 sh 脚本：把 `LD_LIBRARY_PATH` 设成前缀的 `lib/`，`FONTCONFIG_FILE` 没设时指向前缀的配置，再执行旁边的真二进制 `chrome-bin`。字体是前缀配置看得见的那些，包括 LibreOffice 的字体目录（含 Noto CJK）。以 root 运行或在容器里要带 `--no-sandbox` | 官方 zip 里的 `Google Chrome for Testing.app`（`ditto` 解包，只能在 Mac 上构建），arm64 和 x86_64 分开；launcher 指向 `Contents/MacOS/Google Chrome for Testing` | 官方 zip；launcher 指向 `chrome-win64\chrome.exe`。`chrome.exe` 是 GUI 程序，`--version` 由 launcher 自己回答 | Agent Service 的常驻浏览器（「Agent 浏览器」）；Agent 在私有 runtime 里跑 Playwright 测试，不用自己装浏览器和系统库；系统渲染 |
+| `agent-browser` | 随包脚本 `browser/agent-browser.mjs`（源码在 `publish/exttool/ext-core/browser/`），跑在 ext-core 的 node 上，用随包的 `playwright-core` 1.65.1（npm 发布包，`build.sh`，放在 `store/ext-core/playwright/node_modules/`） | 随包脚本 | 随包脚本 | 随包脚本 | Agent 操作自己的常驻浏览器：跑 Playwright 脚本、读页面、截图、请用户接手。`agent-browser env` 给用别的 Playwright 版本的项目打印要设的环境变量 |
+| `page-render` | 随包脚本 `browser/page-render.mjs`，同上 | 随包脚本 | 随包脚本 | 随包脚本 | 系统渲染：把一个页面输出成 PDF 或 PNG（workflow 的 `media.page_to_pdf`、`media.page_snapshot`） |
 | `git` | `conda-lock.yml`；Windows 用 MinGit | conda-forge | conda-forge（**不回退** `/usr/bin/git`：它是 Xcode CLT 垫片，会弹安装对话框） | 官方 MinGit | `buckyos_app_dev`、`opendan_agent_dev`、`buckyos_dev_release` 的源码操作 |
 | `curl` | `conda-lock.yml` | conda-forge | conda-forge | conda-forge | 下载；Agent 脚本的 HTTP 调用 |
 | `jq` | `build.sh` | 官方 | 官方 | 官方 | JSON 提取（`aiworkspace_run` 示例、skill 脚本） |
@@ -316,6 +320,8 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 `bash`、`rsync` 是 Linux 特有，仍由 `build_aios` 的 `RUNTIME_PACKAGES` 进工作镜像，不在 `ext-core`，也不要求 macOS / Windows 提供。
 
 **owner 2026-11-10 定：工作镜像里的工具都来自 `ext-core`。** LibreOffice 进了工作镜像，就属于核心扩展工具：`soffice` 命令一定可用，各环境的区别只是调用方式不同（容器从工具卷取，宿主从 `$BUCKYOS_ROOT/tools` 取）。所以原来规划的 `ext-office` 并入 `ext-core`，也就是上表的 `soffice`（`ext-core` 1.2.0）。`build_aios` 里原来那组 apt 包（`libreoffice-{core,writer,impress,calc}-nogui`、四个字体包、`locales`）已删除。
+
+**owner 2026-11-14 定：浏览器也进 `ext-core`**（1.3.0），不另立扩展包。包里一份 Chromium（Chrome for Testing）加配套的 `playwright-core`，装好后是两个用途：Playwright 测试环境和 Agent 的常驻浏览器。
 
 **表 C：其它官方扩展包与非包内容**
 

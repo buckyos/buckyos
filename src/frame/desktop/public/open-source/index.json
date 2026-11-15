@@ -23,11 +23,14 @@
       "id": "ext-core-darwin-arm64",
       "label": "Extension tools (darwin-arm64)",
       "status": "unavailable",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
+        "Extension tool payload for linux-aarch64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
+        "Extension tool payload for linux-x86_64 has no conda dependency license inventory.",
+        "Extension tool payload for windows-x86_64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
         "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried."
       ]
@@ -36,11 +39,14 @@
       "id": "ext-core-darwin-x86_64",
       "label": "Extension tools (darwin-x86_64)",
       "status": "unavailable",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
+        "Extension tool payload for linux-aarch64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
+        "Extension tool payload for linux-x86_64 has no conda dependency license inventory.",
+        "Extension tool payload for windows-x86_64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
         "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried."
       ]
@@ -49,11 +55,14 @@
       "id": "ext-core-linux-aarch64",
       "label": "Extension tools (linux-aarch64)",
       "status": "partial",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
+        "Extension tool payload for linux-aarch64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
+        "Extension tool payload for linux-x86_64 has no conda dependency license inventory.",
+        "Extension tool payload for windows-x86_64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
         "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried."
       ]
@@ -62,11 +71,14 @@
       "id": "ext-core-linux-x86_64",
       "label": "Extension tools (linux-x86_64)",
       "status": "partial",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
+        "Extension tool payload for linux-aarch64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
+        "Extension tool payload for linux-x86_64 has no conda dependency license inventory.",
+        "Extension tool payload for windows-x86_64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
         "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried."
       ]
@@ -75,11 +87,14 @@
       "id": "ext-core-windows-x86_64",
       "label": "Extension tools (windows-x86_64)",
       "status": "partial",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
+        "Extension tool payload for linux-aarch64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
+        "Extension tool payload for linux-x86_64 has no conda dependency license inventory.",
+        "Extension tool payload for windows-x86_64 has no conda dependency license inventory.",
         "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
         "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried."
       ]
@@ -99,21 +114,21 @@
       "label": "Node activation",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "opendan",
       "label": "OpenDAN Web",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "rust",
       "label": "BuckyOS Rust services",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "sdk-tool",
@@ -123,21 +138,21 @@
         "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
         "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3."
       ],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "sys-test",
       "label": "System test app",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "sys-test-web",
       "label": "System test Web",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "text-editor",
@@ -146,7 +161,7 @@
       "notices": [
         "Text editor: license metadata is unavailable for combine-errors@3.0.3."
       ],
-      "isSnapshot": true
+      "isSnapshot": false
     }
   ],
   "packages": [
@@ -3171,38 +3186,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "427ede676add477fc4c7",
-      "name": "_libavif_api",
-      "version": "1.4.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/_libavif_api",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "09f19a13c935d207704f",
-      "name": "_openmp_mutex",
-      "version": "4.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/_openmp_mutex",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "bd41ffe4388b5205b80d",
       "name": "acorn",
       "version": "8.14.0",
@@ -3250,22 +3233,6 @@
       "scopes": [
         "gateway",
         "rust"
-      ],
-      "licenseFileCount": 3
-    },
-    {
-      "id": "ed6b5201f81a50e47b5c",
-      "name": "adwaita-icon-theme",
-      "version": "51.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/adwaita-icon-theme",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-3.0-or-later OR CC-BY-SA-3.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
       ],
       "licenseFileCount": 3
     },
@@ -3924,22 +3891,6 @@
       "licenseFileCount": 0
     },
     {
-      "id": "85b36c5cb2cad48d40a1",
-      "name": "alsa-lib",
-      "version": "1.2.16.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/alsa-lib",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "52dca6685949ec6b52ab",
       "name": "android_system_properties",
       "version": "0.1.6",
@@ -4097,37 +4048,6 @@
         "opendan"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "18e37801f876f4f45fe3",
-      "name": "aom",
-      "version": "3.14.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/aom",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "ca216125a0b7877f109d",
-      "name": "aom",
-      "version": "3.15.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/aom",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "09dfaecb0aeaeb60cb55",
@@ -5102,54 +5022,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "4933c7e862dd4e3c1d28",
-      "name": "at-spi2-atk",
-      "version": "2.38.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/at-spi2-atk",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "009a41d183805ede9bf6",
-      "name": "at-spi2-core",
-      "version": "2.40.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/at-spi2-core",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "5f2aa5944c4335c2af7c",
-      "name": "atk-1.0",
-      "version": "2.38.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/atk-1.0",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "f3af711e5114359eb36c",
       "name": "atoi",
       "version": "2.0.0",
@@ -5243,22 +5115,6 @@
         "opendan"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "9aa121bdaa2c4480ad6c",
-      "name": "avahi",
-      "version": "0.8",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/avahi",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "4e93005cf27dc8145aaa",
@@ -6277,9 +6133,9 @@
       "licenseFileCount": 1
     },
     {
-      "id": "d40bb9d59ae410aa55c6",
+      "id": "7f9f45b21c24bb00c864",
       "name": "buckyos",
-      "version": "0.7.184",
+      "version": "0.7.185",
       "ecosystem": "npm",
       "description": "BuckyOS WebSDK for browser and Node.js environments",
       "homepage": "https://github.com/buckyos/buckyos-websdk#readme",
@@ -6578,23 +6434,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "48cd1d2c0d1ed4ddf1cb",
-      "name": "bzip2",
-      "version": "1.0.8",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/bzip2",
-      "repository": "",
-      "revision": "",
-      "license": "bzip2-1.0.6",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "21b8950a54e68762a941",
       "name": "bzip2-sys",
       "version": "0.1.13+1.0.8",
@@ -6610,22 +6449,6 @@
       "licenseFileCount": 3
     },
     {
-      "id": "1bdbc6cbb9b759691e8d",
-      "name": "c-ares",
-      "version": "1.34.9",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/c-ares",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "de144f24dbf587bfa233",
       "name": "c-kzg",
       "version": "2.1.8",
@@ -6638,40 +6461,6 @@
       "scopes": [
         "gateway",
         "rust"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "89e844b0c27fcc0b2ec3",
-      "name": "ca-certificates",
-      "version": "2026.10.23",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/ca-certificates",
-      "repository": "",
-      "revision": "",
-      "license": "ISC",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "bb3699049ca98f9da0c4",
-      "name": "cairo",
-      "version": "1.18.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/cairo",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-only or MPL-1.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
       ],
       "licenseFileCount": 0
     },
@@ -8127,23 +7916,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "3e9331b548fe12e3ab3e",
-      "name": "curl",
-      "version": "8.23.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/curl",
-      "repository": "",
-      "revision": "",
-      "license": "curl",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "2e1fabf223cd86fc2ba0",
       "name": "curve25519-dalek",
       "version": "4.1.3",
@@ -8582,22 +8354,6 @@
         "gateway"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "09915039cef6ba0fc5d8",
-      "name": "dbus",
-      "version": "1.16.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/dbus",
-      "repository": "",
-      "revision": "",
-      "license": "AFL-2.1 OR GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "002176022fed4e9984cc",
@@ -9629,22 +9385,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "388c66bcd0fdd21eed2c",
-      "name": "epoxy",
-      "version": "1.5.10",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/epoxy",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "1d68591d3e39cff4eca5",
       "name": "equator",
       "version": "0.4.2",
@@ -10227,40 +9967,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "1ca793e18ac148be4e4e",
-      "name": "ffmpeg",
-      "version": "9.0.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/ffmpeg",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "8d18bcefcc0b1af6a002",
-      "name": "fftw",
-      "version": "3.3.11",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/fftw",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "941b47a2f244bc3bb9dc",
       "name": "fiat-crypto",
       "version": "0.2.9",
@@ -10607,125 +10313,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "2aaf3269f0ad12696aa2",
-      "name": "font-ttf-dejavu-sans-mono",
-      "version": "2.37",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/font-ttf-dejavu-sans-mono",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "43a538dfd8067be8405b",
-      "name": "font-ttf-inconsolata",
-      "version": "3.000",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/font-ttf-inconsolata",
-      "repository": "",
-      "revision": "",
-      "license": "OFL-1.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c9e07036aeda32b9d5b1",
-      "name": "font-ttf-source-code-pro",
-      "version": "2.038",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/font-ttf-source-code-pro",
-      "repository": "",
-      "revision": "",
-      "license": "OFL-1.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0c59392c79609ffa7d5b",
-      "name": "font-ttf-ubuntu",
-      "version": "0.83",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/font-ttf-ubuntu",
-      "repository": "",
-      "revision": "",
-      "license": "Ubuntu-font-1.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "18529ac13dd3f01dfb42",
-      "name": "fontconfig",
-      "version": "2.18.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/fontconfig",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "d6eec44ebd9827101e16",
-      "name": "fonts-conda-ecosystem",
-      "version": "1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/fonts-conda-ecosystem",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "00afbf46ff31cf5b021e",
-      "name": "fonts-conda-forge",
-      "version": "1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/fonts-conda-forge",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "1e4243283ecd847ac97f",
       "name": "foreign-types",
       "version": "0.3.2",
@@ -10788,57 +10375,6 @@
         "opendan"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "ebd9119c9108abc48d75",
-      "name": "freeglut",
-      "version": "3.2.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/freeglut",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "736c724680b16e8e62a8",
-      "name": "freetype",
-      "version": "2.14.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/freetype",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-only OR FTL",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "526922cbd8beb1b2d841",
-      "name": "fribidi",
-      "version": "1.0.18",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/fribidi",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "9085a8373a866cea5370",
@@ -11174,23 +10710,6 @@
       "licenseFileCount": 0
     },
     {
-      "id": "7d171484af7fa8db34e6",
-      "name": "gdk-pixbuf",
-      "version": "2.44.8",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/gdk-pixbuf",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "8f28b75084a777decf7a",
       "name": "generator",
       "version": "0.8.12",
@@ -11249,21 +10768,6 @@
       "license": "MIT",
       "scopes": [
         "rust"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0d6dd9522cf2063c08cc",
-      "name": "getopt-win32",
-      "version": "0.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/getopt-win32",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-3.0-only",
-      "scopes": [
-        "ext-core-windows-x86_64"
       ],
       "licenseFileCount": 0
     },
@@ -11362,70 +10866,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "92424bf3ea2b023712bc",
-      "name": "ghostscript",
-      "version": "10.08.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/ghostscript",
-      "repository": "",
-      "revision": "",
-      "license": "AGPL-3.0-only",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "3c5fd71ab9a5795c1d51",
-      "name": "giflib",
-      "version": "5.2.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/giflib",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "19ee3aca3610d73da970",
-      "name": "giflib",
-      "version": "6.1.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/giflib",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "f35d8f1f43e6d71b532d",
-      "name": "git",
-      "version": "2.56.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/git",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later and LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "de47b2060477a41aaa41",
       "name": "glass_pumpkin",
       "version": "1.10.0",
@@ -11439,38 +10879,6 @@
         "rust"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "6a8feff804d298da9efc",
-      "name": "glib",
-      "version": "2.90.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/glib",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "3a1d188ff9954e416d6b",
-      "name": "glib-tools",
-      "version": "2.90.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/glib-tools",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "60519a62e06602100c9a",
@@ -11534,38 +10942,6 @@
         "gateway"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "1224046053247cd7eec2",
-      "name": "glslang",
-      "version": "16.6.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/glslang",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "488f53cf10f0b3cf88b8",
-      "name": "gmp",
-      "version": "6.3.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/gmp",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "40330c3d451af5dd5ea9",
@@ -11725,40 +11101,6 @@
       "licenseFileCount": 0
     },
     {
-      "id": "4fa76db54de48fb15b3a",
-      "name": "graphite2",
-      "version": "1.3.15",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/graphite2",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "657365321527662533cb",
-      "name": "graphviz",
-      "version": "14.1.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/graphviz",
-      "repository": "",
-      "revision": "",
-      "license": "EPL-1.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "47afe43ac96c5750803c",
       "name": "group",
       "version": "0.13.0",
@@ -11773,39 +11115,6 @@
         "rust"
       ],
       "licenseFileCount": 3
-    },
-    {
-      "id": "9a99869471fda5442b0e",
-      "name": "gtk3",
-      "version": "3.24.52",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/gtk3",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "ab7335a12c58651eb8ea",
-      "name": "gts",
-      "version": "0.7.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/gts",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "787fa18c38d9fb54b500",
@@ -11883,22 +11192,6 @@
         "node-active"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "2012c9e75ef5c0a6b2be",
-      "name": "harfbuzz",
-      "version": "15.0.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/harfbuzz",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "de0a617e37b219a01f9c",
@@ -12375,22 +11668,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "738bb52c30599ba62077",
-      "name": "hicolor-icon-theme",
-      "version": "0.17",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/hicolor-icon-theme",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "92e2d963adeb23120adf",
       "name": "hkdf",
       "version": "0.12.4",
@@ -12751,23 +12028,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "94170364e228ca1b3941",
-      "name": "icu",
-      "version": "78.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/icu",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "2de20456b372f34b3824",
@@ -13342,40 +12602,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "75b2f24765f26a1d3af9",
-      "name": "imagemagick",
-      "version": "7.1.2_31",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/imagemagick",
-      "repository": "",
-      "revision": "",
-      "license": "AGPL-3.0-only AND ImageMagick",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0f7e43423cd164af369f",
-      "name": "imath",
-      "version": "3.2.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/imath",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "874e01587f9025ba48d2",
       "name": "impl-codec",
       "version": "0.6.0",
@@ -13610,36 +12836,6 @@
       "scopes": [
         "gateway",
         "rust"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "119a43ceb28f83a6eb74",
-      "name": "intel-gmmlib",
-      "version": "22.10.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/intel-gmmlib",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "71bde706f3be76569831",
-      "name": "intel-media-driver",
-      "version": "26.1.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/intel-media-driver",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-x86_64"
       ],
       "licenseFileCount": 0
     },
@@ -14009,38 +13205,6 @@
         "gateway"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "1a203ad230bb32e567d9",
-      "name": "jasper",
-      "version": "4.2.9",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/jasper",
-      "repository": "",
-      "revision": "",
-      "license": "JasPer-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "88c6657b5019613f0721",
-      "name": "jbig",
-      "version": "2.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/jbig",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "8e8beca2c3d25a860062",
@@ -14505,22 +13669,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "e1a32b2b854f1f331a0b",
-      "name": "keyutils",
-      "version": "1.6.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/keyutils",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "d7bea6bef47f21a3b654",
       "name": "konst",
       "version": "0.2.20",
@@ -14553,23 +13701,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "6768d8498a0327a21a9f",
-      "name": "krb5",
-      "version": "1.22.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/krb5",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "b8a273439e7439cfaef1",
       "name": "kRPC",
       "version": "0.7.0",
@@ -14598,23 +13729,6 @@
         "rust"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "9e5a0f104942acb8afdd",
-      "name": "lame",
-      "version": "4.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/lame",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.0-only",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "54e9c4deea0fe2678ab6",
@@ -14648,23 +13762,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "3c4da72ad07f761bbbb7",
-      "name": "lcms2",
-      "version": "2.20",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/lcms2",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "e73fd51b1294d3db6dbe",
       "name": "leb128",
       "version": "0.2.7",
@@ -14678,69 +13775,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "85d8d07129d2767634a1",
-      "name": "leptonica",
-      "version": "1.83.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/leptonica",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "de32f871c2b4f122f1fe",
-      "name": "leptonica",
-      "version": "1.87.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/leptonica",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0af32927e3fe87e1904f",
-      "name": "lerc",
-      "version": "4.3.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/lerc",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "e4e799595f9d155d7ddc",
-      "name": "level-zero",
-      "version": "1.34.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/level-zero",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "d772d6b1f9ba0c8a01f9",
@@ -14854,123 +13888,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "39bf3084c94d9aa90fe9",
-      "name": "libabseil",
-      "version": "20260817.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libabseil",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "25586ea23c14f20e319d",
-      "name": "libarchive",
-      "version": "3.8.11",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libarchive",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "f26c768d5706e6fa36ac",
-      "name": "libass",
-      "version": "0.17.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libass",
-      "repository": "",
-      "revision": "",
-      "license": "ISC",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "700084aa088fce97cc15",
-      "name": "libavif16",
-      "version": "1.4.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libavif16",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "cccf9bc33c7c9b471160",
-      "name": "libbrotlicommon",
-      "version": "1.2.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libbrotlicommon",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "a11d0e88bbbe83075f1f",
-      "name": "libbrotlidec",
-      "version": "1.2.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libbrotlidec",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "66eee8244b4ad3d42e2c",
-      "name": "libbrotlienc",
-      "version": "1.2.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libbrotlienc",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "050a82aa944f5ef3d789",
       "name": "libc",
       "version": "0.2.191",
@@ -14985,724 +13902,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "b49f72d0d3e737084f3e",
-      "name": "libcap",
-      "version": "2.78",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libcap",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "6be6c42800686d5a1a8b",
-      "name": "libcups",
-      "version": "2.3.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libcups",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0006b7e6d4107427f9ff",
-      "name": "libcurl",
-      "version": "8.23.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libcurl",
-      "repository": "",
-      "revision": "",
-      "license": "curl",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "5a91864927c235feee15",
-      "name": "libdaemon",
-      "version": "0.14",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libdaemon",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "8b522248f9c0ad41f041",
-      "name": "libdav1d",
-      "version": "1.5.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libdav1d",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "a9e633d33e735e544c67",
-      "name": "libdav1d7",
-      "version": "1.5.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libdav1d7",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "5625c789e7dac2774b38",
-      "name": "libde265",
-      "version": "1.1.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libde265",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-3.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "96d727cea0d460aa75f0",
-      "name": "libdeflate",
-      "version": "1.25",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libdeflate",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "cd0465322859e4a12433",
-      "name": "libdeflate",
-      "version": "1.26",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libdeflate",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "eac128d62bdb16d2ed58",
-      "name": "libdovi",
-      "version": "3.4.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libdovi",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "33451457724bc1203f22",
-      "name": "libdrm",
-      "version": "2.4.129",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libdrm",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "5bd708b5024ab2c716fb",
-      "name": "libedit",
-      "version": "3.1.20260512",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libedit",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "01bebd33de0764bb1c66",
-      "name": "libegl",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libegl",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "dd793c94bfea863b7bf0",
-      "name": "libegl-devel",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libegl-devel",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "348f162a75b8b01f8142",
-      "name": "libev",
-      "version": "4.33",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libev",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause OR GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "5c5e813b717be80f8007",
-      "name": "libevent",
-      "version": "2.1.12",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libevent",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "81654027f40acc02e066",
-      "name": "libexpat",
-      "version": "2.9.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libexpat",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "d1d6c0917ddc1b107574",
-      "name": "libffi",
-      "version": "3.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libffi",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "3b32aaef1cda6e94d388",
-      "name": "libflac",
-      "version": "1.5.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libflac",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "024308afc3bd2ba0c80a",
-      "name": "libfreetype",
-      "version": "2.14.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libfreetype",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-only OR FTL",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "9f2eb615d3829632168c",
-      "name": "libfreetype6",
-      "version": "2.14.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libfreetype6",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-only OR FTL",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "14b5180eef41d185f32f",
-      "name": "libgcc",
-      "version": "16.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgcc",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-3.0-only WITH GCC-exception-3.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "9fdb274f98b0ec96bef6",
-      "name": "libgcc-ng",
-      "version": "16.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgcc-ng",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-3.0-only WITH GCC-exception-3.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "269ff40d76174abcce59",
-      "name": "libgd",
-      "version": "2.3.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgd",
-      "repository": "",
-      "revision": "",
-      "license": "GD",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7430f7c0c1a05a311249",
-      "name": "libgfortran",
-      "version": "16.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgfortran",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-3.0-only WITH GCC-exception-3.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "22ad1d5ac5e1282becf2",
-      "name": "libgfortran5",
-      "version": "16.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgfortran5",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-3.0-only WITH GCC-exception-3.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "81bf4a4e8be63d6d3858",
-      "name": "libgl",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgl",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c8cffcef381902091210",
-      "name": "libgl-devel",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgl-devel",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "562d3337805c4f5e890c",
-      "name": "libglib",
-      "version": "2.90.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libglib",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "580eed4e0e740f36d5d8",
-      "name": "libglu",
-      "version": "9.0.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libglu",
-      "repository": "",
-      "revision": "",
-      "license": "SGI-B-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7a71a8e8dfcb0e33c810",
-      "name": "libglvnd",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libglvnd",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7189184fc1b67c2d5a30",
-      "name": "libglx",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libglx",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "4b2e34ccf374a51d6224",
-      "name": "libglx-devel",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libglx-devel",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "6a32d434a9cb233c8599",
-      "name": "libgomp",
-      "version": "16.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libgomp",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-3.0-only WITH GCC-exception-3.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "33b67642d287047f9206",
-      "name": "libharfbuzz",
-      "version": "15.0.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libharfbuzz",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "206ec18bc408a76ca58e",
-      "name": "libharfbuzz-devel",
-      "version": "15.0.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libharfbuzz-devel",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "2dd7292df5c44b07292f",
-      "name": "libheif",
-      "version": "1.23.7",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libheif",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-3.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "fff2a20dc0bfb672ab28",
-      "name": "libhwloc",
-      "version": "2.15.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libhwloc",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "811bd9e0d2a759e0f4f0",
-      "name": "libhwy",
-      "version": "1.4.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libhwy",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0 OR BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "090d027920f292a8497a",
-      "name": "libiconv",
-      "version": "1.18",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libiconv",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-only",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "783e09f9d1cd5b6c29f5",
-      "name": "libintl",
-      "version": "0.22.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libintl",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "875554d1e9be9eb27c2d",
-      "name": "libintl-devel",
-      "version": "0.22.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libintl-devel",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "8630e01812cf827193ba",
-      "name": "libjpeg-turbo",
-      "version": "3.2.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libjpeg-turbo",
-      "repository": "",
-      "revision": "",
-      "license": "IJG AND BSD-3-Clause AND Zlib",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "a4c9671f5e632ad756f3",
-      "name": "libjxl",
-      "version": "0.12.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libjxl",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "797236192e672f0dbb7b",
@@ -15736,40 +13935,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "3158f4d23b436a2cd983",
-      "name": "liblzma",
-      "version": "5.8.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/liblzma",
-      "repository": "",
-      "revision": "",
-      "license": "0BSD",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "370ccaf0a6cf2cdadf83",
-      "name": "liblzma-devel",
-      "version": "5.8.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/liblzma-devel",
-      "repository": "",
-      "revision": "",
-      "license": "0BSD",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "601f7145ab8b49337b5c",
       "name": "libm",
       "version": "0.2.16",
@@ -15784,456 +13949,6 @@
         "rust"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "872a05dbfd1c67e70a58",
-      "name": "libmpdec",
-      "version": "4.0.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libmpdec",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0491dea72c438361ab63",
-      "name": "libnghttp2",
-      "version": "1.71.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libnghttp2",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "d6bca158b8b98eebc994",
-      "name": "libogg",
-      "version": "1.3.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libogg",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "fee23a871d7ac850a351",
-      "name": "libopengl",
-      "version": "1.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopengl",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-libglvnd",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "d8b3bd2fb3aa7814a864",
-      "name": "libopenvino",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "3015598438dcae91ca25",
-      "name": "libopenvino-arm-cpu-plugin",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-arm-cpu-plugin",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "830f2a56368be028dc36",
-      "name": "libopenvino-auto-batch-plugin",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-auto-batch-plugin",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "9ef0f942d257cd6939ba",
-      "name": "libopenvino-auto-plugin",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-auto-plugin",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "2ed3411e8747ae603935",
-      "name": "libopenvino-gguf-frontend",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-gguf-frontend",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0c82b50bab9a4515d3e4",
-      "name": "libopenvino-hetero-plugin",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-hetero-plugin",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "a8c40577b3f9323e8ae4",
-      "name": "libopenvino-intel-cpu-plugin",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-intel-cpu-plugin",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "a2b46edab9333b9f627f",
-      "name": "libopenvino-intel-gpu-plugin",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-intel-gpu-plugin",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "ff40f1fc8be4b41d39ad",
-      "name": "libopenvino-intel-npu-plugin",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-intel-npu-plugin",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7896311a32252d34f306",
-      "name": "libopenvino-ir-frontend",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-ir-frontend",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0d520f5acd5cc03cd1ba",
-      "name": "libopenvino-onnx-frontend",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-onnx-frontend",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0183bc2eb6e1904a4e72",
-      "name": "libopenvino-paddle-frontend",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-paddle-frontend",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "341f5bcb5e3d06b66a30",
-      "name": "libopenvino-pytorch-frontend",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-pytorch-frontend",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c2867318b0cca5044931",
-      "name": "libopenvino-tensorflow-frontend",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-tensorflow-frontend",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "88c9182b01b62a904359",
-      "name": "libopenvino-tensorflow-lite-frontend",
-      "version": "2026.4.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopenvino-tensorflow-lite-frontend",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "2c7b5f79ff68a01caf20",
-      "name": "libopus",
-      "version": "1.6.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libopus",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "929a8945b9489d550f5a",
-      "name": "libpango",
-      "version": "1.58.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libpango",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c2299f90bb279d17ddc9",
-      "name": "libpango-devel",
-      "version": "1.58.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libpango-devel",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "28260d66dd5e81ca24e8",
-      "name": "libpciaccess",
-      "version": "0.19",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libpciaccess",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "f38317f0bc2549b50add",
-      "name": "libplacebo",
-      "version": "7.387.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libplacebo",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "96291e584c240fa1ed51",
-      "name": "libpng",
-      "version": "1.6.59",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libpng",
-      "repository": "",
-      "revision": "",
-      "license": "zlib-acknowledgement",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "2232bf4202237a7c93c7",
-      "name": "libprotobuf",
-      "version": "7.35.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libprotobuf",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "793c7323fae6f49b1155",
-      "name": "libpsl",
-      "version": "0.23.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libpsl",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "ff271656ce121651a857",
-      "name": "libraw",
-      "version": "0.22.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libraw",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-only",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "f6878567ab91bffb5c58",
@@ -16282,23 +13997,6 @@
         "rust"
       ],
       "licenseFileCount": 10
-    },
-    {
-      "id": "7e65ae5d32e596b9bb64",
-      "name": "librsvg",
-      "version": "2.62.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/librsvg",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "fe1f800ef9fe14b2762a",
@@ -16365,22 +14063,6 @@
       "licenseFileCount": 0
     },
     {
-      "id": "a86e58b29509254fbb98",
-      "name": "libsndfile",
-      "version": "1.2.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libsndfile",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "d72424929cc5ee3379e1",
       "name": "libsocks_client",
       "version": "0.1.4",
@@ -16394,23 +14076,6 @@
         "gateway"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "d536421fb878525a8671",
-      "name": "libsqlite",
-      "version": "3.54.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libsqlite",
-      "repository": "",
-      "revision": "",
-      "license": "blessing",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "0b32ae27939a1187c73a",
@@ -16429,364 +14094,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "5173b9af4bea027dbc07",
-      "name": "libssh2",
-      "version": "1.11.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libssh2",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "cdd597a625b0e41e588c",
-      "name": "libstdcxx",
-      "version": "16.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libstdcxx",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-3.0-only WITH GCC-exception-3.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "e09a9369c18c79fe619b",
-      "name": "libstdcxx-ng",
-      "version": "16.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libstdcxx-ng",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-3.0-only WITH GCC-exception-3.1",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "02f14b50a55375ee74f1",
-      "name": "libsystemd0",
-      "version": "262.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libsystemd0",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "b75c5b1a52a0a81510f8",
-      "name": "libtiff",
-      "version": "4.7.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libtiff",
-      "repository": "",
-      "revision": "",
-      "license": "HPND",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "b84e86de8ddc10e8cccd",
-      "name": "libudev1",
-      "version": "262.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libudev1",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "8a720a3b243edc36dc25",
-      "name": "libunwind",
-      "version": "1.8.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libunwind",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0976248c9f4ef902b73c",
-      "name": "liburing",
-      "version": "2.15",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/liburing",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "63d0174c6cdf5445e773",
-      "name": "libusb",
-      "version": "1.0.30",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libusb",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "cbf561606f24381dfc04",
-      "name": "libuuid",
-      "version": "2.42.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libuuid",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "3dda7cd6983f1b93bdee",
-      "name": "libva",
-      "version": "2.24.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libva",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "f07f35bcef6c9e2e4920",
-      "name": "libvorbis",
-      "version": "1.3.7",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libvorbis",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "50365b4af6ef77a9bea5",
-      "name": "libvpl",
-      "version": "2.16.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libvpl",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "b264fcb53a26c706a2fb",
-      "name": "libvpx",
-      "version": "1.17.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libvpx",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "f40e935d27a3456ac6ba",
-      "name": "libvulkan-loader",
-      "version": "1.4.357.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libvulkan-loader",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "1b15cf619fd486fe8055",
-      "name": "libwebp-base",
-      "version": "1.6.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libwebp-base",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "f4a907119c930f6ca786",
-      "name": "libwinpthread",
-      "version": "12.0.0.r688.g6b2176247.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libwinpthread",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c54ca5e541c7ae3ddc51",
-      "name": "libxcb",
-      "version": "1.17.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libxcb",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7891a42b4beff3a6d131",
-      "name": "libxcrypt",
-      "version": "4.4.38",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libxcrypt",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "061693a78bc659f48b81",
-      "name": "libxkbcommon",
-      "version": "1.13.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libxkbcommon",
-      "repository": "",
-      "revision": "",
-      "license": "MIT AND MIT-open-group AND HPND AND HPND-sell-variant AND ISC",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "0812a1640cbae1f43461",
-      "name": "libxml2",
-      "version": "2.15.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libxml2",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "6b1e3534b5ddbc46dfdc",
-      "name": "libxml2-16",
-      "version": "2.15.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libxml2-16",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "4d8685bd69e0bad90df4",
       "name": "libz-sys",
       "version": "1.1.33",
@@ -16800,40 +14107,6 @@
         "rust"
       ],
       "licenseFileCount": 6
-    },
-    {
-      "id": "9f3c0defbc73e49e8d6b",
-      "name": "libzip",
-      "version": "1.12.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libzip",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "58298105e9a11e6e3aaf",
-      "name": "libzlib",
-      "version": "1.3.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/libzlib",
-      "repository": "",
-      "revision": "",
-      "license": "Zlib",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "e0ccaed6dca50824dff7",
@@ -17451,23 +14724,6 @@
       "licenseFileCount": 3
     },
     {
-      "id": "bc6b692434776cb723f4",
-      "name": "lz4-c",
-      "version": "1.10.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/lz4-c",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "785ee864d9e59d04b407",
       "name": "lz4_flex",
       "version": "0.11.6",
@@ -17512,23 +14768,6 @@
         "rust"
       ],
       "licenseFileCount": 7
-    },
-    {
-      "id": "d5fe2d01e57fe06e8116",
-      "name": "lzo",
-      "version": "2.10",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/lzo",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "1a710008cc68d84b679e",
@@ -18013,23 +15252,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "693052977c06c12d1b7e",
-      "name": "mpg123",
-      "version": "1.33.7",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/mpg123",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-only",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "a6ec20c43a9b5b3d2d0a",
       "name": "ms",
       "version": "2.1.3",
@@ -18198,22 +15420,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "e8f116dae71aeea86a0d",
-      "name": "ncurses",
-      "version": "6.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/ncurses",
-      "repository": "",
-      "revision": "",
-      "license": "X11 AND BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "25795a2d06861cd80bf6",
@@ -18554,38 +15760,6 @@
         "ext-core-windows-x86_64"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "4c72e9bc4ee1b94d0b47",
-      "name": "nspr",
-      "version": "4.40",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/nspr",
-      "repository": "",
-      "revision": "",
-      "license": "MPL-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "78900a4f00cb447b2b88",
-      "name": "nss",
-      "version": "3.118",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/nss",
-      "repository": "",
-      "revision": "",
-      "license": "MPL-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "5b013ad6e372ea111263",
@@ -19163,21 +16337,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "8bf439050e0b58b52751",
-      "name": "ocl-icd",
-      "version": "2.3.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/ocl-icd",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "6613c249cc757793d207",
       "name": "oid-registry",
       "version": "0.8.1",
@@ -19258,117 +16417,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "1a6ef9453eedbe3b904c",
-      "name": "opencl-headers",
-      "version": "2025.06.13",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/opencl-headers",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7095faa2ae90d99a375f",
-      "name": "openexr",
-      "version": "3.5.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/openexr",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7a2a8cfee33e9704bbe8",
-      "name": "openh264",
-      "version": "2.6.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/openh264",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "3ffe7ebd321bced2610e",
-      "name": "openh264",
-      "version": "2.7.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/openh264",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "fd53ef242b46be187e54",
-      "name": "openjpeg",
-      "version": "2.5.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/openjpeg",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "8643eec6ddea7ec754d8",
-      "name": "openjph",
-      "version": "0.32.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/openjph",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "02d129f5329a7de855cd",
-      "name": "openjph",
-      "version": "0.33.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/openjph",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "1163e9be5d40f6920c86",
       "name": "openraft",
       "version": "0.9.26",
@@ -19413,23 +16461,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "1310fb7cba2995379065",
-      "name": "openssl",
-      "version": "3.6.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/openssl",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "1aeef014157b7caf86cf",
@@ -19604,21 +16635,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "9e03cd7bdb80e1cbf3a3",
-      "name": "packaging",
-      "version": "26.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/packaging",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "db188afafbbbad8ceeae",
       "name": "pandoc",
       "version": "3.12.1",
@@ -19632,23 +16648,6 @@
         "ext-core-linux-x86_64"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "b06ae85028063511f4a7",
-      "name": "pango",
-      "version": "1.58.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/pango",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "5b9fef37bebc4b8b0ad8",
@@ -19937,23 +16936,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "d3b267c71bb919737b29",
-      "name": "pcre2",
-      "version": "10.47",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/pcre2",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "6f87d2985968fc30c285",
       "name": "pdfjs-dist",
       "version": "6.4.299",
@@ -20030,22 +17012,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "9aa99f3f9614cc7bba1d",
-      "name": "perl",
-      "version": "5.44.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/perl",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-1.0-or-later OR Artistic-1.0-Perl",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "b902fb05d26833918b92",
@@ -20419,23 +17385,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "f81c9515890ba4372bfd",
-      "name": "pixman",
-      "version": "0.46.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/pixman",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "ca0329bf766b755aecb0",
       "name": "pkcs1",
       "version": "0.7.5",
@@ -20606,54 +17555,6 @@
         "gateway"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "1eff5ed226b7ed4e1c98",
-      "name": "poppler",
-      "version": "26.10.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/poppler",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "548959a6f851f1c330b9",
-      "name": "poppler",
-      "version": "26.11.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/poppler",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "88787c71d762fb45e83c",
-      "name": "poppler-data",
-      "version": "0.4.12",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/poppler-data",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause AND (GPL-2.0-only OR GPL-3.0-only)",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "f7a0ab805277e76c190d",
@@ -21271,39 +18172,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "50537fe055ee8d0dcc6f",
-      "name": "pthread-stubs",
-      "version": "0.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/pthread-stubs",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "6f60b074c377adbd17ab",
-      "name": "pugixml",
-      "version": "1.15",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/pugixml",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "ce4231064008b05675aa",
       "name": "pulldown-cmark",
       "version": "0.13.6",
@@ -21333,22 +18201,6 @@
         "rust"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "8906c1865acadec32cc7",
-      "name": "pulseaudio-client",
-      "version": "17.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/pulseaudio-client",
-      "repository": "",
-      "revision": "",
-      "license": "LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "52e34be5af4e1423893a",
@@ -21450,36 +18302,6 @@
         "ext-core-linux-x86_64"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "89f2021d5bec9ed413c8",
-      "name": "python",
-      "version": "3.15.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/python",
-      "repository": "",
-      "revision": "",
-      "license": "Python-2.0",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "07e7d5849aa21220fd2f",
-      "name": "python_abi",
-      "version": "3.15",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/python_abi",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "ec1fab17e30a8cc75949",
@@ -21881,23 +18703,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "3ed9c4a920f92385433b",
-      "name": "rav1e",
-      "version": "0.8.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/rav1e",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "cde59e4e2c59b14abc03",
@@ -23435,40 +20240,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "dbf31715fc322a8c2649",
-      "name": "sdl2",
-      "version": "2.32.56",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/sdl2",
-      "repository": "",
-      "revision": "",
-      "license": "Zlib",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "b105483e31ec861af0c6",
-      "name": "sdl3",
-      "version": "3.4.20",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/sdl3",
-      "repository": "",
-      "revision": "",
-      "license": "Zlib",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "8c8a4c17b608039097ee",
       "name": "sec1",
       "version": "0.7.3",
@@ -24193,22 +20964,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "48b32b0b7a0338eeabcd",
-      "name": "shaderc",
-      "version": "2026.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/shaderc",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "624900ab2caa01c03ec8",
       "name": "sharded-slab",
       "version": "0.1.7",
@@ -24577,22 +21332,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "71d979460cbe5d914889",
-      "name": "snappy",
-      "version": "1.3.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/snappy",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "14c3303b2b6cd983dc08",
       "name": "socket2",
       "version": "0.5.10",
@@ -24920,22 +21659,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "1bfedd6ade09ff78d36c",
-      "name": "spirv-tools",
-      "version": "2026.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/spirv-tools",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "735f312a5cf5f0f7f66c",
@@ -25376,37 +22099,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "93f82052294d2a91a279",
-      "name": "svt-av1",
-      "version": "4.2.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/svt-av1",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "929fadffaa5004ad9e9c",
-      "name": "svt-av1",
-      "version": "4.3.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/svt-av1",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-2-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "458a7daa9592800d7435",
       "name": "swiper",
       "version": "12.2.0",
@@ -25723,22 +22415,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "b98aef5dae5a00ded2fd",
-      "name": "tbb",
-      "version": "2023.1.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/tbb",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "a3492aae1496776d3cc5",
       "name": "tempfile",
       "version": "3.27.0",
@@ -25850,37 +22526,6 @@
         "sys-test-web"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "91eaef1a8e2fdf712973",
-      "name": "tesseract",
-      "version": "5.5.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/tesseract",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "54e76657e2534d89765a",
-      "name": "tesseract",
-      "version": "5.5.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/tesseract",
-      "repository": "",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "6e5effe5e96853887191",
@@ -26152,21 +22797,6 @@
         "rust"
       ],
       "licenseFileCount": 3
-    },
-    {
-      "id": "0814bfca28b0ca187c28",
-      "name": "tk",
-      "version": "8.6.13",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/tk",
-      "repository": "",
-      "revision": "",
-      "license": "TCL",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "e1c8c5d9e0f83e3246a0",
@@ -26675,22 +23305,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "98b8ec6c19c81c70c4e7",
-      "name": "tree",
-      "version": "2.3.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/tree",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-only",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "9b726df4897842fc1744",
       "name": "trie-db",
       "version": "0.29.2",
@@ -27058,21 +23672,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "5efe89ad52a0d45c852e",
-      "name": "tzdata",
-      "version": "2026e",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/tzdata",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-Public-Domain",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "1ea0dfce6686312da995",
       "name": "tzif",
       "version": "0.4.1",
@@ -27102,21 +23701,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "5719fd7f23e0c506083c",
-      "name": "ucrt",
-      "version": "10.0.26100.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/ucrt",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-MicrosoftWindowsSDK10",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "30cb84a748026a5b3202",
@@ -27460,22 +24044,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "3c26b57bbf471dbea28a",
-      "name": "unzip",
-      "version": "6.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/unzip",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-BSD-like",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "9f15974b36c3b2c35f83",
       "name": "update-browserslist-db",
       "version": "1.3.4",
@@ -27757,51 +24325,6 @@
       "scopes": [
         "gateway",
         "rust"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "4072089008d9f624c287",
-      "name": "vc",
-      "version": "14.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/vc",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "26430c3c94c3e4430dca",
-      "name": "vc14_runtime",
-      "version": "14.51.36247",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/vc14_runtime",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-MicrosoftVisualCpp2015-2022Runtime",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "3c11e14b55102343b2fd",
-      "name": "vcomp14",
-      "version": "14.51.36247",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/vcomp14",
-      "repository": "",
-      "revision": "",
-      "license": "LicenseRef-MicrosoftVisualCpp2015-2022Runtime",
-      "scopes": [
-        "ext-core-windows-x86_64"
       ],
       "licenseFileCount": 0
     },
@@ -28167,37 +24690,6 @@
         "rust"
       ],
       "licenseFileCount": 2
-    },
-    {
-      "id": "6125267dead6ee689b59",
-      "name": "wayland",
-      "version": "1.26.0",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/wayland",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "efd850ab487921bea509",
-      "name": "wayland-protocols",
-      "version": "1.50",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/wayland-protocols",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "c888b73b222fddc3f358",
@@ -29626,40 +26118,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "79002fe29a42b61ac421",
-      "name": "x264",
-      "version": "1!164.3095",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/x264",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "a9a45d13995dfe1988ad",
-      "name": "x265",
-      "version": "3.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/x265",
-      "repository": "",
-      "revision": "",
-      "license": "GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "2563d9d0ca6e381b8e24",
       "name": "x509-cert",
       "version": "0.2.5",
@@ -29707,22 +26165,6 @@
       "licenseFileCount": 2
     },
     {
-      "id": "c487f198cd729447bfd0",
-      "name": "xkeyboard-config",
-      "version": "2.48",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xkeyboard-config",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "6c4fccfd9fe78408ccd8",
       "name": "xml",
       "version": "1.4.0",
@@ -29753,332 +26195,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "db11eb6e4f96d82d5dca",
-      "name": "xorg-libice",
-      "version": "1.1.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libice",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "91292109a32f00e9fae0",
-      "name": "xorg-libsm",
-      "version": "1.2.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libsm",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "990565bf419c46f45be5",
-      "name": "xorg-libx11",
-      "version": "1.8.14",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libx11",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "cad85912b97845d0196e",
-      "name": "xorg-libxau",
-      "version": "1.0.12",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxau",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c3c3eb42ed521c2235a5",
-      "name": "xorg-libxcomposite",
-      "version": "0.4.7",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxcomposite",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "14fb1ed6c3d82c9bcba9",
-      "name": "xorg-libxcursor",
-      "version": "1.2.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxcursor",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "22e492f6636e39399222",
-      "name": "xorg-libxdamage",
-      "version": "1.1.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxdamage",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "ea3668cf802d39fdd38c",
-      "name": "xorg-libxdmcp",
-      "version": "1.1.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxdmcp",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "24d3820b6c1a0a7baf11",
-      "name": "xorg-libxext",
-      "version": "1.3.7",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxext",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "209bce41af78032650f2",
-      "name": "xorg-libxfixes",
-      "version": "6.0.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxfixes",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c23236fea0779e9046a0",
-      "name": "xorg-libxi",
-      "version": "1.8.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxi",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "2b6ebb487a34ab4c46b8",
-      "name": "xorg-libxinerama",
-      "version": "1.1.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxinerama",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "f3349bdd92ff0f5527e4",
-      "name": "xorg-libxpm",
-      "version": "3.5.20",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxpm",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "6c9db1f3be6b31b360d3",
-      "name": "xorg-libxrandr",
-      "version": "1.5.5",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxrandr",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "daab417eb42c99d97456",
-      "name": "xorg-libxrender",
-      "version": "0.9.13",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxrender",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "7b7fe1e72d7813642b78",
-      "name": "xorg-libxscrnsaver",
-      "version": "1.2.4",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxscrnsaver",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "819235197c284b4255b5",
-      "name": "xorg-libxt",
-      "version": "1.3.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxt",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c1c2728d367f31f882a3",
-      "name": "xorg-libxtst",
-      "version": "1.2.6",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxtst",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "ad8120a75c7d3eb3e934",
-      "name": "xorg-libxxf86vm",
-      "version": "1.1.7",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-libxxf86vm",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "c3e2339d696200b51296",
-      "name": "xorg-xorgproto",
-      "version": "2025.1",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xorg-xorgproto",
-      "repository": "",
-      "revision": "",
-      "license": "MIT",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "a9289d231e1ad80a325f",
       "name": "xsum",
       "version": "0.1.6",
@@ -30107,56 +26223,6 @@
         "rust"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "9e660a4f873fc85053d2",
-      "name": "xz",
-      "version": "5.8.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xz",
-      "repository": "",
-      "revision": "",
-      "license": "0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "cb5ed9c1893bb8a578d3",
-      "name": "xz-gpl-tools",
-      "version": "5.8.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xz-gpl-tools",
-      "repository": "",
-      "revision": "",
-      "license": "0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
-      "id": "86cadd3a9e1effcbd5c7",
-      "name": "xz-tools",
-      "version": "5.8.3",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/xz-tools",
-      "repository": "",
-      "revision": "",
-      "license": "0BSD AND LGPL-2.1-or-later",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "b3eb2f20b2b25c386a9c",
@@ -30413,21 +26479,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "ef7e2bac7bd327353d9a",
-      "name": "zlib",
-      "version": "1.3.2",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/zlib",
-      "repository": "",
-      "revision": "",
-      "license": "Zlib",
-      "scopes": [
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
-    },
-    {
       "id": "ac956645896912d05992",
       "name": "zlib-rs",
       "version": "0.6.8",
@@ -30503,23 +26554,6 @@
         "rust"
       ],
       "licenseFileCount": 1
-    },
-    {
-      "id": "77bb25053284ef2b77b4",
-      "name": "zstd",
-      "version": "1.5.7",
-      "ecosystem": "conda",
-      "description": "",
-      "homepage": "https://anaconda.org/conda-forge/zstd",
-      "repository": "",
-      "revision": "",
-      "license": "BSD-3-Clause",
-      "scopes": [
-        "ext-core-linux-aarch64",
-        "ext-core-linux-x86_64",
-        "ext-core-windows-x86_64"
-      ],
-      "licenseFileCount": 0
     },
     {
       "id": "cfcb799e38b818f5d603",
@@ -30600,17 +26634,20 @@
   "notices": [
     "Versions come from resolved Cargo metadata, installed production npm dependencies, the SDK distribution SBOM and available extension payload manifests. Build dependencies and dependencies for other target platforms may also be listed.",
     "This build inventory does not inspect the host operating system, separately installed apps, container base images or packages downloaded at runtime. Missing license metadata is shown explicitly; bundled license notices take precedence over a short license identifier.",
-    "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
-    "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
-    "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
-    "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
-    "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried.",
+    "Desktop: license metadata is unavailable for combine-errors@3.0.3.",
+    "Text editor: license metadata is unavailable for combine-errors@3.0.3.",
     "CYFS Gateway is built separately. Its entries are a snapshot of the sibling checkout's locked dependencies, not a verification of the gateway installed with this BuckyOS build.",
     "CYFS Gateway: license metadata is unavailable for buckyos-http-server@0.7.0, buckyos-io@0.7.0, buckyos-js-runtime@0.7.0, buckyos-kit@0.7.0, kRPC@0.7.0, name-client@0.7.0, name-lib@0.7.0, named_store@0.7.0, ndn-lib@0.7.0, ndn-toolkit@0.7.0, rbac@0.7.0.",
     "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
     "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3.",
-    "Text editor: license metadata is unavailable for combine-errors@3.0.3.",
-    "Desktop: license metadata is unavailable for combine-errors@3.0.3.",
+    "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
+    "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
+    "Extension tool payload for linux-aarch64 has no conda dependency license inventory.",
+    "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
+    "Extension tool payload for linux-x86_64 has no conda dependency license inventory.",
+    "Extension tool payload for windows-x86_64 has no conda dependency license inventory.",
+    "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
+    "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried.",
     "The draw.io stencil snapshot is identified by its recorded date and content hash; its upstream release version was not recorded."
   ]
 }

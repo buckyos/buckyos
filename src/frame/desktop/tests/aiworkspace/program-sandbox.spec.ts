@@ -198,7 +198,7 @@ test('a normal program produces its results and files, and llm.map answers throu
   expect(results.facts).toEqual({ total: 22, today: '2026-11-07' })
   expect(results.checks).toEqual([{ id: 'total', passed: true, detail: null }])
   expect(results.external).toEqual([])
-  expect(results.ai.map).toEqual({ calls: 1, items: 2, cached: 0 })
+  expect(results.ai.map).toEqual({ calls: 1, items: 2, cached: 0, tokens: 0, input_tokens: 0 })
   expect(out.mapRequests).toEqual([{ items: ['east', 'west'], instruction: 'upper-case it', schema: { type: 'string' }, batch: 20, declare: { inputs: { data: ['region', 'revenue'] } } }])
   expect(out.files).toEqual({ 'output/report.md': '# EAST WEST', 'output/copy.bin': { base64: 'AAEC' } })
   expect(out.log).toContain('done with 2 regions')

@@ -450,7 +450,7 @@ pub struct SessionTemplate {
     pub max_process_depth: u8,        // process_stack 深度上限（默认 4，§3.3）
     pub max_sub_sessions: u8,         // 同时未结束的子 session 数上限（默认 4，§4.11）
     pub max_session_depth: u8,        // 子 session 嵌套深度上限（默认 2，§4.11）
-    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 goal 的 system:goal、ui 的 _notify、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
+    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 goal 的 system:goal、ui 的 _notify、用户时区、浏览器交接 _browser）；没有“未订阅也投递”的兜底策略（§4.3）
     pub goal: Option<GoalDefaults>,   // goal 类：[session.goal] 的 budget / min_interval_secs 缺省值
 }
 ```

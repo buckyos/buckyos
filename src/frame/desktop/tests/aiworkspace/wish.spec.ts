@@ -358,6 +358,24 @@ test('§5 8/9/10/11: records of every run — the newest result opens on the can
   // what it was before that run (a rich text is undone block by block: the edited heading was not that run's)
   await rollback(page, api, ws, 'run', '解读：被修改过')
   expect(await richText(api, ws, commentary)).toContain(secondText.replace(/^## 解读|^解读/, ''))
+
+  // 13 (the macro): editing the current macro by hand asks first, results exist; going on, the results are out of date
+  await card.getByTestId('aiws-wish-tab-macro').click()
+  await card.locator('[data-testid="aiws-wish-record"][data-current="true"]').locator('[data-testid="aiws-wish-record-link"][data-kind="program"]').click()
+  await expect(dialog.getByTestId('aiws-wish-program-view')).toHaveAttribute('data-editable', 'true')
+  await dialog.getByTestId('aiws-wish-program-start-edit').click()
+  await expect(page.getByTestId('aiws-wish-invalidate')).toContainText('该修改会让结果过期。')
+  await page.getByTestId('aiws-wish-invalidate-cancel').click()
+  await expect(dialog.getByTestId('aiws-wish-program-edit')).toHaveCount(0)
+  await dialog.getByTestId('aiws-wish-program-start-edit').click()
+  await page.getByTestId('aiws-wish-invalidate-ok').click()
+  const editor = dialog.getByTestId('aiws-wish-program-edit')
+  await editor.fill(`${await editor.inputValue()}\n// 手工改过\n`)
+  await dialog.getByTestId('aiws-wish-program-save').click()
+  await expect(editor).toHaveCount(0)
+  await dialog.getByTestId('aiws-wish-dialog-close').click()
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveAttribute('data-stale', 'true')
+  expect((await api.rpc(ALICE, 'doc.freshness', { workspace_id: ws.workspace_id, entity_ids: [WISH] })).items[0].config_changed).toBe(true)
 })
 
 test('§5 7/12: a macro that calls AI shows its run button in the AI colours and its records name the model; a warning-level check that fails is written, warning first; an error-level one fails the run and changes nothing', async ({ page, api }) => {
@@ -479,7 +497,13 @@ test('§5 16: lines on a free canvas — the input Block to the wish, a ghost fo
   expect(await input.evaluate((el) => getComputedStyle(el).pointerEvents)).toBe('none')
   const ghost = page.getByTestId(`aiws-wishlink-ghost-${BLOCK}-memo`)
   await expect(ghost).toHaveAttribute('data-state', 'ok')
-  // three steps: a line from the wish to each result Block
+  // the ghost opens its input
+  await ghost.click()
+  await expect(page.getByTestId('aiws-detail-memo')).toBeVisible()
+  await page.getByTestId('aiws-top-canvas').click()
+  await expect(page.getByTestId('aiws-canvas-view')).toBeVisible()
+  // three steps (the analysis binds the inputs it uses: the table only, its ghost goes): a line from the wish to each
+  // result Block
   await wishThreeSteps(page, api, ALICE, ws.workspace_id, WISH)
   const cells: string[] = (await api.read(ALICE, ws.workspace_id, WISH)).content.payload.last_run.result_bindings.results.summary.cells
   await fitAll(page)
@@ -495,22 +519,20 @@ test('§5 16: lines on a free canvas — the input Block to the wish, a ghost fo
   const exported = readFileSync(await (await download).path(), 'utf8')
   expect(exported).not.toContain('edge="1"')
   expect((await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.view_type === 'connector')).toHaveLength(0)
-  // the ghost opens its input
-  await ghost.click()
-  await expect(page.getByTestId('aiws-detail-memo')).toBeVisible()
-  await page.getByTestId('aiws-top-canvas').click()
-  await expect(page.getByTestId('aiws-canvas-view')).toBeVisible()
+  await expect(ghost).toHaveCount(0)
   // "显示连线" off in the wish Block's properties: its lines and ghosts are gone
   await fitAll(page)
   await wishCard(page, WISH).getByTestId('aiws-wish-title').click()
   await openProperties(page)
   const toggle = page.getByTestId('aiws-wish-field-show_links')
   await expect(toggle).toBeChecked()
-  await toggle.uncheck()
+  // (the box shows what was written: it changes once the Block has it)
+  await toggle.click()
+  await expect(toggle).not.toBeChecked()
   await expect(links).toHaveCount(0)
-  await expect(ghost).toHaveCount(0)
   await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, BLOCK)).content.payload.config?.show_links).toBe(false)
-  await toggle.check()
+  await toggle.click()
+  await expect(toggle).toBeChecked()
   await expect(links).toBeAttached()
   await page.keyboard.press('Escape')
   // the run that created the results rolled back: its results and their Blocks go, `last_run` with them

@@ -25,7 +25,7 @@ gate。** 当前 executor adapter 注册情况（见
 | `appservice::*` | ❌ 未注册 | 同上 |
 | `/skill/*` `/agent/*` | ⚠️ 编译保留 | `ExecutorRef::SemanticPath`，`fun_id` 为 null，运行时报 unresolved |
 | `/tool/<name>@<version>` | ✅ FunctionRegistry 解析 | 编译期绑定到真实 FunctionObject（`func:<hex>`）；未注册报 `unresolved_function` |
-| `func::<obj_id>` | ✅ LocalThunkRunner | 进程内 Native runner 执行，回执按 `execution_id` 关联；内置 `test.echo/test.sleep/test.fail@1` 与 9 个 `media.*@1` |
+| `func::<obj_id>` | ✅ LocalThunkRunner | 进程内 Native runner 执行，回执按 `execution_id` 关联；内置 `test.echo/test.sleep/test.fail@1` 与 12 个 `media.*@1` |
 
 凡是依赖 ❌ / ⚠️ 行的用例都明确标 `Blocked: <原因>`，不要按 ✅ 标准跑断言。
 
@@ -527,10 +527,10 @@ WaitingHuman；工具齐全时产出 manifest。
 
 ### 关键断言
 
-- `list_definitions {source:"system"}` 恰为 `media.image/pdf/video/document`，均 `read_only:true`、
+- `list_definitions {source:"system"}` 恰为 `media.image/pdf/video/document/page`，均 `read_only:true`、
   带 `revision`。
 - `get_definition media.pdf` 的 `resolved_functions` 每项都是 `func:<hex>`。
-- `list_functions {prefix:"media."}` 返回 9 个；`get_function media.probe@1` 的 `published:true`。
+- `list_functions {prefix:"media."}` 返回 12 个；`get_function media.probe@1` 的 `published:true`。
 - 一个 `media.image` Run 的 `get_run_graph` 含 `revision`（等于 create_run 返回值）、
   `requested_by == "<user_id>/<app_id>"`、`executor == "workflow"`、`node_sources`。
 - `run_id` 就是 Run 的根任务 id（`t-…`）：task_manager `get_task {task_id: run_id}` 得到
@@ -599,6 +599,27 @@ LibreOffice 每次转出的 PDF 字节不同（`CreationDate`、`/ID`、`DocChec
 - 上传相同字节并跑自己的 `media.pdf`：`build_catalog` 来自 `cache`，manifest id 相同；调 `get_run_output` 之前仍 403，之后
   `delivery.held > 1`、无 `hold_error`，manifest 与其引用的每个产物 `get_object` 和 `object/open` 都是 200。
 
+## WF-DV-017: media.page 把 HTML 输出成 PDF
+
+### 目标
+
+验收 [Agent 浏览器 TODO](../../notepads/agent-runtime-browser-todo.md) SR5：系统定义 `media.page` 用 `page-render`（`ext-core` 的无头 Chromium）
+把一份 HTML 对象输出成 PDF；同一份页面第二次来自 Step cache；没有读权限的调用者得不到渲染。
+
+### 关键断言
+
+- `get_capabilities.environment.missing` 含 `page-render`（节点的 `ext-core` 不带浏览器）时：Run `failed`，
+  `node_errors.page_to_pdf.code == tools_missing`，用例记 Blocked。
+- 上传 `dv-page.html`（三节，每节另起一页，中文），`create_run media.page {obj_id, paper:"A4", margin_mm:<本轮的值>}`：
+  `completed`，`page_to_pdf` 为 `executed`，`page_snapshot` 保持 `pending`（只走请求的那条分支），`output.page_to_pdf.pages == 3`。
+  `margin_mm` 每轮不同：Step cache 跨 Zone 重启保留，固定参数的话第一次就会命中上一轮的结果。
+- `get_run_output` 的 `delivery.artifacts` 含 `pdf_obj_id`、无 `hold_error`；请求者经
+  `/ndm/proxy/v1/read/object/open` 读到的内容以 `%PDF-` 开头（存到报告目录的 `page.pdf`，可用 `pdftotext` 人工核对中文）。
+- 相同输入再跑一次：`capabilities` 为 `executed`，`page_to_pdf` 为 `cache`，输出相同。
+- 输入只带 `url`：`invalid_input`（网址不是这条管线的输入）。
+- 第二主体拿第一主体的 `obj_id` 调 `create_run media.page` 被输入授权拒绝；读第一主体那次 Run 的输出也被拒。
+  没有第二主体时，前几项验证完后记 Blocked。
+
 ## 建议执行顺序
 
 1. **WF-DV-001**：主路径，先打通 submit→start→人工 RPC→并行→完成的整条流。
@@ -609,12 +630,13 @@ LibreOffice 每次转出的 PDF 字节不同（`CreationDate`、`/ID`、`DocChec
 6. **WF-DV-008**：失败 / 重试 / 人工接管。
 7. **WF-DV-005**：语义链接编译保留 + 执行降级。
 8. **WF-DV-004**：标 Blocked，等 appservice adapter 注册后启用。
-9. **WF-DV-012**：系统定义 / 函数 / TaskMgr 树可观察性（先于媒体用例，确认 4 条系统定义已播种）。
+9. **WF-DV-012**：系统定义 / 函数 / TaskMgr 树可观察性（先于媒体用例，确认 5 条系统定义已播种）。
 10. **WF-DV-009**：Step cache 复用（test.echo + media.image）。
 11. **WF-DV-010**：并发 ensure。
 12. **WF-DV-011**：缺工具诊断 / media.pdf。
 13. **WF-DV-013**：只读与身份校验（含一个 Blocked 子项）。
 14. **WF-DV-016**：产物交付给已授权的请求者（需要第二主体）。
+15. **WF-DV-017**：`media.page` 把 HTML 输出成 PDF（节点上要有带浏览器的 `ext-core`；未授权调用者那一项需要第二主体）。
 
 ## DV 脚本落地建议
 
@@ -634,6 +656,7 @@ test/workflow_test/
 │   ├── wf-dv-ensure-sleep.json
 │   ├── dv-image.png
 │   ├── dv-note.txt
+│   ├── dv-page.html
 │   └── dv-doc.pdf
 └── testcases.md
 ```

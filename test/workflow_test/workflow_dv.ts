@@ -141,6 +141,7 @@ const DEFAULT_CASES = [
   "WF-DV-014",
   "WF-DV-015",
   "WF-DV-016",
+  "WF-DV-017",
 ];
 const WORKFLOW_DV_CASES = getEnv("WORKFLOW_DV_CASES");
 const WORKFLOW_REPORT_DIR = getEnv("WORKFLOW_REPORT_DIR") ??
@@ -155,6 +156,7 @@ const SYSTEM_DEFINITION_IDS = [
   "media.pdf",
   "media.video",
   "media.document",
+  "media.page",
 ];
 const POPPLER_TOOLS = ["pdfinfo", "pdftotext", "pdftoppm"];
 const TERMINAL_STATUSES = ["completed", "failed", "aborted", "budget_exhausted"];
@@ -1140,6 +1142,92 @@ async function runDocumentCacheCase(args: {
 }
 
 /**
+ * media.page: an HTML object becomes a PDF its requester can read; the same
+ * page again comes from the step cache; a principal who cannot read the page
+ * gets nothing rendered.
+ */
+async function runPageRenderCase(args: {
+  workflowRpc: RpcClient;
+  runTag: string;
+  reportDir: string;
+  page: UploadedInput;
+  zoneHost: string;
+  sessionToken: string;
+}): Promise<void> {
+  const { workflowRpc, runTag, reportDir, page, zoneHost, sessionToken } = args;
+  const caps = await rpcOk<{ environment: { missing?: string[] } }>(workflowRpc, "get_capabilities", {});
+  // The step cache outlives a Zone restart: a margin of this round makes the first run really render.
+  const margin = 5 + (parseInt(runTag.slice(-6), 36) % 300) / 10;
+  const input: JsonObject = { obj_id: page.obj_id, paper: "A4", margin_mm: margin };
+  const first = await createSystemRun(workflowRpc, "media.page", input);
+  const doneA = await waitTerminal(workflowRpc, first.run_id, "media.page run A");
+  await writeJsonFile(joinPath(reportDir, "run-a.json"), doneA.graph);
+  if ((caps.environment.missing ?? []).includes("page-render")) {
+    assert.equal(doneA.graph.status, "failed");
+    assert.equal(doneA.graph.node_errors?.page_to_pdf?.code, "tools_missing");
+    throw new BlockedError(
+      "this node has no page-render (its ext-core carries no browser): media.page fails with tools_missing",
+    );
+  }
+  assert.equal(doneA.graph.status, "completed", JSON.stringify(doneA.graph.node_errors));
+  assert.equal(doneA.graph.node_sources?.page_to_pdf, "executed");
+  assert.equal(doneA.graph.node_states.page_snapshot, "pending", "only the asked output is rendered");
+  const pdfA = doneA.graph.output?.page_to_pdf as JsonObject;
+  assert.equal(pdfA.pages, 3, `one page per section, got ${pdfA.pages}`);
+  const pdfObjId = String(pdfA.pdf_obj_id);
+  const results: Record<string, unknown> = { margin_mm: margin, pdf: pdfA };
+
+  // The requester reads the PDF by the path Agents read.
+  const delivered = await rpcOk<{ delivery: { artifacts: string[]; held: number; hold_error?: string | null } }>(
+    workflowRpc,
+    "get_run_output",
+    { run_id: first.run_id },
+  );
+  assert.equal(delivered.delivery.hold_error ?? null, null, "the grant succeeded");
+  assert.ok(delivered.delivery.artifacts.includes(pdfObjId), JSON.stringify(delivered.delivery));
+  const opened = await fetch(`https://${zoneHost}/ndm/proxy/v1/read/object/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
+    body: JSON.stringify({ obj_id: pdfObjId }),
+  });
+  assert.equal(opened.status, 200, "the requester opens the PDF");
+  const pdfBytes = new Uint8Array(await opened.arrayBuffer());
+  assert.equal(new TextDecoder().decode(pdfBytes.slice(0, 5)), "%PDF-", "the artifact is a PDF");
+  await Deno.writeFile(joinPath(reportDir, "page.pdf"), pdfBytes);
+  results.pdf_bytes = pdfBytes.byteLength;
+
+  // Same page, same paper: served from the step cache.
+  const second = await createSystemRun(workflowRpc, "media.page", input);
+  const doneB = await waitTerminal(workflowRpc, second.run_id, "media.page run B");
+  await writeJsonFile(joinPath(reportDir, "run-b.json"), doneB.graph);
+  assert.equal(doneB.graph.status, "completed", JSON.stringify(doneB.graph.node_errors));
+  assert.equal(doneB.graph.node_sources?.capabilities, "executed");
+  assert.equal(doneB.graph.node_sources?.page_to_pdf, "cache", "the second run comes from the cache");
+  assert.deepEqual(doneB.graph.output?.page_to_pdf, pdfA);
+
+  // A page comes in as an object; an address is not an input.
+  results.url_input = await expectRejected(workflowRpc, "create_run", {
+    workflow_id: "media.page",
+    input: { url: "https://example.com/" },
+  }, ["invalid_input"]);
+
+  // Knowing an obj_id is not a read right: another principal gets nothing rendered.
+  const other = await secondPrincipal(zoneHost);
+  if (!other) {
+    await writeJsonFile(joinPath(reportDir, "results.json"), results);
+    throw new BlockedError(
+      `rendering and cache verified (${JSON.stringify(results)}); the unauthorized caller needs WORKFLOW_DV_SECOND_USER=user:password`,
+    );
+  }
+  results.foreign_input_obj_id = await expectRejected(other.rpc, "create_run", {
+    workflow_id: "media.page",
+    input: { obj_id: page.obj_id, paper: "A4", margin_mm: margin },
+  }, ["rpc_error"]);
+  results.foreign_output = await expectRejected(other.rpc, "get_run_output", { run_id: first.run_id }, ["rpc_error"]);
+  await writeJsonFile(joinPath(reportDir, "results.json"), results);
+}
+
+/**
  * media.video reads its input through `/ndn/` with a read token bound to one key,
  * not a temp copy (bucket design §21 N17): the token and key records prove which path
  * ran, and both are gone when the step ends.
@@ -1401,7 +1489,7 @@ async function runObservabilityCase(args: {
     prefix: "media.",
   });
   const names = functions.functions.map((f) => (f.registration as JsonObject).name).sort();
-  assert.equal(names.length, 10, `10 media functions, got ${names.join(",")}`);
+  assert.equal(names.length, 12, `12 media functions, got ${names.join(",")}`);
   const probe = await rpcOk<{ ok: true; function: JsonObject }>(workflowRpc, "get_function", {
     name: "media.probe",
     version: "1",
@@ -1772,11 +1860,12 @@ type DvInputs = {
   pdf: () => Promise<UploadedInput>;
   video: () => Promise<UploadedInput>;
   note: () => Promise<UploadedInput>;
+  page: () => Promise<UploadedInput>;
 };
 
 function lazyInputs(zoneHost: string, sessionToken: string, runTag: string): DvInputs {
-  const cache: Partial<Record<"image" | "pdf" | "video" | "note", Promise<UploadedInput>>> = {};
-  const get = (key: "image" | "pdf" | "video" | "note", fixture: string) => () => {
+  const cache: Partial<Record<"image" | "pdf" | "video" | "note" | "page", Promise<UploadedInput>>> = {};
+  const get = (key: "image" | "pdf" | "video" | "note" | "page", fixture: string) => () => {
     cache[key] ??= uploadInput(zoneHost, sessionToken, runTag, fixture);
     return cache[key]!;
   };
@@ -1785,6 +1874,7 @@ function lazyInputs(zoneHost: string, sessionToken: string, runTag: string): DvI
     pdf: get("pdf", "dv-doc.pdf"),
     video: get("video", "dv-video.mp4"),
     note: get("note", "dv-note.txt"),
+    page: get("page", "dv-page.html"),
   };
 }
 
@@ -1798,8 +1888,9 @@ async function runOneCase(args: {
   reportRoot: string;
   inputs: DvInputs;
   zoneHost: string;
+  sessionToken: string;
 }): Promise<CaseResult> {
-  const { caseId, workflowRpc, taskMgrRpc, bucketRpc, owner, runTag, reportRoot, inputs, zoneHost } = args;
+  const { caseId, workflowRpc, taskMgrRpc, bucketRpc, owner, runTag, reportRoot, inputs, zoneHost, sessionToken } = args;
   const reportDir = joinPath(reportRoot, safeFileSegment(caseId));
   await Deno.mkdir(reportDir, { recursive: true });
   try {
@@ -1897,6 +1988,15 @@ async function runOneCase(args: {
         image: await inputs.image(),
         zoneHost,
       });
+    } else if (caseId === "WF-DV-017") {
+      await runPageRenderCase({
+        workflowRpc,
+        runTag,
+        reportDir,
+        page: await inputs.page(),
+        zoneHost,
+        sessionToken,
+      });
     } else {
       throw new Error(`unknown workflow DV case ${caseId}`);
     }
@@ -1961,6 +2061,7 @@ async function main(): Promise<void> {
       reportRoot,
       inputs,
       zoneHost,
+      sessionToken,
     });
     results.push(result);
     if (result.status === "passed") {

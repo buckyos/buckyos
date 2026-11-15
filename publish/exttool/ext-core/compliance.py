@@ -311,7 +311,7 @@ def first_party_notices(payload: Path) -> None:
         shutil.copy2(REPOSITORY_ROOT / name, first_party / name)
     (first_party / "README.txt").write_text(
         "The included AGPL-3.0-only license and BuckyOS notices apply to BuckyOS-authored "
-        "launchers, smoke tests, Windows shims, and build/packaging scripts. "
+        "launchers, smoke tests, Windows shims, browser commands (agent-browser, page-render), and build/packaging scripts. "
         "Third-party tools, libraries, fonts, and their source files retain their own licenses; "
         "they are not relicensed by this notice. The matching source archive includes the BuckyOS scripts.\n"
     )
@@ -521,7 +521,7 @@ def finalize(payload: Path, source_root: Path, platform: str, version: str, dist
         shutil.copy2(source, target)
     for source in [*HERE.glob("*.json"), *HERE.glob("*.md")]:
         shutil.copy2(source, source_root / "buckyos-build" / source.name)
-    for name in ("smoke", "windows"):
+    for name in ("smoke", "windows", "browser"):
         copy_tree(HERE / name, source_root / "buckyos-build" / name)
     for name in ("LICENSE", "NOTICE"):
         shutil.copy2(REPOSITORY_ROOT / name, source_root / "buckyos-build" / name)
@@ -569,7 +569,7 @@ def finalize(payload: Path, source_root: Path, platform: str, version: str, dist
     (licenses / "SOURCE_CODE.md").write_text(
         f"# Source code for ext-core {version} ({platform})\n\n"
         "These tools retain their individual licenses. BuckyOS's repository license does not replace them.\n\n"
-        "Only the BuckyOS-authored launchers, smoke tests, Windows shims, and packaging scripts are AGPL-3.0-only; "
+        "Only the BuckyOS-authored launchers, smoke tests, Windows shims, browser commands, and packaging scripts are AGPL-3.0-only; "
         "their license and copyright notices are in `buckyos-packaging/`.\n\n"
         f"The matching source archive is `{filename}` (SHA256 `{digest}`). It must be offered alongside this payload, "
         "at the same download location and without an extra charge. The release manifest records its URL/path and digest. "

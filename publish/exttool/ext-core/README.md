@@ -2,7 +2,8 @@
 
 The payload contains separately licensed third-party programs. The BuckyOS
 repository license does not replace any tool's license. BuckyOS-authored
-launchers, smoke tests, Windows shims, and packaging scripts use AGPL-3.0-only;
+launchers, smoke tests, Windows shims, browser commands (`browser/`), and
+packaging scripts use AGPL-3.0-only;
 their LICENSE and NOTICE are retained under `LICENSES/buckyos-packaging/`.
 A publishable payload
 must be accompanied by its matching corresponding-source archive.
@@ -52,14 +53,18 @@ closure: explicit unresolved requirements block finalization and publishing.
 
 Current release blockers are recorded in each official component's
 `unresolved_source_requirements`, rather than silently ignored. In particular,
-Pandoc's exact binary-specific Haskell dependency/build plan must be obtained;
+Pandoc's exact binary-specific Haskell dependency/build plan must be obtained,
+and Chrome for Testing bundles the closed-source Widevine CDM, whose license
+forbids distribution without an agreement with Google (see
+`OFFICIAL_SOURCES.md`);
 the manifest records the current status of every other component separately.
 A project source tarball alone is insufficient to clear these entries. Do not
 remove a blocker merely because a source download succeeded.
 
 The current release decision is to retain the official binaries and block
 distribution while their required corresponding source remains incomplete.
-Therefore a current Pandoc build is expected to stop at finalization; this is
+Therefore a current build is expected to stop at finalization, with the payload
+complete in `payload/<platform>/` but without its source manifest; this is
 not a reason to substitute another binary or bypass the checks. The collected
 materials remain in the source staging directory, with a `collection-report.json`
 explaining the blocker. They are review material, not a publishable source

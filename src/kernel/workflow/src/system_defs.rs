@@ -1,4 +1,4 @@
-//! System built-in definitions (TODO T1a / T3): the four `media.*`
+//! System built-in definitions (TODO T1a / T3): the `media.*`
 //! pipelines ship with the service, are seeded at startup, carry
 //! `source: system`, are read-only, and bind every `/tool/` link to a real
 //! FunctionObject before the service accepts requests.
@@ -16,12 +16,14 @@ pub const MEDIA_IMAGE_JSON: &str = include_str!("../defs/media.image.json");
 pub const MEDIA_PDF_JSON: &str = include_str!("../defs/media.pdf.json");
 pub const MEDIA_VIDEO_JSON: &str = include_str!("../defs/media.video.json");
 pub const MEDIA_DOCUMENT_JSON: &str = include_str!("../defs/media.document.json");
+pub const MEDIA_PAGE_JSON: &str = include_str!("../defs/media.page.json");
 
-pub const SYSTEM_DEFINITIONS: [&str; 4] = [
+pub const SYSTEM_DEFINITIONS: [&str; 5] = [
     MEDIA_IMAGE_JSON,
     MEDIA_PDF_JSON,
     MEDIA_VIDEO_JSON,
     MEDIA_DOCUMENT_JSON,
+    MEDIA_PAGE_JSON,
 ];
 
 /// Media definitions must satisfy the static constraints of TODO T1e before

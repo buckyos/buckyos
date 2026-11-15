@@ -15,8 +15,9 @@
 #
 # Needs: bash, curl, python3, tar (with xz), unzip, and micromamba (MICROMAMBA, or the one this script downloads).
 # darwin-* builds on a Mac: writing the install prefix into a Mach-O breaks its signature, and only macOS can sign it
-# again; LibreOffice comes out of its dmg with hdiutil. linux-* builds anywhere. windows-* builds on Windows (msiexec /a
-# unpacks LibreOffice's msi) or anywhere with msiextract (msitools).
+# again; LibreOffice comes out of its dmg with hdiutil and Chrome for Testing's app bundle out of its zip with ditto.
+# linux-* builds anywhere. windows-* builds on Windows (msiexec /a unpacks LibreOffice's msi) or anywhere with msiextract
+# (msitools).
 set -euo pipefail
 
 PANDOC_VERSION=3.12.1
@@ -33,6 +34,9 @@ MICROMAMBA_VERSION=2.10.0-0
 LIBREOFFICE_VERSION=26.8.2
 NOTO_SANS_CJK_TAG=Sans2.004
 NOTO_SERIF_CJK_TAG=Serif2.003
+PLAYWRIGHT_VERSION=1.65.1
+CHROMIUM_VERSION=159.0.8154.6
+CHROMIUM_REVISION=1255
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 manifest="$here/ext-manifest.json"
@@ -95,6 +99,17 @@ conda_platform() {
     darwin-arm64) echo osx-arm64 ;;
     darwin-x86_64) echo osx-64 ;;
     windows-x86_64) echo win-64 ;;
+  esac
+}
+
+# Chrome for Testing's name of a platform: its download directory, and chrome-<name>/ inside the archive.
+cft_platform() {
+  case "$1" in
+    linux-x86_64) echo linux64 ;;
+    linux-aarch64) echo linux-arm64 ;;
+    darwin-arm64) echo mac-arm64 ;;
+    darwin-x86_64) echo mac-x64 ;;
+    windows-x86_64) echo win64 ;;
   esac
 }
 
@@ -208,7 +223,7 @@ lib = top / "lib"
 if lib.is_dir():
     for path in list(lib.rglob("*.a")) + list(lib.rglob("*.la")) + list(lib.rglob("*.lib")) + list(lib.glob("openvino-*")):
         rm(path)
-    for pattern in ["libgtk-3*", "libgdk-3*", "libgailutil-3*", "libatk-*", "libatk-bridge-*", "libatspi*", "libepoxy*", "libopenvino_*frontend*", "libopenvino_*plugin*", "perl5"]:
+    for pattern in ["libgtk-3*", "libgdk-3*", "libgailutil-3*", "libepoxy*", "libopenvino_*frontend*", "libopenvino_*plugin*", "perl5"]:
         for path in lib.glob(pattern):
             rm(path)
 git_core = top / "libexec" / "git-core"
@@ -455,10 +470,12 @@ PY
       mv "$tmp/root/opt/libreoffice${LIBREOFFICE_VERSION%.*}" "$lo"
       fonts="$lo/share/fonts/truetype"
       # Text that names no language falls back to the Simplified Chinese faces, not to whichever face comes first.
+      # LibreOffice's font directory, Noto CJK included, is the prefix's too: Chromium has no other fonts.
       cat > "$store/conda/etc/fonts/conf.d/64-ext-core-cjk.conf" <<'XML'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
+  <dir prefix="relative">../../../../libreoffice/share/fonts/truetype</dir>
   <alias><family>sans-serif</family><prefer><family>Noto Sans CJK SC</family></prefer></alias>
   <alias><family>serif</family><prefer><family>Noto Serif CJK SC</family></prefer></alias>
   <alias><family>monospace</family><prefer><family>Noto Sans CJK SC</family></prefer></alias>
@@ -574,6 +591,77 @@ assert_soffice_loads() {
   fi
 }
 
+# Chrome for Testing, the build playwright-core $PLAYWRIGHT_VERSION drives (revision $CHROMIUM_REVISION in its
+# browsers.json), laid out as a Playwright browser directory: PLAYWRIGHT_BROWSERS_PATH is store/ext-core/chromium. The full
+# build only, no headless shell, so a test says channel: 'chromium'. On Linux its system libraries and fonts are the
+# prefix's (conda-env.yml). Playwright runs chrome-linux*/chrome itself, not a launcher of bin/: that name is a script
+# which sets the two up, and the binary is chrome-bin next to it. fonts.conf includes conf.d by a relative name, which
+# fontconfig looks up in FONTCONFIG_PATH: without it that is where the prefix was built, and conf.d is not read.
+install_chromium() {
+  local platform="$2" store="$1/store/ext-core" cft dir file
+  cft="$(cft_platform "$platform")"
+  dir="$store/chromium/chromium-$CHROMIUM_REVISION"
+  file="$(fetch "https://storage.googleapis.com/chrome-for-testing-public/$CHROMIUM_VERSION/$cft/chrome-$cft.zip" "chrome-for-testing-$CHROMIUM_VERSION-$cft.zip")"
+  rm -rf "$store/chromium"
+  mkdir -p "$dir"
+  case "$platform" in
+    darwin-*)
+      # ditto unpacks the app bundle as it was packed: its symlinks, modes and extended attributes.
+      command -v ditto >/dev/null 2>&1 || { echo "[ext-core] $platform: Chrome for Testing's app bundle needs ditto (build on a Mac)" >&2; exit 1; }
+      ditto -x -k "$file" "$dir" ;;
+    *) unzip -q -o "$file" -d "$dir" ;;
+  esac
+  : > "$dir/INSTALLATION_COMPLETE"
+  : > "$dir/DEPENDENCIES_VALIDATED"
+  case "$platform" in
+    linux-*)
+      mv "$dir/chrome-$cft/chrome" "$dir/chrome-$cft/chrome-bin"
+      cat > "$dir/chrome-$cft/chrome" <<'SH'
+#!/bin/sh
+p="$0"
+while [ -h "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="${p%/*}/$l" ;; esac; done
+here="$(cd "${p%/*}" && pwd -P)"
+c="$here/../../../conda"
+export LD_LIBRARY_PATH="$c/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+[ -n "${FONTCONFIG_FILE:-}${FONTCONFIG_PATH:-}" ] || export FONTCONFIG_FILE="$c/etc/fonts/fonts.conf" FONTCONFIG_PATH="$c/etc/fonts"
+exec "$here/chrome-bin" "$@"
+SH
+      chmod 755 "$dir/chrome-$cft/chrome"
+      assert_chromium_loads "$store" "$dir/chrome-$cft" "$platform"
+      ;;
+  esac
+}
+
+# The official Linux build takes X11, NSS, glib, cairo, pango, cups, dbus, alsa, atk, at-spi and gbm from the system: here
+# they are the prefix's. Nothing it loads may be missing from the payload, save glibc.
+assert_chromium_loads() {
+  local store="$1" dir="$2" platform="$3" missing
+  case "$platform:$(uname -s)-$(uname -m)" in
+    linux-x86_64:Linux-x86_64|linux-aarch64:Linux-aarch64) ;;
+    *) return 0 ;;
+  esac
+  missing="$(for file in "$dir"/chrome-bin "$dir"/chrome_crashpad_handler "$dir"/*.so*; do
+    [ -f "$file" ] && LD_LIBRARY_PATH="$store/conda/lib" ldd "$file" 2>/dev/null | grep 'not found' | sed "s|^|$(basename "$file"): |"
+  done | sort -u || true)"
+  if [ -n "$missing" ]; then
+    echo "[ext-core] Chromium loads what the payload does not have:" >&2
+    echo "$missing" >&2
+    exit 1
+  fi
+}
+
+# playwright-core of the version this Chromium belongs to, as a node_modules directory, and on top of the two our own
+# agent-browser and page-render (the modules of browser/, not their tests) with the versions they were packed with.
+install_playwright() {
+  local store="$1/store/ext-core" file
+  file="$(fetch "https://registry.npmjs.org/playwright-core/-/playwright-core-$PLAYWRIGHT_VERSION.tgz")"
+  rm -rf "$store/playwright" "$store/browser"
+  mkdir -p "$store/playwright/node_modules/playwright-core" "$store/browser"
+  tar -xzf "$file" -C "$store/playwright/node_modules/playwright-core" --strip-components=1
+  cp "$here"/browser/*.mjs "$store/browser/"
+  printf '{"playwright": "%s", "chromium": "%s", "revision": "%s"}\n' "$PLAYWRIGHT_VERSION" "$CHROMIUM_VERSION" "$CHROMIUM_REVISION" > "$store/browser/versions.json"
+}
+
 unix_launchers() {
   local p="$1" platform="$2"
   unix_env_files "$p"
@@ -596,6 +684,12 @@ unix_launchers() {
     darwin-*) unix_launcher "$p" soffice "\"\$s/libreoffice/LibreOffice.app/Contents/MacOS/soffice\"" ;;
     *) unix_launcher "$p" soffice "\"\$s/libreoffice/program/soffice\"" soffice.sh ;;
   esac
+  local chrome="\$s/chromium/chromium-$CHROMIUM_REVISION/chrome-$(cft_platform "$platform")"
+  case "$platform" in
+    darwin-*) unix_launcher "$p" chromium "\"$chrome/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing\"" ;;
+    *) unix_launcher "$p" chromium "\"$chrome/chrome\"" ;;
+  esac
+  for c in agent-browser page-render; do unix_launcher "$p" "$c" "\"\$s/node/bin/node\" \"\$s/browser/$c.mjs\""; done
 }
 
 windows_launchers() {
@@ -622,6 +716,9 @@ windows_launchers() {
   windows_launcher "$p" tree '"%S%\python\python.exe" "%S%\tree\tree.py"'
   windows_launcher "$p" unzip '"%S%\busybox\busybox.exe" unzip'
   windows_launcher "$p" soffice '"%S%\libreoffice\program\soffice.com"'
+  # chrome.exe is a GUI program and does not answer --version on a console: the launcher does.
+  windows_launcher "$p" chromium "\"%S%\\chromium\\chromium-$CHROMIUM_REVISION\\chrome-win64\\chrome.exe\"" 'if "%~1"=="--version" (echo Google Chrome for Testing '"$CHROMIUM_VERSION"'& exit /b 0)\r\n'
+  for c in agent-browser page-render; do windows_launcher "$p" "$c" "\"%S%\\node\\node.exe\" \"%S%\\browser\\$c.mjs\""; done
 }
 
 for platform in "${platforms[@]}"; do
@@ -637,6 +734,8 @@ for platform in "${platforms[@]}"; do
   install_conda "$payload" "$platform"
   install_official "$payload" "$platform"
   install_soffice "$payload" "$platform"
+  install_chromium "$payload" "$platform"
+  install_playwright "$payload"
   "$python_bin" "$here/official_sources.py" --payload "$payload" --source-root "$source_out/$platform" \
     --platform "$platform" --cache "$cache/corresponding-source"
   case "$platform" in

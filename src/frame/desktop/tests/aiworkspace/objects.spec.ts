@@ -28,6 +28,14 @@ async function hover(page: Page, blockId: string) {
   await page.mouse.move(c.x, c.y)
 }
 
+/** Hover a wish's card on its title row: its request field (most of an editable card) is a field, which no Block's hover
+ * covers. */
+async function hoverWish(page: Page) {
+  const title = (await wishCard(page, 'wish-analysis').getByTestId('aiws-wish-title').boundingBox())!
+  await page.mouse.move(title.x + 5, title.y + title.height / 2 - 2)
+  await page.mouse.move(title.x + 10, title.y + title.height / 2)
+}
+
 test('OX01/OX02/OX06 resting objects draw no host frame; hover shows the outline and affordances; selection shows round handles', async ({ page, api }) => {
   const ws = await objectsWorkspace(api, `ox01 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
@@ -50,9 +58,11 @@ test('OX01/OX02/OX06 resting objects draw no host frame; hover shows the outline
   await shot(page, 'ox02-hover-table')
   await page.mouse.move(5, 500)
   await expect(page.getByTestId('aiws-afford-name')).toHaveCount(0)
-  await hover(page, 'blk-wish')
-  await expect(page.getByTestId('aiws-afford-wish-run')).toBeVisible()
-  await expect(page.getByTestId('aiws-afford-open')).toBeVisible()
+  // a wish: its name; its card carries its own buttons, nothing floats over it (许愿格交互升级 §3.6)
+  await hoverWish(page)
+  await expect(page.getByTestId('aiws-afford-name')).toBeVisible()
+  await expect(page.getByTestId('aiws-afford-wish-run')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-afford-open')).toHaveCount(0)
   await shot(page, 'ox02-hover-wish')
   await hover(page, 'blk-note')
   await expect(page.getByTestId('aiws-afford-reply')).toBeVisible()
@@ -85,7 +95,7 @@ test('OX01 dark theme: resting, hovered and selected objects read on the dark ca
   await expect(page.getByTestId('aiws-canvas-block-blk-note')).toBeVisible()
   await page.mouse.move(5, 500)
   await shot(page, 'ox01-rest-dark')
-  await hover(page, 'blk-wish')
+  await hoverWish(page)
   await expect(page.getByTestId('aiws-afford-name')).toBeVisible()
   await shot(page, 'ox02-hover-wish-dark')
   await page.getByTestId('aiws-canvas-block-blk-note').click()
@@ -439,13 +449,14 @@ test.describe('OX15 a tablet (touch, not a phone)', () => {
     await openCanvas(page, ALICE, ws.workspace_id)
     await fitAll(page)
     await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-pointer', 'touch')
-    const c = await blockCenter(page, 'blk-wish')
-    await page.touchscreen.tap(c.x, c.y)
+    // (on its title: the card's request field, tabs and buttons take a tap themselves)
+    const title = (await wishCard(page, 'wish-analysis').getByTestId('aiws-wish-title').boundingBox())!
+    await page.touchscreen.tap(title.x + 10, title.y + title.height / 2)
     await expect(page.getByTestId('aiws-selection-blk-wish')).toBeVisible()
     await expect(page.getByTestId('aiws-handle-se')).toHaveAttribute('r', '7')
     await expect(page.locator('.aiws-handle-hit').first()).toHaveAttribute('r', '22')
     // no hover on touch: the affordances come with the selection
-    await expect(page.getByTestId('aiws-afford-wish-run')).toBeVisible()
+    await expect(page.getByTestId('aiws-afford-name')).toBeVisible()
     await expect(page.getByTestId('aiws-rotate-handle')).toHaveCSS('width', '36px')
     await shot(page, 'ox15-tablet-selected')
   })

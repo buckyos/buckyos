@@ -3,7 +3,7 @@ import { BACKEND_FIXTURE, BUNDLED_FIXTURE, VECTORS_PATH, expect, expectAllCommit
 
 const ALICE = 'tok-alice'
 
-test('(a) the app opens from the desktop shell, creates the sample and shows its 13 entities', async ({ page, api }) => {
+test('(a) the app opens from the desktop shell, creates the sample and shows its entities', async ({ page, api }) => {
   // the bundled fixture is the backend's fixture, byte for byte
   expect(readFileSync(BUNDLED_FIXTURE, 'utf8')).toBe(readFileSync(BACKEND_FIXTURE, 'utf8'))
 
@@ -25,13 +25,16 @@ test('(a) the app opens from the desktop shell, creates the sample and shows its
   await expect(items).toHaveCount(6)
   const ids = await items.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-entity-id')))
   expect([...ids].sort()).toEqual(['canvas-content', 'diagram', 'notes', 'project-info', 'task-42-details', 'tasks'].sort())
-  // the outline has the 18 entities: root, the four system nodes, the Surface with its content folder, and the 11 of §3.8
-  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: workspaceId })).entities).toHaveLength(18)
+  // the outline has the 20 entities: root, the four system nodes, the Surface with its content folder, the 11 of §3.8,
+  // and the template's "任务汇总" wish with its Block (许愿格交互升级 §3.10 D)
+  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: workspaceId })).entities).toHaveLength(20)
   await page.getByTestId('aiws-top-canvas').click()
 
   // the flow Surface shows cells in (order_key, entity_id) order; content entities are not on the page
   const frames = await page.locator('[data-testid^="aiws-cell-frame-"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id')))
-  expect(frames).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
+  expect(frames).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-task-summary', 'cell-info', 'cell-diagram'])
+  // the wish is its card on the flow page, nothing run yet
+  await expect(page.getByTestId('aiws-wish-card-wish-task-summary')).toHaveAttribute('data-next', 'analyze')
 
   // every built-in object renders from the real backend
   await expect(page.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-row')).toHaveCount(5)

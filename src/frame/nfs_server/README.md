@@ -214,9 +214,11 @@ manifest 可带 `auto_bind: { bucket_id, key, content_type?, metadata?, tags?, e
 
 - S3 兼容面：`/s3/*`（网关 `/s3/*` 转发）与 `s3.<zone>` 的所有路径（scheduler 的 APP_INFO `s3` 项），路径风格、region `us-east-1`；协议在 cyfs-ndn `s3_gateway`，本服务只回答密钥对应的 (user, app) 与它的 RBAC（`runtime.enforce_principal`，无会话 token）。密钥用 kRPC `bucket.create_s3_key {appid, scope?, expires_at?}` / `bucket.list_s3_keys` / `bucket.revoke_s3_key` 管理，只接受用户本人从系统 UI 来的会话；桶名是 `<appid>-<name>`。
 
+- 重排页（`src/bucket/reflow.rs`，[Agent Browser Protocol](../../../doc/opendan/protocol/Agent%20Browser%20Protocol.md) §5.4）：`reflow.<zone>` 的所有路径（scheduler 的 APP_INFO `reflow` 项），只有 `GET` / `HEAD`。路径就是登录用户的桶 `user/control-panel/<user>/reflow` 里的 key，目录补 `index.html`，`/<site>` 回 307 到 `/<site>/`。这是 D24 的例外：响应保留存进桶时声明的类型（没有或是 `application/octet-stream` 时按扩展名），不带 `Content-Disposition` 和 CSP，仍带 `nosniff`、`no-referrer`，页面在这个源上运行。用户来自这个主机上的会话：Desktop 用 `auth.prepare_app_launch { service_id: "nfs-server" }` 委派、经 `/sso_callback` 种下的用户会话（目标 `System(nfs-server)`），cookie 或 Bearer 都认；别的会话一律 401。读取不走第一层 RBAC，由本路由按会话的用户定桶。反过来，这种会话只用来打开重排页：文件平面、桶（kRPC 与 `/bucket/v1`）、NDM 都不接受它（`auth::is_page_session`，Bearer 被拒、cookie 按匿名）。独立模式没有 Zone 主机名，这条路由不生效。
+
 - Files 投影（设计 §4.5.4，`src/bucket/projection.rs`）：用户 `documents` 档的 `data` 桶只读投影到 `cyfs:///home/<user>/Apps/<App 显示名>/<桶名>/<key 按 / 展开>`，`collected` 档到 `Collected/`；本地真实目录同名时真实目录优先。App 显示名取 spec 的 `app_doc.show_name` / `service_doc.show_name`（独立模式取 `--bucket-specs` 的 `show_name`），重名追加 ` (<appid>)`，App 全部桶都是孤儿时目录名加 `（已卸载）`（部分桶孤儿时加在桶目录上）；key `a` 与前缀 `a/` 并存时文件显示为 `a~file`。节点 ref 为 `bk_<base64url(home 下路径)>`、条目 `binding: "projection"`、`flags: ["read_only"]`、没有 `copy_ref`；文件的 `access_urls.read` 是 `/bucket/v1/<bucket_id>/<key>`。可写操作只有 `delete`：删文件 = 解绑该 key，删前缀目录要 `recursive: true`（解绑其下所有 key），桶与 App 目录不能从 Files 删除；权限按 home 的 NFS ACL（本人 Manage）。不提供：投影内新建/写入/移动/复制（复制走 `read` URL 下载）、目录变化的 watch 推送（revision 随桶的 key 数与版本数变化）。
 
-回归：`cargo test -p nfs_server --test bucket --test projection`；lib 单测 `cargo test -p bucket_store -p s3_gateway`（cyfs-ndn）。
+回归：`cargo test -p nfs_server --test bucket --test projection --test reflow`；lib 单测 `cargo test -p bucket_store -p s3_gateway`（cyfs-ndn）。`--test reflow` 里有一条默认跳过的用例，用真实的 `reflow` 命令（Deno 加构建好的 SDK）写库再从 `reflow.<zone>` 读：`cargo test -p nfs_server --test reflow -- --ignored`。
 
 ## 预览管线(repr)
 

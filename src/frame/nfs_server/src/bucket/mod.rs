@@ -7,6 +7,7 @@
 
 pub mod http;
 pub mod projection;
+pub mod reflow;
 pub mod rpc;
 pub mod s3;
 pub mod spec;
@@ -198,6 +199,9 @@ pub async fn session_of(state: &AppState, token: Option<&str>) -> BucketResult<S
     let claims = buckyos_api::verify_nfs_session_token(token, test_key.as_deref())
         .await
         .map_err(|e| BucketError::PermissionDenied(format!("invalid session token: {e}")))?;
+    if crate::auth::is_page_session(&claims) {
+        return Err(BucketError::PermissionDenied("this session only opens reflow pages".into()));
+    }
     Ok(match claims.principal_kind {
         TokenPrincipalKind::User | TokenPrincipalKind::App => Session::User {
             user: claims.subject,

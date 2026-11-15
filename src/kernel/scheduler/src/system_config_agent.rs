@@ -33,6 +33,8 @@ const SYSTEM_CONFIG_SERVICE_PORT: u16 = 3200;
 const FIXED_SERVICE_WEIGHT: u32 = 100;
 const DEFAULT_REQUIRED_CPU_MHZ: u32 = 50;
 const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
+/// `<host>.<zone>` origins nfs-server serves by itself; each is a reserved host name.
+pub(crate) const NFS_SERVER_HOSTS: [&str; 3] = ["share", "s3", "reflow"];
 
 /// Account records with an unknown `type` join no group: they are skipped
 /// with a warning instead of falling back to an ordinary user.
@@ -1238,8 +1240,9 @@ pub(crate) async fn update_node_gateway_info(
                 // `share.<zone>/s/{token}`: share links served by nfs-server (its own
                 // origin, apart from the Desktop), see notepads/done/share-content-mgr-tech-design-todo.md.
                 // `s3.<zone>`: the S3 compatible endpoint of application object buckets.
+                // `reflow.<zone>/<key>`: the signed-in user's reflow pages (Agent Browser Protocol §5.4).
                 if let Some(selector) = selector.as_ref() {
-                    for host in ["share", "s3"] {
+                    for host in NFS_SERVER_HOSTS {
                         node_gateway_info.app_info.insert(
                             host.to_string(),
                             NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
@@ -2115,6 +2118,7 @@ fn validate_beta22_app_state(input: &HashMap<String, String>) -> Result<()> {
         "homestation".to_string(),
         "share".to_string(),
         "s3".to_string(),
+        "reflow".to_string(),
         // every AI Workspace's own origin folds onto this entry (`aiws-<id>.<zone>`)
         "aiws".to_string(),
     ]);
@@ -2603,6 +2607,28 @@ mod beta22_state_tests {
             serde_json::to_string(&registry).unwrap(),
         )]);
         assert!(validate_beta22_app_state(&input).is_err());
+    }
+
+    #[test]
+    fn no_app_takes_a_host_name_nfs_server_serves() {
+        for host in NFS_SERVER_HOSTS {
+            let app_did = name_lib::DID::new("web", &format!("{host}.example.com"));
+            let mut registry = AppRegistry::default();
+            registry.apps.insert(
+                AppId::from_app_did(&app_did).unwrap(),
+                buckyos_api::AppAllocation {
+                    app_did,
+                    app_name: host.to_string(),
+                    allocated_at: 1,
+                },
+            );
+            let input = HashMap::from([(
+                APP_REGISTRY_KEY.to_string(),
+                serde_json::to_string(&registry).unwrap(),
+            )]);
+            let error = validate_beta22_app_state(&input).unwrap_err();
+            assert_eq!(error.to_string(), format!("reserved app_name `{host}`"));
+        }
     }
 
     #[test]

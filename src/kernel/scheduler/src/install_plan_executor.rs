@@ -182,6 +182,7 @@ fn default_reserved_hostnames(settings: &ZoneGatewaySettings) -> BTreeSet<String
         "homestation".to_string(),
         "share".to_string(),
         "s3".to_string(),
+        "reflow".to_string(),
     ]);
     reserved.extend(settings.shortcuts.keys().cloned());
     reserved
@@ -775,6 +776,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hosts_served_by_nfs_server_are_reserved() {
+        let reserved = default_reserved_hostnames(&ZoneGatewaySettings::default());
+        for host in crate::system_config_agent::NFS_SERVER_HOSTS {
+            assert!(reserved.contains(host), "{host}");
+        }
+    }
+
+    #[test]
     fn deleted_installations_allow_fresh_install_but_not_upgrade() {
         let mut spec = crate::system_config_agent::app_lifecycle_tests::app_spec();
         for state in [
@@ -1074,6 +1083,7 @@ impl SchedulerHandler for SchedulerServer {
                 "homestation".to_string(),
                 "share".to_string(),
                 "s3".to_string(),
+                "reflow".to_string(),
             ]);
             let collides = plan.target_app_instance_id.is_some()
                 && (reserved.contains(&plan.shortcut_hostname)

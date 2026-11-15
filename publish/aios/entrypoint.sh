@@ -66,6 +66,8 @@ export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-${BUCKYOS_INSTANCE_VOLUME
 export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-${BUCKYOS_INSTANCE_VOLUME}/npm-prefix}"
 # Long documents llm_understand_media unpacks for the Agent; a cache, deletable any time.
 export LLM_UNDERSTAND_MEDIA_CATALOG_DIR="${LLM_UNDERSTAND_MEDIA_CATALOG_DIR:-${BUCKYOS_INSTANCE_VOLUME}/media-catalog}"
+# The Agent's browser: its profile (the logins), cache and downloads.
+export OPENDAN_BROWSER_DIR="${OPENDAN_BROWSER_DIR:-${BUCKYOS_INSTANCE_VOLUME}/browser}"
 
 # Extension packages come before the instance/system PATH. Always named: the
 # node's reconciler may fill the volume after this container started.

@@ -21,6 +21,8 @@
 //! - `goals.*` of the facade, plus `goals.activate` / `goals.post` (a run
 //!   opportunity / a message for a Goal); a Goal changed here is reconciled
 //!   by the host right away.
+//! - `browser.*`, the screen and the upload entry of the agent's browser
+//!   ([`crate::browser`]).
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -44,6 +46,7 @@ use libopendan::{OpenDanError, SessionDir};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::browser::BrowserModule;
 use crate::home::Home;
 use crate::ui::UiModule;
 
@@ -114,6 +117,8 @@ pub struct StateService {
     pub supervisor: Arc<Supervisor>,
     pub info: Arc<LoaderInfo>,
     pub ui: Option<Arc<UiModule>>,
+    /// The agent's browser (`browser.*`, the screen, uploads).
+    pub browser: Arc<BrowserModule>,
     pub access: Access,
     pub home: Home,
     /// Session processes on other runtimes: their session tokens and
@@ -140,9 +145,14 @@ fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T
         .map_err(|e| OpenDanError::InvalidArgument(format!("param `{name}`: {e}")))
 }
 
-impl StateService {
-    async fn caller(&self, req: &RPCRequest, ip_from: IpAddr) -> Result<String, RPCErrors> {
-        match &self.access {
+impl Access {
+    /// Who calls `method` with `token` from `ip_from`, if they may: the
+    /// agent's owner (through any app) or the zone's root; an Agent's App
+    /// identity only what [`authorize_agent_method`] lets it. kRPC calls, the
+    /// screen's handshake and uploads all pass here (the latter two as the
+    /// owner-only methods `browser.screen` / `browser.upload`).
+    pub(crate) async fn caller(&self, token: Option<&str>, method: &str, ip_from: IpAddr) -> Result<String, RPCErrors> {
+        match self {
             Access::Open { who } => Ok(who.clone()),
             Access::Zone {
                 owner,
@@ -150,10 +160,10 @@ impl StateService {
                 trust_loopback,
                 ..
             } => {
-                if *trust_loopback && req.token.is_none() && ip_from.is_loopback() {
+                if *trust_loopback && token.is_none() && ip_from.is_loopback() {
                     return Ok(format!("did:bns:{owner}"));
                 }
-                let token = req.token.as_deref().ok_or_else(|| {
+                let token = token.ok_or_else(|| {
                     RPCErrors::NoPermission("a session token is required".to_string())
                 })?;
                 let runtime = buckyos_api::get_buckyos_api_runtime()?;
@@ -176,7 +186,7 @@ impl StateService {
                     };
                     let client = runtime.get_system_config_client().await?;
                     let mode = load_agent_permission_mode(client.as_ref(), app_instance_id).await?;
-                    authorize_agent_method(mode, app_instance_id, app_id, owner, &req.method)?;
+                    authorize_agent_method(mode, app_instance_id, app_id, owner, method)?;
                 }
                 Ok(match token.appid.as_deref().filter(|a| !a.is_empty()) {
                     Some(app) => format!("app:{app}@{user}"),
@@ -184,6 +194,12 @@ impl StateService {
                 })
             }
         }
+    }
+}
+
+impl StateService {
+    pub(crate) async fn caller(&self, token: Option<&str>, method: &str, ip_from: IpAddr) -> Result<String, RPCErrors> {
+        self.access.caller(token, method, ip_from).await
     }
 
     async fn read_session(&self, params: &Value) -> Result<Value, OpenDanError> {
@@ -535,6 +551,8 @@ fn authorize_agent_method(
     if is_owner_only(method) && (mode.is_some() || caller.app_id().as_str() == target_app_id) {
         return Err(RPCErrors::NoPermission(if method.starts_with("memory.") {
             format!("{method} is the owner's: an Agent does not delete what an Agent remembers (the Memory page, as the owner)")
+        } else if method.starts_with("browser.") {
+            format!("{method} is the owner's: watching an Agent's browser, taking it over and handing it back is what its user does (the Agent Browser app)")
         } else {
             format!("{method} is the owner's: an Agent does not change which skills an Agent has (the Skills page, or `buckyos skill` as the owner)")
         }));
@@ -554,8 +572,9 @@ fn authorize_agent_method(
     )))
 }
 
-/// Methods only the owner calls (never an Agent's own App identity): which skills the Agent has, and deleting what the
-/// Agent remembers (cognitions change only through consolidation; an Agent does not delete them on the owner's behalf).
+/// Methods only the owner calls (never an Agent's own App identity): which skills the Agent has, deleting what the
+/// Agent remembers (cognitions change only through consolidation; an Agent does not delete them on the owner's behalf),
+/// and the user's side of the Agent's browser (`browser.screen` is the screen's handshake, not a kRPC method).
 fn is_owner_only(method: &str) -> bool {
     matches!(
         method,
@@ -567,6 +586,15 @@ fn is_owner_only(method: &str) -> bool {
             | "skills.draft_discard"
             | "skills.crystallize_set"
             | "memory.forget"
+            | "browser.take_over"
+            | "browser.hand_back"
+            | "browser.hand_to_agent"
+            | "browser.bind_default"
+            | "browser.upload"
+            | "browser.download_export"
+            | "browser.clear_profile"
+            | "browser.reflow_action"
+            | "browser.screen"
     )
 }
 
@@ -635,6 +663,8 @@ fn is_read(method: &str) -> bool {
             | "runtimes.settings"
             | "runtimes.impact"
             | "loader.status"
+            | "browser.status"
+            | "browser.reflow_state"
     )
 }
 
@@ -662,6 +692,21 @@ fn is_operation(method: &str) -> bool {
             | "goals.activate"
             | "goals.post"
             | "memory.forget"
+            | "browser.ensure"
+            | "browser.acquire"
+            | "browser.renew"
+            | "browser.release"
+            | "browser.request_handover"
+            | "browser.take_over"
+            | "browser.hand_back"
+            | "browser.hand_to_agent"
+            | "browser.bind_default"
+            | "browser.upload"
+            | "browser.download_export"
+            | "browser.clear_profile"
+            | "browser.reflow_refresh"
+            | "browser.reflow_action"
+            | "browser.screen"
     )
 }
 
@@ -695,9 +740,16 @@ impl RPCHandler for StateService {
         if let Some(token) = req.token.as_deref().filter(|t| is_session_token(t)) {
             return self.session_call(&req, token).await;
         }
-        let who = self.caller(&req, ip_from).await?;
-        if is_write(&req.method) || is_operation(&req.method) {
+        let who = self.caller(req.token.as_deref(), &req.method, ip_from).await?;
+        if (is_write(&req.method) || is_operation(&req.method)) && req.method != "browser.renew" {
             log::info!("service: {} by {who}", req.method);
+        }
+        if req.method.starts_with("browser.") {
+            // The browser's errors carry a `code` beside the facade's `kind`.
+            return match crate::browser::rpc::call(&self.browser, &who, req.token.as_deref(), &req.method, &req.params).await {
+                Ok(v) => Ok(RPCResponse::new(RPCResult::Success(v), req.seq)),
+                Err(e) => Err(RPCErrors::ReasonError(e.to_wire())),
+            };
         }
         match self.call(&who, &req.method, &req.params).await {
             Ok(v) => Ok(RPCResponse::new(RPCResult::Success(v), req.seq)),
@@ -734,6 +786,12 @@ impl HttpServer for StateService {
                 }
                 return objects.serve_request(req, info).await;
             }
+        }
+        // The browser's screen (a WebSocket upgrade) and uploads.
+        let agent_path = format!("/kapi/{}", self.agent.agent_id());
+        let mounts = [SERVICE_PATH, WEB_API_PATH, agent_path.as_str()];
+        if let Some(route) = crate::browser::http::route(req.method(), req.uri().path(), &mounts) {
+            return crate::browser::http::serve(self, route, req, info).await;
         }
         if *req.method() == http::Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
@@ -803,6 +861,7 @@ mod permission_tests {
             "session.work_tree", "ui.conversation",
             "home.summary", "memory.overview", "memory.list", "memory.read", "deliveries.recent",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status", "runtimes.settings", "runtimes.impact",
+            "browser.status", "browser.reflow_state",
         ] {
             for target in [OWN_APP, OTHER_APP] {
                 assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, target), "{method}");
@@ -822,6 +881,9 @@ mod permission_tests {
             "notify.send", "notify.cancel", "notify.answer", "skills.note_frozen", "skills.revise", "skills.status", "runtimes.ext_tools_check",
             "session.stop", "session.pause", "session.resume", "ui.rotate", "sessions.delete",
             "session.decide", "session.post", "goals.activate", "goals.post",
+            // Using its own browser is the Agent's own ability, whatever it may do to the owner's files.
+            "browser.ensure", "browser.acquire", "browser.renew", "browser.release", "browser.request_handover",
+            "browser.reflow_refresh",
         ] {
             assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, OWN_APP), "{method}");
             assert!(!authorize(Some(AgentPermissionMode::ReadOnly), method, OTHER_APP), "{method}");
@@ -837,6 +899,9 @@ mod permission_tests {
         for method in [
             "skills.install", "skills.remove", "skills.set_enabled", "skills.ui_set", "skills.import",
             "skills.draft_discard", "skills.crystallize_set", "memory.forget",
+            // The user's side of the browser: an Agent neither takes its browser over nor hands it to itself.
+            "browser.take_over", "browser.hand_back", "browser.hand_to_agent", "browser.bind_default", "browser.upload",
+            "browser.download_export", "browser.clear_profile", "browser.reflow_action", "browser.screen",
         ] {
             for mode in [Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
                 for target in [OWN_APP, OTHER_APP] {
@@ -870,6 +935,26 @@ mod permission_tests {
                 assert!(authorize(mode, "agent.profile_set", target));
                 assert!(authorize(mode, "session.post", target));
             }
+        }
+    }
+
+    /// Every `browser.*` method of the protocol is classified: none falls through as "unclassified".
+    #[test]
+    fn every_browser_method_is_classified() {
+        for method in [
+            "browser.status", "browser.ensure", "browser.acquire", "browser.renew", "browser.release",
+            "browser.request_handover", "browser.take_over", "browser.hand_back", "browser.hand_to_agent",
+            "browser.bind_default", "browser.upload", "browser.download_export", "browser.clear_profile", "browser.reflow_state",
+            "browser.reflow_refresh", "browser.reflow_action",
+        ] {
+            assert!(is_read(method) != is_operation(method), "{method} is read or an operation");
+            assert!(!is_read(method) || !is_owner_only(method), "{method}");
+            // The Agent's own App identity, whatever its permission mode, calls exactly what is not the owner's.
+            for mode in [None, Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
+                assert_eq!(authorize(mode, method, OWN_APP), !is_owner_only(method), "{method} by the Agent ({mode:?})");
+            }
+            // An App of the owner that is no Agent calls all of them.
+            assert!(authorize(None, method, OTHER_APP), "{method} by an owner App");
         }
     }
 }

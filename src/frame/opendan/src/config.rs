@@ -44,6 +44,40 @@ impl Default for GoalsSwitch {
     }
 }
 
+/// `[loader.browser]`: the agent's browser (`crate::browser`). On by
+/// default: it is started on demand, and a node without `chromium` only
+/// reports it unavailable.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserSection {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Nobody watching and no lease for this long: the browser is stopped.
+    #[serde(default = "default_browser_idle")]
+    pub idle_stop_secs: u64,
+    /// Limit of the tabs of all groups together.
+    #[serde(default = "default_max_tabs")]
+    pub max_tabs: usize,
+}
+
+fn default_browser_idle() -> u64 {
+    600
+}
+
+fn default_max_tabs() -> usize {
+    12
+}
+
+impl Default for BrowserSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            idle_stop_secs: default_browser_idle(),
+            max_tabs: default_max_tabs(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoaderSection {
@@ -62,6 +96,8 @@ pub struct LoaderSection {
     pub placeholder_delay_ms: Option<u64>,
     #[serde(default)]
     pub goals: GoalsSwitch,
+    #[serde(default)]
+    pub browser: BrowserSection,
 }
 
 fn yes() -> bool {
@@ -81,6 +117,7 @@ impl Default for LoaderSection {
             ui: Vec::new(),
             placeholder_delay_ms: None,
             goals: GoalsSwitch::default(),
+            browser: BrowserSection::default(),
         }
     }
 }
@@ -197,6 +234,17 @@ mod tests {
         let cfg = AgentConfig::load(dir.path()).unwrap();
         assert!(cfg.loader.ui.is_empty() && cfg.loader.agent_state_service);
         assert!(cfg.loader.goals.enabled);
+        let browser = &cfg.loader.browser;
+        assert_eq!((browser.enabled, browser.idle_stop_secs, browser.max_tabs), (true, 600, 12));
+    }
+
+    #[test]
+    fn the_browser_section_is_parsed() {
+        let cfg = load("[loader.browser]\nenabled = false\nidle_stop_secs = 30\n").unwrap();
+        let browser = &cfg.loader.browser;
+        assert_eq!((browser.enabled, browser.idle_stop_secs, browser.max_tabs), (false, 30, 12));
+        assert_eq!(load("[loader.browser]\nmax_tabs = 3\n").unwrap().loader.browser.max_tabs, 3);
+        assert!(format!("{:#}", load("[loader.browser]\nmax_tab = 3\n").unwrap_err()).contains("unknown field"));
     }
 
     #[test]

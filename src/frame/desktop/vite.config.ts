@@ -180,6 +180,8 @@ export default defineConfig(() => {
         secure: false,
         agent: zoneAgent,
         cookieDomainRewrite: { '*': '' },
+        // the Agent browser's screen: /kapi/<agent_id>/browser/screen
+        ...(path === '/kapi' ? { ws: true } : {}),
       }]))
     : {}
   return {

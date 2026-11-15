@@ -289,8 +289,8 @@ async fn system_definitions_are_seeded_bound_and_read_only() {
     let f = fixture().await;
     let listed = ok(&f, "list_definitions", json!({"source": "system"}), ALICE).await;
     let ids: Vec<&str> = listed["definitions"].as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap()).collect();
-    assert_eq!(ids.len(), 4);
-    for id in ["media.image", "media.pdf", "media.video", "media.document"] {
+    assert_eq!(ids.len(), 5);
+    for id in ["media.image", "media.pdf", "media.video", "media.document", "media.page"] {
         assert!(ids.contains(&id), "{id} missing from {ids:?}");
     }
     assert!(listed["definitions"].as_array().unwrap().iter().all(|d| d["read_only"] == true && d["source"] == "system"));
@@ -307,7 +307,7 @@ async fn system_definitions_are_seeded_bound_and_read_only() {
     assert_eq!(pdf["definition"]["revision"].as_str().unwrap().len(), 64);
 
     let functions = ok(&f, "list_functions", json!({"prefix": "media."}), ALICE).await;
-    assert_eq!(functions["functions"].as_array().unwrap().len(), 10);
+    assert_eq!(functions["functions"].as_array().unwrap().len(), 12);
     let caps = ok(&f, "get_capabilities", json!({}), ALICE).await;
     assert_eq!(caps["execution_epoch"], 1);
 
@@ -807,6 +807,95 @@ async fn system_pipelines_cannot_be_scheduled() {
     assert_eq!(failed["ok"], false, "{failed}");
     assert!(failed.to_string().contains("system_workflow_not_schedulable"), "{failed}");
     assert!(f.tracker.created_run_tasks().await.is_empty());
+}
+
+#[tokio::test]
+async fn the_page_pipeline_takes_an_object_the_caller_may_read_and_the_branch_of_the_asked_output() {
+    let f = fixture().await;
+    let (obj_id, content_id) = f.io.add_file("page.html", b"<p>page</p>").await;
+    let page = ok(&f, "get_definition", json!({"workflow_id": "media.page"}), BOB).await;
+    assert_eq!(page["definition"]["resolved_functions"].as_object().unwrap().len(), 3);
+
+    // A page comes in as an object; an address is not an input.
+    for input in [json!({"obj_id": obj_id, "output": "jpeg"}), json!({"obj_id": obj_id, "url": "https://example.com/"}), json!({"url": "https://example.com/"})] {
+        let bad = call(&f, "create_run", json!({"workflow_id": "media.page", "input": input}), ALICE).await.unwrap();
+        assert_eq!(bad["error"], "invalid_input", "{bad}");
+    }
+
+    for (output, taken, other) in [("pdf", "page_to_pdf", "page_snapshot"), ("png", "page_snapshot", "page_to_pdf")] {
+        let created = ok(&f, "create_run", json!({"workflow_id": "media.page", "auto_start": true, "wait_ms": 0, "input": {"obj_id": obj_id, "output": output, "content_id": "sha256:forged"}}), ALICE).await;
+        let graph = wait_status(&f, created["run_id"].as_str().unwrap(), ALICE, 10).await;
+        assert_eq!(graph["status"], "failed", "{graph}");
+        let trigger = &graph["node_outputs"]["trigger"];
+        assert_eq!(trigger["content_id"], content_id.as_str());
+        assert_eq!((&trigger["paper"], &trigger["margin_mm"], &trigger["viewport_width"]), (&json!("A4"), &json!(10), &json!(1280)));
+        assert_eq!(graph["node_outputs"]["output"]["branch"], output);
+        assert_eq!(graph["node_errors"][taken]["code"], "tools_missing", "{graph}");
+        assert_eq!(graph["node_errors"][taken]["details"]["tools_missing"], json!(["page-render"]));
+        assert_eq!(graph["node_states"][other], "pending");
+        assert!(graph["human_waiting_nodes"].as_array().unwrap().is_empty());
+    }
+
+    let f = fixture_with(1, Arc::new(MemoryExecutionLedger::default()), Arc::new(DenyingAuthorizer)).await;
+    let (obj_id, _) = f.io.add_file("page.html", b"<p>page</p>").await;
+    let denied = call(&f, "create_run", json!({"workflow_id": "media.page", "input": {"obj_id": obj_id}}), ALICE).await;
+    assert!(matches!(denied, Err(RPCErrors::NoPermission(_))), "{denied:?}");
+    assert!(ok(&f, "list_runs", json!({}), ADMIN).await["runs"].as_array().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_page_pipeline_renders_once_and_is_guarded_like_every_system_pipeline() {
+    let f = fixture().await;
+    let bin = tempfile::tempdir().unwrap();
+    let stub = functions::media::page::stub_page_render(bin.path());
+    *f.environment.0.write().unwrap() = Arc::new(ToolEnvironment::with_tools(BTreeMap::from([(
+        "page-render".to_string(),
+        ToolInfo { path: stub, version: "stub".into() },
+    )])));
+    let (obj_id, _) = f.io.add_file("page.html", "<h1>你好</h1>".as_bytes()).await;
+    let request = json!({"workflow_id": "media.page", "auto_start": true, "wait_ms": 0, "input": {"obj_id": obj_id, "paper": "A5", "landscape": true}});
+
+    let run_id = ok(&f, "create_run", request.clone(), ALICE).await["run_id"].as_str().unwrap().to_string();
+    let graph = wait_status(&f, &run_id, ALICE, 20).await;
+    assert_eq!(graph["status"], "completed", "{graph}");
+    assert_eq!(graph["node_sources"]["page_to_pdf"], "executed");
+    assert_eq!(graph["node_states"]["page_snapshot"], "pending");
+    let pdf = graph["output"]["page_to_pdf"].clone();
+    assert_eq!(pdf["pages"], 3, "{graph}");
+    let pdf_obj = pdf["pdf_obj_id"].as_str().unwrap().to_string();
+    assert!(f.io.artifact_bytes(&pdf_obj).unwrap().starts_with(b"%PDF"));
+
+    // The same page with the same paper: only `capabilities` runs again.
+    let second = ok(&f, "create_run", request.clone(), BOB).await["run_id"].as_str().unwrap().to_string();
+    let graph = wait_status(&f, &second, BOB, 20).await;
+    assert_eq!(graph["status"], "completed", "{graph}");
+    assert_eq!(graph["node_sources"]["capabilities"], "executed");
+    assert_eq!(graph["node_sources"]["page_to_pdf"], "cache");
+    assert_eq!(graph["output"]["page_to_pdf"], pdf);
+
+    // What it made is handed to the requester of a run, through that run only.
+    assert!(call(&f, "get_run_output", json!({"run_id": run_id}), BOB).await.is_err());
+    assert!(f.io.holdings_of("bob/agent-a").is_empty());
+    let output = ok(&f, "get_run_output", json!({"run_id": run_id}), ALICE).await;
+    assert!(output["delivery"]["artifacts"].as_array().unwrap().contains(&json!(pdf_obj)));
+    assert!(f.io.holdings_of("alice/agent-a").contains(&pdf_obj));
+    assert!(f.io.holdings_of("bob/agent-a").is_empty());
+
+    // Nobody writes or decides its steps, and it is no schedule target.
+    let idle = ok(&f, "create_run", json!({"workflow_id": "media.page", "auto_start": false, "input": {"obj_id": obj_id}}), BOB).await;
+    let forged = json!({"pdf_content_id": "mix256:00", "pdf_obj_id": "cyfile:deadbeef", "pages": 1});
+    let refused = call(&f, "submit_step_output", json!({"run_id": idle["run_id"], "node_id": "page_to_pdf", "output": forged}), BOB).await.unwrap();
+    assert_eq!(refused["error"], "system_definition_read_only");
+    let refused = call(&f, "submit_human_action", json!({"run_id": idle["run_id"], "node_id": "page_to_pdf", "kind": "skip"}), BOB).await.unwrap();
+    assert_eq!(refused["error"], "system_definition_read_only");
+    let target = crate::scheduled_task_manager::ScheduleSubtaskTemplate {
+        task_type: "workflow.run".into(),
+        name_template: "render".into(),
+        data_template: json!({"request": {"workflow_id": "media.page", "input": {"obj_id": obj_id}}}),
+    };
+    let refused = f.handler.validate_target_exists(&target).await.unwrap_err();
+    assert!(refused.to_string().contains("cannot be scheduled"), "{refused}");
 }
 
 #[tokio::test]

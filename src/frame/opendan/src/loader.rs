@@ -24,6 +24,7 @@ use libopendan::state::{
 use name_lib::DID;
 use ndn_lib::ObjId;
 
+use crate::browser::{BrowserDeps, BrowserModule};
 use crate::config::AgentConfig;
 use crate::home::Home;
 use crate::records::{self, AgentRecords};
@@ -100,6 +101,7 @@ pub struct Loader {
     pub supervisor: Arc<Supervisor>,
     pub info: Arc<LoaderInfo>,
     pub ui: Option<Arc<UiModule>>,
+    pub browser: Arc<BrowserModule>,
     pub config: AgentConfig,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// `shell` commands of the sessions that outlived their wait.
@@ -318,6 +320,17 @@ impl Loader {
             libopendan::todos::ENV_MAX_CHILDREN,
             max_child_concurrency.to_string(),
         );
+        // ... and where `agent-browser` reaches the agent's browser: this
+        // service, on the loopback interface. Sessions on other nodes do not
+        // inherit it and have no browser.
+        if config.loader.browser.enabled && config.loader.agent_state_service {
+            std::env::set_var(
+                crate::browser::ENV_BROWSER_RPC,
+                format!("http://127.0.0.1:{}/kapi/{}", env.port, agent.agent_id()),
+            );
+        } else {
+            std::env::remove_var(crate::browser::ENV_BROWSER_RPC);
+        }
         let host = HostDeps {
             who: env.who.clone(),
             agent: agent.clone(),
@@ -416,6 +429,21 @@ impl Loader {
             config.loader.goals.enabled,
             config.loader.goals.enabled.then_some("schedule backend: local"),
         );
+        // The agent's browser: started when someone needs it.
+        let browser = BrowserModule::new(
+            config.loader.browser.clone(),
+            BrowserDeps {
+                agent: agent.clone(),
+                supervisor: Some(supervisor.clone()),
+                owner_did: env.owner_did.as_ref().map(|d| d.to_string()),
+                agent_root: env.agent_root.clone(),
+            },
+        );
+        let (enabled, usable, note) = browser.module_status();
+        module("browser", enabled, usable, note.as_deref());
+        if enabled {
+            tasks.push(tokio::spawn(browser.clone().run()));
+        }
         let maintenance = libopendan::goal::defaults(Some(&env.agent_root), libopendan::goal::GOAL_CLASS).maintenance;
         module(
             "memory_maintenance",
@@ -436,6 +464,7 @@ impl Loader {
                     supervisor: supervisor.clone(),
                     info: info.clone(),
                     ui: ui.clone(),
+                    browser: browser.clone(),
                     access: env.access.clone(),
                     sessions: match libopendan::session_context::SessionService::new(
                         &env.agent_root,
@@ -606,6 +635,7 @@ impl Loader {
             supervisor,
             info,
             ui,
+            browser,
             config,
             tasks,
             local_tasks: env.xllm.local_tasks.clone(),
@@ -622,6 +652,7 @@ impl Loader {
         for t in self.tasks {
             let _ = t.await;
         }
+        self.browser.shutdown().await;
         self.supervisor.shutdown().await;
         // Commands still running continue without this process: their
         // execution directories record their ends, which the next start

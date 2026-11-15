@@ -8,6 +8,7 @@ import {
   Clock3,
   FolderOpen,
   FlaskConical,
+  Globe,
   Waypoints,
   LayoutGrid,
   MessageSquare,
@@ -52,6 +53,7 @@ const iconMap = {
   'agent-guide': Sparkles,
   'my-network': Network,
   'my-content': Share2,
+  'agent-browser': Globe,
   clock: Clock3,
   notepad: StickyNote,
 }

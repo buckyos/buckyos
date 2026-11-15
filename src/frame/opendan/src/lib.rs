@@ -6,12 +6,14 @@
 //! app of one agent, keeps the agent's sessions hosted
 //! ([`libopendan::host::Supervisor`]), bridges system sources into session
 //! inputs and replies back out ([`ui`]), serves the Agent State
-//! ([`service`]) and reports the agent loaded ([`records`]).
+//! ([`service`]), keeps the agent's browser ([`browser`]) and reports the
+//! agent loaded ([`records`]).
 //!
 //! Nothing here knows a prompt, a behavior name or the shape of an LLM
 //! answer, and nothing here writes a session's state: only a session's
 //! driver does, through `drive`.
 
+pub mod browser;
 pub mod config;
 pub mod home;
 pub mod loader;

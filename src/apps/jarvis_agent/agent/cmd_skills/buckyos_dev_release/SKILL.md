@@ -13,7 +13,7 @@ Building, packaging, test-installing, upgrading or publishing anything for Bucky
 command -v buckyos && buckyos --version --verbose   # tool_version, buckyos_build_id, runtime
 buckyos auth whoami                                 # identity + zone actually used
 ```
-- Agent container: identity = your agent token (`BUCKYOS_APPCLIENT_SESSION_TOKEN`, refreshed per shell call), endpoint `BUCKYOS_TOOL_ENDPOINT`. The image has node/npm/npx, deno, python3/uv, git; it has no docker, cargo, pnpm and no BuckyOS repo. System builds, `start.py`, `build_aios` and Docker images are host work: give the owner exact commands.
+- Agent container: identity = your agent token (`BUCKYOS_APPCLIENT_SESSION_TOKEN`, refreshed per shell call), endpoint `BUCKYOS_TOOL_ENDPOINT`. The image has node/npm/npx, deno, python3/uv, git and a Chromium for page tests (`buckyos_app_dev`, "Page tests"); it has no docker, cargo, pnpm and no BuckyOS repo. System builds, `start.py`, `build_aios` and Docker images are host work: give the owner exact commands.
 - Host (OOD): `buckyos --yes <cmd>` uses the device identity (`ood1`; checked for reads and `app fetch`, installs were tested with a user token). To act as a user, pass `--session-token-file <f>` with a token from control-panel `auth.login` (target `{kind:"system",service_id:"control-panel"}`, recipe in the repo `doc/sdk/app-dev-quickstart.md` §4); the CLI's interactive password login asks verify-hub for app `buckycli` and the DV zone answers `AppAccessDenied`. Tokens last about 15 min.
 - The system CLI reads and writes under the cwd and `~/.buckyos_tool`; a source outside the cwd fails with exit 9 `read access is outside system-default` — add `--allow-read <dir>` or work inside the project dir.
 

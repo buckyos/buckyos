@@ -61,8 +61,25 @@ downloading a project's top-level source archive does not clear that check.
 - The matching BusyBox-w32 release source archive.
 - Original Noto Sans/Serif CJK font files and each family's actual OFL text.
   The redistributed font files are not described as editable design sources.
+- The Chromium project's source archive of the Chrome for Testing release
+  (its `-lite` archive: the source without the test data) and the notices in
+  it. Chrome for Testing is Google's branded build of that release: the
+  archive is the open source it is built from, not a reproduction of the
+  binary. The binary archives carry no license text of their own.
+- playwright-core's npm package, unpacked whole with its notices and the
+  license texts of the modules inlined into its bundles, and the project's
+  tag archive.
 
 ## Remaining release blockers
+
+**Chromium (Chrome for Testing) 159.0.8154.6:** the Linux and macOS archives
+bundle the Widevine CDM (`WidevineCdm/`). It is not open source and its
+`LICENSE` forbids distribution without a separate agreement with Google. Take
+it out of the payload (on macOS it is inside the app's framework, and whether
+the browser still starts without it has to be checked on a Mac) or obtain the
+agreement, then clear `unresolved_source_requirements`. Chrome for Testing as a whole states no
+redistribution terms either: its `ABOUT` names Google's copyright and Chrome's
+Terms of Service. The project decision is to package it as it is.
 
 **Pandoc 3.12.1:** the official static binaries have no verified, binary-specific
 frozen Cabal package plan in the collected source tree. Extracting some package

@@ -4,7 +4,7 @@
  * commit counts are asserted through kRPC and the dev-override hooks, not only through the DOM. */
 
 import type { Page } from '@playwright/test'
-import { asUser, closePermissions, closeWorkspace, expect, hooks, mainMenu, openCanvas, openPermissions, openWorkspacePage, setCanvasMode, showAllWorkspaces, test, workspaceOrigin, workspacePage, type Api } from './fixtures'
+import { asUser, closePermissions, closeWorkspace, expect, hooks, mainMenu, openCanvas, openPermissions, openWorkspacePage, setCanvasMode, showAllWorkspaces, test, wishCard, workspaceOrigin, workspacePage, type Api } from './fixtures'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- RPC results
 type Json = any
@@ -292,7 +292,8 @@ test('UI-P07 object clipboard: copy a group (new ids, shared data), cut across S
   await openCanvas(page, ALICE, ws.workspace_id)
   // group the KPI card and the wish, then copy and paste the group: one commit, new identities, same sources
   await page.getByTestId('aiws-canvas-block-blk-kpi').click()
-  await page.getByTestId('aiws-canvas-block-blk-wish').click({ modifiers: ['Shift'] })
+  // (the wish by its title: its request field takes a click itself)
+  await wishCard(page, 'wish-analysis').getByTestId('aiws-wish-title').click({ modifiers: ['Shift'] })
   await page.keyboard.press('Control+g')
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-kpi')?.parent_id).not.toBe('sf-analysis')
   const groupId = (await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-kpi')?.parent_id as string
@@ -493,7 +494,7 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   await expect(guest.getByTestId('aiws-identity-name')).toHaveText('路人甲')
   await expect(guest.getByTestId('aiws-login')).toBeVisible()
   await guest.keyboard.press('Escape')
-  await guest.getByTestId('aiws-canvas-block-blk-wish').click()
+  await wishCard(guest, 'wish-analysis').getByTestId('aiws-wish-title').click()
   await guest.getByTestId('aiws-near-annotate').click()
   await guest.getByLabel('评论内容').fill('访客的批注')
   await guest.getByTestId('aiws-annotation-save').click()
@@ -538,7 +539,7 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   await expect(guest.getByTestId('aiws-near-more')).toBeVisible()
   await guest.keyboard.press('Delete')
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
-  expect((await cells(api, ws.workspace_id, 'sf-analysis')).find((c: { entity_id: string }) => c.entity_id === 'blk-wish').placement.x).toBe(980)
+  expect((await cells(api, ws.workspace_id, 'sf-analysis')).find((c: { entity_id: string }) => c.entity_id === 'blk-wish').placement.x).toBe(1040)
   // and the guest removes its note: the Block and the note go together
   await guest.getByTestId(`aiws-canvas-block-${placed.entity_id}`).click()
   await guest.keyboard.press('Delete')
@@ -561,32 +562,32 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   await context.close()
 })
 
-test('UI-P12 the AI entry creates a wish where it is placed and opens its task; with a wish selected it opens that one', async ({ page, api }) => {
+test('UI-P12 the wish tool places a new wish where it is clicked: its card takes the request at once, and nothing runs by itself', async ({ page, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `p12 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  // a selected wish: the AI entry opens its existing task flow, nothing is created
-  const head = await api.headSeq(ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-canvas-block-blk-wish').click()
-  await page.getByTestId('aiws-tool-insert-wish').click()
-  // on a free canvas the task opens in the right panel (标准对象的交互改进 R6)
-  const wishPanel = page.locator('[data-testid="aiws-side-panel"][data-tab="wish"]')
-  await expect(wishPanel.getByTestId('aiws-wish-prompt')).toHaveValue(/经营分析/)
-  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
-  await page.getByTestId('aiws-side-close').click()
-  await page.keyboard.press('Escape')
   await page.getByTestId('aiws-canvas').click({ position: { x: 600, y: 750 } })
-  // nothing selected: place a new wish; its panel opens for the task, nothing runs by itself
   await page.getByTestId('aiws-tool-insert-wish').click()
   const at = await screenOf(page, { x: 40, y: 700 })
   await page.mouse.move(at.x, at.y)
   await page.mouse.click(at.x, at.y)
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: { type_id: string }) => e.type_id === 'buckyos.wish').length).toBe(2)
   const created = (await api.outline(ALICE, ws.workspace_id)).find((e: { type_id: string; entity_id: string }) => e.type_id === 'buckyos.wish' && e.entity_id !== 'wish-analysis')
+  expect((await api.read(ALICE, ws.workspace_id, created.entity_id)).content.payload.executor).toBe('xllm')
   const block = (await cells(api, ws.workspace_id, 'sf-analysis')).find((c: { source_id: string }) => c.source_id === created.entity_id)
   await expect(page.getByTestId(`aiws-canvas-block-${block.entity_id}`)).toBeVisible()
-  await expect(wishPanel.getByTestId(`aiws-wish-${created.entity_id}`)).toBeVisible()
-  await expect(wishPanel.getByTestId('aiws-wish-prompt')).toBeVisible()
-  expect((await api.read(ALICE, ws.workspace_id, created.entity_id)).content.payload.last_run ?? null).toBeNull()
+  // the card, not a panel: the request is typed into it at once
+  const card = wishCard(page, created.entity_id)
+  await expect(card.getByTestId('aiws-wish-prompt')).toBeFocused()
+  await page.keyboard.type('按区域汇总销售额')
+  await card.getByTestId('aiws-wish-title').click()
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, created.entity_id)).content.payload.prompt).toBe('按区域汇总销售额')
+  await expect(page.getByTestId('aiws-side-panel')).toHaveCount(0)
+  // nothing ran: the next step is the analysis
+  await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', 'analyze')
+  await expect(card.getByTestId('aiws-wish-run')).toHaveCount(0)
+  const payload = (await api.read(ALICE, ws.workspace_id, created.entity_id)).content.payload
+  expect(payload.last_run ?? null).toBeNull()
+  expect(payload.history ?? null).toBeNull()
 })
 
 test('UI-P13 keyboard: menus by arrows and Esc with focus back on the trigger; V/H only with the canvas focused; help lists the shortcuts', async ({ page, api }) => {

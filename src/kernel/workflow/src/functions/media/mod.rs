@@ -1,13 +1,15 @@
 //! `media.*` native functions (TODO T2a / T2b): capabilities, probe,
 //! fit_image, extract_pdf_text, render_pdf_pages, ocr_pages, extract_frames,
-//! extract_audio, to_pdf, build_catalog. Tool requirements derived from the
-//! registrations are the host / paios baseline (TODO T2c, §2.5).
+//! extract_audio, to_pdf, build_catalog, page_to_pdf, page_snapshot. Tool
+//! requirements derived from the registrations are the host / paios baseline
+//! (TODO T2c, §2.5).
 
 pub mod capabilities;
 pub mod catalog;
 pub mod document;
 pub mod image;
 pub mod ocr;
+pub mod page;
 pub mod pdf;
 pub mod probe;
 pub mod tools;
@@ -38,6 +40,8 @@ pub const EXTRACT_FRAMES: &str = "media.extract_frames";
 pub const EXTRACT_AUDIO: &str = "media.extract_audio";
 pub const TO_PDF: &str = "media.to_pdf";
 pub const BUILD_CATALOG: &str = "media.build_catalog";
+pub const PAGE_TO_PDF: &str = "media.page_to_pdf";
+pub const PAGE_SNAPSHOT: &str = "media.page_snapshot";
 
 pub const STDOUT_LIMIT: usize = 16 * 1024 * 1024;
 
@@ -177,6 +181,22 @@ fn registrations() -> Vec<Registration> {
             object: catalog::function_object(),
             native: Arc::new(catalog::BuildCatalog),
         },
+        Registration {
+            name: PAGE_TO_PDF,
+            description: "Renders an HTML page to PDF with a headless browser",
+            timeout: 300,
+            tools: page::PageToPdf::TOOLS,
+            object: page::to_pdf_function_object(),
+            native: Arc::new(page::PageToPdf),
+        },
+        Registration {
+            name: PAGE_SNAPSHOT,
+            description: "Renders an HTML page to a PNG image with a headless browser",
+            timeout: 300,
+            tools: page::PageSnapshot::TOOLS,
+            object: page::snapshot_function_object(),
+            native: Arc::new(page::PageSnapshot),
+        },
     ]
 }
 
@@ -232,6 +252,7 @@ pub fn media_tool_baseline() -> Vec<ToolRequirement> {
                 tools::FFMPEG => (Some("6.0"), "frame sampling, audio extraction, exotic image decoding (needs libmp3lame)"),
                 tools::SOFFICE => (Some("7.0"), "office document to PDF conversion (headless LibreOffice with fonts and locale)"),
                 tools::TESSERACT => (Some("5.0"), "OCR of page images whose text layer is missing or garbled (with the common language data)"),
+                tools::PAGE_RENDER => (None, "HTML page to PDF / PNG rendering (ext-core: headless Chromium driven by playwright-core)"),
                 _ => (None, ""),
             };
             ToolRequirement {

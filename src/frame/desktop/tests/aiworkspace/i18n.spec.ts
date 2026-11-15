@@ -80,7 +80,7 @@ test('i18n: in English, the list, a demo created from a template, its chrome, pa
   // the main menu and its submenus
   await page.getByTestId('aiws-main-menu').click()
   await expectEnglish(page, 'main menu')
-  for (const path of [['aiws-menu-workspace', 'aiws-menu-offline'], ['aiws-menu-surface', 'aiws-menu-canvas-mode'], ['aiws-menu-insert', 'aiws-menu-import-file'], ['aiws-menu-edit'], ['aiws-menu-view', 'aiws-menu-panels'], ['aiws-menu-collab'], ['aiws-menu-help', 'aiws-menu-dev']]) {
+  for (const path of [['aiws-menu-workspace', 'aiws-menu-offline'], ['aiws-menu-surface', 'aiws-menu-canvas-mode'], ['aiws-menu-insert', 'aiws-menu-import-file'], ['aiws-menu-edit'], ['aiws-menu-view', 'aiws-menu-panels'], ['aiws-menu-collab'], ['aiws-menu-help']]) {
     for (const submenu of path) await page.getByTestId(submenu).click()
     await expectEnglish(page, `main menu → ${path.join(' → ')}`)
   }

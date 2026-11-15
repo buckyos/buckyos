@@ -34,6 +34,7 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py --binary ~/cyfs-gateway/src
   - 远端 app 转发（ROUTES forward-plan 路径）
   - 远端 service 转发（ROUTES forward-plan 路径，单 primary peer）
   - root host / host prefix / `/kapi` / `/sso_callback`；`/ndm`、`/kapi/dfs/obj`（DFS 的 DID Object Provider）转发到 nfs-server
+  - `reflow.<zone>`（APP_INFO 里指向 nfs-server 的主机）：普通路径转发到 nfs-server，`X-Forwarded-Host` 由网关写成真实主机；它的 `/sso_callback` 仍到 control-panel
   - `/.well-known/*` 与 `/1.0/identifiers/*`
   - 非法 host reject
   - `/kapi/kevent/*` 早转发

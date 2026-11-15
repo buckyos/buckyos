@@ -5,6 +5,7 @@ import { useWindowDialog } from '../../../desktop/windows/dialogs'
 import { fetchAgentList } from '../../../api/user_mgr'
 import { desktopUIStore } from '../../../models/DesktopUIDataModel'
 import { bucketObjectRef, bucketObjectUrl } from '../../../components/preview/bucketSource'
+import { AgentBrowserEntry } from '../../agent-browser/conversation/AgentBrowserEntry'
 import { openAgentHome } from '../../agent-setup/guide'
 import { openPreview } from '../../preview/launch'
 import { confirmGroupAction } from '../confirmDialog'
@@ -89,6 +90,7 @@ export function AgentSessionPanel({ entity, session, context, answering, timelin
         <hr className="border-[color:var(--cp-border)]" />
         {session ? <>
           <ConversationState session={session} context={context} conversation={conversation} answering={answering} />
+          <AgentBrowserEntry agentDid={agentDid} agentName={entity.name} sessionId={session.id} hintTaskId={turnTaskId} signal={timeline.length} />
           <SubSessions agentDid={agentDid} context={context} sessionId={session.id} uiSessionId={current?.session_id ?? null} hintTaskId={current?.open_turn?.task_id ?? turnTaskId} signal={`${timeline.length}:${current?.unfinished_works ?? 0}:${current?.paused ?? ''}`} onOpenWorklog={onOpenWorklog} onChanged={conversation.refresh} />
           <NewConversation agentDid={agentDid} session={session} conversation={conversation} onRotating={onRotating} />
           <Deliveries agentDid={agentDid} routeKey={conversation.value?.route_key ?? null} timeline={timeline} onLocateMessage={onLocateMessage} onForward={onForward} context={context} />

@@ -81,6 +81,15 @@ Agent 自己的工具缓存(`DENO_DIR`、`UV_CACHE_DIR`、`UV_PYTHON_INSTALL_DIR
 
 `media-catalog/<源文件对象 id>/` 是转换结果(workflow 步骤缓存)的本地展开,随时可删,下次调用按路径里的对象 id 重建;总量超过 `LLM_UNDERSTAND_MEDIA_CATALOG_MAX_BYTES`(默认 5 GiB)时工具按最近使用时间删旧的。没有这个变量时(单独运行 helper)退到系统临时目录。
 
+Agent 的常驻浏览器(Agent Service 的浏览器模块,见 [Agent Browser Protocol](opendan/protocol/Agent%20Browser%20Protocol.md) §6)的目录同样不进 `tools/`,由 `OPENDAN_BROWSER_DIR` 指定(容器里 `entrypoint.sh` 设置):
+
+| 形态 | 位置 |
+| --- | --- |
+| 容器 | `/opt/buckyos/instance/browser/{profile,cache,downloads,uploads}`、`browser/chromium.log` |
+| 原生私有 runtime、宿主调试 | `<AgentRoot>/.cache/browser/{同上}` |
+
+`profile/` 是浏览器的用户数据目录,里面有这个 Agent 的登录状态:容器重建后仍在,`browser.clear_profile` 删除 `profile/` 和 `cache/`。`downloads/` 是页面下载的文件。`chromium.log` 是最近一次启动的标准错误。同一位置下的 `reflow/<page>/` 是一次重排刷新的临时目录(从重排库取出来的包、结果文件、刷新子进程的 `HOME` 和 `TMPDIR`),刷新结束就删掉,见协议 §5.3。各组的标签页列表不在这里,在 `<AgentRoot>/state/browser/groups.json`。节点 runtime(host)上的 Session 没有常驻浏览器。
+
 应用不能把运行时生成物写入 `/opt/buckyos/tools`;需要写入且可执行的内容放到 `/opt/buckyos/instance`。
 `/home/$username/.local/share/$appid` 仍是 app 的永久 user/app data,host 上对应
 `$buckyos_root/data/home/$username/.local/share/$appid`,不用于承载 session-bin 或依赖缓存 upper。
@@ -128,6 +137,10 @@ $buckyos_root/data/home/$username/Documents => c:/users/alice/Documents
 - 桶在包里声明：App 写 `dapp_meta/app.json` 的 `install_config.buckets`，系统服务写 scheduler `system_config_builder.rs` 里的 `spec_config.buckets`；
   bucket_id 为 `user/<appid>/<user>/<name>` 或 `zone/<appid>/_/<name>`。
 - 读取一律 URL 化：浏览器 `/bucket/v1/<bucket_id>/<key>`，Agent / CLI `obj://bucket/<bucket_id>/<key>`。
+- `/bucket/v1` 把 HTML、脚本这类会执行的内容当附件下发。要在浏览器里运行的页面不从这里读：Agent 浏览器的重排库是桶
+  `user/control-panel/<user>/reflow`（key 为 `<站点>/manifest.json`、`<站点>/index.html`、`<站点>/results/<页面>.json` 等），
+  由 nfs-server 在自己的主机 `https://reflow.<zone>/<key>` 上按原类型提供，目录补 `index.html`。只有在这个主机上登录的用户能打开，
+  看到的是自己的桶（[Agent Browser Protocol](opendan/protocol/Agent%20Browser%20Protocol.md) §5）。
 - 仍然使用目录的只有：`/tmp/buckyos/<svc>` 与 cache 分区里可重建的派生物、处理期间的临时文件、用户文件夹（Desktop、Downloads、Files 里的用户目录）、
   Agent 的电脑（AgentRoot、Session 工作目录、`runs/`）、内核层（system-config、`security/`、kmsg 队列）和传统应用的兼容数据目录。
 

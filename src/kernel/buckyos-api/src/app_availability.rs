@@ -78,10 +78,12 @@ pub struct ValidatedTokenClaims {
     pub target: AuthTarget,
 }
 
-const SYSTEM_LOGIN_TARGETS: &[&str] = &["control-panel", "kernel", "system-config", "aiworkspace"];
+const SYSTEM_LOGIN_TARGETS: &[&str] =
+    &["control-panel", "kernel", "system-config", "aiworkspace", "nfs-server"];
 /// System services a Control Panel user session may be delegated to without a password (the Desktop opening a
-/// page on the service's own origin): AI Workspace pages live on `aiws-<id>.<zone>` (内核架构改进 D21).
-const SYSTEM_DELEGATION_TARGETS: &[&str] = &["aiworkspace"];
+/// page on the service's own origin): AI Workspace pages live on `aiws-<id>.<zone>` (内核架构改进 D21), the
+/// reflow pages of the Agent Browser on nfs-server's `reflow.<zone>` (Agent Browser Protocol §5.4).
+const SYSTEM_DELEGATION_TARGETS: &[&str] = &["aiworkspace", "nfs-server"];
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -862,6 +864,22 @@ mod tests {
         assert_eq!(parsed.1, "alice");
         assert!(parse_app_instance_id("Notes@alice").is_err());
         assert!(parse_app_instance_id("../../spec@alice").is_err());
+    }
+
+    #[test]
+    fn pages_on_a_services_own_origin_sign_in_by_delegation() {
+        for service in ["aiworkspace", "nfs-server"] {
+            assert!(is_system_login_target(service), "{service}");
+            assert!(is_system_delegation_target(service), "{service}");
+        }
+        for service in ["control-panel", "kernel", "system-config", "messagehub"] {
+            assert!(is_system_login_target(service), "{service}");
+            assert!(!is_system_delegation_target(service), "{service}");
+        }
+        for service in ["verify-hub", "scheduler", "opendan"] {
+            assert!(!is_system_login_target(service), "{service}");
+            assert!(!is_system_delegation_target(service), "{service}");
+        }
     }
 
     #[test]

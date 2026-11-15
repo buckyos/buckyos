@@ -1,6 +1,6 @@
 //! Media tool discovery for the workflow host (copied from the nfs_server
 //! preview probe so the kernel does not depend on a frame crate): poppler,
-//! ffmpeg and LibreOffice looked up in `$BUCKYOS_ROOT/libexec/buckyos-tool/bin`,
+//! ffmpeg, LibreOffice and `page-render` looked up in `$BUCKYOS_ROOT/libexec/buckyos-tool/bin`,
 //! `PATH`, fixed install locations, then the extension packages in `$BUCKYOS_ROOT/tools/bin`. The result is a [`ToolEnvironment`]
 //! whose per-tool versions form function fingerprints.
 
@@ -16,9 +16,10 @@ pub const FFMPEG: &str = "ffmpeg";
 pub const FFPROBE: &str = "ffprobe";
 pub const SOFFICE: &str = "soffice";
 pub const TESSERACT: &str = "tesseract";
+pub const PAGE_RENDER: &str = "page-render";
 
 /// Every tool the built-in media functions may need.
-pub const MEDIA_TOOLS: &[&str] = &[PDFINFO, PDFTOTEXT, PDFTOPPM, FFMPEG, FFPROBE, SOFFICE, TESSERACT];
+pub const MEDIA_TOOLS: &[&str] = &[PDFINFO, PDFTOTEXT, PDFTOPPM, FFMPEG, FFPROBE, SOFFICE, TESSERACT, PAGE_RENDER];
 
 pub fn exe_name(name: &str) -> String {
     if cfg!(windows) {
@@ -145,8 +146,23 @@ fn soffice_version(path: &Path) -> Option<String> {
     version(path).or_else(|| (cfg!(windows) && com.is_file()).then(|| version(&com)).flatten())
 }
 
+/// The line `page-render --version` prints: its own version, the browser's and
+/// playwright-core's. A launcher that exits with an error is not a tool.
+fn page_render_version(path: &Path) -> Option<String> {
+    let mut cmd = Command::new(path);
+    cmd.arg("--version").stdin(std::process::Stdio::null());
+    buckyos_api::hide_child_console(&mut cmd);
+    let out = cmd.output().ok().filter(|out| out.status.success())?;
+    parse_page_render_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+pub fn parse_page_render_version(text: &str) -> Option<String> {
+    text.lines().map(str::trim).find(|line| !line.is_empty()).map(String::from)
+}
+
 fn version_of(name: &str, path: &Path) -> Option<String> {
     match name {
+        PAGE_RENDER => page_render_version(path),
         FFMPEG | FFPROBE => {
             output_of(path, &["-hide_banner", "-version"]).and_then(|t| parse_version(name, &t))
         }

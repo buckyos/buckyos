@@ -2,7 +2,7 @@
 
 日期：2026-11-05。来源：[notepads/llm-media-pipeline-workflow-todo.md](../../notepads/llm-media-pipeline-workflow-todo.md) §2.5 / T2c / T4b（用户裁决 P8：以 workflow 需求为先导定义 agent-runtime / paios 的工具基线）。
 
-本文是 workflow 系统内置媒体管线（`media.image` / `media.pdf` / `media.video` / `media.document`）所需外部工具的**唯一需求清单**。清单从 `FunctionRegistration.requirements` 推导（`src/kernel/workflow/src/functions/media/mod.rs::media_tool_baseline()`），构建脚本、镜像文档与探测代码都对齐这里；改任一处先改本表。[paios 容器需求 §6.4](../app_service/paios容器需求.md) 仍是“官方发布的 Agent 可用命令”的维护入口，本文只约束其中的媒体部分。
+本文是 workflow 系统内置媒体管线（`media.image` / `media.pdf` / `media.video` / `media.document` / `media.page`）所需外部工具的**唯一需求清单**。清单从 `FunctionRegistration.requirements` 推导（`src/kernel/workflow/src/functions/media/mod.rs::media_tool_baseline()`），构建脚本、镜像文档与探测代码都对齐这里；改任一处先改本表。[paios 容器需求 §6.4](../app_service/paios容器需求.md) 仍是“官方发布的 Agent 可用命令”的维护入口，本文只约束其中的媒体部分。
 
 ## 0. 两个必须分别满足的环境
 
@@ -23,7 +23,8 @@
 | `ffprobe` | ffmpeg ≥ 6.0 | `media.probe`（video）、`media.extract_frames`、`media.extract_audio` | 时长、流信息（有无音轨） | `ffprobe -hide_banner -version`，取 `ffprobe version <x>` |
 | `ffmpeg` | ≥ 6.0，带 `libmp3lame`（音轨输出）、PNG 编码 | `media.extract_frames`、`media.extract_audio`；`media.fit_image` 的可选依赖（`image` crate 解不了的格式先转 PNG） | 均匀抽帧、提取音轨、非常见图片格式解码 | `ffmpeg -hide_banner -version` |
 | `soffice`（LibreOffice headless：core、writer、impress、calc、draw；`ext-core` 带的是 26.8） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
-| 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体，Linux 上不读系统字体目录） | — | `media.to_pdf`（经 soffice） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf` 指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
+| `page-render`（`ext-core` 的命令：Node 脚本，用 `playwright-core` 起一个一次性的无头 Chromium；参数和输出见 [Agent 浏览器 TODO §5.7](../../notepads/agent-runtime-browser-todo.md)） | — | `media.page_to_pdf`、`media.page_snapshot` | HTML 页面（一份 HTML，或带 `index.html` 的 zip）输出成 PDF 或 PNG；Browser lane 并发 1，隔离运行（§3.1） | `page-render --version` 退出码为 0 时取第一行（`page-render <版本> chromium <版本> playwright-core <版本>`），整行就是它的版本 |
+| 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体，Linux 上不读系统字体目录） | — | `media.to_pdf`（经 soffice）、`media.page_to_pdf`、`media.page_snapshot`（经 Chromium；一个字体都没有时渲染文字会崩溃） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf`、`page_to_pdf`、`page_snapshot` 的指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
 | locale：`C.UTF-8` 可用（glibc 自带；`ext-core` 的 soffice launcher 在环境没有 UTF-8 locale 时自己设 `LC_ALL=C.UTF-8`） | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
 | `tesseract`，带常用语言数据（`ext-core` 保留的 28 种加 `osd`，见 [paios容器需求.md](../app_service/paios容器需求.md) §6.4） | ≥ 5.0 | `media.ocr_pages`（软依赖：缺它时各页保留文字层，步骤输出 `status: tools_missing`，结果不进缓存） | 文字层缺失或乱码的页重新识别；按窗口抽样选语言（试各文字系统的代表模型比置信度，都不像时问 `osd`）；竖排中日韩用 `_vert` 模型 | `tesseract --version` 取第二个 token；`tesseract --list-langs` 的语言表进 `ocr_pages` 指纹（`env/ocr_langs`），增减语言包使旧结果失效 |
 
@@ -37,6 +38,7 @@
 - 每个函数只把**自己依赖**的工具放进指纹：`fingerprint = { "cmd/<tool>": <version> | "missing" }`；`step_cache_key = hash(thunk_obj_id, fingerprint)`。因此升级 poppler 使 PDF 步骤不命中旧缓存，但不影响 `fit_image`（验收 6）。
 - `create_run(ensure=true)` 的合并键包含 `environment_revision`；执行前 runner 再核对指纹，不一致返回 `environment_changed`（retryable），不以旧 key 缓存新环境结果。
 - `to_pdf` 的 `is_pure: true` 表示结果可复用，不表示字节相同：LibreOffice 每次写入不同的 `CreationDate`、`/ID`、`DocChecksum`。第一次的结果写入缓存，之后 `pdf_content_id` 稳定，后续页面步骤全部命中（WF-DV-015）。它的指纹是 soffice、pdfinfo 版本加字体集摘要，字体变化使旧结果失效。
+- `page_to_pdf`、`page_snapshot` 同样是“可复用”意义上的 pure（Chromium 把生成时间写进 PDF）。指纹是 `cmd/page-render`（`--version` 那一行，含脚本、Chromium、playwright-core 三个版本）加字体集摘要 `env/fonts`：换浏览器、换脚本或字体变化都使旧结果失效。
 - locale 目前不进指纹，由宿主预置固定。
 
 ## 3. 宿主预置与检查
@@ -47,6 +49,23 @@
   - `check.py` 的 workflow（4070）一行只说明服务在线；能力诊断调 `workflow.get_capabilities`（返回 `environment.tools` / `missing` / `searched`），或看 workflow 启动日志 `workflow media tools revision=… present=[…] missing=[…]`。
   - 真实验证不是 `command -v`：对每个工具跑冒烟样例（§4），确认版本与真实转换都成功。
 
+### 3.1 `page-render` 的隔离运行
+
+页面里可能有扩展 Block 的 HTML，是第三方代码，而 workflow 在 Linux 上是 root。`page-render` 不走普通的 `run_tool`，走 `NativeContext::run_tool_isolated`（`src/kernel/workflow/src/native.rs`），只做四件事：
+
+| 做法 | 宿主要满足的 |
+| --- | --- |
+| 清空环境，只留白名单：Unix 上是 `PATH`、`LANG`、`LC_ALL`、`LC_CTYPE`、`TZ`，另设 `HOME` 指到本次执行临时目录里的 `page/home`，`TMPDIR` 指到一个短名的私有目录 `/tmp/wf-<12 位随机十六进制>`（0700，调用结束时删除；没有语言环境时设 `LANG=C.UTF-8`）。`WORKFLOW_SESSION_TOKEN` 不在其中 | `page-render` 的启动器靠自身位置找到 `ext-core`，不依赖别的环境变量；`/tmp` 可写 |
+| 单独的进程组；调用结束时（正常返回、超时、取消、调用被丢弃）整组 `SIGKILL` | — |
+| Linux 上有效用户是 root 时降到 `nobody`（`setgroups` / `setgid` / `setuid`，降完核对）；之前把 `page/` 整个目录和上面那个 `TMPDIR` 目录交给这个账号 | 有 `nobody` 账号，没有则该步骤失败；`$BUCKYOS_ROOT/tools` 和 `data/cache/workflow/exec/<execution_id>` 一路对其他用户可进入（默认 umask 022 时成立，`tools` 目录现在是 0755） |
+| 断网：root 时子进程在降权前 `unshare(CLONE_NEWNET)`；不是 root 时套 `unshare --net`，不行再套 `unshare --user --map-root-user --net`（同 nfs_server 预览） | 两种都不行时（容器里没有 `CAP_SYS_ADMIN`、没有 `unshare`）记一条警告继续，只剩 `page-render` 自己在浏览器里拦请求 |
+
+**`TMPDIR` 必须短。** Chromium 在 `TMPDIR` 下建套接字（`<TMPDIR>/org.chromium.Chromium.XXXXXX/SingletonSocket`），套接字路径上限约 108 字节，`TMPDIR` 超过约 62 字节浏览器就起不来：`page-render` 退出码 5，stderr 里是 `Socket path too long`。服务的执行临时目录是 `$BUCKYOS_ROOT/data/cache/workflow/exec/<run_id>_<node_id>_<attempt>`，默认安装下光它自己就有 86 个字符左右，所以 `TMPDIR` 不放在里面。Unix 上固定用 `/tmp`，不跟随服务自己的 `TMPDIR`（它可能同样很长）；Windows 上没有这个限制，`TEMP`、`TMP` 仍指到 `page\tmp`。服务被强杀时 `/tmp/wf-*` 目录会留下，靠系统对 `/tmp` 的清理回收。
+
+Chromium 自身的沙箱由 `page-render` 处理：先带沙箱起，宿主不支持时去掉重试，报告行里 `sandbox: false`，workflow 记一条警告，并写进 Thunk 的 `metrics.native`。macOS 上不降权、不建网络命名空间，清环境和进程组照做。Windows 上也不降权：白名单是 `PATH`、`PATHEXT`、`ComSpec`、`SystemRoot`、`SystemDrive`、`windir`、`ProgramData`、`ProgramFiles`、`ProgramFiles(x86)`，另设 `USERPROFILE`、`APPDATA`、`LOCALAPPDATA` 指到 `page\home` 之下，`TEMP`、`TMP` 指到 `page\tmp`；没有进程组，超时、取消或调用被丢弃时用 `taskkill /F /T` 结束进程树。
+
+实测（2026-11-15，本机，Chrome for Testing 159.0.8154.6、playwright-core 1.65.1）：一次性容器里以 root 运行，默认配置下降到 `nobody`、没有网络命名空间、`sandbox: false`；加 `CAP_SYS_ADMIN` 并放开 seccomp / AppArmor（相当于宿主上的 root）时降到 `nobody`、有网络命名空间、`sandbox: true`。不是 root 的开发机上走 `unshare --user --map-root-user --net`，进程在命名空间里是 root，Chromium 因此不开沙箱（`sandbox: false`）。三种情况用的执行临时目录都和服务上一样深（超过 100 个字符）；`TMPDIR` 还放在里面时，同一条用例以 `Socket path too long` 失败。
+
 ## 4. 冒烟样例（宿主与镜像都要跑）
 
 | 能力 | 样例 | 期望 |
@@ -54,9 +73,10 @@
 | PDF 文本 / 页图 | 两页以上、尾页含唯一答案句的文本 PDF；一页扫描（纯图）PDF | `media.pdf` Run Completed；manifest 尾页 `ok` 且文本含答案；扫描页 `no_text` + 页图；`summary.complete = true` |
 | 视频抽帧 / 音轨 | 带音轨的 3 秒合成视频；无音轨视频 | `media.video` Completed；`frames` ≥ 1 且时间戳单调；有音轨 → `audio.status = ok`，无音轨 → `absent` 不失败 |
 | DOCX / PPTX → PDF | 含中英文与一张图的 DOCX、三页 PPTX | `media.document` Completed；`to_pdf.pages` 正确；页图可见文字（非方块）；页码属于派生 PDF |
+| HTML → PDF / PNG | 带中文、分成多页的 HTML；带样式表和图片的 zip；页面里引用一个外部地址 | `media.page` Completed；`page_to_pdf.pages` 正确，纸张是请求的尺寸，`pdftotext` 抽得出中文；外部地址没有被访问，出现在 `metrics.native.warnings` 里 |
 | 缺工具故障注入 | 临时从搜索路径移除 `pdftoppm` 后建 `media.pdf` Run | `render_pdf_pages` Failed，`error.code = tools_missing`，`details.tools_missing = ["pdftoppm"]`，Run / Step / Thunk Task 与 RPC 一致；恢复工具后新 Run 的 ensure key 因 `environment_revision` 不同而不合并 |
 
-对应的自动化：`cargo test -p workflow -- --ignored`（`functions/media/tests.rs` 的 poppler / ffmpeg / soffice 用例，依赖本机工具），`uv run test/run.py -p workflow_test` 的 WF-DV-009~ 用例（真实 Zone）。
+对应的自动化：`cargo test -p workflow -- --ignored`（`functions/media/tests.rs` 的 poppler / ffmpeg / soffice / page-render 用例，依赖本机工具），`uv run test/run.py -p workflow_test` 的 WF-DV-009~ 用例（真实 Zone；`media.page` 是 WF-DV-017）。隔离运行的单测在 `native.rs`（不带 `--ignored` 就跑）；“降到 `nobody`”那一条只在以 root 运行测试时生效。
 
 ## 5. 与 paios 镜像的联动（T4b）
 
@@ -67,4 +87,5 @@
 ## 6. 未完成项
 
 - `ext-core` 1.2.0 的 soffice 只在 linux-x86_64 上实测（干净的 Ubuntu 24.04 / 22.04 容器，无网络）；linux-aarch64、macOS、Windows 的 payload 未运行过。
-- macOS / Windows 上 soffice 的字体回退走系统字体（CoreText / GDI），没写字体的中日韩文字不一定落到随包的 Noto CJK；`to_pdf` 指纹里的字体摘要取自 `fc-list`，看不到 `ext-core` 自带的字体。两项都未处理。
+- macOS / Windows 上 soffice 的字体回退走系统字体（CoreText / GDI），没写字体的中日韩文字不一定落到随包的 Noto CJK；`to_pdf` 指纹里的字体摘要取自 `fc-list`，看不到 `ext-core` 自带的字体。两项都未处理。`page_to_pdf`、`page_snapshot` 的字体摘要是同一个值，同样看不到随包的字体。
+- `page-render` 的隔离运行只在 Linux x86_64 上验证过（§3.1）。macOS、Windows 的分支没有运行过；真实 Zone 上以 root 运行的 workflow 也还没有跑过 `media.page`（WF-DV-017 未执行）。

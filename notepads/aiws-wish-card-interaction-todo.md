@@ -557,5 +557,14 @@ D2、D3 的答复只给了原则，下面两点落实方式是我定的：
 - 内核：`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace -- --test-threads=1` 全过（`activity.rs` 有一次服务进程没起来，重跑通过）；新增用例覆盖三阶段直接写入、缺输入失败、两种级别的检查、覆盖人工修改、结果 / 宏 / 需求回滚与 needs_confirm、20 条上限与累计次数、失败记录与取消不记、只读成员读不到日志、模板不带历史而克隆带。
 - `aiws/` `deno test -A aiws_test.js` 10 过；websdk `cli` deno test 176 过、相关 jest 20 过。
 - Desktop：`tsc -p tsconfig.app.json`、改过文件的 eslint 干净；连线纯计算单测 6 过；i18n 守卫除基线就失败的 “backend speaks English” 外全过。
-- e2e、真实 Zone DV：见 §8.5（第二阶段）。
-- 未做：websdk `dist` 重建（e2e 结束后做）；Zone 里 CLI 发行版重新打包（托管执行才有用量与 `run-rollback`）；真机。
+- e2e、真实 Zone DV：见 §8.5。
+
+### 8.5 e2e 与第二阶段的修正
+
+- 脚本模型 `tests/aiworkspace/mock-llm.mjs` 重写：程序检查带 `level`；愿望里的标记注入情况——`#slow[=ms]`、`#warn`、`#noinput`（没绑输入时分析提交缺输入）、`#checkwarn` / `#checkerror`、`#ai`（宏用 `aiws.ai.complete`）、`#codefail`；已有宏时重新编码给出不同的第二版；每次回答带 usage，模型名 `<请求的模型>@mock-llm`。`fixtures.ts` 的 `api.demo` 不再切回 Mock、删 `openMock`，浏览器默认连脚本模型，加了卡片操作的 helper。
+- `wish.spec.ts` 重写为 14 条，覆盖 §5 的 1–17 与 20（手机视口、流式页、示例项目的“任务汇总”）；其余依赖 Mock / 旧面板 / `proc.apply` 的 spec 改写（framework、i18n、datamode 新增 §5 18、objects、presence-worklog、block-contract、canvas、basics、ui、program-sandbox），删掉 collab (f) 与 offline 里离线启动 Mock 那一段。真实 Zone 的 DV 用例 `aiworkspace.templates.spec.ts`、`aiworkspace.macro.spec.ts`、`aiworkspace.mindmap.spec.ts` 已按卡片三步改写，**未运行**。
+- 全量 e2e（单 worker）：402 条，386 过、10 败、6 跳过（pdf-fidelity 缺环境变量）。program-sandbox 一条是 `ai.map` 计数多了字段、断言已改；其余 9 条（CN08、extensions 两条、framework §15-2、H-scale、home §15-29、m5 T5-1、session S-03、todo TD10）同一新后端单独重跑全过，当时机器负载约 18、named store 出现过 `database is locked`。基线的 P3-12、UI-M01 这次也通过。之后按最终的 core 重建 WASM，`wish.spec` 重跑 13/14，没过的 §5 17 停在用例开头打开应用那一步（还没进入许愿格操作），单独重跑通过，14 条全过。
+- 第二阶段修掉的：选中许愿格时 Block 工具栏、右键菜单不随新鲜度和运行状态刷新（宏刚写进来时工具栏上没有“运行”）；回滚确认框里结果用记录里的标题；工作日志认得新的提交说明（中文界面不再显示英文）；富文本结果回滚失败（`plan_richtext.rs` 的 `check_block` 在内部提交里接受 `expect: "any"`，已补服务端用例 `a_rolled_back_run_restores_its_rich_text_result`）；`core/src/body.rs` 的 `wish_parts` 读输入的 `entity_id`（原来读不存在的 `ref` / `source`，`ws_read` 列出的输入没有路径，基线就有）。
+- Rust 全量 `cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace -- --test-threads=1`：72 组 71 组一次过，`activity.rs` 两条在高负载下等服务进程启动超时、单独重跑全过；WASM 已按最终的 core 重建。websdk `dist` 已随 owner 的提交 `2252399` 重建。
+- 已知限制：回滚前列出的“会丢掉的改动”按实体算，富文本撤销按块，所以确认框里列出的人工修改回滚后可能其实还在。
+- 没覆盖：§5 19 真实 Zone 三个模板（DV 未跑）；§5 20 手机上只测了 1、2、5、6、整屏弹窗和结果链接；连线“随 Block 移动”用 API 移动测，不是拖动；存为模板走 API；修复宏、`COMMIT_CONFLICT`、状态栏定位按钮没有用例。Zone 里的 CLI 发行版未重新打包（托管执行才有用量与 `run-rollback`）；真机未验。

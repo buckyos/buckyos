@@ -100,6 +100,10 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
                 "service_id": "control-panel",
                 "selector": control_panel_selector,
             },
+            "reflow": {
+                "service_id": "nfs-server",
+                "selector": build_selector(("ood1", 4110, 10)),
+            },
         },
         "service_info": {
             "jarvis.test.buckyos.io": {
@@ -408,6 +412,14 @@ def assertions_for_case(case_name: str):
             control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262"),
             request_header_equals("X-Forwarded-Proto", "https"),
         ]
+    if case_name == "req_reflow_host_ok":
+        return [
+            control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:4110"),
+            request_header_equals("X-Forwarded-Host", "reflow.test.buckyos.io"),
+            request_header_equals("X-Forwarded-Proto", "https"),
+        ]
+    if case_name == "req_reflow_sso_callback_ok":
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_ndm_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:4110")]
     if case_name == "req_dfs_obj_ok":

@@ -73,12 +73,12 @@ async fn invoke(f: &dyn NativeFunction, e: &Env, params: Value) -> Result<Native
 }
 
 #[test]
-fn registry_publishes_ten_functions_and_baseline_lists_their_tools() {
+fn registry_publishes_twelve_functions_and_baseline_lists_their_tools() {
     let mut registry = FunctionRegistry::new();
     register(&mut registry).unwrap();
     let names: Vec<String> = registry.list().iter().map(|f| f.registration.name.clone()).collect();
-    assert_eq!(names.len(), 10);
-    for name in [CAPABILITIES, PROBE, FIT_IMAGE, EXTRACT_PDF_TEXT, RENDER_PDF_PAGES, OCR_PAGES, EXTRACT_FRAMES, EXTRACT_AUDIO, TO_PDF, BUILD_CATALOG] {
+    assert_eq!(names.len(), 12);
+    for name in [CAPABILITIES, PROBE, FIT_IMAGE, EXTRACT_PDF_TEXT, RENDER_PDF_PAGES, OCR_PAGES, EXTRACT_FRAMES, EXTRACT_AUDIO, TO_PDF, BUILD_CATALOG, PAGE_TO_PDF, PAGE_SNAPSHOT] {
         let f = registry.resolve(name, "1").expect(name);
         f.object.validate().unwrap();
         assert!(f.native.is_some());
@@ -93,10 +93,23 @@ fn registry_publishes_ten_functions_and_baseline_lists_their_tools() {
     let ocr = registry.resolve(OCR_PAGES, "1").unwrap();
     assert!(ocr.object.is_pure);
     assert!(!ocr.registration.requirements.contains_key("cmd/tesseract"), "without tesseract pages keep their text layer");
+    for name in [PAGE_TO_PDF, PAGE_SNAPSHOT] {
+        let page = registry.resolve(name, "1").unwrap();
+        assert!(page.object.is_pure);
+        assert!(page.registration.requirements.contains_key("cmd/page-render"));
+        assert_eq!(page.native.as_ref().unwrap().lane(), crate::native::ExecutionLane::Browser);
+    }
+    assert_eq!(
+        registry.resolve(PAGE_TO_PDF, "1").unwrap().object.result_type,
+        registry.resolve(TO_PDF, "1").unwrap().object.result_type
+    );
+    assert_eq!(crate::native::ExecutionLane::Browser.default_slots(), 1);
+    assert!(crate::native::ExecutionLane::ALL.contains(&crate::native::ExecutionLane::Browser));
 
     let baseline = media_tool_baseline();
     let tools: Vec<&str> = baseline.iter().map(|t| t.tool).collect();
-    assert_eq!(tools, vec!["ffmpeg", "ffprobe", "pdfinfo", "pdftoppm", "pdftotext", "soffice", "tesseract"]);
+    assert_eq!(tools, vec!["ffmpeg", "ffprobe", "page-render", "pdfinfo", "pdftoppm", "pdftotext", "soffice", "tesseract"]);
+    assert_eq!(baseline.iter().find(|t| t.tool == "page-render").unwrap().used_by, vec![PAGE_SNAPSHOT, PAGE_TO_PDF]);
     assert_eq!(baseline.iter().find(|t| t.tool == "tesseract").unwrap().used_by, vec![OCR_PAGES]);
     let ffmpeg = baseline.iter().find(|t| t.tool == "ffmpeg").unwrap();
     assert_eq!(ffmpeg.used_by, vec![EXTRACT_AUDIO, EXTRACT_FRAMES, FIT_IMAGE]);
@@ -381,6 +394,165 @@ async fn ocr_pages_without_tesseract_keeps_the_text_layer() {
     assert!(ocr::OcrPages.fingerprint(&ToolEnvironment::default()).contains_key("env/ocr_langs"));
 }
 
+const PDF_PAGE: &str = r#"{"paper": "A4", "landscape": false, "margin_mm": 10, "background": true}"#;
+const PNG_PAGE: &str = r#"{"viewport_width": 1280, "viewport_height": 800, "scale": 1}"#;
+
+fn page_params(base: &str, content_id: &str, more: Value) -> Value {
+    let mut params: Value = serde_json::from_str(base).unwrap();
+    params["content_id"] = json!(content_id);
+    for (name, value) in more.as_object().unwrap() {
+        params[name] = value.clone();
+    }
+    params
+}
+
+fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for (name, bytes) in entries {
+        writer.start_file(*name, options).unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+#[tokio::test]
+async fn page_functions_need_page_render_and_follow_the_browser_and_the_fonts() {
+    let e = env();
+    let (_, id) = e.io.add_file("page.html", b"<p>page</p>").await;
+    for err in [
+        invoke(&page::PageToPdf, &e, page_params(PDF_PAGE, &id, json!({}))).await.unwrap_err(),
+        invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({}))).await.unwrap_err(),
+    ] {
+        assert_eq!(err.code, error_codes::TOOLS_MISSING);
+        assert_eq!(err.details["tools_missing"], json!(["page-render"]));
+    }
+
+    let mut tool_env = ToolEnvironment::default();
+    tool_env.tools.insert("page-render".into(), crate::native::ToolInfo { path: "/x/page-render".into(), version: "page-render 1.0.0 chromium 159.0.8154.6 playwright-core 1.65.1".into() });
+    tool_env.fonts = Some("set-a".into());
+    let first = page::PageToPdf.fingerprint(&tool_env);
+    assert_eq!(first, page::PageSnapshot.fingerprint(&tool_env));
+    assert_eq!(first["cmd/page-render"], "page-render 1.0.0 chromium 159.0.8154.6 playwright-core 1.65.1");
+    tool_env.fonts = Some("set-b".into());
+    assert_ne!(first, page::PageToPdf.fingerprint(&tool_env));
+    tool_env.fonts = Some("set-a".into());
+    tool_env.tools.get_mut("page-render").unwrap().version = "page-render 1.0.0 chromium 160.0.0.0 playwright-core 1.66.0".into();
+    assert_ne!(first, page::PageToPdf.fingerprint(&tool_env));
+    assert_eq!(tools::parse_page_render_version("\n page-render 1.0.0 chromium 159 playwright-core 1.65.1 \nmore\n").as_deref(), Some("page-render 1.0.0 chromium 159 playwright-core 1.65.1"));
+    assert!(tools::parse_page_render_version("\n").is_none());
+
+    assert_eq!(page::paper_arg("A4").unwrap(), "A4");
+    assert_eq!(page::paper_arg("215.9x279.4mm").unwrap(), "215.9x279.4mm");
+    for bad in ["a4", "A4 ", "--help", "210x297", "0x297mm", "NaNx10mm", "210x297mm --url"] {
+        assert_eq!(page::paper_arg(bad).unwrap_err().code, error_codes::INVALID_PARAMS, "{bad}");
+    }
+}
+
+#[cfg(unix)]
+fn stub_page_env() -> Env {
+    let mut e = env();
+    let path = page::stub_page_render(&e.ctx.temp_dir.join("bin"));
+    let mut tools = BTreeMap::new();
+    tools.insert("page-render".to_string(), crate::native::ToolInfo { path, version: "stub".into() });
+    e.ctx.env = Arc::new(ToolEnvironment::with_tools(tools));
+    e
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn page_to_pdf_hands_the_page_to_page_render_in_isolation() {
+    std::env::set_var("WORKFLOW_SESSION_TOKEN", "secret-of-the-service");
+    let e = stub_page_env();
+    let html = "<html><body><h1>你好，世界</h1></body></html>";
+    let (_, id) = e.io.add_file("page.html", html.as_bytes()).await;
+    let header = "<span class=\"pageNumber\"></span>";
+    let out = invoke(&page::PageToPdf, &e, page_params(PDF_PAGE, &id, json!({
+        "landscape": true, "margin_mm": 12.5, "header_html": header, "footer_html": "", "wait_ready": "window.ready === true", "wait_ms": 0
+    }))).await.unwrap();
+    assert!(out.cacheable);
+    assert_eq!(out.result["pages"], 3);
+    let pdf_obj_id = out.result["pdf_obj_id"].as_str().unwrap().to_string();
+    assert!(e.io.artifact_bytes(&pdf_obj_id).unwrap().starts_with(b"%PDF"));
+    assert!(out.result["pdf_content_id"].as_str().unwrap().contains(':'));
+    assert_eq!(out.artifact_refs, vec![pdf_obj_id]);
+    assert_eq!(out.metrics, json!({"sandbox": false, "warnings": ["stub"]}));
+    page::to_pdf_function_object().validate_result(&out.result).unwrap();
+    document::function_object().validate_result(&out.result).unwrap();
+
+    let work = e.ctx.temp_dir.join("page");
+    let text = |path: &std::path::Path| std::fs::read_to_string(path).unwrap();
+    let path = |rel: &str| work.join(rel).to_string_lossy().into_owned();
+    let args: Vec<String> = text(&work.join("args.txt")).lines().map(String::from).collect();
+    assert_eq!(args[..8], ["--html".to_string(), path("site"), "--pdf".into(), path("out/page.pdf"), "--paper".into(), "A4".into(), "--margin".into(), "12.5".into()]);
+    let value_of = |option: &str| args.iter().position(|a| a == option).map(|at| args[at + 1].clone());
+    assert!(args.contains(&"--landscape".to_string()) && args.contains(&"--background".to_string()));
+    assert_eq!(value_of("--header-html"), Some(path("header.html")));
+    assert_eq!(text(&work.join("header.html")), header);
+    assert_eq!(value_of("--footer-html"), None);
+    assert_eq!(value_of("--wait-ready").as_deref(), Some("window.ready === true"));
+    assert_eq!(value_of("--wait-ms"), None);
+    assert!(value_of("--timeout").unwrap().parse::<u64>().unwrap() >= 5);
+    assert!(!args.iter().any(|a| a == "--url" || a == "--allow-host"), "a page never gets a network address");
+    assert_eq!(text(&work.join("site/index.html")), html);
+
+    let seen = text(&work.join("env.txt"));
+    assert!(!seen.contains("WORKFLOW_SESSION_TOKEN") && !seen.contains("secret-of-the-service"), "{seen}");
+    assert!(seen.contains(&format!("HOME={}\n", path("home"))), "{seen}");
+
+    for (bad, code) in [
+        (json!({"paper": "A4 --url http://x"}), error_codes::INVALID_PARAMS),
+        (json!({"margin_mm": 500}), error_codes::INVALID_PARAMS),
+        (json!({"wait_ready": "--allow-host"}), error_codes::INVALID_PARAMS),
+        (json!({"header_html": "x".repeat(100_000)}), error_codes::INVALID_PARAMS),
+    ] {
+        let err = invoke(&page::PageToPdf, &e, page_params(PDF_PAGE, &id, bad.clone())).await.unwrap_err();
+        assert_eq!(err.code, code, "{bad}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_zip_page_is_unpacked_around_its_index_and_stays_in_its_directory() {
+    let e = stub_page_env();
+    let site = zip_of(&[("index.html", b"<img src=\"img/a.png\">"), ("img/a.png", &png(2, 2, false))]);
+    let (_, id) = e.io.add_file("site.zip", &site).await;
+    let out = invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({"scale": 2, "wait_ms": 250}))).await.unwrap();
+    assert_eq!((out.result["width"].as_u64(), out.result["height"].as_u64()), (Some(1280), Some(800)));
+    let image = e.io.artifact_bytes(out.result["image_obj_id"].as_str().unwrap()).unwrap();
+    assert_eq!(probe::sniff_format(&image), "png");
+    page::snapshot_function_object().validate_result(&out.result).unwrap();
+    let work = e.ctx.temp_dir.join("page");
+    assert_eq!(std::fs::read(work.join("site/img/a.png")).unwrap(), png(2, 2, false));
+    let args = std::fs::read_to_string(work.join("args.txt")).unwrap();
+    assert!(args.contains("--viewport\n1280x800\n--scale\n2\n--wait-ms\n250\n"), "{args}");
+
+    let e = stub_page_env();
+    let (_, id) = e.io.add_file("site.zip", &zip_of(&[("page.html", b"<p>x</p>")])).await;
+    let err = invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({}))).await.unwrap_err();
+    assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    assert!(err.message.contains("index.html"), "{}", err.message);
+
+    let e = stub_page_env();
+    let (_, id) = e.io.add_file("site.zip", &zip_of(&[("index.html", b"<p>x</p>"), ("../../escaped.txt", b"out")])).await;
+    let err = invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({}))).await.unwrap_err();
+    assert_eq!(err.code, error_codes::INVALID_PARAMS, "{}", err.message);
+    assert!(!e.ctx.temp_dir.join("escaped.txt").exists() && !e.ctx.temp_dir.join("page/escaped.txt").exists());
+
+    let mut e = stub_page_env();
+    e.ctx.limits.max_input_bytes = 64 * 1024;
+    let (_, id) = e.io.add_file("site.zip", &zip_of(&[("index.html", b"<p>x</p>"), ("big.bin", &vec![0u8; 1024 * 1024])])).await;
+    let err = invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({}))).await.unwrap_err();
+    assert_eq!(err.code, error_codes::RESOURCE_LIMIT, "{}", err.message);
+
+    let e = stub_page_env();
+    let (_, id) = e.io.add_file("page.html", b"<p>x</p>").await;
+    let err = invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({"viewport_width": 3840, "viewport_height": 4096, "scale": 3}))).await.unwrap_err();
+    assert_eq!(err.code, error_codes::RESOURCE_LIMIT);
+    assert!(!e.ctx.temp_dir.join("page").exists(), "refused before anything is laid out");
+}
+
 // ----- tool-backed tests (run with `cargo test -p workflow -- --ignored`) -----
 
 fn minimal_pdf(pages: &[&str]) -> Vec<u8> {
@@ -590,6 +762,100 @@ async fn soffice_converts_documents_to_pdf() {
         assert_eq!(out.result["pages"], 1);
     }
     document::function_object().validate_result(&out.result).unwrap();
+}
+
+/// What poppler reads back from a PDF: `(pdfinfo, pdftotext)`.
+async fn read_pdf(e: &Env, pdf: &[u8]) -> Option<(String, String)> {
+    let (pdfinfo, pdftotext) = (e.ctx.env.tool(tools::PDFINFO)?, e.ctx.env.tool(tools::PDFTOTEXT)?);
+    let path = e.ctx.temp_dir.join("read.pdf");
+    std::fs::write(&path, pdf).unwrap();
+    let path = path.to_string_lossy().into_owned();
+    let info = e.ctx.run_tool(&pdfinfo.path, &[path.clone()], STDOUT_LIMIT).await.unwrap().ok().unwrap();
+    let text = e.ctx.run_tool(&pdftotext.path, &[path, "-".to_string()], STDOUT_LIMIT).await.unwrap().ok().unwrap();
+    Some((info.stdout_string(), text.stdout_string()))
+}
+
+#[tokio::test]
+#[ignore]
+async fn page_render_prints_a_chinese_page_to_a4_takes_a_snapshot_and_reaches_no_network() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(mut e) = real_env() else { return };
+    if !has(&e, &[tools::PAGE_RENDER]) {
+        return;
+    }
+    // As deep as in the service, where the browser's socket paths would not fit.
+    e.ctx.temp_dir = e.ctx.temp_dir.join("opt/buckyos/data/cache/workflow/exec/t-0169ddaa93524c83a1c61bf302a0c1e0_page_to_pdf_1");
+    std::fs::create_dir_all(&e.ctx.temp_dir).unwrap();
+    assert!(e.ctx.temp_dir.as_os_str().len() > 100, "{}", e.ctx.temp_dir.display());
+    // An address the page asks for; nothing may arrive there.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = hits.clone();
+    tokio::spawn(async move {
+        while listener.accept().await.is_ok() {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    let chapters: String = (1..=4)
+        .map(|n| format!("<section><h1>第{n}章 系统渲染</h1><p>这是第{n}页的正文，包含中文字符。ANSWER-{n}</p></section>"))
+        .collect();
+    let html = format!(
+        r#"<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>系统渲染</title>
+<style>section {{ break-before: page; }} section:first-of-type {{ break-before: auto; }} body {{ font-size: 16pt; }}</style></head>
+<body><img src="http://127.0.0.1:{port}/pixel.png">{chapters}
+<script>fetch("http://127.0.0.1:{port}/beacon").catch(() => {{}}).finally(() => {{ window.ready = true; }});</script></body></html>"#
+    );
+    let (_, id) = e.io.add_file("page.html", html.as_bytes()).await;
+    let footer = r#"<div style="font-size: 8pt; width: 100%; text-align: center">PAGE <span class="pageNumber"></span> OF <span class="totalPages"></span></div>"#;
+    let out = invoke(&page::PageToPdf, &e, page_params(PDF_PAGE, &id, json!({"margin_mm": 15, "footer_html": footer, "wait_ready": "window.ready === true"}))).await.unwrap();
+    assert!(out.cacheable);
+    page::to_pdf_function_object().validate_result(&out.result).unwrap();
+    assert_eq!(out.result["pages"], 4, "{}", out.result);
+    let pdf = e.io.artifact_bytes(out.result["pdf_obj_id"].as_str().unwrap()).unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "the page reached the network");
+    let blocked = out.metrics["warnings"].as_array().unwrap();
+    assert!(blocked.iter().any(|w| w.as_str().unwrap().contains(&format!("127.0.0.1:{port}/pixel.png"))), "{}", out.metrics);
+    eprintln!("page-render: sandbox={} warnings={}", out.metrics["sandbox"], out.metrics["warnings"]);
+    match read_pdf(&e, &pdf).await {
+        Some((info, text)) => {
+            let parsed = parse_pdfinfo(&info);
+            assert_eq!(parsed.pages, 4, "{info}");
+            let (width, height) = parsed.page_sizes[0];
+            assert!((width - 595.0).abs() < 2.0 && (height - 842.0).abs() < 2.0, "A4 is 595 x 842 pt, got {width} x {height}");
+            for n in 1..=4 {
+                assert!(text.contains(&format!("第{n}章 系统渲染")) && text.contains(&format!("ANSWER-{n}")), "{text}");
+            }
+            assert!(text.contains("正文，包含中文字符"), "{text}");
+            assert!(text.contains("PAGE 4 OF 4"), "{text}");
+        }
+        None => eprintln!("skipped reading the PDF back: no poppler"),
+    }
+
+    let out = invoke(&page::PageSnapshot, &e, page_params(PNG_PAGE, &id, json!({"viewport_width": 800, "viewport_height": 600, "scale": 2, "wait_ready": "window.ready === true"}))).await.unwrap();
+    page::snapshot_function_object().validate_result(&out.result).unwrap();
+    let image = ::image::load_from_memory(&e.io.artifact_bytes(out.result["image_obj_id"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(out.result["width"], 1600);
+    assert_eq!((u64::from(image.width()), u64::from(image.height())), (1600, out.result["height"].as_u64().unwrap()));
+    assert!(image.height() >= 1200, "the whole page, at least the viewport");
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+    let site = zip_of(&[
+        ("index.html", "<meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"css/a.css\"><p class=\"mark\">压缩包里的页面 ZIP-PAGE</p><img src=\"img/a.png\">".as_bytes()),
+        ("css/a.css", b".mark { color: #c00; }"),
+        ("img/a.png", &png(40, 30, false)),
+    ]);
+    let (_, id) = e.io.add_file("site.zip", &site).await;
+    let out = invoke(&page::PageToPdf, &e, page_params(PDF_PAGE, &id, json!({"paper": "100x150mm"}))).await.unwrap();
+    assert_eq!(out.result["pages"], 1);
+    assert_eq!(out.metrics["warnings"], json!([]), "everything the page asks for is in the zip");
+    if let Some((info, text)) = read_pdf(&e, &e.io.artifact_bytes(out.result["pdf_obj_id"].as_str().unwrap()).unwrap()).await {
+        let (width, height) = parse_pdfinfo(&info).page_sizes[0];
+        assert!((width - 283.5).abs() < 2.0 && (height - 425.2).abs() < 2.0, "100 x 150 mm, got {width} x {height} pt");
+        assert!(text.contains("压缩包里的页面 ZIP-PAGE"), "{text}");
+    }
 }
 
 /// N17: what a tool sees of an `/ndn/` input, against a real HTTP server.

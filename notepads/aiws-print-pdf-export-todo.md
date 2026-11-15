@@ -254,5 +254,5 @@ owner 的判断（第三、四轮）：
 - PDF 书签、PDF/A、表单域。
 - 一次打印多个流模式画布。
 - 用许愿格生成或调整页面布局（文档 10 提到，放到后续）。
-- 集成无头浏览器（另行讨论）。
+- 集成无头浏览器（另行讨论）。这项已在 [Agent 浏览器实施 TODO](agent-runtime-browser-todo.md) §5.7 立项：ext-core 带 Chromium，Workflow 的 `media.page` 把一份 HTML 输出成 PDF 或图片；AIWS 一侧怎么接仍按本文 T7、T8。
 - Agent 和 CLI 打印（Q9）。

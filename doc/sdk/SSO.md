@@ -204,6 +204,8 @@ iss            签发方（Zone 的 verify-hub）
 
 **AI Workspace 页面**（2026-10-28）：每个工作区是自己的站点 `https://aiws-<id>.<zone>/<工作区 slug>/<画布 slug>?id=<画布 id>`（`<id>` 去掉 `ws_`），由 aiworkspace 服务出页。它的登录态在该主机自持：从桌面或列表打开时 CP 用 `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` 委派会话并经一次性 `/sso_callback` 落 cookie；直接打开链接而没有登录态时，公开工作区以访客身份打开，否则到 Zone 根 `/login?redirect_url=` 登录（已在 Zone 根登录者自动接力）。入口页进入工作区时也走这一步。
 
+**Agent 浏览器的重排页**（2026-11-15）：`https://reflow.<zone>/<key>` 由 nfs-server 出页，路径是登录用户的重排桶 `user/control-panel/<user>/reflow` 里的 key（[Agent Browser Protocol](../opendan/protocol/Agent%20Browser%20Protocol.md) §5.4）。登录态同样在该主机自持：Desktop 用 `auth.prepare_app_launch { service_id: "nfs-server", redirect_url }` 委派会话，经一次性 `/sso_callback` 落 cookie，`/sso_refresh` 续期。nfs-server 在这个主机上只认目标是 `System(nfs-server)` 的用户会话，没有就回 401，不跳登录页。这种会话只用来打开重排页：带着它访问 nfs-server 的文件、桶和上传接口，Bearer 被拒，cookie 按匿名处理。
+
 Limited、External 及其衍生会话是**受限会话**：token 带 `restricted: true` 与 `scopes`（`account_self` / `msg_group` / `aiworkspace` / `homestation` / `aicc`）。`BuckyOSRuntime::verify_trusted_session_token` 默认拒绝受限会话，服务对需要开放的方法改用 `verify_session_token_opened(token, scope)`；类型升级不会让旧会话增权，降级在下一次 refresh 收窄。拒绝在 kRPC 失败响应中带 `code: "access_denied"` 与 `data: AccessDenial`（原因码与调整方），websdk 用 `accessDenialOf(error)` 读取，不解析错误文本。
 
 第三方网页不知道用户 Zone 时，用 websdk `buildJumpUrl(action, params)` 跳到 jump（默认 `https://jump.buckyos.org`，可由 `system/sso/settings.jump_base_url` 覆盖），由用户选择目标 Zone 后到达该 Zone 的同路径 action 页面，仍需在该 Zone 登录并确认操作；jump 页面见 `src/frame/jump/`。

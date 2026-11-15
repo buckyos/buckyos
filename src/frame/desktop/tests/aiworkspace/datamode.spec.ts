@@ -220,6 +220,34 @@ test('§15-13 three objects in three tabs: a preview is reused, switching keeps 
   await expect(page.getByTestId('aiws-dm-gone')).toBeVisible()
 })
 
+test('许愿格交互升级 §5 18: a wish made from the tree is on the real executor and opens as its card; nothing of the Mocks is left — no Mock executor, no controlled processing, no apply', async ({ page, api }) => {
+  const ws = await workspaceWithExtras(api)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await dataMode(page)
+  await rowMenu(page, 'f-docs', 'aiws-dm-menu-new', 'aiws-dm-new-wish')
+  const dialog = page.getByTestId('aiws-dm-new-dialog')
+  await dialog.getByTestId('aiws-dm-new-title').fill('按月汇总')
+  await dialog.getByTestId('aiws-new-data').click()
+  await expect(dialog).toHaveCount(0)
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e) => e.type_id === 'buckyos.wish' && e.parent_id === 'f-docs')?.entity_id ?? null).not.toBeNull()
+  const made = (await api.outline(ALICE, ws.workspace_id)).find((e) => e.type_id === 'buckyos.wish' && e.parent_id === 'f-docs')
+  expect((await api.read(ALICE, ws.workspace_id, made.entity_id)).content.payload.executor).toBe('xllm')
+  await expect(page.getByTestId(`aiws-wish-card-${made.entity_id}`)).toBeVisible()
+  await expect(page.getByTestId(`aiws-wish-card-${made.entity_id}`).getByTestId('aiws-wish-next')).toHaveAttribute('data-action', 'analyze')
+  // the Mock executor is no executor, the controlled processing no program, `proc.apply` no method
+  const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
+  const mock = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [{ key: 'executor', value: 'mock', expect: { rev: wish.content.key_revs.executor } }] }])
+  expect(mock.status, JSON.stringify(mock)).not.toBe('accepted')
+  const processing = await api.rpc(ALICE, 'proc.start', { workspace_id: ws.workspace_id, program: 'mock.task-summary@1', idempotency_key: `mock-${Date.now()}`, params: {} }).catch((e: Error) => ({ ok: false, thrown: e.message }))
+  expect(processing.ok, JSON.stringify(processing)).toBe(false)
+  await expect(api.rpc(ALICE, 'proc.apply', { workspace_id: ws.workspace_id, run_id: 'run_x' })).rejects.toThrow(/unknown method/)
+  // nor anything of them in the menus
+  await page.getByTestId('aiws-main-menu').click()
+  await page.getByTestId('aiws-menu-help').click()
+  await expect(page.getByTestId('aiws-side-mock')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+})
+
 test('§15-14 a macro in the “宏” folder opens on its code; “工作区权限” turns the editing area into the permission editor', async ({ page, api }) => {
   const ws = await workspaceWithExtras(api)
   await openWorkspace(page, ALICE, ws.workspace_id)

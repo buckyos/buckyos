@@ -59,6 +59,15 @@ fn cookie_rank(name: &str) -> u8 {
     }
 }
 
+/// RBAC key of a user session delegated to this service: what `/sso_callback` plants on `reflow.<zone>`.
+const PAGE_SESSION_KEY: &str = "system:nfs-server";
+
+/// A user's sign-in on `reflow.<zone>` (bucket::reflow). That origin runs page code, so the session opens its
+/// pages and none of the file, bucket and upload APIs.
+pub(crate) fn is_page_session(claims: &buckyos_api::NfsSessionClaims) -> bool {
+    claims.principal_kind == TokenPrincipalKind::User && claims.authorization_key == PAGE_SESSION_KEY
+}
+
 fn unauthenticated(msg: impl Into<String>) -> NfsError {
     NfsError::new(ErrorCode::PermissionDenied, msg).with("reason", serde_json::json!("unauthenticated"))
 }
@@ -88,6 +97,9 @@ async fn verify(state: &AppState, token: &str) -> NfsResult<Actor> {
     let claims = buckyos_api::verify_nfs_session_token(token, test_key)
         .await
         .map_err(|e| unauthenticated(format!("invalid session token: {}", e)))?;
+    if is_page_session(&claims) {
+        return Err(unauthenticated("this session only opens reflow pages"));
+    }
     match claims.principal_kind {
         TokenPrincipalKind::User => {
             if is_zone_owner(state, &claims.subject).await {

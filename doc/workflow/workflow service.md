@@ -127,7 +127,8 @@ task_manager task tree
 - 同名 Definition 的多次更新形成只增不减的 version 链；运行中的 Run 永远绑定到创建时的 version。
 - Definition 的修改不会影响已存在的 Run（与 Amendment 区分：Amendment 修改的是 Run 内嵌的计划，不修改 Definition）。
 - `source` 由服务端分配：客户端 `submit_definition` 不得自报 `system`；`id` / `name` 以 `media.` / `sys.` 开头的提交被拒。
-- **系统内置 Definition**（`source: system`）：随服务发布的 JSON（`src/kernel/workflow/defs/media.*.json`）在启动时播种，`id` 固定为 DSL id（如 `media.pdf`），owner 为内建标记 `system/workflow`（不是可登录用户），只读（`archive_definition` 拒绝），播种前检查本批约束（显式 `idempotent`、`max_attempts = 1`、`fallback = abort`、`/tool/media.*` executor、`trigger.input_schema` 不含 `content_id`），编译或分析失败则服务启动失败。
+- **系统内置 Definition**（`source: system`）：随服务发布的 JSON（`src/kernel/workflow/defs/media.*.json`：`media.image`、`media.pdf`、`media.video`、`media.document`、`media.page`）在启动时播种，`id` 固定为 DSL id（如 `media.pdf`），owner 为内建标记 `system/workflow`（不是可登录用户），只读（`archive_definition` 拒绝），播种前检查本批约束（显式 `idempotent`、`max_attempts = 1`、`fallback = abort`、`/tool/media.*` executor、`trigger.input_schema` 不含 `content_id`），编译或分析失败则服务启动失败。
+- `media.page`（系统渲染）把一份 HTML 对象（或带 `index.html` 的 zip）输出成 PDF 或 PNG：`capabilities` 之后按输入的 `output`（`pdf` / `png`，默认 `pdf`）走 `page_to_pdf` 或 `page_snapshot` 其中一条分支，另一条保持 `pending`。输入只接受 `obj_id`，读权限按调用者自己的令牌检查；网址不是它的输入（不带 `obj_id` 的输入没有鉴权，令牌也不能进函数参数）。页面在没有网络、不带服务凭据的隔离进程里渲染，见 [media tool baseline.md §3.1](media%20tool%20baseline.md)。
 - `revision` 是不可变的定义身份：Run 固定绑定创建时的 `revision`（`WorkflowRun.definition_revision`）和 compiled 快照；`plan_version` 只是 Run 内 amendment 版本。
 - `trigger.input_schema` 声明 `create_run` 输入及默认值，`trigger.output_schema`（缺省同 input）是步骤可引用的 `${trigger.output.*}`。
 

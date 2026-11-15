@@ -1371,6 +1371,8 @@ export const uiSessionStateSchema = z.object({
   'ui.draft': z.string().max(32_768).optional(),
   /** 客户端已读水位（sort_key）。用于跨端对齐未读分割线。 */
   'ui.last_read_sort_key': z.number().int().nonnegative().optional(),
+  /** 这个会话是在哪个 App 里新建的。现在只有「Agent 浏览器」写 `agent-browser`（它的事情列表只列带这个标记的会话）。 */
+  'ui.source': z.string().trim().min(1).max(64).optional(),
 })
 
 export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>

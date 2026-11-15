@@ -1,9 +1,9 @@
 ---
 name: buckyos_app_dev
-description: Develop a traditional BuckyOS App — static web page, Python/TypeScript script service or Docker service — with SDK identity, AppDoc permissions/endpoints/data dirs, PIKG metadata, local debugging, test install and an upgrade that keeps the App's data.
+description: Develop a traditional BuckyOS App — static web page, Python/TypeScript script service or Docker service — with SDK identity, AppDoc permissions/endpoints/data dirs, PIKG metadata, local debugging, page tests with Playwright on the system's Chromium, test install and an upgrade that keeps the App's data.
 requires: buckyos command with pikg (agent container or host); node/deno/python for the App's own build; Docker Apps need a host with Docker; installs need an identity the control-panel accepts
 baseline: extended
-commands: node, npm, deno, uv, python3, curl
+commands: node, npm, npx, deno, uv, python3, curl, agent-browser
 ---
 #### When to use
 Writing or converting an App that runs in a Zone: a web page/SPA, a small HTTP service in Python or TypeScript, or an existing Docker image; then installing and upgrading it for testing. The shared steps (build vs system build, `pikg` details, the three install paths, waiting for tasks, publish limits, error codes, evidence) are in `buckyos_dev_release`; when that manual is not in this session, read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_dev_release/SKILL.md`. Agents and skill packages are `opendan_agent_dev`.
@@ -63,6 +63,20 @@ Script: same with `--kind script --source ./script/dist` (dir holding `main.py` 
 - Script: run the entry directly with `BUCKYOS_DATA_DIR=./data PORT=3000` style env; on the host the repo tool `src/rootfs/bin/service_debug.tsx <app_id> <owner>` starts an installed script App in the foreground with the real env (not run in the 2026-10-17 check).
 - Docker (host): `docker run --rm -p 8080:<inner_port> -e BUCKYOS_DATA_DIR=/data -v $PWD/data:/data <image>`. Installed (host): `docker logs buckyos-app-<web host>`, `docker port buckyos-app-<web host>`.
 
+#### Page tests (Playwright)
+The extended runtime brings one Chromium and the Playwright that matches it, and a session's `PLAYWRIGHT_BROWSERS_PATH` points at it: a project on that version downloads no browser and installs no system libraries.
+```
+agent-browser version                       # chromium <version>, playwright-core <version>
+npm i -D @playwright/test@<that playwright-core version>
+npx playwright test
+```
+- In the Playwright config write `use: { channel: 'chromium' }` (at the top level, or in every Chromium project). The package has the full browser only, no headless shell: without `channel` the launch fails with `Executable doesn't exist … chromium_headless_shell-…`. Do not run `npx playwright install` for it. A new project takes the system's version.
+- A project pinned to another Playwright version needs a browser of its own (its launch says `Executable doesn't exist … chromium-<another revision>`), and on Linux that browser needs the package's libraries and fonts. Give them to that project's commands only, in a subshell, so that nothing else in the session sees them:
+```
+( eval "$(agent-browser env)"; npx playwright install chromium; npx playwright test )
+```
+- Tests start a browser of their own. To look at a page as the user sees it, or to act on a site for the user, use the Agent's own browser: manual `browser`.
+
 #### New version and upgrade
 1. Write something into `$BUCKYOS_DATA_DIR` (or the App's user data) with the old version and note it.
 2. Change code; set `app.json.version` (semver, higher), `pikg.json.pikg_file`, and for Docker a new image tag + `pikg.json` image; keep `did`/`name`.
@@ -81,4 +95,4 @@ Report: App DID, version, `pikg_digest`, task ids and outcome, URL, the request 
 Current repository contracts: [PIKG CLI](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md), [package format](https://github.com/buckyos/buckyos/blob/main/doc/pikg/format.md), [App configuration](https://github.com/buckyos/buckyos/blob/main/doc/sdk/app-package-config.md). This manual supplies the task recipe; schemas and historical proposals are maintained in those documents.
 Mounted CLI source `/opt/buckyos/libexec/buckyos-tool/cli/modules/{pikg,pikg_protocol,app}.ts`; samples in the BuckyOS repo `test/app_installer_test/pikg_samples/{static-web,script-host,docker}` and `src/apps/text_editor` (static-web App with SDK, NFSP and settings); websdk `examples/`. Extra scripts go to the project or `$OPENDAN_AGENT_ROOT/tools/`.
 
-Checked against: BuckyOS 0.7.0, Tool/SDK 0.7.131, static-web and Docker samples installed and upgraded, script sample installed, on test.buckyos.io from the host (not yet from an agent container), 2026-10-17.
+Checked against: BuckyOS 0.7.0, Tool/SDK 0.7.131, static-web and Docker samples installed and upgraded, script sample installed, on test.buckyos.io from the host (not yet from an agent container), 2026-10-17. Page tests: the ext-core 1.3.0 payload mounted into a bare ubuntu:24.04 container, with @playwright/test 1.65.1 and 1.63.0, 2026-11-15 (not yet in an agent session).

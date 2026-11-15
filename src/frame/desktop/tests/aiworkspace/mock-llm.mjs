@@ -14,7 +14,8 @@
 //   #ai          the macro writes its commentary with `aiws.ai.complete`
 //   #codefail    the coding never finishes (the model gives up)
 // A coding round on a stored macro (the coding message says one exists) or with a "降序" refinement sorts the summary
-// by its total, high to low: a second version of the macro, different code.
+// by its total, high to low: a second version of the macro, different code. A Chinese request gets Chinese names and
+// text, any other English (the English UI spec). Every answer reports its usage and names the model `<asked>@mock-llm`.
 import { createServer } from 'node:http'
 
 let calls = 0

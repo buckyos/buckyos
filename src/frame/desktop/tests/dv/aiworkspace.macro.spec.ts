@@ -1,13 +1,14 @@
 /* A wish's three stages on a real Zone with the real model, from the browser (notepads/aiws-ai-native-phase1-todo.md
- * T7-3): analyze → code (the model writes the macro and trial-runs it; applying stores it with its results) → the data
- * changes → run (the stored macro only, no model loop; the commentary follows the data) → a renamed field changes
- * nothing → a deleted declared field asks for coding again. The CLI as an executor runs the macro restricted; with a
+ * T7-3; 许愿格交互升级 §3.3): analyze → code (the model writes the macro and trial-runs it; only the macro is stored) → run
+ * (its results written as it ends) → the data changes → run again (the stored macro only, no model loop; the commentary
+ * follows the data) → a renamed field changes nothing → a deleted declared field asks for coding again. Every stage is
+ * a click on the wish's card; nothing waits to be applied. The CLI as an executor runs the macro restricted; with a
  * second real account, a run is written as its macro identity (权限需求 §4.5, Q31–Q32). */
 
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { FreshnessInfo, Operation, WishRunView, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
 import { cli, expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
@@ -41,12 +42,38 @@ async function setAmount(actor: Actor, ws: Workspace, record: string, value: str
   await commit(actor, ws, [{ op: 'table.set_values', source_id: 'orders', values: [{ record_id: record, field_id: 'amount', value, expect: { rev: cell.content.rev } }] } as Operation])
 }
 
-async function applyCandidate(page: Page, stage: 'code' | 'run') {
-  const candidate = page.getByTestId('aiws-wish-candidate')
-  await expect(candidate).toHaveAttribute('data-stage', stage, { timeout: 600_000 })
-  await expect(candidate).toHaveAttribute('data-ready', 'true', { timeout: 60_000 })
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toBeVisible({ timeout: 60_000 })
+type WishStage = 'analyze' | 'code' | 'run'
+
+/** The wish's card, large enough to work with: the canvas fitted, the Block selected by its title, then fitted. */
+async function showCard(page: Page): Promise<Locator> {
+  const top = page.getByTestId('aiws-top-canvas')
+  if (await top.isVisible()) await top.click()
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-all').click()
+  const card = page.getByTestId('aiws-wish-card-wish-sales')
+  await card.getByTestId('aiws-wish-title').click()
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-selection').click()
+  await expect(card.getByTestId('aiws-wish-tab-prompt')).toBeVisible()
+  return card
+}
+
+/** A stage from the card — its tab's next step, or the run button — waited for until it wrote its record (no apply). */
+async function step(actor: Actor, ws: Workspace, card: Locator, stage: WishStage, by: 'prompt' | 'analysis' | 'macro' | 'run-button') {
+  const before = ((await wish(actor, ws)).payload.history?.[stage] ?? [])[0]?.id
+  if (by === 'run-button') {
+    await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'ready', { timeout: 60_000 })
+    await card.getByTestId('aiws-wish-run').click()
+  } else {
+    await card.getByTestId(`aiws-wish-tab-${by}`).click()
+    await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', stage)
+    await card.getByTestId('aiws-wish-next').click()
+  }
+  let record: { id: string; ok: boolean; error?: unknown } | undefined
+  await expect.poll(async () => { record = ((await wish(actor, ws)).payload.history?.[stage] ?? [])[0]; return Boolean(record && record.id !== before) }, { timeout: 600_000, intervals: [3_000] }).toBe(true)
+  await expect(card).toHaveAttribute('data-running', '', { timeout: 60_000 })
+  expect(record!.ok, JSON.stringify(record!.error)).toBe(true)
+  return record!
 }
 
 /** A workspace with an order table, a wish asking for monthly totals and a commentary, and its Blocks. */
@@ -81,46 +108,49 @@ async function setup(owner: Actor): Promise<Workspace> {
   return ws
 }
 
-test('[macro] analyze, code, apply, the data changes, run: the commentary follows the data', async ({ owner }, info) => {
+test('[macro] analyze, code, run, the data changes, run again: the commentary follows the data', async ({ owner }, info) => {
   test.setTimeout(1_500_000)
   const ws = await setup(owner)
   const page = owner.page
   await openWorkspace(owner, ws)
-  const top = page.getByTestId('aiws-top-canvas')
-  if (await top.isVisible()) await top.click()
-  await page.getByTestId('aiws-zoom-menu').click()
-  await page.getByTestId('aiws-fit-all').click()
-  await page.getByTestId('aiws-canvas-block-blk-wish').click()
-  await page.getByTestId('aiws-near-wish-open').click()
-  await expect(page.getByTestId('aiws-wish-executor')).toHaveValue('xllm')
+  const card = await showCard(page)
 
-  // analyze: the task contract, written back as the run ends
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_coding', { timeout: 600_000 })
+  // analyze: the task contract, written as the run ends
+  await step(owner, ws, card, 'analyze', 'prompt')
+  await expect(card).toHaveAttribute('data-tab', 'analysis')
   const analyzed = await wish(owner, ws)
   expect(analyzed.payload.analysis.schema_version).toBe('wish.analysis.v3')
+  expect((analyzed.payload.analysis.checks as { kind: string; level?: string }[]).filter((c) => c.kind === 'program').every((c) => c.level === 'error' || c.level === 'warning')).toBe(true)
   await screenshot(page, info, 'macro-analyzed')
 
-  // code: the model writes the macro and trial-runs it in this browser; applying stores it with its results
-  await page.getByTestId('aiws-wish-code').click()
-  await applyCandidate(page, 'code')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current', { timeout: 60_000 })
+  // code: the model writes the macro and trial-runs it in this browser; only the macro is stored
+  const codedRecord = await step(owner, ws, card, 'code', 'analysis')
+  await expect(card).toHaveAttribute('data-tab', 'macro')
+  await expect(card.getByTestId('aiws-wish-run')).toBeVisible()
   const coded = await wish(owner, ws)
   expect(coded.payload.program.api_version).toBe(3)
+  expect(coded.payload.last_run ?? null, 'coding writes no results').toBeNull()
+  expect((codedRecord as { usage?: { model?: string } }).usage?.model, 'the record names the model that answered').toBeTruthy()
   const declared = Object.values(coded.payload.program.manifest.inputs as Record<string, { entity_id: string; fields?: { field_id: string }[] }>)
   expect(declared.some((i) => i.entity_id === 'orders' && (i.fields ?? []).some((f) => f.field_id === 'amount')), JSON.stringify(coded.payload.program.manifest)).toBe(true)
-  const bindings = coded.payload.last_run.result_bindings.results as Record<string, { type: string; entity_id: string }>
+  await screenshot(page, info, 'macro-coded')
+
+  // run: the results and their Blocks, written as it ends
+  await step(owner, ws, card, 'run', 'macro')
+  await expect(card).toHaveAttribute('data-tab', 'results')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+  const first = await wish(owner, ws)
+  const bindings = first.payload.last_run.result_bindings.results as Record<string, { type: string; entity_id: string }>
   const text = Object.values(bindings).find((b) => b.type === 'richtext')
   expect(text, JSON.stringify(bindings)).toBeTruthy()
   const before = await textOf(owner, ws, text!.entity_id)
-  await screenshot(page, info, 'macro-coded')
+  await screenshot(page, info, 'macro-ran-first')
 
   // the data changes: stale; running the macro (no model loop) updates the table and the commentary together
   await setAmount(owner, ws, 'o0', '5000.00')
   await expect.poll(async () => (await freshness(owner, ws)).status, { timeout: 60_000 }).toBe('stale')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'stale', { timeout: 60_000 })
-  await page.getByTestId('aiws-wish-run').click()
-  await applyCandidate(page, 'run')
+  await expect(card.getByTestId('aiws-wish-results-stale')).toBeVisible({ timeout: 60_000 })
+  await step(owner, ws, card, 'run', 'run-button')
   await expect.poll(async () => (await freshness(owner, ws)).status, { timeout: 60_000 }).toBe('current')
   const ran = await wish(owner, ws)
   expect(ran.payload.last_run.mode).toBe('run')
@@ -134,15 +164,15 @@ test('[macro] analyze, code, apply, the data changes, run: the commentary follow
   await commit(owner, ws, [{ op: 'table.update_field', source_id: 'orders', field_id: 'amount', changes: { name: '金额' }, expect: { rev: field.content.def_rev } } as Operation])
   expect((await freshness(owner, ws)).needs_coding ?? null).toBeNull()
   await setAmount(owner, ws, 'o1', '7000.00')
-  await page.getByTestId('aiws-wish-run').click()
-  await applyCandidate(page, 'run')
+  await step(owner, ws, card, 'run', 'run-button')
   await expect.poll(async () => (await freshness(owner, ws)).status, { timeout: 60_000 }).toBe('current')
 
-  // a declared field deleted: the wish needs coding again, and a run is refused before it starts
+  // a declared field deleted: the wish needs coding again, and its run button says so instead of running
   const status = await owner.client.ok<{ content: { def_rev: number } }>('doc.read', { workspace_id: ws.workspace_id, entity_id: 'orders', selector: { kind: 'table_field', field_id: 'amount' } })
   await commit(owner, ws, [{ op: 'table.delete_field', source_id: 'orders', field_id: 'amount', expect: { rev: status.content.def_rev } } as Operation])
   await expect.poll(async () => (await freshness(owner, ws)).needs_coding?.reasons?.[0]?.code, { timeout: 60_000 }).toBe('field_deleted')
-  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_coding', { timeout: 60_000 })
+  await expect(card).toHaveAttribute('data-main', 'needs_coding', { timeout: 60_000 })
+  await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'disabled')
   await screenshot(page, info, 'macro-needs-coding')
 })
 
@@ -163,7 +193,7 @@ export default async function main(aiws) {
 `
 
 /** `actor` works runs of wish-sales through the CLI as their executor: `run-start` (a local run it executes itself),
- * claim, the stage folder; `settle` previews and applies as `actor`. */
+ * claim, the stage folder; `settle` waits until the stage has written its product and its record. */
 function executor(actor: Actor, token: string, baseURL: string, ws: Workspace) {
   const work = mkdtempSync(join(tmpdir(), 'aiws-cli-dv-'))
   const run = (...args: string[]) => cli(token, baseURL, work, 'aiws', ...args, '--workspace', ws.workspace_id)
@@ -178,10 +208,11 @@ function executor(actor: Actor, token: string, baseURL: string, ws: Workspace) {
   }
   const settle = async (runId: string) => {
     let view: WishRunView | null = null
-    await expect.poll(async () => { view = await actor.client.ok<WishRunView>('proc.get', { workspace_id: ws.workspace_id, run_id: runId, choices: {} }); return view.state }, { timeout: 120_000 }).not.toMatch(/^(queued|snapshotting|running|validating)$/)
-    expect(view!.state, JSON.stringify(view)).toBe('waiting_confirmation')
-    expect(view!.preview?.ready, JSON.stringify(view!.preview)).toBe(true)
-    await actor.client.ok('proc.apply', { workspace_id: ws.workspace_id, run_id: runId, plan_digest: view!.preview!.plan_digest, session_id: 'dv-aiws' })
+    await expect.poll(async () => { view = await actor.client.ok<WishRunView>('proc.get', { workspace_id: ws.workspace_id, run_id: runId }); return view.state }, { timeout: 120_000 }).not.toMatch(/^(queued|snapshotting|running|validating|applying)$/)
+    // the stage wrote at once: its product and its record, nothing to apply (许愿格交互升级 §3.3)
+    expect(view!.state, JSON.stringify(view)).toBe('succeeded')
+    expect(view!.applied?.status, JSON.stringify(view!.applied)).toBe('accepted')
+    expect(view!.record?.ok, JSON.stringify(view!.record)).toBe(true)
     return view!
   }
   const analyze = async (results: unknown[]) => {
@@ -228,16 +259,23 @@ test('[macro-cli] an executor outside the browser works a wish through the CLI: 
   // code: the macro runs restricted (no claim.json, no environment), its SQL by the service, its AI with this session
   const { trial, view: coded } = await ex.code(HOSTED_MACRO)
   expect(String(trial.text)).toContain('reads sales: 月份, 销售额, 状态')
-  const facts = (coded.candidate as unknown as { facts: Record<string, unknown> }).facts
+  // the trial's facts are in its answer (the trial results go into the record only, never into the document)
+  const facts = JSON.parse((/\nfacts: (\{.*\})\nChecks:/.exec(String(trial.text)) ?? [])[1] ?? '{}') as Record<string, unknown>
   expect(['NotCapable', 'PermissionDenied']).toContain(facts.claim)
   expect(['NotCapable', 'PermissionDenied']).toContain(facts.env)
+  expect(coded.record?.summary, JSON.stringify(coded.record)).toMatchObject({ trial: { results: 2 } })
   const first = await wish(owner, ws)
   expect(first.payload.program.api_version).toBe(3)
+  expect(first.payload.last_run ?? null, 'coding writes no results').toBeNull()
 
-  // the data changes; running the stored macro updates the table and the commentary
+  // running the stored macro writes the table and the commentary; the data changes, running again updates them
+  await ex.rerun()
+  const monthly = (await wish(owner, ws)).payload.last_run.result_bindings.results.monthly as { entity_id: string }
+  const table = await textOf(owner, ws, monthly.entity_id)
   await setAmount(owner, ws, 'o0', '9000.00')
   const done = await ex.rerun()
-  expect((done.candidate as unknown as { facts: { total: number } }).facts.total).toBeGreaterThan((facts.total as number))
+  expect(done.record?.summary, JSON.stringify(done.record)).toMatchObject({ created: 0 })
+  expect(await textOf(owner, ws, monthly.entity_id), 'the monthly totals follow the data').not.toBe(table)
   expect((await freshness(owner, ws)).status).toBe('current')
 })
 
@@ -268,6 +306,9 @@ test('[macro-permissions] a run is written as its macro identity: an editor\'s p
   expect(await audits(), 'an analysis is no change of the macro').toBe(0)
   await editor.code(PAGE_MACRO)
   expect(await audits(), 'a new macro of a bound wish is on the record').toBe(1)
+  // the editor runs it: the results, its page among them, written as the editor's run
+  await editor.rerun()
+  expect(await audits(), 'a run is no change of the macro').toBe(1)
   const coded = await wish(owner, ws)
   const dash = coded.payload.last_run.result_bindings.results.dash as { entity_id: string; cells: string[] }
   const def = async () => (await owner.client.ok<{ content: { payload: Record<string, any>; key_revs: Record<string, number> } }>('doc.read', { ...at, entity_id: dash.entity_id })).content // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -317,10 +358,11 @@ test('[macro-permissions] a run is written as its macro identity: an editor\'s p
   if (await ptop.isVisible()) await ptop.click()
   await peer.page.getByTestId('aiws-zoom-menu').click()
   await peer.page.getByTestId('aiws-fit-all').click()
-  await peer.page.getByTestId('aiws-canvas-block-blk-wish').click()
-  await peer.page.getByTestId('aiws-near-wish-open').click()
-  await expect(peer.page.getByTestId('aiws-wish-run-only')).toBeVisible()
-  await expect(peer.page.getByTestId('aiws-wish-run')).toBeDisabled()
+  // the card: its run button disabled with why, no next step (no update)
+  const peerCard = peer.page.getByTestId('aiws-wish-card-wish-sales')
+  await expect(peerCard.getByTestId('aiws-wish-run')).toBeDisabled()
+  await expect(peerCard.getByTestId('aiws-wish-run')).toHaveAttribute('title', /只有运行权限/)
+  await expect(peerCard.getByTestId('aiws-wish-next')).toHaveCount(0)
   await screenshot(peer.page, info, 'permissions-run-only')
 
   // bound with intersection to a group that cannot read the input: even the owner's run reads no more than the group

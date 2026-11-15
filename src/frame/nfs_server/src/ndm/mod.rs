@@ -175,6 +175,9 @@ pub async fn principal(state: &AppState, headers: &HeaderMap) -> Result<Principa
     };
     for token in candidates {
         if let Ok(claims) = buckyos_api::verify_nfs_session_token(token, test_key).await {
+            if crate::auth::is_page_session(&claims) {
+                continue;
+            }
             return Ok(Principal {
                 user: claims.subject,
                 app_key: claims.authorization_key,

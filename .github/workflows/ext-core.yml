@@ -95,6 +95,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: publish/exttool/ext-core/browser/test
       - uses: actions/download-artifact@v6
         with:
           name: ext-core-${{ matrix.platform }}
@@ -107,6 +110,14 @@ jobs:
           docker run --rm --network none -v "$RUNNER_TEMP/unpacked:/some/where/else:ro" \
             -e PATH=/some/where/else/bin:/usr/bin:/bin ubuntu:24.04 \
             sh -euc 'cd /tmp; for script in /some/where/else/smoke/*.sh; do echo "== $script"; sh "$script"; done'
+      # The payload carries the modules of browser/ without their tests: put them next to the modules they test.
+      - name: The tests of agent-browser and page-render, on the payload's node, playwright-core and Chromium
+        run: |
+          set -euo pipefail
+          cp -R publish/exttool/ext-core/browser/test "$RUNNER_TEMP/unpacked/store/ext-core/browser/test"
+          docker run --rm --network none -v "$RUNNER_TEMP/unpacked:/some/where/else:ro" \
+            -e PATH=/some/where/else/bin:/usr/bin:/bin ubuntu:24.04 \
+            sh -euc 'cd /some/where/else/store/ext-core/browser; node --test "test/*.test.mjs"'
 
   smoke-macos:
     name: smoke ${{ matrix.platform }}

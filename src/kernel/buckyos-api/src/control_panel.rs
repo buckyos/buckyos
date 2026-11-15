@@ -22,6 +22,9 @@ pub const CONTROL_PANEL_SERVICE_PORT: u16 = 4020;
 
 /// `user/control-panel/<user>/wallpapers`: the account's desktop pictures, key `<sha256[..32]>.<ext>`.
 pub const CONTROL_PANEL_WALLPAPERS_BUCKET: &str = "wallpapers";
+/// `user/control-panel/<user>/reflow`: the account's reflow library of the Agent Browser, key `<site>/…`
+/// (doc/opendan/protocol/Agent Browser Protocol.md §5.1); nfs-server serves it on `reflow.<zone>`.
+pub const CONTROL_PANEL_REFLOW_BUCKET: &str = "reflow";
 /// `zone/control-panel/_/agent_templates`: Agent template PIKGs installed with the CLI, key `<owner>/<app_id>/<digest>.pikg`.
 pub const CONTROL_PANEL_AGENT_TEMPLATES_BUCKET: &str = "agent_templates";
 /// `zone/control-panel/_/packages`: payloads of installed apps, key `<owner>/<app_id>/<version>/<content_id>`.
@@ -48,6 +51,10 @@ pub fn control_panel_bucket_decls() -> HashMap<String, crate::bucket_client::Buc
         (
             CONTROL_PANEL_WALLPAPERS_BUCKET.to_string(),
             decl(BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(128), None),
+        ),
+        (
+            CONTROL_PANEL_REFLOW_BUCKET.to_string(),
+            decl(BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(1024), None),
         ),
         (
             CONTROL_PANEL_AGENT_TEMPLATES_BUCKET.to_string(),
@@ -714,6 +721,26 @@ pub fn generate_control_panel_service_doc() -> AppDoc {
     .selector_type(SelectorType::Single)
     .build()
     .unwrap()
+}
+
+#[cfg(test)]
+mod bucket_decl_tests {
+    use super::*;
+    use crate::bucket_client::{BucketKind, BucketScope, DataPolicy};
+
+    #[test]
+    fn the_reflow_library_is_a_per_user_app_data_bucket_with_a_quota() {
+        let decls = control_panel_bucket_decls();
+        let reflow = &decls[CONTROL_PANEL_REFLOW_BUCKET];
+        assert_eq!(
+            (reflow.kind, reflow.data_policy, reflow.scope, reflow.quota_mib),
+            (BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(1024))
+        );
+        assert_eq!(
+            crate::validate_app_buckets(&decls, Some(CONTROL_PANEL_STORAGE_QUOTA_MIB)),
+            Vec::<String>::new()
+        );
+    }
 }
 
 #[cfg(test)]

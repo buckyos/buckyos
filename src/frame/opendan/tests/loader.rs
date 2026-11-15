@@ -33,6 +33,8 @@ use opendan::tasks::{NewTask, TaskService, TaskView};
 use opendan::ui::MailService;
 use serde_json::{json, Value};
 
+mod fake_browser;
+
 const AGENT: &str = "did:bns:jarvis.alice";
 const WHO: &str = "app:jarvis@alice";
 const BOB: &str = "did:bns:bob";
@@ -2792,5 +2794,451 @@ async fn a_session_process_elsewhere_reaches_its_session_through_the_service() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("cannot call"), "{err}");
+    loader.shutdown().await;
+}
+
+/// A kRPC call as the wire shows it: the result, or the error's JSON
+/// (`kind`, `code`, `message`).
+async fn rpc_wire(port: u16, method: &str, params: Value) -> Result<Value, Value> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = json!({ "method": method, "params": params, "sys": [1] }).to_string();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "POST {SERVICE_PATH} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(Duration::from_secs(30), stream.read_to_string(&mut response)).await.unwrap().unwrap();
+    let (_, body) = response.split_once("\r\n\r\n").unwrap();
+    let answer: Value = serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {response}"));
+    match answer["error"].as_str() {
+        Some(error) => Err(serde_json::from_str(&error[error.find('{').unwrap_or(0)..]).unwrap_or_else(|_| json!({ "message": error }))),
+        None => Ok(answer["result"].clone()),
+    }
+}
+
+/// The agent's browser is the fake one (`tests/fake_browser`), in the
+/// AgentRoot's cache directory as on a host without an instance volume.
+async fn fake_browser_of(w: &World) -> Arc<fake_browser::FakeBrowser> {
+    std::env::set_var("OPENDAN_CHROMIUM", fake_browser::chromium());
+    std::env::remove_var("OPENDAN_BROWSER_DIR");
+    fake_browser::FakeBrowser::start(&w.root.join(".cache").join("browser")).await
+}
+
+/// Browser TODO BR5 / BR6 / HO through the Loader: `browser.*` over real
+/// kRPC — the browser starts on demand, the agent's commands find the
+/// service in their environment, a lease makes the agent the operating
+/// party until the user takes over, errors carry their `code`, and the
+/// screen and upload entries are routed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_agents_browser_is_served_over_krpc() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let w = World::new();
+    let fake = fake_browser_of(&w).await;
+    let port = free_port();
+    // A session's command says what it finds in its environment.
+    let found = Arc::new(Mutex::new(String::new()));
+    let told = found.clone();
+    let llm = Llm::new(move |req, n| match n {
+        0 => "TOOL:echo \"rpc=$OPENDAN_BROWSER_RPC session=$OPENDAN_SESSION_ID\"".to_string(),
+        _ => {
+            *told.lock().unwrap() = format!("{:?}", req.messages);
+            r#"CALL:report {"report": "done", "is_end": true}"#.to_string()
+        }
+    });
+    let loader = Loader::start(w.env(llm, port).await).await.unwrap();
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    // Where a session's `agent-browser` finds the service: the Loader's environment, which a
+    // command of a session on the private runtime inherits.
+    let address = format!("http://127.0.0.1:{port}/kapi/{}", loader.agent.agent_id());
+    assert_eq!(std::env::var("OPENDAN_BROWSER_RPC").unwrap(), address);
+    let work = new_work(loader.agent.as_ref(), &w, "look something up in the browser").await;
+    until("the work ran its command", || finished(&work)).await;
+    let found = found.lock().unwrap().clone();
+    assert!(found.contains(&format!("rpc={address} session={}", work.sid())), "{found}");
+    let status = rpc(port, "loader.status", json!({})).await.unwrap();
+    let module = status["modules"].as_array().unwrap().iter().find(|m| m["name"] == "browser").unwrap().clone();
+    assert_eq!((module["enabled"].clone(), module["running"].clone()), (json!(true), json!(true)), "{module}");
+
+    let status = rpc(port, "browser.status", json!({})).await.unwrap();
+    assert_eq!((status["enabled"].clone(), status["available"].clone(), status["running"].clone()), (json!(true), json!(true), json!(false)));
+    assert_eq!(status["groups"][0]["group_id"], "default");
+    assert_eq!(status["default_session_id"], Value::Null);
+    assert!(fake.pid().is_none(), "nothing is started for a status");
+    let status = rpc(port, "browser.ensure", json!({})).await.unwrap();
+    assert_eq!(status["running"], true);
+    assert_eq!(status["version"]["browser"], "1.2.3.4");
+    assert!(fake.args().contains(&format!("--user-data-dir={}", w.root.join(".cache/browser/profile").display())));
+
+    // The agent's side: a lease, renewed, released with what it says about the thing.
+    let lease = rpc_wire(port, "browser.acquire", json!({ "session_id": "no-such-session" })).await.unwrap();
+    assert_eq!(lease["group_id"], "default");
+    assert_eq!(lease["cdp_url"], format!("http://127.0.0.1:{}", fake.port));
+    assert_eq!((lease["ttl_ms"].clone(), lease["tabs"].clone(), lease["active_tab_id"].clone()), (json!(60_000), json!([]), Value::Null));
+    let group = rpc(port, "browser.status", json!({ "group_id": "default" })).await.unwrap()["groups"][0].clone();
+    assert_eq!((group["controller"].clone(), group["agent_state"].clone()), (json!("agent"), json!("working")));
+    assert_eq!(group["lease"]["session_id"], "no-such-session");
+    let renewed = rpc(port, "browser.renew", json!({ "lease_id": lease["lease_id"] })).await.unwrap();
+    assert!(renewed["expires_at_ms"].as_u64().unwrap() >= lease["expires_at_ms"].as_u64().unwrap());
+    assert_eq!(
+        rpc(port, "browser.release", json!({ "lease_id": lease["lease_id"], "state": "stuck", "note": "a captcha" })).await.unwrap(),
+        json!({})
+    );
+    let group = rpc(port, "browser.status", json!({ "group_id": "default" })).await.unwrap()["groups"][0].clone();
+    assert_eq!(
+        (group["controller"].clone(), group["agent_state"].clone(), group["note"].clone(), group["lease"].clone()),
+        (json!("user"), json!("stuck"), json!("a captcha"), Value::Null)
+    );
+
+    // The user's side: taken over, the agent gets no lease; handed back, it does.
+    let lease = rpc(port, "browser.acquire", json!({ "session_id": "s" })).await.unwrap();
+    let taken = rpc(port, "browser.take_over", json!({ "group_id": "default" })).await.unwrap();
+    assert_eq!((taken["user_hold"].clone(), taken["controller"].clone(), taken["lease"].clone()), (json!(true), json!("user"), Value::Null));
+    let refused = rpc_wire(port, "browser.acquire", json!({ "session_id": "s" })).await.unwrap_err();
+    assert_eq!((refused["code"].clone(), refused["kind"].clone()), (json!("user_in_control"), json!("other")), "{refused}");
+    let lost = rpc_wire(port, "browser.renew", json!({ "lease_id": lease["lease_id"] })).await.unwrap_err();
+    assert_eq!(lost["code"], "lease_lost");
+    let back = rpc(port, "browser.hand_back", json!({ "group_id": "default" })).await.unwrap();
+    assert_eq!(back["user_hold"], false);
+    rpc(port, "browser.acquire", json!({ "session_id": "s" })).await.unwrap();
+    // The agent asks for the user.
+    let asked = rpc(port, "browser.request_handover", json!({ "session_id": "s", "reason": "password", "note": "the login" })).await.unwrap();
+    assert_eq!(asked, json!({ "group_id": "default" }));
+    let group = rpc(port, "browser.status", json!({ "group_id": "default" })).await.unwrap()["groups"][0].clone();
+    assert_eq!((group["agent_state"].clone(), group["user_hold"].clone()), (json!("waiting_takeover"), json!(true)));
+    assert_eq!(group["handover"]["reason"], "password");
+    let to_agent = rpc(port, "browser.hand_to_agent", json!({ "group_id": "default" })).await.unwrap();
+    assert_eq!((to_agent["user_hold"].clone(), to_agent["handover"].clone()), (json!(false), Value::Null));
+
+    // Errors name what is wrong.
+    for (method, params, code) in [
+        ("browser.acquire", json!({}), "invalid_argument"),
+        ("browser.release", json!({ "lease_id": "l", "state": "happy" }), "invalid_argument"),
+        ("browser.request_handover", json!({ "session_id": "s", "reason": "bored" }), "invalid_argument"),
+        ("browser.take_over", json!({ "group_id": "_reflow" }), "no_such_group"),
+        ("browser.bind_default", json!({}), "invalid_argument"),
+        ("browser.bind_default", json!({ "session_id": "default" }), "invalid_argument"),
+        ("browser.renew", json!({ "lease_id": "lease-0" }), "lease_lost"),
+        ("browser.upload", json!({ "request_id": "r", "zone_path": "/x" }), "no_such_request"),
+        ("browser.upload", json!({ "zone_path": "/x" }), "invalid_argument"),
+        ("browser.download_export", json!({ "download_id": "d" }), "no_such_download"),
+        ("browser.reflow_state", json!({ "url": "about:blank" }), "invalid_argument"),
+        // The reflow library is a bucket of the owner's Zone: this Loader runs outside one.
+        ("browser.reflow_state", json!({ "url": "https://example.com" }), "other"),
+        ("browser.reflow_action", json!({ "url": "https://example.com" }), "invalid_argument"),
+        ("browser.nope", json!({}), "invalid_argument"),
+    ] {
+        let error = rpc_wire(port, method, params).await.unwrap_err();
+        assert_eq!(error["code"], code, "{method}: {error}");
+        assert!(!error["message"].as_str().unwrap().is_empty());
+    }
+
+    // The screen and the upload are entries of their own (`the_browsers_screen_and_uploads_are_served_over_http`).
+    for (request, status) in [("GET /kapi/opendan/browser/screen", 400), ("PUT /api/opendan/browser/upload/r1?name=a.txt", 404)] {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(format!("{request} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut response)).await.unwrap().unwrap();
+        assert!(response.starts_with(&format!("HTTP/1.1 {status}")), "{request}: {response}");
+    }
+
+    // Clearing the logins stops the browser; the Loader's end stops it too.
+    rpc(port, "browser.clear_profile", json!({})).await.unwrap();
+    assert_eq!(rpc(port, "browser.status", json!({})).await.unwrap()["running"], false);
+    rpc(port, "browser.ensure", json!({})).await.unwrap();
+    let pid = fake.pid().unwrap();
+    loader.shutdown().await;
+    until("the browser ended with the Loader", || !std::path::Path::new(&format!("/proc/{pid}/cmdline")).exists()).await;
+}
+
+/// One HTTP request to the service: `(status, body)`.
+async fn http_request(port: u16, head: &str, body: &[u8]) -> (u16, Value) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(format!("{head}\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    stream.write_all(body).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(Duration::from_secs(10), stream.read_to_string(&mut response)).await.unwrap().unwrap();
+    let status = response.split(' ').nth(1).and_then(|code| code.parse().ok()).unwrap_or_else(|| panic!("{response}"));
+    let body = response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or_default();
+    (status, serde_json::from_str(body).unwrap_or(Value::Null))
+}
+
+type ScreenSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// The next message of `kind` on a screen connection (frames are acknowledged), `None` once it is closed.
+async fn screen_message(ws: &mut ScreenSocket, kind: &str) -> Option<Value> {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(20), ws.next()).await.unwrap_or_else(|_| panic!("no `{kind}` arrived"));
+        let Some(Ok(Message::Text(text))) = message else {
+            if matches!(message, Some(Ok(Message::Binary(_)))) {
+                continue;
+            }
+            return None;
+        };
+        let message: Value = serde_json::from_str(text.as_str()).unwrap();
+        if message["type"] == kind {
+            return Some(message);
+        }
+        if message["type"] == "frame_meta" {
+            ws.send(Message::text(json!({ "type": "ack", "seq": message["seq"] }).to_string())).await.unwrap();
+        }
+    }
+}
+
+/// Connect to the screen below `path` and say `hello`.
+async fn screen_hello(port: u16, path: &str, token: Option<&str>) -> ScreenSocket {
+    use futures::SinkExt;
+    let (mut ws, response) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}{path}/browser/screen")).await.unwrap();
+    assert_eq!(response.status(), 101);
+    let hello = json!({ "type": "hello", "token": token, "group_id": "default", "viewport": { "width": 412, "height": 915, "mobile": true } });
+    ws.send(tokio_tungstenite::tungstenite::Message::text(hello.to_string())).await.unwrap();
+    ws
+}
+
+/// Browser TODO SC1 / SC6 through the Loader: `GET …/browser/screen` below
+/// every mount becomes a WebSocket whose `hello` is admitted like a kRPC
+/// call of the owner's, and `PUT …/browser/upload/<request>` gives a file
+/// of the App's device to the page that asked for one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_browsers_screen_and_uploads_are_served_over_http() {
+    let w = World::new();
+    let fake = fake_browser_of(&w).await;
+    let port = free_port();
+    let loader = Loader::start(w.env(Llm::new(|_, _| "unused".into()), port).await).await.unwrap();
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    let agent_path = format!("/kapi/{}", loader.agent.agent_id());
+
+    // Outside a Zone every caller is the owner: the hello is answered with the group's state.
+    for path in [WEB_API_PATH, SERVICE_PATH, agent_path.as_str()] {
+        let mut ws = screen_hello(port, path, None).await;
+        let ready = screen_message(&mut ws, "ready").await.unwrap();
+        assert_eq!(ready["state"]["group"]["group_id"], "default", "{path}");
+        assert_eq!((ready["state"]["running"].clone(), ready["state"]["viewport"]["mobile"].clone()), (json!(true), json!(true)));
+        assert_eq!(loader.browser.viewers(), 1);
+        drop(ws);
+        until("the viewer is gone", || loader.browser.viewers() == 0).await;
+    }
+    assert!(fake.pid().is_some(), "the browser was started for the screen");
+    // Not a WebSocket request: refused, nothing is upgraded.
+    let (status, error) = http_request(port, &format!("GET {SERVICE_PATH}/browser/screen HTTP/1.1"), b"").await;
+    assert_eq!((status, error["code"].as_str()), (400, Some("invalid_argument")));
+
+    // A page asks for a file: the screen is told, the App uploads it, the page's input gets it.
+    let tab = loader.browser.open_tab("default", Some("https://a.example/")).await.unwrap();
+    let (_, session) = loader.browser.tab_session(&tab.tab_id).await.unwrap();
+    let mut ws = screen_hello(port, SERVICE_PATH, None).await;
+    screen_message(&mut ws, "ready").await.unwrap();
+    fake.tell(&tab.tab_id, "Page.fileChooserOpened", json!({ "frameId": tab.tab_id, "mode": "selectMultiple", "backendNodeId": 9 }));
+    let request = screen_message(&mut ws, "request").await.unwrap();
+    assert_eq!((request["kind"].clone(), request["multiple"].clone(), request["accept"].clone()), (json!("file_chooser"), json!(true), json!([".png", "image/*"])));
+    let request_id = request["request_id"].as_str().unwrap();
+    let put = |query: &str, length: usize| format!("PUT {agent_path}/browser/upload/{request_id}?{query} HTTP/1.1\r\nContent-Length: {length}");
+    assert_eq!(http_request(port, &put("name=first%20file.txt", 5), b"first").await, (200, json!({})));
+    assert!(fake.received("DOM.setFileInputFiles").is_empty(), "the files are given together");
+    // What cannot be taken says why.
+    let (status, error) = http_request(port, &put("done=1", 1), b"x").await;
+    assert_eq!((status, error["code"].as_str()), (400, Some("invalid_argument")), "a file has a name");
+    let (status, error) = http_request(port, &put("name=huge.bin&done=1", 200 * 1024 * 1024), b"").await;
+    assert_eq!((status, error["code"].as_str()), (413, Some("upload_too_large")));
+    let (status, error) = http_request(port, &format!("PUT {SERVICE_PATH}/browser/upload/r-none?name=a.txt HTTP/1.1\r\nContent-Length: 1"), b"x").await;
+    assert_eq!((status, error["code"].as_str()), (404, Some("no_such_request")));
+    assert_eq!(http_request(port, &put("name=%E7%85%A7%E7%89%87.png&done=1", 6), b"second").await, (200, json!({})));
+    let set = fake.received("DOM.setFileInputFiles");
+    assert_eq!((set.len(), set[0].0.as_deref(), set[0].1["backendNodeId"].clone()), (1, Some(session.as_str()), json!(9)));
+    let files: Vec<PathBuf> = set[0].1["files"].as_array().unwrap().iter().map(|f| PathBuf::from(f.as_str().unwrap())).collect();
+    assert_eq!(files.iter().map(|f| f.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(), vec!["first file.txt", "照片.png"]);
+    assert_eq!((std::fs::read(&files[0]).unwrap(), std::fs::read(&files[1]).unwrap()), (b"first".to_vec(), b"second".to_vec()));
+    assert!(files[0].starts_with(w.root.join(".cache/browser/uploads")));
+    assert_eq!(screen_message(&mut ws, "request_closed").await.unwrap()["request_id"], request_id);
+    // The request is over: nothing more is taken for it.
+    assert_eq!(http_request(port, &put("name=late.txt&done=1", 1), b"x").await.0, 404);
+    // Over the connection the user operates the page.
+    futures::SinkExt::send(&mut ws, tokio_tungstenite::tungstenite::Message::text(json!({ "type": "input", "kind": "text", "text": "typed" }).to_string())).await.unwrap();
+    until("the input reached the tab", || fake.received("Input.insertText").iter().any(|(s, p)| s.as_deref() == Some(session.as_str()) && p["text"] == "typed")).await;
+    drop(ws);
+    loader.shutdown().await;
+
+    // Inside a Zone the hello and the upload carry the owner's session token, checked like a kRPC call's.
+    let w = World::new();
+    let fake = fake_browser_of(&w).await;
+    let port = free_port();
+    let mut env = w.env(Llm::new(|_, _| "unused".into()), port).await;
+    env.access = Access::Zone { owner: "bob".into(), app_id: "jarvis.alice".into(), trust_loopback: false, zone_host: Some("test.buckyos.io".into()) };
+    let loader = Loader::start(env).await.unwrap();
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    for token in [None, Some("not-a-session-token")] {
+        let mut ws = screen_hello(port, SERVICE_PATH, token).await;
+        let error = screen_message(&mut ws, "error").await.unwrap();
+        assert_eq!(error["code"], "unauthorized", "{token:?}: {error}");
+        assert!(!error["message"].as_str().unwrap().is_empty());
+        assert!(screen_message(&mut ws, "ready").await.is_none(), "the connection is closed");
+    }
+    let (status, error) = http_request(port, &format!("PUT {SERVICE_PATH}/browser/upload/r1?name=a.txt HTTP/1.1\r\nContent-Length: 1"), b"x").await;
+    assert_eq!((status, error["code"].as_str()), (401, Some("unauthorized")));
+    let (status, error) =
+        http_request(port, &format!("PUT {SERVICE_PATH}/browser/upload/r1?name=a.txt HTTP/1.1\r\nAuthorization: Bearer not-a-session-token\r\nContent-Length: 1"), b"x").await;
+    assert_eq!((status, error["code"].as_str()), (403, Some("unauthorized")));
+    assert!(fake.pid().is_none() && loader.browser.viewers() == 0, "nobody was admitted");
+    loader.shutdown().await;
+}
+
+/// Browser TODO BR7 / HO4: what the user does to a group is told to the UI
+/// session of that group's conversation as a `_browser` observation — it
+/// says nothing by itself, only the latest one is kept, and the owner's
+/// next message sees it. A session's group is its conversation's: the
+/// default one for the owner's direct conversation, the conversation's
+/// session id for a named one, also for a Work below it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn taking_the_browser_over_is_told_to_the_conversation() {
+    use libopendan::notify::NotifyHost;
+    let mut w = World::new();
+    let notify = Arc::new(libopendan::notify::LocalNotify::enable(&w.root, AGENT).unwrap());
+    w.notify = Some(notify.clone());
+    let fake = fake_browser_of(&w).await;
+    let port = free_port();
+    let llm = Llm::new(|req, n| {
+        let all: String = req.messages.iter().map(|m| m.text_content()).collect();
+        match n {
+            0 | 1 => "hello".to_string(),
+            2 => {
+                assert!(all.contains("[browser default] The user handed the browser back."), "{all}");
+                assert!(all.contains("\"Title of https://shop.example/cart\" (https://shop.example/cart)"), "{all}");
+                assert!(!all.contains("The user took over the browser"), "only the latest record of a group is kept: {all}");
+                assert!(all.contains("go on"), "{all}");
+                "reading the page again".to_string()
+            }
+            3 => {
+                assert!(all.contains("[browser thing-1] The user asks you to go on from the current page"), "{all}");
+                assert!(all.contains("No page is open in it."), "{all}");
+                "on it".to_string()
+            }
+            _ => panic!("unexpected call {n}"),
+        }
+    });
+    let loader = Loader::start(w.env(llm.clone(), port).await).await.unwrap();
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+
+    // Two conversations of the owner: the direct one and a named one.
+    let direct = format!("dm:{BOB}");
+    w.mail.deliver(&direct, chat(BOB, "hi"));
+    until("first reply", || w.mail.sent().len() == 1).await;
+    let mut named = chat(BOB, "book the flight");
+    named.to_session = Some("thing-1".into());
+    w.mail.deliver("thing-1", named);
+    until("second reply", || w.mail.sent().len() == 2).await;
+    let route = |session: &str| MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.to_string())).unwrap().to_string();
+    let ui_direct = ui_entry(loader.agent.as_ref(), &route(&direct)).unwrap();
+    let ui_named = ui_entry(loader.agent.as_ref(), &route("thing-1")).unwrap();
+    let pending = |entry: &RegistryEntry| SessionDir::open(&entry.location).and_then(|sd| sd.state()).map(|st| st.pending_events).unwrap();
+
+    // A session works in the group of its conversation.
+    let mut spec = work_spec("a work of the named conversation", "go");
+    spec.origin = Some(Origin { parent_session: Some(ui_named.session_id.clone()), ..Default::default() });
+    spec.driver = Some("app:other@alice".into());
+    let work = create_session(&w.root.join("sessions"), spec, loader.agent.as_ref(), WHO, w.channels().as_ref()).await.unwrap();
+    for (session, group) in [(ui_direct.session_id.as_str(), "default"), (ui_named.session_id.as_str(), "thing-1"), (work.sid(), "thing-1")] {
+        let lease = rpc(port, "browser.acquire", json!({ "session_id": session })).await.unwrap();
+        assert_eq!(lease["group_id"], group, "session {session}");
+        rpc(port, "browser.release", json!({ "lease_id": lease["lease_id"] })).await.unwrap();
+        // What `agent-browser status` asks: it knows its session, not its group.
+        let status = rpc(port, "browser.status", json!({ "session_id": session })).await.unwrap();
+        assert_eq!(status["groups"].as_array().unwrap().len(), 1);
+        assert_eq!(status["groups"][0]["group_id"], group, "session {session}");
+    }
+
+    // A question the agent asked in a conversation and the user did not answer yet shows as the group's state.
+    let agent_state = |group: &'static str| async move {
+        rpc(port, "browser.status", json!({ "group_id": group })).await.unwrap()["groups"][0]["agent_state"].clone()
+    };
+    assert_eq!(agent_state("thing-1").await, "idle", "a conversation waiting for its next message is not a question");
+    let mut question = buckyos_api::NotifySendReq::input("", "Window or aisle?", "", Vec::new(), true, "ask-seat");
+    question.source = Some(buckyos_api::NotifySource { session_id: Some(work.sid().to_string()), ..Default::default() });
+    let question = notify.send(question).await.unwrap();
+    assert_eq!(agent_state("thing-1").await, "waiting_answer");
+    assert_eq!(agent_state("default").await, "idle");
+    let lease = rpc(port, "browser.acquire", json!({ "session_id": work.sid() })).await.unwrap();
+    assert_eq!(agent_state("thing-1").await, "working", "an agent at work is shown working");
+    rpc(port, "browser.release", json!({ "lease_id": lease["lease_id"], "state": "done" })).await.unwrap();
+    assert_eq!(agent_state("thing-1").await, "waiting_answer", "the open question comes before how the last lease ended");
+    notify.cancel(&question.notify_id, "answered in the test").await.unwrap();
+    assert_eq!(agent_state("thing-1").await, "done");
+
+    // The user opens a page in the default group, takes over, hands back.
+    let tab = loader.browser.open_tab("default", Some("https://shop.example/")).await.unwrap();
+    loader.browser.tab_send(&tab.tab_id, "Page.navigate", json!({ "url": "https://shop.example/cart" })).await.unwrap();
+    until("the page's title arrives", || loader.browser.group("default").tabs[0].title.contains("cart")).await;
+    rpc(port, "browser.take_over", json!({ "group_id": "default" })).await.unwrap();
+    until("the take-over is observed", || pending(&ui_direct).len() == 1).await;
+    let seen = pending(&ui_direct);
+    assert_eq!(seen[0].subscription_id.as_deref(), Some("_browser"));
+    assert_eq!((seen[0].source.kind.as_str(), seen[0].source.id.as_str()), ("system", "browser:default"));
+    assert_eq!(seen[0].latest.as_ref().unwrap().event, "take_over");
+    rpc(port, "browser.hand_back", json!({ "group_id": "default" })).await.unwrap();
+    until("the hand-back replaces it", || pending(&ui_direct)[0].latest.as_ref().is_some_and(|l| l.event == "hand_back")).await;
+    assert_eq!(pending(&ui_direct).len(), 1);
+    assert!(pending(&ui_named).is_empty(), "another conversation is not told");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 2, "an observation says nothing");
+    assert_eq!(w.mail.sent().len(), 2);
+    // The App wakes the agent with an ordinary message.
+    w.mail.deliver(&direct, chat(BOB, "go on"));
+    until("third reply", || w.mail.sent().len() == 3).await;
+    assert_eq!(w.mail.sent()[2].1.content.content, "reading the page again");
+
+    // The named conversation's group, handed to the agent.
+    let handed = rpc(port, "browser.hand_to_agent", json!({ "group_id": "thing-1" })).await.unwrap();
+    assert_eq!(handed["group_id"], "thing-1");
+    until("the hand-over is observed", || pending(&ui_named).len() == 1).await;
+    let mut more = chat(BOB, "from here");
+    more.to_session = Some("thing-1".into());
+    w.mail.deliver("thing-1", more);
+    until("fourth reply", || w.mail.sent().len() == 4).await;
+    // A group whose conversation has no session yet changes hands without a record.
+    let silent = rpc(port, "browser.take_over", json!({ "group_id": "thing-2" })).await.unwrap();
+    assert_eq!(silent["user_hold"], true);
+
+    // The default group is bound to the named conversation (MessageHub has no conversation that is
+    // "the default one" by its id): its group becomes part of the default group, its sessions work
+    // there, and what happens to the default group is told to it rather than to any other.
+    let named_tab = loader.browser.open_tab("thing-1", Some("https://air.example/")).await.unwrap();
+    assert!(pending(&ui_named).is_empty() && pending(&ui_direct).is_empty(), "what was told is consumed");
+    let bound = rpc(port, "browser.bind_default", json!({ "session_id": "thing-1" })).await.unwrap();
+    assert_eq!(bound, json!({ "default_session_id": "thing-1" }));
+    let status = rpc(port, "browser.status", json!({})).await.unwrap();
+    assert_eq!(status["default_session_id"], "thing-1");
+    let groups: Vec<&str> = status["groups"].as_array().unwrap().iter().map(|g| g["group_id"].as_str().unwrap()).collect();
+    assert_eq!(groups, vec!["default", "thing-2"], "the conversation's own group is gone");
+    let tabs: Vec<&str> = status["groups"][0]["tabs"].as_array().unwrap().iter().map(|t| t["tab_id"].as_str().unwrap()).collect();
+    assert!(tabs.contains(&tab.tab_id.as_str()) && tabs.contains(&named_tab.tab_id.as_str()), "{tabs:?}");
+    for session in [ui_direct.session_id.as_str(), ui_named.session_id.as_str(), work.sid()] {
+        let status = rpc(port, "browser.status", json!({ "session_id": session })).await.unwrap();
+        assert_eq!(status["groups"][0]["group_id"], "default", "session {session}");
+    }
+    rpc(port, "browser.take_over", json!({ "group_id": "default" })).await.unwrap();
+    until("the bound conversation is told", || pending(&ui_named).len() == 1).await;
+    assert_eq!(pending(&ui_named)[0].source.id, "browser:default");
+    assert!(pending(&ui_direct).is_empty(), "the conversation the default group is bound to comes first");
+    // Binding it again changes nothing; binding another conversation gives this one its own group back.
+    rpc(port, "browser.bind_default", json!({ "session_id": "thing-1" })).await.unwrap();
+    assert_eq!(rpc(port, "browser.status", json!({})).await.unwrap()["groups"][0]["tabs"].as_array().unwrap().len(), 2);
+    rpc(port, "browser.bind_default", json!({ "session_id": "thing-3" })).await.unwrap();
+    let status = rpc(port, "browser.status", json!({ "session_id": work.sid() })).await.unwrap();
+    assert_eq!((status["default_session_id"].clone(), status["groups"][0]["group_id"].clone()), (json!("thing-3"), json!("thing-1")));
+    assert!(status["groups"][0]["tabs"].as_array().unwrap().is_empty(), "the tabs stay in the default group");
+    let file: Value = serde_json::from_slice(&std::fs::read(w.root.join("state/browser/groups.json")).unwrap()).unwrap();
+    assert_eq!(file["default_session_id"], "thing-3");
+    drop(fake);
     loader.shutdown().await;
 }

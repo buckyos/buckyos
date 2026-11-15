@@ -20,6 +20,9 @@ import { sharesEn, sharesZh } from './shares'
 import { sysdlgSelectEn, sysdlgSelectZh } from './sysdlg-select'
 import { appLaunchEn, appLaunchZh } from './app-launch'
 import { ssoEn, ssoZh } from './sso'
+import { agentBrowserEn, agentBrowserZh } from './agent-browser'
+import { agentBrowserConversationEn, agentBrowserConversationZh } from './agent-browser-conversation'
+import { agentBrowserReflowEn, agentBrowserReflowZh } from './agent-browser-reflow'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
@@ -1762,8 +1765,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...appLaunchEn, ...ssoEn },
-  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...appLaunchZh, ...ssoZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh },
   ja,
   ko,
   fr,

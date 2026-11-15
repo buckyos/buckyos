@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-fn to_axum(r: ::http::Response<bucket_store::http::HttpBody>) -> Response {
+pub(super) fn to_axum(r: ::http::Response<bucket_store::http::HttpBody>) -> Response {
     let (parts, body) = r.into_parts();
     Response::from_parts(parts, Body::new(body))
 }

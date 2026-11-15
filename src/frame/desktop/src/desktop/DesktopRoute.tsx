@@ -12,6 +12,7 @@ import { OpenWithHost, requestOpenWith } from '../app/content/OpenWithSheet'
 import { openPreview } from '../app/preview/launch'
 import { agentGuide } from '../app/agent-setup/guide'
 import { agentSetupLaunchSchema, openAgentSetup } from '../app/agent-setup/launch'
+import { agentBrowserLaunchFromParams, openAgentBrowser } from '../app/agent-browser/launch'
 import { openSettings } from '../app/settings/launch'
 import { isSettingsPage } from '../app/settings/components/layout/navigation'
 import { AGENT_GUIDE_APP_ID } from '../app/agent-setup/model'
@@ -302,6 +303,18 @@ export function DesktopRoute() {
     params.delete('settings')
     setSearchParams(params, { replace: true })
     if (isSettingsPage(page)) openSettings(page)
+  }, [snap.status, searchParams, setSearchParams])
+
+  // A link to an Agent's browser (`?agent_browser=<agent>[&group=<session>][&mode=<mode>]`: the Agent home, a conversation's Agent panel).
+  const agentBrowserLinkHandled = useRef(false)
+  useEffect(() => {
+    const launch = agentBrowserLaunchFromParams(searchParams)
+    if (snap.status !== 'success' || agentBrowserLinkHandled.current || !launch) return
+    agentBrowserLinkHandled.current = true
+    const params = new URLSearchParams(searchParams)
+    for (const name of ['agent_browser', 'group', 'mode']) params.delete(name)
+    setSearchParams(params, { replace: true })
+    openAgentBrowser(launch)
   }, [snap.status, searchParams, setSearchParams])
 
   // The Jarvis guide follows the signed-in user's own Agent created from it.

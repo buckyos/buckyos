@@ -1,0 +1,5 @@
+*.token
+requests.jsonl
+*.jpg
+*.png
+__pycache__/

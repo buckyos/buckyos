@@ -55,6 +55,36 @@ ask_user "<question>" [--option <id>=<label>]... [--allow-text] [--expires <seco
 - 退出码：0 已提问（pending）或已回答；1 参数错误或不在 run 的工具调用里；2 发送失败、找不到收件人、被拒绝或撤销；
   4 已过期。
 
+## 重排库 `reflow`
+
+`commands/reflow.ts`（规则与读写在 `lib/reflow.ts`）：Agent 浏览器的重排库是用户的桶 `user/control-panel/<owner>/reflow`，
+每个站点一个包（`manifest.json`、`refresh.mjs`、`index.html` 及其引用的文件）、用包制作的结果（`results/<页面>.json`）、兜底页
+（`fallback/<页面>.html`），以及站点还没有包时用户的偏好（`preference.json`，由 App 写）。协议见 [`doc/opendan/protocol/Agent Browser Protocol.md`](../../../doc/opendan/protocol/Agent%20Browser%20Protocol.md) §5。
+
+```bash
+reflow match <url>               # 站点、页面、匹配的包、用户对这个站点的偏好、已有的结果和兜底页、该显示哪一页
+reflow ls                        # 库里的站点，带各自的偏好
+reflow get <site> <dir>          # 把包取到本地目录（新目录或空目录）
+reflow put <site> <dir>          # 校验目录里的包，放进库里（整包替换，结果和兜底页保留）
+reflow rm <site>                 # 删除这个站点的包、偏好、结果和兜底页
+reflow result put <url> <file>   # .json 是包要画的数据，.html 是兜底页
+reflow refresh <url>             # 请本 Agent 的常驻浏览器跑包里的 refresh.mjs
+```
+
+- 站点名、规范化网址、页面散列、匹配规则和 Agent Service（Rust）共用一份测试向量：
+  `doc/opendan/protocol/fixtures/reflow_vectors.json`，`lib/reflow_test.ts` 用它。
+- `put` 先校验再上传：`manifest.json` 的 schema、`site` 与参数一致、`match[].host` 是这个站点的主机名、有 `refresh.mjs` 或
+  `index.html` 之一、不带 `results/`、`fallback/` 和根下的 `preference.json`。`manifest.json` 最后上传，`updated_at` 由 `put` 写，
+  manifest 没写 `author` 时用 `$OPENDAN_AGENT_DID` 补上。隐藏文件不上传。
+- 偏好是用户的，放入包时的规则和 App 的导入相同（协议 §5.2）：manifest 写了 `preference` 就用它；没写时 `put` 把站点现有的偏好
+  写进去（原来有合法的包取旧 manifest 的，否则取 `preference.json` 的）。`manifest.json` 写完后 `preference.json` 被删掉，由包接替。
+  `get` 不取 `preference.json`。写包时应把用户的偏好写进 manifest，`reflow match <url>` 会给出站点现有的偏好。
+- `refresh` 不读写桶，它调本 Agent 的 Agent Service：入口是 `$OPENDAN_BROWSER_RPC`（只在 Agent 自己的 runtime 上有），令牌是
+  `$BUCKYOS_APPCLIENT_SESSION_TOKEN`；`browser.reflow_refresh` 之后轮询 `browser.reflow_state` 直到结束，`--no-wait` 不等。
+- 只读权限的 Agent 写不了这个桶：`put`、`rm`、`result put` 以 `permission_denied` 失败，结果里写明把包留在工作目录、请用户在
+  「Agent 浏览器」里导入。
+- 退出码：0 完成；1 参数错误或包不合法；2 服务拒绝或失败；4 `refresh` 等到 `--timeout` 还没结束；5 本地文件错误。
+
 ## AICC Agent CLI Tools
 
 实现见 `aicc-tool.ts` + `commands/*.ts`，需求文档：[`doc/aicc/aicc_agent_cli_tools.md`](../../../doc/aicc/aicc_agent_cli_tools.md)。

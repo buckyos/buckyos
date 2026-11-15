@@ -1686,6 +1686,7 @@ pub async fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Result<V
     if let Ok(tok) = std::env::var("BUCKYOS_APPCLIENT_SESSION_TOKEN") {
         v.push(("BUCKYOS_APPCLIENT_SESSION_TOKEN".to_string(), tok));
     }
+    v.extend(crate::baseline::playwright_env());
     v.extend(ctx.extra_env.iter().cloned());
     agent_tool::runtime_context::refresh_appclient_session_env(&mut v)
         .await

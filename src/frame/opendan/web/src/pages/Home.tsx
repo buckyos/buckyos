@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Globe,
   ImagePlus,
   MessageCircle,
   Minus,
@@ -224,6 +225,21 @@ function AgentCard({ profile }: { profile: AgentProfile }) {
           </span>
           <ChevronRight size={18} className="shrink-0 text-mute" />
         </a>
+        {profile.desktop_url && (
+          <a
+            href={`${profile.desktop_url}/?agent_browser=${encodeURIComponent(profile.agent_did)}`}
+            target={outerTarget}
+            className="flex min-h-12 items-center gap-3 border-t border-line px-4"
+            data-testid="open-agent-browser"
+          >
+            <Globe size={18} className="shrink-0 text-mute" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">{t('agentBrowser')}</span>
+              <span className="block truncate text-xs text-mute">{t('agentBrowserHint')}</span>
+            </span>
+            <ChevronRight size={18} className="shrink-0 text-mute" />
+          </a>
+        )}
       </div>
       {editing && <ProfileDialog profile={profile} onClose={() => setEditing(false)} />}
     </section>

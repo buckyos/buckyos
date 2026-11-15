@@ -479,7 +479,7 @@ impl<'a> Builder<'a> {
         }
         let mut inputs = Vec::new();
         for i in e.payload.get("inputs").and_then(Value::as_array).into_iter().flatten() {
-            let id = i.get("ref").or_else(|| i.get("source")).and_then(|r| r.get("entity_id")).and_then(Value::as_str);
+            let id = i.get("entity_id").and_then(Value::as_str);
             let label = i.get("name").or_else(|| i.get("label")).and_then(Value::as_str).unwrap_or("");
             let target = match id {
                 Some(id) => match self.readable(id)? {

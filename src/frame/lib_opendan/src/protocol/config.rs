@@ -936,6 +936,12 @@ pub const USER_TIMEZONE_SOURCE_ID: &str = "user_timezone";
 /// `system:<id>` subscription also takes the sub ids `<id>:<sub>`).
 pub const NOTIFY_SUBSCRIPTION: &str = "_notify";
 
+/// Id of the implicit semi subscription every session has on what the user
+/// does to the agent's browser in its conversation
+/// (`source = system:browser:<group_id>`: taken over, handed back).
+pub const BROWSER_SUBSCRIPTION: &str = "_browser";
+pub const BROWSER_SOURCE_ID: &str = "browser";
+
 /// Id of a Work Session's implicit timer subscription: while the session
 /// waits for the work it started, the runner ticks it every
 /// `policy.tick_secs` and the tick opens a Turn.
@@ -1039,14 +1045,18 @@ impl SessionConfig {
 
     /// Subscriptions every session has without declaring them.
     pub fn implicit_subscriptions(&self) -> Vec<Subscription> {
-        vec![Subscription {
-            id: USER_TIMEZONE_SUBSCRIPTION.to_string(),
+        [
+            (USER_TIMEZONE_SUBSCRIPTION, USER_TIMEZONE_SOURCE_ID),
+            (BROWSER_SUBSCRIPTION, BROWSER_SOURCE_ID),
+        ]
+        .into_iter()
+        .map(|(id, source)| Subscription {
+            id: id.to_string(),
             mode: SubscriptionMode::Semi,
-            source: SubscriptionSource::System {
-                id: USER_TIMEZONE_SOURCE_ID.to_string(),
-            },
+            source: SubscriptionSource::System { id: source.to_string() },
             watch: Vec::new(),
-        }]
+        })
+        .collect()
     }
 
     /// The valid subscription an event belongs to: the one named by

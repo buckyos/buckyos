@@ -20,3 +20,4 @@ dependencies:
   - tree   # [unix]
   - unzip  # [unix]
   - avahi  # [linux]  libavahi-client, which LibreOffice's impress / draw library links
+  - libgbm # [linux]  libgbm.so.1, which Chromium links

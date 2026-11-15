@@ -1,0 +1,16 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/www-example-com/",
+      "host": "reflow.test.buckyos.io",
+      "url": "https://reflow.test.buckyos.io/www-example-com/?url=https%3A%2F%2Fwww.example.com%2F&page=49365e2b6b265ccb",
+      "X-Forwarded-Host": "www.test.buckyos.io"
+    },
+    "REQ_target_port": "443"
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

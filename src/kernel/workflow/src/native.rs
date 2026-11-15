@@ -33,15 +33,18 @@ pub enum ExecutionLane {
     Video,
     /// soffice: one at a time.
     Office,
+    /// page-render (headless Chromium): one at a time.
+    Browser,
 }
 
 impl ExecutionLane {
-    pub const ALL: [ExecutionLane; 5] = [
+    pub const ALL: [ExecutionLane; 6] = [
         Self::Light,
         Self::Image,
         Self::Pdf,
         Self::Video,
         Self::Office,
+        Self::Browser,
     ];
 
     pub fn default_slots(self) -> usize {
@@ -51,6 +54,7 @@ impl ExecutionLane {
             Self::Pdf => 2,
             Self::Video => 1,
             Self::Office => 1,
+            Self::Browser => 1,
         }
     }
 }
@@ -497,9 +501,72 @@ impl NativeContext {
     ) -> Result<ToolOutput, ThunkExecutionError> {
         self.check_cancelled()?;
         let mut command = tokio::process::Command::new(program);
+        command.args(args).envs(envs.iter().copied());
+        self.run_command(command, program, stdout_limit, false).await
+    }
+
+    /// [`Self::run_tool`] for a tool that renders third-party content: only the
+    /// whitelisted environment (no `WORKFLOW_SESSION_TOKEN`), a process group of
+    /// its own that never outlives the call, `nobody` instead of root on Linux,
+    /// and a network namespace of its own unless `isolation.network`.
+    pub async fn run_tool_isolated(
+        &self,
+        program: &Path,
+        args: &[String],
+        isolation: &ToolIsolation<'_>,
+        stdout_limit: usize,
+    ) -> Result<ToolOutput, ThunkExecutionError> {
+        self.check_cancelled()?;
+        let home = isolation.dir.join("home");
+        tokio::fs::create_dir_all(&home)
+            .await
+            .map_err(|err| internal_error(format!("create {}: {err}", home.display())))?;
+        let tmp = ToolTmp::create(isolation.dir)
+            .map_err(|err| internal_error(format!("create the temp directory of the tool: {err}")))?;
+        #[cfg(target_os = "linux")]
+        let no_network = if isolation.network { confine::NoNetwork::Kept } else { confine::no_network().await };
+        #[cfg(target_os = "linux")]
+        let mut command = match no_network {
+            confine::NoNetwork::Through([unshare, rest @ ..]) => {
+                let mut command = tokio::process::Command::new(unshare);
+                command.args(rest).arg(program);
+                command
+            }
+            _ => tokio::process::Command::new(program),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let mut command = tokio::process::Command::new(program);
         command
             .args(args)
-            .envs(envs.iter().copied())
+            .env_clear()
+            .envs(isolated_env(&home, &tmp.0))
+            .current_dir(isolation.dir);
+        #[cfg(unix)]
+        command.process_group(0);
+        #[cfg(target_os = "linux")]
+        if confine::is_root() {
+            let account = confine::nobody()
+                .ok_or_else(|| internal_error("this host has no `nobody` account to run the tool as"))?;
+            let dirs = [isolation.dir.to_path_buf(), tmp.0.clone()];
+            tokio::task::spawn_blocking(move || dirs.iter().try_for_each(|dir| confine::hand_over(dir, account)))
+                .await
+                .map_err(|err| internal_error(format!("hand over the tool directory: {err}")))?
+                .map_err(|err| internal_error(format!("hand over {}: {err}", isolation.dir.display())))?;
+            confine::drop_root(&mut command, account, matches!(no_network, confine::NoNetwork::Unshare));
+        }
+        self.run_command(command, program, stdout_limit, true).await
+    }
+
+    /// Spawns `command` and waits for it. With `own_tree` everything it started
+    /// is killed when the call ends.
+    async fn run_command(
+        &self,
+        mut command: tokio::process::Command,
+        program: &Path,
+        stdout_limit: usize,
+        own_tree: bool,
+    ) -> Result<ToolOutput, ThunkExecutionError> {
+        command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -513,6 +580,7 @@ impl NativeContext {
             ThunkExecutionError::new(error_codes::TOOL_FAILED, format!("start {tool} failed: {err}"))
                 .with_details(json!({"tool": tool}))
         })?;
+        let mut tree = child.id().filter(|_| own_tree).map(ProcessTree::new);
         let mut stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
         let stdout_task = tokio::spawn(async move {
@@ -536,11 +604,19 @@ impl NativeContext {
             _ = self.cancel.cancelled() => None,
             _ = tokio::time::sleep(timeout) => None,
         };
+        if status.is_none() {
+            if let Some(tree) = &tree {
+                tree.kill();
+            }
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+        if let Some(tree) = tree.as_mut() {
+            tree.leader_reaped();
+        }
         let status = match status {
             Some(status) => status,
             None => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
                 let code = if self.cancel.is_cancelled() {
                     error_codes::CANCELLED
                 } else {
@@ -573,6 +649,223 @@ impl NativeContext {
             stdout,
             stderr_tail,
         })
+    }
+}
+
+/// Where [`NativeContext::run_tool_isolated`] confines a tool.
+pub struct ToolIsolation<'a> {
+    /// The tool's working directory; its home is made in it. On Linux as root
+    /// the whole directory is handed to `nobody` first.
+    pub dir: &'a Path,
+    /// Whether the tool may reach the network.
+    pub network: bool,
+}
+
+/// What an isolated tool keeps of the service's environment.
+const ISOLATED_ENV: &[&str] = if cfg!(windows) {
+    &["PATH", "PATHEXT", "ComSpec", "SystemRoot", "SystemDrive", "windir", "ProgramData", "ProgramFiles", "ProgramFiles(x86)"]
+} else {
+    &["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ"]
+};
+
+fn isolated_env(home: &Path, tmp: &Path) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut env: Vec<(std::ffi::OsString, std::ffi::OsString)> = ISOLATED_ENV
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (name.into(), value)))
+        .collect();
+    let mut set = |name: &str, value: &Path| env.push((name.into(), value.into()));
+    if cfg!(windows) {
+        set("USERPROFILE", home);
+        set("APPDATA", &home.join("AppData").join("Roaming"));
+        set("LOCALAPPDATA", &home.join("AppData").join("Local"));
+        set("TEMP", tmp);
+        set("TMP", tmp);
+    } else {
+        set("HOME", home);
+        set("TMPDIR", tmp);
+        if !env.iter().any(|(name, _)| name == "LANG" || name == "LC_ALL") {
+            env.push(("LANG".into(), "C.UTF-8".into()));
+        }
+    }
+    env
+}
+
+/// The temp space of an isolated tool, removed when the call ends. Chromium
+/// binds sockets under `TMPDIR` and refuses to start when their paths pass
+/// about 100 bytes, which the execution temp dir of the service nearly is by
+/// itself: on Unix it is a short private directory in `/tmp`.
+struct ToolTmp(PathBuf);
+
+impl ToolTmp {
+    #[cfg(unix)]
+    fn create(_dir: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        let path = PathBuf::from(format!("/tmp/wf-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]));
+        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+        Ok(Self(path))
+    }
+
+    #[cfg(not(unix))]
+    fn create(dir: &Path) -> std::io::Result<Self> {
+        let path = dir.join("tmp");
+        std::fs::create_dir_all(&path)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for ToolTmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What an isolated tool started. None of it outlives the call, however the
+/// call ends: returned, timed out, cancelled, or its future dropped.
+struct ProcessTree {
+    leader: u32,
+    leader_reaped: bool,
+}
+
+impl ProcessTree {
+    fn new(leader: u32) -> Self {
+        Self { leader, leader_reaped: false }
+    }
+
+    fn kill(&self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.leader as libc::pid_t), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        {
+            let mut taskkill = std::process::Command::new("taskkill");
+            taskkill
+                .args(["/F", "/T", "/PID", &self.leader.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            buckyos_api::hide_child_console(&mut taskkill);
+            let _ = taskkill.status();
+        }
+    }
+
+    /// On Unix the leader's id still names the group it left behind; on Windows
+    /// a waited-for pid names nothing.
+    fn leader_reaped(&mut self) {
+        #[cfg(unix)]
+        self.kill();
+        self.leader_reaped = true;
+    }
+}
+
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        if !self.leader_reaped {
+            self.kill();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod confine {
+    use std::path::Path;
+    use std::process::Stdio;
+
+    /// uid and gid.
+    pub type Account = (libc::uid_t, libc::gid_t);
+
+    pub fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    pub fn nobody() -> Option<Account> {
+        static NOBODY: std::sync::OnceLock<Option<Account>> = std::sync::OnceLock::new();
+        *NOBODY.get_or_init(|| unsafe {
+            let account = libc::getpwnam(c"nobody".as_ptr());
+            (!account.is_null()).then(|| ((*account).pw_uid, (*account).pw_gid))
+        })
+    }
+
+    /// Gives `dir` and everything in it to `account`; links are not followed.
+    pub fn hand_over(dir: &Path, account: Account) -> std::io::Result<()> {
+        std::os::unix::fs::lchown(dir, Some(account.0), Some(account.1))?;
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                hand_over(&entry.path(), account)?;
+            } else {
+                std::os::unix::fs::lchown(entry.path(), Some(account.0), Some(account.1))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The child leaves root for `account` before it runs the tool, after
+    /// entering a network namespace of its own when `unshare_network`.
+    pub fn drop_root(command: &mut tokio::process::Command, account: Account, unshare_network: bool) {
+        let (uid, gid) = account;
+        unsafe {
+            command.pre_exec(move || {
+                if unshare_network && libc::unshare(libc::CLONE_NEWNET) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::setgroups(1, &gid) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getuid() != uid || libc::geteuid() != uid || libc::getgid() != gid || libc::getegid() != gid {
+                    return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                }
+                Ok(())
+            });
+        }
+    }
+
+    /// How a tool is kept off the network on this host.
+    #[derive(Clone, Copy)]
+    pub enum NoNetwork {
+        /// The service is root: `unshare(2)` in the child, before it drops root.
+        Unshare,
+        /// Run through this command.
+        Through(&'static [&'static str]),
+        /// It keeps the network: asked to, or this host cannot take it away.
+        Kept,
+    }
+
+    /// Probed once. Not root, the ways are those of the nfs_server preview.
+    pub async fn no_network() -> NoNetwork {
+        static WAY: tokio::sync::OnceCell<NoNetwork> = tokio::sync::OnceCell::const_new();
+        *WAY.get_or_init(|| async {
+            let runs = |mut probe: tokio::process::Command| async move {
+                probe.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+                matches!(probe.status().await, Ok(status) if status.success())
+            };
+            if is_root() {
+                let mut probe = tokio::process::Command::new("true");
+                unsafe {
+                    probe.pre_exec(|| match libc::unshare(libc::CLONE_NEWNET) {
+                        0 => Ok(()),
+                        _ => Err(std::io::Error::last_os_error()),
+                    });
+                }
+                if runs(probe).await {
+                    log::info!("workflow: isolated tools run in a network namespace of their own");
+                    return NoNetwork::Unshare;
+                }
+            } else {
+                const WAYS: [&[&str]; 2] = [&["unshare", "--net", "--"], &["unshare", "--user", "--map-root-user", "--net", "--"]];
+                for way in WAYS {
+                    let mut probe = tokio::process::Command::new(way[0]);
+                    probe.args(&way[1..]).arg("true");
+                    if runs(probe).await {
+                        log::info!("workflow: isolated tools run without network ({})", way.join(" "));
+                        return NoNetwork::Through(way);
+                    }
+                }
+            }
+            log::warn!("workflow: no network namespace for isolated tools (unshare is missing or not permitted); they only have their own request blocking");
+            NoNetwork::Kept
+        })
+        .await
     }
 }
 
@@ -690,4 +983,243 @@ pub fn param_str<'a>(params: &'a Value, name: &str) -> Result<&'a str, ThunkExec
 
 pub fn workflow_result<T>(result: Result<T, ThunkExecutionError>) -> WorkflowResult<T> {
     result.map_err(|err| execution_error(&err))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::io::MemoryNativeIo;
+    use crate::object_store::InMemoryObjectStore;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The execution temp dir of a context; as in the service, other accounts
+    /// can be let into it.
+    fn temp_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    fn context(temp_dir: &Path) -> NativeContext {
+        NativeContext {
+            execution: ThunkExecution {
+                execution_id: "run-1/step/1".into(),
+                thunk_obj_id: ndn_lib::ObjId::new("thunk:00").unwrap(),
+                run_id: "run-1".into(),
+                node_id: "step".into(),
+                attempt: 1,
+                execution_epoch: 1,
+                source_obj_id: None,
+                requested_by: None,
+                deadline_at: None,
+                registration: None,
+                fingerprint: BTreeMap::new(),
+                cache_key: None,
+            },
+            temp_dir: temp_dir.to_path_buf(),
+            cancel: CancelToken::new(),
+            deadline: None,
+            env: Arc::new(ToolEnvironment::default()),
+            io: Arc::new(MemoryNativeIo::new(Arc::new(InMemoryObjectStore::new()))),
+            limits: ExecutionLimits::default(),
+            artifact_prefix: "media/test".into(),
+            tool_inputs: Default::default(),
+        }
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["-c".to_string(), script.to_string()]
+    }
+
+    /// Runs a shell script isolated in `<temp>/work`.
+    async fn isolated(ctx: &NativeContext, script: &str, network: bool) -> Result<ToolOutput, ThunkExecutionError> {
+        let dir = ctx.temp_dir.join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        ctx.run_tool_isolated(Path::new("/bin/sh"), &sh(script), &ToolIsolation { dir: &dir, network }, 64 * 1024)
+            .await
+    }
+
+    #[tokio::test]
+    async fn an_isolated_tool_keeps_only_the_whitelisted_environment() {
+        std::env::set_var("WORKFLOW_SESSION_TOKEN", "secret-of-the-service");
+        let tmp = temp_dir();
+        // As deep as the execution temp dir of the service.
+        let deep = tmp.path().join("opt/buckyos/data/cache/workflow/exec/t-0169ddaa93524c83a1c61bf302a0c1e0_page_to_pdf_1");
+        std::fs::create_dir_all(&deep).unwrap();
+        assert!(deep.as_os_str().len() > 100);
+        let ctx = context(&deep);
+        let plain = ctx.run_tool(Path::new("/bin/sh"), &sh("env"), 64 * 1024).await.unwrap();
+        assert!(plain.stdout_string().contains("WORKFLOW_SESSION_TOKEN=secret-of-the-service"), "an ordinary tool inherits it");
+
+        let out = isolated(&ctx, "env; ls -ld \"$TMPDIR\" | cut -c1-10; touch \"$TMPDIR/t\" && echo wrote; pwd -P", true).await.unwrap();
+        assert!(out.success, "{}", out.stderr_tail);
+        let text = out.stdout_string();
+        assert!(!text.contains("WORKFLOW_SESSION_TOKEN") && !text.contains("secret-of-the-service"), "{text}");
+        let names: Vec<&str> = text.lines().filter_map(|line| line.split_once('=')).map(|(name, _)| name).collect();
+        for name in &names {
+            assert!(
+                ISOLATED_ENV.contains(name) || ["HOME", "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_"].contains(name),
+                "`{name}` reached the tool: {text}"
+            );
+        }
+        assert!(names.contains(&"PATH"));
+        let work = deep.join("work");
+        assert!(text.contains(&format!("HOME={}\n", work.join("home").display())), "{text}");
+        assert_eq!(text.lines().last().map(PathBuf::from), Some(work.canonicalize().unwrap()), "it runs in its directory");
+
+        // Its temp space is short whatever the depth of its directory, private, and gone with the call.
+        let tmpdir = text.lines().find_map(|line| line.strip_prefix("TMPDIR=")).unwrap();
+        assert!(tmpdir.starts_with("/tmp/wf-") && tmpdir.len() == 20, "{tmpdir}");
+        assert!(text.contains("\ndrwx------\nwrote\n"), "{text}");
+        assert!(!Path::new(tmpdir).exists());
+    }
+
+    /// Whether `pid` still runs; a zombie waiting for its parent does not.
+    fn runs(pid: i32) -> bool {
+        #[cfg(target_os = "linux")]
+        return std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .is_ok_and(|stat| stat.rsplit(')').next().is_some_and(|rest| !rest.trim_start().starts_with('Z')));
+        #[cfg(not(target_os = "linux"))]
+        return unsafe { libc::kill(pid, 0) == 0 };
+    }
+
+    /// A leader with two children of its own, all waiting; each writes its pid.
+    const FAMILY: &str = "echo \"$TMPDIR\" > tmpdir; echo $$ > leader; sleep 300 & echo $! > first; sleep 300 & echo $! > second; wait";
+
+    /// Whether the temp space the last tool in `work` had is still there.
+    fn temp_space_left(work: &Path) -> bool {
+        let tmpdir = std::fs::read_to_string(work.join("tmpdir")).unwrap();
+        assert!(tmpdir.starts_with("/tmp/wf-"), "{tmpdir}");
+        Path::new(tmpdir.trim()).exists()
+    }
+
+    async fn family(work: &Path) -> Vec<i32> {
+        let read = |name: &str| std::fs::read_to_string(work.join(name)).ok().and_then(|pid| pid.trim().parse::<i32>().ok());
+        for _ in 0..250 {
+            if let (Some(leader), Some(first), Some(second)) = (read("leader"), read("first"), read("second")) {
+                for name in ["leader", "first", "second"] {
+                    std::fs::remove_file(work.join(name)).unwrap();
+                }
+                return vec![leader, first, second];
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the tool did not start");
+    }
+
+    async fn all_gone(pids: &[i32]) -> bool {
+        for _ in 0..250 {
+            if pids.iter().all(|pid| !runs(*pid)) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn nothing_an_isolated_tool_started_outlives_its_deadline() {
+        let tmp = temp_dir();
+        let work = tmp.path().join("work");
+        let mut ctx = context(tmp.path());
+        ctx.deadline = Some(Instant::now() + Duration::from_secs(2));
+        let (result, pids) = tokio::join!(isolated(&ctx, FAMILY, true), async {
+            let pids = family(&work).await;
+            assert!(pids.iter().all(|pid| runs(*pid)), "{pids:?}");
+            pids
+        });
+        assert_eq!(result.unwrap_err().code, error_codes::TIMEOUT);
+        assert!(all_gone(&pids).await, "{pids:?}");
+        assert!(!temp_space_left(&work));
+    }
+
+    #[tokio::test]
+    async fn cancelling_or_dropping_the_call_kills_what_the_tool_started() {
+        let tmp = temp_dir();
+        let work = tmp.path().join("work");
+        let ctx = context(tmp.path());
+        let (result, pids) = tokio::join!(isolated(&ctx, FAMILY, true), async {
+            let pids = family(&work).await;
+            ctx.cancel.cancel();
+            pids
+        });
+        assert_eq!(result.unwrap_err().code, error_codes::CANCELLED);
+        assert!(all_gone(&pids).await, "{pids:?}");
+
+        // The runner drops the call when its own timer wins.
+        let ctx = context(tmp.path());
+        let pids = tokio::select! {
+            result = isolated(&ctx, FAMILY, true) => panic!("the tool ended: {result:?}"),
+            pids = family(&work) => pids,
+        };
+        assert!(all_gone(&pids).await, "{pids:?}");
+        assert!(!temp_space_left(&work));
+
+        // A tool that ends on its own takes what it left in the background with it.
+        let ctx = context(tmp.path());
+        let out = tokio::time::timeout(Duration::from_secs(20), isolated(&ctx, "sleep 300 & echo $! > straggler; echo done", true))
+            .await
+            .expect("the call does not wait for the straggler")
+            .unwrap();
+        assert_eq!(out.stdout_string().trim(), "done");
+        let straggler: i32 = std::fs::read_to_string(work.join("straggler")).unwrap().trim().parse().unwrap();
+        assert!(all_gone(&[straggler]).await);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn without_network_an_isolated_tool_sees_only_loopback_where_the_host_can_do_that() {
+        let tmp = temp_dir();
+        let ctx = context(tmp.path());
+        let out = isolated(&ctx, "cat /proc/net/dev", false).await.unwrap();
+        assert!(out.success, "{}", out.stderr_tail);
+        let interfaces: Vec<String> = out
+            .stdout_string()
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, _)| name.trim().to_string())
+            .collect();
+        match confine::no_network().await {
+            confine::NoNetwork::Kept => eprintln!("skipped: this host makes no network namespace for the tool ({interfaces:?})"),
+            _ => assert_eq!(interfaces, vec!["lo"]),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn as_root_an_isolated_tool_runs_as_nobody_in_a_directory_handed_to_it() {
+        use std::os::unix::fs::MetadataExt;
+        if !confine::is_root() {
+            eprintln!("skipped: the service account is not root");
+            return;
+        }
+        std::env::set_var("WORKFLOW_SESSION_TOKEN", "secret-of-the-service");
+        let tmp = temp_dir();
+        let ctx = context(tmp.path());
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(work.join("site")).unwrap();
+        std::fs::write(work.join("site/index.html"), "<p>page</p>").unwrap();
+        let secret = tmp.path().join("secret");
+        std::fs::write(&secret, "of root").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let (uid, gid) = confine::nobody().unwrap();
+        assert_ne!(uid, 0);
+
+        let script = format!(
+            "id -u; id -g; id -G; cat site/index.html; echo; touch \"$HOME/h\" \"$TMPDIR/t\" out.txt && echo wrote; cat {} 2>/dev/null || echo unreadable; env | grep -c WORKFLOW_SESSION_TOKEN",
+            secret.display()
+        );
+        for network in [true, false] {
+            let out = isolated(&ctx, &script, network).await.unwrap();
+            let text = out.stdout_string();
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(
+                lines,
+                vec![uid.to_string().as_str(), gid.to_string().as_str(), gid.to_string().as_str(), "<p>page</p>", "wrote", "unreadable", "0"],
+                "network={network} stderr={}",
+                out.stderr_tail
+            );
+            assert_eq!(std::fs::metadata(work.join("out.txt")).unwrap().uid(), uid);
+        }
+    }
 }

@@ -84,6 +84,7 @@ pub const STANDARD_TOOLS: &[BaselineTool] = &[
     tool("import_office", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
     tool("import_table", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
     tool("materialize_resource", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
+    tool("reflow", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
     tool("resume_aicc_task", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
     helper("llm_understand_media", ToolCategory::Media, AGENT_TOOL_SOURCE, "agent_tool"),
     tool("caption_image", ToolCategory::Media, AGENT_TOOLS_SOURCE),
@@ -116,6 +117,7 @@ pub enum ExtToolCategory {
     Document,
     Python,
     JavaScript,
+    Browser,
     Utility,
 }
 
@@ -183,6 +185,11 @@ pub const EXTENDED_TOOLS: &[ExtendedTool] = &[
         ext_cmd("npx", "npx --version", None),
     ]),
     core_tool("deno", ExtToolCategory::JavaScript, &[ext_cmd("deno", "deno --version", Some("smoke/deno.sh"))]),
+    core_tool("chromium", ExtToolCategory::Browser, &[
+        ext_cmd("chromium", "chromium --version", Some("smoke/chromium.sh")),
+        ext_cmd("agent-browser", "agent-browser version", Some("smoke/agent-browser.sh")),
+        ext_cmd("page-render", "page-render --version", Some("smoke/page-render.sh")),
+    ]),
     core_tool("helpers", ExtToolCategory::Utility, &[
         ext_cmd("git", "git --version", Some("smoke/helpers.sh")),
         ext_cmd("curl", "curl --version", None),
@@ -588,6 +595,24 @@ pub fn managed_tool_dirs() -> Vec<PathBuf> {
     buckyos_root().map(|root| vec![root.join("tools/bin"), root.join("bin/agent-tools")]).unwrap_or_default()
 }
 
+/// Points Playwright at the browser of `ext-core` under `root`, so that a project on the same Playwright version
+/// downloads none. That browser brings its own libraries: the host has nothing for Playwright to validate. Empty when
+/// the package is not installed.
+pub fn playwright_env_in(root: &Path) -> Vec<(String, String)> {
+    let browsers = root.join("tools/store/ext-core/chromium");
+    if !browsers.is_dir() {
+        return Vec::new();
+    }
+    vec![
+        ("PLAYWRIGHT_BROWSERS_PATH".to_string(), browsers.display().to_string()),
+        ("PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS".to_string(), "1".to_string()),
+    ]
+}
+
+pub fn playwright_env() -> Vec<(String, String)> {
+    buckyos_root().map(|root| playwright_env_in(&root)).unwrap_or_default()
+}
+
 /// The agent's BuckyOS identity for a service tool run by a Session
 /// process that has none in its environment (a node session-runtime: the
 /// executor passes no `BUCKYOS_*`): asked of AgentService with the
@@ -730,6 +755,21 @@ mod tests {
         for wanted in ["DENO_DIR", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "NPM_CONFIG_CACHE", "NPM_CONFIG_PREFIX", "PIP_CACHE_DIR", "LLM_UNDERSTAND_MEDIA_CATALOG_DIR"] {
             assert!(env.iter().any(|(name, _)| name == wanted), "{wanted}");
         }
+    }
+
+    #[test]
+    fn playwright_is_pointed_at_the_installed_browser_only() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(playwright_env_in(root.path()).is_empty(), "no ext-core browser, no opinion");
+        let browsers = root.path().join("tools/store/ext-core/chromium");
+        std::fs::create_dir_all(&browsers).unwrap();
+        assert_eq!(
+            playwright_env_in(root.path()),
+            vec![
+                ("PLAYWRIGHT_BROWSERS_PATH".to_string(), browsers.display().to_string()),
+                ("PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS".to_string(), "1".to_string()),
+            ]
+        );
     }
 
     #[test]

@@ -638,6 +638,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     editorActive: Boolean(subject && editing === subject.entity_id), zoom: camera.zoom,
     onActivate: () => { if (subject) setEditing(subject.entity_id) }, onDeactivate: () => setEditing(null),
   })
+  // a selected wish's actions follow its freshness and its runs (its macro arrives, a run starts or ends): its toolbar,
+  // menu and context window are drawn again when either moves
+  const wishSelected = subject?.view_type === 'wish'
+  const watchWish = useCallback((listener: () => void) => {
+    if (!wishSelected) return () => {}
+    const fresh = store.freshness.subscribe(listener)
+    const runs = store.wish.subscribe(listener)
+    return () => { fresh(); runs() }
+  }, [store, wishSelected])
+  useSyncExternalStore(watchWish, () => (wishSelected ? `${store.freshness.snapshot()}:${store.wish.snapshot()}` : ''))
   /** A Block-control's command context (脑图方案 §7.1) for the selected node `nodeId` or the control itself. */
   const controlCtx = (containerId: string, nodeId: string | null): ControlCommandContext => ({
     store, laid, nodeId, containerId, surface, canEdit: policy.insert && insertReason === null,

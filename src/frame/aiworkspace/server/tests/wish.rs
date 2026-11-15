@@ -430,6 +430,33 @@ fn a_hand_edit_is_overwritten_and_a_run_is_rolled_back() {
 }
 
 #[test]
+fn a_rolled_back_run_restores_its_rich_text_result() {
+    run_test(|| async move {
+    let m = scripted();
+    let mut srv = Srv::start(tempfile::tempdir().unwrap(), m.clone()).await;
+    setup(&mut srv).await;
+    let (_, _, _) = through(&srv).await;
+    let w = srv.wish().await;
+    let commentary = w["last_run"]["result_bindings"]["results"]["commentary"]["entity_id"].as_str().unwrap().to_string();
+    let before = srv.rpc("doc.read", json!({ "entity_id": commentary })).await["content"].clone();
+    // new data: the next run writes another commentary (its blocks replaced in the run's commit)
+    srv.commit(json!([{ "op": "table.insert_records", "source_id": "orders", "records": [{ "record_id": "o30", "values": {
+        "month": "2026-09-01", "customer": "客户9", "region": "east", "amount": "900.50", "status": "done", "note": "服务很好" } }] }])).await;
+    let r2 = srv.run("wish.xllm@1", stage("run")).await;
+    srv.done(&r2);
+    let after = srv.rpc("doc.read", json!({ "entity_id": commentary })).await["content"].clone();
+    assert_ne!(after, before, "the second run rewrote the commentary");
+    // the rollback replays the run's inverse as an internal Commit: rich text blocks take `expect: "any"` too
+    let rb = srv.rollback(&r2["run_id"], false).await["result"].clone();
+    assert_eq!(rb["status"], "accepted", "{rb}");
+    let back = srv.rpc("doc.read", json!({ "entity_id": commentary })).await["content"].clone();
+    assert!(before["content"].is_object(), "{before}");
+    assert_ne!(after["content"], before["content"]);
+    assert_eq!(back["content"], before["content"], "the commentary is the first run's again");
+    });
+}
+
+#[test]
 fn a_macro_and_an_analysis_roll_back_to_the_previous_record() {
     run_test(|| async move {
     let m = scripted();

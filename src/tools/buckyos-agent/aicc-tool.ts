@@ -34,6 +34,7 @@ import * as resume_aicc_task from "./commands/resume_aicc_task.ts";
 import * as import_table from "./commands/import_table.ts";
 import * as import_office from "./commands/import_office.ts";
 import * as ask_user from "./commands/ask_user.ts";
+import * as reflow from "./commands/reflow.ts";
 
 interface Command {
   run: (argv: string[]) => Promise<never>;
@@ -65,6 +66,7 @@ const COMMANDS: Record<string, Command> = {
   import_table,
   import_office,
   ask_user,
+  reflow,
 };
 
 function topLevelHelp(): string {

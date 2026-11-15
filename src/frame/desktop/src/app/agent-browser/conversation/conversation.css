@@ -1,0 +1,49 @@
+/* Agent Browser: the conversation of a thing (APP7) and what the status strip asks before a handover (DG2, DG3). */
+.ab-chat-panel { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--cp-surface-opaque); }
+.ab-chat { position: relative; flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; background: var(--cp-message-canvas); }
+.ab-chat-history { position: relative; flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; }
+.ab-chat-runtime {
+  flex: none; overflow: hidden; padding: 2px 14px; color: var(--cp-accent); font-size: 12px; text-overflow: ellipsis; white-space: nowrap;
+}
+.ab-chat-status {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 0;
+  padding: 24px; color: var(--cp-muted); line-height: 1.5; text-align: center;
+}
+.ab-chat-status-title { color: var(--cp-text); font-size: 15px; font-weight: 600; }
+
+/* Pulled up over the page: from the bottom on a phone, at the side of a wide window. */
+.ab-chat-sheet {
+  position: absolute; right: 0; bottom: 0; left: 0; z-index: 2; display: flex; flex-direction: column; overflow: hidden;
+  height: min(72%, 620px); min-height: min(100%, 300px); border-radius: 16px 16px 0 0; background: var(--cp-surface-opaque);
+  box-shadow: 0 -10px 32px color-mix(in srgb, var(--cp-shadow) 24%, transparent); animation: ab-sheet 0.2s var(--cp-ease-smooth, ease-out);
+}
+@media (min-width: 769px) {
+  .ab-chat-sheet {
+    top: 0; left: auto; width: min(420px, 86%); height: auto; min-height: 0; border-left: 1px solid var(--cp-border); border-radius: 0;
+    box-shadow: -10px 0 32px color-mix(in srgb, var(--cp-shadow) 18%, transparent);
+  }
+}
+.ab-chat-sheet-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 16px; border-bottom: 1px solid var(--cp-border); }
+.ab-chat-sheet-head h2 { flex: 1; min-width: 0; overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.ab-chat-sheet-body { position: relative; flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; }
+
+/* The status strip's way into the conversation */
+.ab-chat-toggle { position: relative; }
+.ab-chat-toggle[aria-expanded='true'] { background: var(--ab-wash); color: var(--cp-accent); }
+.ab-chat-unread { position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--cp-danger); }
+
+/* Handing the page over */
+.ab-page-ref { display: flex; flex-direction: column; margin: 0 8px 10px; padding: 8px 12px; border-radius: 10px; background: var(--ab-wash); }
+.ab-page-ref-title { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ab-page-ref-url { overflow: hidden; color: var(--cp-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.ab-note-label { display: block; padding: 0 8px 4px; color: var(--cp-muted); font-size: 12px; }
+.ab-note-field {
+  display: block; width: calc(100% - 16px); min-height: 88px; margin: 0 8px 6px; padding: 10px 12px; border: 1px solid var(--cp-border);
+  border-radius: 10px; background: transparent; color: inherit; font-size: 16px; line-height: 1.45; resize: none;
+}
+.ab-root .ab-note-field:focus-visible { outline: 2px solid var(--cp-focus-ring); outline-offset: 1px; }
+.ab-note-hint { padding: 0 8px 6px; color: var(--cp-muted); font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ab-chat-sheet { animation: none; }
+}

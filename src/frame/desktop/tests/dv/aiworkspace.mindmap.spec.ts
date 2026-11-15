@@ -207,18 +207,22 @@ test('[mindmap] a wish answered by the real model with a mind map', async ({ own
   const page = owner.page
   await openCanvas(owner, ws)
   await fitAll(page)
-  await page.getByTestId('aiws-canvas-block-blk-wish-map').click()
-  await page.getByTestId('aiws-near-wish-open').click()
-  await expect(page.getByTestId('aiws-wish-executor')).toHaveValue('xllm')
-  await page.getByTestId('aiws-wish-analyze').click()
-  await expect(page.getByTestId('aiws-wish-contract')).toContainText('control', { timeout: 180_000 })
-  await screenshot(page, info, 'mindmap-wish-analysis')
-  await page.getByTestId('aiws-wish-code').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 300_000 })
-  await expect(page.getByTestId('aiws-wish-control-preview')).toBeVisible()
-  await screenshot(page, info, 'mindmap-wish-candidate')
-  await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-message')).toBeVisible({ timeout: 60_000 })
+  // the card, fitted to work with (selected by its title: its own controls take a click themselves)
+  const card = page.getByTestId('aiws-wish-card-wish-map')
+  await card.getByTestId('aiws-wish-title').click()
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-selection').click()
+  // the three stages from its card, each written as it ends (许愿格交互升级 §3.3)
+  const history = async () => (await owner.client.ok<{ content: { payload: { history?: Record<string, { id: string; ok: boolean; error?: unknown }[]> } } }>('doc.read', { workspace_id: ws.workspace_id, entity_id: 'wish-map' })).content.payload.history ?? {}
+  for (const [tab, stage, ms] of [['prompt', 'analyze', 180_000], ['analysis', 'code', 300_000], ['macro', 'run', 120_000]] as const) {
+    const before = (await history())[stage]?.[0]?.id
+    await card.getByTestId(`aiws-wish-tab-${tab}`).click()
+    await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', stage)
+    await card.getByTestId('aiws-wish-next').click()
+    await expect.poll(async () => { const r = (await history())[stage]?.[0]; return r && r.id !== before ? (r.ok ? 'ok' : JSON.stringify(r.error)) : null }, { timeout: ms, intervals: [3_000] }).toBe('ok')
+    await screenshot(page, info, `mindmap-wish-${stage}`)
+  }
+  await expect(card).toHaveAttribute('data-tab', 'results')
   // a control carries no dependency record (only data entities do): the wish's last run binds it
   const wish = await owner.client.ok<{ content: { payload: { last_run: { result_bindings: { results: Record<string, { type: string; entity_id: string }> } } } } }>('doc.read', { workspace_id: ws.workspace_id, entity_id: 'wish-map' })
   const bound = Object.values(wish.content.payload.last_run.result_bindings.results).filter((b) => b.type === 'control')

@@ -69,6 +69,7 @@ Deno 是当前标准 TS 工具的运行依赖，但 `deno` 这个命令名不在
 | `ai_provider` | 查询 provider、模型清单及模型健康状态；子命令包括 `list`、`models`、`health`。 |
 | `ai_quota` | 查询影响当前身份或指定 App 的 AI 配额。 |
 | `materialize_resource` | 将对象、URL 等资源保存为当前执行端的本地文件。 |
+| `reflow` | 读写用户的重排库（Agent 浏览器）：`match`、`ls`、`get`、`put`、`rm`、`result put`、`refresh`；规则见 [Agent Browser Protocol](protocol/Agent%20Browser%20Protocol.md) §5。 |
 | `resume_aicc_task` | 查询/继续等待已有 AICC 任务并取得结果，避免重复提交生成请求。 |
 | `ai_provider_test` | 当前清单中的测试入口；不是可用的产品 CLI，不应用它做 provider 健康检查，见 §2.3。 |
 
@@ -137,7 +138,7 @@ host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，
 
 | 档 | 内容 | 判定 |
 | --- | --- | --- |
-| 核心 | `EXTENDED_TOOLS` 里标 `core` 的工具：`ffmpeg ffprobe`、`magick convert identify compare`、`pdftotext pdftoppm pdfinfo`、`tesseract`、`pandoc`、`python3 uv`、`node npm npx deno`、`git curl jq tree unzip xz` | 声明 `extended` 时缺任何一个，`baseline_check` 失败 |
+| 核心 | `EXTENDED_TOOLS` 里标 `core` 的工具：`ffmpeg ffprobe`、`magick convert identify compare`、`pdftotext pdftoppm pdfinfo`、`tesseract`、`pandoc`、`soffice`、`python3 uv`、`node npm npx deno`、`chromium agent-browser page-render`、`git curl jq tree unzip xz` | 声明 `extended` 时缺任何一个，`baseline_check` 失败 |
 | 推荐 | `EXTENDED_TOOLS` 里标 `recommended` 的工具（首版没有，T0 决定） | 缺了只在 `ext` 状态里报，不否定 `extended` |
 | 可选 | FreeCAD、编译工具链、Docker、pnpm、字体、额外 OCR 数据等，各自成扩展包 | 不改变 baseline，skill 自己核验 |
 
@@ -156,6 +157,8 @@ host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，
 `ext-core`（[`publish/exttool/ext-core`](../../publish/exttool/ext-core)）是第一个包，五个平台各一个自包含 payload，launcher 只指 `store/` 内的文件，不回退 PATH。命令、来源与场景的唯一事实来源是 [paios容器需求.md §6.4](../app_service/paios容器需求.md) 表 B。包格式（`app_type=ext_tools`）见 [PIKG 格式 §5.1](../pikg/format.md)。
 
 软件版本以 `xagent runtime ext-tools status` 和实际运行端的版本输出为准。保证的是命令存在、无网络 smoke 通过，不是所有编解码器、字体、语言包都具备：`tesseract` 只带 `eng`、`osd`；中文字幕需要可用的中文字库；Python 项目需要自己的依赖环境（`uv` 管理，解释器落到 Agent 的缓存，见 [path_usage.md](../path_usage.md)）。Windows PowerShell 5.1 里 `curl`、`compare` 是别名，要写 `curl.cmd`、`magick compare`。
+
+浏览器（`ext-core` 1.3.0 起）：包里有一份 Chromium（Chrome for Testing）和配套的 `playwright-core`，版本用 `agent-browser version` 查。只带完整构建，没有 headless shell，Playwright 的测试配置要写 `channel: 'chromium'`。这台机器装了 `ext-core` 的浏览器时，Session 的环境里有 `PLAYWRIGHT_BROWSERS_PATH`（指到 `$BUCKYOS_ROOT/tools/store/ext-core/chromium`）和 `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1`，项目用同一版本的 `@playwright/test` 时不用下载浏览器，也不用装系统库。浏览器目录只读、只有这一个版本：项目用别的 Playwright 版本时按 `agent-browser env` 的输出设环境变量，把它自己的浏览器下到别处。以 root 运行或在容器里启动 Chromium 要带 `--no-sandbox`。
 
 种子镜像（`paios/exttool`）另外带预热的 `uv-cache`、`deno-cache`：不能据此认定依赖已装进每个 Session 的项目环境。FreeCAD 不在默认镜像里，要用 `FREECAD_APPIMAGE_URL_*` 单独构建，之后成为 `ext-cad` 包（§6.4 表 C）。
 

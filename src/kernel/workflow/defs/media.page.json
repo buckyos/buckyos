@@ -1,0 +1,325 @@
+{
+  "schema_version": "0.2.0",
+  "id": "media.page",
+  "name": "media.page",
+  "description": "Render an HTML page (one HTML file, or a zip with index.html at its root) to a PDF or to a PNG snapshot with the headless browser. The page gets no network.",
+  "trigger": {
+    "type": "manual",
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "obj_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string",
+          "enum": [
+            "pdf",
+            "png"
+          ],
+          "default": "pdf"
+        },
+        "paper": {
+          "type": "string",
+          "pattern": "^(A3|A4|A5|Letter|[0-9]+(\\.[0-9]+)?x[0-9]+(\\.[0-9]+)?mm)$",
+          "default": "A4"
+        },
+        "landscape": {
+          "type": "boolean",
+          "default": false
+        },
+        "margin_mm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 10
+        },
+        "background": {
+          "type": "boolean",
+          "default": true
+        },
+        "header_html": {
+          "type": "string",
+          "default": ""
+        },
+        "footer_html": {
+          "type": "string",
+          "default": ""
+        },
+        "viewport_width": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 3840,
+          "default": 1280
+        },
+        "viewport_height": {
+          "type": "integer",
+          "minimum": 240,
+          "maximum": 4096,
+          "default": 800
+        },
+        "scale": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 1
+        },
+        "wait_ready": {
+          "type": "string",
+          "default": ""
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000,
+          "default": 0
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "obj_id",
+        "output",
+        "content_id",
+        "size"
+      ],
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string",
+          "enum": [
+            "pdf",
+            "png"
+          ],
+          "default": "pdf"
+        },
+        "paper": {
+          "type": "string",
+          "pattern": "^(A3|A4|A5|Letter|[0-9]+(\\.[0-9]+)?x[0-9]+(\\.[0-9]+)?mm)$",
+          "default": "A4"
+        },
+        "landscape": {
+          "type": "boolean",
+          "default": false
+        },
+        "margin_mm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 10
+        },
+        "background": {
+          "type": "boolean",
+          "default": true
+        },
+        "header_html": {
+          "type": "string",
+          "default": ""
+        },
+        "footer_html": {
+          "type": "string",
+          "default": ""
+        },
+        "viewport_width": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 3840,
+          "default": 1280
+        },
+        "viewport_height": {
+          "type": "integer",
+          "minimum": 240,
+          "maximum": 4096,
+          "default": 800
+        },
+        "scale": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 1
+        },
+        "wait_ready": {
+          "type": "string",
+          "default": ""
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000,
+          "default": 0
+        },
+        "content_id": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "capabilities",
+      "name": "Capabilities",
+      "executor": "/tool/media.capabilities@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {},
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "revision"
+        ],
+        "properties": {
+          "revision": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "object"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "page_to_pdf",
+      "name": "Render page to PDF",
+      "executor": "/tool/media.page_to_pdf@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "paper": "${trigger.output.paper}",
+        "landscape": "${trigger.output.landscape}",
+        "margin_mm": "${trigger.output.margin_mm}",
+        "background": "${trigger.output.background}",
+        "header_html": "${trigger.output.header_html}",
+        "footer_html": "${trigger.output.footer_html}",
+        "wait_ready": "${trigger.output.wait_ready}",
+        "wait_ms": "${trigger.output.wait_ms}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "pdf_content_id",
+          "pdf_obj_id",
+          "pages"
+        ],
+        "properties": {
+          "pdf_content_id": {
+            "type": "string"
+          },
+          "pdf_obj_id": {
+            "type": "string"
+          },
+          "pages": {
+            "type": "integer"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "300s"
+      }
+    },
+    {
+      "id": "page_snapshot",
+      "name": "Render page to PNG",
+      "executor": "/tool/media.page_snapshot@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "viewport_width": "${trigger.output.viewport_width}",
+        "viewport_height": "${trigger.output.viewport_height}",
+        "scale": "${trigger.output.scale}",
+        "wait_ready": "${trigger.output.wait_ready}",
+        "wait_ms": "${trigger.output.wait_ms}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "image_content_id",
+          "image_obj_id",
+          "width",
+          "height"
+        ],
+        "properties": {
+          "image_content_id": {
+            "type": "string"
+          },
+          "image_obj_id": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "300s"
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "type": "branch",
+      "id": "output",
+      "on": "${trigger.output.output}",
+      "paths": {
+        "pdf": "page_to_pdf",
+        "png": "page_snapshot"
+      },
+      "max_iterations": 1
+    }
+  ],
+  "edges": [
+    {
+      "from": "capabilities",
+      "to": "output"
+    },
+    {
+      "from": "page_to_pdf"
+    },
+    {
+      "from": "page_snapshot"
+    }
+  ],
+  "guards": {
+    "max_duration": "10m"
+  }
+}

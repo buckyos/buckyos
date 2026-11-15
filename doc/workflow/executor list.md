@@ -418,14 +418,14 @@ DSL 入口：
 
 ### 意图化函数
 
-FunctionObject 必须表达业务意图（“把 PDF 页渲染成页图”），不能是命令行包装（“运行 pdftoppm 参数 …”）；命令及参数拼接只在 Native 实现内。首批 9 个 `media.*` 函数见 [src/kernel/workflow/src/functions/media/mod.rs](../../src/kernel/workflow/src/functions/media/mod.rs)：capabilities、probe、fit_image、extract_pdf_text、render_pdf_pages、extract_frames、extract_audio、to_pdf、build_catalog。外部工具只出现在 `requirements`（`cmd/<tool>`）与诊断里。
+FunctionObject 必须表达业务意图（“把 PDF 页渲染成页图”），不能是命令行包装（“运行 pdftoppm 参数 …”）；命令及参数拼接只在 Native 实现内。12 个 `media.*` 函数见 [src/kernel/workflow/src/functions/media/mod.rs](../../src/kernel/workflow/src/functions/media/mod.rs)：capabilities、probe、fit_image、extract_pdf_text、render_pdf_pages、ocr_pages、extract_frames、extract_audio、to_pdf、build_catalog、page_to_pdf、page_snapshot。外部工具只出现在 `requirements`（`cmd/<tool>`）与诊断里。
 
 ### 执行方式（P0：workflow 进程内）
 
 1. 编排器解析 Reference，构造 `ThunkObject`，计算 `thunk_obj_id` 并把规范化 JSON 写入 Named Store。
 2. 取函数指纹（该函数依赖的工具版本），`cacheable = step.idempotent && function.is_pure`，`step_cache_key = hash(thunk_obj_id, fingerprint)`；命中且结果对象、产物都可用则 `step.completed{source: cache}`，不投递。
 3. 构造 `ThunkExecution`，记录 pending（按 `execution_id`）、创建 `workflow/thunk` Task，调用 `ThunkDispatcher::schedule_thunk(execution, thunk)`。
-4. `LocalThunkRunner`（[src/kernel/workflow/src/local_thunk_runner.rs](../../src/kernel/workflow/src/local_thunk_runner.rs)）只做有界入队即返回；执行任务取 lane 槽（Light / Image / Pdf / Video / Office），校验环境指纹、工具存在、参数 schema、内容可读，执行 Native，结果通过 `result_schema` 后写结果对象，发 `ThunkExecutionResult` 回执（含 `fingerprint`、`artifact_refs`、`cacheable`、结构化 `error`）。
+4. `LocalThunkRunner`（[src/kernel/workflow/src/local_thunk_runner.rs](../../src/kernel/workflow/src/local_thunk_runner.rs)）只做有界入队即返回；执行任务取 lane 槽（Light / Image / Pdf / Video / Office / Browser），校验环境指纹、工具存在、参数 schema、内容可读，执行 Native，结果通过 `result_schema` 后写结果对象，发 `ThunkExecutionResult` 回执（含 `fingerprint`、`artifact_refs`、`cacheable`、结构化 `error`）。Native 实现调外部工具有两种方式：`run_tool` 继承服务的环境；`run_tool_isolated` 给渲染第三方内容的工具用（目前只有 Browser lane 的 `page-render`），清空环境、单独进程组、Linux 上从 root 降到 `nobody`、断网，见 [media tool baseline.md §3.1](media%20tool%20baseline.md)。
 5. `RunDriver` 消费回执：重复、迟到、终态后的回执被拒绝；成功且 `cacheable` 的写缓存索引；失败按 Step 的 retry / fallback 处理，错误 `{code, message, details, retryable}` 落到 Run `node_errors`、Step / Thunk Task 与 RPC。
 
 错误码：`tools_missing`、`timeout`、`cancelled`、`interrupted`、`permission_denied`、`resource_limit`、`environment_changed`、`invalid_params`、`invalid_result`、`input_unavailable`、`tool_failed`、`function_not_found`、`queue_full`、`internal`（`buckyos_api::error_codes`）。

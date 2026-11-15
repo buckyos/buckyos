@@ -33,7 +33,7 @@
 | Workflow DSL | `buckyos_api::workflow_dsl::WorkflowDefinition` / `StepDefinition` / `ControlNodeDefinition` | [workflow_dsl.rs](src/kernel/buckyos-api/src/workflow_dsl.rs)、[src/kernel/workflow/src/dsl.rs](src/kernel/workflow/src/dsl.rs) |
 | Workflow executor 表达 | `ExecutorRef` 支持 `service::` / `http::` / `appservice::` / `operator::` / `func::` 与 `/agent/` / `/skill/` / `/tool/` 语义路径 | [workflow_types.rs](src/kernel/buckyos-api/src/workflow_types.rs)、[doc/workflow/executor list.md](doc/workflow/executor%20list.md) |
 | 共享表示缓存（转换产物） | workflow service 的 Step cache：`step_cache_key = hash(thunk_obj_id, 工具指纹)`，索引在 service-local SQLite（`data/srv/workflow/workflow.db`），结果 / manifest 为 Named Object，产物在 workflow zone 桶 `artifacts`（temp，30 天）；活动 Run 按 principal 合并（ensure） | [src/kernel/workflow/src/cache_index.rs](src/kernel/workflow/src/cache_index.rs)、[persistence.rs](src/kernel/workflow/src/persistence.rs)、[orchestrator.rs](src/kernel/workflow/src/orchestrator.rs) |
-| 转换函数 | 十个 `media.*` Native FunctionObject（capabilities、probe、fit_image、extract_pdf_text、render_pdf_pages、ocr_pages、extract_frames、extract_audio、to_pdf、build_catalog），由 `/tool/media.<fn>@1` 引用 | [src/kernel/workflow/src/functions/media/mod.rs](src/kernel/workflow/src/functions/media/mod.rs) |
+| 转换函数 | 十二个 `media.*` Native FunctionObject（capabilities、probe、fit_image、extract_pdf_text、render_pdf_pages、ocr_pages、extract_frames、extract_audio、to_pdf、build_catalog，以及系统渲染用的 page_to_pdf、page_snapshot，后两个本工具不用），由 `/tool/media.<fn>@1` 引用 | [src/kernel/workflow/src/functions/media/mod.rs](src/kernel/workflow/src/functions/media/mod.rs) |
 | 转换工具探测 | workflow 宿主启动时探测 poppler / ffmpeg / soffice（三平台查找，版本进指纹）；缺工具时对应步骤 Failed(`tools_missing`)，是部署缺陷而非正常降级（基线见 [doc/workflow/media tool baseline.md](doc/workflow/media%20tool%20baseline.md)） | [functions/media/tools.rs](src/kernel/workflow/src/functions/media/tools.rs) |
 | Office / 表格的 Agent 命令 | `import_office`（docx / pptx → Blocks）、`import_table`（csv / xlsx / sqlite → TableSources）。它们是 Agent 手册命令，媒体管线不使用（TODO D9） | [import_office.ts](src/tools/buckyos-agent/commands/import_office.ts)、[import_table.ts](src/tools/buckyos-agent/commands/import_table.ts) |
 | 媒体工具基线（可用性约束） | workflow 宿主和 paios 镜像都要满足同一份清单（poppler、ffmpeg、LibreOffice、字体、locale）；官方命令清单仍以 paios 文档为入口 | [doc/workflow/media tool baseline.md](doc/workflow/media%20tool%20baseline.md)、[paios 容器需求 §6.4](doc/app_service/paios容器需求.md) |
@@ -332,9 +332,9 @@ model = "llm.video"
 
 2026-11-05 第二次裁决（[notepads/llm-media-pipeline-workflow-todo.md](notepads/llm-media-pipeline-workflow-todo.md) P2 / P5）：机械识别与机械转换**由 Workflow Service 的系统内置 pipeline 承载**，不再在 `agent_tool` 进程内实现一个本地 runner，也不复用 nfs_server preview 组件（只借鉴其 ensure / work key / descriptor / 状态机的处理模型）。模型分析仍在 `llm_understand_media` 旁路内进行，不进管线。
 
-- **管线 = `WorkflowDefinition`**：四条系统定义 `media.image` / `media.pdf` / `media.video` / `media.document` 随 workflow service 发布（`src/kernel/workflow/defs/media.*.json`，启动时播种，`source: system`，只读）。
+- **管线 = `WorkflowDefinition`**：四条系统定义 `media.image` / `media.pdf` / `media.video` / `media.document` 随 workflow service 发布（`src/kernel/workflow/defs/media.*.json`，启动时播种，`source: system`，只读）。同一目录里还有第五条 `media.page`（把 HTML 页面输出成 PDF / PNG 的系统渲染，见 §4.5.3 表后的说明），`llm_understand_media` 不调用它。
 - **一次转换 = 一个 Run**：`llm_understand_media` 调 `workflow.create_run` 创建 Run；输入是内容寻址对象，产物是 NDN 对象。
-- **stage = `autonomous` Step**，executor 是 `/tool/media.<fn>@1` 语义链接，编译期经 FunctionRegistry 绑定到真实 FunctionObject（`func:<hex>`）。这是 FunctionObject / Thunk 通道的第一次真实落地：十个 `media.*` Native 函数在 workflow 进程内的 `LocalThunkRunner` 执行。
+- **stage = `autonomous` Step**，executor 是 `/tool/media.<fn>@1` 语义链接，编译期经 FunctionRegistry 绑定到真实 FunctionObject（`func:<hex>`）。这是 FunctionObject / Thunk 通道的第一次真实落地：`media.*` Native 函数在 workflow 进程内的 `LocalThunkRunner` 执行。
 - **跨 Run 复用 = Orchestrator 的 Step cache**：`step_cache_key = hash(thunk_obj_id, 执行指纹)`，持久化在 workflow 的 SQLite 索引里，命中前校验结果对象与全部产物仍可读。
 - **可观测**：Run / Step / Thunk 进 task_manager 任务树，请求者获得 Run 根任务的 WholeTree 读 grant，`run_id` 就是根任务 id（WF-DV-012 已验证）；Desktop `app/workflow` 已改接真实 RPC，未在 Zone 上验证（§10）。
 
@@ -365,9 +365,9 @@ model = "llm.video"
 
 `to_pdf` 的 `is_pure: true` 语义是“结果可复用”，不要求字节相同（§10.3 Q5）。实测 LibreOffice 25.2 对同一输入转两次，文件大小相同，但有 91 字节不同，差异在 `CreationDate`、`/ID`、`DocChecksum`。第一次的结果写入缓存，之后 `pdf_content_id` 稳定，后续文本、页图、manifest 全部命中（WF-DV-015）。它的指纹是 soffice、pdfinfo 版本加字体集摘要（`env/fonts`），字体变化使旧结果失效。
 
-#### 4.5.3 `media.*` FunctionObject（10 个）
+#### 4.5.3 `media.*` FunctionObject（12 个）
 
-注册在 `src/kernel/workflow/src/functions/media/mod.rs`，`content = "<name>/impl-3"`，`func_type = native`，参数以 `params_schema` 为权威、`params_type` 只标出 `content_id` 这类 `CheckByRunner("file_content")` 引用。Native 行为变化必须升级 `impl-<n>`，老 Run 不会悄悄绑定新函数。
+注册在 `src/kernel/workflow/src/functions/media/mod.rs`，`content = "<name>/impl-3"`（`ocr_pages`、`page_to_pdf`、`page_snapshot` 在后面再接自己的修订号，如 `impl-3+page-1`），`func_type = native`，参数以 `params_schema` 为权威、`params_type` 只标出 `content_id` 这类 `CheckByRunner("file_content")` 引用。Native 行为变化必须升级 `impl-<n>`，老 Run 不会悄悄绑定新函数。
 
 | 函数 | 关键参数 | 结果 | 工具（requirements） |
 |---|---|---|---|
@@ -381,6 +381,10 @@ model = "llm.video"
 | `media.extract_audio` | `content_id`、`max_duration_ms` | `{status: ok | absent, audio_obj_id?, codec?, duration_ms?}`；输出固定为 mp3，`codec` 是源音轨编码 | ffprobe、ffmpeg |
 | `media.to_pdf` | `content_id`、`format` | `{pdf_content_id, pdf_obj_id, pages}` | soffice（headless，独立 profile，并发 1）；pdfinfo 数页 |
 | `media.build_catalog` | `family`、`source_content_id`、`derived_content_id?`、`probe`、`text?`、`images?`、`ocr?`、`frames?`、`audio?` | `{manifest_obj_id, summary, complete}` | 无 |
+| `media.page_to_pdf` | `content_id`（一份 HTML，或根目录带 `index.html` 的 zip，按文件头区分）、`paper`（`A3` / `A4` / `A5` / `Letter` / `<宽>x<高>mm`）、`landscape`、`margin_mm`、`background`、`header_html?`、`footer_html?`、`wait_ready?`、`wait_ms?` | `{pdf_content_id, pdf_obj_id, pages}`（和 `to_pdf` 同一个结果类型 `media.derived_pdf`） | page-render（无头 Chromium；Browser lane 并发 1，隔离运行、没有网络）；指纹加 `env/fonts` |
+| `media.page_snapshot` | `content_id`（同上）、`viewport_width`、`viewport_height`、`scale`、`wait_ready?`、`wait_ms?` | `{image_content_id, image_obj_id, width, height}`：整页的 PNG，宽是视口宽乘 `scale` | 同上 |
+
+`page_to_pdf`、`page_snapshot` 属于系统渲染（[Agent 浏览器 TODO §5.7](notepads/agent-runtime-browser-todo.md)），由系统定义 `media.page` 引用，`llm_understand_media` 不使用，列在这里是为了函数清单完整。隔离方式见 [媒体工具基线 §3.1](doc/workflow/media%20tool%20baseline.md)。
 
 共同约定：
 
@@ -394,14 +398,14 @@ model = "llm.video"
 ```text
 fun_id         = func:<JCS(FunctionObject)>      # func_type / content / is_pure / params_type / params_schema / result_type / result_schema
 thunk_obj_id   = thunk:<JCS({fun_id, params})>    # 跨 Run、跨重试相同
-step_cache_key = hash(thunk_obj_id, fingerprint)  # fingerprint = 该函数实际依赖的工具版本（cmd/<tool> -> version）；to_pdf 另加 env/fonts
+step_cache_key = hash(thunk_obj_id, fingerprint)  # fingerprint = 该函数实际依赖的工具版本（cmd/<tool> -> version）；to_pdf、page_to_pdf、page_snapshot 另加 env/fonts
 ```
 
 name / version / description / timeout / requirements 在 `FunctionRegistration` 里，不进任何 hash：只改这些不使缓存失效。缓存索引保存 `key → result_obj_id / artifact_refs / fingerprint / expires_at`（默认 30 天）；命中前读回结果对象并按 NDN 内容身份校验，再逐个检查产物可用性，失效即删索引重算。metrics、耗时只写 run meta。
 
 #### 4.5.5 执行与资源
 
-- `LocalThunkRunner`：`schedule_thunk` 只做有界入队（`max_queue` 64）即返回；执行任务按 lane 取槽，默认 Light 8、Image 2、Pdf 2、Video 1、Office 1。
+- `LocalThunkRunner`：`schedule_thunk` 只做有界入队（`max_queue` 64）即返回；执行任务按 lane 取槽，默认 Light 8、Image 2、Pdf 2、Video 1、Office 1、Browser 1。
 - 资源上限（`ExecutionLimits` 默认值，超限返回 `resource_limit`）：输入 512 MiB、200 页、64 帧、单页 4096² 像素、累计 200 × 2048² 像素、累计输出 2 GiB、临时盘 4 GiB、排队 300 秒、执行 900 秒。
 - 执行前校验：环境指纹与投递时一致（否则 `environment_changed`）、`requirements` 的工具存在（否则 `tools_missing`，details 列出缺项与搜索路径）、params 通过 `params_schema`、`CheckByRunner` 内容可读；结果通过 `result_schema` 才回灌与写缓存。
 - 输入读取：poppler / soffice 把内容落到执行临时目录。ffprobe / ffmpeg 读标准 NDN URL `/ndn/<file_id>?hint={"token":"bkt_..."}`（HTTP + Range，不落临时文件）：FileObject 绑定在 `zone/workflow/zone/scratch` 的 `inputs/<execution_id>`，令牌只读这一个 key，有效期到 deadline 后 60 秒，执行结束时撤销并解绑，崩溃靠过期兜底；限定 `-format_whitelist`（不含 hls / dash / concat）与 `-protocol_whitelist`；令牌不进日志、错误 details、Task 数据和 manifest。这部分见 TODO T2d 与 [Bucket 设计 §21](doc/arch/应用对象桶%20Bucket%20设计.md) N17，WF-DV-014 通过。

@@ -1,7 +1,8 @@
 /* The built-in templates' wishes on a real Zone with the real models, from the browser, in Chinese (the commits the
- * template dialog replays, `api/demos.ts`): the quarterly analysis — analyze, code, apply, the data changes, run — and the short film —
- * character sheets (generated pictures) → storyboard (a shot list and a frame per shot) → a preview clip (a generated
- * video), each wish reading the previous one's result folder. Every stage goes through the Wish panel. */
+ * template dialog replays, `api/demos.ts`): the quarterly analysis — analyze, code, run, the data changes, run again — and
+ * the short film — character sheets (generated pictures) → storyboard (a shot list and a frame per shot) → a preview clip
+ * (a generated video), each wish reading the previous one's result folder. Every stage is a click on the wish's card
+ * (许愿格交互升级 §3.3): no apply, each stage writes when it ends. */
 
 import type { Locator, Page, TestInfo } from '@playwright/test'
 import type { FreshnessInfo, Operation, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
@@ -47,62 +48,79 @@ async function freshness(actor: Actor, ws: Workspace, id: string): Promise<Fresh
   return (await actor.client.ok<{ items: FreshnessInfo[] }>('doc.freshness', { workspace_id: ws.workspace_id, entity_ids: [id] })).items[0]
 }
 
-/** The Wish panel of the wish a canvas Block shows. */
-async function openWish(page: Page, cellId: string, wishId: string): Promise<Locator> {
+type WishStage = 'analyze' | 'code' | 'run'
+type WishRecord = { id: string; stage: WishStage; ok: boolean; error?: unknown; warnings?: unknown[]; usage?: unknown }
+
+async function history(actor: Actor, ws: Workspace, wishId: string): Promise<Record<WishStage, WishRecord[]>> {
+  const h = (await wish(actor, ws, wishId)).payload.history ?? {}
+  return { analyze: h.analyze ?? [], code: h.code ?? [], run: h.run ?? [] }
+}
+
+/** The card of the wish a canvas Block shows, large enough to work with: the canvas fitted, the Block selected by its
+ * title (the card's own controls take a click themselves) and fitted in turn. */
+async function showCard(page: Page, cellId: string, wishId: string): Promise<Locator> {
   const top = page.getByTestId('aiws-top-canvas')
   if (await top.isVisible()) await top.click()
   await page.getByTestId('aiws-zoom-menu').click()
   await page.getByTestId('aiws-fit-all').click()
-  await page.getByTestId(`aiws-canvas-block-${cellId}`).click()
-  await page.getByTestId('aiws-near-wish-open').click()
-  const panel = page.getByTestId(`aiws-wish-${wishId}`)
-  await expect(panel.getByTestId('aiws-wish-executor')).toHaveValue('xllm')
-  return panel
+  const card = page.getByTestId(`aiws-wish-card-${wishId}`)
+  await card.getByTestId('aiws-wish-title').click()
+  await expect(page.getByTestId(`aiws-canvas-block-${cellId}`)).toHaveClass(/is-selected/)
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-selection').click()
+  await expect(card.getByTestId('aiws-wish-tab-prompt')).toBeVisible()
+  return card
 }
 
-/** What went wrong in a stage, for the failure message: the panel's error, the analysis' blockers, the latest run. */
-async function why(actor: Actor, ws: Workspace, wishId: string, panel: Locator) {
-  const error = await panel.getByTestId('aiws-wish-message').textContent({ timeout: 1000 }).catch(() => null)
-  const w = await wish(actor, ws, wishId)
+/** What went wrong in a stage, for the failure message: the card's line of state, the stage's record, the latest run. */
+async function why(actor: Actor, ws: Workspace, wishId: string, card: Locator, stage: WishStage) {
+  const status = await card.getByTestId('aiws-wish-status').textContent({ timeout: 1000 }).catch(() => null)
+  const record = (await history(actor, ws, wishId))[stage][0]
   const runs = await actor.client.ok<{ runs: Record<string, unknown>[] }>('proc.list', { workspace_id: ws.workspace_id, wish_id: wishId, limit: 1 })
   const run = runs.runs[0]
-  return JSON.stringify({ error, blockers: w.payload.analysis?.blockers, warnings: w.payload.analysis?.warnings, run: run && { stage: run.stage, state: run.state, error: run.error } })
+  return JSON.stringify({ status, record: record && { ok: record.ok, error: record.error, warnings: record.warnings }, run: run && { stage: run.stage, state: run.state, error: run.error } })
 }
 
-/** Click a stage's button and wait until the panel is idle again (the run ended, or failed). */
-async function stage(panel: Locator, button: string) {
-  await panel.getByTestId(button).click()
-  await expect(panel).not.toHaveAttribute('data-busy', '', { timeout: 30_000 })
-  await expect(panel).toHaveAttribute('data-busy', '', { timeout: STAGE_MS })
+/** A tab's next step (or the run button): click it and wait until the stage wrote its record (许愿格交互升级 §3.3: no
+ * apply — each stage writes when it ends); a failed record fails the test with why. */
+async function step(actor: Actor, ws: Workspace, card: Locator, wishId: string, stage: WishStage, by: { tab: 'prompt' | 'analysis' | 'macro' | 'results' } | 'run-button') {
+  const before = (await history(actor, ws, wishId))[stage][0]?.id
+  if (by === 'run-button') {
+    await expect(card.getByTestId('aiws-wish-run')).toHaveAttribute('data-state', 'ready', { timeout: 60_000 })
+    await card.getByTestId('aiws-wish-run').click()
+  } else {
+    await card.getByTestId(`aiws-wish-tab-${by.tab}`).click()
+    const next = card.getByTestId('aiws-wish-next')
+    await expect(next).toHaveAttribute('data-action', stage === 'code' ? /^(code|repair)$/ : stage)
+    await expect(next).toBeEnabled({ timeout: 60_000 })
+    await next.click()
+  }
+  let record: WishRecord | undefined
+  await expect.poll(async () => { record = (await history(actor, ws, wishId))[stage][0]; return Boolean(record && record.id !== before) }, { timeout: STAGE_MS, intervals: [5_000] }).toBe(true)
+  await expect(card).toHaveAttribute('data-running', '', { timeout: 60_000 })
+  if (!record!.ok) throw new Error(`the ${stage} stage failed: ${await why(actor, ws, wishId, card, stage)}`)
+  return record!
 }
 
-/** Apply the waiting candidate: every program check passed (a failed one keeps Apply disabled until a person accepts it). */
-async function apply(panel: Locator) {
-  const failed = panel.getByTestId('aiws-wish-failed-checks')
-  expect(await failed.count() ? await panel.getByTestId('aiws-wish-candidate').textContent() : '', 'a program check failed').toBe('')
-  await panel.getByTestId('aiws-wish-apply').click()
-  await expect(panel.getByTestId('aiws-wish-message')).toBeVisible({ timeout: 60_000 })
-}
-
-/** Analyze (written back as the run ends), code (the macro is written and trial-run in this browser), apply. */
-async function analyzeCodeApply(actor: Actor, ws: Workspace, info: TestInfo, cellId: string, wishId: string) {
+/** Analyze, code (the macro is written and trial-run in this browser), run: three clicks on the card's next step, each
+ * stage written as it ends, its tab shown with its record. */
+async function threeSteps(actor: Actor, ws: Workspace, info: TestInfo, cellId: string, wishId: string) {
   const page = actor.page
-  const panel = await openWish(page, cellId, wishId)
-  const main = panel.getByTestId('aiws-wish-main')
-  await stage(panel, 'aiws-wish-analyze')
-  await expect.poll(async () => await main.getAttribute('data-main'), { timeout: 30_000 }).not.toBe('in_progress')
-  if (await main.getAttribute('data-main') !== 'needs_coding') throw new Error(`the analysis did not end ready: ${await why(actor, ws, wishId, panel)}`)
+  const card = await showCard(page, cellId, wishId)
+  await step(actor, ws, card, wishId, 'analyze', { tab: 'prompt' })
+  await expect(card).toHaveAttribute('data-tab', 'analysis')
+  expect((await wish(actor, ws, wishId)).payload.analysis?.status).toBe('ready')
   await screenshot(page, info, `${wishId}-analyzed`)
-  await stage(panel, 'aiws-wish-code')
-  const candidate = panel.getByTestId('aiws-wish-candidate')
-  if (!await candidate.isVisible() || await candidate.getAttribute('data-stage') !== 'code') throw new Error(`the coding left no candidate: ${await why(actor, ws, wishId, panel)}`)
-  await expect(candidate).toHaveAttribute('data-ready', 'true', { timeout: 60_000 })
-  await screenshot(page, info, `${wishId}-candidate`)
-  await apply(panel)
-  await expect(main).toHaveAttribute('data-main', 'current', { timeout: 60_000 })
+  await step(actor, ws, card, wishId, 'code', { tab: 'analysis' })
+  await expect(card).toHaveAttribute('data-tab', 'macro')
+  await expect(card.getByTestId('aiws-wish-run')).toBeVisible()
+  await screenshot(page, info, `${wishId}-coded`)
+  await step(actor, ws, card, wishId, 'run', { tab: 'macro' })
+  await expect(card).toHaveAttribute('data-tab', 'results')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
   const w = await wish(actor, ws, wishId)
   expect(w.payload.program?.api_version).toBe(3)
-  return { panel, wish: w, results: w.payload.last_run.result_bindings.results as Record<string, Binding> }
+  return { card, wish: w, results: w.payload.last_run.result_bindings.results as Record<string, Binding> }
 }
 
 /** An asset result: its bytes are served by the Workspace with the media type it was generated as. */
@@ -117,10 +135,10 @@ async function media(actor: Actor, ws: Workspace, b: Binding) {
   return { objectId, type: served.type ?? '', size: served.size, image: read.content.payload.image }
 }
 
-test('[template-quarterly] the quarterly analysis wish: analyze without questions, code, apply, then run after a correction', async ({ owner }, info) => {
+test('[template-quarterly] the quarterly analysis wish: analyze without questions, code, run — then run again after a correction', async ({ owner }, info) => {
   test.setTimeout(2_400_000)
   const ws = await template(owner, 'quarterly', info)
-  const { panel, results } = await analyzeCodeApply(owner, ws, info, 'blk-wish', 'wish-analysis')
+  const { card, results } = await threeSteps(owner, ws, info, 'blk-wish', 'wish-analysis')
   const all = Object.values(results)
   expect(all.some((r) => r.type === 'richtext'), JSON.stringify(results)).toBe(true)
   expect(all.some((r) => r.type === 'table' || r.type === 'record'), JSON.stringify(results)).toBe(true)
@@ -133,12 +151,10 @@ test('[template-quarterly] the quarterly analysis wish: analyze without question
   const changed = await owner.client.commit(ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 238000, expect: { rev: cell.content.rev } }] } as Operation])
   expect(changed.status, JSON.stringify(changed)).toBe('accepted')
   await expect.poll(async () => (await freshness(owner, ws, 'wish-analysis')).status, { timeout: 60_000 }).toBe('stale')
-  await stage(panel, 'aiws-wish-run')
-  const candidate = panel.getByTestId('aiws-wish-candidate')
-  if (!await candidate.isVisible() || await candidate.getAttribute('data-stage') !== 'run') throw new Error(`the run left no candidate: ${await why(owner, ws, 'wish-analysis', panel)}`)
-  await expect(candidate).toHaveAttribute('data-ready', 'true', { timeout: 60_000 })
-  await apply(panel)
+  await expect(card.getByTestId('aiws-wish-results-stale')).toBeVisible({ timeout: 60_000 })
+  await step(owner, ws, card, 'wish-analysis', 'run', 'run-button')
   await expect.poll(async () => (await freshness(owner, ws, 'wish-analysis')).status, { timeout: 60_000 }).toBe('current')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(2)')
   const after = (await owner.client.ok<{ text: string }>('doc.read', { workspace_id: ws.workspace_id, entity_id: text.entity_id, as: 'body' })).text
   expect(after, 'the summary was written again from the corrected data').not.toBe(before)
   expect((await wish(owner, ws, 'wish-analysis')).payload.last_run.mode).toBe('run')
@@ -149,7 +165,7 @@ test('[template-film] the short-film wishes: character sheets → storyboard →
   test.setTimeout(9_000_000)
   const ws = await template(owner, 'film', info)
 
-  const sheets = await analyzeCodeApply(owner, ws, info, 'blk-wish-1', 'wish-characters')
+  const sheets = await threeSteps(owner, ws, info, 'blk-wish-1', 'wish-characters')
   const pictures = Object.values(sheets.results).filter((r) => r.type === 'image')
   expect(pictures.length, JSON.stringify(sheets.results)).toBeGreaterThanOrEqual(3)
   for (const p of pictures) {
@@ -160,7 +176,7 @@ test('[template-film] the short-film wishes: character sheets → storyboard →
   }
   await screenshot(owner.page, info, 'film-sheets')
 
-  const board = await analyzeCodeApply(owner, ws, info, 'blk-wish-2', 'wish-storyboard')
+  const board = await threeSteps(owner, ws, info, 'blk-wish-2', 'wish-storyboard')
   const inputs = (board.wish.payload.inputs ?? []) as { entity_id: string }[]
   // wish ①'s result folder, or its pictures and notes one by one
   expect(inputs.some((i) => i.entity_id.startsWith('wish-characters-out')), `the storyboard reads the character sheets: ${JSON.stringify(inputs)}`).toBe(true)
@@ -170,7 +186,7 @@ test('[template-film] the short-film wishes: character sheets → storyboard →
   for (const f of frames) expect((await media(owner, ws, f)).type).toMatch(/^image\//)
   await screenshot(owner.page, info, 'film-storyboard')
 
-  const cut = await analyzeCodeApply(owner, ws, info, 'blk-wish-3', 'wish-video')
+  const cut = await threeSteps(owner, ws, info, 'blk-wish-3', 'wish-video')
   const clips = Object.values(cut.results).filter((r) => r.type === 'asset')
   expect(clips.length, JSON.stringify(cut.results)).toBeGreaterThanOrEqual(1)
   const clip = await media(owner, ws, clips[0])

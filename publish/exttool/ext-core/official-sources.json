@@ -13,7 +13,10 @@
     "BUSYBOX_VERSION": "FRP-6354-g5f09fb446",
     "LIBREOFFICE_VERSION": "26.8.2",
     "NOTO_SANS_CJK_TAG": "Sans2.004",
-    "NOTO_SERIF_CJK_TAG": "Serif2.003"
+    "NOTO_SERIF_CJK_TAG": "Serif2.003",
+    "PLAYWRIGHT_VERSION": "1.65.1",
+    "CHROMIUM_VERSION": "159.0.8154.6",
+    "CHROMIUM_REVISION": "1255"
   },
   "components": [
     {
@@ -1393,6 +1396,119 @@
         }
       ],
       "source_note": "Original redistributed font files; no claim that these are editable font design sources."
+    },
+    {
+      "name": "chromium",
+      "version": "159.0.8154.6",
+      "license": "BSD-3-Clause",
+      "license_scope": "the Chromium project; its third-party components retain the notices in the Chromium source archive. The binary is Google's Chrome for Testing build of this release, which states no redistribution terms of its own",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "chrome-for-testing-159.0.8154.6-linux64.zip",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/159.0.8154.6/linux64/chrome-linux64.zip",
+          "sha256": "370601106c1b5619aae5f06f7a3fdc60836486135934779461e2a208d777f596",
+          "payload_file": "chromium/chromium-1255/chrome-linux64/chrome-bin",
+          "archive_member": "chrome-linux64/chrome"
+        },
+        "linux-aarch64": {
+          "file": "chrome-for-testing-159.0.8154.6-linux-arm64.zip",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/159.0.8154.6/linux-arm64/chrome-linux-arm64.zip",
+          "sha256": "4a9ea5f9422e268fff9df19908365b6d1e92da154607d0f90c7138cf6c42ce38",
+          "payload_file": "chromium/chromium-1255/chrome-linux-arm64/chrome-bin",
+          "archive_member": "chrome-linux-arm64/chrome"
+        },
+        "darwin-arm64": {
+          "file": "chrome-for-testing-159.0.8154.6-mac-arm64.zip",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/159.0.8154.6/mac-arm64/chrome-mac-arm64.zip",
+          "sha256": "43609676a41e29d1c7667935eb914a422eca98b2e49dcbfd6f3e9794202de12a",
+          "payload_file": "chromium/chromium-1255/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+          "archive_member": "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+        },
+        "darwin-x86_64": {
+          "file": "chrome-for-testing-159.0.8154.6-mac-x64.zip",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/159.0.8154.6/mac-x64/chrome-mac-x64.zip",
+          "sha256": "6864109aa423785d5d5d52fd06bc1138e02b002fcd400955a2011358c5a8321f",
+          "payload_file": "chromium/chromium-1255/chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+          "archive_member": "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+        },
+        "windows-x86_64": {
+          "file": "chrome-for-testing-159.0.8154.6-win64.zip",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/159.0.8154.6/win64/chrome-win64.zip",
+          "sha256": "3e2514fddb71f6727e2079369e03a6a4e105adcb28f05a6bfd875b782bddc431",
+          "payload_file": "chromium/chromium-1255/chrome-win64/chrome.exe",
+          "archive_member": "chrome-win64/chrome.exe"
+        }
+      },
+      "sources": [
+        {
+          "file": "chromium-159.0.8154.6-lite.tar.xz",
+          "urls": [
+            "https://commondatastorage.googleapis.com/chromium-browser-official/chromium-159.0.8154.6-lite.tar.xz"
+          ],
+          "sha256": "dcfeede4554b3ba185941212ac39953d1d279acf4c7e6315a8989dbc92213b8f",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": [
+        "The Linux and macOS archives bundle the Widevine CDM (WidevineCdm/), which is not open source: its LICENSE forbids distribution without a separate agreement with Google. Take it out of the payload or obtain that agreement before a release."
+      ],
+      "source_note": "The Chromium project's source archive of this release, without its test data. Chrome for Testing is Google's branded build of it: the archive is the open source it is built from, not a reproduction of the binary. The binary archives carry no license text, so the notices here are the source archive's."
+    },
+    {
+      "name": "playwright-core",
+      "version": "1.65.1",
+      "license": "Apache-2.0",
+      "license_scope": "project; the modules inlined into its bundles retain the notices in the package's lib/*.LICENSE files",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "playwright-core-1.65.1.tgz",
+          "url": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz",
+          "sha256": "6f5a60be62a4fddfbe7d10c448d8fbd54547da3358f2f8a04211440471ee863e",
+          "payload_file": "playwright/node_modules/playwright-core/lib/coreBundle.js",
+          "archive_member": "package/lib/coreBundle.js"
+        },
+        "linux-aarch64": {
+          "file": "playwright-core-1.65.1.tgz",
+          "url": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz",
+          "sha256": "6f5a60be62a4fddfbe7d10c448d8fbd54547da3358f2f8a04211440471ee863e",
+          "payload_file": "playwright/node_modules/playwright-core/lib/coreBundle.js",
+          "archive_member": "package/lib/coreBundle.js"
+        },
+        "darwin-arm64": {
+          "file": "playwright-core-1.65.1.tgz",
+          "url": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz",
+          "sha256": "6f5a60be62a4fddfbe7d10c448d8fbd54547da3358f2f8a04211440471ee863e",
+          "payload_file": "playwright/node_modules/playwright-core/lib/coreBundle.js",
+          "archive_member": "package/lib/coreBundle.js"
+        },
+        "darwin-x86_64": {
+          "file": "playwright-core-1.65.1.tgz",
+          "url": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz",
+          "sha256": "6f5a60be62a4fddfbe7d10c448d8fbd54547da3358f2f8a04211440471ee863e",
+          "payload_file": "playwright/node_modules/playwright-core/lib/coreBundle.js",
+          "archive_member": "package/lib/coreBundle.js"
+        },
+        "windows-x86_64": {
+          "file": "playwright-core-1.65.1.tgz",
+          "url": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz",
+          "sha256": "6f5a60be62a4fddfbe7d10c448d8fbd54547da3358f2f8a04211440471ee863e",
+          "payload_file": "playwright/node_modules/playwright-core/lib/coreBundle.js",
+          "archive_member": "package/lib/coreBundle.js"
+        }
+      },
+      "sources": [
+        {
+          "file": "playwright-1.65.1-source.tar.gz",
+          "urls": [
+            "https://codeload.github.com/microsoft/playwright/tar.gz/refs/tags/v1.65.1"
+          ],
+          "sha256": "cee6d08c3ef1cf6511ca25b15d48481d410d3ab7490160fefdbf4ab4ba42634f",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "extract_binary_notices": true,
+      "source_note": "The npm package is the project's published build of this tag and is unpacked whole, with its LICENSE, NOTICE, ThirdPartyNotices.txt and the lib/*.LICENSE texts of the modules inlined into its bundles. No bit-for-bit reproduction claim is made."
     }
   ]
 }
