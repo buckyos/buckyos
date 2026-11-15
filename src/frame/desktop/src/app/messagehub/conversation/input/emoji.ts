@@ -64,7 +64,7 @@ export function rememberEmoji(emoji: string): string[] {
   try {
     window.localStorage.setItem(RECENT_KEY, JSON.stringify({ recent: next }))
   } catch {
-    // Not remembered on this device; the panel still shows it until reload.
+    // Not remembered on this device.
   }
   return next
 }

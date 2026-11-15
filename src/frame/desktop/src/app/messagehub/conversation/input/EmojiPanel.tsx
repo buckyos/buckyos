@@ -37,7 +37,7 @@ export function EmojiPanel({ onPick, onClose }: { onPick: (emoji: string) => voi
   const [groups, setGroups] = useState<EmojiGroup[] | null>(null)
   const [failed, setFailed] = useState(false)
   const [query, setQuery] = useState('')
-  const [recent, setRecent] = useState(recentEmoji)
+  const [recent] = useState(recentEmoji)
   const [active, setActive] = useState<EmojiGroupId>('recent')
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -60,7 +60,7 @@ export function EmojiPanel({ onPick, onClose }: { onPick: (emoji: string) => voi
 
   const pick = useCallback((emoji: string) => {
     onPick(emoji)
-    setRecent(rememberEmoji(emoji))
+    rememberEmoji(emoji)
   }, [onPick])
 
   const groupLabel = (id: EmojiGroupId) => t(`messagehub.emoji.group.${id}`)
