@@ -138,7 +138,7 @@ test('[macro] analyze, code, run, the data changes, run again: the commentary fo
   // run: the results and their Blocks, written as it ends
   await step(owner, ws, card, 'run', 'macro')
   await expect(card).toHaveAttribute('data-tab', 'results')
-  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText(/[(（]1[)）]$/)
   const first = await wish(owner, ws)
   const bindings = first.payload.last_run.result_bindings.results as Record<string, { type: string; entity_id: string }>
   const text = Object.values(bindings).find((b) => b.type === 'richtext')
@@ -361,7 +361,7 @@ test('[macro-permissions] a run is written as its macro identity: an editor\'s p
   // the card: its run button disabled with why, no next step (no update)
   const peerCard = peer.page.getByTestId('aiws-wish-card-wish-sales')
   await expect(peerCard.getByTestId('aiws-wish-run')).toBeDisabled()
-  await expect(peerCard.getByTestId('aiws-wish-run')).toHaveAttribute('title', /只有运行权限/)
+  await expect(peerCard.getByTestId('aiws-wish-run')).toHaveAttribute('title', /只有运行权限|can only run/)
   await expect(peerCard.getByTestId('aiws-wish-next')).toHaveCount(0)
   await screenshot(peer.page, info, 'permissions-run-only')
 

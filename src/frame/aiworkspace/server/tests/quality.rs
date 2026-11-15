@@ -582,7 +582,7 @@ fn w05_w08_w12_guards() {
         srv.done(&e1);
         let w = srv.wish_of("w").await;
         assert!(w["program"]["manifest"]["inputs"]["sales"].is_object(), "the macro is the last successful trial run's: {}", w["program"]);
-        let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: id2.clone(), attempt: 1, manifest: Value::Null, turns: Default::default() };
+        let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: id2.clone(), attempt: 1, manifest: Value::Null, turns: Default::default(), said: Default::default() };
         ex.run_macro(&monthly("销售额")).await.unwrap();
         ex.tool("finish", json!({ "summary": "完成" })).await.unwrap();
         ex.call("proc.report", json!({ "finished": true })).await;

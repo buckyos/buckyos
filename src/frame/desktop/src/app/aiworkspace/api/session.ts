@@ -937,6 +937,12 @@ export function wishRunCodeText(subCode: string | undefined, data: Record<string
       return names.length ? aiwsT('aiworkspace.wishcard.error.needsInputNamed', { inputs: aiwsText().list(names) }) : aiwsT('aiworkspace.wishcard.error.needsInput')
     }
     case 'CHECKS_FAILED': return aiwsT('aiworkspace.wishcard.error.checksFailed')
+    case 'CODING_UNFINISHED': {
+      const parts = [aiwsT('aiworkspace.wishcard.error.codingUnfinished')]
+      if (typeof data?.last_trial_error === 'string' && data.last_trial_error) parts.push(aiwsT('aiworkspace.wishcard.error.lastTrial', { error: data.last_trial_error }))
+      if (typeof data?.said === 'string' && data.said) parts.push(aiwsT('aiworkspace.wishcard.error.modelSaid', { text: data.said }))
+      return parts.join(' ')
+    }
     case 'NOT_CURRENT_RECORD': return aiwsT('aiworkspace.wishcard.error.notCurrentRecord')
     case 'NEEDS_CODING': {
       const reasons = Array.isArray(data?.reasons) ? (data.reasons as NeedsCodingReason[]) : []
@@ -974,9 +980,10 @@ function formatBytes(n: number): string {
 }
 
 /** The failure of a run as shown to its viewer. */
-export function runErrorText(error: (ServiceError & { data?: unknown; missing_inputs?: unknown }) | null | undefined): string | undefined {
+export function runErrorText(error: (ServiceError & { data?: unknown; missing_inputs?: unknown; last_trial_error?: unknown; said?: unknown }) | null | undefined): string | undefined {
   if (!error) return undefined
-  const data = { ...(error.missing_inputs ? { missing_inputs: error.missing_inputs } : {}), ...(error.data as Record<string, unknown> | undefined) }
+  const data = { ...(error.missing_inputs ? { missing_inputs: error.missing_inputs } : {}), ...(error.last_trial_error ? { last_trial_error: error.last_trial_error } : {}),
+    ...(error.said ? { said: error.said } : {}), ...(error.data as Record<string, unknown> | undefined) }
   return aiRefusalText(error.sub_code, data) ?? wishRunCodeText(error.sub_code, data) ?? wishRunCodeText(error.code, data) ?? errorCodeText(error.code, data) ?? error.detail
 }
 

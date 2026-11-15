@@ -268,6 +268,9 @@ pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) ->
         let (st, ws, rid) = (state.clone(), ws_id.to_string(), run_id.clone());
         if provided["stage_host"] == json!(true) {
             let stage = state.wish.hosted(&run_id).ok_or_else(|| WsError::invalid_op("the run has no open stage: claim it first"))?;
+            if let Some(said) = p.get("summary").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
+                *stage.said.lock().unwrap() = Some(said.chars().take(2000).collect());
+            }
             tokio::runtime::Handle::current().spawn(async move {
                 stages::drive_host(st, as_run, ws, rid, stage).await;
             });

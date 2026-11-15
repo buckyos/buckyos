@@ -117,7 +117,7 @@ async function threeSteps(actor: Actor, ws: Workspace, info: TestInfo, cellId: s
   await screenshot(page, info, `${wishId}-coded`)
   await step(actor, ws, card, wishId, 'run', { tab: 'macro' })
   await expect(card).toHaveAttribute('data-tab', 'results')
-  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText(/[(（]1[)）]$/)
   const w = await wish(actor, ws, wishId)
   expect(w.payload.program?.api_version).toBe(3)
   return { card, wish: w, results: w.payload.last_run.result_bindings.results as Record<string, Binding> }
@@ -154,7 +154,7 @@ test('[template-quarterly] the quarterly analysis wish: analyze without question
   await expect(card.getByTestId('aiws-wish-results-stale')).toBeVisible({ timeout: 60_000 })
   await step(owner, ws, card, 'wish-analysis', 'run', 'run-button')
   await expect.poll(async () => (await freshness(owner, ws, 'wish-analysis')).status, { timeout: 60_000 }).toBe('current')
-  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(2)')
+  await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText(/[(（]2[)）]$/)
   const after = (await owner.client.ok<{ text: string }>('doc.read', { workspace_id: ws.workspace_id, entity_id: text.entity_id, as: 'body' })).text
   expect(after, 'the summary was written again from the corrected data').not.toBe(before)
   expect((await wish(owner, ws, 'wish-analysis')).payload.last_run.mode).toBe('run')

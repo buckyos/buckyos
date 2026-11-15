@@ -209,6 +209,12 @@ fn record_error(e: &Value) -> Value {
     if !missing.is_empty() {
         out["missing_inputs"] = json!(missing);
     }
+    // a coding that stopped without finish: why its last trial failed, and what the model said
+    for k in ["last_trial_error", "said"] {
+        if let Some(t) = e["data"][k].as_str().filter(|t| !t.is_empty()) {
+            out[k] = json!(clip(t, MAX_SUMMARY_CHARS));
+        }
+    }
     out
 }
 

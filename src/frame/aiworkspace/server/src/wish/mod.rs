@@ -206,6 +206,10 @@ pub struct StageState {
     pub stored: Option<(String, Value)>,
     /// What ends a run of the stored macro that failed (`PROGRAM_FAILED`, `MACRO_CODE_CHANGED`).
     pub failure: Mutex<Option<WsError>>,
+    /// While coding: why the last trial run of the macro failed, and the executor's last words (`proc.report { summary }`) —
+    /// what a coding that ends without `finish` failed of.
+    pub last_trial_error: Mutex<Option<String>>,
+    pub said: Mutex<Option<String>>,
     pub budget: Value,
     /// The log of the last macro run the executor handed in (a record keeps it).
     pub last_log: Mutex<String>,

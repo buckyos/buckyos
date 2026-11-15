@@ -498,7 +498,9 @@ export interface WishRecord {
   aicc?: { mode: WishAiccMode; user_id: string }
   /** Running: only when the macro used AI. */
   usage?: WishUsage
-  error?: { code: string; sub_code?: string; detail?: string; missing_inputs?: { label?: string; message: string; candidates?: string[] }[] }
+  /** `last_trial_error` / `said`: a coding that stopped without `finish` (`CODING_UNFINISHED`) — why its last trial run failed, and
+   * what the model said when it stopped. */
+  error?: { code: string; sub_code?: string; detail?: string; missing_inputs?: { label?: string; message: string; candidates?: string[] }[]; last_trial_error?: string; said?: string }
   /** The important ones first: failed warning checks, overwritten manual edits, deleted rows and fields, the model's warnings.
    * The service's own are coded (`{ code, …params }`, said in the reader's language); the model's are its text. */
   warnings: WishRecordWarning[]

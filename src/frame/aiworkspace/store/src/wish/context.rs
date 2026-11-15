@@ -1448,10 +1448,15 @@ impl Stage {
             let snap = &self.snap;
             let loader = |obj: &str| -> WsResult<Option<Vec<u8>>> { Ok(snap.asset_bytes(obj).ok()) };
             let mut params = json!({ "max_bytes": (MAX_TOOL_CHARS - 400).min(aiworkspace_core::body::MAX_MAX_BYTES) });
-            if let Some(c) = args.get("cursor").and_then(Value::as_str) {
+            // an empty cursor is the start: models fill optional strings with "" (and then guess "0", "start", "null")
+            let cursor = args.get("cursor").and_then(Value::as_str).filter(|c| !c.trim().is_empty());
+            if let Some(c) = cursor {
                 params["cursor"] = json!(c);
             }
-            let b = aiworkspace_core::body::read_body(&snap.ctx(), &snap.access, &e, &params, Some(&loader))?;
+            let b = aiworkspace_core::body::read_body(&snap.ctx(), &snap.access, &e, &params, Some(&loader)).map_err(|err| match cursor {
+                Some(c) if err.detail == "bad cursor" => WsError::invalid_op(format!("cursor {c:?} is not one a ws_read answer gave: leave cursor out to read from the start, then pass the cursor the answer names")),
+                _ => err,
+            })?;
             let mut text = b["text"].as_str().unwrap_or("").to_string();
             if let Some(c) = b["next_cursor"].as_str() {
                 text.push_str(&format!("\n… (more: ws_read with cursor \"{c}\")"));

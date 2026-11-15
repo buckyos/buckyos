@@ -230,6 +230,8 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         feedback,
         stored,
         failure: Mutex::new(None),
+        last_trial_error: Mutex::new(None),
+        said: Mutex::new(None),
         budget: budget(&state.wish.config, &stage_name),
         last_log: Mutex::new(String::new()),
         ai_user: run["detail"]["aicc"]["user_id"].as_str().unwrap_or("").to_string(),
@@ -487,7 +489,14 @@ async fn code_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc
     }
     if st.collector.lock().unwrap().finished.is_none() {
         let tail = st.collector.lock().unwrap().program.as_ref().map(|p| p.logs.clone()).unwrap_or_default();
-        return Err(WsError::new(Code::DependencyUnavailable, "The coding did not end with finish").with_data(json!({ "program_log": tail })));
+        // what it failed of: the last trial run's error, and what the model said when it stopped
+        let trial = st.last_trial_error.lock().unwrap().clone();
+        let said = st.said.lock().unwrap().clone();
+        let detail = match &trial {
+            Some(t) => format!("The coding did not end with finish; the last trial run failed: {t}"),
+            None => "The coding did not end with finish".to_string(),
+        };
+        return Err(WsError::sub(Code::DependencyUnavailable, "CODING_UNFINISHED", detail).with_data(json!({ "program_log": tail, "last_trial_error": trial, "said": said })));
     }
     {
         let c = st.collector.lock().unwrap();
@@ -947,8 +956,14 @@ pub fn host_program(st: &Arc<StageState>, source: &str, results: Option<&Value>,
     }
     let answer = super::tools::judge_program(st, results, "the executor reported no results", log, "");
     Ok(match answer {
-        Ok(text) => json!({ "ok": true, "status": "ok", "text": text }),
-        Err(text) => tool_error(text, None),
+        Ok(text) => {
+            *st.last_trial_error.lock().unwrap() = None;
+            json!({ "ok": true, "status": "ok", "text": text })
+        }
+        Err(text) => {
+            *st.last_trial_error.lock().unwrap() = Some(text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(1000).collect());
+            tool_error(text, None)
+        }
     })
 }
 

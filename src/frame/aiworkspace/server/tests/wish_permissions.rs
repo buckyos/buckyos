@@ -197,7 +197,7 @@ fn an_intersection_group_bounds_what_the_macro_reads_and_a_stage_is_written_as_i
         let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "late-bind", "params": stage("run") })).await;
         let run_id = start["run_id"].as_str().unwrap().to_string();
         let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": start["claim_token"] })).await;
-        let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.clone(), attempt: 1, manifest: claimed["stage"]["manifest"].clone(), turns: Default::default() };
+        let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.clone(), attempt: 1, manifest: claimed["stage"]["manifest"].clone(), turns: Default::default(), said: Default::default() };
         ex.run_macro(claimed["stage"]["source"].as_str().unwrap()).await.unwrap();
         srv.rpc("acl.set_group", json!({ "group_id": "readers", "title": "只读" })).await;
         srv.rpc("acl.set", json!({ "changes": [{ "subject": "@readers", "resource": "/", "allow": ["read"] }] })).await;

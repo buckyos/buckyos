@@ -207,7 +207,7 @@ impl Srv {
             return;
         }
         let attempt = claimed["attempt"].as_u64().unwrap_or(1);
-        let ex = Exec { srv: self, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.to_string(), attempt, manifest: claimed["stage"]["manifest"].clone(), turns: AtomicU64::new(0) };
+        let ex = Exec { srv: self, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.to_string(), attempt, manifest: claimed["stage"]["manifest"].clone(), turns: AtomicU64::new(0), said: std::sync::Mutex::new(None) };
         let stage = claimed["stage"].clone();
         *self.model.budget.lock().unwrap() = stage["budget"].clone();
         let outcome = if stage["kind"] == json!("program") { ex.run_macro(stage["source"].as_str().unwrap_or("")).await.map(|_| ()) } else { ex.model_loop(&stage).await };
@@ -216,7 +216,8 @@ impl Srv {
         let usage = (n > 0).then(|| json!({ "model": stage["model"], "input_tokens": n * 100, "output_tokens": n * 10, "calls": n }));
         match outcome {
             Ok(()) => {
-                ex.call("proc.report", json!({ "finished": true, "usage": usage })).await;
+                let said = ex.said.lock().unwrap().clone();
+                ex.call("proc.report", json!({ "finished": true, "usage": usage, "summary": said })).await;
             }
             Err(Value::Null) => {}
             Err(e) => {
@@ -286,6 +287,8 @@ pub struct Exec<'a> {
     pub manifest: Value,
     /// Turns of its model loop.
     pub turns: AtomicU64,
+    /// What the model said when it stopped (`proc.report { summary }`).
+    pub said: std::sync::Mutex<Option<String>>,
 }
 
 fn key_of(v: &Value) -> String {
@@ -327,7 +330,10 @@ impl Exec<'_> {
             self.turns.fetch_add(1, Ordering::SeqCst);
             let reply = if analyze { (m.analyze.lock().unwrap())(&turn) } else { (m.execute.lock().unwrap())(&turn) };
             let (name, args) = match reply {
-                Reply::Text(_) => return Ok(()),
+                Reply::Text(t) => {
+                    *self.said.lock().unwrap() = Some(t);
+                    return Ok(());
+                }
                 Reply::Call(n, a) => (n, a),
             };
             let answer = match name.as_str() {

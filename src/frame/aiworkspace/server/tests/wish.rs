@@ -711,7 +711,7 @@ fn executors_claim_report_and_the_service_writes_what_their_stage_collected() {
     let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "loc-e2", "params": { "wish_id": "wish-q3", "stage": "code", "location": loc(), "execution": { "mode": "local" } } })).await;
     let (run_id, claim_token) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
     let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
-    let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.clone(), attempt: 1, manifest: Value::Null, turns: Default::default() };
+    let ex = Exec { srv: &srv, rt: claimed["run_token"].as_str().unwrap().to_string(), run_id: run_id.clone(), attempt: 1, manifest: Value::Null, turns: Default::default(), said: Default::default() };
     ex.run_macro(PROGRAM).await.unwrap();
     assert_eq!(ex.tool("finish", json!({ "summary": "done" })).await.unwrap()["status"], "ok");
     let program = srv.wish().await["program"].clone();

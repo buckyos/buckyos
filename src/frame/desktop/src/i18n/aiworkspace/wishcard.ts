@@ -159,6 +159,9 @@ export const en: Record<string, string> = {
   'aiworkspace.wishcard.error.needsInput': 'An input could not be found',
   'aiworkspace.wishcard.error.needsInputNamed': 'Inputs not found: {{inputs}}',
   'aiworkspace.wishcard.error.checksFailed': 'An error-level acceptance check failed; nothing was written',
+  'aiworkspace.wishcard.error.codingUnfinished': 'The model stopped before it finished the macro (it did not call finish).',
+  'aiworkspace.wishcard.error.lastTrial': 'Its last trial run failed: {{error}}',
+  'aiworkspace.wishcard.error.modelSaid': 'The model said: {{text}}',
   'aiworkspace.wishcard.error.notCurrentRecord': 'Only the record in effect for this stage can be rolled back',
   'aiworkspace.wishcard.offline.rollback': 'Rolling back needs the connection to the workspace',
 }
@@ -318,6 +321,9 @@ export const zh: Record<string, string> = {
   'aiworkspace.wishcard.error.needsInput': '找不到输入',
   'aiworkspace.wishcard.error.needsInputNamed': '找不到输入：{{inputs}}',
   'aiworkspace.wishcard.error.checksFailed': '有错误级的验收检查没有通过，什么都没有写入',
+  'aiworkspace.wishcard.error.codingUnfinished': '模型没有写完宏就停下了（没有调用 finish）。',
+  'aiworkspace.wishcard.error.lastTrial': '最后一次试运行失败：{{error}}',
+  'aiworkspace.wishcard.error.modelSaid': '模型说：{{text}}',
   'aiworkspace.wishcard.error.notCurrentRecord': '只能回滚这个阶段当前生效的那条记录',
   'aiworkspace.wishcard.offline.rollback': '回滚需要连上工作区',
 }

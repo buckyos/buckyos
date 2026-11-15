@@ -275,6 +275,11 @@ fn code_collect_plan_apply_then_run_the_macro() {
     let note = st.ws_read(&json!({ "target": handle_of(&st, "rules") })).unwrap();
     assert!(note.contains("input `input1` appended during execution") || note.contains("appended during execution"), "{note}");
     assert!(work.path().join(&e1).join("context/entities/rules/content.md").exists());
+    // a model fills the optional cursor with "": the start, not a bad cursor; a cursor no answer gave says what to do
+    let again = st.ws_read(&json!({ "target": handle_of(&st, "rules"), "cursor": "", "limit": 50 })).unwrap();
+    assert!(again.contains("口径说明"), "{again}");
+    let bad = st.ws_read(&json!({ "target": handle_of(&st, "rules"), "cursor": "start" })).unwrap_err();
+    assert!(bad.detail.contains("leave cursor out"), "{}", bad.detail);
     let ev = st.evidence().unwrap();
     assert_eq!(ev["stage"], "code");
     let rs = ev["read_set"].as_array().unwrap();

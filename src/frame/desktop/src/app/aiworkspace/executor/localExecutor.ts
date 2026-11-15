@@ -43,8 +43,9 @@ export const claims = {
  * provider did not say), the tokens of all its turns, how many turns. A macro's own AI calls are counted by the program
  * host (`results.ai`). */
 export type RunUsage = { model?: string; input_tokens?: number; output_tokens?: number; calls?: number }
-/** How an executor ends a run: done, or failed with the reason; either with what the stage used. */
-export type RunReport = { finished: true; usage?: RunUsage } | { error: { code: string; detail: string }; usage?: RunUsage }
+/** How an executor ends a run: done (with what the model said when it stopped: a coding that ends without `finish` fails
+ * of it), or failed with the reason; either with what the stage used. */
+export type RunReport = { finished: true; summary?: string; usage?: RunUsage } | { error: { code: string; detail: string }; usage?: RunUsage }
 
 export interface ExecutorSession {
   procClaim(runId: string, claimToken: string): Promise<WishClaim>
@@ -83,6 +84,8 @@ export class LocalExecutor {
   private attempt = 0
   private files: WishStageFiles | null = null
   private phase = 'claimed'
+  /** What the model said when it stopped. */
+  private said = ''
   private budget: Partial<WishBudget> = {}
   private manifest: Json = null
   private readonly usage: Required<Omit<RunUsage, 'model'>> & Pick<RunUsage, 'model'> = { input_tokens: 0, output_tokens: 0, calls: 0 }
@@ -120,7 +123,7 @@ export class LocalExecutor {
       // running the stored macro: the service judges the run (a failure ends it with its own code), then plans it
       if (stage.kind === 'program') await this.program(stage.source ?? '')
       else await this.loop(stage)
-      await this.session.procReport(this.runId, this.attempt, { finished: true, ...this.used() })
+      await this.session.procReport(this.runId, this.attempt, { finished: true, ...(this.said ? { summary: this.said } : {}), ...this.used() })
       return 'finished'
     } catch (error) {
       // stopped on purpose (cancel, the page going away) or revoked by the service: nothing to report
@@ -187,7 +190,7 @@ export class LocalExecutor {
       this.usage.output_tokens += turn.usage.output_tokens ?? 0
       this.usage.model = turn.usage.model ?? (stage.model || undefined)
       messages.push({ role: 'assistant', text: turn.text, toolCalls: turn.toolCalls, raw: turn.raw })
-      if (turn.toolCalls.length === 0) return
+      if (turn.toolCalls.length === 0) { this.said = turn.text.trim().slice(0, 2000); return }
       for (const call of turn.toolCalls) {
         this.checkAborted()
         this.phase = call.name

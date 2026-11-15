@@ -991,8 +991,10 @@ produced stays in the service.
   a successful trial run with a manifest. When it ends only the macro is written (`program`: `{ language: js, api_version: 3, source,
   digest, manifest, produces, run_id }`, with the refinements and appended inputs it brought and the analysis re-stated): the trial
   run's results go into the record only (`summary.trial`, `checks`, `objects.log`). An error-level check the last trial run still
-  fails ends the coding with `CHECKS_FAILED` and no macro. A repair or a feedback round starts from the parent run's macro, else from
-  the stored one.
+  fails ends the coding with `CHECKS_FAILED` and no macro. A coding that stops without an accepted `finish` fails with
+  `DEPENDENCY_UNAVAILABLE` / `CODING_UNFINISHED`; its record's `error` carries `last_trial_error` (why the last trial run failed) and
+  `said` (what the executor's model said when it stopped, `proc.report { finished, summary }`). A repair or a feedback round starts
+  from the parent run's macro, else from the stored one.
 - **run**: needs that and a stored macro that still fits its inputs — `macro_check` (core) on the manifest: a declared field
   deleted or of another type, an input gone or rebound, another program API → `NEEDS_CODING` with `data.reasons`; a renamed field
   or table is no reason. The brief is `{ kind: program, source, manifest, budget }`; no model loop. Only the declared inputs and

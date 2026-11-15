@@ -71,7 +71,7 @@ export function failureText(record: WishRecord, text: AiwsText): string {
   if (!error) return text.t('aiworkspace.wishcard.record.failedUnknown')
   const missing = (error.missing_inputs ?? []).map((m) => m.label || m.message).filter(Boolean)
   if (missing.length) return text.t('aiworkspace.wishcard.error.needsInputNamed', { inputs: text.list(missing) })
-  return runErrorText({ code: error.code, sub_code: error.sub_code, detail: error.detail, missing_inputs: error.missing_inputs }) ?? error.code
+  return runErrorText({ code: error.code, sub_code: error.sub_code, detail: error.detail, missing_inputs: error.missing_inputs, last_trial_error: error.last_trial_error, said: error.said }) ?? error.code
 }
 
 const NOTICE_LABEL: Record<string, string> = {

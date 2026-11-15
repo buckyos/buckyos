@@ -568,3 +568,27 @@ D2、D3 的答复只给了原则，下面两点落实方式是我定的：
 - Rust 全量 `cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace -- --test-threads=1`：72 组 71 组一次过，`activity.rs` 两条在高负载下等服务进程启动超时、单独重跑全过；WASM 已按最终的 core 重建。websdk `dist` 已随 owner 的提交 `2252399` 重建。
 - 已知限制：回滚前列出的“会丢掉的改动”按实体算，富文本撤销按块，所以确认框里列出的人工修改回滚后可能其实还在。
 - 没覆盖：§5 19 真实 Zone 三个模板（DV 未跑）；§5 20 手机上只测了 1、2、5、6、整屏弹窗和结果链接；连线“随 Block 移动”用 API 移动测，不是拖动；存为模板走 API；修复宏、`COMMIT_CONFLICT`、状态栏定位按钮没有用例。Zone 里的 CLI 发行版未重新打包（托管执行才有用量与 `run-rollback`）；真机未验。
+
+### 8.6 真实 Zone DV（2026-11-15，owner 新建的 DV 环境）
+
+owner build 了 aios 并 `start.py --all` 新建环境；部署的 `aiworkspace`（10:17 构建）含 `proc.rollback`、不含 `proc.apply`，Desktop 资源含新卡片。devtest 账号界面是英文，用例里三处写死中文的断言（“结果(N)”、只有运行权限的提示）改成两种语言都认。
+
+| 用例 | 结果 |
+| --- | --- |
+| `aiworkspace.macro.spec.ts` `[macro]` | 通过（6.2 分钟）：卡片三步、数据变化后再运行，解读跟着数据走 |
+| `[macro-cli]` | 通过：CLI 执行器受限运行宏、用自己的 AI 会话 |
+| `[macro-permissions]` | 通过：只有运行权限的成员运行按钮置灰并说明原因 |
+| `aiworkspace.templates.spec.ts` `[template-quarterly]` | 通过（13 分钟）：分析不反问、三步出结果、修正后再运行 |
+| `[template-film]` | 失败（23.6 分钟）：设定图、分镜两个许愿格三步都过了；视频许愿格编码时宏调 `aiws.ai.video`（带首帧图）被 AICC 拒绝 `resource_not_permitted`（no permitted model is available），模型如实说明后没有 `finish`，编码按设计失败、不保存宏。环境里没有可用的带首帧视频模型（上一个 DV Zone 走的是 owner 加的 OpenRouter hailuo），不是代码问题 |
+| `aiworkspace.mindmap.spec.ts` 真实模型回答出脑图的许愿格 | 通过（3.3 分钟）；`control.*` 一条通过 |
+| `[mindmap] the fixture on a real Zone` | 失败：准备阶段调用已删除的 `ws.grant`（11-13 权限改造删掉的），本次改动之前就坏，与许愿格无关，未修 |
+
+记录里看到的用量：分析 `gpt-6-astra:reasoning-high@codex-proxy`，编码 `gpt-6.1-sol:reasoning-xhigh@codex-proxy`，输入 / 输出 token 与模型轮数都正确上报。
+
+DV 中发现并已修（未部署到 Zone）：
+
+- **编码没 `finish` 时失败原因说不清**：记录只写 “The coding did not end with finish”，看不出是视频模型没开通。现在失败的子码是 `CODING_UNFINISHED`，记录的 `error` 带 `last_trial_error`（最后一次试运行为什么失败）和 `said`（执行器上报的模型最后的话，`proc.report { finished, summary }`；浏览器执行器、websdk CLI `run-report --summary`、测试执行器都上报），Desktop 按读者语言显示。用例 `wish_control.rs` 加了断言。
+- **`ws_read` 的空游标**：模型把可选的 `cursor` 填成 `""`，富文本读取答 “bad cursor”，模型再试 `"0"`、`"start"`、`"null"`，整轮 DV 约 40 次工具调用浪费在这里（三个阶段都有）。现在空游标就是从头读，无效游标的答复说明“不填 cursor 从头读，再用答复给的游标”；`store/tests/wish.rs` 加了断言。
+- Rust 全量：72 组 71 组通过；`activity.rs` 两条在全量里两次都 “server did not start”，单独跑通过。它是第一个启动 855 MB debug 二进制的用例、等待只有 5 秒，单独启动实测 72 毫秒就绪，判断是刚链接完冷启动慢；不是本次改动引起的，没改。
+
+待做：在 Zone 里配置带首帧的视频模型后重跑 `[template-film]`；把上面两处修正部署到 Zone（重启服务）后再跑一次模板用例。

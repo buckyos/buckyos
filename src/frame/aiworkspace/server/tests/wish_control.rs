@@ -286,7 +286,7 @@ fn an_executor_outside_the_service_hands_in_a_control() {
                                  "facts": {}, "checks": [], "external": [], "ai": null, "declare": { "inputs": {} }, "error": null });
             let ran = srv.call_as(&rt, "proc.program", at(json!({ "source": PLAN_SOURCE, "results": output, "log": "", "files": {} }))).await;
             let fin = srv.call_as(&rt, "proc.tool", at(json!({ "name": "finish", "args": { "summary": "done" } }))).await;
-            let rep = srv.call_as(&rt, "proc.report", at(json!({ "finished": true }))).await;
+            let rep = srv.call_as(&rt, "proc.report", at(json!({ "finished": true, "summary": "The tree came out empty; stopping here." }))).await;
             assert_eq!(rep["result"]["ok"], true, "{rep}");
             (ran["result"].clone(), fin["result"].clone(), srv.wait(&run_id).await)
         }
@@ -298,6 +298,13 @@ fn an_executor_outside_the_service_hands_in_a_control() {
     assert!(fin["text"].as_str().unwrap_or("").contains("Cannot finish yet"), "{fin}");
     assert_eq!(bad["state"], "failed", "{bad}");
     assert!(bad["error"]["detail"].as_str().unwrap_or("").contains("did not end with finish"), "{bad}");
+    // what it failed of reaches the record: the last trial run's error and what the executor said when it stopped
+    assert_eq!(bad["error"]["sub_code"], "CODING_UNFINISHED", "{bad}");
+    assert!(bad["error"]["detail"].as_str().unwrap_or("").contains("has no nodes"), "{bad}");
+    let failed = srv.wish_of("wish-mm").await["history"]["code"][0].clone();
+    assert_eq!((failed["ok"].as_bool(), failed["error"]["sub_code"].as_str()), (Some(false), Some("CODING_UNFINISHED")), "{failed}");
+    assert!(failed["error"]["last_trial_error"].as_str().unwrap_or("").contains("has no nodes"), "{failed}");
+    assert_eq!(failed["error"]["said"], "The tree came out empty; stopping here.", "{failed}");
     let (ran, fin, done) = coding("loc-ok", json!("- A\n  - B\n")).await;
     assert_eq!((ran["status"].as_str(), fin["status"].as_str()), (Some("ok"), Some("ok")), "{ran} {fin}");
     srv.done(&done);
