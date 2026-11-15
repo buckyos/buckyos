@@ -63,11 +63,12 @@ impl MessageCenter {
         &self,
         owner: &DID,
         group: &DID,
+        refresh_negative: bool,
     ) -> Result<JoinedGroupRoute> {
         let profile = self
             .directory
             .get()
-            .describe(group)
+            .describe(group, refresh_negative)
             .await
             .map_err(|error| match error {
                 DirectoryError::NotFound(_) => denied("remote-group-not-found"),
@@ -243,7 +244,7 @@ impl MessageCenter {
     }
 
     pub(crate) async fn remote_group_doc(&self, owner: &DID, group: &DID) -> Result<Value> {
-        let route = self.resolve_group_route(owner, group).await?;
+        let route = self.resolve_group_route(owner, group, false).await?;
         let value = route
             .fetch(self, &format!("{}/doc", route.base_path()), &[])
             .await?;
@@ -296,7 +297,7 @@ impl MessageCenter {
             return Err(denied("remote-group-auth-failed"));
         }
         let _guard = self.groups.join_lock.lock().await;
-        let route = self.resolve_group_route(&member, group).await?;
+        let route = self.resolve_group_route(&member, group, true).await?;
         let mut saved = self.load_group_binding(&member, group).await?;
         if saved.as_ref().is_some_and(|binding| {
             binding

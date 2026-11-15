@@ -271,7 +271,7 @@ let token = runtime
 | `target_not_allowed` | 是否只请求已开放的两个服务及其允许 scope |
 | 新 Token 仍 401 / 业务 403 | 是否使用对应 Target Token、服务是否开放该 scope，以及主体是否满足业务权限 |
 | 登录成功但 `503 service_not_ready` | scheduler 路由和服务实例是否就绪；收到 HTTP 响应说明已到达网关，认证成功不等于服务已可用 |
-| 群刚建立就出现 `remote-group-not-found` | 群文档是否已发布可解析；消息目录的否定缓存可能让结果延后恢复 |
+| 群刚建立就出现 `remote-group-not-found` | 检查群文档是否已发布可解析；用户再次接受邀请会绕过消息目录的错误缓存，并强制重查 name-client 权威来源，成功缓存仍可复用；邀请卡片的普通查询不触发强制刷新 |
 
 日志可从 Source 的 `logged in at` / `cross-zone ... failed`，Target verify-hub 的 `cross-zone login of` / `cross-zone login refused`，以及网关 RTCP 准入与转发日志串起来。`transport_state(host)` 也可观察客户端最近记录的传输状态。
 

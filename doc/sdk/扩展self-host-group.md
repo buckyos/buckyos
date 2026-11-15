@@ -166,6 +166,8 @@ await call('group.update_shared_state', {
 
 邀请用 `group.invite_member(member_did, role?)`，返回 `invite_id` 与状态。成员接受时调用 `group.accept_invitation`，参数名是 `invitation_id`，必须使用本次邀请的 ID。
 
+跨 Zone 手工接受邀请时，群路由解析绕过消息目录的错误缓存，并使用 name-client 的强制权威查询；有效的成功缓存仍复用。新群文档尚未发布时接受仍可能失败，发布后用户可使用同一邀请再次接受，无需等待旧的否定缓存过期。邀请卡片获取群名仍使用普通缓存；刷新不替代身份、文档和邀请有效性校验。
+
 群侧与成员侧都同意才进入有效成员状态：Owner/Admin 的邀请在接受时仍满足审批能力则直接激活，普通成员的邀请需要管理员审批；主动申请受 `join_policy` 控制。当前已取消成员 proof，不应照旧版设计增加签名入群步骤。同 Zone 好友可能被自动接受；Agent 仅自动接受其 owner 的邀请，其他邀请由 owner 确认。不要假定邀请 RPC 返回后一定处于 `invited` 或 `active`，应读取返回的 `state`。
 
 客服场景可配置 `membership.guest_entry` 引用一个 `allow_guests: true` 且成员策略为 `explicit` 或限定角色的模板，通过 `group.submit_guest_request(request_id)` 原子创建会话。已有具名 Session 可使用 `group.invite_session_guest` / `group.accept_session_invitation`。默认 Session、`inherit` 会话不能允许 Guest；Guest 只获得指定 Session 的参与权，不成为全群成员。

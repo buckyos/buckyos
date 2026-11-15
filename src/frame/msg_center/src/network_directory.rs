@@ -4,7 +4,9 @@
 //! Zone-custody signature rule (G3) compares Zones with it.
 
 use async_trait::async_trait;
-use buckyos_api::{CrossZoneClient, CustodyResolver, DeviceSigner, LookupKind, NameServiceResolver};
+use buckyos_api::{
+    CrossZoneClient, CustodyResolver, DeviceSigner, LookupKind, NameServiceResolver,
+};
 use name_lib::DID;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -47,18 +49,22 @@ pub struct DidProfile {
 
 #[async_trait]
 pub trait NetworkDirectory: Send + Sync {
-    async fn describe(&self, did: &DID) -> Result<DidProfile, DirectoryError>;
+    async fn describe(
+        &self,
+        did: &DID,
+        refresh_negative: bool,
+    ) -> Result<DidProfile, DirectoryError>;
 
     async fn zone_of(&self, did: &DID) -> Result<Option<String>, DirectoryError> {
-        Ok(self.describe(did).await?.zone)
+        Ok(self.describe(did, false).await?.zone)
     }
 }
 
-/// Production directory: DID documents through name_client, answers kept
-/// for ten minutes (failures to answer are not kept).
+/// Production directory: DID documents through name_client.
 #[derive(Default)]
 pub struct NameServiceDirectory {
     cache: Mutex<HashMap<String, (Result<DidProfile, DirectoryError>, Instant)>>,
+    client: Option<Arc<name_client::NameClient>>,
 }
 
 fn host_of(did: &DID) -> String {
@@ -141,11 +147,26 @@ pub(crate) fn profile_from_document(did: &DID, doc: &Value) -> DidProfile {
 }
 
 impl NameServiceDirectory {
-    async fn fetch(did: &DID) -> Result<DidProfile, DirectoryError> {
+    async fn fetch(&self, did: &DID, refresh_negative: bool) -> Result<DidProfile, DirectoryError> {
+        let client = self
+            .client
+            .as_deref()
+            .or_else(|| name_client::get_name_client())
+            .ok_or_else(|| DirectoryError::NotFound("Name client not found".into()))?;
         let resolve = |doc_type| async move {
-            match tokio::time::timeout(DIRECTORY_TIMEOUT, name_client::resolve_did(did, doc_type))
-                .await
-            {
+            let resolve = async {
+                if refresh_negative {
+                    let revision = name_client::Revision::current();
+                    let opts = client.default_resolve_opts().with_force_authority_query();
+                    let result = client
+                        .resolve_did_ex(did, doc_type, revision.clone(), opts)
+                        .await?;
+                    name_client::select_or_error(&result, &revision)
+                } else {
+                    client.resolve_did(did, doc_type).await
+                }
+            };
+            match tokio::time::timeout(DIRECTORY_TIMEOUT, resolve).await {
                 Ok(Ok(doc)) => Ok(doc),
                 Ok(Err(name_lib::NSError::NotFound(reason))) => {
                     Err(DirectoryError::NotFound(reason))
@@ -215,7 +236,11 @@ impl NameServiceDirectory {
 
 #[async_trait]
 impl NetworkDirectory for NameServiceDirectory {
-    async fn describe(&self, did: &DID) -> Result<DidProfile, DirectoryError> {
+    async fn describe(
+        &self,
+        did: &DID,
+        refresh_negative: bool,
+    ) -> Result<DidProfile, DirectoryError> {
         let key = did.to_string();
         if let Some((answer, at)) = self.cache.lock().unwrap().get(&key) {
             let ttl = match answer {
@@ -224,11 +249,11 @@ impl NetworkDirectory for NameServiceDirectory {
                 }
                 _ => DIRECTORY_CACHE_TTL,
             };
-            if at.elapsed() < ttl {
+            if at.elapsed() < ttl && !(refresh_negative && answer.is_err()) {
                 return answer.clone();
             }
         }
-        let answer = Self::fetch(did).await;
+        let answer = self.fetch(did, refresh_negative).await;
         self.cache
             .lock()
             .unwrap()
@@ -332,6 +357,67 @@ impl std::fmt::Debug for CrossZoneSlot {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use name_client::{
+        Carrier, DefaultDocType, DocumentStatus, NameClient, NameClientConfig, PublishInfo,
+        ResolveOpts, Revision, Source, SourceAnswer, SourceRef, SourceTier,
+    };
+    use name_lib::{DidDocType, EncodedDocument};
+
+    #[derive(Default)]
+    pub struct GroupDocumentSource {
+        pub document: Mutex<Option<Value>>,
+        pub calls: Mutex<Vec<bool>>,
+    }
+
+    impl GroupDocumentSource {
+        pub fn directory(self: &Arc<Self>) -> (Arc<NameServiceDirectory>, Arc<NameClient>) {
+            let client = Arc::new(NameClient::new(NameClientConfig::for_test()));
+            client.set_method_authority("web", self.clone());
+            let directory = Arc::new(NameServiceDirectory {
+                client: Some(client.clone()),
+                ..Default::default()
+            });
+            (directory, client)
+        }
+    }
+
+    #[async_trait]
+    impl Source for GroupDocumentSource {
+        fn id(&self) -> String {
+            "group-authority".into()
+        }
+
+        async fn default_doc_type(&self, _: &DID, _: &ResolveOpts) -> Option<DefaultDocType> {
+            Some(DefaultDocType::Known {
+                doc_type: DidDocType::custom("group"),
+                reasons: vec![],
+            })
+        }
+
+        async fn get_document(
+            &self,
+            did: &DID,
+            doc_type: &DidDocType,
+            revision: &Revision,
+            opts: &ResolveOpts,
+        ) -> SourceAnswer {
+            self.calls.lock().unwrap().push(opts.force_authority_query);
+            let source = SourceRef::provider(self.id(), SourceTier::Authority);
+            if *doc_type == DidDocType::custom("group") {
+                if let Some(document) = self.document.lock().unwrap().clone() {
+                    return SourceAnswer::new(source)
+                        .with_body(EncodedDocument::JsonLd(document), Carrier::Body);
+                }
+            }
+            SourceAnswer::new(source).with_publish_info(
+                PublishInfo::new(did.clone(), doc_type.clone(), revision.clone()).with_status(
+                    &DocumentStatus::Missing,
+                    None,
+                    None,
+                ),
+            )
+        }
+    }
 
     /// DID → profile, as two test Zones would publish them.
     #[derive(Default)]
@@ -359,7 +445,7 @@ pub(crate) mod test_support {
 
     #[async_trait]
     impl NetworkDirectory for StaticDirectory {
-        async fn describe(&self, did: &DID) -> Result<DidProfile, DirectoryError> {
+        async fn describe(&self, did: &DID, _: bool) -> Result<DidProfile, DirectoryError> {
             self.0
                 .lock()
                 .unwrap()
@@ -375,6 +461,83 @@ mod tests {
     use super::*;
     use name_lib::{DidDocType, EncodedDocument};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn explicit_lookup_refreshes_negative_caches_and_keeps_positive_answers() {
+        let did = DID::new("web", "club.host.example");
+        for error in [
+            DirectoryError::NotFound("not published".into()),
+            DirectoryError::Unavailable("offline".into()),
+            DirectoryError::Timeout,
+        ] {
+            let source = Arc::new(test_support::GroupDocumentSource::default());
+            let (directory, client) = source.directory();
+            assert!(matches!(
+                directory.describe(&did, false).await,
+                Err(DirectoryError::NotFound(_))
+            ));
+            directory
+                .cache
+                .lock()
+                .unwrap()
+                .insert(did.to_string(), (Err(error.clone()), Instant::now()));
+            let mut doc = group_doc(&did).to_json_value().unwrap();
+            doc["iat"] = json!(buckyos_kit::buckyos_get_unix_timestamp());
+            doc["exp"] = json!(buckyos_kit::buckyos_get_unix_timestamp() + 3600);
+            *source.document.lock().unwrap() = Some(doc);
+            source.calls.lock().unwrap().clear();
+            assert!(client.resolve_did(&did, None).await.is_err());
+            assert_eq!(directory.describe(&did, false).await, Err(error));
+            assert!(source.calls.lock().unwrap().is_empty());
+
+            let profile = directory.describe(&did, true).await.unwrap();
+            assert_eq!(profile.kind, LookupKind::Group);
+            assert_eq!(profile.zone.as_deref(), Some("host.example"));
+            assert_eq!(*source.calls.lock().unwrap(), vec![true]);
+            source.calls.lock().unwrap().clear();
+            assert_eq!(directory.describe(&did, false).await.unwrap(), profile);
+            assert_eq!(directory.describe(&did, true).await.unwrap(), profile);
+            assert!(client.resolve_did(&did, None).await.is_ok());
+            assert!(source.calls.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_lookup_refreshes_lower_cache_without_a_directory_entry() {
+        let did = DID::new("web", "club.host.example");
+        let source = Arc::new(test_support::GroupDocumentSource::default());
+        let (directory, client) = source.directory();
+        assert!(client.resolve_did(&did, None).await.is_err());
+        let mut doc = group_doc(&did).to_json_value().unwrap();
+        doc["iat"] = json!(buckyos_kit::buckyos_get_unix_timestamp());
+        doc["exp"] = json!(buckyos_kit::buckyos_get_unix_timestamp() + 3600);
+        *source.document.lock().unwrap() = Some(doc);
+        source.calls.lock().unwrap().clear();
+        assert_eq!(
+            directory.describe(&did, true).await.unwrap().kind,
+            LookupKind::Group
+        );
+        assert_eq!(*source.calls.lock().unwrap(), vec![true]);
+    }
+
+    #[tokio::test]
+    async fn explicit_lookup_still_rejects_a_document_for_another_did() {
+        let did = DID::new("web", "club.host.example");
+        let source = Arc::new(test_support::GroupDocumentSource::default());
+        let (directory, _) = source.directory();
+        assert!(directory.describe(&did, false).await.is_err());
+        let mut doc = group_doc(&DID::new("web", "other.host.example"))
+            .to_json_value()
+            .unwrap();
+        doc["iat"] = json!(buckyos_kit::buckyos_get_unix_timestamp());
+        doc["exp"] = json!(buckyos_kit::buckyos_get_unix_timestamp() + 3600);
+        *source.document.lock().unwrap() = Some(doc);
+        assert!(matches!(
+            directory.describe(&did, true).await,
+            Err(DirectoryError::NotFound(_))
+        ));
+        assert!(directory.describe(&did, false).await.is_err());
+    }
 
     fn group_doc(did: &DID) -> EncodedDocument {
         EncodedDocument::JsonLd(json!({

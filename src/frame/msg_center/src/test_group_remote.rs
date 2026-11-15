@@ -3,7 +3,7 @@ use crate::message_hub::MessageHubExecutor;
 use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::DeliveryExecutor;
-use crate::network_directory::test_support::StaticDirectory;
+use crate::network_directory::test_support::{GroupDocumentSource, StaticDirectory};
 use crate::test_cross_zone::{connect, documents, sign_as, verify_hub, TestZone, ZONE_A, ZONE_B};
 use buckyos_api::StaticCustodyResolver;
 use crate::test_group_service::{http_body, http_fixture};
@@ -267,6 +267,114 @@ async fn accept(center: &MessageCenter, who: &DID, invitation: &Value) -> Result
     )
     .await
 }
+
+#[tokio::test]
+async fn accepting_an_invitation_recovers_from_unpublished_group_negative_caches() {
+    let zones = two_zones().await;
+    create(&zones).await;
+    let invitation = invite(&zones, &alice(), &bob()).await;
+    pump_one(&zones.host).await;
+    let source = Arc::new(GroupDocumentSource::default());
+    let (directory, client) = source.directory();
+    zones.local.directory.set(directory);
+
+    assert!(matches!(
+        rpc(&zones.local, &bob(), "group.get_doc", json!({})).await,
+        Err(RPCErrors::NoPermission(reason)) if reason == "remote-group-not-found"
+    ));
+    assert!(matches!(
+        accept(&zones.local, &bob(), &invitation).await,
+        Err(RPCErrors::NoPermission(reason)) if reason == "remote-group-not-found"
+    ));
+    assert!(list(&zones.local, &bob()).await["joined"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let state = zones.host.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(
+        state.members[&bob().to_string()].state,
+        MemberStatus::Invited
+    );
+    *source.document.lock().unwrap() = Some(state.public_doc().unwrap());
+    source.calls.lock().unwrap().clear();
+
+    assert!(client.resolve_did(&group(), None).await.is_err());
+    assert!(rpc(&zones.local, &bob(), "group.get_doc", json!({}))
+        .await
+        .is_err());
+    assert!(source.calls.lock().unwrap().is_empty());
+    let accepted = accept(&zones.local, &bob(), &invitation).await.unwrap();
+    assert_eq!(*source.calls.lock().unwrap(), vec![true]);
+    assert_eq!(accepted["state"], "active");
+    assert_eq!(accepted["sync_pending"], false);
+    assert!(matches!(
+        accept(&zones.local, &bob(), &json!({"invite_id":"wrong-invitation"})).await,
+        Err(RPCErrors::NoPermission(reason)) if reason == "invitation-mismatch"
+    ));
+    assert_eq!(
+        zones
+            .host
+            .groups
+            .load(&group())
+            .await
+            .unwrap()
+            .unwrap()
+            .members[&bob().to_string()]
+            .state,
+        MemberStatus::Active
+    );
+    let seq = zones
+        .host
+        .groups
+        .load(&group())
+        .await
+        .unwrap()
+        .unwrap()
+        .group_seq;
+    assert_eq!(
+        accept(&zones.local, &bob(), &invitation).await.unwrap(),
+        accepted
+    );
+    assert_eq!(
+        zones
+            .host
+            .groups
+            .load(&group())
+            .await
+            .unwrap()
+            .unwrap()
+            .group_seq,
+        seq
+    );
+    assert_eq!(
+        list(&zones.local, &bob()).await["joined"][0]["group_did"],
+        json!(group())
+    );
+    assert!(rpc(&zones.local, &bob(), "group.get_doc", json!({}))
+        .await
+        .is_ok());
+
+    let incoming = host_message(&zones.host, "after publication", 1).await;
+    sync(&zones.local, &bob()).await;
+    assert!(projected(&zones.local, &bob()).await.contains(&incoming));
+    let outgoing = message(&bob(), "joined after refresh", 2);
+    zones
+        .local
+        .handle_post_send(outgoing.clone(), None, context(&bob()))
+        .await
+        .unwrap();
+    pump_one(&zones.local).await;
+    assert!(zones
+        .host
+        .groups
+        .load(&group())
+        .await
+        .unwrap()
+        .unwrap()
+        .messages
+        .contains_key(&outgoing.gen_obj_id().0.to_string()));
+}
+
 async fn sync(center: &MessageCenter, who: &DID) -> Value {
     rpc(center, who, "group.sync_joined", json!({}))
         .await

@@ -408,7 +408,7 @@ impl MessageCenter {
             }
             return Ok(Ok(candidate));
         }
-        let profile = self.directory.get().describe(did).await;
+        let profile = self.directory.get().describe(did, false).await;
         if self.is_local_recipient(did) {
             let agent = self
                 .token_verifier
