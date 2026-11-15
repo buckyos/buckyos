@@ -1,10 +1,8 @@
-/* The data mode (UI 框架 PRD §5): tree | editing area with tabs | sidebar, the status bar across the bottom; the phone's
- * single column; the menus, sheets and dialogs of the object tree. Colours and controls come from aiworkspace.css. */
+/* The data mode (UI 框架 PRD §5): tree | editing area with tabs | sidebar, the status bar across the bottom — no row
+ * above them, "返回画布" and the main menu head the tree; the phone's single column; the menus, sheets and dialogs of
+ * the object tree. Colours and controls come from aiworkspace.css. */
 
 .aiws-dm { position: relative; }
-.aiws-dm-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.aiws-dm-bar .aiws-view-toolbar { flex: none; }
-.aiws-dm-mode-chip { display: inline-flex; align-items: center; gap: 4px; }
 .aiws-dm-work { flex-direction: column; }
 .aiws-dm-body { position: relative; display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; }
 
@@ -27,7 +25,10 @@
 
 /* the object tree */
 .aiws-dm-tree { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
-.aiws-dm-tree-head { display: flex; align-items: center; gap: 2px; padding: 6px 6px 2px 10px; }
+.aiws-dm-tree-head { display: flex; align-items: center; gap: 2px; padding: 6px 6px 2px 4px; }
+.aiws-dm-tree-title { flex: 1 1 auto; min-width: 0; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the tree put away: "显示对象树", "返回画布" and the main menu start the tab row */
+.aiws-dm-mainbar-nav { flex: none; display: inline-flex; align-items: center; gap: 2px; padding-right: 4px; margin-right: 2px; border-right: 1px solid var(--cp-border); }
 .aiws-dm-search { display: flex; align-items: center; gap: 6px; margin: 4px 8px; padding: 0 8px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); color: var(--cp-muted); }
 .aiws-dm-search input { flex: 1 1 auto; min-width: 0; border: none; background: none; padding: 6px 0; outline: none; color: var(--cp-text); }
 .aiws-dm-filter { margin: 2px 8px 6px; padding: 8px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); display: flex; flex-direction: column; gap: 6px; }
@@ -36,7 +37,6 @@
 .aiws-dm-filter-line { display: flex; align-items: center; gap: 6px; }
 .aiws-dm-tree-scroll { flex: 1 1 auto; min-height: 60px; overflow: auto; padding: 0 4px 8px; }
 .aiws-dm-tree-empty { padding: 12px 10px; }
-.aiws-dm-tree-pinned { flex: none; border-top: 1px solid var(--cp-border); padding: 4px 4px 6px; max-height: 40%; overflow: auto; }
 .aiws-dm-row { position: relative; min-height: 28px; border-radius: 6px; }
 .aiws-dm-row:hover { background: var(--cp-surface-2); }
 .aiws-dm-row.is-selected:hover { background: var(--aiws-selected-bg); }
@@ -49,10 +49,6 @@
 .aiws-root button.aiws-dm-row-more { flex: none; border: none; background: none; width: 26px; height: 24px; padding: 0; border-radius: 6px; justify-content: center; color: var(--cp-muted); visibility: hidden; }
 .aiws-dm-row:hover button.aiws-dm-row-more, .aiws-dm-row:focus-within button.aiws-dm-row-more, .aiws-root button.aiws-dm-row-more.is-shown { visibility: visible; }
 .aiws-root button.aiws-dm-row-more:hover { background: var(--cp-surface); color: var(--cp-text); }
-.aiws-dm-group { margin-top: 2px; }
-.aiws-dm-group-label { font-weight: 600; font-size: 12px; padding: 2px 4px; }
-.aiws-dm-macros-empty { padding: 2px 28px 4px; font-size: 12px; }
-.aiws-dm-special { margin-top: 2px; }
 .aiws-dm-tree .aiws-tree-label .aiws-chip { flex: none; }
 
 /* the editing area */
@@ -167,7 +163,8 @@
 .aiws-dm.is-phone button.aiws-dm-row-more { width: 44px; height: 44px; visibility: visible; }
 .aiws-dm.is-phone .aiws-dm-search input { padding: 10px 0; font-size: 16px; }
 .aiws-dm.is-phone .aiws-dm-tree-head .aiws-tool { min-width: 44px; height: 44px; }
-.aiws-dm.is-phone .aiws-dm-tree-pinned { max-height: none; }
+/* the tree's head is the phone's top bar */
+.aiws-dm.is-phone .aiws-dm-left .aiws-dm-tree-head { padding: max(4px, env(safe-area-inset-top)) 4px 2px; }
 .aiws-dm.is-phone .aiws-dm-detail { padding: 8px 12px 24px; }
 .aiws-dm.is-phone .aiws-dm-detail.is-bare { padding: 0; }
 .aiws-dm.is-phone .aiws-status-row.is-bar { padding-bottom: max(3px, env(safe-area-inset-bottom)); }

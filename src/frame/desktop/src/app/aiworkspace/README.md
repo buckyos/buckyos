@@ -94,8 +94,9 @@ ui/
                           identity, share link), StatusSummary (the bottom-right status area: save / sync /
                           connection, persistent alerts and notices; the 修改状态 panel), SidePanel, dialogs (New, export, import, help, Mock, leave check),
                           popover.tsx (popovers and keyboard menus), shellContext.ts, panels, annotations panel
-  datamode/               the data mode (UI 框架 PRD §5): ObjectTree (data sources by default, filters, search, the 宏 group
-                          and the 工作区权限 node, the row menu of `data.*` actions, drag to move), tabs.ts (preview and
+  datamode/               the data mode (UI 框架 PRD §5; no tool-zone row above it): ObjectTree (its head holds 返回画布
+                          and the main menu; data sources by default, filters, search, the 宏 folder and the 工作区权限
+                          row last, the row menu of `data.*` actions, drag to move), tabs.ts (preview and
                           fixed tabs in `ui:data-tabs`; `openDataEditor` opens an object's editor from anywhere),
                           TabStrip / EditorHost (one mounted editor, scroll kept per tab), editors (each type's standard
                           editor, a macro's task / code / runs pages), SideBar (属性 / 权限 / 修改记录), StatusInfo (the

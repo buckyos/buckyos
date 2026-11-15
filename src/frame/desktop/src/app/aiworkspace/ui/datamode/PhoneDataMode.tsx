@@ -1,5 +1,7 @@
-/* The data mode on a phone (UI 框架 PRD §5.6): one column in three layers. (1) The object tree, the whole screen: search
- * and filters on top, rows at least 48 px with their ⋯ always shown. (2) The editor of the current object, the whole
+/* The data mode on a phone (UI 框架 PRD §5.6): one column in three layers. (1) The object tree, the whole screen: its
+ * head is the top bar — "返回画布", the main menu, the Workspace's name, how many objects are open, ＋ and the filter (one
+ * row, owner 11-14: the height is the content's) — then the search, rows at least 48 px with their ⋯ always shown. (2)
+ * The editor of the current object, the whole
  * screen: a top bar with "back", the object's name, how many objects are open (tap to switch, like the tabs) and ⋯.
  * (3) The right sidebar's three tabs as a bottom panel, from ⋯ or from the object's line in the status bar. "Back" from
  * an editor that a canvas's "展开" opened goes straight back to the canvas. */
@@ -75,16 +77,7 @@ export function PhoneDataMode({ data }: { data: DataController }) {
           </button>
           <button type="button" className="aiws-tool" aria-label={t('aiworkspace.datamode.phone.more')} data-testid="aiws-dm-phone-more" onClick={() => setMore(true)}><Ellipsis size={20} /></button>
         </div>
-      ) : (
-        <div className="aiws-dm-phone-bar" data-testid="aiws-dm-phone-bar">
-          <button type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.toolbar.backToCanvas')} data-testid="aiws-top-canvas" data-action="view.data-mode" onClick={() => shell.setTopMode('canvas')}><LayoutDashboard size={20} /></button>
-          <span className="aiws-dm-phone-title" data-testid="aiws-dm-workspace-title"><b>{store.session.info().title}</b></span>
-          {state.tabs.length > 0 && (
-            <button type="button" className="aiws-tool aiws-dm-phone-count" aria-label={t('aiworkspace.datamode.phone.open', { count: state.tabs.length })} data-testid="aiws-dm-phone-tabs" onClick={() => setSwitcher(true)}><span>{state.tabs.length}</span></button>
-          )}
-          <PhoneMainMenu canvas={null} />
-        </div>
-      )}
+      ) : null}
       <div className="aiws-sources-work aiws-dm-work">
         <div className="aiws-sources aiws-dm-body" data-testid="aiws-sources" data-active={state.active ?? ''}>
           {editing ? (
@@ -96,7 +89,16 @@ export function PhoneDataMode({ data }: { data: DataController }) {
             </main>
           ) : (
             <aside className="aiws-dm-left is-phone" data-testid="aiws-dm-left">
-              <ObjectTree activeId={state.active} host={{ ...host, open: (id, options) => host.open(id, { ...options, preview: false }) }} phone coarse />
+              <ObjectTree activeId={state.active} host={{ ...host, open: (id, options) => host.open(id, { ...options, preview: false }) }} phone coarse
+                lead={(
+                  <>
+                    <button type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.toolbar.backToCanvas')} data-testid="aiws-top-canvas" data-action="view.data-mode" onClick={() => shell.setTopMode('canvas')}><LayoutDashboard size={20} /></button>
+                    <PhoneMainMenu canvas={null} />
+                  </>
+                )}
+                tail={state.tabs.length > 0 && (
+                  <button type="button" className="aiws-tool aiws-dm-phone-count" aria-label={t('aiworkspace.datamode.phone.open', { count: state.tabs.length })} data-testid="aiws-dm-phone-tabs" onClick={() => setSwitcher(true)}><span>{state.tabs.length}</span></button>
+                )} />
             </aside>
           )}
         </div>

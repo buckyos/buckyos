@@ -1,12 +1,13 @@
 /* The data mode (UI 框架 PRD §5): like a text editor — the object tree on the left, the editing area with its tabs in the
- * middle, the right sidebar (属性 / 权限 / 修改记录), the status bar across the bottom. The title zone shows the
- * workspace's name, "返回画布" and the main menu; the collaboration zone stays, its comment is about the current tab's
- * object. The two side columns are dragged wider or narrower and folded away (the person's state, `ui:data-layout`); a
+ * middle, the right sidebar (属性 / 权限 / 修改记录), the status bar across the bottom. No row of the canvas's tool zones
+ * above it (owner 11-14: the height is the editor's): "返回画布" and the main menu head the object tree, or the tab row
+ * while the tree is put away; the main menu's "添加评论" is about the current tab's object, and the rest of the
+ * collaboration zone (play, macros, share) is in its "协作". The two side columns are dragged wider or narrower and folded away (the person's state, `ui:data-layout`); a
  * medium window turns the sidebar into a drawer, a narrow one the tree too. A phone has its own single column
  * (PhoneDataMode). The tree's actions run here (`DataHost`): open, the sidebar, dialogs, picking files, pasting tables. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react'
-import { Database, Ellipsis, LayoutDashboard, PanelLeft, PanelRight } from 'lucide-react'
+import { Ellipsis, LayoutDashboard, PanelLeft, PanelRight } from 'lucide-react'
 import { DATA_ID, type EntityEnvelope, type Json } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
@@ -24,7 +25,6 @@ import { MenuButton } from '../shell/popover'
 import { useShell } from '../shell/shellContext'
 import { SidePanel } from '../shell/SidePanel'
 import { StatusDock } from '../shell/StatusSummary'
-import { ViewToolbar } from '../shell/ViewToolbar'
 import type { DataDialog, DataHost, PickKind, PropSection, SideTab } from './actions'
 import { DataDialogs } from './dialogs'
 import { TabEditor } from './editors'
@@ -181,29 +181,24 @@ export function DataModeStage({ onActive }: { onActive: (id: string | null) => v
   return shell.phone ? <PhoneDataMode data={data} /> : <DesktopDataMode data={data} />
 }
 
-/** The title zone in the data mode (§5.1): the workspace, "返回画布", the main menu. */
-function DataTitle() {
+/** "返回画布" and the main menu (§5.1, owner 11-14): at the head of the object tree, or of the tab row while the tree is
+ * put away — one place at a time. The main menu sees the current object (its "添加评论"). */
+function DataNav({ commands }: { commands: CanvasCommands }) {
   const { t } = useAiwsText()
-  const store = useStore()
   const shell = useShell()
-  const actions = useActionContext(null)
+  const actions = useActionContext(commands)
   return (
-    <div className="aiws-main-area">
-      <div className="aiws-panel aiws-main-toolbar" role="toolbar" aria-label={t('aiworkspace.shell.toolbar.main')} data-testid="aiws-main-toolbar">
-        <span className="aiws-main-title" data-testid="aiws-dm-workspace-title"><LayoutDashboard size={18} aria-hidden="true" /> <b>{store.session.info().title}</b></span>
-        <span className="aiws-chip aiws-dm-mode-chip"><Database size={13} aria-hidden="true" /> {t('aiworkspace.framework.dataMode')}</span>
-        <span className="aiws-toolbar-sep" aria-hidden="true" />
-        <button type="button" className="aiws-tool" aria-pressed aria-label={t('aiworkspace.shell.toolbar.backToCanvas')} title={t('aiworkspace.shell.toolbar.backToCanvasHint')}
-          data-testid="aiws-top-canvas" data-action="view.data-mode" onClick={() => shell.setTopMode('canvas')}><LayoutDashboard size={18} /></button>
-        <MenuButton label={t('aiworkspace.shell.toolbar.mainMenu')} title={t('aiworkspace.shell.toolbar.mainMenu')} testId="aiws-main-menu" menuTestId="aiws-main-menu-list" items={() => buildMainMenu(actions)}>
-          <Ellipsis size={18} />
-        </MenuButton>
-      </div>
-    </div>
+    <>
+      <button type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.toolbar.backToCanvas')} title={t('aiworkspace.shell.toolbar.backToCanvasHint')}
+        data-testid="aiws-top-canvas" data-action="view.data-mode" onClick={() => shell.setTopMode('canvas')}><LayoutDashboard size={18} /></button>
+      <MenuButton label={t('aiworkspace.shell.toolbar.mainMenu')} title={t('aiworkspace.shell.toolbar.mainMenu')} testId="aiws-main-menu" menuTestId="aiws-main-menu-list" items={() => buildMainMenu(actions)}>
+        <Ellipsis size={18} />
+      </MenuButton>
+    </>
   )
 }
 
-/** What the collaboration zone and its comment see in the data mode: no canvas, a comment about the current object. */
+/** What the main menu sees in the data mode: no canvas, a comment about the current object, the comments panel. */
 function useDataCommands(entity: EntityEnvelope | undefined): CanvasCommands {
   const store = useStore()
   const shell = useShell()
@@ -222,7 +217,7 @@ function useDataCommands(entity: EntityEnvelope | undefined): CanvasCommands {
     return {
       isFree: false, insertReason: away.reason, noteReason: away.reason, insert: () => undefined, openCatalog: () => undefined,
       copy: away, cut: away, paste: away, remove: away, importDrawio: away, importPdf: away, importOffice: away, importTable: away, exportDrawio: away,
-      view: null, canvasTabs: [], comment,
+      view: null, canvasTabs: ['annotations'], comment,
     }
   }, [store, shell, ui, entity, t])
 }
@@ -275,7 +270,8 @@ function DesktopDataMode({ data }: { data: DataController }) {
   const commentFolder = activeEntity ? (acceptsData(activeEntity) ? activeEntity.entity_id : activeEntity.parent_id && acceptsData(store.outline.get(activeEntity.parent_id)) ? activeEntity.parent_id : DATA_ID) : DATA_ID
   const openFromTree: DataHost = useMemo(() => ({ ...host, open: (id, options) => { host.open(id, options); if (leftDrawer) setDrawer(null) } }), [host, leftDrawer])
   const sideTabs = sideTabsOf(state.active)
-  const tree = <ObjectTree activeId={state.active} host={openFromTree} phone={false} coarse={coarse} />
+  const nav = <DataNav commands={commands} />
+  const tree = <ObjectTree activeId={state.active} host={openFromTree} phone={false} coarse={coarse} lead={nav} />
   const side = (
     <>
       <div className="aiws-dm-side-tabs" role="tablist" aria-label={t('aiworkspace.datamode.side.label')}>
@@ -289,11 +285,6 @@ function DesktopDataMode({ data }: { data: DataController }) {
   )
   return (
     <div className="aiws-sources-stage aiws-dm" data-testid="aiws-dm" data-layout="desktop">
-      <div className="aiws-sources-bar aiws-dm-bar">
-        <DataTitle />
-        <span className="aiws-grow" />
-        {!shell.prefs.viewToolbar ? null : <ViewToolbar canvas={commands} />}
-      </div>
       <div className="aiws-sources-row">
         <div className="aiws-sources-work aiws-dm-work">
           <div className="aiws-sources aiws-dm-body" data-testid="aiws-sources" data-active={state.active ?? ''}>
@@ -307,8 +298,13 @@ function DesktopDataMode({ data }: { data: DataController }) {
             {leftShown && !leftDrawer && <div className="aiws-dm-splitter" role="separator" aria-orientation="vertical" aria-label={t('aiworkspace.datamode.resizeTree')} data-testid="aiws-dm-splitter-left" onPointerDown={startDrag('left')} />}
             <main className="aiws-dm-main">
               <div className="aiws-dm-mainbar">
-                {!leftShown && <button type="button" className="aiws-tool" aria-label={t('aiworkspace.datamode.tree.show')} title={t('aiworkspace.datamode.tree.show')} data-testid="aiws-dm-tree-show"
-                  onClick={() => (leftDrawer ? setDrawer('left') : setLayout({ leftHidden: false }))}><PanelLeft size={18} /></button>}
+                {!leftShown && (
+                  <span className="aiws-dm-mainbar-nav">
+                    <button type="button" className="aiws-tool" aria-label={t('aiworkspace.datamode.tree.show')} title={t('aiworkspace.datamode.tree.show')} data-testid="aiws-dm-tree-show"
+                      onClick={() => (leftDrawer ? setDrawer('left') : setLayout({ leftHidden: false }))}><PanelLeft size={18} /></button>
+                    {nav}
+                  </span>
+                )}
                 <TabStrip tabs={tabs} controller={state} onLocate={(id) => ui.openEntity(id)} />
                 {!rightShown && <button type="button" className="aiws-tool" aria-label={t('aiworkspace.datamode.side.show')} title={t('aiworkspace.datamode.side.show')} data-testid="aiws-dm-side-show"
                   onClick={() => (rightDrawer ? setDrawer('right') : setLayout({ rightHidden: false }))}><PanelRight size={18} /></button>}

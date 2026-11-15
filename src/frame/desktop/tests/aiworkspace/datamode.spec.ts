@@ -1,6 +1,7 @@
-/* The data mode (UI 框架 PRD §5; acceptance §15 #11–#15, #21): the object tree's default and filters, new data at a chosen
+/* The data mode (UI 框架 PRD §5; acceptance §15 #11–#15, #21): no row above it — "返回画布" and the main menu head the
+ * object tree, or the tab row while the tree is put away; the object tree's default and filters, new data at a chosen
  * place through the tree's menu, tabs (preview, fixed, switching keeps what was typed, restored after a reload), the
- * "宏" group showing a macro's code, the "工作区权限" node opening the permission editor, the right sidebar following the
+ * "宏" folder showing a macro's code, the "工作区权限" row (always the tree's last) opening the permission editor, the right sidebar following the
  * current tab with a version restored and undone, a directory entered and left; the tree by keyboard (the WAI-ARIA tree
  * pattern); and the data mode on a phone (Pixel 7): from the main menu, the tree full screen, the editor full screen, the
  * sidebar as a bottom panel, and "移动到…" choosing the folder and the place in it (the way to reorder by touch). */
@@ -64,10 +65,42 @@ test('§15-11 the object tree lists only the data sources by default; the filter
   for (const id of ['def-x', 'note-x', 'shows']) await expect(item(id)).toHaveCount(0)
   const types = await page.getByTestId('aiws-tree-item').evaluateAll((els) => els.map((el) => el.getAttribute('data-type')))
   for (const type of types) expect(['buckyos.table-source', 'buckyos.richtext', 'buckyos.record', 'buckyos.asset-ref', 'buckyos.dir', 'buckyos.container']).toContain(type)
-  // each row: the type's icon and the name; the macros and the Workspace's permissions are pinned below
+  // each row: the type's icon and the name; "宏" is a folder of the tree and "工作区权限" its last top-level row
   await expect(item('sales').locator('.aiws-dm-type svg')).toBeVisible()
-  await expect(page.getByTestId('aiws-dm-macros')).toBeVisible()
+  const macros = page.getByTestId('aiws-dm-macros')
+  await expect(macros).toHaveAttribute('role', 'treeitem')
+  await expect(macros).toHaveAttribute('aria-level', '1')
+  await expect(macros).toHaveAttribute('aria-expanded', 'true')
+  await page.getByTestId('aiws-dm-macros-label').click()
+  await expect(macros).toHaveAttribute('aria-expanded', 'false')
+  await page.getByTestId('aiws-dm-macros-label').click()
+  const topLevel = await page.locator('[role="tree"] > [role="treeitem"]').evaluateAll((els) => els.map((el) => el.getAttribute('data-entity-id')))
+  expect(topLevel.slice(-2)).toEqual(['@macros', '@permissions'])
   await expect(page.getByTestId('aiws-dm-perm-node')).toBeVisible()
+  // no row above the data mode (owner 11-14): "返回画布" and the main menu head the tree, with the Workspace's name
+  for (const gone of ['aiws-view-toolbar', 'aiws-main-toolbar']) await expect(page.getByTestId(gone), gone).toHaveCount(0)
+  const left = page.getByTestId('aiws-dm-left')
+  await expect(left.getByTestId('aiws-top-canvas')).toBeVisible()
+  await expect(left.getByTestId('aiws-main-menu')).toBeVisible()
+  await expect(left.getByTestId('aiws-dm-workspace-title')).toHaveText(/datamode/)
+  const head = (await left.locator('.aiws-dm-tree-head').boundingBox())!
+  const body = (await page.getByTestId('aiws-dm').boundingBox())!
+  expect(head.y - body.y).toBeLessThan(8)
+  // the tree put away: they start the tab row; the main menu's "添加评论" is about the current object
+  await page.getByTestId('aiws-dm-tree-hide').click()
+  await expect(left).toHaveCount(0)
+  await expect(page.getByTestId('aiws-top-canvas')).toBeVisible()
+  await page.getByTestId('aiws-main-menu').click()
+  await page.getByTestId('aiws-menu-collab').hover()
+  await expect(page.getByTestId('aiws-menu-annotate')).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await page.getByTestId('aiws-dm-tree-show').click()
+  await expect(left.getByTestId('aiws-top-canvas')).toBeVisible()
+  await page.getByTestId('aiws-tree-sales').click()
+  await left.getByTestId('aiws-main-menu').click()
+  await page.getByTestId('aiws-menu-collab').hover()
+  await expect(page.getByTestId('aiws-menu-annotate')).toBeEnabled()
+  await page.keyboard.press('Escape')
   // the filter: control definitions and comments by type
   await page.getByTestId('aiws-dm-filter').click()
   await page.getByTestId('aiws-dm-filter-type-block-def').check()
@@ -177,7 +210,7 @@ test('§15-13 three objects in three tabs: a preview is reused, switching keeps 
   await expect(page.getByTestId('aiws-dm-gone')).toBeVisible()
 })
 
-test('§15-14 a macro under “宏” opens on its code; “工作区权限” turns the editing area into the permission editor', async ({ page, api }) => {
+test('§15-14 a macro in the “宏” folder opens on its code; “工作区权限” turns the editing area into the permission editor', async ({ page, api }) => {
   const ws = await workspaceWithExtras(api)
   // a macro: the wish's saved program (the demo's wish is on the Mock executor here)
   const source = "aiws.declare({ inputs: {}, results: {} })\nconst rows = aiws.input('sales')\naiws.result.table('summary', rows)\n"
@@ -380,8 +413,15 @@ test('§5.2 the object tree by keyboard (WAI-ARIA tree): one tab stop; arrows mo
   await page.keyboard.press('ArrowRight')
   await expect(item('f-docs')).toHaveAttribute('aria-expanded', 'true')
   await expect.poll(focused).toBe('f-docs')
-  // Home / End
-  await press('End', rows.at(-1)!)
+  // Home / End: "工作区权限" is the last row; "宏" folds and unfolds like a folder (Enter too: it does not open)
+  expect(rows.slice(-2)).toEqual(['@macros', '@permissions'])
+  await press('End', '@permissions')
+  await press('ArrowUp', '@macros')
+  await page.keyboard.press('ArrowLeft')
+  await expect(page.getByTestId('aiws-dm-macros')).toHaveAttribute('aria-expanded', 'false')
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('aiws-dm-macros')).toHaveAttribute('aria-expanded', 'true')
+  await expect(tabs(page)).toHaveCount(0)
   await press('Home', 'x')
   // type-ahead: the next row whose name starts with what is typed
   await page.keyboard.type('br')
@@ -479,6 +519,12 @@ test.describe('on a phone', () => {
     const mode = page.getByTestId('aiws-dm')
     await expect(mode).toHaveAttribute('data-layout', 'phone')
     await expect(mode).toHaveAttribute('data-layer', 'tree')
+    // the tree's head is the top bar: "返回画布", the main menu, the Workspace's name, ＋ — one row
+    await expect(page.getByTestId('aiws-dm-phone-bar')).toHaveCount(0)
+    const left = page.getByTestId('aiws-dm-left')
+    for (const id of ['aiws-top-canvas', 'aiws-main-menu', 'aiws-dm-workspace-title', 'aiws-dm-tree-add']) await expect(left.getByTestId(id), id).toBeVisible()
+    const headBox = (await left.locator('.aiws-dm-tree-head').boundingBox())!
+    expect(headBox.height).toBeLessThan(60)
     // the tree: the whole screen, rows of at least 48 px with their ⋯ always shown
     const viewport = page.viewportSize()!
     const tree = (await page.getByTestId('aiws-dm-left').boundingBox())!

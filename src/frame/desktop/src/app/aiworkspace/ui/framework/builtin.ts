@@ -30,7 +30,8 @@ const command = (pick: (canvas: NonNullable<ActionContext['canvas']>) => { reaso
   reason: (ctx: ActionContext) => (ctx.canvas ? pick(ctx.canvas).reason : notOnCanvas()),
   run: (ctx: ActionContext) => { if (ctx.canvas) pick(ctx.canvas).run() },
 })
-const viewReason = ({ canvas }: ActionContext) => (canvas ? (canvas.view ? null : aiwsT('aiworkspace.shell.menu.flowNoZoom')) : notOnCanvas())
+// the data mode hands the main menu its commands too (no view): "not on a canvas" there, not "a flow page"
+const viewReason = ({ canvas, shell }: ActionContext) => (canvas?.view ? null : canvas && shell.topMode === 'canvas' ? aiwsT('aiworkspace.shell.menu.flowNoZoom') : notOnCanvas())
 
 function beginGuide({ store, shell }: ActionContext, pathId: string) {
   const saved = store.userState.get<Json>(`guide:${pathId}`) as { index?: number; done?: boolean } | undefined

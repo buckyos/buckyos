@@ -1,5 +1,5 @@
 /* What the data mode shows of the outline (UI 框架 PRD §5.2): the object tree's default (the five data source types and
- * the folders holding them; the canvas content folded; macros and the Workspace's permissions pinned below), the
+ * the folders holding them; the canvas content folded; the "宏" folder and, always last, the Workspace's permissions), the
  * filters (types, origin, everything), the search that keeps the levels, each row's type icon and state marks, and the
  * read-only reason of an object. A folder the person cannot read, above something it can (the outline's path node), is
  * shown only as the way there. Non-visual helpers only. */
@@ -15,6 +15,10 @@ import type { WorkspaceStore } from '../../state/store'
 import { TYPE_LABEL, entityLabel } from '../sources/dataOps'
 import type { SideTab } from './actions'
 import { PERMISSIONS_TAB } from './tabs'
+
+/** The "宏" folder of the object tree (§5.2, owner 11-14): a folder like the others, listing the wishes that hold a
+ * macro wherever they are; not an entity. */
+export const MACROS_NODE = '@macros'
 
 /** The right sidebar's current tab (the person's state). */
 export const SIDE_TAB_KEY = 'ui:data-side-tab'
@@ -57,9 +61,10 @@ const ICONS: Record<string, LucideIcon> = {
   'buckyos.viewport': ScanEye, 'buckyos.task': Vote, 'buckyos.response': MessagesSquare, 'buckyos.result': CalendarClock,
 }
 
-/** The icon of an object's type (a folder, a canvas, a table…); the Workspace's permissions for its node. */
+/** The icon of an object's type (a folder, a canvas, a table…); the Workspace's permissions and "宏" for their nodes. */
 export function iconOf(entity: EntityEnvelope | undefined, id?: string): LucideIcon {
   if (id === PERMISSIONS_TAB) return ShieldCheck
+  if (id === MACROS_NODE) return Folder
   if (!entity) return File
   if (entity.path_only && entity.kind !== 'surface') return entity.type_id === 'buckyos.container' ? FolderLock : Lock
   if (entity.kind === 'surface') return LayoutDashboard
@@ -79,6 +84,7 @@ export function typeName(entity: EntityEnvelope | undefined): string {
 /** A row's or a tab's name: the system folders by what they are. */
 export function nameOf(store: WorkspaceStore, entity: EntityEnvelope | undefined, id: string): string {
   if (id === PERMISSIONS_TAB) return aiwsT('aiworkspace.datamode.permissions')
+  if (id === MACROS_NODE) return aiwsT('aiworkspace.datamode.macros')
   if (!entity) return id
   if (entity.entity_id === CANVAS_CONTENT_ID) return aiwsT('aiworkspace.datamode.canvasData')
   if (entity.entity_id === SHOWS_ID) return aiwsT('aiworkspace.data.tree.showPaths')
@@ -119,7 +125,7 @@ export interface TreeView {
   searching: boolean
 }
 
-/** Not shown unless the filters ask for it: what is not a data source (a wish with a macro is listed under "宏"), the
+/** Not shown unless the filters ask for it: what is not a data source (a wish with a macro is listed in "宏"), the
  * presentation and session folders, canvas groups. */
 function hiddenByDefault(entity: EntityEnvelope): boolean {
   if (entity.type_id === 'buckyos.container') return entity.entity_id === SHOWS_ID || entity.entity_id === SESSION_FOLDER || (entity.kind !== 'folder' && !entity.system)
@@ -161,6 +167,16 @@ export function treeView(store: WorkspaceStore, filter: TreeFilter, query: strin
     walk(SURFACES_ID)
   }
   return { shown, hits, searching: q !== '' }
+}
+
+/** Whether a wish holding a macro is listed in the "宏" folder for a filter and a query: a type filter lists it only with
+ * 许愿格 among its types; the origin and the search as for any other row. */
+export function macroShown(store: WorkspaceStore, entity: EntityEnvelope, filter: TreeFilter, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (filter.types.length > 0 && !filter.types.includes(entity.type_id)) return false
+  if (filter.origin === 'generated' && !entity.derived) return false
+  if (filter.origin === 'original' && entity.derived) return false
+  return !q || nameOf(store, entity, entity.entity_id).toLowerCase().includes(q) || (entity.name ?? '').toLowerCase().includes(q) || entity.entity_id.toLowerCase().includes(q)
 }
 
 /** Why the object cannot be changed here, or null (§5.3: the data layer's limits hold in the data mode too). */
