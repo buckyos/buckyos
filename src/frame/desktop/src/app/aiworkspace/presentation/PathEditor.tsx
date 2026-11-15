@@ -7,7 +7,7 @@
 
 import { fixed } from '@controls/placement'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { ArrowDown, ArrowUp, Crosshair, Frame as FrameIcon, Play, Plus, Power, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Crosshair, Frame as FrameIcon, Play, Plus, Power, Trash2, X } from 'lucide-react'
 import { describeError } from '../api/session'
 import type { EntityEnvelope, Json, KeyedContent, Operation, PresentationProps, ShowPathPayload, ShowPurpose, ShowStep, StageSize, StepTransition, ViewportPayload } from '../api/types'
 import { useLoad, useOutlineVersion, useStore, useUserState, useVersion } from '../state/hooks'
@@ -212,7 +212,12 @@ export function PathEditor({ surface, camera, laid }: { surface: EntityEnvelope;
   return (
     <>
       <div className="aiws-path-editor aiws-panel" data-testid="aiws-path-editor" onPointerDown={(event) => event.stopPropagation()}>
-        <h4>{t('aiworkspace.presentation.editor.title')}</h4>
+        <div className="aiws-path-row aiws-path-header">
+          <h4 className="aiws-grow">{t('aiworkspace.presentation.editor.title')}</h4>
+          <button type="button" data-testid="aiws-path-exit" title={t('aiworkspace.presentation.editor.exitTitle')} onClick={() => store.userState.set('canvas:mode', 'edit')}>
+            <X size={14} aria-hidden="true" /> {t('aiworkspace.presentation.editor.exit')}
+          </button>
+        </div>
         <div className="aiws-path-row">
           <select aria-label={t('aiworkspace.presentation.editor.choosePath')} data-testid="aiws-path-select" value={pathId ?? ''} onChange={(event) => { selectPath(event.target.value || null); setSelectedStep(null) }}>
             {paths.length === 0 && <option value="">{t('aiworkspace.presentation.editor.noPaths')}</option>}
