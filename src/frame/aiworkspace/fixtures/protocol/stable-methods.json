@@ -32,10 +32,6 @@
         "format_version": "string",
         "head_commit_id": "string",
         "head_seq": "number",
-        "hosted_exec": {
-          "digest": "string",
-          "enabled": "boolean"
-        },
         "judged_as": "string",
         "ok": "boolean",
         "owner": "boolean",
@@ -1546,10 +1542,6 @@
         "format_version": "string",
         "head_commit_id": "string",
         "head_seq": "number",
-        "hosted_exec": {
-          "digest": "string",
-          "enabled": "boolean"
-        },
         "judged_as": "string",
         "ok": "boolean",
         "owner": "boolean",

@@ -42,11 +42,12 @@ def main(argv):
             names = [n for n in names if os.path.isdir(os.path.join(path, n))]
         for index, name in enumerate(names):
             last = index == len(names) - 1
-            print(f"{prefix}{'└── ' if last else '├── '}{name}")
+            connector = '\u2514\u2500\u2500 ' if last else '\u251c\u2500\u2500 '
+            print(f"{prefix}{connector}{name}")
             full = os.path.join(path, name)
             if os.path.isdir(full):
                 counts[0] += 1
-                walk(full, prefix + ("    " if last else "│   "), depth + 1)
+                walk(full, prefix + ("    " if last else "\u2502   "), depth + 1)
             else:
                 counts[1] += 1
 

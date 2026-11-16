@@ -962,14 +962,14 @@ written by `desktop/tests/datamodel/aiworkspace-ink.test.ts` and committed and r
 One `proc` program for wishes (design §13; `notepads/aiws-ai-native-phase1-todo.md` §2; `notepads/aiws-wish-card-interaction-todo.md`).
 Runs live in `local.sqlite` `runs` (the working record of this deployment: progress, claims, leases; never exported); stage
 folders in `<ws>/runs/<run_id>/work`, the AI answer cache in `<ws>/cache/llm_map/`. The service runs no model and no program: every
-stage of `wish.xllm@1` executes on an executor — the starter's browser (`local`) or the Owner's Agent (`hosted`). The service takes
+stage of `wish.xllm@1` executes on an executor — the starter's browser (`local`) or the starter's own Agent (`hosted`). The service takes
 the stage snapshot, answers the stage's tools, judges what the executor hands in, and **when the stage ends plans what it produced
 and writes it in one Commit** (origin `program`, written as the run, idempotency key `run/<run_id>`) together with the run's record
 in the wish's `history`. Nothing waits for a confirmation; what a run wrote is undone with `proc.rollback`.
 
 | Program | `params` |
 | --- | --- |
-| `wish.xllm@1` | `wish_id`, `stage: analyze \| code \| run`, `parent_run_id?` (code: a failed run to repair, or the previous round) + `feedback?` (a feedback round), `location?` (`{ surface_id, cell_id, selection, viewport }`, the task location of the map), `request?` (`aiws.request`), `execution?: { mode: local \| hosted }`, `session_id?` (the session the stage's Commit is written in: write locks it holds count) |
+| `wish.xllm@1` | `wish_id`, `stage: analyze \| code \| run`, `parent_run_id?` (code: a failed run to repair, or the previous round) + `feedback?` (a feedback round), `location?` (`{ surface_id, cell_id, selection, viewport }`, the task location of the map), `request?` (`aiws.request`), `execution?: { mode: local \| hosted, agent? }`, `session_id?` (the session the stage's Commit is written in: write locks it holds count) |
 
 States: `queued → snapshotting → running → validating → applying → succeeded`, or `failed | cancelled | interrupted` (active:
 `queued snapshotting running validating applying`). An executor's lapsed lease makes its run `interrupted` (resumed as a new
@@ -1115,19 +1115,23 @@ media_timeout_secs }`; `proc.files` answers `{ files, stage: { budget, manifest 
 (previews, checks, manifest, problems); running, a failure ends the run. `proc.report { finished | analysis | error | progress }`;
 `usage?` beside them; results are never reported directly.
 
-**Execution modes (内核架构改进 M3; 浏览器优先).** `proc.start { params: { …, execution: { mode: local | hosted } } }`
+**Execution modes (内核架构改进 M3; 浏览器优先; 2026-11-16).** `proc.start { params: { …, execution: { mode: local | hosted, agent? } } }`
 (`wish.default_execution` when absent; any other configured value counts as `local`). Every run records its execution context
 (`detail.context`: trigger, executor, location, AI and compute attribution, the bound task digest, the declared outputs, expiry) or is
-refused with `EXECUTION_CONTEXT_MISSING`. `local`: the starter is the executor — the `proc.start` answer carries a one-time
-`claim_token`; it claims, heartbeats and reports; its model calls are its own (`aicc: { mode: current_user, user_id: <starter> }`;
-an Account, or an Agent that started the run itself; anybody else is `AI_ATTRIBUTION_UNAVAILABLE`). `hosted`: the Owner's Agent
-(`ws.set_hosted_exec`) is given a Goal with the run reference and claim token (`goals.create` + `goals.activate` on its OpenDAN
-service), uses the owner's AI resources and works through `buckyos aiws run-*`; without a Zone runtime the dispatch is recorded
-`unavailable` and the run waits to be claimed. The stage's end checks the delegation: a changed wish configuration is `DELEGATION_STALE`,
-the work of a superseded attempt or a cancelled run is `RUN_REVOKED`, and results may only land where the task declared
-(`OUTPUT_NOT_DECLARED`). The hosted configuration's details in a run (`context.executor.limits`, `config_digest`, the Agent's goal
-in `dispatch`) show to managers only; `limits.max_tool_iterations` counts the model's stage tools, never a macro's `sql` /
-`llm_cache`.
+refused with `EXECUTION_CONTEXT_MISSING`. Either way the AI resources are the starter's own (`aicc: { mode: current_user, user_id:
+<starter> }`; an Account, or an Agent that started the run itself; anybody else is `AI_ATTRIBUTION_UNAVAILABLE`). `local`: the
+starter is the executor — the `proc.start` answer carries a one-time `claim_token`; it claims, heartbeats and reports. `hosted`: one of
+the starter's own Agents executes it — `agent` (its DID or AgentId; without it the starter's only Agent; none, or several without
+naming one, is `EXECUTION_CONTEXT_MISSING`, the latter with `data.agents`; somebody else's is `PERMISSION_DENIED`), checked against
+system-config `users/<starter>/agents/<id>/spec`, so only an account starts one. The context names it (`executor: { kind: agent,
+principal: <AgentId>, did, owner: <starter> }`, `compute` the starter); the service gives it a Goal with the run reference and claim
+token (`goals.create` + `goals.activate` on `/kapi/<AgentId>` through the node gateway, with the starter's session — an Agent takes work
+from its owner only), and it works through `buckyos aiws run-*` with its own session, its model calls billed to the starter. The run
+reads and writes as that Agent: judged as the starter while the Workspace configured nothing for it (权限需求 R16). Without a Zone
+runtime the dispatch is recorded `unavailable` and the run waits to be claimed. Where it was handed (`dispatch`: the Agent, its goal,
+why it failed) shows to the starter and managers; others see its `status` and `at`. The stage's end checks the delegation: a changed
+wish configuration is `DELEGATION_STALE`, the work of a superseded attempt or a cancelled run is `RUN_REVOKED`, and results may only
+land where the task declared (`OUTPUT_NOT_DECLARED`).
 
 **The macro identity (权限需求 §4.5, Q31–Q32).** Coding and running read and write as the macro identity: the trigger's permissions
 as they are now, bounded by the wish's group when it is bound with `intersection` (`acl.bind_macro`; `union` adds nothing until
@@ -1444,7 +1448,7 @@ may turn a refusal into an allowance), never for the owner; nothing is cached. A
 presenter's memberships settled again at each `show.notes`.
 
 Only the owner (R17): giving or taking `manage` (an entry touching it, the members of a group holding it), `ws.delete`,
-`ws.set_hosted_exec`, a restore over the Workspace (`ws.import restore`). Managers do the rest: groups, members, entries
+a restore over the Workspace (`ws.import restore`). Managers do the rest: groups, members, entries
 without `manage` (denials included), anonymous access, share entries, publications, macro bindings, maintenance. Every
 change is one record in `acl_audit` (who, judged as whom, when, the object with its path then, before, after; `acl.audit`),
 bumps `acl_rev` (`ws.get_info`), wakes `doc.wait_changes { after_acl_rev }` and publishes the kevent
@@ -1496,7 +1500,7 @@ errors.
 ### Sources (内核架构改进 D12, D24, D26; AI Native 余下任务 B0)
 
 A data entity (table, rich text, record, asset, directory) may carry a `source` key in its payload:
-`{ kind: url | workspace | zone | session, url?, zone?, workspace_id?, entity_id?, path?, mode: live | fixed, version?: { content_root }, query?, refresh?: { interval_s ≥ 900 }, auth_mode: none | hosted, name?, def? }`
+`{ kind: url | workspace | zone | session, url?, zone?, workspace_id?, entity_id?, path?, mode: live | fixed, version?: { content_root }, query?, refresh?: { interval_s ≥ 900 }, auth_mode: none | hosted, name?, def?, sync? }`
 (checked by `check_source` in [core/src/types.rs](core/src/types.rs); credentials never belong in it). `def` says what the data is:
 `{ meaning (≤ 2000 chars), origin?, primary_key?: [1–4 field ids], freshness?: { max_age_s }, limit?: 1–100000 }`. Such an entity is **read-only** for
 people and Blocks: every content write (`table.*` data operations, `richtext.*`, `dir.*`, `entity.set_keys` beyond `source` / `title` /
@@ -1510,6 +1514,15 @@ run id: `proc.start { program: "source.refresh@1", params: { entity_id } }` (`ru
   URL's body), or a sync program's output `{ format: "aiws.sync.v1", status: ok | failed, error?, program?: { name, version },
   business_time?, produced_at?, fields?, records: [{ <field_id>: value }], truncated? }`: `status: failed` fails the refresh with the
   program's `error`; `fields` absent keeps the table's.
+- **Sync tasks** (AI Native 余下任务 §8.2): a Zone source may name the Agent's sync task that writes its file, `sync: { agent_id,
+  task_id }` (the owner's to set, like the rest of `source`); `path` is then exactly `/home/<owner>/agents/<agent_id>/sync/<task_id>/out.json`
+  (`check_source_sync`). A triggered refresh (`proc.start`, `run`) first has the Agent run the task: `sync.run { task_id, wait_ms:
+  120000 }` at `agent_gateway/<agent_id>` (`http://127.0.0.1:<node gateway port>/kapi` on a node, `--agent-gateway` standalone) with
+  the service's own session, only for an Agent of the workspace's current owner (its AgentSpec); then it reads the file as above. No
+  gateway, an Agent that is not the owner's, an unreachable Agent or a refusal (a disabled task) fails the refresh with
+  `DEPENDENCY_UNAVAILABLE/SYNC_UNAVAILABLE`, a run the Agent reports `failed` fails it with the run's `error`; the data stays at its
+  last valid version. The service's timer only reads the file again: the Agent host runs the task on its own schedule. The task
+  itself (program, schedule, hosts, secrets, enabling) is the Agent's `sync.*` kRPC, which the Desktop calls with the owner's session.
 - **Record identity** (B5-1): a fetched table (URL or Zone) is cut to `def.limit` rows in file order (`truncated`), and each row's
   `record_id` is `wish::record_id_for_key` of its primary key values — `def.primary_key`, else an `id` column, else the refresh fails
   with `PRIMARY_KEY_REQUIRED`; a row without its key fails the same way, two rows with one key fail with `DUPLICATE_KEY`; nothing is written.
@@ -1528,7 +1541,7 @@ run id: `proc.start { program: "source.refresh@1", params: { entity_id } }` (`ru
   `NEEDS_INPUT` (`data.missing_inputs`).
 - **What a reader sees**: the outline envelope shows `source` (kind, mode, origin, schedule); `doc.read { as: "meta" }` gives
   `data { mode: synced, write: refresh, source { kind, mode, url?, workspace_id?, entity_id?, path?, refresh? }, state: pending | valid,
-  version (the data_version), def, attempt: { at, status: running | succeeded | failed, error?, run_id } (the last refresh, this
+  version (the data_version), def, sync, attempt: { at, status: running | succeeded | failed, error?, run_id } (the last refresh, this
   deployment's own: never exported or cloned), expired }` — `expired` when the business time, else the last successful sync, is older
   than `def.freshness.max_age_s` (display only: nothing runs because of it). A URL table is `url_query`, `none`.
 - **User schemas** (B0-1): a `schema_id` is `<namespace>.<name>@<major>`; `buckyos.` has only the built-in schemas. The earliest created
@@ -1677,7 +1690,7 @@ not depend on deduplication below it). Entities the caller cannot read are left 
 `cloned_from { workspace_id, snapshot }` (kept in `workspace_meta`, shown by `ws.get_info`, written into every snapshot
 root as `lineage.cloned_from`, so its checkpoints retain the source snapshot) is provenance only: no sync, no merge, and
 deleting the source does not touch the copy. Nothing of `local.sqlite` comes along — grants, entries, publications, runs,
-uploads, hosted execution, the name — and neither do personal entities. `ws.import new` records the package's snapshot
+uploads, the name — and neither do personal entities. `ws.import new` records the package's snapshot
 the same way; a restore keeps what its package recorded. The caller must be able to own Workspaces (above) and have
 workspace-level `export` on the source. Not to be confused with `tree.clone` / `entity.clone` (a Commit copying a
 subtree inside one Workspace), a show clone (`clone_for_show`, the frozen baseline of a live show) or a session's run
@@ -1750,7 +1763,6 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `proc.tool` | stable | `run_id`, `attempt`, `name`, `args` — one call of the run's executor: a stage tool (`ws_*`, `submit_analysis`, `check_results`, `finish`), `sql` (a macro's `aiws.sql`) or `llm_cache` (the AI answer cache) — see “Wish runs”. Answers `{ status: ok \| error, text?, code? }` — `error` is for the model to correct |
 | `proc.program` | stable | `run_id`, `attempt`, `source`, `results?` (what the program host wrote to `output/.aiws/results.json`), `log?`, `files?` (`{ "output/<path>": text \| { base64 } }`) — the executor ran the macro: a trial run while coding (the model reads the answer), the run itself when running (a failure ends it: `PROGRAM_FAILED`, `MACRO_CODE_CHANGED`) |
 | `proc.files` | stable | `run_id`, `attempt` — the stage directory (`context/`, `request.json`, `catalog/`, `lib/`, `program/main.js`) as `{ path: { text } \| { base64 } }` plus `stage: { budget, manifest }`; over `snapshot_download_max_bytes` the run fails with `SNAPSHOT_TOO_LARGE` |
-| `ws.set_hosted_exec` | experimental | `config: { enabled, agent_id, allowed_wishes?, triggerers?, limits? }` (`manage`, D22) — the Owner's hosted execution; `ws.get_info.hosted_exec` returns it with its `digest` |
 | `ws.publish` | experimental | `entity_id`, `name?` (`manage`, D26) — the `public` subject may read the entity; the name (default: the entity's, slugified; a new name keeps the old as an alias) is the last segment of the link. Returns `name`, `path` (`/<workspace_name>/<name>`), `url` (on `https://aiws-<workspace_id>.<zonehost>` when the deployment knows its host) and the reference object |
 | `ws.unpublish` | experimental | `entity_id` (`manage`) — every name and the public grant go; referrers keep their records and read `unavailable` |
 | `ws.list_publications` | experimental | the names, entities, `url` and referrer counts (what the caller may read) |
@@ -1849,7 +1861,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `doc.restore_version` | experimental | `read` on `entity_id` |
 | `doc.checkpoint` | experimental | `export` on `/` |
 | `doc.export` | experimental | `export` on `/` |
-| `proc.start` | stable | a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish |
+| `proc.start` | stable | a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish; hosted: an account, executed by one of its own Agents |
 | `proc.get` | stable | one's own run, or `update` / `manage` on its wish |
 | `proc.cancel` | stable | one's own run, or `update` / `manage` on its wish |
 | `proc.rollback` | stable | `update` on the run's wish; the Commit's operations as the caller |
@@ -1862,7 +1874,6 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `proc.files` | stable | the run's token, while its attempt is current and running |
 | `user.get_prefs` | experimental | a person's session (not a guest or a link): its own preferences only |
 | `user.set_prefs` | experimental | a person's session (not a guest or a link): its own preferences only |
-| `ws.set_hosted_exec` | experimental | the owner |
 | `ws.publish` | experimental | `manage` on `entity_id` |
 | `ws.unpublish` | experimental | `manage` on the entity (on `/` once it is deleted) |
 | `ws.list_publications` | experimental | may enter; `read` on each entity |

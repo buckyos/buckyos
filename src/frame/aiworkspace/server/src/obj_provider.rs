@@ -228,8 +228,8 @@ fn entity_actions(mut entity: ObjectKind) -> ObjectKind {
     let auth = authorization("proc.start");
     let key = json!({ "type": "string", "description": "the same key with the same input answers the same run (a retry starts nothing new)" });
     let stage_input = json!({ "type": "object", "properties": {
-        "execution": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["local", "hosted"] } },
-                       "description": "who executes it: local (the caller; the answer carries its claim_token), hosted (the owner's configured Agent); the service's default when absent" },
+        "execution": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["local", "hosted"] }, "agent": { "type": "string", "description": "hosted: one of the caller's own Agents (DID or AgentId); the only one when absent" } },
+                       "description": "who executes it: local (the caller; the answer carries its claim_token), hosted (an Agent of the calling account); the service's default when absent" },
         "request": { "type": "object", "description": "fixed parameters of the run (today, timezone)" },
         "location": { "type": "object", "description": "where the task is: cell_id, surface_id, selection, viewport" },
         "idempotency_key": key } });
@@ -245,7 +245,8 @@ fn entity_actions(mut entity: ObjectKind) -> ObjectKind {
              Authorized as that kRPC method: {auth}. Answers the run; follow it with `proc.get`."
         );
         entity = entity
-            .action(stage, &description, stage_input.clone(), ActionRisk::Write, "write",
+            // running overwrites results a person edited (a rollback brings them back): destructive (owner 2026-11-16)
+            .action(stage, &description, stage_input.clone(), if stage == "run" { ActionRisk::Destructive } else { ActionRisk::Write }, "write",
                     proc_start(PROGRAM_XLLM, move |c| json!({ "wish_id": cap(c, "entity"), "stage": stage })))
             .only_if(|meta| meta["type_id"] == TYPE_WISH);
     }

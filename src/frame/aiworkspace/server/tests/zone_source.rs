@@ -150,12 +150,15 @@ fn a_zone_source_reads_the_owners_home() {
     });
 }
 
-/// B5-1: a URL table is identified by `def.primary_key` or an `id` column, never by the row position.
+/// B5-1: a URL table is identified by `def.primary_key` or an `id` column, never by the row position; without either its
+/// rows are numbered (owner 2026-11-16): a row whose values did not change keeps its number, a new or changed row takes the next.
 #[test]
-fn url_rows_need_a_primary_key() {
+fn url_rows_are_identified_by_a_key_or_numbered() {
     run_test(|| async move {
+    let body = std::sync::Arc::new(std::sync::Mutex::new("name,n\nx,1\ny,2\n".to_string()));
+    let b = body.clone();
     let app = axum::Router::new()
-        .route("/a.csv", axum::routing::get(|| async { ([(axum::http::header::CONTENT_TYPE, "text/csv")], "name,n\nx,1\ny,2\n") }))
+        .route("/a.csv", axum::routing::get(move || { let b = b.clone(); async move { ([(axum::http::header::CONTENT_TYPE, "text/csv")], b.lock().unwrap().clone()) } }))
         .route("/b.json", axum::routing::get(|| async { axum::Json(json!([{ "id": "p1", "n": 1 }, { "id": "p2", "n": 2 }])) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http = format!("http://{}", listener.local_addr().unwrap());
@@ -168,9 +171,21 @@ fn url_rows_need_a_primary_key() {
         { "op": "entity.create", "entity_id": "keyed", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "b", "name": "keyed", "payload": { "source": { "kind": "url", "url": format!("{http}/a.csv"), "def": { "meaning": "names", "primary_key": ["name"] } } } },
         { "op": "entity.create", "entity_id": "ids", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "c", "name": "ids", "payload": { "source": { "kind": "url", "url": format!("{http}/b.json") } } },
     ])).await;
-    let done = refresh_as(&srv, "tok-alice", "nokey").await;
-    assert_eq!(done["result"]["error"]["sub_code"], "PRIMARY_KEY_REQUIRED", "{done}");
     assert_eq!(refresh_as(&srv, "tok-alice", "keyed").await["state"], "succeeded");
+    let ids = |rows: Vec<Value>| { let mut v: Vec<(String, String)> = rows.iter().map(|r| (r["values"]["name"].as_str().unwrap_or("").to_string(), r["record_id"].as_str().unwrap_or("").to_string())).collect(); v.sort(); v };
+    assert_eq!(refresh_as(&srv, "tok-alice", "nokey").await["state"], "succeeded");
+    assert_eq!(ids(srv.records("nokey").await), vec![("x".into(), "1".into()), ("y".into(), "2".into())]);
+    // the same file again changes nothing (its whole numbers parse as floats; the store keeps integers)
+    assert_eq!(refresh_as(&srv, "tok-alice", "nokey").await["result"]["status"], "unchanged");
+    // reordered, one row added: the rows that did not change keep their numbers
+    *body.lock().unwrap() = "name,n\ny,2\nz,3\nx,1\n".into();
+    assert_eq!(refresh_as(&srv, "tok-alice", "nokey").await["state"], "succeeded");
+    assert_eq!(ids(srv.records("nokey").await), vec![("x".into(), "1".into()), ("y".into(), "2".into()), ("z".into(), "3".into())]);
+    // a changed row is a new one; a number is never given twice
+    *body.lock().unwrap() = "name,n\nx,5\n".into();
+    assert_eq!(refresh_as(&srv, "tok-alice", "nokey").await["state"], "succeeded");
+    assert_eq!(ids(srv.records("nokey").await), vec![("x".into(), "4".into())]);
+    *body.lock().unwrap() = "name,n\nx,1\ny,2\n".into();
     assert!(srv.records("keyed").await.iter().any(|r| r["record_id"] == json!(aiworkspace_core::wish::record_id_for_key(&[json!("x")]))));
     assert_eq!(refresh_as(&srv, "tok-alice", "ids").await["state"], "succeeded");
     assert!(srv.records("ids").await.iter().any(|r| r["record_id"] == json!(aiworkspace_core::wish::record_id_for_key(&[json!("p1")]))));

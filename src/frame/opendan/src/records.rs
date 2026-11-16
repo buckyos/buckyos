@@ -74,6 +74,42 @@ impl libopendan::share::ShareSwitch for RecordsShareSwitch {
     }
 }
 
+/// The credentials of the agent's sync tasks, kept in its settings
+/// (`sync_secrets`).
+pub struct RecordsSecrets(pub Arc<dyn AgentRecords>);
+
+fn secrets_err(e: String) -> libopendan::OpenDanError {
+    libopendan::OpenDanError::Other(format!("agent settings: {e}"))
+}
+
+#[async_trait]
+impl libopendan::sync::SyncSecrets for RecordsSecrets {
+    async fn values(&self, task_id: &str) -> libopendan::Result<BTreeMap<String, String>> {
+        Ok(settings(self.0.as_ref()).await.map_err(secrets_err)?.sync_secrets.remove(task_id).unwrap_or_default())
+    }
+
+    async fn set(&self, task_id: &str, name: &str, value: Option<String>) -> libopendan::Result<()> {
+        let mut s = settings(self.0.as_ref()).await.map_err(secrets_err)?;
+        let task = s.sync_secrets.entry(task_id.to_string()).or_default();
+        match value {
+            Some(v) => task.insert(name.to_string(), v),
+            None => task.remove(name),
+        };
+        if task.is_empty() {
+            s.sync_secrets.remove(task_id);
+        }
+        set_settings(self.0.as_ref(), &s).await.map_err(secrets_err)
+    }
+
+    async fn forget(&self, task_id: &str) -> libopendan::Result<()> {
+        let mut s = settings(self.0.as_ref()).await.map_err(secrets_err)?;
+        if s.sync_secrets.remove(task_id).is_some() {
+            set_settings(self.0.as_ref(), &s).await.map_err(secrets_err)?;
+        }
+        Ok(())
+    }
+}
+
 pub async fn info(records: &dyn AgentRecords) -> Result<Option<AgentRuntimeInfo>, String> {
     typed(records, INFO).await
 }

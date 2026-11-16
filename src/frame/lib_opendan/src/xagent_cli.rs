@@ -96,6 +96,14 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   skill list [--kind work|plan|goal] [--scope ui|work] [--all] [--stats] [--json]   (installing, removing, disabling: the owner's — Skills page or `buckyos skill`)
   skill revise <name> --file <new SKILL.md> --reason <why> [--kind work|plan|goal]   rewrite the text of a manual that is not a package's; the old text is kept
   skill status [--runtime <id>] [--json]   the commands each manual relies on, on that runtime, and the extension package that would bring what is missing
+  sync list | get <task_id> | enable|disable|delete <task_id>
+  sync put <task_id> --title <t> --program <file.ts> --every <secs ≥ 900> [--hosts <h1,h2>] [--inputs <json|@file>] [--secret <NAME>]...
+  sync try <task_id> [--program <file.ts>] [--hosts <h1,h2>] [--inputs <json|@file>] [--secret <NAME>]...
+  sync run <task_id> [--wait <secs ≤ 120, default 120>]
+        the agent's sync tasks, the programs behind AI Workspace data sources (manual aiworkspace_sync): `put` installs or
+        changes one (a changed program raises its version; it then runs every --every seconds); `try` runs the task, or
+        the draft given, once and writes nothing; `run` syncs now. Credentials are entered by the owner, never here.
+        (run / try exit 0 succeeded, 1 failed, 3 still running)
   post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
            [--after <todo_id>|none]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
@@ -1606,6 +1614,97 @@ async fn cmd_skill(mut a: Args) -> R<i32> {
         ))),
         other => Err(bad(format!("unknown skill command `{other}` (list | status | revise)"))),
     }
+}
+
+// ----------------------------------------------------------------------
+// sync — the agent's sync tasks (`sync.*` of its own service)
+// ----------------------------------------------------------------------
+
+/// The agent's own service: `--state-url` / `$OPENDAN_AGENT_STATE_URL` (a
+/// development host), else the zone's route to it (`/kapi/<agent_id>`) as
+/// the agent's app, with the session token its host hands the session.
+async fn agent_service(a: &Args) -> R<::kRPC::kRPC> {
+    let timeout = Duration::from_millis(crate::sync::WAIT_MAX_MS + 30_000);
+    if let Some(url) = a.env_or("state-url", crate::state::ENV_AGENT_STATE_URL) {
+        return Ok(::kRPC::kRPC::new_with_timeout(&url, None, timeout));
+    }
+    let unreachable = |why: String| Fail { code: 1, msg: format!("the agent's service is not reachable from here: {why}") };
+    crate::notify::ZoneNotify::for_session_process().await.map_err(unreachable)?;
+    let agent_id = std::env::var("BUCKYOS_APP_ID").map_err(|_| unreachable("the session token names no app".into()))?;
+    let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| unreachable(e.to_string()))?;
+    runtime
+        .get_zone_service_krpc_client_with_default_timeout(&agent_id, Some(timeout.as_secs()))
+        .await
+        .map_err(|e| unreachable(e.to_string()))
+}
+
+/// `--program <file.ts>` (or `@file.ts`; a session on another runtime sends the text itself).
+fn program_arg(a: &Args) -> R<Option<String>> {
+    a.get("program")
+        .map(|v| match v.strip_prefix('@') {
+            Some(_) => file_or_inline(&v),
+            None if Path::new(&v).is_file() => Ok(std::fs::read_to_string(&v)?),
+            None => Ok(v),
+        })
+        .transpose()
+}
+
+/// `sync list | get | put | try | run | enable | disable | delete`: the
+/// agent's sync tasks, through its own service (which runs them).
+async fn cmd_sync(mut a: Args) -> R<i32> {
+    let sub = a.next("sync command (list | get | put | try | run | enable | disable | delete)")?;
+    let inputs = a.get("inputs").map(|v| json_arg::<Value>(&v)).transpose()?;
+    let secrets = a.has("secret").then(|| a.all("secret"));
+    let (method, params) = match sub.as_str() {
+        "list" => ("sync.list", json!({})),
+        "get" | "delete" => (if sub == "get" { "sync.get" } else { "sync.delete" }, json!({ "task_id": a.next("<task_id>")? })),
+        "enable" | "disable" => ("sync.set_enabled", json!({ "task_id": a.next("<task_id>")?, "enabled": sub == "enable" })),
+        "put" => {
+            let task_id = a.next("<task_id>")?;
+            let usage = "sync put <task_id> --title <t> --program <file.ts> --every <secs> [--hosts <h1,h2>] [--inputs <json>] [--secret <NAME>]...";
+            ("sync.put", json!({
+                "task_id": task_id,
+                "title": a.get("title").ok_or_else(|| bad(usage))?,
+                "program": program_arg(&a)?.ok_or_else(|| bad(usage))?,
+                "hosts": comma_list(&a, "hosts"),
+                "schedule": { "every_secs": a.num::<u64>("every")?.ok_or_else(|| bad(usage))? },
+                "inputs": inputs,
+                "secrets": secrets,
+            }))
+        }
+        "try" => {
+            let task_id = a.next("<task_id>")?;
+            ("sync.try", json!({
+                "task_id": task_id,
+                "program": program_arg(&a)?,
+                "hosts": a.has("hosts").then(|| comma_list(&a, "hosts")),
+                "inputs": inputs,
+                "secrets": secrets,
+            }))
+        }
+        "run" => {
+            let task_id = a.next("<task_id>")?;
+            let wait = a.num::<u64>("wait")?.unwrap_or(120).saturating_mul(1000).min(crate::sync::WAIT_MAX_MS);
+            ("sync.run", json!({ "task_id": task_id, "wait_ms": wait }))
+        }
+        other => return Err(bad(format!("unknown sync command `{other}` (list | get | put | try | run | enable | disable | delete)"))),
+    };
+    let client = agent_service(&a).await?;
+    let v = client.call(method, params).await.map_err(|e| match e {
+        ::kRPC::RPCErrors::ReasonError(text) => Fail::from(crate::state::krpc::error_from_wire(&text)),
+        other => Fail { code: 1, msg: format!("{method}: {other}") },
+    })?;
+    print(&v);
+    let status = match sub.as_str() {
+        "run" => v["run"]["status"].as_str(),
+        "try" => v["run"]["status"].as_str(),
+        _ => None,
+    };
+    Ok(match status {
+        Some("failed") => 1,
+        Some("running") => 3,
+        _ => 0,
+    })
 }
 
 /// One skill as `skill list` prints it.
@@ -3285,6 +3384,7 @@ async fn real_main() -> R<i32> {
         "todo" => cmd_todo(a).await,
         "task" => cmd_task(a).await,
         "skill" => cmd_skill(a).await,
+        "sync" => cmd_sync(a).await,
         "copy" => cmd_copy(a).await,
         other => {
             eprintln!("xagent: unknown command `{other}`\n\n{USAGE}");

@@ -1,13 +1,11 @@
 //! 许愿格 under the permission model (权限需求 §4.5, Q31–Q33): a run is written as its macro identity, so one that could
 //! never be written does not start; an editor's macro may write its page, trusted only when a manager writes or vouches
 //! for it; a macro bound with `intersection` reads no more than its group; a stage's end is judged as that identity; only
-//! changes of the macro itself are audited; the owner's hosted configuration shows to managers only; an input the
-//! viewer cannot read tells no story of its fields.
+//! changes of the macro itself are audited; an input the viewer cannot read tells no story of its fields.
 
 #[path = "common/wishkit.rs"]
 mod wishkit;
 use serde_json::{json, Value};
-use std::time::Duration;
 use wishkit::*;
 
 const TABLE: &str = r#"
@@ -233,31 +231,6 @@ fn only_changes_of_the_macro_itself_are_audited() {
         let rev = srv.rpc("doc.read", json!({ "entity_id": "w" })).await["content"]["key_revs"]["prompt"].clone();
         srv.commit(json!([{ "op": "entity.set_keys", "entity_id": "w", "keys": [{ "key": "prompt", "value": "按月汇总", "expect": { "rev": rev } }] }])).await;
         assert_eq!(macro_audits(&srv).await, 1, "results and other keys are no change of the macro");
-    });
-}
-
-#[test]
-fn the_owners_hosted_configuration_shows_to_managers_only() {
-    run_test(|| async move {
-        let srv = start(json!({ "tok-alice": { "principal": "alice" }, "tok-carol": { "principal": "carol" } })).await;
-        srv.rpc("acl.set", json!({ "changes": [{ "subject": "carol", "allow": ["read", "comment", "update", "structure"] }] })).await;
-        srv.rpc("ws.set_hosted_exec", json!({ "config": { "enabled": true, "agent_id": "jarvis.test.buckyos.io", "allowed_wishes": ["w"], "limits": { "max_tool_iterations": 5 } } })).await;
-        let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "h1", "params": { "wish_id": "w", "stage": "analyze", "location": loc(), "execution": { "mode": "hosted" } } })).await;
-        let run_id = start["run_id"].as_str().unwrap().to_string();
-        let mut owner = srv.rpc("proc.get", json!({ "run_id": run_id })).await;
-        for _ in 0..100 {
-            if owner["dispatch"]["status"].is_string() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            owner = srv.rpc("proc.get", json!({ "run_id": run_id })).await;
-        }
-        assert_eq!(owner["context"]["executor"]["limits"]["max_tool_iterations"], 5, "{owner}");
-        assert!(owner["context"]["executor"]["config_digest"].is_string() && owner["dispatch"]["agent_id"].is_string(), "{owner}");
-        let editor = srv.call_as("tok-carol", "proc.get", json!({ "run_id": run_id })).await["result"].clone();
-        assert_eq!(editor["context"]["executor"]["kind"], "agent", "{editor}");
-        assert!(editor["context"]["executor"].get("limits").is_none() && editor["context"]["executor"].get("config_digest").is_none(), "{editor}");
-        assert_eq!(editor["dispatch"], json!({ "status": owner["dispatch"]["status"], "at": owner["dispatch"]["at"] }));
     });
 }
 

@@ -1,6 +1,6 @@
 # AIWS AI Native 余下任务 TODO：浏览器循环改用 xllm、可扩展数据源、对象动作
 
-状态：2026-11-15 立项；§6 的 Q1–Q14 owner 已于同日全部答复。2026-11-15/16 实施（未提交），记录在 §7：A、B 的“拉”路径与数据源契约、C1、C2、D 已实施，真实 Zone DV 结果在 §7.10，PRD §9 对账在 §7.11。B1-1 的调研页已交，要 owner 选执行设施并裁决 Q6；等它的 B3-2、B4-2、B4-4、B4-5、B6-1、B6-2 没做。B5-2 的版本保留没做。新的待确认事项在 §7.12。
+状态：2026-11-15 立项；§6 的 Q1–Q14 owner 已于同日全部答复。2026-11-15/16 第一轮实施，记录在 §7；owner 2026-11-16 答复 §7.12 后做了第二轮（§8）：Agent 宿主里的同步任务、托管执行改为发起者自己的 Agent、自增编号、xllm 连续错误上限可配置、`run` 动作 destructive。全部未提交。真实 Zone DV 见 §7.10、§8.5。B5-2 的版本保留另行立项（§8.1 第 2 项）。§8.6 的五项 owner 已按现状接受。
 
 依据：
 
@@ -160,26 +160,26 @@
 
 ### B4 授权、凭据、隔离（PRD §7.4、§7.9；权限 PRD R39、R40）
 
-- [ ] **B4-1**（权限一条已实施，能力范围由执行环境强制等 B1-1，§7.5）授权绑定的是能力范围：可访问的域名、可用的凭据、流量与频率预算、写入的数据源、可读的配置输入。
+- [x] **B4-1**（2026-11-16：权限按 §7.5；能力范围由同步任务的执行环境强制：只放行声明的域名、清空环境变量、不给读写，流量不计量，§8.4）授权绑定的是能力范围：可访问的域名、可用的凭据、流量与频率预算、写入的数据源、可读的配置输入。
   - 程序在范围内的新版本（包括 Agent 修复后的版本）直接生效；范围扩大时，授权者要重新确认。
   - 范围由执行环境强制，不靠程序自觉。
   - 权限（§6 Q7、Q13）：写草稿、测试、安装、升级、授予能力、修改同步程序的代码、修改定义，都只有 owner 能做（含替 owner 工作的 Agent）。触发同步不限 owner，按数据源上的 `run`；查看同步记录按 `read`。改定义一项比 R39 严（R39 只要 `update`），R39 的修改见 B8-1。
-- [ ] **B4-2** 凭据保管：凭据不进宏的输入、数据、聊天、模板和运行记录，只交给被授权的执行环境。PRD 没有写放在哪里（§12），见 §6 Q6。
+- [x] **B4-2**（2026-11-16：Agent 的 settings，owner 本人在数据源属性里填，结果和记录里都脱敏，§8.4）凭据保管：凭据不进宏的输入、数据、聊天、模板和运行记录，只交给被授权的执行环境。PRD 没有写放在哪里（§12），见 §6 Q6。
 - [ ] **B4-3** 同步数据的可见范围：用拒绝条目表达（R40，已定）。DV 验证不该看到的成员读不到。
-- [ ] **B4-4** 不变量（§6.6）：同步程序读不到工作区的其他数据，声明的配置输入除外。
-- [ ] **B4-5** 停用或撤销授权后，后续运行不再执行，未完成的运行失去提交资格（§7.4）。
+- [x] **B4-4**（2026-11-16：同步程序没有环境变量和文件权限，读不到工作区，`[sync]` DV 验证）不变量（§6.6）：同步程序读不到工作区的其他数据，声明的配置输入除外。
+- [x] **B4-5**（2026-11-16：停用的任务不再运行，刷新报 `SYNC_UNAVAILABLE`）停用或撤销授权后，后续运行不再执行，未完成的运行失去提交资格（§7.4）。
 - [x] **B4-6** 协作者的需求入口（§6 Q7）：协作者描述要一个什么样的数据源（数据含义、来源、时效），作为需求提给工作区 owner；owner 可以自己处理，或交给 Agent（B2-3）。Q14 的情形（协作者发起、Agent 执行）也走这里。形态待定，可以先用发给 owner 的通知或消息。
 
 ### B5 记录身份、频率、数据量（PRD §7.7）
 
 - [x] **B5-1** 表格数据源必须声明主键。现有 URL 来源在没有 `id` 列时用行号作身份，一并改掉。
-- [ ] **B5-2**（间隔下限已实施，版本保留没做，§7.12 第 2 项）最小同步间隔 15 分钟；数据源 Commit 保留最近 50 个版本，再加被固定引用的版本。这是 §6 Q8 的占位值，B8-2 的 DV 之后再调。
+- [ ] **B5-2**（间隔下限已实施；版本保留按 owner 2026-11-16 的答复另行立项：用 named store 保存历史，大数据源要自动分片，按大小决定是否保留历史）最小同步间隔 15 分钟；数据源 Commit 保留最近 50 个版本，再加被固定引用的版本。这是 §6 Q8 的占位值，B8-2 的 DV 之后再调。
 - [x] **B5-3** 同步程序只带回工作区需要的部分，确定单次同步的数据上限。现有抓取的上限是 32 MiB、30 秒。
 
 ### B6 稳态运行与修复（PRD §7.5）
 
-- [ ] **B6-1** 按调度直接运行，没有模型在环。
-- [ ] **B6-2** 失败分三类处理：
+- [x] **B6-1**（2026-11-16：Agent 宿主的同步任务时间表，§8.2；按周期自动运行没在 DV 里等）按调度直接运行，没有模型在环。
+- [x] **B6-2**（2026-11-16：§8.2，单测覆盖）失败分三类处理：
   - 暂时性失败：按策略重试，不打扰用户。
   - 程序失效：通知 owner，可以交给 Agent 修复，修复产生新的程序版本。
   - 授权失效：只能由授权者处理。
@@ -195,7 +195,7 @@
 ### B8 文档与验收
 
 - [x] **B8-1** 回写 PRD §2.2 里标为“修订”的已有决定：冻结思路 §4.4（定义先于数据）、§8.5（许愿格不新建数据源）。PRD §7.8 按 §6 Q3 改为“按执行器分”。[权限 PRD](aiws-permission-system-prd.md) R39 按 §6 Q7、Q13 改：同步程序上的一切写操作（含修改代码）和修改定义都只有 owner 能做，协作者只能提需求；触发同步维持 `run`。
-- [ ] **B8-2**（“拉”路径的同步、失败重试、复制已 DV，§7.10；Agent 写同步程序与定时运行没做）在真实 Zone 上 DV PRD §9 的四行：“外部数据缺口”“自定义同步”“同步失败与重试”“复制与模板”。
+- [ ] **B8-2**（“拉”路径的同步、失败重试、复制、同步任务已 DV，§7.10、§8.5；真实 Agent 在对话里自己写程序装任务、按周期自动运行没在 DV 里验）在真实 Zone 上 DV PRD §9 的四行：“外部数据缺口”“自定义同步”“同步失败与重试”“复制与模板”。
 
 ## 4. C：共用契约的余项
 
@@ -460,10 +460,122 @@
 ### 7.12 需要 owner 确认
 
 1. B1-1：执行设施选哪个、Q6 凭据放哪里，见 [调研页](aiws-sync-facility-survey.md) §6 的 7 个问题。B3-2、B4-2、B4-4、B4-5、B6-1、B6-2 等它。
+> 按建议，做成独立于 Goal 的“同步任务”
 2. 数据源 Commit 的保留（B5-2 的“最近 50 个版本”）：现在没有按实体压缩历史的机制，要不要立项？
+> 从设计上，应该用namedstore的机制来保存历史版本，目前这个对小数据容器直接支持（named object）,单大的数据源，要做类似DirObject的自动分片。这个需要单独立项。 --> 根据数据源的大小决定是否支持历史记录
 3. CSV / JSON 链接没有 `id` 列也没写主键时刷新失败（B5-1）：Desktop 要不要加选主键的界面？
+> 按你的建议，没有合适的主键可以自动生成一个 （传统的自增ID）
 4. 托管运行由配置里的其他 `triggerers`（非 owner）发起时，Agent 不接受他们的会话，派发记为 `unavailable`。是维持（Agent 只听 owner 的），还是让 OpenDAN 接受 AIWS 服务替 owner 派发？
+>  托管运行是指什么？ 如果是spider脚本，Agent编写好后，有权限的用户都可以触发执行，但只有owner和owner的spider可以修改这个脚本。许愿格的执行器选“使用Agent”的时候，用的是当前用户的agent,不是owner的。权限等同当前用户的Agent
 5. xllm 的连续错误上限：连续 4 轮工具调用失败，分析或编码就结束（原来的手写循环只受迭代数限制）。可以接受吗？
+> 可以配置。我记得默认是6轮
 6. C1：`run` 动作的 risk 定为 `write`（它会覆盖别人编辑过的结果，但可以回滚），要不要改成 `destructive`？
+> 按你的建议
 7. C1-2：Agent 修改权限现在只靠手册里“先问用户”，R42 原来担心的“被注入的内容驱使 Agent 公开工作区”这层保护只在手册里。按“先能力再安全”记为已知风险，请确认。
+> 了解
 8. C2：受限会话（External DID、Limited 账号）现在看不到 Agent 面板和需求入口；面板上下文只到 Block 一级（不含表格里选中的行）。
+> 好
+## 8. 第二轮：owner 对 §7.12 的答复（2026-11-16）
+
+### 8.1 裁决与落点
+
+| # | owner 答复（摘要） | 落点 |
+| --- | --- | --- |
+| 1 | 按建议，做成独立于 Goal 的“同步任务” | §8.2：Agent 宿主里的同步任务（复用 Goal 检查脚本的执行器和时间表），AIWS 经它“立即同步”。调研页 §6 的其余各问按页内建议：以 owner 的 Agent 运行（资源算在 Agent 上）；Agent 不在时数据源停在最近一个有效版本并说明执行环境不可用；凭据用方案 1（Agent 的 settings，“Agent 自己读得到”为已知风险）；流量不计量；只支持单节点。程序失效时的入口（调研页 §6 第 4 问没有建议）：通知 owner，由 owner 交给 Agent 修，不自动唤醒 Agent（Goal 是珍贵的资源） |
+| 2 | 历史版本应该用 named store 保存：小的数据容器直接是 named object，大的数据源要做类似 DirObject 的自动分片，单独立项；根据数据源的大小决定是否支持历史记录 | B5-2 的保留策略不在本单做，另行立项 |
+| 3 | 没有合适的主键时自动生成一个（传统的自增 ID） | 已实施：没有 `def.primary_key` 也没有 `id` 列时，记录按自增编号（`1`、`2`…，删掉的号不再用）；值没变的行保留原编号，新行或改过的行取下一个号。Zone 表格不再必须写主键 |
+| 4 | 许愿格选“使用 Agent”执行时，用的是**当前用户自己的 Agent**，不是 owner 的；权限等同当前用户的 Agent。spider 脚本写好后，有权限的用户都可以触发执行，只有 owner 和 owner 的 Agent 能改 | §8.3：托管执行改为发起者自己的 Agent，去掉 owner 的托管配置。spider 一条与 §6 Q13 一致，落在 §8.2 的 `sync.run` |
+| 5 | 可以配置，记得默认 6 轮 | xllm 的 `.llm_context` 现在没有这一项（Rust 与 TS 都固定为 3；OpenDAN behavior 的 budget 可以配，Jarvis 用 4–5）。加配置项 `max_consecutive_errors`（Rust 与 TS 同步），默认仍为 3；AIWS 的阶段循环设为 6 |
+| 6 | `run` 动作的 risk 按建议改 | 已实施：`run` 为 `destructive`，`analyze` / `code` 仍为 `write` |
+| 7 | 了解 | 记为已知风险 |
+| 8 | 好 | 维持 |
+
+### 8.2 同步任务契约（Agent 宿主）
+
+**存放**：AgentRoot 下 `sync/<task_id>/`：`task.json`（定义）、`program.ts`（当前版本）、`state.json`（程序自己的状态）、`runs.jsonl`（运行记录）、`out.json`（产出）。产出的 Zone 路径是 `/home/<owner>/agents/<agent_id>/sync/<task_id>/out.json`，就是数据源 `kind: zone` 的 `path`。
+
+**程序**：一个 Deno 脚本。从 stdin 读 `{ task_id, inputs, secrets, state }`，向 stdout 写一个 JSON：`{ status: "ok" | "failed", error?, error_kind?: "transient" | "program" | "auth", business_time?, fields?, records, truncated?, state? }`。宿主用 `deno run --no-prompt --allow-net=<task.hosts>` 运行它：清空环境变量，不给读写文件的权限（只运行脚本本身），超时 120 秒，stdout 上限 32 MiB。宿主把结果包成 `aiws.sync.v1` 信封（`program: { name: task_id, version }`、`produced_at`）原子写入 `out.json`；失败时写 `status: failed` 的信封（重试都失败以后才写）。
+
+**时间表**：`schedule.every_secs` 至少 900；宿主自己的时间表，服务重启后错过的槽合并成一次。
+
+**失败**（B6-2）：`transient`（以及超时、网络错误）隔 30 秒、120 秒各重试一次；`program`（脚本异常、输出不合规）连续 3 次失败后通知 owner 一次（`notify.send`），由 owner 交给 Agent 修；`auth` 立即通知 owner。任务状态 `ok` / `failing` / `disabled`。
+
+**Agent Service kRPC**（`/kapi/<agent_id>`）：
+
+| 方法 | 参数 → 结果 | 谁能调 |
+| --- | --- | --- |
+| `sync.list` | `{}` → `{ tasks: [Task] }` | owner、owner 的 Agent |
+| `sync.get` | `{ task_id }` → `Task` | owner、owner 的 Agent、AIWS 服务 |
+| `sync.put` | `{ task_id, title, program, hosts, schedule, inputs?, secrets? }` → `Task`；改程序时 `version` 加一 | owner、owner 的 Agent |
+| `sync.set_enabled` | `{ task_id, enabled }` → `Task` | owner、owner 的 Agent |
+| `sync.delete` | `{ task_id }` | owner、owner 的 Agent |
+| `sync.set_secret` | `{ task_id, name, value: string \| null }` → `Task` | 只有 owner 本人（不是 Agent 的会话） |
+| `sync.try` | `{ task_id }` → `{ run, preview: { status, records, sample, error? } }`，不写产出 | owner、owner 的 Agent |
+| `sync.run` | `{ task_id, wait_ms? }`（最多 120000）→ `{ run }`；停用的任务报错 | owner、owner 的 Agent、AIWS 服务（`appid` 为 `aiworkspace` 的系统会话，只放开 `sync.run` 和 `sync.get`） |
+| `sync.runs` | `{ task_id, limit? }` → `{ runs: [Run] }` | owner、owner 的 Agent |
+
+`Task`：`{ task_id, title, version, hosts, schedule, inputs, secrets: [{ name, set }], enabled, state, output: { path }, last_run?, failures }`。`Run`：`{ run_id, at, ended_at?, status: running | succeeded | failed, kind?, error?, records?, trigger }`。凭据值永远不出现在结果、日志和运行记录里。
+
+**Agent 的命令**：`agent-session sync list|get|put|try|run|enable|disable|delete`，照 `agent-session skill` 的做法。手册 `aiworkspace_sync` 改写为：定义数据源 → 写程序 → `sync try` → `sync put`（装上即按时间表运行）→ 数据源加 `source.sync` → 首次同步 → 修复。凭据由 owner 在数据源的属性里填。
+
+**AIWS 侧**：`kind: zone` 的来源可以带 `source.sync = { agent_id, task_id }`（只有 owner 能设，同其他来源字段）。有 `sync` 的数据源触发刷新（要 `run`）时，服务先经节点网关调这个 Agent 的 `sync.run`（等最多 120 秒），再读文件；Agent 不可达或任务停用时，这次刷新失败并说明执行环境不可用，数据停在最近一个有效版本。AIWS 自己的定时器照旧只重读文件。`meta.data.sync` 原样给出。Desktop 数据源属性：owner 看到任务（版本、时间表、域名、启用、最近一次运行、失败次数），能启用停用、立即同步、填写凭据（只写不读）；其他人看到 AIWS 记下的尝试，有 `run` 时能立即同步。
+
+### 8.3 托管执行改为发起者自己的 Agent
+
+- `params.execution = { mode: "hosted", agent? }`：`agent` 是发起者的一个 Agent（DID 或 AgentId）；不给时取发起者唯一的 Agent，没有或不止一个时报错。服务核对这个 Agent 属于发起者（system-config 里 `users/<发起者>/agents/<agent>/spec`），发起者必须是账号。
+- 执行上下文：执行者是这个 Agent；AI 资源是发起者的（`aicc: { mode: current_user, user_id: <发起者> }`，Agent 用自己的会话调 AICC，记在它的 owner 即发起者名下）。权限按这个 Agent 判定：工作区没有单独配置它时等同发起者（R16）。
+- 派发：照现在的做法，用发起者的会话在这个 Agent 上建 Goal。
+- 去掉 owner 的托管配置：`ws.set_hosted_exec`、`ws.get_info.hosted_exec`、`allowed_wishes` / `triggerers` / `limits` 和对应的存储与检查；Desktop 的托管设置、权限审计里的对应部分。Desktop 的执行方式：“本浏览器”总有；查看者有 Agent 时加“使用我的 Agent”，用 MessageHub 的默认 Agent（与 Agent 面板相同）。
+- 文档与手册：服务 README 的 Execution modes、内核文档 08、权限 PRD R30、《内核架构改进》D22 的实施注；手册 `aiworkspace_run`（托管运行就是发起者自己的 Agent 被派来执行，没有 owner 配置）。
+
+### 8.4 第二轮实施记录（2026-11-16，未提交）
+
+**同步任务（S1，Agent 宿主）**
+- `lib_opendan/src/sync.rs`（新）：复用 Goal 检查脚本的 Deno 查找和时间表槽计算。`deno run --quiet --no-prompt --no-config [--allow-net=<hosts>]`，清空环境变量（只留 `NO_COLOR`、`DENO_DIR`），不给读写和子进程权限，120 秒、32 MiB。原子写 `out.json`；`runs.jsonl`、`state.json`，另有 `schedule.json` 存宿主自己的进度（上一个槽、连续失败数、是否已通知）。重试、通知、状态、900 秒下限、重启后槽合并、同一任务同时只有一个运行，都按 §8.2。凭据值在结果、日志、运行记录、错误、`try` 的样例里都换成 `[secret 名字]`。
+- kRPC：`opendan/src/service.rs` 的 `sync.*`，按调用者种类鉴权；AIWS 服务（target 是系统服务 `aiworkspace`，主体 System 或 Device）只能 `sync.run` / `sync.get`；`sync.set_secret` 只认 owner 本人的人的会话（root、App、Agent 都拒绝）。宿主在 `loader.rs` 启动，`loader.status` 多一个 `sync` 模块。
+- 凭据：Agent 的 settings（`buckyos-api` `AgentSettings.sync_secrets`），经 Loader 的 AgentRecords 读写（Loader 已经在写自己的 settings）。因为加了字段，control_panel 也要随之重建部署，否则它读改写 settings 时会丢掉这个字段。
+- Agent 的命令：`agent-session sync list|get|put|try|run|enable|disable|delete`（`xagent_cli.rs`）。`sync.try` 可以带草稿（`program`、`hosts`、`inputs`、`secrets`），只跑一次、不写不记，给出样例、`kind`、脱敏的 stderr。
+- 手册 `aiworkspace_sync` 按完整流程重写；`doc/opendan/protocol/Agent State Protocol.md` §11、`opendan/README.md`。
+
+**AIWS 侧（S2）**
+- `source.sync = { agent_id, task_id }` 只用于 `kind: zone`，带它时 `path` 必须正好是 `/home/<user>/agents/<agent_id>/sync/<task_id>/out.json`（内核校验时不知道 owner，没法自动补）；`meta.data.sync` 原样给出。
+- 触发的刷新先调 owner 名下这个 Agent 的 `sync.run`（经 `Limits.agent_gateway`，节点上是本机网关 `/kapi`，独立后端 `--agent-gateway`），再读文件；只对当前 owner 名下的 Agent 调用（否则 owner 能借服务的会话触发别人的 Agent）。`sync.run` 的结果是失败时这次刷新直接失败，原因取运行的错误，不去读还没更新的旧文件；Agent 不可达、不属于 owner、任务停用等是 `SYNC_UNAVAILABLE`。定时器只重读文件。
+- Desktop `ui/sources/SyncTaskSection.tsx`：owner 用自己的会话看任务（版本、时间表、域名、启用、最近一次运行、失败次数），能启用停用、立即同步、填写凭据（只写不读）；其他人看到 AIWS 的最近一次尝试，有 `run` 时能立即同步。`api/transport.ts` 加 `agentCall`。
+
+**托管执行改为发起者自己的 Agent（H）**
+- `wish/exec.rs` `starters_agent`：`execution.agent` 是 DID 或 AgentId，不给时取唯一的 Agent；没有、多个未指定、不是账号 → `EXECUTION_CONTEXT_MISSING`；别人的 Agent → `PERMISSION_DENIED`。Agent 列表来自 `auth.rs` 的 `agents_of`（Zone 上读 system-config，独立后端读静态令牌表里 `class: agent` 的条目）。
+- 执行上下文的 executor 是这个 Agent，`compute` 与 AI 归属都是发起者（`current_user`）；运行以这个 Agent 的身份读写（`acting_as`），`MACRO_CANNOT_WRITE` 预检也按它判定。派发用发起者的会话。
+- 删除 owner 的托管配置：`ws.set_hosted_exec`、`ws.get_info.hosted_exec`、`allowed_wishes` / `triggerers` / `limits`、`max_tool_rounds`、每日次数、`config_digest` 与对应的 `DELEGATION_STALE`；Desktop 的托管设置及其在权限编辑器、审计、worklog 里的引用。
+- `store/acl.rs` 的 `judge`：Agent 按 owner 判定的条件从 `is_agent()` 改为 `acting_for.is_some()`，否则托管运行的 run token 什么都读不到；顺带修了 Agent 自己发起的本地运行的 run token。
+- Desktop：执行方式“本浏览器”总有，查看者有 Agent（MessageHub 的默认 Agent，与 Agent 面板相同）时加“使用我的 Agent”，请求带 `execution.agent`。
+- 记录的 `by` 和 Commit 的 `as_principal` 仍是发起者，授权按 Agent，`attribution.executed_by` 记 AgentId。派发细节给发起者和管理者看。
+- 手册 `aiworkspace_run`、服务 README、内核文档 08 和 12、权限 PRD R30、《内核架构改进》D22。
+
+**主会话**
+- §8.1 第 3、5、6 项（见上表）。第 3 项实施时发现：CSV 里的整数解析成浮点（`1.0`），库里存的是整数（`1`），不只是按内容配编号失败，带主键的表每次刷新也会把这些行当作改过、写一个 Commit；已在比较前把整数形式的浮点数换成整数。
+- xllm：Rust `agent_tool/src/xllm.rs`、TS `src/xllm/core/{config,types,run,prepare}.ts` 加 `max_consecutive_errors`（至少 1，记入 `RunLimits`，未配置不写），各加一个测试；`doc/llm_context/local_llm_context_protocol.md`、`xllm_rust_sdk.md`；websdk `dist/` 已重建。AIWS 的阶段循环设为 6。
+
+### 8.5 第二轮验证
+
+| 项 | 结果 |
+| --- | --- |
+| `cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace -p buckyos-api -- --test-threads=1` | 828 例，只有 `activity` 两例在满载时启动超时，单独重跑通过 |
+| `cargo test -p libopendan --test sync_tasks`、`-p opendan`、`-p libopendan --lib skills`、`--test xagent_cli skills_are`、`-p agent_tool --lib xllm` | 7、124、14、93 例全过；`cargo check -p control_panel -p scheduler --tests` 通过 |
+| websdk `pnpm test:xllm` | 290 过（含新增 `config_limits.test.ts`） |
+| Desktop `tsc -b`；e2e 全量 | 通过；406 过、6 跳过、1 失败。失败的 P3-12 是用例里的竞态：放映锁一过期 `ws.get_info` 就不显示，克隆要等清理器下一次运行才删，用例却立即检查；改为轮询（同一用例后面已经这样写），连跑 3 次通过 |
+| 部署 | `uv run buckyos-build.py`、`./build_aios --local-test`、`uv run start.py`（要更新 control_panel：`AgentSettings` 加了字段）；三本手册 `docker cp` 进 browsy |
+| 真实 Zone DV | `[sync]`（新增）、`[sources]`、`[jarvis]`、`[macro]` 系列 6 条全部通过 |
+
+`[sync]`：owner 在 browsy 上装一个探测任务；声明了凭据却没填时运行失败（`kind: auth`）；owner 填入凭据后，`sync.get` 只显示“已填”；数据源带 `source.sync`，刷新经 AIWS 服务调 `sync.run`，变为 `valid`，程序版本是这个任务；程序读不到环境变量和文件、连不上没声明的主机（都是 `NotCapable`），声明的主机返回 200，凭据送到了程序；任务目录里的文件都不含凭据值；停用任务后刷新报 `SYNC_UNAVAILABLE`，数据停在上一个版本。`[macro-hosted-agent]` 按新形式（发起者自己的 Agent）通过。`[macro]` 第一次因宏里调真实模型超过 120 秒的程序时限失败，重跑通过。
+
+没做的：时间表按周期自动运行（等一个周期，没在 DV 里等）、Agent 在对话里用 `agent-session sync` 自己写程序装任务（手册已写，命令有单测）、协作者用自己的 Agent 跑托管运行、手机真机。
+
+### 8.6 第二轮新出现、需要 owner 确认的
+
+2026-11-16 owner 答复“可以”：下面五项都按现状接受。
+
+1. 凭据明文存在 system-config 的 Agent settings 里：Agent 自己读得到（已定的已知风险）；另外现有 RBAC 的 `agent_read_write`（`obj://*`）让 Zone 里任何读写模式的 Agent 都读得到，这比“Agent 自己读得到”更宽。是否接受，还是要先收紧 `agent_read_write`？
+2. 托管运行的历史记录 `by` 记发起者，Commit 按 Agent 授权、`attribution.executed_by` 记 Agent。`by` 要不要改成 Agent？
+3. 查看者有多个 Agent 时，“使用我的 Agent”固定用 MessageHub 的默认 Agent，没有选择器。要不要加？
+4. Limited 账号如果有 Agent，现在也能发起托管运行。要不要禁止？
+5. 同步任务的时间表按纪元对齐（同 Goal），装上以后第一次按计划运行最晚在一个周期之后，首次数据靠数据源的“立即同步”。遇到暂时性失败时一次运行最长约 5 分钟（两次重试），AIWS 只等 120 秒，之后读到的是旧文件。可以吗？

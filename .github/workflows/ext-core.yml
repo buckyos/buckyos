@@ -1,7 +1,7 @@
 name: ext-core Release
 
 # Builds the five payloads of the ext-core extension package and, on a release tag
-# or an explicit dispatch, publishes them (ExtTools TODO §3.10):
+# or an explicit dispatch, publishes them (ExtTools TODO section 3.10):
 #   ext-core-v<version>   immutable
 #   ext-core-latest       rolling, with latest.json
 # and mirrors them to R2, where installers, build-all and developers take them from.
@@ -212,7 +212,7 @@ jobs:
           EXT_CORE_SMOKE_ARTIFACTS: ${{ runner.temp }}/ext-core-smoke
         run: |
           $ErrorActionPreference = 'Stop'
-          $tools = Join-Path $env:RUNNER_TEMP 'outils é tools'
+          $tools = Join-Path $env:RUNNER_TEMP ('outils ' + [char]0xe9 + ' tools')
           $package = Join-Path $tools 'versions\ext-core\ci'
           New-Item -ItemType Directory -Path $package, (Join-Path $tools 'store') | Out-Null
           $tar = (Get-ChildItem "$env:RUNNER_TEMP\dist\ext-core-*-windows-x86_64.tar.gz").FullName
@@ -360,7 +360,7 @@ jobs:
           lines = [f"ext-core {package['version']}", "", "The runtime archives include third-party license texts. Matching source archives include source, patches and build recipes. All artifacts are available on R2; artifacts below GitHub's 2 GiB limit are also attached here.", "", "Corresponding source downloads:", ""]
           for platform, entry in package["platforms"].items():
               source = entry["corresponding_source"]
-              lines.append(f"- [{platform}](https://buckyos-installer.tbudr.top/{source['path']}) — `{source['sha256']}`")
+              lines.append(f"- [{platform}](https://buckyos-installer.tbudr.top/{source['path']}) - `{source['sha256']}`")
           lines.extend(["", f"[Release manifest](https://buckyos-installer.tbudr.top/ext-tools/ext-core/{package['version']}/manifest.json) includes the runtime and .pikg locations and checksums."])
           (dist / "release-notes.md").write_text("\n".join(lines) + "\n")
           PY

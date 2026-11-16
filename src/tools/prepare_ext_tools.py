@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The seed payload of ext-core for this machine: rootfs/bin/ext-tools/ (ExtTools TODO §3.10, T2d).
+"""The seed payload of ext-core for this machine: rootfs/bin/ext-tools/ (ExtTools TODO section 3.10, T2d).
 
 node_daemon unpacks it into $BUCKYOS_ROOT/tools the first time, on a developer's machine as on an installed one. This
 script only gets the file there, and only when it is not there yet:

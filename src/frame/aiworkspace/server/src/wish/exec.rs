@@ -1,6 +1,6 @@
 //! The execution model of a wish run (内核架构改进 §9, D14–D16, D22, D23, M3; 浏览器优先): every run binds an
-//! explicit execution context; an executor outside the service — the browser (local) or an Agent Work
-//! Session the Owner configured (hosted) — claims the run, keeps a lease alive, works on the service's
+//! explicit execution context; an executor outside the service — the browser (local) or an Agent of the
+//! account that starts it (hosted, 2026-11-16) — claims the run, keeps a lease alive, works on the service's
 //! stage and reports when done; the service plans what the stage collected and writes it (许愿格交互升级 §3.3).
 
 use super::stages;
@@ -8,7 +8,7 @@ use crate::AppState;
 use aiworkspace_core::canonical::sha256_hex;
 use aiworkspace_core::value::format_utc_ms;
 use aiworkspace_core::{Code, WsError, WsResult};
-use aiworkspace_store::workspace::{random_id, Caller, Workspace};
+use aiworkspace_store::workspace::{random_id, Caller, CallerClass, Workspace};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -38,10 +38,33 @@ impl Mode {
 /// A run's context lasts this long: an attempt reporting after it is refused.
 const CONTEXT_TTL_MS: i64 = 24 * 3_600_000;
 
+/// The Agent a hosted run is handed to (2026-11-16): one of the starter's own — `requested` (its DID or AgentId), or the
+/// only one the starter has. Only an account has Agents. `(AgentId, DID)`.
+pub async fn starters_agent(state: &Arc<AppState>, caller: &Caller, requested: Option<&str>) -> WsResult<(String, String)> {
+    let missing = |what: &str| WsError::new(Code::ExecutionContextMissing, format!("the run cannot be started: {what}"));
+    if !matches!(caller.class, CallerClass::Account { .. }) {
+        return Err(missing("a hosted run is executed by an Agent of the account that starts it, and this caller is no account"));
+    }
+    let mine = state.auth.agents_of(&caller.principal).await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("your Agents could not be read: {e}")))?;
+    let Some(asked) = requested.map(str::trim).filter(|a| !a.is_empty()) else {
+        return match mine.len() {
+            1 => Ok(mine.into_iter().next().unwrap()),
+            0 => Err(missing("you have no Agent to execute it; run it in this browser")),
+            _ => Err(missing("you have several Agents: name the one to execute it (execution.agent)")
+                .with_data(json!({ "agents": mine.iter().map(|(id, did)| json!({ "agent_id": id, "did": did })).collect::<Vec<_>>() }))),
+        };
+    };
+    let id = name_lib::DID::from_str(asked).ok().and_then(|d| buckyos_api::AgentId::from_agent_did(&d).ok()).map(|a| a.to_string());
+    mine.into_iter()
+        .find(|(agent, did)| did == asked || agent == asked || id.as_deref() == Some(agent.as_str()))
+        .ok_or_else(|| WsError::denied(format!("{asked} is not one of your Agents")))
+}
+
 /// The execution context of a new run (§9.6): who triggers, who executes, where, whose AI and compute
 /// resources, the task configuration it binds (D16) and the outputs it may write. Anything that cannot be
-/// named is `EXECUTION_CONTEXT_MISSING` — never the service's or another user's identity.
-pub fn execution_context(ws: &Workspace, caller: &Caller, wish_id: &str, payload: &Value, mode: Mode, aicc: &Value, hosted: Option<&Value>) -> WsResult<Value> {
+/// named is `EXECUTION_CONTEXT_MISSING` — never the service's or another user's identity. `agent`: the starter's
+/// Agent a hosted run is handed to ([`starters_agent`]).
+pub fn execution_context(ws: &Workspace, caller: &Caller, wish_id: &str, payload: &Value, mode: Mode, aicc: &Value, agent: Option<&(String, String)>) -> WsResult<Value> {
     let missing = |what: &str| WsError::new(Code::ExecutionContextMissing, format!("the run cannot be started: {what}"));
     if caller.principal.is_empty() {
         return Err(missing("no trigger identity"));
@@ -49,13 +72,11 @@ pub fn execution_context(ws: &Workspace, caller: &Caller, wish_id: &str, payload
     if !aicc["user_id"].as_str().is_some_and(|u| !u.is_empty()) {
         return Err(missing("no AI resource attribution"));
     }
-    let owner = ws.owner()?.ok_or_else(|| missing("the workspace has no owner"))?;
     let (executor, compute) = match mode {
         Mode::Local => (json!({ "kind": "browser", "principal": caller.principal }), json!({ "principal": caller.principal, "kind": "browser" })),
         Mode::Hosted => {
-            let cfg = hosted.ok_or_else(|| missing("hosted execution is not configured"))?;
-            let agent = cfg["agent_id"].as_str().filter(|a| !a.is_empty()).ok_or_else(|| missing("the owner configured no agent"))?;
-            (json!({ "kind": "agent", "principal": agent, "owner": owner, "config_digest": cfg["digest"], "limits": cfg["limits"] }), json!({ "principal": owner, "kind": "agent" }))
+            let (agent, did) = agent.ok_or_else(|| missing("no Agent to execute it"))?;
+            (json!({ "kind": "agent", "principal": agent, "did": did, "owner": caller.principal }), json!({ "principal": caller.principal, "kind": "agent" }))
         }
     };
     let payload_map = payload.as_object().cloned().unwrap_or_default();
@@ -112,7 +133,7 @@ pub fn claim(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
         if run["detail"]["context"]["expires_at"].as_str().is_some_and(|e| e < ws.now().as_str()) {
             return Err(WsError::new(Code::RunRevoked, "the run's execution context expired"));
         }
-        // only the executor the context names claims (权限需求 S6, R30): the configured Agent of a hosted run, whoever
+        // only the executor the context names claims (权限需求 S6): the starter's Agent a hosted run was handed to, whoever
         // started a local one — a leaked claim token alone is not enough
         let named = run["detail"]["context"]["executor"]["principal"].as_str().unwrap_or("");
         if !is_executor(caller, named) {
@@ -153,12 +174,6 @@ pub async fn tool(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value
     let (st, c, w, body) = (state.clone(), caller.clone(), ws_id.to_string(), p.clone());
     let (stage, _, _) = tokio::task::spawn_blocking(move || hosted_stage(&st, &c, &w, &body)).await.map_err(|e| WsError::io(e.to_string()))??;
     let name = p.get("name").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("name required"))?;
-    // the owner's limit on the model's tool rounds in a hosted run (权限需求 R30); a macro's SQL and AI cache are no rounds
-    if let Some(max) = stage.max_tool_rounds.filter(|_| name != "sql" && name != "llm_cache") {
-        if stage.tool_rounds() >= max {
-            return Err(WsError::limit(format!("the owner allows {max} tool rounds per hosted run")));
-        }
-    }
     Ok(stages::host_tool(&stage, name, p.get("args").unwrap_or(&Value::Null)).await)
 }
 
@@ -304,7 +319,7 @@ fn merge_exec_field(old: &Value, mut patch: Value) -> Value {
 }
 
 /// Only the run's executor speaks for it: the run token's holder, or a session of the run's own
-/// principal (the browser that started a local run) or of the configured Agent.
+/// principal (the browser that started a local run) or of the Agent a hosted run was handed to.
 fn check_executor(caller: &Caller, run: &Value) -> WsResult<()> {
     if caller.kind.as_deref() == Some("run") {
         if caller.run_scope.as_deref() != run["run_id"].as_str() {
@@ -325,20 +340,19 @@ pub fn expire_if_due(ws: &mut Workspace, run: &Value) -> WsResult<bool> {
     ws.wish_run_expire_lease(run)
 }
 
-/// Hosted dispatch (D23, T3-5): the Owner's Agent gets a Goal with the run reference and its claim
+/// Hosted dispatch (D23, T3-5; 2026-11-16): the starter's Agent gets a Goal with the run reference and its claim
 /// token, and is activated. Without a Zone runtime (standalone, tests) the run stays claimable and the
 /// dispatch is recorded as `unavailable`.
-pub async fn dispatch_hosted(state: &Arc<AppState>, ws_id: &str, run_id: &str, claim_token: &str, cfg: &Value, context: &Value, session: &str) -> Value {
-    let agent = cfg["agent_id"].as_str().unwrap_or("").to_string();
-    let owner = context["compute"]["principal"].as_str().unwrap_or("").to_string();
+pub async fn dispatch_hosted(ws_id: &str, run_id: &str, claim_token: &str, context: &Value, session: &str) -> Value {
+    let agent = context["executor"]["principal"].as_str().unwrap_or("").to_string();
+    let owner = context["executor"]["owner"].as_str().unwrap_or("").to_string();
     let objective = format!(
-        "Execute AI Workspace run {run_id} of workspace {ws_id} (wish {}). Follow the `aiworkspace_run` command manual: claim the run with \
+        "Execute AI Workspace run {run_id} of workspace {ws_id} (wish {}), started by {owner}, who you work for. Follow the `aiworkspace_run` command manual: claim the run with \
          `buckyos aiws run-claim --workspace {ws_id} --run {run_id} --claim-token {claim_token}`, read its stage (analyze, code: write and trial-run the macro, \
          run: run the stored macro) and inputs, hand macro runs in with `buckyos aiws run-program`, end with `buckyos aiws run-report --finished`, \
-         and keep the lease alive with `buckyos aiws run-heartbeat` while you work. Resources: the workspace owner's ({owner}).",
+         and keep the lease alive with `buckyos aiws run-heartbeat` while you work. Resources: {owner}'s.",
         context["task"]["wish_id"].as_str().unwrap_or("")
     );
-    let _ = state;
     match dispatch_goal(&agent, &owner, run_id, &objective, session).await {
         Ok(goal) => json!({ "status": "dispatched", "agent_id": agent, "goal": goal, "at": format_utc_ms(now_wall()) }),
         Err(e) => json!({ "status": "unavailable", "agent_id": agent, "detail": e, "at": format_utc_ms(now_wall()) }),
@@ -351,8 +365,8 @@ fn now_wall() -> i64 {
 
 /// `goals.create` + `goals.activate` on the Agent's OpenDAN service (its AgentSpec binding names the service).
 /// The Agent serves its kRPC at `/kapi/<agent_id>` behind the node gateway (the scheduler routes it by the Agent's id), and
-/// takes requests from its owner only: the Goal is created in the name of whoever started the run (`session`), so an
-/// Agent never takes work from someone it would not take it from directly.
+/// takes requests from its owner only: the Goal is created with the session of whoever started the run (`session`), the
+/// Agent's owner.
 async fn dispatch_goal(agent_id: &str, owner: &str, run_id: &str, objective: &str, session: &str) -> Result<Value, String> {
     let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| format!("no zone runtime: {e}"))?;
     let agent = buckyos_api::AgentId::parse(agent_id).map_err(|e| format!("bad agent id: {e:?}"))?;

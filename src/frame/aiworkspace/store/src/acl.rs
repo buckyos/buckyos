@@ -159,7 +159,7 @@ pub struct Judgment {
 }
 
 impl Judgment {
-    /// The subjects this judgment holds (what hosted execution's `triggerers` are compared with).
+    /// The subjects this judgment holds.
     pub fn subjects(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::from([self.principal.clone()]);
         if self.owner {
@@ -195,9 +195,10 @@ impl Judgment {
     }
 }
 
-/// Judge `caller` against `data`: an Agent nobody configured here is judged as its owner (R16, Q29).
+/// Judge `caller` against `data`: an Agent nobody configured here is judged as its owner (R16, Q29) — also as the run
+/// token of a run that acts as the Agent.
 pub fn judge(data: &AclData, caller: &Caller) -> WsResult<Judgment> {
-    if caller.is_agent() && caller.publication.is_none() && !data.configures(&caller.principal) {
+    if caller.acting_for.is_some() && caller.publication.is_none() && !data.configures(&caller.principal) {
         if let Some(owner) = &caller.acting_for {
             let mut j = judge_one(data, owner)?;
             j.agent_as_owner = true;
@@ -353,10 +354,6 @@ impl Workspace {
         }
     }
 
-    pub fn subjects_of(&self, caller: &Caller) -> WsResult<BTreeSet<String>> {
-        Ok(self.judge(caller)?.subjects())
-    }
-
     /// What `ws.list` shows: the owner's Workspaces and those naming the caller or one of its groups — never one it
     /// could only enter anonymously (R8).
     pub fn listed(&self, caller: &Caller) -> WsResult<Option<Access>> {
@@ -472,7 +469,7 @@ impl Workspace {
         Ok((out, rev))
     }
 
-    /// One operation record outside a permission change (publications, hosted execution, moves widening visibility).
+    /// One operation record outside a permission change (publications, moves widening visibility).
     pub(crate) fn audit(&self, caller: &Caller, action: &str, target: &Value, before: Option<&Value>, after: Option<&Value>) -> WsResult<()> {
         let judged = self.judge(caller).map(|j| j.principal).unwrap_or_else(|_| caller.principal.clone());
         self.local

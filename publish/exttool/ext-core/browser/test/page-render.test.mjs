@@ -51,7 +51,7 @@ before(async () => {
       return response.end('not here');
     }
     response.setHeader('content-type', 'text/html; charset=utf-8');
-    return response.end(`<!doctype html><meta charset="utf-8"><title>在线页面</title><h1>在线页面</h1>
+    return response.end(`<!doctype html><meta charset="utf-8"><title>\u5728\u7ebf\u9875\u9762</title><h1>\u5728\u7ebf\u9875\u9762</h1>
 <img src="/own.png"><img src="http://localhost:${server.address().port}/other-host.png">`);
   });
   server.on('upgrade', (request, socket) => {
@@ -62,17 +62,17 @@ before(async () => {
 
   write(
     'book/index.html',
-    `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>系统渲染</title>
+    `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>\u7cfb\u7edf\u6e32\u67d3</title>
 <style>section { break-after: page; } .cover { background: #cde; height: 100mm; }</style></head><body>
-<section class="cover"><h1>第一章 中文标题</h1><p>中英混排 mixed text，第一页。</p><img src="dot.png"></section>
-<section><h1>第二章</h1><p>第二页的内容。</p></section>
-<section><h1>第三章</h1><p id="late">还没排好</p></section>
-<script>setTimeout(() => { late.textContent = '排好之后的内容'; window.ready = true; }, 300);</script>
+<section class="cover"><h1>\u7b2c\u4e00\u7ae0 \u4e2d\u6587\u6807\u9898</h1><p>\u4e2d\u82f1\u6df7\u6392 mixed text\uff0c\u7b2c\u4e00\u9875\u3002</p><img src="dot.png"></section>
+<section><h1>\u7b2c\u4e8c\u7ae0</h1><p>\u7b2c\u4e8c\u9875\u7684\u5185\u5bb9\u3002</p></section>
+<section><h1>\u7b2c\u4e09\u7ae0</h1><p id="late">\u8fd8\u6ca1\u6392\u597d</p></section>
+<script>setTimeout(() => { late.textContent = '\u6392\u597d\u4e4b\u540e\u7684\u5185\u5bb9'; window.ready = true; }, 300);</script>
 </body></html>`,
   );
   fs.writeFileSync(path.join(dir, 'book', 'dot.png'), png(8, 8, [200, 0, 0]));
-  write('header.html', '<div style="font-size: 9px; width: 100%; text-align: center">页眉：<span class="title"></span></div>');
-  write('footer.html', '<div style="font-size: 9px; width: 100%; text-align: center">第 <span class="pageNumber"></span> 页，共 <span class="totalPages"></span> 页</div>');
+  write('header.html', '<div style="font-size: 9px; width: 100%; text-align: center">\u9875\u7709\uff1a<span class="title"></span></div>');
+  write('footer.html', '<div style="font-size: 9px; width: 100%; text-align: center">\u7b2c <span class="pageNumber"></span> \u9875\uff0c\u5171 <span class="totalPages"></span> \u9875</div>');
 });
 
 after(async () => {
@@ -97,11 +97,11 @@ test('a multi-page Chinese document becomes an A4 PDF with header, footer and pa
   assert.match(info, /^Pages:\s+3$/m);
   assert.match(info, /^Page size:.*\(A4\)$/m);
   const text = poppler('pdftotext', [out, '-']).replace(/[ \t]+/g, '');
-  assert.ok(text.includes('中英混排mixedtext，第一页。'), text);
-  assert.ok(text.includes('排好之后的内容'), text);
-  assert.ok(!text.includes('还没排好'), text);
-  assert.ok(text.includes('页眉：系统渲染'), text);
-  for (const number of [1, 2, 3]) assert.ok(text.includes(`第${number}页，共3页`), text);
+  assert.ok(text.includes('\u4e2d\u82f1\u6df7\u6392mixedtext\uff0c\u7b2c\u4e00\u9875\u3002'), text);
+  assert.ok(text.includes('\u6392\u597d\u4e4b\u540e\u7684\u5185\u5bb9'), text);
+  assert.ok(!text.includes('\u8fd8\u6ca1\u6392\u597d'), text);
+  assert.ok(text.includes('\u9875\u7709\uff1a\u7cfb\u7edf\u6e32\u67d3'), text);
+  for (const number of [1, 2, 3]) assert.ok(text.includes(`\u7b2c${number}\u9875\uff0c\u51713\u9875`), text);
 });
 
 test('paper size and orientation', async () => {
@@ -119,7 +119,7 @@ test('an HTML input reaches neither the network nor files outside its directory'
   write('secret.txt', 'outside the input directory');
   write(
     'offline/index.html',
-    `<!doctype html><meta charset="utf-8"><h1 id="state">断网渲染</h1>
+    `<!doctype html><meta charset="utf-8"><h1 id="state">\u65ad\u7f51\u6e32\u67d3</h1>
 <img src="${origin}/pixel.png"><img src="../secret.txt"><iframe src="../secret.txt"></iframe>
 <link rel="stylesheet" href="${origin}/style.css">
 <script>
@@ -138,7 +138,7 @@ test('an HTML input reaches neither the network nor files outside its directory'
   assert.ok(warnings.some((warning) => warning.startsWith('blocked: file://') && warning.endsWith('/secret.txt')), warnings.join('\n'));
   assert.deepEqual(hits, []);
   const text = poppler('pdftotext', [out, '-']);
-  assert.match(text, /断网渲染 inline/);
+  assert.match(text, /\u65ad\u7f51\u6e32\u67d3 inline/);
   assert.doesNotMatch(text, /outside the input directory/);
 });
 
@@ -162,7 +162,7 @@ test('a URL input loads the allowed hosts only', async () => {
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).warnings, [`blocked: http://localhost:${port}/other-host.png`]);
   assert.deepEqual(hits.toSorted(), [`127.0.0.1:${port}/own.png`, `127.0.0.1:${port}/page`]);
-  assert.match(poppler('pdftotext', [out, '-']), /在线页面/);
+  assert.match(poppler('pdftotext', [out, '-']), /\u5728\u7ebf\u9875\u9762/);
 
   const refused = await pageRender(['--url', `${origin}/page`, '--allow-host', 'example.com', '--pdf', out]);
   assert.equal(refused.code, 2);

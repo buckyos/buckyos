@@ -26,12 +26,12 @@ mkdir doc
 magick -size 32x32 xc:red doc/a.png
 cat > doc/index.html <<'HTML'
 <!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>标题 Title</title>
+<html lang="zh"><head><meta charset="utf-8"><title>&#x6807;&#x9898; Title</title>
 <style>section { break-after: page; } .cover { background: #cde; }</style></head>
 <body>
-<section class="cover"><h1>标题 Title</h1><p>中英混排 mixed text</p><img src="a.png"><img src="http://ext-core.invalid/b.png"></section>
-<section><p>第二页 page two</p></section>
-<section><p>第三页 page three</p></section>
+<section class="cover"><h1>&#x6807;&#x9898; Title</h1><p>&#x4e2d;&#x82f1;&#x6df7;&#x6392; mixed text</p><img src="a.png"><img src="http://ext-core.invalid/b.png"></section>
+<section><p>&#x7b2c;&#x4e8c;&#x9875; page two</p></section>
+<section><p>&#x7b2c;&#x4e09;&#x9875; page three</p></section>
 </body></html>
 HTML
 printf '%s\n' '<div style="font-size: 9px; width: 100%; text-align: center"><span class="pageNumber"></span>/<span class="totalPages"></span></div>' > footer.html
@@ -43,7 +43,9 @@ pdfinfo out/a.pdf | grep -q '^Pages: *3'
 pdfinfo out/a.pdf | grep -q '^Page size:.*A4'
 echo '[page-render] checking the PDF text, font and picture'
 pdftotext out/a.pdf a.txt
-for expected in '中英混排 mixed text' '第三页 page three' '2/3'; do
+mixed_text="$(python3 -c 'print("\u4e2d\u82f1\u6df7\u6392 mixed text")')"
+third_page="$(python3 -c 'print("\u7b2c\u4e09\u9875 page three")')"
+for expected in "$mixed_text" "$third_page" '2/3'; do
   if ! grep -q "$expected" a.txt; then
     printf '[page-render] the PDF is missing expected text: %s\n' "$expected" >&2
     exit 1

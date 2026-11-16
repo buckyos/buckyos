@@ -1,4 +1,4 @@
-// kRPC over HTTP POST, as buckyos-websdk's krpc_client.ts: { method, params, sys: [seq, token] } →
+// kRPC over HTTP POST, as buckyos-websdk's krpc_client.ts: { method, params, sys: [seq, token] } ->
 // { result, sys } or { error, sys }.
 
 import http from 'node:http';

@@ -605,6 +605,11 @@ pub struct AgentSettings {
     /// to its HomeStation so other Agents can learn from it.
     #[serde(default = "default_true")]
     pub auto_share_results: bool,
+    /// Credentials of the Agent's sync tasks (task id → name → value), set
+    /// only by the owner (`sync.set_secret`) and handed to the task's
+    /// program; the Agent can read them too (a known risk).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sync_secrets: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for AgentSettings {
@@ -622,6 +627,7 @@ impl Default for AgentSettings {
             default_runtime_id: None,
             homestation: true,
             auto_share_results: true,
+            sync_secrets: BTreeMap::new(),
         }
     }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# build_exttool — build the paios/exttool image that seeds a node's buckyos-tools
-# volume when it is new (see doc/app_service/paios容器需求.md §6.4).
+# build_exttool - build the paios/exttool image that seeds a node's buckyos-tools
+# volume when it is new (see the paios container requirements, section 6.4).
 #
 # Unlike build_aios this script does not cross-compile any Rust code;
 # everything we ship is already OS packages, downloaded AppImages, and
@@ -42,7 +42,7 @@ named volume with:
   * the ext-core payload of the architecture (src/tools/prepare_ext_tools.py)
   * optional baked tool packages (FreeCAD CLI, see FREECAD_APPIMAGE_URL_*)
   * the /opt/buckyos/tools/{store,bin,uv-cache,deno-cache} layout
-    (see paios容器需求.md §9)
+    (see the paios container requirements, section 9)
 
 The image is published per arch so node_daemon can pick the correct
 variant when running the one-shot seeder:

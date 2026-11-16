@@ -42,6 +42,7 @@ pub mod session;
 pub mod session_context;
 pub mod share;
 pub mod skills;
+pub mod sync;
 pub mod state;
 pub mod template;
 pub mod todos;

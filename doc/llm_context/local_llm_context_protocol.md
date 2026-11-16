@@ -61,6 +61,7 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 | `llm_timeout` | `600`，秒 | 单次模型请求超时；客户端实际至少使用 1 秒 |
 | `context_window` | 未设置 | 模型上下文窗口 token 数；启用本地容量检查与提前压缩阈值 |
 | `context_yield_ratio` | `0.80` | 提前压缩阈值占窗口的比例，`(0, 1]`，越界报配置错误；没有 `context_window` 时无效，只发一条警告 |
+| `max_consecutive_errors` | `3` | 连续多少轮工具调用失败后 run 失败（waist 的 `error_policy.max_consecutive_errors`），至少 1；记入 `RunLimits.max_consecutive_errors`，未配置时不写 |
 | `runs_dir` | `~/.xllm/runs` | Run 存储目录；YAML `none` 或 `null` 表示内存模式 |
 | `loop_model` | `function_call` | 另一值为 `behavior` |
 | `run_logs` | `info` | `debug` / `info` / `warn` / `result` |
@@ -69,7 +70,7 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 | `prompt` | standard 模式 | `mode`、`select`、`groups`、`sections`、`tools`、`system` |
 | `runtime` | `kind: native` | 执行体，以及调用内等待预算 `task_wait_ms`（§9.1），见 [AgentRuntime 设计](<AgentRuntime 设计.md>) §4 |
 
-`context_window` / `context_yield_ratio` 当前没有 CLI flag，也不是 `TaskOverrides` 字段。`--json` 属于本次任务覆盖项，不能写成顶层 YAML `json`。SDK 另可设置 `json_schema` 和 `disable_capabilities`；CLI 没有对应参数。
+`context_window` / `context_yield_ratio` / `max_consecutive_errors` 当前没有 CLI flag，也不是 `TaskOverrides` 字段。`--json` 属于本次任务覆盖项，不能写成顶层 YAML `json`。SDK 另可设置 `json_schema` 和 `disable_capabilities`；CLI 没有对应参数。
 
 ### 2.3 工具配置优先级
 
@@ -254,7 +255,7 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 | `compactions` / `pid` | 已完成压缩次数 / 最近执行者 PID |
 | `host` / `host_commit_pending` / `handover` | 宿主装配、输入提交门槛及 behavior 交接点，见 §11 |
 
-`EffectiveConfig` 中的 `limits`（`RunLimits`）使用 `max_tokens`、`max_tool_iterations`、`timeout_secs`、`llm_timeout_secs`、`context_window_tokens`、`context_yield_ratio`（未配置时不写，按 0.80）；`timeout_secs`、`llm_timeout_secs`、`context_window_tokens` 不同于 YAML 的 `timeout`、`llm_timeout`、`context_window`。Provider 的已解析类型字段为 `kind`，不同于 YAML `type`。`result_format` 在记录里是 `{"kind":"raw"}` 或 `{"kind":"path","segments":[...]}`，在 CLI 视图中才是字符串。
+`EffectiveConfig` 中的 `limits`（`RunLimits`）使用 `max_tokens`、`max_tool_iterations`、`timeout_secs`、`llm_timeout_secs`、`context_window_tokens`、`context_yield_ratio`（未配置时不写，按 0.80）、`max_consecutive_errors`（未配置时不写，按 3）；`timeout_secs`、`llm_timeout_secs`、`context_window_tokens` 不同于 YAML 的 `timeout`、`llm_timeout`、`context_window`。Provider 的已解析类型字段为 `kind`，不同于 YAML `type`。`result_format` 在记录里是 `{"kind":"raw"}` 或 `{"kind":"path","segments":[...]}`，在 CLI 视图中才是字符串。
 
 `config.tools` 保存 `enabled`、`filesystem_policy`、`tools2actions`、原始来源列表 `tool_sources` / `action_sources`、展开的 `native` / `actions`、`bash_tools`、shell 的生效设置 `shell`（`wait_ms` 取自 `runtime.task_wait_ms`，以及 `timeout_ms` / `max_timeout_ms`）、`exec_enabled` 和来源信息。恢复按保存的来源重新构建工具，MCP 仍需可连接；记录不保存工具进程或模型连接。
 

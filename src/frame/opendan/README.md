@@ -280,6 +280,22 @@ Agent 的 skills：work / ui skill（`cmd_skills/<name>/SKILL.md` + 可选 `refe
 
 新建 Session 读取当时已安装的手册，运行中的 Session 保持冻结正文。模板 PIKG 若带 `agent_skills` 子包，node-daemon 以 `BUCKYOS_AGENT_SKILLS_PKG_DIR` 只读挂入，Loader 启动时与 `agent` 子包一样同步进 AgentRoot（模板 pinned 时不同步）。
 
+### 同步任务
+
+AI Workspace 数据源背后的程序（`kind: zone` 来源的 `source.sync = {agent_id, task_id}`）：本 Agent 的宿主按任务自己的时间表用 Deno 运行，只能连声明的主机，产出写到 AgentRoot 的 `sync/<task_id>/out.json`（`aiws.sync.v1`）。文件、运行、时间表与失败见 Agent State Protocol §11，实现在 `libopendan::sync`。Agent 在 Session 里用 `agent-session sync list|get|put|try|run|enable|disable|delete`（手册 `aiworkspace_sync`）。
+
+谁能调：owner 与 owner 的 Agent（只读 Agent 也能管自己的任务）可调全部，除 `sync.set_secret`；AI Workspace 服务自己的会话（`aiworkspace` 系统服务的 System / Device 主体）只能调 `sync.run`、`sync.get`；`sync.set_secret` 只有 owner 本人的人的会话（`principal_kind: user`，不是 root，不是任何 App 或 Agent）。
+
+| method | params | 说明 |
+|---|---|---|
+| `sync.list` / `sync.get` | `{}` / `{task_id}` | `{tasks: [Task]}` / `Task`：`{task_id, title, version, hosts, schedule: {every_secs}, inputs, secrets: [{name, set}], enabled, state: ok \| failing \| disabled, output: {path}, last_run?, failures}` |
+| `sync.put` | `{task_id, title, program, hosts, schedule: {every_secs ≥ 900}, inputs?, secrets?: [名字]}` | 新建（启用）或修改；程序变了 `version` 加一并重新计失败数；没给的 `inputs` / `secrets` 保留原值；去掉的凭据名连值一起删 |
+| `sync.set_enabled` / `sync.delete` | `{task_id, enabled}` / `{task_id}` | 停用的任务不按时间表跑，`sync.run` 报错；运行中的任务删除报 `busy` |
+| `sync.set_secret`（owner 本人） | `{task_id, name, value: string \| null}` | 只能填任务声明的名字；返回 `Task`（不含值） |
+| `sync.try` | `{task_id, program?, hosts?, inputs?, secrets?}` | 运行一次（不重试），什么都不写：`{run, preview: {status, records, sample（前 3 条）, error?, kind?, fields?, business_time?, truncated?, log}}`；没 `put` 过的任务要给 `program` |
+| `sync.run` | `{task_id, wait_ms? ≤ 120000}` | 立即运行（有进行中的就加入它），等到结束或 `wait_ms`：`{run}`（`status` 可能仍是 `running`） |
+| `sync.runs` | `{task_id, limit?}` | `{runs: [Run]}`，新的在前 |
+
 ### 首页
 
 | method | params | result |

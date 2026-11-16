@@ -23,6 +23,10 @@
 //!   by the host right away.
 //! - `browser.*`, the screen and the upload entry of the agent's browser
 //!   ([`crate::browser`]).
+//! - `sync.*`, the agent's sync tasks ([`libopendan::sync`]): the owner and
+//!   the owner's Agent; the AI Workspace service runs and reads them
+//!   (`sync.run`, `sync.get`); only the owner, signed in as themselves,
+//!   enters a credential (`sync.set_secret`).
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -30,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use buckyos_api::{
     load_agent_permission_mode, validate_verify_hub_token_claims, AgentPermissionMode,
-    AppInstanceId, AuthTarget, TokenPrincipalKind, TokenUse,
+    AppInstanceId, AuthTarget, TokenPrincipalKind, TokenUse, AIWORKSPACE_SERVICE_NAME,
 };
 use buckyos_http_server::{serve_http_by_rpc_handler, HttpServer, ServerError, ServerResult, StreamInfo};
 use bytes::Bytes;
@@ -51,6 +55,8 @@ use crate::home::Home;
 use crate::ui::UiModule;
 
 pub const SERVICE_PATH: &str = "/kapi/opendan";
+/// `who` of the AI Workspace service's own session.
+pub const AIWORKSPACE_CALLER: &str = "service:aiworkspace";
 pub const WEB_API_PATH: &str = "/api/opendan";
 
 /// Who may call the service.
@@ -119,6 +125,8 @@ pub struct StateService {
     pub ui: Option<Arc<UiModule>>,
     /// The agent's browser (`browser.*`, the screen, uploads).
     pub browser: Arc<BrowserModule>,
+    /// The agent's sync tasks (`sync.*`). `None`: this host runs none.
+    pub sync: Option<Arc<libopendan::sync::SyncHost>>,
     pub access: Access,
     pub home: Home,
     /// Session processes on other runtimes: their session tokens and
@@ -148,7 +156,8 @@ fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T
 impl Access {
     /// Who calls `method` with `token` from `ip_from`, if they may: the
     /// agent's owner (through any app) or the zone's root; an Agent's App
-    /// identity only what [`authorize_agent_method`] lets it. kRPC calls, the
+    /// identity only what [`authorize_agent_method`] lets it; the AI
+    /// Workspace service only [`zone_service`]'s methods. kRPC calls, the
     /// screen's handshake and uploads all pass here (the latter two as the
     /// owner-only methods `browser.screen` / `browser.upload`).
     pub(crate) async fn caller(&self, token: Option<&str>, method: &str, ip_from: IpAddr) -> Result<String, RPCErrors> {
@@ -169,6 +178,9 @@ impl Access {
                 let runtime = buckyos_api::get_buckyos_api_runtime()?;
                 let token = runtime.verify_trusted_session_token(token).await?;
                 let claims = validate_verify_hub_token_claims(&token, TokenUse::Session)?;
+                if let Some(admitted) = zone_service(claims.principal_kind, &claims.target, method) {
+                    return admitted;
+                }
                 let user = token
                     .sub
                     .clone()
@@ -178,6 +190,7 @@ impl Access {
                         "{user} is not the owner of this agent"
                     )));
                 }
+                person_only(claims.principal_kind, &user, owner, method)?;
                 if claims.principal_kind == TokenPrincipalKind::App {
                     let AuthTarget::App { app_instance_id } = &claims.target else {
                         return Err(RPCErrors::InvalidToken(
@@ -495,6 +508,13 @@ impl StateService {
                 }
                 self.home.runtime_settings(self.agent.as_ref()).await
             }
+            m if m.starts_with("sync.") => {
+                let sync = self.sync.as_ref().ok_or_else(|| {
+                    OpenDanError::InvalidArgument("this host runs no sync tasks".into())
+                })?;
+                let trigger = if who == AIWORKSPACE_CALLER { "aiworkspace" } else { "manual" };
+                libopendan::sync::call(sync, m, params, trigger).await
+            }
             "goals.activate" => {
                 let id: String = param(params, "goal_id")?;
                 let reason = param::<Option<String>>(params, "reason")?
@@ -539,6 +559,37 @@ impl StateService {
     }
 }
 
+/// A Zone service's own session (a System or Device principal for a system
+/// service): the AI Workspace service runs and reads the sync tasks behind
+/// its data sources (`sync.run`, `sync.get`); nothing else here is open to
+/// a Zone service. `None`: not the AI Workspace service.
+fn zone_service(kind: TokenPrincipalKind, target: &AuthTarget, method: &str) -> Option<Result<String, RPCErrors>> {
+    let AuthTarget::System { service_id } = target else {
+        return None;
+    };
+    if !matches!(kind, TokenPrincipalKind::System | TokenPrincipalKind::Device) || service_id.as_str() != AIWORKSPACE_SERVICE_NAME {
+        return None;
+    }
+    Some(if matches!(method, "sync.run" | "sync.get") {
+        Ok(AIWORKSPACE_CALLER.to_string())
+    } else {
+        Err(RPCErrors::NoPermission(format!(
+            "the AI Workspace service calls sync.run and sync.get of an Agent, not {method}"
+        )))
+    })
+}
+
+/// Methods only the owner calls signed in as themselves (no App, no Agent,
+/// not root): entering a sync task's credentials.
+fn person_only(kind: TokenPrincipalKind, user: &str, owner: &str, method: &str) -> Result<(), RPCErrors> {
+    if method == "sync.set_secret" && (kind != TokenPrincipalKind::User || user != owner) {
+        return Err(RPCErrors::NoPermission(
+            "sync.set_secret is the owner's own: only the owner, signed in as themselves, enters a credential (the data source's properties in the AI Workspace)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn authorize_agent_method(
     mode: Option<AgentPermissionMode>,
     caller: &AppInstanceId,
@@ -553,6 +604,8 @@ fn authorize_agent_method(
             format!("{method} is the owner's: an Agent does not delete what an Agent remembers (the Memory page, as the owner)")
         } else if method.starts_with("browser.") {
             format!("{method} is the owner's: watching an Agent's browser, taking it over and handing it back is what its user does (the Agent Browser app)")
+        } else if method.starts_with("sync.") {
+            format!("{method} is the owner's: an Agent never handles the credentials of a sync task (the owner enters them in the data source's properties)")
         } else {
             format!("{method} is the owner's: an Agent does not change which skills an Agent has (the Skills page, or `buckyos skill` as the owner)")
         }));
@@ -595,6 +648,7 @@ fn is_owner_only(method: &str) -> bool {
             | "browser.clear_profile"
             | "browser.reflow_action"
             | "browser.screen"
+            | "sync.set_secret"
     )
 }
 
@@ -665,6 +719,9 @@ fn is_read(method: &str) -> bool {
             | "loader.status"
             | "browser.status"
             | "browser.reflow_state"
+            | "sync.list"
+            | "sync.get"
+            | "sync.runs"
     )
 }
 
@@ -707,6 +764,12 @@ fn is_operation(method: &str) -> bool {
             | "browser.reflow_refresh"
             | "browser.reflow_action"
             | "browser.screen"
+            | "sync.put"
+            | "sync.set_enabled"
+            | "sync.delete"
+            | "sync.set_secret"
+            | "sync.try"
+            | "sync.run"
     )
 }
 
@@ -869,7 +932,7 @@ mod permission_tests {
             "session.work_tree", "ui.conversation",
             "home.summary", "memory.overview", "memory.list", "memory.read", "deliveries.recent",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status", "runtimes.settings", "runtimes.impact",
-            "browser.status", "browser.reflow_state",
+            "browser.status", "browser.reflow_state", "sync.list", "sync.get", "sync.runs",
         ] {
             for target in [OWN_APP, OTHER_APP] {
                 assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, target), "{method}");
@@ -892,6 +955,8 @@ mod permission_tests {
             // Using its own browser is the Agent's own ability, whatever it may do to the owner's files.
             "browser.ensure", "browser.acquire", "browser.renew", "browser.release", "browser.request_handover",
             "browser.reflow_refresh",
+            // Its sync tasks are the Agent's own work: it writes, tries and runs them.
+            "sync.put", "sync.set_enabled", "sync.delete", "sync.try", "sync.run",
         ] {
             assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, OWN_APP), "{method}");
             assert!(!authorize(Some(AgentPermissionMode::ReadOnly), method, OTHER_APP), "{method}");
@@ -910,6 +975,8 @@ mod permission_tests {
             // The user's side of the browser: an Agent neither takes its browser over nor hands it to itself.
             "browser.take_over", "browser.hand_back", "browser.hand_to_agent", "browser.bind_default", "browser.upload",
             "browser.download_export", "browser.clear_profile", "browser.reflow_action", "browser.screen",
+            // The credentials of a sync task are entered by the owner only.
+            "sync.set_secret",
         ] {
             for mode in [Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
                 for target in [OWN_APP, OTHER_APP] {
@@ -942,6 +1009,46 @@ mod permission_tests {
             for target in [OWN_APP, OTHER_APP] {
                 assert!(authorize(mode, "agent.profile_set", target));
                 assert!(authorize(mode, "session.post", target));
+            }
+        }
+    }
+
+    const SYNC_METHODS: [&str; 9] = [
+        "sync.list", "sync.get", "sync.put", "sync.set_enabled", "sync.delete", "sync.set_secret", "sync.try", "sync.run",
+        "sync.runs",
+    ];
+
+    fn service(name: &str) -> AuthTarget {
+        AuthTarget::system(buckyos_api::SystemServiceId::parse(name).unwrap())
+    }
+
+    /// `sync.*` by caller kind: the owner calls all of them; the owner's Agent all but `sync.set_secret` (and so does
+    /// root); the AI Workspace service's own session only `sync.run` and `sync.get`; no other Zone service any.
+    #[test]
+    fn sync_tasks_by_caller_kind() {
+        use TokenPrincipalKind::*;
+        for method in SYNC_METHODS {
+            assert!(is_read(method) != is_operation(method), "{method} is read or an operation");
+            // The owner, signed in as themselves (the Desktop, or an AI Workspace page's delegated session).
+            for target in [service("control-panel"), service("aiworkspace")] {
+                assert!(zone_service(User, &target, method).is_none(), "{method}: a person is no service");
+                assert!(person_only(User, "alice", "alice", method).is_ok(), "{method} by the owner");
+            }
+            // Root and an App of the owner (an Agent included) reach everything but the credentials.
+            assert_eq!(person_only(User, "root", "alice", method).is_ok(), method != "sync.set_secret", "{method} by root");
+            assert_eq!(person_only(App, "alice", "alice", method).is_ok(), method != "sync.set_secret", "{method} by an App");
+            for mode in [None, Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
+                assert_eq!(authorize(mode, method, OWN_APP), method != "sync.set_secret", "{method} by the Agent ({mode:?})");
+            }
+            // The AI Workspace service's own session (a System principal; a device key's login is a Device one).
+            for kind in [System, Device] {
+                let admitted = zone_service(kind, &service("aiworkspace"), method).expect("the AI Workspace service");
+                match method {
+                    "sync.run" | "sync.get" => assert_eq!(admitted.unwrap(), AIWORKSPACE_CALLER),
+                    _ => assert!(admitted.is_err(), "{method} by the AI Workspace service"),
+                }
+                // Any other Zone service is judged as its subject (a device: refused as no owner).
+                assert!(zone_service(kind, &service("control-panel"), method).is_none(), "{method}");
             }
         }
     }

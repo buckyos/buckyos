@@ -641,6 +641,28 @@ test('the output mode in the properties: "新建一组" makes a second group bes
   for (const r of first) expect(now.find((e: Json) => e.entity_id === r.entity_id).content_rev).toBe(r.content_rev)
 })
 
+test('"使用我的 Agent" in the properties hands a run to the viewer\'s own Agent (MessageHub\'s default one); the owner configures nothing', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `wish my agent ${Date.now()}`)
+  expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).hosted_exec).toBeUndefined()
+  await expect(api.rpc(ALICE, 'ws.set_hosted_exec', { workspace_id: ws.workspace_id, config: { enabled: true } })).rejects.toThrow(/unknown method/)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  await card.getByTestId('aiws-wish-title').click()
+  await openProperties(page)
+  const mode = page.getByTestId('aiws-wish-props-exec-mode')
+  await expect(mode.locator('option')).toHaveText(['本浏览器', '使用我的 Agent'])
+  await mode.selectOption('hosted')
+  await page.keyboard.press('Escape')
+  await card.getByTestId('aiws-wish-next').click()
+  // its context names the Agent, the AI is the starter's; without a Zone the dispatch is recorded unavailable and it waits
+  const runs = async () => (await api.rpc(ALICE, 'proc.list', { workspace_id: ws.workspace_id, wish_id: WISH })).runs
+  await expect.poll(async () => (await runs())[0]?.dispatch?.status).toBe('unavailable')
+  const [run] = await runs()
+  expect(run.context.executor).toEqual({ kind: 'agent', principal: 'codeassistant.test.buckyos.io', did: 'did:buckyos:agent:codeassistant', owner: 'alice' })
+  expect(run.aicc).toEqual({ mode: 'current_user', user_id: 'alice', operator_id: 'alice' })
+  expect((await api.rpc(ALICE, 'proc.cancel', { workspace_id: ws.workspace_id, run_id: run.run_id })).state).toBe('cancelled')
+})
+
 test.describe('phone', () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the browser comes from the project, the rest is the phone
   const { defaultBrowserType, ...pixel } = devices['Pixel 7']

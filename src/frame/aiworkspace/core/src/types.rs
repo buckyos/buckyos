@@ -2370,15 +2370,15 @@ fn check_build_record(p: &Planner, o: &Map<String, Value>, content_rev: u64) -> 
 // ---- Source (内核架构改进 D12, D24, D26): where a data entity's content comes from ----
 
 /// `source{ kind: url | workspace | zone | session, url?, zone?, workspace_id?, entity_id?, path?, mode: live | fixed,
-/// version?, query?, refresh?: { interval_s }, auth_mode: none | hosted, name?, def? }`. An entity with a Source is
+/// version?, query?, refresh?: { interval_s }, auth_mode: none | hosted, name?, def?, sync? }`. An entity with a Source is
 /// read-only for Blocks and people: its content is written only by a refresh run (commit origin `source`). Credentials
 /// never belong in it (§6.2): `auth_mode: hosted` means the owner's Agent refreshes it. `kind: zone` reads a file of the
 /// workspace owner's home (`path`, AI Native 余下任务 §7.2); `def` says what the data is (meaning, primary key,
-/// freshness, row limit).
+/// freshness, row limit); `sync` names the Agent's sync task that writes the file (§8.2, [`check_source_sync`]).
 pub fn check_source(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| bad("source must be an object"))?;
     for k in o.keys() {
-        if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "path" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name" | "feed" | "def") {
+        if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "path" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name" | "feed" | "def" | "sync") {
             return Err(bad(format!("source: unknown key {k}")));
         }
     }
@@ -2405,10 +2405,13 @@ pub fn check_source(v: &Value) -> WsResult<()> {
             }
         }
         Some("zone") => {
-            if o.keys().any(|k| !matches!(k.as_str(), "kind" | "path" | "mode" | "refresh" | "name" | "def")) {
-                return Err(bad("a zone source has kind, path, mode, refresh, name and def only"));
+            if o.keys().any(|k| !matches!(k.as_str(), "kind" | "path" | "mode" | "refresh" | "name" | "def" | "sync")) {
+                return Err(bad("a zone source has kind, path, mode, refresh, name, def and sync only"));
             }
-            zone_path_segments(o.get("path").and_then(Value::as_str).unwrap_or(""))?;
+            let segs = zone_path_segments(o.get("path").and_then(Value::as_str).unwrap_or(""))?;
+            if let Some(sync) = o.get("sync") {
+                check_source_sync(sync, &segs)?;
+            }
             if o.get("mode").is_some_and(|m| m != "live") {
                 return Err(bad("a zone source is live"));
             }
@@ -2426,6 +2429,9 @@ pub fn check_source(v: &Value) -> WsResult<()> {
     }
     if o.get("kind").and_then(Value::as_str) != Some("session") && o.contains_key("feed") {
         return Err(bad("source.feed belongs to a session source"));
+    }
+    if o.get("kind").and_then(Value::as_str) != Some("zone") && o.contains_key("sync") {
+        return Err(bad("source.sync belongs to a zone source"));
     }
     match (o.get("mode").and_then(Value::as_str), o.get("version")) {
         (None | Some("live"), None) => {}
@@ -2511,6 +2517,23 @@ pub fn zone_path_segments(path: &str) -> WsResult<Vec<&str>> {
         return Err(bad("source.path must be a file in the owner's home: /home/<owner>/…, without . or .. segments"));
     }
     Ok(segs)
+}
+
+/// `source.sync { agent_id, task_id }` (AI Native 余下任务 §8.2): the owner's Agent runs the sync task `task_id` and leaves
+/// its output in its AgentRoot, so the source reads exactly that file: `path` is
+/// `/home/<owner>/agents/<agent_id>/sync/<task_id>/out.json`. The service asks the Agent to run the task before it reads the
+/// file on a triggered refresh; that the Agent is the current owner's is checked then, with the owner.
+pub fn check_source_sync(sync: &Value, path: &[&str]) -> WsResult<()> {
+    let o = sync.as_object().ok_or_else(|| bad("source.sync must be { agent_id, task_id }"))?;
+    let id = |k: &str| o.get(k).and_then(Value::as_str).filter(|v| !v.is_empty() && v.len() <= 253);
+    let (Some(agent), Some(task)) = (id("agent_id"), id("task_id")) else { return Err(bad("source.sync must be { agent_id, task_id }")) };
+    if o.len() != 2 {
+        return Err(bad("source.sync has agent_id and task_id only"));
+    }
+    if path.len() != 7 || path[2] != "agents" || path[3] != agent || path[4] != "sync" || path[5] != task || path[6] != "out.json" {
+        return Err(bad(format!("a synced source reads its task's output: source.path must be /home/<owner>/agents/{agent}/sync/{task}/out.json")));
+    }
+    Ok(())
 }
 
 /// The definition of a sourced entity's data (`source.def`), when it has one.

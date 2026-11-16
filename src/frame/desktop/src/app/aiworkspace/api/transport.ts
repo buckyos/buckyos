@@ -256,11 +256,7 @@ class ZoneTransport implements Transport {
     try {
       return await this.client().call<T, Record<string, unknown>>(method, params)
     } catch (error) {
-      // The SDK reports kRPC-level errors and network failures through the same channel; for a
-      // commit both mean "no business result", which is all the callers need to know.
-      const message = error instanceof Error ? error.message : String(error)
-      const denial = accessDenialOf(error)
-      throw new TransportError(denial || !/fetch|network|timeout|abort/i.test(message) ? 'protocol' : 'network', message, denial)
+      throw sdkFailure(error)
     }
   }
 
@@ -375,6 +371,27 @@ export function resolveTransport(): TransportAvailability {
   const transport = new ZoneTransport()
   void transport.principal()
   return { ok: true, transport }
+}
+
+/** The SDK reports kRPC-level errors and network failures through the same channel; for a commit both mean "no business
+ * result", which is all the callers need to know. */
+function sdkFailure(error: unknown): TransportError {
+  const message = error instanceof Error ? error.message : String(error)
+  const denial = accessDenialOf(error)
+  return new TransportError(denial || !/fetch|network|timeout|abort/i.test(message) ? 'protocol' : 'network', message, denial)
+}
+
+/** kRPC to an Agent's own service (`/kapi/<agent_id>`) with the page's session: the owner's sync tasks (AI Native 余下任务
+ * §8.2). With the dev override the token goes to `<agent_id>` beside the backend's base (e2e routes it). */
+export async function agentCall<T>(agentId: string, method: string, params: Record<string, unknown>): Promise<T> {
+  if (!/^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/.test(agentId)) throw new TransportError('unconfigured', `not an Agent id: ${agentId}`)
+  const override = readDevOverride()
+  if (override) return guestCall<T>((override.baseUrl ?? `/kapi/${SERVICE_NAME}`).replace(/\/+$/, '').replace(/[^/]+$/, agentId), method, params, override.token, Date.now())
+  try {
+    return await buckyos.getServiceRpcClient(agentId).call<T, Record<string, unknown>>(method, params)
+  } catch (error) {
+    throw sdkFailure(error)
+  }
 }
 
 /** A prompter link's call (第三期规划 §11.1): plain kRPC to the service with the show's token instead of a session —

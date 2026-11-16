@@ -18,12 +18,12 @@ try {
   & magick -size 32x32 xc:red doc\a.png; Require ($LASTEXITCODE -eq 0)
   $make = @'
 page = """<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>标题 Title</title>
+<html lang="zh"><head><meta charset="utf-8"><title>\u6807\u9898 Title</title>
 <style>section { break-after: page; } .cover { background: #cde; }</style></head>
 <body>
-<section class="cover"><h1>标题 Title</h1><p>中英混排 mixed text</p><img src="a.png"><img src="http://ext-core.invalid/b.png"></section>
-<section><p>第二页 page two</p></section>
-<section><p>第三页 page three</p></section>
+<section class="cover"><h1>\u6807\u9898 Title</h1><p>\u4e2d\u82f1\u6df7\u6392 mixed text</p><img src="a.png"><img src="http://ext-core.invalid/b.png"></section>
+<section><p>\u7b2c\u4e8c\u9875 page two</p></section>
+<section><p>\u7b2c\u4e09\u9875 page three</p></section>
 </body></html>
 """
 open("doc/index.html", "w", encoding="utf-8").write(page)
@@ -59,7 +59,7 @@ assert pdf["warnings"] == ["blocked: http://ext-core.invalid/b.png"], pdf
 assert png["pages"] == 1 and png["bytes"] > 0, png
 text = open("a.txt", encoding="utf-8").read()
 print("[page-render] PDF text:", ascii(text), flush=True)
-for expected in ("中英混排 mixed text", "第三页 page three", "2/3"):
+for expected in ("\u4e2d\u82f1\u6df7\u6392 mixed text", "\u7b2c\u4e09\u9875 page three", "2/3"):
     assert expected in text, "the PDF is missing expected text: " + ascii(expected)
 assert re.search(rb"/Subtype */Image", open("out/a.pdf", "rb").read()), "the PDF has no picture"
 '@

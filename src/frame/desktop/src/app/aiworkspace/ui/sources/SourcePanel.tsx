@@ -9,6 +9,7 @@ import { describeError } from '../../api/session'
 import type { EntityEnvelope, Publication, Referrer, Result, RunView } from '../../api/types'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+import { SyncTaskSection, type SyncRef } from './SyncTaskSection'
 
 /** `meta.data` of a sourced entity (AI Native 余下任务 §7.2, B0-2/B0-3): defined but not synced, or the version its last
  * refresh wrote; the last attempt; whether it is past its freshness. */
@@ -19,6 +20,8 @@ interface DataState {
   attempt?: { at: string; status: 'running' | 'succeeded' | 'failed'; error?: { code?: string; sub_code?: string; detail?: string } | null; schema_changes?: { field_id: string }[] } | null
   expired?: boolean
   def?: { meaning?: string; primary_key?: string[]; freshness?: { max_age_s: number } | null; limit?: number } | null
+  /** The Agent's sync task that writes it (§8.2). */
+  sync?: SyncRef | null
 }
 
 const ATTEMPT_TEXT: Record<'running' | 'succeeded' | 'failed', string> = {
@@ -134,7 +137,7 @@ export function SourceSection({ entity }: { entity: EntityEnvelope }) {
   }
   return (
     <div className="aiws-wish-section" data-testid="aiws-source" data-kind={source.kind} data-mode={source.mode} data-state={data?.state ?? ''} data-expired={data?.expired ? 'true' : 'false'}>
-      <div className="aiws-muted">{t(source.mode === 'fixed' ? 'aiworkspace.data.source.fixed' : 'aiworkspace.data.source.live')} · <code>{origin}</code></div>
+      <div className="aiws-muted" style={{ overflowWrap: 'anywhere' }}>{t(source.mode === 'fixed' ? 'aiworkspace.data.source.fixed' : 'aiworkspace.data.source.live')} · <code>{origin}</code></div>
       {def?.meaning && <div data-testid="aiws-source-meaning">{t('aiworkspace.datasource.meaning', { text: def.meaning })}</div>}
       {def && (def.primary_key?.length || def.limit) && (
         <div className="aiws-muted">{[def.primary_key?.length ? t('aiworkspace.datasource.key', { fields: def.primary_key.join(', ') }) : '', def.limit ? t('aiworkspace.datasource.limit', { count: def.limit }) : ''].filter(Boolean).join(' · ')}</div>
@@ -155,10 +158,11 @@ export function SourceSection({ entity }: { entity: EntityEnvelope }) {
         </div>
       )}
       {changed.length > 0 && <div className="aiws-warning" role="status">{t('aiworkspace.datasource.schemaChanged', { fields: changed.join(', ') })}</div>}
+      {data?.sync && <SyncTaskSection sync={data.sync} owner={store.session.info().owner === true} version={`${version}:${run?.state ?? ''}`} />}
       <div className="aiws-muted">{t('aiworkspace.data.source.readOnly')}{source.refresh ? ` · ${t('aiworkspace.data.source.schedule', { minutes: Math.round(source.refresh.interval_s / 60) })}` : ''}</div>
       {!store.session.info().owner && source.kind !== 'session' && <div className="aiws-muted">{t('aiworkspace.datasource.ownerOnly')}</div>}
       <div className="aiws-inline-form">
-        <button type="button" data-testid="aiws-source-refresh" disabled={!canRefresh || busy} onClick={() => { void refresh() }}>{t('aiworkspace.data.source.refresh')}</button>
+        <button type="button" data-testid="aiws-source-refresh" disabled={!canRefresh || busy} onClick={() => { void refresh() }}>{t(data?.sync ? 'aiworkspace.datasource.sync.now' : 'aiworkspace.data.source.refresh')}</button>
         {run && <span className="aiws-muted" data-testid="aiws-source-run" data-state={run.state}>{STATE_LABEL[run.state] ? t(STATE_LABEL[run.state]) : run.state}</span>}
       </div>
       {message && <div className="aiws-error" role="alert" data-testid="aiws-source-error">{message}</div>}

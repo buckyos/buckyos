@@ -6,19 +6,41 @@ from unittest import mock
 import ext_tools
 
 
+class ScriptEncodingTest(unittest.TestCase):
+    def test_related_scripts_are_ascii(self):
+        paths = [ext_tools.ROOT / name for name in (
+            "build_exttool",
+            "src/tools/prepare_ext_tools.py",
+            ".github/scripts/ext_tools.py",
+            ".github/scripts/test_ext_tools.py",
+            ".github/workflows/ext-core.yml",
+            ".github/workflows/build-exttool.yml",
+            "publish/exttool/ext-core/conda-env.yml",
+        )]
+        for directory in (ext_tools.EXT_CORE, *(ext_tools.EXT_CORE / name for name in (
+            "smoke", "windows", "browser", "browser/test",
+        ))):
+            paths.extend(path for path in directory.iterdir()
+                         if path.is_file() and path.suffix in (".py", ".sh", ".ps1", ".mjs", ".cmd", ".bat"))
+        for path in paths:
+            with self.subTest(path=str(path.relative_to(ext_tools.ROOT))):
+                self.assertTrue(path.read_bytes().isascii(),
+                                "Use ASCII script source and escapes for Unicode test data")
+
+
 def manifest(*commands):
     return {"provides": [{"command": c} for c in commands]}
 
 
 TABLE = """intro
-**表 B：ext-core**
+**\u8868 B\uff1aext-core**
 
-| 命令 | 工具 | 场景 |
+| \u547d\u4ee4 | \u5de5\u5177 | \u573a\u666f |
 | --- | --- | --- |
-| `ffmpeg`、`ffprobe` | ffmpeg | x |
-| `tesseract`（含 `eng`、`osd` 数据） | tesseract | y |
+| `ffmpeg`\u3001`ffprobe` | ffmpeg | x |
+| `tesseract`\uff08\u542b `eng`\u3001`osd` \u6570\u636e\uff09 | tesseract | y |
 
-**表 C：其它**
+**\u8868 C\uff1a\u5176\u5b83**
 | `soffice` | z | z |
 """
 

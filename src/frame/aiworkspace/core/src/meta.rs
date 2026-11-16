@@ -99,6 +99,7 @@ pub fn meta(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, assets: Option<As
             data["state"] = json!(if crate::types::data_pending(e) { "pending" } else { "valid" });
             data["version"] = e.payload.get("data_version").cloned().unwrap_or(Value::Null);
             data["def"] = s.get("def").cloned().unwrap_or(Value::Null);
+            data["sync"] = s.get("sync").cloned().unwrap_or(Value::Null);
         }
         if let Some(d) = &e.derived {
             data["derived"] = json!({ "wish_id": d.get("wish_id"), "run_id": d.get("run_id"), "at": d.get("at") });

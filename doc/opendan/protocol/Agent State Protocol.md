@@ -6,6 +6,8 @@
 
 2026-11-02：登记表 `status.retry_not_before_ms`（可重试错误的退避期，Session Directory Protocol §7“run 的预算”）。只是加法。
 
+2026-11-16：增加同步任务（§11，`sync/<task_id>/`，宿主 kRPC `sync.*`）。只是加法。
+
 2026-10-11：增加 Runtime 登记（§10，`state/runtimes/`，kRPC `runtimes.*`）；behavior 增加 `[tool]`（§7）。只是加法；Workspace 位置的 `runtime_id` 由 `local` 改称 `container`，旧记录照常读。
 
 ## 1. AgentRoot 布局
@@ -30,6 +32,7 @@
   state/workspaces/                         Known Workspace 登记（项目目录可在 AgentRoot 外）
   state/runtimes/<runtime_id>.json          Runtime 登记（§10）
   state/browser/groups.json                 常驻浏览器各组的标签页（Agent Service 的浏览器模块维护，见下）
+  sync/<task_id>/                           同步任务（§11）：task.json program.ts state.json runs.jsonl out.json schedule.json
   .locks/memory_consolidation.lease  .locks/artifact/<aid>.lease  .locks/workspaces.lock  .locks/runtimes.lock
 ```
 
@@ -348,3 +351,13 @@ Agent 的 Session 与 Workspace 能用哪些 Runtime。记录（版本 5，2026-
 - **使用者**：Workspace 位置的 `runtime_id` 是 `private`（旧记录的 `container` / `local`）或一个可用、不是只读、没有期限的节点 runtime（`workspaces.create / import` 对只读或有期限的 runtime 报 `runtime_no_workspace`；[Agent Workspace Protocol](<Agent Workspace Protocol.md>)）；Session 创建时 `api::freeze_runtime` 选择并冻结工作 runtime（UI / chat 恒私有；其它：显式 > 继承 > 私有；owner 的 `default` 不参与），`create-worksession --runtime <id>` / Todo 的 `--runtime` 要求已登记、`active`、`enabled`、`available`，只读的 runtime 不承载会写的 work，否则拒绝不回退；Todo 点名的 runtime 不能用时，Todo 带着原因（`block_reason`）等 plan 处理。Agent 级原语 `runtime_exec(runtime_id, command, cwd, timeout)` / `runtime_put(runtime_id, local, remote_dir)`（libopendan `runtime/mod.rs`）在 Session 之外对任一可用 runtime 执行命令 / 放文件，记录在 `state/runtime_ops/<op_id>.json`；`agent-session run` 走它。
 - kRPC（宿主 opendan 另有，见 `src/frame/opendan/README.md`）：`runtimes.settings`（分配：`runtimes`、生效的 `default_runtime_id`、配置的 `configured_default_runtime_id`）、`runtimes.settings_set {runtime_id, enabled?, default?, confirm?}`（只改已分配条目的启停与默认，不新增目标也不改 runtime 的配置；停用默认 runtime 不清默认）、`runtimes.remove {runtime_id, confirm?}`（从 Agent 移除，记录转 `retired`）、`runtimes.impact {runtime_id}`（进行中的 Session、等待的 Todo、Workspace、是否 owner 默认）。分配与 runtime 自己的配置是 control-panel 的事（`agent.update`、`agent.runtime_catalog`、`node.owner_agents_set`、`executor.device.*`）。
 - kRPC：`runtimes.list`、`runtimes.lookup {runtime_id}`；写：`runtimes.register {request}`、`runtimes.update {runtime_id, request}`、`runtimes.check {runtime_id, commands?}`、`runtimes.unregister {runtime_id, expected_revision}`、`runtimes.note_usage {runtime_id, event}`（署名为服务端看到的调用方）。
+
+## 11. 同步任务 `sync/<task_id>/`
+
+AI Workspace 数据源背后的程序（[AI Native 余下任务](../../../notepads/aiws-ai-native-remaining-todo.md) §8.2）：宿主（Agent Service）按任务自己的时间表运行，独立于 Goal，不经 `AgentStateClient`，只经宿主的 kRPC `sync.*`（方法、参数与谁能调见 [opendan README](../../../src/frame/opendan/README.md)“同步任务”）。实现：`libopendan::sync`。
+
+- 文件（只有宿主写）：`task.json`（`{task_id, title, version, hosts, schedule: {every_secs ≥ 900}, inputs, secrets: [名字], enabled, updated_at}`；程序改了 `version` 加一）、`program.ts`（当前版本）、`state.json`（程序上次成功时交回的 `state`）、`runs.jsonl`（`{run_id, at, ended_at?, status: running|succeeded|failed, kind?: transient|program|auth, error?, records?, trigger: schedule|manual|aiworkspace}`，保留最近 200～400 条）、`out.json`（`aiws.sync.v1` 信封，tmp + rename 原子写；失败（重试用完后）写 `status: failed`）、`schedule.json`（宿主进度：`last_slot`、连续失败数、是否已通知、最近一次运行）。产出的 Zone 路径是 `/home/<owner>/agents/<agent_id>/sync/<task_id>/out.json`，即数据源 `kind: zone` 的 `path`。
+- 运行：Deno（与 Goal 检查脚本同一个），`deno run --quiet --no-prompt --no-config [--allow-net=<hosts>] program.ts`，环境变量清空（只留 `NO_COLOR`、`DENO_DIR`），没有读写文件、环境变量、子进程的权限，120 秒，stdout 至多 32 MiB。stdin 一个 JSON `{task_id, inputs, secrets, state}`，stdout 一个 JSON `{status: ok|failed, error?, error_kind?, business_time?, fields?, records, truncated?, state?}`（最后一行也可，前面的输出忽略）；stderr 是日志。
+- 时间表：`slot = now / every_secs`，宿主每 15 秒看一次；新任务或改了间隔从当前槽算起；宿主停着时错过的槽合并成一次；同一任务同时只有一个运行，`sync.run` 遇到进行中的运行就等它。
+- 失败：`transient`（含超时、未捕获的网络错误）隔 30 秒、120 秒各重试一次；`program` 连续 3 次、`auth`（含声明的凭据没填）立即，通知 owner 一次（`notify.send`，同一串失败只通知一次，成功或换程序后重新计数）。任务状态 `ok` / `failing`（连续失败数 > 0）/ `disabled`。
+- 凭据：值存在 Agent 的 settings（system-config `users/<owner>/agents/<agent_id>/settings` 的 `sync_secrets`，任务 → 名字 → 值），只有 owner 本人（人的会话）经 `sync.set_secret` 写；结果只给名字和是否已填。值只进程序的 stdin；结果、日志、运行记录、错误、`try` 的样例里出现的值都换成 `[secret <名字>]`。Agent 自己的身份读得到 settings（已知风险）。

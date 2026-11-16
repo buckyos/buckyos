@@ -19,7 +19,7 @@ import {
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type SqlResult, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type DerivedRecord, type FreshnessInfo, type RelationsInfo,
-  type Subject, type VersionInfo, type NeedsCodingReason, type WishRollbackResult, type WishRunView, type ShowLockInfo, type ServiceError, type WishClaim, type WishToolAnswer, type WishStageFiles, type HostedExecConfig, type Publication, type Referrer,
+  type Subject, type VersionInfo, type NeedsCodingReason, type WishRollbackResult, type WishRunView, type ShowLockInfo, type ServiceError, type WishClaim, type WishToolAnswer, type WishStageFiles, type Publication, type Referrer,
   type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtMigration, type ExtPackResult, type LibraryPackage, type TemplateSpec,
   type PresenceList, type WorkLogFilter, type WorkLogPage, type ExternalDataWanted,
 } from './types'
@@ -198,8 +198,6 @@ export interface WorkspaceSession {
    * carries the new `acl_rev` and the caller's Workspace capabilities (a replica window follows them too). */
   subscribeAcl(listener: () => void): () => void
   listSubjects(): Promise<Subject[]>
-  /** The owner's hosted execution configuration (D22, T3-7); `manage`, online only. */
-  setHostedExec(config: HostedExecConfig): Promise<HostedExecConfig>
   /** Publication by path (D26): `manage`; the link is in `url` when the deployment has a host. */
   publish(entityId: string, name?: string): Promise<Publication>
   unpublish(entityId: string): Promise<void>
@@ -427,7 +425,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     if (rev === undefined || rev <= (this.wsInfo.acl_rev ?? 0)) return
     const info = await this.client.wsGetInfo(this.ws)
     if (!info.ok) { this.handleStreamError(info.error.code, info.error.detail); return }
-    this.wsInfo = { ...this.wsInfo, capabilities: info.capabilities, acl_rev: info.acl_rev ?? rev, anonymous: info.anonymous, judged_as: info.judged_as, owner: info.owner, hosted_exec: info.hosted_exec }
+    this.wsInfo = { ...this.wsInfo, capabilities: info.capabilities, acl_rev: info.acl_rev ?? rev, anonymous: info.anonymous, judged_as: info.judged_as, owner: info.owner }
     for (const listener of [...this.aclListeners]) {
       try { listener() } catch (error) { console.error('[aiworkspace] permission listener failed', error) }
     }
@@ -612,13 +610,6 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
 
   async listSubjects() {
     try { return unwrap(await this.client.wsListSubjects(this.ws)).subjects } catch (error) { return this.fail(error) }
-  }
-  async setHostedExec(config: HostedExecConfig) {
-    try {
-      const applied = unwrap(await this.client.wsSetHostedExec(this.ws, config)).hosted_exec
-      this.wsInfo = { ...this.wsInfo, hosted_exec: applied }
-      return applied
-    } catch (error) { return this.fail(error) }
   }
   async publish(entityId: string, name?: string) { try { return unwrap(await this.client.wsPublish(this.ws, entityId, name)) } catch (error) { return this.fail(error) } }
   async unpublish(entityId: string) { try { unwrap(await this.client.wsUnpublish(this.ws, entityId)) } catch (error) { return this.fail(error) } }

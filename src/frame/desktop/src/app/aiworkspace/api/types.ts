@@ -84,10 +84,8 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   purpose?: string | null
   /** Who the service takes the caller for (a guest of a public link only learns its principal here). */
   principal?: string
-  /** Where wish runs execute by default (内核架构改进 D14; 浏览器优先): this browser or the owner's Agent. */
+  /** Where wish runs execute by default (内核架构改进 D14; 浏览器优先): this browser or the viewer's own Agent. */
   wish_execution?: { default: WishExecutionMode }
-  /** The owner's hosted execution configuration (D22): an Agent runs tasks for collaborators with `run`. */
-  hosted_exec?: HostedExecConfig
   /** The Workspace's own origin for publication links (D21), `null` when the deployment has no host. */
   public_base?: string | null
   /** Bytes this Workspace's Sources fetched (D24). */
@@ -126,14 +124,11 @@ export type SessionFeed = 'participants' | 'stage' | 'tasks' | 'my_responses' | 
 export interface Publication { entity_id: string; name: string; path: string; url?: string; reference: Reference; published_at: string; published_by: string; referrers: number; current?: boolean }
 export interface Referrer { referrer: { zone?: string | null; workspace_id?: string; entity_id?: string | null; principal?: string | null }; registered_at: string }
 
-/** The owner's hosted execution configuration (`ws.set_hosted_exec`, D22). */
-export interface HostedExecConfig { enabled: boolean; agent_id?: string; allowed_wishes?: string[]; triggerers?: string[]; limits?: Record<string, Json>; digest?: string }
-
-/** Where a wish run executes (内核架构改进 §9, D14; 浏览器优先): this browser, or the owner's Agent. */
+/** Where a wish run executes (内核架构改进 §9, D14; 浏览器优先): this browser, or the starter's own Agent (2026-11-16). */
 export type WishExecutionMode = 'local' | 'hosted'
 
-/** Whose AICC a run uses (local: the starter's own; hosted: the owner's). */
-export type WishAiccMode = 'workspace_owner' | 'current_user'
+/** Whose AICC a run uses: the starter's own, wherever it executes. */
+export type WishAiccMode = 'current_user'
 /** Whose AICC a run uses, fixed when it was accepted: `user_id` pays, `operator_id` started it. */
 export interface WishRunAicc { mode: WishAiccMode; user_id: string; operator_id?: string }
 
@@ -593,7 +588,7 @@ export interface WishRunView {
   aicc?: WishRunAicc | null
   /** The execution context the run bound (§9.6). */
   context?: Record<string, Json> | null
-  /** Hosted runs: how the Agent was reached; its goal and detail only for whoever manages the Workspace. */
+  /** Hosted runs: how the starter's Agent was reached; its goal and detail only for the starter and the Workspace's managers. */
   dispatch?: { status: string; at?: string; agent_id?: string; detail?: string } | null
   execution?: { mode: WishExecutionMode; attempt: number; lease_until?: string | null; executor?: Json }
   /** Once, to the browser that started a local run: what claims it. */

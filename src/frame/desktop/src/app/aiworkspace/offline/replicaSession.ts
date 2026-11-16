@@ -27,7 +27,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type Touched, type WorkspaceInfo,
-  type AnnotationContent, type ListAnnotationsParams, type ShowLockInfo, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
+  type AnnotationContent, type ListAnnotationsParams, type ShowLockInfo, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -537,12 +537,6 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   async listSubjects() {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.subjects'))
     return this.direct.listSubjects()
-  }
-  async setHostedExec(config: HostedExecConfig) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.onlineSetting'))
-    const applied = await this.direct.setHostedExec(config)
-    this.wsInfo = { ...this.wsInfo, hosted_exec: applied }
-    return applied
   }
   async publish(entityId: string, name?: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.onlineSetting'))

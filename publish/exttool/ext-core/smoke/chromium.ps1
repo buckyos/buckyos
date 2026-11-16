@@ -8,7 +8,7 @@ function Require($ok) { if (-not $ok) { throw "failed at line $($MyInvocation.Sc
 try {
   Require ((& chromium --version) -match '\d+\.\d+')
   $make = @'
-open("a.html", "w", encoding="utf-8").write('<!doctype html><meta charset="utf-8"><title>smoke</title><p>中英混排 mixed text</p>\n')
+open("a.html", "w", encoding="utf-8").write('<!doctype html><meta charset="utf-8"><title>smoke</title><p>\u4e2d\u82f1\u6df7\u6392 mixed text</p>\n')
 '@
   [IO.File]::WriteAllText("$dir\make.py", $make)
   & python3 make.py; Require ($LASTEXITCODE -eq 0)
@@ -21,7 +21,7 @@ open("a.html", "w", encoding="utf-8").write('<!doctype html><meta charset="utf-8
   & pdftotext -enc UTF-8 a.pdf a.txt; Require ($LASTEXITCODE -eq 0)
   $check = @'
 text = open("a.txt", encoding="utf-8").read()
-assert "中英混排 mixed text" in text, ascii(text)
+assert "\u4e2d\u82f1\u6df7\u6392 mixed text" in text, ascii(text)
 '@
   [IO.File]::WriteAllText("$dir\check.py", $check)
   & python3 check.py; Require ($LASTEXITCODE -eq 0)

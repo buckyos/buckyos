@@ -544,13 +544,18 @@ impl Workspace {
     /// Operations that turn the current content into `fetched`, and the fields they delete or retype.
     pub(crate) fn source_ops(&mut self, caller: &Caller, entity_id: &str, fetched: &Fetched) -> WsResult<(Vec<Value>, Vec<Value>)> {
         let now = self.now();
-        let (e, fields, records, ast) = {
+        let (e, fields, records, ast, mut last_number) = {
             let ctx = self.ctx(&now);
             let e = ctx.entity(entity_id)?.filter(|e| e.alive()).ok_or_else(|| WsError::not_found(format!("entity {entity_id} not found")))?;
             let fields: Vec<FieldRow> = if e.type_id == TYPE_TABLE { ctx.fields(entity_id)?.into_iter().filter(|f| f.alive()).collect() } else { Vec::new() };
             let mut records: BTreeMap<String, RecordRow> = BTreeMap::new();
+            let mut last_number = 0u64;
             if e.type_id == TYPE_TABLE {
                 ctx.scan_records(entity_id, &mut |r| {
+                    // an auto-increment id is never given twice, a deleted record's included
+                    if let Ok(n) = r.record_id.parse::<u64>() {
+                        last_number = last_number.max(n);
+                    }
                     if r.alive() {
                         records.insert(r.record_id.clone(), r.clone());
                     }
@@ -558,7 +563,7 @@ impl Workspace {
                 })?;
             }
             let ast = if e.type_id == TYPE_RICHTEXT { ctx.richtext(entity_id)? } else { None };
-            (e, fields, records, ast)
+            (e, fields, records, ast, last_number)
         };
         let mut ops = Vec::new();
         let mut schema_changes = Vec::new();
@@ -589,10 +594,31 @@ impl Workspace {
                 }
                 let mut seen = std::collections::BTreeSet::new();
                 let (mut inserts, mut sets, mut unsets) = (Vec::new(), Vec::new(), Vec::new());
+                // rows without a key keep the id of a current record with the same values, else take the next number
+                let content = |vals: &mut dyn Iterator<Item = (&String, &Value)>| -> String {
+                    let sorted: BTreeMap<&String, &Value> = vals.filter(|(k, v)| wanted.contains_key(*k) && !v.is_null()).collect();
+                    serde_json::to_string(&sorted).unwrap_or_default()
+                };
+                let mut same_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                if new_records.iter().any(|r| r["record_id"].as_str().is_none()) {
+                    for (id, r) in records.iter().rev() {
+                        same_values.entry(content(&mut r.values.iter())).or_default().push(id.clone());
+                    }
+                }
                 for r in new_records {
-                    let rid = r["record_id"].as_str().ok_or_else(|| WsError::invalid_schema("record_id required"))?.to_string();
                     let values = r["values"].as_object().cloned().unwrap_or_default();
-                    let values: Map<String, Value> = values.into_iter().filter(|(k, _)| wanted.contains_key(k)).collect();
+                    // a parsed 1.0 is the stored 1: compared as stored, or every refresh rewrites the row
+                    let values: Map<String, Value> = values.into_iter().filter(|(k, _)| wanted.contains_key(k)).map(|(k, v)| (k, stored_number(v))).collect();
+                    let rid = match r["record_id"].as_str() {
+                        Some(id) => id.to_string(),
+                        None => match same_values.get_mut(&content(&mut values.iter())).and_then(Vec::pop) {
+                            Some(id) => id,
+                            None => {
+                                last_number += 1;
+                                last_number.to_string()
+                            }
+                        },
+                    };
                     seen.insert(rid.clone());
                     match records.get(&rid) {
                         None => inserts.push(json!({ "record_id": rid, "values": values })),
@@ -746,6 +772,14 @@ fn local_set(conn: &rusqlite::Connection, key: &str, value: &str) -> WsResult<()
 }
 
 /// `source_refreshed:<id>` is a `format_utc_ms` timestamp.
+/// A whole number parsed as a float is the integer the store keeps.
+fn stored_number(v: Value) -> Value {
+    match v.as_f64() {
+        Some(f) if v.is_f64() && f.fract() == 0.0 && f.abs() < 9.0e15 => json!(f as i64),
+        _ => v,
+    }
+}
+
 pub fn refreshed_at(ws: &Workspace, entity_id: &str) -> WsResult<Option<String>> {
     local_get(&ws.local, &format!("source_refreshed:{entity_id}"))
 }

@@ -263,18 +263,6 @@ impl Workspace {
         ids.iter().map(|id| self.wish_row(id)).collect()
     }
 
-    /// Hosted runs started since `since` (`format_utc_ms`): what the owner's daily limit counts (权限需求 R30).
-    pub fn hosted_runs_since(&self, since: &str) -> WsResult<u64> {
-        self.local
-            .query_row(
-                "SELECT COUNT(*) FROM runs WHERE created_at >= ?1 AND json_extract(result_json, '$.context.location') = 'hosted'",
-                [since],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|n| n.max(0) as u64)
-            .map_err(db_err)
-    }
-
     /// Runs some worker should own (restart reconciliation).
     pub fn wish_runs_active(&self) -> WsResult<Vec<Value>> {
         let mut st = self

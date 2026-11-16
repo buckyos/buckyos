@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dist/manifest.json of an ext-core release: per platform the file, sha256, size and R2 path (ExtTools TODO §3.10)."""
+"""dist/manifest.json of an ext-core release: per platform the file, sha256, size and R2 path (ExtTools TODO section 3.10)."""
 from __future__ import annotations
 
 import argparse

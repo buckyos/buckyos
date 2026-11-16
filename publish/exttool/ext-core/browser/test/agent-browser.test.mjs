@@ -123,7 +123,7 @@ test('open navigates the group tab, snapshot reads it, the lease is released eac
   // Without a scheme: an IP address gets http://.
   const opened = await agentBrowser(['open', `${site.url.replace('http://', '')}/form`]);
   assert.equal(opened.code, 0, opened.stderr);
-  assert.equal(opened.stdout, `url: ${site.url}/form\ntitle: 登记表\n`);
+  assert.equal(opened.stdout, `url: ${site.url}/form\ntitle: \u767b\u8bb0\u8868\n`);
   assert.deepEqual(called('browser.acquire')[0].params, { session_id: 'session-1' });
   assert.equal(called('browser.release').length, 1);
   assert.equal(service.group('default').lease, null);
@@ -131,10 +131,10 @@ test('open navigates the group tab, snapshot reads it, the lease is released eac
 
   const snapshot = await agentBrowser(['snapshot']);
   assert.equal(snapshot.code, 0, snapshot.stderr);
-  assert.ok(snapshot.stdout.startsWith(`url: ${site.url}/form\ntitle: 登记表\n\n`), snapshot.stdout);
-  assert.match(snapshot.stdout, /- heading "登记表" \[level=1\]/);
-  assert.match(snapshot.stdout, /- textbox "姓名"/);
-  assert.match(snapshot.stdout, /- button "提交"/);
+  assert.ok(snapshot.stdout.startsWith(`url: ${site.url}/form\ntitle: \u767b\u8bb0\u8868\n\n`), snapshot.stdout);
+  assert.match(snapshot.stdout, /- heading "\u767b\u8bb0\u8868" \[level=1\]/);
+  assert.match(snapshot.stdout, /- textbox "\u59d3\u540d"/);
+  assert.match(snapshot.stdout, /- button "\u63d0\u4ea4"/);
   assert.equal(called('browser.release').length, 2);
 });
 
@@ -143,9 +143,9 @@ test('run fills a form in a background tab and prints what the script returns', 
   const file = script(
     'fill.mjs',
     `export default async ({ page, pages, context, args }) => {
-  await page.getByLabel('姓名').fill(args.who);
-  await page.getByLabel('城市').fill(args.city);
-  await page.getByRole('button', { name: '提交' }).click();
+  await page.getByLabel('\u59d3\u540d').fill(args.who);
+  await page.getByLabel('\u57ce\u5e02').fill(args.city);
+  await page.getByRole('button', { name: '\u63d0\u4ea4' }).click();
   return { result: await page.locator('#result').textContent(), tabs: pages.length, all: context.pages().length };
 };
 `,
@@ -154,9 +154,9 @@ test('run fills a form in a background tab and prints what the script returns', 
   const foreign = await chromium.newTab(`${site.url}/blank`);
   service.group('other').tabs = [foreign.id];
   assert.equal(await visibility(tab), 'hidden');
-  const result = await agentBrowser(['run', file, '--arg', 'who=张三', '--arg', 'city=上海=浦东']);
+  const result = await agentBrowser(['run', file, '--arg', 'who=\u5f20\u4e09', '--arg', 'city=\u4e0a\u6d77=\u6d66\u4e1c']);
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { result: '已提交：张三，上海=浦东', tabs: 1, all: 2 });
+  assert.deepEqual(JSON.parse(result.stdout), { result: '\u5df2\u63d0\u4ea4\uff1a\u5f20\u4e09\uff0c\u4e0a\u6d77=\u6d66\u4e1c', tabs: 1, all: 2 });
   assert.equal(service.group('default').lease, null);
   assert.equal(await visibility(foreign), 'visible');
   assert.equal(await visibility(tab), 'hidden');
@@ -168,17 +168,17 @@ test('while the user has control, commands fail and say to wait', async () => {
   assert.equal(opened.code, 4);
   assert.match(opened.stderr, /the user is operating the browser: wait until they hand it back/);
   assert.equal((await chromium.targets()).find((target) => target.id === tab.id).url, `${site.url}/blank`);
-  const done = await agentBrowser(['done', '--note', '办完了']);
+  const done = await agentBrowser(['done', '--note', '\u529e\u5b8c\u4e86']);
   assert.equal(done.code, 4);
   assert.match(done.stderr, /"done" was not reported: the user is operating the browser/);
   assert.equal(called('browser.release').length, 0);
 });
 
 test('a script that throws still disconnects and releases the lease', async () => {
-  const file = script('throws.mjs', "export default async ({ page }) => { await page.title(); throw new Error('表单没找到'); };\n");
+  const file = script('throws.mjs', "export default async ({ page }) => { await page.title(); throw new Error('\u8868\u5355\u6ca1\u627e\u5230'); };\n");
   const result = await agentBrowser(['run', file]);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /the script failed: Error: 表单没找到/);
+  assert.match(result.stderr, /the script failed: Error: \u8868\u5355\u6ca1\u627e\u5230/);
   assert.equal(result.stdout, '');
   assert.equal(called('browser.release').length, 1);
   assert.equal(service.group('default').lease, null);
@@ -221,7 +221,7 @@ test('a script handles its own dialog', async () => {
     'confirm.mjs',
     `export default async ({ page }) => {
   page.on('dialog', (dialog) => dialog.accept());
-  return page.evaluate(() => confirm('继续吗'));
+  return page.evaluate(() => confirm('\u7ee7\u7eed\u5417'));
 };
 `,
   );
@@ -262,7 +262,7 @@ test('a group without tabs gets one, and tabs lists it', async () => {
   assert.equal(await visibility(tab), 'visible', 'the new tab pushed the other group\'s tab into the background');
   const tabs = await agentBrowser(['tabs'], { OPENDAN_SESSION_ID: 'session-2' });
   assert.equal(tabs.code, 0, tabs.stderr);
-  assert.equal(tabs.stdout, `group trip\n* 1 ${site.url}/form  "登记表"\n`);
+  assert.equal(tabs.stdout, `group trip\n* 1 ${site.url}/form  "\u767b\u8bb0\u8868"\n`);
 });
 
 test('screenshot writes a PNG of the viewport, also of a tab that was in the background', async () => {
@@ -304,25 +304,25 @@ test('a screenshot is in CSS pixels while the screen paints the tab at twice its
 test('handover gives the user control; done and stuck report the state', async () => {
   const bad = await agentBrowser(['handover', '--reason', 'tired']);
   assert.equal(bad.code, 2);
-  const handover = await agentBrowser(['handover', '--reason', 'password', '--note', '要输登录密码']);
+  const handover = await agentBrowser(['handover', '--reason', 'password', '--note', '\u8981\u8f93\u767b\u5f55\u5bc6\u7801']);
   assert.equal(handover.code, 0, handover.stderr);
   assert.match(handover.stdout, /^handover asked \(group default\): the user has control now/);
-  assert.deepEqual(called('browser.request_handover')[0].params, { session_id: 'session-1', reason: 'password', note: '要输登录密码' });
+  assert.deepEqual(called('browser.request_handover')[0].params, { session_id: 'session-1', reason: 'password', note: '\u8981\u8f93\u767b\u5f55\u5bc6\u7801' });
   const status = await agentBrowser(['status']);
   assert.match(status.stdout, /group default: user has control, agent waiting_takeover, held by the user/);
-  assert.match(status.stdout, /handover asked: password: 要输登录密码/);
+  assert.match(status.stdout, /handover asked: password: \u8981\u8f93\u767b\u5f55\u5bc6\u7801/);
   const blocked = await agentBrowser(['run', script('noop.mjs', 'export default async () => 1;\n')]);
   assert.equal(blocked.code, 4);
 
   service.group('default').user_hold = false;
   service.group('default').handover = null;
-  const done = await agentBrowser(['done', '--note', '订单已提交']);
+  const done = await agentBrowser(['done', '--note', '\u8ba2\u5355\u5df2\u63d0\u4ea4']);
   assert.equal(done.code, 0, done.stderr);
   assert.equal(done.stdout, 'reported done (group default)\n');
   assert.equal(service.group('default').agent_state, 'done');
-  assert.equal(service.group('default').note, '订单已提交');
+  assert.equal(service.group('default').note, '\u8ba2\u5355\u5df2\u63d0\u4ea4');
   assert.equal((await agentBrowser(['stuck'])).code, 2);
-  const stuck = await agentBrowser(['stuck', '--note', '验证码过不去']);
+  const stuck = await agentBrowser(['stuck', '--note', '\u9a8c\u8bc1\u7801\u8fc7\u4e0d\u53bb']);
   assert.equal(stuck.code, 0, stuck.stderr);
   assert.equal(service.group('default').agent_state, 'stuck');
 });
@@ -385,19 +385,19 @@ test('reflow-run opens the address in a new tab, runs refresh.mjs, writes the da
   assert.equal(plain.code, 0, plain.stderr);
   const data = JSON.parse(fs.readFileSync(out, 'utf8'));
   assert.equal(data.url, `${site.url}/article`);
-  assert.equal(data.headline, '原标题');
+  assert.equal(data.headline, '\u539f\u6807\u9898');
   assert.match(data.photo, /^data:image\/jpeg;base64,/);
   assert.deepEqual(jpegSize(Buffer.from(data.photo.split(',')[1], 'base64')), { width: 1280, height: 320 });
   assert.deepEqual((await chromium.targets()).map((target) => target.id), [tab.id]);
 
   const clicked = await reflow(['--click', '#more']);
   assert.equal(clicked.code, 0, clicked.stderr);
-  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).headline, '点过之后的标题');
+  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).headline, '\u70b9\u8fc7\u4e4b\u540e\u7684\u6807\u9898');
 
-  fs.writeFileSync(path.join(pack, 'refresh.mjs'), "export default async () => { throw new Error('页面改版了'); };\n");
+  fs.writeFileSync(path.join(pack, 'refresh.mjs'), "export default async () => { throw new Error('\u9875\u9762\u6539\u7248\u4e86'); };\n");
   const failed = await reflow([]);
   assert.equal(failed.code, 1);
-  assert.equal(failed.stderr.trimEnd().split('\n').at(-1), 'agent-browser: reflow failed: 页面改版了');
+  assert.equal(failed.stderr.trimEnd().split('\n').at(-1), 'agent-browser: reflow failed: \u9875\u9762\u6539\u7248\u4e86');
   assert.deepEqual((await chromium.targets()).map((target) => target.id), [tab.id]);
 
   // What a page that changed looks like: the reason names the part that is missing, well before the run is over.

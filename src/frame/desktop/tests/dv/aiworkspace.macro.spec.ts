@@ -246,7 +246,7 @@ function executor(actor: Actor, token: string, baseURL: string, ws: Workspace) {
 
 const MONTHLY_AND_COMMENTARY = [{ name: 'monthly', type: 'table', title: '月度汇总', key: ['月份'] }, { name: 'commentary', type: 'richtext', title: '解读' }]
 
-// The hosted dispatch itself is not exercised here: since 权限需求 S6 the claim token reaches only the configured Agent.
+// The hosted dispatch itself is not exercised here: since 权限需求 S6 the claim token reaches only the starter's Agent.
 test('[macro-resume] the tab closes while the real model codes: the lease lapses, the reopened page resumes the run as a new attempt on xllm; the AI is the starter\'s', async ({ owner }, info) => {
   // AI Native 余下任务 A6: the loop runs on xllm in this page; a new attempt starts its loop again (§7.1 4)
   test.setTimeout(1_500_000)
@@ -284,9 +284,10 @@ test('[macro-resume] the tab closes while the real model codes: the lease lapses
   await screenshot(owner.page, info, 'macro-resumed')
 })
 
-test('[macro-hosted-agent] the owner\'s real Agent works a hosted run by its manual: it claims the run, runs the stored macro restricted and hands it in', async ({ owner }, info) => {
-  // AI Native 余下任务 A7 (第一期 §7.5): the Goal the service dispatches names the run and its claim token; the Agent follows
-  // `aiworkspace_run` (run-claim → run-files → run-exec / run-program → run-report)
+test('[macro-hosted-agent] the starter\'s own real Agent works a hosted run by its manual: it claims the run, runs the stored macro restricted and hands it in', async ({ owner }, info) => {
+  // AI Native 余下任务 A7 (第一期 §7.5), §8.3: a hosted run is the starter's own Agent's (AIWS_DV_AGENT, one of the
+  // signed-in user's); the Goal the service dispatches with the starter's session names the run and its claim token; the
+  // Agent follows `aiworkspace_run` (run-claim → run-files → run-exec / run-program → run-report)
   test.setTimeout(2_400_000)
   const agent = process.env.AIWS_DV_AGENT ?? 'browsy.test.buckyos.io'
   const ws = await setup(owner)
@@ -294,10 +295,9 @@ test('[macro-hosted-agent] the owner\'s real Agent works a hosted run by its man
   const card = await showCard(owner.page)
   await step(owner, ws, card, 'analyze', 'prompt')
   await step(owner, ws, card, 'code', 'analysis')
-  await owner.client.ok('ws.set_hosted_exec', { workspace_id: ws.workspace_id, config: { enabled: true, agent_id: agent } })
   const before = ((await wish(owner, ws)).payload.history?.run ?? [])[0]?.id
   const started = await owner.client.ok<WishRunView & { dispatch?: unknown }>('proc.start', { workspace_id: ws.workspace_id, program: 'wish.xllm@1', idempotency_key: `${owner.client.prefix}-hosted`,
-    params: { wish_id: 'wish-sales', stage: 'run', location: { cell_id: 'blk-wish' }, execution: { mode: 'hosted' } } })
+    params: { wish_id: 'wish-sales', stage: 'run', location: { cell_id: 'blk-wish' }, execution: { mode: 'hosted', agent } } })
   let run: (WishRunView & { execution?: { mode?: string; attempt?: number }; detail?: { dispatch?: unknown }; context?: { executor?: { principal?: string } } }) | undefined
   await expect.poll(async () => {
     run = await owner.client.ok('proc.get', { workspace_id: ws.workspace_id, run_id: started.run_id })
@@ -305,6 +305,8 @@ test('[macro-hosted-agent] the owner\'s real Agent works a hosted run by its man
   }, { timeout: 2_100_000, intervals: [10_000] }).toMatch(/succeeded|failed|cancelled/)
   expect(run!.state, JSON.stringify(run)).toBe('succeeded')
   expect(run!.execution?.mode).toBe('hosted')
+  expect(run!.context?.executor?.principal).toBe(agent)
+  expect(run!.aicc).toMatchObject({ mode: 'current_user', user_id: owner.userId })
   const record = ((await wish(owner, ws)).payload.history?.run ?? [])[0]
   expect(record?.id).not.toBe(before)
   expect(record?.ok, JSON.stringify(record?.error)).toBe(true)

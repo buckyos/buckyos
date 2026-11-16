@@ -169,7 +169,8 @@ fn actions_are_declared_where_they_apply_and_judged_as_their_krpc_method() {
         name_lib::ObjectProfile::from_value(wish.clone()).unwrap().validate().unwrap();
         assert_eq!(names(&wish), vec!["analyze", "code", "run"], "{wish}");
         for stage in ["analyze", "code", "run"] {
-            assert_eq!(wish["actions"][stage]["x-buckyos:risk"], "write", "{wish}");
+            // running overwrites results a person edited: destructive (owner 2026-11-16)
+            assert_eq!(wish["actions"][stage]["x-buckyos:risk"], if stage == "run" { "destructive" } else { "write" }, "{wish}");
             assert_eq!(wish["actions"][stage]["x-buckyos:rbac"], json!({ "resource": format!("obj://aiworkspace/{ws}/entities/w"), "action": "write" }));
             assert!(wish["actions"][stage]["description"].as_str().unwrap().contains("Authorized as that kRPC method"), "{wish}");
         }

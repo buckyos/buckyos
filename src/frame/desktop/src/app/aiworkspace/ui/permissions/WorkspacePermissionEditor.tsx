@@ -1,6 +1,6 @@
 /* The Workspace's permission editor (UI 框架 PRD §8): the groups (fixed first, then the logical groups with their members
  * and rules), the rule list, "check permissions", the state of anonymous access and share entries (changed in the share
- * dialog), the owner's hosted execution; the operation record when no sidebar shows it. On a phone or a narrow panel each
+ * dialog); the operation record when no sidebar shows it. On a phone or a narrow panel each
  * part is a screen of its own, entered one level at a time (§8.5). Without `manage` it is "my permissions" (§5.2).
  * Meant as the content of a tab of the data mode. */
 
@@ -13,7 +13,6 @@ import { useAcl, useAclRead, useWorkspaceCaps } from './aclData'
 import { AclAuditList } from './AclAuditList'
 import { CheckPanel } from './CheckPanel'
 import { GroupDetail, GroupList, type GroupsData } from './GroupsPanel'
-import { HostedExecSetting } from './HostedExecSetting'
 import { MyPermissions } from './MyPermissions'
 import { RulesPanel } from './RulesPanel'
 
@@ -22,7 +21,7 @@ export interface WorkspacePermissionEditorProps {
   audit?: boolean
 }
 
-type Part = 'groups' | 'rules' | 'check' | 'audit' | 'hosted'
+type Part = 'groups' | 'rules' | 'check' | 'audit'
 
 /** Narrow: a phone, or a container below 640 px (the side panel, a drawer). */
 function useNarrow(): [RefObject<HTMLDivElement | null>, boolean] {
@@ -78,13 +77,13 @@ function ManagerEditor({ audit }: { audit: boolean }) {
   const shares = useAclRead('share-entries', api.entries)
   const [part, setPart] = useState<Part | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
-  const parts: Part[] = ['groups', 'rules', 'check', ...(audit ? ['audit' as const] : []), 'hosted']
+  const parts: Part[] = ['groups', 'rules', 'check', ...(audit ? ['audit' as const] : [])]
   const current: Part | null = narrow ? part : part ?? 'groups'
   const data: GroupsData | null = all.data && groups.data ? { all: all.data, groups: groups.data.groups, entries: shares.data ?? [], owner } : null
   const entryTargets = new Set((shares.data ?? []).filter((e) => e.state === 'active').map((e) => `@${e.group_id}`))
   const label: Record<Part, string> = {
     groups: t('aiworkspace.perm.part.groups'), rules: t('aiworkspace.perm.part.rules'), check: t('aiworkspace.perm.part.check'),
-    audit: t('aiworkspace.perm.part.audit'), hosted: t('aiworkspace.perm.part.hosted'),
+    audit: t('aiworkspace.perm.part.audit'),
   }
   const body = (p: Part): ReactNode => {
     if (!data) return null
@@ -102,7 +101,6 @@ function ManagerEditor({ audit }: { audit: boolean }) {
       case 'rules': return <RulesPanel all={data.all} entryTargets={entryTargets} owner={owner} />
       case 'check': return <CheckPanel />
       case 'audit': return <AclAuditList />
-      case 'hosted': return <HostedExecSetting online={online} />
     }
   }
   const back = () => { if (current === 'groups' && selected) setSelected(null); else setPart(null) }

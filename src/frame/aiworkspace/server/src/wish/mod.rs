@@ -1,6 +1,6 @@
 //! Wish runs (许愿格详细设计 §3, §13; AI Native 第一期 §2; 许愿格交互升级 §3.3): `proc.start` creates a run record and
 //! returns at once. Every stage of `wish.xllm@1` — analyze, code, run — executes on an executor outside the service: the
-//! browser that started it (local) or the Owner's Agent (hosted). The service keeps the stage snapshot, answers the
+//! browser that started it (local) or the starter's own Agent (hosted). The service keeps the stage snapshot, answers the
 //! stage tools (`ws_*`, the macro's `sql`, the `llm_cache`), validates what the executor hands in, and when the stage
 //! ends plans what it produced and writes it in one Commit with the run's record in the wish's `history` — nothing
 //! waits for a confirmation; a record is rolled back instead (`proc.rollback`). It calls no model and runs no program.
@@ -216,9 +216,6 @@ pub struct StageState {
     /// Whose AI the run uses (its `aicc.user_id`): the AI answer cache is kept per that user, so one person's executor
     /// never answers another's runs from what it wrote (权限需求 R35).
     pub ai_user: String,
-    /// The owner's limit on the model's tool rounds in a hosted run (`limits.max_tool_iterations`, 权限需求 R30); a
-    /// macro's own bridge calls (`sql`, `llm_cache`) are not rounds.
-    pub max_tool_rounds: Option<u64>,
     prompts: Vec<String>,
     tool_calls: AtomicU32,
     program_runs: AtomicU32,
@@ -228,11 +225,6 @@ pub struct StageState {
 impl StageState {
     pub fn cancelled(&self) -> bool {
         self.active.cancelled.load(Ordering::SeqCst)
-    }
-
-    /// The model's tool rounds so far.
-    pub fn tool_rounds(&self) -> u64 {
-        self.tool_calls.load(Ordering::SeqCst) as u64
     }
 
     pub fn note_tool(&self, name: &str) {
@@ -342,41 +334,44 @@ pub fn run_view(rt: &WishRuntime, run: &Value, full: bool) -> Value {
     v
 }
 
-/// Whose AICC a new run uses (AI Center Quota PRD §3.3), fixed when the run is accepted and following where it runs:
-/// a local run's model calls come from the starter's own session (an Account, or an Agent working as its own executor,
-/// 第一期 §2.9); a hosted run uses the workspace owner's, through the Owner's Agent.
-pub fn run_attribution(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, mode: exec::Mode) -> WsResult<Value> {
-    use aiworkspace_store::workspace::{CallerClass, WISH_AICC_CURRENT_USER, WISH_AICC_WORKSPACE_OWNER};
-    let (mode, user_id) = match mode {
-        exec::Mode::Local => {
-            let own = matches!(caller.class, CallerClass::Account { .. }) || (matches!(caller.class, CallerClass::Service) && caller.kind.as_deref() == Some("agent"));
-            if !own {
-                return Err(WsError::sub(Code::PermissionDenied, "AI_ATTRIBUTION_UNAVAILABLE", "You have no AI resources in this Zone: a wish block runs here with the AI resources of the user who starts it")
-                    .with_data(json!({ "aicc": { "mode": WISH_AICC_CURRENT_USER } })));
-            }
-            (WISH_AICC_CURRENT_USER, caller.principal.clone())
-        }
-        exec::Mode::Hosted => (
-            WISH_AICC_WORKSPACE_OWNER,
-            ws.owner()?.ok_or_else(|| WsError::sub(Code::DependencyUnavailable, "AI_ATTRIBUTION_UNAVAILABLE", "The workspace has no owner whose AI resources the wish block could use"))?,
-        ),
-    };
-    Ok(json!({ "mode": mode, "user_id": user_id, "operator_id": caller.principal }))
+/// Whose AICC a new run uses (AI Center Quota PRD §3.3), fixed when the run is accepted: the starter's own — a local
+/// run's model calls come from its session (an Account, or an Agent working as its own executor, 第一期 §2.9), a hosted
+/// run's from the starter's Agent, billed to its owner, the starter (2026-11-16).
+pub fn run_attribution(caller: &Caller) -> WsResult<Value> {
+    use aiworkspace_store::workspace::{CallerClass, WISH_AICC_CURRENT_USER};
+    let own = matches!(caller.class, CallerClass::Account { .. }) || (matches!(caller.class, CallerClass::Service) && caller.kind.as_deref() == Some("agent"));
+    if !own {
+        return Err(WsError::sub(Code::PermissionDenied, "AI_ATTRIBUTION_UNAVAILABLE", "You have no AI resources in this Zone: a wish block runs here with the AI resources of the user who starts it")
+            .with_data(json!({ "aicc": { "mode": WISH_AICC_CURRENT_USER } })));
+    }
+    Ok(json!({ "mode": WISH_AICC_CURRENT_USER, "user_id": caller.principal, "operator_id": caller.principal }))
 }
 
 fn s<'a>(p: &'a Value, k: &str) -> WsResult<&'a str> {
     p.get(k).and_then(Value::as_str).ok_or_else(|| WsError::invalid_op(format!("{k} required")))
 }
 
-/// The caller a run acts for (权限需求 R14): its trigger as recorded — class, restriction, an Agent with its owner — with
-/// its group and contact memberships settled now for this Workspace. Never `Caller::user(<name>)`: a Limited trigger
-/// stays Limited, a member of a group keeps that group, a refused group stays refusing.
+/// The caller a run acts for (权限需求 R14): its trigger as recorded — class, restriction, an Agent with its owner — or the
+/// trigger's Agent a hosted run was handed to ([`acting_as`]), with group and contact memberships settled now for this
+/// Workspace. Never `Caller::user(<name>)`: a Limited trigger stays Limited, a member of a group keeps that group, a
+/// refused group stays refusing.
 pub async fn delegated(state: &Arc<AppState>, ws_id: &str, run: &Value) -> Caller {
     let principal = run["principal"].as_str().unwrap_or("");
-    let identity = &run["detail"]["context"]["trigger_identity"];
-    let mut c = if identity.is_object() { Caller::delegated(identity, principal) } else { Caller::delegated(&json!({ "class": "account", "restricted": true }), principal) };
+    let context = &run["detail"]["context"];
+    let identity = &context["trigger_identity"];
+    let trigger = if identity.is_object() { Caller::delegated(identity, principal) } else { Caller::delegated(&json!({ "class": "account", "restricted": true }), principal) };
+    let mut c = acting_as(trigger, context["executor"]["did"].as_str());
     crate::prepare_caller(state, &mut c, "proc.delegate", Some(ws_id)).await;
     c
+}
+
+/// A hosted run acts as the starter's Agent it was handed to (`agent`, its DID; 2026-11-16): judged as the starter while
+/// the Workspace configured nothing for that Agent (R16).
+fn acting_as(trigger: Caller, agent: Option<&str>) -> Caller {
+    match agent {
+        Some(did) => Caller { acting_for: Some(Box::new(trigger)), ..Caller::agent(did) },
+        None => trigger,
+    }
 }
 
 /// Whether a run of `wish_id` written as `identity` could be written at all: its results and last run are kept on the
@@ -421,39 +416,39 @@ pub fn macro_scope(run: &Value) -> Option<String> {
     (is_wish_program(run["program"].as_str().unwrap_or("")) && (stage == STAGE_CODE || stage == STAGE_RUN)).then(|| run["params"]["wish_id"].as_str().map(str::to_string)).flatten()
 }
 
-/// [`run_view`] as `caller` may see it: how the owner's hosted execution is configured (its limits, its digest, the
-/// Agent's goal) only for whoever manages the Workspace (权限需求 V1).
+/// [`run_view`] as `caller` may see it: where a hosted run was handed (the Agent's goal, why that failed) only for its
+/// starter and whoever manages the Workspace (权限需求 V1).
 fn view_for(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, rt: &WishRuntime, run: &Value, full: bool) -> WsResult<Value> {
     let mut v = run_view(rt, run, full);
-    if !ws.access(caller)?.ws_caps.has(Cap::Manage) {
-        if let Some(e) = v["context"].get_mut("executor").and_then(Value::as_object_mut) {
-            e.remove("limits");
-            e.remove("config_digest");
-        }
-        if v["dispatch"].is_object() {
-            v["dispatch"] = json!({ "status": v["dispatch"]["status"], "at": v["dispatch"]["at"] });
-        }
+    if v["dispatch"].is_object() && run["principal"] != json!(caller.principal) && !ws.access(caller)?.ws_caps.has(Cap::Manage) {
+        v["dispatch"] = json!({ "status": v["dispatch"]["status"], "at": v["dispatch"]["at"] });
     }
     Ok(v)
 }
 
 /// `proc.start` for `wish.xllm@1` (stages `analyze`, `code`, `run`).
-/// `session`: the starter's own token: a hosted run is handed to the owner's Agent in the starter's name.
+/// `session`: the starter's own token: a hosted run is handed to the starter's own Agent with it (2026-11-16).
 pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str, params: &Value, idem: &str, session: &str) -> WsResult<Value> {
     let wish_id = s(params, "wish_id")?.to_string();
     let stage = s(params, "stage")?.to_string();
     if !STAGES.contains(&stage.as_str()) {
         return Err(WsError::invalid_op(format!("{program} has no stage {stage}")));
     }
+    // the execution context (§9.6): named in full, or the run does not start
+    let mode_name = params["execution"]["mode"].as_str().map(str::to_string).unwrap_or_else(|| state.wish.config.default_execution.clone());
+    let mode = exec::Mode::parse(&mode_name).ok_or_else(|| WsError::invalid_op(format!("unknown execution mode {mode_name}")))?;
+    let agent = match mode {
+        exec::Mode::Hosted => Some(tokio::runtime::Handle::current().block_on(exec::starters_agent(state, caller, params["execution"]["agent"].as_str()))?),
+        exec::Mode::Local => None,
+    };
+    // who the run acts as: the starter, or the starter's Agent a hosted run is handed to
+    let actor = acting_as(caller.clone(), agent.as_ref().map(|(_, did)| did.as_str()));
     let run_id = state.with_ws(ws_id, |ws| {
         // the wish must exist and be writable by the caller: a run ends in writing it
         let read = ws.read(caller, &wish_id, None)?;
         if read["type_id"] != json!("buckyos.wish") {
             return Err(WsError::invalid_op(format!("{wish_id} is not a wish")));
         }
-        // the execution context (§9.6): named in full, or the run does not start
-        let mode_name = params["execution"]["mode"].as_str().map(str::to_string).unwrap_or_else(|| state.wish.config.default_execution.clone());
-        let mode = exec::Mode::parse(&mode_name).ok_or_else(|| WsError::invalid_op(format!("unknown execution mode {mode_name}")))?;
         // analysis and coding change the macro and hand the caller's words to a model: `update` on the wish (权限需求
         // R29); running it: `run` or any editing right on the wish (R22), wherever it executes
         let has = |c: &str| read["capabilities"].as_array().is_some_and(|caps| caps.iter().any(|x| x == c));
@@ -474,40 +469,33 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
         }
         let payload = read["content"]["payload"].as_object().cloned().unwrap_or_default();
         ws.read_ctx(|ctx| ready(ctx, &payload, &stage))?;
-        // a run is written as its macro identity — this phase the trigger, bounded by an `intersection` group; only a
-        // trusted executor could write more (§4.5, Q12): a run that could never be written does not start, and spends
-        // nobody's AI — a collaborator holding only `run` waits for trusted executors (权限需求 Q31)
+        // a run is written as its macro identity — this phase the trigger, or its Agent a hosted run is handed to, bounded
+        // by an `intersection` group; only a trusted executor could write more (§4.5, Q12): a run that could never be
+        // written does not start, and spends nobody's AI — a collaborator holding only `run` waits for trusted executors
+        // (权限需求 Q31)
         if stage != STAGE_ANALYZE {
-            let identity = ws.macro_access(caller, &wish_id)?;
+            let identity = ws.macro_access(&actor, &wish_id)?;
             let binding = ws.macro_binding(&wish_id)?;
             let payload = read["content"]["payload"].as_object().cloned().unwrap_or_default();
             ws.read_ctx(|ctx| macro_can_write(ctx, &identity, &wish_id, &payload, binding.as_ref().map(|(g, _)| g.as_str())))?;
         }
-        let aicc = run_attribution(ws, caller, mode)?;
-        let hosted = if mode == exec::Mode::Hosted { Some(ws.hosted_exec_admits(caller, &wish_id)?) } else { None };
-        // the owner's limits on hosted runs are enforced, not just stored (权限需求 R30)
-        if let Some(max) = hosted.as_ref().and_then(|c| c["limits"]["max_runs_per_day"].as_u64()) {
-            let since = aiworkspace_core::value::format_utc_ms((ws.clock)() - 24 * 3_600_000);
-            if ws.hosted_runs_since(&since)? >= max {
-                return Err(WsError::limit(format!("the owner allows {max} hosted runs a day; try again later")));
-            }
-        }
-        let context = exec::execution_context(ws, caller, &wish_id, &read["content"]["payload"], mode, &aicc, hosted.as_ref())?;
+        let aicc = run_attribution(caller)?;
+        let context = exec::execution_context(ws, caller, &wish_id, &read["content"]["payload"], mode, &aicc, agent.as_ref())?;
         let (exec_record, claim) = exec::new_exec_record(mode);
         let payload = &read["content"]["payload"];
         // what an executor starts from (inputs are read through the run token)
         let brief = json!({ "prompt": payload["prompt"], "knowledge": payload["knowledge"], "refinements": payload["refinements"], "analysis": payload["analysis"],
                             "inputs": payload["inputs"], "output": payload["output"], "request": params.get("request").cloned().unwrap_or(Value::Null), "stage": stage });
         let (run_id, replayed) = ws.wish_run_create_with(caller, program, params, idem, &aicc, &json!({ "context": context, "exec": exec_record, "brief": brief }))?;
-        Ok((run_id, replayed, mode, claim, hosted, context))
+        Ok((run_id, replayed, claim, context))
     })?;
-    let (run_id, replayed, mode, claim, hosted, context) = (run_id.0, run_id.1, run_id.2, run_id.3, run_id.4, run_id.5);
+    let (run_id, replayed, claim, context) = run_id;
     if !replayed && mode == exec::Mode::Hosted {
-        let (st, w, rid, token, cfg, ctx, session) = (state.clone(), ws_id.to_string(), run_id.clone(), claim.clone().unwrap_or_default(), hosted.clone().unwrap_or(Value::Null), context.clone(), session.to_string());
+        let (st, w, rid, token, ctx, session) = (state.clone(), ws_id.to_string(), run_id.clone(), claim.clone().unwrap_or_default(), context.clone(), session.to_string());
         tokio::runtime::Handle::current().spawn(async move {
-            // the claim token goes to the configured Agent only, never into the run's detail (权限需求 S6, R30): when the
+            // the claim token goes to the starter's Agent only, never into the run's detail (权限需求 S6): when the
             // dispatch fails the run waits for a retry or a cancel
-            let dispatch = exec::dispatch_hosted(&st, &w, &rid, &token, &cfg, &ctx, &session).await;
+            let dispatch = exec::dispatch_hosted(&w, &rid, &token, &ctx, &session).await;
             let _ = st.with_ws(&w, |ws| ws.wish_run_set(&rid, None, None, None, None, Some(&json!({ "dispatch": dispatch }))));
         });
     }
@@ -594,20 +582,14 @@ pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Calle
     Ok(plan)
 }
 
-/// The delegation a run was started under still holds (D16, §9.5): the task configuration it bound, the owner's hosted
-/// configuration, its context's life, and the attempt that produced what it hands in.
+/// The delegation a run was started under still holds (D16, §9.5): the task configuration it bound, its context's life,
+/// and the attempt that produced what it hands in.
 fn delegation_holds(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, run: &Value) -> WsResult<()> {
     if let Some(bound) = run["detail"]["context"]["task"]["digest"].as_str() {
         let wish_id = run["params"]["wish_id"].as_str().unwrap_or("");
         let payload = ws.read(caller, wish_id, None)?["content"]["payload"].as_object().cloned().unwrap_or_default();
         if aiworkspace_core::wish::basis_digest(&payload)[..32] != *bound {
             return Err(WsError::new(Code::DelegationStale, "the wish configuration changed after the run was started; run it again under the current configuration").with_data(json!({ "bound": bound })));
-        }
-    }
-    // a hosted run still runs under the owner's configuration it was started with, within its context's life (R30)
-    if let Some(bound) = run["detail"]["context"]["executor"]["config_digest"].as_str() {
-        if ws.hosted_exec()?["digest"].as_str() != Some(bound) {
-            return Err(WsError::new(Code::DelegationStale, "the owner's hosted execution configuration changed after the run was started; run it again").with_data(json!({ "bound": bound })));
         }
     }
     if run["detail"]["context"]["expires_at"].as_str().is_some_and(|e| e < ws.now().as_str()) {

@@ -128,20 +128,10 @@ fn check_user_table(p: &Planner, e: &EntityRow) -> WsResult<()> {
     Ok(())
 }
 
-/// Validator class: schema. A table of a Zone source names its primary key (B5-1): its rows are identified by it.
-fn check_keyed_source(e: &EntityRow) -> WsResult<()> {
-    let zone = e.payload.get("source").and_then(|s| s.get("kind")).and_then(Value::as_str) == Some("zone");
-    if zone && crate::types::source_def(e).and_then(|d| d.get("primary_key")).is_none() {
-        return Err(WsError::sub(crate::error::Code::InvalidSchema, "PRIMARY_KEY_REQUIRED", format!("{}: a table of a zone source names source.def.primary_key", e.entity_id)));
-    }
-    Ok(())
-}
-
 /// Validator class: schema. A standard table is created with every standard field in its type (the options of a
 /// select may differ), and its title field is `title`. A table of a user schema defines it or follows it.
 pub fn check_table(p: &Planner, before: Option<&EntityRow>, e: &EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     if changed.is_none_or(|c| c.iter().any(|k| k == "source")) {
-        check_keyed_source(e)?;
     }
     if e.schema_id.is_some() && standard_fields(e).is_none() && before.is_none() {
         return check_user_table(p, e);

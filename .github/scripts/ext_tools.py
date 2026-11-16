@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Keep ext-core's facts in one piece and resolve its release (ExtTools TODO §3.10, T2a / T2b).
+"""Keep ext-core's facts in one piece and resolve its release (ExtTools TODO section 3.10, T2a / T2b).
 
-check-table   doc/app_service/paios容器需求.md §6.4 table B <-> ext-manifest.json provides <-> what the build pins,
+check-table   the paios container requirements, section 6.4 table B <-> ext-manifest.json provides <-> what the build pins,
               and the manifest's online items <-> the build's versions and pins
 resolve       the release manifest of the pinned version from R2, every tar checked with HEAD, as bin/ext-tools/ext_tools.json
 latest        latest.json of a release, for ext-core-latest and R2
@@ -16,7 +16,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 EXT_CORE = ROOT / "publish" / "exttool" / "ext-core"
-TABLE_DOC = ROOT / "doc" / "app_service" / "paios容器需求.md"
+TABLE_DOC = ROOT / "doc" / "app_service" / "paios\u5bb9\u5668\u9700\u6c42.md"
 SCHEMA = "buckyos.ext-tools/v1"
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "darwin-arm64", "darwin-x86_64", "windows-x86_64")
 DEFAULT_BASE_URL = "https://buckyos-installer.tbudr.top"
@@ -27,14 +27,14 @@ OFFICIAL_TOOLS = {"pandoc": "pandoc-", "python": "cpython-", "uv": "uv-", "node"
 
 def table_commands(text):
     """The command column of table B."""
-    start = text.index("**表 B")
-    end = text.index("**表 C", start)
+    start = text.index("**\u8868 B")
+    end = text.index("**\u8868 C", start)
     commands = set()
     for line in text[start:end].splitlines():
         cells = line.split("|")
-        if len(cells) < 4 or not line.startswith("|") or cells[1].strip() in ("命令", "---"):
+        if len(cells) < 4 or not line.startswith("|") or cells[1].strip() in ("\u547d\u4ee4", "---"):
             continue
-        commands.update(re.findall(r"`([^`\s]+)`", re.sub(r"（.*?）", "", cells[1])))
+        commands.update(re.findall(r"`([^`\s]+)`", re.sub(r"\uff08.*?\uff09", "", cells[1])))
     return commands
 
 

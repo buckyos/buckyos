@@ -724,31 +724,101 @@ fn executors_claim_report_and_the_service_writes_what_their_stage_collected() {
     // the analysis changed with the prompt: coding is refused until it is analyzed again
     let r = srv.run("wish.xllm@1", stage("code")).await;
     assert_eq!(r["error"]["sub_code"], "NEEDS_ANALYSIS", "{r}");
-    // hosted: the owner configures the agent; without a Zone runtime the dispatch is recorded unavailable and the run waits
-    assert_eq!(srv.call_as("tok-alice", "proc.start", json!({ "workspace_id": ws, "program": "wish.xllm@1", "idempotency_key": "host-0", "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "execution": { "mode": "hosted" } } })).await["result"]["error"]["code"], "EXECUTION_CONTEXT_MISSING");
-    let cfg = srv.rpc("ws.set_hosted_exec", json!({ "config": { "enabled": true, "agent_id": "jarvis.test.buckyos.io", "allowed_wishes": ["wish-q3"] } })).await;
-    assert!(cfg["hosted_exec"]["digest"].is_string());
-    let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "host-1", "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "execution": { "mode": "hosted" } } })).await;
-    assert_eq!((start["context"]["location"].as_str(), start["context"]["executor"]["principal"].as_str()), (Some("hosted"), Some("jarvis.test.buckyos.io")), "{start}");
-    assert_eq!((start["aicc"]["mode"].as_str(), start["aicc"]["user_id"].as_str()), (Some("workspace_owner"), Some("alice")), "a hosted run uses the owner's: {start}");
+    });
+}
+
+/// The run's `proc.get` as `token` once its dispatch is recorded.
+async fn dispatched(srv: &Srv, token: &str, run_id: &str) -> Value {
+    for _ in 0..100 {
+        let got = srv.call_as(token, "proc.get", json!({ "run_id": run_id })).await["result"].clone();
+        if got["dispatch"]["status"].is_string() {
+            return got;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no dispatch of {run_id} recorded");
+}
+
+#[test]
+fn a_hosted_run_is_handed_to_the_starters_own_agent() {
+    run_test(|| async move {
+    let mut srv = Srv::start_with(tempfile::tempdir().unwrap(), scripted(), json!({
+        "tok-alice": { "principal": "alice" },
+        "tok-bob": { "principal": "bob" },
+        "tok-carol": { "principal": "carol" },
+        "tok-dave": { "principal": "dave" },
+        "tok-jarvis": { "principal": "did:web:jarvis.test.buckyos.io", "class": "agent", "owner": "alice" },
+        "tok-bobby": { "principal": "did:web:bobby.test.buckyos.io", "class": "agent", "owner": "bob" },
+        "tok-d1": { "principal": "did:web:d1.test.buckyos.io", "class": "agent", "owner": "dave" },
+        "tok-d2": { "principal": "did:web:d2.test.buckyos.io", "class": "agent", "owner": "dave" },
+    })).await;
+    setup(&mut srv).await;
+    for who in ["bob", "carol", "dave"] {
+        srv.rpc("acl.set", json!({ "changes": [{ "subject": who, "allow": ["read", "comment", "update"] }] })).await;
+    }
+    assert!(srv.rpc("ws.get_info", json!({})).await.get("hosted_exec").is_none(), "the owner configures nothing");
+    assert!(srv.rpc_raw("ws.set_hosted_exec", json!({ "config": { "enabled": true } })).await["error"].is_string());
+    let hosted = |key: &str, stage: &str, agent: Option<&str>| {
+        let mut execution = json!({ "mode": "hosted" });
+        if let Some(a) = agent {
+            execution["agent"] = json!(a);
+        }
+        json!({ "program": "wish.xllm@1", "idempotency_key": key, "params": { "wish_id": "wish-q3", "stage": stage, "location": loc(), "execution": execution } })
+    };
+    // the starter's only Agent executes it, on the starter's AI resources; the claim token goes to the Agent alone
+    let start = srv.call_as("tok-alice", "proc.start", hosted("h1", "analyze", None)).await["result"].clone();
+    assert_eq!(start["context"]["executor"], json!({ "kind": "agent", "principal": "jarvis.test.buckyos.io", "did": "did:web:jarvis.test.buckyos.io", "owner": "alice" }), "{start}");
+    assert_eq!((start["context"]["location"].as_str(), start["context"]["trigger"].as_str(), start["context"]["compute"]["principal"].as_str()), (Some("hosted"), Some("alice"), Some("alice")));
+    assert_eq!(start["aicc"], json!({ "mode": "current_user", "user_id": "alice", "operator_id": "alice" }));
     assert!(start.get("claim_token").is_none(), "the token goes to the agent, not the starter");
     let run_id = start["run_id"].as_str().unwrap().to_string();
-    let mut got = srv.rpc("proc.get", json!({ "run_id": run_id })).await;
-    for _ in 0..100 {
-        if got["dispatch"]["status"].is_string() { break; }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        got = srv.rpc("proc.get", json!({ "run_id": run_id })).await;
-    }
-    assert_eq!(got["dispatch"]["status"], "unavailable", "{got}");
-    // S6: the claim token never shows in the run, and only the configured Agent claims (a token alone is not enough)
-    assert!(got["dispatch"].get("claim_token").is_none() && !got.to_string().contains("ct_"), "{got}");
-    let refused = srv.call_as("tok-alice", "proc.claim", json!({ "workspace_id": ws, "run_id": run_id, "claim_token": "ct_aaaaaaaaaaaaaaaaaaaaaaaaaa" })).await;
+    // without a Zone runtime the dispatch is recorded unavailable and the run waits
+    let got = dispatched(&srv, "tok-alice", &run_id).await;
+    assert_eq!((got["dispatch"]["status"].as_str(), got["dispatch"]["agent_id"].as_str()), (Some("unavailable"), Some("jarvis.test.buckyos.io")), "{got}");
+    // S6: the claim token never shows in the run, and only the Agent claims (a token alone is not enough)
+    assert!(!got.to_string().contains("ct_"), "{got}");
+    let refused = srv.call_as("tok-alice", "proc.claim", json!({ "run_id": run_id, "claim_token": "ct_aaaaaaaaaaaaaaaaaaaaaaaaaa" })).await;
     assert_eq!(refused["result"]["error"]["code"], "PERMISSION_DENIED", "{refused}");
+    // a collaborator's hosted run is the collaborator's own Agent's, on the collaborator's resources
+    let start = srv.call_as("tok-bob", "proc.start", hosted("h2", "analyze", None)).await["result"].clone();
+    assert_eq!((start["context"]["executor"]["principal"].as_str(), start["context"]["executor"]["owner"].as_str(), start["aicc"]["user_id"].as_str()), (Some("bobby.test.buckyos.io"), Some("bob"), Some("bob")), "{start}");
+    let bobs = start["run_id"].as_str().unwrap().to_string();
+    // where it was handed shows to its starter and the managers; another editor sees whether it was
+    let own = dispatched(&srv, "tok-bob", &bobs).await;
+    assert_eq!(own["dispatch"]["agent_id"], "bobby.test.buckyos.io", "{own}");
+    assert_eq!(dispatched(&srv, "tok-alice", &bobs).await["dispatch"]["agent_id"], "bobby.test.buckyos.io");
+    let other = dispatched(&srv, "tok-carol", &bobs).await;
+    assert_eq!(other["dispatch"], json!({ "status": own["dispatch"]["status"], "at": own["dispatch"]["at"] }), "{other}");
+    // an Agent of somebody else is refused, one's own is found by its DID or its AgentId
+    let r = srv.call_as("tok-alice", "proc.start", hosted("h3", "analyze", Some("did:web:bobby.test.buckyos.io"))).await;
+    assert_eq!(r["result"]["error"]["code"], "PERMISSION_DENIED", "{r}");
+    for (key, name) in [("h4", "jarvis.test.buckyos.io"), ("h5", "did:web:jarvis.test.buckyos.io")] {
+        let r = srv.call_as("tok-alice", "proc.start", hosted(key, "analyze", Some(name))).await["result"].clone();
+        assert_eq!(r["context"]["executor"]["principal"], "jarvis.test.buckyos.io", "{r}");
+    }
+    // no Agent, several without naming one, or no account: nobody to hand it to
+    let none = srv.call_as("tok-carol", "proc.start", hosted("h6", "analyze", None)).await;
+    assert_eq!(none["result"]["error"]["code"], "EXECUTION_CONTEXT_MISSING", "{none}");
+    let several = srv.call_as("tok-dave", "proc.start", hosted("h7", "analyze", None)).await;
+    assert_eq!((several["result"]["error"]["code"].as_str(), several["result"]["error"]["data"]["agents"].as_array().map(Vec::len)), (Some("EXECUTION_CONTEXT_MISSING"), Some(2)), "{several}");
+    let named = srv.call_as("tok-dave", "proc.start", hosted("h8", "analyze", Some("d2.test.buckyos.io"))).await["result"].clone();
+    assert_eq!(named["context"]["executor"]["did"], "did:web:d2.test.buckyos.io", "{named}");
+    let agent = srv.call_as("tok-jarvis", "proc.start", hosted("h9", "analyze", None)).await;
+    assert_eq!(agent["result"]["error"]["code"], "EXECUTION_CONTEXT_MISSING", "{agent}");
+    // the run is written as the Agent: judged as its starter until the workspace configures the Agent itself
+    srv.done(&srv.run("wish.xllm@1", stage("analyze")).await);
+    let coding = srv.call_as("tok-alice", "proc.start", hosted("h10", "code", None)).await["result"].clone();
+    assert_eq!(coding["state"], "queued", "{coding}");
+    srv.rpc("acl.set", json!({ "changes": [{ "subject": "did:web:jarvis.test.buckyos.io", "deny": ["update"] }] })).await;
+    let denied = srv.call_as("tok-alice", "proc.start", hosted("h11", "code", None)).await;
+    assert_eq!(denied["result"]["error"]["sub_code"], "MACRO_CANNOT_WRITE", "{denied}");
+    let local = srv.call_as("tok-alice", "proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "l1", "params": { "wish_id": "wish-q3", "stage": "code", "location": loc(), "execution": { "mode": "local" } } })).await;
+    assert_eq!(local["result"]["state"], "queued", "{local}");
     });
 }
 
 #[test]
-fn local_runs_use_the_starters_ai_hosted_runs_the_owners() {
+fn local_runs_use_the_starters_ai() {
     run_test(|| async move {
     let m = scripted();
     let mut srv = Srv::start_with(tempfile::tempdir().unwrap(), m.clone(), json!({

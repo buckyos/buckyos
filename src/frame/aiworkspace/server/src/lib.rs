@@ -63,13 +63,16 @@ pub struct Limits {
     /// The folder holding the Zone's `home/<user>/…` (B3-1, Zone sources): `$BUCKYOS_ROOT/data` on a node; `None` = Zone
     /// files are not readable here.
     pub zone_root: Option<std::path::PathBuf>,
+    /// Where the Zone's Agents serve kRPC, `<agent_gateway>/<agent_id>` (余下任务 §8.2: a source's sync task runs on its
+    /// Agent): the node gateway's `/kapi` on a node; `None` = no Agent is reachable here.
+    pub agent_gateway: Option<String>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_media_bytes: 2 << 30, max_package_bytes: 2 << 30,
                  workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None, web_dir: None,
-                 fetch_private: false, zone_root: None }
+                 fetch_private: false, zone_root: None, agent_gateway: None }
     }
 }
 
@@ -743,7 +746,6 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
         "proc.report" => wish::exec::report(state, caller, ws_id()?, p)?,
         "proc.program" => wish::exec::program(state, caller, ws_id()?, p)?,
         "proc.files" => wish::exec::files(state, caller, ws_id()?, p)?,
-        "ws.set_hosted_exec" => state.with_ws(ws_id()?, |ws| ws.set_hosted_exec(caller, p.get("config").unwrap_or(&Value::Null)))?,
         "lock.acquire" => state.with_ws(ws_id()?, |ws| ws.lock_acquire(caller, &strings(p, "entity_ids")?, s(p, "session_id")?))?,
         "lock.renew" => state.with_ws(ws_id()?, |ws| ws.lock_renew(caller, &strings(p, "lock_ids")?))?,
         "lock.release" => state.with_ws(ws_id()?, |ws| ws.lock_release(caller, &strings(p, "lock_ids")?))?,

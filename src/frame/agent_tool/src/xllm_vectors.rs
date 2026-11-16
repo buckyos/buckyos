@@ -1500,6 +1500,7 @@ async fn run_loop_case(c: LoopInput<'_>, behavior: Option<&BehaviorSetup>) -> Va
         llm_timeout_secs: DEFAULT_LLM_TIMEOUT_SECS,
         context_window_tokens: c.request.budget.context_window_tokens,
         context_yield_ratio: None,
+        max_consecutive_errors: Some(c.request.error_policy.max_consecutive_errors),
     };
     let outcome_json = outcome_summary(&outcome);
     let step = run_step(outcome, false, &[], &limits, &ProviderConfig::default());

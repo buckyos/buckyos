@@ -160,7 +160,7 @@ const ACL: Record<string, string> = {
   'acl.set': 'aiworkspace.activity.acl.set', 'acl.set_anonymous': 'aiworkspace.activity.acl.anonymous', 'acl.members': 'aiworkspace.activity.acl.members',
   'acl.set_group': 'aiworkspace.activity.acl.group', 'acl.delete_group': 'aiworkspace.activity.acl.deleteGroup', 'acl.bind_macro': 'aiworkspace.activity.acl.bindMacro',
   'acl.load_design': 'aiworkspace.activity.acl.set', 'macro.changed': 'aiworkspace.activity.acl.macroChanged', 'visibility.widened': 'aiworkspace.activity.acl.widened',
-  'hosted_exec.set': 'aiworkspace.activity.acl.hostedExec', 'entry.create': 'aiworkspace.activity.acl.entry', 'entry.close': 'aiworkspace.activity.acl.entry',
+  'entry.create': 'aiworkspace.activity.acl.entry', 'entry.close': 'aiworkspace.activity.acl.entry',
   'entry.join': 'aiworkspace.activity.acl.members', publish: 'aiworkspace.activity.acl.publish', unpublish: 'aiworkspace.activity.acl.publish',
 }
 

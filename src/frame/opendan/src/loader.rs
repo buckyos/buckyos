@@ -457,6 +457,17 @@ impl Loader {
             }),
         );
 
+        // Sync tasks: the programs behind AI Workspace data sources, on
+        // their own timetables.
+        let sync = libopendan::sync::SyncHost::new(libopendan::sync::SyncHostOptions::new(
+            env.agent_root.clone(),
+            Arc::new(records::RecordsSecrets(env.records.clone())),
+            env.notify.clone(),
+        ));
+        let deno = libopendan::sync::DenoSyncRunner::discover().is_some();
+        module("sync", true, deno, (!deno).then_some("no Deno on this host: sync programs cannot run"));
+        tasks.push(tokio::spawn(sync.clone().serve()));
+
         if config.loader.agent_state_service || config.loader.webui {
             let runner = Runner::new(env.port);
             if config.loader.agent_state_service {
@@ -466,6 +477,7 @@ impl Loader {
                     info: info.clone(),
                     ui: ui.clone(),
                     browser: browser.clone(),
+                    sync: Some(sync.clone()),
                     access: env.access.clone(),
                     sessions: match libopendan::session_context::SessionService::new(
                         &env.agent_root,

@@ -235,7 +235,6 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         budget: budget(&state.wish.config, &stage_name),
         last_log: Mutex::new(String::new()),
         ai_user: run["detail"]["aicc"]["user_id"].as_str().unwrap_or("").to_string(),
-        max_tool_rounds: run["detail"]["context"]["executor"]["limits"]["max_tool_iterations"].as_u64(),
         prompts,
         tool_calls: Default::default(),
         program_runs: Default::default(),

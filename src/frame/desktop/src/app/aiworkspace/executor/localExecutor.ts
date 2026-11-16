@@ -27,6 +27,8 @@ const DEFAULT_TIMEOUT_SECS = 120
 const STAGE_TIMEOUT_SECS = 21600
 const LLM_TIMEOUT_SECS = 900
 const CONTEXT_WINDOW = 200000
+/** Tool rounds in a row that may fail (a trial run that fails is one) before the stage fails (owner 2026-11-16). */
+const MAX_CONSECUTIVE_ERRORS = 6
 /** A model call that failed for a passing reason (the provider, a timeout) is tried again this many times. */
 const TRANSIENT_RETRIES = 2
 const TRANSIENT_KINDS = ['provider_transient', 'provider_timeout']
@@ -259,6 +261,7 @@ export class LocalExecutor {
       timeout: STAGE_TIMEOUT_SECS,
       llm_timeout: LLM_TIMEOUT_SECS,
       context_window: CONTEXT_WINDOW,
+      max_consecutive_errors: MAX_CONSECUTIVE_ERRORS,
       tools: { enabled: true, tools: tools.map((t) => ({ name: t.name })) },
     }
     this.checkAborted()

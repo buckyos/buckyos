@@ -20,7 +20,7 @@ async function openEditor(page: Page, token: string, workspaceId: string) {
 }
 
 /** One part of the editor (a tab, or a screen of its own on a narrow panel). */
-async function part(page: Page, name: 'groups' | 'rules' | 'check' | 'audit' | 'hosted') {
+async function part(page: Page, name: 'groups' | 'rules' | 'check' | 'audit') {
   const editor = page.getByTestId('aiws-permissions').first()
   for (let i = 0; i < 3 && (await editor.getAttribute('data-narrow')) === 'true' && !['home', name].includes((await editor.getAttribute('data-part')) ?? ''); i++) {
     await editor.getByTestId('aiws-perm-back').click()
@@ -238,7 +238,7 @@ test('§15-27 without manage the permission node shows only one’s own permissi
   await expect(mine.getByTestId('aiws-perm-judgment-groups')).toContainText('不属于这个工作区的任何组')
   await expect(mine.locator('[data-testid="aiws-perm-explain-cap"][data-cap="read"]')).toHaveAttribute('data-allowed', 'true')
   await expect(mine.locator('[data-testid="aiws-perm-explain-cap"][data-cap="update"]')).toHaveAttribute('data-allowed', 'false')
-  for (const id of ['aiws-perm-group-new', 'aiws-perm-rule-add', 'aiws-perm-tab-rules', 'aiws-hosted-save']) await expect(page.getByTestId(id)).toHaveCount(0)
+  for (const id of ['aiws-perm-group-new', 'aiws-perm-rule-add', 'aiws-perm-tab-rules']) await expect(page.getByTestId(id)).toHaveCount(0)
   await expect(page.getByTestId('aiws-sources').getByTestId('aiws-perm-audit')).toHaveCount(0)
   // the owner gives bob more (another window): his view follows the permissions' revision, no reload
   expect((await api.rpc(ALICE, 'acl.set_group', { workspace_id: ws.workspace_id, group_id: 'editors', title: '编辑' })).ok).toBe(true)

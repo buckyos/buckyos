@@ -1,5 +1,6 @@
 /* AI Workspace text: the state of a data source (ui/sources/SourcePanel.tsx — pending or valid, its three times, the last
- * attempt, freshness) and a table view's row limit (ui/table/TableEditor.tsx). English first; the Chinese table has the
+ * attempt, freshness; the Agent's sync task that writes it, ui/sources/SyncTaskSection.tsx) and a table view's row limit
+ * (ui/table/TableEditor.tsx). English first; the Chinese table has the
  * same keys. */
 export const en: Record<string, string> = {
   'aiworkspace.datasource.zone': 'File in the owner’s home',
@@ -23,6 +24,29 @@ export const en: Record<string, string> = {
   'aiworkspace.datasource.rows.all': 'Show all rows',
   'aiworkspace.datasource.rows.limited': 'Showing the first {{count}} of {{total}} rows',
   'aiworkspace.datasource.rows.edit': 'Change rows shown',
+  'aiworkspace.datasource.sync.by': 'Written by the sync task {{task}} of the Agent {{agent}}',
+  'aiworkspace.datasource.sync.now': 'Sync now',
+  'aiworkspace.datasource.sync.unreachable': 'Cannot read the sync task from the Agent: {{error}}',
+  'aiworkspace.datasource.sync.failed': 'The Agent did not do it: {{error}}',
+  'aiworkspace.datasource.sync.version': 'version {{version}}',
+  'aiworkspace.datasource.sync.every': 'runs every {{minutes}} min',
+  'aiworkspace.datasource.sync.state.on': 'on',
+  'aiworkspace.datasource.sync.state.failing': 'on, failing',
+  'aiworkspace.datasource.sync.state.off': 'off',
+  'aiworkspace.datasource.sync.hosts': 'Reaches: {{hosts}}',
+  'aiworkspace.datasource.sync.run.running': 'Running since {{at}}',
+  'aiworkspace.datasource.sync.run.succeeded': 'Last run {{at}}: succeeded',
+  'aiworkspace.datasource.sync.run.failed': 'Last run {{at}}: failed — {{error}}',
+  'aiworkspace.datasource.sync.failures': 'Failures: {{count}}',
+  'aiworkspace.datasource.sync.enable': 'Turn on',
+  'aiworkspace.datasource.sync.disable': 'Turn off',
+  'aiworkspace.datasource.sync.secrets': 'Secrets (kept by the Agent, never shown again)',
+  'aiworkspace.datasource.sync.secret.set': 'set',
+  'aiworkspace.datasource.sync.secret.unset': 'not set',
+  'aiworkspace.datasource.sync.secret.enter': 'Enter the value',
+  'aiworkspace.datasource.sync.secret.replace': 'Enter a new value',
+  'aiworkspace.datasource.sync.secret.save': 'Save',
+  'aiworkspace.datasource.sync.secret.clear': 'Clear',
 }
 
 export const zh: Record<string, string> = {
@@ -47,4 +71,27 @@ export const zh: Record<string, string> = {
   'aiworkspace.datasource.rows.all': '显示全部',
   'aiworkspace.datasource.rows.limited': '显示前 {{count}} 条，共 {{total}} 条',
   'aiworkspace.datasource.rows.edit': '修改显示行数',
+  'aiworkspace.datasource.sync.by': '由 Agent {{agent}} 的同步任务 {{task}} 写入',
+  'aiworkspace.datasource.sync.now': '立即同步',
+  'aiworkspace.datasource.sync.unreachable': '读不到 Agent 上的同步任务：{{error}}',
+  'aiworkspace.datasource.sync.failed': 'Agent 没有完成：{{error}}',
+  'aiworkspace.datasource.sync.version': '版本 {{version}}',
+  'aiworkspace.datasource.sync.every': '每 {{minutes}} 分钟运行',
+  'aiworkspace.datasource.sync.state.on': '已启用',
+  'aiworkspace.datasource.sync.state.failing': '已启用，运行失败',
+  'aiworkspace.datasource.sync.state.off': '已停用',
+  'aiworkspace.datasource.sync.hosts': '访问：{{hosts}}',
+  'aiworkspace.datasource.sync.run.running': '{{at}} 起正在运行',
+  'aiworkspace.datasource.sync.run.succeeded': '最近一次运行 {{at}}：成功',
+  'aiworkspace.datasource.sync.run.failed': '最近一次运行 {{at}}：失败——{{error}}',
+  'aiworkspace.datasource.sync.failures': '失败次数：{{count}}',
+  'aiworkspace.datasource.sync.enable': '启用',
+  'aiworkspace.datasource.sync.disable': '停用',
+  'aiworkspace.datasource.sync.secrets': '凭据（由 Agent 保管，填写后不再显示）',
+  'aiworkspace.datasource.sync.secret.set': '已填写',
+  'aiworkspace.datasource.sync.secret.unset': '未填写',
+  'aiworkspace.datasource.sync.secret.enter': '填写',
+  'aiworkspace.datasource.sync.secret.replace': '填写新值',
+  'aiworkspace.datasource.sync.secret.save': '保存',
+  'aiworkspace.datasource.sync.secret.clear': '清除',
 }

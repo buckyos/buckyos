@@ -486,7 +486,8 @@ test('P3-12 the show lock: other writes are refused and name the presenter; a cr
   // the stage crashes (the tab goes away without ending the show): the lease runs out, the clone goes
   await page.close()
   await expect.poll(async () => (await api.rpc(BOB, 'ws.get_info', { workspace_id: ws.workspace_id })).show_lock, { timeout: 20_000 }).toBeNull()
-  if (show.start.clone_workspace_id) expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: show.start.clone_workspace_id })).error?.code).toBe('NOT_FOUND')
+  // the lock reads as gone once its time is up; the sweeper deletes the clone on its next tick
+  if (show.start.clone_workspace_id) await expect.poll(async () => (await api.rpc(ALICE, 'ws.get_info', { workspace_id: show.start.clone_workspace_id })).error?.code, { timeout: 15_000 }).toBe('NOT_FOUND')
   await expect(bobPage.getByTestId('aiws-show-locked')).toHaveCount(0, { timeout: 40_000 })
   // bob presents; alice (the owner) ends it from her window's alert
   const bobShow = await api.rpc(BOB, 'show.start', { workspace_id: ws.workspace_id, path_id: 'path-intro', live: false })

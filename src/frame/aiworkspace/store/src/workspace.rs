@@ -20,8 +20,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Wish blocks use the workspace owner's AICC (default).
-pub const WISH_AICC_WORKSPACE_OWNER: &str = "workspace_owner";
 /// Wish blocks use the AICC of the user who starts the run.
 pub const WISH_AICC_CURRENT_USER: &str = "current_user";
 
@@ -913,71 +911,6 @@ impl Workspace {
         self.local.query_row("SELECT value FROM local_meta WHERE key = 'name'", [], |r| r.get(0)).optional().map_err(db_err)
     }
 
-    /// The Owner's hosted execution configuration (D22, T3-7): `{ enabled, agent_id, allowed_wishes?: [ids],
-    /// triggerers?: [subjects], limits?: { max_runs_per_day?, max_tool_iterations? } }`; `digest` is what a run
-    /// binds to (D16: a changed configuration makes older delegations `DELEGATION_STALE`).
-    pub fn hosted_exec(&self) -> WsResult<Value> {
-        let raw: Option<String> = self.local.query_row("SELECT value FROM local_meta WHERE key = 'hosted_exec'", [], |r| r.get(0)).optional().map_err(db_err)?;
-        let mut v = raw.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or_else(|| json!({ "enabled": false }));
-        let digest = sha256_hex(aiworkspace_core::canonical::canonical_json(&v).unwrap_or_default().as_bytes())[..32].to_string();
-        v["digest"] = json!(digest);
-        Ok(v)
-    }
-
-    /// `ws.set_hosted_exec` (the owner only, 权限需求 R17: it spends the owner's Agent and AI quota): the Owner's
-    /// configuration; runs accepted afterwards bind to its digest.
-    pub fn set_hosted_exec(&mut self, caller: &Caller, config: &Value) -> WsResult<Value> {
-        self.require_owner(caller)?;
-        let before = self.hosted_exec()?;
-        let o = config.as_object().ok_or_else(|| WsError::invalid_op("config must be an object"))?;
-        for k in o.keys() {
-            if !matches!(k.as_str(), "enabled" | "agent_id" | "allowed_wishes" | "triggerers" | "limits") {
-                return Err(WsError::invalid_op(format!("unknown hosted_exec key {k}")));
-            }
-        }
-        let enabled = o.get("enabled").and_then(Value::as_bool).unwrap_or(false);
-        if enabled && !o.get("agent_id").and_then(Value::as_str).is_some_and(|a| !a.is_empty() && a.len() <= 256) {
-            return Err(WsError::invalid_op("hosted execution needs the Owner's agent_id"));
-        }
-        for k in ["allowed_wishes", "triggerers"] {
-            if o.get(k).is_some_and(|v| !v.is_null() && !v.as_array().is_some_and(|a| a.iter().all(Value::is_string))) {
-                return Err(WsError::invalid_op(format!("{k} must be an array of strings")));
-            }
-        }
-        if o.get("limits").is_some_and(|l| !l.is_object()) {
-            return Err(WsError::invalid_op("limits must be an object"));
-        }
-        let text = Value::Object(o.clone()).to_string();
-        if text.len() > 16 * 1024 {
-            return Err(WsError::limit("hosted_exec configuration is limited to 16 KiB"));
-        }
-        self.local.execute("INSERT OR REPLACE INTO local_meta (key, value) VALUES ('hosted_exec', ?1)", [text]).map_err(db_err)?;
-        let v = self.hosted_exec()?;
-        self.audit(caller, "hosted_exec.set", &json!({}), Some(&before), Some(&v))?;
-        Ok(json!({ "ok": true, "hosted_exec": v }))
-    }
-
-    /// May `caller` trigger a hosted run of `wish_id` under this configuration (D22)?
-    pub fn hosted_exec_admits(&self, caller: &Caller, wish_id: &str) -> WsResult<Value> {
-        let cfg = self.hosted_exec()?;
-        if cfg["enabled"] != json!(true) {
-            return Err(WsError::new(Code::ExecutionContextMissing, "hosted execution is not configured for this workspace: the owner sets it up (ws.set_hosted_exec)"));
-        }
-        if let Some(allowed) = cfg["allowed_wishes"].as_array() {
-            if !allowed.is_empty() && !allowed.iter().any(|w| w == wish_id) {
-                return Err(WsError::denied(format!("wish {wish_id} is not among the tasks the owner allows to run hosted")));
-            }
-        }
-        if let Some(who) = cfg["triggerers"].as_array() {
-            // the triggerers are subjects (a principal, `@<group>`, `@all`): any of the caller's admits it
-            let subjects = self.subjects_of(caller)?;
-            if !who.is_empty() && !who.iter().filter_map(Value::as_str).any(|s| subjects.contains(s)) {
-                return Err(WsError::denied("the owner's hosted execution configuration does not admit this caller"));
-            }
-        }
-        Ok(cfg)
-    }
-
     // ---- user work state (phase two §4.4): per subject, per Workspace, in local.sqlite ----
 
     /// `ws.get_user_state`: every entry of the caller.
@@ -1189,9 +1122,6 @@ impl Workspace {
                    "cloned_from": meta_get(&self.doc, "cloned_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
                    "acl_rev": self.acl_rev(), "anonymous": self.anonymous()?, "judged_as": access.principal });
-        // who runs hosted and for whom is the managers' business (V1); everyone learns whether it is on
-        let hosted = self.hosted_exec()?;
-        info["hosted_exec"] = if access.ws_caps.has(Cap::Manage) { hosted } else { json!({ "enabled": hosted["enabled"] }) };
         if access.is_owner() {
             info["owner"] = json!(true);
         }

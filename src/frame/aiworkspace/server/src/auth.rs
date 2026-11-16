@@ -42,6 +42,8 @@ pub trait Authenticator: Send + Sync {
     async fn caller_for(&self, principal: &str) -> Caller {
         guessed_caller(principal)
     }
+    /// The Agents of the account `owner` as `(AgentId, DID)`: whom a hosted run it starts can be handed to.
+    async fn agents_of(&self, owner: &str) -> Result<Vec<(String, String)>, String>;
 }
 
 /// The kind of a principal from its form alone.
@@ -181,6 +183,21 @@ impl Authenticator for StaticTokens {
                 None => Caller::agent(&id.principal),
             },
         }
+    }
+    /// The `agent` identities naming `owner`; the AgentId is their `app_id`, or what their DID names.
+    async fn agents_of(&self, owner: &str) -> Result<Vec<(String, String)>, String> {
+        let mut out: Vec<(String, String)> = self
+            .tokens
+            .values()
+            .filter(|t| t.class == StaticClass::Agent && t.owner.as_deref() == Some(owner))
+            .filter_map(|t| {
+                let id = t.app_id.clone().or_else(|| name_lib::DID::from_str(&t.principal).ok().and_then(|d| buckyos_api::AgentId::from_agent_did(&d).ok()).map(|a| a.to_string()))?;
+                Some((id, t.principal.clone()))
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 }
 
@@ -346,6 +363,30 @@ impl Authenticator for RuntimeAuth {
             }
         }
         guessed_caller(principal)
+    }
+    /// From system-config: `users/<owner>/agents/<id>/spec` (a trusted source, never a request parameter).
+    async fn agents_of(&self, owner: &str) -> Result<Vec<(String, String)>, String> {
+        use buckyos_api::{agent_spec_key, get_buckyos_api_runtime, AgentId, AgentSpec, SystemConfigError};
+        let client = get_buckyos_api_runtime().map_err(|e| e.to_string())?.get_system_config_client().await.map_err(|e| e.to_string())?;
+        let names = match client.list(&format!("users/{owner}/agents")).await {
+            Ok(names) => names,
+            Err(SystemConfigError::KeyNotFound(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut out = Vec::new();
+        for name in names {
+            let Ok(agent) = AgentId::parse(&name) else { continue };
+            match client.get(&agent_spec_key(owner, &agent)).await {
+                Ok(v) => {
+                    if let Ok(spec) = serde_json::from_str::<AgentSpec>(&v.value) {
+                        out.push((spec.agent_id.to_string(), spec.agent_did.to_string()));
+                    }
+                }
+                Err(SystemConfigError::KeyNotFound(_)) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(out)
     }
     async fn sso_settings(&self) -> Result<SsoSettings, AccessDenial> {
         use buckyos_api::{get_buckyos_api_runtime, SystemConfigError, SSO_SETTINGS_KEY};

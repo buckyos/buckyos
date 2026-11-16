@@ -806,6 +806,10 @@ pub struct LlmContextFile {
     /// in `(0, 1]` (default `DEFAULT_CONTEXT_YIELD_RATIO`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_yield_ratio: Option<f32>,
+    /// Tool rounds in a row that may fail before the run fails (default
+    /// `DEFAULT_MAX_CONSECUTIVE_ERRORS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_errors: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1487,6 +1491,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
             "llm_timeout",
             "context_window",
             "context_yield_ratio",
+            "max_consecutive_errors",
             "timeout",
             "runs_dir",
             "loop_model",
@@ -1540,6 +1545,10 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
     let context_yield_ratio = ctx.get_f32("", m, "context_yield_ratio")?;
     if context_yield_ratio.is_some_and(|r| !(r > 0.0 && r <= 1.0)) {
         return Err(ctx.err("context_yield_ratio", "must be in (0, 1]"));
+    }
+    let max_consecutive_errors = ctx.get_u32("", m, "max_consecutive_errors")?;
+    if max_consecutive_errors == Some(0) {
+        return Err(ctx.err("max_consecutive_errors", "must be at least 1"));
     }
     let timeout = ctx.get_u64("", m, "timeout")?;
     let runs_dir = match m.get("runs_dir") {
@@ -1689,6 +1698,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         llm_timeout,
         context_window,
         context_yield_ratio,
+        max_consecutive_errors,
         timeout,
         runs_dir,
         loop_model,
@@ -1755,6 +1765,10 @@ pub struct MergedConfig {
     /// in `(0, 1]` (default `DEFAULT_CONTEXT_YIELD_RATIO`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_yield_ratio: Option<f32>,
+    /// Tool rounds in a row that may fail before the run fails (default
+    /// `DEFAULT_MAX_CONSECUTIVE_ERRORS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_errors: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1853,6 +1867,7 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         scalar!(llm_timeout, "llm_timeout");
         scalar!(context_window, "context_window");
         scalar!(context_yield_ratio, "context_yield_ratio");
+        scalar!(max_consecutive_errors, "max_consecutive_errors");
         scalar!(timeout, "timeout");
         scalar!(runs_dir, "runs_dir");
         scalar!(loop_model, "loop_model");
@@ -2252,6 +2267,9 @@ pub struct RunLimits {
     /// (records written before the key existed included).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_yield_ratio: Option<f32>,
+    /// `max_consecutive_errors`; absent means `DEFAULT_MAX_CONSECUTIVE_ERRORS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_errors: Option<u32>,
 }
 
 /// 展开后的单个工具。
@@ -6283,6 +6301,7 @@ impl RunRecord {
                     llm_timeout_secs: DEFAULT_LLM_TIMEOUT_SECS,
                     context_window_tokens: None,
                     context_yield_ratio: None,
+                    max_consecutive_errors: None,
                 },
                 run_logs: RunLogLevel::Info,
                 result_format: ResultFormat::Raw,
@@ -7266,6 +7285,7 @@ impl XllmTask {
             ),
             context_window_tokens: merged.context_window,
             context_yield_ratio: merged.context_yield_ratio,
+            max_consecutive_errors: merged.max_consecutive_errors,
         };
         let store = match (&overrides.runs_dir, &merged.runs_dir) {
             (Some(p), _) => {
@@ -7705,6 +7725,7 @@ impl XllmTask {
             llm_timeout_secs: merged.llm_timeout.unwrap_or(DEFAULT_LLM_TIMEOUT_SECS),
             context_window_tokens: merged.context_window,
             context_yield_ratio: merged.context_yield_ratio,
+            max_consecutive_errors: merged.max_consecutive_errors,
         };
         let group = merged
             .prompt
@@ -8171,7 +8192,7 @@ pub fn hosted_request(
             context_window_tokens: cfg.limits.context_window_tokens,
         },
         error_policy: ErrorPolicy {
-            max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
+            max_consecutive_errors: cfg.limits.max_consecutive_errors.unwrap_or(DEFAULT_MAX_CONSECUTIVE_ERRORS),
         },
         forbid_next_behavior: false,
     }
@@ -9324,7 +9345,7 @@ impl XllmRun {
                 context_window_tokens: cfg.limits.context_window_tokens,
             },
                 error_policy: ErrorPolicy {
-                max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
+                max_consecutive_errors: cfg.limits.max_consecutive_errors.unwrap_or(DEFAULT_MAX_CONSECUTIVE_ERRORS),
             },
             forbid_next_behavior: false,
         };
@@ -13874,6 +13895,7 @@ there]]></write_file>
             llm_timeout_secs: 60,
             context_window_tokens: window,
             context_yield_ratio: ratio,
+            max_consecutive_errors: None,
         };
         assert_eq!(compaction_target_tokens(&limits(None, None)), 32_768);
         // 30% of the window, the default cap above it.
@@ -13882,6 +13904,24 @@ there]]></write_file>
         // Never above half a low yield line.
         assert_eq!(compaction_target_tokens(&limits(Some(20_000), Some(0.5))), 5_000);
         assert_eq!(compaction_target_tokens(&limits(Some(20_000), Some(0.4))), 4_000);
+    }
+
+    #[tokio::test]
+    async fn max_consecutive_errors_sets_the_error_policy() {
+        let path = Path::new(".llm_context");
+        let err = parse_llm_context_file(path, "max_consecutive_errors: 0\n").unwrap_err();
+        assert!(err.to_string().contains("max_consecutive_errors"), "{err}");
+        for (config, cap, recorded) in [("max_consecutive_errors: 6\n", 6, Some(6)), ("model: llm.chat\n", DEFAULT_MAX_CONSECUTIVE_ERRORS, None)] {
+            let env = Env::new();
+            env.write("project/.llm_context", config);
+            let llm = ScriptedLlm::new(vec![text("done")]);
+            let o = env.run(TaskInput::question("hello"), env.overrides(), llm).await.unwrap();
+            assert!(matches!(o, RunOutcome::Completed(_)), "{:?}", o.record().last_error);
+            let rec = env.store().read_record(&o.record().run_id).unwrap();
+            assert_eq!(rec.config.limits.max_consecutive_errors, recorded, "{config}");
+            let snap = env.store().get_snapshot(&rec.run_id, rec.latest_snapshot_idx.unwrap()).unwrap();
+            assert_eq!(snap.request.error_policy.max_consecutive_errors, cap, "{config}");
+        }
     }
 
     #[test]

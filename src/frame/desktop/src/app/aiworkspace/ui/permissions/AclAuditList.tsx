@@ -19,7 +19,7 @@ export interface AclAuditListProps {
 }
 
 const KNOWN = new Set(['acl.set', 'acl.create_group', 'acl.update_group', 'acl.delete_group', 'acl.members', 'acl.set_anonymous', 'acl.bind_macro', 'acl.load_design',
-  'entry.create', 'entry.close', 'entry.join', 'publish', 'unpublish', 'visibility.widened', 'macro.changed', 'hosted_exec.set', 'workspace.delete', 'session.link_member', 'session.revoke_link'])
+  'entry.create', 'entry.close', 'entry.join', 'publish', 'unpublish', 'visibility.widened', 'macro.changed', 'workspace.delete', 'session.link_member', 'session.revoke_link'])
 
 function mentions(item: AclAuditItem, entityId: string): boolean {
   return JSON.stringify(item.target ?? null).includes(`"${entityId}"`)
@@ -92,7 +92,7 @@ export function AclAuditList({ entityId = null, pageSize = 50 }: AclAuditListPro
   const { api } = useAcl()
   const { capabilities } = useWorkspaceCaps()
   const manage = capabilities.includes('manage')
-  // records outside permission changes (publications, moves, hosted execution) do not move the revision: "refresh"
+  // records outside permission changes (publications, moves) do not move the revision: "refresh"
   const rev = useAclRev()
   const [tick, setTick] = useState(0)
   const load = useCallback(() => (manage ? api.audit() : Promise.resolve([] as AclAuditItem[])), [api, manage])

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The Agent's command for its persistent browser (doc/opendan/protocol/Agent Browser Protocol.md §2).
+// The Agent's command for its persistent browser (doc/opendan/protocol/Agent Browser Protocol.md section 2).
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';

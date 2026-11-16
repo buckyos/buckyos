@@ -3,7 +3,7 @@
 //! Standalone (independent testing):
 //!
 //!   aiworkspace --data-dir ./aiws-data --listen 127.0.0.1:4120 \
-//!               --auth-file tokens.json [--fixture-sources] [--log-level info] \
+//!               --auth-file tokens.json [--fixture-sources] [--log-level info] [--zone-root dir] [--agent-gateway url] \
 //!               [--nfs-server http://127.0.0.1:3290 --named-store-config store.json]
 //!
 //!   tokens.json: { "tokens": { "<token>": { "principal": "alice" } } }
@@ -52,6 +52,7 @@ fn main() {
         .arg(Arg::new("public-base").long("public-base").help("Standalone: the origin publications are linked at, with {workspace_id} substituted, e.g. http://aiws-{workspace_id}.localhost:4120"))
         .arg(Arg::new("web").long("web").help("Standalone: the Desktop build directory (holds aiws.html) the AI Workspace page is served from on a Workspace's own host"))
         .arg(Arg::new("zone-root").long("zone-root").help("Standalone: the folder holding home/<user>/… that Zone sources (source.kind zone) read, as $BUCKYOS_ROOT/data on a node"))
+        .arg(Arg::new("agent-gateway").long("agent-gateway").help("Standalone: where Agents serve kRPC (<url>/<agent_id>), as the node gateway's /kapi on a node: a synced source's refresh runs its sync task there"))
         .arg(Arg::new("log-level").long("log-level").default_value("info"))
         .get_matches();
     // deep futures need more than the default stack
@@ -85,7 +86,8 @@ fn main() {
         }
         let nfs = matches.get_one::<String>("nfs-server").map(|origin| (origin.trim_end_matches('/').to_string(), PathBuf::from(matches.get_one::<String>("named-store-config").unwrap())));
         let limits = Limits { public_base: matches.get_one::<String>("public-base").cloned(), web_dir: aiworkspace_server::pages::locate_web_dir(matches.get_one::<String>("web").map(String::as_str)),
-                              zone_root: matches.get_one::<String>("zone-root").map(PathBuf::from), ..Limits::default() };
+                              zone_root: matches.get_one::<String>("zone-root").map(PathBuf::from), agent_gateway: matches.get_one::<String>("agent-gateway").map(|u| u.trim_end_matches('/').to_string()),
+                              ..Limits::default() };
         rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), limits, fixtures, None, wish, Objects::Standalone(nfs)));
     } else {
         init_logging("aiworkspace", true);
@@ -141,6 +143,8 @@ async fn buckyos_service_main(fixtures: bool) {
             std::process::exit(1);
         }
     };
+    // Agents serve their kRPC behind this node's gateway (`/kapi/<agent_id>`, routed by the scheduler)
+    let agent_gateway = format!("http://127.0.0.1:{}/kapi", runtime.node_gateway_port);
     if let Err(e) = set_buckyos_api_runtime(runtime) {
         log::error!("register aiworkspace runtime failed: {:?}", e);
         std::process::exit(1);
@@ -156,6 +160,7 @@ async fn buckyos_service_main(fixtures: bool) {
         public_base,
         web_dir,
         zone_root: Some(buckyos_kit::get_buckyos_root_dir().join("data")),
+        agent_gateway: Some(agent_gateway),
         ..Limits::default()
     };
     // wake-up hints over kevent: only "there is a new head", never content or entity ids

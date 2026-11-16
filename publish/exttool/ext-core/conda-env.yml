@@ -1,4 +1,4 @@
-# The tools of ext-core with no official binary archive (doc/app_service/paios容器需求.md §6.4 table B).
+# Conda-forge tools in the ext-core payload; see the extension tools documentation.
 # Regenerate the lock after changing this file:
 #   uvx conda-lock lock -f conda-env.yml --lockfile conda-lock.yml --micromamba --mamba
 channels:

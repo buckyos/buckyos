@@ -85,27 +85,3 @@ test('UI14 workspace and canvas rules by path, and what a restricted principal c
   expect(fresh.items[0].status).toBe('unknown')
   expect(JSON.stringify(fresh)).not.toContain('原始销售数据')
 })
-
-test('内核架构改进 D22: the owner configures hosted execution; a reader cannot change it; whose AI a run uses is no setting', async ({ page, browser, api }) => {
-  const ws = await api.demo(ALICE, 'quarterly', `hosted ${Date.now()}`)
-  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
-  await openEditor(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-perm-tab-hosted').click()
-  // a run uses the AI of where it runs (local: the starter's own, hosted: the owner's): nothing to choose
-  await expect(page.getByTestId('aiws-hosted-enabled')).toBeVisible()
-  await expect(page.getByTestId('aiws-wish-aicc-mode')).toHaveCount(0)
-
-  // a reader sees only its own permissions: no hosted execution to change (the owner's own, 权限需求 R17)
-  const bobPage = await (await browser.newContext()).newPage()
-  await openEditor(bobPage, BOB, ws.workspace_id)
-  await expect(bobPage.getByTestId('aiws-perm-mine')).toBeVisible()
-  // the owner names the Agent and the wishes (T3-7); a reader cannot change it
-  await page.getByTestId('aiws-hosted-enabled').check()
-  await page.getByTestId('aiws-hosted-agent').fill('jarvis.test.buckyos.io')
-  await page.getByTestId('aiws-hosted-wish-wish-analysis').check()
-  await page.getByTestId('aiws-hosted-save').click()
-  await expect.poll(async () => (await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).hosted_exec).toMatchObject({ enabled: true, agent_id: 'jarvis.test.buckyos.io', allowed_wishes: ['wish-analysis'] })
-  await expect(bobPage.getByTestId('aiws-hosted-save')).toHaveCount(0)
-  const hostedRefused = await api.rpc(BOB, 'ws.set_hosted_exec', { workspace_id: ws.workspace_id, config: { enabled: false } })
-  expect(hostedRefused.error.code).toBe('PERMISSION_DENIED')
-})

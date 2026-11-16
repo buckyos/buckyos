@@ -20,19 +20,22 @@ use std::sync::Arc;
 const MAX_FETCH_BYTES: usize = 32 * 1024 * 1024;
 const FETCH_TIMEOUT_SECS: u64 = 30;
 
-/// `proc.start { program: source.refresh@1, params: { entity_id } }`: the run is created and refreshed on a worker.
+/// `proc.start { program: source.refresh@1, params: { entity_id } }`: the run is created and refreshed on a worker; a
+/// Source with a sync task has its Agent run the task first.
 pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, params: &Value, idem: &str) -> WsResult<Value> {
     let entity_id = params.get("entity_id").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("entity_id required"))?.to_string();
     let run = state.with_ws(ws_id, |ws| ws.source_refresh_start(caller, &entity_id, idem))?;
     if run["replayed"] != json!(true) {
         let (st, w, rid) = (state.clone(), ws_id.to_string(), run["run_id"].as_str().unwrap_or("").to_string());
-        tokio::runtime::Handle::current().spawn(async move { refresh(st, w, rid).await });
+        tokio::runtime::Handle::current().spawn(async move { refresh(st, w, rid, true).await });
     }
     Ok(run)
 }
 
 /// Fetch, then apply (one Commit of origin `source`); a failure leaves the entity as it was and the run says why.
-pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String) {
+/// `run_sync`: a triggered refresh of a Source with `sync` runs the task on its Agent before it reads the output; the
+/// timer only reads it again (the Agent host keeps the task's schedule).
+pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String, run_sync: bool) {
     let (st, w, r) = (state.clone(), ws_id.clone(), run_id.clone());
     let run = match tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.source_run(&r))).await {
         Ok(Ok(run)) => run,
@@ -43,7 +46,13 @@ pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String) {
     let consumer = run["params"]["entity_id"].as_str().unwrap_or("").to_string();
     let (st, w, r) = (state.clone(), ws_id.clone(), run_id.clone());
     let _ = tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.source_run_set(&r, "running", None))).await;
-    let outcome = fetch(&state, &ws_id, &consumer, &source, &principal).await;
+    let outcome = async {
+        if let Some(sync) = source.get("sync").filter(|s| run_sync && s.is_object()) {
+            run_sync_task(&state, &ws_id, sync).await?;
+        }
+        fetch(&state, &ws_id, &consumer, &source, &principal).await
+    }
+    .await;
     let (st, w, r) = (state.clone(), ws_id.clone(), run_id.clone());
     let _ = tokio::task::spawn_blocking(move || {
         st.with_ws(&w, |ws| match outcome {
@@ -94,9 +103,49 @@ pub fn tick(state: &Arc<AppState>) {
         });
         for run_id in due.unwrap_or_default() {
             let (st, w) = (state.clone(), ws_id.clone());
-            tokio::runtime::Handle::current().spawn(async move { refresh(st, w, run_id).await });
+            tokio::runtime::Handle::current().spawn(async move { refresh(st, w, run_id, false).await });
         }
     }
+}
+
+/// How long a triggered refresh waits for a sync task's run (`sync.run { wait_ms }`, at most what the Agent host allows).
+const SYNC_WAIT_MS: u64 = 120_000;
+
+/// `source.sync { agent_id, task_id }` (余下任务 §8.2): the workspace owner's Agent runs the task now — `sync.run` through
+/// the Agent gateway with this service's own session, which the Agent accepts for `sync.run` / `sync.get` — and the
+/// refresh then reads the output file. An Agent that is not the current owner's, unreachable, or refusing (a disabled
+/// task) fails the refresh with `SYNC_UNAVAILABLE`; a run that failed fails it with the program's reason. Either way the
+/// data stays at its last valid version.
+async fn run_sync_task(state: &Arc<AppState>, ws_id: &str, sync: &Value) -> WsResult<()> {
+    let unavailable = |m: String| WsError::sub(Code::DependencyUnavailable, "SYNC_UNAVAILABLE", m);
+    let (agent_id, task_id) = (sync["agent_id"].as_str().unwrap_or(""), sync["task_id"].as_str().unwrap_or(""));
+    let base = state.limits.agent_gateway.clone().ok_or_else(|| unavailable("no Agent is reachable from this deployment: the sync task cannot run".into()))?;
+    let (st, w) = (state.clone(), ws_id.to_string());
+    let owner = tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.owner())).await.map_err(|e| WsError::io(e.to_string()))??.unwrap_or_default();
+    let agent = buckyos_api::AgentId::parse(agent_id).map_err(|e| unavailable(format!("{agent_id} is no Agent id: {e}")))?;
+    let as_agent = state.auth.caller_for(&agent.agent_did().to_string()).await;
+    if !as_agent.acting_for.as_ref().is_some_and(|o| o.principal == owner) {
+        return Err(unavailable(format!("{agent_id} is not an Agent of this workspace's owner ({owner})")));
+    }
+    let token = match buckyos_api::get_buckyos_api_runtime() {
+        Ok(runtime) => Some(runtime.get_session_token().await),
+        Err(_) => None,
+    };
+    let client = kRPC::kRPC::new_with_timeout_secs(&format!("{base}/{agent_id}"), token, SYNC_WAIT_MS / 1000 + 30);
+    let answer = client
+        .call("sync.run", json!({ "task_id": task_id, "wait_ms": SYNC_WAIT_MS }))
+        .await
+        .map_err(|e| unavailable(format!("the sync task {task_id} of {agent_id} did not run: {e}")))?;
+    let run = &answer["run"];
+    if run["status"] == json!("failed") {
+        let why = match &run["error"] {
+            Value::String(s) => s.clone(),
+            Value::Null => "no reason given".to_string(),
+            other => other.to_string(),
+        };
+        return Err(WsError::new(Code::DependencyUnavailable, format!("the sync program failed: {}", why.chars().take(2000).collect::<String>())).with_data(json!({ "run": run })));
+    }
+    Ok(())
 }
 
 /// What one fetch got: the content, the bytes it cost, the content root a fixed Source resolved to, and what the
@@ -138,8 +187,9 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Valu
 }
 
 /// The rows of a fetched table cut to `def.limit` (file order) and identified by the primary key: `def.primary_key`,
-/// else an `id` column; each `record_id` is [`record_id_for_key`] of the key values. No key, a row without its key, or
-/// two rows with one key fail the refresh and write nothing.
+/// else an `id` column; each `record_id` is [`record_id_for_key`] of the key values. A row without its key, or two rows
+/// with one key, fail the refresh and write nothing. With neither, the rows have no `record_id`: the refresh numbers
+/// them (owner 2026-11-16: an auto-increment id when there is no suitable key, `Workspace::source_ops`).
 fn keyed(fields: &[Value], mut rows: Vec<Value>, def: &Value) -> WsResult<(Vec<Value>, bool)> {
     let truncated = def["limit"].as_u64().is_some_and(|n| rows.len() as u64 > n);
     if let Some(n) = def["limit"].as_u64() {
@@ -148,7 +198,7 @@ fn keyed(fields: &[Value], mut rows: Vec<Value>, def: &Value) -> WsResult<(Vec<V
     let key: Vec<String> = match def["primary_key"].as_array() {
         Some(k) => k.iter().filter_map(Value::as_str).map(str::to_string).collect(),
         None if fields.iter().any(|f| f["field_id"] == json!("id")) => vec!["id".to_string()],
-        None => return Err(WsError::sub(Code::InvalidSchema, "PRIMARY_KEY_REQUIRED", "the source's rows have no primary key: give source.def.primary_key, or an id column")),
+        None => return Ok((rows, truncated)),
     };
     if let Some(k) = key.iter().find(|k| !fields.iter().any(|f| f["field_id"] == json!(k))) {
         return Err(WsError::sub(Code::InvalidSchema, "PRIMARY_KEY_REQUIRED", format!("the primary key field {k} is not among the source's fields")).with_data(json!({ "field_id": k })));

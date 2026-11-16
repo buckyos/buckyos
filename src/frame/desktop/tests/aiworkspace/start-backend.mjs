@@ -51,10 +51,12 @@ writeFileSync(bucketSpecs, JSON.stringify({
 }))
 const nfs = spawn(nfsBinary, ['--data-dir', join(root, 'nfs'), '--export', `home=${exported}`, '--named-store', store, '--bucket-specs', bucketSpecs, '--listen', `127.0.0.1:${process.env.AIWS_E2E_NDM_PORT}`, '--log-level', 'warn'], { stdio: 'inherit' })
 const auth = join(root, 'tokens.json')
-// a Limited account (restricted session) and an External DID stand for the hybrid SSO visitors (entries.spec.ts)
+// a Limited account (restricted session) and an External DID stand for the hybrid SSO visitors (entries.spec.ts); alice's
+// Agent is the MessageHub mock's own one, which "使用我的 Agent" hands a run to (wish.spec.ts)
 writeFileSync(auth, JSON.stringify({
   tokens: {
     'tok-alice': { principal: 'alice', auth_method: 'password' },
+    'tok-coder': { principal: 'did:buckyos:agent:codeassistant', class: 'agent', owner: 'alice', app_id: 'codeassistant.test.buckyos.io' },
     'tok-bob': { principal: 'bob', auth_method: 'password' },
     'tok-lim': { principal: 'acme-c1', restricted: true, auth_method: 'password' },
     'tok-ext': { principal: 'did:bns:carol', class: 'external', auth_method: 'did_federation' },

@@ -61,11 +61,6 @@ fn source_definitions_and_zone_paths() {
         let f = ws.fail(bad(source.clone()));
         assert!(detail(&f).contains(why), "{source}: {f}");
     }
-    // a Zone table is identified by its primary key (B5-1)
-    let f = ws.fail(bad(json!({ "kind": "zone", "path": "/home/alice/q.json", "def": { "meaning": "m" } })));
-    assert_eq!(sub(&f), "PRIMARY_KEY_REQUIRED", "{f}");
-    let f = ws.fail(bad(json!({ "kind": "zone", "path": "/home/alice/q.json" })));
-    assert_eq!(sub(&f), "PRIMARY_KEY_REQUIRED", "{f}");
     // a session feed carries no definition
     assert!(detail(&ws.fail(bad(json!({ "kind": "session", "feed": "tasks", "def": { "meaning": "m" } })))).contains("session source"));
 }
@@ -202,4 +197,33 @@ fn a_table_view_may_show_its_first_rows() {
     ws.ok(cell(json!(100)));
     let m = meta::meta(&ws.store, &full(), &ws.store.entity("v").unwrap().unwrap(), None).unwrap();
     assert_eq!(m["shows"]["row_limit"], 100, "{m}");
+}
+
+#[test]
+fn a_zone_source_may_name_the_sync_task_that_writes_it() {
+    let mut ws = MemWorkspace::new();
+    let out = "/home/alice/agents/bot.example/sync/quotes/out.json";
+    let synced = |path: &str, sync: Value| json!({ "kind": "zone", "path": path, "sync": sync, "def": { "meaning": "Daily closing prices", "primary_key": ["symbol"] } });
+    ws.ok(json!([create("quotes", "a", json!({ "fields": fields(), "source": synced(out, json!({ "agent_id": "bot.example", "task_id": "quotes" })) }))]));
+    let m = meta::meta(&ws.store, &full(), &ws.store.entity("quotes").unwrap().unwrap(), None).unwrap();
+    assert_eq!(m["data"]["sync"], json!({ "agent_id": "bot.example", "task_id": "quotes" }), "{m}");
+    ws.ok(json!([create("plain", "b", json!({ "fields": fields(), "source": zone_source() }))]));
+    assert!(meta::meta(&ws.store, &full(), &ws.store.entity("plain").unwrap().unwrap(), None).unwrap()["data"]["sync"].is_null());
+    let bad = |source: Value| json!([create("x", "c", json!({ "fields": fields(), "source": source }))]);
+    for (source, why) in [
+        (synced("/home/alice/sync/quotes.json", json!({ "agent_id": "bot.example", "task_id": "quotes" })), "agents/bot.example/sync/quotes/out.json"),
+        (synced("/home/alice/agents/bot.example/sync/other/out.json", json!({ "agent_id": "bot.example", "task_id": "quotes" })), "source.path must be"),
+        (synced("/home/alice/agents/other.example/sync/quotes/out.json", json!({ "agent_id": "bot.example", "task_id": "quotes" })), "source.path must be"),
+        (synced(out, json!({ "agent_id": "bot.example" })), "{ agent_id, task_id }"),
+        (synced(out, json!({ "agent_id": "bot.example", "task_id": "quotes", "secret": "x" })), "agent_id and task_id only"),
+        (json!({ "kind": "url", "url": "https://example.invalid/q.csv", "sync": { "agent_id": "bot.example", "task_id": "quotes" } }), "belongs to a zone source"),
+    ] {
+        let f = ws.fail(bad(source.clone()));
+        assert!(detail(&f).contains(why), "{source}: {f}");
+    }
+    // it is part of the Source: the owner's alone
+    let editor = Access::uniform("bob", CapSet::ALL);
+    let env = ws.env("bob", "human", None, false);
+    let unset = MemWorkspace::request(json!([{ "op": "entity.set_keys", "entity_id": "quotes", "keys": [{ "key": "source", "value": synced(out, json!({ "agent_id": "bot.example", "task_id": "quotes2" })), "expect": "any" }] }]));
+    assert_eq!(ws.commit_with(&editor, &env, &unset).unwrap_err().to_json()["errors"][0]["code"], "PERMISSION_DENIED");
 }

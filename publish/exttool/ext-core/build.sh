@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the payloads of ext-core (doc/pikg/format.md §5.1, ExtTools TODO §3.10) into payload/<platform>/ and, with
+# Build the payloads of ext-core (doc/pikg/format.md section 5.1, ExtTools TODO section 3.10) into payload/<platform>/ and, with
 # --archive, dist/ext-core-<version>-<platform>.tar.gz plus dist/manifest.json.
 # Every build also writes the matching corresponding-source archive to dist/.
 #
@@ -8,8 +8,8 @@
 #   buckyos pikg build dapp_meta && buckyos pikg pack dapp_dist
 #   buckyos ext-tools import dapp_dist/ext-core-<version>.pikg     # into a Zone's Repo, digest unchanged
 #
-# Tools with an official archive are downloaded here, version and SHA256 pinned in the table below (§6.4 of
-# doc/app_service/paios容器需求.md: table B says which tool comes from where). The ones without go into a conda-forge
+# Tools with an official archive are downloaded here, version and SHA256 pinned in the table below (section 6.4 of
+# the paios container requirements: table B says which tool comes from where). The ones without go into a conda-forge
 # prefix locked by conda-lock.yml. A launcher in bin/ only ever points into store/ext-core, relative to itself, and never
 # falls back to the PATH. The browser is the exception: an online item, which the payload declares (ext-manifest.json
 # `online`) and a node downloads from Google into <tools>/online/chromium; its launcher points there.
@@ -291,7 +291,7 @@ if git_core.is_dir():
     for path in git_core.iterdir():
         if path.is_symlink() and os.readlink(path) == "git":
             path.unlink()
-# OCR language data (§6.4 of doc/app_service/paios容器需求.md): the UI languages, their vertical variants, and the other
+# OCR language data (section 6.4 of the paios container requirements): the UI languages, their vertical variants, and the other
 # common ones; keep smoke/tesseract.sh and smoke/tesseract.ps1 in step.
 tesseract_langs = {"osd", "eng", "chi_sim", "chi_tra", "spa", "fra", "deu", "kor", "jpn", "rus",
                    "chi_sim_vert", "chi_tra_vert", "jpn_vert", "kor_vert",
@@ -484,7 +484,7 @@ install_official() {
   rm -rf "$store/.tmp"
 }
 
-# LibreOffice, headless conversion only (doc/app_service/paios容器需求.md §6.4 table B): writer, calc, impress, draw, math,
+# LibreOffice, headless conversion only (the paios container requirements section 6.4 table B): writer, calc, impress, draw, math,
 # the import filters and its own fonts. No Python, Java classes, help, gallery, icon themes, extensions, dictionaries,
 # database drivers nor GUI media backends. Noto Sans / Serif CJK, regular and bold, go into its font directory on every
 # platform: the font set is part of a conversion's fingerprint.

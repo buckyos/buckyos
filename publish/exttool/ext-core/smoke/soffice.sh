@@ -23,7 +23,12 @@ trap cleanup EXIT
 cd "$dir"
 echo '[soffice] preparing DOCX and XLSX fixtures'
 magick -size 32x32 xc:red a.png
-printf '# 标题 Title\n\n中英混排 mixed text\n\n![](a.png)\n' > a.md
+mixed_text="$(python3 -c 'print("\u4e2d\u82f1\u6df7\u6392 mixed text")')"
+sheet_text="$(python3 -c 'print("\u8868\u683c sheet")')"
+python3 - <<'PYTHON'
+from pathlib import Path
+Path("a.md").write_text("# \u6807\u9898 Title\n\n\u4e2d\u82f1\u6df7\u6392 mixed text\n\n![](a.png)\n", encoding="utf-8")
+PYTHON
 pandoc a.md -o a.docx
 python3 "$smoke_dir/soffice_docx.py" a.docx
 python3 - <<'PY'
@@ -33,7 +38,7 @@ parts = {
     "_rels/.rels": '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
     "xl/workbook.xml": '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="s" sheetId="1" r:id="rId1"/></sheets></workbook>',
     "xl/_rels/workbook.xml.rels": '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
-    "xl/worksheets/sheet1.xml": '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>表格 sheet</t></is></c><c r="B1"><v>42</v></c></row></sheetData></worksheet>',
+    "xl/worksheets/sheet1.xml": '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>\u8868\u683c sheet</t></is></c><c r="B1"><v>42</v></c></row></sheetData></worksheet>',
 }
 with zipfile.ZipFile("b.xlsx", "w") as z:
     for name, text in parts.items():
@@ -67,8 +72,8 @@ PY
   fi
 }
 echo '[soffice] checking DOCX and XLSX text'
-require_text a.txt '中英混排 mixed text'
-require_text b.txt '表格 sheet'
+require_text a.txt "$mixed_text"
+require_text b.txt "$sheet_text"
 echo '[soffice] checking embedded Noto CJK font and image'
 if ! grep -a -q 'NotoS[a-z]*CJK' out/a.pdf; then
   echo '[soffice] DOCX PDF has no embedded Noto CJK font marker' >&2

@@ -14,6 +14,7 @@ import { createInfer } from '../../executor/infer'
 import { claims, LocalExecutor } from '../../executor/localExecutor'
 import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
+import { panelAgent, type PanelAgent } from '../jarvis/session'
 import { latestRecord } from './records'
 
 const ACTIVE = new Set(['queued', 'snapshotting', 'running', 'validating', 'applying'])
@@ -160,24 +161,36 @@ export class WishService {
     }
   }
 
-  // ---- where a run executes (内核架构改进 §9, D14, D22)
+  // ---- where a run executes (内核架构改进 §9, D14; 2026-11-16: hosted is the viewer's own Agent)
 
-  /** The modes this workspace offers: this browser, and the owner's Agent when hosted execution is configured.
-   * Empty on a service without the execution model. */
+  /** The viewer's own Agent (the one the Agent panel talks to), once looked up; a guest has none. */
+  private agent: PanelAgent | null | undefined
+  private agentLookup: Promise<PanelAgent | null> | null = null
+
+  private viewerAgent(): Promise<PanelAgent | null> {
+    if (isGuestPrincipal(this.store.session.info().principal)) return Promise.resolve(null)
+    this.agentLookup ??= panelAgent().catch(() => null).then((found) => { this.agent = found; this.changed(); return found })
+    return this.agentLookup
+  }
+
+  /** The modes this viewer has here: this browser, and its own Agent once it has one. Empty on a service without the
+   * execution model. */
   executionModes(): WishExecutionMode[] {
-    const info = this.store.session.info()
-    if (!info.wish_execution) return []
-    return info.hosted_exec?.enabled ? ['local', 'hosted'] : ['local']
+    if (!this.store.session.info().wish_execution) return []
+    if (this.agent === undefined) void this.viewerAgent()
+    return this.agent ? ['local', 'hosted'] : ['local']
+  }
+
+  /** The mode this viewer chose, else the service's default — whether or not it is available. */
+  private wantedMode(): WishExecutionMode | undefined {
+    let saved: string | null = null
+    try { saved = window.localStorage.getItem(EXECUTION_KEY) } catch { saved = null }
+    return saved === 'local' || saved === 'hosted' ? saved : this.store.session.info().wish_execution?.default
   }
 
   executionMode(): WishExecutionMode {
-    const modes = this.executionModes()
-    let saved: string | null = null
-    try { saved = window.localStorage.getItem(EXECUTION_KEY) } catch { saved = null }
-    if (saved && modes.includes(saved as WishExecutionMode)) return saved as WishExecutionMode
-    const preset = this.store.session.info().wish_execution?.default
-    if (preset && modes.includes(preset)) return preset
-    return 'local'
+    const wanted = this.wantedMode()
+    return wanted && this.executionModes().includes(wanted) ? wanted : 'local'
   }
 
   setExecutionMode(mode: WishExecutionMode) {
@@ -186,10 +199,10 @@ export class WishService {
   }
 
   /** Why this browser cannot call the model of a stage it would execute (浏览器优先 Q5, 余下任务 A4): a guest has no
-   * Zone session to call AICC with. Hosted execution, when the owner turned it on, needs no model here. */
+   * Zone session to call AICC with, nor an Agent of its own to hand the stage to. */
   noModelReason(): string | null {
-    if (this.executionMode() !== 'local' || devModelEndpoint() || !isGuestPrincipal(this.store.session.info().principal)) return null
-    return aiwsT(this.executionModes().includes('hosted') ? 'aiworkspace.wish.noModel.hosted' : 'aiworkspace.wish.noModel')
+    if (devModelEndpoint() || !isGuestPrincipal(this.store.session.info().principal)) return null
+    return aiwsT('aiworkspace.wish.noModel')
   }
 
   /** An interrupted local run resumes from this browser, which keeps its claim token. */
@@ -220,7 +233,11 @@ export class WishService {
   /** Start a stage and follow it to its end. A run that fails is no error here: it wrote its record (§3.3), which says why. */
   private async start(wishId: string, stage: WishStage, extra: Record<string, Json>, cellId?: string, raised?: { event: Json; key: string }): Promise<WishRunView> {
     const params: Record<string, Json> = { wish_id: wishId, stage, location: this.location(wishId, cellId) as unknown as Json, request: { ...this.request(), ...(raised ? { event: raised.event } : {}) }, ...extra }
-    if (this.executionModes().length) params.execution = { mode: this.executionMode() }
+    if (this.store.session.info().wish_execution) {
+      // a hosted run names the viewer's Agent: looked up when that is what the viewer chose (none: this browser)
+      const agent = this.wantedMode() === 'hosted' ? await this.viewerAgent() : null
+      params.execution = agent ? { mode: 'hosted', agent: agent.did } : { mode: 'local' }
+    }
     // the stage's commit is written in this window's session: the write locks it holds count
     params.session_id = this.store.session.sessionId
     const started = await this.store.session.wishStart('wish.xllm@1', params, raised?.key)

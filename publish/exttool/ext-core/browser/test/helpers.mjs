@@ -309,17 +309,17 @@ export async function startSite() {
     return signals.get(name);
   };
   const pages = {
-    '/form': `<!doctype html><html lang="zh"><meta charset="utf-8"><title>登记表</title>
-<h1>登记表</h1>
-<form onsubmit="event.preventDefault(); result.textContent = '已提交：' + who.value + '，' + city.value">
-  <label>姓名 <input id="who"></label>
-  <label>城市 <input id="city"></label>
-  <button>提交</button>
+    '/form': `<!doctype html><html lang="zh"><meta charset="utf-8"><title>\u767b\u8bb0\u8868</title>
+<h1>\u767b\u8bb0\u8868</h1>
+<form onsubmit="event.preventDefault(); result.textContent = '\u5df2\u63d0\u4ea4\uff1a' + who.value + '\uff0c' + city.value">
+  <label>\u59d3\u540d <input id="who"></label>
+  <label>\u57ce\u5e02 <input id="city"></label>
+  <button>\u63d0\u4ea4</button>
 </form>
 <p id="result"></p></html>`,
-    '/article': `<!doctype html><html lang="zh"><meta charset="utf-8"><title>旧网站</title>
-<h1 id="headline">原标题</h1><img id="photo" src="/big.png">
-<button id="more" onclick="headline.textContent = '点过之后的标题'">更多</button></html>`,
+    '/article': `<!doctype html><html lang="zh"><meta charset="utf-8"><title>\u65e7\u7f51\u7ad9</title>
+<h1 id="headline">\u539f\u6807\u9898</h1><img id="photo" src="/big.png">
+<button id="more" onclick="headline.textContent = '\u70b9\u8fc7\u4e4b\u540e\u7684\u6807\u9898'">\u66f4\u591a</button></html>`,
     '/blank': '<!doctype html><title>blank</title>',
   };
   const picture = png(2000, 500, [200, 30, 30]);

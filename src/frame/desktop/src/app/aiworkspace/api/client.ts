@@ -6,7 +6,7 @@ import type {
   QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Json,
   UserPrefsRead, WorkspaceListItem,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishRollbackResult, WishRunView,
-  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, WishStageFiles, HostedExecConfig, Publication, Referrer,
+  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, WishStageFiles, Publication, Referrer,
   ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
   AclAuditItem, AclEntityView, AclExplain, AclSubjectView,
   PresenceList, WorkLogFilter, WorkLogPage,
@@ -63,7 +63,6 @@ export class AiwsClient {
   }
   /** R19: the operation record, oldest first, after `after` (a `seq`). */
   aclAudit(ws: Ws, after = 0, limit = 200) { return this.call<Result<{ items: AclAuditItem[] }>>('acl.audit', { ...ws, after, limit }) }
-  wsSetHostedExec(ws: Ws, config: HostedExecConfig) { return this.call<Result<{ hosted_exec: HostedExecConfig }>>('ws.set_hosted_exec', { ...ws, config: config as unknown as Json }) }
   wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
   // ---- publication by path (内核架构改进 D26)
   wsPublish(ws: Ws, entity_id: string, name?: string) { return this.call<Result<Publication>>('ws.publish', { ...ws, entity_id, ...(name ? { name } : {}) }) }

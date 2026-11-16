@@ -41,7 +41,6 @@ export const en: Record<string, string> = {
   'aiworkspace.perm.part.rules': 'Rules',
   'aiworkspace.perm.part.check': 'Check permissions',
   'aiworkspace.perm.part.audit': 'Change log',
-  'aiworkspace.perm.part.hosted': 'Hosted execution',
 
   'aiworkspace.perm.cap.read': 'Read',
   'aiworkspace.perm.cap.append': 'Append',
@@ -248,7 +247,6 @@ export const en: Record<string, string> = {
   'aiworkspace.perm.audit.action.unpublish': 'Unpublished',
   'aiworkspace.perm.audit.action.visibility.widened': 'Moved where more may see it',
   'aiworkspace.perm.audit.action.macro.changed': 'Bound macro changed',
-  'aiworkspace.perm.audit.action.hosted_exec.set': 'Hosted execution changed',
   'aiworkspace.perm.audit.action.workspace.delete': 'Workspace deleted',
   'aiworkspace.perm.audit.action.session.link_member': 'Joined through a session link',
   'aiworkspace.perm.audit.action.session.revoke_link': 'Session link revoked',
@@ -316,7 +314,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.perm.part.rules': '规则',
   'aiworkspace.perm.part.check': '检查权限',
   'aiworkspace.perm.part.audit': '操作记录',
-  'aiworkspace.perm.part.hosted': '托管执行',
 
   'aiworkspace.perm.cap.read': '读取',
   'aiworkspace.perm.cap.append': '追加',
@@ -523,7 +520,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.perm.audit.action.unpublish': '撤销发布',
   'aiworkspace.perm.audit.action.visibility.widened': '移动后可见范围扩大',
   'aiworkspace.perm.audit.action.macro.changed': '修改了已绑定组的宏',
-  'aiworkspace.perm.audit.action.hosted_exec.set': '修改托管执行',
   'aiworkspace.perm.audit.action.workspace.delete': '删除工作区',
   'aiworkspace.perm.audit.action.session.link_member': '经会话链接加入',
   'aiworkspace.perm.audit.action.session.revoke_link': '撤销会话链接',
