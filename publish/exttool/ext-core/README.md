@@ -38,6 +38,13 @@ download from its address fails or has other bytes, the addresses listed for its
 SHA256 are tried in turn and checked the same way. Source templates, VCS-only
 recipes, missing patches, and unpinned downloads fail collection.
 
+A Cargo.lock inside a source archive brings its crates.io dependencies, each
+pinned by the lock's checksum. A git dependency of such a lock is included only
+when `cargo-git-sources.json` pins an archive of its locked commit (an https
+address, the file name, the archive's SHA256); GitHub's archive of a commit
+(`codeload.github.com/<owner>/<repo>/tar.gz/<commit>`) is byte-stable. An
+unpinned git dependency stays a release blocker.
+
 The source archive also contains registry crate sources pinned by top-level
 Cargo.lock files, including dependencies compiled into Rust libraries. A
 non-registry Cargo dependency is recorded as unresolved until its exact source

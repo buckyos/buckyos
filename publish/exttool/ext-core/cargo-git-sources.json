@@ -1,0 +1,8 @@
+{
+  "git+https://github.com/google/googletest-rust?rev=0db12bb338b9e75884a24493273c6bf4ce0fa5f5#0db12bb338b9e75884a24493273c6bf4ce0fa5f5": {
+    "url": "https://codeload.github.com/google/googletest-rust/tar.gz/0db12bb338b9e75884a24493273c6bf4ce0fa5f5",
+    "file": "googletest-rust-0db12bb338b9e75884a24493273c6bf4ce0fa5f5.tar.gz",
+    "sha256": "701e80e9db04838f3817c04e330e2b688e74d335d2b7664777334b10f9700b2c",
+    "reason": "The googletest and googletest_macro crates in the Cargo.lock of protobuf 6.33.5 (Conda libprotobuf on osx-arm64): GitHub's archive of the locked commit, which is byte-stable."
+  }
+}

@@ -133,6 +133,24 @@ class ComplianceTests(unittest.TestCase):
         with self.assertRaisesRegex(compliance.ComplianceError, "unsafe relative path"):
             compliance.artifact(other, recipe, self.root, self.root)
 
+    def test_a_cargo_git_source_is_included_only_when_its_commit_archive_is_pinned(self):
+        origin = "git+https://github.com/example/crate?rev=" + "c" * 40 + "#" + "c" * 40
+        lock = ('[[package]]\nname = "pinned"\nversion = "1.0.0"\nsource = "' + origin + '"\n\n'
+                '[[package]]\nname = "unpinned"\nversion = "1.0.0"\nsource = "git+https://github.com/example/other?rev=1#1"\n')
+        archive = self.root / "project.tar.gz"
+        with tarfile.open(archive, "w:gz") as handle:
+            data = lock.encode()
+            info = tarfile.TarInfo("project-1.0/Cargo.lock")
+            info.size = len(data)
+            handle.addfile(info, io.BytesIO(data))
+        pins = {origin: {"url": "https://codeload.github.com/example/crate/tar.gz/" + "c" * 40, "file": "crate.tar.gz", "sha256": "d" * 64}}
+        (self.root / "cargo-git-sources.json").write_text(json.dumps(pins))
+        with patch.object(compliance, "HERE", self.root):
+            artifacts, unresolved = compliance.cargo_sources(archive)
+        self.assertEqual([(a["file"], a["urls"]) for a in artifacts], [("upstream/" + "d" * 64 + "/crate.tar.gz", [pins[origin]["url"]])])
+        self.assertEqual(len(unresolved), 1)
+        self.assertIn("unpinned", unresolved[0])
+
     def test_missing_patch_and_unpinned_source_fail(self):
         source = {"url": "https://example.invalid/source.tar.gz", "sha256": "a" * 64, "patches": ["missing.patch"]}
         with self.assertRaisesRegex(compliance.ComplianceError, "missing recipe patch"):
@@ -182,7 +200,7 @@ class ComplianceTests(unittest.TestCase):
         source.mkdir()
         builder.mkdir()
         for filename in ("build.sh", "compliance.py", "official_sources.py", "official-sources.json", "release_manifest.py",
-                         "place_online.py", "conda-env.yml", "conda-lock.yml", "sources.sha256", "source-mirrors.json", "ext-manifest.json"):
+                         "place_online.py", "conda-env.yml", "conda-lock.yml", "sources.sha256", "source-mirrors.json", "cargo-git-sources.json", "ext-manifest.json"):
             (builder / filename).write_text("build input fixture\n")
         for directory in ("windows", "smoke", "browser"):
             (builder / directory).mkdir()

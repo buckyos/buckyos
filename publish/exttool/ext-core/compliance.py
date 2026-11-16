@@ -252,8 +252,15 @@ def extract_notices(archive: Path, destination: Path) -> list[str]:
     return files
 
 
+def cargo_git_pins() -> dict:
+    """Git sources of Cargo locks, each pinned to an archive of its locked commit and that archive's SHA256."""
+    path = HERE / "cargo-git-sources.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
 def cargo_sources(archive: Path) -> tuple[list[dict], list[str]]:
-    """Include registry source pinned by a project's own lock, including static Rust code."""
+    """Include registry source pinned by a project's own lock, including static Rust code; a git source is included
+    when cargo-git-sources.json pins an archive of its commit."""
     if not tarfile.is_tarfile(archive):
         return [], []
     lock = None
@@ -268,9 +275,17 @@ def cargo_sources(archive: Path) -> tuple[list[dict], list[str]]:
         return [], []
     artifacts = []
     unresolved = []
+    git_pins = cargo_git_pins()
     for package in lock.get("package", []):
         origin = package.get("source", "")
         if not origin:
+            continue
+        if origin in git_pins:
+            pin = git_pins[origin]
+            if not re.fullmatch("[0-9a-f]{64}", str(pin.get("sha256", ""))) or not str(pin.get("url", "")).startswith("https://"):
+                raise ComplianceError(f"cargo-git-sources.json: {origin} needs an https url and a sha256")
+            artifacts.append({"file": (Path("upstream") / pin["sha256"] / safe_relative(pin["file"])).as_posix(), "sha256": pin["sha256"],
+                              "urls": [pin["url"]], "kind": "dependency-source", "lockfile": "Cargo.lock"})
             continue
         if origin != "registry+https://github.com/rust-lang/crates.io-index":
             unresolved.append(f'Cargo.lock contains non-registry source requiring an exact source bundle: {package["name"]} {origin}')
@@ -580,7 +595,7 @@ def finalize(payload: Path, source_root: Path, platform: str, version: str, dist
         directory = licenses / safe_relative(component["license_directory"])
         if not component.get("metadata_only") and not any(p.is_file() for p in directory.rglob("*")):
             raise ComplianceError(f'{component["id"]}: license texts are missing')
-    for name in ("build.sh", "compliance.py", "official_sources.py", "official-sources.json", "source-mirrors.json", "release_manifest.py",
+    for name in ("build.sh", "compliance.py", "official_sources.py", "official-sources.json", "source-mirrors.json", "cargo-git-sources.json", "release_manifest.py",
                  "place_online.py", "conda-env.yml", "conda-lock.yml", "sources.sha256", "ext-manifest.json"):
         source = HERE / name
         if not source.is_file():
