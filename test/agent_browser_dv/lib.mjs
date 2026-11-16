@@ -114,7 +114,7 @@ export async function waitIdle(sessionId, { timeoutMs = 15 * 60_000, settleMs = 
   while (Date.now() - started < timeoutMs) {
     const { current } = await conversation(sessionId)
     const status = await browserStatus()
-    const group = status.groups.find((item) => item.group_id === sessionId) ?? status.groups.find((item) => item.group_id === 'default')
+    const group = status.groups.find((item) => item.group_id === 'default')
     const line = current
       ? `${current.session_id} run=${current.run_state} turn=${current.open_turn?.turn ?? '-'} works=${current.unfinished_works ?? 0} needs_input=${current.needs_input} | ${current.one_line_status ?? ''} | browser ${group?.group_id}: ${group?.controller}/${group?.agent_state}${group?.user_hold ? ' hold' : ''} tabs=${group?.tabs?.length}`
       : 'no ui session yet'

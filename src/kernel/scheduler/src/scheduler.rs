@@ -1079,7 +1079,8 @@ impl NodeScheduler {
                 );
                 return 0;
             }
-            return app_index * 16 + BASE_APP_PORT;
+            let port = app_index * 16 + BASE_APP_PORT;
+            return if port == 10080 { port + 1 } else { port };
         }
         if expose_port.is_some() {
             return expose_port.unwrap();

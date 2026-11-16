@@ -1,7 +1,7 @@
 /* Text of the Agent Browser's conversation side: the conversation panel, the handover messages and the entries from other apps. */
 
 export const agentBrowserConversationEn: Record<string, string> = {
-  'agentBrowser.thing.newTitle': 'Browser task',
+  'agentBrowser.session.title': 'Browser',
 
   'agentBrowser.chat.with': 'Conversation with {{name}}',
   'agentBrowser.chat.open': 'Open the conversation',
@@ -11,8 +11,6 @@ export const agentBrowserConversationEn: Record<string, string> = {
   'agentBrowser.chat.unavailable': 'Your conversations cannot be reached right now.',
   'agentBrowser.chat.unavailableHint': 'You can keep browsing. Try again to talk to {{name}}.',
   'agentBrowser.chat.bindFailed': 'The conversation with {{name}} could not be opened.',
-  'agentBrowser.chat.gone': 'The conversation of this task was archived or deleted.',
-  'agentBrowser.chat.goneHint': 'Its tabs are still here. Choose another task to talk to {{name}}.',
   'agentBrowser.chat.empty': 'Tell {{name}} what you want done. It works in this browser and asks here when it needs something from you.',
   'agentBrowser.chat.input': 'Message {{name}}…',
   'agentBrowser.chat.readOnly': 'Nothing can be sent in this conversation.',
@@ -34,14 +32,14 @@ export const agentBrowserConversationEn: Record<string, string> = {
   'agentBrowser.operator.answerHint': 'answer in the conversation',
   'agentBrowser.error.message_not_sent': 'The page was handed over, but the message to the Agent was not sent. Tell it in the conversation.',
 
+  'agentBrowser.entry.session': 'This is the conversation of {{name}}’s browser',
+  'agentBrowser.entry.open': 'Open browser',
   'agentBrowser.entry.working': '{{name}} is using the browser',
-  'agentBrowser.entry.waiting': '{{name}} is waiting for you in the browser',
-  'agentBrowser.entry.tabs': 'This conversation has pages open in the browser',
   'agentBrowser.entry.view': 'View',
 }
 
 export const agentBrowserConversationZh: Record<string, string> = {
-  'agentBrowser.thing.newTitle': '浏览器里的事',
+  'agentBrowser.session.title': '浏览器',
 
   'agentBrowser.chat.with': '和 {{name}} 的对话',
   'agentBrowser.chat.open': '打开对话',
@@ -51,8 +49,6 @@ export const agentBrowserConversationZh: Record<string, string> = {
   'agentBrowser.chat.unavailable': '现在读不到你的对话。',
   'agentBrowser.chat.unavailableHint': '可以继续浏览。要和 {{name}} 说话时再试一次。',
   'agentBrowser.chat.bindFailed': '没能打开和 {{name}} 的对话。',
-  'agentBrowser.chat.gone': '这件事的对话已经归档或删除了。',
-  'agentBrowser.chat.goneHint': '它的标签页还在。要和 {{name}} 说话，换一件事。',
   'agentBrowser.chat.empty': '告诉 {{name}} 你要办什么。它在这个浏览器里操作，需要你补充时会在这里问。',
   'agentBrowser.chat.input': '发消息给 {{name}}…',
   'agentBrowser.chat.readOnly': '这个对话里不能发消息。',
@@ -74,8 +70,8 @@ export const agentBrowserConversationZh: Record<string, string> = {
   'agentBrowser.operator.answerHint': '到对话里回答',
   'agentBrowser.error.message_not_sent': '页面已经交接，但给 Agent 的消息没发出去。到对话里再跟它说一遍。',
 
+  'agentBrowser.entry.session': '这是 {{name}} 的浏览器的对话',
+  'agentBrowser.entry.open': '打开浏览器',
   'agentBrowser.entry.working': '{{name}} 正在使用浏览器',
-  'agentBrowser.entry.waiting': '{{name}} 在浏览器里等你接手',
-  'agentBrowser.entry.tabs': '这个对话在浏览器里开着网页',
   'agentBrowser.entry.view': '查看',
 }

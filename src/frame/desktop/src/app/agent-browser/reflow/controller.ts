@@ -1,12 +1,12 @@
 /* Reflow mode (RF6, TODO §5.6): for the address in the bar, what the library has (`browser.reflow_state`) decides
  * what shows — the page that was made, a refresh of the site's package in the Agent's browser, or a request to the
- * Agent for a fallback page. One controller per App window. The address is kept per Agent and thing: it starts as
+ * Agent for a fallback page. One controller per App window. The address is kept per Agent: it starts as
  * the page the browser shows and then goes its own way (links of reflow pages, the bar), until the browser has
  * moved on when the user comes back to this mode. */
 
 import { getBrowserBackend } from '../api/backend'
-import { browserErrorCode, DEFAULT_GROUP } from '../api/types'
-import { agentBrowserExtensions, type ThingContext } from '../extensions'
+import { browserErrorCode } from '../api/types'
+import { agentBrowserExtensions, type ConversationContext } from '../extensions'
 import { toNavigableUrl } from '../shell/address'
 import type { AgentBrowserStore } from '../store/store'
 import { ReflowError, libraryState, normalizeUrl, readPreference, reflowAddress, shownMade, writePreference, type ReflowState } from './library'
@@ -163,7 +163,7 @@ export class ReflowController {
     this.t = t
   }
 
-  /** The panel is shown: follow the store's Agent and thing, and look up the address in the bar. */
+  /** The panel is shown: follow the store's Agent, and look up the address in the bar. */
   activate() {
     if (this.active) return
     this.active = true
@@ -189,9 +189,9 @@ export class ReflowController {
   }
 
   private follow(entered: boolean) {
-    const { agent, groupId, state, group } = this.store.getSnapshot()
+    const { agent, state, group } = this.store.getSnapshot()
     if (!agent) return
-    const key = `${agent.agentId}\n${groupId}`
+    const key = agent.agentId
     const switched = key !== this.key
     this.key = key
     const place = this.place()
@@ -410,11 +410,11 @@ export class ReflowController {
   // ── The Agent ──
 
   /** The conversation side comes up a moment after the App opens. */
-  private thingContext(): Promise<ThingContext | null> {
+  private conversationContext(): Promise<ConversationContext | null> {
     const started = Date.now()
     return new Promise((resolve) => {
       const look = () => {
-        const context = this.store.thingContext()
+        const context = this.store.conversationContext()
         if (context || Date.now() - started >= CONTEXT_WAIT_MS) resolve(context)
         else window.setTimeout(look, 200)
       }
@@ -422,7 +422,7 @@ export class ReflowController {
     })
   }
 
-  /** Writes to the Agent in the default conversation about this address, once per subject until the page changes. */
+  /** Writes to the Agent in the browser conversation about this address, once per subject until the page changes. */
   private async ask(topic: AskTopic, reason = '', again = false): Promise<'asked' | 'waiting' | 'unreachable'> {
     const { state, preference } = this.snapshot
     const agent = this.store.getSnapshot().agent
@@ -435,14 +435,14 @@ export class ReflowController {
       if (!send) return 'unreachable'
       asked.set(key, this.shown ?? { view: null, madeAt: 0 })
       try {
-        const context = await this.thingContext()
+        const context = await this.conversationContext()
         if (!context) throw Error('the conversation is not available')
         if (run !== this.run && (topic === 'fallback' || topic === 'redo')) {
           asked.delete(key)
           return outcome
         }
         const text = askText(this.t, topic, { url: state.url, site: state.site, host: new URL(state.url).hostname, preference, reason, selector: this.selector })
-        await send({ group: DEFAULT_GROUP, text }, context)
+        await send({ text }, context)
       } catch {
         asked.delete(key)
         return 'unreachable'
@@ -537,7 +537,7 @@ export class ReflowController {
     const { state } = this.snapshot
     const url = (state && shownMade(state)?.source_url) || state?.url || this.snapshot.url
     const place = this.place()
-    const { agent, groupId } = store.getSnapshot()
+    const { agent } = store.getSnapshot()
     store.setMode('page')
     if (!url) return
     place.adopted = url
@@ -546,7 +546,7 @@ export class ReflowController {
     const finish = () => { stop(); window.clearTimeout(timer) }
     const look = () => {
       const now = store.getSnapshot()
-      if (now.mode !== 'page' || now.agent !== agent || now.groupId !== groupId) { finish(); return }
+      if (now.mode !== 'page' || now.agent !== agent) { finish(); return }
       if (now.screenStatus !== 'open' || !now.state) return
       if (!sent) {
         sent = true

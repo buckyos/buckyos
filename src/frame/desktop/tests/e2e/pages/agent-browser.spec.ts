@@ -32,12 +32,12 @@ interface MockControl {
   rpc: Array<{ agentId: string; method: string; params: Record<string, unknown> }>
   uploads: Array<{ requestId: string; name: string; source: 'zone' | 'local'; done: boolean }>
   rects(width: number): Record<MockElement, MockRect>
-  page(agentId: string, groupId: string): { text: string; composition: string; selected: number[]; dialog: string; files: string[]; scrollY: number; signedIn: boolean; url: string } | null
-  agentAcquire(agentId: string, groupId: string): boolean
-  agentOpen(agentId: string, groupId: string, url: string): boolean
-  agentRelease(agentId: string, groupId: string, state?: 'done' | 'stuck', note?: string): void
-  agentRequestHandover(agentId: string, groupId: string, reason: 'password' | 'captcha' | 'other', note?: string): void
-  agentAsk(agentId: string, groupId: string, waiting: boolean): void
+  page(agentId: string): { text: string; composition: string; selected: number[]; dialog: string; files: string[]; scrollY: number; signedIn: boolean; url: string } | null
+  agentAcquire(agentId: string): boolean
+  agentOpen(agentId: string, url: string): boolean
+  agentRelease(agentId: string, state?: 'done' | 'stuck', note?: string): void
+  agentRequestHandover(agentId: string, reason: 'password' | 'captcha' | 'other', note?: string): void
+  agentAsk(agentId: string, waiting: boolean): void
   setAvailability(agentId: string, patch: { enabled?: boolean; available?: boolean; unavailable?: string | null }): void
   dropConnections(agentId: string): void
 }
@@ -45,16 +45,16 @@ type MockWindow = { __agentBrowserMock: MockControl }
 
 test.use({ viewport: { width: 1280, height: 900 } })
 
-const received = (page: Page, type: string, group = 'default') =>
-  page.evaluate(([t, g]) => (window as unknown as MockWindow).__agentBrowserMock.log.filter((entry) => entry.message.type === t && entry.groupId === g), [type, group] as const)
+const received = (page: Page, type: string) =>
+  page.evaluate((t) => (window as unknown as MockWindow).__agentBrowserMock.log.filter((entry) => entry.message.type === t), type)
 const inputs = async (page: Page, kind: string) => (await received(page, 'input')).filter((entry) => entry.message.kind === kind)
 const rpcCalls = (page: Page, method: string) =>
   page.evaluate((m) => (window as unknown as MockWindow).__agentBrowserMock.rpc.filter((call) => call.method === m), method)
-const mockPage = (page: Page, group = 'default') =>
-  page.evaluate(([a, g]) => (window as unknown as MockWindow).__agentBrowserMock.page(a, g), [AGENT, group] as const)
-/** The Agent's side, on the default group: `agentAcquire`, `agentRelease(state, note)`, `agentRequestHandover(reason, note)`, `agentAsk(waiting)`. */
+const mockPage = (page: Page) =>
+  page.evaluate((a) => (window as unknown as MockWindow).__agentBrowserMock.page(a), AGENT)
+/** The Agent's side: `agentAcquire`, `agentRelease(state, note)`, `agentRequestHandover(reason, note)`, `agentAsk(waiting)`. */
 const agentSide = (page: Page, method: 'agentAcquire' | 'agentRelease' | 'agentRequestHandover' | 'agentAsk', ...args: unknown[]) =>
-  page.evaluate(([m, list]) => ((window as unknown as MockWindow).__agentBrowserMock[m] as (...values: unknown[]) => unknown)(...list), [method, [AGENT, 'default', ...args]] as const)
+  page.evaluate(([m, list]) => ((window as unknown as MockWindow).__agentBrowserMock[m] as (...values: unknown[]) => unknown)(...list), [method, [AGENT, ...args]] as const)
 
 /** Opens the App and, with several Agents, stops at the question whose browser to use. */
 async function openApp(page: Page) {
@@ -111,10 +111,10 @@ test('opens from All apps, asks whose browser, and shows the page of the address
   await expect(picker.getByTestId('ab-agent-assistant.alice')).toContainText('BuckyOS Assistant')
   await enterAgent(page)
 
-  // The default entry: the default thing, original page mode, an empty address, no tab yet.
-  await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-group', 'default')
+  // The Agent's browser in original page mode, an empty address, no tab yet; nothing lists tasks or conversations.
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-mode', 'page')
-  await expect(page.getByTestId('ab-thing-title')).toHaveText('General browsing')
+  await expect(page.getByTestId('ab-agent-name')).toHaveText('CodeAssistant')
+  await expect(page.getByTestId('ab-identity').getByRole('button')).toHaveCount(0)
   await expect(page.getByTestId('ab-address-input')).toHaveValue('')
   await expect(page.getByTestId('ab-screen-empty')).toContainText('CodeAssistant')
   await expect(page.getByTestId('ab-status')).toHaveAttribute('data-controller', 'user')
@@ -159,16 +159,18 @@ test('a single Agent opens at once, and the Agent last used is remembered', asyn
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-agent', AGENT)
   await expect(page.getByTestId('ab-agent-picker')).toHaveCount(0)
   // With one Agent there is nothing to switch to.
-  await page.getByTestId('ab-thing-button').click()
-  await expect(page.getByTestId('ab-things-agent')).toContainText('CodeAssistant')
-  await expect(page.getByTestId('ab-switch-agent')).toHaveCount(0)
+  await expect(page.getByTestId('ab-agent-name')).toHaveText('CodeAssistant')
+  await page.getByTestId('ab-menu-button').click()
+  await expect(page.getByTestId('ab-menu')).toBeVisible()
+  await expect(page.getByTestId('ab-menu-switch-agent')).toHaveCount(0)
+  await page.getByTestId('ab-menu-close').click()
 
   // Two Agents again: the one used last opens without asking, and can be switched.
   await page.evaluate((key) => window.localStorage.removeItem(key), MOCK_CONTROL_PANEL)
   await openApp(page)
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-agent', AGENT)
-  await page.getByTestId('ab-thing-button').click()
-  await page.getByTestId('ab-switch-agent').click()
+  await page.getByTestId('ab-menu-button').click()
+  await page.getByTestId('ab-menu-switch-agent').click()
   await page.getByTestId('ab-agent-assistant.alice').click()
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-agent', 'assistant.alice')
   await expect(page.getByTestId('ab-agent-name')).toHaveText('BuckyOS Assistant')
@@ -220,7 +222,7 @@ test('pointer, wheel and keyboard reach the page in the page’s own pixels', as
   expect(wheel).toMatchObject({ x: field.page.x, y: field.page.y, delta_x: 0 })
 })
 
-test('tabs: a page’s new window joins the thing, tabs switch and close', async ({ page }) => {
+test('tabs: a page’s new window is a tab of the browser, tabs switch and close', async ({ page }) => {
   await openBrowser(page)
   await press(page, 'newTab')
   await expect(page.getByTestId('ab-tabs-count')).toHaveText('2')
@@ -375,44 +377,6 @@ test('who operates: the page is view only while the Agent operates; take over, h
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-mode', 'page')
 })
 
-test('things are the conversations with the Agent; each has its own tabs', async ({ page }) => {
-  await openBrowser(page)
-  // The Agent used the browser for one of its conversations: that conversation is a thing beside the default one.
-  await page.evaluate(([agent, group]) => {
-    const mock = (window as unknown as MockWindow).__agentBrowserMock
-    mock.agentAcquire(agent, group)
-    mock.agentOpen(agent, group, 'https://api.example.org')
-    mock.agentRelease(agent, group)
-  }, [AGENT, 'session-coder-2'] as const)
-  await page.getByTestId('ab-thing-button').click()
-  const things = page.getByTestId('ab-thing-list').getByRole('button')
-  // The Agent's other conversations are not things (DG1); new ones are started here.
-  await expect(things).toHaveCount(2)
-  await expect(things.first()).toContainText('General browsing')
-  await expect(things.first()).toContainText('1 tab')
-  await expect(things.first()).toHaveAttribute('aria-current', 'true')
-  await expect(page.getByTestId('ab-thing-session-coder-2')).toContainText('API Documentation')
-  await expect(page.getByTestId('ab-thing-session-coder-2')).toContainText('1 tab')
-  await expect(page.getByTestId('ab-new-thing')).toBeVisible()
-
-  await page.getByTestId('ab-thing-session-coder-2').click()
-  await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-group', 'session-coder-2')
-  await expect(page.getByTestId('ab-thing-title')).toHaveText('API Documentation')
-  await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open')
-  await expect(page.getByTestId('ab-address-input')).toHaveValue('api.example.org')
-  await expect(page.getByTestId('ab-tabs-count')).toHaveText('1')
-  expect((await received(page, 'hello', 'session-coder-2')).map((entry) => entry.message.group_id)).toEqual(['session-coder-2'])
-  await browse(page, 'docs.example.com')
-  await expect.poll(async () => (await mockPage(page, 'session-coder-2'))?.url).toBe('https://docs.example.com')
-
-  // Back to the first thing: its tab is still there.
-  await page.getByTestId('ab-thing-button').click()
-  await page.getByTestId('ab-thing-default').click()
-  await expect(page.getByTestId('ab-address-input')).toHaveValue('example.com')
-  await expect(page.getByTestId('ab-screen-canvas')).toBeVisible()
-  await expect(page.getByTestId('ab-tabs-count')).toHaveText('1')
-})
-
 test('the three modes switch; reflow and chat leave the stage to their panels', async ({ page }) => {
   await openBrowser(page)
   await expect(page.getByRole('tab', { name: 'Page' })).toHaveAttribute('aria-selected', 'true')
@@ -565,7 +529,6 @@ test('the App’s text follows the language', async ({ page }) => {
   await openBrowser(page)
   await expect(page.getByTestId('window-agent-browser')).toContainText('Agent 浏览器')
   await expect(page.getByRole('tab')).toHaveText(['原始页面', '重排', '对话'])
-  await expect(page.getByTestId('ab-thing-title')).toHaveText('日常浏览')
   await expect(page.getByTestId('ab-status-operator')).toHaveText('你在操作')
   await expect(page.getByTestId('ab-hand-to-agent')).toHaveText('交给 Agent')
   await agentSide(page, 'agentAcquire')

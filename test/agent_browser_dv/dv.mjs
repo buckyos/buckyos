@@ -3,18 +3,18 @@
 //
 //   node dv.mjs token                               print the owner's session token (renews it when it is old)
 //   node dv.mjs krpc <service> <method> ['<json>']  one kRPC as the owner
-//   node dv.mjs status [group]                      browser.status of the Agent
+//   node dv.mjs status                              browser.status of the Agent (one tab group: default)
 //   node dv.mjs new "<title>"                       a new conversation with the Agent; prints its id
 //   node dv.mjs send <session> "<text>" | @file     a message of the owner in that conversation (costs tokens)
-//   node dv.mjs wait <session> [seconds] [state]    until the conversation is idle, or its group's agent_state is <state>
+//   node dv.mjs wait <session> [seconds] [state]    until the conversation is idle, or the browser's agent_state is <state>
 //   node dv.mjs messages <session>                  the conversation as the owner sees it
 //   node dv.mjs sessions <session>                  the UI session of the conversation and the work it started
 //   node dv.mjs tree <session>                      the work the conversation started: state, rounds, tokens, one line
 //   node dv.mjs worklog <sid> [--full]              a session's committed worklog
 //   node dv.mjs usage <sid>                         rounds and tokens of a session
 //   node dv.mjs grep <session> <string>             looks for a string in the conversation, the UI session's and its work's worklogs
-//   node dv.mjs take-over|hand-back|hand-to-agent <group>
-//   node dv.mjs take-over-when-working <group> [seconds]   take over the moment the Agent holds a lease on the group
+//   node dv.mjs take-over|hand-back|hand-to-agent
+//   node dv.mjs take-over-when-working [seconds]    take over the moment the Agent holds a lease
 //   node dv.mjs reflow <url> [out dir]              what the reflow library has for <url> (browser.reflow_state), then opens
 //                                                   its page on reflow.<zone> as the owner (prepare_app_launch, the session
 //                                                   cookie, GET) and, for a package's page, its results/<page>.json
@@ -56,7 +56,7 @@ function entryLine(entry, full) {
 switch (command) {
   case 'token': print(await ownerToken()); break
   case 'krpc': print(await call(rest[0], rest[1], JSON.parse(rest[2] ?? '{}'))); break
-  case 'status': print(await browserStatus(rest[0] ? { group_id: rest[0] } : {})); break
+  case 'status': print(await browserStatus({})); break
   case 'new': print(await newSession(rest[0])); break
   case 'send': {
     const text = rest[1].startsWith('@') ? readFileSync(rest[1].slice(1), 'utf8').trim() : rest[1]
@@ -65,7 +65,7 @@ switch (command) {
   }
   case 'wait': {
     const want = rest[2]
-    const result = await waitIdle(rest[0], { timeoutMs: Number(rest[1] ?? 900) * 1000, until: want ? ({ group }) => group?.group_id === rest[0] && group.agent_state === want : undefined })
+    const result = await waitIdle(rest[0], { timeoutMs: Number(rest[1] ?? 900) * 1000, until: want ? ({ group }) => group?.agent_state === want : undefined })
     print(`=> ${result.reason}`)
     process.exitCode = result.reason === 'timeout' ? 1 : 0
     break
@@ -126,15 +126,15 @@ switch (command) {
     break
   }
   case 'take-over-when-working': {
-    const until = Date.now() + Number(rest[1] ?? 600) * 1000
+    const until = Date.now() + Number(rest[0] ?? 600) * 1000
     let seen = ''
     while (Date.now() < until) {
-      const status = await browserStatus({ group_id: rest[0] })
+      const status = await browserStatus({ group_id: 'default' })
       const group = status.groups[0]
       const line = `${group.controller}/${group.agent_state} lease=${group.lease ? group.lease.session_id : '-'} tabs=${group.tabs.map((tab) => tab.url).join(',')}`
       if (line !== seen) { print(`${new Date().toISOString()} ${line}`); seen = line }
       if (group.lease) {
-        const taken = await agent('browser.take_over', { group_id: rest[0] })
+        const taken = await agent('browser.take_over', { group_id: 'default' })
         print(`${new Date().toISOString()} took over while ${group.lease.session_id} held the lease: ${JSON.stringify({ controller: taken.controller, user_hold: taken.user_hold, agent_state: taken.agent_state, lease: taken.lease })}`)
         process.exit(0)
       }
@@ -144,9 +144,9 @@ switch (command) {
     process.exitCode = 1
     break
   }
-  case 'take-over': print(await agent('browser.take_over', { group_id: rest[0] })); break
-  case 'hand-back': print(await agent('browser.hand_back', { group_id: rest[0] })); break
-  case 'hand-to-agent': print(await agent('browser.hand_to_agent', { group_id: rest[0] })); break
+  case 'take-over': print(await agent('browser.take_over', { group_id: 'default' })); break
+  case 'hand-back': print(await agent('browser.hand_back', { group_id: 'default' })); break
+  case 'hand-to-agent': print(await agent('browser.hand_to_agent', { group_id: 'default' })); break
   case 'reflow': {
     const state = await agent('browser.reflow_state', { url: rest[0] })
     print(state)

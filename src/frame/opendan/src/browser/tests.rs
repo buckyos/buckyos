@@ -163,7 +163,7 @@ async fn the_cdp_client_pairs_answers_and_broadcasts_events() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_browser_starts_on_demand_and_ends_without_leaving_processes() {
     let b = Bench::new(section(12, 600), |_| {}).await;
-    let status = b.module.status(None, None).await;
+    let status = b.module.status().await;
     assert_eq!((status["enabled"].clone(), status["available"].clone(), status["running"].clone()), (json!(true), json!(true), json!(false)));
     assert_eq!(status["groups"].as_array().unwrap().len(), 1, "the default group is always there");
     assert!(b.fake.pid().is_none(), "status starts nothing");
@@ -186,7 +186,7 @@ async fn the_browser_starts_on_demand_and_ends_without_leaving_processes() {
     assert_eq!(args.contains("--no-sandbox"), unsafe { libc::geteuid() } == 0, "{args}");
     let downloads = b.fake.received("Browser.setDownloadBehavior");
     assert_eq!(downloads[0].1["downloadPath"], json!(b.module.dirs().downloads.display().to_string()));
-    let status = b.module.status(None, None).await;
+    let status = b.module.status().await;
     assert_eq!(status["running"], true);
     assert_eq!(status["version"]["browser"], "1.2.3.4");
     assert_eq!(status["unavailable"], Value::Null);
@@ -263,12 +263,12 @@ async fn tabs_belong_to_groups() {
     let mut changes = m.changes();
     changes.borrow_and_update();
 
-    // The user opens a tab in the group they look at.
-    let first = m.open_tab("thing", Some("https://a.example/")).await.unwrap();
+    // The user opens a tab.
+    let first = m.open_tab(DEFAULT_GROUP, Some("https://a.example/")).await.unwrap();
     assert!(first.active && first.url == "https://a.example/");
     assert!(changes.has_changed().unwrap(), "the screen is told");
     assert_eq!(b.fake.received("Target.createTarget")[0].1, json!({ "url": "https://a.example/", "newWindow": true }));
-    assert_eq!(m.active_tab("thing").unwrap().tab_id, first.tab_id);
+    assert_eq!(m.active_tab(DEFAULT_GROUP).unwrap().tab_id, first.tab_id);
     // The module attaches to it: its events are followed and it renders in the background.
     let (cdp, session) = m.tab_session(&first.tab_id).await.unwrap();
     until("the tab is set up", || b.fake.received("Emulation.setFocusEmulationEnabled").iter().any(|(s, _)| s.as_deref() == Some(session.as_str()))).await;
@@ -278,37 +278,34 @@ async fn tabs_belong_to_groups() {
     let mut events = m.tab_events(&first.tab_id, &["Page.frameStartedLoading"]).await.unwrap();
     m.tab_send(&first.tab_id, "Page.navigate", json!({ "url": "https://a.example/slow" })).await.unwrap();
     assert_eq!(events.next().await.unwrap().method, "Page.frameStartedLoading");
-    until("the page is loading", || b.tabs("thing")[0].loading && b.tabs("thing")[0].url == "https://a.example/slow").await;
+    until("the page is loading", || b.tabs(DEFAULT_GROUP)[0].loading && b.tabs(DEFAULT_GROUP)[0].url == "https://a.example/slow").await;
     cdp.send(Some(&session), "Page.navigate", json!({ "url": "https://a.example/done" })).await.unwrap();
-    until("the page is loaded", || !b.tabs("thing")[0].loading && b.tabs("thing")[0].title == "Title of https://a.example/done").await;
+    until("the page is loaded", || !b.tabs(DEFAULT_GROUP)[0].loading && b.tabs(DEFAULT_GROUP)[0].title == "Title of https://a.example/done").await;
     // A title a page changes later is seen when the group is shown.
     b.fake.set_page(&first.tab_id, "https://a.example/done", "Changed by the page");
-    assert_eq!(m.status(Some("thing"), None).await["groups"][0]["tabs"][0]["title"], "Changed by the page");
+    assert_eq!(m.status().await["groups"][0]["tabs"][0]["title"], "Changed by the page");
 
     // A page opened by a page joins its opener's group.
     let popup = b.fake.open("https://a.example/popup", Some(&first.tab_id));
     until("the popup is a tab", || m.tab(&popup).is_some()).await;
-    assert_eq!(m.tab(&popup).unwrap().group_id, "thing");
-    assert_eq!(m.active_tab("thing").unwrap().tab_id, popup, "the newest tab is the current one");
-    assert_eq!(m.activate_tab(&first.tab_id).unwrap(), "thing");
-    assert_eq!(b.tabs("thing").iter().map(|t| t.active).collect::<Vec<_>>(), vec![true, false]);
+    assert_eq!(m.tab(&popup).unwrap().group_id, DEFAULT_GROUP);
+    assert_eq!(m.active_tab(DEFAULT_GROUP).unwrap().tab_id, popup, "the newest tab is the current one");
+    assert_eq!(m.activate_tab(&first.tab_id).unwrap(), DEFAULT_GROUP);
+    assert_eq!(b.tabs(DEFAULT_GROUP).iter().map(|t| t.active).collect::<Vec<_>>(), vec![true, false]);
 
-    // A tab without an opener: the group the user is watching ...
-    let viewer = m.viewer("watched");
+    // A tab without an opener is the default group's, whoever opened it and whoever holds a lease.
     let seen = b.fake.open("https://b.example/", None);
     until("the tab is seen", || m.tab(&seen).is_some()).await;
-    assert_eq!(m.tab(&seen).unwrap().group_id, "watched");
-    // ... unless an agent holds a lease: then it is the agent's.
+    assert_eq!(m.tab(&seen).unwrap().group_id, DEFAULT_GROUP);
     let lease = m.acquire("no-such-session").await.unwrap();
-    assert_eq!(lease.group_id, DEFAULT_GROUP, "a session without a conversation works in the default group");
+    assert_eq!(lease.group_id, DEFAULT_GROUP, "every session works in the one group");
     let by_agent = b.fake.open("https://c.example/", None);
     until("the agent's tab is seen", || m.tab(&by_agent).is_some()).await;
     assert_eq!(m.tab(&by_agent).unwrap().group_id, DEFAULT_GROUP);
     m.release(&lease.lease_id, None, None).unwrap();
-    drop(viewer);
 
-    // max_tabs counts every group's tabs: the module opens no more, and a tab from elsewhere is closed.
-    assert_eq!(m.open_tab("thing", None).await.unwrap_err().code, "too_many_tabs");
+    // max_tabs: the module opens no more, and a tab from elsewhere is closed.
+    assert_eq!(m.open_tab(DEFAULT_GROUP, None).await.unwrap_err().code, "too_many_tabs");
     let extra = b.fake.open("https://d.example/", None);
     until("the extra tab is closed", || b.fake.received("Target.closeTarget").iter().any(|(_, p)| p["targetId"] == extra.as_str())).await;
     assert!(m.tab(&extra).is_none());
@@ -319,16 +316,17 @@ async fn tabs_belong_to_groups() {
         until("the module's tab is seen", || m.tab(&own).is_some()).await;
         assert_eq!(m.tab(&own).unwrap().group_id, "_reflow");
     }
-    let listed: Vec<String> = m.status(None, None).await["groups"].as_array().unwrap().iter().map(|g| g["group_id"].as_str().unwrap().to_string()).collect();
-    assert_eq!(listed, vec!["default", "thing", "watched"]);
+    let listed: Vec<String> = m.status().await["groups"].as_array().unwrap().iter().map(|g| g["group_id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(listed, vec!["default"]);
+    assert_eq!(b.tabs(DEFAULT_GROUP).len(), 4);
 
     // Closing: by the module, and by anyone else.
     m.close_tab(&popup).await.unwrap();
     assert!(m.tab(&popup).is_none() && !b.fake.targets().iter().any(|(id, _)| *id == popup));
     assert_eq!(m.close_tab(&popup).await.unwrap_err().code, "no_such_tab");
     b.fake.close(&first.tab_id);
-    until("the closed tab is gone", || b.tabs("thing").is_empty()).await;
-    assert_eq!(m.open_tab("thing", Some("bad:url")).await.unwrap_err().code, "invalid_argument");
+    until("the closed tab is gone", || b.tabs(DEFAULT_GROUP).len() == 2).await;
+    assert_eq!(m.open_tab(DEFAULT_GROUP, Some("bad:url")).await.unwrap_err().code, "invalid_argument");
     m.shutdown().await;
 }
 
@@ -338,28 +336,28 @@ async fn a_dialog_nobody_attends_to_is_closed() {
     let m = &b.module;
     let housekeeping = tokio::spawn(m.clone().run());
     let handled = || b.fake.received("Page.handleJavaScriptDialog").iter().map(|(_, p)| p["accept"].clone()).collect::<Vec<_>>();
-    let tab = m.open_tab("thing", Some("https://a.example/")).await.unwrap();
+    let tab = m.open_tab(DEFAULT_GROUP, Some("https://a.example/")).await.unwrap();
     m.tab_session(&tab.tab_id).await.unwrap();
 
     // Nobody looks, no agent operates: it would block the page and every Playwright that connects.
     b.fake.dialog(&tab.tab_id, "confirm", "Leave?");
     until("the dialog is dismissed", || handled() == vec![json!(false)]).await;
-    until("it is known to be closed", || m.open_dialogs("thing").is_empty() && b.fake.open_dialogs().is_empty()).await;
+    until("it is known to be closed", || m.open_dialogs(DEFAULT_GROUP).is_empty() && b.fake.open_dialogs().is_empty()).await;
     b.fake.dialog(&tab.tab_id, "beforeunload", "");
     until("leaving the page is accepted", || handled() == vec![json!(false), json!(true)]).await;
 
-    // Someone looks at the group: the dialog is theirs to answer ...
-    let viewer = m.viewer("thing");
+    // Someone looks at the browser: the dialog is theirs to answer ...
+    let viewer = m.viewer(DEFAULT_GROUP);
     b.fake.dialog(&tab.tab_id, "alert", "Saved");
-    until("the dialog is open", || m.open_dialogs("thing").len() == 1).await;
-    assert_eq!(m.open_dialogs("thing")[0], (tab.tab_id.clone(), json!({ "url": "", "message": "Saved", "type": "alert", "hasBrowserHandler": false, "defaultPrompt": "" })));
+    until("the dialog is open", || m.open_dialogs(DEFAULT_GROUP).len() == 1).await;
+    assert_eq!(m.open_dialogs(DEFAULT_GROUP)[0], (tab.tab_id.clone(), json!({ "url": "", "message": "Saved", "type": "alert", "hasBrowserHandler": false, "defaultPrompt": "" })));
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(handled().len(), 2, "a watched dialog is left open");
     // ... until they leave.
     drop(viewer);
     until("the dialog left behind is dismissed", || handled().len() == 3).await;
 
-    // An agent operating the group answers its own dialogs (Playwright does); what it leaves is closed.
+    // An agent operating the browser answers its own dialogs (Playwright does); what it leaves is closed.
     let lease = m.acquire("s1").await.unwrap();
     assert_eq!(lease.group_id, DEFAULT_GROUP);
     let agents = m.open_tab(DEFAULT_GROUP, Some("https://b.example/")).await.unwrap();
@@ -378,9 +376,9 @@ async fn a_dialog_nobody_attends_to_is_closed() {
 async fn a_browser_that_dies_is_started_again_with_its_tabs() {
     let b = Bench::new(section(12, 600), |_| {}).await;
     let m = &b.module;
-    m.open_tab("default", Some("https://a.example/")).await.unwrap();
-    let second = m.open_tab("thing", Some("https://b.example/one")).await.unwrap();
-    m.open_tab("thing", Some("https://b.example/two")).await.unwrap();
+    m.open_tab(DEFAULT_GROUP, Some("https://a.example/")).await.unwrap();
+    let second = m.open_tab(DEFAULT_GROUP, Some("https://b.example/one")).await.unwrap();
+    m.open_tab(DEFAULT_GROUP, Some("https://b.example/two")).await.unwrap();
     m.activate_tab(&second.tab_id).unwrap();
     let lease = m.acquire("s1").await.unwrap();
     let pid = b.fake.pid().unwrap();
@@ -390,12 +388,14 @@ async fn a_browser_that_dies_is_started_again_with_its_tabs() {
     b.fake.crash();
     until("the browser is seen to be gone", || !m.running() || b.fake.pid() != Some(pid)).await;
     assert!(changes.has_changed().unwrap());
-    until("the browser runs again", || m.running() && b.fake.pid().is_some_and(|p| p != pid) && b.tabs("thing").len() == 2).await;
+    until("the browser runs again", || m.running() && b.fake.pid().is_some_and(|p| p != pid) && b.tabs(DEFAULT_GROUP).len() == 3).await;
     assert!(!alive(pid) && process::group_pids(pid as u32).is_empty());
-    assert_eq!(b.tabs("default").iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), vec!["https://a.example/"]);
-    let thing = b.tabs("thing");
-    assert_eq!(thing.iter().map(|t| (t.url.as_str(), t.active)).collect::<Vec<_>>(), vec![("https://b.example/one", true), ("https://b.example/two", false)]);
-    assert_ne!(thing[0].tab_id, second.tab_id, "they are new tabs");
+    let tabs = b.tabs(DEFAULT_GROUP);
+    assert_eq!(
+        tabs.iter().map(|t| (t.url.as_str(), t.active)).collect::<Vec<_>>(),
+        vec![("https://a.example/", false), ("https://b.example/one", true), ("https://b.example/two", false)]
+    );
+    assert_ne!(tabs[1].tab_id, second.tab_id, "they are new tabs");
     assert_eq!(m.renew(&lease.lease_id).unwrap_err().code, "lease_lost", "a lease ends with the browser it was for");
     m.shutdown().await;
 }
@@ -405,11 +405,11 @@ async fn an_idle_browser_is_stopped_and_its_tabs_come_back() {
     let b = Bench::new(section(12, 1), |t| t.tick = Duration::from_millis(50)).await;
     let m = &b.module;
     let housekeeping = tokio::spawn(m.clone().run());
-    m.open_tab("thing", Some("https://a.example/kept")).await.unwrap();
+    m.open_tab(DEFAULT_GROUP, Some("https://a.example/kept")).await.unwrap();
     let pid = b.fake.pid().unwrap();
 
     // Someone looking keeps it running.
-    let viewer = m.viewer("thing");
+    let viewer = m.viewer(DEFAULT_GROUP);
     tokio::time::sleep(Duration::from_millis(1600)).await;
     assert!(m.running(), "a watched browser is not idle");
     drop(viewer);
@@ -418,16 +418,16 @@ async fn an_idle_browser_is_stopped_and_its_tabs_come_back() {
     m.release(&lease.lease_id, None, None).unwrap();
     until("the idle browser is stopped", || !m.running()).await;
     assert!(!alive(pid) && process::group_pids(pid as u32).is_empty());
-    assert!(b.tabs("thing").is_empty(), "a stopped browser has no tabs");
+    assert!(b.tabs(DEFAULT_GROUP).is_empty(), "a stopped browser has no tabs");
     let file: Value = serde_json::from_slice(&std::fs::read(b.root.join("state/browser/groups.json")).unwrap()).unwrap();
     assert_eq!(file["schema"], "opendan.browser.groups/1");
-    assert_eq!(file["groups"][0]["group_id"], "thing");
+    assert_eq!(file["groups"][0]["group_id"], "default");
     assert_eq!(file["groups"][0]["tabs"][0]["url"], "https://a.example/kept");
 
     // The next use starts it with what was open.
     b.fake.forget_tabs();
     m.ensure().await.unwrap();
-    assert_eq!(b.tabs("thing").iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), vec!["https://a.example/kept"]);
+    assert_eq!(b.tabs(DEFAULT_GROUP).iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), vec!["https://a.example/kept"]);
     housekeeping.abort();
     m.shutdown().await;
 
@@ -435,9 +435,9 @@ async fn an_idle_browser_is_stopped_and_its_tabs_come_back() {
     b.fake.forget_tabs();
     let tuning = Tuning { chromium: Some(fake_browser::chromium()), dirs: Some(m.dirs().clone()), ..Default::default() };
     let again = BrowserModule::with_tuning(section(12, 600), deps(&b.root), tuning);
-    assert!(again.group("thing").tabs.is_empty());
+    assert!(again.group(DEFAULT_GROUP).tabs.is_empty());
     again.ensure().await.unwrap();
-    assert_eq!(again.group("thing").tabs[0].url, "https://a.example/kept");
+    assert_eq!(again.group(DEFAULT_GROUP).tabs[0].url, "https://a.example/kept");
     again.shutdown().await;
 }
 
@@ -464,13 +464,13 @@ async fn one_party_operates_a_group_at_a_time() {
     // The user takes over: the agent's lease is void and it gets no new one.
     let mut changes = m.changes();
     changes.borrow_and_update();
-    let taken = m.hand("did:bns:bob", DEFAULT_GROUP, Handed::TakeOver).await.unwrap();
+    let taken = m.hand("did:bns:bob", Handed::TakeOver).await.unwrap();
     assert!(taken.user_hold && taken.controller == Controller::User && taken.lease.is_none());
     assert!(changes.has_changed().unwrap(), "the screen is told");
     assert_eq!(m.renew(&lease.lease_id).unwrap_err().code, "lease_lost");
     assert_eq!(m.acquire("ui-1").await.unwrap_err().code, "user_in_control");
     // Handed back: the agent operates again.
-    let back = m.hand("did:bns:bob", DEFAULT_GROUP, Handed::HandBack).await.unwrap();
+    let back = m.hand("did:bns:bob", Handed::HandBack).await.unwrap();
     assert!(!back.user_hold);
     let lease = m.acquire("ui-1").await.unwrap();
     assert_eq!(m.controller(DEFAULT_GROUP), Controller::Agent);
@@ -484,57 +484,49 @@ async fn one_party_operates_a_group_at_a_time() {
 
     // The agent asks the user to take over.
     let lease = m.acquire("ui-1").await.unwrap();
-    assert_eq!(m.request_handover("ui-1", "password", Some("the bank's login".into())).await.unwrap(), DEFAULT_GROUP);
+    m.request_handover("password", Some("the bank's login".into())).await.unwrap();
     let group = m.group(DEFAULT_GROUP);
     assert_eq!((group.controller, group.agent_state, group.user_hold), (Controller::User, AgentState::WaitingTakeover, true));
     assert_eq!(group.handover.as_ref().map(|h| h.reason.as_str()), Some("password"));
     assert_eq!(group.note.as_deref(), Some("the bank's login"));
     assert_eq!(m.renew(&lease.lease_id).unwrap_err().code, "lease_lost");
     assert_eq!(m.acquire("ui-1").await.unwrap_err().code, "user_in_control");
-    m.hand("did:bns:bob", DEFAULT_GROUP, Handed::HandToAgent).await.unwrap();
+    m.hand("did:bns:bob", Handed::HandToAgent).await.unwrap();
     let lease = m.acquire("ui-1").await.unwrap();
     m.release(&lease.lease_id, Some(AgentState::Done), Some("booked".into())).unwrap();
     let group = m.group(DEFAULT_GROUP);
     assert_eq!((group.controller, group.agent_state, group.note.as_deref()), (Controller::User, AgentState::Done, Some("booked")));
-    // Who holds a group is kept across a restart of the service.
-    m.hand("did:bns:bob", "thing", Handed::TakeOver).await.unwrap();
+    // Whether the user holds the browser is kept across a restart of the service.
+    m.hand("did:bns:bob", Handed::TakeOver).await.unwrap();
     housekeeping.abort();
     m.shutdown().await;
     let tuning = Tuning { chromium: Some(fake_browser::chromium()), dirs: Some(m.dirs().clone()), ..Default::default() };
     let again = BrowserModule::with_tuning(section(12, 600), deps(&b.root), tuning);
-    assert!(again.group("thing").user_hold);
-    assert!(!again.group(DEFAULT_GROUP).user_hold);
+    assert!(again.group(DEFAULT_GROUP).user_hold);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_default_group_is_bound_to_a_conversation() {
+async fn the_browser_conversation_is_bound() {
     let b = Bench::new(section(12, 600), |_| {}).await;
     let m = &b.module;
-    assert_eq!(m.status(None, None).await["default_session_id"], Value::Null);
+    assert_eq!(m.status().await["default_session_id"], Value::Null);
     let own = m.open_tab(DEFAULT_GROUP, Some("https://a.example/")).await.unwrap();
-    let named = m.open_tab("conv-1", Some("https://b.example/")).await.unwrap();
-    let _viewer = m.viewer("conv-1");
     let mut changes = m.changes();
     changes.borrow_and_update();
 
-    // The conversation's group becomes part of the default group.
-    assert_eq!(m.bind_default("conv-1").unwrap(), "conv-1");
+    // Binding names the conversation; the tabs stay.
+    assert!(m.bind_default("conv-1").unwrap());
     assert!(changes.has_changed().unwrap(), "the screen is told");
     assert_eq!(m.default_session().as_deref(), Some("conv-1"));
-    assert_eq!(b.tabs(DEFAULT_GROUP).iter().map(|t| (t.tab_id.clone(), t.active)).collect::<Vec<_>>(), vec![(own.tab_id.clone(), true), (named.tab_id.clone(), false)]);
-    assert!(b.tabs("conv-1").is_empty());
-    let status = m.status(None, None).await;
+    assert_eq!(b.tabs(DEFAULT_GROUP).iter().map(|t| t.tab_id.clone()).collect::<Vec<_>>(), vec![own.tab_id.clone()]);
+    let status = m.status().await;
     assert_eq!(status["default_session_id"], "conv-1");
     assert_eq!(status["groups"].as_array().unwrap().len(), 1);
-    // Who looked at the conversation's group looks at the default group: a tab they open is not in a group that is gone.
-    let seen = b.fake.open("https://c.example/", None);
-    until("the tab is seen", || m.tab(&seen).is_some()).await;
-    assert_eq!(m.tab(&seen).unwrap().group_id, DEFAULT_GROUP);
     // Written at once, and read by the next service.
     let file: Value = serde_json::from_slice(&std::fs::read(b.root.join("state/browser/groups.json")).unwrap()).unwrap();
     assert_eq!(file["default_session_id"], "conv-1");
     changes.borrow_and_update();
-    m.bind_default("conv-1").unwrap();
+    assert!(!m.bind_default("conv-1").unwrap());
     assert!(!changes.has_changed().unwrap(), "bound again: nothing happens");
     m.shutdown().await;
     b.fake.forget_tabs();
@@ -542,7 +534,7 @@ async fn the_default_group_is_bound_to_a_conversation() {
     let again = BrowserModule::with_tuning(section(12, 600), deps(&b.root), tuning);
     assert_eq!(again.default_session().as_deref(), Some("conv-1"));
     again.ensure().await.unwrap();
-    assert_eq!(again.group(DEFAULT_GROUP).tabs.len(), 3);
+    assert_eq!(again.group(DEFAULT_GROUP).tabs.len(), 1);
     again.shutdown().await;
 }
 
@@ -550,7 +542,7 @@ async fn the_default_group_is_bound_to_a_conversation() {
 async fn an_agent_without_a_browser_says_so() {
     // Switched off.
     let b = Bench::new(BrowserSection { enabled: false, ..section(12, 600) }, |_| {}).await;
-    let status = b.module.status(None, None).await;
+    let status = b.module.status().await;
     assert_eq!((status["enabled"].clone(), status["running"].clone(), status["version"].clone()), (json!(false), json!(false), Value::Null));
     assert!(status["unavailable"].as_str().unwrap().contains("enabled = false"));
     assert_eq!((status["unavailable_code"].clone(), status["available"].clone()), (json!("disabled"), json!(true)), "the browser is there, the agent may not use it");
@@ -558,7 +550,7 @@ async fn an_agent_without_a_browser_says_so() {
         b.module.ensure().await.err(),
         b.module.acquire("s").await.err(),
         b.module.renew("l").err(),
-        b.module.hand("did:bns:bob", "default", Handed::TakeOver).await.err(),
+        b.module.hand("did:bns:bob", Handed::TakeOver).await.err(),
         b.module.bind_default("conv-1").err(),
         b.module.clear_profile().await.err(),
     ] {
@@ -569,7 +561,7 @@ async fn an_agent_without_a_browser_says_so() {
 
     // No chromium on this node.
     let b = Bench::new(section(12, 600), |t| t.chromium = Some(PathBuf::from("/nonexistent/chromium"))).await;
-    let status = b.module.status(None, None).await;
+    let status = b.module.status().await;
     assert_eq!((status["enabled"].clone(), status["available"].clone(), status["version"].clone()), (json!(true), json!(false), Value::Null));
     assert!(status["unavailable"].as_str().unwrap().contains("chromium"));
     assert_eq!(status["unavailable_code"], "no_package");
@@ -584,7 +576,7 @@ async fn an_agent_without_a_browser_says_so() {
     let error = b.module.ensure().await.unwrap_err();
     assert_eq!((error.code, error.unavailable_code), ("browser_unavailable", None));
     assert!(error.message.contains("ended while starting"), "{}", error.message);
-    let status = b.module.status(None, None).await;
+    let status = b.module.status().await;
     assert_eq!((status["available"].clone(), status["running"].clone()), (json!(true), json!(false)));
     assert!(status["unavailable"].as_str().unwrap().contains("ended while starting"));
     assert_eq!(status["unavailable_code"], Value::Null, "the browser is there: it did not start");
@@ -606,7 +598,7 @@ async fn the_browser_is_usable_as_soon_as_the_node_downloaded_it() {
         std::fs::write(tools.join("online/chromium.json"), record.to_string()).unwrap();
     };
     async fn unavailable(m: &BrowserModule, unavailable_code: &str) -> String {
-        let status = m.status(None, None).await;
+        let status = m.status().await;
         assert_eq!((status["enabled"].clone(), status["available"].clone(), status["running"].clone()), (json!(true), json!(false), json!(false)));
         assert_eq!(status["unavailable_code"], unavailable_code);
         let why = status["unavailable"].as_str().unwrap().to_string();
@@ -621,7 +613,7 @@ async fn the_browser_is_usable_as_soon_as_the_node_downloaded_it() {
 
     // No extension package: no launcher.
     assert!(unavailable(m, "no_package").await.contains("no `chromium` on this node"));
-    assert_eq!(m.status(None, None).await["version"], Value::Null);
+    assert_eq!(m.status().await["version"], Value::Null);
 
     // The package is installed; its browser is not downloaded yet.
     std::fs::create_dir_all(tools.join("bin")).unwrap();
@@ -629,7 +621,7 @@ async fn the_browser_is_usable_as_soon_as_the_node_downloaded_it() {
     std::fs::create_dir_all(tools.join("store/ext-core/browser")).unwrap();
     std::fs::write(tools.join("store/ext-core/browser/versions.json"), json!({ "playwright": "1.65.1", "chromium": "159.0.8154.6", "revision": "1255" }).to_string()).unwrap();
     assert!(unavailable(m, "not_downloaded").await.contains("not downloaded on this node yet"));
-    assert_eq!(m.status(None, None).await["version"], json!({ "browser": "159.0.8154.6", "playwright": "1.65.1" }), "what the package will download");
+    assert_eq!(m.status().await["version"], json!({ "browser": "159.0.8154.6", "playwright": "1.65.1" }), "what the package will download");
     assert_eq!(m.module_status().1, false);
 
     // Being downloaded, and a download that failed.
@@ -644,12 +636,12 @@ async fn the_browser_is_usable_as_soon_as_the_node_downloaded_it() {
     std::fs::create_dir_all(tools.join("online/chromium")).unwrap();
     unavailable(m, "not_downloaded").await;
     record(json!({ "state": "ready", "version": "159.0.8154.6", "size_bytes": 200u64 << 20, "downloaded_bytes": 200u64 << 20 }));
-    let status = m.status(None, None).await;
+    let status = m.status().await;
     assert_eq!((status["available"].clone(), status["unavailable"].clone(), status["unavailable_code"].clone()), (json!(true), Value::Null, Value::Null));
     assert_eq!(m.module_status().1, true);
     let lease = m.acquire("s").await.unwrap();
     assert!(b.fake.pid().is_some() && m.running(), "acquiring started it");
-    let status = m.status(None, None).await;
+    let status = m.status().await;
     assert_eq!((status["running"].clone(), status["version"].clone()), (json!(true), json!({ "browser": "1.2.3.4", "playwright": "1.65.1" })));
     assert!(b.fake.args().contains("--user-agent=") && b.fake.args().contains("Chrome/159.0.0.0"), "the package's browser gets a windowed browser's user agent");
     m.release(&lease.lease_id, None, None).unwrap();
@@ -752,15 +744,15 @@ mod real {
         assert!(processes.len() > 1, "the browser and its helpers run");
         let group = process::group_pids(*processes.iter().min().unwrap());
         assert!(group.len() > 1, "the browser's helpers are in its process group");
-        let status = m.status(None, None).await;
+        let status = m.status().await;
         assert!(status["version"]["browser"].as_str().unwrap().split('.').count() == 4, "{status}");
         assert_eq!(status["groups"][0]["tabs"], json!([]), "the browser starts without a tab of its own");
 
-        // Two groups, each with a tab: both render at once.
-        let a = m.open_tab("default", Some(&page("Alpha"))).await.unwrap();
-        let b = m.open_tab("thing", Some(&page("Beta"))).await.unwrap();
-        until("titles arrive", || m.group("default").tabs[0].title == "Alpha" && m.group("thing").tabs[0].title == "Beta").await;
-        until("the pages are loaded", || !m.group("default").tabs[0].loading && !m.group("thing").tabs[0].loading).await;
+        // Two tabs, one of them the module's own: both render at once.
+        let a = m.open_tab(DEFAULT_GROUP, Some(&page("Alpha"))).await.unwrap();
+        let b = m.open_tab("_own", Some(&page("Beta"))).await.unwrap();
+        until("titles arrive", || m.group(DEFAULT_GROUP).tabs[0].title == "Alpha" && m.group("_own").tabs[0].title == "Beta").await;
+        until("the pages are loaded", || !m.group(DEFAULT_GROUP).tabs[0].loading && !m.group("_own").tabs[0].loading).await;
         for tab in [&a, &b] {
             // Set by the module's attachment, which may still be on its way.
             let started = Instant::now();
@@ -771,15 +763,14 @@ mod real {
         }
         assert_eq!(eval(m, &a.tab_id, "innerWidth").await, 1280);
 
-        // A page opened by a page joins its group; a tab without opener goes to the watched group.
+        // A page opened by a page joins its group; a tab without opener is the default group's.
         eval(m, &b.tab_id, "window.open('about:blank') && 1").await;
-        until("the popup is a tab of its opener's group", || m.group("thing").tabs.len() == 2).await;
-        let _viewer = m.viewer("watched");
+        until("the popup is a tab of its opener's group", || m.group("_own").tabs.len() == 2).await;
         let cdp = m.cdp().unwrap();
         let foreign = cdp.send(None, "Target.createTarget", json!({ "url": page("Gamma") })).await.unwrap();
         let foreign = foreign["targetId"].as_str().unwrap().to_string();
         until("the foreign tab is seen", || m.tab(&foreign).is_some()).await;
-        assert_eq!(m.tab(&foreign).unwrap().group_id, "watched");
+        assert_eq!(m.tab(&foreign).unwrap().group_id, DEFAULT_GROUP);
         // It took the window of another tab: both still render.
         until("the foreign tab is attached", || m.tab(&foreign).unwrap().session.is_some()).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -791,13 +782,13 @@ mod real {
         let mut events = m.tab_events(&a.tab_id, &["Page.frameStoppedLoading"]).await.unwrap();
         m.tab_send(&a.tab_id, "Page.navigate", json!({ "url": page("Delta") })).await.unwrap();
         assert!(events.next().await.is_some());
-        until("the new title arrives", || m.group("default").tabs[0].title == "Delta" && !m.group("default").tabs[0].loading).await;
+        until("the new title arrives", || m.group(DEFAULT_GROUP).tabs[0].title == "Delta" && !m.group(DEFAULT_GROUP).tabs[0].loading).await;
 
         // A dialog nobody attends to is closed: the page goes on.
         eval(m, &a.tab_id, "setTimeout(() => alert('unattended'), 0) && 1").await;
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(eval(m, &a.tab_id, "2 + 2").await, 4);
-        assert!(m.open_dialogs("default").is_empty());
+        assert!(m.open_dialogs(DEFAULT_GROUP).is_empty());
 
         // The crash handlers left the browser's process group; they carry its mark and end with it.
         let mark = format!("{}={}-", process::ENV_MARK, std::process::id());
@@ -811,7 +802,7 @@ mod real {
         assert!(!handlers.is_empty(), "this Chromium starts crash handlers outside its group");
 
         m.close_tab(&b.tab_id).await.unwrap();
-        assert_eq!(m.group("thing").tabs.len(), 1);
+        assert_eq!(m.group("_own").tabs.len(), 1);
         m.shutdown().await;
         until("the processes are gone", || processes_of(&m.dirs().profile).is_empty()).await;
         until("the crash handlers are gone", || handlers.iter().all(|pid| !Path::new(&format!("/proc/{pid}")).exists())).await;
@@ -823,13 +814,13 @@ mod real {
     async fn a_killed_browser_is_started_again_with_its_tabs() {
         let r = real(section(12, 600), |_| {});
         let m = &r.module;
-        m.open_tab("thing", Some(&page("Kept"))).await.unwrap();
-        until("the title arrives", || m.group("thing").tabs[0].title == "Kept").await;
+        m.open_tab(DEFAULT_GROUP, Some(&page("Kept"))).await.unwrap();
+        until("the title arrives", || m.group(DEFAULT_GROUP).tabs[0].title == "Kept").await;
         let before = processes_of(&m.dirs().profile);
         let main = *before.iter().min().unwrap();
         assert_eq!(std::process::Command::new("kill").args(["-KILL", &main.to_string()]).status().unwrap().code(), Some(0));
         until("the browser is seen to be gone", || !m.running()).await;
-        until("it runs again with the tab", || m.running() && m.group("thing").tabs.first().is_some_and(|t| t.title == "Kept")).await;
+        until("it runs again with the tab", || m.running() && m.group(DEFAULT_GROUP).tabs.first().is_some_and(|t| t.title == "Kept")).await;
         let after = processes_of(&m.dirs().profile);
         assert!(!after.is_empty() && after.iter().all(|pid| !before.contains(pid)), "before {before:?}, after {after:?}");
         m.shutdown().await;
@@ -843,8 +834,8 @@ mod real {
         let m = &r.module;
         let housekeeping = tokio::spawn(m.clone().run());
         let site = site().await;
-        let tab = m.open_tab("thing", Some(&site)).await.unwrap();
-        until("the site is loaded", || m.group("thing").tabs[0].title == "Site" && !m.group("thing").tabs[0].loading).await;
+        let tab = m.open_tab(DEFAULT_GROUP, Some(&site)).await.unwrap();
+        until("the site is loaded", || m.group(DEFAULT_GROUP).tabs[0].title == "Site" && !m.group(DEFAULT_GROUP).tabs[0].loading).await;
         eval(m, &tab.tab_id, "document.cookie = 'login=alice; max-age=3600'").await;
         assert_eq!(eval(m, &tab.tab_id, "document.cookie").await, "login=alice");
 
@@ -854,16 +845,16 @@ mod real {
         assert_eq!(file["groups"][0]["tabs"][0]["url"], site.as_str());
 
         m.ensure().await.unwrap();
-        until("the tab is back", || m.group("thing").tabs.first().is_some_and(|t| t.title == "Site" && !t.loading)).await;
-        let tab = m.group("thing").tabs[0].clone();
+        until("the tab is back", || m.group(DEFAULT_GROUP).tabs.first().is_some_and(|t| t.title == "Site" && !t.loading)).await;
+        let tab = m.group(DEFAULT_GROUP).tabs[0].clone();
         assert_eq!(eval(m, &tab.tab_id, "document.cookie").await, "login=alice", "logins are kept");
 
         // Clearing the profile logs out.
         m.clear_profile().await.unwrap();
         assert!(processes_of(&m.dirs().profile).is_empty());
         m.ensure().await.unwrap();
-        until("the tab is back again", || m.group("thing").tabs.first().is_some_and(|t| t.title == "Site" && !t.loading)).await;
-        let tab = m.group("thing").tabs[0].clone();
+        until("the tab is back again", || m.group(DEFAULT_GROUP).tabs.first().is_some_and(|t| t.title == "Site" && !t.loading)).await;
+        let tab = m.group(DEFAULT_GROUP).tabs[0].clone();
         assert_eq!(eval(m, &tab.tab_id, "document.cookie").await, "");
         housekeeping.abort();
         m.shutdown().await;
@@ -877,8 +868,8 @@ mod real {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let r = real(section(12, 600), |_| {});
         let m = &r.module;
-        let user_tab = m.open_tab("thing", Some(&page("Users"))).await.unwrap();
-        let _viewer = m.viewer("thing");
+        let user_tab = m.open_tab(DEFAULT_GROUP, Some(&page("Users"))).await.unwrap();
+        let _viewer = m.viewer(DEFAULT_GROUP);
         let lease = m.acquire("ui-1").await.unwrap();
         assert_eq!(lease.group_id, DEFAULT_GROUP);
 
@@ -902,9 +893,9 @@ mod real {
         };
         let output = tokio::process::Command::new("node").arg(script).arg(&lease.cdp_url).output().await.unwrap();
         assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-        // What the agent opened while it held the lease is in the lease's group, not the watched one.
+        // What the agent opened is a tab of the browser beside the user's.
         until("the agent's tab is seen", || m.group(DEFAULT_GROUP).tabs.iter().any(|t| t.title == "From Playwright")).await;
-        assert_eq!(m.group("thing").tabs.len(), 1);
+        assert_eq!(m.group(DEFAULT_GROUP).tabs.len(), 2);
         // Playwright connected and left: the user's tab is as it was.
         assert_eq!(eval(m, &user_tab.tab_id, "document.title").await, "Users");
         m.release(&lease.lease_id, Some(AgentState::Done), None).unwrap();

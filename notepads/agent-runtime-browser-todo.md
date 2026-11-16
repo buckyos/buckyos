@@ -100,6 +100,12 @@
 | D32 | 在线项从哪里下载 | 下载地址就写官方。我生活在硅谷，BuckyOS 的早期客户也主要在美欧日，连不上 Google 不是问题 | 清单里每个平台一个官方地址加 SHA256，不配镜像，不做可覆盖的下载源 |
 | D33 | 在线项怎么触发 | 装完自动下载；下载失败是可以接受的，可以在系统管理面板手工再次触发下载 | 包装好以后节点自动下载一次，失败就停在“失败”，不无限重试；“设置 > 扩展工具”和 `buckyos ext-tools` 里可以再次触发 |
 | D34 | 哪些东西做成在线项 | 这次只做 Chromium。后续再专门讨论一次哪些包可以在线化 | LibreOffice 等照旧随包 |
+| D35 | Q30 默认事情绑定哪个会话；Q34 “事情”的界面 | 每个 Agent 有一个专门处理“重排”的 chat session，不为每个事情建一个，所有和浏览器使用的都在这里。“事情”是逻辑上的，UI 上没必要做专门的支持，大部分普通用户压根做不好 topic 管理 | 每个 Agent 一个专用的浏览器会话（带 `ui.source` 标记的 MessageHub 会话，用 `bind_default` 绑定）；App 去掉事情列表和“新建一件事”；服务端每个 Agent 只有一个标签组（§5.10） |
+| D36 | Q31 `browser` 手册进不进对话的默认集合 | 可以考虑让上面的专用 chat session 有这个手册 | 只有专用浏览器会话的 UI Session 带 `browser` 手册，别的对话照旧 |
+| D37 | Q32 手机画面的清晰度 | 按建议做，最好能根据网速动态调整。真正解决网速问题的其实是重排 | 协议加 `pixel_ratio`（2 倍虚拟屏）；App 按实测的网速自动调像素密度、画质和帧率 |
+| D38 | Q35 重排包的生命周期 | 现在内核跑通了，重排包的生命周期再单独设计。非实时重排的价值比想象中大：可以先缓存相关资源到本地，甚至对这些资源做处理（比如给无字幕的视频加字幕），甚至只是把看过的媒体从本地缓存变成组织好的本地存储都有价值。“重排”这个词可能把功能说窄了，实际上用户拥有了一段连续时间观察网站的能力，而不是只能看打开这一刻的网站。新网页 = 重排(网址, 当前时间, 历史记录) | 本期不改重排的格式和生命周期，另立文档设计 |
+| D39 | Q38 重排脚本的运行身份 | 好，安全登记就是“Agent 为我定制的可信产物” | 记进已知风险的说法 |
+| D40 | Q28、Q29、Q33、Q36、Q37、Q39–Q41、Q48 | Q28 已经发布了；Q29、Q36、Q37、Q39、Q40、Q41 按建议；Q33 现在还是高级功能，不放桌面；Q48 另行验证 | Q29：ext-core 里所有用 fontconfig 的工具都设 `FONTCONFIG_PATH`（ext-core 1.3.1）；其余照现在的做法 |
 
 原 Q15 由 D3 定下，编号不复用。
 
@@ -470,6 +476,8 @@ D2、D17、D23、D27：选择器；存放和触发不问作者；和浏览器绑
 
 **不必实时带来的性质。** 重排模式不要求原标签页开着，也不要求浏览器在运行。
 
+**以后的方向（D38，本期不做）。** owner 试用后认为非实时重排的价值比想象中大：可以先把相关资源缓存到本地，甚至对资源做处理（比如给没有字幕的视频加字幕），或者只是把看过的媒体从缓存变成组织好的本地存储。“重排”这个词把功能说窄了：用户得到的是在一段连续时间里观察一个网站的能力，而不只是打开那一刻的网站。新网页 = 重排(网址, 当前时间, 历史记录)。重排包的生命周期另立文档设计；本期的格式和触发不变。
+
 ### 5.7 系统渲染
 
 （实施后的参数名、默认值和隔离做法见 §5.8 的“系统渲染”。）
@@ -587,6 +595,12 @@ ext-tool 的基础机制加了“在线项”：包的清单里声明，包本�
 ## 6. 任务
 
 每条：落点、做法、验证。没写落点的见 §3 对应小节。
+
+### 5.10 一个 Agent 一个浏览器会话（D35、D36）和画面清晰度（D37）
+
+- 每个 Agent 只有一个标签组 `default`（`_` 开头的内部组照旧，比如重排刷新的后台标签页），用户和 Agent 的所有会话共用这一组标签页。
+- 浏览器会话：这个 Agent 名下带 `ui.source = agent-browser` 标记的 MessageHub 会话，App 第一次需要时找或建（标题“浏览器”）并用 `browser.bind_default` 绑定。`_browser` 记录、App 发的交接消息、重排的兜底请求都进这里；`waiting_answer` 只看这里的提问；它的 UI Session 带 `browser` 手册，别的对话不带。App 没有事情列表、没有“新建一件事”，深链只有 `agent` 和 `mode`。
+- 清晰度：屏幕协议的视口带 `pixel_ratio`（1–2），大于 1 时服务端把标签页的窗口挪到 2 倍虚拟屏（启动参数 `--screen-info`），1 和 2 之间用截屏流的最大尺寸压。App 按实测的网速在四档之间自动换（清晰 / 标准 / 省流 / 极省：像素比、画质、帧率），降档快、升档慢；设备像素比低于 1.5 时“清晰”档也按 1；设置里可以手动选“自动 / 清晰 / 省流”。画质跟随生效视口的那条连接。细节在协议 §3。
 
 ### 6.1 EX：ext-core 加浏览器
 
@@ -827,33 +841,48 @@ Q1–Q26 都已答复（§2）。下面是实施和真实环境验证中新出�
 | --- | --- | --- |
 | Q27 | Chrome for Testing 的 Linux、macOS 归档里带着 Widevine CDM，它的 `LICENSE` 写明没有和 Google 的单独协议不得分发 | **已裁决（D31–D34）**：ext-tool 加“在线项”，Chromium 不再随包，节点装好包以后从 Google 的官方地址下载。我们不分发它，这条阻塞项和 D26 的再分发风险一起消掉 |
 | Q28 | ext-core 升到 1.3.0 之后，`build-all.yml` 的 `resolve-ext-tools` 要求这个版本已经发布；发布被 pandoc（原有）拦着。另外 `ext-core.yml` 的 pikg 作业用 `npx buckyos@latest pikg doctor`，要等认得 `online` 字段的 websdk 发布后才能过 | 没处理。开发机不受影响（`buckyos-build.py` 忽略这一步的失败，沿用本地种子） |
+> 已经发布了
 | Q29 | ext-core 里用 fontconfig 的工具装到别的路径后读不到 `conf.d`（原有的缺陷：简体字回退对 `soffice` 实际不生效）。要不要在 `env/*.sh` 和 Windows 启动器里统一加 `FONTCONFIG_PATH`？表 B 写的“不读系统字体目录”也和现实不符 | 只给浏览器的包装脚本和 `agent-browser env` 加了。别的工具没动：加了会改变它们看到的字体 |
+> 按你的建议
 
 产品和交互：
 
 | # | 问题 | 现在的做法 |
 | --- | --- | --- |
 | Q30 | 默认事情绑定哪个会话 | 第一次用到时取“最近活跃、且不是在浏览器里新建的”那个和 Agent 的对话，可能是用户在 MessageHub 里正在用的任意一个。另一种做法是给默认事情建一个专门的会话 |
+> 每个agnet有一个专门处理“重排的chat session”, 不为每个事情建一个。所有和浏览器使用的都在这里。
 | Q31 | `browser` 手册要不要进对话的默认手册集合 | 没进（进了每个对话的系统提示多约 11 KB）。靠意图分析给 Work 会话配手册，真实模型验证里 5 个 Work 会话都配上了；对话自己不直接操作浏览器 |
+> 如上，可以考虑上面的重排专用chat session有这个手册?
 | Q32 | 手机上画面的清晰度和流量怎么取舍 | 没做高清晰度。现在的帧是 CSS 像素（手机 412×780），在 2.6 倍的屏上放大显示，小字能认但发糊。实测只有一种办法不改页面布局和输入坐标：给浏览器加一块 2 倍的虚拟屏，有人要高清时把标签页的窗口移过去。代价：流量约 2.7 倍（全屏动画 309 → 839 KiB/s，静止一帧 20.8 → 56.2 KB），动画时 CPU 约 4 倍；这期间 Agent 自己的截图像素也翻倍；1.5 倍是 554 KiB/s。要做的话协议加一个 `pixel_ratio`（做法和数据见 §12 屏幕修复那一行） |
+> 按你的建议，这个最好能根据网速动态调整。真正解决网速问题的其实是重排
 | Q33 | 新账号的桌面要不要默认放「Agent 浏览器」的快捷方式 | 没放，从“所有应用”进。放了会改新账号的默认桌面 |
+> 好，现在这个还是高级功能
 | Q34 | 几处我定的默认：默认事情叫“日常浏览”；新事情默认名“浏览器里的事 月-日 时:分”；交给 Agent、交还都先出一个可以补话的确认面板；地址栏输入的不是网址时去 Bing 搜索；改了重排偏好自动给 Agent 发消息请它改包重做；用户刚按过页面时文件选择器直接弹出，否则只显示提示 | 如左。文案在 `src/frame/desktop/src/i18n/agent-browser*.ts` |
+> 这个“事情” 是逻辑上的，我觉得UI上没必要做专门的支持。大部分普通用户压根做不好topic管理
 | Q35 | 重排的 `<站点>` 和匹配规则都不含端口，同一主机不同端口共用一个包 | 如左。开发机上 `localhost:3000` 和 `localhost:8080` 会互相套用 |
+> 现在内核跑通了，重排包的生命周期再单独设计。我今天试用了后，觉得非实时重排的价值比想象中大，比如可以先缓存相关资源到本地，甚至对这些资源做处理（比如无字幕的视频加个字幕）。甚至只是把看过的meida从本地缓存变成组织好的本地存储，都有价值。重排这个词可能把功能说窄了，实际上用户拥有了 一段连续时间观察网站的能力，而不是过去只是打开这一刻的网站。新网页 = 重排(网址，当前时间，历史记录)
 | Q36 | `media.page` 的默认值和截图上限 | A4、边距 10 mm、打印背景；截图超过 4096² 像素失败（宽 1280、倍数 2 时页面高过约 6500 px 就超） |
+> 按你的建议
 
 权限和边界：
 
 | # | 问题 | 现在的做法 |
 | --- | --- | --- |
 | Q37 | 下载存到 Zone：`browser.download_export` 登记对象后要给调用者登记持有，这要 `obj://ndm/grant`，普通用户 owner 和只读 Agent 没有 | 被拒只记日志，照常返回 objId；管理员 owner 实测能存，普通用户 owner 会在随后的提交对象那一步被拒 |
+> 按你的建议
 | Q38 | 重排的 `refresh.mjs` 以 Agent Service 的身份运行（容器里是 root），读得到服务的文件；能写 owner 重排桶的一方（owner、读写权限的 Agent）都能让它在这个 owner 的任一个 Agent 的容器里执行 | 子进程的环境是清空的，拿不到令牌；文件系统没有隔离（D27：重排的代码看作我们自己生产的） |
+> 好，安全登记就是Agent为我定制的“可信产物”
 | Q39 | 我加的一处收口：种在 `reflow.<zone>` 上的会话在 nfs-server 的文件、桶、NDM 接口上不算登录 | 已实现并验证。不加的话受限账号能借“nfs-server”这个新的登录目标用上文件接口 |
+> 按你的建议
 | Q40 | 原生运行的 private runtime 默认声明的基线是 standard，`browser` 手册是 extended | 节点声明成 extended 之后手册才生效，和其他 extended 手册一样。原生运行没有实测（DT3） |
+> 按你的建议
 | Q45 | 在线项下载到一半节点停了 | **owner 2026-11-15 认可。** 重启后记成失败（“下载时节点停了”），不自动重试，要手工再触发。照“失败不重试、重启也不重试”做的；另一种做法是中断后自动再试一次 |
 | Q46 | 对已经就绪的在线项手工触发下载 | **owner 2026-11-15 认可。** 重新下载并整体换掉，当作修复用；界面上要二次确认 |
 | Q47 | 在线项下载的超时和代理 | **owner 2026-11-15 认可。** 连接 30 秒、连续 60 秒没有数据、总共 2 小时；不做断点续传。走 HTTP 客户端的默认行为，会用环境变量里的系统代理（这不是可覆盖的下载源） |
 | Q48 | macOS 离线包的签名脚本（`pve-pack-system/bin/pack/sign_macos_ext_tools.py`）只认 payload 顶层的 `ext-manifest.json`、`bin`、`store`、`smoke`，并且会跑清单里所有的冒烟 | 没改（另一个仓库）。要放行 `online/`，并跳过要浏览器的冒烟（`chromium`、`page-render`），否则 mac 包签名那一步会失败。owner 2026-11-15：当前环境做不了，由 owner 后续验证 |
+> 另行验证
 | Q41 | 只读权限的 Agent 发起的重排刷新 | 照常跑，写结果时被桶拒绝，状态是失败。没有事先拦。只读 Agent 的两条验收没验：权限模式只能在创建 Agent 时定 |
+> 按你的建议
 
 这次发现、不属于本需求、没有改的：
 
@@ -886,9 +915,10 @@ owner 定了先能力再安全（D18）。下面这些第一期不处理：
 实施和验证中补充的：
 
 - **屏幕连接只在握手时校验令牌。** 令牌过期或 owner 被撤权之后，已经连上的屏幕继续可用，直到断开。
-- **重排的刷新脚本以 Agent Service 的身份运行**（Q38）。
+- **重排的刷新脚本以 Agent Service 的身份运行**（Q38）。owner 的说法（D39）：重排包是“Agent 为我定制的可信产物”，按这个边界登记。
 - **下拉框的拦截一直开着。** 没人看、Agent 在操作时，点下拉框也不会弹出原生的选项列表（无头模式下本来也看不见）。Agent 用 Playwright 的 `selectOption` 不受影响。
 - **页面环境里包了几个原生函数**（定位、摄像头、通知等的入口），用来告知用户“页面请求了权限、已被拒绝”。页面察觉得到。
+- **有人用高清屏看的时候，页面的设备像素比是 2**（D37 的 2 倍虚拟屏）。没人看之后标签页留在原来的屏，Agent 操作期间也一样。`agent-browser screenshot` 已改成按 CSS 像素截（`scale: 'css'`），手册也要求脚本里的 `page.screenshot()` 带它；Agent 自己写的截图代码不带时，图的像素会翻倍。
 - **Chrome 把崩溃转储写在浏览器目录之外**（`~/.config/google-chrome-for-testing/Crash Reports`）。
 - **下载导出在 Agent 的 `artifacts` 桶里留下对象**，没有清理。
 - **同一个还没做好的网址可能请 Agent 两次**：“已经请过”记在浏览器标签页的 `sessionStorage` 里，换设备或新窗口打开会再请一次。
@@ -951,3 +981,9 @@ owner 定了先能力再安全（D18）。下面这些第一期不处理：
 | 2026-11-15 | 在线项：使用方 | opendan 的浏览器模块区分 `no_package`、`not_downloaded`、`disabled`，每次现读记录、不缓存，下载好不用重启；Workflow 把 `page-render` 的退出码 6 映射成 `tools_missing`；协议文档同步。`baseline.rs` 和 `skills.rs`：浏览器没下载时 `chromium` 记成“等下载”（`ext.waiting`、`waiting_online`），不算缺失、不推荐启用 ext-core。Desktop“设置 > 扩展工具”显示在线项和进度，管理员可以下载、重试、重新下载；「Agent 浏览器」App 按三种原因说明，管理员能直接下载；OpenDAN WebUI 的 Skills 页、Runtimes 页显示“等下载”。验证：opendan、workflow、libopendan 的用例全过；Desktop mock e2e（Agent 浏览器和设置页）80 条、OpenDAN WebUI 58 条全过 |
 | 2026-11-15 | 在线项：真实 Zone | 全部合入后重新构建、重新播种（不带浏览器的 ext-core，种子 686 MiB）、重建镜像、部署。ext-core 在启动后 21 秒装好，`installs/ext-core.json` 的 `waiting` 是 `chromium`、`page-render`；节点随即自动从 Google 下载，29 秒时 `ready`（下载约 6 秒）；`waiting` 清空，三条命令都探测到版本；目录 0755、记录 0644。Agent 的 `browser.status` 可用，容器里 `chromium --version`、`agent-browser open`、`done` 正常。`buckyos ext-tools download ext-core chromium`（经 `--endpoint http://127.0.0.1:3180`）手工重新下载：记录保持 `ready`、新版本在 `next` 里走完 7 秒后换上，期间 Agent 的浏览器一直可用。部署的 Desktop 设置页显示“在线项 chromium 159.0.8154.6 199 MB · ood1 已就绪 · 重新下载”。重启一次让 Workflow 重新探测（Q43）后：`WF-DV-017`、`WF-DV-012` 通过，`tests/dv/agent-browser.spec.ts` 8 过，`tests/dv/agent-browser.reflow.spec.ts` 9 过 1 跳过，`test/agent_browser_dv/main.py` 通过。没在真实 Zone 上验的：“还没下载”时 App 里管理员点下载的那条路（mock 上验过；真实 Zone 上浏览器在 Agent 起来之前就下载好了），下载失败后重试 |
 | 2026-11-15 | 在线项之后的回归（Rust） | 在 `src/target` 里 `cargo test -p buckyos-api -p node_daemon -p control_panel -p opendan -p libopendan -p workflow --no-fail-fast -- --test-threads=1`（临时建了 `src/tools/bin`、`src/bin/agent-tools`，跑完已删）：61 个 target、1565 条通过、34 条 ignored、1 条失败。失败的是 `opendan` 的 `a_turn_is_a_task_and_a_slow_reply_replaces_its_placeholder`（期望回复已经替换占位，读到的还是“(working)”），是负载下的时序问题（TODO 之前的记忆里也记过它在负载下失败），单独连跑 3 次都通过 |
+| 2026-11-15 | 裁决 | owner 在 §9 里答复了 Q28–Q41（记成 D35–D40）。要改代码的三件：一个 Agent 一个浏览器会话、去掉“事情”（D35、D36），画面清晰度按网速调整（D37），ext-core 的字体（Q29，D40） |
+| 2026-11-15 | D35、D36 | opendan：每个 Agent 只有一个标签组 `default`；`bind_default` 只决定哪个 MessageHub 会话是浏览器会话；`_browser` 记录只投给它，前缀 `[browser]`；`waiting_answer` 只看它；建 UI Session 时如果对应的是浏览器会话就带上 `browser` 手册（libopendan `template.rs` 的 `own_cmd_skills`，提示词重新冻结时补回）；改绑时把那个会话空闲的 UI Session 归档。旧 `groups.json` 里的具名组丢弃。Desktop：去掉事情列表、“新建一件事”、深链的 `group`；第一次要用会话时找或建一个带 `ui.source = agent-browser` 标记、标题“浏览器”的会话并绑定；MessageHub 的入口在浏览器会话里总是“打开浏览器”，别的会话只在 Agent 操作浏览器时出现。协议 §1–§3、两本手册、Agent 侧 DV 脚本同步。验证：opendan 全过；Desktop e2e 76 条全过 |
+| 2026-11-15 | D37 | opendan：启动参数 `--screen-info` 加一块 2 倍虚拟屏；视口带 `pixel_ratio`，大于 1 时把标签页窗口挪过去、1 和 2 之间用截屏流的最大尺寸压；画质跟随生效视口的连接；截屏流在第一次套完视口后才启动。屏幕握手只认 `default`。Desktop：四档自动换（降档快、升档慢），设备像素比低于 1.5 时清晰档也按 1，菜单里可选“自动 / 清晰 / 省流”。实测（手机 412×780，画质 60）：1 倍静止一帧 20.9 KB、动画 310 KiB/s、浏览器 0.29 核；1.5 倍 36.9 KB、540 KiB/s、0.73 核；2 倍 56.3 KB、840 KiB/s、1.07 核；没人看时 0.03 核，`--screen-info` 本身不增加 CPU。`agent-browser screenshot` 改成按 CSS 像素截（有人用高清屏看时页面的像素比是 2），新用例在 2 倍屏上复现并验证 |
+| 2026-11-15 | Q29（D40） | ext-core 1.3.1：所有加载 fontconfig 的工具（含 `ffprobe`）的环境都设 `FONTCONFIG_PATH`，Windows 启动器同样；`imagemagick` 冒烟查中文字体；表 B 按实际改写（读系统和用户字体目录，这一条保留）。修复前后在裸容器里对比：`fc-match 'sans-serif:lang=zh-cn'` 从 Inconsolata 变成 Noto Sans CJK SC；`soffice` 转写了微软雅黑 / 宋体的 docx，嵌入的字体从 HK 变成 SC；ffmpeg 字幕、`magick pango:` 从方框变成正常。`magick label:` 不写 `-font` 时仍是空白，这是 ImageMagick 不经 fontconfig 的设计，表 B 写了正确写法 |
+| 2026-11-15 | 部署和复验 | 重新播种 ext-core 1.3.1、全量构建、重建镜像、部署。部署时发现本机 Zone 在 12:14 被重新激活过（不是本次操作），原来的三个测试 Agent 的登记都没了（AgentRoot 还在 `data/home/devtest/agents/` 下）；新激活的 Zone 自动带上了 `reflow` 桶。新建测试 Agent `browsy` 后：`WF-DV-017`、`WF-DV-012` 通过；`tests/dv/agent-browser.spec.ts` 8 过；`tests/dv/agent-browser.reflow.spec.ts` 9 过 1 跳过（中途一条失败是用例拿 Agent 的名字去比显示名，已改成和 App 同样取显示名）；浏览器会话的 UI Session 冻结的手册是 `ui_core`、`browser`，`extensions.opendan.cmd_skills` 是 `browser`；经 443 的屏幕在 `pixel_ratio` 2 时帧是 824×1560、1 时 412×780；容器里 ext-core 是 1.3.1，`magick` 认得 Noto Sans CJK SC。没在真实 Zone 上验：按网速自动换档（只在 mock 的限速上验过）、两台设备同看时的规则、真机 |
+| 2026-11-15 | 最后的回归（Rust） | `cargo test -p opendan --no-fail-fast -- --test-threads=1` 全过。`cargo test -p libopendan -p buckyos-api -p workflow --no-fail-fast -- --test-threads=1`：53 个 target、1061 条通过、2 条失败，都是时序用例（`retry` 的 `a_retryable_error_waits_for_its_backoff_and_the_same_run_goes_on`、`work_simple_async` 的 `parallel_tasks_tick_and_show_only_new_output`，当时机器同时在跑 Playwright），单独各跑两次都通过 |

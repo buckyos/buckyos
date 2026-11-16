@@ -1,89 +1,72 @@
-/* The conversation of a thing (protocol §1): a named group's is the MessageHub session of the same id. The default
- * group has none until one is bound to it: the first time its conversation is used, the owner's default conversation
- * with the Agent is taken (created when there is none) and `browser.bind_default` binds it. */
+/* The browser conversation (protocol §1, D35): one MessageHub session with the Agent, started here with the source
+ * mark (`ui.source` = the App's id, kept by components/conversation/agentSessions), where everything about its
+ * browser is said. The first time it is needed it is looked up among the Agent's marked sessions (the bound one
+ * first, else the latest active one) or started, and bound with `browser.bind_default`. */
 
-import { createSourcedSession, ensureDefaultSession as ensureAgentSession, isSourced, loadSources } from '../../../components/conversation/agentSessions'
+import { createSourcedSession, isSourced, isSourceKnown, loadSources } from '../../../components/conversation/agentSessions'
 import { translate } from '../../messagehub/translate'
 import type { Session } from '../../messagehub/types'
 import { getBrowserBackend } from '../api/backend'
-import { DEFAULT_GROUP, type BrowserStatus } from '../api/types'
-import type { HandoverEvent, ThingContext } from '../extensions'
+import type { BrowserStatus } from '../api/types'
+import type { ConversationContext, HandoverEvent } from '../extensions'
 import { AGENT_BROWSER_APP_ID } from '../launch'
-import { defaultThingSession, groupIdOfSession } from '../store/things'
 
-const binding = new Map<string, Promise<Session>>()
-const listeners = new Set<(agentId: string) => void>()
+const finding = new Map<string, Promise<Session>>()
+const listeners = new Set<(agentId: string, sessionId: string) => void>()
 
-/** `browser.bind_default` succeeded for this Agent: `default_session_id` of its `browser.status` changed. */
-export function subscribeDefaultBinding(listener: (agentId: string) => void): () => void {
+/** The browser conversation of an Agent was found (or started) and is bound. */
+export function subscribeBrowserSession(listener: (agentId: string, sessionId: string) => void): () => void {
   listeners.add(listener)
   return () => { listeners.delete(listener) }
 }
 
 /** DG1: the session was started in the Agent browser (its `ui.source` is the App's id). */
-export const isBrowserThing = (sessionId: string) => isSourced(sessionId, AGENT_BROWSER_APP_ID)
+const isBrowserSession = (sessionId: string) => isSourced(sessionId, AGENT_BROWSER_APP_ID)
 
-async function bindDefault(thing: ThingContext): Promise<Session> {
-  const { agent, hub, context } = thing
-  const backend = await getBrowserBackend()
-  await hub.ensureOwner(context)
-  const { default_session_id: bound } = await backend.call<BrowserStatus>(agent, 'browser.status', { group_id: DEFAULT_GROUP })
-  const active = () => hub.sessions(context, agent.agentDid, 'active')
-  const current = defaultThingSession(active(), agent.agentDid, bound)
-  if (current) return current
-  const found = await ensureAgentSession(agent.agentDid, agent.name)
-  let session = active().find((item) => item.id === found.id)
+/** A new session with the Agent that carries the source mark. */
+async function startBrowserSession({ agent, hub, context }: ConversationContext): Promise<Session> {
+  const created = await createSourcedSession(agent.agentDid, AGENT_BROWSER_APP_ID, translate('agentBrowser.session.title', 'Browser'), agent.name)
+  const session = hub.sessions(context, agent.agentDid, 'active').find((item) => item.id === created.id)
   if (!session) throw Error('session_missing')
-  // A thing started here keeps its own tabs: bound to the default group they would be folded into it.
-  await loadSources(active().map((item) => item.id))
-  if (isBrowserThing(session.id)) {
-    session = active().filter((item) => item.binding.kind === 'native' && !isBrowserThing(item.id)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
-      ?? await hub.create(context, { entityId: agent.agentDid, title: '', connection: 'native' })
-  }
-  if (groupIdOfSession(session, agent.agentDid, null) !== DEFAULT_GROUP) {
-    await backend.call(agent, 'browser.bind_default', { session_id: session.id })
-    for (const listener of [...listeners]) listener(agent.agentId)
-  }
   return session
 }
 
-/** The session of the default thing; one is bound to the default group when it has none (or the bound one is gone). */
-export function ensureDefaultSession(thing: ThingContext): Promise<Session> {
-  const { agentId } = thing.agent
-  let pending = binding.get(agentId)
+async function findBrowserSession(conversation: ConversationContext): Promise<Session> {
+  const { agent, hub, context } = conversation
+  const backend = await getBrowserBackend()
+  await hub.ensureOwner(context)
+  const { default_session_id: bound } = await backend.call<BrowserStatus>(agent, 'browser.status', {})
+  const active = hub.sessions(context, agent.agentDid, 'active')
+  const current = active.find((item) => item.id === bound)
+  if (current) await loadSources([current.id])
+  let session = current && isBrowserSession(current.id) ? current : undefined
+  if (!session) {
+    await loadSources(active.map((item) => item.id))
+    session = active.filter((item) => isBrowserSession(item.id)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
+    // A mark that could not be read may be the browser conversation's: no second one is started then.
+    if (!session && active.some((item) => !isSourceKnown(item.id))) throw Error('marks_unavailable')
+    session ??= await startBrowserSession(conversation)
+  }
+  if (session.id !== bound) await backend.call(agent, 'browser.bind_default', { session_id: session.id })
+  for (const listener of [...listeners]) listener(agent.agentId, session.id)
+  return session
+}
+
+/** The Agent's browser conversation, bound; calls at the same time share one lookup. */
+export function ensureBrowserSession(conversation: ConversationContext): Promise<Session> {
+  const { agentId } = conversation.agent
+  let pending = finding.get(agentId)
   if (!pending) {
-    pending = bindDefault(thing).finally(() => { binding.delete(agentId) })
-    binding.set(agentId, pending)
+    pending = findBrowserSession(conversation).finally(() => { finding.delete(agentId) })
+    finding.set(agentId, pending)
   }
   return pending
 }
 
-export async function sessionOfGroup(group: string, thing: ThingContext): Promise<Session> {
-  if (group === DEFAULT_GROUP) return ensureDefaultSession(thing)
-  const { agent, hub, context } = thing
-  await hub.ensureOwner(context)
-  const session = hub.sessions(context, agent.agentDid, 'active').find((item) => item.id === group)
-  if (!session) throw Error('session_missing')
-  return session
-}
-
-/** An ordinary message from the owner in the conversation of `group`: what wakes the Agent. */
-export async function sendToGroup(group: string, text: string, thing: ThingContext): Promise<void> {
-  const session = await sessionOfGroup(group, thing)
-  await thing.hub.send(thing.context, session.id, { content: text, attachments: [] }, undefined)
-}
-
-const two = (value: number) => String(value).padStart(2, '0')
-
-/** DG1: a new session with the Agent that carries the source mark; its name tells the things apart until the owner renames it. */
-export async function createThing(thing: ThingContext): Promise<Session> {
-  const { agent, hub, context } = thing
-  const now = new Date()
-  const title = `${translate('agentBrowser.thing.newTitle', 'Browser task')} ${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}:${two(now.getMinutes())}`
-  const created = await createSourcedSession(agent.agentDid, AGENT_BROWSER_APP_ID, title, agent.name)
-  const session = hub.sessions(context, agent.agentDid, 'active').find((item) => item.id === created.id)
-  if (!session) throw Error('session_missing')
-  return session
+/** An ordinary message from the owner in the browser conversation: what wakes the Agent. */
+export async function sendToBrowserSession(text: string, conversation: ConversationContext): Promise<void> {
+  const session = await ensureBrowserSession(conversation)
+  await conversation.hub.send(conversation.context, session.id, { content: text, attachments: [] }, undefined)
 }
 
 /** DG2: what the Agent is told after `hand_to_agent`: to go on from the page, which page that is, and what the owner added. */
@@ -98,9 +81,9 @@ function handToAgentText(event: HandoverEvent): string {
 }
 
 /** DG2 / DG3: the message that wakes the Agent after the page was handed to it or handed back. */
-export async function afterHandover(event: HandoverEvent, thing: ThingContext | null): Promise<void> {
+export async function afterHandover(event: HandoverEvent, conversation: ConversationContext | null): Promise<void> {
   const text = event.kind === 'hand_to_agent' ? handToAgentText(event) : event.note.trim()
   if (!text) return
-  if (!thing) throw Error('conversation_unavailable')
-  await sendToGroup(event.thing.groupId, text, thing)
+  if (!conversation) throw Error('conversation_unavailable')
+  await sendToBrowserSession(text, conversation)
 }

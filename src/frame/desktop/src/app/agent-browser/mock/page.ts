@@ -73,7 +73,8 @@ const LABELS: Record<Exclude<MockElement, 'input' | 'select'>, string> = {
   alert: 'Alert', confirm: 'Confirm', prompt: 'Prompt', upload: 'Upload', download: 'Download', location: 'Location', newTab: 'Open in new tab', signIn: 'Sign in',
 }
 
-export interface MockRenderInfo { viewport: Viewport; signedIn: boolean; frame: number }
+/** `viewport.pixel_ratio` makes the JPEG that many times the viewport's pixels; `quality` is the JPEG quality (10–95). */
+export interface MockRenderInfo { viewport: Viewport; signedIn: boolean; frame: number; quality: number }
 
 function draw(ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D, page: MockPage, info: MockRenderInfo) {
   const { width, height } = info.viewport
@@ -152,21 +153,26 @@ function draw(ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D,
 
 /** One frame of the page as JPEG bytes. */
 export async function renderMockPage(page: MockPage, info: MockRenderInfo): Promise<ArrayBuffer> {
-  const { width, height } = info.viewport
+  const ratio = info.viewport.pixel_ratio ?? 1
+  const width = Math.round(info.viewport.width * ratio)
+  const height = Math.round(info.viewport.height * ratio)
+  const quality = info.quality / 100
   if (typeof OffscreenCanvas !== 'undefined') {
     const canvas = new OffscreenCanvas(width, height)
     const ctx = canvas.getContext('2d')
     if (!ctx) throw Error('no 2d context')
+    ctx.scale(ratio, ratio)
     draw(ctx, page, info)
-    return (await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.6 })).arrayBuffer()
+    return (await canvas.convertToBlob({ type: 'image/jpeg', quality })).arrayBuffer()
   }
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
   const ctx = canvas.getContext('2d')
   if (!ctx) throw Error('no 2d context')
+  ctx.scale(ratio, ratio)
   draw(ctx, page, info)
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.6))
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
   if (!blob) throw Error('frame encoding failed')
   return blob.arrayBuffer()
 }

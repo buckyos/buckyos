@@ -1,14 +1,14 @@
 //! The agent's browser: one headless Chromium the Agent Service starts on
-//! demand in the agent's private runtime, with the agent's logins, whose
-//! tabs are grouped by conversation. The agent operates it with Playwright
-//! over its debugging endpoint (`agent-browser`); the owner sees and
-//! operates it through the screen. One party operates a group at a time and
+//! demand in the agent's private runtime, with the agent's logins and one
+//! group of tabs for all its sessions. The agent operates it with
+//! Playwright over its debugging endpoint (`agent-browser`); the owner sees
+//! and operates it through the screen. One party operates it at a time and
 //! hands it over explicitly ([Agent Browser Protocol]).
 //!
 //! - [`process`]: the Chromium process (start, stop, what it leaves behind).
 //! - [`cdp`]: the DevTools Protocol client.
 //! - [`groups`]: groups, tabs, leases, who operates.
-//! - [`sessions`]: groups and the agent's sessions; records for a conversation.
+//! - [`sessions`]: the browser conversation and its records.
 //! - [`rpc`]: `browser.*`; [`http`]: the screen and upload entries.
 //! - [`screen`]: a screen connection; [`input`]: what the user does as
 //!   input commands; [`requests`]: what a page shows outside itself;
@@ -202,28 +202,11 @@ pub struct BrowserModule {
     casts: screen::Casts,
 }
 
-/// Someone looking at a group (a screen connection). While one exists the
-/// browser is not stopped for being idle, and a tab the user opens belongs
-/// to the group the latest one looks at.
+/// Someone looking at the browser (a screen connection). While one exists
+/// the browser is not stopped for being idle, and its dialogs are left to it.
 pub struct Viewer {
     module: Arc<BrowserModule>,
     id: u64,
-}
-
-impl Viewer {
-    /// The group it looks at (another one than it asked for once that one
-    /// became part of the default group).
-    pub fn group(&self) -> String {
-        let s = self.module.shared();
-        s.viewers.iter().find(|(id, _)| *id == self.id).map(|(_, group)| group.clone()).unwrap_or_default()
-    }
-
-    pub fn look_at(&self, group_id: &str) {
-        let mut s = self.module.shared();
-        if let Some(viewer) = s.viewers.iter_mut().find(|(id, _)| *id == self.id) {
-            viewer.1 = group_id.to_string();
-        }
-    }
 }
 
 impl Drop for Viewer {
@@ -945,8 +928,7 @@ impl BrowserModule {
             changed = s.groups.tab_changed(tab_id, url, title);
         } else {
             let expected = s.expected.last().map(|(_, group)| group.clone());
-            let watched = s.viewers.last().map(|(_, group)| group.clone());
-            let group_id = s.groups.place(info["openerId"].as_str(), expected.as_deref(), watched.as_deref(), now_ms());
+            let group_id = s.groups.place(info["openerId"].as_str(), expected.as_deref());
             if expected.is_none() && !groups::is_internal(&group_id) && !s.groups.has_room() {
                 log::warn!("browser: tab {tab_id} ({url}) is one more than max_tabs = {}; closing it", s.groups.max_tabs());
                 let (cdp, tab_id) = (cdp.clone(), tab_id.to_string());
@@ -1051,20 +1033,15 @@ impl BrowserModule {
         self.persist();
     }
 
-    /// The conversation the default group is bound to.
+    /// The agent's browser conversation (`browser.bind_default`).
     pub fn default_session(&self) -> Option<String> {
         self.shared().groups.default_session().map(str::to_string)
     }
 
-    /// The group a session of the agent works in.
-    pub async fn group_of_session(&self, session_id: &str) -> String {
-        sessions::group_of_session(self.deps.agent.as_ref(), session_id, self.default_session().as_deref()).await
-    }
-
-    /// In which groups' conversations the agent waits for an answer of the user.
+    /// Whether the agent waits in the browser conversation for an answer of the user.
     async fn refresh_waiting(&self) {
-        let waiting = sessions::groups_waiting_answer(self.deps.agent.as_ref(), self.default_session().as_deref()).await;
-        if self.shared().groups.set_waiting_answer(&waiting) {
+        let waiting = sessions::waiting_answer(self.deps.agent.as_ref(), self.default_session().as_deref()).await;
+        if self.shared().groups.set_waiting_answer(waiting) {
             self.bump();
         }
     }
@@ -1106,13 +1083,8 @@ impl BrowserModule {
     // browser.*
     // ------------------------------------------------------------------
 
-    /// `browser.status`: every group, the one named, or the one `session_id` works in.
-    pub async fn status(&self, group_id: Option<&str>, session_id: Option<&str>) -> Value {
-        let of_session = match (group_id, session_id) {
-            (None, Some(session_id)) => Some(self.group_of_session(session_id).await),
-            _ => None,
-        };
-        let group_id = group_id.or(of_session.as_deref());
+    /// `browser.status`: the browser and its one group.
+    pub async fn status(&self) -> Value {
         if self.cfg.enabled {
             self.refresh_waiting().await;
             self.refresh_running().await;
@@ -1139,10 +1111,6 @@ impl BrowserModule {
                 "playwright": package["playwright"],
             })
         });
-        let group_ids = match group_id {
-            Some(group_id) => vec![group_id.to_string()],
-            None => s.groups.group_ids(),
-        };
         json!({
             "enabled": self.cfg.enabled,
             "available": available,
@@ -1151,32 +1119,31 @@ impl BrowserModule {
             "unavailable_code": unavailable_code,
             "version": version,
             "default_session_id": s.groups.default_session(),
-            "groups": group_ids.iter().map(|id| s.groups.group(id, now)).collect::<Vec<_>>(),
+            "groups": [s.groups.group(DEFAULT_GROUP, now)],
         })
     }
 
-    /// `browser.acquire`: a lease of `session_id` on its group.
+    /// `browser.acquire`: a lease of `session_id` on the browser.
     pub async fn acquire(&self, session_id: &str) -> Result<Acquired, BrowserError> {
         self.usable()?;
-        let group_id = self.group_of_session(session_id).await;
         // Refused before the browser is started for nothing.
-        if self.group(&group_id).user_hold {
-            return Err(BrowserError::user_in_control(&group_id));
+        if self.group(DEFAULT_GROUP).user_hold {
+            return Err(BrowserError::user_in_control());
         }
         let cdp = self.ensure().await?;
         self.refresh_tabs(&cdp).await;
         let now = now_ms();
         let (lease, group, port, ttl_ms) = {
             let mut s = self.shared();
-            let lease = s.groups.acquire(&group_id, session_id, now)?;
+            let lease = s.groups.acquire(DEFAULT_GROUP, session_id, now)?;
             s.last_active = Instant::now();
-            (lease, s.groups.group(&group_id, now), s.port, s.groups.lease_ttl_ms())
+            (lease, s.groups.group(DEFAULT_GROUP, now), s.port, s.groups.lease_ttl_ms())
         };
         self.bump();
         let port = port.ok_or_else(|| BrowserError::unavailable("the browser stopped"))?;
         Ok(Acquired {
             lease_id: lease.lease_id,
-            group_id,
+            group_id: DEFAULT_GROUP.to_string(),
             ttl_ms,
             expires_at_ms: lease.expires_at_ms,
             cdp_url: format!("http://127.0.0.1:{port}"),
@@ -1203,35 +1170,34 @@ impl BrowserModule {
         Ok(())
     }
 
-    /// `browser.request_handover`: the group the user is asked to take over.
-    pub async fn request_handover(&self, session_id: &str, reason: &str, note: Option<String>) -> Result<String, BrowserError> {
+    /// `browser.request_handover`: the user is asked to take the browser over.
+    pub async fn request_handover(&self, reason: &str, note: Option<String>) -> Result<(), BrowserError> {
         self.usable()?;
-        let group_id = self.group_of_session(session_id).await;
         let note = note.filter(|n| !n.trim().is_empty());
-        self.shared().groups.request_handover(&group_id, reason, note, now_ms());
+        self.shared().groups.request_handover(DEFAULT_GROUP, reason, note, now_ms());
         self.bump();
-        Ok(group_id)
+        Ok(())
     }
 
     /// `browser.take_over`, `browser.hand_back`, `browser.hand_to_agent`:
-    /// the group changes hands and its conversation is told.
-    pub async fn hand(&self, who: &str, group_id: &str, what: Handed) -> Result<Group, BrowserError> {
+    /// the browser changes hands and the browser conversation is told.
+    pub async fn hand(&self, who: &str, what: Handed) -> Result<Group, BrowserError> {
         self.usable()?;
         self.refresh_running().await;
         let (group, page) = {
             let mut s = self.shared();
             match what {
-                Handed::TakeOver => s.groups.take_over(group_id),
-                Handed::HandBack | Handed::HandToAgent => s.groups.hand_back(group_id),
+                Handed::TakeOver => s.groups.take_over(DEFAULT_GROUP),
+                Handed::HandBack | Handed::HandToAgent => s.groups.hand_back(DEFAULT_GROUP),
             }
             s.last_active = Instant::now();
-            let page = s.groups.active_tab(group_id).and_then(|id| s.groups.tab(&id));
-            (s.groups.group(group_id, now_ms()), page)
+            let page = s.groups.active_tab(DEFAULT_GROUP).and_then(|id| s.groups.tab(&id));
+            (s.groups.group(DEFAULT_GROUP, now_ms()), page)
         };
         self.bump();
-        let event = sessions::record(group_id, what, page.as_ref().map(|t| (t.url.as_str(), t.title.as_str())));
+        let event = sessions::record(what, page.as_ref().map(|t| (t.url.as_str(), t.title.as_str())));
         let (agent, default_session) = (self.deps.agent.as_ref(), self.default_session());
-        if let Some(sid) = sessions::post_record(agent, self.deps.owner_did.as_deref(), default_session.as_deref(), who, group_id, event).await {
+        if let Some(sid) = sessions::post_record(agent, self.deps.owner_did.as_deref(), default_session.as_deref(), who, event).await {
             if let Some(supervisor) = &self.deps.supervisor {
                 match supervisor.ensure_task(&sid, "browser").await {
                     Ok(()) | Err(OpenDanError::NotDriver { .. }) => {}
@@ -1242,25 +1208,17 @@ impl BrowserModule {
         Ok(group)
     }
 
-    /// `browser.bind_default`: the default group is the group of the
-    /// conversation `session_id` from now on (`Groups::bind_default`).
-    pub fn bind_default(&self, session_id: &str) -> Result<String, BrowserError> {
+    /// `browser.bind_default`: the conversation `session_id` is the agent's
+    /// browser conversation from now on. Returns whether that changed.
+    pub fn bind_default(&self, session_id: &str) -> Result<bool, BrowserError> {
         self.usable()?;
-        let changed = {
-            let mut s = self.shared();
-            let changed = s.groups.bind_default(session_id);
-            // Who looked at the conversation's own group looks at the default group now.
-            for viewer in s.viewers.iter_mut().filter(|(_, group)| group == session_id) {
-                viewer.1 = DEFAULT_GROUP.to_string();
-            }
-            changed
-        };
+        let changed = self.shared().groups.bind_default(session_id);
         if changed {
-            log::info!("browser: the default group is bound to conversation {session_id}");
+            log::info!("browser: the browser conversation is {session_id}");
             self.bump();
             self.persist();
         }
-        Ok(session_id.to_string())
+        Ok(changed)
     }
 
     /// `browser.clear_profile`: stop the browser and delete its logins,

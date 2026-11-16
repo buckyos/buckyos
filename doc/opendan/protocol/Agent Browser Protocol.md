@@ -8,25 +8,24 @@ Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`�
 
 | 名词 | 含义 |
 | --- | --- |
-| 组（group） | 一件事的一组标签页。`group_id` 是 MessageHub 会话的 id |
-| 默认组 | `group_id` 固定为 `default`。对应 owner 和这个 Agent 的默认会话：用 `browser.bind_default` 绑定的会话（`default_session_id`）、`dm:*` 会话、id 等于实体 id 的会话、以及 `channels.outbound.to_session` 为空的 UI Session |
-| 具名组 | `group_id` 等于会话 id，也就是 UI Session 的 `channels.outbound.to_session` |
+| 组（group） | 浏览器的标签页。每个 Agent 只有一个组，`group_id` 固定为 `default`：Agent 的每个会话操作的都是它，用户在「Agent 浏览器」里看的、操作的也是它。字段和参数里的 `group_id` 保留，取值只会是 `default` |
+| 浏览器会话 | owner 和这个 Agent 的一个 MessageHub 会话：用户在「Agent 浏览器」里和 Agent 说话的地方，和浏览器有关的话都在这里说（交接、重排的请求）。用 `browser.bind_default` 绑定，它的 id 是 `default_session_id`。写给会话的记录（§2.4）投给它，它的 UI Session 带 `browser` 手册 |
 | 标签页（tab） | `tab_id` 是 CDP 的 target id |
 | 操作方（controller） | `user` 或 `agent`。Agent 持有有效租约、用户又没有接手时是 `agent`，其他时候是 `user` |
-| 租约（lease） | Agent 操作一个组的凭据，默认 60 秒，靠 `browser.renew` 续。一个组可以同时有几个租约（UI Session 和它的 Work 会话各跑一条命令），只要有一个有效，操作方就是 `agent` |
+| 租约（lease） | Agent 操作浏览器的凭据，默认 60 秒，靠 `browser.renew` 续。可以同时有几个租约（一个 UI Session 和它的 Work 会话、或几个会话各跑一条命令），只要有一个有效，操作方就是 `agent` |
 | 接手（user_hold） | 用户明确接手，或 Agent 请用户接手之后，直到用户交还。期间 `browser.acquire` 失败 |
 
-App 这样把会话换成组：`session.id === default_session_id || session.id.startsWith('dm:') || session.id === entityId ? 'default' : session.id`（`default_session_id` 取自 `browser.status`）。
+服务端把会话换成组：哪个 `session_id` 都是 `default`（登记表里没有的也是）。
 
-默认组绑定的会话：MessageHub 里和 Agent 的会话都是具名会话（id 是 msg-center 生成的），没有稳定的“默认会话”。所以默认组要用到会话时（交给 Agent、打开对话面板），App 取一个会话（已绑定的还在就用它，否则 `ensureDefaultSession`；取到的如果是在「Agent 浏览器」里新建的事情，改取最近活跃的别的会话，没有就新建一个）并调 `browser.bind_default`，之后这个会话里 Agent 的操作都归 `default`。没绑定之前默认组只有浏览，没有会话。
+浏览器会话怎么来：MessageHub 里和 Agent 的会话都是具名会话（id 是 msg-center 生成的），没有稳定的“默认会话”，所以由 App 建一个、绑定上。App 第一次要用到它时（打开对话面板、交给 Agent、交还后发消息、请 Agent 重排）在这个 Agent 名下带来源标记（owner 自己的会话 UI 状态里键 `ui.source`，值 `agent-browser`）的会话里找：已绑定的那个还在、也带标记就用它，否则取带标记的里最近活跃的，都没有就新建一个（标题“浏览器”，带标记；有会话的标记读不出来时不新建，报失败让用户重试）；`default_session_id` 不是它时调 `browser.bind_default`。没绑定之前浏览照常，只是没有会话收记录。
 
-服务端这样把 Agent 的会话换成组：从 `session_id` 顺着来源找到所属的 UI Session（Work 会话往上找，Goal 的会话取创建这个 Goal 的 UI Session），取 `channels.outbound.to_session`；为空、以 `dm:` 开头、或等于 `default_session_id` 是 `default`，否则就是它。找不到 UI Session 的会话（包括登记表里没有的 `session_id`）归 `default`。
+浏览器会话的 UI Session：服务端建 UI Session 时，它对应的 MessageHub 会话（`channels.outbound.to_session`）就是 `default_session_id` 的话，手册在模板的默认集合之外加上 `browser`（记在会话配置的 `extensions.opendan.cmd_skills`，提示词重新冻结时也带上）；Agent 没有这本手册、手册关着、或运行时达不到它的基线时，照常在冻结时去掉。别的会话不加。绑定改到一个已经有 UI Session、而它的手册里没有 `browser` 的会话时，服务端把那个 UI Session 归档（同 `/new`），这个会话的下一条消息开出的 UI Session 就有了；它正在跑一个 Turn 或有没结束的 Work 时不归档，等它以后开新的 UI Session。
 
-反过来，一个组的会话是：回复去向是 owner、`to_session` 换算出来等于这个组、还没结束的 UI Session 里最新的一个。`default` 组先取绑定会话（`default_session_id`）的 UI Session，它还没有才取其他归到 `default` 的。会话在第一条消息到达时才创建，所以一个组可以还没有会话。
+反过来，浏览器会话的 UI Session 是：回复去向是 owner、`to_session` 等于 `default_session_id`、还没结束的 UI Session 里最新的一个。UI Session 在第一条消息到达时才创建，所以绑定了也可以还没有。
 
-`group_id` 以 `_` 开头的组留给服务端自己用（重排刷新时开的后台标签页这一类）：不出现在 `browser.status` 的列表里，不落盘，不计入 `max_tabs`，`take_over`、`hand_back`、`hand_to_agent` 引用它回 `no_such_group`。
+`group_id` 以 `_` 开头的组留给服务端自己用（重排刷新时开的后台标签页这一类）：不出现在 `browser.status` 里，不落盘，不计入 `max_tabs`，`take_over`、`hand_back`、`hand_to_agent` 引用它回 `no_such_group`。
 
-新出现的标签页归哪个组，按顺序：有 opener 的归 opener 的组；服务端正在为某个组开标签页时归那个组；有 Agent 持着有效租约时归租约的组（几个组都有租约时取最晚到期的）；否则归最近连上的观看者正在看的组；都没有归 `default`。
+新出现的标签页归哪个组，按顺序：有 opener 的归 opener 的组；服务端正在为某个组开标签页时归那个组；其他都归 `default`。
 
 每个标签页单独一个窗口（`Target.createTarget {newWindow: true}`），服务端另给每个标签页开着焦点模拟（`Emulation.setFocusEmulationEnabled`）：同一个窗口里排在后面的标签页不渲染，截屏流和 Playwright 的点击、截图都会停住。`agent-browser` 自己开标签页也要用 `newWindow: true`。
 
@@ -60,8 +59,8 @@ App 这样把会话换成组：`session.id === default_session_id || session.id.
   "unavailable": null,             // 不可用时的一句说明（英文，给人和 Agent 看）；可用但最近一次启动失败时是失败的原因
   "unavailable_code": null,        // 不可用的原因：disabled | no_package | not_downloaded；其他时候为 null
   "version": { "browser": "159.0.8154.6", "playwright": "1.65.1" },   // disabled、no_package 时为 null
-  "default_session_id": null,      // 默认组绑定的 MessageHub 会话，没绑定时为 null
-  "groups": [ /* Group */ ]        // 不带参数时：default，加上有标签页、租约、接手或状态要显示的组
+  "default_session_id": null,      // 浏览器会话（browser.bind_default 绑定的 MessageHub 会话），没绑定时为 null
+  "groups": [ /* Group */ ]        // 总是只有一个：default
 }
 ```
 
@@ -98,8 +97,8 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 | --- | --- |
 | `waiting_takeover` | Agent 调了 `request_handover`，用户还没交还 |
 | `working` | Agent 持有有效租约 |
-| `waiting_answer` | 没有租约，这个组的会话里有 Agent 提出、用户还没回答的问题：这个 Agent 发出的、还开着的 `input` 通知（`ask_user`），它的来源会话换算出来是这个组 |
-| `done`、`stuck` | Agent 最近一次 `release` 带的 `state`。组里出现新的租约、接手、交还时清掉 |
+| `waiting_answer` | 没有租约，浏览器会话里有 Agent 提出、用户还没回答的问题：这个 Agent 发出的、还开着的 `input` 通知（`ask_user`），来源是浏览器会话（它的 UI Session，或从它开出的 Work、Goal）。别的会话里的问题不算：App 让用户到浏览器会话里回答。没绑定浏览器会话时不会是这个值 |
+| `done`、`stuck` | Agent 最近一次 `release` 带的 `state`。出现新的租约、接手、交还时清掉 |
 | `idle` | 其他 |
 
 `waiting_answer` 不看会话登记表的 `needs_input`：那一项在会话等下一条消息时就是真（每个空闲的对话都是），而在会话等自己提的问题时反而是假。服务端在 `browser.status` 里现查通知，有人在看时每 3 秒查一次。
@@ -108,13 +107,13 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 
 | 方法 | 参数 | 返回 | 谁能调 |
 | --- | --- | --- | --- |
-| `browser.status` | `{group_id?, session_id?}` | Status。带 `group_id` 时 `groups` 只有这一组，没有标签页的组也返回；带 `session_id` 时只有这个会话所在的组（换算同 `acquire`，两个都带时以 `group_id` 为准） | owner、Agent |
+| `browser.status` | `{group_id?, session_id?}` | Status。`group_id` 只能是 `default`，别的回 `no_such_group`；`session_id` 照收，结果一样（每个会话都在 `default`） | owner、Agent |
 | `browser.ensure` | `{}` | Status | owner、Agent |
 | `browser.acquire` | `{session_id}` | `{lease_id, group_id, ttl_ms, expires_at_ms, cdp_url, tabs, active_tab_id}` | Agent |
 | `browser.renew` | `{lease_id}` | `{expires_at_ms}` | Agent |
 | `browser.release` | `{lease_id, state?, note?}` | `{}`。`state`：`done`、`stuck` | Agent |
-| `browser.request_handover` | `{session_id, reason, note?}` | `{group_id}`。`reason`：`password`、`captcha`、`other` | Agent |
-| `browser.take_over` | `{group_id}` | Group | owner |
+| `browser.request_handover` | `{session_id, reason, note?}` | `{group_id}`（`default`）。`reason`：`password`、`captcha`、`other` | Agent |
+| `browser.take_over` | `{group_id}` | Group。`group_id` 只能是 `default`，下两个同 | owner |
 | `browser.hand_back` | `{group_id}` | Group | owner |
 | `browser.hand_to_agent` | `{group_id}` | Group | owner |
 | `browser.bind_default` | `{session_id}` | `{default_session_id}` | owner |
@@ -127,14 +126,13 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 
 - `status` 不启动浏览器。`ensure` 没在运行就启动。`acquire` 也会启动（等于先 `ensure`）；用户接手着的时候先回 `user_in_control`，不为此启动浏览器。
 - `cdp_url` 是 `http://127.0.0.1:<端口>`，给 `chromium.connectOverCDP` 用。端口每次启动都会变。
-- `active_tab_id` 是这个组当前的标签页，组里没有标签页时为 `null`。`acquire` 不替 Agent 开标签页。
-- Agent 持有租约期间新建的标签页归租约的组。
-- 同一个组再次 `acquire` 得到另一个租约，原来的照旧有效。`renew`、`release` 用到已经过期或被作废的租约回 `lease_lost`（`release` 带的 `state` 这时不生效）。浏览器停掉或崩溃时，所有租约作废。
-- `request_handover` 作废这个组的全部租约，并置 `user_hold`。
+- `active_tab_id` 是当前的标签页，没有标签页时为 `null`。`acquire` 不替 Agent 开标签页。
+- 再次 `acquire`（同一个会话或别的会话）得到另一个租约，原来的照旧有效：几个会话同时操作的是同一组标签页。`renew`、`release` 用到已经过期或被作废的租约回 `lease_lost`（`release` 带的 `state` 这时不生效）。浏览器停掉或崩溃时，所有租约作废。
+- `request_handover` 作废全部租约，并置 `user_hold`。
 - `take_over` 作废租约，置 `user_hold`。`hand_back`、`hand_to_agent` 清 `user_hold` 和 `handover`。两者只差写给会话的记录（§2.4）。
-- `bind_default` 把默认组绑定到一个 MessageHub 会话，落盘在 `groups.json`。已经有一个以这个会话 id 为名的组时，它的标签页并进 `default`，那个组消失。改绑到另一个会话时，原来绑定的会话重新成为具名组（标签页留在 `default`）。重复绑定同一个会话没有效果。`session_id` 是 `default` 或以 `_` 开头时回 `invalid_argument`。
-- 并组的规则：标签页排在 `default` 原有的后面，`default` 原来有当前标签页就保留，没有才用并进来的那个；那个组的租约跟着并过来，正在跑的命令不受影响；两个组里有一个被用户接手着，并完的 `default` 就是接手着，这时租约全部作废（同 `take_over`）；接手请求（`handover`）和 `done` / `stuck`，`default` 自己有的保留，没有才用并进来的。正在看那个组的屏幕连接改算看 `default`。
-- `clear_profile` 停掉浏览器，删除用户数据目录和缓存目录（下载目录不动）。各组的标签页还在，下次启动时重开，登录状态没有了。它不重新启动浏览器：App 清除之后接着调 `browser.ensure`。
+- `bind_default` 把浏览器会话绑定到一个 MessageHub 会话，落盘在 `groups.json`。只改 `default_session_id`：标签页、租约、接手都不变。重复绑定同一个会话没有效果。改了绑定时，新绑定的会话已有的、手册里没有 `browser` 的 UI Session 按 §1 归档。`session_id` 是 `default` 或以 `_` 开头时回 `invalid_argument`。
+- `groups.json` 只存 `default` 一组。加载时别的组（每个会话一组时的旧文件）的标签页和接手状态都不恢复。
+- `clear_profile` 停掉浏览器，删除用户数据目录和缓存目录（下载目录不动）。标签页还在，下次启动时重开，登录状态没有了。它不重新启动浏览器：App 清除之后接着调 `browser.ensure`。
 - 没人处理的 JS 弹框由服务端立刻关掉：弹框所在的组没有人在看、操作方也不是 Agent 时，`beforeunload` 按“离开”处理，其他按取消处理。有人在看的留给屏幕（§3.4）；操作方是 Agent 的留给 Agent 的 Playwright，租约结束时还开着的照上面关掉。开着的弹框会卡住它的页面，也会卡住任何一个 `connectOverCDP`，不分组。
 - “owner”一列的方法在 `is_owner_only` 里（屏幕的握手和上传按同样的规则校验，方法名是 `browser.screen`、`browser.upload`）。“Agent”一列的方法 owner 也能调；Agent 自己的 App 身份不论对 owner 目录是只读还是读写都调得通。
 
@@ -156,7 +154,7 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 
 ### 2.4 写给会话的记录
 
-隐式半订阅 `_browser`（每个会话都有，不用声明，已有的会话也有），来源 `system:browser:<group_id>`，同一组只保留最新一条，在下一次输入前呈现，不单独触发推理。记录投给这个组的会话（§1）；组还没有会话时不写。`event` 是 `take_over`、`hand_back`、`hand_to_agent`，`summary` 以 `[browser <group_id>]` 开头。
+隐式半订阅 `_browser`（每个会话都有，不用声明，已有的会话也有），来源 `system:browser:default`，只保留最新一条，在下一次输入前呈现，不单独触发推理。记录投给浏览器会话的 UI Session（§1）；没绑定浏览器会话、或它还没有 UI Session 时不写。别的会话不收：在别的会话里操作浏览器的 Agent 从 `agent-browser` 的退出码知道用户接手了。`event` 是 `take_over`、`hand_back`、`hand_to_agent`，`summary` 以 `[browser]` 开头。
 
 | 时机 | 内容 |
 | --- | --- |
@@ -164,7 +162,7 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 | `hand_back` | 用户已交还，带当前网址和标题；提示先重新读页面 |
 | `hand_to_agent` | 用户请 Agent 从当前页面接着做，带当前网址和标题 |
 
-要叫醒 Agent 时，由 App 往会话里发一条普通消息。
+要叫醒 Agent 时，由 App 往浏览器会话里发一条普通消息。
 
 ### 2.5 Agent 侧入口
 
@@ -185,12 +183,11 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 
 ### 3.1 连接
 
-`GET /kapi/<agent_id>/browser/screen` 升级成 WebSocket（`/kapi/opendan`、`/api/opendan` 两个挂载点下也有）。连上后 5 秒内客户端发 `hello`，服务端按 owner 校验令牌（和 kRPC 同一套判定，方法名按 `browser.screen` 算），通过后回 `ready`，否则回 `error` 并关闭。一条连接看一个组。不带 WebSocket 升级头的请求回 400。
+`GET /kapi/<agent_id>/browser/screen` 升级成 WebSocket（`/kapi/opendan`、`/api/opendan` 两个挂载点下也有）。连上后 5 秒内客户端发 `hello`，服务端按 owner 校验令牌（和 kRPC 同一套判定，方法名按 `browser.screen` 算），通过后回 `ready`，否则回 `error` 并关闭。连接看的是这个 Agent 的浏览器，也就是它唯一的组 `default`（§1）。不带 WebSocket 升级头的请求回 400。
 
 - 浏览器没在运行时，`hello` 通过后服务端先把它启动起来（等于 `browser.ensure`），起不来回 `browser_unavailable`（原因是 §2.1 那三种之一时带 `unavailable_code`，§3.3）。
-- 连接存在期间算“有人在看这个组”：浏览器不会因为空闲被停掉，用户新开的标签页归这个组，这个组的 JS 弹框留给屏幕（§3.4）。
+- 连接存在期间算“有人在看浏览器”：浏览器不会因为空闲被停掉，JS 弹框留给屏幕（§3.4）。
 - 浏览器崩溃后重启、或者被停掉又启动，标签页的 `tab_id` 全都变了。连接不用重连：服务端先发一条 `running: false` 的 `state`，浏览器回来后发新的 `state`，画面换成新的当前标签页。
-- 这个组被绑定成默认会话（`browser.bind_default`）时，连接改看 `default` 组，`state.group.group_id` 跟着变。
 
 文本帧是 JSON，都有 `type`。二进制帧是一张 JPEG，前面总有一条 `frame_meta`。客户端发来的单条消息不超过 1 MiB。
 
@@ -198,7 +195,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 
 ```jsonc
 { "type": "hello", "token": "<会话令牌>", "group_id": "default",
-  "viewport": { "width": 412, "height": 915, "mobile": true } }
+  "viewport": { "width": 412, "height": 915, "mobile": true, "pixel_ratio": 2 } }
 
 { "type": "ack", "seq": 17 }
 
@@ -218,16 +215,16 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 { "type": "tab", "action": "open", "url": "https://example.com" }   // url 可省，省略时开空白页
 { "type": "tab", "action": "close|activate", "tab_id": "E3F1…" }
 
-{ "type": "viewport", "width": 1280, "height": 800, "mobile": false }
+{ "type": "viewport", "width": 1280, "height": 800, "mobile": false, "pixel_ratio": 1 }
 
 { "type": "respond", "request_id": "r12", "result": { /* 见 §3.4 */ } }
 
-{ "type": "quality", "max_fps": 15, "jpeg_quality": 60 }
+{ "type": "quality", "max_fps": 15, "jpeg_quality": 60, "pixel_ratio": 1 }
 
 { "type": "ping" }
 ```
 
-- `hello` 的 `token` 在 Zone 之外（`--dev`）可以不带；`group_id` 必填，不能以 `_` 开头；`viewport` 必填。
+- `hello` 的 `token` 在 Zone 之外（`--dev`）可以不带；`group_id` 可以省略，带的话只能是 `default`，别的值回 `bad_hello`；`viewport` 必填。
 - 坐标是 CSS 像素，相对当前视口的左上角（页面被缩放时也是屏幕上的位置，和 `frame_meta` 的宽高同一个坐标系）。
 - `touch` 的 `points` 是这个事件之后仍然按着的全部触点：`start`、`move` 带全部触点；`end` 带剩下的，最后一指抬起时为空；`cancel` 为空。
 - 桌面版视口（`mobile: false`）下 App 把触摸换成鼠标：点一下是 `mouse` 的 move、down、up，拖动是 `wheel`。`wheel` 的 `delta_x`、`delta_y` 和 DOM 的 `WheelEvent` 同号（正数向下、向右滚）。`mouse` 的 `move` 带着按住的键（没有按键时 `button: "none"`）。
@@ -237,10 +234,11 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - `key` 的 `key`、`code` 用 DOM 的 `KeyboardEvent` 的值（软键盘没有 `code` 时留空）。可打印字符在 `down` 的 `text` 里带上；带 `text` 的按键会打出这个字，不带的只是按键（快捷键、方向键、Backspace）。`Enter` 不带 `text` 时服务端补上回车。
 - `text` 是整段上屏的文字（输入法提交的、粘贴的）。`composition` 是输入法组字的中间状态；`text` 为空表示取消组字。组字结束时上屏的文字发 `kind: "text"`，它替换掉正在组的字。
 - `viewport.mobile` 为真时服务端按手机模拟：触屏（5 个触点）、设备像素比 2、UA 是 `Mozilla/5.0 (Linux; Android 10; K) … Chrome/<主版本>.0.0.0 Mobile Safari/537.36`；为假是这个尺寸的桌面窗口，UA 是浏览器自己的。尺寸取值会被夹到 320–2560 × 320–2560。
-- 一个标签页同时只有一个生效的视口：正在看它的连接里，最近设置视口的那一条的。`hello` 和每一条 `viewport` 消息都算设置一次，内容和上次一样也算。别的连接看到的是这个视口下的画面，各条连接的 `state.viewport` 报的都是它；和自己发的不一样，说明画面不是按自己的尺寸排的，想换回来就再发一次 `viewport`。那条连接断开、或者不再看这个标签页之后，标签页换成剩下的连接里最近设置的那个视口，页面按它重新排版；没有连接在看了，标签页保持最后的设置。因为别的连接来了或走了而换视口时，页面不重新加载。
+- 一个标签页同时只有一个生效的视口：正在看它的连接里，最近设置视口的那一条的。`hello` 和每一条 `viewport` 消息都算设置一次，内容和上次一样也算。别的连接看到的是这个视口下的画面，各条连接的 `state.viewport` 报的都是它；和自己发的不一样，说明画面不是按自己的尺寸排的，想换回来就再发一次 `viewport`。那条连接断开、或者不再看这个标签页之后，标签页换成剩下的连接里最近设置的那个视口，页面按它重新排版；没有连接在看了，标签页保持最后的设置。因为别的连接来了或走了而换视口时，页面不重新加载。帧的 `pixel_ratio` 和画质（`jpeg_quality`）算视口的一部分：标签页按生效视口那条连接的值出帧，`state.viewport` 带着生效的 `pixel_ratio`。`quality` 消息改的是这条连接自己的值，不算设置视口：这条连接的视口正在生效时马上用上，否则等它的视口生效时（别的连接走了，或者它再发 `viewport`）才用上。
+- `pixel_ratio`（`hello.viewport`、`viewport`、`quality` 里都可以带）是客户端要的帧的像素密度：一个 CSS 像素对应帧里几个像素，取 1–2（超出的夹进来，保留两位小数）。`hello` 不带是 1；`viewport`、`quality` 不带时沿用这条连接上一次的值。它只改帧，不改页面：布局、`innerWidth`、`devicePixelRatio`（手机版仍是模拟的 2，桌面版仍是 1）、输入坐标都不变。做法：浏览器有两块屏（§6 的 `--screen-info`），第二块的像素密度是 2。生效值大于 1 时服务端把标签页的窗口挪到第二块屏，再重套一次视口（挪窗口会冲掉设备模拟），截屏流就按 2 倍出帧；在 1 和 2 之间时截屏流再用 `maxWidth`、`maxHeight` 缩到这个倍数；回到 1 时挪回第一块屏。密度变了，截屏流重开一次（会出一帧）。代价见 §3.5。副作用：密度大于 1 的期间（没有连接在看之后也保持），Agent 的 Playwright 截图也是这个密度的像素（`page.screenshot()` 的宽高翻倍，手机版和桌面版都是）；Agent 操作时设备模拟会失效（见下面 Playwright 那条），这期间页面的 `devicePixelRatio` 是这块屏的 2；页面在挪窗口时收到一次尺寸不变的 `resize`；`screen.isExtended` 恒为真。
 - `viewport` 消息里的 `mobile` 和这条连接上一次的不一样（切到桌面版或切回来），当前标签页会重新加载一次，因为网站按 UA 决定下发什么。只改尺寸不重新加载。
-- Agent 的 Playwright 截一张图，页面上的设备模拟就失效了（Chromium 按截图那条调试会话的状态恢复）：设备像素比、`screen` 的尺寸回到没模拟的样子，没有 viewport meta 的页面连布局宽度和帧的尺寸都变。所以这个组的操作方从 `agent` 回到 `user` 时（租约被释放、过期、被接手作废），服务端给正在看的标签页把生效的视口重套一次，不重新加载页面；连接开始显示一个标签页时也重套。Agent 操作期间不重套（会和它正在截的图打架），这段时间画面可能不是手机的样子。
-- `quality`：`max_fps` 取 1–30，默认 15；`jpeg_quality` 取 10–95，默认 60。两个字段都可以省略。画质是标签页的，几条连接看同一个标签页时以最后设置的为准。
+- Agent 的 Playwright 截一张图，页面上的设备模拟就失效了（Chromium 按截图那条调试会话的状态恢复）：设备像素比、`screen` 的尺寸回到没模拟的样子，没有 viewport meta 的页面连布局宽度和帧的尺寸都变。所以这个组的操作方从 `agent` 回到 `user` 时（租约被释放、过期、被接手作废），服务端给正在看的标签页把生效的视口重套一次（连同窗口所在的屏），不重新加载页面；连接开始显示一个标签页时也重套。Agent 操作期间不重套（会和它正在截的图打架），这段时间画面可能不是手机的样子。
+- `quality`：`max_fps` 取 1–30，默认 15；`jpeg_quality` 取 10–95，默认 60；`pixel_ratio` 见上。三个字段都可以省略，和这条连接上一次的值一样时什么都不做。`max_fps` 只管发给这条连接的帧；`jpeg_quality`、`pixel_ratio` 是标签页的，按上面的规则取生效视口那条连接的。客户端怎么按网速调它们见 §3.5。
 - 操作方是 `agent` 时，`input`、`nav`、`tab` 被丢弃，服务端回一条 `error`（`code: "agent_in_control"`），每秒最多一条。`ack`、`viewport`、`quality`、`respond`、`ping` 照常处理。
 
 ### 3.3 下行
@@ -256,7 +254,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
   "active_tab_id": "E3F1…",
   "url": "https://example.com/", "title": "Example", "loading": false,
   "can_go_back": true, "can_go_forward": false,
-  "viewport": { "width": 412, "height": 915, "mobile": true },   // 当前标签页生效的视口，不一定是这条连接发的
+  "viewport": { "width": 412, "height": 915, "mobile": true, "pixel_ratio": 2 },   // 当前标签页生效的视口，不一定是这条连接发的
   "running": true }
 
 { "type": "request", "request_id": "r12", "kind": "select|dialog|file_chooser|download|permission",
@@ -272,7 +270,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 ```
 
 - 状态一变就发 `state`，内容是全量；没变不发。会让它变的有：组的状态（操作方、接手、Agent 状态、租约、标签页列表）、当前标签页、它的网址、标题、是否在加载、能不能前进后退、当前标签页生效的视口（§3.2；组里没有标签页时是这条连接自己的）、浏览器是否在运行。组里没有标签页（或浏览器没在运行）时 `active_tab_id` 是 `null`，`url`、`title` 是空串。
-- `frame_meta` 的 `width`、`height` 是 CSS 像素，和输入坐标同一个坐标系；JPEG 自己的像素尺寸可以不同（现在两者相等：截屏流的帧按 CSS 像素出，不随设备像素比变大）。`seq` 每条连接从 1 递增。
+- `frame_meta` 的 `width`、`height` 是 CSS 像素，和输入坐标同一个坐标系；JPEG 自己的像素尺寸是它们乘以生效的 `pixel_ratio`（§3.2；1 倍时两者相等，1 和 2 之间时可能差 1 个像素）。客户端按 `width`、`height` 显示，坐标也按它们换算，不看 JPEG 的像素。`seq` 每条连接从 1 递增。
 - `focus`：当前标签页里获得焦点的元素变了。`editable` 为真表示它能输入文字（`input`、`textarea`、`contenteditable`），这时带 `input_type`（`input` 的 `type`，另有 `textarea`、`contenteditable`）和它在视口里的位置 `rect`（整数）；焦点离开可编辑元素时发 `editable: false`。App 据此弹出和收起软键盘。切换标签页、页面跳转后服务端重发一次。算作能输入文字的 `input` 类型：`text`、`search`、`url`、`tel`、`email`、`password`、`number`、`date`、`time`、`datetime-local`、`month`、`week`（日期时间这几种第一期当文本框用）；只读、禁用的不算。
 - 重连之后，还没处理完的 `select`、`dialog`、`file_chooser` 请求由服务端在 `ready` 之后重发；`download`、`permission` 不重发。
 - 握手阶段的 `error.code`：`hello_timeout`、`bad_hello`、`unauthorized`、`browser_unavailable`，发完就关闭连接。
@@ -339,6 +337,23 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - 切换标签页后的第一帧是新标签页当时的画面，`frame_meta.tab_id` 说明是哪个标签页的。
 - 页面重新加载、换了渲染进程之后浏览器有时不出新帧。服务端在页面加载完 0.4 秒内没等到帧时把截屏流重开一次（重开一定会出一帧），所以这种情况下画面会晚不到半秒。标签页换了视口之后也一样：套完 0.4 秒内没等到新尺寸的帧就重开一次。
 - 几条连接看同一个标签页时共用一路截屏流，各自按自己的 `ack` 和帧率取帧；画面是同一个视口下的（§3.2），`frame_meta` 的宽高是那个视口的。
+- 帧的代价（手机 412×780、画质 60、每秒 15 帧，Chromium 159；测试页是小字和输入框，动画是一个方块来回滑，每帧都是整屏）：
+
+  | `pixel_ratio` | 帧的像素 | 静止的一帧 | 动画时 | 动画时浏览器的 CPU |
+  | --- | --- | --- | --- | --- |
+  | 1 | 412×780 | 20.9 KB | 310 KiB/s | 0.29 核 |
+  | 1.5 | 618×1170 | 36.9 KB | 540 KiB/s | 0.73 核 |
+  | 2 | 824×1560 | 56.3 KB | 840 KiB/s | 1.07 核 |
+
+  同样的画面，画质 30、40、70 的字节约是画质 60 的 0.71、0.82、1.12 倍。没有连接在看（没有截屏流）时，标签页在哪块屏上 CPU 都一样。
+
+客户端建议（服务端不依赖这些，Desktop App 现在这样做，见 `src/frame/desktop/src/app/agent-browser/screen/quality.ts`）：
+
+- 档位从清楚到省：清晰（`pixel_ratio` 取设备的像素比，最多 2，像素比不到 1.5 时取 1：1.25 这样的屏换来的清晰有限，服务端却要在 2 倍屏上画再缩小，CPU 约 2.5 倍；画质 70；每秒 15 帧）、标准（1、60、15）、省流（1、40、8）、极省（1、30、3）。用户可以固定选“清晰”或“省流”，默认“自动”。换档用一条 `quality` 同时发这三个值；`hello.viewport` 带当前档的 `pixel_ratio`，`ready` 之后马上发一次 `quality`。
+- “自动”按帧本身量网速：一帧从 `frame_meta` 到它的 JPEG 收齐用的时间（传输）、从收齐到画完发 `ack` 的时间（绘制）、字节数。换档时已经在路上的那一帧还是旧档的，不算。
+- 降档要快：最近 3 秒的帧平均传输超过 250 毫秒，或有一帧超过 700 毫秒，或传输加绘制占了这 3 秒的 70% 以上，或平均绘制超过 120 毫秒，马上降一档。
+- 升档要稳：最近 10 秒至少 2 帧、合计至少 16 KB，按上面的字节倍数推算上一档的平均传输不到 100 毫秒、绘制（按像素数推算）不到 50 毫秒、占用不到 35%，连续 5 秒都这样才升一档。降档后 10 秒内不升；升档后 60 秒内又降了，这个等待加倍，最多 2 分钟，2 分钟没降过就回到 10 秒。没有帧时不升也不降。
+- 这些数值只在 mock 的限速上验证过，真实的弱网还要再调。
 
 ## 4. 本机文件上传
 
@@ -506,7 +521,7 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 
 1. 调 `browser.reflow_state {url}`。有 `view` 就在 iframe 里显示（§5.4），旁边显示这一页的制作时间和制作者：有包有结果时取 `result`，否则取 `fallback`。
 2. 没有 `view`、有包：调 `browser.reflow_refresh`，显示“正在制作”，每 2 秒查一次 `reflow_state`。`refresh.status` 已经是 `running` 时不再调，直接等。
-3. 没有 `view`、没有包，或者刷新失败（`refresh.status` 变成 `failed`，或刷新结束了仍然没有 `view`）：往默认组的会话发一条普通消息请 Agent 处理，显示“正在制作”，每 4 秒查一次 `reflow_state`，直到出现 `view`。`browser.reflow_refresh` 这次调用本身出错（刷新没有开始）不算刷新失败：App 只提示，不请 Agent。
+3. 没有 `view`、没有包，或者刷新失败（`refresh.status` 变成 `failed`，或刷新结束了仍然没有 `view`）：往浏览器会话发一条普通消息请 Agent 处理，显示“正在制作”，每 4 秒查一次 `reflow_state`，直到出现 `view`。`browser.reflow_refresh` 这次调用本身出错（刷新没有开始）不算刷新失败：App 只提示，不请 Agent。
 
 - App 发给 Agent 的消息有五种，都带规范化网址：请它做兜底页（带用户对这个站点的偏好）；刷新失败（带 `refresh.error`、`<site>` 和偏好，请它先做兜底页再修包）；用户要求重做一张兜底页；`reflow.action` 失败（带选择器和原因）；用户改了偏好（带新的偏好，请它改包并重做这一页）。
 - 同一个 Agent、同一个网址只请一次（`reflow.action` 的失败按选择器另算），直到这一页显示的内容变了（`view` 变了，或它的 `made_at` 变了）；用户可以明确要求再请一次，改偏好每次都发。
@@ -546,7 +561,7 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 
 进程：
 
-- 启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --disable-blink-features=CaretBlinking`。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。浏览器来自 ext-core（读得到 `browser/versions.json`）时再加 `--user-agent=<同版本有窗口的 Chrome 的 UA>`：无头模式默认的 UA 带 `HeadlessChrome`，很多网站会把它当机器人。`versions.json` 随包，按启动器的位置找（`<启动器所在目录>/../store/ext-core/browser/versions.json`），和浏览器本体下载到哪里无关。Unix 上有效用户是 root 时加 `--no-sandbox`；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口从 `<profile>/DevToolsActivePort` 读，只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
+- 启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2} --disable-blink-features=CaretBlinking`。`--screen-info` 给无头浏览器两块屏：第一块和不带这个参数时一样（800×600，像素密度 1），标签页的窗口都开在这里；第二块 CSS 尺寸相同、像素密度 2，有连接要更密的帧时把标签页的窗口挪过去（`Browser.setWindowBounds` 的 `left` 设 1600，回来设 0；只设位置，不设宽高），帧就按 2 倍出（§3.2 `pixel_ratio`）。这个参数本身不改变什么：没有窗口在第二块屏时 CPU 和不带它一样，只有 `screen.isExtended` 变成真。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。浏览器来自 ext-core（读得到 `browser/versions.json`）时再加 `--user-agent=<同版本有窗口的 Chrome 的 UA>`：无头模式默认的 UA 带 `HeadlessChrome`，很多网站会把它当机器人。`versions.json` 随包，按启动器的位置找（`<启动器所在目录>/../store/ext-core/browser/versions.json`），和浏览器本体下载到哪里无关。Unix 上有效用户是 root 时加 `--no-sandbox`；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口从 `<profile>/DevToolsActivePort` 读，只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
 - 浏览器没有自己的标签页（`--no-startup-window`）：每个标签页都属于某个组。
 - 用户数据目录上一次留下的锁（`SingletonLock` 等，记着主机名和进程号，容器每次重建主机名都会变）在启动前删掉；锁指着的进程还在、并且确实是用这个目录起的浏览器时，先把它结束。
 - Chromium 在 `TMPDIR` 下建一个套接字，路径太长（`TMPDIR` 超过约 60 字节）就起不来。Agent Service 自己的 `TMPDIR` 超过 50 字节时，浏览器进程改用 `/tmp`。

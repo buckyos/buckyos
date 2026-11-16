@@ -14,7 +14,7 @@ import { pickLocal, pickZone, pickZoneFolder, putZoneFile, selectDialog } from '
 const AGENT = 'codeassistant'
 const STORY = 'https://news.example.com/story/1'
 
-interface Ask { group: string; text: string }
+interface Ask { text: string }
 interface ReflowControl {
   seededAt: number
   extensions: { askAgent?: (request: Ask) => Promise<void> }
@@ -51,7 +51,7 @@ async function recordAsks(page: Page, available = true) {
   await page.evaluate((on) => {
     const host = window as unknown as MockWindow
     host.__asked = []
-    if (on) host.__agentBrowserMock.reflow.extensions.askAgent = async (request) => { host.__asked!.push({ group: request.group, text: request.text }) }
+    if (on) host.__agentBrowserMock.reflow.extensions.askAgent = async (request) => { host.__asked!.push({ text: request.text }) }
     else delete host.__agentBrowserMock.reflow.extensions.askAgent
   }, available)
 }
@@ -187,7 +187,6 @@ test('a refresh that fails goes to the Agent with the reason, once; its fallback
   await expect(page.getByTestId('ab-reflow-failure')).toContainText('no element matches')
   const sent = await asks(page)
   expect(sent).toHaveLength(1)
-  expect(sent[0].group).toBe('default')
   for (const part of ['https://news.example.com/broken/1', 'no element matches', 'news-example-com', 'Headline and text only, one column']) expect(sent[0].text).toContain(part)
 
   await agentFallback(page, 'https://news.example.com/broken/1', 'Repaired by hand')
@@ -204,7 +203,6 @@ test('a page the library has nothing for is asked of the Agent once, and shows w
   await expect(making).toHaveAttribute('data-by', 'agent')
   let sent = await asks(page)
   expect(sent).toHaveLength(1)
-  expect(sent[0].group).toBe('default')
   expect(sent[0].text).toContain('https://old.example.org/news')
   expect(sent[0].text).toContain('fallback page')
   expect(await rpc(page, 'browser.reflow_refresh')).toEqual([])
@@ -229,12 +227,15 @@ test('a page the library has nothing for is asked of the Agent once, and shows w
   expect(sent).toHaveLength(2)
 })
 
-test('the request reaches the Agent as a message in the default conversation', async ({ page }) => {
+test('the request reaches the Agent as a message in the browser conversation', async ({ page }) => {
   await openReflow(page, { record: false })
   await go(page, 'old.example.org/integrated')
   await expect(page.getByTestId('ab-reflow-making')).toHaveAttribute('data-by', 'agent', { timeout: 15_000 })
   await page.getByTestId('ab-mode-chat').click()
   await expect(page.getByTestId('ab-stage')).toContainText('Please make a reflow page for this address (a fallback page): https://old.example.org/integrated')
+  const bound = await rpc(page, 'browser.bind_default')
+  expect(bound).toHaveLength(1)
+  await expect(page.getByTestId('ab-chat-panel').getByTestId('ab-conversation')).toHaveAttribute('data-session', String(bound[0].session_id))
 })
 
 test('without a way to the Agent the page says so, and asks when there is one', async ({ page }) => {

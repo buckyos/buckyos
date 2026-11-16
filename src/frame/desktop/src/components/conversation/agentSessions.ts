@@ -87,6 +87,13 @@ export function isSourced(sessionId: string, source: string): boolean {
   return sources.get(key) === source
 }
 
+/** Whether the session's mark is known: read, or kept in this browser (mock). A read that failed leaves it unknown. */
+export function isSourceKnown(sessionId: string): boolean {
+  const backend = conversationBackend()
+  if (!backend) return false
+  return backend.isMock || sources.has(keyOf(backend.viewerDid(), sessionId))
+}
+
 /** Resolves once the marks of these sessions are known (or could not be read). */
 export async function loadSources(sessionIds: string[]): Promise<void> {
   const backend = await loadConversationBackend()

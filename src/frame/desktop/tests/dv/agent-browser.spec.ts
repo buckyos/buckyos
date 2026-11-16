@@ -7,7 +7,7 @@
  *
  * Needs:
  * - a ready Agent of the admin user (`BUCKYOS_TEST_BROWSER_AGENT`, its AgentId) whose browser is available
- *   (ext-core with Chromium on its node). The specs use its `default` group and leave one tab there.
+ *   (ext-core with Chromium on its node). The specs use its browser (the one group `default`) and leave one tab there.
  * - the Agent's browser must reach this machine: the specs serve a test page on 0.0.0.0 and open it as
  *   `http://<BUCKYOS_TEST_SITE_HOST>:<port>/` (default 172.17.0.1, the Docker bridge of a Linux node).
  * - a second user (`BUCKYOS_TEST_SHARE_USER`) for the owner-only checks.
@@ -16,9 +16,10 @@
  *   VITE_ZONE_PROXY_IP=127.0.0.1 VITE_NFS_PROXY=http://127.0.0.1:4110`).
  *
  * No message is sent to the Agent (nothing wakes the model): the Agent's side of the handover is played with the
- * owner's token (`browser.acquire`, `release`, `request_handover`). The specs create and delete one session with
- * the Agent, two files in the owner's home, one saved download and its copy in the Agent's `artifacts` bucket.
- * Left behind: the conversation the default thing is bound to the first time (`browser.bind_default`).
+ * owner's token (`browser.acquire`, `release`, `request_handover`). The specs create and delete two files in the
+ * owner's home, one saved download and its copy in the Agent's `artifacts` bucket. Left behind: the browser
+ * conversation (a session with the Agent titled “Browser”, with the source mark), started and bound the first time
+ * it is needed and kept as the Agent's (`browser.bind_default`).
  */
 import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
@@ -459,7 +460,7 @@ test('handover: view only while the Agent operates; take over, hand back, done, 
   await openBrowser(page)
   await openForm(page, site)
   const status = page.getByTestId('ab-status')
-  const session = 'dv-no-such-session' // a session the service does not know is the default group
+  const session = 'dv-no-such-session' // every session, also one the service does not know, works in the one group
   /** Hands back without the message that would wake the Agent. */
   const handBack = async () => {
     await page.getByTestId('ab-hand-back').click()
@@ -509,51 +510,26 @@ test('handover: view only while the Agent operates; take over, hand back, done, 
   await context.close()
 })
 
-test('things: a new task is a session with the source mark and its own tabs; a link opens it; the default thing binds a conversation', async ({ browser, request }) => {
+test('the browser conversation: a session with the source mark, bound the first time it is needed, the same one after that', async ({ browser, request }) => {
   const { context, page, token } = await signIn(browser, request)
   await openBrowser(page)
   await openForm(page, site)
-  const root = page.getByTestId('agent-browser')
-  const address = page.getByTestId('ab-address-input')
-  await page.getByTestId('ab-thing-button').click()
-  await page.getByTestId('ab-new-thing').click()
-  await expect(root).not.toHaveAttribute('data-group', 'default')
-  const group = (await root.getAttribute('data-group'))!
-  try {
-    await expect(page.getByTestId('ab-screen-empty')).toBeVisible()
-    const marks = await rpc(request, 'msg-center', 'ui_session.list_state', { session_id: group, owner: ownerDid }, token) as unknown as Array<{ key: string; value: unknown }>
-    expect(marks).toContainEqual(expect.objectContaining({ key: 'ui.source', value: 'agent-browser' }))
-    await browse(page, `${site.url}/page2`)
-    await page.getByTestId('ab-thing-button').click()
-    await page.getByTestId('ab-thing-default').click()
-    await expect(address).toHaveValue(site.url)
-    await page.getByTestId('ab-thing-button').click()
-    await page.getByTestId(`ab-thing-${group}`).click()
-    await expect(address).toHaveValue(`${site.url}/page2`)
-    const groups = (await browserRpc(request, token, 'browser.status', {})).groups.map((item: Json) => item.group_id)
-    expect(groups).toEqual(expect.arrayContaining(['default', group]))
+  expect((await browserRpc(request, token, 'browser.status', {})).groups.map((item: Json) => item.group_id)).toEqual(['default'])
+  await page.getByTestId('ab-chat-toggle').click()
+  const conversation = page.getByTestId('ab-chat-sheet').getByTestId('ab-conversation')
+  await expect(conversation).toBeVisible({ timeout: 30_000 })
+  const session = (await conversation.getAttribute('data-session'))!
+  await expect.poll(async () => (await browserRpc(request, token, 'browser.status', {})).default_session_id).toBe(session)
+  const marks = await rpc(request, 'msg-center', 'ui_session.list_state', { session_id: session, owner: ownerDid }, token) as unknown as Array<{ key: string; value: unknown }>
+  expect(marks).toContainEqual(expect.objectContaining({ key: 'ui.source', value: 'agent-browser' }))
+  expect(await refusal(browserRpc(request, token, 'browser.status', { group_id: session }))).toContain('no_such_group')
 
-    await page.goto(`${base}/?agent_browser=${AGENT}&group=${group}`)
-    await expect(root).toHaveAttribute('data-group', group, { timeout: 40_000 })
-    await expect(address).toHaveValue(`${site.url}/page2`)
-    await page.getByTestId('ab-tabs-button').click()
-    await page.locator('[data-testid="ab-tab"] button[data-testid^="ab-tab-close-"]').first().click()
-    await expect(page.getByTestId('ab-tabs-count')).toHaveText('0')
-    await page.getByTestId('ab-tabs-close').click()
-
-    // The default thing has no conversation until it is first opened: then one is bound to the default group.
-    await page.getByTestId('ab-thing-button').click()
-    await page.getByTestId('ab-thing-default').click()
-    await page.getByTestId('ab-chat-toggle').click()
-    const conversation = page.getByTestId('ab-chat-sheet').getByTestId('ab-conversation')
-    await expect(conversation).toBeVisible({ timeout: 30_000 })
-    const bound = await conversation.getAttribute('data-session')
-    await expect.poll(async () => (await browserRpc(request, token, 'browser.status', {})).default_session_id).toBe(bound)
-    expect(bound).not.toBe(group)
-  } finally {
-    await rpc(request, 'msg-center', 'msg.delete_session', { owner: ownerDid, session_id: group }, token).catch(() => undefined)
-    await context.close()
-  }
+  // The next visit (a link to the Agent's browser in conversation mode) finds the same conversation and binds nothing new.
+  await page.goto(`${base}/?agent_browser=${AGENT}&mode=chat`)
+  await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-mode', 'chat', { timeout: 40_000 })
+  await expect(page.getByTestId('ab-chat-panel').getByTestId('ab-conversation')).toHaveAttribute('data-session', session, { timeout: 30_000 })
+  expect((await browserRpc(request, token, 'browser.status', {})).default_session_id).toBe(session)
+  await context.close()
 })
 
 test('only the owner reaches the screen, the owner methods and the upload', async ({ request }) => {

@@ -4,10 +4,12 @@
 //! `PATH`, fixed install locations, then the extension packages in `$BUCKYOS_ROOT/tools/bin`. The result is a [`ToolEnvironment`]
 //! whose per-tool versions form function fingerprints.
 
-use crate::native::{ToolEnvironment, ToolInfo};
+use crate::native::{EnvironmentProvider, ToolEnvironment, ToolInfo};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 pub const PDFINFO: &str = "pdfinfo";
 pub const PDFTOTEXT: &str = "pdftotext";
@@ -216,6 +218,71 @@ pub fn probe_default() -> ToolEnvironment {
     probe(&search_dirs())
 }
 
+pub struct MediaEnvironment(RwLock<Arc<ToolEnvironment>>);
+
+impl EnvironmentProvider for MediaEnvironment {
+    fn current(&self) -> Arc<ToolEnvironment> {
+        self.0.read().unwrap().clone()
+    }
+}
+
+impl MediaEnvironment {
+    pub async fn start() -> Result<Arc<Self>, tokio::task::JoinError> {
+        Self::start_with(None, Duration::from_secs(30)).await
+    }
+
+    async fn start_with(
+        dirs: Option<Vec<PathBuf>>,
+        interval: Duration,
+    ) -> Result<Arc<Self>, tokio::task::JoinError> {
+        let initial_dirs = dirs.clone();
+        let initial = tokio::task::spawn_blocking(move || match initial_dirs {
+            Some(dirs) => probe(&dirs),
+            None => probe_default(),
+        })
+        .await?;
+        Self::log_environment(&initial);
+        let environment = Arc::new(Self(RwLock::new(Arc::new(initial))));
+        let weak = Arc::downgrade(&environment);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                if weak.strong_count() == 0 {
+                    break;
+                }
+                let dirs = dirs.clone();
+                let next = tokio::task::spawn_blocking(move || match dirs {
+                    Some(dirs) => probe(&dirs),
+                    None => probe_default(),
+                })
+                .await;
+                let Some(environment) = weak.upgrade() else {
+                    break;
+                };
+                match next {
+                    Ok(next) => {
+                        if environment.current().revision != next.revision {
+                            Self::log_environment(&next);
+                        }
+                        *environment.0.write().unwrap() = Arc::new(next);
+                    }
+                    Err(err) => log::warn!("workflow media tool refresh failed: {err}"),
+                }
+            }
+        });
+        Ok(environment)
+    }
+
+    fn log_environment(environment: &ToolEnvironment) {
+        log::info!(
+            "workflow media tools revision={} present={:?} missing={:?}",
+            environment.revision,
+            environment.tools.keys().collect::<Vec<_>>(),
+            environment.missing,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +335,52 @@ mod tests {
         let fp = env.fingerprint_for(&[PDFTOPPM]);
         assert_eq!(fp.get("cmd/pdftoppm").map(String::as_str), Some("missing"));
         assert_eq!(env.missing_from(&[PDFTOPPM, FFMPEG]), vec!["pdftoppm", "ffmpeg"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn running_environment_discovers_installs_upgrades_and_removals() {
+        use std::os::unix::fs::PermissionsExt;
+
+        async fn wait_for_version(environment: &MediaEnvironment, version: Option<&str>) -> Arc<ToolEnvironment> {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let current = environment.current();
+                    if current.tool(PDFINFO).map(|tool| tool.version.as_str()) == version {
+                        return current;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap()
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let environment = MediaEnvironment::start_with(Some(vec![dir.path().to_path_buf()]), Duration::from_millis(20)).await.unwrap();
+        let missing = environment.current();
+        assert_eq!(missing.missing_from(&[PDFINFO]), vec![PDFINFO]);
+        let install = |version: &str| {
+            let staging = dir.path().join("pdfinfo.new");
+            std::fs::write(&staging, format!("#!/bin/sh\nprintf 'pdfinfo version {version}\\n'\n")).unwrap();
+            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::rename(staging, dir.path().join(PDFINFO)).unwrap();
+        };
+
+        install("24.02.0");
+        let installed = wait_for_version(&environment, Some("24.02.0")).await;
+        assert!(installed.missing_from(&[PDFINFO]).is_empty());
+        assert_ne!(missing.revision, installed.revision);
+        assert_ne!(missing.fingerprint_for(&[PDFINFO]), installed.fingerprint_for(&[PDFINFO]));
+        assert!(missing.tool(PDFINFO).is_none());
+
+        install("25.01.0");
+        let upgraded = wait_for_version(&environment, Some("25.01.0")).await;
+        assert_ne!(installed.revision, upgraded.revision);
+        assert_ne!(installed.fingerprint_for(&[PDFINFO]), upgraded.fingerprint_for(&[PDFINFO]));
+        assert_eq!(installed.tool(PDFINFO).unwrap().version, "24.02.0");
+
+        std::fs::remove_file(dir.path().join(PDFINFO)).unwrap();
+        let removed = wait_for_version(&environment, None).await;
+        assert_eq!(removed.missing_from(&[PDFINFO]), vec![PDFINFO]);
+        assert_eq!(missing.revision, removed.revision);
     }
 }

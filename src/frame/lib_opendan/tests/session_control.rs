@@ -460,6 +460,43 @@ async fn a_conversation_takes_the_current_prompt_after_its_history_is_compacted(
     assert_eq!(sd.state().unwrap().turns_completed, 3);
 }
 
+/// A conversation given a manual of its own (the Agent browser's
+/// conversation and `browser`) has it besides its class's, also when its
+/// prompt is frozen again; another conversation does not.
+#[tokio::test]
+async fn a_conversations_own_skills_stay_when_its_prompt_is_frozen_again() {
+    let env = Env::new();
+    let agent = env.agent();
+    for (name, scope) in [("ui_core", "ui"), ("browser", "ui, work")] {
+        std::fs::create_dir_all(env.agent_root.join(format!("cmd_skills/{name}"))).unwrap();
+        std::fs::write(env.agent_root.join(format!("cmd_skills/{name}/SKILL.md")), format!("---\ndescription: {name}\nscope: {scope}\n---\nThe {name} manual.")).unwrap();
+    }
+    std::fs::write(env.agent_root.join("agent.toml"), "[session.ui]\ndefault_cmd_skills = [\"ui_core\"]\n").unwrap();
+    let spec = |own: bool| {
+        let template = SessionTemplate::load("ui", Some(&env.agent_root)).unwrap();
+        let mut spec = ui();
+        spec.prompt.cmd_skills = template.default_cmd_skills;
+        spec.freeze = true;
+        if own {
+            libopendan::template::add_own_cmd_skills(&mut spec, &["browser"]);
+            libopendan::template::add_own_cmd_skills(&mut spec, &["browser"]);
+        } else {
+            spec.route_key = Some(format!("{AGENT}/browser-other"));
+        }
+        spec
+    };
+    let names = |cfg: &SessionConfig| cfg.prompt.frozen.as_ref().unwrap().cmd_skills.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+    let own = env.create_work(spec(true)).await;
+    let other = env.create_work(spec(false)).await;
+    assert_eq!(names(&own.config().unwrap()), ["ui_core", "browser"]);
+    assert_eq!(libopendan::template::own_cmd_skills(&own.config().unwrap().extensions), ["browser"]);
+    assert_eq!(names(&other.config().unwrap()), ["ui_core"]);
+    for (sd, expected) in [(&own, vec!["ui_core", "browser"]), (&other, vec!["ui_core"])] {
+        let next = libopendan::state::refrozen(&sd.config().unwrap(), agent.behaviors(), agent.agent_root(), APP).await.unwrap();
+        assert_eq!(names(&next), expected);
+    }
+}
+
 fn system_text(req: &llm_context::deps::LlmInferenceRequest) -> String {
     req.messages
         .iter()

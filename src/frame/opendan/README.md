@@ -316,13 +316,13 @@ Agent 的常驻浏览器：一个无头 Chromium，跑在 Agent Service 所在�
 
 | method | params | 说明 | 谁能调 |
 |---|---|---|---|
-| `browser.status` | `{group_id?, session_id?}` | Status：是否启用、可用、在运行，不可用的原因（`unavailable_code`：`disabled`、`no_package`、`not_downloaded`，加一句说明 `unavailable`），版本，默认组绑定的会话，各组的操作方、Agent 状态和标签页。不启动浏览器 | owner、Agent |
+| `browser.status` | `{group_id?, session_id?}` | Status：是否启用、可用、在运行，不可用的原因（`unavailable_code`：`disabled`、`no_package`、`not_downloaded`，加一句说明 `unavailable`），版本，浏览器会话（`default_session_id`），唯一的标签组 `default` 的操作方、Agent 状态和标签页。不启动浏览器 | owner、Agent |
 | `browser.ensure` | `{}` | 没在运行就启动；返回 Status | owner、Agent |
 | `browser.acquire` | `{session_id}` | 取得会话所在组的租约（默认 60 秒；没在运行就启动）：`{lease_id, group_id, ttl_ms, expires_at_ms, cdp_url, tabs, active_tab_id}`。用户接手着时 `user_in_control` | Agent |
 | `browser.renew` / `browser.release` | `{lease_id}` / `{lease_id, state?: done \| stuck, note?}` | 续租 `{expires_at_ms}`；释放 `{}` | Agent |
-| `browser.request_handover` | `{session_id, reason: password \| captcha \| other, note?}` | 请用户接手：租约作废，组由用户持有；`{group_id}` | Agent |
-| `browser.take_over` / `browser.hand_back` / `browser.hand_to_agent` | `{group_id}` | 接手、交还、交给 Agent；返回 Group，并给这个组的会话写一条 `_browser` 记录 | owner |
-| `browser.bind_default` | `{session_id}` | 把默认组绑定到一个 MessageHub 会话：这个会话里 Agent 的操作从此归 `default`，它原来的组并进 `default`；`{default_session_id}`，记在 `groups.json` | owner |
+| `browser.request_handover` | `{session_id, reason: password \| captcha \| other, note?}` | 请用户接手：租约作废，浏览器由用户持有；`{group_id}`（总是 `default`） | Agent |
+| `browser.take_over` / `browser.hand_back` / `browser.hand_to_agent` | `{group_id}`（只认 `default`） | 接手、交还、交给 Agent；返回 Group，并给浏览器会话写一条 `_browser` 记录 | owner |
+| `browser.bind_default` | `{session_id}` | 把这个 MessageHub 会话定为 Agent 的浏览器会话（D35）：`_browser` 记录投给它，它的 UI Session 带 `browser` 手册（D36）；`{default_session_id}`，记在 `groups.json` | owner |
 | `browser.clear_profile` | `{}` | 停掉浏览器，清空登录状态和缓存 | owner |
 | `browser.upload` | `{request_id, zone_path, done?}` | 回应屏幕上的一个 `file_chooser` 请求：用调用者的令牌从 Zone 读 `zone_path`（nfs-server 的 `stat` 加 `/nfs/v1/read`），存到 `<浏览器目录>/uploads/<request_id>/`；带 `done` 时把这个请求收到的文件一起交给页面的输入框。`{}` | owner |
 | `browser.download_export` | `{download_id}` | 把一个下载好的文件登记成命名对象（绑进 `artifacts` 桶，并交给调用者），供 App 存进 Zone：`{obj_id, name, size}` | owner |

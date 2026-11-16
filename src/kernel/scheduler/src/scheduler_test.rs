@@ -113,6 +113,77 @@ fn service_info_nodes(service_info: &ServiceInfo) -> HashSet<String> {
     }
 }
 
+#[test]
+fn app_www_ports_are_fetch_safe_and_unique() {
+    let mut ports = HashSet::new();
+    for app_index in 1..=buckyos_api::MAX_APP_INDEX {
+        let mut scheduler = NodeScheduler::new_empty(1);
+        scheduler.add_node(create_test_node(
+            "node1",
+            1000,
+            1024 * 1024 * 1024,
+            vec![],
+            NodeState::Ready,
+            "zone1",
+        ));
+        let mut spec = create_test_service_spec("app.example@alice");
+        spec.app_id = "app.example".to_string();
+        spec.owner_id = "alice".to_string();
+        spec.spec_type = ServiceSpecType::App;
+        spec.app_index = app_index;
+        spec.service_ports_config = HashMap::from([("www".to_string(), 80)]);
+        scheduler.add_service_spec(spec);
+
+        let actions = scheduler.schedule_spec_change().unwrap();
+        let instance = actions
+            .iter()
+            .find_map(|action| match action {
+                SchedulerAction::InstanceReplica(instance) => Some(instance),
+                _ => None,
+            })
+            .expect("app must be scheduled");
+        let port = instance.service_ports["www"];
+        assert!(port > 10000);
+        assert_ne!(port, 10080);
+        assert!(ports.insert(port), "duplicate app port {port}");
+        match app_index {
+            4 => assert_eq!(port, 10064),
+            5 => assert_eq!(port, 10081),
+            6 => assert_eq!(port, 10096),
+            buckyos_api::MAX_APP_INDEX => assert_eq!(port, 65520),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn system_and_explicit_service_ports_are_preserved() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+    scheduler.add_node(create_test_node(
+        "node1",
+        1000,
+        1024 * 1024 * 1024,
+        vec![],
+        NodeState::Ready,
+        "zone1",
+    ));
+    let mut spec = create_test_service_spec("workflow");
+    spec.service_ports_config =
+        HashMap::from([("www".to_string(), 4070), ("custom".to_string(), 10080)]);
+    scheduler.add_service_spec(spec);
+
+    let actions = scheduler.schedule_spec_change().unwrap();
+    let instance = actions
+        .iter()
+        .find_map(|action| match action {
+            SchedulerAction::InstanceReplica(instance) => Some(instance),
+            _ => None,
+        })
+        .expect("system service must be scheduled");
+    assert_eq!(instance.service_ports["www"], 4070);
+    assert_eq!(instance.service_ports["custom"], 10080);
+}
+
 // test node state change
 // New -> Prepare
 // Removing -> Deleted

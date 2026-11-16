@@ -278,6 +278,29 @@ test('screenshot writes a PNG of the viewport, also of a tab that was in the bac
   assert.equal((await agentBrowser(['screenshot', 'shot.jpg'])).code, 2);
 });
 
+test('a screenshot is in CSS pixels while the screen paints the tab at twice its pixels', async () => {
+  await agentBrowser(['open', `${site.url}/form`]);
+  // What the screen does for a viewer on a sharp screen: the tab's window goes to the second screen, of pixel ratio 2.
+  const { webSocketDebuggerUrl } = await (await fetch(`${chromium.cdpUrl}/json/version`)).json();
+  const browser = await Cdp.open(webSocketDebuggerUrl);
+  const { windowId } = await browser.send('Browser.getWindowForTarget', { targetId: tab.id });
+  await browser.send('Browser.setWindowBounds', { windowId, bounds: { left: 1600, top: 0 } });
+  const page = await Cdp.open(tab.webSocketDebuggerUrl);
+  const { result: ratio } = await page.send('Runtime.evaluate', { expression: 'devicePixelRatio' });
+  const { result: viewport } = await page.send('Runtime.evaluate', { expression: '[innerWidth, innerHeight]', returnByValue: true });
+  page.close();
+  try {
+    assert.equal(ratio.value, 2);
+    const result = await agentBrowser(['screenshot', 'dense.png']);
+    assert.equal(result.code, 0, result.stderr);
+    const [width, height] = viewport.value;
+    assert.deepEqual(pngSize(fs.readFileSync(path.join(dir, 'dense.png'))), { width, height });
+  } finally {
+    await browser.send('Browser.setWindowBounds', { windowId, bounds: { left: 0, top: 0 } });
+    browser.close();
+  }
+});
+
 test('handover gives the user control; done and stuck report the state', async () => {
   const bad = await agentBrowser(['handover', '--reason', 'tired']);
   assert.equal(bad.code, 2);

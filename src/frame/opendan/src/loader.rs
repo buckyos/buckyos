@@ -394,6 +394,16 @@ impl Loader {
         }
 
         let mut tasks = Vec::new();
+        // The agent's browser: started when someone needs it.
+        let browser = BrowserModule::new(
+            config.loader.browser.clone(),
+            BrowserDeps {
+                agent: agent.clone(),
+                supervisor: Some(supervisor.clone()),
+                owner_did: env.owner_did.as_ref().map(|d| d.to_string()),
+                agent_root: env.agent_root.clone(),
+            },
+        );
         let ui = match (&env.mail, config.loader.ui.is_empty()) {
             (_, true) => {
                 module("ui", false, false, Some("no [[loader.ui]] rule"));
@@ -420,6 +430,7 @@ impl Loader {
                     env.channels.clone(),
                     supervisor.clone(),
                     env.agent_root.join("sessions"),
+                    browser.clone(),
                 ))
             }
         };
@@ -428,16 +439,6 @@ impl Loader {
             config.loader.goals.enabled,
             config.loader.goals.enabled,
             config.loader.goals.enabled.then_some("schedule backend: local"),
-        );
-        // The agent's browser: started when someone needs it.
-        let browser = BrowserModule::new(
-            config.loader.browser.clone(),
-            BrowserDeps {
-                agent: agent.clone(),
-                supervisor: Some(supervisor.clone()),
-                owner_did: env.owner_did.as_ref().map(|d| d.to_string()),
-                agent_root: env.agent_root.clone(),
-            },
         );
         let (enabled, usable, note) = browser.module_status();
         module("browser", enabled, usable, note.as_deref());

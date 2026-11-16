@@ -163,6 +163,35 @@ impl Default for GoalDefaults {
     }
 }
 
+/// A conversation's own manuals (`extensions.opendan.cmd_skills`): it takes
+/// them besides those of its class (as far as [`MAX_CMD_SKILLS`] allows),
+/// when it is created and whenever its prompt is frozen again.
+pub fn own_cmd_skills(extensions: &std::collections::BTreeMap<String, serde_json::Value>) -> Vec<String> {
+    extensions
+        .get(OPENDAN_EXTENSION)
+        .and_then(|o| o.get("cmd_skills"))
+        .and_then(|v| v.as_array())
+        .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Give the session of `spec` manuals of its own ([`own_cmd_skills`]).
+pub fn add_own_cmd_skills(spec: &mut SessionSpec, names: &[&str]) {
+    let mut own = own_cmd_skills(&spec.extensions);
+    for name in names {
+        if !own.iter().any(|n| n == name) {
+            own.push(name.to_string());
+        }
+        if spec.prompt.cmd_skills.len() < MAX_CMD_SKILLS && !spec.prompt.cmd_skills.iter().any(|n| n == name) {
+            spec.prompt.cmd_skills.push(name.to_string());
+        }
+    }
+    let opendan = spec.extensions.entry(OPENDAN_EXTENSION.to_string()).or_insert_with(|| json!({}));
+    if let Some(o) = opendan.as_object_mut() {
+        o.insert("cmd_skills".to_string(), json!(own));
+    }
+}
+
 impl SessionTemplate {
     /// The built-in templates: `work`, `ui`, `goal`.
     pub fn builtin(class: &str) -> Option<Self> {

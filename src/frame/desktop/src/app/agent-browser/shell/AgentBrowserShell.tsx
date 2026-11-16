@@ -1,8 +1,8 @@
-/* The App's frame, designed for a phone and used as it is on the desktop: the thing and the mode on top, the
+/* The App's frame, designed for a phone and used as it is on the desktop: the Agent and the mode on top, the
  * address under them, the stage (the screen, or the reflow / conversation panel), and the strip that says who
  * operates. Before that: choosing one of the user's own Agents (D10). */
 
-import { ChevronDown, EllipsisVertical, MonitorOff } from 'lucide-react'
+import { EllipsisVertical, MonitorOff } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { LoadingOrb } from '../../../components/LoadingOrb'
 import { useI18n } from '../../../i18n/provider'
@@ -18,12 +18,11 @@ import { ReflowAddressBar } from '../reflow/ReflowAddressBar'
 import { RequestLayer } from '../requests/RequestLayer'
 import { ScreenView } from '../screen/ScreenView'
 import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
-import { browserUsable, canOperate, currentThing } from '../store/store'
-import { thingTitle } from '../store/things'
+import { browserUsable, canOperate } from '../store/store'
 import { AddressBar } from './AddressBar'
 import { BrowserDownload } from './BrowserDownload'
 import { HandoverBar } from './HandoverBar'
-import { MenuSheet, TabsSheet, ThingsSheet } from './sheets'
+import { MenuSheet, TabsSheet } from './sheets'
 
 function Message({ testId, title, detail, action }: { testId: string; title: string; detail?: string; action?: { label: string; onClick: () => void; testId: string } }) {
   return (
@@ -106,15 +105,13 @@ function Toast() {
   return <div key={notice.id} className="ab-toast" role="status" data-testid="ab-toast" data-kind={notice.kind} data-code={notice.code}>{text}</div>
 }
 
-type SheetName = 'things' | 'tabs' | 'menu'
+type SheetName = 'tabs' | 'menu'
 
 function BrowserFrame() {
   const store = useAgentBrowserStore()
   const { t } = useI18n()
   const agent = useAgentBrowser((snapshot) => snapshot.agent)
   const mode = useAgentBrowser((snapshot) => snapshot.mode)
-  const groupId = useAgentBrowser((snapshot) => snapshot.groupId)
-  const things = useAgentBrowser((snapshot) => snapshot.things)
   const usable = useAgentBrowser(browserUsable)
   const operable = useAgentBrowser(canOperate)
   const loading = useAgentBrowser((snapshot) => snapshot.state?.loading ?? false)
@@ -127,19 +124,14 @@ function BrowserFrame() {
     observer.observe(stage)
     return () => observer.disconnect()
   }, [store])
-  const thing = currentThing({ things, groupId })
   const close = () => setSheet(null)
   return (
-    <div className="ab-root" data-testid="agent-browser" data-mode={mode} data-group={groupId} data-agent={agent?.agentId} data-operable={operable ? 'true' : 'false'}>
+    <div className="ab-root" data-testid="agent-browser" data-mode={mode} data-agent={agent?.agentId} data-operable={operable ? 'true' : 'false'}>
       <div className="ab-top">
-        <button type="button" className="ab-thing-button" aria-haspopup="dialog" data-testid="ab-thing-button" onClick={() => setSheet('things')}>
+        <div className="ab-identity" title={agent ? t('agentBrowser.agent.browserOf', 'This is {{name}}’s browser', { name: agent.name }) : undefined} data-testid="ab-identity">
           {agent ? <HubAvatar type="agent" name={agent.name} avatar={agent.avatar} size={24} /> : null}
-          <span className="ab-thing-names">
-            <span className="ab-thing-agent" data-testid="ab-agent-name">{agent?.name}</span>
-            <span className="ab-thing-title" data-testid="ab-thing-title">{thingTitle(t, thing)}</span>
-          </span>
-          <ChevronDown size={16} aria-hidden />
-        </button>
+          <span className="ab-identity-name" data-testid="ab-agent-name">{agent?.name}</span>
+        </div>
         <div className="ab-modes" role="tablist" aria-label={t('agentBrowser.mode.label', 'View')}>
           {browserModes.map((item) => (
             <button key={item} type="button" role="tab" aria-selected={mode === item} className="ab-mode" data-testid={`ab-mode-${item}`} onClick={() => store.setMode(item)}>
@@ -152,13 +144,13 @@ function BrowserFrame() {
       {mode === 'chat' ? null : mode === 'reflow' ? <ReflowAddressBar /> : <AddressBar onOpenTabs={() => setSheet('tabs')} />}
       <div className="ab-progress" data-active={loading && mode === 'page' ? 'true' : 'false'} aria-hidden />
       <div ref={stageRef} className="ab-stage" data-testid="ab-stage" role="tabpanel">
-        {mode === 'reflow' ? <ReflowPanel /> : mode === 'chat' ? <ConversationPanel /> : usable ? <ScreenView key={groupId} /> : <Unavailable />}
+        {mode === 'reflow' ? <ReflowPanel /> : mode === 'chat' ? <ConversationPanel /> : usable ? <ScreenView /> : <Unavailable />}
         {usable && mode !== 'reflow' ? <RequestLayer /> : null}
         {mode === 'chat' ? null : <ConversationSheet />}
         <Toast />
       </div>
       <HandoverBar />
-      {sheet === 'things' ? <ThingsSheet onClose={close} /> : sheet === 'tabs' ? <TabsSheet onClose={close} /> : sheet === 'menu' ? <MenuSheet onClose={close} /> : null}
+      {sheet === 'tabs' ? <TabsSheet onClose={close} /> : sheet === 'menu' ? <MenuSheet onClose={close} /> : null}
     </div>
   )
 }

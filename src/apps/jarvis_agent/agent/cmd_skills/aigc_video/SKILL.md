@@ -70,7 +70,7 @@ ffmpeg -y -i joined.mp4 -i subs.srt -map 0 -map 1 -c copy -c:s mov_text out/film
 # last frame of a clip (continuation substitute)
 ffmpeg -y -sseof -0.2 -i s1.mp4 -frames:v 1 -update 1 s1-last.png
 ```
-- Burned-in subtitles work with `-vf "subtitles=subs.srt:force_style=FontName=DejaVu Sans"`; in the container Chinese text falls back to its Noto CJK font. On a `host` runtime the fonts are the machine's, so check the result. Soft `mov_text` subtitles are drawn by the player and avoid this.
+- Burned-in subtitles work with `-vf "subtitles=subs.srt:force_style=FontName=DejaVu Sans"`; Chinese text falls back to the Noto Sans CJK SC font of ext-core (1.3.1 and later), in the container and on a `host` runtime, which also sees the machine's own fonts. `drawtext` does not fall back: give it `font=Noto Sans CJK SC`. Soft `mov_text` subtitles are drawn by the player and avoid this.
 - Plain ffmpeg in `shell` is enough for assembly. If you wrap these steps in a TS script, run it with `--allow-run` added to its `deno run` line — the installed command launcher does not grant that permission.
 
 #### Check the result

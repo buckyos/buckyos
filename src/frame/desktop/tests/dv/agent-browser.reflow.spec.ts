@@ -381,11 +381,12 @@ async function removeZoneFolder() {
 test.beforeAll(async ({ playwright }) => {
   api = await playwright.request.newContext({ ignoreHTTPSErrors: true })
   server = await startSite()
-  const { agents } = await call<{ agents: Array<{ agent_id: string; agent_did: string; name: string }> }>('control-panel', 'agent.list', {}, await tokenOf())
+  const { agents } = await call<{ agents: Array<{ agent_id: string; agent_did: string; name: string; display_name?: string | null; profile?: { display_name?: string | null } }> }>('control-panel', 'agent.list', {}, await tokenOf())
   const found = agents.find((item) => item.agent_id === agentId)
   expect(found, `${agentId} is an Agent of ${owner}`).toBeTruthy()
   agentDid = found!.agent_did
-  agentName = found!.name
+  // The App names the maker as the Agent setup does (`agentDisplayName`): its display name, else its name.
+  agentName = found!.profile?.display_name?.trim() || found!.display_name?.trim() || found!.name
   await removeSite(SITE)
   await removeSite(BARE_SITE)
   await removeZoneFolder()

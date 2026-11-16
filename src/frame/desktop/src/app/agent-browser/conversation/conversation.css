@@ -1,4 +1,4 @@
-/* Agent Browser: the conversation of a thing (APP7) and what the status strip asks before a handover (DG2, DG3). */
+/* Agent Browser: the browser conversation (APP7) and what the status strip asks before a handover (DG2, DG3). */
 .ab-chat-panel { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--cp-surface-opaque); }
 .ab-chat-status {
   flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 0;

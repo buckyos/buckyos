@@ -83,7 +83,12 @@ struct State {
     history: std::collections::HashMap<String, (Vec<String>, usize)>,
     /// The size each target was made (`Emulation.setDeviceMetricsOverride`); the others have `TAB_SIZE`.
     sizes: std::collections::HashMap<String, (u64, u64)>,
+    /// Where each target's window was moved (`Browser.setWindowBounds`); the others are at `WINDOW_LEFT`.
+    windows: std::collections::HashMap<String, i64>,
 }
+
+/// Where a new window is.
+const WINDOW_LEFT: i64 = 10;
 
 /// The size of a tab nobody resized.
 const TAB_SIZE: (u64, u64) = (412, 915);
@@ -335,6 +340,20 @@ impl FakeBrowser {
                 }
                 ok(json!({}))
             }
+            // Every target has a window of its own, numbered as the target.
+            "Browser.getWindowForTarget" => {
+                let target_id = params["targetId"].as_str().map(str::to_string).or_else(|| session.as_deref().and_then(|session| self.target_of(session)));
+                let Some(target_id) = target_id.filter(|t| self.state.lock().unwrap().targets.iter().any(|known| known.id == *t)) else { return fail("No target with given id found") };
+                let left = self.window_left(&target_id);
+                ok(json!({ "windowId": target_id.trim_start_matches('T').parse::<i64>().unwrap_or(0), "bounds": { "left": left, "top": 0, "width": 1280, "height": 800, "windowState": "normal" } }))
+            }
+            "Browser.setWindowBounds" => {
+                let target_id = format!("T{}", params["windowId"].as_i64().unwrap_or(0));
+                if let Some(left) = params["bounds"]["left"].as_i64() {
+                    self.state.lock().unwrap().windows.insert(target_id, left);
+                }
+                ok(json!({}))
+            }
             "DOM.describeNode" => ok(json!({ "node": { "nodeName": "INPUT", "attributes": ["type", "file", "accept", ".png, image/*"] } })),
             // A command the browser never answers.
             "Fake.never" => (Value::Null, false),
@@ -423,6 +442,11 @@ impl FakeBrowser {
     pub fn close(&self, target_id: &str) {
         self.state.lock().unwrap().targets.retain(|t| t.id != target_id);
         self.emit("Target.targetDestroyed", json!({ "targetId": target_id }), None);
+    }
+
+    /// Where a target's window is (`Browser.setWindowBounds`).
+    pub fn window_left(&self, target_id: &str) -> i64 {
+        self.state.lock().unwrap().windows.get(target_id).copied().unwrap_or(WINDOW_LEFT)
     }
 
     pub fn targets(&self) -> Vec<(String, String)> {

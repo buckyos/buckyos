@@ -31,16 +31,10 @@
 .ab-button-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--cp-danger) 88%, var(--cp-text)); }
 .ab-root :is(button, input, [tabindex]):focus-visible { outline: 2px solid var(--cp-focus-ring); outline-offset: 1px; }
 
-/* Top: the thing, the mode, the menu */
+/* Top: the Agent, the mode, the menu */
 .ab-top { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 8px 0; }
-.ab-thing-button {
-  flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 2px 8px 2px 6px;
-  border-radius: 12px; text-align: left;
-}
-.ab-thing-button:hover { background: var(--ab-hover); }
-.ab-thing-names { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
-.ab-thing-agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--cp-muted); }
-.ab-thing-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.ab-identity { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 2px 8px 2px 6px; }
+.ab-identity-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
 .ab-modes { flex: none; display: flex; padding: 2px; border-radius: 10px; background: var(--ab-wash); }
 .ab-mode { min-height: 34px; padding: 0 9px; border-radius: 8px; font-size: 13px; color: var(--cp-muted); white-space: nowrap; }
 .ab-mode[aria-selected='true'] {
@@ -185,8 +179,6 @@
 .ab-list-item[role='switch'] .ab-list-detail { white-space: normal; }
 .ab-tab-row { display: flex; align-items: center; gap: 2px; }
 .ab-tab-row .ab-list-item { flex: 1; min-width: 0; }
-.ab-agent-row { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 8px 10px; border-radius: 12px; background: var(--ab-wash); }
-.ab-agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .ab-switch { flex: none; position: relative; width: 40px; height: 24px; border-radius: 12px; background: color-mix(in srgb, var(--cp-text) 24%, transparent); transition: background 0.15s; }
 .ab-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
 [aria-checked='true'] > .ab-switch { background: var(--cp-accent); }

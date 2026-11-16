@@ -29,15 +29,15 @@ interface Received { groupId: string; dropped: boolean; message: Message }
 interface MockControl {
   log: Received[]
   rects(width: number): Record<MockElement, { x: number; y: number; width: number; height: number }>
-  page(agentId: string, groupId: string): { text: string; scrollY: number; dialog: string } | null
-  agentAcquire(agentId: string, groupId: string): boolean
+  page(agentId: string): { text: string; scrollY: number; dialog: string } | null
+  agentAcquire(agentId: string): boolean
 }
 type MockWindow = { __agentBrowserMock: MockControl }
 
 const received = (page: Page, type: string) =>
   page.evaluate((t) => (window as unknown as MockWindow).__agentBrowserMock.log.filter((entry) => entry.message.type === t), type)
 const inputs = async (page: Page, kind: string) => (await received(page, 'input')).filter((entry) => entry.message.kind === kind)
-const mockPage = (page: Page) => page.evaluate((agent) => (window as unknown as MockWindow).__agentBrowserMock.page(agent, 'default'), AGENT)
+const mockPage = (page: Page) => page.evaluate((agent) => (window as unknown as MockWindow).__agentBrowserMock.page(agent), AGENT)
 
 async function openBrowser(page: Page) {
   await page.goto('/?scenario=normal')
@@ -127,7 +127,7 @@ test('on a phone the page is laid out for the phone, touches reach it, and the o
 
   // While the Agent operates a touch goes nowhere and the App says why.
   const sent = (await received(page, 'input')).length
-  await page.evaluate((agent) => { (window as unknown as MockWindow).__agentBrowserMock.agentAcquire(agent, 'default') }, AGENT)
+  await page.evaluate((agent) => { (window as unknown as MockWindow).__agentBrowserMock.agentAcquire(agent) }, AGENT)
   await expect(page.getByTestId('ab-screen-readonly')).toBeVisible()
   await expect(page.getByTestId('ab-keyboard')).toHaveCount(0)
   await page.touchscreen.tap(field.screen.x, field.screen.y)
@@ -143,8 +143,8 @@ test('on a phone the page is laid out for the phone, touches reach it, and the o
 test('on a phone panels come up from the bottom and the Back key closes them', async ({ page }) => {
   await openBrowser(page)
   const app = await page.getByTestId('agent-browser').boundingBox()
-  await page.getByTestId('ab-thing-button').tap()
-  const sheet = page.getByTestId('ab-things')
+  await page.getByTestId('ab-menu-button').tap()
+  const sheet = page.getByTestId('ab-menu')
   await expect(sheet).toBeVisible()
   await expect.poll(async () => {
     const box = await sheet.boundingBox()

@@ -55,6 +55,7 @@ export function ScreenView() {
   const attempts = useAgentBrowser((snapshot) => snapshot.screenAttempts)
   const agentName = useAgentBrowser((snapshot) => snapshot.agent?.name ?? '')
   const restartFailed = useAgentBrowser((snapshot) => snapshot.restartFailed)
+  const tier = useAgentBrowser((snapshot) => snapshot.screenTier)
   const coarse = useMediaQuery('(pointer: coarse)')
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -464,7 +465,7 @@ export function ScreenView() {
   const waiting = status === 'connecting' || (status === 'open' && hasTab && !frame) || (stopped && !restartFailed)
 
   return (
-    <div className="ab-screen" data-testid="ab-screen" data-readonly={operable ? undefined : 'true'} data-status={status}>
+    <div className="ab-screen" data-testid="ab-screen" data-readonly={operable ? undefined : 'true'} data-status={status} data-tier={tier ?? undefined}>
       <div
         ref={hostRef}
         className="ab-screen-surface"

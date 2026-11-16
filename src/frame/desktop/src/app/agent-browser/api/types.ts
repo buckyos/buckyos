@@ -44,6 +44,8 @@ export interface Viewport {
   width: number
   height: number
   mobile: boolean
+  /** Pixels of a frame per CSS pixel, 1–2 (§3.2); the service's state always says it, a message may leave it out. */
+  pixel_ratio?: number
 }
 
 /** `state` (and `ready.state`): always the whole state. */
@@ -85,7 +87,7 @@ export type ScreenUpstream =
   | { type: 'tab'; action: 'close' | 'activate'; tab_id: string }
   | ({ type: 'viewport' } & Viewport)
   | { type: 'respond'; request_id: string; result: RequestResult }
-  | { type: 'quality'; max_fps: number; jpeg_quality: number }
+  | { type: 'quality'; max_fps?: number; jpeg_quality?: number; pixel_ratio?: number }
   | { type: 'ping' }
 
 export interface SelectOption { index: number; label: string; selected: boolean; disabled: boolean; group?: string }

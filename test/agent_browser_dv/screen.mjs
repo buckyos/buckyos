@@ -2,7 +2,7 @@
 // The owner at the screen of the Agent's browser (Agent Browser Protocol §3): what the Agent Browser app does when
 // the user looks at a thing, taps and types. Runs a list of actions in order and prints what the service says.
 //
-//   node screen.mjs --group <group id> [--viewport 1280x800] [--mobile] [--out <dir>] <action>...
+//   node screen.mjs [--viewport 1280x800] [--mobile] [--out <dir>] <action>...   (the Agent's one tab group, `default`)
 //
 //   nav=<url>        go to an address, wait until it is loaded
 //   tap=<x>,<y>      tap (touch on a phone viewport, a mouse click on a desktop one)
@@ -10,7 +10,7 @@
 //   key=<Key>        press a key (DOM key name: Enter, Tab, Backspace)
 //   wait=<ms>
 //   shot=<name>      save the newest frame as <out>/<name>.jpg (and .png when AB_DV_MAGICK names ImageMagick's magick)
-//   close-tabs       close every tab of the group
+//   close-tabs       close every tab of the browser
 //   blocked          tap once and expect the service to refuse it with agent_in_control (exit code 1 otherwise)
 //   watch=<seconds>  just look: print state changes and count frames
 //   probe=<seconds>  look, and tap an empty corner of the page twice a second: counts the taps the service refused
@@ -26,8 +26,7 @@ const argv = process.argv.slice(2)
 const flags = { group: 'default', viewport: '1280x800', mobile: false, out: '.' }
 const actions = []
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--group') flags.group = argv[++i]
-  else if (argv[i] === '--viewport') flags.viewport = argv[++i]
+  if (argv[i] === '--viewport') flags.viewport = argv[++i]
   else if (argv[i] === '--mobile') flags.mobile = true
   else if (argv[i] === '--out') flags.out = argv[++i]
   else actions.push(argv[i])

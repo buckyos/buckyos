@@ -1,24 +1,23 @@
-/* The App's state: the user's Agents, the Agent and thing being looked at, the screen of that group, and the
- * requests the page raised outside itself. One screen channel at a time, for the current group; while there is
- * none (reflow mode, browser unavailable) the group's state comes from `browser.status`. */
+/* The App's state: the user's Agents, the Agent being looked at, the screen of its browser, its browser
+ * conversation, and the requests the page raised outside itself. One screen channel at a time; while there is none
+ * (reflow mode, browser unavailable) the browser's state comes from `browser.status`. */
 
 import type { LocalFile, SelectedContent, ZoneContent } from 'buckyos/content'
 import { getMessageHubStore, type MessageHubStore } from '../../messagehub/store'
-import type { MessageHubContext } from '../../messagehub/types'
+import type { MessageHubContext, Session } from '../../messagehub/types'
 import { getBrowserBackend, type BrowserAgent, type BrowserBackend } from '../api/backend'
 import { ScreenChannel, type ChannelFailure, type ChannelStatus } from '../api/channel'
 import { browserErrorCode, DEFAULT_GROUP } from '../api/types'
 import type { BrowserGroup, BrowserStatus, RequestResult, ScreenFocus, ScreenFrame, ScreenInput, ScreenRequest, ScreenState, ScreenUpstream } from '../api/types'
-import { subscribeSources } from '../../../components/conversation/agentSessions'
-import { subscribeDefaultBinding } from '../conversation/session'
-import { agentBrowserExtensions, type ThingContext } from '../extensions'
+import { subscribeBrowserSession } from '../conversation/session'
+import { agentBrowserExtensions, type ConversationContext } from '../extensions'
 import type { AgentBrowserLaunch, BrowserMode } from '../launch'
+import { rememberedQuality, rememberQuality, type QualityChoice, type TierName } from '../screen/quality'
 import { viewportFor, type Size } from '../screen/viewport'
 import { toNavigableUrl } from '../shell/address'
-import { buildThings, groupIdOfSession, type Thing } from './things'
 
 export type Phase = 'loading' | 'error' | 'empty' | 'pick' | 'agent'
-export type PendingAction = 'take_over' | 'hand_back' | 'hand_to_agent' | 'clear_profile' | 'create_thing'
+export type PendingAction = 'take_over' | 'hand_back' | 'hand_to_agent' | 'clear_profile'
 export interface Notice { id: number; kind: 'agent_in_control' | 'offline' | 'failed' | 'profile_cleared'; code?: string }
 
 export interface AgentBrowserSnapshot {
@@ -29,14 +28,17 @@ export interface AgentBrowserSnapshot {
   browser: BrowserStatus | null
   /** The Agent's service did not answer `browser.status`. */
   browserError: boolean
-  things: Thing[]
-  /** MessageHub for the things' conversations: `unavailable` when it could not be reached (the default thing alone stays usable). */
+  /** MessageHub for the browser conversation: `unavailable` when it could not be reached (the browser stays usable). */
   conversations: 'loading' | 'ready' | 'unavailable'
-  /** The conversation of the current thing is pulled up over the page (original page and reflow modes). */
+  /** The browser conversation as MessageHub has it: the bound one (`default_session_id`), or the one found for it since. */
+  session: Session | null
+  /** The browser conversation is pulled up over the page (original page and reflow modes). */
   chatOpen: boolean
-  groupId: string
   mode: BrowserMode
   desktopSite: boolean
+  /** How clear the screen's frames are: the user's choice, and the tier the screen asks for now (null without one). */
+  screenQuality: QualityChoice
+  screenTier: TierName | null
   screenStatus: ChannelStatus | 'idle'
   screenFailure: ChannelFailure | null
   screenAttempts: number
@@ -72,16 +74,13 @@ function remember(key: string, value: string | null) {
 }
 
 export const browserUsable = (snapshot: AgentBrowserSnapshot): boolean => !!snapshot.browser && snapshot.browser.enabled && snapshot.browser.available
-/** Whether the user's input reaches the page: not while the Agent is operating the group. */
+/** Whether the user's input reaches the page: not while the Agent is operating the browser. */
 export const canOperate = (snapshot: AgentBrowserSnapshot): boolean => snapshot.group?.controller !== 'agent'
-export function currentThing(snapshot: Pick<AgentBrowserSnapshot, 'things' | 'groupId'>): Thing {
-  return snapshot.things.find((thing) => thing.groupId === snapshot.groupId) ?? { groupId: snapshot.groupId, session: null, title: snapshot.groupId === DEFAULT_GROUP ? '' : snapshot.groupId, lastActiveAt: 0 }
-}
 
 export class AgentBrowserStore {
   private snapshot: AgentBrowserSnapshot = {
-    phase: 'loading', agents: [], agent: null, browser: null, browserError: false, things: [], conversations: 'loading', chatOpen: false, groupId: DEFAULT_GROUP, mode: 'page',
-    desktopSite: remembered(DESKTOP_SITE_KEY) === '1', screenStatus: 'idle', screenFailure: null, screenAttempts: 0, state: null,
+    phase: 'loading', agents: [], agent: null, browser: null, browserError: false, conversations: 'loading', session: null, chatOpen: false, mode: 'page',
+    desktopSite: remembered(DESKTOP_SITE_KEY) === '1', screenQuality: rememberedQuality(), screenTier: null, screenStatus: 'idle', screenFailure: null, screenAttempts: 0, state: null,
     group: null, pageFocus: null, restartFailed: false, requests: [], notice: null, pending: null,
   }
   private readonly listeners = new Set<() => void>()
@@ -91,8 +90,8 @@ export class AgentBrowserStore {
   private hub: MessageHubStore | null = null
   private hubContext: MessageHubContext | null = null
   private stopHub: (() => void) | null = null
-  /** The groups `browser.status` last listed: a session that has one is a thing, whoever started it. */
-  private browserGroups: ReadonlySet<string> = new Set()
+  /** The browser conversation found (or started) since the Agent was entered. */
+  private sessionId: string | null = null
   private screenSize: Size | null = null
   private stageSize: Size | null = null
   private pollTimer = 0
@@ -132,7 +131,7 @@ export class AgentBrowserStore {
       const wanted = launch?.agent ?? remembered(AGENT_KEY)
       const agent = agents.find((item) => item.agentId === wanted || item.agentDid === wanted) ?? (agents.length === 1 ? agents[0] : null)
       this.update({ agents, ...(launch?.mode ? { mode: launch.mode } : {}) })
-      if (agent) this.enter(agent, launch?.group ? groupIdOfSession({ id: launch.group }, agent.agentDid, null) : DEFAULT_GROUP)
+      if (agent) this.enter(agent)
       else this.update({ phase: 'pick' })
     } catch {
       if (run === this.run) this.update({ phase: 'error' })
@@ -145,7 +144,7 @@ export class AgentBrowserStore {
 
   selectAgent(agentId: string) {
     const agent = this.snapshot.agents.find((item) => item.agentId === agentId)
-    if (agent) this.enter(agent, DEFAULT_GROUP)
+    if (agent) this.enter(agent)
   }
 
   /** Back to the list of Agents (only offered when there are several). */
@@ -163,19 +162,19 @@ export class AgentBrowserStore {
     this.stopHub?.()
     this.stopHub = null
     this.hubContext = null
-    this.browserGroups = new Set()
-    this.update({ browser: null, browserError: false, things: [], conversations: 'loading', chatOpen: false, state: null, group: null, pageFocus: null, restartFailed: false, requests: [], pending: null })
+    this.sessionId = null
+    this.update({ browser: null, browserError: false, conversations: 'loading', session: null, chatOpen: false, state: null, group: null, pageFocus: null, restartFailed: false, requests: [], pending: null })
   }
 
-  private enter(agent: BrowserAgent, groupId: string) {
+  private enter(agent: BrowserAgent) {
     this.leave()
     remember(AGENT_KEY, agent.agentId)
-    this.update({ phase: 'agent', agent, groupId, things: buildThings([], agent.agentDid, null, () => '', () => true) })
+    this.update({ phase: 'agent', agent })
     void this.refreshStatus()
     void this.enterHub()
   }
 
-  // ── Things ──
+  // ── The browser conversation ──
 
   private async enterHub() {
     const epoch = this.epoch
@@ -190,15 +189,18 @@ export class AgentBrowserStore {
       if (hub.ownerStatus(context).phase !== 'ready') throw Error('conversations unavailable')
       this.hub = hub
       this.hubContext = context
-      const unsubscribe = hub.subscribe(() => this.refreshThings())
+      const unsubscribe = hub.subscribe(() => this.refreshSession())
       const stopSync = hub.startSync(context, null)
-      const stopMarks = subscribeSources(() => this.refreshThings())
-      const stopBinding = subscribeDefaultBinding((agentId) => { if (agentId === this.snapshot.agent?.agentId) void this.refreshStatus() })
-      this.stopHub = () => { unsubscribe(); stopSync(); stopMarks(); stopBinding() }
+      const stopFound = subscribeBrowserSession((agentId, sessionId) => {
+        if (agentId !== this.snapshot.agent?.agentId) return
+        this.sessionId = sessionId
+        this.refreshSession()
+      })
+      this.stopHub = () => { unsubscribe(); stopSync(); stopFound() }
       this.update({ conversations: 'ready' })
-      this.refreshThings()
+      this.refreshSession()
     } catch {
-      // The default thing alone stays usable.
+      // The browser alone stays usable.
       if (!this.disposed && epoch === this.epoch) this.update({ conversations: 'unavailable' })
     }
   }
@@ -207,74 +209,32 @@ export class AgentBrowserStore {
     if (this.snapshot.conversations === 'unavailable') void this.enterHub()
   }
 
-  thingContext(): ThingContext | null {
+  conversationContext(): ConversationContext | null {
     const { agent } = this.snapshot
     return agent && this.hub && this.hubContext ? { agent, hub: this.hub, context: this.hubContext } : null
   }
 
-  private refreshThings() {
-    const context = this.thingContext()
+  private refreshSession() {
+    const context = this.conversationContext()
     if (!context) return
-    const { hub, agent } = context
-    const listed = agentBrowserExtensions.listsThing
-    const { groupId, browser } = this.snapshot
-    const things = buildThings(
-      hub.sessions(context.context, agent.agentDid, 'active'), agent.agentDid, browser?.default_session_id ?? null,
-      (session) => hub.title(context.context, session),
-      (session) => session.id === groupId || this.browserGroups.has(session.id) || (listed?.(session, context) ?? true),
-    )
-    const before = this.snapshot.things
-    const same = before.length === things.length && things.every((thing, index) => {
-      const old = before[index]
-      return old.groupId === thing.groupId && old.title === thing.title && old.session?.id === thing.session?.id && old.lastActiveAt === thing.lastActiveAt && old.session?.unreadCount === thing.session?.unreadCount
-    })
-    if (!same) this.update({ things })
-  }
-
-  selectThing(groupId: string) {
-    if (groupId === this.snapshot.groupId) return
-    this.closeChannel()
-    this.update({ groupId, state: null, group: null, requests: [] })
-    this.refreshThings()
-    this.syncChannel()
-    void this.refreshStatus()
-  }
-
-  canCreateThing(): boolean {
-    return !!agentBrowserExtensions.createThing && !!this.thingContext()
-  }
-
-  async createThing() {
-    const context = this.thingContext()
-    const create = agentBrowserExtensions.createThing
-    if (!context || !create || this.snapshot.pending) return
-    this.update({ pending: 'create_thing' })
-    try {
-      const session = await create(context)
-      this.refreshThings()
-      if (session) this.selectThing(groupIdOfSession(session, context.agent.agentDid, this.snapshot.browser?.default_session_id ?? null))
-    } catch (error) {
-      this.notify('failed', browserErrorCode(error) ?? undefined)
-    } finally {
-      this.update({ pending: null })
-    }
+    const id = this.sessionId ?? this.snapshot.browser?.default_session_id ?? null
+    const session = id ? context.hub.sessions(context.context, context.agent.agentDid, 'active').find((item) => item.id === id) ?? null : null
+    const before = this.snapshot.session
+    if (before?.id !== session?.id || before?.unreadCount !== session?.unreadCount || before?.lastActiveAt !== session?.lastActiveAt) this.update({ session })
   }
 
   // ── Browser status ──
 
   async refreshStatus() {
-    const { agent, groupId } = this.snapshot
+    const { agent } = this.snapshot
     const backend = this.backend
     if (!agent || !backend) return
     const epoch = this.epoch
     try {
-      const browser = await backend.call<BrowserStatus>(agent, 'browser.status', { group_id: groupId })
-      if (epoch !== this.epoch || groupId !== this.snapshot.groupId) return
-      // The session the default group is bound to is the default thing, not one of its own.
-      if (groupId !== DEFAULT_GROUP && groupId === browser.default_session_id) { this.selectThing(DEFAULT_GROUP); return }
-      const group = browser.groups.find((item) => item.group_id === groupId) ?? null
-      this.update({ browser, browserError: false, ...(this.channel?.status === 'open' ? {} : { group }) })
-      this.refreshThings()
+      const browser = await backend.call<BrowserStatus>(agent, 'browser.status', {})
+      if (epoch !== this.epoch) return
+      this.update({ browser, browserError: false, ...(this.channel?.status === 'open' ? {} : { group: browser.groups[0] ?? null }) })
+      this.refreshSession()
     } catch {
       if (epoch !== this.epoch) return
       this.update({ browserError: true })
@@ -290,7 +250,7 @@ export class AgentBrowserStore {
     this.syncChannel()
   }
 
-  /** Pulls the current thing's conversation up over the page, or puts it away; in conversation mode it is the stage already. */
+  /** Pulls the browser conversation up over the page, or puts it away; in conversation mode it is the stage already. */
   setChatOpen(chatOpen: boolean) {
     if (chatOpen !== this.snapshot.chatOpen && this.snapshot.mode !== 'chat') this.update({ chatOpen })
   }
@@ -300,6 +260,13 @@ export class AgentBrowserStore {
     remember(DESKTOP_SITE_KEY, desktopSite ? '1' : null)
     this.update({ desktopSite })
     this.syncChannel()
+  }
+
+  setScreenQuality(screenQuality: QualityChoice) {
+    if (screenQuality === this.snapshot.screenQuality) return
+    rememberQuality(screenQuality)
+    this.update({ screenQuality })
+    this.channel?.setQuality(screenQuality)
   }
 
   /** The size of the screen view (null when it is not shown) and of the area it would take. */
@@ -325,12 +292,12 @@ export class AgentBrowserStore {
     if (!this.channel) return
     this.channel.close()
     this.channel = null
-    this.update({ screenStatus: 'idle', screenFailure: null, screenAttempts: 0, pageFocus: null, restartFailed: false })
+    this.update({ screenStatus: 'idle', screenFailure: null, screenAttempts: 0, screenTier: null, pageFocus: null, restartFailed: false })
   }
 
   private syncChannel() {
     if (this.disposed) return
-    const { phase, agent, groupId, mode, desktopSite } = this.snapshot
+    const { phase, agent, mode, desktopSite } = this.snapshot
     const backend = this.backend
     const size = this.screenSize ?? this.stageSize
     const wanted = phase === 'agent' && !!agent && !!backend && browserUsable(this.snapshot) && mode !== 'reflow' && !!size && size.width > 0 && size.height > 0
@@ -345,8 +312,10 @@ export class AgentBrowserStore {
       return
     }
     const channel = new ScreenChannel({
-      groupId,
+      groupId: DEFAULT_GROUP,
       viewport,
+      quality: this.snapshot.screenQuality,
+      onTier: (tier) => { if (this.channel === channel) this.update({ screenTier: tier.name }) },
       prepare: async () => {
         try {
           await backend.call<BrowserStatus>(agent, 'browser.ensure', {})
@@ -463,19 +432,6 @@ export class AgentBrowserStore {
     return performance.now() - this.pressedAt <= ms
   }
 
-  /** Every group of the Agent's browser that has tabs, for the list of things. */
-  async groups(): Promise<BrowserGroup[]> {
-    const { agent } = this.snapshot
-    if (!agent || !this.backend) return []
-    const epoch = this.epoch
-    const { groups } = await this.backend.call<BrowserStatus>(agent, 'browser.status', {})
-    if (epoch === this.epoch) {
-      this.browserGroups = new Set(groups.map((group) => group.group_id))
-      this.refreshThings()
-    }
-    return groups
-  }
-
   /** Whether an address was sent: a blank tab is opened for it when the group has none. */
   navigate(text: string): boolean {
     const url = toNavigableUrl(text)
@@ -550,13 +506,13 @@ export class AgentBrowserStore {
   // ── Handover ──
 
   private async groupAction(method: 'take_over' | 'hand_back' | 'hand_to_agent'): Promise<BrowserGroup | null> {
-    const { agent, groupId, pending } = this.snapshot
+    const { agent, pending } = this.snapshot
     const backend = this.backend
     if (!agent || !backend || pending) return null
     this.update({ pending: method })
     try {
-      const group = await backend.call<BrowserGroup>(agent, `browser.${method}`, { group_id: groupId })
-      if (groupId === this.snapshot.groupId) this.update({ group })
+      const group = await backend.call<BrowserGroup>(agent, `browser.${method}`, { group_id: DEFAULT_GROUP })
+      if (agent === this.snapshot.agent) this.update({ group })
       return group
     } catch (error) {
       this.notify('failed', browserErrorCode(error) ?? undefined)
@@ -581,13 +537,12 @@ export class AgentBrowserStore {
   }
 
   private async handover(kind: 'hand_back' | 'hand_to_agent', note: string) {
-    const thing = currentThing(this.snapshot)
     const { agent, state } = this.snapshot
     const group = await this.groupAction(kind)
     if (!group || !agent) return
     const tab = group.tabs.find((item) => item.active)
     try {
-      await agentBrowserExtensions.afterHandover?.({ kind, agent, thing, group, url: tab?.url ?? state?.url ?? '', title: tab?.title ?? state?.title ?? '', note }, this.thingContext())
+      await agentBrowserExtensions.afterHandover?.({ kind, agent, group, url: tab?.url ?? state?.url ?? '', title: tab?.title ?? state?.title ?? '', note }, this.conversationContext())
     } catch {
       this.notify('failed', 'message_not_sent')
     }

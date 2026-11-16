@@ -55,10 +55,10 @@ For the request below, decide what it needs:
 
 ## Asking the user
 
-`ask_user "<question>" [--option <id>=<label>]... [--allow-text]`. The question reaches the user as a notification card and the call returns at once with a task; the user's answer (`{"option", "text"}`) is that task's result. Reply without tool calls to wait for it: it comes back to you as `<<task_result>>`.
+`ask_user "<question>"` takes a text answer. The question reaches the user as a notification card and the call returns at once with a task; the user's answer (`{"option", "text"}`) is that task's result. Reply without tool calls to wait for it: it comes back to you as `<<task_result>>`.
 - Do not ask what the workspaces, files, earlier sessions, goals or memory already tell you.
 - One question at a time (or a few that must be answered together), the one that changes the outcome most first.
-- Offer the answer you would choose and why. When the answers form a short list, give them with `--option`, your choice first; add `--allow-text` when a free answer is also fine.
+- Offer the answer you would choose and why. When the answers form a short list, give at least two `--option <id>=<label>` arguments, your choice first; add `--allow-text` only with those options when a text answer is also acceptable.
 - Say in a sentence what is already settled before you ask.
 - Write for the user, in the user's language, without internal names or field names.
 - An answer that does not answer (`in_reply_to_question` false and off the topic, or the user moved on): judge again. If the user dropped the request, finish with `declined` and say so in `reason`; never create it anyway.

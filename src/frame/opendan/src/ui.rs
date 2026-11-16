@@ -40,6 +40,7 @@ use ndn_lib::{MsgObjKind, MsgObject};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::browser::BrowserModule;
 use crate::config::{AgentConfig, ON_MSG_CHAT, ON_MSG_GROUP};
 use crate::records::{self, AgentRecords};
 
@@ -394,6 +395,8 @@ pub struct UiModule {
     pub supervisor: Arc<Supervisor>,
     /// Where session directories are created.
     pub sessions_dir: PathBuf,
+    /// The agent's browser: its conversation's sessions get the browser's manual.
+    browser: Arc<BrowserModule>,
     status: Mutex<BTreeMap<String, InboxStatus>>,
     scan: Mutex<UiStatus>,
     /// Interruptions the conversation was already told about (session id →
@@ -440,6 +443,7 @@ impl UiModule {
         channels: Arc<dyn InputChannelFactory>,
         supervisor: Arc<Supervisor>,
         sessions_dir: PathBuf,
+        browser: Arc<BrowserModule>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config,
@@ -452,6 +456,7 @@ impl UiModule {
             channels,
             supervisor,
             sessions_dir,
+            browser,
             status: Mutex::new(BTreeMap::new()),
             scan: Mutex::new(UiStatus::default()),
             told: Mutex::new(BTreeMap::new()),
@@ -614,6 +619,27 @@ impl UiModule {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(json!({ "archived": sid, "finished": false }))
+    }
+
+    /// The conversation `to_session` became the browser conversation: a UI
+    /// session it has without the browser's manual is archived, so that its
+    /// next message opens one with it. Not while it is in a Turn or has
+    /// unfinished work: it gets the manual with its next session then.
+    pub async fn browser_bound(self: &Arc<Self>, to_session: &str) {
+        let owner = self.owner.to_string();
+        let Some(entry) = crate::browser::sessions::ui_session_of(self.agent.as_ref(), Some(&owner), to_session).await else { return };
+        let Ok(sd) = libopendan::SessionDir::open(&entry.location) else { return };
+        let has = sd.config().is_ok_and(|cfg| cfg.prompt.cmd_skills.iter().any(|n| n == crate::browser::sessions::CMD_SKILL));
+        if has || sd.state().map_or(true, |st| st.open_turn.is_some()) {
+            return;
+        }
+        let ui = self.clone();
+        tokio::spawn(async move {
+            match ui.rotate(&entry.session_id, &owner).await {
+                Ok(_) => log::info!("ui: session {} archived: its conversation became the browser conversation", entry.session_id),
+                Err(e) => log::info!("ui: session {} of the browser conversation kept: {e}", entry.session_id),
+            }
+        });
     }
 
     /// Resume what a restart interrupted in the conversation of `sid`: the
@@ -788,6 +814,10 @@ impl UiModule {
                 })
             }
         };
+        let to_session = spec.outbound.as_ref().and_then(|o| o.to_session.clone());
+        if to_session.is_some() && to_session == self.browser.default_session() {
+            libopendan::template::add_own_cmd_skills(&mut spec, &[crate::browser::sessions::CMD_SKILL]);
+        }
         let sd = create_session(
             &self.sessions_dir,
             spec,

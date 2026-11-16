@@ -21,12 +21,12 @@ const HANDOVER_REASONS = ['password', 'captcha', 'other'];
 const HELP = {
   '': `agent-browser: operate this Agent's persistent browser
 
-  agent-browser status [--json]                  the browser and this session's tab group: who has control, which tabs
-  agent-browser run <script.mjs> [--arg k=v]...  run a Playwright script on this session's tab
-  agent-browser open <url>                       open an address in this session's tab
+  agent-browser status [--json]                  the browser: who has control, which tabs
+  agent-browser run <script.mjs> [--arg k=v]...  run a Playwright script on the browser's current tab
+  agent-browser open <url>                       open an address in the browser's current tab
   agent-browser snapshot                         the current page as an accessibility tree (text)
   agent-browser screenshot <file.png>            the current viewport as a PNG file
-  agent-browser tabs                             this session's tabs
+  agent-browser tabs                             the browser's tabs
   agent-browser handover --reason password|captcha|other [--note <text>]
                                                  ask the user to take over
   agent-browser done [--note <text>]             report the job finished; control returns to the user
@@ -34,7 +34,7 @@ const HELP = {
   agent-browser env                              environment for a project with its own Playwright version
   agent-browser version                          versions of the browser and of playwright-core
 
-run, open, snapshot, screenshot and tabs take the lease of this session's tab group, do their work and release it;
+run, open, snapshot, screenshot and tabs take a lease on the browser, do their work and release it;
 those that touch a page connect to the browser for that time only. While the user has control they fail with exit
 code 4: wait until the user hands the browser back, then read the page again.
 
@@ -43,8 +43,8 @@ Exit codes: 0 ok, 1 failed, 2 usage, 3 browser unavailable, 4 the user has contr
 
   status: `agent-browser status [--json]
 
-Whether the browser can be used, and for the tab group of this session: who has control (user or agent), the Agent's
-state, a pending handover, and the tabs (* marks the group's current tab). Takes no lease and works while the user has
+Whether the browser can be used, who has control (user or agent), the Agent's state, a pending handover, and the
+tabs (* marks the current tab). The Agent has one browser with one set of tabs, the user's and every session's. Takes no lease and works while the user has
 control.
 --json prints the Status structure of the protocol instead. Exit code 3 when the browser is unavailable.`,
 
@@ -54,37 +54,38 @@ Calls the script's default export once and prints what it returns as JSON:
 
   export default async ({ page, pages, context, args }) => { ...; return result; };
 
-  page     the group's current tab (a new one when the group has none)
-  pages    all tabs of the group, page among them
-  context  the browser context; context.newPage() opens a tab in the group. context.pages() also has the tabs
-           of other groups: leave those alone
+  page     the browser's current tab (a new one when there is none)
+  pages    all tabs of the browser, page among them
+  context  the browser context; context.newPage() opens a tab. context.pages() can also have a background tab
+           of a reflow refresh: leave that alone, use pages
   args     the --arg values, as strings
 
 The lease is renewed while the script runs. If the user takes over, the script is stopped (exit code 5).
 Actions time out after ${ACTION_TIMEOUT_MS / 1000} seconds unless the script sets its own timeout.
 The viewport follows the user's device: do not change it.
-page.screenshot() needs the tab in front of its window: call page.bringToFront() first.
+page.screenshot() needs the tab in front of its window: call page.bringToFront() first. Pass scale: 'css': the
+screen may be painting the tab at twice its pixels for a viewer, and a screenshot would follow.
 Dialogs (alert, confirm, prompt): handle them with page.on('dialog', ...). A dialog the script does not handle is
-dismissed (a beforeunload dialog is accepted) and reported on stderr. Dialogs in other groups' tabs are left open.`,
+dismissed (a beforeunload dialog is accepted) and reported on stderr. Dialogs in a background tab of a reflow refresh are left open.`,
 
   open: `agent-browser open <url>
 
-Navigates the group's current tab to the address (a new tab when the group has none) and prints the resulting
+Navigates the browser's current tab to the address (a new tab when there is none) and prints the resulting
 url and title. An address without a scheme gets https://, or http:// for localhost and IP addresses.
 A page still loading after ${ACTION_TIMEOUT_MS / 1000} seconds is reported on stderr and is not an error.`,
 
   snapshot: `agent-browser snapshot
 
-Prints the url and title of the group's current tab, an empty line, then the page's accessibility tree
+Prints the url and title of the browser's current tab, an empty line, then the page's accessibility tree
 (Playwright's ARIA snapshot of <body>).`,
 
   screenshot: `agent-browser screenshot <file.png>
 
-Saves the current viewport of the group's current tab as a PNG file and prints its path.`,
+Saves the current viewport of the browser's current tab as a PNG file (in CSS pixels) and prints its path.`,
 
   tabs: `agent-browser tabs
 
-Lists the tabs of this session's group: number, url, title; * marks the current tab.`,
+Lists the browser's tabs: number, url, title; * marks the current tab.`,
 
   handover: `agent-browser handover --reason password|captcha|other [--note <text>]
 
@@ -235,7 +236,7 @@ async function connect(cdpUrl, timeout) {
   }
 }
 
-// The connection sees every tab of the browser, the other groups' and the one the user is watching among them. This
+// The connection sees every tab of the browser, a reflow refresh's background tab among them, and the user may be watching one. This
 // keeps what it does to the tabs that are ours (`tabIds`, those opened here, and their popups):
 // - Playwright closes within milliseconds every dialog nobody listens for. One listener on the context keeps them all
 //   open; ours are then closed here unless the script handles them, the others stay for the user.
@@ -443,7 +444,7 @@ async function screenshot(argv) {
   await withPage(async ({ page }) => {
     // Only the tab in front of its window is painted.
     await page.bringToFront();
-    await page.screenshot({ path: file, type: 'png' });
+    await page.screenshot({ path: file, type: 'png', scale: 'css' });
     print(`saved: ${file}`);
   });
 }

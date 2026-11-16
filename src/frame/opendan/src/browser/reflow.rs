@@ -1163,7 +1163,7 @@ printf '{"headline":"%s","click":"%s","script":"%s"}' "$url" "$click" "$(cat "$p
             let others = b.fake.open("https://other.example/", None);
             until("the other tab is seen", || b.module.tab(&others).is_some()).await;
             assert_eq!(b.module.tab(&others).unwrap().group_id, "default");
-            let status = b.module.status(None, None).await;
+            let status = b.module.status().await;
             assert_eq!(status["groups"].as_array().unwrap().iter().map(|g| g["group_id"].as_str().unwrap()).collect::<Vec<_>>(), vec!["default"]);
 
             b.fake.close(&tab);

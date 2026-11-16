@@ -5,7 +5,7 @@
 ## What the user gets
 
 - The reflow library belongs to the user, not to you: it stays when an Agent is removed, and any Agent of the user can add to it. Per site it holds a package, the results made with it, fallback pages and the user's preference for the site: in the package's `manifest.json`, or in `preference.json` while the site has no package (the app writes it). `<site>` is the host name with dots as dashes; `reflow match <url>` prints it together with the page id and the preference.
-- For an address the app shows the package's page when the library has a matching package and a result for the page, otherwise the fallback page when there is one; `reflow match <url>` says which under `view`. With a package and no result yet the app starts a refresh itself; with nothing to show, or when that refresh fails, it asks you in the conversation.
+- For an address the app shows the package's page when the library has a matching package and a result for the page, otherwise the fallback page when there is one; `reflow match <url>` says which under `view`. With a package and no result yet the app starts a refresh itself; with nothing to show, or when that refresh fails, it asks you in the browser conversation.
 - The app shows it in a frame from `https://reflow.<zone>/`, to the signed-in user only, with the time it was made. You cannot open that address yourself: it takes the user's session, not an Agent's. Check your work with `reflow match` and the preview below.
 - Nothing is live: a page is made ahead and read later, also when your browser is not running.
 

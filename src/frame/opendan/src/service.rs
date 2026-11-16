@@ -745,9 +745,17 @@ impl RPCHandler for StateService {
             log::info!("service: {} by {who}", req.method);
         }
         if req.method.starts_with("browser.") {
+            let bound = self.browser.default_session();
             // The browser's errors carry a `code` beside the facade's `kind`.
             return match crate::browser::rpc::call(&self.browser, &who, req.token.as_deref(), &req.method, &req.params).await {
-                Ok(v) => Ok(RPCResponse::new(RPCResult::Success(v), req.seq)),
+                Ok(v) => {
+                    // A conversation that became the browser conversation takes the browser's manual.
+                    let now = self.browser.default_session().filter(|now| req.method == "browser.bind_default" && Some(now) != bound.as_ref());
+                    if let (Some(ui), Some(now)) = (&self.ui, now) {
+                        ui.browser_bound(&now).await;
+                    }
+                    Ok(RPCResponse::new(RPCResult::Success(v), req.seq))
+                }
                 Err(e) => Err(RPCErrors::ReasonError(e.to_wire())),
             };
         }

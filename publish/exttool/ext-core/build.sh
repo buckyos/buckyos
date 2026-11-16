@@ -184,6 +184,7 @@ unix_online_launcher() {
 }
 
 # A prefix's data directories are compiled in at their build location, so a relocated tool is told where they are.
+# fonts.conf includes conf.d by a relative name, which fontconfig looks up in FONTCONFIG_PATH.
 unix_env_files() {
   local store="$1/store/ext-core" ghostscript
   mkdir -p "$store/env"
@@ -191,6 +192,7 @@ unix_env_files() {
 c="$s/conda"
 export MAGICK_CONFIGURE_PATH="$c/etc/ImageMagick-7:$(echo "$c"/share/ImageMagick-7):$(echo "$c"/lib/ImageMagick-*/config-Q16HDRI)"
 export FONTCONFIG_FILE="$c/etc/fonts/fonts.conf"
+export FONTCONFIG_PATH="$c/etc/fonts"
 SH
   cat > "$store/env/tesseract.sh" <<'SH'
 export TESSDATA_PREFIX="$s/conda/share/tessdata"
@@ -207,13 +209,15 @@ export CURL_CA_BUNDLE="$s/conda/ssl/cacert.pem"
 SH
   cat > "$store/env/fontconfig.sh" <<'SH'
 export FONTCONFIG_FILE="$s/conda/etc/fonts/fonts.conf"
+export FONTCONFIG_PATH="$s/conda/etc/fonts"
 SH
   # LibreOffice's own libraries first (its copies of curl, ICU and libxml2 are not the prefix's), then the prefix for what
-  # the official build takes from the system. Fonts: the prefix's and LibreOffice's share/fonts, not the system's font
-  # directories, so that a conversion looks the same on every machine. Its text handling needs a UTF-8 locale; C.UTF-8 is in every glibc.
+  # the official build takes from the system. Fonts: the prefix configuration's, which are the prefix's, LibreOffice's
+  # share/fonts and the user's and the system's (XDG) font directories. Its text handling needs a UTF-8 locale; C.UTF-8 is in every glibc.
   cat > "$store/env/soffice.sh" <<'SH'
 export LD_LIBRARY_PATH="$s/libreoffice/program:$s/conda/lib"
 export FONTCONFIG_FILE="$s/conda/etc/fonts/fonts.conf"
+export FONTCONFIG_PATH="$s/conda/etc/fonts"
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8|*[Uu][Tt][Ff]8) ;; *) export LC_ALL=C.UTF-8 ;; esac
 SH
 }
@@ -718,8 +722,8 @@ install_playwright() {
 unix_launchers() {
   local p="$1" platform="$2"
   unix_env_files "$p"
-  for c in ffprobe xz tree unzip; do unix_launcher "$p" "$c" "\"\$s/conda/bin/$c\""; done
-  unix_launcher "$p" ffmpeg "\"\$s/conda/bin/ffmpeg\"" fontconfig.sh
+  for c in xz tree unzip; do unix_launcher "$p" "$c" "\"\$s/conda/bin/$c\""; done
+  for c in ffmpeg ffprobe; do unix_launcher "$p" "$c" "\"\$s/conda/bin/$c\"" fontconfig.sh; done
   for c in magick convert identify compare; do unix_launcher "$p" "$c" "\"\$s/conda/bin/magick\"$( [ "$c" = magick ] || echo " $c")" magick.sh; done
   for c in pdftotext pdftoppm pdfinfo; do unix_launcher "$p" "$c" "\"\$s/conda/bin/$c\"" fontconfig.sh; done
   unix_launcher "$p" tesseract "\"\$s/conda/bin/tesseract\"" tesseract.sh
@@ -745,10 +749,10 @@ unix_launchers() {
 
 windows_launchers() {
   local p="$1" conda_env='set "C=%S%\\conda"\r\nset "PATH=%C%\\Library\\bin;%C%;%C%\\Library\\mingw-w64\\bin;%PATH%"\r\n'
-  local font_env="$conda_env"'set "FONTCONFIG_FILE=%C%\\Library\\etc\\fonts\\fonts.conf"\r\n'
-  for c in ffprobe xz curl; do windows_launcher "$p" "$c" "\"%C%\\Library\\bin\\$c.exe\"" "$conda_env"; done
-  windows_launcher "$p" ffmpeg "\"%C%\\Library\\bin\\ffmpeg.exe\"" "$font_env"
-  local magick_env="$conda_env"'set "MAGICK_CONFIGURE_PATH=%C%\\Library\\bin;%C%\\Library\\etc\\ImageMagick-7;%C%\\Library\\share\\ImageMagick-7"\r\nset "FONTCONFIG_FILE=%C%\\Library\\etc\\fonts\\fonts.conf"\r\n'
+  local font_env="$conda_env"'set "FONTCONFIG_FILE=%C%\\Library\\etc\\fonts\\fonts.conf"\r\nset "FONTCONFIG_PATH=%C%\\Library\\etc\\fonts"\r\n'
+  for c in xz curl; do windows_launcher "$p" "$c" "\"%C%\\Library\\bin\\$c.exe\"" "$conda_env"; done
+  for c in ffmpeg ffprobe; do windows_launcher "$p" "$c" "\"%C%\\Library\\bin\\$c.exe\"" "$font_env"; done
+  local magick_env="$font_env"'set "MAGICK_CONFIGURE_PATH=%C%\\Library\\bin;%C%\\Library\\etc\\ImageMagick-7;%C%\\Library\\share\\ImageMagick-7"\r\n'
   windows_launcher "$p" magick "\"%C%\\Library\\bin\\magick.exe\"" "$magick_env"
   for c in convert identify compare; do windows_launcher "$p" "$c" "\"%C%\\Library\\bin\\magick.exe\" $c" "$magick_env"; done
   for c in pdftotext pdftoppm pdfinfo; do windows_launcher "$p" "$c" "\"%C%\\Library\\bin\\$c.exe\"" "$font_env"; done

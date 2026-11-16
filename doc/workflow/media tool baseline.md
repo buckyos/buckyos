@@ -24,7 +24,7 @@
 | `ffmpeg` | ≥ 6.0，带 `libmp3lame`（音轨输出）、PNG 编码 | `media.extract_frames`、`media.extract_audio`；`media.fit_image` 的可选依赖（`image` crate 解不了的格式先转 PNG） | 均匀抽帧、提取音轨、非常见图片格式解码 | `ffmpeg -hide_banner -version` |
 | `soffice`（LibreOffice headless：core、writer、impress、calc、draw；`ext-core` 带的是 26.8） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
 | `page-render`（`ext-core` 的命令：Node 脚本，用 `playwright-core` 起一个一次性的无头 Chromium；浏览器本身不在包里，是包的在线项，由节点下载，见 §3.2；参数和输出见 [Agent 浏览器 TODO §5.7](../../notepads/agent-runtime-browser-todo.md)） | — | `media.page_to_pdf`、`media.page_snapshot` | HTML 页面（一份 HTML，或带 `index.html` 的 zip）输出成 PDF 或 PNG；Browser lane 并发 1，隔离运行（§3.1） | `page-render --version` 退出码为 0 时取第一行（`page-render <版本> chromium <版本> playwright-core <版本>`），整行就是它的版本；这一步不启动浏览器，浏览器没下载时照样取得到 |
-| 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体，Linux 上不读系统字体目录） | — | `media.to_pdf`（经 soffice）、`media.page_to_pdf`、`media.page_snapshot`（经 Chromium；一个字体都没有时渲染文字会崩溃） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf`、`page_to_pdf`、`page_snapshot` 的指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
+| 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体；1.3.1 起包里所有用 fontconfig 的工具都读得到这些字体和简体中文优先的回退规则，另外也读机器上的系统字体目录和用户字体目录（`/usr/share/fonts`、`~/.local/share/fonts`），见 [paios容器需求.md](../app_service/paios容器需求.md) 表 B） | — | `media.to_pdf`（经 soffice）、`media.page_to_pdf`、`media.page_snapshot`（经 Chromium；一个字体都没有时渲染文字会崩溃） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf`、`page_to_pdf`、`page_snapshot` 的指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
 | locale：`C.UTF-8` 可用（glibc 自带；`ext-core` 的 soffice launcher 在环境没有 UTF-8 locale 时自己设 `LC_ALL=C.UTF-8`） | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
 | `tesseract`，带常用语言数据（`ext-core` 保留的 28 种加 `osd`，见 [paios容器需求.md](../app_service/paios容器需求.md) §6.4） | ≥ 5.0 | `media.ocr_pages`（软依赖：缺它时各页保留文字层，步骤输出 `status: tools_missing`，结果不进缓存） | 文字层缺失或乱码的页重新识别；按窗口抽样选语言（试各文字系统的代表模型比置信度，都不像时问 `osd`）；竖排中日韩用 `_vert` 模型 | `tesseract --version` 取第二个 token；`tesseract --list-langs` 的语言表进 `ocr_pages` 指纹（`env/ocr_langs`），增减语言包使旧结果失效 |
 
@@ -34,7 +34,7 @@
 
 ## 2. 版本如何进入执行指纹
 
-- 服务启动时 `probe_default()` 对上表每个命令定位并取版本，得到 `ToolEnvironment { tools, missing, searched, revision }`；`revision` 是全部工具 (path, version) 的 hash，`get_capabilities` RPC 与 `media.capabilities` 步骤都返回它。
+- 服务启动时 `probe_default()` 对上表每个命令定位并取版本，之后每隔 30 秒在后台重新探测并替换环境快照；安装、升级或删除工具后不需要重启 workflow，下一次探测完成后生效。快照为 `ToolEnvironment { tools, missing, searched, revision }`；`revision` 是工具 (path, version)、字体集和 OCR 语言的 hash，`get_capabilities` RPC 与 `media.capabilities` 步骤都返回它。已经失败的 run 不会自动重试，确认工具就绪后重新发起。
 - 每个函数只把**自己依赖**的工具放进指纹：`fingerprint = { "cmd/<tool>": <version> | "missing" }`；`step_cache_key = hash(thunk_obj_id, fingerprint)`。因此升级 poppler 使 PDF 步骤不命中旧缓存，但不影响 `fit_image`（验收 6）。
 - `create_run(ensure=true)` 的合并键包含 `environment_revision`；执行前 runner 再核对指纹，不一致返回 `environment_changed`（retryable），不以旧 key 缓存新环境结果。
 - `to_pdf` 的 `is_pure: true` 表示结果可复用，不表示字节相同：LibreOffice 每次写入不同的 `CreationDate`、`/ID`、`DocChecksum`。第一次的结果写入缓存，之后 `pdf_content_id` 稳定，后续页面步骤全部命中（WF-DV-015）。它的指纹是 soffice、pdfinfo 版本加字体集摘要，字体变化使旧结果失效。

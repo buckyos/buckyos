@@ -1,7 +1,8 @@
-//! Groups of tabs and who operates each of them. One group is one thing the
-//! user and the agent work on: the tabs of one MessageHub conversation. All
-//! of it is memory; the tab lists (and whether the user holds a group) are
-//! also kept in `<AgentRoot>/state/browser/groups.json`, from which the tabs
+//! The tabs of the agent's browser and who operates them. The agent has one
+//! group, [`DEFAULT_GROUP`]: every session of the agent works in it and the
+//! user sees it; a group whose id starts with `_` is one the module keeps for
+//! itself. All of it is memory; the tabs (and whether the user holds them)
+//! are also kept in `<AgentRoot>/state/browser/groups.json`, from which they
 //! are opened again after the browser was stopped.
 
 use std::collections::{BTreeMap, HashMap};
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::rpc::BrowserError;
 
-/// The group of the owner's default conversation with the agent.
+/// The agent's one group.
 pub const DEFAULT_GROUP: &str = "default";
 pub const LEASE_TTL_MS: u64 = 60_000;
 const SCHEMA: &str = "opendan.browser.groups/1";
@@ -117,7 +118,7 @@ struct SavedGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SavedFile {
     schema: String,
-    /// The MessageHub conversation the default group is bound to.
+    /// The agent's browser conversation (`browser.bind_default`).
     #[serde(default)]
     default_session_id: Option<String>,
     #[serde(default)]
@@ -167,7 +168,7 @@ impl GroupState {
 pub struct Groups {
     groups: BTreeMap<String, GroupState>,
     tabs: HashMap<String, TabState>,
-    /// The conversation whose sessions work in the default group (`browser.bind_default`).
+    /// The agent's browser conversation (`browser.bind_default`).
     default_session_id: Option<String>,
     max_tabs: usize,
     lease_ttl_ms: u64,
@@ -199,49 +200,20 @@ impl Groups {
         self.groups.entry(group_id.to_string()).or_default()
     }
 
-    // ---- the default group's conversation ----
+    // ---- the browser conversation ----
 
     pub fn default_session(&self) -> Option<&str> {
         self.default_session_id.as_deref()
     }
 
-    /// Bind the default group to a conversation: its sessions work in the
-    /// default group from now on. A group that conversation had until now
-    /// becomes part of the default group — its tabs after the default
-    /// group's own (the default group keeps its current tab if it has one),
-    /// its leases with them (a command that is running goes on); the result
-    /// is held by the user when either was, and then has no lease, as after
-    /// a take-over. The conversation bound before is a group of its own
-    /// again. Returns whether anything changed.
+    /// The MessageHub conversation that is the agent's browser conversation
+    /// from now on; the tabs and who holds them stay as they are. Returns
+    /// whether it changed.
     pub fn bind_default(&mut self, session_id: &str) -> bool {
         if self.default_session_id.as_deref() == Some(session_id) {
             return false;
         }
         self.default_session_id = Some(session_id.to_string());
-        let Some(named) = self.groups.remove(session_id) else { return true };
-        for tab_id in &named.tabs {
-            if let Some(tab) = self.tabs.get_mut(tab_id) {
-                tab.group_id = DEFAULT_GROUP.to_string();
-            }
-        }
-        let default = self.entry(DEFAULT_GROUP);
-        if default.active.is_none() {
-            default.active = named.active;
-        }
-        if default.saved_active.is_none() {
-            default.saved_active = named.saved_active.map(|i| i + default.saved.len());
-        }
-        default.tabs.extend(named.tabs);
-        default.saved.extend(named.saved);
-        default.leases.extend(named.leases.into_iter().map(|l| Lease { group_id: DEFAULT_GROUP.to_string(), ..l }));
-        default.user_hold |= named.user_hold;
-        default.handover = default.handover.take().or(named.handover);
-        default.report = default.report.take().or(named.report);
-        default.waiting_answer |= named.waiting_answer;
-        if default.user_hold {
-            default.leases.clear();
-            default.report = None;
-        }
         true
     }
 
@@ -261,26 +233,12 @@ impl Groups {
     }
 
     /// The group a tab that just appeared belongs to: its opener's; else the
-    /// one a tab is being opened for (`expected`); else the one an agent
-    /// holds a lease on (the latest lease); else the one the user is
-    /// watching; else the default group.
-    pub fn place(&self, opener: Option<&str>, expected: Option<&str>, watched: Option<&str>, now_ms: u64) -> String {
+    /// one a tab is being opened for (`expected`); else the default group.
+    pub fn place(&self, opener: Option<&str>, expected: Option<&str>) -> String {
         if let Some(group) = opener.and_then(|o| self.tabs.get(o)) {
             return group.group_id.clone();
         }
-        if let Some(group) = expected {
-            return group.to_string();
-        }
-        let leased = self
-            .groups
-            .iter()
-            .filter(|(_, g)| !g.user_hold)
-            .filter_map(|(id, g)| g.leased(now_ms).map(|l| (l.expires_at_ms, id)))
-            .max();
-        match leased {
-            Some((_, id)) => id.clone(),
-            None => watched.unwrap_or(DEFAULT_GROUP).to_string(),
-        }
+        expected.unwrap_or(DEFAULT_GROUP).to_string()
     }
 
     /// A tab exists (seen as a target, or just opened): it is in `group_id`
@@ -445,7 +403,7 @@ impl Groups {
         };
         let group = self.entry(group_id);
         if group.user_hold {
-            return Err(BrowserError::user_in_control(group_id));
+            return Err(BrowserError::user_in_control());
         }
         group.leases.retain(|l| l.expires_at_ms > now_ms);
         group.leases.push(lease.clone());
@@ -506,22 +464,11 @@ impl Groups {
         group.report = None;
     }
 
-    /// The groups whose conversation waits for an answer of the user.
-    /// Returns whether that changed for any group.
-    pub fn set_waiting_answer(&mut self, waiting: &[String]) -> bool {
-        let mut changed = false;
-        for group_id in waiting {
-            let group = self.entry(group_id);
-            changed |= !group.waiting_answer;
-            group.waiting_answer = true;
-        }
-        for (group_id, group) in self.groups.iter_mut() {
-            if group.waiting_answer && !waiting.contains(group_id) {
-                group.waiting_answer = false;
-                changed = true;
-            }
-        }
-        changed
+    /// Whether the browser conversation waits for an answer of the user.
+    /// Returns whether that changed.
+    pub fn set_waiting_answer(&mut self, waiting: bool) -> bool {
+        let group = self.entry(DEFAULT_GROUP);
+        std::mem::replace(&mut group.waiting_answer, waiting) != waiting
     }
 
     // ---- views ----
@@ -565,13 +512,6 @@ impl Groups {
                 })
                 .collect(),
         }
-    }
-
-    /// The default group, then every other group a conversation shows that
-    /// has something to show.
-    pub fn group_ids(&self) -> Vec<String> {
-        let shown = self.groups.iter().filter(|(id, g)| *id != DEFAULT_GROUP && !is_internal(id) && !g.idle());
-        std::iter::once(DEFAULT_GROUP.to_string()).chain(shown.map(|(id, _)| id.clone())).collect()
     }
 
     // ---- stop, start, the file ----
@@ -649,7 +589,7 @@ impl Groups {
             }
         };
         self.default_session_id = file.default_session_id.filter(|s| !s.is_empty());
-        for saved in file.groups.into_iter().filter(|g| !g.group_id.is_empty() && !is_internal(&g.group_id)) {
+        for saved in file.groups.into_iter().filter(|g| g.group_id == DEFAULT_GROUP) {
             let group = self.entry(&saved.group_id);
             group.saved = saved.tabs;
             group.saved_active = saved.active;
@@ -694,8 +634,6 @@ mod tests {
         let view = g.group("default", T0 + 3);
         assert!(view.user_hold && view.lease.is_none());
         assert_eq!(view.agent_state, AgentState::Idle, "the user took it without being asked");
-        // Another group is not held.
-        assert!(g.acquire("thing-2", "ui-2", T0 + 3).is_ok());
 
         // Handed back: the agent may operate again.
         g.hand_back("default");
@@ -716,100 +654,98 @@ mod tests {
     #[test]
     fn the_agent_asks_the_user_to_take_over_and_reports_how_it_ended() {
         let mut g = Groups::new(12);
-        let lease = g.acquire("thing", "work-1", T0).unwrap();
-        g.request_handover("thing", "password", Some("the bank's login".into()), T0 + 10);
-        let view = g.group("thing", T0 + 11);
+        let lease = g.acquire(DEFAULT_GROUP, "work-1", T0).unwrap();
+        g.request_handover(DEFAULT_GROUP, "password", Some("the bank's login".into()), T0 + 10);
+        let view = g.group(DEFAULT_GROUP, T0 + 11);
         assert_eq!((view.controller, view.agent_state), (Controller::User, AgentState::WaitingTakeover));
         assert!(view.user_hold && view.lease.is_none());
         assert_eq!(view.note.as_deref(), Some("the bank's login"));
         assert_eq!(view.handover.as_ref().unwrap().reason, "password");
         assert_eq!(code(g.renew(&lease.lease_id, T0 + 12)), "lease_lost");
-        assert_eq!(code(g.acquire("thing", "work-1", T0 + 12)), "user_in_control");
+        assert_eq!(code(g.acquire(DEFAULT_GROUP, "ui-2", T0 + 12)), "user_in_control", "whichever session asks");
         // Taking over what was asked for keeps the request shown.
-        g.take_over("thing");
-        assert_eq!(g.group("thing", T0 + 13).agent_state, AgentState::WaitingTakeover);
-        g.hand_back("thing");
-        let view = g.group("thing", T0 + 14);
+        g.take_over(DEFAULT_GROUP);
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 13).agent_state, AgentState::WaitingTakeover);
+        g.hand_back(DEFAULT_GROUP);
+        let view = g.group(DEFAULT_GROUP, T0 + 14);
         assert_eq!((view.agent_state, view.user_hold, view.handover, view.note), (AgentState::Idle, false, None, None));
 
-        // done / stuck stay until the group is leased, taken or handed back again.
-        let lease = g.acquire("thing", "work-1", T0 + 20).unwrap();
+        // done / stuck stay until the browser is leased, taken or handed back again.
+        let lease = g.acquire(DEFAULT_GROUP, "work-1", T0 + 20).unwrap();
         g.release(&lease.lease_id, Some((AgentState::Stuck, Some("needs a code".into()))), T0 + 21).unwrap();
-        let view = g.group("thing", T0 + 22);
+        let view = g.group(DEFAULT_GROUP, T0 + 22);
         assert_eq!((view.controller, view.agent_state), (Controller::User, AgentState::Stuck));
         assert_eq!(view.note.as_deref(), Some("needs a code"));
-        let lease = g.acquire("thing", "work-1", T0 + 30).unwrap();
-        assert_eq!(g.group("thing", T0 + 31).agent_state, AgentState::Working);
+        let lease = g.acquire(DEFAULT_GROUP, "work-1", T0 + 30).unwrap();
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 31).agent_state, AgentState::Working);
         g.release(&lease.lease_id, Some((AgentState::Done, None)), T0 + 32).unwrap();
-        assert_eq!(g.group("thing", T0 + 33).agent_state, AgentState::Done);
-        g.take_over("thing");
-        assert_eq!(g.group("thing", T0 + 34).agent_state, AgentState::Idle);
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 33).agent_state, AgentState::Done);
+        g.take_over(DEFAULT_GROUP);
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 34).agent_state, AgentState::Idle);
 
-        // A question the conversation waits on shows when no lease is held.
-        g.hand_back("thing");
-        let lease = g.acquire("thing", "work-1", T0 + 40).unwrap();
-        assert!(g.set_waiting_answer(&["thing".to_string()]));
-        assert!(!g.set_waiting_answer(&["thing".to_string()]));
-        assert_eq!(g.group("thing", T0 + 41).agent_state, AgentState::Working);
+        // A question the browser conversation waits on shows when no lease is held.
+        g.hand_back(DEFAULT_GROUP);
+        let lease = g.acquire(DEFAULT_GROUP, "work-1", T0 + 40).unwrap();
+        assert!(g.set_waiting_answer(true));
+        assert!(!g.set_waiting_answer(true));
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 41).agent_state, AgentState::Working);
         g.release(&lease.lease_id, None, T0 + 42).unwrap();
-        assert_eq!(g.group("thing", T0 + 43).agent_state, AgentState::WaitingAnswer);
-        assert!(g.set_waiting_answer(&[]));
-        assert_eq!(g.group("thing", T0 + 44).agent_state, AgentState::Idle);
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 43).agent_state, AgentState::WaitingAnswer);
+        assert!(g.set_waiting_answer(false));
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 44).agent_state, AgentState::Idle);
     }
 
     #[test]
-    fn two_sessions_of_a_group_hold_leases_side_by_side() {
+    fn sessions_hold_leases_side_by_side() {
         let mut g = Groups::new(12);
-        let a = g.acquire("thing", "ui-1", T0).unwrap();
-        let b = g.acquire("thing", "work-1", T0 + 1_000).unwrap();
+        let a = g.acquire(DEFAULT_GROUP, "ui-1", T0).unwrap();
+        let b = g.acquire(DEFAULT_GROUP, "work-1", T0 + 1_000).unwrap();
         assert_ne!(a.lease_id, b.lease_id);
-        assert_eq!(g.group("thing", T0 + 1_001).lease.unwrap().session_id, "work-1", "the one that ends last");
+        assert_eq!(g.group(DEFAULT_GROUP, T0 + 1_001).lease.unwrap().session_id, "work-1", "the one that ends last");
         g.release(&a.lease_id, None, T0 + 1_002).unwrap();
-        assert_eq!(g.controller("thing", T0 + 1_003), Controller::Agent);
+        assert_eq!(g.controller(DEFAULT_GROUP, T0 + 1_003), Controller::Agent);
         g.release(&b.lease_id, None, T0 + 1_004).unwrap();
-        assert_eq!(g.controller("thing", T0 + 1_005), Controller::User);
+        assert_eq!(g.controller(DEFAULT_GROUP, T0 + 1_005), Controller::User);
     }
 
     #[test]
-    fn a_new_tab_goes_to_its_openers_group_then_the_leased_then_the_watched_one() {
+    fn a_new_tab_goes_to_its_openers_group_then_the_one_it_is_opened_for_then_the_default_one() {
         let mut g = Groups::new(3);
-        assert_eq!(g.place(None, None, None, T0), DEFAULT_GROUP);
-        assert_eq!(g.place(None, None, Some("watched"), T0), "watched");
-        assert!(g.tab_seen("t1", "thing", "https://a.example/", "A"));
-        assert!(!g.tab_seen("t1", "thing", "https://a.example/x", ""));
+        assert_eq!(g.place(None, None), DEFAULT_GROUP);
+        assert!(g.tab_seen("r1", "_reflow", "https://r.example/", "R"));
+        assert!(g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/", "A"));
+        assert!(!g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/x", ""));
         assert_eq!(g.tab("t1").unwrap().url, "https://a.example/x");
         // A page opened by a page.
-        assert_eq!(g.place(Some("t1"), Some("other"), Some("watched"), T0), "thing");
-        // A tab the module opens for a group.
-        assert_eq!(g.place(None, Some("other"), Some("watched"), T0), "other");
-        // An agent holding a lease opens one; a group the user holds does not count.
-        let lease = g.acquire("leased", "ui-9", T0).unwrap();
-        assert_eq!(g.place(None, None, Some("watched"), T0 + 1), "leased");
-        g.release(&lease.lease_id, None, T0 + 2).unwrap();
-        assert_eq!(g.place(None, None, Some("watched"), T0 + 3), "watched");
+        assert_eq!(g.place(Some("r1"), None), "_reflow");
+        assert_eq!(g.place(Some("t1"), Some("_reflow")), DEFAULT_GROUP);
+        // A tab the module opens for one of its own groups.
+        assert_eq!(g.place(None, Some("_reflow")), "_reflow");
+        // A lease changes nothing: every session works in the one group.
+        g.acquire(DEFAULT_GROUP, "ui-9", T0).unwrap();
+        assert_eq!(g.place(None, None), DEFAULT_GROUP);
 
         // The newest tab is the group's current one; closing it falls back.
-        assert!(g.tab_seen("t2", "thing", "https://b.example/", "B"));
-        assert_eq!(g.active_tab("thing").as_deref(), Some("t2"));
-        assert_eq!(g.activate("t1").unwrap(), "thing");
-        let tabs = g.group("thing", T0).tabs;
+        assert!(g.tab_seen("t2", DEFAULT_GROUP, "https://b.example/", "B"));
+        assert_eq!(g.active_tab(DEFAULT_GROUP).as_deref(), Some("t2"));
+        assert_eq!(g.activate("t1").unwrap(), DEFAULT_GROUP);
+        let tabs = g.group(DEFAULT_GROUP, T0).tabs;
         assert_eq!(tabs.iter().map(|t| (t.tab_id.as_str(), t.active)).collect::<Vec<_>>(), vec![("t1", true), ("t2", false)]);
         assert!(g.tab_removed("t1"));
-        assert_eq!(g.active_tab("thing").as_deref(), Some("t2"));
+        assert_eq!(g.active_tab(DEFAULT_GROUP).as_deref(), Some("t2"));
         assert_eq!(code(g.activate("t1")), "no_such_tab");
 
-        // The limit counts the tabs conversations show.
-        assert!(g.tab_seen("t3", "default", "about:blank", ""));
+        // The limit counts the tabs the user sees.
+        assert!(g.tab_seen("t3", DEFAULT_GROUP, "about:blank", ""));
         assert!(g.has_room());
         assert!(g.tab_seen("t4", "_reflow", "about:blank", ""));
         assert!(g.has_room());
-        assert!(g.tab_seen("t5", "default", "about:blank", ""));
+        assert!(g.tab_seen("t5", DEFAULT_GROUP, "about:blank", ""));
         assert!(!g.has_room());
-        assert_eq!(g.group_ids(), vec!["default".to_string(), "thing".to_string()]);
         // A tab the module opened for another group than the one it was first seen in moves there.
-        assert!(!g.tab_seen("t5", "thing", "", ""));
-        assert_eq!(g.tab("t5").unwrap().group_id, "thing");
-        assert_eq!(g.group("default", T0).tabs.len(), 1);
+        assert!(!g.tab_seen("t5", "_reflow", "", ""));
+        assert_eq!(g.tab("t5").unwrap().group_id, "_reflow");
+        assert_eq!(g.group(DEFAULT_GROUP, T0).tabs.len(), 2);
     }
 
     #[test]
@@ -817,92 +753,65 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("groups.json");
         let mut g = Groups::new(12);
-        g.tab_seen("t1", "default", "https://a.example/", "A");
-        g.tab_seen("t2", "default", "https://b.example/", "B");
-        g.tab_seen("t3", "thing", "https://c.example/", "C");
+        g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/", "A");
+        g.tab_seen("t2", DEFAULT_GROUP, "https://b.example/", "B");
         g.tab_seen("t4", "_reflow", "https://d.example/", "D");
         g.activate("t1").unwrap();
-        g.take_over("thing");
+        g.take_over(DEFAULT_GROUP);
         let running = g.to_json();
-        g.acquire("default", "ui-1", T0).unwrap();
         g.suspend();
         assert_eq!(g.to_json(), running, "what is saved does not depend on whether the browser runs");
         assert!(g.tab_ids().is_empty() && !g.has_lease(T0));
-        assert!(g.group("default", T0).tabs.is_empty());
+        assert!(g.group(DEFAULT_GROUP, T0).tabs.is_empty());
         std::fs::write(&path, g.to_json()).unwrap();
 
         let mut again = Groups::new(12);
         again.load(&path);
-        assert!(again.group("thing", T0).user_hold, "a group the user holds stays held");
+        assert!(again.group(DEFAULT_GROUP, T0).user_hold, "the browser the user holds stays held");
         let saved = again.take_saved();
-        assert_eq!(saved.len(), 2);
-        assert_eq!(saved[0].0, "default");
+        assert_eq!(saved.len(), 1, "the module's own tabs are not kept");
+        assert_eq!(saved[0].0, DEFAULT_GROUP);
         assert_eq!(saved[0].1.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), vec!["https://a.example/", "https://b.example/"]);
         assert_eq!(saved[0].2, Some(0));
-        assert_eq!(saved[1].1[0].title, "C");
         assert!(again.take_saved().is_empty());
 
-        // Groups nothing is left of are forgotten; the default group stays.
-        let mut g = Groups::new(12);
-        g.acquire("gone", "ui-1", T0).unwrap();
-        g.expire(T0 + LEASE_TTL_MS);
-        assert_eq!(g.group_ids(), vec!["default".to_string()]);
+        // A file from when every conversation had a group of its own: only the default group's tabs come back.
+        let old = serde_json::json!({ "schema": SCHEMA, "default_session_id": "conv-1", "groups": [
+            { "group_id": "default", "tabs": [{ "url": "https://a.example/" }], "active": 0 },
+            { "group_id": "conv-2", "tabs": [{ "url": "https://c.example/" }], "user_hold": true },
+        ] });
+        std::fs::write(&path, old.to_string()).unwrap();
+        let mut again = Groups::new(12);
+        again.load(&path);
+        assert_eq!(again.default_session(), Some("conv-1"));
+        let saved = again.take_saved();
+        assert_eq!(saved.iter().map(|(id, tabs, _)| (id.as_str(), tabs.len())).collect::<Vec<_>>(), vec![(DEFAULT_GROUP, 1)]);
+        assert!(!again.group(DEFAULT_GROUP, T0).user_hold);
     }
 
     #[test]
-    fn the_default_group_is_bound_to_a_conversation() {
+    fn the_browser_conversation_is_bound_and_kept_in_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("groups.json");
         let mut g = Groups::new(12);
         assert_eq!(g.default_session(), None);
-        g.tab_seen("d1", "default", "https://d.example/", "D");
-        g.tab_seen("t1", "conv-1", "https://a.example/", "A");
-        g.tab_seen("t2", "conv-1", "https://b.example/", "B");
-        g.tab_seen("o1", "conv-2", "https://o.example/", "O");
-        g.activate("t1").unwrap();
-        let lease = g.acquire("conv-1", "ui-1", T0).unwrap();
-        let ended = g.acquire("conv-1", "work-1", T0).unwrap();
-        g.release(&ended.lease_id, Some((AgentState::Done, Some("booked".into()))), T0).unwrap();
+        g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/", "A");
+        let lease = g.acquire(DEFAULT_GROUP, "ui-1", T0).unwrap();
 
-        // The conversation's group becomes part of the default group: tabs, leases, what the agent said.
+        // Binding moves nothing: the tabs and the lease stay.
         assert!(g.bind_default("conv-1"));
         assert_eq!(g.default_session(), Some("conv-1"));
-        assert_eq!(g.group_ids(), vec!["default".to_string(), "conv-2".to_string()]);
-        let view = g.group("default", T0 + 1);
-        assert_eq!(view.tabs.iter().map(|t| (t.tab_id.as_str(), t.active)).collect::<Vec<_>>(), vec![("d1", true), ("t1", false), ("t2", false)]);
-        assert_eq!(g.tab("t2").unwrap().group_id, "default");
-        assert_eq!((view.controller, view.lease.map(|l| l.session_id)), (Controller::Agent, Some("ui-1".to_string())));
-        assert!(g.renew(&lease.lease_id, T0 + 2).is_ok(), "a command that is running goes on");
-        g.release(&lease.lease_id, None, T0 + 3).unwrap();
-        assert_eq!(g.group("default", T0 + 4).agent_state, AgentState::Done);
-        assert!(g.group("conv-1", T0).tabs.is_empty());
-        // Again: nothing happens.
-        assert!(!g.bind_default("conv-1"));
-
-        // A group the user holds makes the default group held, without a lease.
-        g.acquire("default", "ui-1", T0 + 5).unwrap();
-        g.request_handover("conv-2", "password", Some("the login".into()), T0 + 6);
+        assert!(!g.bind_default("conv-1"), "again: nothing changes");
+        let view = g.group(DEFAULT_GROUP, T0 + 1);
+        assert_eq!((view.tabs.len(), view.controller), (1, Controller::Agent));
+        assert!(g.renew(&lease.lease_id, T0 + 2).is_ok());
         assert!(g.bind_default("conv-2"));
-        let view = g.group("default", T0 + 7);
-        assert_eq!((view.user_hold, view.agent_state, view.controller, view.lease), (true, AgentState::WaitingTakeover, Controller::User, None));
-        assert_eq!(view.tabs.len(), 4);
-        // The conversation bound before is a group of its own again; its old tabs stay where they are.
-        assert!(g.tab_seen("t3", "conv-1", "https://c.example/", "C"));
-        assert_eq!(g.group("conv-1", T0).tabs.len(), 1);
 
-        // Kept in the file, with the tabs of a browser that is not running.
         g.suspend();
         std::fs::write(&path, g.to_json()).unwrap();
         let mut again = Groups::new(12);
         again.load(&path);
         assert_eq!(again.default_session(), Some("conv-2"));
-        assert!(again.group("default", T0).user_hold);
-        assert!(again.bind_default("conv-1"));
-        let saved = again.take_saved();
-        assert_eq!(saved.len(), 1, "the saved tabs of the conversation's group are the default group's now");
-        assert_eq!(saved[0].0, "default");
-        assert_eq!(saved[0].1.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), vec![
-            "https://d.example/", "https://a.example/", "https://b.example/", "https://o.example/", "https://c.example/",
-        ]);
+        assert_eq!(again.take_saved()[0].1.len(), 1);
     }
 }

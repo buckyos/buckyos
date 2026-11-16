@@ -1,83 +1,16 @@
-/* The App's own panels: the things of the Agent, the tabs of the current thing, and the settings. */
+/* The App's own panels: the tabs of the browser, and the settings. */
 
-import { Check, LayoutList, Plus, Trash2, Users, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { LayoutList, Plus, Trash2, Users, X } from 'lucide-react'
+import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
-import { HubAvatar } from '../../messagehub/HubAvatar'
-import type { BrowserGroup } from '../api/types'
 import { ReflowLibrarySheet } from '../reflow/LibrarySheet'
+import { QualityItem } from '../screen/QualityItem'
 import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
 import { canOperate } from '../store/store'
-import { thingTitle, type Thing } from '../store/things'
 import { displayUrl } from './address'
 import { Sheet } from './Sheet'
 
-/** The things of the current Agent; choosing one switches the conversation and the screen to its tabs (D15). */
-export function ThingsSheet({ onClose }: { onClose: () => void }) {
-  const store = useAgentBrowserStore()
-  const { t } = useI18n()
-  const agent = useAgentBrowser((snapshot) => snapshot.agent)
-  const agentCount = useAgentBrowser((snapshot) => snapshot.agents.length)
-  const things = useAgentBrowser((snapshot) => snapshot.things)
-  const groupId = useAgentBrowser((snapshot) => snapshot.groupId)
-  const pending = useAgentBrowser((snapshot) => snapshot.pending)
-  // New things are sessions of MessageHub: offered once it is there.
-  const talks = useAgentBrowser((snapshot) => snapshot.conversations === 'ready')
-  const [groups, setGroups] = useState<ReadonlyMap<string, BrowserGroup>>(new Map())
-  useEffect(() => {
-    let alive = true
-    store.groups().then((list) => { if (alive) setGroups(new Map(list.map((group) => [group.group_id, group]))) }, () => undefined)
-    return () => { alive = false }
-  }, [store])
-  const detail = (thing: Thing) => {
-    const group = groups.get(thing.groupId)
-    if (!group) return ''
-    const tabs = group.tabs.length === 1 ? t('agentBrowser.thing.tab', '1 tab') : t('agentBrowser.thing.tabs', '{{count}} tabs', { count: group.tabs.length })
-    return group.agent_state === 'idle' ? tabs : `${tabs} · ${t(`agentBrowser.state.${group.agent_state}`, group.agent_state, { name: agent?.name ?? '' })}`
-  }
-  return (
-    <Sheet
-      testId="ab-things"
-      title={t('agentBrowser.thing.title', 'Tasks')}
-      onClose={onClose}
-      footer={talks && store.canCreateThing() ? (
-        <button type="button" className="ab-button ab-button-primary" disabled={pending !== null} data-testid="ab-new-thing" onClick={() => { void store.createThing().then(onClose) }}>
-          <Plus size={16} aria-hidden />{t('agentBrowser.thing.new', 'New task')}
-        </button>
-      ) : undefined}
-    >
-      {agent ? (
-        <div className="ab-agent-row" data-testid="ab-things-agent">
-          <HubAvatar type="agent" name={agent.name} avatar={agent.avatar} size={36} />
-          <div className="ab-list-text">
-            <p className="ab-agent-name">{agent.name}</p>
-            <p className="ab-list-detail">{t('agentBrowser.agent.browserOf', 'This is {{name}}’s browser', { name: agent.name })}</p>
-          </div>
-          {agentCount > 1 ? <button type="button" className="ab-button" data-testid="ab-switch-agent" onClick={() => { onClose(); store.leaveAgent() }}><Users size={16} aria-hidden />{t('agentBrowser.agent.switch', 'Switch')}</button> : null}
-        </div>
-      ) : null}
-      <ul className="ab-list" data-testid="ab-thing-list">
-        {things.map((thing) => {
-          const current = thing.groupId === groupId
-          const extra = detail(thing)
-          return (
-            <li key={thing.groupId}>
-              <button type="button" className="ab-list-item" aria-current={current ? 'true' : undefined} data-testid={`ab-thing-${thing.groupId}`} onClick={() => { store.selectThing(thing.groupId); onClose() }}>
-                <span className="ab-list-text">
-                  <span className="ab-list-title">{thingTitle(t, thing)}</span>
-                  {extra ? <span className="ab-list-detail">{extra}</span> : null}
-                </span>
-                {current ? <Check size={18} aria-hidden /> : null}
-              </button>
-            </li>
-          )
-        })}
-      </ul>
-    </Sheet>
-  )
-}
-
-/** The tabs of the current thing: switch, close, open a new one. */
+/** The tabs of the browser: switch, close, open a new one. */
 export function TabsSheet({ onClose }: { onClose: () => void }) {
   const store = useAgentBrowserStore()
   const { t } = useI18n()
@@ -148,6 +81,7 @@ export function MenuSheet({ onClose }: { onClose: () => void }) {
             <span className="ab-switch" aria-hidden />
           </button>
         </li>
+        <li><QualityItem /></li>
         <li>
           <button type="button" className="ab-list-item" data-testid="ab-reflow-library-open" onClick={() => setLibrary(true)}>
             <LayoutList size={18} aria-hidden />

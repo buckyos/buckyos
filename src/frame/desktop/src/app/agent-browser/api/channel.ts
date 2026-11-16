@@ -1,7 +1,9 @@
 /* The screen channel (Agent Browser Protocol §3): one WebSocket per group. It says `hello` with the user's token, the
  * group and the viewport, hands every frame to the view (which answers `ack` once it is painted), keeps the
- * connection alive with `ping` while idle, and reconnects with the latest viewport when the socket is lost. */
+ * connection alive with `ping` while idle, and reconnects with the latest viewport when the socket is lost. How clear
+ * the frames are (`quality`) follows the user's choice, or in "auto" what the frames show of the connection. */
 
+import { QualityGovernor, type QualityChoice, type Tier } from '../screen/quality'
 import type { FrameMeta, ScreenDownstream, ScreenFocus, ScreenFrame, ScreenRequest, ScreenState, ScreenUpstream, Viewport } from './types'
 
 /** A WebSocket as the channel uses it; the mock Agent Service hands out the same shape. */
@@ -21,6 +23,9 @@ export interface ChannelFailure { code: string; message: string }
 export interface ScreenChannelOptions {
   groupId: string
   viewport: Viewport
+  quality: QualityChoice
+  /** The tier the frames are asked for: at the start, and whenever it changes. */
+  onTier: (tier: Tier) => void
   /** Before every connection: whatever must hold first (`browser.ensure`), then the token of the `hello`. */
   prepare: () => Promise<string>
   open: () => ScreenSocket
@@ -35,6 +40,7 @@ export interface ScreenChannelOptions {
 
 const PING_MS = 10_000
 const SILENCE_MS = 30_000
+const ADJUST_MS = 1000
 /** Handshake errors a new attempt cannot fix. */
 const FATAL = new Set(['unauthorized', 'bad_hello', 'browser_unavailable'])
 
@@ -58,20 +64,30 @@ export class ScreenChannel {
   private attempts = 0
   private retryTimer = 0
   private pingTimer = 0
+  private adjustTimer = 0
   private sentAt = 0
   private receivedAt = 0
   private pendingMeta: FrameMeta | null = null
+  private metaAt = 0
   private generation = 0
+  private readonly governor: QualityGovernor
+  /** Frames handed to the view and not acknowledged yet: when each arrived, its bytes, how long it took. */
+  private readonly arrived = new Map<number, { at: number; bytes: number; transfer: number }>()
+  /** Frames up to this one may have been painted at the tier before. */
+  private tierSeq = 0
+  private lastSeq = 0
 
   constructor(options: ScreenChannelOptions) {
     this.options = options
     this.groupId = options.groupId
     this.viewport = options.viewport
+    this.governor = new QualityGovernor(options.quality, () => window.devicePixelRatio || 1)
   }
 
   start() {
     window.addEventListener('online', this.wake)
     document.addEventListener('visibilitychange', this.wake)
+    this.options.onTier(this.governor.tier())
     void this.connect()
   }
 
@@ -82,6 +98,7 @@ export class ScreenChannel {
     document.removeEventListener('visibilitychange', this.wake)
     window.clearTimeout(this.retryTimer)
     window.clearInterval(this.pingTimer)
+    window.clearInterval(this.adjustTimer)
     this.dropSocket()
     this.setStatus('closed', null)
   }
@@ -101,13 +118,42 @@ export class ScreenChannel {
 
   ack(seq: number) {
     this.send({ type: 'ack', seq })
+    const arrived = this.arrived.get(seq)
+    this.arrived.delete(seq)
+    // A page in the background paints late: that says nothing of the connection.
+    if (!arrived || seq <= this.tierSeq || document.visibilityState === 'hidden') return
+    const now = performance.now()
+    this.governor.sample(arrived.bytes, arrived.transfer, now - arrived.at, now)
+    this.adjust()
   }
 
   setViewport(viewport: Viewport) {
     const current = this.viewport
     if (current.width === viewport.width && current.height === viewport.height && current.mobile === viewport.mobile) return
     this.viewport = viewport
-    this.send({ type: 'viewport', ...viewport })
+    this.send({ type: 'viewport', ...viewport, pixel_ratio: this.governor.tier().pixel_ratio })
+  }
+
+  /** The user's choice of how clear the frames are. */
+  setQuality(choice: QualityChoice) {
+    this.governor.choose(choice)
+    this.useTier(this.governor.tier())
+  }
+
+  private adjust() {
+    const tier = this.governor.adjust(performance.now())
+    if (tier) this.useTier(tier)
+  }
+
+  private useTier(tier: Tier) {
+    // The frame on its way when the service hears of the tier is still of the one before.
+    this.tierSeq = this.lastSeq + 1
+    this.sendQuality(tier)
+    this.options.onTier(tier)
+  }
+
+  private sendQuality(tier: Tier) {
+    this.send({ type: 'quality', max_fps: tier.max_fps, jpeg_quality: tier.jpeg_quality, pixel_ratio: tier.pixel_ratio })
   }
 
   /** A failed channel tries again (the user asked, or the reason may be gone). */
@@ -134,6 +180,9 @@ export class ScreenChannel {
     this.socket = null
     this.ready = false
     this.pendingMeta = null
+    this.arrived.clear()
+    this.lastSeq = this.tierSeq = 0
+    window.clearInterval(this.adjustTimer)
     if (!socket) return
     socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null
     try { socket.close() } catch { /* already closed */ }
@@ -166,7 +215,7 @@ export class ScreenChannel {
     this.socket = socket
     socket.onopen = () => {
       try {
-        socket.send(JSON.stringify({ type: 'hello', token, group_id: this.groupId, viewport: this.viewport } satisfies ScreenUpstream))
+        socket.send(JSON.stringify({ type: 'hello', token, group_id: this.groupId, viewport: { ...this.viewport, pixel_ratio: this.governor.tier().pixel_ratio } } satisfies ScreenUpstream))
         this.sentAt = Date.now()
       } catch {
         this.lost()
@@ -184,6 +233,9 @@ export class ScreenChannel {
       const meta = this.pendingMeta
       this.pendingMeta = null
       if (!meta || !(data instanceof ArrayBuffer)) return
+      const now = performance.now()
+      this.arrived.set(meta.seq, { at: now, bytes: data.byteLength, transfer: now - this.metaAt })
+      this.lastSeq = meta.seq
       const frame = { ...meta, data }
       this.lastFrame = frame
       this.options.onFrame(frame)
@@ -197,13 +249,17 @@ export class ScreenChannel {
         this.attempts = 0
         this.setStatus('open', null)
         this.options.onState(message.state)
+        this.sendQuality(this.governor.tier())
         this.startPing()
+        window.clearInterval(this.adjustTimer)
+        this.adjustTimer = window.setInterval(() => this.adjust(), ADJUST_MS)
         break
       case 'state':
         this.options.onState(body(message))
         break
       case 'frame_meta':
         this.pendingMeta = { seq: message.seq, tab_id: message.tab_id, width: message.width, height: message.height }
+        this.metaAt = performance.now()
         break
       case 'request':
         this.options.onRequest(body(message) as ScreenRequest)

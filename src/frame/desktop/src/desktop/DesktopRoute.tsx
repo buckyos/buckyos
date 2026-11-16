@@ -305,7 +305,7 @@ export function DesktopRoute() {
     if (isSettingsPage(page)) openSettings(page)
   }, [snap.status, searchParams, setSearchParams])
 
-  // A link to an Agent's browser (`?agent_browser=<agent>[&group=<session>][&mode=<mode>]`: the Agent home, a conversation's Agent panel).
+  // A link to an Agent's browser (`?agent_browser=<agent>[&mode=<mode>]`: the Agent home, a conversation's Agent panel; the `group` of an older link is dropped).
   const agentBrowserLinkHandled = useRef(false)
   useEffect(() => {
     const launch = agentBrowserLaunchFromParams(searchParams)

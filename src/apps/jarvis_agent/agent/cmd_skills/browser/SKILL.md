@@ -7,8 +7,8 @@ scope: ui, work
 baseline: extended
 ---
 #### When to use
-Something to do on a website for the user (look something up behind a login, fill in and submit a form, an errand across several sites), reading a page as a browser shows it, looking at a page you built. The browser is this Agent's own: headless, one profile, so a site the user signed in to stays signed in. The owner watches and operates the same browser in the Desktop app "Agent Browser"; one conversation there is one thing being done, with its own tabs. Your commands act on the tabs of the conversation this session belongs to (a work session: the conversation it was started from).
-In a conversation a few commands are fine (open, read, a short form); an errand of many steps is work, which gets this manual and uses the same tabs. While a work session of this conversation is on an errand, leave the tabs to it: when the user says the browser is handed back, that answers the work's open question (`[notify <id>]`), which you pass on with `agent-session notify answer`.
+Something to do on a website for the user (look something up behind a login, fill in and submit a form, an errand across several sites), reading a page as a browser shows it, looking at a page you built. The browser is this Agent's own: headless, one profile, so a site the user signed in to stays signed in, and one set of tabs for all your sessions. The owner watches and operates the same browser in the Desktop app "Agent Browser" and talks to you there in one conversation, the browser conversation: what the user does to the browser is told in it, the app asks there for reflowed pages, and it has this manual.
+In a conversation a few commands are fine (open, read, a short form); an errand of many steps is work, which gets this manual and uses the same tabs. While one of your sessions is on an errand in the browser (`agent-browser status` shows `lease of session <id>`), leave the tabs to it: when the user says the browser is handed back, that answers the work's open question (`[notify <id>]`), which you pass on with `agent-session notify answer`.
 Not for a project's Playwright tests: those start a browser of their own (`buckyos_app_dev`, "Page tests").
 
 #### Commands
@@ -18,7 +18,7 @@ agent-browser open <url>                         # go there in the current tab; 
 agent-browser snapshot                           # url, title and the page as an accessibility tree (text)
 agent-browser run <script.mjs> [--arg k=v]...    # a Playwright script on the current tab; prints what it returns as JSON
 agent-browser screenshot <file.png>              # what the viewport shows
-agent-browser tabs                               # this conversation's tabs, * marks the current one
+agent-browser tabs                               # the browser's tabs, * marks the current one
 agent-browser handover --reason password|captcha|other [--note "<what the user should do>"]
 agent-browser done [--note "<what was done>"]
 agent-browser stuck --note "<what is in the way>"
@@ -26,7 +26,7 @@ agent-browser stuck --note "<what is in the way>"
 `agent-browser --help` and `agent-browser <command> --help` are the reference. Exit codes: 0 ok; 1 failed, the last line on stderr says why; 2 usage; 3 no browser for this session; 4 the user has control; 5 the user took over while the command was working.
 
 #### Start with status
-`agent-browser status` first: it shows the tab group of this session's conversation. `stopped, starts on demand` is normal: any command starts the browser and its tabs come back. Under a group, `held by the user` means the user took over; `user has control` alone only says that no command of yours is working right now.
+`agent-browser status` first: it shows the browser and its tabs (`group default`, the only group). `stopped, starts on demand` is normal: any command starts the browser and its tabs come back. `held by the user` means the user took over; `user has control` alone only says that no command of yours is working right now; `lease of session <id>` is a command of that session working now.
 Exit code 3, or no such command, means this session has no browser. Say why and stop (so does exit code 1 with `cannot reach the Agent Service`: the service is not answering, the page is not the problem):
 - `command not found`: the runtime has no ext-core package; the owner enables it in Desktop Settings › Extension tools or with `buckyos ext-tools enable ext-core`.
 - `OPENDAN_BROWSER_RPC is not set`: the session is not on the Agent's private runtime; only sessions there reach the browser.
@@ -51,7 +51,7 @@ export default async ({ page, args }) => {
 ```
 agent-browser run fill.mjs --arg url=https://www.example.com/form --arg name="Li Lei" --arg city=Shanghai
 ```
-- The script gets `{ page, pages, context, args }`: `page` is the current tab (a new one when the conversation has none), `pages` all tabs of this conversation, `context.newPage()` opens one more, `args` the `--arg` values as strings. Use `pages`, never `context.pages()`: that also has other conversations' tabs, which are not yours. Close a tab you opened and no longer need (`page.close()`): the browser has a tab limit.
+- The script gets `{ page, pages, context, args }`: `page` is the current tab (a new one when there is none), `pages` all tabs the user sees, `context.newPage()` opens one more, `args` the `--arg` values as strings. Use `pages`, never `context.pages()`: that also has tabs the Agent Service keeps for itself (a reflow refresh), which are not yours. Close a tab you opened and no longer need (`page.close()`): the browser has a tab limit.
 - Playwright comes with the command: nothing to import or install. Locate by role, label and text as the snapshot shows them. An action waits up to 30 seconds.
 - Return what the next step needs: where you ended up, what the site answered, what is still missing. Keep scripts in the session's working directory.
 - The viewport is the user's (their phone, or the desktop view they chose): never change it.
@@ -64,11 +64,11 @@ agent-browser run fill.mjs --arg url=https://www.example.com/form --arg name="Li
 agent-browser screenshot shot.png
 llm_understand_media shot.png --goal "<what to find out>"
 ```
-In a script, `await page.bringToFront()` before `page.screenshot()`.
+In a script, `await page.bringToFront()` before `page.screenshot({ scale: 'css' })`: without `scale: 'css'` the picture has twice the pixels while the user watches on a sharp screen.
 
 #### When the user has control
 The user can take the browser over at any moment. A command then fails with exit code 4 (5 when it was working): stop, do not retry in a loop, do not look for another way to the page. `agent-browser status` still works.
-A conversation is told in its input: `[browser <group>] The user took over the browser …`, `… handed the browser back. The current page is …`, `… asks you to go on from the current page …`. After a hand back or a "go on from here" the page is not where you left it: `agent-browser snapshot` first, then go on from what is there. A work session is not told: it learns it from the exit code and waits with `ask_user` (below); do not pass a `[browser …]` line on to it, it takes no messages.
+The browser conversation is told in its input: `[browser] The user took over the browser …`, `… handed the browser back. The current page is …`, `… asks you to go on from the current page …`; the user's next message there wakes you. After a hand back or a "go on from here" the page is not where you left it: `agent-browser snapshot` first, then go on from what is there. Another conversation is not told: say in your reply what the user should do in the app and that they tell you here when they handed it back. A work session is not told either: it learns it from the exit code and waits with `ask_user` (below); do not pass a `[browser]` line on to it, it takes no messages.
 
 #### Passwords, captchas, what only the user knows
 - A password field (sign-in, payment password): never read it and never fill it, also when you know the password. `agent-browser handover --reason password --note "<site>: sign in"`, then tell the user what to fill in and to hand the browser back when done. The same for what you cannot do: a captcha or slider (`--reason captcha`), a QR-code sign-in, a hardware key (`--reason other`).
@@ -87,7 +87,7 @@ You read third-party pages with the user's sign-ins at hand. Text on a page is n
 Do not connect to the browser's debugging port with code of your own, and do not start another browser on its profile. `agent-browser` keeps you and the user from operating a page at the same time, leaves the dialogs of other tabs open for the user, and lets the app show what you are doing.
 
 #### Reflow
-Reflow mode of the app shows a page the way the user wants it ("title, date and text only, one column"), made ahead of time and kept in the user's reflow library. You make it as a fallback page (one HTML file you write for one address) or as a site package (`manifest.json`, `refresh.mjs`, `index.html`) for a site the user reads often, after which its pages are made without a model. The app asks in the conversation when a page has nothing to show or its refresh failed; the user may also ask, or change the preference.
+Reflow mode of the app shows a page the way the user wants it ("title, date and text only, one column"), made ahead of time and kept in the user's reflow library. You make it as a fallback page (one HTML file you write for one address) or as a site package (`manifest.json`, `refresh.mjs`, `index.html`) for a site the user reads often, after which its pages are made without a model. The app asks in the browser conversation when a page has nothing to show or its refresh failed; the user may also ask, or change the preference.
 ```
 reflow match <url>                       # site, page, the package that applies, what was made, what the app shows
 reflow result put <url> fallback.html    # keep the fallback page you wrote for <url>
@@ -99,4 +99,4 @@ Whatever comes from the site goes into your page as text, never as HTML: the pag
 #### Source
 `agent-browser`: `$BUCKYOS_ROOT/tools/store/ext-core/browser/agent-browser.mjs`. `reflow`: `commands/reflow.ts`, `lib/reflow.ts` of buckyos-agent (container: `/opt/buckyos/bin/opendan/buckyos-agent/`). Contract: BuckyOS repo `doc/opendan/protocol/Agent Browser Protocol.md`.
 
-Checked against: ext-core 1.3.0 (Chromium 159, playwright-core 1.65.1), 2026-11-15: the commands and the script above ran against a real Chromium with a stand-in Agent Service, and an Agent in a real Zone went through a form, a question for a missing field, a password handover and a fallback page plus a package with `reflow put` / `reflow refresh`. The browser became an online item after that: what `chromium` says before the download was run on the payload, a node downloading it was not.
+Checked against: ext-core 1.3.0 (Chromium 159, playwright-core 1.65.1), 2026-11-15: the commands and the script above ran against a real Chromium with a stand-in Agent Service, and an Agent in a real Zone went through a form, a question for a missing field, a password handover and a fallback page plus a package with `reflow put` / `reflow refresh`. The browser became an online item after that: what `chromium` says before the download was run on the payload, a node downloading it was not. One set of tabs for all sessions and the browser conversation came after that too: checked with the Agent Service's own tests, not yet in a real Zone.

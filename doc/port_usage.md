@@ -51,4 +51,6 @@
 
 应用服务端口通常是动态端口，无需特意保留。
 
-基址 `BASE_APP_PORT = 10000`，端口号通常按 `10000 + appindex * 10` 分配。
+基址 `BASE_APP_PORT = 10000`，App 的 `www` 服务按 `10000 + app_index * 16` 分配。`app_index = 5` 使用同一端口段内的 `10081`，避开 [Fetch 标准禁止的 `10080`](https://fetch.spec.whatwg.org/#port-blocking)。其他服务使用声明的端口。
+
+该规则在 scheduler 创建实例时应用。已写入 node config 的实例保留原端口，重启服务不会重新分配；客户端应读取服务发现结果，不自行按公式计算端口。

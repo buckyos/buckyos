@@ -3133,149 +3133,177 @@ async fn an_agent_without_a_browser_says_why_on_every_entry() {
     loader.shutdown().await;
 }
 
-/// Browser TODO BR7 / HO4: what the user does to a group is told to the UI
-/// session of that group's conversation as a `_browser` observation — it
-/// says nothing by itself, only the latest one is kept, and the owner's
-/// next message sees it. A session's group is its conversation's: the
-/// default one for the owner's direct conversation, the conversation's
-/// session id for a named one, also for a Work below it.
+/// Browser TODO BR7 / HO4, D35, D36: every session works in the agent's one
+/// group. The browser conversation is the one `browser.bind_default` names:
+/// what the user does to the browser is told to its UI session as a
+/// `_browser` observation — it says nothing by itself, only the latest one is
+/// kept, and the owner's next message sees it — and its questions are what
+/// the browser shows the agent waiting for. Its UI sessions have the
+/// browser's manual, no other conversation's has; a UI session it had before
+/// it was bound is archived, and its next message opens one with the manual.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn taking_the_browser_over_is_told_to_the_conversation() {
+async fn taking_the_browser_over_is_told_to_the_browser_conversation() {
     use libopendan::notify::NotifyHost;
     let mut w = World::new();
+    std::fs::create_dir_all(w.root.join("cmd_skills/browser")).unwrap();
+    std::fs::write(w.root.join("cmd_skills/browser/SKILL.md"), "---\ndescription: the browser\nscope: ui, work\n---\nThe browser manual.").unwrap();
     let notify = Arc::new(libopendan::notify::LocalNotify::enable(&w.root, AGENT).unwrap());
     w.notify = Some(notify.clone());
     let fake = fake_browser_of(&w).await;
     let port = free_port();
     let llm = Llm::new(|req, n| {
         let all: String = req.messages.iter().map(|m| m.text_content()).collect();
+        let manual = all.contains("The browser manual.");
         match n {
-            0 | 1 => "hello".to_string(),
+            0 | 1 => {
+                assert!(!manual, "no conversation has the browser's manual before it is the browser conversation");
+                "hello".to_string()
+            }
             2 => {
-                assert!(all.contains("[browser default] The user handed the browser back."), "{all}");
-                assert!(all.contains("\"Title of https://shop.example/cart\" (https://shop.example/cart)"), "{all}");
-                assert!(!all.contains("The user took over the browser"), "only the latest record of a group is kept: {all}");
-                assert!(all.contains("go on"), "{all}");
-                "reading the page again".to_string()
+                assert!(manual, "the browser conversation's new session has the manual");
+                "ready".to_string()
             }
             3 => {
-                assert!(all.contains("[browser thing-1] The user asks you to go on from the current page"), "{all}");
-                assert!(all.contains("No page is open in it."), "{all}");
+                assert!(all.contains("[browser] The user handed the browser back."), "{all}");
+                assert!(all.contains("\"Title of https://shop.example/cart\" (https://shop.example/cart)"), "{all}");
+                assert!(!all.contains("The user took over the browser"), "only the latest record is kept: {all}");
+                "reading the page again".to_string()
+            }
+            4 => {
+                assert!(all.contains("[browser] The user asks you to go on from the current page"), "{all}");
                 "on it".to_string()
+            }
+            5 => {
+                assert!(manual, "{all}");
+                "here too".to_string()
             }
             _ => panic!("unexpected call {n}"),
         }
     });
     let loader = Loader::start(w.env(llm.clone(), port).await).await.unwrap();
     until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    let route = |session: &str| MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.to_string())).unwrap().to_string();
+    let open_ui = |session: &str| {
+        let entries = futures_block(loader.agent.sessions().query(&RegistryQuery { kind: Some(SessionKind::Ui), ..Default::default() })).unwrap();
+        entries.into_iter().find(|e| e.route_key.as_deref() == Some(route(session).as_str()) && e.status.run_state != RunState::Finished)
+    };
+    let manuals = |entry: &RegistryEntry| {
+        let cfg = SessionDir::open(&entry.location).unwrap().config().unwrap();
+        cfg.prompt.frozen.unwrap().cmd_skills.into_iter().map(|c| c.name).collect::<Vec<_>>()
+    };
+    let pending = |entry: &RegistryEntry| SessionDir::open(&entry.location).and_then(|sd| sd.state()).map(|st| st.pending_events).unwrap();
+    let say = |session: &str, text: &str| {
+        let mut msg = chat(BOB, text);
+        msg.to_session = Some(session.to_string());
+        w.mail.deliver(session, msg);
+    };
 
-    // Two conversations of the owner: the direct one and a named one.
+    // Two conversations of the owner, neither of them the browser conversation yet.
     let direct = format!("dm:{BOB}");
     w.mail.deliver(&direct, chat(BOB, "hi"));
     until("first reply", || w.mail.sent().len() == 1).await;
-    let mut named = chat(BOB, "book the flight");
-    named.to_session = Some("thing-1".into());
-    w.mail.deliver("thing-1", named);
+    say("thing-1", "book the flight");
     until("second reply", || w.mail.sent().len() == 2).await;
-    let route = |session: &str| MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.to_string())).unwrap().to_string();
-    let ui_direct = ui_entry(loader.agent.as_ref(), &route(&direct)).unwrap();
-    let ui_named = ui_entry(loader.agent.as_ref(), &route("thing-1")).unwrap();
-    let pending = |entry: &RegistryEntry| SessionDir::open(&entry.location).and_then(|sd| sd.state()).map(|st| st.pending_events).unwrap();
+    let ui_direct = open_ui(&direct).unwrap();
+    let before = open_ui("thing-1").unwrap();
+    assert!(manuals(&ui_direct).is_empty() && manuals(&before).is_empty());
 
-    // A session works in the group of its conversation.
-    let mut spec = work_spec("a work of the named conversation", "go");
-    spec.origin = Some(Origin { parent_session: Some(ui_named.session_id.clone()), ..Default::default() });
-    spec.driver = Some("app:other@alice".into());
-    let work = create_session(&w.root.join("sessions"), spec, loader.agent.as_ref(), WHO, w.channels().as_ref()).await.unwrap();
-    for (session, group) in [(ui_direct.session_id.as_str(), "default"), (ui_named.session_id.as_str(), "thing-1"), (work.sid(), "thing-1")] {
+    // Every session works in the one group, also one the registry does not know.
+    for session in [ui_direct.session_id.as_str(), before.session_id.as_str(), "no-such-session"] {
         let lease = rpc(port, "browser.acquire", json!({ "session_id": session })).await.unwrap();
-        assert_eq!(lease["group_id"], group, "session {session}");
+        assert_eq!(lease["group_id"], "default", "session {session}");
         rpc(port, "browser.release", json!({ "lease_id": lease["lease_id"] })).await.unwrap();
-        // What `agent-browser status` asks: it knows its session, not its group.
         let status = rpc(port, "browser.status", json!({ "session_id": session })).await.unwrap();
-        assert_eq!(status["groups"].as_array().unwrap().len(), 1);
-        assert_eq!(status["groups"][0]["group_id"], group, "session {session}");
+        assert_eq!(status["groups"].as_array().unwrap().iter().map(|g| g["group_id"].clone()).collect::<Vec<_>>(), vec![json!("default")]);
     }
+    for (method, params) in [("browser.status", json!({ "group_id": "thing-1" })), ("browser.take_over", json!({ "group_id": "thing-1" }))] {
+        assert_eq!(rpc_wire(port, method, params).await.unwrap_err()["code"], "no_such_group", "{method}");
+    }
+    // Without a browser conversation the browser changes hands without a record.
+    let silent = rpc(port, "browser.take_over", json!({ "group_id": "default" })).await.unwrap();
+    assert_eq!(silent["user_hold"], true);
+    rpc(port, "browser.hand_back", json!({ "group_id": "default" })).await.unwrap();
+    assert!(pending(&ui_direct).is_empty() && pending(&before).is_empty());
 
-    // A question the agent asked in a conversation and the user did not answer yet shows as the group's state.
-    let agent_state = |group: &'static str| async move {
-        rpc(port, "browser.status", json!({ "group_id": group })).await.unwrap()["groups"][0]["agent_state"].clone()
-    };
-    assert_eq!(agent_state("thing-1").await, "idle", "a conversation waiting for its next message is not a question");
-    let mut question = buckyos_api::NotifySendReq::input("", "Window or aisle?", "", Vec::new(), true, "ask-seat");
-    question.source = Some(buckyos_api::NotifySource { session_id: Some(work.sid().to_string()), ..Default::default() });
-    let question = notify.send(question).await.unwrap();
-    assert_eq!(agent_state("thing-1").await, "waiting_answer");
-    assert_eq!(agent_state("default").await, "idle");
-    let lease = rpc(port, "browser.acquire", json!({ "session_id": work.sid() })).await.unwrap();
-    assert_eq!(agent_state("thing-1").await, "working", "an agent at work is shown working");
-    rpc(port, "browser.release", json!({ "lease_id": lease["lease_id"], "state": "done" })).await.unwrap();
-    assert_eq!(agent_state("thing-1").await, "waiting_answer", "the open question comes before how the last lease ended");
-    notify.cancel(&question.notify_id, "answered in the test").await.unwrap();
-    assert_eq!(agent_state("thing-1").await, "done");
+    // The named conversation becomes the browser conversation: its session without the manual is archived.
+    assert_eq!(rpc(port, "browser.bind_default", json!({ "session_id": "thing-1" })).await.unwrap(), json!({ "default_session_id": "thing-1" }));
+    assert_eq!(rpc(port, "browser.status", json!({})).await.unwrap()["default_session_id"], "thing-1");
+    until("the session without the manual is archived", || open_ui("thing-1").is_none()).await;
+    say("thing-1", "the browser is yours");
+    until("third reply", || w.mail.sent().len() == 3).await;
+    let ui_browser = open_ui("thing-1").unwrap();
+    assert_ne!(ui_browser.session_id, before.session_id);
+    assert_eq!(manuals(&ui_browser), ["browser"]);
+    assert!(manuals(&open_ui(&direct).unwrap()).is_empty(), "another conversation has no browser manual");
+    // Bound again: nothing is archived.
+    rpc(port, "browser.bind_default", json!({ "session_id": "thing-1" })).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(open_ui("thing-1").unwrap().session_id, ui_browser.session_id);
 
-    // The user opens a page in the default group, takes over, hands back.
+    // The user opens a page, takes over, hands back: the browser conversation is told, no other.
     let tab = loader.browser.open_tab("default", Some("https://shop.example/")).await.unwrap();
     loader.browser.tab_send(&tab.tab_id, "Page.navigate", json!({ "url": "https://shop.example/cart" })).await.unwrap();
     until("the page's title arrives", || loader.browser.group("default").tabs[0].title.contains("cart")).await;
     rpc(port, "browser.take_over", json!({ "group_id": "default" })).await.unwrap();
-    until("the take-over is observed", || pending(&ui_direct).len() == 1).await;
-    let seen = pending(&ui_direct);
+    until("the take-over is observed", || pending(&ui_browser).len() == 1).await;
+    let seen = pending(&ui_browser);
     assert_eq!(seen[0].subscription_id.as_deref(), Some("_browser"));
     assert_eq!((seen[0].source.kind.as_str(), seen[0].source.id.as_str()), ("system", "browser:default"));
     assert_eq!(seen[0].latest.as_ref().unwrap().event, "take_over");
     rpc(port, "browser.hand_back", json!({ "group_id": "default" })).await.unwrap();
-    until("the hand-back replaces it", || pending(&ui_direct)[0].latest.as_ref().is_some_and(|l| l.event == "hand_back")).await;
-    assert_eq!(pending(&ui_direct).len(), 1);
-    assert!(pending(&ui_named).is_empty(), "another conversation is not told");
+    until("the hand-back replaces it", || pending(&ui_browser)[0].latest.as_ref().is_some_and(|l| l.event == "hand_back")).await;
+    assert_eq!(pending(&ui_browser).len(), 1);
+    assert!(pending(&ui_direct).is_empty(), "another conversation is not told");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(llm.calls.load(Ordering::SeqCst), 2, "an observation says nothing");
-    assert_eq!(w.mail.sent().len(), 2);
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 3, "an observation says nothing");
     // The App wakes the agent with an ordinary message.
-    w.mail.deliver(&direct, chat(BOB, "go on"));
-    until("third reply", || w.mail.sent().len() == 3).await;
-    assert_eq!(w.mail.sent()[2].1.content.content, "reading the page again");
-
-    // The named conversation's group, handed to the agent.
-    let handed = rpc(port, "browser.hand_to_agent", json!({ "group_id": "thing-1" })).await.unwrap();
-    assert_eq!(handed["group_id"], "thing-1");
-    until("the hand-over is observed", || pending(&ui_named).len() == 1).await;
-    let mut more = chat(BOB, "from here");
-    more.to_session = Some("thing-1".into());
-    w.mail.deliver("thing-1", more);
+    say("thing-1", "go on");
     until("fourth reply", || w.mail.sent().len() == 4).await;
-    // A group whose conversation has no session yet changes hands without a record.
-    let silent = rpc(port, "browser.take_over", json!({ "group_id": "thing-2" })).await.unwrap();
-    assert_eq!(silent["user_hold"], true);
+    assert_eq!(w.mail.sent()[3].1.content.content, "reading the page again");
 
-    // The default group is bound to the named conversation (MessageHub has no conversation that is
-    // "the default one" by its id): its group becomes part of the default group, its sessions work
-    // there, and what happens to the default group is told to it rather than to any other.
-    let named_tab = loader.browser.open_tab("thing-1", Some("https://air.example/")).await.unwrap();
-    assert!(pending(&ui_named).is_empty() && pending(&ui_direct).is_empty(), "what was told is consumed");
-    let bound = rpc(port, "browser.bind_default", json!({ "session_id": "thing-1" })).await.unwrap();
-    assert_eq!(bound, json!({ "default_session_id": "thing-1" }));
-    let status = rpc(port, "browser.status", json!({})).await.unwrap();
-    assert_eq!(status["default_session_id"], "thing-1");
-    let groups: Vec<&str> = status["groups"].as_array().unwrap().iter().map(|g| g["group_id"].as_str().unwrap()).collect();
-    assert_eq!(groups, vec!["default", "thing-2"], "the conversation's own group is gone");
-    let tabs: Vec<&str> = status["groups"][0]["tabs"].as_array().unwrap().iter().map(|t| t["tab_id"].as_str().unwrap()).collect();
-    assert!(tabs.contains(&tab.tab_id.as_str()) && tabs.contains(&named_tab.tab_id.as_str()), "{tabs:?}");
-    for session in [ui_direct.session_id.as_str(), ui_named.session_id.as_str(), work.sid()] {
-        let status = rpc(port, "browser.status", json!({ "session_id": session })).await.unwrap();
-        assert_eq!(status["groups"][0]["group_id"], "default", "session {session}");
-    }
-    rpc(port, "browser.take_over", json!({ "group_id": "default" })).await.unwrap();
-    until("the bound conversation is told", || pending(&ui_named).len() == 1).await;
-    assert_eq!(pending(&ui_named)[0].source.id, "browser:default");
-    assert!(pending(&ui_direct).is_empty(), "the conversation the default group is bound to comes first");
-    // Binding it again changes nothing; binding another conversation gives this one its own group back.
-    rpc(port, "browser.bind_default", json!({ "session_id": "thing-1" })).await.unwrap();
-    assert_eq!(rpc(port, "browser.status", json!({})).await.unwrap()["groups"][0]["tabs"].as_array().unwrap().len(), 2);
+    // A question the agent asked in the browser conversation (here: a Work of it) shows as its state; one asked elsewhere does not.
+    let agent_state = || async move { rpc(port, "browser.status", json!({})).await.unwrap()["groups"][0]["agent_state"].clone() };
+    let work_of = |parent: &RegistryEntry, objective: &str| {
+        let mut spec = work_spec(objective, "go");
+        spec.origin = Some(Origin { parent_session: Some(parent.session_id.clone()), ..Default::default() });
+        spec.driver = Some("app:other@alice".into());
+        spec
+    };
+    let elsewhere = create_session(&w.root.join("sessions"), work_of(&ui_direct, "a work of the direct conversation"), loader.agent.as_ref(), WHO, w.channels().as_ref()).await.unwrap();
+    let work = create_session(&w.root.join("sessions"), work_of(&ui_browser, "a work of the browser conversation"), loader.agent.as_ref(), WHO, w.channels().as_ref()).await.unwrap();
+    assert_eq!(agent_state().await, "idle", "a conversation waiting for its next message is not a question");
+    let ask = |session: &str, key: &str| {
+        let mut question = buckyos_api::NotifySendReq::input("", "Window or aisle?", "", Vec::new(), true, key);
+        question.source = Some(buckyos_api::NotifySource { session_id: Some(session.to_string()), ..Default::default() });
+        question
+    };
+    let other = notify.send(ask(elsewhere.sid(), "ask-elsewhere")).await.unwrap();
+    assert_eq!(agent_state().await, "idle", "asked in another conversation");
+    let question = notify.send(ask(work.sid(), "ask-seat")).await.unwrap();
+    assert_eq!(agent_state().await, "waiting_answer");
+    let lease = rpc(port, "browser.acquire", json!({ "session_id": work.sid() })).await.unwrap();
+    assert_eq!(agent_state().await, "working", "an agent at work is shown working");
+    rpc(port, "browser.release", json!({ "lease_id": lease["lease_id"], "state": "done" })).await.unwrap();
+    assert_eq!(agent_state().await, "waiting_answer", "the open question comes before how the last lease ended");
+    notify.cancel(&question.notify_id, "answered in the test").await.unwrap();
+    notify.cancel(&other.notify_id, "answered in the test").await.unwrap();
+    assert_eq!(agent_state().await, "done");
+
+    // Handed to the agent: the browser conversation is told, and the App's message wakes it.
+    let handed = rpc(port, "browser.hand_to_agent", json!({ "group_id": "default" })).await.unwrap();
+    assert_eq!(handed["group_id"], "default");
+    until("the hand-over is observed", || pending(&ui_browser).len() == 1).await;
+    say("thing-1", "from here");
+    until("fifth reply", || w.mail.sent().len() == 5).await;
+
+    // Another conversation becomes the browser conversation: its first session has the manual; the tabs stay.
     rpc(port, "browser.bind_default", json!({ "session_id": "thing-3" })).await.unwrap();
-    let status = rpc(port, "browser.status", json!({ "session_id": work.sid() })).await.unwrap();
-    assert_eq!((status["default_session_id"].clone(), status["groups"][0]["group_id"].clone()), (json!("thing-3"), json!("thing-1")));
-    assert!(status["groups"][0]["tabs"].as_array().unwrap().is_empty(), "the tabs stay in the default group");
+    say("thing-3", "hello browser");
+    until("sixth reply", || w.mail.sent().len() == 6).await;
+    assert_eq!(manuals(&open_ui("thing-3").unwrap()), ["browser"]);
+    assert_eq!(open_ui("thing-1").unwrap().session_id, ui_browser.session_id, "the conversation bound before keeps its session");
+    let status = rpc(port, "browser.status", json!({})).await.unwrap();
+    assert_eq!((status["default_session_id"].clone(), status["groups"][0]["tabs"].as_array().unwrap().len()), (json!("thing-3"), 1));
     let file: Value = serde_json::from_slice(&std::fs::read(w.root.join("state/browser/groups.json")).unwrap()).unwrap();
     assert_eq!(file["default_session_id"], "thing-3");
     drop(fake);

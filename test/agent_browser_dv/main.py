@@ -69,7 +69,7 @@ def main() -> int:
         site.stdout.readline()
         # screen: the owner's path to a password field
         base = f"http://{SITE_FROM_AGENT}:{PORT}"
-        screen = run(["node", str(HERE / "screen.mjs"), "--group", "default", "--out", str(out / "shots"),
+        screen = run(["node", str(HERE / "screen.mjs"), "--out", str(out / "shots"),
                       f"nav={base}/login", "tap=100,130", "text=dvuser", "tap=100,220", f"text={PASSWORD}",
                       "shot=login-filled", "key=Enter", "wait=1500", "shot=orders", "close-tabs"], env)
         (out / "screen.txt").write_text(screen.stdout + screen.stderr)

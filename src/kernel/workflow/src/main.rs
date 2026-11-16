@@ -211,19 +211,10 @@ pub async fn start_workflow_service() -> Result<()> {
     info!("workflow published {} builtin functions", functions.list().len());
 
     // Tool environment of this host; media function fingerprints derive from it.
-    let environment = Arc::new(
-        tokio::task::spawn_blocking(functions::media::tools::probe_default)
-            .await
-            .map_err(|err| anyhow::anyhow!("probe media tools failed: {}", err))?,
-    );
-    info!(
-        "workflow media tools revision={} present={:?} missing={:?}",
-        environment.revision,
-        environment.tools.keys().collect::<Vec<_>>(),
-        environment.missing
-    );
     let environment_provider: Arc<dyn EnvironmentProvider> =
-        Arc::new(StaticEnvironment(environment.clone()));
+        functions::media::tools::MediaEnvironment::start()
+            .await
+            .map_err(|err| anyhow::anyhow!("probe media tools failed: {}", err))?;
 
     let artifacts_bucket = buckyos_api::workflow_artifacts_bucket();
     let io: Arc<dyn NativeIo> = Arc::new(ZoneNativeIo::new(

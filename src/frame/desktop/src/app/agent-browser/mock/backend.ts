@@ -1,7 +1,7 @@
 /* The Agent Service of the mock runtime (`VITE_CP_USE_MOCK`): kRPC `browser.*`, the screen socket and the upload,
  * speaking the wire format of the protocol document, so the App above api/backend.ts runs the same code as on a
- * Zone. A group has tabs showing the page of mock/page.ts; the Agent's side (lease, release, handover request) is
- * driven from `window.__agentBrowserMock`, which the e2e specs also read the received messages from. */
+ * Zone. The Agent's one group has tabs showing the page of mock/page.ts; the Agent's side (lease, release, handover
+ * request) is driven from `window.__agentBrowserMock`, which the e2e specs also read the received messages from. */
 
 import { mockOnlineInPlace, mockOnlineStatus, setMockOnline } from '../../../api/settings_mock'
 import { getMockEntityDid } from '../../messagehub/mock/data'
@@ -133,10 +133,10 @@ function unavailability(browser: MockBrowser): { code: UnavailableCode; text: st
   return { code: 'not_downloaded', text }
 }
 
-function wireStatus(agentId: string, groupId?: string): BrowserStatus {
+function wireStatus(agentId: string): BrowserStatus {
   const browser = browserOf(agentId)
   const why = unavailability(browser)
-  const groups = groupId ? [groupOf(agentId, groupId)] : [groupOf(agentId, DEFAULT_GROUP), ...[...browser.groups.values()].filter((group) => group.id !== DEFAULT_GROUP && (group.tabs.length > 0 || !!group.lease || group.userHold || agentStateOf(group) !== 'idle'))]
+  const groups = [groupOf(agentId, DEFAULT_GROUP)]
   return {
     enabled: browser.enabled,
     available: browserThere(browser),
@@ -149,10 +149,19 @@ function wireStatus(agentId: string, groupId?: string): BrowserStatus {
   }
 }
 
-function clampViewport(viewport: Viewport): Viewport {
-  const clamp = (value: number) => Math.max(VIEWPORT_MIN, Math.min(VIEWPORT_MAX, Math.round(Number(value) || VIEWPORT_MIN)))
-  return { width: clamp(viewport.width), height: clamp(viewport.height), mobile: viewport.mobile === true }
+/** §3.2: 1–2, two decimals; `fallback` when the message names none. */
+function clampRatio(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.max(1, Math.min(2, value)) * 100) / 100 : fallback
 }
+
+function clampViewport(viewport: Viewport, pixelRatio: number): Viewport {
+  const clamp = (value: number) => Math.max(VIEWPORT_MIN, Math.min(VIEWPORT_MAX, Math.round(Number(value) || VIEWPORT_MIN)))
+  return { width: clamp(viewport.width), height: clamp(viewport.height), mobile: viewport.mobile === true, pixel_ratio: clampRatio(viewport.pixel_ratio, pixelRatio) }
+}
+
+/** A slow link between the service and the App (`window.__agentBrowserMock.network`): a frame's JPEG arrives after its
+ * `frame_meta` as late as its bytes take at this rate; null: at once. */
+const network: { bytesPerSecond: number | null } = { bytesPerSecond: null }
 
 class MockSocket implements ScreenSocket {
   binaryType: BinaryType = 'arraybuffer'
@@ -162,7 +171,8 @@ class MockSocket implements ScreenSocket {
   onerror: ((event: Event) => void) | null = null
   readonly agentId: string
   groupId: string | null = null
-  viewport: Viewport = { width: 412, height: 915, mobile: true }
+  viewport: Viewport = { width: 412, height: 915, mobile: true, pixel_ratio: 1 }
+  jpegQuality = 60
   closed = false
   seq = 0
   unacked: number | null = null
@@ -243,7 +253,7 @@ async function pushFrame(socket: MockSocket) {
   const viewport = socket.viewport
   let data: ArrayBuffer
   try {
-    data = await renderMockPage(tab.page, { viewport, signedIn: browserOf(socket.agentId).signedIn, frame: ++frameCount })
+    data = await renderMockPage(tab.page, { viewport, signedIn: browserOf(socket.agentId).signedIn, frame: ++frameCount, quality: socket.jpegQuality })
   } catch {
     socket.rendering = false
     return
@@ -252,7 +262,8 @@ async function pushFrame(socket: MockSocket) {
   if (socket.closed) return
   socket.unacked = ++socket.seq
   socket.deliver({ type: 'frame_meta', seq: socket.seq, tab_id: tab.id, width: viewport.width, height: viewport.height })
-  socket.deliver(data)
+  if (network.bytesPerSecond) window.setTimeout(() => socket.deliver(data), (data.byteLength / network.bytesPerSecond) * 1000)
+  else socket.deliver(data)
 }
 
 function repaint(agentId: string, groupId: string) {
@@ -420,7 +431,7 @@ function receive(socket: MockSocket, message: ScreenUpstream) {
     if (why) { refuse('browser_unavailable', why); return }
     browser.running = true
     socket.groupId = message.group_id
-    socket.viewport = clampViewport(message.viewport)
+    socket.viewport = clampViewport(message.viewport, 1)
     const group = groupOf(agentId, message.group_id)
     log.push({ agentId, groupId: group.id, dropped: false, message })
     socket.deliver({ type: 'ready', state: screenState(socket, group) })
@@ -488,7 +499,7 @@ function receive(socket: MockSocket, message: ScreenUpstream) {
       }
       break
     case 'viewport':
-      socket.viewport = clampViewport(message)
+      socket.viewport = clampViewport(message, socket.viewport.pixel_ratio ?? 1)
       socket.deliver({ type: 'state', ...screenState(socket, group) })
       void pushFrame(socket)
       break
@@ -497,6 +508,10 @@ function receive(socket: MockSocket, message: ScreenUpstream) {
       changed(agentId, group.id)
       break
     case 'quality':
+      if (typeof message.jpeg_quality === 'number') socket.jpegQuality = Math.round(Math.max(10, Math.min(95, message.jpeg_quality)))
+      socket.viewport = { ...socket.viewport, pixel_ratio: clampRatio(message.pixel_ratio, socket.viewport.pixel_ratio ?? 1) }
+      socket.deliver({ type: 'state', ...screenState(socket, group) })
+      void pushFrame(socket)
       break
   }
 }
@@ -534,7 +549,8 @@ function call(agentId: string, method: string, params: Record<string, unknown>):
   const groupId = typeof params.group_id === 'string' ? params.group_id : ''
   switch (method) {
     case 'browser.status':
-      return wireStatus(agentId, groupId || undefined)
+      if (groupId && groupId !== DEFAULT_GROUP) throw new MockError('no_such_group')
+      return wireStatus(agentId)
     case 'browser.ensure':
       requireUsable(agentId).running = true
       return wireStatus(agentId)
@@ -542,7 +558,7 @@ function call(agentId: string, method: string, params: Record<string, unknown>):
     case 'browser.hand_back':
     case 'browser.hand_to_agent': {
       requireUsable(agentId)
-      if (!groupId) throw new MockError('no_such_group')
+      if (groupId !== DEFAULT_GROUP) throw new MockError('no_such_group')
       const group = groupOf(agentId, groupId)
       group.lease = null
       group.released = null
@@ -553,17 +569,8 @@ function call(agentId: string, method: string, params: Record<string, unknown>):
     }
     case 'browser.bind_default': {
       const sessionId = typeof params.session_id === 'string' ? params.session_id : ''
-      if (!sessionId) throw new MockError('invalid_argument')
-      const browser = browserOf(agentId)
-      const named = browser.groups.get(sessionId)
-      browser.defaultSessionId = sessionId
-      if (named && sessionId !== DEFAULT_GROUP) {
-        const target = groupOf(agentId, DEFAULT_GROUP)
-        target.tabs.push(...named.tabs)
-        target.activeTabId ??= named.activeTabId
-        browser.groups.delete(sessionId)
-        changed(agentId, DEFAULT_GROUP)
-      }
+      if (!sessionId || sessionId === DEFAULT_GROUP) throw new MockError('invalid_argument')
+      browserOf(agentId).defaultSessionId = sessionId
       return { default_session_id: sessionId }
     }
     case 'browser.upload': {
@@ -617,56 +624,57 @@ const control = {
   log,
   rpc: rpcLog,
   uploads,
+  network,
   rects: mockPageRects,
   reflow: mockReflowControl,
-  page(agentId: string, groupId: string) {
-    const group = groupOf(agentId, groupId)
-    const tab = activeTab(group)
+  page(agentId: string) {
+    const tab = activeTab(groupOf(agentId, DEFAULT_GROUP))
     return tab ? { ...tab.page, signedIn: browserOf(agentId).signedIn } : null
   },
-  agentAcquire(agentId: string, groupId: string, sessionId = 'mock-work-session') {
-    const group = groupOf(agentId, groupId)
+  agentAcquire(agentId: string, sessionId = 'mock-work-session') {
+    const group = groupOf(agentId, DEFAULT_GROUP)
     if (group.userHold) return false
     group.lease = { session_id: sessionId, expires_at_ms: Date.now() + 60_000 }
     group.released = null
-    changed(agentId, groupId)
+    changed(agentId, DEFAULT_GROUP)
     return true
   },
-  agentOpen(agentId: string, groupId: string, url: string) {
-    const group = groupOf(agentId, groupId)
+  agentOpen(agentId: string, url: string) {
+    const group = groupOf(agentId, DEFAULT_GROUP)
     if (!group.lease) return false
     const tab = activeTab(group)
     if (tab) {
       tab.history = [...tab.history.slice(0, tab.cursor + 1), url]
       tab.cursor = tab.history.length - 1
-      load(agentId, groupId, tab, url)
-    } else load(agentId, groupId, openTab(agentId, groupId, url), url)
+      load(agentId, DEFAULT_GROUP, tab, url)
+    } else load(agentId, DEFAULT_GROUP, openTab(agentId, DEFAULT_GROUP, url), url)
     return true
   },
-  agentRelease(agentId: string, groupId: string, state?: 'done' | 'stuck', note?: string) {
-    const group = groupOf(agentId, groupId)
+  agentRelease(agentId: string, state?: 'done' | 'stuck', note?: string) {
+    const group = groupOf(agentId, DEFAULT_GROUP)
     group.lease = null
     group.released = state ? { state, note: note ?? null } : null
-    changed(agentId, groupId)
+    changed(agentId, DEFAULT_GROUP)
   },
-  agentRequestHandover(agentId: string, groupId: string, reason: HandoverReason, note?: string) {
-    const group = groupOf(agentId, groupId)
+  agentRequestHandover(agentId: string, reason: HandoverReason, note?: string) {
+    const group = groupOf(agentId, DEFAULT_GROUP)
     group.lease = null
     group.userHold = true
     group.handover = { reason, note: note ?? null, at_ms: Date.now() }
-    changed(agentId, groupId)
+    changed(agentId, DEFAULT_GROUP)
   },
-  agentAsk(agentId: string, groupId: string, waiting: boolean) {
-    groupOf(agentId, groupId).waitingAnswer = waiting
-    changed(agentId, groupId)
+  /** A question the Agent asked in the browser conversation is open (`waiting_answer`), or not any more. */
+  agentAsk(agentId: string, waiting: boolean) {
+    groupOf(agentId, DEFAULT_GROUP).waitingAnswer = waiting
+    changed(agentId, DEFAULT_GROUP)
   },
   /** The page moves its own focus onto its text field, or away from it (a script, not a press). */
-  pageFocus(agentId: string, groupId: string, focused: boolean) {
-    const tab = activeTab(groupOf(agentId, groupId))
+  pageFocus(agentId: string, focused: boolean) {
+    const tab = activeTab(groupOf(agentId, DEFAULT_GROUP))
     if (!tab) return
     tab.page.focused = focused
-    changed(agentId, groupId)
-    emitFocus(agentId, groupId)
+    changed(agentId, DEFAULT_GROUP)
+    emitFocus(agentId, DEFAULT_GROUP)
   },
   /** `download`: where the node's `chromium` stands (shared by every Agent of the mock); it then moves only by `ext_tools.download`. */
   setAvailability(agentId: string, { download, ...patch }: { enabled?: boolean; available?: boolean; unavailable?: string | null; download?: 'missing' | 'failed' | 'ready' }) {

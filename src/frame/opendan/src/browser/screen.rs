@@ -6,7 +6,7 @@
 //! page — unless the agent operates the group.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,8 +23,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use super::cdp::{CdpClient, CdpError, EventStream, Scope};
-use super::groups::{is_internal, Controller};
+use super::groups::{Controller, DEFAULT_GROUP};
 use super::input;
+use super::process;
 use super::requests::{send_settled, Notice};
 use super::{BrowserError, BrowserModule, Viewer};
 
@@ -34,6 +35,8 @@ pub type Authorize = Box<dyn FnOnce(Option<String>) -> BoxFuture<'static, Result
 
 const VIEWPORT_MIN: f64 = 320.0;
 const VIEWPORT_MAX: f64 = 2560.0;
+/// The most pixels of a frame a CSS pixel can be: that of the browser's dense screen (`process::SCREENS`).
+const PIXEL_RATIO_MAX: f64 = 2.0;
 const DEFAULT_FPS: u32 = 15;
 const MAX_FPS: u32 = 30;
 const DEFAULT_JPEG_QUALITY: u8 = 60;
@@ -73,13 +76,37 @@ struct Viewport {
     width: u32,
     height: u32,
     mobile: bool,
+    /// How many pixels of a frame a CSS pixel is, 1–2: the density of the screen that shows the frames.
+    pixel_ratio: f64,
 }
 
 impl Viewport {
-    fn parse(value: &Value) -> Option<Self> {
+    /// `pixel_ratio` is the one of a value that names none.
+    fn parse(value: &Value, pixel_ratio: f64) -> Option<Self> {
         let side = |name: &str| value[name].as_f64().filter(|n| n.is_finite()).map(|n| n.round().clamp(VIEWPORT_MIN, VIEWPORT_MAX) as u32);
-        Some(Self { width: side("width")?, height: side("height")?, mobile: value["mobile"].as_bool().unwrap_or(false) })
+        Some(Self {
+            width: side("width")?,
+            height: side("height")?,
+            mobile: value["mobile"].as_bool().unwrap_or(false),
+            pixel_ratio: pixel_ratio_of(value).unwrap_or(pixel_ratio),
+        })
     }
+
+    /// The tab is painted on the browser's dense screen.
+    fn dense(&self) -> bool {
+        self.pixel_ratio > 1.0
+    }
+
+    /// The largest frame of the screencast: a ratio between the two screens' is the dense screen's frame made smaller.
+    fn limit(&self) -> Option<(u32, u32)> {
+        let side = |n: u32| (n as f64 * self.pixel_ratio).round() as u32;
+        (self.dense() && self.pixel_ratio < PIXEL_RATIO_MAX).then(|| (side(self.width), side(self.height)))
+    }
+}
+
+/// The `pixel_ratio` a message names, kept within what the browser's screens have.
+fn pixel_ratio_of(value: &Value) -> Option<f64> {
+    value["pixel_ratio"].as_f64().filter(|n| n.is_finite()).map(|n| (n.clamp(1.0, PIXEL_RATIO_MAX) * 100.0).round() / 100.0)
 }
 
 /// The user agent of a phone with this browser's version, and what the
@@ -104,14 +131,28 @@ fn mobile_agent(version: &Value) -> Option<(String, Value)> {
     Some((agent, metadata))
 }
 
+/// Put a tab's window on the browser's screen of its pixel ratio: the first
+/// one, or the dense one beside it (`process::SCREENS`). A window on the
+/// dense screen paints frames of twice its pixels; its page sees no
+/// difference once it is made its device again (a window that moves loses
+/// the metrics it was given). One that is there already does not move.
+async fn place(cdp: &CdpClient, session: &str, dense: bool) {
+    let Ok(window) = send_settled(cdp, session, "Browser.getWindowForTarget", json!({})).await else { return };
+    let Some(window_id) = window["windowId"].as_i64() else { return };
+    let left = if dense { process::DENSE_SCREEN_LEFT } else { 0 };
+    let _ = send_settled(cdp, session, "Browser.setWindowBounds", json!({ "windowId": window_id, "bounds": { "left": left, "top": 0 } })).await;
+}
+
 /// Make a tab look to its page like the device that shows it: a phone
-/// (size, touch, a phone's user agent) or a desktop window of this size.
-/// `again`: the tab may have been made that device before.
+/// (size, touch, a phone's user agent) or a desktop window of this size, on
+/// the screen of its pixel ratio. `again`: the tab may have been made that device before.
 async fn emulate(cdp: &CdpClient, session: &str, viewport: Viewport, mobile: Option<&(String, Value)>, again: bool) {
-    let Viewport { width, height, mobile: phone } = viewport;
+    let Viewport { width, height, mobile: phone, .. } = viewport;
+    place(cdp, session, viewport.dense()).await;
     let metrics = match phone {
         true => json!({ "width": width, "height": height, "deviceScaleFactor": MOBILE_SCALE, "mobile": true, "screenWidth": width, "screenHeight": height }),
-        false => json!({ "width": width, "height": height, "deviceScaleFactor": 0, "mobile": false }),
+        // Not the screen's: on the dense one a page would be twice as dense.
+        false => json!({ "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false }),
     };
     if again {
         // The browser takes metrics it already got over this session for done, though a
@@ -158,10 +199,12 @@ pub struct Frame {
     pub height: u64,
 }
 
-/// How a connection looks at tabs: the viewport it asks for, when it set
-/// it (`Casts::stamp`), and what a phone tells sites it is (`mobile_agent`).
+/// How a connection looks at tabs: the viewport it asks for, the picture
+/// quality of its frames, when it set its viewport (`Casts::stamp`), and
+/// what a phone tells sites it is (`mobile_agent`).
 struct Look {
     viewport: Viewport,
+    quality: u8,
     set: u64,
     mobile: Option<(String, Value)>,
 }
@@ -170,15 +213,30 @@ struct Look {
 struct Viewing {
     id: u64,
     viewport: Viewport,
+    quality: u8,
     set: u64,
 }
 
-/// What a tab is to its page: the viewport of the viewer that set its own
+/// How a tab's screencast paints: for which viewport (its pixel ratio), at what quality.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Paint {
+    viewport: Viewport,
+    quality: u8,
+}
+
+impl Paint {
+    /// What the screencast is started with: it is started again when that changes.
+    fn cast(&self) -> (u8, bool, Option<(u32, u32)>) {
+        (self.quality, self.viewport.dense(), self.viewport.limit())
+    }
+}
+
+/// What a tab is to its page: the look of the viewer that set its viewport
 /// last, how often the page was to be asked for again as that device, and
 /// how often the tab was to be made that device once more.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Device {
-    viewport: Viewport,
+    paint: Paint,
     reloads: u64,
     dresses: u64,
 }
@@ -186,7 +244,6 @@ struct Device {
 struct Cast {
     cdp: Arc<CdpClient>,
     session: String,
-    quality: Arc<AtomicU8>,
     viewers: Vec<Viewing>,
     device: watch::Sender<Device>,
     frames: watch::Receiver<Option<Arc<Frame>>>,
@@ -195,13 +252,13 @@ struct Cast {
 }
 
 impl Cast {
-    /// A tab has one viewport: that of the viewer that set its own last.
-    /// Returns whether the tab is to be made another device, or asked for again.
+    /// A tab has one look: that of the viewer that set its viewport last.
+    /// Returns whether the tab is to be made another device, painted otherwise, or asked for again.
     fn settle(&self, reload: bool) -> bool {
-        let Some(viewport) = self.viewers.iter().max_by_key(|viewing| viewing.set).map(|viewing| viewing.viewport) else { return false };
+        let Some(paint) = self.viewers.iter().max_by_key(|viewing| viewing.set).map(|viewing| Paint { viewport: viewing.viewport, quality: viewing.quality }) else { return false };
         self.device.send_if_modified(|device| {
-            let changed = device.viewport != viewport || reload;
-            device.viewport = viewport;
+            let changed = device.paint != paint || reload;
+            device.paint = paint;
             device.reloads += reload as u64;
             changed
         })
@@ -234,7 +291,7 @@ pub struct Watching {
 impl Watching {
     /// The viewport the tab has: this connection's, or that of another one that set its own later.
     fn viewport(&self) -> Viewport {
-        self.device.borrow().viewport
+        self.device.borrow().paint.viewport
     }
 }
 
@@ -244,16 +301,20 @@ impl Drop for Watching {
     }
 }
 
-/// Keep a tab the device its viewers settled on, and tell its screencast what it was made (`dressed`).
-async fn dress(cdp: Arc<CdpClient>, session: String, mobile: Option<(String, Value)>, mut device: watch::Receiver<Device>, dressed: watch::Sender<Option<Viewport>>) {
+/// Keep a tab the device its viewers settled on, and tell its screencast what it was made and how to paint it (`dressed`).
+async fn dress(cdp: Arc<CdpClient>, session: String, mobile: Option<(String, Value)>, mut device: watch::Receiver<Device>, dressed: watch::Sender<Option<Paint>>) {
     let mut worn: Option<Device> = None;
     loop {
         let wanted = *device.borrow_and_update();
-        if worn.map(|worn| (worn.viewport, worn.dresses)) != Some((wanted.viewport, wanted.dresses)) {
+        let viewport = wanted.paint.viewport;
+        let made = worn.map(|worn| (worn.paint.viewport, worn.dresses)) != Some((viewport, wanted.dresses));
+        if made {
             // What the tab was before this screencast is not known.
-            let again = worn.is_none_or(|worn| worn.viewport == wanted.viewport);
-            emulate(&cdp, &session, wanted.viewport, mobile.as_ref(), again).await;
-            dressed.send_replace(Some(wanted.viewport));
+            let again = worn.is_none_or(|worn| worn.paint.viewport == viewport);
+            emulate(&cdp, &session, viewport, mobile.as_ref(), again).await;
+        }
+        if made || worn.is_some_and(|worn| worn.paint.quality != wanted.paint.quality) {
+            dressed.send_replace(Some(wanted.paint));
         }
         // A site decides what it sends by the user agent: asked again as the other device.
         if worn.is_some_and(|worn| worn.reloads != wanted.reloads) {
@@ -266,11 +327,15 @@ async fn dress(cdp: Arc<CdpClient>, session: String, mobile: Option<(String, Val
     }
 }
 
-fn start_cast(cdp: &CdpClient, session: &str, quality: u8) {
+fn start_cast(cdp: &CdpClient, session: &str, paint: &Paint) {
     // The page domain is on by the time the module is done attaching; a screen may be earlier.
     let _ = cdp.post(Some(session), "Page.enable", json!({}));
     // Every frame: the browser's own thinning would drop the last frame of a change.
-    let _ = cdp.post(Some(session), "Page.startScreencast", json!({ "format": "jpeg", "quality": quality, "everyNthFrame": 1 }));
+    let mut params = json!({ "format": "jpeg", "quality": paint.quality, "everyNthFrame": 1 });
+    if let Some((width, height)) = paint.viewport.limit() {
+        (params["maxWidth"], params["maxHeight"]) = (json!(width), json!(height));
+    }
+    let _ = cdp.post(Some(session), "Page.startScreencast", params);
 }
 
 /// What a screencast's task hears of its tab.
@@ -282,9 +347,12 @@ async fn feed(
     session: String,
     mut events: EventStream,
     frames: watch::Sender<Option<Arc<Frame>>>,
-    quality: Arc<AtomicU8>,
-    mut dressed: watch::Receiver<Option<Viewport>>,
+    first: Paint,
+    mut dressed: watch::Receiver<Option<Paint>>,
 ) {
+    // How the screencast paints. It starts once the tab is made its device,
+    // and again when it is to paint at another quality or pixel ratio.
+    let mut painting: Option<Paint> = None;
     // When a frame is expected by. The browser paints one when a screencast
     // starts, but not always when a page was loaded again, the tab went to
     // another renderer or was made another size: a screencast that owes a
@@ -309,15 +377,23 @@ async fn feed(
                 restarts += 1;
                 owed = (restarts < CAST_RESTARTS).then(|| Instant::now() + FIRST_FRAME_WAIT);
                 let _ = cdp.post(Some(&session), "Page.stopScreencast", json!({}));
-                start_cast(&cdp, &session, quality.load(Ordering::SeqCst));
+                start_cast(&cdp, &session, painting.get_or_insert(first));
                 continue;
             }
             Ok(()) = dressed.changed() => {
-                resized = dressed.borrow_and_update().map(|viewport| (viewport.width as u64, viewport.height as u64)).filter(|size| Some(*size) != painted);
-                if resized.is_some() {
+                let Some(paint) = *dressed.borrow_and_update() else { continue };
+                resized = Some((paint.viewport.width as u64, paint.viewport.height as u64)).filter(|size| Some(*size) != painted);
+                if painting.map(|painting| painting.cast()) != Some(paint.cast()) {
+                    if painting.is_some() {
+                        let _ = cdp.post(Some(&session), "Page.stopScreencast", json!({}));
+                    }
+                    start_cast(&cdp, &session, &paint);
+                    (restarts, owed) = (0, Some(Instant::now() + FIRST_FRAME_WAIT));
+                } else if resized.is_some() {
                     restarts = 0;
                     owed = owed.or(Some(Instant::now() + LOADED_FRAME_WAIT));
                 }
+                painting = Some(paint);
                 continue;
             }
         };
@@ -354,8 +430,8 @@ impl Casts {
         self.stamps.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    fn watch(&self, module: &Arc<BrowserModule>, cdp: &Arc<CdpClient>, tab_id: &str, session: &str, look: &Look, quality: u8) -> Watching {
-        let viewing = Viewing { id: self.stamp(), viewport: look.viewport, set: look.set };
+    fn watch(&self, module: &Arc<BrowserModule>, cdp: &Arc<CdpClient>, tab_id: &str, session: &str, look: &Look) -> Watching {
+        let viewing = Viewing { id: self.stamp(), viewport: look.viewport, quality: look.quality, set: look.set };
         let id = viewing.id;
         let mut tabs = self.tabs.lock().expect("casts");
         let (frames, device, changed) = match tabs.get_mut(tab_id) {
@@ -369,14 +445,13 @@ impl Casts {
                     stale.end();
                 }
                 let (publish, frames) = watch::channel(None);
-                let (device, devices) = watch::channel(Device { viewport: look.viewport, reloads: 0, dresses: 0 });
+                let paint = Paint { viewport: look.viewport, quality: look.quality };
+                let (device, devices) = watch::channel(Device { paint, reloads: 0, dresses: 0 });
                 let (dressed, dressing) = watch::channel(None);
                 let events = cdp.subscribe(Scope::Session(session.to_string()), CAST_EVENTS);
-                let quality = Arc::new(AtomicU8::new(quality));
-                let task = tokio::spawn(feed(cdp.clone(), tab_id.to_string(), session.to_string(), events, publish, quality.clone(), dressing));
+                let task = tokio::spawn(feed(cdp.clone(), tab_id.to_string(), session.to_string(), events, publish, paint, dressing));
                 let dresser = tokio::spawn(dress(cdp.clone(), session.to_string(), look.mobile.clone(), devices.clone(), dressed));
-                start_cast(cdp, session, quality.load(Ordering::SeqCst));
-                let cast = Cast { cdp: cdp.clone(), session: session.to_string(), quality, viewers: vec![viewing], device, frames: frames.clone(), task, dresser };
+                let cast = Cast { cdp: cdp.clone(), session: session.to_string(), viewers: vec![viewing], device, frames: frames.clone(), task, dresser };
                 tabs.insert(tab_id.to_string(), cast);
                 (frames, devices, false)
             }
@@ -388,14 +463,15 @@ impl Casts {
         Watching { module: module.clone(), id, tab_id: tab_id.to_string(), session: session.to_string(), frames, device }
     }
 
-    /// A viewer set its viewport: the tab has it from now on, and with
-    /// `reload` its page is asked for again as that device.
+    /// A viewer changed its look. One that set its viewport (a later
+    /// `look.set`) gives the tab its look from now on, and with `reload` its
+    /// page is asked for again as that device.
     fn claim(&self, watching: &Watching, look: &Look, reload: bool) {
         let changed = {
             let mut tabs = self.tabs.lock().expect("casts");
             let Some(cast) = tabs.get_mut(&watching.tab_id).filter(|cast| cast.session == watching.session) else { return };
             let Some(viewing) = cast.viewers.iter_mut().find(|viewing| viewing.id == watching.id) else { return };
-            (viewing.viewport, viewing.set) = (look.viewport, look.set);
+            (viewing.viewport, viewing.quality, viewing.set) = (look.viewport, look.quality, look.set);
             cast.settle(reload)
         };
         if changed {
@@ -404,7 +480,8 @@ impl Casts {
     }
 
     /// The agent is done with a tab: what its Playwright did may have ended
-    /// the device the tab was made (a screenshot does), so it is made that device once more.
+    /// the device the tab was made (a screenshot does), so it is made that
+    /// device once more, on the screen of its pixel ratio.
     fn dress_again(&self, watching: &Watching) {
         let tabs = self.tabs.lock().expect("casts");
         if let Some(cast) = tabs.get(&watching.tab_id).filter(|cast| cast.session == watching.session) {
@@ -412,18 +489,8 @@ impl Casts {
         }
     }
 
-    /// The picture quality of a tab's frames from now on (the last viewer to say so is heard).
-    fn set_quality(&self, tab_id: &str, session: &str, quality: u8) {
-        let mut tabs = self.tabs.lock().expect("casts");
-        if let Some(cast) = tabs.get_mut(tab_id).filter(|cast| cast.session == session && cast.quality.load(Ordering::SeqCst) != quality) {
-            cast.quality.store(quality, Ordering::SeqCst);
-            let _ = cast.cdp.post(Some(session), "Page.stopScreencast", json!({}));
-            start_cast(&cast.cdp, session, quality);
-        }
-    }
-
-    /// A viewer is gone. The tab keeps its viewport if it was the last
-    /// one; else it gets the viewport of those that are left.
+    /// A viewer is gone. The tab keeps its look if it was the last
+    /// one; else it gets the look of those that are left.
     fn leave(&self, module: &BrowserModule, tab_id: &str, session: &str, id: u64) {
         let changed = {
             let mut tabs = self.tabs.lock().expect("casts");
@@ -472,11 +539,11 @@ struct Shown {
 struct Screen<W> {
     sink: W,
     module: Arc<BrowserModule>,
-    viewer: Viewer,
+    /// Somebody looks at the group while the connection lasts.
+    _viewer: Viewer,
     group_id: String,
     look: Look,
     max_fps: u32,
-    jpeg_quality: u8,
     /// The tab whose frames the connection gets.
     shown: Option<Shown>,
     /// `(tab, address, loading)` the history was last asked for, and what it was.
@@ -501,7 +568,6 @@ struct Screen<W> {
 
 struct Hello {
     token: Option<String>,
-    group_id: String,
     viewport: Viewport,
 }
 
@@ -510,11 +576,12 @@ fn hello(text: &str) -> Result<Hello, String> {
     if message["type"] != "hello" {
         return Err("the first message is not a hello".into());
     }
-    let group_id = message["group_id"].as_str().map(str::trim).filter(|g| !g.is_empty() && g.len() <= 256 && !is_internal(g));
+    if !message["group_id"].is_null() && message["group_id"] != DEFAULT_GROUP {
+        return Err(format!("the agent's browser has one group, `{DEFAULT_GROUP}`"));
+    }
     Ok(Hello {
         token: message["token"].as_str().filter(|t| !t.is_empty()).map(str::to_string),
-        group_id: group_id.ok_or("the hello names no group")?.to_string(),
-        viewport: Viewport::parse(&message["viewport"]).ok_or("the hello has no viewport")?,
+        viewport: Viewport::parse(&message["viewport"], 1.0).ok_or("the hello has no viewport")?,
     })
 }
 
@@ -558,18 +625,18 @@ where
         Err(e) => return refuse_with(&mut sink, BrowserError { code: "browser_unavailable", ..e }.to_json()).await,
     };
     let version = cdp.send_within(None, "Browser.getVersion", json!({}), HISTORY_WAIT).await.unwrap_or(Value::Null);
-    log::info!("browser: {who} looks at group {} ({}x{}{})", said.group_id, said.viewport.width, said.viewport.height, if said.viewport.mobile { ", phone" } else { "" });
+    let Viewport { width, height, mobile, pixel_ratio } = said.viewport;
+    log::info!("browser: {who} looks at the browser ({width}x{height}{}, pixel ratio {pixel_ratio})", if mobile { ", phone" } else { "" });
 
     let mut changes = module.changes();
     let mut notices = module.outside.subscribe();
     let (told, mut tellings) = mpsc::unbounded_channel();
     let mut screen = Screen {
         sink,
-        viewer: module.viewer(&said.group_id),
-        group_id: said.group_id,
-        look: Look { viewport: said.viewport, set: module.casts.stamp(), mobile: mobile_agent(&version) },
+        _viewer: module.viewer(DEFAULT_GROUP),
+        group_id: DEFAULT_GROUP.to_string(),
+        look: Look { viewport: said.viewport, quality: DEFAULT_JPEG_QUALITY, set: module.casts.stamp(), mobile: mobile_agent(&version) },
         max_fps: DEFAULT_FPS,
-        jpeg_quality: DEFAULT_JPEG_QUALITY,
         shown: None,
         history_of: None,
         history: (false, false),
@@ -665,13 +732,6 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
     /// The group changed, or the connection is new: show the group's current
     /// tab and tell what changed.
     async fn sync(&mut self) -> Result<(), Gone> {
-        // Bound as the default conversation, the group became part of the default group.
-        let group_id = self.viewer.group();
-        let moved = group_id != self.group_id;
-        if moved {
-            self.group_id = group_id;
-            self.module.outside.attend(&self.module, &self.group_id);
-        }
         let first = self.state.is_null();
         let switched = self.follow();
         // The group is the user's again (the agent's lease was released, ran out or was taken from it).
@@ -682,7 +742,7 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
             }
         }
         self.tell_state().await?;
-        if first || moved {
+        if first {
             self.requests_again().await?;
         }
         if switched {
@@ -713,7 +773,7 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
         self.history_of = None;
         self.history = (false, false);
         let Some((tab_id, session, cdp)) = target else { return false };
-        let cast = self.module.casts.watch(&self.module, &cdp, &tab_id, &session, &self.look, self.jpeg_quality);
+        let cast = self.module.casts.watch(&self.module, &cdp, &tab_id, &session, &self.look);
         self.frame_due = cast.frames.borrow().is_some();
         self.shown = Some(Shown { tab_id, session, cdp, cast });
         true
@@ -848,7 +908,7 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
             "input" => self.input(&message).await,
             "nav" => self.nav(&message).await,
             "tab" => self.tab(&message).await,
-            "viewport" => match Viewport::parse(&message) {
+            "viewport" => match Viewport::parse(&message, self.look.viewport.pixel_ratio) {
                 Some(viewport) => self.resize(viewport).await,
                 None => self.fail("bad_message", "viewport needs a width and a height").await,
             },
@@ -856,13 +916,17 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
                 if let Some(fps) = message["max_fps"].as_f64().filter(|n| n.is_finite()) {
                     self.max_fps = (fps.round() as u32).clamp(1, MAX_FPS);
                 }
-                if let Some(quality) = message["jpeg_quality"].as_f64().filter(|n| n.is_finite()) {
-                    self.jpeg_quality = quality.round().clamp(10.0, 95.0) as u8;
-                    if let Some(shown) = &self.shown {
-                        self.module.casts.set_quality(&shown.tab_id, &shown.session, self.jpeg_quality);
-                    }
+                let quality = message["jpeg_quality"].as_f64().filter(|n| n.is_finite()).map_or(self.look.quality, |n| n.round().clamp(10.0, 95.0) as u8);
+                let pixel_ratio = pixel_ratio_of(&message).unwrap_or(self.look.viewport.pixel_ratio);
+                if (quality, pixel_ratio) == (self.look.quality, self.look.viewport.pixel_ratio) {
+                    return Ok(());
                 }
-                Ok(())
+                (self.look.quality, self.look.viewport.pixel_ratio) = (quality, pixel_ratio);
+                // Not a viewport set: the tab is painted so while the viewport it has is this connection's.
+                if let Some(shown) = &self.shown {
+                    self.module.casts.claim(&shown.cast, &self.look, false);
+                }
+                self.tell_state().await
             }
             "respond" => {
                 let Some(request_id) = message["request_id"].as_str().map(str::to_string) else {
@@ -1010,21 +1074,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_hello_names_the_group_and_the_viewport() {
+    fn a_hello_names_the_viewport_and_at_most_the_one_group() {
         let said = hello(r#"{"type":"hello","token":"t","group_id":"default","viewport":{"width":412,"height":915,"mobile":true}}"#).unwrap();
-        assert_eq!((said.token.as_deref(), said.group_id.as_str()), (Some("t"), "default"));
-        assert_eq!(said.viewport, Viewport { width: 412, height: 915, mobile: true });
-        // Sizes are kept within what a page can be shown at.
-        let said = hello(r#"{"type":"hello","group_id":"g","viewport":{"width":100,"height":9000.4}}"#).unwrap();
-        assert_eq!((said.token, said.viewport), (None, Viewport { width: 320, height: 2560, mobile: false }));
+        assert_eq!(said.token.as_deref(), Some("t"));
+        assert_eq!(said.viewport, Viewport { width: 412, height: 915, mobile: true, pixel_ratio: 1.0 });
+        // Without a group it is the one there is. Sizes are kept within what a page can be shown at,
+        // pixel ratios within what the screens have.
+        let said = hello(r#"{"type":"hello","viewport":{"width":100,"height":9000.4,"pixel_ratio":0.5}}"#).unwrap();
+        assert_eq!((said.token, said.viewport), (None, Viewport { width: 320, height: 2560, mobile: false, pixel_ratio: 1.0 }));
+        for (asked, ratio) in [(2.625, 2.0), (1.5, 1.5), (1.333, 1.33), (1.0, 1.0)] {
+            let said = hello(&json!({ "type": "hello", "viewport": { "width": 412, "height": 915, "pixel_ratio": asked } }).to_string()).unwrap();
+            assert_eq!(said.viewport.pixel_ratio, ratio, "{asked}");
+        }
+        // Between the screens' ratios the dense screen's frames are made smaller.
+        let at = |pixel_ratio: f64| Viewport { width: 412, height: 780, mobile: true, pixel_ratio };
+        assert_eq!([at(1.0).limit(), at(1.5).limit(), at(2.0).limit()], [None, Some((618, 1170)), None]);
+        assert_eq!([at(1.0).dense(), at(1.01).dense(), at(2.0).dense()], [false, true, true]);
         for bad in [
             "not json",
             r#"{"type":"ack","seq":1}"#,
-            r#"{"type":"hello","viewport":{"width":1,"height":1}}"#,
-            r#"{"type":"hello","group_id":"","viewport":{"width":1,"height":1}}"#,
-            r#"{"type":"hello","group_id":"_reflow","viewport":{"width":1,"height":1}}"#,
-            r#"{"type":"hello","group_id":"g"}"#,
-            r#"{"type":"hello","group_id":"g","viewport":{"width":"wide","height":1}}"#,
+            r#"{"type":"hello","group_id":"thing","viewport":{"width":412,"height":915}}"#,
+            r#"{"type":"hello","group_id":"","viewport":{"width":412,"height":915}}"#,
+            r#"{"type":"hello","group_id":"_reflow","viewport":{"width":412,"height":915}}"#,
+            r#"{"type":"hello","group_id":"default"}"#,
+            r#"{"type":"hello","group_id":"default","viewport":{"width":"wide","height":1}}"#,
         ] {
             assert!(hello(bad).is_err(), "{bad}");
         }

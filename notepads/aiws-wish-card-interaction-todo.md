@@ -591,4 +591,4 @@ DV 中发现并已修（未部署到 Zone）：
 - **`ws_read` 的空游标**：模型把可选的 `cursor` 填成 `""`，富文本读取答 “bad cursor”，模型再试 `"0"`、`"start"`、`"null"`，整轮 DV 约 40 次工具调用浪费在这里（三个阶段都有）。现在空游标就是从头读，无效游标的答复说明“不填 cursor 从头读，再用答复给的游标”；`store/tests/wish.rs` 加了断言。
 - Rust 全量：72 组 71 组通过；`activity.rs` 两条在全量里两次都 “server did not start”，单独跑通过。它是第一个启动 855 MB debug 二进制的用例、等待只有 5 秒，单独启动实测 72 毫秒就绪，判断是刚链接完冷启动慢；不是本次改动引起的，没改。
 
-待做：在 Zone 里配置带首帧的视频模型后重跑 `[template-film]`；把上面两处修正部署到 Zone（重启服务）后再跑一次模板用例。
+之后 owner 把 OpenRouter provider 加回 Zone；我把上面两处修正部署到 Zone（release `aiworkspace` 与 Desktop `dist` 拷进 `/opt`，`start.py --skip-update` 重启），重跑 `[template-film]` **通过（33 分钟）**：设定图 → 分镜 → 预览视频三个许愿格各三步出结果。保留的工作区「AI 短片工作流（DV 2026-11-15 23:42 UTC）」`ws_2611nmub`。

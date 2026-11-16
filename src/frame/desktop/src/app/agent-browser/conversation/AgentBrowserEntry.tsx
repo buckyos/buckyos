@@ -1,5 +1,5 @@
-/* APP8: from a conversation with one of the owner's Agents (MessageHub's Agent panel) to what the Agent does in its
- * browser for that conversation. Shown while the conversation's group has tabs or the Agent is at work in it. */
+/* APP8: from a conversation with one of the owner's Agents (MessageHub's Agent panel) to the Agent's browser. The
+ * browser conversation always has the way in; another conversation shows it while the Agent operates the browser. */
 
 import { Globe } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
@@ -7,9 +7,8 @@ import { desktopUIStore } from '../../../models/DesktopUIDataModel'
 import type { AgentSessionEntryProps } from '../../messagehub/agentpanel/entries'
 import { usePanelResource } from '../../messagehub/agentpanel/hooks'
 import { getBrowserBackend, type BrowserAgent } from '../api/backend'
-import { DEFAULT_GROUP, type BrowserGroup, type BrowserStatus } from '../api/types'
+import type { BrowserStatus } from '../api/types'
 import { AGENT_BROWSER_APP_ID, openAgentBrowser } from '../launch'
-import { groupIdOfSession } from '../store/things'
 
 const agents = new Map<string, Promise<BrowserAgent | null>>()
 
@@ -23,40 +22,30 @@ function agentOf(agentDid: string): Promise<BrowserAgent | null> {
   return agent
 }
 
-/** The group of a MessageHub session (protocol §1) as `browser.status` reports it; null when the Agent is not one of the viewer's own. */
-async function groupOfSession(agentDid: string, sessionId: string): Promise<{ agent: BrowserAgent; group: BrowserGroup } | null> {
+/** The Agent's browser as `browser.status` reports it; null when the Agent is not one of the viewer's own. */
+async function browserOf(agentDid: string): Promise<{ agent: BrowserAgent; status: BrowserStatus } | null> {
   const agent = await agentOf(agentDid)
   if (!agent) return null
   const backend = await getBrowserBackend()
-  let groupId = groupIdOfSession({ id: sessionId }, agentDid, null)
-  let status = await backend.call<BrowserStatus>(agent, 'browser.status', { group_id: groupId })
-  if (groupId !== DEFAULT_GROUP && status.default_session_id === sessionId) {
-    groupId = DEFAULT_GROUP
-    status = await backend.call<BrowserStatus>(agent, 'browser.status', { group_id: groupId })
-  }
-  const group = status.groups.find((item) => item.group_id === groupId)
-  return group ? { agent, group } : null
+  return { agent, status: await backend.call<BrowserStatus>(agent, 'browser.status', {}) }
 }
 
-const atWork = (group: BrowserGroup) => group.controller === 'agent' || group.agent_state !== 'idle'
+const operating = (status: BrowserStatus) => status.groups[0]?.controller === 'agent'
 
-/** `hintTaskId` (the Turn in front) and `signal` (the conversation's messages) say when to look again; while the Agent is at work the group is read every 15 seconds. */
+/** `hintTaskId` (the Turn in front) and `signal` (the conversation's messages) say when to look again; while the Agent operates the browser it is read every 15 seconds. */
 export function AgentBrowserEntry({ agentDid, agentName, sessionId, hintTaskId, signal }: AgentSessionEntryProps) {
   const { t } = useI18n()
   const available = desktopUIStore.getSnapshot().apps.some((app) => app.id === AGENT_BROWSER_APP_ID)
-  const browser = usePanelResource(available ? `browser:${agentDid}:${sessionId}` : null, () => groupOfSession(agentDid, sessionId), { live: (value) => !!value && atWork(value.group), hintTaskId, signal })
+  const browser = usePanelResource(available ? `browser:${agentDid}` : null, () => browserOf(agentDid), { live: (value) => !!value && operating(value.status), hintTaskId, signal })
   const value = browser.value
-  if (!value || (value.group.tabs.length === 0 && !atWork(value.group))) return null
-  const { agent, group } = value
-  const state = group.agent_state === 'waiting_takeover' ? 'waiting' : group.controller === 'agent' || group.agent_state === 'working' ? 'working' : 'tabs'
-  const text = state === 'waiting' ? t('agentBrowser.entry.waiting', '{{name}} is waiting for you in the browser', { name: agentName })
-    : state === 'working' ? t('agentBrowser.entry.working', '{{name}} is using the browser', { name: agentName })
-    : t('agentBrowser.entry.tabs', 'This conversation has pages open in the browser')
+  const own = value?.status.default_session_id === sessionId
+  if (!value || (!own && !operating(value.status))) return null
+  const open = () => { openAgentBrowser({ agent: value.agent.agentId }) }
   return (
-    <div className="flex items-center gap-2 rounded-xl bg-[color:color-mix(in_srgb,var(--cp-accent)_10%,transparent)] px-3 py-2 text-[13px]" role="status" data-testid="agent-browser-entry" data-state={state} data-group={group.group_id}>
+    <div className="flex items-center gap-2 rounded-xl bg-[color:color-mix(in_srgb,var(--cp-accent)_10%,transparent)] px-3 py-2 text-[13px]" role="status" data-testid="agent-browser-entry" data-state={own ? 'session' : 'working'}>
       <Globe size={15} className="shrink-0 text-[color:var(--cp-accent)]" aria-hidden />
-      <span className="min-w-0 flex-1">{text}</span>
-      <button type="button" className="mh-turn-action shrink-0" onClick={() => { openAgentBrowser({ agent: agent.agentId, group: sessionId }) }} data-testid="agent-browser-entry-open">{t('agentBrowser.entry.view', 'View')}</button>
+      <span className="min-w-0 flex-1">{own ? t('agentBrowser.entry.session', 'This is the conversation of {{name}}’s browser', { name: agentName }) : t('agentBrowser.entry.working', '{{name}} is using the browser', { name: agentName })}</span>
+      <button type="button" className="mh-turn-action shrink-0" onClick={open} data-testid="agent-browser-entry-open">{own ? t('agentBrowser.entry.open', 'Open browser') : t('agentBrowser.entry.view', 'View')}</button>
     </div>
   )
 }

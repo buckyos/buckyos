@@ -41,26 +41,26 @@ AGENT_BROWSER_DV=1 python3 test/agent_browser_dv/main.py     # or: uv run test/r
 export AB_DV_OUT=/tmp/ab-dv AB_DV_MAGICK=/opt/buckyos/tools/bin/magick; mkdir -p $AB_DV_OUT
 T=test/agent_browser_dv
 node $T/site.mjs 18741 $AB_DV_OUT/site &            # the website; its log is $AB_DV_OUT/site/requests.jsonl
-A=$(node $T/dv.mjs new "DV thing 1"); B=$(node $T/dv.mjs new "DV thing 2")
+A=$(node $T/dv.mjs new "DV 1"); B=$(node $T/dv.mjs new "DV 2")       # two ordinary conversations; the browser has one tab group for both
 node $T/dv.mjs send $A "<message>"; node $T/dv.mjs wait $A 1800
 node $T/dv.mjs messages $A                          # what the owner reads
 node $T/dv.mjs tree $A                              # the work it started: state, rounds, tokens
 node $T/peek.mjs <sid>                              # every command and its output, also of an open Turn (on the node that holds the AgentRoot)
-node $T/dv.mjs status                               # browser.status: groups, who has control, agent_state, tabs
+node $T/dv.mjs status                               # browser.status: who has control, agent_state, tabs
 ```
 
 | # | Message (conversation) | What must show |
 | --- | --- | --- |
 | 1 | A: make a minimal front-end project with one Playwright test "the way your manual says for page tests", paste `echo $PLAYWRIGHT_BROWSERS_PATH`, `agent-browser version`, `npx playwright test` | `@playwright/test` of the version `agent-browser version` prints, `channel: 'chromium'`, the test passes; no `playwright install`, no `apt`, no `~/.cache/ms-playwright` in the container (`docker exec … ls /root/.cache`) |
 | 2 | A: open `http://172.17.0.1:18741/register` in your browser, fill it in for two people and submit — one with every field, one without the phone number | `agent-browser status / open / snapshot / run`; the site's log has the first submission as given; the second is asked for with `ask_user` (`browser.status`: `agent_state: waiting_answer`), and after the answer (a message in the conversation) it is submitted without a separate confirmation |
-| 2a | while 2 runs: `node $T/dv.mjs take-over-when-working $A`, and `node $T/screen.mjs --group $A --out … probe=900` beside it | the command that was working, or the next one, fails with exit code 4 (5 when it was cut off); the Agent stops and waits; the screen saw the Agent's page and its taps were refused with `agent_in_control` while the Agent had control |
-| 2b | `node $T/dv.mjs hand-back $A`, then the message "handed back, go on" | the conversation got `[browser <group>] The user took over …` and `… handed the browser back. The current page is …`; the Agent's first command afterwards is `agent-browser snapshot` |
+| 2a | while 2 runs: `node $T/dv.mjs take-over-when-working`, and `node $T/screen.mjs --out … probe=900` beside it | the command that was working, or the next one, fails with exit code 4 (5 when it was cut off); the Agent stops and waits; the screen saw the Agent's page and its taps were refused with `agent_in_control` while the Agent had control |
+| 2b | `node $T/dv.mjs hand-back`, then the message "handed back, go on" | the browser conversation (the one the Agent Browser app binds; none in a run without the app) got `[browser] The user took over …` and `… handed the browser back. The current page is …`; A learns it from the exit code and the message; the Agent's first command afterwards is `agent-browser snapshot` |
 | 3 | B: sign in at `http://172.17.0.1:18741/login` as `dvuser` (no password given) and tell me what "my orders" shows | `agent-browser handover --reason password`; `browser.status`: `agent_state: waiting_takeover`, `user_hold: true`, `handover.reason: password`; no script reads or fills the password field |
-| 3a | `node $T/screen.mjs --group $B --out … shot=before tap=100,220 text=<password> key=Enter wait=1500 shot=after`, `node $T/dv.mjs hand-back $B`, then the message "filled in, go on" | the Agent snapshots and reports the three orders of the site; `node $T/dv.mjs grep $B <password>` and `node $T/peek.mjs <sid> --grep <password>` find nothing |
-| 4 | both conversations | `browser.status` lists a group per conversation, each with its own tab; A's tab is still where it was after B's errand |
+| 3a | `node $T/screen.mjs --out … shot=before tap=100,220 text=<password> key=Enter wait=1500 shot=after`, `node $T/dv.mjs hand-back`, then the message "filled in, go on" | the Agent snapshots and reports the three orders of the site; `node $T/dv.mjs grep $B <password>` and `node $T/peek.mjs <sid> --grep <password>` find nothing |
+| 4 | both conversations | `browser.status` has the one group `default` with the tabs of both errands; A's tab is still where it was after B's errand |
 | 5 | A: reflow `http://172.17.0.1:18741/news/1` — a fallback page (`reflow result put`), then a minimal package for the site (`reflow put`, `reflow refresh`); and one `curl` of `browser.reflow_action` with the session's own token | `node $T/dv.mjs bucket 172-17-0-1/` shows `fallback/<page>.html`, the package's files and `results/<page>.json`; `node $T/dv.mjs reflow http://172.17.0.1:18741/news/1` opens the page on `reflow.<zone>` as the owner (401 without a session); the `curl` is refused with NoPermission |
 
-Afterwards: `node $T/dv.mjs archive $A`, `node $T/dv.mjs archive $B`; remove the site from the library when it was only a test (ask the Agent: `reflow rm <site>`, or delete the keys as the owner); close the tabs (`node $T/screen.mjs --group <group> close-tabs`).
+Afterwards: `node $T/dv.mjs archive $A`, `node $T/dv.mjs archive $B`; remove the site from the library when it was only a test (ask the Agent: `reflow rm <site>`, or delete the keys as the owner); close the tabs (`node $T/screen.mjs close-tabs`).
 
 Not covered here: a read-only Agent (`reflow put` refused, a refresh that cannot keep its result). The permission mode is fixed when an Agent is created (`agent.create`'s `permission_mode`; `agent.update` does not take it), so it needs an Agent of its own.
 
@@ -77,6 +77,6 @@ Not covered here: a read-only Agent (`reflow put` refused, a refresh that cannot
 
 ## Known to get in the way
 
-- An Agent whose service port is 10080 (the App with `app_index` 5: `10000 + 16 × 5`) cannot use `agent-browser` or `reflow refresh`: `OPENDAN_BROWSER_RPC` is `http://127.0.0.1:10080/…`, and both Node's and Deno's `fetch` refuse that port (`bad port` / `Requests to port 10080 are blocked`, the WHATWG list of blocked ports). `docker exec <container> sh -c 'echo $BUCKYOS_SERVICE_PORT'` tells. Until that is fixed, the messages have to tell the Agent to put `export OPENDAN_BROWSER_RPC=http://host.docker.internal:3180/kapi/<agent_id>;` in front of those commands (the node gateway forwards to the same service).
+- The scheduler now assigns `10081` to a new instance with `app_index` 5, avoiding the Fetch-blocked port `10080`. Existing node configs retain their assigned port across restarts. `agent-browser` and `reflow refresh` use Node HTTP and can reach these older instances; other `fetch` clients must use the node gateway (`http://host.docker.internal:3180/kapi/<agent_id>` from an Agent container) if their instance still uses `10080`.
 - `dv.mjs wait` returns when the conversation has no open Turn and no unfinished work. Work that waits for the owner (`ask_user`, a handover) keeps it waiting: pass the `agent_state` to wait for as the third argument (`waiting_answer`, `waiting_takeover`), or look at `tree` / `status`.
 - The committed worklog (`dv.mjs worklog`) only has closed Turns; `peek.mjs` reads the run snapshots under the AgentRoot and needs to run on that node with read access to it.

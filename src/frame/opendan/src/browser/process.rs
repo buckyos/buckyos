@@ -16,6 +16,12 @@ pub const ENV_MARK: &str = "OPENDAN_BROWSER_MARK";
 const PORT_FILE: &str = "DevToolsActivePort";
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_SANDBOX_ERROR: &str = "No usable sandbox";
+/// The browser's screens: the one its windows open on, and beside it one of
+/// twice its pixel density (the same size in CSS pixels). A tab whose window
+/// is moved there paints frames of twice as many pixels, its page unchanged.
+pub const SCREENS: &str = "{0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2}";
+/// Where a window is sent to be on the dense screen.
+pub const DENSE_SCREEN_LEFT: u32 = 1600;
 /// Chromium keeps a socket in `<TMPDIR>/.org.chromium.Chromium.<6>/SingletonSocket`
 /// and does not start when that path is too long for a socket address
 /// (about 104 bytes): this much is left for `TMPDIR`.
@@ -283,6 +289,7 @@ fn arguments(dirs: &BrowserDirs, no_sandbox: bool, user_agent: Option<&str>) -> 
         // No tab of its own: every tab belongs to a group.
         "--no-startup-window".to_string(),
         "--window-size=1280,800".to_string(),
+        format!("--screen-info={SCREENS}"),
         // The caret of a focused field stays lit: one that blinks paints two frames a second for the screens.
         "--disable-blink-features=CaretBlinking".to_string(),
     ];
@@ -588,6 +595,7 @@ mod tests {
         assert!(args.contains(&"--user-data-dir=/x/browser/profile".to_string()));
         assert!(args.contains(&"--no-sandbox".to_string()));
         assert!(args.contains(&"--disable-blink-features=CaretBlinking".to_string()));
+        assert!(args.contains(&"--screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2}".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("--user-agent=")));
         assert!(!arguments(&dirs, false, None).contains(&"--no-sandbox".to_string()));
         let agent = user_agent("159.0.8154.6").unwrap();

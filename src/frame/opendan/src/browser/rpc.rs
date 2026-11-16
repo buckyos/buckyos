@@ -39,11 +39,8 @@ impl BrowserError {
         Self::new("invalid_argument", why)
     }
 
-    pub fn user_in_control(group_id: &str) -> Self {
-        Self::new(
-            "user_in_control",
-            format!("the user is operating the browser (group {group_id}); wait until they hand it back"),
-        )
+    pub fn user_in_control() -> Self {
+        Self::new("user_in_control", "the user is operating the browser; wait until they hand it back")
     }
 
     pub fn lease_lost(lease_id: &str) -> Self {
@@ -118,12 +115,12 @@ fn text(params: &Value, name: &str) -> Result<String, BrowserError> {
     Ok(value)
 }
 
-fn group_param(params: &Value) -> Result<String, BrowserError> {
-    let group_id = text(params, "group_id")?;
-    if super::groups::is_internal(&group_id) || group_id.len() > 256 {
-        return Err(BrowserError::no_such_group(&group_id));
+/// `group_id` names the agent's one group.
+fn the_group(group_id: &str) -> Result<(), BrowserError> {
+    match group_id {
+        super::groups::DEFAULT_GROUP => Ok(()),
+        other => Err(BrowserError::no_such_group(other)),
     }
-    Ok(group_id)
 }
 
 fn encode<T: serde::Serialize>(value: &T) -> Result<Value, BrowserError> {
@@ -136,13 +133,16 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Value, BrowserError> {
 pub async fn call(browser: &Arc<BrowserModule>, who: &str, token: Option<&str>, method: &str, params: &Value) -> Result<Value, BrowserError> {
     match method {
         "browser.status" => {
-            let group_id = param::<Option<String>>(params, "group_id")?;
-            let session_id = param::<Option<String>>(params, "session_id")?;
-            Ok(browser.status(group_id.as_deref(), session_id.as_deref()).await)
+            if let Some(group_id) = param::<Option<String>>(params, "group_id")? {
+                the_group(&group_id)?;
+            }
+            // Every session works in the one group.
+            param::<Option<String>>(params, "session_id")?;
+            Ok(browser.status().await)
         }
         "browser.ensure" => {
             browser.ensure().await?;
-            Ok(browser.status(None, None).await)
+            Ok(browser.status().await)
         }
         "browser.acquire" => {
             let session_id = text(params, "session_id")?;
@@ -164,24 +164,31 @@ pub async fn call(browser: &Arc<BrowserModule>, who: &str, token: Option<&str>, 
             Ok(json!({}))
         }
         "browser.request_handover" => {
-            let session_id = text(params, "session_id")?;
+            text(params, "session_id")?;
             let reason = text(params, "reason")?;
             if !matches!(reason.as_str(), "password" | "captcha" | "other") {
                 return Err(BrowserError::invalid(format!("reason is password | captcha | other, not `{reason}`")));
             }
             let note = param::<Option<String>>(params, "note")?;
-            let group_id = browser.request_handover(&session_id, &reason, note).await?;
-            Ok(json!({ "group_id": group_id }))
+            browser.request_handover(&reason, note).await?;
+            Ok(json!({ "group_id": super::groups::DEFAULT_GROUP }))
         }
-        "browser.take_over" => encode(&browser.hand(who, &group_param(params)?, Handed::TakeOver).await?),
-        "browser.hand_back" => encode(&browser.hand(who, &group_param(params)?, Handed::HandBack).await?),
-        "browser.hand_to_agent" => encode(&browser.hand(who, &group_param(params)?, Handed::HandToAgent).await?),
+        "browser.take_over" | "browser.hand_back" | "browser.hand_to_agent" => {
+            the_group(&text(params, "group_id")?)?;
+            let what = match method {
+                "browser.take_over" => Handed::TakeOver,
+                "browser.hand_back" => Handed::HandBack,
+                _ => Handed::HandToAgent,
+            };
+            encode(&browser.hand(who, what).await?)
+        }
         "browser.bind_default" => {
             let session_id = text(params, "session_id")?;
             if session_id == super::groups::DEFAULT_GROUP || super::groups::is_internal(&session_id) || session_id.len() > 256 {
                 return Err(BrowserError::invalid(format!("`{session_id}` is not the id of a conversation")));
             }
-            Ok(json!({ "default_session_id": browser.bind_default(&session_id)? }))
+            browser.bind_default(&session_id)?;
+            Ok(json!({ "default_session_id": session_id }))
         }
         "browser.clear_profile" => {
             browser.clear_profile().await?;
@@ -215,7 +222,7 @@ mod tests {
     #[test]
     fn errors_carry_a_code_in_the_services_wire_form() {
         for (error, kind) in [
-            (BrowserError::user_in_control("default"), "other"),
+            (BrowserError::user_in_control(), "other"),
             (BrowserError::lease_lost("lease-1"), "lease_lost"),
             (BrowserError::no_such_tab("t"), "not_found"),
             (BrowserError::no_such_group("g"), "not_found"),
@@ -238,7 +245,7 @@ mod tests {
         );
         assert!(libopendan::state::krpc::error_from_wire(&waiting.to_wire()).to_string().contains("42% of 200 MiB"));
         // What a caller of the facade sees keeps the message.
-        let seen = libopendan::state::krpc::error_from_wire(&BrowserError::user_in_control("default").to_wire());
+        let seen = libopendan::state::krpc::error_from_wire(&BrowserError::user_in_control().to_wire());
         assert!(seen.to_string().contains("the user is operating the browser"), "{seen}");
         assert_eq!(BrowserError::from(CdpError::Closed).code, "browser_unavailable");
         assert_eq!(BrowserError::from(CdpError::Remote { code: -32000, message: "bad url".into() }).code, "invalid_argument");

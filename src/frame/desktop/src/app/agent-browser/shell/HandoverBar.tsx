@@ -4,7 +4,6 @@ import { useI18n } from '../../../i18n/provider'
 import type { BrowserGroup } from '../api/types'
 import { HandBackSheet, HandToAgentSheet } from '../conversation/HandoverSheets'
 import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
-import { currentThing } from '../store/store'
 
 type Translate = ReturnType<typeof useI18n>['t']
 
@@ -32,12 +31,12 @@ function agentText(t: Translate, group: BrowserGroup, name: string): string {
   return more ? `${state} · ${more}` : state
 }
 
-/** The way into the current thing's conversation while the page is on the stage: it comes up over the page. */
+/** The way into the browser conversation while the page is on the stage: it comes up over the page. */
 function ChatToggle() {
   const store = useAgentBrowserStore()
   const { t } = useI18n()
   const open = useAgentBrowser((snapshot) => snapshot.chatOpen)
-  const unread = useAgentBrowser((snapshot) => (currentThing(snapshot).session?.unreadCount ?? 0) > 0)
+  const unread = useAgentBrowser((snapshot) => (snapshot.session?.unreadCount ?? 0) > 0)
   return (
     <button type="button" className="ab-icon-button ab-chat-toggle" aria-expanded={open} aria-label={open ? t('agentBrowser.chat.close', 'Close the conversation') : t('agentBrowser.chat.open', 'Open the conversation')} data-testid="ab-chat-toggle" onClick={() => store.setChatOpen(!open)}>
       <MessageSquare size={18} aria-hidden />
@@ -48,7 +47,7 @@ function ChatToggle() {
 
 /**
  * The strip that always shows who operates and the Agent's state (D8), with the one handover action that applies.
- * Handing the page to the Agent or back wakes it with a message in the thing's conversation (DG2, DG3), which the
+ * Handing the page to the Agent or back wakes it with a message in the browser conversation (DG2, DG3), which the
  * owner sees first; without the conversations the page changes hands at once.
  */
 export function HandoverBar() {

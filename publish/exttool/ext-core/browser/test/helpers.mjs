@@ -125,7 +125,8 @@ export class Cdp {
 export async function startChromium() {
   const profile = tempDir('agent-browser-profile');
   const executable = process.env.OPENDAN_CHROMIUM ?? loadPlaywright().chromium.executablePath();
-  const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage'];
+  // The Agent Service's two screens (opendan `browser/process.rs`): a viewer on a sharp screen gets its tab painted on the second.
+  const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', '--screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2}'];
   if (process.getuid?.() === 0) args.push('--no-sandbox');
   const child = spawn(executable, [...args, 'about:blank'], { stdio: 'ignore' });
   let port;

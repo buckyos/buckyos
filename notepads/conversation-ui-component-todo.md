@@ -1,6 +1,6 @@
 # 会话 UI 公共组件化 TODO
 
-> 状态：2026-11-15 已实施（分支 `feat/conversation-component`，websdk 分支 `feat/conversation-embed`），§5 按“建议”一栏裁决，Q8 选了保留并改用 `ConversationSurface`；实施记录见 §7。§1 的现状核实于 2026-11-15（buckyos `e1a44183e`、buckyos-websdk `03d2dde`），行号以这两个提交为准。
+> 状态：§5 的 Q1–Q9 已全部裁决（owner，2026-11-15：都按建议，Q8 选保留并改用 `ConversationSurface`）；2026-11-15 已实施（分支 `feat/conversation-component`，websdk 分支 `feat/conversation-embed`），实施记录见 §7。§1 的现状核实于 2026-11-15（buckyos `e1a44183e`、buckyos-websdk `03d2dde`），行号以这两个提交为准。
 >
 > 起因：Agent 浏览器（`e1a44183e`）要在自己的界面里显示和 Agent 的对话。系统里没有能嵌入的会话组件，于是它把 MessageHub 的会话接线复制了一份（[ThingConversation.tsx](../src/frame/desktop/src/app/agent-browser/conversation/ThingConversation.tsx)），这已经是会话 UI 的第四份拼装（§1.1）。
 >
@@ -27,7 +27,7 @@
 
 本 TODO 不做：
 
-- 不改 msg-center 协议。Q5 的服务端筛选如果要做，单独立项。
+- 不改 msg-center 协议。Q5 的服务端筛选按裁决另立项，见 §4。
 - 不支持 Zone 以外的站点嵌入。
 - 不改 MessageHub 自己的界面和行为。阶段一完成后，MessageHub 的 e2e 不改用例也要全部通过。
 
@@ -138,15 +138,20 @@ interface ConversationSource {
 |---|---|---|
 | `embed.init` | App → 系统页 | `{ nonce, target, theme, locale, placeholder? }`，`target` 见下 |
 | `embed.update` | App → 系统页 | `{ theme?, locale? }` |
-| `embed.send` | App → 系统页 | `{ text, attachments?: TransferableContentRef[] }`：以用户的名义发一条消息（Q3） |
+| `embed.send` | App → 系统页 | `{ text, attachments?: TransferableContentRef[] }`：以用户的名义发一条消息（Q3：允许） |
 | `embed.state` | 系统页 → App | `{ status: 'loading' \| 'ready' \| 'error', sessionId?, error? }` |
-| `embed.turn` | 系统页 → App | `{ mode }`：取值同 `foregroundState` 和回答状态，App 可以据此调整自己的界面（Q4） |
+| `embed.turn` | 系统页 → App | `{ mode }`：取值同 `foregroundState` 和回答状态，App 可以据此调整自己的界面 |
 | `embed.error` | 系统页 → App | `{ code }`：`invalid_params`、`not_found`、`denied` |
 
-`target` 有两种：
+系统页回传给 App 的只有上表中的 `status`、`sessionId`、Turn 状态和错误码，不回传消息内容或摘要（Q4）。
 
-- `{ kind: 'agent', agentDid? }`：和这个 Agent 的、由本 App 建立的会话。还没有时，第一次发消息时新建，并打上 `ui.source = <appid>`。`agentDid` 不填就用 owner 的默认 Agent。
-- `{ kind: 'session', sessionId }`：打开指定的会话。是否允许由 Q2 决定。
+按 Q2，App 只能打开自己建的会话（`ui.source` 等于自己的 appid），或者新建会话。所以 `target` 只有下面三种：
+
+- `{ kind: 'agent', agentDid? }`：本 App 和这个 Agent 最近活跃的一个会话。还没有的话，在第一次发消息时新建，并打上 `ui.source = <appid>`。`agentDid` 不填就用 owner 的默认 Agent。
+- `{ kind: 'agent', agentDid?, fresh: true }`：在第一次发消息时新建一个会话，给同时要处理好几件事的 App 用，Agent 浏览器的"新任务"就是这种情况。
+- `{ kind: 'session', sessionId }`：打开本 App 以前建的某个会话。`sessionId` 是 App 从 `embed.state` 拿到后自己存下的。来源不是本 App 的会话回 `denied`，会话不存在回 `not_found`。
+
+`fresh` 这一项是我根据 Q2 选 a 的"或者新建"补出来的，owner 没有单独确认过。实施时没有做：`ConversationEmbedApp` 的 `target` schema 只有 `agent`、`session` 两种。D35（[agent-runtime-browser-todo.md](agent-runtime-browser-todo.md) §5.10）之后 Agent 浏览器也不再有"新任务"，眼下没有使用方。
 
 规则：
 
@@ -165,49 +170,51 @@ websdk 这一侧，`ConversationEmbed`（App 端）和 `ConversationEmbedHost`�
 - [x] **C3 渲染插槽。** `renderers.tsx` 对通知卡、群设置链接、好友关系的特化，改成按消息类型注册的渲染器，由 MessageHub 在启动时注册。其他宿主不注册时，这几类消息按普通消息显示。
 - [x] **C4 抽出 `ConversationSurface`。** 把 `ConversationView` 里头部以下的部分（§0 列的那些）挪进去，`ConversationView` 只剩头部加 Surface。两份 `toOutgoing` 合成一份。消息操作的组装（`ConversationView.tsx:204-269`）变成一个函数，按 source 的能力和宿主给的回调决定开哪些操作。
 - [x] **C5 `ConversationSource` 和 MessageHub 的适配。** 适配放在 `app/messagehub/conversationSource.ts`；MessageHubView 的 `conversationProps` 里只剩宿主相关的部分（打开详情、转发、打开实体、归档中的提示）。
-- [x] **C6 `SessionConversation`。** 已绑定 store 的便捷组件，按 Q1 取得 store；自带 provider 和样式（§2.2）。
-- [x] **C7 样式。** `messagehub.css` 里会话用到的类拆到 `components/conversation/conversation.css`，由组件自己引入。i18n 键见 Q6。
+- [x] **C6 `SessionConversation`。** 已绑定 store 的便捷组件，按 Q1 经 `components/conversation/backend.ts` 动态 import `app/messagehub/store` 取得 store；自带 provider 和样式（§2.2）。
+- [x] **C7 样式。** `messagehub.css` 里会话用到的类拆到 `components/conversation/conversation.css`，由组件自己引入。i18n 键保留 `messagehub.*`（Q6）。
 - [x] **C8 依赖方向检查。** 在 `eslint.config.js` 里对 `components/conversation/**` 加 `no-restricted-imports`，禁止引用 `app/**`（Q1 的注册点除外），让 `pnpm lint` 来守这条规则。
 - [x] **C9 回归。** 先跑一遍基线并记下已经失败的用例；之后 `tests/e2e/pages/` 下的 `messagehub*.spec.ts`（18 个文件，含访客页）和 `agent-browser.conversation.spec.ts` 在不改用例的情况下通过。
 
 ### 3.2 阶段二：系统 App 改用
 
-- [x] **S1 Agent 浏览器。** `ThingConversation` 里的 `SessionConversation`（:46）换成组件，`ConversationSheet` 和 `ConversationPanel` 不用改。能力补齐的范围按 Q7。
-- [x] **S2 提取 `agentSessions.ts`**（§2.2）。agent-browser 的 `session.ts` 只留 `bind_default` 和交接消息；`marks.ts` 挪进通用模块，来源取值参数化。按来源列会话的开销见 Q5。
+- [x] **S1 Agent 浏览器。** `ThingConversation` 里的 `SessionConversation`（:46）换成组件，`ConversationSheet` 和 `ConversationPanel` 不用改。按 Q7，组件的能力默认全开（编辑、置顶、转发、详情、搜索、拖放），宿主没给回调的操作就不出现。Agent 浏览器的"详情"用 MessageHub 已有的消息深链实现：打开 MessageHub 里的对应会话，并显示这条消息的详情。转发没有现成的目标选择器可用，不提供。
+- [x] **S2 提取 `agentSessions.ts`**（§2.2）。agent-browser 的 `session.ts` 只留 `bind_default` 和交接消息；`marks.ts` 挪进通用模块，来源取值参数化。按 Q5，继续逐个会话读取标记，不改协议。
 - [x] **S3 访客页。** `GuestConversation` 改成 `ConversationSurface` 加 guest source。这一步顺带验证 `ConversationSource` 没有被做成 `MessageHubStore` 的形状。
-- [x] **S4 CodeAssistant**：按 Q8 处理。
+- [x] **S4 CodeAssistant**（Q8：保留）。改成 `ConversationSurface` 加 InMemory source，作为"不接 msg-center 的 source"的样例。不再引用 `ConversationView` 和 MessageHub 的 mock 数据。
 - [x] **S5 Agent 面板的入口插槽。** `AgentSessionPanel` 去掉对 agent-browser 的直接引用，改成一张注册表（比如 `registerAgentSessionEntry`），Agent 浏览器在应用登记时把 `AgentBrowserEntry` 注册进去。这样 MessageHub 不再需要知道有哪些 App 往 Agent 面板里放东西。
 
 ### 3.3 阶段三：第三方 App 嵌入
 
-- [x] **E1 系统页 `/embed/conversation`**（`ConversationEmbedApp`）。嵌入方校验同 `SelectEmbedApp` 的 `acceptEmbedder`，包括 mock 运行时下放行 localhost；origin 换成 App id 的规则先核实（§2.3 第 1 条）；`target` 的参数过 zod schema。
+- [x] **E1 系统页 `/embed/conversation`**（`ConversationEmbedApp`）。嵌入方校验同 `SelectEmbedApp` 的 `acceptEmbedder`，包括 mock 运行时下放行 localhost。origin 换成 App id 的规则先核实（§2.3 第 1 条）。`target` 的参数过 zod schema；`kind: 'session'` 要校验会话的来源（§2.3 的 `target`）。
 - [x] **E2 websdk。** 实现 `ConversationEmbed` 和 `ConversationEmbedHost`，导出类型并补单测，测试写法参照 `tests/preview_embed.test.ts`。改动涉及 websdk 的 `app-frame` 导出，`buckyos-build.py` 会从源码重新构建 SDK。
 - [ ] **E3 窄屏。** 系统页在 360px 宽度和软键盘弹出时都要能用，iframe 里的 `visualViewport` 在 iOS 上的表现要实测。按产品原则以手机为准评估。
-- [x] **E4 第一个真实调用方**，按 Q9。
+- [x] **E4 第一个真实调用方：Text Editor**（Q9）。加"和 Agent 讨论这篇文档"：用 `{ kind: 'agent' }` 打开会话，第一条消息用 `embed.send` 带上当前文档的引用。
 - [x] **E5 文档和手册。** 在 doc/sdk 下补一节嵌入会话的用法。[`buckyos_app_dev`](../src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev/SKILL.md) 补一句：要和 Agent 对话就嵌入系统会话页，不要自己连 msg-center 拼界面。这属于 AGENTS 里的 cmd_skills 联动，要记录并验证。
 - [x] **E6 mock 运行时。** 系统页在 mock 下可用，补一个 e2e：用一个假的 App 页面嵌入它，完成发送、回答和停止。
-- [x] **E7 核实 §1.4 的前提。** 逐个检查 msg-center 的发送、会话列表、`ui_session.*` 对 App token 的处理。如果有入口不把 App 当作用户本人，就回头修改 §2.3 第 2 条和 Q2、Q3 的依据。
+- [x] **E7 核实 §1.4 的前提。** 逐个检查 msg-center 的发送、会话列表、`ui_session.*` 对 App token 的处理。如果有入口不把 App 当作用户本人，Q2、Q3 的依据就不成立了，要请 owner 重议，不要直接按原裁决实施。
 
 ## 4. 不做和以后再做
 
 - 不做 Shell 代画的会话面板（系统对话框方案的路径 B）。会话是常驻面板，App 自己的布局决定它放在哪里。
-- 不把 `MessageHubStore` 搬出 `app/messagehub/`（Q1 选项 b）。
-- 不通过嵌入协议向 App 提供消息内容或消息事件订阅。
+- 不把 `MessageHubStore` 搬出 `app/messagehub/`（Q1）。
+- 不通过嵌入协议向 App 提供消息内容或消息事件订阅（Q4）。
 - 本轮不改 i18n 键名（Q6）。
+- **以后再做：** 让 msg-center 的会话列表支持按 UI 状态键筛选（改协议）。按 Q5，在第三个使用方出现之前单独立项。现在的两个使用方是 Agent 浏览器和 Text Editor。
+- **另议：** 气泡上要不要标注"经某 App 发送"（Q3 留下的问题）。
 
-## 5. 待裁决
+## 5. 裁决（owner，2026-11-15）
 
-| # | 问题 | 选项 | 建议 |
+| # | 问题 | 裁决 | 依据 / 落点 |
 |---|---|---|---|
-| Q1 | `SessionConversation` 怎么拿到 MessageHub 的 store | a. 在 `components/conversation/backend.ts` 里动态 import `app/messagehub/store`，做法同 `components/network/backend.ts` 的注册模式，`preview/nfspProvider.ts` 引 filebrowser 是先例；b. 把 MessageHub 的数据层（store、api、mock、types，约 5 千行）搬到 `src/api/messagehub/`，组件和 MessageHub 都从那里引用 | a。改动最小；等出现第二个数据层消费者时再做 b |
-| Q2 | 第三方 App 能打开哪些会话 | a. 只能打开自己建的（`ui.source` 等于自己的 appid）或者新建；b. 再加上用户和 Agent 的默认会话；c. 任意 `sessionId` | a。按 §1.4，App 本来就能读这些会话，所以这不是数据边界，而是"App 页面里显示用户的哪些对话"。选 a，App 页面里只会出现和它有关的对话，用户在 MessageHub 里也能按来源认出这些对话 |
-| Q3 | 是否允许 `embed.send`，即 App 以用户的名义发消息 | 允许 / 不允许 | 允许。Agent 浏览器的交接（`afterHandover`）和"问 Agent"（`askAgent`）都需要这个能力；按"先能力再安全"，已知风险是 App 可以替用户说话，但它用自己的会话本来也做得到（§1.4）。气泡上要不要标注"经某 App 发送"，另议 |
-| Q4 | 系统页向 App 回传哪些信息 | a. 只回传 `status`、`sessionId` 和 Turn 状态；b. 再加上消息摘要 | a |
-| Q5 | 按来源列出会话的开销：现在每个会话都要调一次 `listUiSessionState`（最多同时 6 个，结果只缓存在内存里），通用化以后每个用到的 App 都会这样做 | a. 先沿用；b. 让 msg-center 的会话列表支持按 UI 状态键筛选（改协议，单独立项） | 阶段二先选 a；第三个使用方出现之前立项做 b |
-| Q6 | i18n 键 | a. 保留 `messagehub.*`；b. 改成 `conversation.*` | a。一个键都不用动 |
-| Q7 | Agent 浏览器里的会话要不要补齐 MessageHub 的全部能力（编辑、置顶、转发、详情、搜索、拖放） | 全部补齐 / 保持现在的子集 | 组件默认全开，宿主没给回调的操作（转发目标选择器、消息详情页）就不出现。Agent 浏览器的"详情"可以做成打开 MessageHub 里的对应消息 |
-| Q8 | CodeAssistant（只在 mock 应用清单里，只接 mock 数据）怎么处理 | 删除 / 改用 `ConversationSurface` 加 InMemory source | 由 owner 决定。如果保留，它正好可以作为"不接 msg-center 的 source"的样例 |
-| Q9 | 第一个第三方调用方 | Text Editor 的"和 Agent 讨论这篇文档"，或其他 | Text Editor。它已经用了 Preview 嵌入和系统选择器，接入成本最低 |
+| Q1 | `SessionConversation` 怎么拿到 MessageHub 的 store | 按建议：在 `components/conversation/backend.ts` 里动态 import `app/messagehub/store`，这是唯一允许的反向引用。不把数据层搬到 `src/api/messagehub/`，等出现第二个数据层消费者时再议 | 做法同 `components/network/backend.ts` 的注册模式，`preview/nfspProvider.ts` 引 filebrowser 是先例。落在 C6、C8 |
+| Q2 | 第三方 App 能打开哪些会话 | 选 a：只能打开自己建的会话（`ui.source` 等于自己的 appid），或者新建 | 按 §1.4，App 本来就能读这些会话，所以这不是数据边界，而是"App 页面里显示用户的哪些对话"。落在 §2.3 的 `target`、E1 |
+| Q3 | 是否允许 `embed.send`（App 以用户的名义发消息） | 按建议：允许 | Agent 浏览器的交接和"问 Agent"都需要这个能力；按"先能力再安全"，已知风险是 App 可以替用户说话，但它用自己的会话本来也做得到（§1.4）。气泡标注另议，见 §4 |
+| Q4 | 系统页向 App 回传哪些信息 | 按建议：只回传 `status`、`sessionId` 和 Turn 状态，不回传消息摘要 | 落在 §2.3 |
+| Q5 | 按来源列会话的开销 | 按建议：阶段二继续逐个会话读取标记；msg-center 按 UI 状态键筛选在第三个使用方出现之前立项 | 落在 S2、§4 |
+| Q6 | i18n 键 | 按建议：保留 `messagehub.*` | 一个键都不用动 |
+| Q7 | Agent 浏览器里的会话补到什么程度 | 按建议：组件默认全开，宿主没给回调的操作就不出现；Agent 浏览器的"详情"打开 MessageHub 里的对应消息 | 落在 S1 |
+| Q8 | CodeAssistant | 保留，改用 `ConversationSurface` 加 InMemory source | 作为"不接 msg-center 的 source"的样例。落在 S4 |
+| Q9 | 第一个第三方调用方 | 按建议：Text Editor 的"和 Agent 讨论这篇文档" | 它已经用了 Preview 嵌入和系统选择器，接入成本最低。落在 E4 |
 
 ## 6. 验证
 
@@ -240,6 +247,7 @@ websdk 这一侧，`ConversationEmbed`（App 端）和 `ConversationEmbedHost`�
 - Agent 浏览器的“消息详情”（Q7）打开 MessageHub 并定位到那条消息；它没有转发目标选择器，所以不出现“转发”。
 - 来源标记的 mock 存储改为 `buckyos.conversation.mock.sources.v1`（`{ "<owner>\n<session>": "<appid>" }`），`agent-browser.conversation.spec.ts` 跟着改了一处断言。
 - E1：App id 取嵌入方 origin 的 web host（`<web host>.<zone>`）在 `apps.list` 里对应的 `app_id`；mock 运行时用 `*.localhost` 的第一段。`target` 过 zod schema。`{ kind: 'agent' }` 还没有会话时，第一条消息（App 的 `embed.send` 或用户在输入框里发的）用 `createSourcedSession` 新建并打上 App id，会话标题为空（MessageHub 按派生标题显示）。`cyfs-path` 附件不是对象，作为路径文字附在消息里；`object-id` 作为 `data_obj` 引用。
+- 和 Agent 浏览器 D35（一个 Agent 一个浏览器会话，[agent-runtime-browser-todo.md](agent-runtime-browser-todo.md) §5.10）的合并：两边同一天各自改了 agent-browser 的会话部分，rebase 时合成一份。`session.ts` 保留 D35 的找或建规则（已绑定且带标记的优先，否则取带标记的最近活跃的一个，都没有才新建标题为“浏览器”的会话），读写标记改用 `agentSessions` 的 `isSourced`、`loadSources`、`createSourcedSession`；`agentSessions` 补了 `isSourceKnown`，有会话的标记读失败时不新建第二个浏览器会话。`marks.ts` 删除，`agent-browser.conversation.spec.ts` 的标记辅助函数改成新的 mock 存储格式。
 - E7：读代码确认身份层（`caller_mailbox_identity`）对 `post_send`、`msg.list_sessions`、`ui_session.*` 都把非 Agent 的 App token 当作用户本人；之后的 RBAC（`authorize_resource`，`obj://msg-center/owners/<owner>`）对 App token 的结果没有在真实 Zone 上验证。
 
 **验证（mock 运行时）**

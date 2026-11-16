@@ -5,7 +5,7 @@ import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
 import { canOperate } from '../store/store'
 import { displayUrl } from './address'
 
-/** Back, forward (when there is somewhere to go), the address with reload / stop, and the tabs of the current thing. */
+/** Back, forward (when there is somewhere to go), the address with reload / stop, and the tabs. */
 export function AddressBar({ onOpenTabs }: { onOpenTabs: () => void }) {
   const store = useAgentBrowserStore()
   const { t } = useI18n()

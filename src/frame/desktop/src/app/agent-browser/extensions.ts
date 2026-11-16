@@ -1,14 +1,13 @@
-/* What the shell leaves to the conversation side (APP7, DG1–DG3), implemented in conversation/. The shell works
- * without an entry and shows the matching control only when it is set. */
+/* What the shell leaves to the conversation side (APP7, DG2, DG3, RF4), implemented in conversation/. The shell
+ * works without an entry and shows the matching control only when it is set. */
 
 import type { MessageHubStore } from '../messagehub/store'
-import type { MessageHubContext, Session } from '../messagehub/types'
+import type { MessageHubContext } from '../messagehub/types'
 import type { BrowserAgent } from './api/backend'
 import type { BrowserGroup } from './api/types'
-import { afterHandover, createThing, isBrowserThing, sendToGroup } from './conversation/session'
-import type { Thing } from './store/things'
+import { afterHandover, sendToBrowserSession } from './conversation/session'
 
-export interface ThingContext {
+export interface ConversationContext {
   agent: BrowserAgent
   hub: MessageHubStore
   /** The signed-in user looking at their own messages. */
@@ -18,7 +17,6 @@ export interface ThingContext {
 export interface HandoverEvent {
   kind: 'hand_back' | 'hand_to_agent'
   agent: BrowserAgent
-  thing: Thing
   /** The group as the kRPC call returned it. */
   group: BrowserGroup
   url: string
@@ -28,19 +26,13 @@ export interface HandoverEvent {
 }
 
 export interface AgentBrowserExtensions {
-  /** DG1: whether a session of the Agent is listed as a thing. Unset: every active session is. */
-  listsThing?: (session: Session, context: ThingContext) => boolean
-  /** DG1: "New task" — creates the session (with its source mark) and resolves to it; the shell then switches to its group. Unset: no button. */
-  createThing?: (context: ThingContext) => Promise<Session | null>
   /** DG2 / DG3: runs after `browser.hand_back` / `browser.hand_to_agent` succeeded — the message that wakes the Agent is sent here. */
-  afterHandover?: (event: HandoverEvent, context: ThingContext | null) => Promise<void>
-  /** RF4: sends `text` as an ordinary message to the conversation of `group` (binding the default group's session first when it has none), which wakes the Agent. */
-  askAgent?: (request: { group: string; text: string }, context: ThingContext) => Promise<void>
+  afterHandover?: (event: HandoverEvent, context: ConversationContext | null) => Promise<void>
+  /** RF4: sends `text` as an ordinary message to the browser conversation (found or started first), which wakes the Agent. */
+  askAgent?: (request: { text: string }, context: ConversationContext) => Promise<void>
 }
 
 export const agentBrowserExtensions: AgentBrowserExtensions = {
-  listsThing: (session) => isBrowserThing(session.id),
-  createThing,
   afterHandover,
-  askAgent: ({ group, text }, context) => sendToGroup(group, text, context),
+  askAgent: ({ text }, context) => sendToBrowserSession(text, context),
 }

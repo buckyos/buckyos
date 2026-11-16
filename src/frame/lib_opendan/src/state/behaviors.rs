@@ -472,7 +472,8 @@ pub async fn freeze_config(
 /// What a session of this configuration would freeze now: the catalog's
 /// current identity, behaviors and manuals. A conversation takes the
 /// manuals a new one of its class would get (the owner's UI set, what is
-/// switched off left out); behaviors frozen on their first use stay known.
+/// switched off left out) and its own ([`crate::template::own_cmd_skills`]);
+/// behaviors frozen on their first use stay known.
 pub async fn refrozen(
     cfg: &SessionConfig,
     catalog: &dyn BehaviorCatalog,
@@ -482,7 +483,13 @@ pub async fn refrozen(
     let mut next = cfg.clone();
     let old = next.prompt.frozen.take();
     if cfg.session.kind == SessionKind::Ui {
-        next.prompt.cmd_skills = crate::template::SessionTemplate::load(&cfg.session.class, agent_root)?.default_cmd_skills;
+        let mut names = crate::template::SessionTemplate::load(&cfg.session.class, agent_root)?.default_cmd_skills;
+        for own in crate::template::own_cmd_skills(&cfg.extensions) {
+            if names.len() < MAX_CMD_SKILLS && !names.contains(&own) {
+                names.push(own);
+            }
+        }
+        next.prompt.cmd_skills = names;
     }
     freeze_config(&mut next, catalog, who).await?;
     let later: Vec<String> = old

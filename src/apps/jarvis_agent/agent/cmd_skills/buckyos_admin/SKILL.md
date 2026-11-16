@@ -282,6 +282,7 @@ buckyos ext-tools import <file.pikg>                   # an official release's .
 buckyos skill status --agent <agent_id> [--runtime id] # the commands each skill relies on there, and which package would bring what is missing
 ```
 A node's reconciler retries a failed package with growing delays, and a failed upgrade leaves the old version running: read `error` under `nodes` in `ext-tools status`, then `log` for `node_daemon` (`ext_tools`). A package that came with the installer shows up with no `latest`: it needs `ext-tools import` before it can be upgraded.
+Workflow probes media tools at startup and every 30 seconds afterward; installing, upgrading or removing tools takes effect after the next probe, without restarting workflow. Once the tools are ready, submit a new run for work that already failed with `tools_missing`.
 An online item is something a package only declares (the browser of `ext-core`): each node downloads it from its upstream once, after the package is installed. `ext-tools status` shows it per node under `nodes.<node>.online.<item>` (`state`: `missing | downloading | ready | failed`, with `downloaded_bytes` of `size_bytes` and `error`), and the commands that wait for it under `targets.<root>.waiting`. A `failed` download is never retried by the node, not after a restart either: fix the cause (usually the node cannot reach the upstream) and run `ext-tools download`.
 
 #### Change loop

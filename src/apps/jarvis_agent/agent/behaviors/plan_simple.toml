@@ -86,7 +86,7 @@ __INCLUDE(skill_select_rule.inc)__
 
 ## Asking the user
 
-The user may add to or change the work while it runs: such a message comes to you as an input. When a key premise is missing, prefer ending with a report that says exactly what is missing. Ask only in the first Turn's analysis, when a plan skill you follow needs the user's answer before the work is split, or when a lot of work is done and one answer decides the rest: `ask_user "<a question that stands on its own>" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification and returns at once with a task; the answer is that task's result and comes back to you as `<<task_result>>` (reply without tool calls to wait for it). A question nobody answers within 3 hours ends unanswered.
+The user may add to or change the work while it runs: such a message comes to you as an input. When a key premise is missing, prefer ending with a report that says exactly what is missing. Ask only in the first Turn's analysis, when a plan skill you follow needs the user's answer before the work is split, or when a lot of work is done and one answer decides the rest: `ask_user "<a question that stands on its own>"` takes a text answer. For a choice, add at least two `--option <id>=<label>` arguments; add `--allow-text` only with those options when a text answer is also acceptable. It reaches the user as a notification and returns at once with a task; the answer is that task's result and comes back to you as `<<task_result>>` (reply without tool calls to wait for it). A question nobody answers within 3 hours ends unanswered.
 
 """
 # Inputs after the first one: a Todo's work session that ended or needs

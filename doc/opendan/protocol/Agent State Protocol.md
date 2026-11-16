@@ -35,7 +35,7 @@
 
 访问经 `AgentStateClient`：文件版直接读写上述文件（要求能看到 AgentRoot）；kRPC 版与 DFS 版必须对外表现一致（同一组 fixtures）。
 
-`state/browser/groups.json` 不经 `AgentStateClient`：只有 Agent Service（opendan 的浏览器模块）读写，其他方通过 kRPC `browser.status` 看（[Agent Browser Protocol](Agent%20Browser%20Protocol.md)）。内容是 `{"schema": "opendan.browser.groups/1", "default_session_id": <默认组绑定的 MessageHub 会话 | null>, "groups": [{"group_id", "tabs": [{"url", "title"}], "active": <当前标签页的下标 | null>, "user_hold", "handover"}]}`：浏览器停掉（空闲回收、崩溃、Agent Service 重启）之后，下次启动按它把各组的标签页重新打开；`user_hold` / `handover` 让“用户接手着”跨重启保持；`default_session_id` 由 `browser.bind_default` 写。只列有标签页或被接手的组；租约不落盘。登录状态不在这里，在浏览器的用户数据目录（`doc/path_usage.md`）。
+`state/browser/groups.json` 不经 `AgentStateClient`：只有 Agent Service（opendan 的浏览器模块）读写，其他方通过 kRPC `browser.status` 看（[Agent Browser Protocol](Agent%20Browser%20Protocol.md)）。内容是 `{"schema": "opendan.browser.groups/1", "default_session_id": <这个 Agent 的浏览器会话（MessageHub 会话）| null>, "groups": [{"group_id": "default", "tabs": [{"url", "title"}], "active": <当前标签页的下标 | null>, "user_hold", "handover"}]}`：每个 Agent 只有一个标签组 `default`（D35），文件里最多这一项。浏览器停掉（空闲回收、崩溃、Agent Service 重启）之后，下次启动按它把标签页重新打开；`user_hold` / `handover` 让“用户接手着”跨重启保持；`default_session_id` 由 `browser.bind_default` 写。没有标签页也没被接手时不列；租约不落盘。登录状态不在这里，在浏览器的用户数据目录（`doc/path_usage.md`）。
 
 ## 2. 登记表 `state/sessions/<sid>.json`
 
