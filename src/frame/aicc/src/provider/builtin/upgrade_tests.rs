@@ -252,6 +252,27 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
     let openrouter_matcher =
         openrouter::OpenRouterDiscovery::new(HttpTransport::new(Default::default()).unwrap());
     for (provider, id, effort, pointer, expected) in [
+        (
+            "doubao-agent-plan",
+            "kimi-k3.1-pro",
+            "max",
+            "/reasoning/effort",
+            json!("max"),
+        ),
+        (
+            "doubao-agent-plan",
+            "deepseek-v4.1-flash-economy",
+            "none",
+            "/reasoning/effort",
+            json!("none"),
+        ),
+        (
+            "doubao-agent-plan",
+            "deepseek-v4.1-flash-economy",
+            "high",
+            "/reasoning/effort",
+            json!("high"),
+        ),
         ("sn", "glm-5", "none", "/reasoning/enabled", json!(false)),
         ("sn", "glm-5", "thinking", "/reasoning/enabled", json!(true)),
         ("sn", "glm-5.3", "low", "/reasoning/effort", json!("low")),
@@ -1060,10 +1081,11 @@ async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions()
 #[tokio::test]
 async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
     let body = json!({"object":"list","data":[
-        {"object":"model","id":"active-vlm","task_type":["TextGeneration","VisualQuestionAnswering","SpeechToText"]},
-        {"object":"model","id":"active-video","task_type":["MultimodalToVideo","VideoEditing","VideoExtension"]},
-        {"object":"model","id":"retiring","status":"Retiring","task_type":["TextGeneration"]},
-        {"object":"model","id":"unsupported-3d","task_type":["ImageTo3D"]}
+        {"object":"model","id":"active-vlm","task_type":["text_generation","visual_question_answering","speech_to_text"]},
+        {"object":"model","id":"doubao-seedream-5-0-flash-260915","task_type":["text_to_image","image_to_image"]},
+        {"object":"model","id":"active-video","task_type":["multimodal_to_video","video_editing","video_extension"]},
+        {"object":"model","id":"retiring","status":"Retiring","task_type":["text_generation"]},
+        {"object":"model","id":"unsupported-3d","task_type":["image_to_3D"]}
     ]});
     let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
         &ModelsHttp(body),
@@ -1094,6 +1116,7 @@ async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
             ApiType::VideoExtend,
         ])
     );
+    assert_eq!(model("doubao-seedream-5-0-flash-260915").api_types.clone(), Some(vec![ApiType::ImageTextToImage, ApiType::ImageImageToImage]));
     assert_eq!(
         model("retiring").availability,
         ModelAvailability::Unavailable
@@ -1845,8 +1868,8 @@ fn builtin_media_models_mount_their_default_families() {
         ),
         (
             "doubao-agent-plan",
-            "doubao-seedream-5.0-lite",
-            "doubao-seedream-5.0-lite",
+            "doubao-seedream-5.0-flash",
+            "doubao-seedream-5.0-flash",
             "image.txt2img.seedream",
             "image.txt2img",
             "ark.images.generate",
@@ -1924,21 +1947,25 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
         .profiles()
         .find(|profile| profile.provider_profile_id == "doubao-agent-plan")
         .unwrap();
+    let rules = catalog.provider_rules("doubao-agent-plan").unwrap();
+    let retired = [
+        "doubao-seed-2.0-lite",
+        "doubao-seed-2.1-turbo",
+        "kimi-k2.7-code",
+        "minimax-m3",
+        "doubao-seedream-5.0-lite",
+        "kimi-k2.6",
+    ];
+    let model_ids = rules
+        .static_inventory_models
+        .iter()
+        .map(String::as_str)
+        .chain(["kimi-k2.6"])
+        .collect::<Vec<_>>();
     let inventory = InventoryBuilder::build(
         profile,
         &instance(profile, "doubao-agent-plan"),
-        discovery(&[
-            "doubao-seed-2.0-mini",
-            "deepseek-v4-flash",
-            "deepseek-v4.1-flash",
-            "glm-5.3",
-            "glm-5.3-flash",
-            "kimi-k2.7-code",
-            "kimi-k2.6",
-            "kimi-k2.8-preview",
-            "kimi-k3",
-            "minimax-m3",
-        ]),
+        discovery(&model_ids),
         &catalog,
         &providers.codecs(),
     )
@@ -1954,13 +1981,33 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
             .copied()
             .collect::<HashSet<_>>()
     };
-    assert!(
+    assert_eq!(
         inventory
             .models
             .iter()
-            .all(|model| model.provider_model_id != "kimi-k2.6"),
-        "unlisted Agent Plan models must fail closed"
+            .map(|model| model.provider_model_id.as_str())
+            .collect::<HashSet<_>>(),
+        rules
+            .static_inventory_models
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>()
     );
+    for retired_id in retired {
+        assert!(!rules.static_inventory_models.iter().any(|id| id == retired_id));
+    }
+    for (model_id, context, output) in [
+        ("deepseek-v4.1-flash-economy", 1048576, 393216),
+        ("kimi-k3.1-pro", 1048576, 1048576),
+    ] {
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == model_id)
+            .unwrap();
+        assert_eq!(model.capabilities["max_context_tokens"], context);
+        assert_eq!(model.capabilities["max_output_tokens"], output);
+    }
     let text_only = HashSet::from([ApiType::Llm]);
     let vision = HashSet::from([ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]);
     for model_id in ["deepseek-v4-flash", "glm-5.3"] {
@@ -1969,11 +2016,11 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
     for model_id in [
         "doubao-seed-2.0-mini",
         "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-economy",
         "glm-5.3-flash",
-        "kimi-k2.7-code",
         "kimi-k2.8-preview",
         "kimi-k3",
-        "minimax-m3",
+        "kimi-k3.1-pro",
     ] {
         assert_eq!(api_types(model_id), vision, "{model_id}");
     }

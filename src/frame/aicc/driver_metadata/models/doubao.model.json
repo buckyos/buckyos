@@ -126,6 +126,14 @@
       "capabilities": {"image_generation": true}
     },
     {
+      "id": "doubao-seedream-5.0-flash",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
+      "capabilities": {"image_generation": true},
+      "canonical_fields": {"/n": {"converter": "omit", "fallback": {"action": "omit"}}}
+    },
+    {
       "id": "doubao-seedance-2.0",
       "parameter_scale": "video",
       "api_types": ["video.generate", "video.extend"],

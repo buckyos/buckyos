@@ -2917,6 +2917,54 @@ mod tests {
     }
 
     #[test]
+    fn seedream_flash_single_image_omits_unsupported_sequential_parameters() {
+        let catalog = metadata_snapshot();
+        let codecs = all_codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        for (profile, model) in [
+            ("doubao-agent-plan", "doubao-seedream-5.0-flash"),
+            ("doubao", "doubao-seedream-5-0-flash-260915"),
+        ] {
+            for n in [None, Some(1)] {
+                let exact = format!("{model}@primary");
+                let mut route = decision(&exact);
+                route.trace.requested_model = "images.generate".into();
+                route.trace.requested_model_type = RouteModelKind::Exact;
+                route.selected.provider_instance_name = "primary".into();
+                route.selected.model_driver_id = "doubao".into();
+                route.selected.origin_model_id = "doubao-seedream-5.0-flash".into();
+                route.selected.provider_model_id = model.into();
+                route.selected.provider_profile_id = profile.into();
+                route.selected.protocol_adapter_id = "doubao-responses".into();
+                route.selected.operation = "ark.images.generate".into();
+                route.selected.enabled_capabilities = vec!["image_generation".into()];
+                let mut request = buckyos_api::TextToImageInvokeRequest::new(exact, "A blue square");
+                request.n = n;
+                let mut target = target("test-secret");
+                target.provider_rules_id = Some(profile.into());
+                let lowered = resolver
+                    .lower(&route, &AiccCall::ImagesGenerate(request), target)
+                    .unwrap();
+                let wire = codecs
+                    .encode(
+                        "doubao-responses",
+                        "ark.images.generate",
+                        ApiType::ImageTextToImage,
+                        &lowered.input,
+                        &lowered.context,
+                    )
+                    .unwrap();
+                let crate::protocol::HttpBody::Json(body) = wire.body else {
+                    panic!("expected JSON")
+                };
+                assert_eq!(body["model"], model);
+                assert!(body.get("sequential_image_generation").is_none());
+                assert!(body.get("sequential_image_generation_options").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn every_builtin_provider_operation_has_a_golden_lowering_binding() {
         let codecs = all_codecs();
         let providers = built_in_rules();

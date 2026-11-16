@@ -1,0 +1,49 @@
+{
+  "source_url": "https://ark.cn-beijing.volces.com/api/v3/models",
+  "checked_at": "2026-11-16",
+  "data": [
+    {
+      "api_supported": {
+        "images/generations": true
+      },
+      "created": 1789531767,
+      "domain": "ImageGeneration",
+      "features": {
+        "batch": {
+          "batch_chat": false,
+          "batch_job": false
+        },
+        "cache": {
+          "prefix_cache": false,
+          "session_cache": false
+        },
+        "structured_outputs": {
+          "json_object": false,
+          "json_schema": false
+        },
+        "tools": {
+          "function_calling": false,
+          "web_search": false
+        }
+      },
+      "id": "doubao-seedream-5-0-flash-260915",
+      "modalities": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ]
+      },
+      "name": "doubao-seedream-5-0-flash",
+      "object": "model",
+      "status": "Published",
+      "task_type": [
+        "text_to_image",
+        "image_to_image"
+      ],
+      "version": "260915"
+    }
+  ]
+}

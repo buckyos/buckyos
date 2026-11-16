@@ -509,32 +509,32 @@ pub(super) async fn discover_volcengine_ark_models(
             };
             for task_type in task_types.iter().filter_map(serde_json::Value::as_str) {
                 match task_type {
-                    "TextGeneration" => {
+                    "text_generation" => {
                         add_api_type(ApiType::Llm);
                     }
-                    "VisualQuestionAnswering" => {
+                    "visual_question_answering" => {
                         add_api_type(ApiType::VisionOcr);
                         add_api_type(ApiType::VisionCaption);
                     }
-                    "TextEmbedding" => {
+                    "text_embedding" => {
                         add_api_type(ApiType::EmbeddingText);
                     }
-                    "ImageEmbedding" => {
+                    "image_embedding" => {
                         add_api_type(ApiType::EmbeddingMultimodal);
                     }
-                    "TextToImage" => {
+                    "text_to_image" => {
                         add_api_type(ApiType::ImageTextToImage);
                     }
-                    "ImageToImage" => {
+                    "image_to_image" => {
                         add_api_type(ApiType::ImageImageToImage);
                     }
-                    "TextToVideo" | "ImageToVideo" | "MultimodalToVideo" => {
+                    "text_to_video" | "image_to_video" | "multimodal_to_video" => {
                         add_api_type(ApiType::VideoGenerate);
                     }
-                    "VideoEditing" => {
+                    "video_editing" => {
                         add_api_type(ApiType::VideoEdit);
                     }
-                    "VideoExtension" => {
+                    "video_extension" => {
                         add_api_type(ApiType::VideoExtend);
                     }
                     _ => {}
@@ -998,7 +998,7 @@ mod tests {
             }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
                 DOUBAO_PROFILE_ID => 7,
-                DOUBAO_AGENT_PLAN_PROFILE_ID => 12,
+                DOUBAO_AGENT_PLAN_PROFILE_ID => 13,
                 QWEN_PROFILE_ID => 10,
                 _ => 1,
             };

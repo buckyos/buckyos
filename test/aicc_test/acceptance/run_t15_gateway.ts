@@ -1,4 +1,5 @@
 import { decisionInput, assertDecisionResult } from "./decision.ts";
+import { T15_PROVIDER_DISCOVERY_CONTRACTS } from "./t15_mock_provider.ts";
 import {firstReusableResource} from "./payloads.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -373,13 +374,6 @@ async function addProvider(
     candidate.provider_driver === driver
   );
   if (!provider) throw new Error(`unknown T1.5 Provider ${driver}`);
-  const catalogOnly = new Set([
-    "fal",
-    "glm",
-    "doubao",
-    "doubao-speech",
-    "qwen",
-  ]);
   const catalogModels = provider.official_first_party_model_ids ??
     Object.fromEntries(
       Object.entries(provider.test_model_ids).map((
@@ -430,7 +424,7 @@ async function addProvider(
       configuredModels.set(providerModelId, model);
     }
   }
-  const catalogDiscovery = catalogOnly.has(driver)
+  const catalogDiscovery = T15_PROVIDER_DISCOVERY_CONTRACTS[driver]?.mode === "catalog_only"
     ? {
       revision: `t15-${driver}-${instance}`,
       discovered_at_ms: Date.now(),
@@ -1005,7 +999,7 @@ export function buildT15TypedParams(
         items: [{ id: "item-1", text: "marker", image: resource("image/png") }],
       };
     case "image.txt2img":
-      return { ...common, prompt: "A blue square marked 4827" };
+      return { ...common, prompt: "A blue square marked 4827", n: 1 };
     case "image.img2img":
       return {
         ...common,

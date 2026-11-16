@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "contract_revision": "2026-11-09.1",
-  "capability_baseline_revision": "2026-11-09.1",
-  "capability_cells_sha256": "1bf98f43a887646667c1f236211158228e3ee8fcac1701100d0646d398076f31",
+  "contract_revision": "2026-11-16.1",
+  "capability_baseline_revision": "2026-11-16.1",
+  "capability_cells_sha256": "c836b906b710cf708ab1ea3924fddcc7a498b2ecf3d07e7834db8e0a669cc286",
   "logical_entrypoint_baseline_revision": "2026-10-26.1",
   "profiles": [
     {
@@ -361,6 +361,7 @@
         "glm-5.3-flash",
         "kimi-k2.7-code",
         "kimi-k3",
+        "kimi-k3.1-pro",
         "kimi-k2.8-preview",
         "minimax-m3",
         "doubao-seed-*"

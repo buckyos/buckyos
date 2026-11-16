@@ -323,28 +323,28 @@ function discoveryFixture(
         ? {
           task_type: [
             ...(documentedModels?.llm?.includes(id)
-              ? ["TextGeneration"]
+              ? ["text_generation"]
               : []),
             ...(documentedModels?.["vision.ocr"]?.includes(id)
-              ? ["VisualQuestionAnswering"]
+              ? ["visual_question_answering"]
               : []),
             ...(documentedModels?.["embedding.multimodal"]?.includes(id)
-              ? ["ImageEmbedding"]
+              ? ["image_embedding"]
               : []),
             ...(documentedModels?.["image.txt2img"]?.includes(id)
-              ? ["TextToImage"]
+              ? ["text_to_image"]
               : []),
             ...(documentedModels?.["image.img2img"]?.includes(id)
-              ? ["ImageToImage"]
+              ? ["image_to_image"]
               : []),
             ...(documentedModels?.["video.generate"]?.includes(id)
-              ? ["MultimodalToVideo"]
+              ? ["multimodal_to_video"]
               : []),
             ...(documentedModels?.["video.edit"]?.includes(id)
-              ? ["VideoEditing"]
+              ? ["video_editing"]
               : []),
             ...(documentedModels?.["video.extend"]?.includes(id)
-              ? ["VideoExtension"]
+              ? ["video_extension"]
               : []),
           ],
           domain: id.includes("seedream")

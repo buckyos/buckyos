@@ -1092,19 +1092,19 @@ test("Doubao official catalog preserves lifecycle and task evidence without cros
             {
               id: "doubao-seed-current",
               object: "model",
-              task_type: ["TextGeneration"],
+              task_type: ["text_generation"],
             },
             {
               id: "doubao-seed-retiring",
               object: "model",
               status: "Retiring",
-              task_type: ["TextGeneration"],
+              task_type: ["text_generation"],
             },
             {
               id: "doubao-seed-shutdown",
               object: "model",
               status: "Shutdown",
-              task_type: ["TextGeneration"],
+              task_type: ["text_generation"],
             },
           ],
         }),
@@ -1115,7 +1115,7 @@ test("Doubao official catalog preserves lifecycle and task evidence without cros
     inventory.models.map((model) => model.provider_model_id),
     ["doubao-seed-current", "doubao-seed-retiring", "doubao-seed-shutdown"],
   );
-  assert.deepEqual(inventory.models[0].official_task_types, ["TextGeneration"]);
+  assert.deepEqual(inventory.models[0].official_task_types, ["text_generation"]);
   assert.equal(inventory.models[1].official_lifecycle_status, "Retiring");
   assert.equal(inventory.models[2].official_lifecycle_status, "Shutdown");
 
@@ -1145,9 +1145,9 @@ test("Doubao T2 derives canonical cells from configured official task types", as
       api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
       official_task_types: [
-        "TextGeneration",
-        "VisualQuestionAnswering",
-        "SpeechToText",
+        "text_generation",
+        "visual_question_answering",
+        "speech_to_text",
       ],
     }],
   };
@@ -1180,12 +1180,11 @@ test("frozen official inventory is explicit and does not make a network request"
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     "deepseek-v4.1-flash",
+    "deepseek-v4.1-flash-economy",
     "doubao-embedding-vision",
-    "doubao-seed-2.0-lite",
     "doubao-seed-2.0-mini",
     "doubao-seed-2.1-lite",
     "doubao-seed-2.1-pro",
-    "doubao-seed-2.1-turbo",
     "doubao-seed-evolving",
     "doubao-seed-tts-2.0",
     "doubao-seedance-2.0",
@@ -1193,16 +1192,15 @@ test("frozen official inventory is explicit and does not make a network request"
     "doubao-seedance-2.0-mini",
     "doubao-seedance-2.5",
     "doubao-seedream-5-0-pro",
-    "doubao-seedream-5.0-lite",
+    "doubao-seedream-5.0-flash",
     "glm-5.3",
     "glm-5.3-flash",
-    "kimi-k2.7-code",
     "kimi-k2.8-preview",
     "kimi-k3",
-    "minimax-m3",
+    "kimi-k3.1-pro",
   ]);
   assert.equal(requests, 0);
-  assert.equal(profile.official_catalog.checked_at, "2026-09-24");
+  assert.equal(profile.official_catalog.checked_at, "2026-11-16");
   assert.match(
     profile.official_catalog.risk ?? "",
     /not revalidated at run time/,
@@ -1271,8 +1269,8 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
       logical_mounts: [],
     },
     {
-      exact_model: `kimi-k2.7-code@${instance}`,
-      provider_model_id: "kimi-k2.7-code",
+      exact_model: `kimi-k3.1-pro@${instance}`,
+      provider_model_id: "kimi-k3.1-pro",
       api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
     },
@@ -1289,8 +1287,8 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
       logical_mounts: [],
     },
     {
-      exact_model: `minimax-m3@${instance}`,
-      provider_model_id: "minimax-m3",
+      exact_model: `deepseek-v4.1-flash-economy@${instance}`,
+      provider_model_id: "deepseek-v4.1-flash-economy",
       api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
     },
@@ -1328,10 +1326,10 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
   for (
     const model of [
       "glm-5.3-flash",
-      "kimi-k2.7-code",
+      "kimi-k3.1-pro",
       "kimi-k2.8-preview",
       "kimi-k3",
-      "minimax-m3",
+      "deepseek-v4.1-flash-economy",
     ]
   ) {
     assert.deepEqual(
@@ -5167,6 +5165,8 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
       if (provider.provider_driver === "doubao") {
         const models = fixture.data as Array<Record<string, unknown>>;
         assert.ok(models.every((model) => Array.isArray(model.task_type)));
+        const official = JSON.parse(await readFile(new URL("./fixtures/doubao-models.json", import.meta.url), "utf8"));
+        assert.deepEqual(models.find(model => model.id === official.data[0].id)?.task_type, official.data[0].task_type);
         assert.ok(models.every((model) => model.id !== "doubao-seed-tts-2.0"));
       }
       if (provider.provider_driver === "qwen") {
@@ -6930,6 +6930,25 @@ test("Kimi K3.1 Pro wire accepts fixed sampling values and rejects incompatible 
       assert.ok(validateProviderRequest(contract, captured, "llm").some((error) => error.includes(field)), `${driver} must reject ${field}`);
       delete body[field];
     }
+  }
+});
+
+test("Seedream Flash rejects sequential generation even when explicitly disabled", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [driver, contractId, model] of [
+    ["doubao-agent-plan", "doubao-agent-plan.images.plan-v3", "doubao-seedream-5.0-flash"],
+    ["doubao", "doubao.images.v3", "doubao-seedream-5-0-flash-260915"],
+  ]) {
+    const contract = protocolContract(catalog, driver, contractId);
+    const request = t15ProviderRequest("https://mock.invalid", contract, model, {}, "image.txt2img");
+    const body = JSON.parse(request.init.body as string);
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+    assert.deepEqual(validateProviderRequest(contract, captured, "image.txt2img"), []);
+    body.sequential_image_generation = "disabled";
+    assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("sequential_image_generation")));
+    delete body.sequential_image_generation;
+    body.sequential_image_generation_options = { max_images: 1 };
+    assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("sequential_image_generation_options")));
   }
 });
 
