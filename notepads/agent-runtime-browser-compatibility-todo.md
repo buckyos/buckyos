@@ -274,7 +274,7 @@ BC2 需要收口三件事：显示/传输组件及所属安装层；CfT 是否�
 | Q2 | Xvnc 的指针不被 Chromium 当成鼠标：`(hover: hover)`、`(pointer: fine)` 为假，和无头一样 | 三个办法：A 维持（同一显示环境下原生如此，Q1 的结果能说明 Google 在不在意）；B 给浏览器加 `--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2`，按显示器实际是鼠标操作来声明（不加新依赖，但这是一个显式设定）；C 改用 Xvfb（带 MOUSE 类型的设备）+ x11vnc（`-unixsock`），opendan 的 RFB 客户端不用改，镜像多一个组件。建议先看 Q1 |
 | Q3 | 浏览器发行版（F） | CfT 的启动窗口有“只用于自动化测试”的信息条（服务端经 CDP 开的窗口没有），UA-CH 品牌是 `Chromium` 不是 `Google Chrome`。Chrome Stable 没有 Linux arm64、再分发另议。建议 Q1 通过就维持 CfT |
 | Q4 | 时区、语言 | 容器里是 UTC、`C.UTF-8`，浏览器照实报告；真人的浏览器一般是本地时区。要和节点一致需要 node_daemon 把宿主时区传进容器，没做 |
-| Q5 | App 的地址栏与浏览器自己的工具栏同时出现 | 现在两者都在（App 的地址栏、标签列表经 CDP 操作）。手机上浏览器工具栏约占 90 CSS px。是否在 `virtual` 下收起 App 的地址栏，待定 |
+| Q5 | App 的地址栏与浏览器自己的工具栏同时出现 | 现在两者都在（App 的地址栏、标签列表经 CDP 操作）。手机上浏览器工具栏约占 90 CSS px。11-16 owner 定：App 的地址栏保留，桌面上并进顶部一行（Agent 名字后面是地址栏，标签页按钮在 ⋮ 左边），手机仍是两行，已实施（Desktop `shell/AgentBrowserShell.tsx`）。屏幕里浏览器自己的标签栏、地址栏、书签栏是否收起，未定 |
 | Q6 | 剪贴板、输入法 | 远端复制的文字带回手机（需要 TigerVNC 扩展剪贴板，UTF-8 走 zlib）没做；输入法组字中间态不再画进页面（手机输入法自己显示），上屏后才到页面 |
 | Q7 | 接手时的后台重排 | 重排在自己的 `_reflow` 标签页里跑，用服务端自己的连接，不碰用户的标签页和输入；接手不中止它（有超时上限）。要不要接手时一并中止 |
 | Q8 | macOS / Windows | 仍是无头（`display = auto` 的取值），身份补偿和注入在那里照旧；它们的显示器和画面捕获没做 |

@@ -1,7 +1,9 @@
-/* The App's frame, designed for a phone and used as it is on the desktop: the Agent and the mode on top, the
- * address under them, the stage (the screen, or the reflow / conversation panel), and the strip that says who
- * operates. Before that: choosing one of the user's own Agents (D10). */
+/* The App's frame, designed for a phone: the Agent and the mode on top, the address under them, the stage (the
+ * screen, or the reflow / conversation panel), and the strip that says who operates. On a desktop the top is one
+ * row — the Agent, the address, the mode, the tabs, the menu — unless the window is too narrow for it. Before
+ * that: choosing one of the user's own Agents (D10). */
 
+import { useMediaQuery } from '@mui/material'
 import { EllipsisVertical, MonitorOff } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { LoadingOrb } from '../../../components/LoadingOrb'
@@ -19,7 +21,7 @@ import { RequestLayer } from '../requests/RequestLayer'
 import { ScreenView } from '../screen/ScreenView'
 import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
 import { browserUsable, canOperate } from '../store/store'
-import { AddressBar } from './AddressBar'
+import { AddressBar, TabsButton } from './AddressBar'
 import { BrowserDownload } from './BrowserDownload'
 import { HandoverBar } from './HandoverBar'
 import { MenuSheet, TabsSheet } from './sheets'
@@ -108,6 +110,9 @@ function Toast() {
 
 type SheetName = 'tabs' | 'menu'
 
+/** Below this width of the App the one-row top of a desktop leaves the address too little room: it goes back to two rows. */
+const ONE_ROW_MIN_WIDTH = 640
+
 function BrowserFrame() {
   const store = useAgentBrowserStore()
   const { t } = useI18n()
@@ -116,23 +121,32 @@ function BrowserFrame() {
   const usable = useAgentBrowser(browserUsable)
   const operable = useAgentBrowser(canOperate)
   const loading = useAgentBrowser((snapshot) => snapshot.state?.loading ?? false)
+  const desktop = useMediaQuery('(min-width: 769px)')
+  const [roomy, setRoomy] = useState(true)
   const [sheet, setSheet] = useState<SheetName | null>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const stage = stageRef.current
     if (!stage) return
-    const observer = new ResizeObserver(() => store.setStageSize({ width: stage.clientWidth, height: stage.clientHeight }))
+    const observer = new ResizeObserver(() => {
+      store.setStageSize({ width: stage.clientWidth, height: stage.clientHeight })
+      setRoomy(stage.clientWidth >= ONE_ROW_MIN_WIDTH)
+    })
     observer.observe(stage)
     return () => observer.disconnect()
   }, [store])
   const close = () => setSheet(null)
+  const openTabs = () => setSheet('tabs')
+  const oneRow = desktop && roomy
+  const address = mode === 'chat' ? null : mode === 'reflow' ? <ReflowAddressBar /> : <AddressBar onOpenTabs={oneRow ? undefined : openTabs} />
   return (
     <div className="ab-root" data-testid="agent-browser" data-mode={mode} data-agent={agent?.agentId} data-operable={operable ? 'true' : 'false'}>
-      <div className="ab-top">
+      <div className="ab-top" data-layout={oneRow ? 'row' : 'stacked'} data-testid="ab-top">
         <div className="ab-identity" title={agent ? t('agentBrowser.agent.browserOf', 'This is {{name}}’s browser', { name: agent.name }) : undefined} data-testid="ab-identity">
           {agent ? <HubAvatar type="agent" name={agent.name} avatar={agent.avatar} size={24} /> : null}
           <span className="ab-identity-name" data-testid="ab-agent-name">{agent?.name}</span>
         </div>
+        {oneRow ? address ?? <span className="ab-top-fill" aria-hidden /> : null}
         <div className="ab-modes" role="tablist" aria-label={t('agentBrowser.mode.label', 'View')}>
           {browserModes.map((item) => (
             <button key={item} type="button" role="tab" aria-selected={mode === item} className="ab-mode" data-testid={`ab-mode-${item}`} onClick={() => store.setMode(item)}>
@@ -140,9 +154,11 @@ function BrowserFrame() {
             </button>
           ))}
         </div>
+        {/* The tabs are the original page's; in the other modes their place stays, so the mode buttons do not move. */}
+        {oneRow ? mode === 'page' ? <TabsButton onOpen={openTabs} /> : <span className="ab-tabs-slot" aria-hidden /> : null}
         <button type="button" className="ab-icon-button" aria-label={t('agentBrowser.menu.title', 'Browser settings')} aria-haspopup="dialog" data-testid="ab-menu-button" onClick={() => setSheet('menu')}><EllipsisVertical size={18} aria-hidden /></button>
       </div>
-      {mode === 'chat' ? null : mode === 'reflow' ? <ReflowAddressBar /> : <AddressBar onOpenTabs={() => setSheet('tabs')} />}
+      {oneRow ? null : address}
       <div className="ab-progress" data-active={loading && mode === 'page' ? 'true' : 'false'} aria-hidden />
       <div ref={stageRef} className="ab-stage" data-testid="ab-stage" role="tabpanel">
         {mode === 'reflow' ? <ReflowPanel /> : mode === 'chat' ? <ConversationPanel /> : usable ? <ScreenView /> : <Unavailable />}

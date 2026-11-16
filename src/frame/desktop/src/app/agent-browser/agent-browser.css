@@ -41,6 +41,12 @@
   background: var(--cp-surface-opaque); color: var(--cp-text); font-weight: 600;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--cp-shadow) 22%, transparent);
 }
+/* A desktop: one row — the Agent, the address taking the room left, the mode, the tabs, the menu. */
+.ab-top[data-layout='row'] { padding: 6px 8px; }
+.ab-top[data-layout='row'] .ab-identity { flex: 0 1 auto; max-width: 220px; }
+.ab-top[data-layout='row'] .ab-address { flex: 1 1 0; min-width: 240px; padding: 0; }
+.ab-top-fill { flex: 1 1 0; }
+.ab-tabs-slot { flex: none; width: 40px; }
 
 /* Address */
 .ab-address { flex: none; display: flex; align-items: center; gap: 2px; padding: 4px 6px; }

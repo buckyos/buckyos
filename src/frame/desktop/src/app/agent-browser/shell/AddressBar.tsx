@@ -5,12 +5,23 @@ import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
 import { canOperate } from '../store/store'
 import { displayUrl } from './address'
 
-/** Back, forward (when there is somewhere to go), the address with reload / stop, and the tabs. */
-export function AddressBar({ onOpenTabs }: { onOpenTabs: () => void }) {
+/** The tabs of the browser, with how many there are: at the end of the address bar on a phone, beside the menu on a desktop. */
+export function TabsButton({ onOpen }: { onOpen: () => void }) {
+  const { t } = useI18n()
+  const tabCount = useAgentBrowser((snapshot) => snapshot.group?.tabs.length ?? 0)
+  return (
+    <button type="button" className="ab-icon-button ab-tabs-button" aria-label={t('agentBrowser.tabs.open', 'Tabs: {{count}}', { count: tabCount })} data-testid="ab-tabs-button" onClick={onOpen}>
+      <Layers size={18} aria-hidden />
+      <span className="ab-tabs-count" data-testid="ab-tabs-count">{tabCount}</span>
+    </button>
+  )
+}
+
+/** Back, forward (when there is somewhere to go), the address with reload / stop, and — given `onOpenTabs` — the tabs. */
+export function AddressBar({ onOpenTabs }: { onOpenTabs?: () => void }) {
   const store = useAgentBrowserStore()
   const { t } = useI18n()
   const state = useAgentBrowser((snapshot) => snapshot.state)
-  const tabCount = useAgentBrowser((snapshot) => snapshot.group?.tabs.length ?? 0)
   const operable = useAgentBrowser(canOperate)
   const inputRef = useRef<HTMLInputElement>(null)
   const [draft, setDraft] = useState<string | null>(null)
@@ -66,10 +77,7 @@ export function AddressBar({ onOpenTabs }: { onOpenTabs: () => void }) {
           </button>
         ) : null}
       </form>
-      <button type="button" className="ab-icon-button ab-tabs-button" aria-label={t('agentBrowser.tabs.open', 'Tabs: {{count}}', { count: tabCount })} data-testid="ab-tabs-button" onClick={onOpenTabs}>
-        <Layers size={18} aria-hidden />
-        <span className="ab-tabs-count" data-testid="ab-tabs-count">{tabCount}</span>
-      </button>
+      {onOpenTabs ? <TabsButton onOpen={onOpenTabs} /> : null}
     </div>
   )
 }
