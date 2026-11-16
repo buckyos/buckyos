@@ -392,6 +392,7 @@ def first_party_notices(payload: Path) -> None:
     (first_party / "README.txt").write_text(
         "The included AGPL-3.0-only license and BuckyOS notices apply to BuckyOS-authored "
         "launchers, smoke tests, Windows shims, browser commands (agent-browser, page-render), and build/packaging scripts. "
+        "The third-party sample files that `smoke/THIRD_PARTY.md` lists keep their own license (MPL-2.0). "
         "Third-party tools, libraries, fonts, and their source files retain their own licenses; "
         "they are not relicensed by this notice. The matching source archive includes the BuckyOS scripts.\n"
     )
@@ -654,7 +655,8 @@ def finalize(payload: Path, source_root: Path, platform: str, version: str, dist
         f"# Source code for ext-core {version} ({platform})\n\n"
         "These tools retain their individual licenses. BuckyOS's repository license does not replace them.\n\n"
         "Only the BuckyOS-authored launchers, smoke tests, Windows shims, browser commands, and packaging scripts are AGPL-3.0-only; "
-        "their license and copyright notices are in `buckyos-packaging/`.\n\n"
+        "their license and copyright notices are in `buckyos-packaging/`. The third-party sample files listed in "
+        "`smoke/THIRD_PARTY.md` keep their own license (MPL-2.0) and are shipped unmodified, in the payload and in the source archive.\n\n"
         f"The matching source archive is `{filename}` (SHA256 `{digest}`). It must be offered alongside this payload, "
         "at the same download location and without an extra charge. The release manifest records its URL/path and digest. "
         "If you redistribute the payload, redistribute that archive and these notices as well.\n\n"

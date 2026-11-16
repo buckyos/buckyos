@@ -85,6 +85,7 @@ const PIPELINE_DOCUMENTS: Record<string, [string, PipelineDocumentProfile]> = {
   dpt: ['application/ksdpt', 'preview-document'],
   odp: [`${ODF}.presentation`, 'preview-document'],
   odg: [`${ODF}.graphics`, 'preview-document'],
+  vsd: ['application/vnd.visio', 'preview-document'],
   vsdx: ['application/vnd.ms-visio.drawing', 'preview-document'],
   pub: ['application/vnd.ms-publisher', 'preview-document'],
   hwp: ['application/x-hwp', 'preview-document'],
@@ -103,7 +104,16 @@ const PIPELINE_DOCUMENTS: Record<string, [string, PipelineDocumentProfile]> = {
   markdown: ['text/markdown', 'preview-html'],
 }
 
-const PIPELINE_PROFILES = new Map<string, PipelineDocumentProfile>([...Object.values(PIPELINE_DOCUMENTS), ['text/rtf', 'preview-document']])
+/** Other names the same documents arrive under (a server's or an OS's Content-Type). */
+const PIPELINE_ALIASES: [string, PipelineDocumentProfile][] = [
+  ['text/rtf', 'preview-document'],
+  ['application/x-visio', 'preview-document'],
+  ['application/visio', 'preview-document'],
+  ['application/vnd.ms-visio.viewer', 'preview-document'],
+  ['application/vnd.ms-visio.drawing.main+xml', 'preview-document'],
+]
+
+const PIPELINE_PROFILES = new Map<string, PipelineDocumentProfile>([...Object.values(PIPELINE_DOCUMENTS), ...PIPELINE_ALIASES])
 
 /** Text markup a Pipeline turns into a page; shown as plain text where no Pipeline does. */
 const TEXT_FALLBACK_TYPES = new Set(['ipynb', 'md'].map((ext) => PIPELINE_DOCUMENTS[ext][0]))

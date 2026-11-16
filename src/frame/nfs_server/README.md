@@ -233,17 +233,29 @@ Office / ODF / RTF / iWork 文档;RAW 等图片;EPUB、ipynb、Markdown)由 nfs_
   `/Applications/LibreOffice.app/Contents/MacOS`;Linux `/usr/bin`、`/usr/lib/libreoffice/program`、
   `/opt/libreoffice*/program`;Windows `%ProgramFiles%\LibreOffice\program`、`%ProgramFiles(x86)%\LibreOffice\program`)
   → 扩展包 `$BUCKYOS_ROOT/tools/bin/`(排最后:机器上已有的转换器优先)。Windows 加 `.exe`(扩展包 launcher 是 `.cmd`)
-  且子进程无控制台;不下载不安装。启动时、每次 `hello` 与 `repr` 前按(路径, 大小, mtime)复核(只 stat,变了才重新探测)。
-- **soffice 按应用查找**:查找顺序上的每个 `soffice` 都保留,并读它的 `program/` 目录(macOS 是 `../Frameworks`)里的
-  模块库判断带了哪些应用——Writer `swlo`、Calc `sclo`、Impress/Draw `sdlo`(`lib*.so` / `lib*.dylib` / `*.dll`)。
-  文档交给第一个带对应应用的安装:宿主 LibreOffice 缺 Calc 时,表格改用 `tools/bin/soffice`(ext-core 的 launcher 不在
-  program 目录里,视为应用齐全)。`soffice` 属于 ext-core,一个都找不到、或某个应用没有任何安装带,是**部署缺陷**:
-  规划阶段就返回 `unsupported/no-pipeline`,`detail` 写明 deployment defect 和查过的位置,启动日志打 warn,不提示
-  用户自己装软件。
+  且子进程无控制台;不下载不安装。启动时、每次 `hello` 与 `repr` 前按(路径, 大小, mtime)复核(只 stat,变了才重新探测);
+  soffice 的复核范围还包括它实际启动的那套 LibreOffice 的真实二进制、四个应用的模块库、`registry/*.xcd` 和服务注册表
+  `*.rdb`,应用或过滤器装上、卸掉、升级都会重新探测。
+- **soffice 按应用和导入过滤器查找**:查找顺序上的每个 `soffice` 都保留,读它实际启动的那套安装——是 launcher 脚本
+  (ext-core 的 `tools/bin/soffice` / `soffice.cmd`,或任何 `exec` 另一个 soffice 的脚本)就跟到它执行的 soffice,
+  跟不到的不当作齐全,不使用,列进 `soffice_unresolved` 并打 warn。安装布局:Linux/Windows `program/`(有 `soffice.bin`)
+  + `share/registry/`,macOS `Contents/MacOS` + `Contents/Frameworks` + `Contents/Resources/registry`。应用 = 模块库 +
+  该应用的 registry 文件:Writer `swlo`+`writer.xcd`、Calc `sclo`+`calc.xcd`、Impress `sdlo`+`impress.xcd`、Draw
+  `sdlo`+`draw.xcd`(Impress 与 Draw 共用 `sdlo`,靠 xcd 区分)。导入过滤器:Visio = 有 Draw,`draw.xcd` 登记了
+  `draw_Visio_Document` 类型和 `com.sun.star.comp.Draw.VisioImportFilter`,且服务注册表 `*.rdb` 里实现它的库文件存在
+  (官方包是 `libmergedlo` 或 `libwpftdrawlo`)。文档交给第一个同时带所需应用和过滤器的安装(`media.rs`
+  `office_of` / `filter_of`:doc/docx/odt/rtf/…→Writer,xls/xlsx/ods/numbers→Calc,ppt/pptx/odp/key→Impress,
+  odg/pub/vsd/vsdx→Draw,vsd/vsdx 另需 Visio 过滤器):宿主 LibreOffice 缺 Calc 或缺 Visio 过滤器时,这类文档改用
+  ext-core 的安装。`soffice` 属于 ext-core,一个都找不到、或某个应用/过滤器没有任何安装带,是**部署缺陷**:规划阶段就
+  返回 `unsupported/no-pipeline`,`detail` 只说缺什么(如 `the LibreOffice installs on this node have no Draw with the
+  Visio import filter (… deployment defect)`),路径和各安装的应用/过滤器留在 `hello.repr` 与日志(规划失败时 warn 一行
+  带上各安装),不提示用户自己装软件。
 - **`hello.repr`**:`available`(任一组在)、`profiles`(只列当前能产出的档位)、`ffmpeg`/`ffprobe`/`magick`/
   `pdftoppm`/`pdfinfo`/`pandoc` 各给 `{path, version, source}`(`source` = `system` 或 `ext-tools`),`soffice` 是数组
-  `[{path, version, source, components:["writer","calc","impress"]}]`,没有任何安装带的应用进
-  `soffice_missing_components`;ffmpeg 在时另给 `tonemap`、`h264_encoder`、`heif`;缺的工具进 `missing` 并给 `detail`。
+  `[{path, version, source, components:["writer","calc","impress","draw"], filters:["visio"]}]`,没有任何安装带的应用进
+  `soffice_missing_components`,没有任何安装带的过滤器进 `soffice_missing_filters`,读不出安装的 soffice 进
+  `soffice_unresolved`;ffmpeg 在时另给 `tonemap`、`h264_encoder`、`heif`;缺的工具进 `missing` 并给 `detail`
+  (带查过的位置;`repr` 规划失败的 `detail` 不带路径)。
   HEIC 需要 ffmpeg ≥ 7.1。
 - **协议**(`rpc.rs`,websdk `NfspClient.repr/getRepr` 同形):`repr` 的源是 `at`(NFSP 路径/ref,按路径 ACL
   判 read)或 `args.source`(`{bucket:{bucket_id,key,version?,access_token?}}` 按桶权限,`{obj_id}` 按 NDM 读权);
@@ -284,10 +296,16 @@ Office / ODF / RTF / iWork 文档;RAW 等图片;EPUB、ipynb、Markdown)由 nfs_
 - **文档**(`media.rs` `Kind::Document`、`convert.rs` `preview-document` / `preview-sheet`):docx/pptx/xlsx/vsdx 按 zip
   条目名(`word/document*.xml`、`ppt/presentation*.xml`、`xl/workbook*.xml`、`visio/document*.xml`),iWork 按
   `Index/*.iwa` 加扩展名(pages/key/numbers),ODF 按首条目 `mimetype`,doc/ppt/xls/pub 按 OLE2 目录里的流名
-  (`WordDocument`/`PowerPoint Document`/`Workbook`/`Quill`),RTF 按 `{\rtf`,WordPerfect 按 `\xffWPC`,HWP 97 按
+  (`WordDocument`/`PowerPoint Document`/`Workbook`/`Quill`;Visio VSD 是 `VisioDocument`),RTF 按 `{\rtf`,WordPerfect 按 `\xffWPC`,HWP 97 按
   `HWP Document File`(HWP 5 是 OLE2,LibreOffice 不读,不认)。OLE2 目录不在头 1 MiB 里时,按文件头的目录扇区号补读
-  一次目录。只在字节判断不了时参考文件名:`wps/wpt→doc`、`et/ett→xls`、`dps/dpt→ppt`、
-  `docm/dotx/dotm→docx`、`xlsm/xltx→xlsx`、`pptm/ppsx/potx→pptx`。
+  一次目录。只在字节判断不了时参考文件名:`wps/wpt→doc`、`et/ett→xls`、`dps/dpt→ppt`、`vsd`(都要求先是 OLE2 容器;
+  目录读到了也没有 Visio 流、只是名字叫 .vsd 的 OLE2 文件按 vsd 交给转换,转换失败按 `failed` 报),
+  `docm/dotx/dotm→docx`、`xlsm/xltx→xlsx`、`pptm/ppsx/potx→pptx`、`vsdx`(zip)。`vsdm`/`vst`/`vss` 不认。
+  Visio(VSD / VSDX)由 Draw 经 libvisio 导入后 `--convert-to pdf`(soffice 自动选 `draw_pdf_Export`,不另指定过滤器),
+  每页一页 PDF。实测(LibreOffice 26.8.2,ext-core darwin-arm64):`tests/fixtures/preview/drawing.vsd`(LibreOffice 测试数据
+  里的 libvisio 样本)一页、文字正确;`drawing.vsdx` 两页、文字、
+  连接线与箭头、组合、嵌入 PNG 都在;Calibri 换成 Liberation Sans,macOS 上中文落到 Noto Sans CJK HK(字形与 SC
+  有细微差异);页面尺寸取文档 PageSheet。
   `purpose:"preview"`:xls / ods / numbers 产出 xlsx(`preview-sheet`,`result_type:"sheet"`,给前端表格渲染器;
   xlsx 本身前端直接读,走到管线时仍给 PDF),其余产出 PDF(`result_type:"document"`,`runtime.accept` 含 `pdf`)。
   命令:`soffice -env:UserInstallation=file:///<数据根>/preview-tmp/profile-<attempt_id>

@@ -78,6 +78,38 @@ test('an App shows the system Preview inline and its Open with goes to the shell
   await expect(page.getByTestId('window-reader-fixture')).toBeVisible()
 })
 
+test('the embedded Preview names the file in its own compact bar, can let it hide, and shares the file there with links only', async ({ page }) => {
+  const { app, embed } = await openFixture(page, 'cyfs:///samples/release-notes.md')
+  const preview = embed.getByTestId('content-preview')
+  await expect(preview).toHaveAttribute('data-status', 'ready', { timeout: 15_000 })
+  const toolbar = embed.getByTestId('content-preview-toolbar')
+  // No title bar of its own here: the bar names the file and closes the preview (not the App), and starts shown.
+  await expect(toolbar.getByTestId('content-preview-title')).toHaveText('release-notes.md')
+  await expect(toolbar.getByTestId('content-preview-exit')).toBeVisible()
+  await expect(toolbar).toHaveAttribute('data-pinned', 'true')
+  expect(await toolbar.evaluate((el) => getComputedStyle(el).backgroundImage)).toBe('none')
+  await toolbar.getByTestId('content-preview-pin-toolbar').click()
+  await expect(toolbar).toHaveAttribute('data-pinned', 'false')
+  const box = (await preview.boundingBox())!
+  await page.mouse.move(box.x + 40, box.y + box.height - 40)
+  await expect(preview).toHaveAttribute('data-ui-visible', 'false', { timeout: 8_000 })
+  await preview.hover()
+  await expect(preview).toHaveAttribute('data-ui-visible', 'true')
+
+  await toolbar.getByTestId('content-preview-share').click()
+  const share = embed.getByTestId('preview-embed-share')
+  await expect(share.getByTestId('share-dialog-name')).toHaveText('release-notes.md')
+  // Hand-offs to other apps and My Content need the Desktop shell: only links here.
+  await expect(share.getByTestId('share-dialog-messagehub')).toHaveCount(0)
+  await share.getByTestId('share-dialog-create').click()
+  await expect(share.getByTestId('share-dialog-created')).toBeVisible({ timeout: 10_000 })
+  await expect(share.getByTestId('share-dialog-manage')).toHaveCount(0)
+  await share.getByTestId('share-dialog-done').click()
+  await expect(share).toHaveCount(0)
+  await expect(app.locator('#state')).toHaveText('ready')
+  await expect(page.getByTestId('window-preview')).toHaveCount(0)
+})
+
 test('Preview shows its own unsupported state inline and the window does not ping-pong focus and title', async ({ page }) => {
   const { app, embed } = await openFixture(page, 'cyfs:///samples/keynote.pptx')
   await expect(app.locator('#state')).toHaveText('error:unsupported', { timeout: 15_000 })

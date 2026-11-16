@@ -1,4 +1,4 @@
-# The same as soffice.sh. Windows PowerShell reads a script without a BOM in the ANSI code page, so the Chinese text is
+# The same as soffice.sh (DOCX, XLSX, then a VSDX and a VSD drawing). Windows PowerShell reads a script without a BOM in the ANSI code page, so the Chinese text is
 # written as escapes and python3 does the comparing.
 $ErrorActionPreference = 'Continue'
 $root = [IO.Path]::GetTempPath()
@@ -59,6 +59,41 @@ assert re.search(rb"/Subtype */Image", pdf), "DOCX PDF does not contain an image
 '@
   [IO.File]::WriteAllText("$dir\check.py", $check)
   & python3 check.py; Require ($LASTEXITCODE -eq 0)
+  $stage = 'convert a VSDX drawing to PDF'
+  Write-Output "[soffice] $stage"
+  & python3 (Join-Path $PSScriptRoot 'make_visio.py') c.vsdx; Require ($LASTEXITCODE -eq 0)
+  & soffice "-env:UserInstallation=$profile_url" --headless --convert-to pdf --outdir out c.vsdx > visio.log 2>&1
+  $visio_exit = $LASTEXITCODE
+  Get-Content -LiteralPath visio.log
+  Require ($visio_exit -eq 0)
+  Require (Test-Path out\c.pdf)
+  Require (Select-String -LiteralPath visio.log -Pattern 'as a Draw document' -Quiet)
+  & pdftotext -enc UTF-8 out\c.pdf c.txt; Require ($LASTEXITCODE -eq 0)
+  & pdfinfo out\c.pdf > c.info; Require ($LASTEXITCODE -eq 0)
+  $visio = @'
+import re
+text = open("c.txt", encoding="utf-8").read()
+print("[soffice] VSDX PDF text:", ascii(text), flush=True)
+assert "\u5f00\u59cb Start" in text and "\u56fe\u7247\u8bf4\u660e Picture caption" in text, "VSDX PDF text mismatch"
+assert re.search(r"^Pages:\s+2\s*$", open("c.info", encoding="utf-8").read(), re.M), "VSDX PDF does not have 2 pages"
+assert re.search(rb"/Subtype */Image", open("out/c.pdf", "rb").read()), "VSDX PDF does not contain the picture"
+'@
+  [IO.File]::WriteAllText("$dir\visio.py", $visio)
+  & python3 visio.py; Require ($LASTEXITCODE -eq 0)
+  $stage = 'convert a VSD drawing to PDF'
+  Write-Output "[soffice] $stage"
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'visio-fdo57117.vsd') -Destination d.vsd
+  & soffice "-env:UserInstallation=$profile_url" --headless --convert-to pdf --outdir out d.vsd > vsd.log 2>&1
+  $vsd_exit = $LASTEXITCODE
+  Get-Content -LiteralPath vsd.log
+  Require ($vsd_exit -eq 0)
+  Require (Test-Path out\d.pdf)
+  Require (Select-String -LiteralPath vsd.log -Pattern 'as a Draw document' -Quiet)
+  & pdftotext -enc UTF-8 out\d.pdf d.txt; Require ($LASTEXITCODE -eq 0)
+  & pdfinfo out\d.pdf > d.info; Require ($LASTEXITCODE -eq 0)
+  Require ((Get-Content -LiteralPath d.txt -Raw) -match 'test')
+  Require ((Get-Content -LiteralPath d.info -Raw) -match '(?m)^Pages:\s+1\s*$')
+  Require ((Get-FileHash -LiteralPath d.vsd).Hash -eq (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'visio-fdo57117.vsd')).Hash)
   $passed = $true
 } catch {
   Write-Output "[soffice] failed during: $stage"

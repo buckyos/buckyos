@@ -66,6 +66,7 @@ for (const [name, type, renderer] of [
   ['show.ppsx', 'application/vnd.openxmlformats-officedocument.presentationml.slideshow', 'pdf'],
   ['deck.key', 'application/vnd.apple.keynote', 'pdf'],
   ['plan.vsdx', 'application/vnd.ms-visio.drawing', 'pdf'],
+  ['FLOW.VSD', 'application/vnd.visio', 'pdf'],
   // Spreadsheets a Pipeline converts to xlsx (nfs_server `preview-sheet`).
   ['old.xls', 'application/vnd.ms-excel', 'sheet'],
   ['kingsoft.et', 'application/kset', 'sheet'],
@@ -79,6 +80,27 @@ for (const [name, type, renderer] of [
   const doc = classifyMedia({ name })
   equal([doc.mediaType, doc.rendererType, doc.direct], [type, renderer, false], `${name} by extension`)
 }
+// Visio drawings: converted to a PDF whatever the server calls them; a generic or text header loses to the name.
+const ole2 = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, ...new Array(504).fill(0)])
+const vsdx = classifyMedia({ name: 'drawing.vsdx', hints: ['application/octet-stream'], contentType: 'application/octet-stream', magic: bytes('drawing.vsdx') })
+equal([vsdx.mediaType, vsdx.rendererType, vsdx.direct], ['application/vnd.ms-visio.drawing', 'pdf', false], 'VSDX bytes with its name')
+equal(decideDirect(vsdx, 5337, chromium), { ok: false, reason: 'no-renderer' }, 'a VSDX goes to the Pipeline, never to the PDF viewer as is')
+for (const [what, input] of [
+  ['OLE2 bytes named .vsd', { name: 'Network Diagram.vsd', contentType: 'application/octet-stream', magic: ole2 }],
+  ['an empty File.type', { name: 'flow.VSD', hints: [''], contentType: '' }],
+  ['a text header', { name: 'flow.vsd', contentType: 'text/plain' }],
+  ['the IANA type alone', { name: 'download', contentType: 'application/vnd.visio' }],
+  ['an x- alias', { name: 'download', contentType: 'application/x-visio' }],
+  ['the viewer type Windows registers', { name: 'download', contentType: 'application/vnd.ms-visio.viewer' }],
+  ['a VSDX part type', { name: 'download', contentType: 'application/vnd.ms-visio.drawing.main+xml; charset=binary' }],
+  ['a text header on VSDX', { name: 'plan.vsdx', contentType: 'text/plain' }],
+] as const) {
+  const drawing = classifyMedia(input)
+  equal([drawing.rendererType, drawing.direct, pipelineDocumentProfile(drawing.mediaType)], ['pdf', false, 'preview-document'], `Visio: ${what}`)
+}
+const vsd = classifyMedia({ name: 'drawing.vsd', hints: ['application/octet-stream'], contentType: 'application/octet-stream', magic: bytes('drawing.vsd').subarray(0, 512) })
+equal([vsd.mediaType, vsd.rendererType, vsd.direct, decideDirect(vsd, 11264, chromium).ok], ['application/vnd.visio', 'pdf', false, false], 'a real VSD with its name goes to the Pipeline')
+equal(classifyMedia({ name: 'macro.vsdm' }).rendererType, null, 'vsdm is not taken')
 equal(
   ['old.doc', 'old.xls', 'novel.epub', 'book.xlsx', 'paper.pdf'].map((name) => pipelineDocumentProfile(classifyMedia({ name }).mediaType)),
   ['preview-document', 'preview-sheet', 'preview-html', null, null],

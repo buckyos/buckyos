@@ -79,6 +79,7 @@ import { OFFICE_ACCEPT, officeKind } from '@office/package'
 import { TABULAR_ACCEPT, tabularKind } from '@table/files'
 import { clipboardTable } from '../import/clipboardTable'
 import { tableImports, type TableImportSource } from '../import/tableImportRequest'
+import { DRAWIO_ACCEPT, externalImports, PDF_ACCEPT } from '../import/externalImport'
 import { libraryShapeConfig, SHAPE_DRAG_TYPE, stencilPack } from './stencilLibrary'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
 import { importedAssetOps } from '../sources/dataOps'
@@ -113,8 +114,6 @@ interface Viewport { x: number; y: number; zoom: number }
  * narrow windows stack the two top toolbars (a phone has only one). */
 /** What a line drawn to blank space offers to create at its end (Miro's "next object"). */
 const NEXT_OBJECTS = ['note', 'richtext', 'shape', 'wish']
-const DRAWIO_ACCEPT = '.drawio,.xml,.png,.svg,application/xml,text/xml,image/png,image/svg+xml'
-const PDF_ACCEPT = '.pdf,application/pdf'
 const TOP_INSET = 68
 const TOP_INSET_NARROW = 124
 const LEFT_INSET = 68
@@ -1049,6 +1048,21 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       spot = spot ? { x: spot.x + 24, y: spot.y + 24 } : null
     }
   }
+  // a file handed over from elsewhere ("Import to AI Workspace" in Open with…) goes in as if it was dropped here
+  const handedOver = useSyncExternalStore(externalImports.subscribe, externalImports.snapshot)
+  const pdfAsking = useSyncExternalStore(pdfImports.subscribe, pdfImports.snapshot)
+  const officeAsking = useSyncExternalStore(officeImports.subscribe, officeImports.snapshot)
+  const tableAsking = useSyncExternalStore(tableImports.subscribe, tableImports.snapshot)
+  const otherImport = pdfAsking ?? officeAsking ?? tableAsking
+  const handleFilesRef = useRef(handleFiles)
+  useEffect(() => { handleFilesRef.current = handleFiles })
+  useEffect(() => {
+    if (!handedOver) return
+    const blocked = insertReason ?? (otherImport ? t('aiworkspace.canvas.import.busy') : null)
+    if (blocked) { externalImports.block(handedOver.id, blocked); return }
+    const file = externalImports.take(handedOver.id)
+    if (file) void handleFilesRef.current([file], null)
+  }, [handedOver, insertReason, otherImport, t])
   /** A library shape dragged from the shape library onto the canvas (§2.4). */
   const dropLibraryShape = async (data: string, at: { x: number; y: number } | null) => {
     const entry = registryEntries().find((e) => e.definition.type === 'shape' && !e.variant)

@@ -4,12 +4,13 @@ import { useMobileBackHandler, useMobileTitleOverride } from '../../desktop/wind
  * Preview App — the system's standalone content viewer (PRD §13).
  *
  * One window = one Preview Component with its own Session and browsing
- * position. The panel adds only app-level concerns: window title, "open in
- * new window", pinning, the Open-with sheet, settings and the landing page
- * shown when the app is launched without content.
+ * position. The panel adds only app-level concerns: window title (the window's
+ * title bar names the item, so the component's toolbar does not), "open in
+ * new window", keeping a window for comparison, the Open-with sheet, Share,
+ * settings and the landing page shown when the app is launched without content.
  */
 
-import { Pin, PinOff, Settings2, SquareArrowOutUpRight } from 'lucide-react'
+import { AppWindow, Columns2, Settings2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ContentPreview,
@@ -18,14 +19,17 @@ import {
   type PreviewOpenWithRequest,
 } from '../../components/ContentPreview'
 import { refIdentity } from '../../components/preview/session'
+import type { PreviewShareRequest } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
+import { SHARE_DIALOG_PATH, useSystemDialog } from '../../sysdlg'
 import type { AppContentLoaderProps } from '../types'
 import { OpenWithSheet } from '../content/OpenWithSheet'
+import { shareParamsOf } from '../content/share'
 import { openPreviewInNewWindow } from './launch'
 import { PreviewLanding } from './PreviewLanding'
 import { PreviewSettingsDialog } from './PreviewSettingsDialog'
-import { usePreviewSettings } from './settings'
+import { previewSettingsStore, usePreviewSettings } from './settings'
 import { isPreviewLaunchPayload, PREVIEW_LAUNCH_KIND, type PreviewLaunchPayload, type PreviewOpenRequest } from './types'
 import { previewWindowManager } from './windowManager'
 
@@ -50,6 +54,7 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   // Keyed by request so a re-targeted window never shows a stale sheet.
   const [openWithState, setOpenWithState] = useState<{ requestId: string; request: PreviewOpenWithRequest } | null>(null)
   const previewRef = useRef<ContentPreviewHandle | null>(null)
+  const systemDialog = useSystemDialog()
   const [mobileTitle, setMobileTitle] = useState<{ requestId: string; title: string } | null>(null)
   useMobileTitleOverride(isMobile && mobileTitle?.requestId === payload?.requestId && mobileTitle ? { title: mobileTitle.title } : null)
 
@@ -91,12 +96,26 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
     })
   }, [windowId])
 
+  const share = useCallback(
+    (request: PreviewShareRequest) => {
+      const params = shareParamsOf(request.item.source, request.item.title)
+      if (!params) {
+        desktopUIStore.setSnackbar(t('previewApp.share.unavailable', 'Only files in your Zone can be shared; {{name}} is not one, so it cannot be shared from here.', { name: request.item.title }))
+        return
+      }
+      // The dialog layer takes no focus: keys must not reach the preview behind it (Esc would close the window).
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+      void systemDialog.open(SHARE_DIALOG_PATH, params)
+    },
+    [systemDialog, t],
+  )
+
   const hostActions = useMemo<PreviewHostAction[]>(
     () => [
       {
         id: 'open-new-window',
         label: t('previewApp.action.newWindow', 'Open in new window'),
-        icon: <SquareArrowOutUpRight size={15} />,
+        icon: <AppWindow size={15} />,
         placement: 'toolbar',
         onInvoke: ({ item }) => {
           openPreviewInNewWindow({
@@ -110,9 +129,9 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
       },
       {
         id: 'pin',
-        label: pinned ? t('previewApp.action.unpin', 'Unpin window') : t('previewApp.action.pin', 'Pin window (keep for comparison)'),
-        icon: pinned ? <PinOff size={15} className="text-[color:var(--cp-accent)]" /> : <Pin size={15} />,
-        placement: 'toolbar',
+        label: pinned ? t('previewApp.action.unpin', 'Stop keeping this window') : t('previewApp.action.pin', 'Keep this window (for comparison)'),
+        icon: <Columns2 size={14} className={pinned ? 'text-[color:var(--cp-accent)]' : undefined} />,
+        placement: 'overflow',
         onInvoke: () => togglePin(),
       },
       {
@@ -156,9 +175,14 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
         hostActions={hostActions}
         prefetchAdjacent={settings.prefetchAdjacent}
         autoFocus
+        titleInHost
+        onUiModeChange={(mode) => previewSettingsStore.update({ defaultUiMode: mode })}
         onRequestExit={exit}
         onRequestOpenWith={(request) => setOpenWithState({ requestId: payload.requestId, request })}
+        onRequestShare={share}
         onItemChanged={(item) => {
+          // Open with… belongs to the item it was asked for.
+          setOpenWithState((prev) => (prev && refIdentity(prev.request.item.source) !== refIdentity(item.source) ? null : prev))
           setMobileTitle({ requestId: payload.requestId, title: item.title })
           if (!windowId) return
           desktopUIStore.updateWindow(windowId, { title: pinned ? `📌 ${item.title}` : item.title })

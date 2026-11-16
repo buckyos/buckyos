@@ -3,6 +3,8 @@
  * file or folder — a link (holder or password, with an expiry), or a hand-off
  * to MessageHub / HomeStation. Opening and closing it has no side effects:
  * only `share.plan` and `share.capabilities` run until the user acts.
+ * Without the Desktop shell (`shell={false}`: the Preview embed page) only
+ * links are offered: hand-offs and My Content open Desktop windows.
  */
 
 import { AlertTriangle, Check, Copy, ExternalLink, FileText, Folder, Globe, Home, Link2, Loader2, MessageSquare, Rocket } from 'lucide-react'
@@ -107,7 +109,7 @@ function CopyField({ url, testId }: { url: string; testId: string }) {
   )
 }
 
-export function ShareDialog({ params, onDone }: { params: ShareDialogParams; onDone: (result: ShareDialogResult) => void }) {
+export function ShareDialog({ params, onDone, shell = true }: { params: ShareDialogParams; onDone: (result: ShareDialogResult) => void; shell?: boolean }) {
   const { t, locale } = useI18n()
   const [service, setService] = useState<ShareService | null>(null)
   const [caps, setCaps] = useState<ShareCapabilities | null>(null)
@@ -305,9 +307,11 @@ export function ShareDialog({ params, onDone }: { params: ShareDialogParams; onD
             </Notice>
           )}
           <div className="flex flex-wrap justify-between gap-2">
-            <Btn testId="share-dialog-manage" onClick={() => { openMyContent(step.op.share_id ?? undefined); onDone({ action: 'created', shareId: step.op.share_id ?? '', url }) }}>
-              <ExternalLink size={16} aria-hidden />{t('share.dialog.manage')}
-            </Btn>
+            {shell ? (
+              <Btn testId="share-dialog-manage" onClick={() => { openMyContent(step.op.share_id ?? undefined); onDone({ action: 'created', shareId: step.op.share_id ?? '', url }) }}>
+                <ExternalLink size={16} aria-hidden />{t('share.dialog.manage')}
+              </Btn>
+            ) : <span />}
             <Btn primary testId="share-dialog-done" onClick={() => onDone({ action: 'created', shareId: step.op.share_id ?? '', url })}>{t('share.dialog.done')}</Btn>
           </div>
         </section>
@@ -432,7 +436,7 @@ export function ShareDialog({ params, onDone }: { params: ShareDialogParams; onD
             </div>
           )}
         </form>
-        <section className="space-y-2">
+        {shell && <section className="space-y-2">
           <h3 className="text-xs text-[var(--cp-muted)]">{t('share.dialog.withApp')}</h3>
           <div className="flex flex-wrap gap-2">
             <Btn disabled={!!appBlocked} testId="share-dialog-messagehub" onClick={() => void chooseTarget('messagehub')}><MessageSquare size={16} aria-hidden />{t('share.dialog.messagehub')}</Btn>
@@ -441,7 +445,7 @@ export function ShareDialog({ params, onDone }: { params: ShareDialogParams; onD
               <Btn testId="share-dialog-golive" onClick={() => setStep({ kind: isPikg ? 'pikg' : 'site' })}><Rocket size={16} aria-hidden />{t('share.dialog.goLive')}</Btn>
             )}
           </div>
-        </section>
+        </section>}
         {plan.existing.length > 0 && (
           <section className="space-y-2" data-testid="share-dialog-existing">
             <h3 className="text-xs text-[var(--cp-muted)]">{t('share.dialog.existing')}</h3>

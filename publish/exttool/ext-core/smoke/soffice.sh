@@ -1,6 +1,8 @@
 #!/bin/sh
 # A docx explicitly using the payload's Noto CJK font, with Chinese and Latin text and a picture, and an xlsx, to PDF:
-# the text comes back, the requested font is embedded, and the picture is in the page.
+# the text comes back, the requested font is embedded, and the picture is in the page. Then a two-page Visio drawing
+# (make_visio.py): Draw opens it through the Visio import filter, both pages, their text and the picture come back; and
+# a Visio binary (visio-fdo57117.vsd, from LibreOffice's tests, see THIRD_PARTY.md): one page with its text.
 set -eu
 smoke_dir="$(cd "$(dirname "$0")" && pwd)"
 if [ -n "${EXT_CORE_SMOKE_ARTIFACTS:-}" ]; then
@@ -81,6 +83,55 @@ if ! grep -a -q 'NotoS[a-z]*CJK' out/a.pdf; then
 fi
 if ! grep -a -q '/Subtype */Image' out/a.pdf; then
   echo '[soffice] DOCX PDF has no image marker' >&2
+  exit 1
+fi
+echo '[soffice] converting a VSDX drawing to PDF'
+flow_text="$(python3 -c 'print("开始 Start")')"
+caption_text="$(python3 -c 'print("图片说明 Picture caption")')"
+python3 "$smoke_dir/make_visio.py" c.vsdx
+if ! soffice "-env:UserInstallation=file://$dir/profile" --headless --convert-to pdf --outdir out c.vsdx >visio.log 2>&1 || [ ! -s out/c.pdf ]; then
+  cat visio.log >&2
+  echo '[soffice] VSDX conversion failed' >&2
+  exit 1
+fi
+cat visio.log
+if ! grep -q 'as a Draw document' visio.log; then
+  echo '[soffice] the VSDX drawing was not opened by Draw' >&2
+  exit 1
+fi
+pages="$(pdfinfo out/c.pdf | sed -n 's/^Pages: *//p')"
+if [ "$pages" != 2 ]; then
+  printf '[soffice] VSDX PDF has %s pages, expected 2\n' "$pages" >&2
+  exit 1
+fi
+pdftotext out/c.pdf c.txt
+require_text c.txt "$flow_text"
+require_text c.txt "$caption_text"
+if ! grep -a -q '/Subtype */Image' out/c.pdf; then
+  echo '[soffice] VSDX PDF has no picture' >&2
+  exit 1
+fi
+echo '[soffice] converting a VSD drawing to PDF'
+cp "$smoke_dir/visio-fdo57117.vsd" d.vsd
+if ! soffice "-env:UserInstallation=file://$dir/profile" --headless --convert-to pdf --outdir out d.vsd >vsd.log 2>&1 || [ ! -s out/d.pdf ]; then
+  cat vsd.log >&2
+  echo '[soffice] VSD conversion failed' >&2
+  exit 1
+fi
+cat vsd.log
+if ! grep -q 'as a Draw document' vsd.log; then
+  echo '[soffice] the VSD drawing was not opened by Draw' >&2
+  exit 1
+fi
+pages="$(pdfinfo out/d.pdf | sed -n 's/^Pages: *//p')"
+if [ "$pages" != 1 ]; then
+  printf '[soffice] VSD PDF has %s pages, expected 1\n' "$pages" >&2
+  exit 1
+fi
+pdftotext out/d.pdf d.txt
+require_text d.txt 'test'
+if ! cmp -s "$smoke_dir/visio-fdo57117.vsd" d.vsd; then
+  echo '[soffice] the VSD input was changed by the conversion' >&2
   exit 1
 fi
 echo '[soffice] passed'

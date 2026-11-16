@@ -5,6 +5,8 @@ repository license does not replace any tool's license. BuckyOS-authored
 launchers, smoke tests, Windows shims, browser commands (`browser/`), and
 packaging scripts use AGPL-3.0-only;
 their LICENSE and NOTICE are retained under `LICENSES/buckyos-packaging/`.
+The sample files that `smoke/THIRD_PARTY.md` lists (a Visio drawing from
+LibreOffice's tests, MPL-2.0) are third-party and keep their own license.
 A publishable payload
 must be accompanied by its matching corresponding-source archive.
 

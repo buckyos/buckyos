@@ -1,15 +1,17 @@
 /* eslint-disable react-refresh/only-export-components */
-import { Copy, Download, X } from 'lucide-react'
+import { Copy, Download, Import, Loader2, X } from 'lucide-react'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { handlerOfApp, type HandlerPlan, type TransferableContentRef, type TransferableSessionContext } from 'buckyos/content'
 import { useI18n } from '../../i18n/provider'
 import { ensurePreviewProvider } from '../../components/preview/provider'
 import { normalizeCyfsPath } from '../../components/preview/session'
 import { extensionRefField, isCyfsPathRef, isObjectIdRef, type ContentRef, type PreviewReadRef, type PreviewSessionContext } from '../../components/preview/types'
+import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import type { PreviewLaunchOrigin } from '../preview/types'
 import { contentHandlers, handlerLabel, openContent } from './open'
 
-/** What "Open with…" is asked for: the content, what is known about it and who is asking. */
+/** What "Open with…" is asked for: the content, what is known about it and who is asking. Always the original: its
+ * name and media type, never those of a Preview conversion (an Office document shown as PDF is still a DOCX here). */
 export interface OpenWithTarget {
   source: ContentRef
   session?: PreviewSessionContext
@@ -48,6 +50,30 @@ export function OpenWithSheet({ target, onClose, preferFullApp, overlay = 'absol
     void ensurePreviewProvider().then(provider => provider.resolvePreviewSource(source, {})).then(resolved => { if (current) setReadRef(resolved.readRef) }).catch(() => {})
     return () => { current = false }
   }, [source, target.readRef])
+  // AI Workspace imports the formats its own importers accept (`externalImport.ts`): the original's bytes are handed
+  // to the AI Workspace window, which imports them on the page the user opens there.
+  const fileName = target.displayName ?? name
+  const [importable, setImportable] = useState(false)
+  const [importing, setImporting] = useState<{ state: 'reading' } | { state: 'failed'; reason: string } | null>(null)
+  useEffect(() => {
+    let current = true
+    const hasApp = desktopUIStore.getSnapshot().apps.some(app => app.id === 'aiworkspace')
+    if (hasApp) void import('../aiworkspace/ui/import/externalImport').then(m => { if (current) setImportable(m.importFormatOf(fileName, mediaType) !== null) })
+    return () => { current = false }
+  }, [fileName, mediaType])
+  const importToWorkspace = async () => {
+    if (!readRef) return
+    setImporting({ state: 'reading' })
+    try {
+      const blob = readRef.kind === 'blob' ? readRef.blob : await fetch(readRef.url).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob() })
+      const { externalImports } = await import('../aiworkspace/ui/import/externalImport')
+      externalImports.offer(new File([blob], fileName, { type: mediaType ?? blob.type }))
+      desktopUIStore.openAppWindow('aiworkspace')
+      onClose()
+    } catch (error) {
+      setImporting({ state: 'failed', reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
   const apps = handlers.filter(p => p.appInstanceId)
   const reference = isCyfsPathRef(source) ? normalizeCyfsPath(source.path) : isObjectIdRef(source) ? source.objectId : extensionRefField(source, 'reference') ?? name
   const download = () => {
@@ -86,6 +112,26 @@ export function OpenWithSheet({ target, onClose, preferFullApp, overlay = 'absol
         </p>
         <div className="mt-3 flex flex-col gap-2">
           {handlers.map(plan => <button type="button" key={plan.handlerKey} className="rounded-xl border px-3 py-2 text-left" onClick={() => { void openContent({ source, session, origin: target.origin }, { handlerKey: plan.handlerKey, name, mime: mediaType, size, exclude }); onClose() }}>{handlerLabel(plan)}</button>)}
+          {importable && readRef ? (
+            <button
+              type="button"
+              onClick={() => void importToWorkspace()}
+              disabled={importing?.state === 'reading'}
+              data-testid="preview-open-with-import-aiws"
+              className="flex items-center gap-2 rounded-xl border border-[color:var(--cp-border)] px-3 py-2 text-left text-[13px] hover:border-[color:var(--cp-accent)] disabled:opacity-60"
+            >
+              {importing?.state === 'reading' ? <Loader2 size={15} className="shrink-0 animate-spin" /> : <Import size={15} className="shrink-0" />}
+              <span className="min-w-0">
+                <span className="block">{importing?.state === 'reading' ? t('previewApp.openWith.importReading', 'Reading {{name}}…', { name: fileName }) : t('previewApp.openWith.importAiws', 'Import to AI Workspace')}</span>
+                <span className="block text-[11px] text-[color:var(--cp-muted)]">{t('previewApp.openWith.importAiwsHint', 'Opens AI Workspace; the import starts on the page you open there')}</span>
+              </span>
+            </button>
+          ) : null}
+          {importing?.state === 'failed' ? (
+            <p role="alert" className="text-[12px] text-[color:var(--cp-danger,#c62828)]" data-testid="preview-open-with-import-error">
+              {t('previewApp.openWith.importFailed', 'Could not read {{name}}: {{reason}}', { name: fileName, reason: importing.reason })}
+            </p>
+          ) : null}
           {readRef ? (
             <button type="button" onClick={download} className="flex items-center gap-2 rounded-xl border border-[color:var(--cp-border)] px-3 py-2 text-[13px] hover:border-[color:var(--cp-accent)]">
               <Download size={15} /> {t('preview.action.download', 'Download original')}

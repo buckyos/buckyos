@@ -355,6 +355,7 @@ export interface PreviewCapabilities {
   next: boolean
   export: boolean
   openWith: boolean
+  share: boolean
   fullscreen: boolean
 }
 
@@ -417,9 +418,12 @@ export interface PreviewHostAction {
   onInvoke: (context: { item: PreviewItemInfo; resolved?: ResolvedPreviewSource }) => void
 }
 
+/** An action on the original of the current item (Open with…, Share): never on a Pipeline result. */
 export interface PreviewOpenWithRequest {
   item: PreviewItemInfo
   resolved?: ResolvedPreviewSource
-  /** Best-known media type at the time of the request. */
+  /** The original's media type as classified (a converted Office document keeps its own type, not the PDF's). */
   mediaType?: string
 }
+
+export type PreviewShareRequest = PreviewOpenWithRequest

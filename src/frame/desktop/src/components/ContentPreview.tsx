@@ -33,9 +33,12 @@ import {
   Minimize2,
   MoreHorizontal,
   Music,
+  Pin,
+  PinOff,
   RefreshCw,
   RotateCw,
   Search,
+  Share2,
   X,
   ZoomIn,
   ZoomOut,
@@ -101,6 +104,7 @@ import {
   type PreviewResult,
   type PreviewRuntimeProfile,
   type PreviewSessionContext,
+  type PreviewShareRequest,
   type PreviewStatus,
   type PreviewUIMode,
   type PreviewUnsupportedReason,
@@ -119,6 +123,7 @@ export type {
   PreviewProgress,
   PreviewReadyInfo,
   PreviewSessionContext,
+  PreviewShareRequest,
   PreviewStatus,
   PreviewUIMode,
 } from './preview/types'
@@ -128,8 +133,13 @@ export type {
 export interface ContentPreviewProps {
   source: ContentRef
   session?: PreviewSessionContext
-  /** Auto (default): content only until the user shows intent. */
+  /** Auto (default): content only until the user shows intent. The user can pin the toolbar (`visible`) or let it
+   * hide again (`auto`); `silent` is the host's and offers no toolbar. */
   uiMode?: PreviewUIMode
+  /** The user pinned the toolbar or let it hide again: the host may keep the choice. */
+  onUiModeChange?: (mode: 'auto' | 'visible') => void
+  /** The host already names the item and has its own close (a window title bar): the toolbar shows neither. */
+  titleInHost?: boolean
   fitMode?: PreviewFitMode
   hostActions?: PreviewHostAction[]
   /** Passed through to the Source Resolver; never widens permissions (§16). */
@@ -157,6 +167,8 @@ export interface ContentPreviewProps {
   onUiVisibilityChanged?: (visible: boolean) => void
   onRequestExit?: () => void
   onRequestOpenWith?: (request: PreviewOpenWithRequest) => void
+  /** Share the original (the system share dialog): a Share action is offered when the host gives this. */
+  onRequestShare?: (request: PreviewShareRequest) => void
   onActionInvoked?: (action: { id: string; item: PreviewItemInfo | null }) => void
   onError?: (error: PreviewErrorState, item: PreviewItemInfo | null) => void
 }
@@ -183,6 +195,12 @@ export interface ContentPreviewHandle {
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 const MOD_KEY = IS_MAC ? '⌘' : 'Ctrl'
 const AUTO_HIDE_MS = 2600
+/** Below this width the toolbar keeps its main actions and moves the rest into More. */
+const COMPACT_TOOLBAR_PX = 640
+/** Below this width the zoom buttons go too (a phone pinches). */
+const TINY_TOOLBAR_PX = 420
+/** The band the toolbar takes at the top of a renderer with controls of its own up there (the browser's PDF viewer). */
+const TOOLBAR_BAND_PX = 52
 const LOADING_DELAY_MS = 260
 const PIPELINE_TOTAL_TIMEOUT_MS = 90_000
 const PDF_LOAD_TIMEOUT_MS = 15_000
@@ -399,6 +417,8 @@ export function ContentPreview(props: ContentPreviewProps) {
     hostActions,
     onRequestExit,
     onRequestOpenWith,
+    onRequestShare,
+    titleInHost = false,
     allowFullscreen = true,
     allowExport = true,
     prefetchAdjacent = true,
@@ -418,6 +438,9 @@ export function ContentPreview(props: ContentPreviewProps) {
     latest.current = props
   })
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const toolbarRef = useRef<HTMLDivElement | null>(null)
+  const rootWidth = useElementSize(rootRef).width
+  const toolbarLayout: 'full' | 'compact' | 'tiny' = rootWidth > 0 && rootWidth < TINY_TOOLBAR_PX ? 'tiny' : rootWidth > 0 && rootWidth < COMPACT_TOOLBAR_PX ? 'compact' : 'full'
 
   // ── session ──
   const sourceIdentity = refIdentity(source)
@@ -728,43 +751,66 @@ export function ContentPreview(props: ContentPreviewProps) {
   }, [currentSession, index, latest, prefetchAdjacent, status])
 
   // ── UI visibility (§10.3) ──
-  // Visible: always; Silent: never; Auto: shown on intent, hidden after idle.
+  // Visible: always; Silent: never; Auto: shown on intent, hidden after idle. The user's pin switches between Auto
+  // and Visible for this item list (a new `uiMode` from the host starts over); Silent stays the host's.
+  const [pinChoice, setPinChoice] = useState<{ base: PreviewUIMode; pinned: boolean } | null>(null)
+  const toolbarPinned = pinChoice && pinChoice.base === uiMode ? pinChoice.pinned : uiMode === 'visible'
+  const effectiveUiMode: PreviewUIMode = uiMode === 'silent' ? 'silent' : toolbarPinned ? 'visible' : 'auto'
   const [autoVisible, setAutoVisible] = useState(false)
-  const uiVisible = uiMode === 'visible' ? true : uiMode === 'silent' ? false : autoVisible
+  const uiVisible = effectiveUiMode === 'visible' ? true : effectiveUiMode === 'silent' ? false : autoVisible
   const hideTimer = useRef<number | null>(null)
-  const uiPinnedRef = useRef(false)
+  // What keeps an auto toolbar shown besides the pin: keyboard focus in it, an open menu, and the pointer resting on
+  // it (read as `:hover` when the time is up: an enter whose leave never came, the bar having moved, does not count).
+  const holds = useRef(new Set<string>())
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const scheduleHide = useCallback(() => {
     if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
-    hideTimer.current = window.setTimeout(() => {
+    const due = () => {
       hideTimer.current = null
-      if (!uiPinnedRef.current) setAutoVisible(false)
-    }, AUTO_HIDE_MS)
+      if (holds.current.size > 0) return
+      if (toolbarRef.current?.matches(':hover')) hideTimer.current = window.setTimeout(due, AUTO_HIDE_MS)
+      else setAutoVisible(false)
+    }
+    hideTimer.current = window.setTimeout(due, AUTO_HIDE_MS)
   }, [])
   const showUi = useCallback(() => {
-    if (uiMode !== 'auto') return
+    if (effectiveUiMode !== 'auto') return
     setAutoVisible(true)
     scheduleHide()
-  }, [scheduleHide, uiMode])
+  }, [scheduleHide, effectiveUiMode])
   useEffect(() => () => {
     if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
+    hideTimer.current = null
   }, [])
-  const pinUi = useCallback(
-    (pinned: boolean) => {
-      uiPinnedRef.current = pinned
-      if (pinned) {
+  useEffect(() => {
+    // Shown without a countdown (a remount kept the state but dropped the timer): start one.
+    if (autoVisible && effectiveUiMode === 'auto' && hideTimer.current === null && holds.current.size === 0) scheduleHide()
+  }, [autoVisible, effectiveUiMode, scheduleHide])
+  const holdUi = useCallback(
+    (reason: string, on: boolean) => {
+      if (on) {
+        holds.current.add(reason)
         if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
         hideTimer.current = null
-      } else if (uiMode === 'auto') {
+      } else if (holds.current.delete(reason) && holds.current.size === 0 && effectiveUiMode === 'auto') {
         scheduleHide()
       }
     },
-    [scheduleHide, uiMode],
+    [scheduleHide, effectiveUiMode],
   )
   useEffect(() => {
-    // Open menus keep the toolbar around.
-    pinUi(Boolean(menuAnchor))
-  }, [menuAnchor, pinUi])
+    holdUi('menu', Boolean(menuAnchor))
+  }, [menuAnchor, holdUi])
+  const toggleToolbarPin = useCallback(() => {
+    const pinned = !toolbarPinned
+    setPinChoice({ base: uiMode, pinned })
+    if (!pinned) {
+      // Unpinned: still shown until the user is idle.
+      setAutoVisible(true)
+      if (holds.current.size === 0) scheduleHide()
+    }
+    latest.current.onUiModeChange?.(pinned ? 'visible' : 'auto')
+  }, [latest, scheduleHide, toolbarPinned, uiMode])
 
   // ── info / find / fullscreen ──
   const [infoOpen, setInfoOpen] = useState(false)
@@ -837,9 +883,10 @@ export function ContentPreview(props: ContentPreviewProps) {
       next: canNext,
       export: allowExport && hasRead,
       openWith: Boolean(onRequestOpenWith),
+      share: Boolean(onRequestShare),
       fullscreen: fullscreenAvailable,
     }
-  }, [allowExport, canNext, canPrev, current?.result?.readRef, fullscreenAvailable, imageView, onRequestOpenWith, rendererType, status])
+  }, [allowExport, canNext, canPrev, current?.result?.readRef, fullscreenAvailable, imageView, onRequestOpenWith, onRequestShare, rendererType, status])
 
   const capabilitiesKey = JSON.stringify(capabilities)
   useEffect(() => {
@@ -879,11 +926,23 @@ export function ContentPreview(props: ContentPreviewProps) {
     latest.current.onRequestExit?.()
   }, [invokeAction, latest])
 
+  // Open with… and Share act on the original: its own media type, never a Pipeline result's (a DOCX shown as PDF).
+  const originalRequest = useCallback(
+    (): PreviewOpenWithRequest | null => (itemInfo ? { item: itemInfo, resolved: current?.resolved, mediaType: current?.classification?.mediaType } : null),
+    [current?.classification?.mediaType, current?.resolved, itemInfo],
+  )
   const requestOpenWith = useCallback(() => {
-    if (!itemInfo) return
+    const request = originalRequest()
+    if (!request) return
     invokeAction('open-with')
-    latest.current.onRequestOpenWith?.({ item: itemInfo, resolved: current?.resolved, mediaType: current?.result?.mediaType ?? current?.classification?.mediaType })
-  }, [current?.classification?.mediaType, current?.resolved, current?.result?.mediaType, invokeAction, itemInfo, latest])
+    latest.current.onRequestOpenWith?.(request)
+  }, [invokeAction, latest, originalRequest])
+  const requestShare = useCallback(() => {
+    const request = originalRequest()
+    if (!request) return
+    invokeAction('share')
+    latest.current.onRequestShare?.(request)
+  }, [invokeAction, latest, originalRequest])
 
   const downloadCurrent = useCallback(() => {
     // "Download original": the source's bytes, never a Pipeline result.
@@ -971,6 +1030,12 @@ export function ContentPreview(props: ContentPreviewProps) {
     }
     if (inField || target.closest('video, audio')) return
     showUi()
+    if (event.key === 'Tab' && !event.shiftKey && target === rootRef.current && !uiVisible && effectiveUiMode === 'auto') {
+      // A hidden toolbar is inert: the first Tab shows it and moves into it.
+      event.preventDefault()
+      window.requestAnimationFrame(() => toolbarRef.current?.querySelector<HTMLElement>('button:not([disabled])')?.focus())
+      return
+    }
     const isMedia = rendererType === 'audio' || rendererType === 'video'
     switch (event.key) {
       case 'ArrowLeft':
@@ -1056,12 +1121,20 @@ export function ContentPreview(props: ContentPreviewProps) {
 
   // ── render ──
   const contentLabel = error?.contentLabel ?? (current?.classification ? contentLabelOf(current.classification) : undefined)
-  const showToolbar = uiMode !== 'silent' && uiVisible
+  const showToolbar = effectiveUiMode !== 'silent' && uiVisible
   const transition = reducedMotion ? 'none' : 'opacity 160ms var(--cp-ease-smooth, ease)'
   const sessionCount = currentSession?.items.length ?? 0
 
   const toolbarHostActions = (hostActions ?? []).filter((a) => a.placement !== 'overflow')
   const overflowHostActions = (hostActions ?? []).filter((a) => a.placement === 'overflow')
+  const runHostAction = (action: PreviewHostAction) => {
+    invokeAction(action.id)
+    if (itemInfo) action.onInvoke({ item: itemInfo, resolved: current?.resolved })
+  }
+  const closeMenuThen = (run: () => void) => {
+    setMenuAnchor(null)
+    run()
+  }
   const zoomPercent = rendererType === 'text' ? Math.round(fontScale * 100) : imageView ? Math.round(imageView.scale * 100) : null
 
   return (
@@ -1087,6 +1160,7 @@ export function ContentPreview(props: ContentPreviewProps) {
       style={style}
       onKeyDown={handleKeyDown}
       onPointerMove={handlePointerActivity}
+      onPointerOver={handlePointerActivity}
       onPointerDown={handlePointerActivity}
       onFocus={handlePointerActivity}
       onTouchStart={handlePointerActivity}
@@ -1100,7 +1174,7 @@ export function ContentPreview(props: ContentPreviewProps) {
               result={current.result}
               displayName={displayName}
               fitMode={fitMode}
-              uiMode={uiMode}
+              uiMode={effectiveUiMode}
               compact={inline}
               autoPlay={autoPlay}
               reducedMotion={reducedMotion}
@@ -1137,55 +1211,73 @@ export function ContentPreview(props: ContentPreviewProps) {
         ) : null}
 
         {/* Session edge navigation */}
-        {sessionCount > 1 && uiMode !== 'silent' && !inline ? (
+        {sessionCount > 1 && effectiveUiMode !== 'silent' && !inline ? (
           <>
             <EdgeNav side="left" visible={showToolbar} disabled={!canPrev} onClick={() => step(-1)} label={t('preview.action.previous', 'Previous')} transition={transition} />
             <EdgeNav side="right" visible={showToolbar} disabled={!canNext} onClick={() => step(1)} label={t('preview.action.next', 'Next')} transition={transition} />
           </>
         ) : null}
 
-        {/* Toolbar (§10.8) */}
-        {uiMode !== 'silent' && !inline ? (
+        {/* Toolbar (§10.8): a compact bar centred at the top, over the content; the host's title bar keeps the name */}
+        {effectiveUiMode !== 'silent' && !inline ? (
           <div
+            ref={toolbarRef}
             data-testid="content-preview-toolbar"
+            data-pinned={toolbarPinned ? 'true' : 'false'}
+            data-layout={toolbarLayout}
             role="toolbar"
             aria-label={t('preview.a11y.toolbar', 'Preview actions')}
             aria-hidden={!showToolbar}
+            inert={!showToolbar}
             className={clsx(
-              'absolute inset-x-0 top-0 z-20 flex items-center gap-1 px-2 py-1.5',
+              'absolute left-1/2 top-2 z-20 flex max-w-[calc(100%-16px)] -translate-x-1/2 items-center gap-0.5 rounded-full border px-1 py-1',
               !showToolbar && 'pointer-events-none',
             )}
             style={{
               opacity: showToolbar ? 1 : 0,
               transition,
-              background: 'linear-gradient(180deg, color-mix(in srgb, var(--cp-bg-strong) 92%, transparent), color-mix(in srgb, var(--cp-bg-strong) 55%, transparent) 70%, transparent)',
+              borderColor: 'color-mix(in srgb, var(--cp-border) 85%, transparent)',
+              background: 'color-mix(in srgb, var(--cp-surface-opaque) 80%, transparent)',
+              backdropFilter: 'blur(14px) saturate(1.3)',
+              WebkitBackdropFilter: 'blur(14px) saturate(1.3)',
+              boxShadow: '0 6px 20px color-mix(in srgb, var(--cp-shadow, #000) 16%, transparent)',
             }}
-            onPointerEnter={() => pinUi(true)}
-            onPointerLeave={() => pinUi(false)}
+            onPointerLeave={showUi}
+            onFocus={(event) => holdUi('focus', event.target.matches(':focus-visible'))}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) holdUi('focus', false)
+            }}
           >
-            {onRequestExit ? (
+            {onRequestExit && !titleInHost ? (
               <ToolButton label={t('preview.action.exit', 'Exit preview')} shortcut="Esc" onClick={requestExit} testId="content-preview-exit">
                 <X size={16} />
               </ToolButton>
             ) : null}
-            <div className="min-w-0 flex-1 px-1">
-              <div className="truncate text-[13px] font-medium" title={displayName}>
-                {displayName}
-              </div>
-              {sessionCount > 1 ? (
-                <div className="text-[11px] text-[color:var(--cp-muted)]" data-testid="content-preview-counter">
-                  {t('preview.counter', '{{index}} of {{count}}', { index: index + 1, count: sessionCount })}
+            {!titleInHost ? (
+              <div className="min-w-0 max-w-[260px] shrink px-1.5" title={displayName}>
+                <div className="truncate text-[13px] font-medium" data-testid="content-preview-title">
+                  {displayName}
                 </div>
-              ) : null}
-            </div>
-            {capabilities.zoom ? (
-              <div className="flex items-center gap-0.5 rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-2)_70%,transparent)] px-1">
+                {sessionCount > 1 ? (
+                  <div className="text-[11px] leading-4 text-[color:var(--cp-muted)]" data-testid="content-preview-counter">
+                    {t('preview.counter', '{{index}} of {{count}}', { index: index + 1, count: sessionCount })}
+                  </div>
+                ) : null}
+              </div>
+            ) : sessionCount > 1 ? (
+              <div className="shrink-0 px-2 text-[12px] tabular-nums text-[color:var(--cp-muted)]" data-testid="content-preview-counter">
+                {t('preview.counter', '{{index}} of {{count}}', { index: index + 1, count: sessionCount })}
+              </div>
+            ) : null}
+            {!titleInHost || sessionCount > 1 ? <ToolbarDivider /> : null}
+            {capabilities.zoom && toolbarLayout !== 'tiny' ? (
+              <div className="flex shrink-0 items-center">
                 <ToolButton label={t('preview.action.zoomOut', 'Zoom out')} shortcut="-" onClick={zoomOut} testId="content-preview-zoom-out">
                   <ZoomOut size={15} />
                 </ToolButton>
                 <button
                   type="button"
-                  className="min-w-[44px] rounded px-1 text-[11px] font-medium tabular-nums text-[color:var(--cp-text)] hover:bg-[color:color-mix(in_srgb,var(--cp-surface-2)_90%,transparent)]"
+                  className="h-8 min-w-[44px] rounded-full px-1 text-[11px] font-medium tabular-nums text-[color:var(--cp-text)] hover:bg-[color:color-mix(in_srgb,var(--cp-surface-2)_90%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)]"
                   onClick={fitToView}
                   title={t('preview.action.fit', 'Fit to view')}
                   data-testid="content-preview-zoom-level"
@@ -1195,7 +1287,7 @@ export function ContentPreview(props: ContentPreviewProps) {
                 <ToolButton label={t('preview.action.zoomIn', 'Zoom in')} shortcut="+" onClick={zoomIn} testId="content-preview-zoom-in">
                   <ZoomIn size={15} />
                 </ToolButton>
-                {capabilities.pan ? (
+                {capabilities.pan && toolbarLayout === 'full' ? (
                   <ToolButton
                     label={imageView?.mode === 'fit' ? t('preview.action.actualSize', 'Actual size') : t('preview.action.fit', 'Fit to view')}
                     shortcut={imageView?.mode === 'fit' ? '1' : '0'}
@@ -1206,81 +1298,113 @@ export function ContentPreview(props: ContentPreviewProps) {
                 ) : null}
               </div>
             ) : null}
-            {capabilities.rotate ? (
-              <ToolButton label={t('preview.action.rotate', 'Rotate')} shortcut="R" onClick={rotate} testId="content-preview-rotate">
-                <RotateCw size={15} />
+            {toolbarLayout === 'full' ? (
+              <>
+                {capabilities.rotate ? (
+                  <ToolButton label={t('preview.action.rotate', 'Rotate')} shortcut="R" onClick={rotate} testId="content-preview-rotate">
+                    <RotateCw size={15} />
+                  </ToolButton>
+                ) : null}
+                {capabilities.search ? (
+                  <ToolButton label={t('preview.action.find', 'Find')} shortcut={`${MOD_KEY}+F`} onClick={() => setFindOpen(true)} testId="content-preview-find">
+                    <Search size={15} />
+                  </ToolButton>
+                ) : null}
+                <ToolButton label={t('preview.action.info', 'Info')} shortcut="I" onClick={() => setInfoOpen((v) => !v)} active={infoOpen} testId="content-preview-info">
+                  <Info size={15} />
+                </ToolButton>
+              </>
+            ) : null}
+            {capabilities.share ? (
+              <ToolButton label={t('preview.action.share', 'Share')} onClick={requestShare} testId="content-preview-share">
+                <Share2 size={15} />
               </ToolButton>
             ) : null}
-            {capabilities.search ? (
-              <ToolButton label={t('preview.action.find', 'Find')} shortcut={`${MOD_KEY}+F`} onClick={() => setFindOpen(true)} testId="content-preview-find">
-                <Search size={15} />
-              </ToolButton>
+            {toolbarLayout === 'full' ? (
+              <>
+                {capabilities.openWith ? (
+                  <ToolButton label={t('preview.action.openWith', 'Open with…')} onClick={requestOpenWith} testId="content-preview-open-with">
+                    <ExternalLink size={15} />
+                  </ToolButton>
+                ) : null}
+                {toolbarHostActions.map((action) => (
+                  <ToolButton
+                    key={action.id}
+                    label={action.label}
+                    disabled={action.disabled}
+                    onClick={() => runHostAction(action)}
+                    testId={`content-preview-host-${action.id}`}
+                  >
+                    {action.icon ?? <span className="px-1 text-[11px]">{action.label}</span>}
+                  </ToolButton>
+                ))}
+                <ToolButton
+                  label={toolbarPinned ? t('preview.action.unpinToolbar', 'Hide the toolbar when idle') : t('preview.action.pinToolbar', 'Keep the toolbar shown')}
+                  onClick={toggleToolbarPin}
+                  active={toolbarPinned}
+                  testId="content-preview-pin-toolbar"
+                >
+                  {toolbarPinned ? <PinOff size={15} /> : <Pin size={15} />}
+                </ToolButton>
+              </>
             ) : null}
-            <ToolButton label={t('preview.action.info', 'Info')} shortcut="I" onClick={() => setInfoOpen((v) => !v)} active={infoOpen} testId="content-preview-info">
-              <Info size={15} />
-            </ToolButton>
-            {capabilities.openWith ? (
-              <ToolButton label={t('preview.action.openWith', 'Open with…')} onClick={requestOpenWith} testId="content-preview-open-with">
-                <ExternalLink size={15} />
-              </ToolButton>
-            ) : null}
-            {toolbarHostActions.map((action) => (
-              <ToolButton
-                key={action.id}
-                label={action.label}
-                disabled={action.disabled}
-                onClick={() => {
-                  invokeAction(action.id)
-                  if (itemInfo) action.onInvoke({ item: itemInfo, resolved: current?.resolved })
-                }}
-                testId={`content-preview-host-${action.id}`}
-              >
-                {action.icon ?? <span className="px-1 text-[11px]">{action.label}</span>}
-              </ToolButton>
-            ))}
             <ToolButton label={t('preview.action.more', 'More')} onClick={(event) => setMenuAnchor(event.currentTarget)} testId="content-preview-more">
               <MoreHorizontal size={15} />
             </ToolButton>
             <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => setMenuAnchor(null)}>
+              {toolbarLayout !== 'full'
+                ? [
+                    capabilities.zoom && toolbarLayout === 'tiny' ? (
+                      <MenuItem key="fit" onClick={() => closeMenuThen(fitToView)} data-testid="content-preview-menu-fit">
+                        <Minimize2 size={14} className="mr-2" /> {t('preview.action.fit', 'Fit to view')}
+                      </MenuItem>
+                    ) : null,
+                    capabilities.rotate ? (
+                      <MenuItem key="rotate" onClick={() => closeMenuThen(rotate)} data-testid="content-preview-menu-rotate">
+                        <RotateCw size={14} className="mr-2" /> {t('preview.action.rotate', 'Rotate')}
+                      </MenuItem>
+                    ) : null,
+                    capabilities.search ? (
+                      <MenuItem key="find" onClick={() => closeMenuThen(() => setFindOpen(true))} data-testid="content-preview-menu-find">
+                        <Search size={14} className="mr-2" /> {t('preview.action.find', 'Find')}
+                      </MenuItem>
+                    ) : null,
+                    <MenuItem key="info" onClick={() => closeMenuThen(() => setInfoOpen((v) => !v))} data-testid="content-preview-menu-info">
+                      <Info size={14} className="mr-2" /> {t('preview.action.info', 'Info')}
+                    </MenuItem>,
+                    capabilities.openWith ? (
+                      <MenuItem key="open-with" onClick={() => closeMenuThen(requestOpenWith)} data-testid="content-preview-menu-open-with">
+                        <ExternalLink size={14} className="mr-2" /> {t('preview.action.openWith', 'Open with…')}
+                      </MenuItem>
+                    ) : null,
+                    ...toolbarHostActions.map((action) => (
+                      <MenuItem key={action.id} disabled={action.disabled} onClick={() => closeMenuThen(() => runHostAction(action))} data-testid={`content-preview-menu-${action.id}`}>
+                        {action.icon ? <span className="mr-2 inline-flex">{action.icon}</span> : null}
+                        {action.label}
+                      </MenuItem>
+                    )),
+                    <MenuItem key="pin-toolbar" onClick={() => closeMenuThen(toggleToolbarPin)} data-testid="content-preview-menu-pin-toolbar">
+                      {toolbarPinned ? <PinOff size={14} className="mr-2" /> : <Pin size={14} className="mr-2" />}
+                      {toolbarPinned ? t('preview.action.unpinToolbar', 'Hide the toolbar when idle') : t('preview.action.pinToolbar', 'Keep the toolbar shown')}
+                    </MenuItem>,
+                  ]
+                : null}
               {capabilities.export ? (
-                <MenuItem
-                  onClick={() => {
-                    setMenuAnchor(null)
-                    downloadCurrent()
-                  }}
-                >
+                <MenuItem onClick={() => closeMenuThen(downloadCurrent)}>
                   <Download size={14} className="mr-2" /> {t('preview.action.download', 'Download original')}
                 </MenuItem>
               ) : null}
-              <MenuItem
-                onClick={() => {
-                  setMenuAnchor(null)
-                  copySource()
-                }}
-              >
+              <MenuItem onClick={() => closeMenuThen(copySource)}>
                 <Copy size={14} className="mr-2" /> {t('preview.action.copySource', 'Copy path / object id')}
               </MenuItem>
               {capabilities.fullscreen ? (
-                <MenuItem
-                  onClick={() => {
-                    setMenuAnchor(null)
-                    toggleFullscreen()
-                  }}
-                >
+                <MenuItem onClick={() => closeMenuThen(toggleFullscreen)}>
                   <Fullscreen size={14} className="mr-2" /> {isFullscreen ? t('preview.action.exitFullscreen', 'Exit fullscreen') : t('preview.action.fullscreen', 'Fullscreen')}
                   <span className="ml-auto pl-4 text-[11px] text-[color:var(--cp-muted)]">F</span>
                 </MenuItem>
               ) : null}
               {overflowHostActions.map((action) => (
-                <MenuItem
-                  key={action.id}
-                  disabled={action.disabled}
-                  onClick={() => {
-                    setMenuAnchor(null)
-                    invokeAction(action.id)
-                    if (itemInfo) action.onInvoke({ item: itemInfo, resolved: current?.resolved })
-                  }}
-                >
+                <MenuItem key={action.id} disabled={action.disabled} onClick={() => closeMenuThen(() => runHostAction(action))} data-testid={`content-preview-menu-${action.id}`}>
                   {action.icon ? <span className="mr-2 inline-flex">{action.icon}</span> : null}
                   {action.label}
                 </MenuItem>
@@ -1308,7 +1432,7 @@ export function ContentPreview(props: ContentPreviewProps) {
         {/* Fidelity note (Pipeline results, §6.4) */}
         {status === 'ready' && current?.result?.fidelityNote && showToolbar ? (
           <div
-            className="pointer-events-none absolute bottom-3 left-1/2 z-10 max-w-[80%] -translate-x-1/2 rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_92%,transparent)] px-3 py-1 text-[11px] text-[color:var(--cp-muted)] shadow"
+            className="pointer-events-none absolute left-1/2 top-[52px] z-10 max-w-[80%] -translate-x-1/2 rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_86%,transparent)] px-3 py-1 text-[11px] text-[color:var(--cp-muted)] shadow"
             style={{ transition }}
             data-testid="content-preview-fidelity"
           >
@@ -1376,13 +1500,17 @@ function ToolButton({
       data-testid={testId}
       onClick={onClick}
       className={clsx(
-        'inline-flex h-8 min-w-8 items-center justify-center rounded-full px-1.5 text-[color:var(--cp-text)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-surface-2)_90%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)] disabled:opacity-40',
+        'inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full px-1.5 text-[color:var(--cp-text)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-surface-2)_90%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)] disabled:opacity-40',
         active && 'bg-[color:color-mix(in_srgb,var(--cp-accent)_22%,transparent)] text-[color:var(--cp-accent)]',
       )}
     >
       {children}
     </button>
   )
+}
+
+function ToolbarDivider() {
+  return <span aria-hidden="true" className="mx-0.5 h-5 w-px shrink-0 bg-[color:color-mix(in_srgb,var(--cp-border)_90%,transparent)]" />
 }
 
 function EdgeNav({
@@ -1788,7 +1916,7 @@ function RendererSwitch({
         />
       )
     case 'pdf':
-      return <PdfRenderer ref={zoomRef} readRef={result.readRef} title={displayName} onViewChange={onViewChange} onRendered={onRendered} onFailure={onFailure} onDownload={onDownload} onOpenWith={onOpenWith} t={t} />
+      return <PdfRenderer ref={zoomRef} readRef={result.readRef} title={displayName} topInset={uiMode !== 'silent' && !compact ? TOOLBAR_BAND_PX : 0} onViewChange={onViewChange} onRendered={onRendered} onFailure={onFailure} onDownload={onDownload} onOpenWith={onOpenWith} t={t} />
     case 'sheet': {
       const type = result.mediaType.split(';')[0].trim().toLowerCase()
       const delimited = type === 'text/csv' || type === 'text/tab-separated-values'
@@ -2379,6 +2507,7 @@ function PdfRenderer({
   ref,
   readRef,
   title,
+  topInset,
   onViewChange,
   onRendered,
   onFailure,
@@ -2389,6 +2518,9 @@ function PdfRenderer({
   ref: Ref<ZoomHandle>
   readRef: PreviewReadRef
   title: string
+  /** The browser's viewer draws its own toolbar at the top: it starts below the component's (a fixed band, so the
+   * content never moves when the component's toolbar shows or hides). */
+  topInset: number
   onViewChange: (view: ImageViewInfo | null) => void
   onRendered: (media?: LoadState['media'], opts?: { degraded?: boolean }) => void
   onFailure: (failure: RenderFailure) => void
@@ -2401,19 +2533,21 @@ function PdfRenderer({
   if (pdfjs) {
     return <PdfJsRenderer ref={ref} readRef={readRef} title={title} onViewChange={onViewChange} onRendered={onRendered} onFailure={onFailure} onDownload={onDownload} onOpenWith={onOpenWith} t={t} />
   }
-  return <PDFIframeRenderer ref={ref} readRef={readRef} title={title} onRendered={onRendered} onUnavailable={fallBack} />
+  return <PDFIframeRenderer ref={ref} readRef={readRef} title={title} topInset={topInset} onRendered={onRendered} onUnavailable={fallBack} />
 }
 
 function PDFIframeRenderer({
   ref,
   readRef,
   title,
+  topInset,
   onRendered,
   onUnavailable,
 }: {
   ref: Ref<ZoomHandle>
   readRef: PreviewReadRef
   title: string
+  topInset: number
   onRendered: (media?: LoadState['media']) => void
   /** The viewer did not take the content: pdf.js draws it instead. */
   onUnavailable: () => void
@@ -2464,7 +2598,8 @@ function PDFIframeRenderer({
       title={title}
       src={src}
       referrerPolicy="no-referrer"
-      className="absolute inset-0 h-full w-full border-0 bg-[color:var(--cp-surface-2-opaque)]"
+      className="absolute inset-x-0 bottom-0 w-full border-0 bg-[color:var(--cp-surface-2-opaque)]"
+      style={{ top: topInset, height: `calc(100% - ${topInset}px)` }}
       data-testid="content-preview-pdf"
       onLoad={() => {
         rendered.current = true

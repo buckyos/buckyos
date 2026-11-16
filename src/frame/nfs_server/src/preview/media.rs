@@ -2,9 +2,10 @@
 //! (`ffprobe` JSON: the execution facts) a conversion starts.
 //!
 //! Office documents (Office import TODO §5.1): OOXML, ODF, iWork and Visio
-//! are zips told apart by their entry names, the legacy binaries OLE2 compound
-//! files by their stream names, RTF by `{\rtf`; the file name only settles
-//! what the bytes leave open (text markup, TGA, the RAW flavours of TIFF).
+//! are zips told apart by their entry names, the legacy binaries (Visio's VSD
+//! included) OLE2 compound files by their stream names, RTF by `{\rtf`; the
+//! file name only settles what the bytes leave open (text markup, TGA, the RAW
+//! flavours of TIFF, an OLE2 file whose directory was not read).
 
 use serde_json::Value;
 
@@ -33,14 +34,35 @@ pub enum Office {
     Writer,
     Calc,
     Impress,
+    Draw,
 }
 
 impl Office {
+    pub const ALL: [Office; 4] = [Office::Writer, Office::Calc, Office::Impress, Office::Draw];
+
     pub fn name(&self) -> &'static str {
         match self {
             Office::Writer => "Writer",
             Office::Calc => "Calc",
             Office::Impress => "Impress",
+            Office::Draw => "Draw",
+        }
+    }
+}
+
+/// An import filter a document needs besides its application (Draw reads Visio only through libvisio's filter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Filter {
+    Visio,
+}
+
+impl Filter {
+    pub const ALL: [Filter; 1] = [Filter::Visio];
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Filter::Visio => "the Visio import filter",
         }
     }
 }
@@ -48,9 +70,14 @@ impl Office {
 pub fn office_of(ext: &str) -> Office {
     match ext {
         "xls" | "xlsx" | "ods" | "numbers" => Office::Calc,
-        "ppt" | "pptx" | "odp" | "key" | "odg" | "vsdx" | "pub" => Office::Impress,
+        "ppt" | "pptx" | "odp" | "key" => Office::Impress,
+        "odg" | "vsd" | "vsdx" | "pub" => Office::Draw,
         _ => Office::Writer,
     }
+}
+
+pub fn filter_of(ext: &str) -> Option<Filter> {
+    matches!(ext, "vsd" | "vsdx").then_some(Filter::Visio)
 }
 
 /// Spreadsheets shown as a sheet (converted to xlsx), not as PDF pages; xlsx itself the viewer reads.
@@ -205,12 +232,12 @@ fn document(head: &[u8], ext: Option<&str>) -> Option<&'static str> {
         return Some("hwp");
     }
     if is_ole2(head) {
-        let streams = [("WordDocument", "doc"), ("PowerPoint Document", "ppt"), ("Workbook", "xls"), ("Book", "xls"), ("Quill", "pub")];
+        let streams = [("WordDocument", "doc"), ("PowerPoint Document", "ppt"), ("Workbook", "xls"), ("Book", "xls"), ("Quill", "pub"), ("VisioDocument", "vsd")];
         const NAMES: &[(&str, &str)] = &[
             ("doc", "doc"), ("dot", "doc"), ("wps", "doc"), ("wpt", "doc"),
             ("ppt", "ppt"), ("pps", "ppt"), ("pot", "ppt"), ("dps", "ppt"), ("dpt", "ppt"),
             ("xls", "xls"), ("xlt", "xls"), ("et", "xls"), ("ett", "xls"),
-            ("pub", "pub"),
+            ("pub", "pub"), ("vsd", "vsd"),
         ];
         return streams.iter().find(|(s, _)| ole_stream(head, s)).map(|(_, e)| *e).or_else(|| hinted(NAMES));
     }
@@ -610,12 +637,44 @@ mod tests {
         assert_eq!(sniff(&vsdx, None), Some(Kind::Document("vsdx")));
         assert_eq!(sniff(b"\xffWPC\x10\0\0\0\x01\x0a\0\0", None), Some(Kind::Document("wpd")));
         assert!(is_sheet("xls") && is_sheet("ods") && is_sheet("numbers") && !is_sheet("xlsx") && !is_sheet("doc"));
-        assert_eq!((office_of("vsdx"), office_of("numbers"), office_of("hwp")), (Office::Impress, Office::Calc, Office::Writer));
+        assert_eq!((office_of("vsdx"), office_of("numbers"), office_of("hwp")), (Office::Draw, Office::Calc, Office::Writer));
+        assert_eq!((office_of("vsd"), office_of("odg"), office_of("pub"), office_of("odp")), (Office::Draw, Office::Draw, Office::Draw, Office::Impress));
+        assert_eq!((filter_of("vsd"), filter_of("vsdx"), filter_of("odg"), filter_of("pptx")), (Some(Filter::Visio), Some(Filter::Visio), None, None));
 
         ole[30] = 9;
         ole[640..640 + name.len()].copy_from_slice(&name);
         ole[640 + 64..640 + 66].copy_from_slice(&((name.len() + 2) as u16).to_le_bytes());
         assert_eq!(sniff(&ole, Some("deck.doc")), Some(Kind::Document("ppt")), "streams beat the name");
+    }
+
+    /// An OLE2 header whose first directory sector holds the root entry and `stream`.
+    fn ole_with(stream: &str) -> Vec<u8> {
+        let mut ole = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+        ole.resize(512 + 128 * 4, 0);
+        ole[30] = 9;
+        let name: Vec<u8> = stream.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        ole[640..640 + name.len()].copy_from_slice(&name);
+        ole[640 + 64..640 + 66].copy_from_slice(&((name.len() + 2) as u16).to_le_bytes());
+        ole
+    }
+
+    #[test]
+    fn visio_drawings() {
+        let vsd = ole_with("VisioDocument");
+        assert_eq!(sniff(&vsd, None), Some(Kind::Document("vsd")), "the stream names it without a file name");
+        assert_eq!(sniff(&vsd, Some("diagram.doc")), Some(Kind::Document("vsd")), "content beats a wrong name");
+        assert_eq!(sniff(&vsd, Some("流程图.VSD")), Some(Kind::Document("vsd")));
+        let unknown = ole_with("Something Else");
+        assert_eq!(sniff(&unknown, Some("流程图.vsd")), Some(Kind::Document("vsd")), "an OLE2 container named .vsd whose directory is not read: converting it decides");
+        assert_eq!(sniff(&unknown, None), None, "an unrelated OLE2 file stays unsupported");
+        assert_eq!(sniff(&unknown, Some("setup.msi")), None);
+        assert_eq!(sniff(b"not a compound file at all, only named like one", Some("fake.vsd")), None, "the name needs the container");
+        assert_eq!(sniff(&vsd[..8], Some("cut.vsd")), None, "too short to tell");
+        let vsdx = [zip_entry("[Content_Types].xml", 8, &[3; 9]), zip_entry("visio/pages/page1.xml", 8, &[5; 9]), zip_entry("visio/document.xml", 8, &[4; 9])].concat();
+        assert_eq!(sniff(&vsdx, Some("plan.docx")), Some(Kind::Document("vsdx")), "the Visio part decides");
+        let other = zip_entry("readme.txt", 0, b"hello world");
+        assert_eq!(sniff(&other, Some("Plan.VSDX")), Some(Kind::Document("vsdx")), "the name settles a zip the head leaves open");
+        assert_eq!(sniff(&other, Some("macro.vsdm")), None, "vsdm is not taken");
     }
 
     #[test]

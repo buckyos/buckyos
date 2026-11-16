@@ -265,7 +265,10 @@ impl PreviewMgr {
             log::info!("preview converter: ffmpeg {} ({}), ffprobe {}, tonemap={}, libx264={}, heif={}", t.ffmpeg.version, t.ffmpeg.path.display(), t.ffprobe.version, t.tonemap, t.libx264, t.heif);
         }
         for o in &probe.office {
-            log::info!("preview converter: soffice {} ({}, {}), applications {:?}", o.tool.version, o.tool.path.display(), o.tool.source, o.components);
+            log::info!("preview converter: soffice {} ({}, {}), applications {:?}, filters {:?}", o.tool.version, o.tool.path.display(), o.tool.source, o.components, o.filters);
+        }
+        for path in &probe.unresolved {
+            log::warn!("preview: the LibreOffice install of {} could not be read (a launcher that names no soffice); it is not used", path.display());
         }
         for t in [&probe.magick, &probe.pandoc, &probe.pdf.as_ref().map(|p| p.pdftoppm.clone())].into_iter().flatten() {
             log::info!("preview converter: {} {} ({})", t.path.file_stem().unwrap_or_default().to_string_lossy(), t.version, t.source);
@@ -275,6 +278,9 @@ impl PreviewMgr {
         }
         for app in probe.missing_office() {
             log::warn!("preview: no LibreOffice install has {}, its documents cannot be previewed (deployment defect)", app.name());
+        }
+        for filter in probe.missing_filters() {
+            log::warn!("preview: no LibreOffice install has {}, its documents cannot be previewed (deployment defect)", filter.name());
         }
         if let Some(detail) = probe.missing_detail() {
             log::info!("preview converter unavailable: {detail}");

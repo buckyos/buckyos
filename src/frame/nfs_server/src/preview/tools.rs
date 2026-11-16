@@ -7,17 +7,23 @@
 //! prefixes; LibreOffice's install directories on all three platforms), then
 //! the extension packages in `$BUCKYOS_ROOT/tools/bin/`; Windows
 //! names carry `.exe` and spawn without a console. Nothing is downloaded or
-//! installed. Every `soffice` found is kept with the applications it has
-//! (Writer / Calc / Impress, by their module libraries): a document goes to
-//! the first install that has its application, so a system LibreOffice
-//! without Calc leaves spreadsheets to the extension package's. `soffice` is
-//! part of ext-core: none at all is a deployment defect, not a degradation.
-//! The probe result is cached per binary identity (path, size, mtime) and
-//! shown in `hello` so a DV run can tell which path ran.
+//! installed. Every `soffice` found is kept with what its install can load,
+//! read from the install the binary starts (a launcher script is followed to
+//! the `soffice` it runs): the applications (Writer / Calc / Impress / Draw, by
+//! their module library and their registry `*.xcd`) and the import filters a
+//! format needs on top (Visio: Draw's registration of the filter and the
+//! library that implements it). A document goes to the first install that has
+//! both, so a system LibreOffice without Calc or without the Visio filter
+//! leaves those documents to the extension package's. `soffice` is part of
+//! ext-core: none at all is a deployment defect, not a degradation. The probe
+//! result is cached per identity (path, size, mtime) of the binaries and of
+//! each LibreOffice install's libraries, registry and service files, and shown
+//! in `hello` so a DV run can tell which path ran.
 
 use super::convert::Profile;
-use super::media::{Kind, Office};
+use super::media::{filter_of, office_of, Filter, Kind, Office};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
@@ -52,12 +58,19 @@ pub struct Toolchain {
     pub heif: bool,
 }
 
-/// One LibreOffice install and the applications it can load.
+/// One LibreOffice install, the applications and the import filters it can load.
 #[derive(Debug, Clone, Serialize)]
 pub struct Soffice {
     #[serde(flatten)]
     pub tool: Tool,
     pub components: Vec<Office>,
+    pub filters: Vec<Filter>,
+}
+
+impl Soffice {
+    pub fn has(&self, app: Office, filter: Option<Filter>) -> bool {
+        self.components.contains(&app) && filter.is_none_or(|f| self.filters.contains(&f))
+    }
 }
 
 /// poppler: the first page of a PDF as a thumbnail.
@@ -102,6 +115,8 @@ pub struct Probe {
     pub media: Option<Toolchain>,
     /// In lookup order.
     pub office: Vec<Soffice>,
+    /// `soffice` binaries whose LibreOffice install could not be read (a launcher that names no `soffice`).
+    pub unresolved: Vec<PathBuf>,
     pub magick: Option<Tool>,
     pub pdf: Option<PdfTools>,
     pub pandoc: Option<Tool>,
@@ -119,9 +134,18 @@ impl Probe {
         self.media.is_some() || !self.office.is_empty() || self.magick.is_some() || self.pdf.is_some() || self.pandoc.is_some()
     }
 
-    /// The first install that has `app`.
+    /// The first install that has `app` (and `filter`).
+    pub fn soffice_with(&self, app: Office, filter: Option<Filter>) -> Option<&Tool> {
+        self.office.iter().find(|o| o.has(app, filter)).map(|o| &o.tool)
+    }
+
     pub fn soffice_for(&self, app: Office) -> Option<&Tool> {
-        self.office.iter().find(|o| o.components.contains(&app)).map(|o| &o.tool)
+        self.soffice_with(app, None)
+    }
+
+    /// The install that converts a document of this import extension to PDF.
+    pub fn soffice_for_document(&self, ext: &str) -> Option<&Tool> {
+        self.soffice_with(office_of(ext), filter_of(ext))
     }
 
     pub fn scaler(&self) -> Option<Scaler> {
@@ -132,27 +156,26 @@ impl Probe {
         self.searched.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
     }
 
-    fn soffice_detail(&self, app: Office) -> String {
-        match self.office.first() {
-            None => format!("soffice is not available on this node ({SOFFICE_DEFECT}; searched {})", self.searched_text()),
-            Some(o) => format!(
-                "the LibreOffice at {} has no {} and no other soffice has it ({SOFFICE_DEFECT}; searched {})",
-                o.tool.path.display(),
-                app.name(),
-                self.searched_text()
-            ),
+    /// Why no install takes a document, for the person looking at it: paths and versions are in `hello` and the log.
+    fn soffice_detail(&self, app: Office, filter: Option<Filter>) -> String {
+        if self.office.is_empty() {
+            return format!("soffice is not available on this node ({SOFFICE_DEFECT})");
         }
+        let what = match filter {
+            Some(f) if self.soffice_for(app).is_some() => format!("{} with {}", app.name(), f.name()),
+            _ => app.name().to_string(),
+        };
+        format!("the LibreOffice installs on this node have no {what} ({SOFFICE_DEFECT})")
     }
 
     /// The converter of `kind` for `profile`, or why this node has none.
     pub fn converter(&self, profile: Profile, kind: Kind) -> Result<Converter, String> {
-        let missing = |group: &[&str]| self.detail(&[group]).unwrap_or_default();
+        let missing = |group: &[&str]| self.detail(&[group], false).unwrap_or_default();
         match (profile, kind) {
             (Profile::PreviewDocument, Kind::Document(ext)) => {
-                let app = super::media::office_of(ext);
-                self.soffice_for(app).cloned().map(Converter::Soffice).ok_or_else(|| self.soffice_detail(app))
+                self.soffice_for_document(ext).cloned().map(Converter::Soffice).ok_or_else(|| self.soffice_detail(office_of(ext), filter_of(ext)))
             }
-            (Profile::PreviewSheet, Kind::Document(_)) => self.soffice_for(Office::Calc).cloned().map(Converter::Soffice).ok_or_else(|| self.soffice_detail(Office::Calc)),
+            (Profile::PreviewSheet, Kind::Document(_)) => self.soffice_for(Office::Calc).cloned().map(Converter::Soffice).ok_or_else(|| self.soffice_detail(Office::Calc, None)),
             (Profile::PreviewHtml, Kind::Markup(_)) => self.pandoc.clone().map(Converter::Pandoc).ok_or_else(|| missing(MARKUP)),
             (Profile::PreviewImage | Profile::Thumbnail, Kind::Raster(_)) => self.magick.clone().map(Converter::Magick).ok_or_else(|| missing(IMAGE)),
             (Profile::Thumbnail, Kind::Pdf) => self.pdf.clone().map(Converter::Pdftoppm).ok_or_else(|| missing(PDF)),
@@ -180,19 +203,20 @@ impl Probe {
         super::PROFILES.iter().filter(|p| self.advertised(**p)).map(Profile::as_str).collect()
     }
 
-    fn detail(&self, groups: &[&[&str]]) -> Option<String> {
+    /// What of `groups` is missing; `searched` adds the directories looked in (diagnostics, not what a viewer is told).
+    fn detail(&self, groups: &[&[&str]], searched: bool) -> Option<String> {
         let sentences: Vec<String> = groups
             .iter()
             .map(|g| self.missing.iter().copied().filter(|m| g.contains(m)).collect::<Vec<_>>())
             .filter(|m| !m.is_empty())
             .map(|m| if m == OFFICE { format!("soffice not found on this node ({SOFFICE_DEFECT})") } else { format!("{} not found on this node", m.join(" and ")) })
             .collect();
-        (!sentences.is_empty()).then(|| format!("{} (searched {})", sentences.join("; "), self.searched_text()))
+        (!sentences.is_empty()).then(|| if searched { format!("{} (searched {})", sentences.join("; "), self.searched_text()) } else { sentences.join("; ") })
     }
 
     /// What is missing, e.g. "ffmpeg and ffprobe not found on this node; soffice not found on this node (…) (searched ...)".
     pub fn missing_detail(&self) -> Option<String> {
-        self.detail(&[MEDIA, OFFICE, IMAGE, PDF, MARKUP])
+        self.detail(&[MEDIA, OFFICE, IMAGE, PDF, MARKUP], true)
     }
 
     /// The applications no install has (e.g. Calc when the only LibreOffice lacks it).
@@ -200,7 +224,15 @@ impl Probe {
         if self.office.is_empty() {
             return Vec::new();
         }
-        [Office::Writer, Office::Calc, Office::Impress].into_iter().filter(|a| self.soffice_for(*a).is_none()).collect()
+        Office::ALL.into_iter().filter(|a| self.soffice_for(*a).is_none()).collect()
+    }
+
+    /// The import filters no install has together with the application they belong to.
+    pub fn missing_filters(&self) -> Vec<Filter> {
+        if self.office.is_empty() {
+            return Vec::new();
+        }
+        Filter::ALL.into_iter().filter(|f| !self.office.iter().any(|o| o.filters.contains(f))).collect()
     }
 
     /// The `repr` capability block of `hello`.
@@ -229,6 +261,13 @@ impl Probe {
         let apps = self.missing_office();
         if !apps.is_empty() {
             out["soffice_missing_components"] = serde_json::json!(apps);
+        }
+        let filters = self.missing_filters();
+        if !filters.is_empty() {
+            out["soffice_missing_filters"] = serde_json::json!(filters);
+        }
+        if !self.unresolved.is_empty() {
+            out["soffice_unresolved"] = serde_json::json!(self.unresolved);
         }
         if !self.missing.is_empty() {
             out["missing"] = serde_json::json!(self.missing);
@@ -308,9 +347,12 @@ pub fn find_all(name: &str, dirs: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Everything `refresh` keys the cached probe on.
+/// Everything `refresh` keys the cached probe on: the binaries, and what each LibreOffice install loads its applications and filters from.
 pub fn installed(dirs: &[PathBuf]) -> Vec<PathBuf> {
-    NAMES.iter().flat_map(|n| if *n == "soffice" { find_all(n, dirs) } else { find(n, dirs).into_iter().collect() }).collect()
+    NAMES
+        .iter()
+        .flat_map(|n| if *n == "soffice" { find_all(n, dirs).into_iter().flat_map(|p| std::iter::once(p.clone()).chain(office_markers(&p))).collect() } else { find(n, dirs).into_iter().collect::<Vec<_>>() })
+        .collect()
 }
 
 pub fn find(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
@@ -373,7 +415,7 @@ fn poppler_version(name: &'static str) -> impl Fn(&Path) -> Option<String> {
     move |path| run(path, &["-v"]).and_then(|o| parse_version(name, &String::from_utf8_lossy(&[o.stderr, o.stdout].concat())))
 }
 
-fn module_library(module: &str) -> String {
+pub fn module_library(module: &str) -> String {
     if cfg!(windows) {
         format!("{module}lo.dll")
     } else if cfg!(target_os = "macos") {
@@ -383,19 +425,160 @@ fn module_library(module: &str) -> String {
     }
 }
 
-/// The applications of the install `soffice` starts: the module libraries next
-/// to the real binary (`../Frameworks` on macOS). A launcher that is not inside
-/// a LibreOffice program directory (an extension package's) is taken as complete.
-pub fn office_components(soffice: &Path) -> Vec<Office> {
-    const ALL: [(Office, &str); 3] = [(Office::Writer, "sw"), (Office::Calc, "sc"), (Office::Impress, "sd")];
-    let real = std::fs::canonicalize(soffice).unwrap_or_else(|_| soffice.to_path_buf());
-    let Some(program) = real.parent() else { return ALL.iter().map(|(a, _)| *a).collect() };
-    let frameworks = program.parent().map(|p| p.join("Frameworks")).filter(|p| p.is_dir());
-    if !program.join("soffice.bin").is_file() && frameworks.is_none() {
-        return ALL.iter().map(|(a, _)| *a).collect();
+/// Where a LibreOffice install keeps what the probe reads: the module libraries, the registry (`*.xcd`) and the UNO service registries.
+struct Layout {
+    libs: Vec<PathBuf>,
+    registry: PathBuf,
+    services: Vec<PathBuf>,
+}
+
+/// The layout around the real `soffice`: `program/` with `soffice.bin` (Linux, Windows) or `Contents/MacOS` (macOS).
+fn layout_of(real: &Path) -> Option<Layout> {
+    let program = real.parent()?;
+    let root = program.parent()?;
+    if program.join("soffice.bin").is_file() {
+        return Some(Layout { libs: vec![program.to_path_buf()], registry: root.join("share").join("registry"), services: vec![program.join("services"), program.to_path_buf()] });
     }
-    let dirs: Vec<&Path> = std::iter::once(program).chain(frameworks.as_deref()).collect();
-    ALL.iter().filter(|(_, m)| dirs.iter().any(|d| d.join(module_library(m)).is_file())).map(|(a, _)| *a).collect()
+    let frameworks = root.join("Frameworks");
+    let resources = root.join("Resources");
+    (frameworks.is_dir() && resources.is_dir()).then(|| Layout {
+        libs: vec![program.to_path_buf(), frameworks],
+        registry: resources.join("registry"),
+        services: vec![resources.join("services"), resources],
+    })
+}
+
+/// `$name` / `${name}` (sh) and `%NAME%` / `%~dp0` (cmd) of a launcher, from the variables it set before.
+fn expand(text: &str, vars: &HashMap<String, String>) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(['$', '%']) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let (name, used) = if let Some(t) = tail.strip_prefix("${") {
+            let end = t.find('}')?;
+            (&t[..end], end + 3)
+        } else if tail.starts_with("%~dp0") {
+            ("~dp0", 5)
+        } else if let Some(t) = tail.strip_prefix('%') {
+            let end = t.find('%')?;
+            (&t[..end], end + 2)
+        } else {
+            let t = &tail[1..];
+            let end = t.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(t.len());
+            (&t[..end], end + 1)
+        };
+        out.push_str(vars.get(&name.to_ascii_lowercase())?);
+        rest = &tail[used..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// The first quoted (or bare) word of `text`.
+fn first_word(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    match text.chars().next()? {
+        q @ ('"' | '\'') => text[1..].split(q).next(),
+        _ => text.split_whitespace().next(),
+    }
+}
+
+/// The `soffice` a launcher script runs: the extension package's (`s="$here/../store/ext-core"`, then
+/// `exec "$s/libreoffice/…/soffice" "$@"`; on Windows `set "S=%~dp0..\store\ext-core"`, then
+/// `"%S%\libreoffice\program\soffice.com" %*`) or any script that `exec`s one.
+fn launcher_target(launcher: &Path) -> Option<PathBuf> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(launcher).ok()?.take(16 * 1024).read_to_string(&mut text).ok()?;
+    let dir = launcher.parent()?.to_string_lossy().into_owned();
+    let mut vars: HashMap<String, String> = HashMap::from([("here".into(), dir.clone()), ("~dp0".into(), format!("{dir}{}", std::path::MAIN_SEPARATOR))]);
+    for line in text.lines().map(str::trim) {
+        let set = line.strip_prefix("set \"").and_then(|l| l.strip_suffix('"')).or_else(|| line.strip_prefix("set "));
+        if let Some((name, value)) = set.and_then(|l| l.split_once('=')) {
+            if let Some(v) = expand(value, &vars) {
+                vars.insert(name.trim().to_ascii_lowercase(), v);
+            }
+            continue;
+        }
+        if let Some((name, value)) = line.split_once('=').filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+            if let Some(v) = first_word(value).filter(|v| !v.contains("$(")).and_then(|v| expand(v, &vars)) {
+                vars.insert(name.to_ascii_lowercase(), v);
+            }
+            continue;
+        }
+        let command = line.strip_prefix("exec ").unwrap_or(line);
+        let Some(target) = first_word(command).and_then(|w| expand(w, &vars)) else { continue };
+        let target = PathBuf::from(target.replace(['\\', '/'], std::path::MAIN_SEPARATOR_STR));
+        if target.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("soffice")) {
+            return Some(if target.is_absolute() { target } else { Path::new(&dir).join(target) });
+        }
+    }
+    None
+}
+
+/// The real `soffice` behind `path`: itself inside an install, else what its launcher runs (a few levels deep).
+fn real_soffice(path: &Path) -> Option<(PathBuf, Layout)> {
+    let mut at = path.to_path_buf();
+    for _ in 0..4 {
+        let real = std::fs::canonicalize(&at).ok()?;
+        if let Some(layout) = layout_of(&real) {
+            return Some((real, layout));
+        }
+        at = launcher_target(&real)?;
+    }
+    None
+}
+
+const APPLICATIONS: [(Office, &str, &str); 4] = [(Office::Writer, "sw", "writer.xcd"), (Office::Calc, "sc", "calc.xcd"), (Office::Impress, "sd", "impress.xcd"), (Office::Draw, "sd", "draw.xcd")];
+const VISIO_TYPE: &str = "oor:name=\"draw_Visio_Document\"";
+const VISIO_SERVICE: &str = "com.sun.star.comp.Draw.VisioImportFilter";
+
+/// The library a service registry (`services.rdb`) names for an implementation.
+fn implementation_library(rdb: &str, implementation: &str) -> Option<String> {
+    let at = rdb.find(&format!("<implementation name=\"{implementation}\""))?;
+    let component = &rdb[rdb[..at].rfind("<component ")?..at];
+    let uri = component.split("uri=\"").nth(1)?.split('"').next()?;
+    uri.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).map(String::from)
+}
+
+fn service_registries(layout: &Layout) -> Vec<PathBuf> {
+    layout
+        .services
+        .iter()
+        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "rdb") && p.is_file())
+        .collect()
+}
+
+/// Draw registers the Visio type and filter (`draw.xcd`) and a service registry names the library that implements the filter, which is there.
+fn visio_filter(layout: &Layout) -> bool {
+    let registered = std::fs::read_to_string(layout.registry.join("draw.xcd")).is_ok_and(|x| x.contains(VISIO_TYPE) && x.contains(VISIO_SERVICE));
+    registered
+        && service_registries(layout).iter().any(|rdb| {
+            std::fs::read_to_string(rdb).ok().and_then(|text| implementation_library(&text, VISIO_SERVICE)).is_some_and(|lib| layout.libs.iter().any(|d| d.join(&lib).is_file()))
+        })
+}
+
+/// The applications and import filters of the install `soffice` starts; `None` when that install cannot be read.
+pub fn office_components(soffice: &Path) -> Option<(Vec<Office>, Vec<Filter>)> {
+    let (_, layout) = real_soffice(soffice)?;
+    let apps: Vec<Office> = APPLICATIONS
+        .iter()
+        .filter(|(_, m, xcd)| layout.libs.iter().any(|d| d.join(module_library(m)).is_file()) && layout.registry.join(xcd).is_file())
+        .map(|(a, _, _)| *a)
+        .collect();
+    let filters = if apps.contains(&Office::Draw) && visio_filter(&layout) { vec![Filter::Visio] } else { Vec::new() };
+    Some((apps, filters))
+}
+
+/// What a change of the install behind `soffice` would show in: its real binary, launcher, module libraries, registry and service registries.
+fn office_markers(soffice: &Path) -> Vec<PathBuf> {
+    let Some((real, layout)) = real_soffice(soffice) else { return Vec::new() };
+    let libs = APPLICATIONS.iter().map(|(_, m, _)| module_library(m)).flat_map(|lib| layout.libs.iter().map(move |d| d.join(&lib)).collect::<Vec<_>>());
+    let registry = APPLICATIONS.iter().map(|(_, _, xcd)| layout.registry.join(xcd));
+    std::iter::once(real).chain(libs).chain(registry).filter(|p| p.is_file()).chain(service_registries(&layout)).collect()
 }
 
 pub fn parse_version(name: &str, text: &str) -> Option<String> {
@@ -473,11 +656,15 @@ fn probe_media(dirs: &[PathBuf], missing: &mut Vec<&'static str>) -> Option<Tool
 pub fn probe(dirs: &[PathBuf]) -> Probe {
     let mut missing = Vec::new();
     let media = probe_media(dirs, &mut missing);
-    let office: Vec<Soffice> = find_all("soffice", dirs)
-        .into_iter()
-        .filter_map(|path| soffice_version(&path).map(|version| Soffice { components: office_components(&path), tool: Tool::new(path, version) }))
-        .filter(|o| !o.components.is_empty())
-        .collect();
+    let mut unresolved = Vec::new();
+    let mut office = Vec::new();
+    for path in find_all("soffice", dirs) {
+        let Some(version) = soffice_version(&path) else { continue };
+        match office_components(&path) {
+            Some((components, filters)) if !components.is_empty() => office.push(Soffice { components, filters, tool: Tool::new(path, version) }),
+            _ => unresolved.push(path),
+        }
+    }
     if office.is_empty() {
         missing.push("soffice");
     }
@@ -486,7 +673,7 @@ pub fn probe(dirs: &[PathBuf]) -> Probe {
     let pdfinfo = tool("pdfinfo", dirs, &mut missing, poppler_version("pdfinfo"));
     let pdf = pdftoppm.zip(pdfinfo).map(|(pdftoppm, pdfinfo)| PdfTools { pdftoppm, pdfinfo });
     let pandoc = tool("pandoc", dirs, &mut missing, |p| output_of(p, &["--version"]).and_then(|t| parse_pandoc_version(&t)));
-    Probe { media, office, magick, pdf, pandoc, missing, searched: dirs.to_vec() }
+    Probe { media, office, unresolved, magick, pdf, pandoc, missing, searched: dirs.to_vec() }
 }
 
 #[cfg(test)]
@@ -536,25 +723,32 @@ mod tests {
         assert!(detail.contains("magick not found") && detail.contains("pdftoppm and pdfinfo not found") && detail.contains("pandoc not found"), "{detail}");
         assert!(!probe.available() && probe.profiles().is_empty());
         let why = probe.converter(Profile::PreviewDocument, Kind::Document("docx")).unwrap_err();
-        assert_eq!(why, format!("soffice is not available on this node (soffice is part of ext-core: this is a deployment defect; searched {})", dir.path().display()));
+        assert_eq!(why, "soffice is not available on this node (soffice is part of ext-core: this is a deployment defect)", "what a viewer is told names no paths");
+        assert!(probe.missing_detail().unwrap().contains(&dir.path().display().to_string()), "the diagnostics do");
     }
 
-    fn soffice(path: &str, components: &[Office]) -> Soffice {
-        Soffice { tool: Tool::new(path.into(), "25.2.3.2".into()), components: components.to_vec() }
+    fn soffice(path: &str, components: &[Office], filters: &[Filter]) -> Soffice {
+        Soffice { tool: Tool::new(path.into(), "25.2.3.2".into()), components: components.to_vec(), filters: filters.to_vec() }
     }
+
+    const ALL_APPS: &[Office] = &[Office::Writer, Office::Calc, Office::Impress, Office::Draw];
 
     #[test]
     fn each_group_is_optional() {
-        let probe = Probe { office: vec![soffice("soffice", &[Office::Writer, Office::Calc, Office::Impress])], missing: vec!["ffmpeg", "ffprobe"], ..Default::default() };
+        let probe = Probe { office: vec![soffice("soffice", ALL_APPS, &[Filter::Visio])], missing: vec!["ffmpeg", "ffprobe"], ..Default::default() };
         assert!(probe.available());
         assert_eq!(probe.profiles(), vec!["preview-document", "preview-sheet"]);
         assert!(matches!(probe.converter(Profile::PreviewDocument, Kind::Document("pptx")), Ok(Converter::Soffice(_))));
+        assert!(matches!(probe.converter(Profile::PreviewDocument, Kind::Document("vsd")), Ok(Converter::Soffice(_))));
         assert!(probe.converter(Profile::Thumbnail, Kind::Video).is_err());
         assert!(matches!(probe.converter(Profile::Thumbnail, Kind::Document("odt")), Ok(Converter::Embedded(None))));
+        assert!(matches!(probe.converter(Profile::Thumbnail, Kind::Document("vsdx")), Ok(Converter::Embedded(None))), "a thumbnail never starts soffice");
         let described = probe.describe();
         assert_eq!(described["soffice"][0]["version"], "25.2.3.2");
         assert_eq!(described["soffice"][0]["source"], "system");
-        assert_eq!(described["soffice"][0]["components"], serde_json::json!(["writer", "calc", "impress"]));
+        assert_eq!(described["soffice"][0]["components"], serde_json::json!(["writer", "calc", "impress", "draw"]));
+        assert_eq!(described["soffice"][0]["filters"], serde_json::json!(["visio"]));
+        assert!(described.get("soffice_missing_components").is_none() && described.get("soffice_missing_filters").is_none());
         assert!(described.get("ffmpeg").is_none());
         assert_eq!(described["missing"], serde_json::json!(["ffmpeg", "ffprobe"]));
 
@@ -565,43 +759,118 @@ mod tests {
         assert!(matches!(probe.converter(Profile::PreviewHtml, Kind::Markup("epub")), Ok(Converter::Pandoc(_))));
         assert!(matches!(probe.converter(Profile::Thumbnail, Kind::Pdf), Ok(Converter::Pdftoppm(_))));
         assert!(matches!(probe.converter(Profile::Thumbnail, Kind::Markup("epub")), Ok(Converter::Embedded(Some(Scaler::Magick(_))))));
-        assert!(probe.converter(Profile::PreviewImage, Kind::Image).unwrap_err().contains("ffmpeg and ffprobe not found"));
+        let why = probe.converter(Profile::PreviewImage, Kind::Image).unwrap_err();
+        assert!(why.contains("ffmpeg and ffprobe not found") && !why.contains("searched"), "{why}");
     }
 
     #[test]
     fn a_document_goes_to_the_first_install_with_its_application() {
-        let probe = Probe { office: vec![soffice("/usr/bin/soffice", &[Office::Writer, Office::Impress]), soffice("/opt/buckyos/tools/bin/soffice", &[Office::Writer, Office::Calc, Office::Impress])], ..Default::default() };
+        let probe = Probe {
+            office: vec![
+                soffice("/usr/bin/soffice", &[Office::Writer, Office::Impress, Office::Draw], &[]),
+                soffice("/opt/buckyos/tools/bin/soffice", ALL_APPS, &[Filter::Visio]),
+            ],
+            ..Default::default()
+        };
         let path = |kind| match probe.converter(Profile::PreviewDocument, kind) {
             Ok(Converter::Soffice(t)) => t.path,
             other => panic!("{other:?}"),
         };
-        assert_eq!(path(Kind::Document("docx")), PathBuf::from("/usr/bin/soffice"));
-        assert_eq!(path(Kind::Document("xlsx")), PathBuf::from("/opt/buckyos/tools/bin/soffice"));
-        assert!(probe.missing_office().is_empty());
+        let (system, ext) = (PathBuf::from("/usr/bin/soffice"), PathBuf::from("/opt/buckyos/tools/bin/soffice"));
+        assert_eq!(path(Kind::Document("docx")), system);
+        assert_eq!(path(Kind::Document("pptx")), system);
+        assert_eq!(path(Kind::Document("odg")), system, "Draw without Visio still opens ODF drawings");
+        assert_eq!(path(Kind::Document("pub")), system);
+        assert_eq!(path(Kind::Document("xlsx")), ext);
+        assert_eq!(path(Kind::Document("vsdx")), ext, "the Visio filter is only in the extension package's install");
+        assert_eq!(path(Kind::Document("vsd")), ext);
+        assert_eq!(probe.soffice_for_document("vsd").map(|t| t.path.clone()), Some(ext.clone()), "the cached PDF of a thumbnail is looked up under the same install");
+        assert!(probe.missing_office().is_empty() && probe.missing_filters().is_empty());
 
-        let probe = Probe { office: vec![soffice("/usr/bin/soffice", &[Office::Writer, Office::Impress])], ..Default::default() };
+        let probe = Probe { office: vec![soffice("/usr/bin/soffice", &[Office::Writer, Office::Impress], &[])], ..Default::default() };
         assert_eq!(probe.profiles(), vec!["preview-document"]);
         let why = probe.converter(Profile::PreviewSheet, Kind::Document("xls")).unwrap_err();
-        assert!(why.starts_with("the LibreOffice at /usr/bin/soffice has no Calc and no other soffice has it"), "{why}");
-        assert_eq!(probe.describe()["soffice_missing_components"], serde_json::json!(["calc"]));
+        assert_eq!(why, "the LibreOffice installs on this node have no Calc (soffice is part of ext-core: this is a deployment defect)");
+        let why = probe.converter(Profile::PreviewDocument, Kind::Document("vsdx")).unwrap_err();
+        assert!(why.starts_with("the LibreOffice installs on this node have no Draw ("), "Impress alone does not open drawings: {why}");
+        let described = probe.describe();
+        assert_eq!(described["soffice_missing_components"], serde_json::json!(["calc", "draw"]));
+        assert_eq!(described["soffice_missing_filters"], serde_json::json!(["visio"]));
+
+        let probe = Probe { office: vec![soffice("/usr/bin/soffice", ALL_APPS, &[])], ..Default::default() };
+        let why = probe.converter(Profile::PreviewDocument, Kind::Document("vsd")).unwrap_err();
+        assert!(why.starts_with("the LibreOffice installs on this node have no Draw with the Visio import filter ("), "{why}");
+        assert!(matches!(probe.converter(Profile::PreviewDocument, Kind::Document("odg")), Ok(Converter::Soffice(_))));
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// A Draw registry that registers the Visio type and filter, a service registry naming `lib` for the filter.
+    fn visio_files(registry: &Path, services: &Path, lib: &str) {
+        write(&registry.join("draw.xcd"), &format!("<oor:data><node oor:name=\"draw_Visio_Document\" oor:op=\"replace\"><prop oor:name=\"DetectService\"><value>{VISIO_SERVICE}</value></prop></node></oor:data>"));
+        write(&services.join("services.rdb"), &format!("<components><component loader=\"com.sun.star.loader.SharedLibrary\" environment=\"gcc3\" uri=\"vnd.sun.star.expand:$LO_LIB_DIR/libsdlo.so\"><implementation name=\"com.sun.star.comp.Draw.DrawingDocument\"/></component><component loader=\"com.sun.star.loader.SharedLibrary\" environment=\"gcc3\" uri=\"vnd.sun.star.expand:$LO_LIB_DIR/{lib}\"><implementation name=\"{VISIO_SERVICE}\" constructor=\"x\"><service name=\"com.sun.star.document.ImportFilter\"/></implementation></component></components>"));
     }
 
     #[test]
-    fn applications_are_read_from_the_program_directory() {
+    fn applications_and_filters_are_read_from_the_install() {
         let dir = tempfile::tempdir().unwrap();
-        let program = dir.path().join("lib/program");
-        std::fs::create_dir_all(&program).unwrap();
-        let launcher = dir.path().join("bin");
-        std::fs::create_dir_all(&launcher).unwrap();
-        std::fs::write(launcher.join("soffice"), b"#!/bin/sh\n").unwrap();
-        assert_eq!(office_components(&launcher.join("soffice")), vec![Office::Writer, Office::Calc, Office::Impress], "a launcher outside a program directory is complete");
+        // Linux / Windows: program/ (soffice.bin, module libraries, services/), share/registry/.
+        let root = dir.path().join("libreoffice");
+        let program = root.join("program");
+        let registry = root.join("share/registry");
         for f in ["soffice", "soffice.bin", &module_library("sw"), &module_library("sd")] {
-            std::fs::write(program.join(f), b"").unwrap();
+            write(&program.join(f), "");
         }
-        assert_eq!(office_components(&program.join("soffice")), vec![Office::Writer, Office::Impress]);
-        std::fs::write(program.join(module_library("sc")), b"").unwrap();
-        assert_eq!(office_components(&program.join("soffice")), vec![Office::Writer, Office::Calc, Office::Impress]);
-        assert_eq!(find_all("soffice", &[launcher.clone(), program.clone(), launcher.clone()]), vec![launcher.join("soffice"), program.join("soffice")]);
+        assert_eq!(office_components(&program.join("soffice")), Some((vec![], vec![])), "libraries without their registry are no application");
+        for x in ["writer.xcd", "impress.xcd"] {
+            write(&registry.join(x), "");
+        }
+        assert_eq!(office_components(&program.join("soffice")), Some((vec![Office::Writer, Office::Impress], vec![])), "Impress and Draw share sd: the registry tells them apart");
+        let before = tools_identity(&program);
+        write(&registry.join("draw.xcd"), "<oor:data/>");
+        assert_ne!(tools_identity(&program), before, "an application added to an install re-probes");
+        assert_eq!(office_components(&program.join("soffice")), Some((vec![Office::Writer, Office::Impress, Office::Draw], vec![])), "Draw without the Visio registration");
+        visio_files(&registry, &program.join("services"), "libwpftdrawlo.so");
+        assert_eq!(office_components(&program.join("soffice")).unwrap().1, vec![], "the library the filter is in is missing");
+        write(&program.join("libwpftdrawlo.so"), "");
+        write(&program.join(module_library("sc")), "");
+        write(&registry.join("calc.xcd"), "");
+        assert_eq!(office_components(&program.join("soffice")), Some((vec![Office::Writer, Office::Calc, Office::Impress, Office::Draw], vec![Filter::Visio])));
+
+        // macOS: Contents/MacOS/soffice, Contents/Frameworks, Contents/Resources/{registry,services}.
+        let contents = dir.path().join("LibreOffice.app/Contents");
+        write(&contents.join("MacOS/soffice"), "");
+        write(&contents.join("Frameworks").join(module_library("sd")), "");
+        write(&contents.join("Frameworks/libmergedlo.dylib"), "");
+        write(&contents.join("Resources/registry/impress.xcd"), "");
+        visio_files(&contents.join("Resources/registry"), &contents.join("Resources/services"), "libmergedlo.dylib");
+        assert_eq!(office_components(&contents.join("MacOS/soffice")), Some((vec![Office::Impress, Office::Draw], vec![Filter::Visio])));
+
+        // The extension package's launcher is followed to the install it runs; an unknown one is not taken as complete.
+        let bin = dir.path().join("tools/bin");
+        write(&dir.path().join("tools/store/ext-core/libreoffice"), "");
+        std::fs::remove_file(dir.path().join("tools/store/ext-core/libreoffice")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&root, dir.path().join("tools/store/ext-core/libreoffice")).unwrap();
+        write(&bin.join("soffice"), "#!/bin/sh\np=\"$0\"\nwhile [ -h \"$p\" ]; do l=\"$(readlink \"$p\")\"; done\nhere=\"$(cd \"${p%/*}\" && pwd -P)\"\ns=\"$here/../store/ext-core\"\n. \"$s/env/soffice.sh\"\nexec \"$s/libreoffice/program/soffice\" \"$@\"\n");
+        #[cfg(unix)]
+        assert_eq!(office_components(&bin.join("soffice")).map(|c| c.0.len()), Some(4), "ext-core's launcher");
+        write(&bin.join("soffice.cmd"), "@echo off\r\nsetlocal\r\nset \"S=%~dp0..\\store\\ext-core\"\r\n\"%S%\\libreoffice\\program\\soffice.com\" %*\r\nexit /b %ERRORLEVEL%\r\n");
+        let target = launcher_target(&bin.join("soffice.cmd")).unwrap();
+        assert!(target.ends_with(Path::new("store/ext-core/libreoffice/program/soffice.com")) && target.starts_with(&bin), "{}", target.display());
+        write(&bin.join("other"), "#!/bin/sh\nexec \"$(dirname \"$0\")/real-office\" \"$@\"\n");
+        assert_eq!(office_components(&bin.join("other")), None, "a launcher that names no soffice");
+        write(&bin.join("plain"), "#!/bin/sh\n");
+        assert_eq!(office_components(&bin.join("plain")), None);
+        assert_eq!(find_all("soffice", &[bin.clone(), program.clone(), bin.clone()]), vec![bin.join("soffice"), program.join("soffice")]);
+    }
+
+    fn tools_identity(program: &Path) -> Identity {
+        let found = installed(&[program.to_path_buf()]);
+        identity(&found.iter().map(PathBuf::as_path).collect::<Vec<_>>())
     }
 
     #[test]

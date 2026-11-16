@@ -179,16 +179,20 @@ buckyos system info                                 # BuckyOS version, build_ver
   after their last write or read. The background round evicts a batch every 30 s; an admin runs it to the end at once
   with kRPC `bucket.collect_garbage` or Desktop Settings › Storage › Clean up now. Pool and bucket quotas: kRPC `bucket.get_pool_quota|set_pool_quota|get_quota|set_quota`
   (admin) and `bucket.usage_report`; no CLI verb, Desktop Settings › Storage lists per-App usage.
-  Preview conversion (HEIC/HEVC shown on browsers that cannot decode them; Office / ODF / RTF / iWork documents →
+  Preview conversion (HEIC/HEVC shown on browsers that cannot decode them; Office / ODF / RTF / iWork / Visio documents →
   PDF, legacy spreadsheets → xlsx; RAW and other stills; PDF and document thumbnails; EPUB / ipynb / Markdown → HTML)
   runs five tool groups, each optional: ffmpeg + ffprobe, LibreOffice `soffice`, ImageMagick `magick`, poppler
   `pdftoppm` + `pdfinfo`, and `pandoc`. They are looked up in `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/`, `PATH`,
   LibreOffice's install directory, and last the extension package directory `$BUCKYOS_ROOT/tools/bin/` (ext-core
   carries all of them, soffice and CJK fonts included, so a missing soffice is a deployment defect, not something
   the user installs). NFSP `hello` (`POST /nfs/v1/hello`) reports the converters in `repr`: path, version and
-  `source` (`system` | `ext-tools`) of each, every soffice install with the applications it has
-  (`components`, and `soffice_missing_components` when no install has one), the `profiles` it can produce, and
-  what is `missing`; results live in bucket
+  `source` (`system` | `ext-tools`) of each, every soffice install with what the install it starts can load (a
+  launcher is followed to the soffice it runs): `components` (`writer` / `calc` / `impress` / `draw`) and import
+  `filters` (`visio`: VSD / VSDX need Draw with it), `soffice_missing_components` / `soffice_missing_filters` when no
+  install has one, `soffice_unresolved` for a soffice whose install could not be read (not used); then the
+  `profiles` it can produce, and what is `missing`. A document goes to the first install that has its application
+  and filter; when none has, `repr` answers `unsupported` / `no-pipeline` at once (a deployment defect: ext-core
+  carries them) and the nfs-server log names the installs; results live in bucket
   `zone/nfs-server/_/preview-cache`, capped by `services/nfs-server/settings.preview_cache_mib` (default 20480).
 - System URLs (`obj://`, `cyfs://`, `file://<device_id>`, https; rules in `doc/key url.md`): `buckyos obj resolve <url>`
   normalizes a reference (also `//config/...`, `/abs/path`) and prints its canonical form, RBAC key, kevent pattern and

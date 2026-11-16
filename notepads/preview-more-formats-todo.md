@@ -365,3 +365,7 @@ WMV / WMA（ASF）、FLV、RM / RMVB、AIFF、CAF、APE 由 ffmpeg 解码。容�
 6. OLE2 大文件只按文件头里的目录扇区号补读一次（64 KiB），不沿 FAT 链读完整目录。
 7. 前端：iframe 加载失败或 15 秒没出来时改由 pdf.js 接手；表格只显示值和合并区间，没有单元格样式和图表；pdf.js 渲染器没有文本层，不能选字和查找。
 8. Windows 上 LibreOffice 是否从 `share\fonts\truetype` 加载随包字体没有验证；macOS / Windows 上没指定字体的中文不一定用随包的 Noto CJK。workflow `to_pdf` 指纹里的字体摘要取自 `fc-list`，看不到 ext-core 自带的字体。
+
+### 7.7 后续：Visio 与 Draw 能力（2026-11-16）
+
+VSD / VSDX 的预览补齐与 Draw / Visio 过滤器的探测在 [preview-component-optimization-todo.md](preview-component-optimization-todo.md) 里实施（T1–T6），记录见该文 §6。与本文的关系：本文 §2 把 odg / vsdx / pub 归在“需要 draw 组件”，当时 `office_of` 仍把它们交给 Impress、`sdlo` 被当作 Draw 和 Impress 共有的证据、ext-core launcher 被视为应用齐全；这三点在那里改为按 `draw.xcd` 区分 Draw、按 `draw.xcd` 登记加实现库判断 Visio 过滤器、跟随 launcher 读真实安装。本文 §7 的历史记录保持原样，不代表新一轮验收。

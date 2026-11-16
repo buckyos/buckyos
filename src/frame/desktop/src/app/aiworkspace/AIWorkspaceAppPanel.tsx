@@ -6,7 +6,7 @@
  * window) first ends the current edit and waits for the saves that can complete; what would still be
  * lost is asked about, never dropped silently. */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import './aiworkspace.css'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import type { AppContentLoaderProps } from '../types'
@@ -19,6 +19,7 @@ import { OfflineUnavailable, openPreparedReplica, prepareOffline, type PrepareRe
 import { ReplicaWorkspaceSession } from './offline/replicaSession'
 import { forgetRecent, readRecent, rememberRecent } from './state/recent'
 import { WorkspaceStore } from './state/store'
+import { externalImports } from './ui/import/externalImport'
 import { LeaveDialog, type LeaveSummary } from './ui/shell/dialogs'
 import type { LaunchTarget } from './ui/shell/WorkspaceShell'
 import { WorkspaceList } from './ui/WorkspaceList'
@@ -68,6 +69,8 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
   const openSeq = useRef(0)
   const tabRef = useRef(tab)
   useEffect(() => { tabRef.current = tab })
+  /** A file handed over to import ("Import to AI Workspace"), waiting for a page that can take it. */
+  const handedOver = useSyncExternalStore(externalImports.subscribe, externalImports.snapshot)
 
   useEffect(() => {
     if (!store) return
@@ -256,6 +259,14 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
   return (
     <div className="aiws-root" data-testid="aiws-root">
       {error && <div className="aiws-error aiws-root-error" role="alert" data-testid="aiws-open-error">{error} <button type="button" className="aiws-link" onClick={() => setError(null)}>{t('aiworkspace.core.app.dismiss')}</button></div>}
+      {handedOver && (
+        <div className="aiws-warning aiws-root-error" role="status" data-testid="aiws-external-import">
+          {!store ? t('aiworkspace.core.app.import.openWorkspace', { name: handedOver.file.name })
+            : handedOver.blocked ? t('aiworkspace.core.app.import.blocked', { name: handedOver.file.name, reason: handedOver.blocked })
+              : t('aiworkspace.core.app.import.openPage', { name: handedOver.file.name })}
+          {' '}<button type="button" className="aiws-link" onClick={() => externalImports.cancel()} data-testid="aiws-external-import-cancel">{t('aiworkspace.core.app.import.cancel')}</button>
+        </div>
+      )}
       {report && store && (
         <div className="aiws-warning aiws-root-error" role="status" data-testid="aiws-prepare-report">
           {tNode('aiworkspace.core.app.prepareReport', {

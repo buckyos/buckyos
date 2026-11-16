@@ -266,7 +266,7 @@ pub async fn op_repr(state: &SharedState, actor: &Actor, env: &Envelope, headers
     };
     let mut preview_pdf = None;
     if let (Profile::Thumbnail, Kind::Document(ext), Some(pdf)) = (profile, kind, &probe.pdf) {
-        if let Some(soffice) = probe.soffice_for(super::media::office_of(ext)) {
+        if let Some(soffice) = probe.soffice_for_document(ext) {
             preview_pdf = super::cached_preview_pdf(state, soffice, &input_obj_id).await.map(|id| (id, tools::Converter::Pdftoppm(pdf.clone())));
         }
     }
@@ -274,7 +274,12 @@ pub async fn op_repr(state: &SharedState, actor: &Actor, env: &Envelope, headers
         Some((id, converter)) => (Some(id), converter),
         None => match probe.converter(profile, kind) {
             Ok(converter) => (None, converter),
-            Err(detail) => return Ok(unsupported("no-pipeline", detail)),
+            Err(detail) => {
+                if let Kind::Document(_) = kind {
+                    log::warn!("preview: no converter for {kind:?} ({}): {detail}; LibreOffice installs: {}", profile.as_str(), serde_json::json!(probe.office));
+                }
+                return Ok(unsupported("no-pipeline", detail));
+            }
         },
     };
     if let (Kind::Heif, tools::Converter::Ffmpeg(t)) = (kind, &converter) {

@@ -4,8 +4,14 @@
 //! saved by LibreOffice). The other samples are generated: stills written by
 //! ImageMagick, `raw.dng` an uncompressed Bayer DNG, `clip.*` / `tone.*`
 //! encoded by ffmpeg, `book.epub` by pandoc, `sheet.*` and the PDFs by
-//! LibreOffice. Conversion cases skip when their tool is not
-//! installed; the "missing converter" cases and document sniffing always run.
+//! LibreOffice, `drawing.vsdx` (two pages: boxes with Chinese and Latin text,
+//! connectors with arrow heads, a group; a PNG picture and its caption) by
+//! ext-core's `smoke/make_visio.py` from the published VSDX schema; `drawing.vsd`
+//! is a real Visio binary from LibreOffice's own test data
+//! (`writerperfect/qa/unit/data/draw/libvisio/pass/fdo57117-1.vsd`, MPL-2.0: one
+//! A4 page, a box with the text "test"). Conversion cases
+//! skip when their tool is not installed; the "missing converter" cases and
+//! document sniffing always run.
 //! Tokens use the test key of tests/ndm.rs.
 
 use buckyos_api::*;
@@ -84,6 +90,16 @@ fn present(names: &[&str]) -> bool {
         eprintln!("skipped: {missing:?} not installed");
     }
     missing.is_empty()
+}
+
+/// Whether some installed LibreOffice has Draw with the Visio import filter.
+fn visio_present() -> bool {
+    let probe = nfs_server::preview::tools::probe(&nfs_server::preview::tools::search_dirs());
+    if probe.soffice_for_document("vsdx").is_some() {
+        return true;
+    }
+    eprintln!("skipped: no LibreOffice with Draw and the Visio import filter installed");
+    false
 }
 
 /// Whether some installed LibreOffice has Calc.
@@ -445,6 +461,10 @@ fn documents_are_sniffed_by_content() {
     assert_eq!(sniff(&read("office.pptx"), None), Some(Kind::Document("pptx")));
     assert_eq!(sniff(&read("office.odt"), None), Some(Kind::Document("odt")));
     assert_eq!(sniff(&read("office.doc"), None), Some(Kind::Document("doc")));
+    assert_eq!(sniff(&read("drawing.vsdx"), None), Some(Kind::Document("vsdx")));
+    assert_eq!(sniff(&read("drawing.vsdx"), Some("drawing.pptx")), Some(Kind::Document("vsdx")));
+    assert_eq!(sniff(&read("drawing.vsd"), None), Some(Kind::Document("vsd")), "the VisioDocument stream names it");
+    assert_eq!(sniff(&read("drawing.vsd"), Some("drawing.doc")), Some(Kind::Document("vsd")));
     // The bytes decide, a wrong or missing name does not.
     assert_eq!(sniff(&read("office.pptx"), Some("deck.docx")), Some(Kind::Document("pptx")));
     assert_eq!(sniff(&read("office.docx")[..2048], Some("attachment")), Some(Kind::Document("docx")), "the first entries are enough");
@@ -792,15 +812,74 @@ async fn legacy_spreadsheets_become_xlsx() {
     assert_eq!(no_sheet["result"]["reason"], "no-renderer", "{no_sheet}");
 }
 
-/// A LibreOffice program directory with only the named applications' libraries, started through the real one.
-#[cfg(target_os = "linux")]
-fn partial_office(dir: &Path, modules: &[&str]) -> Option<PathBuf> {
+#[tokio::test]
+async fn visio_drawings_become_pdf() {
+    if !visio_present() {
+        return;
+    }
+    let srv = start(None).await;
+    let alice = srv.client("alice").await;
+    let repr = &alice.hello["repr"];
+    let installs = repr["soffice"].as_array().unwrap();
+    assert!(installs.iter().any(|o| o["components"].as_array().unwrap().iter().any(|c| c == "draw") && o["filters"] == json!(["visio"])), "{repr}");
+    let mut works = Vec::new();
+    for (name, pages, needles) in [("drawing.vsdx", 2, &["开始 Start", "检查 Check", "完成 Done", "组合 Group", "图片说明 Picture caption"][..]), ("drawing.vsd", 1, &["test"][..])] {
+        let path = format!("{DIR}/{name}");
+        let done = alice.converted(alice.repr_at(&path, json!({"purpose": "preview", "runtime": {"accept": ["image", "pdf"]}})).await).await;
+        assert_eq!(done["state"], "completed", "{name}: {done}");
+        let result = &done["result"];
+        assert_eq!((&result["media_type"], &result["result_type"], &result["plan"]), (&json!("application/pdf"), &json!("document"), &json!("soffice-pdf")), "{name}: {result}");
+        assert!(result["fidelity"].as_str().unwrap().contains("LibreOffice"), "{result}");
+        let pdf = alice.fetch(result["read_url"].as_str().unwrap()).await;
+        assert_eq!(pdf_pages(&pdf), pages, "{name}");
+        if name.ends_with("vsdx") {
+            assert!(pdf.windows(6).any(|w| w == b"/Image") || pdf.windows(8).any(|w| w == b"/XObject"), "the picture is on its page");
+        }
+        if present(&["pdftotext"]) {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("d.pdf"), &pdf).unwrap();
+            let out = std::process::Command::new(tool("pdftotext").unwrap()).arg(dir.path().join("d.pdf")).arg("-").output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            for needle in needles {
+                assert!(text.contains(needle), "{name}: {needle} in {text}");
+            }
+        }
+        assert_eq!(std::fs::read(srv._tmp.path().join(format!("exports/home/alice/照片 2026/{name}"))).unwrap(), std::fs::read(fixture(name)).unwrap(), "{name}: the original is untouched");
+        works.push(done);
+    }
+    let (path, done) = (format!("{DIR}/drawing.vsdx"), works.remove(0));
+    // Opening it again is the same completed work, its thumbnail the PDF's first page.
+    let again = alice.repr_at(&path, json!({})).await;
+    assert_eq!((&again["result"]["state"], &again["result"]["work_key"]), (&json!("completed"), &done["work_key"]), "{again}");
+    if present(&["pdftoppm", "pdfinfo"]) {
+        let thumb = alice.converted(alice.repr_at(&path, json!({"purpose": "thumbnail"})).await).await;
+        assert_eq!((&thumb["state"], &thumb["result"]["plan"]), (&json!("completed"), &json!("pdf-page")), "{thumb}");
+    }
+    // A damaged drawing is a failed conversion with Retry, not an unsupported format.
+    let bytes = std::fs::read(fixture("drawing.vsdx")).unwrap();
+    std::fs::write(srv._tmp.path().join("exports/home/alice/cut.vsdx"), &bytes[..bytes.len() / 2]).unwrap();
+    let cut = alice.converted(alice.repr_at("/home/alice/cut.vsdx", json!({})).await).await;
+    assert_eq!((&cut["state"], &cut["error"]["code"]), (&json!("failed"), &json!("CONVERT_FAILED")), "{cut}");
+    let cached = alice.repr_at("/home/alice/cut.vsdx", json!({})).await;
+    assert_eq!(cached["result"]["attempt_id"], cut["attempt_id"], "the failure is cached: {cached}");
+    let retried = alice.repr_at("/home/alice/cut.vsdx", json!({"retry": true, "expected_attempt_id": cut["attempt_id"]})).await;
+    assert_ne!(retried["result"]["attempt_id"], cut["attempt_id"], "an explicit Retry starts a new attempt: {retried}");
+    assert_eq!(alice.converted(retried).await["state"], "failed");
+}
+
+/// A LibreOffice install with only the named applications (module libraries and registry files) and no Visio filter, started through the real one.
+#[cfg(unix)]
+fn partial_office(dir: &Path, modules: &[&str], registry: &[&str]) -> Option<PathBuf> {
     let real = std::fs::canonicalize(tool("soffice")?).ok()?;
     let program = dir.join("program");
     std::fs::create_dir_all(&program).unwrap();
+    std::fs::create_dir_all(dir.join("share/registry")).unwrap();
     std::fs::write(program.join("soffice.bin"), b"").unwrap();
     for m in modules {
-        std::fs::write(program.join(format!("lib{m}lo.so")), b"").unwrap();
+        std::fs::write(program.join(nfs_server::preview::tools::module_library(m)), b"").unwrap();
+    }
+    for x in registry {
+        std::fs::write(dir.join("share/registry").join(x), b"<oor:data/>").unwrap();
     }
     let launcher = program.join("soffice");
     std::fs::write(&launcher, format!("#!/bin/sh\nexec '{}' \"$@\"\n", real.display())).unwrap();
@@ -809,41 +888,59 @@ fn partial_office(dir: &Path, modules: &[&str]) -> Option<PathBuf> {
     Some(program)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[tokio::test]
-async fn an_install_without_calc_leaves_sheets_to_the_next_one() {
+async fn an_install_without_an_application_or_filter_leaves_it_to_the_next_one() {
     if !soffice_present() {
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
-    let no_calc = partial_office(&tmp.path().join("system"), &["sw", "sd"]).unwrap();
-    let srv = start(Some(vec![no_calc.clone()])).await;
+    let host = partial_office(&tmp.path().join("system"), &["sw", "sd"], &["writer.xcd", "impress.xcd", "draw.xcd"]).unwrap();
+    let srv = start(Some(vec![host.clone()])).await;
     let alice = srv.client("alice").await;
     let repr = &alice.hello["repr"];
-    assert_eq!(repr["soffice"][0]["components"], json!(["writer", "impress"]), "{repr}");
+    assert_eq!(repr["soffice"][0]["components"], json!(["writer", "impress", "draw"]), "{repr}");
+    assert_eq!(repr["soffice"][0]["filters"], json!([]), "{repr}");
     assert_eq!(repr["soffice_missing_components"], json!(["calc"]), "{repr}");
+    assert_eq!(repr["soffice_missing_filters"], json!(["visio"]), "{repr}");
     assert!(!repr["profiles"].as_array().unwrap().iter().any(|p| p == "preview-sheet"), "{repr}");
     let xls = alice.repr_at(&format!("{DIR}/sheet.xls"), json!({})).await;
     assert_eq!((&xls["result"]["state"], &xls["result"]["reason"]), (&json!("unsupported"), &json!("no-pipeline")), "planned, not failed: {xls}");
     let detail = xls["result"]["detail"].as_str().unwrap();
-    assert!(detail.contains("has no Calc") && detail.contains("deployment defect"), "{xls}");
+    assert!(detail.contains("have no Calc") && detail.contains("deployment defect") && !detail.contains(&host.display().to_string()), "{xls}");
+    let vsdx = alice.repr_at(&format!("{DIR}/drawing.vsdx"), json!({})).await;
+    assert_eq!((&vsdx["result"]["state"], &vsdx["result"]["reason"]), (&json!("unsupported"), &json!("no-pipeline")), "planned before any conversion starts: {vsdx}");
+    assert!(vsdx["result"]["detail"].as_str().unwrap().contains("have no Draw with the Visio import filter"), "{vsdx}");
+    let vsd = alice.repr_at(&format!("{DIR}/drawing.vsd"), json!({})).await;
+    assert_eq!(vsd["result"]["reason"], "no-pipeline", "{vsd}");
     let docx = alice.converted(alice.repr_at(&format!("{DIR}/office.docx"), json!({})).await).await;
     assert_eq!(docx["state"], "completed", "{docx}");
 
-    // A second install (the extension package's place in the lookup order) takes what the first lacks.
+    // A second install (the extension package's place in the lookup order) takes what the first lacks; its launcher
+    // is followed to the install it runs, so only a complete install counts as complete.
     let ext = tmp.path().join("ext/bin");
     std::fs::create_dir_all(&ext).unwrap();
-    std::os::unix::fs::symlink(no_calc.join("soffice"), ext.join("soffice.real")).unwrap();
-    std::fs::write(ext.join("soffice"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", no_calc.join("soffice").display())).unwrap();
+    let real = std::fs::canonicalize(tool("soffice").unwrap()).unwrap();
+    std::fs::write(ext.join("soffice"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", real.display())).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(ext.join("soffice"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let srv = start(Some(vec![no_calc.clone(), ext.clone()])).await;
+    let full = nfs_server::preview::tools::probe(&[ext.clone()]);
+    let srv = start(Some(vec![host.clone(), ext.clone()])).await;
     let alice = srv.client("alice").await;
     let repr = &alice.hello["repr"];
     assert_eq!(repr["soffice"].as_array().unwrap().len(), 2, "{repr}");
-    assert_eq!(repr["soffice"][1]["components"], json!(["writer", "calc", "impress"]), "{repr}");
-    assert!(repr.get("soffice_missing_components").is_none(), "{repr}");
-    assert!(repr["profiles"].as_array().unwrap().iter().any(|p| p == "preview-sheet"), "{repr}");
+    assert_eq!(repr["soffice"][1]["components"], json!(full.office[0].components), "{repr}");
+    if full.soffice_for_document("vsdx").is_none() {
+        eprintln!("skipped: the installed LibreOffice has no Visio import filter");
+        return;
+    }
+    assert!(repr.get("soffice_missing_filters").is_none(), "{repr}");
+    let vsdx = alice.converted(alice.repr_at(&format!("{DIR}/drawing.vsdx"), json!({})).await).await;
+    assert_eq!(vsdx["state"], "completed", "{vsdx}");
+    assert_eq!(pdf_pages(&alice.fetch(vsdx["result"]["read_url"].as_str().unwrap()).await), 2);
+    let vsd = alice.converted(alice.repr_at(&format!("{DIR}/drawing.vsd"), json!({})).await).await;
+    assert_eq!(vsd["state"], "completed", "{vsd}");
+    assert_eq!(pdf_pages(&alice.fetch(vsd["result"]["read_url"].as_str().unwrap()).await), 1);
 }
 
 #[tokio::test]
