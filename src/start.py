@@ -21,7 +21,8 @@ build_dir = os.path.dirname(os.path.abspath(__file__))
 # after run build.py ,use this script to restart the dev buckyos system
 # 1) killall process
 # 2) update files to /opt/buckyos (--all to update all files to /opt/buckyos)
-# 3) start the system (node_daemon, as root on Linux; on macOS the BuckyOS Runtime LaunchAgent)
+# 3) start the system (node_daemon, as root on Linux; on macOS the BuckyOS Runtime LaunchAgent);
+#    an extension package seeded from an older bin/ext-tools seed is seeded again (drop_stale_ext_tools_seed)
 
 
 def _command_names(command: str) -> list[str]:
@@ -118,6 +119,46 @@ def _ext_tools_ready() -> None:
             f"Get it with `{sys.executable} tools/prepare_ext_tools.py` "
             "(or build one with publish/exttool/ext-core/build.sh and pass it with --local)."
         )
+
+
+def drop_stale_ext_tools_seed(buckyos_root: Path) -> list[str]:
+    """node_daemon seeds a package from bin/ext-tools only into a tools root that has no record of it, so that a newer
+    installer never replaces a node's version. A dev tree gets newer seeds all the time: a package the seed put there
+    (origin `seed`) whose payload is not the deployed seed's loses its record, and node_daemon seeds it again when it
+    starts. A package the Zone asked for (origin `desired`) is the Zone's and stays. Returns the ids it dropped."""
+    pin_dir = buckyos_root / "bin" / "ext-tools"
+    try:
+        packages = json.loads((pin_dir / "ext_tools.json").read_text(encoding="utf-8"))["packages"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    if not isinstance(packages, dict):
+        return []
+    dropped = []
+    for package_id, package in packages.items():
+        record_path = buckyos_root / "tools" / "installs" / f"{package_id}.json"
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or not isinstance(package, dict) or record.get("origin") != "seed":
+            continue
+        seed = (package.get("platforms") or {}).get(record.get("platform"))
+        if not isinstance(seed, dict) or not seed.get("file") or seed.get("sha256") == record.get("payload_digest"):
+            continue
+        # node_daemon seeds only from a tar that is there: without it the record is all the node has.
+        if not (pin_dir / str(seed["file"])).is_file():
+            continue
+        try:
+            record_path.unlink()
+        except OSError as error:
+            print(f"ext-tools: {package_id} stays at {record.get('version')}: cannot remove {record_path}: {error}")
+            continue
+        print(
+            f"ext-tools: {package_id} {record.get('version')} came from an older seed; "
+            f"node_daemon seeds {package.get('version')} when it starts"
+        )
+        dropped.append(package_id)
+    return dropped
 
 
 def _run_command(command: str, args: list[str]) -> int:
@@ -427,6 +468,9 @@ def start_system():
         print(f"Error: Cannot find node_daemon executable: {executable}")
         print(f"Please check if the installation directory is correct: {buckyos_root}")
         sys.exit(1)
+
+    # Here, after the re-run as root on Linux: tools/ belongs to node_daemon's account.
+    drop_stale_ext_tools_seed(buckyos_root)
 
     try:
         if platform.system() == "Darwin" and _macos_gui_session():

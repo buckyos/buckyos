@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -434,6 +435,90 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
 
             with patch.object(module, "_find_command", return_value=None):
                 self.assertEqual(module._missing_paios_images(Path(temporary) / "missing"), [])
+
+
+class BuckyosStartExtToolsSeedTests(unittest.TestCase):
+    """A dev root keeps tools/ across start.py runs; node_daemon seeds only a package it has no record of."""
+
+    def _root(self, temporary, *, record=None, seed_digest="sha256:new", with_tar=True) -> Path:
+        root = Path(temporary)
+        pin_dir = root / "bin" / "ext-tools"
+        pin_dir.mkdir(parents=True)
+        tar = "ext-core-1.3.1-darwin-arm64.tar.gz"
+        if with_tar:
+            (pin_dir / tar).write_bytes(b"payload")
+        pin = {"schema": "buckyos.ext-tools/v1", "packages": {"ext-core": {
+            "version": "1.3.1", "platforms": {"darwin-arm64": {"file": tar, "sha256": seed_digest, "size": 7}},
+        }}}
+        (pin_dir / "ext_tools.json").write_text(json.dumps(pin), encoding="utf-8")
+        if record is not None:
+            (root / "tools" / "installs").mkdir(parents=True)
+            base = {"id": "ext-core", "version": "1.1.0", "payload_digest": "sha256:old", "platform": "darwin-arm64", "origin": "seed"}
+            (root / "tools" / "installs" / "ext-core.json").write_text(json.dumps({**base, **record}), encoding="utf-8")
+        return root
+
+    def _drop(self, root: Path) -> list[str]:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return _load_start_script().drop_stale_ext_tools_seed(root)
+
+    def test_an_older_seed_loses_its_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary, record={})
+            self.assertEqual(self._drop(root), ["ext-core"])
+            self.assertFalse((root / "tools" / "installs" / "ext-core.json").exists())
+
+    def test_the_same_seed_rebuilt_under_its_version_loses_its_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary, record={"version": "1.3.1"})
+            self.assertEqual(self._drop(root), ["ext-core"])
+
+    def test_what_stays(self) -> None:
+        cases = {
+            "the deployed seed is installed": ({"payload_digest": "sha256:new"}, {}),
+            "the Zone asked for it": ({"origin": "desired"}, {}),
+            "the seed has no tar": ({}, {"with_tar": False}),
+            "the seed is of another platform": ({"platform": "linux-x86_64"}, {}),
+        }
+        for name, (record, root_args) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                root = self._root(temporary, record=record, **root_args)
+                self.assertEqual(self._drop(root), [])
+                self.assertTrue((root / "tools" / "installs" / "ext-core.json").is_file())
+
+    def test_nothing_to_compare(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(self._drop(Path(temporary)), [], "no seed deployed")
+            root = self._root(Path(temporary) / "fresh", record=None)
+            self.assertEqual(self._drop(root), [], "never installed: node_daemon seeds it anyway")
+            (root / "bin" / "ext-tools" / "ext_tools.json").write_text("{not json", encoding="utf-8")
+            self.assertEqual(self._drop(root), [])
+
+    @unittest.skipIf(os.name == "nt", "start_win.py starts Windows")
+    def test_start_system_drops_it_before_node_daemon_starts(self) -> None:
+        module = _load_start_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary, record={})
+            executable = module.node_daemon_path(root)
+            executable.parent.mkdir(parents=True)
+            executable.write_text("", encoding="utf-8")
+            record = root / "tools" / "installs" / "ext-core.json"
+            seen = []
+
+            def spawn(args, env):
+                seen.append(record.exists())
+                return 1
+
+            with (
+                patch.object(stop, "needs_root", return_value=False),
+                patch.object(module, "resolve_buckyos_root", return_value=root),
+                patch.object(module, "_macos_gui_session", return_value=False),
+                patch.object(module, "_spawn_background", side_effect=spawn),
+                patch.object(module, "_warn_missing_paios_images"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                module.start_system()
+            self.assertEqual(seen, [False])
+
 
 if __name__ == "__main__":
     unittest.main()

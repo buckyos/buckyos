@@ -7,8 +7,9 @@ script only gets the file there, and only when it is not there yet:
   prepare_ext_tools.py                    the version publish/exttool/ext-core/ext-manifest.json pins, from R2
   prepare_ext_tools.py --latest           the newest release instead
   prepare_ext_tools.py --force            download again
-  prepare_ext_tools.py --local <payload>  package a payload built by publish/exttool/ext-core/build.sh; delete
-                                          $BUCKYOS_ROOT/tools/installs/ext-core.json and restart to install it
+  prepare_ext_tools.py --local <payload>  package a payload built by publish/exttool/ext-core/build.sh; start.py
+                                          then has node_daemon seed it in place of an ext-core an earlier seed put
+                                          there (not of one the Zone asked for)
 """
 from __future__ import annotations
 
