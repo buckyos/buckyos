@@ -48,7 +48,7 @@ fn logs() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         if std::env::var_os("OPENDAN_TEST_LOG").is_some() && log::set_logger(&Stderr).is_ok() {
-            log::set_max_level(log::LevelFilter::Debug);
+            log::set_max_level(if std::env::var_os("OPENDAN_TEST_LOG") == Some("trace".into()) { log::LevelFilter::Trace } else { log::LevelFilter::Debug });
         }
     });
 }
@@ -112,7 +112,7 @@ impl Bench {
         let zone = Arc::new(FakeZone::default());
         let mut tuning = Tuning { chromium: Some(fake_browser::chromium()), dirs: Some(dirs), zone: Some(zone.clone()), ..Default::default() };
         tune(&mut tuning);
-        let cfg = BrowserSection { enabled: true, idle_stop_secs: 600, max_tabs: 4 };
+        let cfg = BrowserSection { enabled: true, idle_stop_secs: 600, max_tabs: 4, display: crate::browser::display::DisplayMode::Headless, ..Default::default() };
         let module = BrowserModule::with_tuning(cfg, deps(&tmp.path().join("agent_root")), tuning);
         Self { _tmp: tmp, fake, module, zone }
     }
@@ -1144,7 +1144,7 @@ async fn a_screen_goes_on_when_the_browser_was_started_again() {
 // A real Chromium (`OPENDAN_CHROMIUM`)
 // ---------------------------------------------------------------------------
 
-mod real {
+pub(super) mod real {
     use super::*;
 
     const PAGE: &str = r#"<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1199,41 +1199,41 @@ mod real {
         format!("http://127.0.0.1:{port}/")
     }
 
-    struct Real {
-        _tmp: tempfile::TempDir,
-        module: Arc<BrowserModule>,
-        zone: Arc<FakeZone>,
-        site: String,
+    pub(super) struct Real {
+        pub(super) _tmp: tempfile::TempDir,
+        pub(super) module: Arc<BrowserModule>,
+        pub(super) zone: Arc<FakeZone>,
+        pub(super) site: String,
     }
 
-    async fn real(tune: impl FnOnce(&mut Tuning)) -> Real {
+    pub(super) async fn real(tune: impl FnOnce(&mut Tuning)) -> Real {
         logs();
         let chromium = std::env::var_os(process::ENV_CHROMIUM).map(PathBuf::from).expect("set OPENDAN_CHROMIUM to a Chromium executable");
         let tmp = tempfile::tempdir().unwrap();
         let zone = Arc::new(FakeZone::default());
         let mut tuning = Tuning { chromium: Some(chromium), dirs: Some(BrowserDirs::at(tmp.path().join("browser"))), zone: Some(zone.clone()), ..Default::default() };
         tune(&mut tuning);
-        let cfg = BrowserSection { enabled: true, idle_stop_secs: 600, max_tabs: 12 };
+        let cfg = BrowserSection { enabled: true, idle_stop_secs: 600, max_tabs: 12, display: crate::browser::display::DisplayMode::Headless, ..Default::default() };
         let module = BrowserModule::with_tuning(cfg, deps(&tmp.path().join("agent_root")), tuning);
         Real { _tmp: tmp, module, zone, site: site().await }
     }
 
     /// A screen of `group_id` that shows the test page. Returns the tab too.
-    async fn showing(r: &Real, group_id: &str, viewport: Value) -> (Client<tokio::io::DuplexStream>, String) {
+    pub(super) async fn showing(r: &Real, group_id: &str, viewport: Value) -> (Client<tokio::io::DuplexStream>, String) {
         let (mut c, _) = admitted(&r.module, group_id, viewport).await;
         c.say(json!({ "type": "nav", "action": "url", "url": r.site })).await;
         let state = c.state("the test page is loaded", |s| s["title"] == "Screen test" && s["loading"] == false).await;
         (c, state["active_tab_id"].as_str().unwrap().to_string())
     }
 
-    async fn eval(m: &BrowserModule, tab_id: &str, expression: &str) -> Value {
+    pub(super) async fn eval(m: &BrowserModule, tab_id: &str, expression: &str) -> Value {
         let params = json!({ "expression": expression, "returnByValue": true, "awaitPromise": true });
         let answer = m.tab_send(tab_id, "Runtime.evaluate", params).await.unwrap();
         answer["result"]["value"].clone()
     }
 
     /// Wait until `expression` is `expected` in the page.
-    async fn page_has(m: &BrowserModule, tab_id: &str, expression: &str, expected: Value) {
+    pub(super) async fn page_has(m: &BrowserModule, tab_id: &str, expression: &str, expected: Value) {
         let started = Instant::now();
         loop {
             let value = eval(m, tab_id, expression).await;
@@ -1246,7 +1246,7 @@ mod real {
     }
 
     /// `(width, height)` of a JPEG, from its frame header.
-    fn jpeg_size(jpeg: &[u8]) -> Option<(u64, u64)> {
+    pub(super) fn jpeg_size(jpeg: &[u8]) -> Option<(u64, u64)> {
         if jpeg.len() < 4 || jpeg[0] != 0xff || jpeg[1] != 0xd8 {
             return None;
         }
@@ -1262,26 +1262,26 @@ mod real {
     }
 
     /// `OPENDAN_TEST_FRAMES=<dir>`: frames are kept there to be looked at.
-    fn keep(name: &str, jpeg: &[u8]) {
+    pub(super) fn keep(name: &str, jpeg: &[u8]) {
         if let Some(dir) = std::env::var_os("OPENDAN_TEST_FRAMES") {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(Path::new(&dir).join(name), jpeg).unwrap();
         }
     }
 
-    async fn tap<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(c: &mut Client<S>, x: f64, y: f64) {
+    pub(super) async fn tap<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(c: &mut Client<S>, x: f64, y: f64) {
         c.say(json!({ "type": "input", "kind": "touch", "phase": "start", "points": [{ "id": 0, "x": x, "y": y }] })).await;
         c.say(json!({ "type": "input", "kind": "touch", "phase": "end", "points": [] })).await;
     }
 
-    async fn press<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(c: &mut Client<S>, key: &str, code: &str, modifiers: i64, text: &str) {
+    pub(super) async fn press<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(c: &mut Client<S>, key: &str, code: &str, modifiers: i64, text: &str) {
         for action in ["down", "up"] {
             let text = if action == "down" { text } else { "" };
             c.say(json!({ "type": "input", "kind": "key", "action": action, "key": key, "code": code, "modifiers": modifiers, "text": text })).await;
         }
     }
 
-    async fn stop(r: &Real) {
+    pub(super) async fn stop(r: &Real) {
         r.module.shutdown().await;
     }
 
@@ -1781,5 +1781,172 @@ mod real {
         c.within(Duration::from_millis(700)).await;
         assert!(c.frames.last().unwrap().1 == lit, "and is drawn again");
         stop(&r).await;
+    }
+}
+
+/// A headed browser on its virtual display (compatibility TODO BC3–BC6).
+/// Ignored; needs a Chromium and TigerVNC's `Xvnc` (on PATH or `OPENDAN_XVNC`):
+/// `OPENDAN_CHROMIUM=<chrome> cargo test -p opendan --lib browser::screen_tests::headed -- --ignored --test-threads=1`.
+mod headed {
+    use super::real::*;
+    use super::*;
+    use crate::browser::display::DisplayMode;
+
+    async fn headed(scale: f64) -> Real {
+        let mut r = real(|_| {}).await;
+        r.module.shutdown().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let chromium = std::env::var_os(process::ENV_CHROMIUM).map(PathBuf::from).unwrap();
+        let tuning = Tuning { chromium: Some(chromium), dirs: Some(BrowserDirs::at(tmp.path().join("browser"))), zone: Some(r.zone.clone()), ..Default::default() };
+        let cfg = BrowserSection { enabled: true, idle_stop_secs: 600, max_tabs: 12, display: DisplayMode::Virtual, device_scale_factor: scale, ..Default::default() };
+        r.module = BrowserModule::with_tuning(cfg, deps(&tmp.path().join("agent_root")), tuning);
+        r._tmp = tmp;
+        r
+    }
+
+    /// Where an element's centre is on the display: its place in the page, the page's in its window, the window's on the display.
+    async fn on_display(m: &BrowserModule, tab_id: &str, selector: &str) -> (f64, f64) {
+        let at = eval(
+            m,
+            tab_id,
+            &format!(
+                "(() => {{ const r = document.querySelector('{selector}').getBoundingClientRect(); \
+                 return [screenX + (outerWidth - innerWidth) / 2 + r.left + r.width / 2, screenY + outerHeight - innerHeight + r.top + r.height / 2] }})()"
+            ),
+        )
+        .await;
+        (at[0].as_f64().unwrap(), at[1].as_f64().unwrap())
+    }
+
+    async fn click<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(c: &mut Client<S>, (x, y): (f64, f64)) {
+        for action in ["move", "down", "up"] {
+            let button = if action == "move" { "none" } else { "left" };
+            c.say(json!({ "type": "input", "kind": "mouse", "action": action, "x": x, "y": y, "button": button, "click_count": 1, "modifiers": 0 })).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs OPENDAN_CHROMIUM and Xvnc"]
+    async fn the_display_shows_the_browser_as_it_is() {
+        let r = headed(std::env::var("HEADED_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(2.0)).await;
+        let m = &r.module;
+        let (mut c, tab_id) = showing(&r, DEFAULT_GROUP, phone()).await;
+        let status = m.status().await;
+        assert_eq!((status["display"].as_str(), status["device_scale_factor"].as_f64()), (Some("virtual"), Some(2.0)));
+        // The window is as narrow as a browser's window gets, the phone's height; the page is a desktop browser's, as it is.
+        let painting = *m.display().expect("a display").painting().borrow();
+        assert_eq!((painting.width, painting.height, painting.pixel_ratio), (500, 915, 1.0));
+        page_has(m, &tab_id, "Math.abs(outerWidth - 500) <= 1", json!(true)).await;
+        c.say(json!({ "type": "viewport", "width": 600, "height": 900, "mobile": true })).await;
+        let state = c.state("the viewport is the new one", |s| s["viewport"]["width"] == 600).await;
+        assert_eq!(state["viewport"], json!({ "width": 600, "height": 900, "mobile": false, "pixel_ratio": 1.0 }));
+        // The browser's window on X is a pixel short of what it was given on each side.
+        page_has(m, &tab_id, "Math.abs(outerWidth - 600) <= 1 && Math.abs(outerHeight - 900) <= 1", json!(true)).await;
+        let identity = eval(
+            m,
+            &tab_id,
+            "(async () => { const h = await navigator.userAgentData.getHighEntropyValues(['fullVersionList', 'architecture']); \
+             return [navigator.userAgent, navigator.webdriver, devicePixelRatio, h.fullVersionList.length > 0, h.architecture, \
+             'ontouchstart' in window, \
+             (await navigator.permissions.query({ name: 'geolocation' })).state, \
+             Function.prototype.toString.call(navigator.geolocation.getCurrentPosition).includes('[native code]'), \
+             Object.getOwnPropertySymbols(window).length] })()",
+        )
+        .await;
+        let ua = identity[0].as_str().unwrap();
+        assert!(!ua.contains("Headless") && !ua.contains("Android") && ua.contains("X11; Linux"), "{ua}");
+        assert_eq!(identity.as_array().unwrap()[1..].to_vec(), vec![json!(false), json!(2), json!(true), json!("x86"), json!(false), json!("prompt"), json!(true), json!(0)], "{identity}");
+        // Frames are the display: the phone's size in CSS pixels, made smaller to the pixel ratio asked for.
+        c.within(Duration::from_millis(1500)).await;
+        let (meta, jpeg) = c.frames.last().cloned().expect("frames arrive");
+        assert_eq!((meta["width"].as_u64(), meta["height"].as_u64(), jpeg_size(&jpeg)), (Some(600), Some(900), Some((600, 900))));
+        keep("headed-phone.jpg", &jpeg);
+        c.say(json!({ "type": "quality", "pixel_ratio": 2 })).await;
+        c.frames.clear();
+        eval(m, &tab_id, "document.getElementById('mode').textContent = 'changed 已改变'").await;
+        c.within(Duration::from_millis(1500)).await;
+        let (_, jpeg) = c.frames.last().cloned().expect("frames arrive");
+        assert_eq!(jpeg_size(&jpeg), Some((1200, 1800)), "the display's own pixels");
+        keep("headed-phone-2x.jpg", &jpeg);
+        // A desktop viewport: the display and the window grow, the page stays the same browser.
+        c.say(json!({ "type": "viewport", "width": 1280, "height": 800, "mobile": false })).await;
+        c.state("the viewport is the desktop's", |s| s["viewport"]["width"] == 1280).await;
+        page_has(m, &tab_id, "Math.abs(outerWidth - 1280) <= 1", json!(true)).await;
+        assert_eq!(eval(m, &tab_id, "devicePixelRatio").await, json!(2));
+        stop(&r).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs OPENDAN_CHROMIUM and Xvnc"]
+    async fn what_the_user_does_is_done_on_the_display() {
+        let r = headed(1.0).await;
+        let m = &r.module;
+        let (mut c, tab_id) = showing(&r, DEFAULT_GROUP, json!({ "width": 1280, "height": 800, "mobile": false })).await;
+        page_has(m, &tab_id, "Math.abs(outerWidth - 1280) <= 1", json!(true)).await;
+
+        // A click focuses the field; text, keys and a shortcut are typed into it.
+        click(&mut c, on_display(m, &tab_id, "#text").await).await;
+        page_has(m, &tab_id, "document.activeElement.id", json!("text")).await;
+        c.say(json!({ "type": "input", "kind": "text", "text": "héllo 世界" })).await;
+        page_has(m, &tab_id, "document.getElementById('text').value", json!("héllo 世界")).await;
+        press(&mut c, "Backspace", "Backspace", 0, "").await;
+        page_has(m, &tab_id, "document.getElementById('text').value", json!("héllo 世")).await;
+        press(&mut c, "a", "KeyA", 2, "").await;
+        press(&mut c, "X", "KeyX", 8, "X").await;
+        page_has(m, &tab_id, "document.getElementById('text').value", json!("X")).await;
+        assert!(eval(m, &tab_id, "window.events.includes('keydown:X@text')").await == json!(true));
+
+        // The browser's own list of a <select>: opened by a click, operated with the keys. No request reaches the screen.
+        click(&mut c, on_display(m, &tab_id, "#pick").await).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        press(&mut c, "ArrowDown", "ArrowDown", 0, "").await;
+        press(&mut c, "Enter", "Enter", 0, "").await;
+        page_has(m, &tab_id, "document.getElementById('pick').value", json!("green")).await;
+
+        // A JS dialog is the browser's own, on the display: Enter accepts it.
+        click(&mut c, on_display(m, &tab_id, "#confirm").await).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        press(&mut c, "Enter", "Enter", 0, "").await;
+        page_has(m, &tab_id, "window.confirmed", json!(true)).await;
+
+        // The wheel scrolls the page.
+        let (x, y) = on_display(m, &tab_id, "#mode").await;
+        c.say(json!({ "type": "input", "kind": "wheel", "x": x, "y": y + 200.0, "delta_x": 0, "delta_y": 400, "modifiers": 0 })).await;
+        page_has(m, &tab_id, "scrollY > 0", json!(true)).await;
+
+        let (messages, frames) = c.within(Duration::from_millis(800)).await;
+        let requests: Vec<&Value> = of_kind(&messages, "request").into_iter().chain(c.passed.iter().filter(|m| m["type"] == "request")).collect();
+        assert!(requests.iter().all(|r| !matches!(r["kind"].as_str(), Some("select" | "dialog" | "permission"))), "{requests:?}");
+        assert!(frames > 0 || !c.frames.is_empty(), "the display was shown");
+        keep("headed-desktop.jpg", &c.frames.last().unwrap().1);
+        stop(&r).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs OPENDAN_CHROMIUM and Xvnc"]
+    async fn a_display_that_ends_comes_back_with_the_browser_and_its_tabs() {
+        let r = headed(1.0).await;
+        let m = &r.module;
+        let (mut c, _) = showing(&r, DEFAULT_GROUP, json!({ "width": 1024, "height": 700, "mobile": false })).await;
+        let first = m.display().expect("a display");
+        let number = first.name();
+        // The X server is killed: the browser on it ends, and both are started again with the tab.
+        let pid = std::fs::read_dir("/proc").unwrap().filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok()).find(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| c.starts_with(b"Xvnc") || String::from_utf8_lossy(&c).contains(&format!("Xvnc\0{number}\0")))
+        });
+        let pid = pid.expect("the display's process");
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        c.state("the browser is gone", |s| s["running"] == false).await;
+        let back = c.state("the browser is back with its tab", |s| s["running"] == true && s["title"] == "Screen test" && s["loading"] == false).await;
+        let second = m.display().expect("a display again");
+        assert!(!Arc::ptr_eq(&first, &second), "a new display");
+        assert_eq!(back["viewport"]["width"], 1024, "the screen's viewport is the new display's");
+        c.frames.clear();
+        c.within(Duration::from_millis(1500)).await;
+        assert!(!c.frames.is_empty(), "the new display is shown");
+        stop(&r).await;
+        assert!(second.ended().is_some(), "the display ends with the browser");
     }
 }

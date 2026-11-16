@@ -1,9 +1,12 @@
 // Runs in every document of the agent's browser, in a world of its own
 // (page scripts see neither it nor `__opendanScreen`): what the screen cannot
-// show as part of a frame is told to the Agent Service.
+// show as part of a frame is told to the Agent Service. In a headed browser
+// (`__opendanHeaded`) the display shows the browser's own lists and prompts:
+// the script only listens, telling where the focused field is on the display.
 (() => {
   if (globalThis.__opendanScreenInstalled) return;
   globalThis.__opendanScreenInstalled = true;
+  const headed = Boolean(globalThis.__opendanHeaded);
   const say = (message) => {
     try { globalThis.__opendanScreen(JSON.stringify(message)); } catch (_) { /* the service is not listening */ }
   };
@@ -24,15 +27,18 @@
     } catch (_) { /* an ancestor of another origin: its offset is unknown */ }
     const view = win.visualViewport;
     const scale = view ? view.scale : 1;
+    // On the display: the page's place in its window, the window's on the display.
+    const left = headed ? win.screenX + Math.max(0, (win.outerWidth - win.innerWidth) / 2) : 0;
+    const top = headed ? win.screenY + Math.max(0, win.outerHeight - win.innerHeight) : 0;
     return {
-      x: Math.round((x - (view ? view.offsetLeft : 0)) * scale),
-      y: Math.round((y - (view ? view.offsetTop : 0)) * scale),
+      x: Math.round(left + (x - (view ? view.offsetLeft : 0)) * scale),
+      y: Math.round(top + (y - (view ? view.offsetTop : 0)) * scale),
       width: Math.round(rect.width * scale),
       height: Math.round(rect.height * scale),
     };
   };
 
-  // ---- <select>: its list is drawn outside the page, so the screen shows it.
+  // ---- <select>: its list is drawn outside the page, so the screen shows it. Headless only.
   const isMenu = (el) => el instanceof HTMLSelectElement && !el.multiple && el.size <= 1 && !el.disabled;
   const opened = new Map();
   let tokens = 0;
@@ -55,7 +61,7 @@
     }
     say({ kind: 'select', token, multiple: el.multiple, options, rect: place(el.getBoundingClientRect()) });
   };
-  document.addEventListener('mousedown', (event) => {
+  if (!headed) document.addEventListener('mousedown', (event) => {
     if (event.button !== 0) return;
     const path = event.composedPath ? event.composedPath() : [event.target];
     const el = path.find((node) => node instanceof HTMLSelectElement);
@@ -64,7 +70,7 @@
     el.focus();
     open(el);
   }, true);
-  document.addEventListener('keydown', (event) => {
+  if (!headed) document.addEventListener('keydown', (event) => {
     const el = event.target;
     if (!isMenu(el)) return;
     const opens = event.key === ' ' || event.key === 'Enter' || event.key === 'F4'
@@ -119,8 +125,8 @@
   for (const type of ['focusin', 'focusout']) document.addEventListener(type, () => setTimeout(report, 0), true);
   report();
 
-  // ---- permissions: the page asked for one (told by the page-world script; all are refused).
-  for (const name of ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read', 'midi']) {
+  // ---- permissions: the page asked for one (told by the page-world script; all are refused). Headless only.
+  if (!headed) for (const name of ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read', 'midi']) {
     document.addEventListener('opendan-permission-' + name, () => say({ kind: 'permission', permission: name, origin: location.origin }), true);
   }
 })();

@@ -10,7 +10,7 @@ here: they cost tokens and are judged from the worklog (README.md, "Steps").
 
 Checks:
   tools     the Agent's container has chromium, agent-browser, page-render and they start
-  screen    the owner opens the test site's sign-in page through the screen, types and signs in
+  screen    the owner opens the test site's sign-in page through the screen, types (by the keyboard) and signs in
   render    a page rendered by Workflow's media.page reaches no network; its processes are not the service's user
 """
 
@@ -69,9 +69,11 @@ def main() -> int:
         site.stdout.readline()
         # screen: the owner's path to a password field
         base = f"http://{SITE_FROM_AGENT}:{PORT}"
+        # In a tab of its own (the Agent's other tabs are the user's), by the keyboard: a headed browser shows its own
+        # toolbar above the page, so page coordinates are not the screen's.
         screen = run(["node", str(HERE / "screen.mjs"), "--out", str(out / "shots"),
-                      f"nav={base}/login", "tap=100,130", "text=dvuser", "tap=100,220", f"text={PASSWORD}",
-                      "shot=login-filled", "key=Enter", "wait=1500", "shot=orders", "close-tabs"], env)
+                      f"open={base}/login", "key=Tab", "text=dvuser", "key=Tab", f"text={PASSWORD}",
+                      "shot=login-filled", "key=Enter", "wait=1500", "shot=orders", "close-mine"], env)
         (out / "screen.txt").write_text(screen.stdout + screen.stderr)
         requests = [json.loads(line) for line in (site_dir / "requests.jsonl").read_text().splitlines()]
         signed_in = any(r["path"] == "/login" and r.get("login") == "ok" for r in requests)

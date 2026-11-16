@@ -427,6 +427,10 @@ sid_strategy = "per_group"
 
 [session.group]
 base = "ui"
+
+# The fake browser (tests/fake_browser) is a headless one: it has no display.
+[loader.browser]
+display = "headless"
 "#;
 
 impl World {
@@ -2880,7 +2884,12 @@ async fn the_agents_browser_is_served_over_krpc() {
     // The agent's side: a lease, renewed, released with what it says about the thing.
     let lease = rpc_wire(port, "browser.acquire", json!({ "session_id": "no-such-session" })).await.unwrap();
     assert_eq!(lease["group_id"], "default");
-    assert_eq!(lease["cdp_url"], format!("http://127.0.0.1:{}", fake.port));
+    // Through this service, where the lease's end closes the connection (Agent Browser Protocol §2.2).
+    let cdp_url = format!("http://127.0.0.1:{port}/kapi/jarvis.alice/browser/cdp/{}", lease["lease_id"].as_str().unwrap());
+    assert_eq!(lease["cdp_url"], cdp_url.as_str());
+    let version: Value = reqwest::get(format!("{cdp_url}/json/version/")).await.unwrap().json().await.unwrap();
+    assert_eq!(version["webSocketDebuggerUrl"], format!("{}/devtools/browser", cdp_url.replacen("http://", "ws://", 1)));
+    assert!(fake.port > 0);
     assert_eq!((lease["ttl_ms"].clone(), lease["tabs"].clone(), lease["active_tab_id"].clone()), (json!(60_000), json!([]), Value::Null));
     let group = rpc(port, "browser.status", json!({ "group_id": "default" })).await.unwrap()["groups"][0].clone();
     assert_eq!((group["controller"].clone(), group["agent_state"].clone()), (json!("agent"), json!("working")));
@@ -2896,6 +2905,8 @@ async fn the_agents_browser_is_served_over_krpc() {
         (group["controller"].clone(), group["agent_state"].clone(), group["note"].clone(), group["lease"].clone()),
         (json!("user"), json!("stuck"), json!("a captcha"), Value::Null)
     );
+    // A lease that ended has no way to the browser any more.
+    assert_eq!(reqwest::get(format!("{cdp_url}/json/version")).await.unwrap().status(), reqwest::StatusCode::GONE);
 
     // The user's side: taken over, the agent gets no lease; handed back, it does.
     let lease = rpc(port, "browser.acquire", json!({ "session_id": "s" })).await.unwrap();
@@ -3101,7 +3112,7 @@ async fn the_browsers_screen_and_uploads_are_served_over_http() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_without_a_browser_says_why_on_every_entry() {
     let w = World::new();
-    std::fs::write(w.root.join("agent.toml"), format!("{AGENT_TOML}\n[loader.browser]\nenabled = false\n")).unwrap();
+    std::fs::write(w.root.join("agent.toml"), format!("{AGENT_TOML}enabled = false\n")).unwrap();
     let fake = fake_browser_of(&w).await;
     let port = free_port();
     let loader = Loader::start(w.env(Llm::new(|_, _| "unused".into()), port).await).await.unwrap();

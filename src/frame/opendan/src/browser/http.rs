@@ -1,7 +1,8 @@
 //! The browser module's HTTP entries beside kRPC, below every mount of the
-//! service: the screen (`GET …/browser/screen`, upgraded to a WebSocket) and
+//! service: the screen (`GET …/browser/screen`, upgraded to a WebSocket),
 //! the upload of a local file for a page's file chooser
-//! (`PUT …/browser/upload/<request_id>`).
+//! (`PUT …/browser/upload/<request_id>`), and the agent's DevTools
+//! connection of a lease (`GET …/browser/cdp/<lease_id>/…`, loopback only).
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -16,7 +17,7 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
 use super::rpc::BrowserError;
-use super::{screen, transfer};
+use super::{proxy, screen, transfer};
 use crate::service::StateService;
 
 type Request = http::Request<BoxBody<Bytes, ServerError>>;
@@ -36,6 +37,8 @@ pub enum BrowserRoute {
     Screen,
     /// `request_id` of the file chooser the upload answers.
     Upload(String),
+    /// The DevTools endpoint of a lease: `(lease_id, what of it)`.
+    Cdp(String, String),
 }
 
 /// The entry `method path` names, if it is one of the module's. `mounts`
@@ -44,6 +47,10 @@ pub fn route(method: &http::Method, path: &str, mounts: &[&str]) -> Option<Brows
     let rest = mounts.iter().find_map(|mount| path.strip_prefix(mount)?.strip_prefix("/browser/"))?;
     match (method, rest) {
         (&http::Method::GET, "screen") => Some(BrowserRoute::Screen),
+        (&http::Method::GET, cdp) if cdp.starts_with("cdp/") => {
+            let (lease_id, rest) = cdp["cdp/".len()..].split_once('/')?;
+            (!lease_id.is_empty()).then(|| BrowserRoute::Cdp(lease_id.to_string(), rest.trim_end_matches('/').to_string()))
+        }
         (&http::Method::PUT, upload) => {
             let request_id = upload.strip_prefix("upload/")?;
             (!request_id.is_empty() && !request_id.contains('/')).then(|| BrowserRoute::Upload(request_id.to_string()))
@@ -73,6 +80,49 @@ pub async fn serve(service: &StateService, route: BrowserRoute, req: Request, in
     match route {
         BrowserRoute::Screen => screen(service, req, ip),
         BrowserRoute::Upload(request_id) => upload(service, &request_id, req, ip).await,
+        BrowserRoute::Cdp(lease_id, rest) => cdp(service, &lease_id, &rest, req, ip),
+    }
+}
+
+/// The agent's DevTools connection of a lease: only from this node's
+/// loopback interface, only while the lease lasts (`proxy`).
+fn cdp(service: &StateService, lease_id: &str, rest: &str, mut req: Request, ip: IpAddr) -> Response {
+    if !ip.is_loopback() {
+        return json_response(http::StatusCode::FORBIDDEN, json!({ "code": "unauthorized", "message": "the browser's DevTools connection is for the agent's own runtime" }));
+    }
+    if !service.browser.lease_valid(lease_id) {
+        return failed(BrowserError::lease_lost(lease_id));
+    }
+    let Some((browser_url, version)) = service.browser.endpoint() else {
+        return failed(BrowserError::unavailable("the browser is not running"));
+    };
+    match rest {
+        "json/version" => {
+            let host = req.headers().get(http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("127.0.0.1");
+            let mount = req.uri().path().split("/browser/cdp/").next().unwrap_or_default();
+            json_response(http::StatusCode::OK, proxy::version(&format!("http://{host}{mount}"), lease_id, version.as_deref()))
+        }
+        "devtools/browser" => {
+            let invalid = || buckyos_http_server::server_err!(buckyos_http_server::ServerErrorCode::BadRequest, "invalid websocket request");
+            let mut head = http::Request::builder().method(req.method()).uri(req.uri()).version(req.version()).body(()).map_err(|_| invalid())?;
+            *head.headers_mut() = req.headers().clone();
+            let Ok(response) = tokio_tungstenite::tungstenite::handshake::server::create_response(&head) else {
+                return failed(BrowserError::invalid("the DevTools connection is a WebSocket; this request does not ask for one"));
+            };
+            let upgrade = hyper::upgrade::on(&mut req);
+            let (proxies, lease_id) = (service.browser.proxies.clone(), lease_id.to_string());
+            tokio::spawn(async move {
+                let Ok(Ok(upgraded)) = tokio::time::timeout(UPGRADE_WAIT, upgrade).await else { return };
+                let mut config = WebSocketConfig::default();
+                config.max_message_size = None;
+                config.max_frame_size = None;
+                let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config)).await;
+                proxy::carry(proxies, lease_id, socket, browser_url).await;
+            });
+            let (parts, _) = response.into_parts();
+            Ok(http::Response::from_parts(parts, Full::new(Bytes::new()).map_err(|e| match e {}).boxed()))
+        }
+        other => failed(BrowserError::invalid(format!("no `{other}` of the DevTools connection"))),
     }
 }
 
@@ -81,6 +131,7 @@ fn failed(e: BrowserError) -> Response {
         "upload_too_large" => http::StatusCode::PAYLOAD_TOO_LARGE,
         "invalid_argument" => http::StatusCode::BAD_REQUEST,
         "browser_unavailable" => http::StatusCode::SERVICE_UNAVAILABLE,
+        "lease_lost" => http::StatusCode::GONE,
         code if code.starts_with("no_such_") => http::StatusCode::NOT_FOUND,
         _ => http::StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -169,6 +220,9 @@ mod tests {
             assert_eq!(route(&get, &format!("{mount}/obj/browser/screen"), &mounts), None);
         }
         assert_eq!(route(&get, "/kapi/other/browser/screen", &mounts), None);
+        assert_eq!(route(&get, "/kapi/jarvis.alice/browser/cdp/lease-1/json/version/", &mounts), Some(BrowserRoute::Cdp("lease-1".into(), "json/version".into())));
+        assert_eq!(route(&get, "/kapi/jarvis.alice/browser/cdp/lease-1/devtools/browser", &mounts), Some(BrowserRoute::Cdp("lease-1".into(), "devtools/browser".into())));
+        assert_eq!(route(&get, "/kapi/jarvis.alice/browser/cdp//json/version", &mounts), None);
         let info = StreamInfo::new("127.0.0.1:5000".to_string());
         assert!(client_ip(&info).unwrap().is_loopback());
     }

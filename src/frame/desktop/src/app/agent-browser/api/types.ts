@@ -26,7 +26,7 @@ export interface BrowserGroup {
 }
 
 /** Why there is no browser (§2.1): turned off for the Agent, no ext-core on the node, or the browser not downloaded there yet. */
-export type UnavailableCode = 'disabled' | 'no_package' | 'not_downloaded'
+export type UnavailableCode = 'disabled' | 'no_package' | 'not_downloaded' | 'no_display'
 
 export interface BrowserStatus {
   enabled: boolean
@@ -34,6 +34,10 @@ export interface BrowserStatus {
   running: boolean
   unavailable: string | null
   unavailable_code: UnavailableCode | null
+  /** How the browser is shown (§2.1): headed on a virtual display, or headless. */
+  display: 'virtual' | 'headless'
+  /** Device pixels per CSS pixel the headed browser draws at; null when headless. */
+  device_scale_factor: number | null
   version: { browser: string; playwright: string } | null
   /** The MessageHub session the default group is bound to (`browser.bind_default`). */
   default_session_id: string | null

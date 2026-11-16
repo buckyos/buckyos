@@ -40,6 +40,7 @@ agent_tool = { path = "../agent_tool" }
 agent_tool_cli_dev = { path = "../agent_tool_cli_dev" }
 agent-did-object-lib = { path = "../agent-did-object-lib" }
 libopendan = { path = "../lib_opendan" }
+image = { version = "0.25.5", default-features = false, features = ["jpeg"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.177"

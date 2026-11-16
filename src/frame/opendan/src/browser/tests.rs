@@ -56,7 +56,7 @@ fn alive(pid: i32) -> bool {
 }
 
 fn section(max_tabs: usize, idle_stop_secs: u64) -> BrowserSection {
-    BrowserSection { enabled: true, idle_stop_secs, max_tabs }
+    BrowserSection { enabled: true, idle_stop_secs, max_tabs, display: crate::browser::display::DisplayMode::Headless, ..Default::default() }
 }
 
 fn deps(root: &Path) -> BrowserDeps {
@@ -173,7 +173,6 @@ async fn the_browser_starts_on_demand_and_ends_without_leaving_processes() {
     let args = b.fake.args();
     for expected in [
         "--headless=new",
-        "--remote-debugging-port=0",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-dev-shm-usage",
@@ -181,6 +180,8 @@ async fn the_browser_starts_on_demand_and_ends_without_leaving_processes() {
     ] {
         assert!(args.contains(expected), "{expected} in {args}");
     }
+    // A port of its own, given to it: never 0.
+    assert!(args.contains("--remote-debugging-port=") && !args.contains("--remote-debugging-port=0 "), "{args}");
     assert!(args.contains(&format!("--user-data-dir={}", b.module.dirs().profile.display())), "{args}");
     assert!(args.contains(&format!("--disk-cache-dir={}", b.module.dirs().cache.display())), "{args}");
     assert_eq!(args.contains("--no-sandbox"), unsafe { libc::geteuid() } == 0, "{args}");

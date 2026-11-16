@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // The test site of the Agent browser DV: a registration form, a sign-in with a password field and an
-// "orders" page behind it, an old-style news page to reflow, and a /leak address nothing should ever ask for.
+// "orders" page behind it, an old-style news page to reflow, a /leak address nothing should ever ask for,
+// and the diagnostic pages under /diag (diag_site.mjs; not logged).
 // Every request is appended to <log dir>/requests.jsonl, so the DV can check what the Agent's browser really sent.
 //
 //   node site.mjs <port> <log dir> [--user dvuser --password <password>]
@@ -10,6 +11,7 @@ import { createServer } from 'node:http'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { diagRoute } from './diag_site.mjs'
 
 const args = process.argv.slice(2)
 const port = Number(args[0] ?? 0)
@@ -114,6 +116,7 @@ const server = createServer(async (req, res) => {
   }
   const redirect = (to, headers = {}) => send(303, '', { Location: to, ...headers })
   const path = url.pathname
+  if (diagRoute(req, res, url, raw)) return
 
   if (path === '/') return send(200, html('DV 测试站点', '<main><h1>DV 测试站点</h1><ul><li><a href="/register">体检预约登记</a></li><li><a href="/login">会员登录</a></li><li><a href="/orders">我的订单</a></li><li><a href="/news">城事老站</a></li></ul></main>'))
   if (path === '/register' && req.method === 'GET') return send(200, registerPage())

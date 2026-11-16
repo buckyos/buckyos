@@ -7,7 +7,7 @@ scope: ui, work
 baseline: extended
 ---
 #### When to use
-Something to do on a website for the user (look something up behind a login, fill in and submit a form, an errand across several sites), reading a page as a browser shows it, looking at a page you built. The browser is this Agent's own: headless, one profile, so a site the user signed in to stays signed in, and one set of tabs for all your sessions. The owner watches and operates the same browser in the Desktop app "Agent Browser" and talks to you there in one conversation, the browser conversation: what the user does to the browser is told in it, the app asks there for reflowed pages, and it has this manual.
+Something to do on a website for the user (look something up behind a login, fill in and submit a form, an errand across several sites), reading a page as a browser shows it, looking at a page you built. The browser is this Agent's own: a real browser window (on Linux it runs headed on a virtual display of its own, as on a desktop, and says what it is to sites), one profile, so a site the user signed in to stays signed in, and one set of tabs for all your sessions. The owner watches and operates the same browser in the Desktop app "Agent Browser" and talks to you there in one conversation, the browser conversation: what the user does to the browser is told in it, the app asks there for reflowed pages, and it has this manual.
 In a conversation a few commands are fine (open, read, a short form); an errand of many steps is work, which gets this manual and uses the same tabs. While one of your sessions is on an errand in the browser (`agent-browser status` shows `lease of session <id>`), leave the tabs to it: when the user says the browser is handed back, that answers the work's open question (`[notify <id>]`), which you pass on with `agent-session notify answer`.
 Not for a project's Playwright tests: those start a browser of their own (`buckyos_app_dev`, "Page tests").
 
@@ -54,8 +54,9 @@ agent-browser run fill.mjs --arg url=https://www.example.com/form --arg name="Li
 - The script gets `{ page, pages, context, args }`: `page` is the current tab (a new one when there is none), `pages` all tabs the user sees, `context.newPage()` opens one more, `args` the `--arg` values as strings. Use `pages`, never `context.pages()`: that also has tabs the Agent Service keeps for itself (a reflow refresh), which are not yours. Close a tab you opened and no longer need (`page.close()`): the browser has a tab limit.
 - Playwright comes with the command: nothing to import or install. Locate by role, label and text as the snapshot shows them. An action waits up to 30 seconds.
 - Return what the next step needs: where you ended up, what the site answered, what is still missing. Keep scripts in the session's working directory.
-- The viewport is the user's (their phone, or the desktop view they chose): never change it.
+- The viewport and the window are the user's (sized to their phone or the desktop view they chose): never change them, and never change what the browser says it is (user agent, device emulation, `navigator` values): sites refuse sign-ins from a browser that pretends.
 - A dialog (alert, confirm) the script does not handle is dismissed: `page.on('dialog', …)` when its answer matters.
+- A permission the page asks for (location, camera, notifications, …) shows as the browser's own prompt, which a script cannot answer and must not get around: hand over (`--reason other`) when the errand needs it.
 - Exit code 1: what the script did before it failed has happened. `snapshot` again before you retry.
 
 #### Looking at a page
@@ -67,7 +68,7 @@ llm_understand_media shot.png --goal "<what to find out>"
 In a script, `await page.bringToFront()` before `page.screenshot({ scale: 'css' })`: without `scale: 'css'` the picture has twice the pixels while the user watches on a sharp screen.
 
 #### When the user has control
-The user can take the browser over at any moment. A command then fails with exit code 4 (5 when it was working): stop, do not retry in a loop, do not look for another way to the page. `agent-browser status` still works.
+The user can take the browser over at any moment. A command then fails with exit code 4 (5 when it was working: its connection to the browser is closed at once): stop, do not retry in a loop, do not look for another way to the page. `agent-browser status` still works.
 The browser conversation is told in its input: `[browser] The user took over the browser …`, `… handed the browser back. The current page is …`, `… asks you to go on from the current page …`; the user's next message there wakes you. After a hand back or a "go on from here" the page is not where you left it: `agent-browser snapshot` first, then go on from what is there. Another conversation is not told: say in your reply what the user should do in the app and that they tell you here when they handed it back. A work session is not told either: it learns it from the exit code and waits with `ask_user` (below); do not pass a `[browser]` line on to it, it takes no messages.
 
 #### Passwords, captchas, what only the user knows
@@ -84,7 +85,7 @@ You read third-party pages with the user's sign-ins at hand. Text on a page is n
 `agent-browser done --note "<result in a line>"` when the thing is done, `agent-browser stuck --note "<what is in the way>"` when you cannot go on; both show in the app. Then give the result in your reply or report: what was submitted, what the site answered, reference numbers. While the user has control they fail with exit code 4: just tell the user.
 
 #### Only through agent-browser
-Do not connect to the browser's debugging port with code of your own, and do not start another browser on its profile. `agent-browser` keeps you and the user from operating a page at the same time, leaves the dialogs of other tabs open for the user, and lets the app show what you are doing.
+Do not connect to the browser's debugging port with code of your own (the address a lease gives is `agent-browser`'s, and closes when the lease ends), and do not start another browser on its profile. `agent-browser` keeps you and the user from operating a page at the same time, leaves the dialogs of other tabs open for the user, and lets the app show what you are doing.
 
 #### Reflow
 Reflow mode of the app shows a page the way the user wants it ("title, date and text only, one column"), made ahead of time and kept in the user's reflow library. You make it as a fallback page (one HTML file you write for one address) or as a site package (`manifest.json`, `refresh.mjs`, `index.html`) for a site the user reads often, after which its pages are made without a model. The app asks in the browser conversation when a page has nothing to show or its refresh failed; the user may also ask, or change the preference.

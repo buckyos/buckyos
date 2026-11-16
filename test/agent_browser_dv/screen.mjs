@@ -4,7 +4,9 @@
 //
 //   node screen.mjs [--viewport 1280x800] [--mobile] [--out <dir>] <action>...   (the Agent's one tab group, `default`)
 //
-//   nav=<url>        go to an address, wait until it is loaded
+//   nav=<url>        go to an address in the current tab, wait until it is loaded
+//   open=<url>       open a tab of its own at an address (it becomes the current one), wait until it is loaded
+//   close-mine       close the tabs `open=` opened (the others are the user's)
 //   tap=<x>,<y>      tap (touch on a phone viewport, a mouse click on a desktop one)
 //   text=<text>      type text into what has the focus
 //   key=<Key>        press a key (DOM key name: Enter, Tab, Backspace)
@@ -97,12 +99,25 @@ async function loaded(timeoutMs = 20_000) {
 }
 
 let code = 0
+const mine = []
 try {
   await whenReady
   for (const action of actions) {
     const [name, value = ''] = action.split(/=(.*)/s)
     console.log(`> ${name === 'text' ? 'text=<…>' : action}`)
     if (name === 'nav') { say({ type: 'nav', action: 'url', url: value }); await loaded() }
+    else if (name === 'open') {
+      const before = new Set(state.group.tabs.map((tab) => tab.tab_id))
+      say({ type: 'tab', action: 'open', url: value })
+      const until = Date.now() + 20_000
+      while (Date.now() < until && !(state.active_tab_id && !before.has(state.active_tab_id) && state.url.startsWith(value) && !state.loading)) await sleep(200)
+      if (!state.active_tab_id || before.has(state.active_tab_id)) throw new Error('no tab of its own was opened')
+      mine.push(state.active_tab_id)
+    }
+    else if (name === 'close-mine') {
+      for (const tab_id of mine.splice(0)) say({ type: 'tab', action: 'close', tab_id })
+      await sleep(800)
+    }
     else if (name === 'tap') { const [x, y] = value.split(',').map(Number); tap(x, y); await sleep(500) }
     else if (name === 'text') { say({ type: 'input', kind: 'text', text: value }); await sleep(400) }
     else if (name === 'key') {

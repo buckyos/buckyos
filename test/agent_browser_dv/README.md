@@ -32,7 +32,7 @@ AGENT_BROWSER_DV=1 python3 test/agent_browser_dv/main.py     # or: uv run test/r
 ```
 
 - `tools`: `chromium`, `agent-browser`, `page-render` are in the container's `/opt/buckyos/tools/bin` and start.
-- `screen`: the owner opens the site's sign-in page through the screen (group `default`), types the user name and the password and signs in; the site's log shows the sign-in.
+- `screen`: the owner opens the site's sign-in page in a tab of its own through the screen (group `default`), types the user name and the password by the keyboard (a headed browser has its own toolbar above the page) and signs in; the site's log shows the sign-in. Only that tab is closed afterwards: the Agent's other tabs are the user's.
 - `render`: `render_isolation.ts` has Workflow's `media.page` render a page that asks the site (loopback, the Docker bridge, the node gateway), an outside address and an image, and reads `document.cookie`; the PDF must say every request failed, the site must have no request of the run, and the render's processes must belong to `nobody`. Their environment is readable only for root or `nobody`: without that the check says so and covers the owner of the processes only.
 
 ## Steps with the model
@@ -64,10 +64,21 @@ Afterwards: `node $T/dv.mjs archive $A`, `node $T/dv.mjs archive $B`; remove the
 
 Not covered here: a read-only Agent (`reflow put` refused, a refresh that cannot keep its result). The permission mode is fixed when an Agent is created (`agent.create`'s `permission_mode`; `agent.update` does not take it), so it needs an Agent of its own.
 
+## Diagnostics: what the browser shows of itself
+
+`diag.mjs` runs the attributable comparison of the compatibility TODO (`notepads/agent-runtime-browser-compatibility-todo.md` §4.1) on the site's diagnostic pages (`diag_site.mjs`, under `/diag`): each condition starts a new browser process with a new profile; the page reports to the site what it sees (UA and UA-CH, `navigator`, screen and window, media queries, WebGL, fonts, codecs, permissions, whether API methods are native, injected globals, …) from the top page, a cross-origin iframe, a popup opened by a click and the page after a navigation; `report.md` lists every difference from the native baseline A. A, A2 (A again: the normal variation) and B are never connected to over DevTools; C connects step by step (connect, discover, attach, Page/Runtime) and reports after each; each `D-*` adds one thing the service did or does (`ua`, `mobile`, `inject`, `focus`, `screencast`, `permissions`, `playwright`); `H` is headless with nothing else, `E` the headless browser as the service started it before (all of it). Nothing signs in anywhere.
+
+```bash
+# in a throwaway container with an X server (Xvfb or Xvnc), the node's tools mounted read-only
+node test/agent_browser_dv/diag.mjs --out <dir> --xvfb :99            # starts Xvfb itself
+node test/agent_browser_dv/diag.mjs --out <dir> --display :40 --conditions A,B,C
+```
+
 ## Files
 
 | File | What it is |
 | --- | --- |
+| `diag_site.mjs`, `diag.mjs` | the diagnostic pages (mounted by `site.mjs` under `/diag`) and the runner of the conditions |
 | `site.mjs` | the website: `/register` (form, result page with a number the site makes up), `/login` → `/orders` (cookie session), `/news/<n>` (an old-style page to reflow), `/leak`, `/pixel.png`; `requests.jsonl` has every request with its form fields |
 | `lib.mjs`, `dv.mjs` | the owner's kRPC: conversations and messages (msg-center), sessions, worklogs and work trees (the Agent Service), the browser (`status`, `take_over`, `hand_back`), the reflow library |
 | `screen.mjs` | the owner at the screen: navigate, tap, type, keys, screenshots; `probe` counts the taps refused while the Agent had control |

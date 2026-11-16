@@ -584,6 +584,20 @@ ARG OPENDAN_SHA256
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# The virtual display the Agent's browser runs headed on (TigerVNC's Xvnc; Agent
+# Browser Protocol §6, container spec §6.3). Its package pulls in Mesa and LLVM
+# through libGL and Perl for the vncserver wrapper; Xvnc uses neither, so a
+# placeholder package stands in for them and apt's state stays consistent.
+RUN mkdir -p /tmp/xvnc-shim/DEBIAN && printf '%s\n' \
+      'Package: buckyos-xvnc-shim' 'Version: 1' 'Architecture: all' 'Multi-Arch: allowed' \
+      'Maintainer: BuckyOS' 'Provides: libglx-mesa0, libfile-readbackwards-perl (= 1.06), perl' \
+      'Description: lets Xvnc install without Mesa GLX or Perl, which it does not use' \
+      > /tmp/xvnc-shim/DEBIAN/control && \
+    dpkg-deb --build /tmp/xvnc-shim /tmp/buckyos-xvnc-shim.deb >/dev/null && \
+    apt-get update && apt-get install -y --no-install-recommends /tmp/buckyos-xvnc-shim.deb tigervnc-standalone-server && \
+    apt-get check && Xvnc -version 2>&1 | grep -q TigerVNC && \
+    rm -rf /tmp/xvnc-shim /tmp/buckyos-xvnc-shim.deb /var/lib/apt/lists/*
+
 # What the worker needs that is no extension tool (see container spec §6.4). The
 # GPU / LLVM stack that LibreOffice's dependencies drag in is never linked by the
 # headless tools, so it is dropped in the same layer.

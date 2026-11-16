@@ -236,6 +236,9 @@ impl Outside {
     /// Someone looks at `group_id` now: the JS dialogs that are open in it
     /// are theirs to answer.
     pub fn attend(&self, module: &BrowserModule, group_id: &str) {
+        if module.headed() {
+            return;
+        }
         for (tab_id, dialog) in module.open_dialogs(group_id) {
             let known = self.state().pending.iter().any(|p| p.tab_id == tab_id && matches!(p.kind, Kind::Dialog { .. }));
             if !known {
@@ -375,8 +378,12 @@ impl Outside {
 
     /// Prepare a tab the module attached to: the page script in every
     /// document (the open one too), file choosers intercepted.
-    pub(super) async fn instrument(&self, cdp: &Arc<CdpClient>, tab_id: &str, session: &str) {
-        self.refuse_permissions(cdp);
+    pub(super) async fn instrument(&self, cdp: &Arc<CdpClient>, tab_id: &str, session: &str, headed: bool) {
+        // A headed browser asks the user for permissions itself, on the display.
+        if !headed {
+            self.refuse_permissions(cdp);
+        }
+        let page_script = if headed { format!("globalThis.__opendanHeaded = true;\n{PAGE_SCRIPT}") } else { PAGE_SCRIPT.to_string() };
         let run = |method: &'static str, params: Value| async move {
             let answer = send_settled(cdp, session, method, params).await;
             if let Err(e) = &answer {
@@ -387,11 +394,15 @@ impl Outside {
         // A binding only exists while the runtime domain is on.
         run("Runtime.enable", json!({})).await;
         run("Runtime.addBinding", json!({ "name": BINDING, "executionContextName": WORLD })).await;
-        run("Page.addScriptToEvaluateOnNewDocument", json!({ "source": PAGE_SCRIPT, "worldName": WORLD })).await;
-        run("Page.addScriptToEvaluateOnNewDocument", json!({ "source": PERMISSION_SCRIPT })).await;
+        run("Page.addScriptToEvaluateOnNewDocument", json!({ "source": page_script, "worldName": WORLD })).await;
+        if !headed {
+            run("Page.addScriptToEvaluateOnNewDocument", json!({ "source": PERMISSION_SCRIPT })).await;
+        }
         run("Page.setInterceptFileChooserDialog", json!({ "enabled": true })).await;
         // The document that is already there.
-        run("Runtime.evaluate", json!({ "expression": PERMISSION_SCRIPT })).await;
+        if !headed {
+            run("Runtime.evaluate", json!({ "expression": PERMISSION_SCRIPT })).await;
+        }
         let tree = run("Page.getFrameTree", json!({})).await.unwrap_or(Value::Null);
         let mut frames = vec![tree["frameTree"].clone()];
         while let Some(frame) = frames.pop() {
@@ -399,7 +410,7 @@ impl Outside {
             let Some(frame_id) = frame["frame"]["id"].as_str() else { continue };
             let Some(world) = run("Page.createIsolatedWorld", json!({ "frameId": frame_id, "worldName": WORLD })).await else { continue };
             if let Some(context) = world["executionContextId"].as_i64() {
-                run("Runtime.evaluate", json!({ "expression": PAGE_SCRIPT, "contextId": context })).await;
+                run("Runtime.evaluate", json!({ "expression": page_script, "contextId": context })).await;
             }
         }
         self.state().prepared.insert(tab_id.to_string());
@@ -445,7 +456,8 @@ impl Outside {
             }
             (Some(session), "Page.javascriptDialogOpening") => {
                 let Some(tab) = module.tab_of_session(session) else { return };
-                if module.watched(&tab.group_id) {
+                // A headed browser shows its dialog on the display.
+                if module.watched(&tab.group_id) && !module.headed() {
                     self.raise_dialog(module, &tab.tab_id, &event.params);
                 }
             }

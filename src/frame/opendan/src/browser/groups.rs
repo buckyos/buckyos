@@ -379,6 +379,11 @@ impl Groups {
         changed
     }
 
+    /// Whether `lease_id` is a lease that has not ended.
+    pub fn lease_valid(&self, lease_id: &str, now_ms: u64) -> bool {
+        self.groups.values().any(|g| !g.user_hold && g.leases.iter().any(|l| l.lease_id == lease_id && l.expires_at_ms > now_ms))
+    }
+
     pub fn has_lease(&self, now_ms: u64) -> bool {
         self.groups.values().any(|g| g.leased(now_ms).is_some())
     }

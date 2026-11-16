@@ -143,6 +143,9 @@ function wireStatus(agentId: string): BrowserStatus {
     running: !why && browser.running,
     unavailable: why?.text ?? null,
     unavailable_code: why?.code ?? null,
+    // The mock page is a headless browser's: it is made the device that looks and asks the screen for its lists and dialogs.
+    display: 'headless',
+    device_scale_factor: null,
     version: why?.code === 'disabled' || why?.code === 'no_package' ? null : { browser: '159.0.8154.6', playwright: '1.65.1' },
     default_session_id: browser.defaultSessionId,
     groups: groups.map(wireGroup),

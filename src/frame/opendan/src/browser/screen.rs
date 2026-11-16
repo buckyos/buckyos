@@ -1,9 +1,11 @@
 //! The screen (Agent Browser Protocol §3): a WebSocket over which the owner
-//! sees the current tab of one group as a stream of JPEG frames and operates
-//! it. A connection says `hello` first and is admitted as the owner; from
-//! then on it is told the group's state whenever it changes, gets at most
-//! one frame it has not acknowledged, and what it sends is applied to the
-//! page — unless the agent operates the group.
+//! sees the browser as a stream of JPEG frames and operates it. A connection
+//! says `hello` first and is admitted as the owner; from then on it is told
+//! the group's state whenever it changes, gets at most one frame it has not
+//! acknowledged, and what it sends is applied — unless the agent operates
+//! the group. A headed browser's frames are its whole display, and what the
+//! user does is done on the display with its pointer and keyboard; a
+//! headless one's are the current tab's, operated through DevTools.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +25,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use super::cdp::{CdpClient, CdpError, EventStream, Scope};
+use super::display::{Display, Painting, Want};
 use super::groups::{Controller, DEFAULT_GROUP};
+use super::rfb;
 use super::input;
 use super::process;
 use super::requests::{send_settled, Notice};
@@ -533,12 +537,184 @@ struct Shown {
     tab_id: String,
     session: String,
     cdp: Arc<CdpClient>,
-    cast: Watching,
+    /// The tab's screencast (headless; a headed browser's frames are its display's).
+    cast: Option<Watching>,
+}
+
+/// A connection's look at a headed browser's display, and what it holds
+/// down on it.
+struct DisplayView {
+    display: Arc<Display>,
+    id: u64,
+    frames: watch::Receiver<Option<Arc<Frame>>>,
+    painting: watch::Receiver<Painting>,
+    buttons: u8,
+    wheel_rest: (f64, f64),
+    /// Modifier keys this connection holds down (keysyms).
+    held: Vec<u32>,
+    /// A finger on the display: where it went down, where it is, whether it scrolls.
+    finger: Option<(f64, f64, f64, f64, bool)>,
+}
+
+impl Drop for DisplayView {
+    fn drop(&mut self) {
+        for keysym in std::mem::take(&mut self.held) {
+            self.display.key(keysym, false);
+        }
+        if self.buttons != 0 {
+            self.display.pointer(0.0, 0.0, 0);
+        }
+        self.display.leave(self.id);
+    }
+}
+
+/// A finger that moved this far (CSS pixels) scrolls instead of tapping.
+const TAP_SLOP: f64 = 8.0;
+
+impl DisplayView {
+    fn new(display: Arc<Display>, id: u64, want: Want) -> Self {
+        display.watch(id, want);
+        Self { frames: display.frames(), painting: display.painting(), display, id, buttons: 0, wheel_rest: (0.0, 0.0), held: Vec::new(), finger: None }
+    }
+
+    /// The viewport the display has (a desktop window: no phone is made of it).
+    fn viewport(&self) -> Viewport {
+        let p = *self.painting.borrow();
+        Viewport { width: p.width, height: p.height, mobile: false, pixel_ratio: p.pixel_ratio }
+    }
+
+    /// Hold down the modifier keys of the protocol's bits, and only those.
+    fn modifiers(&mut self, bits: i64) {
+        for (bit, keysym) in rfb::MODIFIER_KEYSYMS {
+            let held = self.held.contains(&keysym);
+            if bits & bit != 0 && !held {
+                self.display.key(keysym, true);
+                self.held.push(keysym);
+            } else if bits & bit == 0 && held {
+                self.display.key(keysym, false);
+                self.held.retain(|k| *k != keysym);
+            }
+        }
+    }
+
+    fn click(&mut self, x: f64, y: f64) {
+        self.display.pointer(x, y, self.buttons);
+        self.display.pointer(x, y, self.buttons | 1);
+        self.display.pointer(x, y, self.buttons);
+    }
+
+    /// An `input` message, done on the display.
+    fn input(&mut self, message: &Value) -> Result<(), String> {
+        let number = |m: &Value, name: &str| m[name].as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("input `{name}` is not a number"));
+        let modifiers = message["modifiers"].as_i64().unwrap_or(0) & 0xf;
+        match message["kind"].as_str() {
+            Some("mouse") => {
+                let (x, y) = (number(message, "x")?, number(message, "y")?);
+                let bit = match message["button"].as_str().unwrap_or("none") {
+                    "left" => 1,
+                    "middle" => 2,
+                    "right" => 4,
+                    "none" => 0,
+                    other => return Err(format!("unknown mouse button `{other}`")),
+                };
+                match message["action"].as_str() {
+                    Some("down") => self.buttons |= bit,
+                    Some("up") => self.buttons &= !bit,
+                    Some("move") => self.buttons = bit,
+                    other => return Err(format!("unknown mouse action {other:?}")),
+                }
+                self.modifiers(modifiers);
+                self.display.pointer(x, y, self.buttons);
+            }
+            Some("wheel") => {
+                let (x, y) = (number(message, "x")?, number(message, "y")?);
+                let delta = (message["delta_x"].as_f64().unwrap_or(0.0), message["delta_y"].as_f64().unwrap_or(0.0));
+                self.modifiers(modifiers);
+                self.display.wheel(x, y, self.buttons, delta, &mut self.wheel_rest);
+            }
+            Some("key") => {
+                let (key, code) = (message["key"].as_str().unwrap_or_default(), message["code"].as_str().unwrap_or_default());
+                if key.is_empty() && code.is_empty() {
+                    return Err("a key input names no key".into());
+                }
+                let down = match message["action"].as_str() {
+                    Some("down") => true,
+                    Some("up") => false,
+                    other => return Err(format!("unknown key action {other:?}")),
+                };
+                let single = |text: &str| {
+                    let mut chars = text.chars();
+                    chars.next().filter(|_| chars.next().is_none())
+                };
+                let keysym = rfb::named_keysym(key, code)
+                    .or_else(|| single(message["text"].as_str().unwrap_or_default()).map(rfb::char_keysym))
+                    .or_else(|| single(key).map(rfb::char_keysym));
+                // A key the input method owns, or none known: its text arrives as `text`.
+                let Some(keysym) = keysym else { return Ok(()) };
+                if rfb::MODIFIER_KEYSYMS.iter().any(|(_, k)| *k == keysym) || matches!(keysym, 0xffe2 | 0xffe4 | 0xffea | 0xffec) {
+                    match down {
+                        true if !self.held.contains(&keysym) => self.held.push(keysym),
+                        false => self.held.retain(|k| *k != keysym),
+                        _ => {}
+                    }
+                } else if down {
+                    self.modifiers(modifiers);
+                }
+                self.display.key(keysym, down);
+            }
+            Some("text") => {
+                let text = message["text"].as_str().ok_or("input `text` is not a string")?;
+                self.modifiers(0);
+                self.display.type_text(text);
+            }
+            // The input method shows what it composes itself; the page gets the text it commits.
+            Some("composition") => {
+                message["text"].as_str().ok_or("input `text` is not a string")?;
+            }
+            Some("touch") => {
+                let point = message["points"].as_array().and_then(|p| p.first()).map(|p| (number(p, "x"), number(p, "y")));
+                match message["phase"].as_str() {
+                    Some("start") => {
+                        let (x, y) = match point {
+                            Some((x, y)) => (x?, y?),
+                            None => return Err("a touch start or move names no point".into()),
+                        };
+                        self.finger = Some((x, y, x, y, false));
+                        self.display.pointer(x, y, self.buttons);
+                    }
+                    Some("move") => {
+                        let (x, y) = match point {
+                            Some((x, y)) => (x?, y?),
+                            None => return Err("a touch start or move names no point".into()),
+                        };
+                        let Some((sx, sy, lx, ly, scrolling)) = self.finger else { return Ok(()) };
+                        let scrolling = scrolling || (x - sx).hypot(y - sy) > TAP_SLOP;
+                        if scrolling {
+                            // The page goes with the finger: a wheel the other way.
+                            self.display.wheel(sx, sy, self.buttons, (lx - x, ly - y), &mut self.wheel_rest);
+                        }
+                        self.finger = Some((sx, sy, x, y, scrolling));
+                    }
+                    Some("end") => {
+                        if let Some((sx, sy, _, _, false)) = self.finger.take() {
+                            self.click(sx, sy);
+                        }
+                    }
+                    Some("cancel") => self.finger = None,
+                    other => return Err(format!("unknown touch phase {other:?}")),
+                }
+            }
+            other => return Err(format!("unknown input kind {other:?}")),
+        }
+        Ok(())
+    }
 }
 
 struct Screen<W> {
     sink: W,
     module: Arc<BrowserModule>,
+    /// What the connection looks at of a headed browser's display.
+    display: Option<DisplayView>,
     /// Somebody looks at the group while the connection lasts.
     _viewer: Viewer,
     group_id: String,
@@ -624,7 +800,11 @@ where
         Ok(cdp) => cdp,
         Err(e) => return refuse_with(&mut sink, BrowserError { code: "browser_unavailable", ..e }.to_json()).await,
     };
-    let version = cdp.send_within(None, "Browser.getVersion", json!({}), HISTORY_WAIT).await.unwrap_or(Value::Null);
+    let headed = module.headed();
+    let version = match headed {
+        true => Value::Null,
+        false => cdp.send_within(None, "Browser.getVersion", json!({}), HISTORY_WAIT).await.unwrap_or(Value::Null),
+    };
     let Viewport { width, height, mobile, pixel_ratio } = said.viewport;
     log::info!("browser: {who} looks at the browser ({width}x{height}{}, pixel ratio {pixel_ratio})", if mobile { ", phone" } else { "" });
 
@@ -633,6 +813,7 @@ where
     let (told, mut tellings) = mpsc::unbounded_channel();
     let mut screen = Screen {
         sink,
+        display: None,
         _viewer: module.viewer(DEFAULT_GROUP),
         group_id: DEFAULT_GROUP.to_string(),
         look: Look { viewport: said.viewport, quality: DEFAULT_JPEG_QUALITY, set: module.casts.stamp(), mobile: mobile_agent(&version) },
@@ -658,9 +839,10 @@ where
     while ended.is_ok() {
         let (wait_frame, next_frame) = (screen.frame_due && screen.unacked.is_none() && screen.shown.is_some(), screen.next_frame);
         let new_frame = async {
-            match screen.shown.as_mut() {
-                Some(shown) => shown.cast.frames.changed().await.is_ok(),
-                None => std::future::pending().await,
+            match (screen.display.as_mut(), screen.shown.as_mut()) {
+                (Some(view), Some(_)) => view.frames.changed().await.is_ok(),
+                (None, Some(Shown { cast: Some(cast), .. })) => cast.frames.changed().await.is_ok(),
+                _ => std::future::pending().await,
             }
         };
         ended = tokio::select! {
@@ -680,12 +862,13 @@ where
                 Err(_) => Err(Gone),
             },
             fresh = new_frame => {
-                // A screencast that ended has no further frame: the next change of the tabs says why.
+                // A screencast or display that ended has no further frame: the next change of the tabs says why.
                 if fresh {
                     screen.frame_due = true;
                     screen.pump().await
                 } else {
                     screen.shown = None;
+                    screen.display = None;
                     Ok(())
                 }
             }
@@ -732,13 +915,14 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
     /// The group changed, or the connection is new: show the group's current
     /// tab and tell what changed.
     async fn sync(&mut self) -> Result<(), Gone> {
+        log::trace!("browser: screen sync");
         let first = self.state.is_null();
         let switched = self.follow();
         // The group is the user's again (the agent's lease was released, ran out or was taken from it).
         let agent = self.module.controller(&self.group_id) == Controller::Agent;
         if std::mem::replace(&mut self.agent, agent) && !agent {
-            if let Some(shown) = &self.shown {
-                self.module.casts.dress_again(&shown.cast);
+            if let Some(Shown { cast: Some(cast), .. }) = &self.shown {
+                self.module.casts.dress_again(cast);
             }
         }
         self.tell_state().await?;
@@ -756,6 +940,7 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
 
     /// Take the frames of the group's current tab. Returns whether that is another tab than before.
     fn follow(&mut self) -> bool {
+        self.see_display();
         let target = match (self.module.active_tab(&self.group_id), self.module.cdp()) {
             (Some(tab), Some(cdp)) => tab.session.map(|session| (tab.tab_id, session, cdp)),
             _ => None,
@@ -773,10 +958,42 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
         self.history_of = None;
         self.history = (false, false);
         let Some((tab_id, session, cdp)) = target else { return false };
-        let cast = self.module.casts.watch(&self.module, &cdp, &tab_id, &session, &self.look);
-        self.frame_due = cast.frames.borrow().is_some();
+        let cast = match &self.display {
+            Some(view) => {
+                self.frame_due = view.frames.borrow().is_some();
+                None
+            }
+            None if self.module.headed() => None,
+            None => {
+                let cast = self.module.casts.watch(&self.module, &cdp, &tab_id, &session, &self.look);
+                self.frame_due = cast.frames.borrow().is_some();
+                Some(cast)
+            }
+        };
         self.shown = Some(Shown { tab_id, session, cdp, cast });
         true
+    }
+
+    /// Look at the display of a headed browser: the one it has now (a
+    /// browser that was started again has another).
+    fn see_display(&mut self) {
+        let display = self.module.display();
+        let same = match (&self.display, &display) {
+            (Some(view), Some(display)) => Arc::ptr_eq(&view.display, display),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.display = display.map(|display| DisplayView::new(display, self.module.casts.stamp(), self.want()));
+        self.frame_due = self.display.as_ref().is_some_and(|view| view.frames.borrow().is_some());
+    }
+
+    /// How the connection looks at a display.
+    fn want(&self) -> Want {
+        let Viewport { width, height, pixel_ratio, .. } = self.look.viewport;
+        Want { width, height, pixel_ratio, quality: self.look.quality, max_fps: self.max_fps, set: self.look.set }
     }
 
     async fn tell_state(&mut self) -> Result<(), Gone> {
@@ -791,7 +1008,11 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
             "loading": active.as_ref().is_some_and(|tab| tab.loading),
             "can_go_back": self.history.0,
             "can_go_forward": self.history.1,
-            "viewport": self.shown.as_ref().map_or(self.look.viewport, |shown| shown.cast.viewport()),
+            "viewport": match (&self.display, &self.shown) {
+                (Some(view), _) => view.viewport(),
+                (None, Some(Shown { cast: Some(cast), .. })) => cast.viewport(),
+                _ => self.look.viewport,
+            },
             "running": self.module.running(),
         });
         if state == self.state {
@@ -799,6 +1020,7 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
         }
         let first = self.state.is_null();
         self.state = state.clone();
+        log::trace!("browser: screen state {}", state["group"]["tabs"]);
         match first {
             true => self.tell("ready", json!({ "state": state })).await,
             false => self.tell("state", state).await,
@@ -829,9 +1051,13 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
         if !self.frame_due || self.unacked.is_some() || Instant::now() < self.next_frame {
             return Ok(());
         }
-        let Some(shown) = self.shown.as_mut() else { return Ok(()) };
+        let frames = match (self.display.as_mut(), self.shown.as_mut()) {
+            (Some(view), Some(_)) => &mut view.frames,
+            (None, Some(Shown { cast: Some(cast), .. })) => &mut cast.frames,
+            _ => return Ok(()),
+        };
         self.frame_due = false;
-        let Some(frame) = shown.cast.frames.borrow_and_update().clone() else { return Ok(()) };
+        let Some(frame) = frames.borrow_and_update().clone() else { return Ok(()) };
         self.seq += 1;
         self.unacked = Some(self.seq);
         self.next_frame = Instant::now() + Duration::from_millis(1000 / self.max_fps as u64);
@@ -886,6 +1112,9 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
     async fn heard(&mut self, text: &str) -> Result<(), Gone> {
         let Ok(message) = serde_json::from_str::<Value>(text) else { return self.fail("bad_message", "not JSON").await };
         let kind = message["type"].as_str().unwrap_or_default();
+        if kind != "ack" && kind != "ping" {
+            log::debug!("browser: the screen says {kind}");
+        }
         if matches!(kind, "input" | "nav" | "tab") && self.module.controller(&self.group_id) == Controller::Agent {
             self.touches.clear();
             if self.refused_at.is_none_or(|at| at.elapsed() >= REFUSAL_EVERY) {
@@ -915,6 +1144,7 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
             "quality" => {
                 if let Some(fps) = message["max_fps"].as_f64().filter(|n| n.is_finite()) {
                     self.max_fps = (fps.round() as u32).clamp(1, MAX_FPS);
+                    self.claim_display();
                 }
                 let quality = message["jpeg_quality"].as_f64().filter(|n| n.is_finite()).map_or(self.look.quality, |n| n.round().clamp(10.0, 95.0) as u8);
                 let pixel_ratio = pixel_ratio_of(&message).unwrap_or(self.look.viewport.pixel_ratio);
@@ -923,9 +1153,10 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
                 }
                 (self.look.quality, self.look.viewport.pixel_ratio) = (quality, pixel_ratio);
                 // Not a viewport set: the tab is painted so while the viewport it has is this connection's.
-                if let Some(shown) = &self.shown {
-                    self.module.casts.claim(&shown.cast, &self.look, false);
+                if let Some(Shown { cast: Some(cast), .. }) = &self.shown {
+                    self.module.casts.claim(cast, &self.look, false);
                 }
+                self.claim_display();
                 self.tell_state().await
             }
             "respond" => {
@@ -946,6 +1177,12 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
     }
 
     async fn input(&mut self, message: &Value) -> Result<(), Gone> {
+        if let Some(view) = self.display.as_mut() {
+            return match view.input(message) {
+                Ok(()) => Ok(()),
+                Err(why) => self.fail("bad_message", why).await,
+            };
+        }
         let commands = match input::commands(message, &mut self.touches) {
             Ok(commands) => commands,
             Err(why) => return self.fail("bad_message", why).await,
@@ -964,10 +1201,18 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
     async fn resize(&mut self, viewport: Viewport) -> Result<(), Gone> {
         let turned = viewport.mobile != self.look.viewport.mobile;
         (self.look.viewport, self.look.set) = (viewport, self.module.casts.stamp());
-        if let Some(shown) = &self.shown {
-            self.module.casts.claim(&shown.cast, &self.look, turned);
+        if let Some(Shown { cast: Some(cast), .. }) = &self.shown {
+            self.module.casts.claim(cast, &self.look, turned);
         }
+        self.claim_display();
         self.tell_state().await
+    }
+
+    /// The display is looked at as this connection looks now.
+    fn claim_display(&self) {
+        if let Some(view) = &self.display {
+            view.display.claim(view.id, self.want());
+        }
     }
 
     /// Open a tab in the group as this connection's device, then go to `url`.
@@ -978,7 +1223,9 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
                 let tab = module.open_tab(&group_id, None).await?;
                 let (cdp, session) = module.tab_session(&tab.tab_id).await?;
                 module.outside.prepared(&tab.tab_id).await;
-                emulate(&cdp, &session, viewport, mobile.as_ref(), false).await;
+                if !module.headed() {
+                    emulate(&cdp, &session, viewport, mobile.as_ref(), false).await;
+                }
                 if let Some(url) = url {
                     navigate(&cdp, &session, &url).await?;
                 }
@@ -1004,8 +1251,16 @@ impl<W: Sink<Message> + Unpin> Screen<W> {
             self.open(url);
             return Ok(());
         }
-        let Some(shown) = &self.shown else { return self.fail("no_such_tab", "the group has no tab to navigate").await };
-        let (cdp, session, told) = (shown.cdp.clone(), shown.session.clone(), self.told.clone());
+        // The current tab, once the module is attached to it (a tab the browser opened again after a start is not yet).
+        let (cdp, session) = match (&self.shown, self.module.active_tab(&self.group_id)) {
+            (Some(shown), _) => (shown.cdp.clone(), shown.session.clone()),
+            (None, Some(tab)) => match self.module.tab_session(&tab.tab_id).await {
+                Ok(attached) => attached,
+                Err(e) => return self.tell("error", e.to_json()).await,
+            },
+            (None, None) => return self.fail("no_such_tab", "the group has no tab to navigate").await,
+        };
+        let told = self.told.clone();
         match (action, url) {
             ("url", Some(url)) => {
                 tokio::spawn(async move {

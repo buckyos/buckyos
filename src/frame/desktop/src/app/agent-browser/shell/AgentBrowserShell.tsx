@@ -77,6 +77,7 @@ function Unavailable() {
     disabled: t('agentBrowser.unavailable.disabled', 'The browser is turned off in this Agent’s configuration ([loader.browser] enabled = false).'),
     no_package: t('agentBrowser.unavailable.noPackage', 'The node this Agent runs on does not have the “ext-core” extension tools, which bring the browser.'),
     not_downloaded: t('agentBrowser.unavailable.notDownloaded', 'The browser is not downloaded to this node yet.'),
+    no_display: t('agentBrowser.unavailable.noDisplay', 'This Agent’s runtime has no virtual display for the browser to run on. Its container image is older than the browser needs: update BuckyOS on this node.'),
   }[reason]
   return (
     <div className="ab-message ab-unavailable" role="alert" data-testid="ab-unavailable" data-reason={reason}>

@@ -99,6 +99,29 @@ async fn a01_work_session_completes_with_tool_call() {
     assert_eq!(llm.count(), 2);
 }
 
+/// The assembled system is final text, never an xllm template: a literal
+/// `{{now}}` (AIWS action config in a skill, say) or `\{{x}}` in the
+/// objective reaches the model as written instead of failing the run.
+#[tokio::test]
+async fn literal_braces_in_system_text_are_not_xllm_templates() {
+    let env = Env::new();
+    let sd = env
+        .create_work(work_spec("set props to `{{now}}`, keep `\\{{x}}` and `{{{y}}}`"))
+        .await;
+    let llm = ScriptedLlm::new(|req, _| {
+        let sys = common::plan::system_of(req);
+        assert!(
+            sys.contains("set props to `{{now}}`, keep `\\{{x}}` and `{{{y}}}`"),
+            "{sys}"
+        );
+        text("done")
+    });
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 1);
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+}
+
 #[tokio::test]
 async fn follow_up_input_after_finish_is_rejected_and_logged() {
     let env = Env::new();

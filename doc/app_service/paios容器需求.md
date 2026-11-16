@@ -254,7 +254,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 3. 工匠镜像的产物是独立的工具包，不是“工匠镜像本身替代工作镜像”。工具包加载回工作镜像后，工作层 Agent 才能使用新能力。
 4. 工匠镜像必须具备“模拟工作镜像环境”的能力，以便在交付前验证产物能在干净的工作镜像里运行，避免构建环境与运行环境之间的隐式依赖泄漏。
 5. 体积大、但只有部分任务用到的 CLI（目前是 pandoc）以自包含工具包的形式随 External Tool Volume 发布（`/opt/buckyos/tools/bin/` 在 PATH 上），不进工作镜像。External Tool Volume 不可用时 Worker 照常启动，只是缺这些工具（node_daemon 记 error 日志）。ExtTools TODO T2 之后整组 `ext-core` 命令都这样交付：容器节点的 `buckyos-tools` 卷与原生的 `$BUCKYOS_ROOT/tools/` 用同一份 payload 字节（§6.4 表 B）。
-6. Agent 看到的工具分三层（owner 2026-11-05 定）：**核心**（Agent 标准命令及其运行依赖，随系统升级、不能独立升级）、**扩展**（zone-owner 装的扩展包，可独立升级，装在哪台机器上对该机器所有 Agent 生效）、**Agent 自装**（在自己的实例卷里，删掉不伤核心）。工作镜像预置的 CLI 工具集在扩展包体系落地后就是 `ext-core` 的内容；T2 之后工作镜像不再 apt 装这组命令，容器也从 `ext-core` payload 取（§6.4 表 B）。`ext-core` 1.2.0 起 LibreOffice headless 与字体也在其中：`build_aios` 的 `RUNTIME_PACKAGES` 只剩 `bash`、`ca-certificates`、`rsync`，不装 `locales`（`LANG=C.UTF-8`）。
+6. Agent 看到的工具分三层（owner 2026-11-05 定）：**核心**（Agent 标准命令及其运行依赖，随系统升级、不能独立升级）、**扩展**（zone-owner 装的扩展包，可独立升级，装在哪台机器上对该机器所有 Agent 生效）、**Agent 自装**（在自己的实例卷里，删掉不伤核心）。工作镜像预置的 CLI 工具集在扩展包体系落地后就是 `ext-core` 的内容；T2 之后工作镜像不再 apt 装这组命令，容器也从 `ext-core` payload 取（§6.4 表 B）。`ext-core` 1.2.0 起 LibreOffice headless 与字体也在其中：`build_aios` 的 `RUNTIME_PACKAGES` 只剩 `bash`、`ca-certificates`、`rsync`，不装 `locales`（`LANG=C.UTF-8`）。另外装 TigerVNC 的 `Xvnc`（`tigervnc-standalone-server`，2026-11-16 owner 确认）：Agent 浏览器有窗口地跑在它上面（[Agent Browser Protocol](<../opendan/protocol/Agent Browser Protocol.md>) §1、§6）。它的包经 `libGL` 拉进 Mesa 和 LLVM、为 `vncserver` 包装脚本拉进 Perl，`Xvnc` 本身都不用：`build_aios` 先用 `dpkg-deb` 造一个占位包 `buckyos-xvnc-shim`（`Provides: libglx-mesa0, libfile-readbackwards-perl, perl`），和它一起装，镜像只多约 17 MB（不用占位包约 290 MB），`apt-get check` 保持一致。Ubuntu 24.04 的版本是 1.13.1。它不是扩展工具：显示器是浏览器运行环境的一部分，跟着工作镜像走。
 
 ### 6.4 官方发布的基线与扩展工具清单（运维事实来源）
 
@@ -317,7 +317,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 
 `git`、`curl`、`tree`、`unzip`、`xz` 这组辅助命令在五个平台都随 `ext-core` 带，launcher 不依赖系统同名命令（owner 2026-11-06 确认；macOS 的系统 `git` 是 Xcode CLT 垫片，会弹安装对话框）。锁定清单与构建脚本都在 `publish/exttool/ext-core/`：`build.sh` 管官方归档，`conda-lock.yml` 管 conda-forge 那组。
 
-`bash`、`rsync` 是 Linux 特有，仍由 `build_aios` 的 `RUNTIME_PACKAGES` 进工作镜像，不在 `ext-core`，也不要求 macOS / Windows 提供。
+`bash`、`rsync` 是 Linux 特有，仍由 `build_aios` 的 `RUNTIME_PACKAGES` 进工作镜像，不在 `ext-core`，也不要求 macOS / Windows 提供。`Xvnc` 同样只在 Linux 的工作镜像里（§6.3）。
 
 **owner 2026-11-10 定：工作镜像里的工具都来自 `ext-core`。** LibreOffice 进了工作镜像，就属于核心扩展工具：`soffice` 命令一定可用，各环境的区别只是调用方式不同（容器从工具卷取，宿主从 `$BUCKYOS_ROOT/tools` 取）。所以原来规划的 `ext-office` 并入 `ext-core`，也就是上表的 `soffice`（`ext-core` 1.2.0）。`build_aios` 里原来那组 apt 包（`libreoffice-{core,writer,impress,calc}-nogui`、四个字体包、`locales`）已删除。
 

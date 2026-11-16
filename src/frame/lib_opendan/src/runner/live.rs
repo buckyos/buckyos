@@ -634,6 +634,9 @@ async fn own_run_context(
     }
     llm_ctx["runtime"] = serde_json::to_value(sh.deps.runtime.config()).unwrap();
     resolve_context_window(sh, &mut llm_ctx).await;
+    // The assembled system is final text (the session's own templates are
+    // already rendered): never an xllm template, so a literal `{{` from a
+    // skill, the objective or the identity stays as written.
     let hosted = XllmTask::prepare_hosted(
         sh.dir.path(),
         &llm_ctx,
@@ -642,7 +645,7 @@ async fn own_run_context(
             .join("session_config.json")
             .display()
             .to_string(),
-        &system,
+        &system.replace("{{", "\\{{"),
         &xdeps,
     )
     .await?;

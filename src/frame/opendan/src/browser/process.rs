@@ -1,7 +1,7 @@
 //! The Chromium process of the agent's browser: where its executable and
-//! directories are, how it is started (headless, debugging endpoint on a
-//! loopback port of its own choosing) and how it is ended without leaving
-//! processes behind.
+//! directories are, how it is started (headed on the virtual display, or
+//! headless; the debugging endpoint on a loopback port given to it) and how
+//! it is ended without leaving processes behind.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -16,6 +16,8 @@ pub const ENV_MARK: &str = "OPENDAN_BROWSER_MARK";
 const PORT_FILE: &str = "DevToolsActivePort";
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_SANDBOX_ERROR: &str = "No usable sandbox";
+/// What the browser logs when another process took its debugging port.
+const PORT_TAKEN: &str = "Cannot start http server for devtools";
 /// The browser's screens: the one its windows open on, and beside it one of
 /// twice its pixel density (the same size in CSS pixels). A tab whose window
 /// is moved there paints frames of twice as many pixels, its page unchanged.
@@ -263,8 +265,19 @@ fn is_root() -> bool {
     }
 }
 
+/// How the browser is started.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Shown {
+    /// Headless: its frames and input go through the DevTools protocol.
+    Headless,
+    /// Headed on the X display `display` (`:20`): it draws at `scale` device
+    /// pixels per CSS pixel, its windows open at `size` (CSS pixels).
+    Display { display: String, scale: f64, size: (u32, u32) },
+}
+
 /// The user agent a windowed Chrome of this version sends: a headless one
-/// names itself `HeadlessChrome`, which sites take for a robot.
+/// names itself `HeadlessChrome`, which sites take for a robot. Only for a
+/// headless browser: a headed one says what it is itself.
 fn user_agent(chromium_version: &str) -> Option<String> {
     let major = chromium_version.split('.').next().filter(|m| !m.is_empty() && m.bytes().all(|b| b.is_ascii_digit()))?;
     let platform = if cfg!(target_os = "macos") {
@@ -277,29 +290,43 @@ fn user_agent(chromium_version: &str) -> Option<String> {
     Some(format!("Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"))
 }
 
-fn arguments(dirs: &BrowserDirs, no_sandbox: bool, user_agent: Option<&str>) -> Vec<String> {
+fn arguments(dirs: &BrowserDirs, no_sandbox: bool, shown: &Shown, user_agent: Option<&str>, port: u16) -> Vec<String> {
     let mut args = vec![
-        "--headless=new".to_string(),
         format!("--user-data-dir={}", dirs.profile.display()),
         format!("--disk-cache-dir={}", dirs.cache.display()),
-        "--remote-debugging-port=0".to_string(),
+        format!("--remote-debugging-port={port}"),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-dev-shm-usage".to_string(),
         // No tab of its own: every tab belongs to a group.
         "--no-startup-window".to_string(),
-        "--window-size=1280,800".to_string(),
-        format!("--screen-info={SCREENS}"),
         // The caret of a focused field stays lit: one that blinks paints two frames a second for the screens.
         "--disable-blink-features=CaretBlinking".to_string(),
     ];
+    match shown {
+        Shown::Headless => {
+            args.insert(0, "--headless=new".to_string());
+            args.push("--window-size=1280,800".to_string());
+            args.push(format!("--screen-info={SCREENS}"));
+            if let Some(agent) = user_agent {
+                args.push(format!("--user-agent={agent}"));
+            }
+        }
+        Shown::Display { scale, size: (width, height), .. } => {
+            args.push("--window-position=0,0".to_string());
+            args.push(format!("--window-size={width},{height}"));
+            args.push(format!("--force-device-scale-factor={scale}"));
+        }
+    }
     if no_sandbox {
         args.push("--no-sandbox".to_string());
     }
-    if let Some(agent) = user_agent {
-        args.push(format!("--user-agent={agent}"));
-    }
     args
+}
+
+/// A loopback port nobody listens on now (the browser may still lose it to another process: it is then started again).
+fn free_port() -> Result<u16, String> {
+    std::net::TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).map(|a| a.port()).map_err(|e| format!("no free loopback port: {e}"))
 }
 
 /// The `TMPDIR` the browser is started with when the one of this process
@@ -344,15 +371,18 @@ fn release_profile(dirs: &BrowserDirs) {
     }
 }
 
-async fn spawn(exe: &Path, dirs: &BrowserDirs, no_sandbox: bool) -> Result<Launched, String> {
+async fn spawn(exe: &Path, dirs: &BrowserDirs, no_sandbox: bool, shown: &Shown, port: u16) -> Result<Launched, String> {
     for dir in [&dirs.profile, &dirs.cache, &dirs.downloads] {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
     release_profile(dirs);
     let log = std::fs::File::create(dirs.log()).map_err(|e| format!("create {}: {e}", dirs.log().display()))?;
     let mut cmd = tokio::process::Command::new(exe);
-    let agent = package_versions(exe).and_then(|v| v["chromium"].as_str().and_then(user_agent));
-    cmd.args(arguments(dirs, no_sandbox, agent.as_deref()))
+    let agent = match shown {
+        Shown::Headless => package_versions(exe).and_then(|v| v["chromium"].as_str().and_then(user_agent)),
+        Shown::Display { .. } => None,
+    };
+    cmd.args(arguments(dirs, no_sandbox, shown, agent.as_deref(), port))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)
@@ -360,6 +390,11 @@ async fn spawn(exe: &Path, dirs: &BrowserDirs, no_sandbox: bool) -> Result<Launc
     if let Some(tmpdir) = short_tmpdir(std::env::var_os("TMPDIR").as_deref()) {
         cmd.env("TMPDIR", tmpdir);
     }
+    match shown {
+        Shown::Display { display, .. } => cmd.env("DISPLAY", display),
+        Shown::Headless => cmd.env_remove("DISPLAY"),
+    };
+    cmd.env_remove("WAYLAND_DISPLAY");
     let mark = format!("{}-{}", std::process::id(), libopendan::now_ms());
     cmd.env(ENV_MARK, &mark);
     #[cfg(unix)]
@@ -379,15 +414,24 @@ async fn spawn(exe: &Path, dirs: &BrowserDirs, no_sandbox: bool) -> Result<Launc
     let port_file = dirs.profile.join(PORT_FILE);
     let started = Instant::now();
     loop {
-        if let Some((port, path)) = std::fs::read_to_string(&port_file).ok().and_then(|t| {
-            let mut lines = t.lines();
+        // The browser says where it listens in its log; a headless one also writes `DevToolsActivePort`.
+        let endpoint = std::fs::read_to_string(dirs.log()).ok().and_then(|log| listening(&log, port)).or_else(|| {
+            let text = std::fs::read_to_string(&port_file).ok()?;
+            let mut lines = text.lines();
             Some((lines.next()?.trim().parse::<u16>().ok()?, lines.next()?.trim().to_string()))
-        }) {
+        });
+        if let Some((port, path)) = endpoint {
             return Ok(Launched { child, tree, port, path });
         }
         if let Ok(Some(status)) = child.try_wait() {
             tree.sweep().await;
             return Err(format!("the browser ended while starting ({status}): {}", log_tail(dirs)));
+        }
+        if std::fs::read_to_string(dirs.log()).is_ok_and(|log| log.contains(PORT_TAKEN)) {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            tree.sweep().await;
+            return Err(format!("{PORT_TAKEN} on port {port}"));
         }
         if started.elapsed() > START_TIMEOUT {
             let _ = child.start_kill();
@@ -399,17 +443,28 @@ async fn spawn(exe: &Path, dirs: &BrowserDirs, no_sandbox: bool) -> Result<Launc
     }
 }
 
+/// `(port, path)` of the debugging endpoint the log says the browser listens on (`port` is the one it was given).
+fn listening(log: &str, port: u16) -> Option<(u16, String)> {
+    let prefix = format!("DevTools listening on ws://127.0.0.1:{port}");
+    log.lines().find_map(|line| line.trim().strip_prefix(&prefix)).map(|path| (port, path.trim().to_string()))
+}
+
 /// Start the browser. As root its sandbox is off (it refuses to start
 /// otherwise); as anyone else it is tried with the sandbox first and once
 /// more without when the system offers none.
-pub async fn launch(exe: &Path, dirs: &BrowserDirs) -> Result<Launched, String> {
-    let root = is_root();
-    match spawn(exe, dirs, root).await {
-        Err(e) if !root && e.contains(NO_SANDBOX_ERROR) => {
-            log::warn!("browser: this system offers Chromium no usable sandbox; starting it with --no-sandbox ({e})");
-            spawn(exe, dirs, true).await
+pub async fn launch(exe: &Path, dirs: &BrowserDirs, shown: &Shown) -> Result<Launched, String> {
+    let mut no_sandbox = is_root();
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        match spawn(exe, dirs, no_sandbox, shown, free_port()?).await {
+            Err(e) if !no_sandbox && e.contains(NO_SANDBOX_ERROR) => {
+                log::warn!("browser: this system offers Chromium no usable sandbox; starting it with --no-sandbox ({e})");
+                no_sandbox = true;
+            }
+            Err(e) if e.contains(PORT_TAKEN) && tries < 4 => log::warn!("browser: {e}; starting it on another port"),
+            other => return other,
         }
-        other => other,
     }
 }
 
@@ -587,21 +642,38 @@ mod tests {
     }
 
     #[test]
+    fn the_endpoint_is_read_from_the_log() {
+        let log = "[1:1:ERROR:dbus] no bus\n\nDevTools listening on ws://127.0.0.1:9333/devtools/browser/83acad6b\n";
+        assert_eq!(listening(log, 9333), Some((9333, "/devtools/browser/83acad6b".to_string())));
+        assert_eq!(listening(log, 9334), None);
+        assert_eq!(listening("starting", 9333), None);
+    }
+
+    #[test]
     fn directories_follow_the_environment_or_the_agent_root() {
         let dirs = BrowserDirs::at(PathBuf::from("/x/browser"));
         assert_eq!(dirs.profile, PathBuf::from("/x/browser/profile"));
         assert_eq!(dirs.downloads, PathBuf::from("/x/browser/downloads"));
-        let args = arguments(&dirs, true, None);
+        let args = arguments(&dirs, true, &Shown::Headless, None, 9222);
+        assert!(args.contains(&"--headless=new".to_string()));
         assert!(args.contains(&"--user-data-dir=/x/browser/profile".to_string()));
+        assert!(args.contains(&"--remote-debugging-port=9222".to_string()));
         assert!(args.contains(&"--no-sandbox".to_string()));
         assert!(args.contains(&"--disable-blink-features=CaretBlinking".to_string()));
         assert!(args.contains(&"--screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2}".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("--user-agent=")));
-        assert!(!arguments(&dirs, false, None).contains(&"--no-sandbox".to_string()));
+        assert!(!arguments(&dirs, false, &Shown::Headless, None, 1).contains(&"--no-sandbox".to_string()));
         let agent = user_agent("159.0.8154.6").unwrap();
         assert!(agent.ends_with("Chrome/159.0.0.0 Safari/537.36") && !agent.contains("Headless"), "{agent}");
-        assert!(arguments(&dirs, false, Some(&agent)).contains(&format!("--user-agent={agent}")));
+        assert!(arguments(&dirs, false, &Shown::Headless, Some(&agent), 1).contains(&format!("--user-agent={agent}")));
         assert_eq!(user_agent(""), None);
+        // Headed: what the browser is, it says itself; its windows have the display's size and scale.
+        let headed = Shown::Display { display: ":20".into(), scale: 2.0, size: (412, 915) };
+        let args = arguments(&dirs, false, &headed, Some(&agent), 9222);
+        assert!(!args.iter().any(|a| a.starts_with("--headless") || a.starts_with("--user-agent=") || a.starts_with("--screen-info=")), "{args:?}");
+        for wanted in ["--window-size=412,915", "--window-position=0,0", "--force-device-scale-factor=2", "--no-startup-window"] {
+            assert!(args.contains(&wanted.to_string()), "{wanted} {args:?}");
+        }
     }
 
     /// The extension package brings the launcher; the browser itself is

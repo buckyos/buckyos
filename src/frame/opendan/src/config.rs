@@ -58,6 +58,17 @@ pub struct BrowserSection {
     /// Limit of the tabs of all groups together.
     #[serde(default = "default_max_tabs")]
     pub max_tabs: usize,
+    /// How the browser is shown: `virtual` (headed on a virtual display,
+    /// Linux), `headless`, or `auto` (the platform's).
+    #[serde(default)]
+    pub display: crate::browser::display::DisplayMode,
+    /// Device pixels per CSS pixel of the virtual display.
+    #[serde(default = "default_device_scale_factor")]
+    pub device_scale_factor: f64,
+}
+
+fn default_device_scale_factor() -> f64 {
+    2.0
 }
 
 fn default_browser_idle() -> u64 {
@@ -74,6 +85,8 @@ impl Default for BrowserSection {
             enabled: true,
             idle_stop_secs: default_browser_idle(),
             max_tabs: default_max_tabs(),
+            display: Default::default(),
+            device_scale_factor: default_device_scale_factor(),
         }
     }
 }

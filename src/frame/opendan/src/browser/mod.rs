@@ -1,11 +1,14 @@
-//! The agent's browser: one headless Chromium the Agent Service starts on
-//! demand in the agent's private runtime, with the agent's logins and one
-//! group of tabs for all its sessions. The agent operates it with
+//! The agent's browser: one Chromium the Agent Service starts on demand in
+//! the agent's private runtime, with the agent's logins and one group of
+//! tabs for all its sessions. On Linux it runs headed on a virtual display
+//! of its own ([`display`]), as a browser on a desktop does; elsewhere it is
+//! headless. The agent operates it with
 //! Playwright over its debugging endpoint (`agent-browser`); the owner sees
 //! and operates it through the screen. One party operates it at a time and
 //! hands it over explicitly ([Agent Browser Protocol]).
 //!
 //! - [`process`]: the Chromium process (start, stop, what it leaves behind).
+//! - [`display`]: the virtual display a headed browser draws on; [`rfb`]: how it is read and operated.
 //! - [`cdp`]: the DevTools Protocol client.
 //! - [`groups`]: groups, tabs, leases, who operates.
 //! - [`sessions`]: the browser conversation and its records.
@@ -18,12 +21,15 @@
 //! [Agent Browser Protocol]: ../../../../../doc/opendan/protocol/Agent%20Browser%20Protocol.md
 
 pub mod cdp;
+pub mod display;
 pub mod groups;
 pub mod http;
 pub mod input;
 pub mod process;
+pub mod proxy;
 pub mod reflow;
 pub mod requests;
+pub mod rfb;
 pub mod rpc;
 pub mod screen;
 #[cfg(test)]
@@ -55,6 +61,7 @@ pub use rpc::BrowserError;
 pub use sessions::Handed;
 
 use crate::config::BrowserSection;
+use display::{Display, DisplayMode};
 use groups::Groups;
 use process::Chromium;
 
@@ -147,6 +154,8 @@ pub struct Acquired {
 struct Proc {
     generation: u64,
     tree: process::ProcessTree,
+    /// The display a headed browser draws on, and the task that keeps its windows on it.
+    display: Option<(Arc<Display>, tokio::task::JoinHandle<()>)>,
     cdp: Arc<CdpClient>,
     exited: watch::Receiver<bool>,
     tracker: tokio::task::JoinHandle<()>,
@@ -163,8 +172,12 @@ struct Life {
 struct Shared {
     groups: Groups,
     cdp: Option<Arc<CdpClient>>,
-    /// Port of the debugging endpoint.
+    display: Option<Arc<Display>>,
+    /// Tabs a page opened (popups): they keep the size they were opened at.
+    popups: HashSet<String>,
+    /// Port and path of the debugging endpoint.
     port: Option<u16>,
+    endpoint_path: String,
     browser_version: Option<String>,
     last_error: Option<String>,
     /// Who looks at which group, in the order they came.
@@ -186,6 +199,7 @@ struct Shared {
 pub struct BrowserModule {
     me: Weak<BrowserModule>,
     cfg: BrowserSection,
+    mode: DisplayMode,
     deps: BrowserDeps,
     tuning: Tuning,
     dirs: BrowserDirs,
@@ -200,6 +214,8 @@ pub struct BrowserModule {
     outside: requests::Outside,
     /// The tabs whose frames are being taken.
     casts: screen::Casts,
+    /// The agent's connections to the browser, by lease.
+    pub proxies: Arc<proxy::Proxies>,
 }
 
 /// Someone looking at the browser (a screen connection). While one exists
@@ -251,6 +267,7 @@ impl BrowserModule {
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
             dirs: tuning.dirs.clone().unwrap_or_else(|| BrowserDirs::of(&deps.agent_root)),
+            mode: cfg.display.resolved(),
             cfg,
             deps,
             tuning,
@@ -259,7 +276,10 @@ impl BrowserModule {
             shared: Mutex::new(Shared {
                 groups,
                 cdp: None,
+                display: None,
+                popups: HashSet::new(),
                 port: None,
+                endpoint_path: String::new(),
                 browser_version: None,
                 last_error: None,
                 viewers: Vec::new(),
@@ -277,6 +297,7 @@ impl BrowserModule {
             reflow: reflow::Reflow::default(),
             outside,
             casts: screen::Casts::default(),
+            proxies: Arc::new(proxy::Proxies::default()),
         })
     }
 
@@ -317,6 +338,22 @@ impl BrowserModule {
         self.shared().cdp.is_some()
     }
 
+    /// Whether the browser runs headed on a virtual display.
+    pub fn headed(&self) -> bool {
+        self.mode == DisplayMode::Virtual
+    }
+
+    /// The display of the running headed browser.
+    pub fn display(&self) -> Option<Arc<Display>> {
+        self.shared().display.clone()
+    }
+
+    /// Device pixels per CSS pixel a headed browser draws at.
+    fn scale(&self) -> f64 {
+        let scale = self.cfg.device_scale_factor;
+        if scale.is_finite() { (scale * 100.0).round().clamp(100.0, 300.0) / 100.0 } else { 1.0 }
+    }
+
     pub fn dirs(&self) -> &BrowserDirs {
         &self.dirs
     }
@@ -339,11 +376,18 @@ impl BrowserModule {
                 "the browser is switched off for this agent ([loader.browser] enabled = false)",
             ));
         }
-        match chromium {
-            Chromium::Ready(exe) => Ok(exe),
-            Chromium::NotDownloaded { why, .. } => Err(BrowserError::no_browser("not_downloaded", why)),
-            Chromium::NoPackage(why) => Err(BrowserError::no_browser("no_package", why)),
+        let exe = match chromium {
+            Chromium::Ready(exe) => exe,
+            Chromium::NotDownloaded { why, .. } => return Err(BrowserError::no_browser("not_downloaded", why)),
+            Chromium::NoPackage(why) => return Err(BrowserError::no_browser("no_package", why)),
+        };
+        if self.headed() && display::find_xvnc().is_none() {
+            return Err(BrowserError::no_browser(
+                "no_display",
+                "this runtime has no virtual display for the browser (`Xvnc` of TigerVNC is not on PATH; it comes with the Agent's container image)",
+            ));
         }
+        Ok(exe)
     }
 
     /// The browser's executable, or why this agent has no browser.
@@ -437,7 +481,9 @@ impl BrowserModule {
     async fn open_in(&self, cdp: &CdpClient, group_id: &str, url: &str) -> Result<String, BrowserError> {
         // A window of its own: tabs of one window hide each other.
         let expected = self.expect_tabs(group_id);
+        log::debug!("browser: opening a tab of group {group_id} at {url}");
         let answer = cdp.send(None, "Target.createTarget", json!({ "url": url, "newWindow": true })).await;
+        log::debug!("browser: the tab is opened: {answer:?}");
         drop(expected);
         let tab_id = answer?["targetId"]
             .as_str()
@@ -528,9 +574,31 @@ impl BrowserModule {
 
     async fn start(&self, life: &mut Life) -> Result<Arc<CdpClient>, BrowserError> {
         let exe = self.usable()?;
-        let launched = match process::launch(&exe, &self.dirs).await {
+        let (display, shown) = match self.headed() {
+            false => (None, process::Shown::Headless),
+            true => {
+                let xvnc = display::find_xvnc().ok_or_else(|| BrowserError::no_browser("no_display", "`Xvnc` is gone"))?;
+                let scale = self.scale();
+                match Display::start(&xvnc, &self.dirs, scale).await {
+                    Ok(display) => {
+                        let painting = *display.painting().borrow();
+                        let shown = process::Shown::Display { display: display.name(), scale, size: (painting.width, painting.height) };
+                        (Some(display), shown)
+                    }
+                    Err(e) => {
+                        let message = format!("the browser's display did not start: {e}");
+                        self.failed(&message);
+                        return Err(BrowserError::unavailable(message));
+                    }
+                }
+            }
+        };
+        let launched = match process::launch(&exe, &self.dirs, &shown).await {
             Ok(launched) => launched,
             Err(e) => {
+                if let Some(display) = &display {
+                    display.stop().await;
+                }
                 self.failed(&e);
                 return Err(BrowserError::unavailable(e));
             }
@@ -544,13 +612,16 @@ impl BrowserModule {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let process::Launched { mut child, tree, port, .. } = launched;
+        let process::Launched { mut child, tree, port, path } = launched;
         let cdp = match connected {
             Ok(cdp) => cdp,
             Err(e) => {
                 let _ = child.start_kill();
                 let _ = child.wait().await;
                 tree.sweep().await;
+                if let Some(display) = &display {
+                    display.stop().await;
+                }
                 let message = format!("the browser's debugging endpoint {endpoint} is not reachable: {e}");
                 self.failed(&message);
                 return Err(BrowserError::unavailable(message));
@@ -565,7 +636,9 @@ impl BrowserModule {
         {
             let mut s = self.shared();
             s.cdp = Some(cdp.clone());
+            s.display = display.clone();
             s.port = Some(port);
+            s.endpoint_path = path;
             s.last_error = None;
             s.last_active = Instant::now();
             s.stopping = false;
@@ -573,7 +646,11 @@ impl BrowserModule {
         }
         let tracker = tokio::spawn(self.me().track(cdp.clone(), events, pid));
         tokio::spawn(self.me().monitor(child, generation, exited_tx));
-        life.proc = Some(Proc { generation, tree, cdp: cdp.clone(), exited, tracker, started: Instant::now() });
+        let display = display.map(|display| {
+            let keeper = tokio::spawn(self.me().keep_windows(cdp.clone(), display.clone()));
+            (display, keeper)
+        });
+        life.proc = Some(Proc { generation, tree, display, cdp: cdp.clone(), exited, tracker, started: Instant::now() });
 
         let prepared = async {
             cdp.send(None, "Target.setDiscoverTargets", json!({ "discover": true })).await?;
@@ -651,6 +728,14 @@ impl BrowserModule {
             log::error!("browser: pid {} is still there", proc.tree.pid);
         }
         self.gone(&proc);
+        Self::end_display(&proc).await;
+    }
+
+    async fn end_display(proc: &Proc) {
+        if let Some((display, keeper)) = &proc.display {
+            keeper.abort();
+            display.stop().await;
+        }
     }
 
     /// The browser of `proc` is gone: its tabs are kept to be opened again.
@@ -660,6 +745,8 @@ impl BrowserModule {
             let mut s = self.shared();
             s.groups.suspend();
             s.cdp = None;
+            s.display = None;
+            s.popups.clear();
             s.port = None;
             s.attaching.clear();
             s.dialogs.clear();
@@ -698,6 +785,7 @@ impl BrowserModule {
         let ran = proc.started.elapsed();
         proc.tree.sweep().await;
         self.gone(&proc);
+        Self::end_display(&proc).await;
         life.crashes = if ran >= STABLE_RUN { 1 } else { life.crashes + 1 };
         self.failed(&format!("the browser ended unexpectedly ({status}) after {}s", ran.as_secs()));
         loop {
@@ -836,6 +924,7 @@ impl BrowserModule {
         let mut s = self.shared();
         s.attaching.remove(tab_id);
         s.dialogs.remove(tab_id);
+        s.popups.remove(tab_id);
         s.groups.tab_removed(tab_id)
     }
 
@@ -938,6 +1027,9 @@ impl BrowserModule {
                 return false;
             }
             changed |= s.groups.tab_seen(tab_id, &group_id, url, title);
+            if info["openerId"].as_str().is_some_and(|o| !o.is_empty()) {
+                s.popups.insert(tab_id.to_string());
+            }
         }
         if s.attaching.insert(tab_id.to_string()) {
             tokio::spawn(self.me().attach(cdp.clone(), tab_id.to_string()));
@@ -960,16 +1052,69 @@ impl BrowserModule {
         };
         self.shared().groups.tab_attached(&tab_id, Some(&session));
         self.bump();
-        for (method, params) in [
-            ("Page.enable", json!({})),
-            ("Page.setLifecycleEventsEnabled", json!({ "enabled": true })),
-            ("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })),
-        ] {
+        let mut setup = vec![("Page.enable", json!({})), ("Page.setLifecycleEventsEnabled", json!({ "enabled": true }))];
+        // A headless window is never in front: its page is told it has the focus. A headed one has what the display gives it.
+        if !self.headed() {
+            setup.push(("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })));
+        }
+        for (method, params) in setup {
             if let Err(e) = cdp.send(Some(&session), method, params).await {
                 log::debug!("browser: {method} of tab {tab_id}: {e}");
             }
         }
-        self.outside.instrument(&cdp, &tab_id, &session).await;
+        if let Some(display) = self.display() {
+            let size = { let p = *display.painting().borrow(); (p.width, p.height) };
+            let popup = self.shared().popups.contains(&tab_id);
+            fit_window(&cdp, &tab_id, size, popup).await;
+        }
+        self.outside.instrument(&cdp, &tab_id, &session, self.headed()).await;
+    }
+
+    /// Keep a headed browser's windows on its display: a tab's window has
+    /// the display's size (a popup keeps its own, within the display); the
+    /// group's current tab is the window in front, also after a window of
+    /// the module's own (a reflow's) opened over it.
+    async fn keep_windows(self: Arc<Self>, cdp: Arc<CdpClient>, display: Arc<Display>) {
+        let mut changes = self.changes();
+        let mut painting = display.painting();
+        let mut size = { let p = *painting.borrow(); (p.width, p.height) };
+        let (mut raised, mut known): (Option<String>, Vec<String>) = (None, Vec::new());
+        loop {
+            let (active, all) = {
+                let s = self.shared();
+                (s.groups.active_tab(DEFAULT_GROUP), s.groups.tab_ids())
+            };
+            if active != raised || (all != known && active.is_some()) {
+                if let Some(tab_id) = &active {
+                    display.tab.send_replace(tab_id.clone());
+                    if let Err(e) = cdp.send(None, "Target.activateTarget", json!({ "targetId": tab_id })).await {
+                        log::debug!("browser: tab {tab_id} not brought to the front: {e}");
+                    }
+                }
+                raised = active;
+            }
+            known = all;
+            tokio::select! {
+                changed = changes.changed() => if changed.is_err() { return },
+                changed = painting.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let p = *painting.borrow_and_update();
+                    if (p.width, p.height) != size {
+                        size = (p.width, p.height);
+                        let (tabs, popups) = {
+                            let s = self.shared();
+                            (s.groups.tab_ids(), s.popups.clone())
+                        };
+                        for tab_id in tabs {
+                            fit_window(&cdp, &tab_id, size, popups.contains(&tab_id)).await;
+                        }
+                    }
+                }
+                _ = cdp.closed() => return,
+            }
+        }
     }
 
     /// Events were lost: the tabs are what the browser says they are now.
@@ -1017,6 +1162,7 @@ impl BrowserModule {
         if expired {
             self.bump();
         }
+        self.cut_agent();
         self.close_unattended_dialogs();
         if watched {
             self.refresh_running().await;
@@ -1114,6 +1260,8 @@ impl BrowserModule {
         json!({
             "enabled": self.cfg.enabled,
             "available": available,
+            "display": if self.headed() { "virtual" } else { "headless" },
+            "device_scale_factor": if self.headed() { Some(self.scale()) } else { None },
             "running": running,
             "unavailable": unavailable,
             "unavailable_code": unavailable_code,
@@ -1141,15 +1289,41 @@ impl BrowserModule {
         };
         self.bump();
         let port = port.ok_or_else(|| BrowserError::unavailable("the browser stopped"))?;
+        // Through this service, where the lease's end closes the connection; straight to the browser where there is no service to go through (tests).
+        let cdp_url = match std::env::var(ENV_BROWSER_RPC).ok().filter(|rpc| !rpc.is_empty()) {
+            Some(rpc) => format!("{}/browser/cdp/{}", rpc.trim_end_matches('/'), lease.lease_id),
+            None => format!("http://127.0.0.1:{port}"),
+        };
         Ok(Acquired {
             lease_id: lease.lease_id,
             group_id: DEFAULT_GROUP.to_string(),
             ttl_ms,
             expires_at_ms: lease.expires_at_ms,
-            cdp_url: format!("http://127.0.0.1:{port}"),
+            cdp_url,
             active_tab_id: group.tabs.iter().find(|t| t.active).map(|t| t.tab_id.clone()),
             tabs: group.tabs,
         })
+    }
+
+    /// Close the agent's connections whose lease ended: from now on no
+    /// command of what it was doing reaches the browser.
+    pub fn cut_agent(&self) {
+        let now = now_ms();
+        let cut = self.proxies.cut(|lease_id| self.shared().groups.lease_valid(lease_id, now));
+        if cut > 0 {
+            log::info!("browser: {cut} connection(s) of the agent to the browser closed: their lease ended");
+        }
+    }
+
+    /// Whether `lease_id` is a lease of the agent that has not ended.
+    pub fn lease_valid(&self, lease_id: &str) -> bool {
+        self.shared().groups.lease_valid(lease_id, now_ms())
+    }
+
+    /// `ws://…` of the running browser's DevTools endpoint, and its version.
+    pub fn endpoint(&self) -> Option<(String, Option<String>)> {
+        let s = self.shared();
+        s.port.map(|port| (format!("ws://127.0.0.1:{port}{}", s.endpoint_path), s.browser_version.clone()))
     }
 
     /// `browser.renew`: the lease's new end.
@@ -1166,6 +1340,7 @@ impl BrowserModule {
         let note = note.filter(|n| !n.trim().is_empty());
         self.shared().groups.release(lease_id, state.map(|state| (state, note)), now_ms())?;
         self.bump();
+        self.cut_agent();
         self.close_unattended_dialogs();
         Ok(())
     }
@@ -1176,6 +1351,7 @@ impl BrowserModule {
         let note = note.filter(|n| !n.trim().is_empty());
         self.shared().groups.request_handover(DEFAULT_GROUP, reason, note, now_ms());
         self.bump();
+        self.cut_agent();
         Ok(())
     }
 
@@ -1195,6 +1371,7 @@ impl BrowserModule {
             (s.groups.group(DEFAULT_GROUP, now_ms()), page)
         };
         self.bump();
+        self.cut_agent();
         let event = sessions::record(what, page.as_ref().map(|t| (t.url.as_str(), t.title.as_str())));
         let (agent, default_session) = (self.deps.agent.as_ref(), self.default_session());
         if let Some(sid) = sessions::post_record(agent, self.deps.owner_did.as_deref(), default_session.as_deref(), who, event).await {
@@ -1236,5 +1413,32 @@ impl BrowserModule {
         }
         log::info!("browser: profile {} cleared", self.dirs.profile.display());
         Ok(())
+    }
+}
+
+/// Give a tab's window the display's size `(width, height)` (CSS pixels),
+/// or keep a popup's own size within it.
+async fn fit_window(cdp: &CdpClient, tab_id: &str, (width, height): (u32, u32), popup: bool) {
+    let Ok(window) = cdp.send(None, "Browser.getWindowForTarget", json!({ "targetId": tab_id })).await else { return };
+    let Some(window_id) = window["windowId"].as_i64() else { return };
+    let bounds = &window["bounds"];
+    let side = |name: &str| bounds[name].as_i64().unwrap_or(0);
+    let (w, h) = (width as i64, height as i64);
+    let wanted = if popup {
+        let (pw, ph) = (side("width").clamp(1, w), side("height").clamp(1, h));
+        (side("left").clamp(0, w - pw), side("top").clamp(0, h - ph), pw, ph)
+    } else {
+        (0, 0, w, h)
+    };
+    if bounds["windowState"] == "normal" && (side("left"), side("top"), side("width"), side("height")) == wanted {
+        return;
+    }
+    if bounds["windowState"] != "normal" {
+        let _ = cdp.send(None, "Browser.setWindowBounds", json!({ "windowId": window_id, "bounds": { "windowState": "normal" } })).await;
+    }
+    let (left, top, w, h) = wanted;
+    let bounds = json!({ "left": left, "top": top, "width": w, "height": h });
+    if let Err(e) = cdp.send(None, "Browser.setWindowBounds", json!({ "windowId": window_id, "bounds": bounds })).await {
+        log::debug!("browser: the window of tab {tab_id} was not fitted to the display: {e}");
     }
 }

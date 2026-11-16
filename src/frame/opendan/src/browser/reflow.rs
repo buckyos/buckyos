@@ -948,7 +948,7 @@ printf '{"headline":"%s","click":"%s","script":"%s"}' "$url" "$click" "$(cat "$p
 
         impl Bench {
             async fn new(idle_stop_secs: u64) -> Self {
-                Self::with(BrowserSection { enabled: true, idle_stop_secs, max_tabs: 12 }, |_| {}).await
+                Self::with(BrowserSection { enabled: true, idle_stop_secs, max_tabs: 12, display: crate::browser::display::DisplayMode::Headless, ..Default::default() }, |_| {}).await
             }
 
             async fn with(cfg: BrowserSection, tune: impl FnOnce(&mut Tuning)) -> Self {
@@ -1097,7 +1097,7 @@ printf '{"headline":"%s","click":"%s","script":"%s"}' "$url" "$click" "$(cat "$p
         /// making it again needs one.
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
         async fn without_a_browser_the_library_is_still_told() {
-            let off = BrowserSection { enabled: false, idle_stop_secs: 600, max_tabs: 12 };
+            let off = BrowserSection { enabled: false, idle_stop_secs: 600, max_tabs: 12, display: crate::browser::display::DisplayMode::Headless, ..Default::default() };
             let on = BrowserSection { enabled: true, ..off.clone() };
             let tools = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(tools.path().join("bin")).unwrap();
@@ -1486,7 +1486,7 @@ printf '{"headline":"%s","click":"%s","script":"%s"}' "$url" "$click" "$(cat "$p
                 reflow_library: Some(library.clone()),
                 ..Default::default()
             };
-            let cfg = BrowserSection { enabled: true, idle_stop_secs: 600, max_tabs: 12 };
+            let cfg = BrowserSection { enabled: true, idle_stop_secs: 600, max_tabs: 12, display: crate::browser::display::DisplayMode::Headless, ..Default::default() };
             let m = BrowserModule::with_tuning(cfg, deps(&tmp.path().join("agent_root")), tuning);
             let settled = || async {
                 let started = Instant::now();

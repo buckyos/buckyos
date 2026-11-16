@@ -27,7 +27,12 @@ Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`�
 
 新出现的标签页归哪个组，按顺序：有 opener 的归 opener 的组；服务端正在为某个组开标签页时归那个组；其他都归 `default`。
 
-每个标签页单独一个窗口（`Target.createTarget {newWindow: true}`），服务端另给每个标签页开着焦点模拟（`Emulation.setFocusEmulationEnabled`）：同一个窗口里排在后面的标签页不渲染，截屏流和 Playwright 的点击、截图都会停住。`agent-browser` 自己开标签页也要用 `newWindow: true`。
+每个标签页单独一个窗口（`Target.createTarget {newWindow: true}`）：同一个窗口里排在后面的标签页不渲染，截屏流和 Playwright 的点击、截图都会停住。`agent-browser` 自己开标签页也要用 `newWindow: true`。无头浏览器（§6 的 `display`）的标签页服务端另开着焦点模拟（`Emulation.setFocusEmulationEnabled`）；有显示器的浏览器（`virtual`）不开，焦点就是显示器上的焦点。
+
+浏览器有两种跑法（§6 `[loader.browser] display`）：
+
+- `virtual`（Linux 的默认）：有窗口地跑在这个 Agent 自己的虚拟显示器上（TigerVNC 的 `Xvnc`），和桌面上的浏览器一样：身份（UA、UA-CH）、权限提示、下拉框、JS 弹框、账号选择这些都是浏览器自己的，画在显示器上。屏幕看到的是整块显示器，用户的操作是显示器上的鼠标和键盘（§3.6）。服务端不改浏览器的身份，不往页面里注入改变页面行为的脚本，不替用户拒绝权限。
+- `headless`（其他平台的默认，或明确配置）：无头，屏幕是当前标签页的截屏流，输入走 DevTools；服务端把标签页模拟成看它的设备（手机的 UA 和触屏）、给它换掉 `HeadlessChrome` 的 UA、拦下拉框、拒绝全部权限（§3）。
 
 ## 2. kRPC
 
@@ -57,7 +62,9 @@ Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`�
   "available": true,               // 这个节点上有浏览器可以启动：ext-core 装了，浏览器也下载好了。不看 enabled
   "running": false,
   "unavailable": null,             // 不可用时的一句说明（英文，给人和 Agent 看）；可用但最近一次启动失败时是失败的原因
-  "unavailable_code": null,        // 不可用的原因：disabled | no_package | not_downloaded；其他时候为 null
+  "unavailable_code": null,        // 不可用的原因：disabled | no_package | not_downloaded | no_display；其他时候为 null
+  "display": "virtual",            // 浏览器怎么跑：virtual（有窗口，在虚拟显示器上）| headless（§1、§6）
+  "device_scale_factor": 2,        // virtual 时显示器的设备像素比（§6）；headless 时为 null
   "version": { "browser": "159.0.8154.6", "playwright": "1.65.1" },   // disabled、no_package 时为 null
   "default_session_id": null,      // 浏览器会话（browser.bind_default 绑定的 MessageHub 会话），没绑定时为 null
   "groups": [ /* Group */ ]        // 总是只有一个：default
@@ -71,6 +78,7 @@ Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`�
 | `disabled` | `[loader.browser] enabled = false` |
 | `no_package` | 工具目录里没有 `chromium` 启动器：这个节点没装 ext-core |
 | `not_downloaded` | 启动器在，浏览器本体没到 `ready`。浏览器是 ext-core 的在线项 `chromium`：不随包分发，包装好以后在节点上下载（§6）。还没下载、正在下载、下载失败都是这个值，`unavailable` 按记录文件区分 |
+| `no_display` | `display` 是 `virtual`，运行环境里找不到 `Xvnc`（`PATH` 上，或 `OPENDAN_XVNC` 指的文件）：Agent 的容器镜像比浏览器要求的旧 |
 | `null` | 上面都不成立。这时 `unavailable` 也是 `null`，除非浏览器在但最近一次启动失败、现在没在运行：那是失败的原因 |
 
 现在的 `unavailable`：
@@ -78,6 +86,7 @@ Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`�
 ```text
 disabled        the browser is switched off for this agent ([loader.browser] enabled = false)
 no_package      no `chromium` on this node (it comes with the ext-core extension tools)
+no_display      this runtime has no virtual display for the browser (`Xvnc` of TigerVNC is not on PATH; it comes with the Agent's container image)
 not_downloaded  the browser is not downloaded on this node yet (the online item `chromium` of ext-core): download it in Settings › Extension tools, or with `buckyos ext-tools download ext-core chromium`
                 the browser is being downloaded to this node (42% of 171 MiB)
                 the browser's download to this node failed: <记录里的原因>. Start it again in Settings › Extension tools, or with `buckyos ext-tools download ext-core chromium`
@@ -125,7 +134,7 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 | `browser.reflow_action` | `{url, selector}` | 见 §5.3 | owner |
 
 - `status` 不启动浏览器。`ensure` 没在运行就启动。`acquire` 也会启动（等于先 `ensure`）；用户接手着的时候先回 `user_in_control`，不为此启动浏览器。
-- `cdp_url` 是 `http://127.0.0.1:<端口>`，给 `chromium.connectOverCDP` 用。端口每次启动都会变。
+- `cdp_url` 给 `chromium.connectOverCDP` 用，是这个服务上这个租约的入口：`<OPENDAN_BROWSER_RPC>/browser/cdp/<lease_id>`（§2.5）。Playwright 先读它的 `json/version`，再连上它给的 WebSocket（`…/browser/cdp/<lease_id>/devtools/browser`），服务端把消息原样转给浏览器。只收本机回环地址上的连接；租约无效时回 `lease_lost`。租约一结束（`release`、过期、`take_over`、`request_handover`、浏览器停掉），这个租约的连接立刻被服务端关掉：正在执行的命令马上失败，之后的命令到不了浏览器，用户接手时不用等 Agent 停手。服务端没有 `OPENDAN_BROWSER_RPC` 时（测试）`cdp_url` 是浏览器自己的 `http://127.0.0.1:<端口>`。这只是让交接干净，不是安全边界：同一个运行环境里自己去找浏览器端口的进程拦不住。
 - `active_tab_id` 是当前的标签页，没有标签页时为 `null`。`acquire` 不替 Agent 开标签页。
 - 再次 `acquire`（同一个会话或别的会话）得到另一个租约，原来的照旧有效：几个会话同时操作的是同一组标签页。`renew`、`release` 用到已经过期或被作废的租约回 `lease_lost`（`release` 带的 `state` 这时不生效）。浏览器停掉或崩溃时，所有租约作废。
 - `request_handover` 作废全部租约，并置 `user_hold`。
@@ -142,7 +151,7 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 
 | `code` | 含义 |
 | --- | --- |
-| `browser_unavailable` | 这个 Agent 现在没有浏览器可用（`message` 里有原因）。模块关着、节点没装 ext-core、浏览器还没下载好这三种，错误的 JSON 另带 `unavailable_code`（`disabled`、`no_package`、`not_downloaded`，含义和 `message` 同 §2.1 的 Status）：`{"kind": "other", "code": "browser_unavailable", "unavailable_code": "not_downloaded", "message": "…"}`。浏览器起不来、中途断了、Agent Service 正在退出这些没有这个字段 |
+| `browser_unavailable` | 这个 Agent 现在没有浏览器可用（`message` 里有原因）。模块关着、节点没装 ext-core、浏览器还没下载好、运行环境没有虚拟显示器这四种，错误的 JSON 另带 `unavailable_code`（`disabled`、`no_package`、`not_downloaded`、`no_display`，含义和 `message` 同 §2.1 的 Status）：`{"kind": "other", "code": "browser_unavailable", "unavailable_code": "not_downloaded", "message": "…"}`。浏览器起不来、中途断了、Agent Service 正在退出这些没有这个字段 |
 | `invalid_argument` | 参数缺失或取值不对，或浏览器拒绝了这条命令（比如打不开的网址） |
 | `user_in_control` | 用户接手着，`acquire` 失败 |
 | `lease_lost` | 租约过期或被作废 |
@@ -170,7 +179,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 
 `agent-browser`（`publish/exttool/ext-core/browser/agent-browser.mjs`）这样用这些方法：
 
-- 要操作页面的子命令（`run`、`open`、`snapshot`、`screenshot`）依次调 `browser.ensure`、`browser.acquire`，用 Playwright 的 `connectOverCDP(cdp_url)` 连上，做完断开，再调 `browser.release`。`tabs` 只取租约、不连接。`done`、`stuck` 取到租约后立刻带 `state` 释放。
+- 要操作页面的子命令（`run`、`open`、`snapshot`、`screenshot`）依次调 `browser.ensure`、`browser.acquire`，用 Playwright 的 `connectOverCDP(cdp_url)` 连上（经过服务端，§2.2），做完断开，再调 `browser.release`。用户接手时连接被服务端关掉，命令按“被切断”退出。`tabs` 只取租约、不连接。`done`、`stuck` 取到租约后立刻带 `state` 释放。
 - 持有租约期间每隔 `ttl_ms / 3` 调一次 `browser.renew`。返回 `lease_lost` 时断开连接、中止脚本，不再 `release`。
 - 错误的 `code` 从 kRPC 的 `error` 文本里的 JSON 取：先取 `code`，没有时取 `kind`。
 - 连接带 `noDefaults`：Playwright 不改默认上下文的下载行为、媒体模拟和焦点模拟。
@@ -180,6 +189,8 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - 连接时任何一个标签页上有没人处理的 JS 弹框，新的 CDP 会话都附着不上去，`connectOverCDP` 会等到超时（30 秒）。超时后命令报错，并列出没有回应的标签页。
 
 ## 3. 屏幕
+
+本节按无头浏览器写；有显示器的浏览器（`display: virtual`）哪里不同见 §3.6。
 
 ### 3.1 连接
 
@@ -354,6 +365,18 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - 降档要快：最近 3 秒的帧平均传输超过 250 毫秒，或有一帧超过 700 毫秒，或传输加绘制占了这 3 秒的 70% 以上，或平均绘制超过 120 毫秒，马上降一档。
 - 升档要稳：最近 10 秒至少 2 帧、合计至少 16 KB，按上面的字节倍数推算上一档的平均传输不到 100 毫秒、绘制（按像素数推算）不到 50 毫秒、占用不到 35%，连续 5 秒都这样才升一档。降档后 10 秒内不升；升档后 60 秒内又降了，这个等待加倍，最多 2 分钟，2 分钟没降过就回到 10 秒。没有帧时不升也不降。
 - 这些数值只在 mock 的限速上验证过，真实的弱网还要再调。
+
+### 3.6 有显示器的浏览器
+
+`display` 是 `virtual` 时（§1、§6），屏幕看的是浏览器所在的整块虚拟显示器，用户在显示器上操作。连接、握手、`state`、`ack`、帧的节奏、`nav`、`tab`、`respond`、接手的规则不变，下面这些不同：
+
+- 帧：显示器的画面（浏览器的窗口，带它自己的标签栏、地址栏、弹出的窗口、对话框、下拉列表、权限提示）。`frame_meta` 的 `width`、`height` 是显示器的 CSS 尺寸，坐标都相对显示器左上角；`tab_id` 是组的当前标签页。几条连接看到的是同一块显示器。
+- 视口：最近设置视口的那条连接的 `width`、`height` 就是显示器的 CSS 尺寸，浏览器的窗口铺满它（页面打开的弹出窗口保持自己的大小，挪进显示器里）。宽度至少 500（浏览器的窗口不比这更窄），更窄的视口得到 500 宽的显示器，由 App 缩小显示。`mobile` 不起作用：不模拟手机，不改 UA，不开触屏，不重新加载；`state.viewport.mobile` 总是 `false`，App 因而把触摸换成鼠标和滚轮（§3.2）。改视口时浏览器的窗口跟着变，页面像在桌面上拖窗口一样重排。
+- 像素：浏览器按固定的设备像素比画（`Status.device_scale_factor`，§6），页面的 `devicePixelRatio` 就是它，不随连接和网速变。连接要的 `pixel_ratio`（取 1 到设备像素比）只决定帧缩到多大：显示器本来的像素按比例缩小后编码。
+- 输入：`mouse` 是显示器上的指针（按下的键随消息）；`wheel` 换成滚轮的格数（每格 53 个 CSS 像素，不足一格的留到下一次）；`key` 换成 X 的 keysym 按下、抬起，消息的 `modifiers` 先同步成按住的修饰键；`text` 一个字符一个字符地打（非拉丁字符由 Xvnc 临时映射到空闲的键上）；`composition` 不处理：输入法自己显示组字，上屏的文字作为 `text` 到页面。`touch` 也收：没移动就是在按下处点一下，移动超过 8 个 CSS 像素就是反方向的滚轮。
+- 页面之外的请求（§3.4）：没有 `select`、`dialog`、`permission`。下拉列表、JS 弹框、权限提示都是浏览器自己的，画在显示器上，用户直接点；权限的选择由浏览器记在用户数据里，不再一律拒绝。`file_chooser` 照旧由服务端拦下、交给 App 上传本机或 Zone 的文件（页面拿到的仍是那几个文件）；`download` 照旧。没人在看、也不是 Agent 在操作时开着的 JS 弹框照 §2.2 关掉，只因为它会卡住 Agent 的 `connectOverCDP`。
+- `focus`：仍由服务端在单独隔离环境里的脚本报告（只监听焦点，不拦任何事件、不改页面的 API），`rect` 是显示器上的坐标。
+- 浏览器之外的显示器：服务端用它自己到显示器的 VNC 连接（只有服务端能打开的本地套接字），浏览器的调试连接只用来列标签页、读网址标题、导航、上传文件、管窗口的大小和前后（组的当前标签页的窗口在最前），不用来出帧和输入。
 
 ## 4. 本机文件上传
 
@@ -539,6 +562,8 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 | `enabled` | `true` | 关掉后所有 `browser.*`（`status`、`reflow_state` 除外）回 `browser_unavailable`（`unavailable_code` 是 `disabled`），进程环境里也不设 `OPENDAN_BROWSER_RPC` |
 | `idle_stop_secs` | `600` | 没有人看、没有租约，超过这个时间停掉浏览器。停之前把各组标签页的网址存下来，下次启动时重开 |
 | `max_tabs` | `12` | 所有组的标签页总数上限。服务端到了上限不再开（`too_many_tabs`）；别处开出来的超出上限的标签页会被立刻关掉 |
+| `display` | `auto` | `virtual`：有窗口地跑在虚拟显示器上；`headless`：无头；`auto`：Linux 上是 `virtual`，其他平台是 `headless`（macOS、Windows 的显示器还没做）。`virtual` 而没有 `Xvnc` 时报 `no_display`，不改成无头 |
+| `device_scale_factor` | `2` | 虚拟显示器的设备像素比（1–3）：浏览器按它画，页面看到的 `devicePixelRatio` 就是它。手机上要清楚就要 2；节点 CPU 紧时可以设 1 |
 
 这个节点上没有浏览器可以启动时，模块报“不可用”（`browser.status` 的 `available: false`，`browser.reflow_state` 照常，其他方法回 `browser_unavailable`），Agent Service 的其他功能照常。分两种，`unavailable_code` 不同（§2.1）：
 
@@ -561,7 +586,9 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 
 进程：
 
-- 启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2} --disable-blink-features=CaretBlinking`。`--screen-info` 给无头浏览器两块屏：第一块和不带这个参数时一样（800×600，像素密度 1），标签页的窗口都开在这里；第二块 CSS 尺寸相同、像素密度 2，有连接要更密的帧时把标签页的窗口挪过去（`Browser.setWindowBounds` 的 `left` 设 1600，回来设 0；只设位置，不设宽高），帧就按 2 倍出（§3.2 `pixel_ratio`）。这个参数本身不改变什么：没有窗口在第二块屏时 CPU 和不带它一样，只有 `screen.isExtended` 变成真。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。浏览器来自 ext-core（读得到 `browser/versions.json`）时再加 `--user-agent=<同版本有窗口的 Chrome 的 UA>`：无头模式默认的 UA 带 `HeadlessChrome`，很多网站会把它当机器人。`versions.json` 随包，按启动器的位置找（`<启动器所在目录>/../store/ext-core/browser/versions.json`），和浏览器本体下载到哪里无关。Unix 上有效用户是 root 时加 `--no-sandbox`；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口从 `<profile>/DevToolsActivePort` 读，只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
+- 虚拟显示器（`display: virtual`）：浏览器启动前服务端起一个 `Xvnc :<n>`（`n` 从 20 起找空闲的，`-geometry` 是默认 1280×800 乘设备像素比，`-dpi` 96 乘设备像素比，`-depth 24`），不开 TCP（`-rfbport -1 -nolisten tcp`），只开一个本地套接字 `/tmp/opendan-display-<n>.rfb`（`-rfbunixmode 0600`，不要密码，`-AcceptSetDesktopSize`）；日志在 `display.log`。浏览器停掉后它也停掉，浏览器崩溃重启时一起重来。`Xvnc` 来自 Agent 的容器镜像（`build_aios`，一个占位包替掉它用不到的 Mesa 和 Perl，见 `doc/app_service/paios容器需求.md`）；`OPENDAN_XVNC` 可以指定别的。有显示器时浏览器的参数：`--user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --disable-blink-features=CaretBlinking --window-position=0,0 --window-size=<显示器的 CSS 尺寸> --force-device-scale-factor=<设备像素比>`，环境变量 `DISPLAY=:<n>`；不带 `--headless`、`--user-agent`、`--screen-info`。
+- 调试端口：服务端先在回环地址上找一个空闲端口给浏览器（`--remote-debugging-port=<端口>`），从浏览器标准错误里的 `DevTools listening on ws://127.0.0.1:<端口>/devtools/browser/<id>` 读到地址（有窗口的浏览器给了端口就不写 `DevToolsActivePort`）；端口被别的进程抢了（`Cannot start http server for devtools`）就换一个再起，最多 4 次。
+- 无头时的启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2} --disable-blink-features=CaretBlinking`。`--screen-info` 给无头浏览器两块屏：第一块和不带这个参数时一样（800×600，像素密度 1），标签页的窗口都开在这里；第二块 CSS 尺寸相同、像素密度 2，有连接要更密的帧时把标签页的窗口挪过去（`Browser.setWindowBounds` 的 `left` 设 1600，回来设 0；只设位置，不设宽高），帧就按 2 倍出（§3.2 `pixel_ratio`）。这个参数本身不改变什么：没有窗口在第二块屏时 CPU 和不带它一样，只有 `screen.isExtended` 变成真。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。浏览器来自 ext-core（读得到 `browser/versions.json`）时再加 `--user-agent=<同版本有窗口的 Chrome 的 UA>`：无头模式默认的 UA 带 `HeadlessChrome`，很多网站会把它当机器人。`versions.json` 随包，按启动器的位置找（`<启动器所在目录>/../store/ext-core/browser/versions.json`），和浏览器本体下载到哪里无关。Unix 上有效用户是 root 时加 `--no-sandbox`（两种跑法都是）；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
 - 浏览器没有自己的标签页（`--no-startup-window`）：每个标签页都属于某个组。
 - 用户数据目录上一次留下的锁（`SingletonLock` 等，记着主机名和进程号，容器每次重建主机名都会变）在启动前删掉；锁指着的进程还在、并且确实是用这个目录起的浏览器时，先把它结束。
 - Chromium 在 `TMPDIR` 下建一个套接字，路径太长（`TMPDIR` 超过约 60 字节）就起不来。Agent Service 自己的 `TMPDIR` 超过 50 字节时，浏览器进程改用 `/tmp`。
