@@ -61,7 +61,7 @@ T1.5 必须使用包含新增闲时 operation 的 AICC 二进制。T2 仅在对�
 - `cargo build --manifest-path src/Cargo.toml -p aicc`：通过。
 - 选定新增模型的 T1.5 manifest dry-run：标准渠道 35 项（含 17 个独立预设 cell），语音闲时版 14 项；dry-run 无网络请求、无 DV 配置变更。
 
-已安装新二进制到 `/opt/buckyos/bin/aicc/aicc`，SHA256 为 `2adeaca31838bee9dc64f33e201303a86536efff62deba690b7efca9af9f8add`，旧文件备份为 `aicc.before-standard-speech-20261116`。已由用户完成重启。网关启动时短暂出现 3180 绑定冲突，随后自行恢复，无需修改启动配置。尚未执行本轮 T2、全 workspace 测试或完整系统构建；本轮真实推理调用数为 0。
+已安装新二进制到 `/opt/buckyos/bin/aicc/aicc`，SHA256 为 `2adeaca31838bee9dc64f33e201303a86536efff62deba690b7efca9af9f8add`，旧文件备份为 `aicc.before-standard-speech-20261116`。已由用户完成重启。网关启动时短暂出现 3180 绑定冲突，随后自行恢复，无需修改启动配置。该 T1.5 阶段真实推理调用数为 0；后续 T2 记录见下。未执行全 workspace 测试或完整系统构建。
 
 ### 网关 T1.5 与测试范围修复
 
@@ -73,4 +73,29 @@ T1.5 必须使用包含新增闲时 operation 的 AICC 二进制。T2 仅在对�
 
 语音闲时版首轮 `t15-20261116060019-632966`：14/14 通过，包括提交、查询、队列超时、错误和响应解析；临时 Provider 清理通过，真实调用为 0。测试 runner 修复后的最终复跑 `t15-20261116060324-636479` 同样为 14/14 通过，临时 Provider 清理通过，真实调用为 0。两组最终合计 49/49 通过。
 
-本轮 T2 离线方案：上述六个新模型共 11 个 `ProviderInstance × model × API-Type` 单元，另需 1 次图片和 1 次视频前置生成，最多 13 次真实调用、0 次重试、并发 1、间隔 1 秒、每单元 300 秒、估算预算上限 3 USD；不启用 Judge。计划临时注入并恢复标准渠道与语音渠道的凭证/设置，通过 Zone Gateway 执行，不向外发送消息。本轮渠道范围的授权尚待确认，不能把现存凭证或历史真实测试结果视为本轮 T2 已通过。
+本轮 T2 离线方案：上述六个新模型共 11 个 `ProviderInstance × model × API-Type` 单元，另需 1 次图片和 1 次视频前置生成，最多 13 次真实调用、0 次重试、并发 1、间隔 1 秒、每单元 300 秒、估算预算上限 3 USD；不启用 Judge。计划临时注入并恢复标准渠道与语音渠道的凭证/设置，通过 Zone Gateway 执行，不向外发送消息。该完整方案未执行；用户随后要求跳过已有 Agent Plan 成功记录的模型，每个剩余模型只选择一个渠道，实际执行范围如下。
+
+### 按模型去重后的真实 T2（2026-11-16）
+
+按用户新要求，不重复 Agent Plan 已成功的原厂模型：
+
+- `deepseek-v4.1-flash`：沿用 Agent Plan 已有 llm 成功记录，例如 `aicc-2026-09-29T14-06-14-898Z-c836c51b`，不因标准渠道新增版本映射重复测试。
+- `deepseek-v4.1-flash-economy`、`kimi-k3.1-pro`、`doubao-seedream-5.0-flash`：沿用上一轮 Agent Plan 成功及人工复核记录，见 `doubao_agent_plan_inventory.md`。
+
+本次选定标准渠道 `doubao-seedream-5-5-261028`（两项图片 API）、`doubao-seedance-2-5-flash-261115`（三项视频 API），以及 speech 渠道 `doubao-seed-asr-2.0-idle`（ASR），共六个单元，含前置生成最多八次调用；每次最多一次尝试、并发一、间隔一秒、估算总预算三美元，无 Judge 或外部消息。
+
+| 模型 | 渠道 | T2 结果 |
+| --- | --- | --- |
+| Seedream 5.5 | 标准 | 账号未开通，官方 `ModelNotOpen`；未生成图片，编辑所需前置图片也被同一限制拒绝 |
+| Seedance 2.5 Flash | 标准 | 账号未开通，官方 `ModelNotOpen`；未生成视频，编辑/延长前置视频被同一限制拒绝 |
+| ASR 2.0 闲时版 | speech | 成功；人工复核通过，转写为“今天的测试编号是4827。” |
+
+首次运行 `aicc-2026-11-16T07-09-38-969Z-65b10ddb` 计入五次调用。标准渠道的五个 API 单元均由基础生成或共享前置生成的 `ModelNotOpen` 阻断，不属于 AICC 协议缺陷。ASR 首次请求返回 404，原因是本地测试配置生成时把 runner 要求的 `operation=url` 字符串数组误写成嵌套表，未正确覆盖 operation base URL；不是产品 metadata 或 codec 错误。
+
+只修正被 Git 忽略的本地 TOML，并在补测脚本中校验解析后的 idle endpoint，再执行一次 speech-only T2：`aicc-2026-11-16T07-13-13-263Z-c3121b1b`。它在约 8.6 秒内成功，任务 ID `t-c84c1ac3afa94186b71c0e6e090868ae`，报告音频时长 3.533 秒，转写匹配夹具说明中的“今天的测试编号是四八二七”。原机器报告保留 `review`，人工复核结论追加到本地 `summary.md`。
+
+两轮合计六次真实调用，未超过八次上限；实际费用均未返回，不能将报告的已知费用聚合 0 解释为免费，累计未知费用估算敞口 0.60 USD。两轮都恢复临时 Provider 凭证/设置并清理各自的 26 个上传夹具对象；没有生成媒体制品。未修改产品实现、Mock、Jarvis 提示词或手册。
+
+当前未通过项为标准账号缺少两个媒体模型的开通权限。Agent Plan 当前官方库存不包含这两个模型，speech 不提供图片/视频接口，因而没有同模型的可用替代渠道。需要在方舟控制台开通对应 Model ID，或使用已有权限的标准账号凭证后定向继续；不开通时保留为账号受限，不能宣称两个模型 T2 通过。
+
+本地原始报告目录为 `test/aicc_test/reports/acceptance/doubao-new-uncovered-20261116/` 与 `test/aicc_test/reports/acceptance/doubao-new-uncovered-speech-20261116/`；本次只提交本文的脱敏概要，不提交逐项报告、原始任务响应或本地配置。
