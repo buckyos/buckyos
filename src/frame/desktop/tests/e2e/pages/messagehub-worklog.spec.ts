@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 declare global {
-  interface Window { __messageHubMockWorklogs: typeof import('../../../src/app/messagehub/mock/worklog').mockWorklogs }
+  interface Window { __messageHubMockWorklogs: typeof import('../../../src/components/conversation/mock/worklog').mockWorklogs }
 }
 
 test('agent messages open the turn work log, page upward, and open a created task', async ({ page }) => {

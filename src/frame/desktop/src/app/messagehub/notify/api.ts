@@ -1,7 +1,7 @@
 import { buckyos, taskMgrErrorCode, TASK_ERR_NOT_FOUND, TASK_ERR_PERMISSION_DENIED } from 'buckyos'
-import { getTaskWatchSource } from '../conversation/tasks'
+import { getTaskWatchSource } from '../../../components/conversation/tasks'
 import { ackNotify, dismissNotify, fetchAccountUsername, getNotify, listNotify, MessageHubApiError } from '../datamodel/sessionApi'
-import { parseHumanTaskPrompt } from '../protocol/msgobj'
+import { parseHumanTaskPrompt } from '../../../components/conversation/model/msgobj'
 import type { NotifyView } from './model'
 import type { NotifyBackend } from './watch'
 

@@ -1,4 +1,4 @@
-import type { PauseSource } from '../conversation/worksessions/model'
+import type { PauseSource } from '../../../components/conversation/worksessions/model'
 
 export type { PauseSource }
 

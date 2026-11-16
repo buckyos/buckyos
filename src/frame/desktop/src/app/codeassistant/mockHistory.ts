@@ -1,10 +1,10 @@
 import {
   InMemoryConversationMessageReader,
   IndexedDbConversationMessageReader,
-} from '../messagehub/conversation/history/data-source'
-import type { AppendableConversationMessageReader } from '../messagehub/conversation/history/types'
+} from '../../components/conversation/history/data-source'
+import type { AppendableConversationMessageReader } from '../../components/conversation/history/types'
 import type { ndn } from 'buckyos'
-import type { ConversationStatusType, MessageDeliveryStatus, MessageObject } from '../messagehub/protocol/msgobj'
+import type { ConversationStatusType, MessageDeliveryStatus, MessageObject } from '../../components/conversation/model/msgobj'
 import {
   getMockEntityDid,
   MOCK_SELF_DID,

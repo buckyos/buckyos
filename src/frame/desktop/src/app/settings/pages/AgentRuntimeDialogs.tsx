@@ -16,7 +16,7 @@ import {
 import { isMockRuntime } from '../../../runtime'
 import { useI18n } from '../../../i18n/provider'
 import { errorMessage } from '../../agent-setup/model'
-import { agentServiceClient } from '../../messagehub/conversation/worklog/source'
+import { agentServiceClient } from '../../../components/conversation/worklog/source'
 import { CopyButton } from '../components/shared/CopyButton'
 import { SectionNote } from '../components/shared/Section'
 

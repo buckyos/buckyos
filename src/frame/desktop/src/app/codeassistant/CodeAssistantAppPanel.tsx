@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ConversationView } from '../messagehub/ConversationView'
-import { InMemoryConversationMessageReader } from '../messagehub/conversation/history/data-source'
-import type { AppendableConversationMessageReader } from '../messagehub/conversation/history/types'
-import type { ConversationComposerSubmitPayload } from '../messagehub/conversation/input/ConversationComposer'
-import type { MessageObject } from '../messagehub/protocol/msgobj'
+import { InMemoryConversationMessageReader } from '../../components/conversation/history/data-source'
+import type { AppendableConversationMessageReader } from '../../components/conversation/history/types'
+import type { ConversationComposerSubmitPayload } from '../../components/conversation/input/ConversationComposer'
+import type { MessageObject } from '../../components/conversation/model/msgobj'
 import { EntityDetails } from '../messagehub/EntityDetails'
 import {
   createOutgoingMockMessage,

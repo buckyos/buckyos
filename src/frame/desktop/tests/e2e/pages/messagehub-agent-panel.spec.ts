@@ -12,8 +12,8 @@ import { createNamedSession } from '../fixtures/messagehub'
 declare global {
   interface Window {
     __messageHubMockAgent: typeof import('../../../src/app/messagehub/mock/agentpanel').mockAgentPanel
-    __messageHubMockTasks: import('../../../src/app/messagehub/mock/tasks').MockTaskSource
-    __messageHubMockWorkCards: typeof import('../../../src/app/messagehub/mock/worksessions').mockWorkCards
+    __messageHubMockTasks: import('../../../src/components/conversation/mock/tasks').MockTaskSource
+    __messageHubMockWorkCards: typeof import('../../../src/components/conversation/mock/worksessions').mockWorkCards
   }
 }
 

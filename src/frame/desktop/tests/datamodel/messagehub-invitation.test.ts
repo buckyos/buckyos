@@ -2,7 +2,7 @@
 import { buckyos } from 'buckyos'
 import { MessageHubApiStore } from '../../src/app/messagehub/api/store.ts'
 import { groupErrorReason, MessageHubApiError } from '../../src/app/messagehub/datamodel/sessionApi.ts'
-import { groupErrorText } from '../../src/app/messagehub/groupModel.ts'
+import { groupErrorText } from '../../src/components/conversation/model/groupNotice'
 import type { GroupInvitation } from '../../src/app/messagehub/types.ts'
 import { createRealNetworkBackend } from '../../src/components/network/realBackend.ts'
 import { networkErrorText } from '../../src/components/network/relation.ts'

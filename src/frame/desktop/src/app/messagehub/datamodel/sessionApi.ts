@@ -1,7 +1,7 @@
 import { accessDenialOf, buckyos, type AccessDenial, type EntryDescriptor, type DID, type NotifyCategory, type NotifyKind, type NotifyStatus, type ndn } from 'buckyos'
 import { fetchUserDetail } from '../../../api/user_mgr'
 import type { NotifyView } from '../notify/model'
-import { groupErrorCode } from '../groupModel'
+import { groupErrorCode } from '../../../components/conversation/model/groupNotice'
 
 /**
  * Thin client for the msg-center RPC surface used by MessageHub. Wire shapes

@@ -117,7 +117,7 @@ test('an iPhone HEIC photo goes out as the original file, whether or not the bro
   await expect.poll(() => page.evaluate(async ({ context, id }) => (await window.__messageHubMock.reader(context, id).readRange(0, 1)).map(message => message.ui_local_id ?? 'stored'), { context: OWN, id }), { timeout: 10_000 }).toEqual(['stored'])
   const sent = await page.evaluate(async ({ context, id }) => {
     const [message] = await window.__messageHubMock.reader(context, id).readRange(0, 1)
-    const modulePath = '/src/app/messagehub/conversation/history/objectAccess.ts'
+    const modulePath = '/src/components/conversation/history/objectAccess.ts'
     const { getObjectAccess } = await import(modulePath)
     return Promise.all((message.content.refs ?? []).map(async ref => {
       const info = await getObjectAccess()!.describe(ref.target.type === 'data_obj' ? ref.target.obj_id : '')
@@ -171,7 +171,7 @@ test('an attachment is saved to the viewer\'s collection through its message', a
 test('directory enumeration retains empty nodes and reports file or reader failures', async ({ page }) => {
   await page.goto('/messagehub')
   const result = await page.evaluate(async () => {
-    const modulePath = '/src/app/messagehub/conversation/input/attachmentDraft.ts'
+    const modulePath = '/src/components/conversation/input/attachmentDraft.ts'
     const { extractTransferFiles } = await import(modulePath)
     const transfer = (entry: object) => ({ items: [{ kind: 'file', webkitGetAsEntry: () => entry }], files: [] })
     const directory = (path: string, entries: object[]) => ({ isDirectory: true, isFile: false, fullPath: path, createReader() { let sent = false; return { readEntries(done: (items: object[]) => void) { done(sent ? [] : entries); sent = true } } } })
@@ -201,7 +201,7 @@ test('a directory is one attachment with empty children and original file bytes 
     const [message] = await window.__messageHubMock.reader(context, sessionId).readRange(0, 1)
     const target = message.content.refs?.[0].target
     if (target?.type !== 'data_obj') throw Error('missing directory reference')
-    const modulePath = '/src/app/messagehub/conversation/history/objectAccess.ts'
+    const modulePath = '/src/components/conversation/history/objectAccess.ts'
     const { getObjectAccess } = await import(modulePath)
     return { count: message.content.refs?.length, id: target.obj_id, content: await (await fetch(await getObjectAccess()!.contentUrl(target.obj_id, undefined, 'photo.heic'))).text() }
   }, { context: OWN, sessionId })

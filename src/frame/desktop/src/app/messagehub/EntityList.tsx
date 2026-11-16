@@ -1,5 +1,5 @@
 import { useMessageHubClock } from './store'
-import { relativeActivity } from './sessionModel'
+import { relativeActivity } from '../../components/conversation/model/activity'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,

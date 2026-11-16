@@ -3,9 +3,9 @@ import type {
   Session,
   EntityDetail,
 } from '../types'
-import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
+import { InMemoryConversationMessageReader } from '../../../components/conversation/history/data-source'
 import type { ndn } from 'buckyos'
-import type { MessageDeliveryStatus, MessageObject } from '../protocol/msgobj'
+import type { MessageDeliveryStatus, MessageObject } from '../../../components/conversation/model/msgobj'
 
 /* ── Entities ── */
 

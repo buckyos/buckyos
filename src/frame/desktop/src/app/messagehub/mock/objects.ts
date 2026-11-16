@@ -1,5 +1,5 @@
-import type { AttachmentDirectory } from '../conversation/input/attachmentDraft'
-import { ObjectRouteError, retryingObjectRead, type ObjectAccess, type ObjectInfo } from '../conversation/history/objectAccess'
+import type { AttachmentDirectory } from '../../../components/conversation/input/attachmentDraft'
+import { ObjectRouteError, retryingObjectRead, type ObjectAccess, type ObjectInfo } from '../../../components/conversation/history/objectAccess'
 
 interface MockObject {
   name: string

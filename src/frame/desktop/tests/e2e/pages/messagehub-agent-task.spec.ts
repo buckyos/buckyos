@@ -9,10 +9,10 @@ import { expect, test, type Page } from '@playwright/test'
 declare global {
   interface Window {
     __messageHubMock: import('../../../src/app/messagehub/mock/store').MessageHubMockStore
-    __messageHubMockTasks: import('../../../src/app/messagehub/mock/tasks').MockTaskSource
-    __messageHubTaskWatch: import('../../../src/app/messagehub/conversation/tasks/taskWatch').TaskWatch
-    __messageHubMockWorkCards: typeof import('../../../src/app/messagehub/mock/worksessions').mockWorkCards
-    __messageHubWorkCards: import('../../../src/app/messagehub/conversation/worksessions/watch').WorkCardsWatch
+    __messageHubMockTasks: import('../../../src/components/conversation/mock/tasks').MockTaskSource
+    __messageHubTaskWatch: import('../../../src/components/conversation/tasks/taskWatch').TaskWatch
+    __messageHubMockWorkCards: typeof import('../../../src/components/conversation/mock/worksessions').mockWorkCards
+    __messageHubWorkCards: import('../../../src/components/conversation/worksessions/watch').WorkCardsWatch
   }
 }
 

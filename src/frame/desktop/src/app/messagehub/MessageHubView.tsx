@@ -5,20 +5,20 @@ import './messagehub.css'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
 import { ForwardMessageForm } from './ForwardDialog'
-import { InMemoryConversationMessageReader } from './conversation/history/data-source'
-import type { ConversationMessageReader } from './conversation/history/types'
-import type { MessageObject } from './protocol/msgobj'
-import { useMessageMediaHost } from './conversation/media/context'
-import { MessageMediaHost } from './conversation/media/MessageMediaHost'
-import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
+import { InMemoryConversationMessageReader } from '../../components/conversation/history/data-source'
+import type { ConversationMessageReader } from '../../components/conversation/history/types'
+import type { MessageObject } from '../../components/conversation/model/msgobj'
+import { useMessageMediaHost } from '../../components/conversation/media/context'
+import { MessageMediaHost } from '../../components/conversation/media/MessageMediaHost'
+import type { ConversationComposerSubmitPayload } from '../../components/conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
 import { AgentSessionPanel } from './agentpanel/AgentSessionPanel'
-import { AgentWorklog } from './conversation/worklog/AgentWorklog'
-import { conversationInputState } from './conversation/input/inputState'
-import { useSwipe } from './swipe'
+import { AgentWorklog } from '../../components/conversation/worklog/AgentWorklog'
+import { conversationInputState } from '../../components/conversation/input/inputState'
+import { useSwipe } from '../../components/conversation/swipe'
 import { MessageDetails } from './MessageDetails'
-import type { WorklogDestination } from './conversation/worklog/model'
-import { messageObjId } from './conversation/history/relations'
+import type { WorklogDestination } from '../../components/conversation/worklog/model'
+import { messageObjId } from '../../components/conversation/history/relations'
 import { friendlyDidName } from './api/projection'
 import { EntityList, type EntityPreferencePatch } from './EntityList'
 import type { HeaderMenuItem, HubIdentity } from './EntityListHeader'
@@ -492,14 +492,14 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const handleQueueChange = (queued: ConversationComposerSubmitPayload[]) => {
     if (activeSession) store.stageOutgoing(context, activeSession.id, queued.map(toOutgoing))
   }
-  const handleResend = async (message: import('./protocol/msgobj').MessageObject) => {
+  const handleResend = async (message: import('../../components/conversation/model/msgobj').MessageObject) => {
     if (!activeSession) throw Error('session_missing')
     await store.resend(context, activeSession.id, message, writeConfirmations[activeSession.id])
   }
-  const openForward = (message: import('./protocol/msgobj').MessageObject) => {
+  const openForward = (message: import('../../components/conversation/model/msgobj').MessageObject) => {
     void dialog.open({ title: t('messagehub.forward.title'), size: 'sm', dismissible: false, renderBody: controls => <ForwardMessageForm context={context} message={message} confirmationFor={sessionId => writeConfirmations[sessionId]} onCancel={() => controls.close()} onDone={() => controls.close()} /> })
   }
-  const openMessageDetails = (message: import('./protocol/msgobj').MessageObject, worklog?: WorklogDestination) => {
+  const openMessageDetails = (message: import('../../components/conversation/model/msgobj').MessageObject, worklog?: WorklogDestination) => {
     const id = messageObjId(message)
     if (!id) return
     setDetailMessageId(id)
@@ -528,7 +528,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     onOpenSessionDetails: () => handleOpenDetails('session'), onOpenDetails: () => handleOpenDetails('entity'),
     draft: activeSession ? store.draft(context, activeSession.id) : '',
     draftAttachments: activeSession ? store.attachments(context, activeSession.id) : [],
-    onAttachmentsChange: (attachments: import('./conversation/input/attachmentDraft').ComposerAttachmentInput[]) => activeSession ? store.saveAttachments(context, activeSession.id, attachments) : undefined,
+    onAttachmentsChange: (attachments: import('../../components/conversation/input/attachmentDraft').ComposerAttachmentInput[]) => activeSession ? store.saveAttachments(context, activeSession.id, attachments) : undefined,
     onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
     showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
   }

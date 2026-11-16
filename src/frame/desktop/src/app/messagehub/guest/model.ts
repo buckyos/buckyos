@@ -7,7 +7,7 @@ import type { AuthMethod, EntryMethods, ndn } from 'buckyos'
 import type { GroupSessionItem } from '../datamodel/sessionApi'
 import { groupSessionKey } from '../groupModel'
 import { sessionExtensions, type GroupDisplayInfo, type GroupPanelRef } from '../extensions/model'
-import type { MessageObject } from '../protocol/msgobj'
+import type { MessageObject } from '../../../components/conversation/model/msgobj'
 
 export const GUEST_PAGE_PATH = '/messagehub/guest'
 

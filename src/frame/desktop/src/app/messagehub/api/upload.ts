@@ -1,5 +1,5 @@
 import { buckyos, ndm } from 'buckyos'
-import { attachmentSize, oversizedAttachmentNames, type ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
+import { attachmentSize, oversizedAttachmentNames, type ComposerAttachmentInput } from '../../../components/conversation/input/attachmentDraft'
 import { currentSessionToken } from '../datamodel/sessionApi'
 import type { OutgoingUpload } from '../store/types'
 

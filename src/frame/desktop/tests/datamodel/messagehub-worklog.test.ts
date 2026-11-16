@@ -1,4 +1,4 @@
-import { taskWorklogTarget, worklogRows, type WorklogEntry } from '../../src/app/messagehub/conversation/worklog/model.ts'
+import { taskWorklogTarget, worklogRows, type WorklogEntry } from '../../src/components/conversation/worklog/model.ts'
 import type { TaskWatchDetail } from '../../src/api/task_mgr.ts'
 
 function equal(actual: unknown, expected: unknown) {

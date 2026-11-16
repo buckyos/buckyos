@@ -1,7 +1,7 @@
-import { cardUsage, displayModel, formatDuration, formatTokens, localizeLine, parseWorkCards, todoTitle, visibleTodos, workDuration, workTone, type WorkCard, type WorkCards, type WorkTodo } from '../../src/app/messagehub/conversation/worksessions/model.ts'
-import { WorkCardsWatch } from '../../src/app/messagehub/conversation/worksessions/watch.ts'
-import type { WorkCardsRequest } from '../../src/app/messagehub/conversation/worksessions/source.ts'
-import { worklogRows, type WorklogEntry } from '../../src/app/messagehub/conversation/worklog/model.ts'
+import { cardUsage, displayModel, formatDuration, formatTokens, localizeLine, parseWorkCards, todoTitle, visibleTodos, workDuration, workTone, type WorkCard, type WorkCards, type WorkTodo } from '../../src/components/conversation/worksessions/model.ts'
+import { WorkCardsWatch } from '../../src/components/conversation/worksessions/watch.ts'
+import type { WorkCardsRequest } from '../../src/components/conversation/worksessions/source.ts'
+import { worklogRows, type WorklogEntry } from '../../src/components/conversation/worklog/model.ts'
 
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))

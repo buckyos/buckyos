@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getTaskWatchSource } from '../conversation/tasks'
+import { getTaskWatchSource } from '../../../components/conversation/tasks'
 
 export interface PanelResource<T> {
   /** `unavailable`: no read has succeeded (not the owner, the Agent is offline). */

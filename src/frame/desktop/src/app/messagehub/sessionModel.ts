@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import { notifyCategoryFromSessionId } from 'buckyos'
-import { NOTIFY_CATEGORIES, type MessageObject } from './protocol/msgobj'
-import { isHiddenRelationMessage } from './conversation/history/relations'
+import { NOTIFY_CATEGORIES } from '../../components/conversation/model/msgobj'
 import type { Entity, MessageHubContext, Session, SessionAccess, SessionBinding, SessionPreferences } from './types'
 
 export const createSessionSchema = z.object({ entityId: z.string().min(1), title: z.string().trim().max(64), description: z.string().trim().max(500).optional(), connection: z.string().min(1) })
@@ -18,16 +17,6 @@ export const pinnedMessageSchema = z.object({ id: z.string().min(1), text: z.str
 export const defaultPreferences: SessionPreferences = { title: '', description: '', pinned: false, muted: false, showActions: true }
 export const sessionKey = (ownerDid: string, sessionId: string) => JSON.stringify([ownerDid, sessionId])
 export const viewerSessionKey = (context: MessageHubContext, sessionId: string) => JSON.stringify([context.viewerDid, context.ownerDid, sessionId])
-export const isActionMessage = (message: MessageObject) => message.kind === 'event' && message.content.machine?.intent === 'buckyos.action_log'
-export function isMessageActivity(message: MessageObject) {
-  if (isActionMessage(message) || message.ui_item_kind === 'status' || isHiddenRelationMessage(message)) return false
-  return message.kind === 'chat' || message.kind === 'group_msg' || (message.kind === 'notify' && message.ui_unavailable !== true) || (message.kind === 'deliver' && Boolean(message.content.content?.trim() || message.content.refs?.some(ref => ref.role === 'output')))
-}
-export function relativeActivity(time: number | undefined, now: number, justNow: string) {
-  if (!time || !Number.isFinite(time)) return '—'
-  const minutes = Math.floor(Math.max(0, now - time) / 60_000)
-  return minutes < 1 ? justNow : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`
-}
 /** Rank of a notification session in the fixed category order (to-do, Agent, App); -1 for any other session. */
 function notifyRank(session: Session) {
   const category = notifyCategoryFromSessionId(session.id)

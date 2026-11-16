@@ -1,9 +1,9 @@
-import { searchMessages, searchTerms } from '../../src/app/messagehub/conversation/search/model.ts'
-import { foldMessageRelations } from '../../src/app/messagehub/conversation/history/relations.ts'
+import { searchMessages, searchTerms } from '../../src/components/conversation/search/model.ts'
+import { foldMessageRelations } from '../../src/components/conversation/history/relations.ts'
 import { entityMatchScore, fuzzyScore, rankEntities } from '../../src/app/messagehub/entitySearch.ts'
 import { createSessionSchema, defaultPreferences, latestActiveSession, newSessionFormSchema, NATIVE_CONNECTION_LABEL, presentationSchema, sessionDescription } from '../../src/app/messagehub/sessionModel.ts'
 import { senderTone } from '../../src/app/messagehub/senderTone.ts'
-import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 import type { Session } from '../../src/app/messagehub/types.ts'
 
 const ME = 'did:user:me', BOB = 'did:user:bob'

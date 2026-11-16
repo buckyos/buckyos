@@ -1,7 +1,8 @@
 import { Archive, MessageSquare, MoreHorizontal, Send, SquarePen, X } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { useMessageHubClock } from './store'
-import { NATIVE_CONNECTION_LABEL, relativeActivity } from './sessionModel'
+import { NATIVE_CONNECTION_LABEL } from './sessionModel'
+import { relativeActivity } from '../../components/conversation/model/activity'
 import type { Session } from './types'
 
 interface SessionSidebarProps {

@@ -1,5 +1,5 @@
-import { agentServiceClient } from '../conversation/worklog/source'
-import { parseWorkTree, type WorkTree } from '../conversation/worksessions/model'
+import { agentServiceClient } from '../../../components/conversation/worklog/source'
+import { parseWorkTree, type WorkTree } from '../../../components/conversation/worksessions/model'
 import { mockAgentPanelSource } from '../mock/agentpanel'
 import { isMessageHubMock } from '../store'
 import { parseAgentSummary, parseDeliveries, parseUiConversation, type AgentSummary, type DeliveryPage, type UiConversation } from './model'

@@ -3,10 +3,10 @@
  * pages prepended on demand, and record-level upsert / remove so delivery
  * and read-state changes reach the projection without a full reload.
  */
-import { foldMessageRelations } from '../conversation/history/relations'
-import type { ConversationMessageReader } from '../conversation/history/types'
+import { foldMessageRelations } from '../../../components/conversation/history/relations'
+import type { ConversationMessageReader } from '../../../components/conversation/history/types'
 import type { MailboxKind, RecipientState, SessionDeliveryOverall, SessionDeliveryView, SessionMessageDirection, SessionMessageItem } from '../datamodel/sessionApi'
-import type { MessageDeliveryStatus, MessageObject } from '../protocol/msgobj'
+import type { MessageDeliveryStatus, MessageObject } from '../../../components/conversation/model/msgobj'
 
 /** Local record context attached to every projected message (`ui_record`). */
 export interface MessageRecordMeta {

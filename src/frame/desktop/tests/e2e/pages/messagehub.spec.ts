@@ -579,7 +579,7 @@ for (const source of ['object', 'http'] as const) {
     const id = await createSession(page, 'Photo without caption')
     if (source === 'object') {
       await page.evaluate(async () => {
-        const modulePath = '/src/app/messagehub/conversation/history/objectAccess.ts'
+        const modulePath = '/src/components/conversation/history/objectAccess.ts'
         const { registerObjectAccess } = await import(modulePath)
         registerObjectAccess({
           describe: async (objId: string) => ({ objId, name: 'photo.png', mimeType: 'image/png', size: 100, isFile: true }),

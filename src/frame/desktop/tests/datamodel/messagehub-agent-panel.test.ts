@@ -1,9 +1,9 @@
-import { foregroundState, latestTurnAnchor, turnInputMessage, turnMode } from '../../src/app/messagehub/conversation/input/foregroundState.ts'
-import { flattenWork, interruptedRoots, localizeLine, parseWorkCards, parseWorkTree, workControls, type WorkCard } from '../../src/app/messagehub/conversation/worksessions/model.ts'
-import { taskAreaView, taskNodeState } from '../../src/app/messagehub/conversation/tasks/taskView.ts'
+import { foregroundState, latestTurnAnchor, turnInputMessage, turnMode } from '../../src/components/conversation/input/foregroundState.ts'
+import { flattenWork, interruptedRoots, localizeLine, parseWorkCards, parseWorkTree, workControls, type WorkCard } from '../../src/components/conversation/worksessions/model.ts'
+import { taskAreaView, taskNodeState } from '../../src/components/conversation/tasks/taskView.ts'
 import { agentConversationState, formatSize, generationBreaks, generationNumber, parseAgentSummary, parseDeliveries, parseUiConversation, type UiSessionView } from '../../src/app/messagehub/agentpanel/model.ts'
-import { rowsWithBreaks } from '../../src/app/messagehub/agentpanel/breaks.ts'
-import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import { rowsWithBreaks } from '../../src/components/conversation/history/breaks.ts'
+import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
 

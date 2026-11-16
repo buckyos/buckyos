@@ -1,9 +1,9 @@
-import { emojiOnlyCount, loadEmojiGroups, searchEmoji } from '../../src/app/messagehub/conversation/input/emoji.ts'
-import { compressWaveform, formatRecordingTime, formatVoiceDuration, pickRecorderType, resampleWaveform, voiceBarCount, voiceFileName } from '../../src/app/messagehub/conversation/media/voice.ts'
-import { messageSummaryText } from '../../src/app/messagehub/conversation/history/relations.ts'
+import { emojiOnlyCount, loadEmojiGroups, searchEmoji } from '../../src/components/conversation/input/emoji.ts'
+import { compressWaveform, formatRecordingTime, formatVoiceDuration, pickRecorderType, resampleWaveform, voiceBarCount, voiceFileName } from '../../src/components/conversation/media/voice.ts'
+import { messageSummaryText } from '../../src/components/conversation/history/relations.ts'
 import { summarizeMessage, type ProjectionLabels } from '../../src/app/messagehub/api/projection.ts'
 import { pendingBubble } from '../../src/app/messagehub/store/outgoing.ts'
-import { messageVoice, VOICE_WAVEFORM_MAX, VOICE_WAVEFORM_SAMPLES, type MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import { messageVoice, VOICE_WAVEFORM_MAX, VOICE_WAVEFORM_SAMPLES, type MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
 

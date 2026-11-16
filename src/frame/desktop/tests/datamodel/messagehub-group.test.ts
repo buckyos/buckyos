@@ -1,7 +1,8 @@
-import { formatInviteLink, groupErrorText, parseGroupNotice, sortSessionParticipants, withinWindow } from '../../src/app/messagehub/groupModel.ts'
-import { displayedContent, foldMessageRelations, isHiddenRelationMessage, mentionsViewer, messageObjId, messageRelations, ownReactionId } from '../../src/app/messagehub/conversation/history/relations.ts'
-import { applyMention, collectMentions, matchMentionCandidates, mentionQueryAt } from '../../src/app/messagehub/conversation/input/mentions.ts'
-import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import { formatInviteLink, sortSessionParticipants } from '../../src/app/messagehub/groupModel.ts'
+import { groupErrorText, parseGroupNotice, withinWindow } from '../../src/components/conversation/model/groupNotice'
+import { displayedContent, foldMessageRelations, isHiddenRelationMessage, mentionsViewer, messageObjId, messageRelations, ownReactionId } from '../../src/components/conversation/history/relations.ts'
+import { applyMention, collectMentions, matchMentionCandidates, mentionQueryAt } from '../../src/components/conversation/input/mentions.ts'
+import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
 const GROUP = 'did:buckyos:group:team'
 const ME = 'did:user:me', BOB = 'did:user:bob', AGENT = 'did:agent:mine'

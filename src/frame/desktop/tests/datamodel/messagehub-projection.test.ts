@@ -1,9 +1,10 @@
 import { attributeSession, canonicalizeDid, isHiddenAccount, parseTunnelDid, projectOwner, summarizeMessage, UNASSIGNED_ENTITY_ID, type ProjectionLabels } from '../../src/app/messagehub/api/projection.ts'
 import { itemToMessage, recordMeta, removeMessage, upsertMessages, emptyHistory } from '../../src/app/messagehub/api/reader.ts'
 import { creationReason, selectDefaultSession } from '../../src/app/messagehub/sessionModel.ts'
-import { groupSessionId, groupSessionKey, parseGroupInvitation } from '../../src/app/messagehub/groupModel.ts'
+import { groupSessionId, groupSessionKey } from '../../src/app/messagehub/groupModel.ts'
+import { parseGroupInvitation } from '../../src/components/conversation/model/groupNotice'
 import type { Contact, SessionMessageItem, SessionSummary } from '../../src/app/messagehub/datamodel/sessionApi.ts'
-import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
 const owner = 'did:bns:devtest'
 const peerEndpoint = 'did:msgtunnel:5397330802.user.tg-main-tunnel'

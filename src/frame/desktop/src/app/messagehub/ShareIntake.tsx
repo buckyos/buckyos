@@ -11,7 +11,7 @@ import { reportShareDelivery } from '../../api/shares'
 import { ForwardMessageForm } from './ForwardDialog'
 import type { SharedLaunch } from './launch'
 import { ndn } from 'buckyos'
-import type { MessageObject } from './protocol/msgobj'
+import type { MessageObject } from '../../components/conversation/model/msgobj'
 import type { MessageHubContext } from './types'
 
 function shareMessage(context: MessageHubContext, share: SharedLaunch): MessageObject {

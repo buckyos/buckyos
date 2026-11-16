@@ -3,8 +3,8 @@
  * files), the Action Message display filter and the tunnel write
  * confirmation are all keyed by `(viewerDid, ownerDid, sessionId)`.
  */
-import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
-import { resetObjectCaches } from '../conversation/history/objectAccess'
+import type { ComposerAttachmentInput } from '../../../components/conversation/input/attachmentDraft'
+import { resetObjectCaches } from '../../../components/conversation/history/objectAccess'
 
 interface LocalRecord {
   drafts: Record<string, string>

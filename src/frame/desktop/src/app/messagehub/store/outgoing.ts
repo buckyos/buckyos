@@ -1,6 +1,6 @@
-import { localObjectIdFor } from '../conversation/history/objectAccess'
+import { localObjectIdFor } from '../../../components/conversation/history/objectAccess'
 import type { ndn } from 'buckyos'
-import type { MessageObject } from '../protocol/msgobj'
+import type { MessageObject } from '../../../components/conversation/model/msgobj'
 import type { OutgoingPayload, OutgoingUpload } from './types'
 
 export const pendingBubbleId = (localId: string) => `pending:${localId}`

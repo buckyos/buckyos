@@ -1,12 +1,12 @@
 import { buckyos, ndn, RPCError, type CurrentIdentity } from 'buckyos'
 import { objectUrl, ObjectRouteError } from '../../src/app/messagehub/api/objects.ts'
-import { objectContextOf } from '../../src/app/messagehub/conversation/media/source.ts'
-import { displayContext } from '../../src/app/messagehub/conversation/history/objectAccess.ts'
-import { foldMessageRelations } from '../../src/app/messagehub/conversation/history/relations.ts'
+import { objectContextOf } from '../../src/components/conversation/media/source.ts'
+import { displayContext } from '../../src/components/conversation/history/objectAccess.ts'
+import { foldMessageRelations } from '../../src/components/conversation/history/relations.ts'
 import { GuestHub } from '../../src/app/messagehub/guest/hub.ts'
 import type { GuestApi, GuestMessagePage } from '../../src/app/messagehub/guest/api.ts'
 import { guestEntryAllows, guestEntryPath, guestPagePath, guestSessions, guestTimeline, guestTimelineMessage, isCustomerUserId, isGroupDid, suggestCustomerUserId } from '../../src/app/messagehub/guest/model.ts'
-import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
 

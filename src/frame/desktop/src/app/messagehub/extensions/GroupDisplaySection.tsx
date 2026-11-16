@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ExternalLink, FileText, Star, Webhook } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
-import { displayContext, getObjectAccess } from '../conversation/history/objectAccess'
+import { displayContext, getObjectAccess } from '../../../components/conversation/history/objectAccess'
 import { hookServiceHost, type GroupDisplayInfo, type GroupHookInfo } from './model'
 
 /**

@@ -6,9 +6,9 @@
 import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, SessionBinding } from '../types'
 import type { Contact, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
 import { notifyCategoryFromSessionId, type NotifyCategory } from 'buckyos'
-import { messageNotify, messageVoice, type MessageObject } from '../protocol/msgobj'
-import { formatVoiceDuration } from '../conversation/media/voice'
-import { isActionMessage, isMessageActivity } from '../sessionModel'
+import { messageNotify, messageVoice, type MessageObject } from '../../../components/conversation/model/msgobj'
+import { formatVoiceDuration } from '../../../components/conversation/media/voice'
+import { isActionMessage, isMessageActivity } from '../../../components/conversation/model/activity'
 import { didDisplayName, usableImageUrl } from '../../../presentation/model'
 
 /** UI container for sessions without a determinable peer. Not a DID, never a send target. */

@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import type { z } from 'zod'
 import { useI18n } from '../../i18n/provider'
 import { creationReason, newSessionFormSchema } from './sessionModel'
-import { groupErrorText } from './groupModel'
+import { groupErrorText } from '../../components/conversation/model/groupNotice'
 import { useMessageHubStore } from './store'
 import type { MessageHubContext, Session } from './types'
 

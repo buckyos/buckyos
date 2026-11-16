@@ -1,8 +1,9 @@
-import { creationReason, defaultPreferences, isActionMessage, isMessageActivity, relativeActivity, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../../src/app/messagehub/sessionModel.ts'
+import { creationReason, defaultPreferences, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../../src/app/messagehub/sessionModel.ts'
+import { isActionMessage, isMessageActivity, relativeActivity } from '../../src/components/conversation/model/activity'
 import { ensureDefaultSession } from '../../src/app/messagehub/store/defaultSession.ts'
 import type { Entity, MessageHubContext, Session } from '../../src/app/messagehub/types.ts'
 import { ndn } from 'buckyos'
-import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
 const context: MessageHubContext = { viewerDid: 'did:user:me', ownerDid: 'did:user:me', mode: 'self' }
 const now = 1_780_000_000_000
@@ -63,7 +64,7 @@ Deno.test('owner scope, observer capabilities and tunnel creation limits cannot 
 })
 
 Deno.test('Action filtering preserves raw indices and rebuilds dates, including incremental appends', async () => {
-  const { InMemoryConversationMessageReader, buildConversationProjection, extendConversationProjection, materializeConversationWindow } = await import('../../src/app/messagehub/conversation/history/data-source.ts')
+  const { InMemoryConversationMessageReader, buildConversationProjection, extendConversationProjection, materializeConversationWindow } = await import('../../src/components/conversation/history/data-source.ts')
   const action = { ...message, kind: 'event' as const, created_at_ms: now + 86400000, ui_message_id: 'action', content: { content: 'Unknown version', machine: { intent: 'buckyos.action_log', data: { schema_version: 99 } } } }
   const ordinaryEvent = { ...message, kind: 'event' as const, ui_message_id: 'ordinary-event' }
   const reader = InMemoryConversationMessageReader.fromMessages([{ ...message, ui_message_id: 'chat' }, action, ordinaryEvent])

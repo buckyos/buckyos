@@ -1,4 +1,4 @@
-import { getAttachmentKey } from '../conversation/input/attachmentDraft'
+import { getAttachmentKey } from '../../../components/conversation/input/attachmentDraft'
 /**
  * MessageHub data layer backed by the msg-center service. Implements
  * `MessageHubStore` on top of the real RPC surface:
@@ -14,17 +14,17 @@ import { buckyos, identityKey, objectUrl, ndn, notifyCategoryFromSessionId } fro
 import type { z } from 'zod'
 import { fetchAgentList } from '../../../api/user_mgr'
 import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
-import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
-import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
-import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '../conversation/history/objectAccess'
-import type { ConversationMessageReader } from '../conversation/history/types'
+import type { ComposerAttachmentInput } from '../../../components/conversation/input/attachmentDraft'
+import { InMemoryConversationMessageReader } from '../../../components/conversation/history/data-source'
+import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '../../../components/conversation/history/objectAccess'
+import type { ConversationMessageReader } from '../../../components/conversation/history/types'
 import {
   acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, groupSessionId } from '../groupModel'
-import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
-import { messageVoice, type MessageObject } from '../protocol/msgobj'
+import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../../../components/conversation/history/relations'
+import { messageVoice, type MessageObject } from '../../../components/conversation/model/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'

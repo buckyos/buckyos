@@ -9,7 +9,7 @@
  * session to commit into their files (`msg.prepare_save_attachment`).
  */
 import { collectAttachment, currentSessionToken, msgCenterServiceUrl, prepareSaveAttachment } from '../datamodel/sessionApi'
-import { ObjectRouteError, onObjectCachesReset, resetObjectCaches, retryingObjectRead, type ObjectAccess, type ObjectInfo } from '../conversation/history/objectAccess'
+import { ObjectRouteError, onObjectCachesReset, resetObjectCaches, retryingObjectRead, type ObjectAccess, type ObjectInfo } from '../../../components/conversation/history/objectAccess'
 
 export { ObjectRouteError }
 

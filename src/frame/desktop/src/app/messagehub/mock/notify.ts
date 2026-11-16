@@ -7,7 +7,7 @@
  * way a TaskMgr kevent would.
  */
 import { NOTIFY_CHOICE_CONTROL_ID, NOTIFY_INTENT, NOTIFY_TEXT_CONTROL_ID, notifyCategorySessionId, type HumanTaskPrompt, type NotifyCategory, type NotifyKind, type NotifyLevel, type NotifyMessageData, type NotifySource, type NotifyStatus, type ndn } from 'buckyos'
-import type { MessageObject } from '../protocol/msgobj'
+import type { MessageObject } from '../../../components/conversation/model/msgobj'
 import { isNotifyClosed, NOTIFY_ACTION_DISMISS, TASK_ERR_ALREADY_COMPLETED, TASK_ERR_REVISION_CONFLICT, type NotifyAnswer, type NotifyResult, type NotifyView } from '../notify/model'
 import type { NotifyBackend, NotifyListQuery, NotifyTaskState } from '../notify/watch'
 import { sessionKey } from '../sessionModel'

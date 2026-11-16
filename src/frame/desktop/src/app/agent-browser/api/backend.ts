@@ -7,7 +7,7 @@ import { fetchCurrentAccount } from '../../../api/account'
 import { fetchAgentList, type AgentEntry } from '../../../api/user_mgr'
 import { isMockRuntime } from '../../../runtime'
 import { agentDisplayName, usableImageUrl } from '../../agent-setup/model'
-import { agentServiceClient } from '../../messagehub/conversation/worklog/source'
+import { agentServiceClient } from '../../../components/conversation/worklog/source'
 import type { ScreenSocket } from './channel'
 
 export interface BrowserAgent {

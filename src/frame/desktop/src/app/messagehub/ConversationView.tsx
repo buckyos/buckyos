@@ -19,41 +19,41 @@ import { useI18n } from '../../i18n/provider'
 import {
   ConversationHistoryPane,
   type ConversationHistoryPaneHandle,
-} from './conversation/history/ConversationHistoryPane'
-import { ConversationMessageActionsContext } from './conversation/history/actions'
-import type { ConversationMessageReader } from './conversation/history/types'
+} from '../../components/conversation/history/ConversationHistoryPane'
+import { ConversationMessageActionsContext } from '../../components/conversation/history/actions'
+import type { ConversationMessageReader } from '../../components/conversation/history/types'
 import {
   ConversationComposer,
   type ComposerAnswer,
   type ComposerRelation,
   type ConversationComposerHandle,
   type ConversationComposerSubmitPayload,
-} from './conversation/input/ConversationComposer'
-import { conversationInputState } from './conversation/input/inputState'
-import { foregroundState, latestTurnAnchor, turnInputMessage } from './conversation/input/foregroundState'
-import { TurnControls } from './conversation/tasks/TurnControls'
-import { useTaskSummary } from './conversation/tasks'
-import { taskWorklogTarget } from './conversation/worklog/model'
+} from '../../components/conversation/input/ConversationComposer'
+import { conversationInputState } from '../../components/conversation/input/inputState'
+import { foregroundState, latestTurnAnchor, turnInputMessage } from '../../components/conversation/input/foregroundState'
+import { TurnControls } from '../../components/conversation/tasks/TurnControls'
+import { useTaskSummary } from '../../components/conversation/tasks'
+import { taskWorklogTarget } from '../../components/conversation/worklog/model'
 import { getAgentPanelSource } from './agentpanel/source'
-import { useGenerationBreaks, useReaderWithBreaks } from './agentpanel/breaks'
-import { useSwipe } from './swipe'
-import { messageObjId, messageSummaryText, ownReactionId } from './conversation/history/relations'
-import { SessionPanel } from './conversation/SessionPanel'
-import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
-import { ConversationMediaScopeContext } from './conversation/media/context'
+import { useGenerationBreaks, useReaderWithBreaks } from '../../components/conversation/history/breaks'
+import { useSwipe } from '../../components/conversation/swipe'
+import { messageObjId, messageSummaryText, ownReactionId } from '../../components/conversation/history/relations'
+import { SessionPanel } from '../../components/conversation/SessionPanel'
+import { isTransferWithFiles, type ComposerAttachmentInput } from '../../components/conversation/input/attachmentDraft'
+import { ConversationMediaScopeContext } from '../../components/conversation/media/context'
 import { notifyCategoryFromSessionId, type DID } from 'buckyos'
-import type { MessageObject } from './protocol/msgobj'
-import type { WorklogDestination } from './conversation/worklog/model'
+import type { MessageObject } from '../../components/conversation/model/msgobj'
+import type { WorklogDestination } from '../../components/conversation/worklog/model'
 import { useNotifyFilteredReader } from './notify'
 import { NOTIFY_FILTERS, type NotifyFilter } from './notify/model'
 import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
 import { useMessageHubRuntime, useMessageHubStore } from './store'
 import { RequestBanner } from './RelationPanel'
 import { friendlyDidName } from './api/projection'
-import { parseGroupNotice, withinWindow } from './groupModel'
+import { parseGroupNotice, withinWindow } from '../../components/conversation/model/groupNotice'
 import { HubAvatar, SenderAvatar } from './HubAvatar'
 import { HeaderMenu, type HeaderMenuItem } from './EntityListHeader'
-import { ConversationSearchBar } from './conversation/search/ConversationSearchBar'
+import { ConversationSearchBar } from '../../components/conversation/search/ConversationSearchBar'
 
 interface ConversationViewProps {
   entity: Entity
