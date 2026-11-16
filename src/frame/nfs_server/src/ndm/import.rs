@@ -99,13 +99,13 @@ pub async fn finalize(State(state): State<SharedState>, req: Request) -> Respons
                 next.push((id, body, children));
                 continue;
             }
+            if let Err(r) = hold_checked(&state, store, &p, &id, "import").await { return r; }
             if let Err(e) = store.put_object(&id, &body).await {
                 return ndm_error(StatusCode::INTERNAL_SERVER_ERROR, "registration_failed", e);
             }
             if !store.is_object_stored(&id, None).await.unwrap_or(false) {
                 return ndm_error(StatusCode::CONFLICT, "incomplete_object", id);
             }
-            if let Err(r) = hold_checked(&state, store, &p, &id, "import").await { return r; }
         }
         if next.len() == before {
             return ndm_error(StatusCode::CONFLICT, "missing_dependency", "object dependencies are incomplete or are not authorized for this session");
@@ -121,10 +121,10 @@ pub async fn finalize(State(state): State<SharedState>, req: Request) -> Respons
         if !may_read(&state, &p, &id.to_string()).await {
             return denied("use this import root");
         }
+        if let Err(r) = hold_checked(&state, store, &p, &id, "import").await { return r; }
         if !store.is_object_stored(&id, None).await.unwrap_or(false) {
             return ndm_error(StatusCode::CONFLICT, "incomplete_object", id);
         }
-        if let Err(r) = hold_checked(&state, store, &p, &id, "import").await { return r; }
         roots.push(json!({"obj_id": id.to_string(), "ready": true}));
     }
     let mut warnings = Vec::new();

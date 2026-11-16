@@ -226,8 +226,8 @@ function GarbageSection({ onCollected }: { onCollected: () => void }) {
           {!status.evict_enabled && <SectionNote tone="warning">{t('settings.storage.gc.evictOff', 'Background cleanup is turned off on this Zone; only a manual cleanup frees space.')}</SectionNote>}
           <SectionNote>
             {status.last_round_at == null
-              ? t('settings.storage.gc.notYet', 'The background check runs every 30 seconds; it has not run since the service started.')
-              : t('settings.storage.gc.lastRound', 'The background check runs every 30 seconds; last run {{when}}.', { when: formatRelative(Math.floor(status.last_round_at / 1000), locale) })}
+              ? t('settings.storage.gc.notYet', 'The background check runs every 30 minutes; it has not run since the service started.')
+              : t('settings.storage.gc.lastRound', 'The background check runs every 30 minutes; last run {{when}}.', { when: formatRelative(Math.floor(status.last_round_at / 1000), locale) })}
           </SectionNote>
           <p className="mt-3 text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('settings.storage.gc.recent', 'Recent cleanups')}</p>
           {status.recent.length === 0 && <SectionNote>{t('settings.storage.gc.noRecords', 'Nothing has been cleaned up since the service started.')}</SectionNote>}

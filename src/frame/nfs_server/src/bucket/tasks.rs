@@ -5,7 +5,7 @@
 use crate::state::SharedState;
 use std::time::Duration;
 
-const GC_HOST_EVERY: Duration = Duration::from_secs(30);
+const GC_HOST_EVERY: Duration = Duration::from_secs(30 * 60);
 const RECONCILE_EVERY: Duration = Duration::from_secs(600);
 const DEEP_RECONCILE_EVERY: Duration = Duration::from_secs(24 * 3600);
 const LIFECYCLE_EVERY: Duration = Duration::from_secs(3600);
@@ -88,7 +88,7 @@ impl GcLog {
     }
 }
 
-/// Manual GC: the periodic round evicts one batch per store every 30 seconds,
+/// Manual GC: the periodic round evicts one batch per store every 30 minutes,
 /// this repeats eviction rounds until one finds nothing to evict. It evicts even
 /// when `named_store_gc_evict` is off (the admin asked for it), under the same
 /// protection rules: pins, incoming refs, fs anchors and the 24 h chunk grace.
