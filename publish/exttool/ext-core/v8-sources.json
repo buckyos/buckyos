@@ -128,6 +128,7 @@
       "commit": "61150a5f1ddf6460bad3d896c1502c6a56e15311",
       "url": "https://chromium.googlesource.com/chromium/src/tools/clang/+archive/61150a5f1ddf6460bad3d896c1502c6a56e15311.tar.gz",
       "sha256": "200a7472327838307ce100ccbfb33659dbc65931da9ae8ae8a2ba9646455ef02",
+      "tree_sha256": "d15d109f14b597966f278c9fd5c9f27a0b23cc8fdf5822f8ea71e8cdc0495697",
       "size": 638893,
       "crate_comparison": {
         "matching_files": 1,
@@ -140,6 +141,7 @@
       "commit": "c3027d884967773057bf74b957e3fea87e5df4d7",
       "url": "https://chromium.googlesource.com/chromium/src/third_party/jinja2/+archive/c3027d884967773057bf74b957e3fea87e5df4d7.tar.gz",
       "sha256": "b36481f9deb7c25851546a6a6e32773f4fff45b5fcab154f013c483373f30fed",
+      "tree_sha256": "837fb0ccdda3a46bb2af8e3c941b8b1d2a17da0c05d05ea375a5dd772d488428",
       "size": 124223,
       "crate_comparison": {
         "matching_files": 29,
@@ -152,6 +154,7 @@
       "commit": "4256084ae14175d38a3ff7d739dca83ae49ccec6",
       "url": "https://chromium.googlesource.com/chromium/src/third_party/markupsafe/+archive/4256084ae14175d38a3ff7d739dca83ae49ccec6.tar.gz",
       "sha256": "9ab07e584e6d4f8aa3f52124d9fbb47994936c041da74c0cb18abccf9e07ee5f",
+      "tree_sha256": "b9e771e2814c7f630f0f52f0ba88dd5d7238d08f5ea317ce6b1a4c3f219f6b70",
       "size": 10301,
       "crate_comparison": {
         "matching_files": 10,
@@ -164,6 +167,7 @@
       "commit": "c9110ba7150d93134b1c85ea392033b4a82d28f7",
       "url": "https://chromium.googlesource.com/chromium/src/buildtools/+archive/c9110ba7150d93134b1c85ea392033b4a82d28f7.tar.gz",
       "sha256": "0b127b4b302835c6cda941f7e0f6b76297921d4522e89f8073ba136ac0c55688",
+      "tree_sha256": "e9ff5c0065300654812879778756bdfa0acc200d5935b9ef3c1db90a8b4c6ee8",
       "size": 60341,
       "crate_comparison": {
         "matching_files": 23,
@@ -176,6 +180,7 @@
       "commit": "ee5f27adc28bd3f15b2c293f726d14d2e336cbd5",
       "url": "https://chromium.googlesource.com/chromium/deps/icu/+archive/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5.tar.gz",
       "sha256": "d8244cdebec31d3764822ef80672a7854865c4bb052b6fe92f56a5e1984771f8",
+      "tree_sha256": "1555d41024617ce3515e0123d032548c0e7b7a626977c72e6878a7233c9859e8",
       "size": 55186978,
       "crate_comparison": {
         "matching_files": 1027,
@@ -188,6 +193,7 @@
       "commit": "5e42a36a85a252d8cdee6c39661d2bfd9883fd5c",
       "url": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp/+archive/5e42a36a85a252d8cdee6c39661d2bfd9883fd5c.tar.gz",
       "sha256": "f61ae02adf35da95db61f12877be14a10b9a0e23e50b81c12c83f6c86897cb0f",
+      "tree_sha256": "cc24a43c7b61ef68f5ae4693cee0426a6604dbf066faf0e71a0d3646cde5e257",
       "size": 3126001,
       "crate_comparison": {
         "matching_files": 984,
@@ -212,6 +218,7 @@
       "commit": "99457fa555797f8c5ac3c076ca288d8481d3b23a",
       "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+archive/99457fa555797f8c5ac3c076ca288d8481d3b23a.tar.gz",
       "sha256": "483153f037ef0c75df0034a52b25aea099f033e30807cdeb4b552630b1ba758d",
+      "tree_sha256": "dea4414880e59fcb57feecd78f00c4fd4bde9820fd73eabb94066e8a87078ed2",
       "size": 8891995,
       "crate_comparison": {
         "matching_files": 1991,
@@ -224,6 +231,7 @@
       "commit": "8f11bb1d4438d0239d0dfc1bd9456a9f31629dda",
       "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxxabi/+archive/8f11bb1d4438d0239d0dfc1bd9456a9f31629dda.tar.gz",
       "sha256": "bd2bf34a27d7ee219303efbaede86124a4fd22c886d75e92dac9dd79bf8cb253",
+      "tree_sha256": "55bfcd9eae28e0dcf0a74f38053bd13360854fde900f70b25994e338f50e97cd",
       "size": 806324,
       "crate_comparison": {
         "matching_files": 50,
@@ -236,6 +244,7 @@
       "commit": "a2530baf3d11013afd0f1c1941ab6bef5ba71d0a",
       "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libunwind/+archive/a2530baf3d11013afd0f1c1941ab6bef5ba71d0a.tar.gz",
       "sha256": "90b78374e34b667fa425853a0ff01189678d1ff3427b4fa410fa6ce76db0a512",
+      "tree_sha256": "0375d73cac58005d77569d8c2458dc7fc9e54cd2623e650210905e12ed6aaadb",
       "size": 181576,
       "crate_comparison": {
         "matching_files": 68,
@@ -248,6 +257,7 @@
       "commit": "05087a303dad9c98768b33c829d398223a649bc6",
       "url": "https://chromium.googlesource.com/external/github.com/fastfloat/fast_float/+archive/05087a303dad9c98768b33c829d398223a649bc6.tar.gz",
       "sha256": "c4f2ab104a6178eb3030ea06ea276a06f7835e1b594290ad38baa4547c5dd7dd",
+      "tree_sha256": "81cd7b020d8d176bc236a4c8a556239e91c801a00a58b0daecdbde74b64e594b",
       "size": 126110,
       "crate_comparison": {
         "matching_files": 26,
@@ -260,6 +270,7 @@
       "commit": "cb952785ccee13811f293f3c419958d1e3ddafbf",
       "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc/+archive/cb952785ccee13811f293f3c419958d1e3ddafbf.tar.gz",
       "sha256": "3c6de8530d1006fd252b85352d45cb9439c079a7712f921a939a2204c8867fa2",
+      "tree_sha256": "df1b5b22728ea6b86e37b6e91632220adf34649a1d4a6bd645e22425343a6275",
       "size": 7657352,
       "crate_comparison": {
         "matching_files": 4568,
@@ -272,6 +283,7 @@
       "commit": "f7356eed293f8208c40b3c1b344a50bd70971983",
       "url": "https://chromium.googlesource.com/chromium/src/third_party/simdutf/+archive/f7356eed293f8208c40b3c1b344a50bd70971983.tar.gz",
       "sha256": "fa54a8101ba97f1b6862df08f60292632ff2bee4e76ca1875cbb54b8d2e51a01",
+      "tree_sha256": "f844a52d591a689c01696dcadf57f6d0b3985c5c9c981efafc4de2a367b50eb1",
       "size": 425708,
       "crate_comparison": {
         "matching_files": 3,
@@ -284,6 +296,7 @@
       "commit": "2607d3b5b0113992fe84d3848859eae13b3b52c1",
       "url": "https://chromium.googlesource.com/external/github.com/google/highway/+archive/2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz",
       "sha256": "e5084e9db9aa4525c151fcc4728ba6567691203a3ce63cfedd6499066b44f7bf",
+      "tree_sha256": "f2810cb7d7fd21cb849b304337ac87f66c397a02852781de7fa64b1239115c2d",
       "size": 3704517,
       "crate_comparison": {
         "matching_files": 171,
@@ -296,6 +309,7 @@
       "commit": "fafdd4c9f559c6d0cfdf2ed3170ce370b59bfdbf",
       "url": "https://chromium.googlesource.com/chromium/src/base/allocator/partition_allocator/+archive/fafdd4c9f559c6d0cfdf2ed3170ce370b59bfdbf.tar.gz",
       "sha256": "8fe872115b35b2a508ec7e45303806b16662a2f81ddcb9a6ab308c264dc19682",
+      "tree_sha256": "40de0b4ba8a86444421a779bf37281cfc9c2a7e45ae4b1da483c3801e99ae894",
       "size": 859967,
       "crate_comparison": {
         "matching_files": 385,
@@ -308,6 +322,7 @@
       "commit": "beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44",
       "url": "https://chromium.googlesource.com/external/github.com/jk-jeon/dragonbox/+archive/beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44.tar.gz",
       "sha256": "3c2783bcf541ab6bd1e067fccca62ebcaecba96f5699575249b928fb72e90bf0",
+      "tree_sha256": "4e05d928aec53f2caa053731b84c407088516ef9dd345aa1163b74cadf4ad7ef",
       "size": 4235160,
       "crate_comparison": {
         "matching_files": 3,
@@ -320,6 +335,7 @@
       "commit": "2b055f4ecac78bbf34a0d34217c699b7b09b44dd",
       "url": "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/2b055f4ecac78bbf34a0d34217c699b7b09b44dd.tar.gz",
       "sha256": "27b59d958ec7418cbbafbc2ff053003069915d2755f445aae0ce69034119d229",
+      "tree_sha256": "250dbfad98e37046751f0022ea36c395006210266e9c9918565ce21d3515f763",
       "size": 32417830,
       "crate_comparison": {
         "matching_files": 235,
@@ -332,6 +348,7 @@
       "commit": "d16e6b55b2bd699735919d8a13a55ff284086603",
       "url": "https://chromium.googlesource.com/chromium/src/tools/win/+archive/d16e6b55b2bd699735919d8a13a55ff284086603.tar.gz",
       "sha256": "a1d7fd8cfa186e92fbcb23d4ef57b1a00240c0f2ebb86961de62e2e114dbff01",
+      "tree_sha256": "bf3a3d1f80cab958ddbf9793884a40047e19ae3b31df6c72f5f1ebc57750ba1c",
       "size": 177223,
       "crate_comparison": {
         "matching_files": 6,

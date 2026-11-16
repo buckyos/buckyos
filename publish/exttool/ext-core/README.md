@@ -31,9 +31,12 @@ rendered recipes, patches, build scripts, build configuration, and installed
 package records. Source URLs are read from rendered conda-build recipes and
 rattler staging caches; they are never confused with Conda binary package URLs.
 Each source archive is checked against the recipe's SHA256. Exact-content
-upstream mirrors are listed in `source-mirrors.json`; their bytes must have the
-same digest as the original recipe. Source templates, VCS-only recipes, missing
-patches, and unpinned downloads fail collection.
+upstream mirrors are listed in `source-mirrors.json` under that pin, tried after
+the original addresses; their bytes must have the same digest as the original
+recipe. `build.sh` uses the same file for what `sources.sha256` pins: when a
+download from its address fails or has other bytes, the addresses listed for its
+SHA256 are tried in turn and checked the same way. Source templates, VCS-only
+recipes, missing patches, and unpinned downloads fail collection.
 
 The source archive also contains registry crate sources pinned by top-level
 Cargo.lock files, including dependencies compiled into Rust libraries. A
@@ -50,6 +53,20 @@ collects the pinned native dependencies listed by Python standalone's build
 recipe and LibreOffice's `download.lst`, and font license texts. This collection
 does not by itself prove an arbitrary upstream binary's complete static source
 closure: explicit unresolved requirements block finalization and publishing.
+
+Every source item is pinned by the SHA256 of its bytes (`sha256`) except a
+gitiles archive of a commit (`https://*.googlesource.com/…/+archive/<commit>.tar.gz`),
+which gitiles makes anew on each request: the same files, other bytes (member
+times and the like). Such an item is pinned by its content instead,
+`tree_sha256` (`compliance.tree_sha256`): one line per regular file,
+`<path>\t<x or ->\t<sha256 of its contents>` (`x`: any executable bit), and per
+symbolic link, `<path>\tl\t<target>`; directories are left out, paths are the
+archive's without a leading `./`, and the lines are sorted, each ending in a
+newline, the SHA256 taken of their UTF-8. No other address is pinned this way.
+The download, its cache entry (`tree-<tree_sha256>` in the download cache, with
+whichever bytes it got), `--offline` and `release_manifest.py` check such an
+archive by its content. The source archive carries the bytes that were
+downloaded, and its manifest records their SHA256 beside the `tree_sha256`.
 
 Chrome for Testing is not part of the payload. It is an online item, declared
 in `ext-manifest.json` (`online`) with Google's own address, SHA256 and size
@@ -76,12 +93,14 @@ as well as from `<tools>/bin`. The payload's overlay (`online/<item>/`) is laid
 over the item again each time the package is activated, without the archive
 being fetched again, so a changed script in it reaches a node with the package.
 
-Current release blockers are recorded in each official component's
-`unresolved_source_requirements`, rather than silently ignored. In particular,
-Pandoc's exact binary-specific Haskell dependency/build plan must be obtained;
-the manifest records the current status of every other component separately.
-A project source tarball alone is insufficient to clear these entries. Do not
-remove a blocker merely because a source download succeeded.
+Release blockers are recorded in each official component's
+`unresolved_source_requirements`, rather than silently ignored. A gap the owner
+accepts in writing moves to `accepted_source_gaps` (`gap`, `accepted_by`,
+`accepted_at`): it no longer blocks a release and stays recorded in the source
+manifest. Pandoc's binary-specific Haskell dependency/build plan is such a gap
+(accepted 2026-11-15, see `OFFICIAL_SOURCES.md`). A project source tarball alone
+is insufficient to clear an entry. Do not remove a blocker merely because a
+source download succeeded.
 
 The current release decision is to retain the official binaries and block
 distribution while their required corresponding source remains incomplete.

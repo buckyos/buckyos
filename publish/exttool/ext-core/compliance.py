@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import time
 import tomllib
+from typing import BinaryIO
 from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -28,6 +29,9 @@ PLATFORMS = {
     "darwin-arm64": "osx-arm64", "darwin-x86_64": "osx-64", "windows-x86_64": "win-64",
 }
 SCHEMA = "buckyos.ext-tools-sources/v1"
+# gitiles makes the archive of a commit anew on each request: the same files, other bytes (member times and the like).
+# These alone are pinned by their content, tree_sha256.
+GITILES_ARCHIVE = re.compile(r"https://[a-z0-9-]+\.googlesource\.com/[^?#]+/\+archive/[0-9a-f]{40}\.tar\.gz")
 
 
 class ComplianceError(RuntimeError):
@@ -40,6 +44,35 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def tree_sha256(archive: Path | BinaryIO) -> str:
+    """The content of a tar archive, whatever the order, times, owners or compression of its members: one line per
+    regular file, `<path>\\t<x or ->\\t<sha256 of its contents>` (x: any executable bit), and per symbolic link,
+    `<path>\\tl\\t<target>`; directories are left out. Paths are the archive's without a leading `./`. The lines are
+    sorted, each ends in a newline, and the SHA256 of their UTF-8 is the tree_sha256."""
+    if isinstance(archive, Path):
+        with archive.open("rb") as handle:
+            return tree_sha256(handle)
+    lines = {}
+    try:
+        with tarfile.open(fileobj=archive, mode="r|*") as handle:
+            for member in handle:
+                if member.isdir():
+                    continue
+                name = member.name.removeprefix("./")
+                if name in lines or any(c in name + member.linkname for c in "\t\n"):
+                    raise ComplianceError(f"archive member cannot be pinned by content: {member.name!r}")
+                if member.issym():
+                    lines[name] = f"{name}\tl\t{member.linkname}"
+                elif member.isfile():
+                    contents = hashlib.file_digest(handle.extractfile(member), "sha256").hexdigest()
+                    lines[name] = f"{name}\t{'x' if member.mode & 0o111 else '-'}\t{contents}"
+                else:
+                    raise ComplianceError(f"archive member is neither a file, a directory nor a symlink: {member.name!r}")
+    except (tarfile.TarError, OSError, EOFError) as error:
+        raise ComplianceError(f"cannot read archive: {error}") from error
+    return hashlib.sha256("".join(line + "\n" for line in sorted(lines.values())).encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def write_json(path: Path, value: object) -> None:
@@ -119,14 +152,22 @@ def recipe_sources(recipe: Path) -> list[dict]:
     return found
 
 
-def download(urls: list[str], expected: str, cache: Path, offline: bool = False) -> Path:
+def download(urls: list[str], expected: str, cache: Path, offline: bool = False, tree: bool = False) -> Path:
+    """`expected` is the SHA256 of the bytes; with `tree`, the tree_sha256 of a gitiles archive, which is cached as
+    tree-<tree_sha256> and holds whichever bytes were downloaded."""
     if not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
         raise ComplianceError(f"source requires a SHA256 pin: {urls}")
+    if tree and not all(GITILES_ARCHIVE.fullmatch(url) for url in urls):
+        raise ComplianceError(f"only a gitiles +archive of a commit is pinned by content: {urls}")
     expected = expected.lower()
+    digest, name = (tree_sha256, "tree_sha256") if tree else (sha256, "SHA256")
     cache.mkdir(parents=True, exist_ok=True)
-    destination = cache / expected
-    if destination.is_file() and sha256(destination) == expected:
-        return destination
+    destination = cache / (f"tree-{expected}" if tree else expected)
+    try:
+        if destination.is_file() and digest(destination) == expected:
+            return destination
+    except ComplianceError:
+        pass
     if offline:
         raise ComplianceError(f"missing cached source {expected}: {urls}")
     errors = []
@@ -149,9 +190,9 @@ def download(urls: list[str], expected: str, cache: Path, offline: bool = False)
                 with urlopen(request, timeout=45) as response, tempfile.NamedTemporaryFile(dir=cache, delete=False) as handle:
                     temporary = Path(handle.name)
                     shutil.copyfileobj(response, handle, length=1024 * 1024)
-                actual = sha256(temporary)
+                actual = digest(temporary)
                 if actual != expected:
-                    raise ComplianceError(f"SHA256 mismatch for {url}: expected {expected}, got {actual}")
+                    raise ComplianceError(f"{name} mismatch for {url}: expected {expected}, got {actual}")
                 temporary.replace(destination)
                 return destination
             except (OSError, URLError, ComplianceError) as error:
@@ -276,6 +317,30 @@ def extract_header_notices(archive: Path, destination: Path) -> list[str]:
     return sorted(set(mapping.values()))
 
 
+def built_recipe_directory(recipe: Path) -> str | None:
+    """Where the recipe was on the machine that built the package: conda-build writes it into the rendered meta.yaml
+    (`# meta.yaml template originally from:` then `# <directory>, last modified ...`)."""
+    meta = recipe / "meta.yaml"
+    if not meta.is_file():
+        return None
+    lines = meta.read_text(errors="replace").splitlines()[:5]
+    for line, following in zip(lines, lines[1:]):
+        if line.strip() == "# meta.yaml template originally from:" and following.startswith("# "):
+            return following[2:].rsplit(", last modified", 1)[0].strip()
+    return None
+
+
+def recipe_directory_sources(source: dict, recipe: Path, destination: Path, source_root: Path) -> list[dict] | None:
+    """A package built from its own recipe directory (`source: path: <that directory>`, an absolute path of the build
+    machine; `_openmp_mutex` on macOS): its source is the recipe, which the package carries in info/recipe."""
+    path = str(source.get("path", ""))
+    if not path or not PurePosixPath(path.replace("\\", "/")).is_absolute() or path != built_recipe_directory(recipe):
+        return None
+    copied = destination / "info" / "recipe"
+    return [{"file": item.relative_to(source_root).as_posix(), "sha256": sha256(item), "kind": "recipe-source"}
+            for item in sorted(copied.rglob("*")) if item.is_file()]
+
+
 def artifact(source: dict, recipe: Path, destination: Path, source_root: Path) -> dict:
     if "path" in source:
         local = recipe / safe_relative(str(source["path"]))
@@ -382,6 +447,10 @@ def collect_conda(prefix: Path | None, lock: Path, package_cache: Path, source_r
             if file_list and not sources:
                 raise ComplianceError(f"{package_id}: package contains files but has no rendered source recipe")
             for entry in sources:
+                itself = recipe_directory_sources(entry, recipe, destination, source_root)
+                if itself is not None:
+                    component["sources"].extend(itself)
+                    continue
                 record = artifact(entry, recipe, destination, source_root)
                 if record.get("sha256") in requests:
                     record["file"] = requests[record["sha256"]]["file"]

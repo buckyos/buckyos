@@ -31,4 +31,4 @@ MPL 部分保留文件级授权及源码提供安排；LGPL 部分还需满足�
 
 先检查许可证与包元数据，再执行相关打包测试和实际归档检查。确保运行包中的许可证、来源记录和发行的对应源码包完整匹配。禁止发布缺少必需源码、许可证或补丁材料的扩展工具包。
 
-当前保留官方 Pandoc 二进制。其完整静态依赖源码记录尚未补齐，因此源码收集可运行，但最终归档和发行会失败；不会将只含 Pandoc 主仓库的源码标为完整。缺口记录在 `publish/exttool/ext-core/official-sources.json` 的 `unresolved_source_requirements`，其他组件的缺口也受同一检查约束。
+当前保留官方 Pandoc 二进制。其完整静态依赖源码（与官方二进制对应的 Haskell 依赖闭包和构建计划）尚未补齐；owner 于 2026-11-15 明确接受这一缺口，记为 `publish/exttool/ext-core/official-sources.json` 里 Pandoc 组件的 `accepted_source_gaps`（写明缺口、接受人、日期），不再阻止发行，并随每个对应源码包的清单一起发布。没有被明确接受的缺口仍记在 `unresolved_source_requirements`，会阻止最终归档和发行；不会将只含主仓库的源码标为完整。

@@ -151,15 +151,24 @@ def collect_official(payload: Path, source_root: Path, platform: str, download_c
     licenses = payload / "store/ext-core/LICENSES"
     records = []
 
+    # An item is pinned by its bytes (sha256) or, a gitiles archive, by its content (tree_sha256). Either way the record
+    # has the SHA256 of the bytes that were downloaded and are in the source archive.
     def obtain(item: dict) -> tuple[dict, Path]:
         filename = safe_relative(item["file"])
-        cached = download(item["urls"], item["sha256"], download_cache, offline)
-        target = source_root / "upstream" / item["sha256"] / filename
+        tree = "tree_sha256" in item
+        if tree == ("sha256" in item):
+            raise ComplianceError(f"{item['file']}: pin either sha256 or tree_sha256")
+        pin = item["tree_sha256" if tree else "sha256"]
+        cached = download(item["urls"], pin, download_cache, offline, tree)
+        digest = sha256(cached) if tree else pin
+        target = source_root / "upstream" / pin / filename
         target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.is_file() or sha256(target) != item["sha256"]:
+        if not target.is_file() or sha256(target) != digest:
             shutil.copy2(cached, target)
-        return ({"file": str(target.relative_to(source_root)), "sha256": item["sha256"],
-                 "urls": item["urls"], "kind": item["kind"]}, target)
+        record = {"file": str(target.relative_to(source_root)), "sha256": digest, "urls": item["urls"], "kind": item["kind"]}
+        if tree:
+            record["tree_sha256"] = pin
+        return record, target
 
     selected = [item for item in manifest["components"] if platform in item["binaries"]]
     if not selected:
@@ -169,6 +178,11 @@ def collect_official(payload: Path, source_root: Path, platform: str, download_c
         binary = component["binaries"][platform]
         payload_verification = verify_payload(payload, binary)
         unresolved = list(component.get("unresolved_source_requirements", []))
+        # A gap the owner accepted in writing does not block a release; it stays recorded in the source manifest.
+        accepted = list(component.get("accepted_source_gaps", []))
+        for gap in accepted:
+            if not isinstance(gap, dict) or not all(isinstance(gap.get(key), str) and gap[key] for key in ("gap", "accepted_by", "accepted_at")):
+                raise ComplianceError(f"{name}: an accepted source gap needs gap, accepted_by and accepted_at")
         notice_dir = licenses / "official" / safe_relative(name)
         notice_dir.mkdir(parents=True, exist_ok=True)
         # Remove a previous component's generated notices so an update cannot pass
@@ -236,7 +250,8 @@ def collect_official(payload: Path, source_root: Path, platform: str, download_c
                         "payload_verification": payload_verification,
                         "sources": sources, "notice_sources": notice_sources,
                         "license_directory": str(notice_dir.relative_to(licenses)),
-                        "source_coverage": "incomplete" if unresolved else "pinned-upstream-materials",
+                        "source_coverage": "incomplete" if unresolved else ("pinned-upstream-materials-with-accepted-gaps" if accepted else "pinned-upstream-materials"),
+                        "accepted_source_gaps": accepted,
                         "source_note": component.get("source_note", "The archive includes upstream build recipes. Source collection does not certify bit-for-bit reproducibility or relicense bundled dependencies."),
                         "unresolved_source_requirements": unresolved})
     shutil.copy2(HERE / "official-sources.json", source_root / "official-source-inputs.json")

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 import tarfile
 
-from compliance import ComplianceError, SCHEMA as SOURCE_SCHEMA, safe_relative
+from compliance import ComplianceError, SCHEMA as SOURCE_SCHEMA, safe_relative, tree_sha256
 
 PLATFORMS = ["linux-x86_64", "linux-aarch64", "darwin-arm64", "darwin-x86_64", "windows-x86_64"]
 SCHEMA = "buckyos.ext-tools/v1"
@@ -46,7 +47,9 @@ def read_json(archive: tarfile.TarFile, members: dict, name: str) -> tuple[dict,
     return json.loads(data), hashlib.sha256(data).hexdigest()
 
 
-def verify_inventory(archive: tarfile.TarFile, members: dict, inventory: list[dict]) -> None:
+def verify_inventory(archive: tarfile.TarFile, members: dict, inventory: list[dict], trees: dict[str, str] | None = None) -> None:
+    """`trees`: the files among them pinned by their content (gitiles archives), with their tree_sha256."""
+    trees = trees or {}
     # Read compressed archives in their physical order. Lexical path order can
     # otherwise force repeated decompression of multi-gigabyte tool payloads.
     ordered = sorted(inventory, key=lambda entry: members.get(safe_relative(entry["path"]).as_posix()).offset
@@ -62,17 +65,25 @@ def verify_inventory(archive: tarfile.TarFile, members: dict, inventory: list[di
             continue
         if not (member.isfile() or member.islnk()):
             raise ComplianceError(f'archive file is not regular: {entry["path"]}')
-        previous = hashes.get(member.linkname.removeprefix("./")) if member.islnk() else None
+        tree = trees.get(entry["path"])
+        previous = hashes.get(member.linkname.removeprefix("./")) if member.islnk() and tree is None else None
         if previous is None:
             handle = archive.extractfile(member)
             if handle is None:
                 raise ComplianceError(f'cannot read archive member: {entry["path"]}')
             digest = hashlib.sha256()
             size = 0
+            content = io.BytesIO() if tree else None
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
                 size += len(chunk)
+                if content is not None:
+                    content.write(chunk)
             previous = (digest.hexdigest(), size)
+            if content is not None:
+                content.seek(0)
+                if tree_sha256(content) != tree:
+                    raise ComplianceError(f'archive content differs from its tree_sha256: {entry["path"]}')
         hashes[member.name.removeprefix("./")] = previous
         if previous != (entry["sha256"], entry["size"]):
             raise ComplianceError(f'archive file hash/size changed: {entry["path"]}')
@@ -126,7 +137,9 @@ def corresponding_source(payload: Path, dist: Path, version: str, platform: str)
         inventory = manifest.get("files")
         if not isinstance(inventory, list) or not inventory:
             raise ComplianceError(f"{source}: missing corresponding-source file inventory")
-        verify_inventory(tar, members, inventory)
+        trees = {item["file"]: item["tree_sha256"] for component in manifest["components"]
+                 for item in component.get("sources", []) if "tree_sha256" in item}
+        verify_inventory(tar, members, inventory, trees)
         expected = {entry["path"] for entry in inventory}
         for component in manifest["components"]:
             for item in component.get("sources", []):

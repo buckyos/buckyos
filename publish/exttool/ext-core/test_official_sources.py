@@ -8,21 +8,25 @@ from unittest.mock import patch
 import zipfile
 
 import official_sources
-from compliance import ComplianceError, sha256
+from compliance import ComplianceError, sha256, tree_sha256
+
+
+def upstream_archive(path, mtime=0):
+    with tarfile.open(path, "w:gz") as handle:
+        for name, text in (("upstream/LICENSE", "MIT License\nCopyright upstream\n"),
+                           ("upstream/source.c", "int main(void) { return 0; }\n")):
+            contents = text.encode()
+            member = tarfile.TarInfo(name)
+            member.size, member.mtime = len(contents), mtime
+            handle.addfile(member, io.BytesIO(contents))
+    return path
 
 
 class OfficialSourceTests(unittest.TestCase):
-    def fixture(self, root, unresolved=False):
+    def fixture(self, root, unresolved=False, accepted=None):
         cache = root / "cache"
         cache.mkdir()
-        archive = root / "upstream.tar.gz"
-        with tarfile.open(archive, "w:gz") as handle:
-            for name, text in (("upstream/LICENSE", "MIT License\nCopyright upstream\n"),
-                               ("upstream/source.c", "int main(void) { return 0; }\n")):
-                contents = text.encode()
-                member = tarfile.TarInfo(name)
-                member.size = len(contents)
-                handle.addfile(member, io.BytesIO(contents))
+        archive = upstream_archive(root / "upstream.tar.gz")
         digest = sha256(archive)
         (cache / digest).write_bytes(archive.read_bytes())
         (root / "build.sh").write_text("TOOL_VERSION=1.2.3\n")
@@ -42,7 +46,8 @@ class OfficialSourceTests(unittest.TestCase):
                                                           "url": "https://upstream.invalid/binary"}},
                             "sources": [{"file": "source.tar.gz", "sha256": digest,
                                          "urls": ["https://upstream.invalid/source"], "kind": "upstream-source"}],
-                            "unresolved_source_requirements": ["missing linked library source"] if unresolved else []}]}))
+                            "unresolved_source_requirements": ["missing linked library source"] if unresolved else [],
+                            **({"accepted_source_gaps": accepted} if accepted is not None else {})}]}))
         return root / "payload", root / "sources", cache
 
     def test_collect_preserves_source_and_upstream_notice_with_hashes(self):
@@ -58,6 +63,43 @@ class OfficialSourceTests(unittest.TestCase):
             self.assertEqual((notices / "source.tar.gz/upstream/LICENSE").read_text(), "MIT License\nCopyright upstream\n")
             self.assertEqual(json.loads((sources / "official-components.json").read_text()), result)
 
+    def test_gitiles_archive_is_collected_by_content_with_the_bytes_downloaded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload, sources, cache = self.fixture(root)
+            path = root / "official-sources.json"
+            manifest = json.loads(path.read_text())
+            item = manifest["components"][0]["sources"][0]
+            pin = tree_sha256(root / "upstream.tar.gz")
+            # What a later request of that commit gets: the same files, other bytes.
+            repacked = upstream_archive(root / "repacked.tar.gz", mtime=1_700_000_000)
+            self.assertNotEqual(sha256(repacked), item["sha256"])
+            (cache / f"tree-{pin}").write_bytes(repacked.read_bytes())
+            byte_pin = item.pop("sha256")
+            item.update(tree_sha256=pin, urls=["https://chromium.googlesource.com/upstream/+archive/" + "a" * 40 + ".tar.gz"])
+            path.write_text(json.dumps(manifest))
+            with patch.object(official_sources, "HERE", root):
+                result = official_sources.collect_official(payload, sources, "linux-x86_64", cache, offline=True)
+                record = result["components"][0]["sources"][0]
+                self.assertEqual(record["file"], f"upstream/{pin}/source.tar.gz")
+                self.assertEqual((record["sha256"], record["tree_sha256"]), (sha256(repacked), pin))
+                self.assertEqual(sha256(sources / record["file"]), record["sha256"])
+                # An item of any other address is pinned by its bytes, and other bytes fail.
+                item.pop("tree_sha256")
+                item.update(sha256=byte_pin, urls=["https://upstream.invalid/source"])
+                path.write_text(json.dumps(manifest))
+                (cache / byte_pin).write_bytes(repacked.read_bytes())
+                with self.assertRaisesRegex(ComplianceError, "missing cached source"):
+                    official_sources.collect_official(payload, sources, "linux-x86_64", cache, offline=True)
+                item["tree_sha256"] = pin
+                path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ComplianceError, "either sha256 or tree_sha256"):
+                    official_sources.collect_official(payload, sources, "linux-x86_64", cache, offline=True)
+                item.pop("sha256")
+                path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ComplianceError, "only a gitiles"):
+                    official_sources.collect_official(payload, sources, "linux-x86_64", cache, offline=True)
+
     def test_incomplete_static_closure_stays_a_release_blocker(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -66,6 +108,24 @@ class OfficialSourceTests(unittest.TestCase):
                 result = official_sources.collect_official(payload, sources, "linux-x86_64", cache, offline=True)
             self.assertEqual(result["components"][0]["source_coverage"], "incomplete")
             self.assertEqual(result["components"][0]["unresolved_source_requirements"], ["missing linked library source"])
+
+    def test_an_accepted_source_gap_is_recorded_and_does_not_block(self):
+        gap = {"gap": "missing linked library source", "accepted_by": "owner", "accepted_at": "2026-11-15"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload, sources, cache = self.fixture(root, accepted=[gap])
+            with patch.object(official_sources, "HERE", root):
+                result = official_sources.collect_official(payload, sources, "linux-x86_64", cache, offline=True)
+            component = result["components"][0]
+            self.assertEqual(component["unresolved_source_requirements"], [])
+            self.assertEqual(component["source_coverage"], "pinned-upstream-materials-with-accepted-gaps")
+            self.assertEqual(component["accepted_source_gaps"], [gap])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload, sources, cache = self.fixture(root, accepted=[{"gap": "unsigned"}])
+            with patch.object(official_sources, "HERE", root):
+                with self.assertRaisesRegex(ComplianceError, "accepted source gap needs"):
+                    official_sources.collect_official(payload, sources, "linux-x86_64", cache, offline=True)
 
     def test_version_and_binary_drift_rejected_before_publication(self):
         with tempfile.TemporaryDirectory() as temporary:

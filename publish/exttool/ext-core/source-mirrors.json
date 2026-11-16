@@ -18,5 +18,17 @@
   "a1d5b63d2d38ec9bd03acf643caa51fa22edd1e89c5a109c4807717216bbec07": {
     "urls": ["https://codeload.github.com/videolan/dav1d/tar.gz/refs/tags/1.5.4"],
     "reason": "Official project mirror at the original recipe version; archive bytes match the original recipe SHA256."
+  },
+  "a61d5706136ae4c05bd48f86186bcfdbd88dd8bd5107e3e195c924cfc1b39bb4": {
+    "urls": ["https://deb.debian.org/debian/pool/main/k/keyutils/keyutils_1.6.3.orig.tar.gz"],
+    "reason": "Debian's copy of the upstream tarball; bytes match the exact source SHA256 from the Conda recipe (git.kernel.org was unreachable from GitHub runners)."
+  },
+  "95343c871869cc0ab57ecec26b2f9af0370eb9c954f7e5ddd017163e4e0d09a0": {
+    "urls": ["https://github.com/buckyos/buckyos/releases/download/ext-tools-upstream-mirror/busybox-w64-FRP-6354-g5f09fb446.exe"],
+    "reason": "BuckyOS copy of frippery.org's release binary (frippery.org answers GitHub runners with 403); same bytes."
+  },
+  "950d2c73e979e54c65c7723668406d1d6e740fc474f41516a82ddae805fbf24b": {
+    "urls": ["https://github.com/buckyos/buckyos/releases/download/ext-tools-upstream-mirror/busybox-w32-FRP-6354-g5f09fb446.tgz"],
+    "reason": "BuckyOS copy of frippery.org's release source (frippery.org answers GitHub runners with 403); same bytes."
   }
 }

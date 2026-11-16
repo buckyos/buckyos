@@ -73,24 +73,42 @@ sha256_of_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
+# The addresses source-mirrors.json has for a SHA256, one per line: the same file as compliance.py's download() reads.
+mirrors_of() {
+  [ -f "$here/source-mirrors.json" ] || return 0
+  "$python_bin" -c 'import json, sys
+print("\n".join(json.load(open(sys.argv[1])).get(sys.argv[2], {}).get("urls", [])))' "$here/source-mirrors.json" "$1"
+}
+
+# Into the cache from one address, if the bytes are the ones sources.sha256 pins.
+fetch_from() {
+  local url="$1" file="$2" want="$3"
+  if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 30 -o "$cache/$file.part" "$url"; then
+    echo "$file: download failed: $url" >&2
+  elif [ "$(sha256_of_file "$cache/$file.part")" != "$want" ]; then
+    echo "$file: sha256 differs from sources.sha256: $url" >&2
+  else
+    mv "$cache/$file.part" "$cache/$file"
+    return
+  fi
+  rm -f "$cache/$file.part"
+  return 1
+}
+
+# The file from its address or, failing that, from the mirrors of its SHA256.
 fetch() {
   local url="$1" file="${2:-${1##*/}}" want
   want="$(sha_of "$file")"
   [ -n "$want" ] || { echo "$file is not in sources.sha256" >&2; exit 1; }
-  if [ ! -f "$cache/$file" ] || [ "$(sha256_of_file "$cache/$file")" != "$want" ]; then
-    if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 30 -o "$cache/$file.part" "$url"; then
-      rm -f "$cache/$file.part"
-      echo "$file: download failed" >&2
-      exit 1
-    fi
-    if [ "$(sha256_of_file "$cache/$file.part")" != "$want" ]; then
-      rm -f "$cache/$file.part"
-      echo "$file: sha256 differs from sources.sha256" >&2
-      exit 1
-    fi
-    mv "$cache/$file.part" "$cache/$file" || exit 1
+  if [ -f "$cache/$file" ] && [ "$(sha256_of_file "$cache/$file")" = "$want" ]; then
+    echo "$cache/$file"
+    return
   fi
-  echo "$cache/$file"
+  fetch_from "$url" "$file" "$want" && { echo "$cache/$file"; return; }
+  while IFS= read -r url; do
+    [ -n "$url" ] && fetch_from "$url" "$file" "$want" && { echo "$cache/$file"; return; }
+  done <<< "$(mirrors_of "$want")"
+  exit 1
 }
 
 conda_platform() {

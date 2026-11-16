@@ -43,7 +43,10 @@ downloading a project's top-level source archive does not clear that check.
   repositories. `v8-sources.json` records the revisions and comparison with
   the published crate: 14,321 shared files match; the crate retains its
   generated bindings, normalized manifest and pruned lockfile. Both the
-  original crate and the full source notices are preserved.
+  original crate and the full source notices are preserved. The 17
+  submodules served by gitiles are pinned by `tree_sha256` (README.md);
+  `v8-sources.json` keeps the `sha256` and `size` of the copies that were
+  compared, which a later download has the content of, not the bytes.
 - LibreOffice source, patches and build recipes, plus every SHA256-pinned
   external input in that release's `download.lst`. This is a superset of the
   headless payload's dependencies. A NuGet build tool is labeled as a build
@@ -80,17 +83,20 @@ for that. What the payload does carry for it is ours: the launcher, and the
 `online/chromium/` overlay with Playwright's marker files and the Linux
 wrapper script.
 
-## Remaining release blockers
+## Accepted source gaps
 
 **Pandoc 3.12.1:** the official static binaries have no verified, binary-specific
 frozen Cabal package plan in the collected source tree. Extracting some package
 versions with `strings`, or using the repository's Nix flake lock, does not
-prove the complete linked source closure. Obtain the publisher's matching
-build plan and all linked sources, or rebuild the binary from a captured Cabal
-plan and package its dependency sources, patches and build settings. The
-current project decision is to keep the official binary and block incomplete
-releases; this change does not introduce a replacement compiler or binary.
-Verify every supported platform before clearing `unresolved_source_requirements`.
+prove the complete linked source closure. Closing the gap means obtaining the
+publisher's matching build plan and all linked sources, or rebuilding the binary
+from a captured Cabal plan and packaging its dependency sources, patches and
+build settings. On 2026-11-15 the owner explicitly accepted this gap so that
+releases go ahead with the official binary: it is recorded as
+`accepted_source_gaps` (not `unresolved_source_requirements`) and carried into
+every source manifest, whose coverage then reads
+`pinned-upstream-materials-with-accepted-gaps`. An accepted gap needs `gap`,
+`accepted_by` and `accepted_at`; a gap nobody accepted stays a release blocker.
 
 MinGit's 65 package-source mappings and 426 embedded inputs have been
 verified. Its `git-extra` package identifies `build-extra` commit
