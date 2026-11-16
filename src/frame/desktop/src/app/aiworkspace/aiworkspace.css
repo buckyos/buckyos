@@ -22,31 +22,32 @@
   font-size: 13px;
   line-height: 1.5;
 }
-.aiws-root button,
-.aiws-root input,
-.aiws-root select,
-.aiws-root textarea { font: inherit; color: inherit; }
-/* not inside a hosted system component (the Preview component of a media Block): it styles its own buttons; `:where`
-   keeps the specificity of these base rules */
-.aiws-root button:where(:not(.aiws-preview-host *)) {
+.aiws-root button:where(:not(.aiws-system-host *)),
+.aiws-root input:where(:not(.aiws-system-host *)),
+.aiws-root select:where(:not(.aiws-system-host *)),
+.aiws-root textarea:where(:not(.aiws-system-host *)) { font: inherit; color: inherit; }
+/* not inside a hosted system component (the Preview component of a media Block: its buttons; the conversation of the
+   Agent's panel, `aiws-system-host`: its buttons and fields): it styles its own; `:where` keeps the specificity of these
+   base rules */
+.aiws-root button:where(:not(.aiws-preview-host *, .aiws-system-host *)) {
   border: 1px solid var(--cp-border);
   background: var(--cp-surface);
   border-radius: 6px;
   padding: 2px 8px;
   cursor: pointer;
 }
-.aiws-root button:where(:not(.aiws-preview-host *)):hover:not(:disabled) { background: var(--cp-surface-2); }
-.aiws-root button:where(:not(.aiws-preview-host *)):disabled { opacity: 0.5; cursor: default; }
+.aiws-root button:where(:not(.aiws-preview-host *, .aiws-system-host *)):hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root button:where(:not(.aiws-preview-host *, .aiws-system-host *)):disabled { opacity: 0.5; cursor: default; }
 /* buttons keep the Desktop's focus ring (index.css); fields get the same ring instead of a second outline */
-.aiws-root input:not([type='radio']):not([type='checkbox']):focus-visible,
-.aiws-root select:focus-visible,
-.aiws-root textarea:focus-visible { outline: none; border-color: color-mix(in srgb, var(--cp-accent) 55%, var(--cp-border)); box-shadow: 0 0 0 3px var(--cp-focus-ring); }
+.aiws-root input:not([type='radio']):not([type='checkbox']):where(:not(.aiws-system-host *)):focus-visible,
+.aiws-root select:where(:not(.aiws-system-host *)):focus-visible,
+.aiws-root textarea:where(:not(.aiws-system-host *)):focus-visible { outline: none; border-color: color-mix(in srgb, var(--cp-accent) 55%, var(--cp-border)); box-shadow: 0 0 0 3px var(--cp-focus-ring); }
 /* radios and checkboxes stay native (tinted by accent-color), never boxed like text fields */
 .aiws-root input[type='radio']:focus-visible,
 .aiws-root input[type='checkbox']:focus-visible { outline: 2px solid var(--cp-focus-ring); outline-offset: 2px; }
-.aiws-root input:not([type='radio']):not([type='checkbox']),
-.aiws-root select,
-.aiws-root textarea {
+.aiws-root input:not([type='radio']):not([type='checkbox']):where(:not(.aiws-system-host *)),
+.aiws-root select:where(:not(.aiws-system-host *)),
+.aiws-root textarea:where(:not(.aiws-system-host *)) {
   border: 1px solid var(--cp-border);
   background: var(--cp-surface);
   border-radius: 6px;

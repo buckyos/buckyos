@@ -333,11 +333,17 @@ impl Stage {
             let at = format!("output_contract.results[{i}]");
             let mut r = r.clone();
             if let Some(m) = r.as_object_mut() {
-                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "key" | "target" | "views" | "description" | "fields" | "kind" | "def"));
+                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "key" | "target" | "views" | "description" | "fields" | "kind" | "def" | "schema_id"));
             }
             if let Err(e) = check_contract_result(&r) {
                 problems.push(format!("{at}: {}", e.detail));
                 continue;
+            }
+            // a business schema of the result (B0-4): a built-in one, or one a table of this workspace defines
+            if let Some(sid) = r["schema_id"].as_str() {
+                if !aiworkspace_core::standard::is_standard_schema(sid) && aiworkspace_core::standard::user_schema_fields(&self.ctx(), sid)?.is_none() {
+                    problems.push(format!("{at}: schema_id {sid} is neither built in nor defined here (a table with that schema_id and a source.def defines it)"));
+                }
             }
             let ty = r["type"].as_str().unwrap_or("");
             if ty == "table" && !r.get("key").and_then(Value::as_array).is_some_and(|k| !k.is_empty()) {
@@ -397,6 +403,13 @@ impl Stage {
             }
             if !c.is_empty() {
                 x["candidates"] = json!(c);
+            }
+            // the data source an analysis asks for when the data is outside the Workspace (B2-1)
+            if let Some(w) = b.get("wanted").filter(|w| !w.is_null()) {
+                match aiworkspace_core::wish::check_wanted(w) {
+                    Ok(()) => x["wanted"] = w.clone(),
+                    Err(e) => problems.push(e.detail),
+                }
             }
             blockers.push(x);
         }

@@ -312,8 +312,9 @@ fn check_executor(caller: &Caller, run: &Value) -> WsResult<()> {
         }
         return Ok(());
     }
-    let exec = &run["detail"]["context"]["executor"];
-    if run["principal"] == json!(caller.principal) || exec["principal"] == json!(caller.principal) {
+    // the executor the context names, as `proc.claim` judged it (an Agent named by its AgentId signs in with its DID)
+    let named = run["detail"]["context"]["executor"]["principal"].as_str().unwrap_or("");
+    if run["principal"] == json!(caller.principal) || is_executor(caller, named) {
         return Ok(());
     }
     Err(WsError::denied("only the run's executor reports on it"))
@@ -327,7 +328,7 @@ pub fn expire_if_due(ws: &mut Workspace, run: &Value) -> WsResult<bool> {
 /// Hosted dispatch (D23, T3-5): the Owner's Agent gets a Goal with the run reference and its claim
 /// token, and is activated. Without a Zone runtime (standalone, tests) the run stays claimable and the
 /// dispatch is recorded as `unavailable`.
-pub async fn dispatch_hosted(state: &Arc<AppState>, ws_id: &str, run_id: &str, claim_token: &str, cfg: &Value, context: &Value) -> Value {
+pub async fn dispatch_hosted(state: &Arc<AppState>, ws_id: &str, run_id: &str, claim_token: &str, cfg: &Value, context: &Value, session: &str) -> Value {
     let agent = cfg["agent_id"].as_str().unwrap_or("").to_string();
     let owner = context["compute"]["principal"].as_str().unwrap_or("").to_string();
     let objective = format!(
@@ -338,7 +339,7 @@ pub async fn dispatch_hosted(state: &Arc<AppState>, ws_id: &str, run_id: &str, c
         context["task"]["wish_id"].as_str().unwrap_or("")
     );
     let _ = state;
-    match dispatch_goal(&agent, &owner, run_id, &objective).await {
+    match dispatch_goal(&agent, &owner, run_id, &objective, session).await {
         Ok(goal) => json!({ "status": "dispatched", "agent_id": agent, "goal": goal, "at": format_utc_ms(now_wall()) }),
         Err(e) => json!({ "status": "unavailable", "agent_id": agent, "detail": e, "at": format_utc_ms(now_wall()) }),
     }
@@ -349,14 +350,20 @@ fn now_wall() -> i64 {
 }
 
 /// `goals.create` + `goals.activate` on the Agent's OpenDAN service (its AgentSpec binding names the service).
-async fn dispatch_goal(agent_id: &str, owner: &str, run_id: &str, objective: &str) -> Result<Value, String> {
+/// The Agent serves its kRPC at `/kapi/<agent_id>` behind the node gateway (the scheduler routes it by the Agent's id), and
+/// takes requests from its owner only: the Goal is created in the name of whoever started the run (`session`), so an
+/// Agent never takes work from someone it would not take it from directly.
+async fn dispatch_goal(agent_id: &str, owner: &str, run_id: &str, objective: &str, session: &str) -> Result<Value, String> {
     let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| format!("no zone runtime: {e}"))?;
     let agent = buckyos_api::AgentId::parse(agent_id).map_err(|e| format!("bad agent id: {e:?}"))?;
     let sysconf = runtime.get_system_config_client().await.map_err(|e| format!("system-config: {e}"))?;
     let key = buckyos_api::agent_spec_key(owner, &agent);
     let spec = sysconf.get(&key).await.map_err(|e| format!("agent spec {key}: {e}"))?;
     let spec: buckyos_api::AgentSpec = serde_json::from_str(&spec.value).map_err(|e| format!("agent spec: {e}"))?;
-    let client = runtime.get_zone_service_krpc_client(&spec.binding.service_name).await.map_err(|e| format!("agent service: {e}"))?;
+    if session.is_empty() {
+        return Err("the run was started without a session to hand it to the Agent with".into());
+    }
+    let client = kRPC::kRPC::new(&format!("http://127.0.0.1:{}/kapi/{}", runtime.node_gateway_port, agent.as_str()), Some(session.to_string()));
     let created = client
         .call("goals.create", json!({ "request": { "key": format!("aiws/{run_id}"), "title": format!("AI Workspace run {run_id}"), "objective": objective, "initial_skills": [{ "name": "aiworkspace_run" }] } }))
         .await

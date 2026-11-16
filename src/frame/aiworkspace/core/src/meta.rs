@@ -88,12 +88,17 @@ pub fn meta(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, assets: Option<As
         let mut data = json!({ "mode": mode, "write": write });
         if let Some(s) = e.payload.get("source").filter(|s| s.is_object()) {
             let mut src = serde_json::Map::new();
-            for k in ["kind", "mode", "url", "workspace_id", "entity_id", "refresh", "revision", "fetched_at", "refreshed_at", "error"] {
+            for k in ["kind", "mode", "url", "workspace_id", "entity_id", "path", "refresh"] {
                 if let Some(x) = s.get(k) {
                     src.insert(k.into(), x.clone());
                 }
             }
             data["source"] = Value::Object(src);
+            // defined but not yet satisfied (B0-3), or the version the last refresh wrote (B0-2); the service adds the
+            // last attempt and whether the data is past its freshness
+            data["state"] = json!(if crate::types::data_pending(e) { "pending" } else { "valid" });
+            data["version"] = e.payload.get("data_version").cloned().unwrap_or(Value::Null);
+            data["def"] = s.get("def").cloned().unwrap_or(Value::Null);
         }
         if let Some(d) = &e.derived {
             data["derived"] = json!({ "wish_id": d.get("wish_id"), "run_id": d.get("run_id"), "at": d.get("at") });

@@ -124,7 +124,7 @@ test('UI-PH16 §15 #16 the phone keeps the title zone and the status bar; its ma
   expect(await entries(menu)).toEqual(['aiws-menu-import-drawio', 'aiws-menu-import-pdf', 'aiws-menu-import-office', 'aiws-menu-import-table'])
   await menu.getByTestId('aiws-menu-back').tap()
   await menu.getByTestId('aiws-menu-collab').tap()
-  expect(await entries(menu)).toEqual(['aiws-menu-share', 'aiws-menu-members', 'aiws-menu-annotate', 'aiws-top-play', 'aiws-menu-guides', 'aiws-menu-macros'])
+  expect(await entries(menu)).toEqual(['aiws-menu-share', 'aiws-menu-members', 'aiws-menu-annotate', 'aiws-top-play', 'aiws-menu-guides', 'aiws-menu-macros', 'aiws-menu-jarvis', 'aiws-menu-request-data'])
   // a disabled entry says why, in the menu (no hover on a phone)
   await expect(menu.getByTestId('aiws-top-play')).toBeDisabled()
   await expect(menu.getByTestId('aiws-top-play').locator('.aiws-menu-reason')).toBeVisible()

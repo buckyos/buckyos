@@ -52,13 +52,17 @@ fn check_new_refs(p: &Planner, old: &Validated, new: &Validated) -> WsResult<()>
 /// carries the CRDT snapshot so replicas obtain the very same lineage.
 pub fn create(p: &mut Planner, row: &mut EntityRow, payload: JsonMap) -> WsResult<Value> {
     for k in payload.keys() {
-        if !matches!(k.as_str(), "content" | "lineage_id" | "snapshot" | "source") {
+        if !matches!(k.as_str(), "content" | "lineage_id" | "snapshot" | "source" | "data_version") {
             return Err(WsError::invalid_schema(format!("richtext: unknown key {k}")));
         }
     }
     if let Some(s) = payload.get("source") {
         crate::types::check_source(s)?;
         row.payload.insert("source".into(), s.clone());
+    }
+    if let Some(v) = payload.get("data_version") {
+        row.payload.insert("data_version".into(), v.clone());
+        crate::types::check_data_version(p, row, None)?;
     }
     let id = row.entity_id.clone();
     let (doc, lineage_id) = match (payload.get("content"), payload.get("snapshot")) {

@@ -158,8 +158,10 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 const CELL_KEYS: &[&str] = &[
     "source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked",
     "flip", "start", "end", "route", "controls", "label", "presentation",
-    "data_ownership", "slot", "on",
+    "data_ownership", "slot", "on", "row_limit",
 ];
+/// The most rows a table view's `row_limit` may name (B7-3; none: all rows).
+pub const MAX_ROW_LIMIT: u64 = 100_000;
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
 /// Data one `many` binding names at most (控件 on_bind TODO Q2: a list of references).
@@ -458,6 +460,12 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
                 return Err(bad("manual_order: invalid record_id"));
             }
             check_order_key(key.as_str().unwrap_or(""))?;
+        }
+    }
+    // how many rows the table view shows (B7-3, §6 Q9): a display limit, the data keeps every row
+    if let Some(n) = e.payload.get("row_limit").filter(|v| !v.is_null()) {
+        if view_type != "table" || !n.as_u64().is_some_and(|n| (1..=MAX_ROW_LIMIT).contains(&n)) {
+            return Err(bad(format!("row_limit (1..{MAX_ROW_LIMIT}) belongs to a table view")));
         }
     }
     if view_type == "connector" {
@@ -1234,7 +1242,7 @@ pub const ASSET_CONTENT_KEYS: &[&str] = &["image", "poster", "duration_ms", "pag
 /// Validator class: primitive (AssetRef shape, media type and size from the verified content); reference for the uploaded
 /// object and its poster (a picture of the content: a video frame, a PDF's first page, an album cover).
 fn validate_asset(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
-    check_keys(&e.payload, &["object_id", "media_type", "size", "file_name", "image", "poster", "duration_ms", "page_count", "source"], "asset")?;
+    check_keys(&e.payload, &["object_id", "media_type", "size", "file_name", "image", "poster", "duration_ms", "page_count", "source", "data_version"], "asset")?;
     if let Some(s) = e.payload.get("source") {
         check_source(s)?;
     }
@@ -2361,14 +2369,16 @@ fn check_build_record(p: &Planner, o: &Map<String, Value>, content_rev: u64) -> 
 
 // ---- Source (内核架构改进 D12, D24, D26): where a data entity's content comes from ----
 
-/// `source{ kind: url | workspace, url?, zone?, workspace_id?, entity_id?, mode: live | fixed, version?, query?,
-/// refresh?: { interval_s }, auth_mode: none | hosted, name? }`. An entity with a Source is read-only for Blocks
-/// and people: its content is written only by a refresh run (commit origin `source`). Credentials never
-/// belong in it (§6.2): `auth_mode: hosted` means the owner's Agent refreshes it.
+/// `source{ kind: url | workspace | zone | session, url?, zone?, workspace_id?, entity_id?, path?, mode: live | fixed,
+/// version?, query?, refresh?: { interval_s }, auth_mode: none | hosted, name?, def? }`. An entity with a Source is
+/// read-only for Blocks and people: its content is written only by a refresh run (commit origin `source`). Credentials
+/// never belong in it (§6.2): `auth_mode: hosted` means the owner's Agent refreshes it. `kind: zone` reads a file of the
+/// workspace owner's home (`path`, AI Native 余下任务 §7.2); `def` says what the data is (meaning, primary key,
+/// freshness, row limit).
 pub fn check_source(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| bad("source must be an object"))?;
     for k in o.keys() {
-        if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name" | "feed") {
+        if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "path" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name" | "feed" | "def") {
             return Err(bad(format!("source: unknown key {k}")));
         }
     }
@@ -2394,6 +2404,15 @@ pub fn check_source(v: &Value) -> WsResult<()> {
                 check_absolute_url(u.as_str().unwrap_or(""))?;
             }
         }
+        Some("zone") => {
+            if o.keys().any(|k| !matches!(k.as_str(), "kind" | "path" | "mode" | "refresh" | "name" | "def")) {
+                return Err(bad("a zone source has kind, path, mode, refresh, name and def only"));
+            }
+            zone_path_segments(o.get("path").and_then(Value::as_str).unwrap_or(""))?;
+            if o.get("mode").is_some_and(|m| m != "live") {
+                return Err(bad("a zone source is live"));
+            }
+        }
         Some("session") => {
             // a session feed (第四期规划 §5.3, Q19): live only, refreshed by the session service, never fetched
             if !o.get("feed").and_then(Value::as_str).is_some_and(|f| SESSION_FEEDS.contains(&f)) {
@@ -2403,7 +2422,7 @@ pub fn check_source(v: &Value) -> WsResult<()> {
                 return Err(bad("a session source has kind, feed, mode and name only"));
             }
         }
-        _ => return Err(bad("source.kind must be url, workspace or session")),
+        _ => return Err(bad("source.kind must be url, workspace, zone or session")),
     }
     if o.get("kind").and_then(Value::as_str) != Some("session") && o.contains_key("feed") {
         return Err(bad("source.feed belongs to a session source"));
@@ -2424,8 +2443,8 @@ pub fn check_source(v: &Value) -> WsResult<()> {
     }
     if let Some(r) = o.get("refresh") {
         let secs = r.get("interval_s").and_then(Value::as_u64).ok_or_else(|| bad("source.refresh.interval_s must be a number of seconds"))?;
-        if secs < 60 {
-            return Err(bad("source.refresh.interval_s is at least 60"));
+        if secs < MIN_REFRESH_INTERVAL_S {
+            return Err(bad(format!("source.refresh.interval_s is at least {MIN_REFRESH_INTERVAL_S}")));
         }
         if r.as_object().is_some_and(|m| m.keys().any(|k| k != "interval_s")) {
             return Err(bad("source.refresh: only interval_s"));
@@ -2440,7 +2459,109 @@ pub fn check_source(v: &Value) -> WsResult<()> {
             return Err(bad("source.name must be a short string"));
         }
     }
+    if let Some(d) = o.get("def") {
+        check_source_def(d)?;
+    }
     Ok(())
+}
+
+/// The shortest refresh interval a Source may ask for (B5-2, a placeholder until the DV says otherwise).
+pub const MIN_REFRESH_INTERVAL_S: u64 = 900;
+/// The most rows `def.limit` may keep.
+pub const MAX_SOURCE_LIMIT: u64 = 100_000;
+
+/// `source.def { meaning, origin?, primary_key?, freshness?: { max_age_s }, limit? }` (B0-1): what the data means, where
+/// it comes from, the fields that identify a record, how old it may get, and how many rows of it the workspace keeps.
+pub fn check_source_def(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("source.def must be an object"))?;
+    if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "meaning" | "origin" | "primary_key" | "freshness" | "limit")) {
+        return Err(bad(format!("source.def: unknown key {k}")));
+    }
+    if !o.get("meaning").and_then(Value::as_str).is_some_and(|m| !m.trim().is_empty() && m.chars().count() <= 2000) {
+        return Err(bad("source.def.meaning (what the data is, at most 2000 chars) required"));
+    }
+    if o.get("origin").is_some_and(|x| !x.as_str().is_some_and(|m| m.chars().count() <= 2000)) {
+        return Err(bad("source.def.origin must be a string of at most 2000 chars"));
+    }
+    if let Some(k) = o.get("primary_key") {
+        let ok = k.as_array().is_some_and(|a| (1..=4).contains(&a.len()) && a.iter().all(|f| f.as_str().is_some_and(|f| !f.is_empty() && f.len() <= 128)));
+        let unique = k.as_array().is_some_and(|a| a.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>().len() == a.len());
+        if !ok || !unique {
+            return Err(bad("source.def.primary_key must list 1 to 4 distinct field ids"));
+        }
+    }
+    if let Some(f) = o.get("freshness") {
+        let ok = f.as_object().is_some_and(|m| m.len() == 1) && f.get("max_age_s").and_then(Value::as_u64).is_some_and(|s| s >= 1);
+        if !ok {
+            return Err(bad("source.def.freshness must be { max_age_s } (seconds)"));
+        }
+    }
+    if o.get("limit").is_some_and(|l| !l.as_u64().is_some_and(|n| (1..=MAX_SOURCE_LIMIT).contains(&n))) {
+        return Err(bad(format!("source.def.limit must be 1..{MAX_SOURCE_LIMIT}")));
+    }
+    Ok(())
+}
+
+/// The segments of a zone source's path: `/home/<owner>/<rest…>`, each a plain name (no `.`, `..`, empty segment or
+/// separator). The owner is checked when the source is read: the workspace's owner then.
+pub fn zone_path_segments(path: &str) -> WsResult<Vec<&str>> {
+    let rest = path.strip_prefix('/').filter(|_| path.len() <= 1024).ok_or_else(|| bad("source.path must be an absolute Zone path /home/<owner>/…"))?;
+    let segs: Vec<&str> = rest.split('/').collect();
+    if segs.len() < 3 || segs[0] != "home" || segs.iter().any(|s| s.is_empty() || *s == "." || *s == ".." || s.contains(['\\', '\0']) || s.chars().any(char::is_control)) {
+        return Err(bad("source.path must be a file in the owner's home: /home/<owner>/…, without . or .. segments"));
+    }
+    Ok(segs)
+}
+
+/// The definition of a sourced entity's data (`source.def`), when it has one.
+pub fn source_def(e: &EntityRow) -> Option<&Value> {
+    e.payload.get("source").and_then(|s| s.get("def")).filter(|d| d.is_object())
+}
+
+/// Types that can carry a Source.
+pub const SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_DIR];
+/// Types a refresh writes content into: they carry `data_version` and can be pending.
+pub const REFRESHED_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_ASSET];
+
+/// A data source defined but not yet satisfied (B0-3): a fetched Source (not a session feed) whose refresh has not
+/// written a data version yet. It is no valid dependency: no rows to read, never shown as an empty table.
+pub fn data_pending(e: &EntityRow) -> bool {
+    REFRESHED_TYPES.contains(&e.type_id.as_str()) && has_source(e) && session_feed(e).is_none() && !e.payload.get("data_version").is_some_and(Value::is_object)
+}
+
+/// `data_version` (B0-2): the version a refresh wrote, only with a Source and only by the refresh (origin `source`;
+/// an import or clone carries it). Without a Source it goes with the Source.
+pub(crate) fn check_data_version(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
+    let Some(v) = e.payload.get("data_version") else { return Ok(()) };
+    let changed = before.is_none_or(|b| b.payload.get("data_version") != Some(v));
+    if !has_source(e) {
+        if changed {
+            return Err(bad("data_version belongs to an entity with a Source"));
+        }
+        e.payload.remove("data_version");
+        return Ok(());
+    }
+    if changed && !(p.env.origin == "source" || p.env.internal || p.env.import || p.env.replay) {
+        return Err(WsError::sub(Code::InvalidOperation, "SOURCE_READ_ONLY", format!("{}: data_version is written by the Source's refresh", e.entity_id)));
+    }
+    let o = v.as_object().ok_or_else(|| bad("data_version must be an object"))?;
+    if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "synced_at" | "business_time" | "produced_at" | "program" | "records" | "truncated" | "content_root")) {
+        return Err(bad(format!("data_version: unknown key {k}")));
+    }
+    if !o.get("synced_at").and_then(Value::as_str).is_some_and(|s| crate::value::parse_datetime_ms(s).is_some()) || canonical_len(v) > 4096 {
+        return Err(bad("data_version needs synced_at (a time) and stays under 4 KiB"));
+    }
+    Ok(())
+}
+
+/// Changing where an entity's data comes from — adding, changing (its `def` too) or removing a Source — is the
+/// workspace owner's (an Agent working for the owner included; B4-1, §6 Q7, Q13). A session feed is the session
+/// service's; imports, clones and internal paths carry what they have.
+pub fn require_source_owner(p: &Planner, entity_id: &str) -> WsResult<()> {
+    if p.access.is_owner() || p.env.internal || p.env.import || p.env.replay || matches!(p.env.origin.as_str(), "session" | "source") {
+        return Ok(());
+    }
+    Err(WsError::denied(format!("only the workspace owner sets the Source of {entity_id}")))
 }
 
 fn check_absolute_url(url: &str) -> WsResult<()> {
@@ -2524,7 +2645,7 @@ pub fn check_query_reference(v: &Value) -> WsResult<()> {
 
 /// Validator class: primitive (`title_field_id` names a live text field, `data_mode` fixed); schema for `description` and the `url_query` reference.
 fn validate_table_meta(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["title_field_id", "description", "data_mode", "source_ref", "source"], "table")?;
+    check_keys(&e.payload, &["title_field_id", "description", "data_mode", "source_ref", "source", "data_version"], "table")?;
     opt_text(&e.payload, "description", 4000)?;
     if let Some(s) = e.payload.get("source") {
         check_source(s)?;
@@ -2611,6 +2732,7 @@ pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut E
                     }
                 }
             }
+            check_data_version(p, e, before)?;
             validate_asset(p, e)
         }
         TYPE_TABLE => {
@@ -2618,17 +2740,18 @@ pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut E
             if before.is_some() && has("source_ref") {
                 p.require(&e.entity_id, Cap::Structure)?;
             }
+            check_data_version(p, e, before)?;
             validate_table_meta(p, e, before)
         }
         TYPE_RICHTEXT if before.is_some() => {
-            // a rich text's content is edited with richtext.* operations; its Source is a key
-            if changed.unwrap_or(&[]).iter().any(|k| k != "source") {
+            // a rich text's content is edited with richtext.* operations; its Source and data version are keys
+            if changed.unwrap_or(&[]).iter().any(|k| k != "source" && k != "data_version") {
                 return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
             }
-            match e.payload.get("source") {
-                Some(s) => check_source(s),
-                None => Ok(()),
+            if let Some(s) = e.payload.get("source") {
+                check_source(s)?;
             }
+            check_data_version(p, e, before)
         }
         TYPE_DIR => {
             if before.is_some() && has("members") {

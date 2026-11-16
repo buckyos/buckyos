@@ -484,6 +484,10 @@ pub fn describe_cell_view(ctx: &dyn ReadCtx, access: &Access, cell: &EntityRow, 
         Ok(Some(v)) => {
             into["view_sql"] = json!(v.sql);
             into["view_count_sql"] = json!(v.count_sql);
+            // the Block shows the first `row_limit` rows of what the SQL gives (B7-3)
+            if let Some(n) = cell.payload.get("row_limit").filter(|n| n.is_u64()) {
+                into["row_limit"] = n.clone();
+            }
             if let Some(g) = v.group_sql {
                 into["view_group_sql"] = json!(g);
             }

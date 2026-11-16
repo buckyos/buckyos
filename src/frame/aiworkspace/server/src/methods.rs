@@ -137,7 +137,7 @@ pub const METHODS: &[MethodSpec] = &[
     m("doc.restore_version", "experimental", &[Entity(Cap::Read, "entity_id")]),
     m("doc.checkpoint", "experimental", &[Ws(Cap::Export)]),
     m("doc.export", "experimental", &[Ws(Cap::Export)]),
-    m("proc.start", "stable", &[Handler("a Source: `update` on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish")]),
+    m("proc.start", "stable", &[Handler("a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish")]),
     m("proc.get", "stable", &[RUN_OWN]),
     m("proc.cancel", "stable", &[RUN_OWN]),
     m("proc.rollback", "stable", &[Handler("`update` on the run's wish; the Commit's operations as the caller")]),

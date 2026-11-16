@@ -47,12 +47,12 @@ pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String) {
     let (st, w, r) = (state.clone(), ws_id.clone(), run_id.clone());
     let _ = tokio::task::spawn_blocking(move || {
         st.with_ws(&w, |ws| match outcome {
-            Ok((fetched, bytes, root)) => {
+            Ok(Got { fetched, bytes, root, version }) => {
                 if let Err(e) = ws.add_traffic(bytes) {
                     ws.source_fail(&r, &e)?;
                     return Err(e);
                 }
-                ws.source_apply(&r, &fetched, bytes, root.as_deref()).map(|_| ())
+                ws.source_apply(&r, &fetched, bytes, root.as_deref(), &version).map(|_| ())
             }
             Err(e) => {
                 ws.source_fail(&r, &e)?;
@@ -99,10 +99,79 @@ pub fn tick(state: &Arc<AppState>) {
     }
 }
 
+/// What one fetch got: the content, the bytes it cost, the content root a fixed Source resolved to, and what the
+/// source said of the data (`business_time`, `produced_at`, `program`, `truncated`: the parts of `data_version` a
+/// refresh does not know by itself).
+struct Got {
+    fetched: Fetched,
+    bytes: u64,
+    root: Option<String>,
+    version: Value,
+}
+
 /// Where a Source's content comes from: another Workspace of this service (read directly as the `public`
-/// subject), or an HTTP URL fetched without credentials. Returns the content, the bytes it cost, and the
-/// content root a fixed Source resolved to.
-async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Value, principal: &str) -> WsResult<(Fetched, u64, Option<String>)> {
+/// subject), an HTTP URL fetched without credentials, or a file of the workspace owner's home. A table's rows are then
+/// cut to `def.limit` and identified by its primary key (B5-1, B7-3).
+async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Value, principal: &str) -> WsResult<Got> {
+    let (fetched, bytes, root, mut version) = fetch_raw(state, ws_id, consumer, source, principal).await?;
+    let def = &source["def"];
+    // a publication's rows keep the publisher's record ids; any other table is identified by its key here
+    let identified = |records: &[Value]| !records.is_empty() && records.iter().all(|r| r["record_id"].is_string());
+    let fetched = match fetched {
+        Fetched::Table { fields, records } if source["kind"] != json!("workspace") && !identified(&records) => {
+            let (records, truncated) = keyed(&fields, records, def)?;
+            if truncated {
+                version["truncated"] = json!(true);
+            }
+            Fetched::Table { fields, records }
+        }
+        Fetched::Table { fields, mut records } => {
+            if let Some(n) = def["limit"].as_u64().filter(|n| records.len() as u64 > *n) {
+                records.truncate(n as usize);
+                version["truncated"] = json!(true);
+            }
+            Fetched::Table { fields, records }
+        }
+        other => other,
+    };
+    Ok(Got { fetched, bytes, root, version })
+}
+
+/// The rows of a fetched table cut to `def.limit` (file order) and identified by the primary key: `def.primary_key`,
+/// else an `id` column; each `record_id` is [`record_id_for_key`] of the key values. No key, a row without its key, or
+/// two rows with one key fail the refresh and write nothing.
+fn keyed(fields: &[Value], mut rows: Vec<Value>, def: &Value) -> WsResult<(Vec<Value>, bool)> {
+    let truncated = def["limit"].as_u64().is_some_and(|n| rows.len() as u64 > n);
+    if let Some(n) = def["limit"].as_u64() {
+        rows.truncate(n as usize);
+    }
+    let key: Vec<String> = match def["primary_key"].as_array() {
+        Some(k) => k.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        None if fields.iter().any(|f| f["field_id"] == json!("id")) => vec!["id".to_string()],
+        None => return Err(WsError::sub(Code::InvalidSchema, "PRIMARY_KEY_REQUIRED", "the source's rows have no primary key: give source.def.primary_key, or an id column")),
+    };
+    if let Some(k) = key.iter().find(|k| !fields.iter().any(|f| f["field_id"] == json!(k))) {
+        return Err(WsError::sub(Code::InvalidSchema, "PRIMARY_KEY_REQUIRED", format!("the primary key field {k} is not among the source's fields")).with_data(json!({ "field_id": k })));
+    }
+    let mut seen = std::collections::BTreeMap::new();
+    for (i, r) in rows.iter_mut().enumerate() {
+        let values: Vec<Value> = key.iter().map(|k| r["values"].get(k).cloned().unwrap_or(Value::Null)).collect();
+        if values.iter().any(|v| v.is_null() || v.as_str() == Some("")) {
+            return Err(WsError::sub(Code::InvalidSchema, "PRIMARY_KEY_REQUIRED", format!("row {} has no value for the primary key {}", i + 1, key.join(", "))).with_data(json!({ "row": i + 1 })));
+        }
+        let id = aiworkspace_core::wish::record_id_for_key(&values);
+        if let Some(first) = seen.insert(id.clone(), i + 1) {
+            return Err(WsError::sub(Code::InvalidSchema, "DUPLICATE_KEY", format!("rows {first} and {} have the same primary key {}", i + 1, json!(values))).with_data(json!({ "rows": [first, i + 1], "key": values })));
+        }
+        r["record_id"] = json!(id);
+    }
+    Ok((rows, truncated))
+}
+
+async fn fetch_raw(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Value, principal: &str) -> WsResult<(Fetched, u64, Option<String>, Value)> {
+    if source["kind"] == json!("zone") {
+        return zone_file(state, ws_id, consumer, source).await;
+    }
     let own = own_publication(state, source);
     let source = own.as_ref().unwrap_or(source);
     let kind = source["kind"].as_str().unwrap_or("");
@@ -131,7 +200,7 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Valu
             .map_err(|e| WsError::io(e.to_string()))??;
             let bytes = envelope.to_string().len() as u64;
             let root = envelope["content_root"].as_str().map(str::to_string);
-            return Ok((from_envelope(&envelope)?, bytes, root));
+            return Ok((from_envelope(&envelope)?, bytes, root, json!({})));
         }
         // another Zone: its publication over HTTP (D24), the entity id as the name (any name resolves by id)
         let zone = source["zone"].as_str().ok_or_else(|| WsError::new(Code::DependencyUnavailable, "the source workspace is not on this service and names no zone"))?;
@@ -152,12 +221,79 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Valu
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().map_err(|e| WsError::io(e.to_string()))?;
         let base = url.split('?').next().unwrap_or("").to_string();
         let _ = client.post(format!("{base}/referrers")).json(&json!({ "zone": own_zone(state), "workspace_id": ws_id, "entity_id": consumer, "principal": principal })).send().await;
-        return Ok((from_envelope(&envelope)?, body.len() as u64, root));
+        return Ok((from_envelope(&envelope)?, body.len() as u64, root, json!({})));
     }
     let url = source["url"].as_str().ok_or_else(|| WsError::invalid_op("source.url required"))?;
     let (body, ctype) = http_get(state, url).await?;
     let bytes = body.len() as u64;
-    Ok((parse_body(&body, &ctype, source)?, bytes, None))
+    Ok((parse_body(&body, &ctype, url)?, bytes, None, json!({})))
+}
+
+/// The format of what a sync program leaves for a Zone source (B3-1, “pull”).
+pub const SYNC_FORMAT: &str = "aiws.sync.v1";
+
+/// A file of the workspace owner's home (`source.path` = `/home/<owner>/…`), read as that owner (B3-1): only the
+/// current owner's home — a copied workspace reads its new owner's — never through a link out of it, at most the
+/// fetch's size and time. The file is plain JSON / CSV / Markdown (as a URL's body), or a sync program's
+/// `aiws.sync.v1` output: `status: failed` fails the refresh with the program's own reason.
+async fn zone_file(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Value) -> WsResult<(Fetched, u64, Option<String>, Value)> {
+    let unavailable = |m: String| WsError::new(Code::DependencyUnavailable, m);
+    let path = source["path"].as_str().unwrap_or("").to_string();
+    let segs: Vec<String> = aiworkspace_core::types::zone_path_segments(&path)?.into_iter().map(str::to_string).collect();
+    let (st, w) = (state.clone(), ws_id.to_string());
+    let owner = tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.owner())).await.map_err(|e| WsError::io(e.to_string()))??.unwrap_or_default();
+    if segs[1] != owner {
+        return Err(WsError::denied(format!("{path} is not in the home of this workspace's owner ({owner}): set the source to a file of /home/{owner}/")));
+    }
+    let root = state.limits.zone_root.clone().ok_or_else(|| unavailable("Zone files are not readable on this deployment".into()))?;
+    let read = tokio::task::spawn_blocking(move || -> WsResult<Vec<u8>> {
+        let home = root.join("home").join(&segs[1]);
+        let file = segs[2..].iter().fold(home.clone(), |p, s| p.join(s));
+        let missing = |e: std::io::Error| unavailable(format!("{path} cannot be read: {e}"));
+        let (home, file) = (home.canonicalize().map_err(missing)?, file.canonicalize().map_err(missing)?);
+        if !file.starts_with(&home) || !file.is_file() {
+            return Err(unavailable(format!("{path} is not a file of the owner's home")));
+        }
+        let len = std::fs::metadata(&file).map_err(missing)?.len();
+        if len as usize > MAX_FETCH_BYTES {
+            return Err(WsError::limit(format!("{path} is larger than {MAX_FETCH_BYTES} bytes")));
+        }
+        std::fs::read(&file).map_err(missing)
+    });
+    let body = tokio::time::timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS), read).await.map_err(|_| unavailable(format!("reading the file took longer than {FETCH_TIMEOUT_SECS} s")))?.map_err(|e| WsError::io(e.to_string()))??;
+    let bytes = body.len() as u64;
+    let name = source["path"].as_str().unwrap_or("");
+    let envelope = name.to_ascii_lowercase().ends_with(".json").then(|| serde_json::from_slice::<Value>(&body).ok()).flatten().filter(|v| v["format"] == json!(SYNC_FORMAT));
+    let Some(env) = envelope else { return Ok((parse_body(&body, "", name)?, bytes, None, json!({}))) };
+    let program = env["program"].clone();
+    match env["status"].as_str() {
+        Some("ok") => {}
+        Some("failed") => {
+            let why = env["error"].as_str().unwrap_or("the sync program reported a failure").chars().take(2000).collect::<String>();
+            return Err(unavailable(format!("the sync program failed: {why}")).with_data(json!({ "program": program, "produced_at": env["produced_at"] })));
+        }
+        _ => return Err(WsError::invalid_schema(format!("{name}: {SYNC_FORMAT} needs status ok or failed"))),
+    }
+    let records: Vec<Value> = env["records"].as_array().ok_or_else(|| WsError::invalid_schema(format!("{name}: {SYNC_FORMAT} needs records (a list of objects)")))?
+        .iter().map(|r| r.as_object().map(|o| json!({ "values": o })).ok_or_else(|| WsError::invalid_schema(format!("{name}: every record is an object of field id → value")))).collect::<WsResult<_>>()?;
+    let fields: Vec<Value> = match env.get("fields").filter(|f| !f.is_null()) {
+        Some(f) => f.as_array().cloned().ok_or_else(|| WsError::invalid_schema(format!("{name}: fields must be a list of field definitions")))?,
+        None => {
+            let (st, w, id) = (state.clone(), ws_id.to_string(), consumer.to_string());
+            tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.read_ctx(|ctx| Ok(ctx.fields(&id)?.into_iter().filter(|f| f.alive()).map(|f| f.def.to_value()).collect::<Vec<_>>()))))
+                .await.map_err(|e| WsError::io(e.to_string()))??
+        }
+    };
+    let mut version = json!({ "program": program });
+    for k in ["business_time", "produced_at"] {
+        if let Some(t) = env[k].as_str().filter(|t| aiworkspace_core::value::parse_datetime_ms(t).is_some()) {
+            version[k] = json!(t);
+        }
+    }
+    if env["truncated"] == json!(true) {
+        version["truncated"] = json!(true);
+    }
+    Ok((Fetched::Table { fields, records }, bytes, None, version))
 }
 
 /// A `kind: url` Source whose URL is a publication of this service — `aiws-<id>.<zonehost>/<workspace>/<name>` or
@@ -302,10 +438,10 @@ fn from_envelope(v: &Value) -> WsResult<Fetched> {
     }
 }
 
-/// A fetched body by media type: JSON array of objects or CSV → table; Markdown / text → rich text; image → asset.
-fn parse_body(body: &[u8], ctype: &str, source: &Value) -> WsResult<Fetched> {
+/// A fetched body by media type (or the extension of `url`, a URL or a Zone path): JSON array of objects or CSV →
+/// table; Markdown / text → rich text; image → asset.
+fn parse_body(body: &[u8], ctype: &str, url: &str) -> WsResult<Fetched> {
     let ctype = ctype.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
-    let url = source["url"].as_str().unwrap_or("");
     let ext = url.split('?').next().unwrap_or("").rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if ctype.starts_with("image/") {
         return Ok(Fetched::Asset { bytes: body.to_vec(), file_name: url.split('?').next().and_then(|u| u.rsplit('/').next()).map(str::to_string) });
@@ -328,8 +464,7 @@ fn parse_body(body: &[u8], ctype: &str, source: &Value) -> WsResult<Fetched> {
     Ok(Fetched::RichText { doc })
 }
 
-/// Rows of `{ column: value }` → a table whose field ids come from the column names and whose record ids
-/// follow an `id` column or the row position (stable across refreshes as long as the order is).
+/// Rows of `{ column: value }` → a table whose field ids come from the column names; [`keyed`] gives the record ids.
 fn table_from_rows(rows: Vec<Vec<(String, Value)>>) -> Fetched {
     let get = |r: &Vec<(String, Value)>, k: &str| r.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
     let mut columns: Vec<String> = Vec::new();
@@ -350,8 +485,7 @@ fn table_from_rows(rows: Vec<Vec<(String, Value)>>) -> Fetched {
         let ty = if numeric && any { "number" } else if rows.iter().filter_map(|r| get(r, name)).all(|v| v.is_boolean() || v.is_null()) && any { "boolean" } else { "text" };
         json!({ "field_id": field_id(name, i), "name": name, "type": ty })
     }).collect();
-    let records: Vec<Value> = rows.iter().enumerate().map(|(i, r)| {
-        let rid = get(r, "id").and_then(|v| v.as_str().map(str::to_string)).filter(|s| aiworkspace_core::id::is_valid_id(s)).unwrap_or_else(|| format!("r{}", i + 1));
+    let records: Vec<Value> = rows.iter().map(|r| {
         let mut values = Map::new();
         for (ci, name) in columns.iter().enumerate() {
             let Some(v) = get(r, name) else { continue };
@@ -366,7 +500,7 @@ fn table_from_rows(rows: Vec<Vec<(String, Value)>>) -> Fetched {
                 values.insert(f["field_id"].as_str().unwrap_or("").to_string(), v);
             }
         }
-        json!({ "record_id": rid, "values": values })
+        json!({ "values": values })
     }).collect();
     Fetched::Table { fields, records }
 }

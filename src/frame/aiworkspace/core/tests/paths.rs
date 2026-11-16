@@ -232,7 +232,8 @@ fn meta_tells_editable_data_from_a_synced_copy_and_a_url_table() {
                        "source_ref": { "kind": "url_query", "source_url": "https://example.invalid/q", "query": {}, "version": { "mode": "live_head" }, "consistency": "best_effort" } } },
     ]));
     let meta_of = |id: &str| meta::meta(&ws.store, &full(), &ws.store.entity(id).unwrap().unwrap(), None).unwrap();
-    for (id, mode, write, body) in [("own", "local", "edit", "full"), ("copy", "synced", "refresh", "full"), ("remote", "url_query", "none", "definition")] {
+    // the copy has not been refreshed yet: a definition, not an empty table (B0-3)
+    for (id, mode, write, body) in [("own", "local", "edit", "full"), ("copy", "synced", "refresh", "pending"), ("remote", "url_query", "none", "definition")] {
         let m = meta_of(id);
         assert_eq!((m["data"]["mode"].as_str(), m["data"]["write"].as_str(), m["body"]["state"].as_str()), (Some(mode), Some(write), Some(body)), "{id}: {m}");
         assert!(m["capabilities"].as_array().unwrap().contains(&json!("update")), "{id}: the ACL is the same");

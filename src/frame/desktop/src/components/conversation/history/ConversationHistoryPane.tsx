@@ -631,7 +631,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
 
   return (
     <div className="relative h-full min-h-0 flex-1" data-testid="conversation-history" data-raw-count={reader.totalCount} data-visible-count={projection.totalCount}>
-      {projection.totalCount === 0 && <p className="absolute inset-0 flex items-center justify-center text-sm text-[color:var(--cp-muted)]" role="status">{reader.totalCount ? t('messagehub.filteredMessages') : emptyLabel ?? t('messagehub.noMessages')}</p>}
+      {projection.totalCount === 0 && <p className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-[color:var(--cp-muted)]" role="status">{reader.totalCount ? t('messagehub.filteredMessages') : emptyLabel ?? t('messagehub.noMessages')}</p>}
       <div
         ref={scrollRef}
         className="h-full overflow-y-auto px-3 py-2 shell-scrollbar"

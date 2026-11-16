@@ -54,6 +54,7 @@ pub fn describe(_ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<Desc> {
     }
     Ok(match e.type_id.as_str() {
         TYPE_TABLE if crate::types::is_url_table(e) => desc("definition", "text/plain", None),
+        _ if crate::types::data_pending(e) => desc("pending", "text/plain", None),
         TYPE_TABLE => desc("full", "text/csv", None),
         TYPE_RICHTEXT | TYPE_CELL | TYPE_WISH | TYPE_BLOCK_DEF => desc("full", "text/markdown", None),
         TYPE_CONTAINER => match e.payload.get("kind").and_then(Value::as_str).unwrap_or("") {
@@ -351,6 +352,7 @@ impl<'a> Builder<'a> {
         Ok(match e.type_id.as_str() {
             TYPE_RICHTEXT => self.richtext_parts(e)?,
             TYPE_TABLE if crate::types::is_url_table(e) => self.url_table_parts(e)?,
+            _ if d.state == "pending" => self.pending_parts(e)?,
             TYPE_TABLE => {
                 let (fields, bodies, header) = self.table_header(e)?;
                 let mut rows = vec![Part::text(header)];
@@ -409,6 +411,27 @@ impl<'a> Builder<'a> {
         }
         for f in &fields {
             lines.push(format!("field {}: {}", f.def.name, f.def.ty.as_str()));
+        }
+        Ok(vec![Part::text(lines.join("\n"))])
+    }
+
+    /// A data source defined but not yet synced (B0-3): what it is and, for a table, its fields; never an empty table.
+    fn pending_parts(&mut self, e: &EntityRow) -> WsResult<Vec<Part>> {
+        let mut lines = vec![format!("{} {} (a data source without valid data yet: its first sync has not succeeded)", crate::path::short_type(&e.type_id), label_of(e))];
+        if let Some(d) = crate::types::source_def(e) {
+            for k in ["meaning", "origin"] {
+                if let Some(t) = d.get(k).and_then(Value::as_str) {
+                    lines.push(format!("{k}: {t}"));
+                }
+            }
+            if let Some(k) = d.get("primary_key").and_then(Value::as_array) {
+                lines.push(format!("primary key: {}", k.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
+            }
+        }
+        if e.type_id == TYPE_TABLE {
+            for f in live_fields(self.ctx, &e.entity_id)? {
+                lines.push(format!("field {}: {}", f.def.name, f.def.ty.as_str()));
+            }
         }
         Ok(vec![Part::text(lines.join("\n"))])
     }
@@ -707,7 +730,7 @@ pub fn etag_of(deps: &[String]) -> String {
 /// The `etag` of `e`'s body without reading a table's records.
 pub fn etag(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, assets: Option<AssetLoader>) -> WsResult<String> {
     let mut b = Builder::new(ctx, access, assets);
-    if e.type_id == TYPE_TABLE && !crate::types::is_url_table(e) && e.degraded().is_none() {
+    if e.type_id == TYPE_TABLE && !crate::types::is_url_table(e) && !crate::types::data_pending(e) && e.degraded().is_none() {
         b.table_deps(e)?;
         let mut deps = std::mem::take(&mut b.deps);
         deps.sort();

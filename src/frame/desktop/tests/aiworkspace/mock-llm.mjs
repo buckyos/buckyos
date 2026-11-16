@@ -9,6 +9,8 @@
 //   #warn        the analysis carries a warning
 //   #noinput     the need names no data: unless an input is bound in the wish's properties, the analysis finds none and
 //                submits `needs_input` (the run fails, naming the input)
+//   #external    the need is for data from outside the workspace: the analysis submits an `external_data` blocker with
+//                what it wants (the run fails `NEEDS_EXTERNAL_DATA`)
 //   #checkwarn   a warning-level program check: every row's value is positive
 //   #checkerror  the same check at error level
 //   #ai          the macro writes its commentary with `aiws.ai.complete`
@@ -47,6 +49,7 @@ export function marks(user) {
     slow: slow ? Number(slow[1] ?? 1500) : 0,
     warn: need.includes('#warn'),
     noinput: need.includes('#noinput'),
+    external: need.includes('#external'),
     check: need.includes('#checkerror') ? 'error' : need.includes('#checkwarn') ? 'warning' : null,
     ai: need.includes('#ai'),
     codefail: need.includes('#codefail'),
@@ -92,6 +95,14 @@ function tableOf(user, m) {
 function analysis(msgs, user, tools) {
   const m = marks(user)
   const w = wordsOf(m.need)
+  if (m.external) {
+    if (tools.length > 0) return say('submitted')
+    return toolCall('submit_analysis', { analysis: {
+      schema_version: 'wish.analysis.v3', status: 'needs_input', context_prompt: w.missing, inputs: [],
+      output_contract: { results: [{ name: 'commentary', type: 'richtext', title: w.commentary }] }, checks: [], warnings: [],
+      blockers: [{ code: 'external_data', message: w.missing, wanted: { meaning: 'Daily closing prices of the tracked stocks', origin: 'A market data API', freshness: 'daily', fields: [{ name: 'symbol', type: 'text' }, { name: 'close', type: 'decimal' }] } }],
+    } })
+  }
   // `#noinput`: the wish's own inputs decide (bound by the user in its properties): the model reads the wish first
   if (m.noinput && tools.length === 0) return toolCall('ws_read', { target: '@W' })
   const table = m.noinput ? boundTable(tools[0], user) : tableOf(user, m)

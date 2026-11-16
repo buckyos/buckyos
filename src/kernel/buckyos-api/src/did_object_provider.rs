@@ -29,6 +29,8 @@ pub type Captures = HashMap<String, String>;
 pub type ParamsFn = Arc<dyn Fn(&Captures, &Value) -> Result<Value, DIDObjectError> + Send + Sync>;
 /// Maps a kRPC result to the value returned to the caller.
 pub type ResultFn = Arc<dyn Fn(&Captures, Value) -> Value + Send + Sync>;
+/// Whether an object declares an action, from the value of its kind's access property.
+pub type AppliesFn = Arc<dyn Fn(&Value) -> bool + Send + Sync>;
 
 /// `x-buckyos:risk` of an action (RBAC权限设计 "Profile x-buckyos:rbac / risk").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +134,8 @@ pub struct ActionSpec {
     /// RBAC action of the object's resource key (`read`, `write`, `create`, ...).
     pub rbac_action: String,
     pub rpc: RpcBinding,
+    /// Declared only by the objects it accepts (see [`ObjectKind::only_if`]); by every object of the kind when unset.
+    pub applies: Option<AppliesFn>,
 }
 
 #[derive(Clone)]
@@ -230,7 +234,18 @@ impl ObjectKind {
             risk,
             rbac_action: rbac_action.to_string(),
             rpc,
+            applies: None,
         });
+        self
+    }
+
+    /// The action declared last is declared only by the objects whose access property value `applies` accepts: the
+    /// Profile reads that property with the caller's credentials and lists the action when it holds (not when the
+    /// read fails). Invoking it is the kRPC method's to judge, as for any action.
+    pub fn only_if(mut self, applies: impl Fn(&Value) -> bool + Send + Sync + 'static) -> Self {
+        if let Some(action) = self.actions.last_mut() {
+            action.applies = Some(Arc::new(applies));
+        }
         self
     }
 
@@ -400,7 +415,15 @@ impl KrpcObjectProvider {
         })
     }
 
-    fn profile(&self, kind: &ObjectKind, endpoint: &str, url: &ObjectUrl) -> Value {
+    /// The value of the kind's access property, read with the caller's credentials.
+    async fn access_value(&self, kind: &ObjectKind, captures: &Captures, ctx: &DIDObjectRequestContext) -> DIDObjectServerResult<Option<Value>> {
+        match kind.access.as_deref().and_then(|access| kind.properties.iter().find(|p| p.name == access)) {
+            Some(property) => self.call(&property.rpc, captures, &Value::Null, ctx).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn profile(&self, kind: &ObjectKind, endpoint: &str, url: &ObjectUrl, access: Option<&Value>) -> Value {
         let mut properties = Map::new();
         for p in &kind.properties {
             properties.insert(
@@ -410,7 +433,7 @@ impl KrpcObjectProvider {
         }
         let resource = url.rbac_resource_key(None).unwrap_or_default();
         let mut actions = Map::new();
-        for a in &kind.actions {
+        for a in kind.actions.iter().filter(|a| a.applies.as_ref().map_or(true, |f| access.is_some_and(|v| f(v)))) {
             actions.insert(
                 a.name.clone(),
                 action_affordance(&a.description, a.input.clone(), a.risk, &resource, &a.rbac_action, &a.name),
@@ -499,17 +522,17 @@ impl DIDObjectServer for KrpcObjectProvider {
 
     async fn object_card_for(&self, ctx: DIDObjectRequestContext) -> DIDObjectServerResult<DIDObjectCard> {
         let (kind, captures, url) = self.locate(&ctx)?;
-        if let Some(access) = kind.access.as_deref() {
-            if let Some(property) = kind.properties.iter().find(|p| p.name == access) {
-                self.call(&property.rpc, &captures, &Value::Null, &ctx).await?;
-            }
-        }
+        self.access_value(kind, &captures, &ctx).await?;
         Ok(self.card(kind, &ctx, &url))
     }
 
     async fn object_profile_for(&self, ctx: DIDObjectRequestContext) -> DIDObjectServerResult<Value> {
-        let (kind, _, url) = self.locate(&ctx)?;
-        Ok(self.profile(kind, &request_endpoint(&ctx), &url))
+        let (kind, captures, url) = self.locate(&ctx)?;
+        let access = match kind.actions.iter().any(|a| a.applies.is_some()) {
+            true => self.access_value(kind, &captures, &ctx).await.ok().flatten(),
+            false => None,
+        };
+        Ok(self.profile(kind, &request_endpoint(&ctx), &url, access.as_ref()))
     }
 
     async fn read_property(&self, name: &str, ctx: DIDObjectRequestContext) -> DIDObjectServerResult<Value> {
@@ -703,6 +726,27 @@ mod tests {
         let status = resp.status().as_u16();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn an_action_only_some_objects_declare_is_listed_by_the_profile_of_those_the_caller_reads() {
+        let rpc = Arc::new(FakeRpc { calls: Mutex::new(Vec::new()) });
+        let item = ObjectKind::new("items/{item}", "kmsg.item", "Item", "An item")
+            .summary_property("meta", "What it is", json!({ "type": "object" }), RpcBinding::new("items.get", |c, _| Ok(json!({ "item": c["item"] }))))
+            .action("touch", "Touch any item", json!({ "type": "object" }), ActionRisk::IdempotentWrite, "write", RpcBinding::new("items.touch", |c, _| Ok(json!({ "item": c["item"] }))))
+            .action("start", "Start a runnable item", json!({ "type": "object" }), ActionRisk::Write, "write", RpcBinding::new("items.start", |c, _| Ok(json!({ "item": c["item"] }))))
+            .only_if(|meta| meta["params"]["item"] == "runnable");
+        let server = KrpcObjectProvider::new("kmsg", DID::from_str("did:web:zone.example").unwrap(), vec![item], rpc.clone()).into_http_server();
+
+        let (_, profile) = get(&server, "/kapi/kmsg/obj/items/runnable?type=profile", Some("good")).await;
+        assert_eq!(profile["actions"]["start"]["x-buckyos:risk"], "write", "{profile}");
+        assert_eq!(profile["actions"]["touch"]["x-buckyos:risk"], "idempotent_write", "{profile}");
+        let (_, profile) = get(&server, "/kapi/kmsg/obj/items/plain?type=profile", Some("good")).await;
+        assert!(profile["actions"].get("start").is_none() && profile["actions"].get("touch").is_some(), "{profile}");
+        let (status, profile) = get(&server, "/kapi/kmsg/obj/items/runnable?type=profile", Some("bad")).await;
+        assert_eq!(status, 200);
+        assert!(profile["actions"].get("start").is_none(), "an object the caller cannot read declares none of them: {profile}");
+        assert!(rpc.calls.lock().unwrap().iter().all(|(m, _, _)| m == "items.get"));
     }
 
     #[tokio::test]

@@ -158,7 +158,7 @@ fn scan_entity(run: &mut Run, ctx: &dyn ReadCtx, access: &Access, e: &EntityRow,
         // matched by name and title only
     } else if d.state == "unavailable" {
         run.skipped.push(json!({ "entity_id": e.entity_id, "reason": d.reason.unwrap_or("unavailable") }));
-    } else if e.type_id == TYPE_TABLE && d.state != "definition" && e.degraded().is_none() {
+    } else if e.type_id == TYPE_TABLE && !matches!(d.state, "definition" | "pending") && e.degraded().is_none() {
         let mut b = Builder::new(ctx, access, assets);
         let (fields, _, _) = b.table_header(e)?;
         let mut refs = |v: &Value| -> String {
@@ -190,9 +190,10 @@ fn scan_entity(run: &mut Run, ctx: &dyn ReadCtx, access: &Access, e: &EntityRow,
             Ok(true)
         })?;
     } else {
-        if d.state == "definition" {
-            // a URL table (R7): its definition is searched below, its rows are remote and not
-            run.skipped.push(json!({ "entity_id": e.entity_id, "reason": "definition" }));
+        if matches!(d.state, "definition" | "pending") {
+            // a URL table (R7): its definition is searched below, its rows are remote and not; a pending source
+            // (B0-3) has a definition and no rows yet
+            run.skipped.push(json!({ "entity_id": e.entity_id, "reason": d.state }));
         }
         let mut b = Builder::new(ctx, access, assets);
         let body = b.build(e)?;

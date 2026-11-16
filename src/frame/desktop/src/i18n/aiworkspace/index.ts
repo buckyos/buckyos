@@ -13,6 +13,7 @@ import * as cover from './cover'
 import * as customize from './customize'
 import * as data from './data'
 import * as datamode from './datamode'
+import * as datasource from './datasource'
 import * as demos from './demos'
 import * as directory from './directory'
 import * as ext from './ext'
@@ -20,6 +21,7 @@ import * as fielddefault from './fielddefault'
 import * as framework from './framework'
 import * as home from './home'
 import * as imports from './import'
+import * as jarvis from './jarvis'
 import * as members from './members'
 import * as mindmap from './mindmap'
 import * as objecttree from './objecttree'
@@ -36,6 +38,7 @@ import * as schedule from './schedule'
 import * as session from './session'
 import * as settings from './settings'
 import * as shell from './shell'
+import * as sourcereq from './sourcereq'
 import * as surfaces from './surfaces'
 import * as table from './table'
 import * as tablecurrent from './tablecurrent'
@@ -44,7 +47,7 @@ import * as wishlinks from './wishlinks'
 import * as wishcard from './wishcard'
 import * as worklog from './worklog'
 
-const parts = [common, shell, canvas, blocks, wish, data, directory, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session, office, schedule, framework, home, surfaces, settings, activity, table, permissions, blockui, blockprops, customize, members, worklog, datamode, phone, objecttree, fielddefault, tablecurrent, pathnode, cover, runlog, samplewish, wishlinks, wishcard]
+const parts = [common, shell, canvas, blocks, wish, data, directory, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session, office, schedule, framework, home, surfaces, settings, activity, table, permissions, blockui, blockprops, customize, members, worklog, datamode, phone, objecttree, fielddefault, tablecurrent, pathnode, cover, runlog, samplewish, wishlinks, wishcard, jarvis, sourcereq, datasource]
 
 export const aiWorkspaceEn: Record<string, string> = Object.assign({}, ...parts.map((part) => part.en))
 export const aiWorkspaceZh: Record<string, string> = Object.assign({}, ...parts.map((part) => part.zh))

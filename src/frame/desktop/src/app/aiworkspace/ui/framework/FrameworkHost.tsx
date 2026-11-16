@@ -1,11 +1,14 @@
 /* What the framework keeps for the whole open Workspace, whatever the view (canvas, data mode, a show, a control's own
  * page): this window's presence registration (K2: the others see it from the moment the Workspace opens), and the
  * customize dialog asked for by "视图 ▸ 自定义工具栏…" or App mode's ⋯ (UI 框架 PRD §4.6), the cover dialog of
- * "工作区 ▸ 设置封面…" (§9.2, Q37). Mounted once by the shell. */
+ * "工作区 ▸ 设置封面…" (§9.2, Q37), the Agent's panel and the data source request of "协作" (C2-1, B4-6). Mounted once by
+ * the shell. */
 
 import { useEffect, useState } from 'react'
 import { WorkspaceCoverHost } from '../cover/CoverDialog'
 import { CustomizeDialog } from '../customize/CustomizeDialog'
+import { JarvisHost } from '../jarvis/JarvisPanel'
+import { DataSourceRequestHost } from '../sources/DataSourceRequestDialog'
 import { onCustomizeRequest } from './appMode'
 import { PresenceKeeper } from './members'
 
@@ -17,6 +20,8 @@ export function FrameworkHost() {
       <PresenceKeeper />
       {customizing && <CustomizeDialog onClose={() => setCustomizing(false)} />}
       <WorkspaceCoverHost />
+      <JarvisHost />
+      <DataSourceRequestHost />
     </>
   )
 }

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import type { FreshnessInfo, Operation, WishRunView, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
-import { cli, expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
+import { cli, expect, openWorkspace, screenshot, test, workspaceOrigin, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
 
@@ -247,6 +247,73 @@ function executor(actor: Actor, token: string, baseURL: string, ws: Workspace) {
 const MONTHLY_AND_COMMENTARY = [{ name: 'monthly', type: 'table', title: '月度汇总', key: ['月份'] }, { name: 'commentary', type: 'richtext', title: '解读' }]
 
 // The hosted dispatch itself is not exercised here: since 权限需求 S6 the claim token reaches only the configured Agent.
+test('[macro-resume] the tab closes while the real model codes: the lease lapses, the reopened page resumes the run as a new attempt on xllm; the AI is the starter\'s', async ({ owner }, info) => {
+  // AI Native 余下任务 A6: the loop runs on xllm in this page; a new attempt starts its loop again (§7.1 4)
+  test.setTimeout(1_500_000)
+  const ws = await setup(owner)
+  await openWorkspace(owner, ws)
+  let card = await showCard(owner.page)
+  await step(owner, ws, card, 'analyze', 'prompt')
+  await card.getByTestId('aiws-wish-tab-analysis').click()
+  await card.getByTestId('aiws-wish-next').click()
+  const runs = async () => (await owner.client.ok<{ runs: WishRunView[] }>('proc.list', { workspace_id: ws.workspace_id, wish_id: 'wish-sales', limit: 5 })).runs
+  await expect.poll(async () => { const r = (await runs())[0]; return r?.stage === 'code' ? r.state : '' }, { timeout: 120_000 }).toBe('running')
+  const running = (await runs())[0]
+  // the page goes away mid-stage (to a plain page of the same origin, so this test's client still reaches the service);
+  // the browser keeps the claim
+  await owner.page.goto(`${workspaceOrigin(owner, ws)}/kapi/aiworkspace/healthz`)
+  await expect.poll(async () => {
+    await owner.client.ok('proc.get', { workspace_id: ws.workspace_id, run_id: running.run_id })
+    return (await runs()).find((r) => r.run_id === running.run_id)?.state
+  }, { timeout: 300_000, intervals: [5_000] }).toBe('interrupted')
+  await openWorkspace(owner, ws)
+  card = await showCard(owner.page)
+  const resume = card.getByTestId('aiws-wish-next')
+  await expect(resume).toHaveAttribute('data-action', 'resume', { timeout: 60_000 })
+  await resume.click()
+  let record: { id: string; ok: boolean; error?: unknown; usage?: { calls?: number; model?: string }; aicc?: unknown } | undefined
+  await expect.poll(async () => { record = ((await wish(owner, ws)).payload.history?.code ?? [])[0]; return Boolean(record) }, { timeout: 900_000, intervals: [5_000] }).toBe(true)
+  expect(record!.ok, JSON.stringify(record!.error)).toBe(true)
+  expect(record!.usage?.calls ?? 0).toBeGreaterThan(0)
+  expect(record!.usage?.model).toBeTruthy()
+  const done = (await runs()).find((r) => r.run_id === running.run_id) as WishRunView & { execution?: { attempt?: number }; aicc?: { mode?: string; user_id?: string } }
+  expect(done.execution?.attempt).toBe(2)
+  // the model was called with the starter's own session: the run and its record say whose AI it was
+  expect(done.aicc, JSON.stringify(done)).toMatchObject({ mode: 'current_user', user_id: owner.userId })
+  expect(record!.aicc).toMatchObject({ mode: 'current_user', user_id: owner.userId })
+  await screenshot(owner.page, info, 'macro-resumed')
+})
+
+test('[macro-hosted-agent] the owner\'s real Agent works a hosted run by its manual: it claims the run, runs the stored macro restricted and hands it in', async ({ owner }, info) => {
+  // AI Native 余下任务 A7 (第一期 §7.5): the Goal the service dispatches names the run and its claim token; the Agent follows
+  // `aiworkspace_run` (run-claim → run-files → run-exec / run-program → run-report)
+  test.setTimeout(2_400_000)
+  const agent = process.env.AIWS_DV_AGENT ?? 'browsy.test.buckyos.io'
+  const ws = await setup(owner)
+  await openWorkspace(owner, ws)
+  const card = await showCard(owner.page)
+  await step(owner, ws, card, 'analyze', 'prompt')
+  await step(owner, ws, card, 'code', 'analysis')
+  await owner.client.ok('ws.set_hosted_exec', { workspace_id: ws.workspace_id, config: { enabled: true, agent_id: agent } })
+  const before = ((await wish(owner, ws)).payload.history?.run ?? [])[0]?.id
+  const started = await owner.client.ok<WishRunView & { dispatch?: unknown }>('proc.start', { workspace_id: ws.workspace_id, program: 'wish.xllm@1', idempotency_key: `${owner.client.prefix}-hosted`,
+    params: { wish_id: 'wish-sales', stage: 'run', location: { cell_id: 'blk-wish' }, execution: { mode: 'hosted' } } })
+  let run: (WishRunView & { execution?: { mode?: string; attempt?: number }; detail?: { dispatch?: unknown }; context?: { executor?: { principal?: string } } }) | undefined
+  await expect.poll(async () => {
+    run = await owner.client.ok('proc.get', { workspace_id: ws.workspace_id, run_id: started.run_id })
+    return run!.state
+  }, { timeout: 2_100_000, intervals: [10_000] }).toMatch(/succeeded|failed|cancelled/)
+  expect(run!.state, JSON.stringify(run)).toBe('succeeded')
+  expect(run!.execution?.mode).toBe('hosted')
+  const record = ((await wish(owner, ws)).payload.history?.run ?? [])[0]
+  expect(record?.id).not.toBe(before)
+  expect(record?.ok, JSON.stringify(record?.error)).toBe(true)
+  const ran = await wish(owner, ws)
+  expect(ran.payload.last_run.mode).toBe('run')
+  expect(Object.keys(ran.payload.last_run.result_bindings.results ?? {}).length).toBeGreaterThan(0)
+  await screenshot(owner.page, info, 'macro-hosted-agent')
+})
+
 test('[macro-cli] an executor outside the browser works a wish through the CLI: a restricted macro run, its AI with its own session', async ({ owner, baseURL }) => {
   test.setTimeout(900_000)
   const ws = await setup(owner)
@@ -277,6 +344,80 @@ test('[macro-cli] an executor outside the browser works a wish through the CLI: 
   expect(done.record?.summary, JSON.stringify(done.record)).toMatchObject({ created: 0 })
   expect(await textOf(owner, ws, monthly.entity_id), 'the monthly totals follow the data').not.toBe(table)
   expect((await freshness(owner, ws)).status).toBe('current')
+})
+
+/** What a macro tries against the session of the page that runs it on `ORIGIN` (xllm TS TODO MW): each attempt's outcome. */
+const PROBE_MACRO = `
+export default async function main(aiws) {
+  aiws.declare({ inputs: { sales: ['月份'] }, zone: ['/sso_refresh', '/nfs/v1'] })
+  const out = {}
+  const attempt = async (name, fn) => { try { out[name] = await fn() } catch (e) { out[name] = String((e && (e.code || e.name)) || e) + ': ' + String(e && e.message) } }
+  await attempt('fetch_sso_refresh', async () => 'status ' + (await fetch('ORIGIN/sso_refresh', { method: 'POST', credentials: 'include' })).status)
+  await attempt('zone_sso_refresh', async () => 'status ' + (await aiws.zone.fetch('/sso_refresh', { method: 'POST' })).status)
+  await attempt('fetch_nfs', async () => 'status ' + (await fetch('ORIGIN/nfs/v1/hello', { method: 'POST', credentials: 'include', body: '{"args":{}}' })).status)
+  await attempt('indexeddb', () => new Promise((resolve, reject) => { const q = indexedDB.open('aiws-probe'); q.onsuccess = () => resolve('opened'); q.onerror = () => reject(q.error) }))
+  aiws.result.text('probe', JSON.stringify(out))
+}
+`
+
+test('[macro-sandbox] a macro this browser runs cannot reach the page\'s session, which a same-origin Worker of the page can', async ({ owner, baseURL }, info) => {
+  test.setTimeout(600_000)
+  const ws = await setup(owner)
+  const token = (await owner.page.context().cookies()).find((c) => c.name === 'buckyos_session_token')!.value
+  const ex = executor(owner, token, baseURL!, ws)
+  await ex.analyze([{ name: 'probe', type: 'richtext', title: '探测' }])
+  const origin = workspaceOrigin(owner, ws)
+  await ex.code(PROBE_MACRO.replaceAll('ORIGIN', origin))
+
+  const page = owner.page
+  await openWorkspace(owner, ws)
+  // TW-1: a same-origin Worker of this page (what the program Worker was before the sandbox) takes a new session with
+  // the page's cookie, and reads files with it
+  const threat = await page.evaluate(async () => {
+    const src = `self.onmessage = async () => {
+      const out = {}
+      try { const r = await fetch(self.origin + '/sso_refresh', { method: 'POST', credentials: 'include' }); const b = await r.json().catch(() => ({})); out.sso_refresh = { status: r.status, session_token: typeof b.session_token === 'string' } } catch (e) { out.sso_refresh = String(e) }
+      try {
+        const nfs = (m, body) => fetch(self.origin + '/nfs/v1/' + m, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }))
+        const hello = await nfs('hello', { args: {} })
+        const session = hello.body?.result?.session ?? hello.body?.session
+        const stat = await nfs('stat', { session, at: { path: '/' }, args: {} })
+        out.nfs = { hello: hello.status, identity: hello.body?.result?.identity ?? hello.body?.identity, stat: stat.status, stat_ok: stat.body?.ok }
+      } catch (e) { out.nfs = String(e) }
+      postMessage(out)
+    }`
+    const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })))
+    const out = await new Promise<Record<string, unknown>>((resolve) => { worker.onmessage = (e) => resolve(e.data as Record<string, unknown>); worker.postMessage(0) })
+    worker.terminate()
+    return out
+  })
+  expect.soft(threat.sso_refresh, JSON.stringify(threat)).toMatchObject({ status: 200, session_token: true })
+
+  // TW-6: the stored macro, run by this browser in the sandbox, reaches none of it and the session is not renewed
+  const refresh = async () => (await page.context().cookies(origin)).find((c) => c.name === 'buckyos_refresh_token')?.value ?? null
+  const before = await refresh()
+  const refreshes: string[] = []
+  const watch = (request: { url(): string; frame(): { url(): string } }) => {
+    if (!request.url().endsWith('/sso_refresh')) return
+    let from = 'worker'
+    try { from = request.frame().url() } catch { /* a worker's request has no frame */ }
+    refreshes.push(from)
+  }
+  page.context().on('request', watch)
+  const card = await showCard(page)
+  await step(owner, ws, card, 'run', 'run-button')
+  page.context().off('request', watch)
+  const probe = (await wish(owner, ws)).payload.last_run.result_bindings.results.probe as { entity_id: string }
+  const tried = JSON.parse(await textOf(owner, ws, probe.entity_id)) as Record<string, string>
+  expect(tried.fetch_sso_refresh, JSON.stringify(tried)).not.toMatch(/^status /)
+  expect(tried.zone_sso_refresh, JSON.stringify(tried)).toMatch(/^ZONE_READ_ONLY/)
+  expect(tried.fetch_nfs, JSON.stringify(tried)).not.toMatch(/^status /)
+  expect(tried.indexeddb, JSON.stringify(tried)).not.toBe('opened')
+  expect(refreshes, 'no /sso_refresh while the macro ran').toEqual([])
+  expect(await refresh(), 'the session was not renewed').toBe(before)
+  const record = { origin, threat, macro: tried, refreshes }
+  await info.attach('macro-sandbox.json', { body: JSON.stringify(record, null, 2), contentType: 'application/json' })
+  console.log(JSON.stringify(record, null, 2))
 })
 
 const PAGE_MACRO = `

@@ -396,6 +396,8 @@ fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
     // an answered commit must survive power loss
     conn.pragma_update(None, "synchronous", if synchronous_full { "FULL" } else { "NORMAL" }).map_err(db_err)?;
     conn.pragma_update(None, "foreign_keys", "ON").map_err(db_err)?;
+    // a WAL that grew while a wish stage held its snapshot shrinks back once the snapshot ends (余下任务 D2)
+    conn.pragma_update(None, "journal_size_limit", 16 * 1024 * 1024).map_err(db_err)?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
     Ok(conn)
 }

@@ -327,7 +327,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // the task location of a wish run (许愿格 §5.2): this Surface, the last selection that was not only a wish, the viewport
   useEffect(() => {
     const ids = [...selection]
-    store.setCanvasFocus(ids.length > 0 && !ids.every((id) => laid.get(id)?.entity.view_type === 'wish') ? { surfaceId, selection: ids } : { surfaceId })
+    store.setCanvasFocus(ids.length > 0 && !ids.every((id) => laid.get(id)?.entity.view_type === 'wish') ? { surfaceId, selection: ids, current: ids } : { surfaceId, current: ids })
   }, [store, surfaceId, selection, laid])
   useEffect(() => camera.onSettle(() => {
     const r = camera.visibleRect

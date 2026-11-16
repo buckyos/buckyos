@@ -80,8 +80,9 @@ export class WorkspaceStore {
   /** Design / run mode of the canvas (扩展控件 P2, Q27): this window's choice, never persisted. */
   readonly runMode = new RunModeState()
   /** Where the user works on the canvas: the task location a wish run starts from (许愿格 §5.2). The
-   * selection is the last one that was not just a wish Block (clicking the wish must not lose it). */
-  readonly canvasFocus: { surfaceId: string | null; selection: string[]; viewport: Placement | null } = { surfaceId: null, selection: [], viewport: null }
+   * selection is the last one that was not just a wish Block (clicking the wish must not lose it); `current` is the
+   * selection as it is now, a wish included (what the Agent's panel is handed). */
+  readonly canvasFocus: { surfaceId: string | null; selection: string[]; current: string[]; viewport: Placement | null } = { surfaceId: null, selection: [], current: [], viewport: null }
 
   setCanvasFocus(patch: Partial<WorkspaceStore['canvasFocus']>) {
     Object.assign(this.canvasFocus, patch)

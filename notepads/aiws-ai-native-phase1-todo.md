@@ -1,6 +1,6 @@
 # AIWS AI Native 第一期实施 TODO：许愿格三步与宏的边界
 
-状态：2026-11-12 立项；同日按本单实施（未提交），前置的浏览器优先 M1–M2 一并实施（见其 §7）。§5 的六项按“建议”列执行，Q6 未定所以 T6-2 未做。实施记录与偏差在 §7。
+状态：2026-11-12 立项；同日按本单实施，前置的浏览器优先 M1–M2 一并实施（见其 §7），已提交 `aee37a21a`。§5 的六项按“建议”列执行，Q6 未定所以 T6-2 未做。实施记录与偏差在 §7。2026-11-14 起，[许愿格交互升级](aiws-wish-card-interaction-todo.md) 取代了本单里“候选”“确认”“应用”的部分：阶段结束时服务直接写入，没有待确认的候选，`proc.apply` 删除、改为 `proc.rollback`；§4 的“试运行直通”一行和“三步”一行里的“编码的候选应用后”因此作废，以交互升级为准。余下未做的 T6-2、T7-3 转到 [AI Native 余下任务](aiws-ai-native-remaining-todo.md)（C1-1、A6）。
 
 依据：
 
@@ -195,42 +195,42 @@
 
 ### M0：契约（只改文档和 Schema）
 
-- [ ] **T0-1** 阶段契约：
+- [x] **T0-1** 阶段契约：
   - `proc.start` 的三种阶段及参数，各阶段的工具表，`host_open` 的 brief（`code` 阶段不再有 `put_result`）。
   - 新子码 `NEEDS_CODING`、`MACRO_CODE_CHANGED`，写进 `schemas/error-codes.json`。
   - README 的 Wish 一节。
-- [ ] **T0-2** 宏版本：
+- [x] **T0-2** 宏版本：
   - `program` 的 v3 格式与清单 Schema。
   - `digest` 的覆盖范围；`check_program` 的规则。
   - 现有 v2 程序怎样处理：建议直接要求重新编码（§6）。
-- [ ] **T0-3** 去掉 direct：
+- [x] **T0-3** 去掉 direct：
   - `wish.analysis.v3` 的输出契约。
   - 现有直接结果的去向（§6）。
-- [ ] **T0-4** 程序 API v3：
+- [x] **T0-4** 程序 API v3：
   - `declare`、`sql`、`ai.complete`、`zone.fetch` 的签名和错误。
   - 删除的接口。
   - 同步 `aiws.d.ts`。
-- [ ] **T0-5** 预算字段（在浏览器优先 T1-4 的 `budget` 上扩展）、`llm_cache` 的键格式、默认值。
-- [ ] **T0-6** 主状态函数的输入输出；`needs_coding` 的原因枚举。
-- [ ] **T0-7** 托管受限运行器：CLI 动词、Deno 参数、stdio 桥的消息格式。
-- [ ] **T0-8** 宏编写指南的位置和目录。
-- [ ] **T0-9** 确认 §5 的各项。
+- [x] **T0-5** 预算字段（在浏览器优先 T1-4 的 `budget` 上扩展）、`llm_cache` 的键格式、默认值。
+- [x] **T0-6** 主状态函数的输入输出；`needs_coding` 的原因枚举。
+- [x] **T0-7** 托管受限运行器：CLI 动词、Deno 参数、stdio 桥的消息格式。
+- [x] **T0-8** 宏编写指南的位置和目录。
+- [x] **T0-9** 确认 §5 的各项。
 
 ### M1：core 与 store
 
-- [ ] **T1-1** core：
+- [x] **T1-1** core：
   - `check_program` v3 与清单校验。
   - `wish.analysis.v3`，去掉 `approach`。
   - `basis_digest` / `config_digest` 同步。
   - 阶段名常量。
-- [ ] **T1-2** core `sqlview.rs`：`logical_table_ddl` 增加列映射（字段子集，用指定的名字），视图输入包一层；对照测试。
-- [ ] **T1-3** core：结构检查 `macro_check` 和主状态函数；freshness 加 `needs_coding`，删 `direct_stale`。改完重建 Desktop 的 WASM。
-- [ ] **T1-4** store `context.rs`：
+- [x] **T1-2** core `sqlview.rs`：`logical_table_ddl` 增加列映射（字段子集，用指定的名字），视图输入包一层；对照测试。
+- [x] **T1-3** core：结构检查 `macro_check` 和主状态函数；freshness 加 `needs_coding`，删 `direct_stale`。改完重建 Desktop 的 WASM。
+- [x] **T1-4** store `context.rs`：
   - 运行阶段按清单物化，字段名用编码时的名字。
   - 快照里不再写 `data-tree.json` 和 `block-tree.json`。
   - 清单写进许愿格的 `body`。
-- [ ] **T1-5** store：宿主工具 `sql`，在阶段快照上按清单建表，返回 JSON，记读集，有调用次数上限。
-- [ ] **T1-6** store `plan.rs` / `results.rs`：
+- [x] **T1-5** store：宿主工具 `sql`，在阶段快照上按清单建表，返回 JSON，记读集，有调用次数上限。
+- [x] **T1-6** store `plan.rs` / `results.rs`：
   - 删除保留直接结果的逻辑和 `program_only`。
   - `plan_html` 校验 `code_digest`，运行时只更新 `bindings`。
   - `uncited_numbers` 改为检查宏产出的文字。
@@ -238,50 +238,50 @@
 
 ### M2：服务端阶段
 
-- [ ] **T2-1** `mod.rs` `start` 和 `stages.rs`：
+- [x] **T2-1** `mod.rs` `start` 和 `stages.rs`：
   - 三种阶段的分派与就绪检查（`code` 用现在的 `ready_to_execute`；`run` 另加 `macro_check`）。
   - `host_open` 的 brief：`code` 是模型阶段，`run` 是 `{ kind: "program", source, manifest, budget }`。
-- [ ] **T2-2** `tools.rs`：
+- [x] **T2-2** `tools.rs`：
   - 删除 `put_result`。
   - `finish` 要求至少一次成功的试运行，并且有清单。
   - 候选带上宏版本，`mode` 为 `code` 或 `run`。
-- [ ] **T2-3** `budget` 增加 SQL 和 AICC 的上限；`llm_cache` 支持 complete 的键。
-- [ ] **T2-4** 契约测试：`fixtures/protocol` 重录；README 的方法表和错误码。
+- [x] **T2-3** `budget` 增加 SQL 和 AICC 的上限；`llm_cache` 支持 complete 的键。
+- [x] **T2-4** 契约测试：`fixtures/protocol` 重录；README 的方法表和错误码。
 
 ### M3：执行器
 
-- [ ] **T3-1** `aiws/aiws.js` v3：
+- [x] **T3-1** `aiws/aiws.js` v3：
   - `declare`，未声明的字段抛错。
   - `sql`、`ai.complete`、`zone.fetch` 经桥调用。
   - 删除 `resolve` / `find` / `outline`。
   - 修正 `#trackFetch`；保留拒绝的 `code`。
   - `aiws_test.js`、`aiws.d.ts` 同步。
-- [ ] **T3-2** 浏览器：
+- [x] **T3-2** 浏览器：
   - `program.worker.ts` 和 `programHost.ts` 增加三个桥及消息校验。
   - `localExecutor.ts`：`sql` 走 `proc.tool`；`ai.complete` 和 `llm.map` 在浏览器里直接推理，并读写 `llm_cache`（依赖 §5 Q1）。
   - `zone.fetch` 用发起者的会话，只允许本 Zone 的地址。
-- [ ] **T3-3** 托管（websdk `cli/modules/aiws.ts`）：
+- [x] **T3-3** 托管（websdk `cli/modules/aiws.ts`）：
   - 新动词（例如 `run-exec`）以受限 Deno 运行程序，stdio 桥接 `sql`（`proc.tool`）、`ai.complete` / `llm.map`（Agent 的 AICC 加 `llm_cache`）和 `zone.fetch`。
   - `run-program` 改为调用它之后再上报。
   - 补 CLI 测试。
 
 ### M4：Desktop
 
-- [ ] **T4-1** `WishService.ts`：三种阶段；修程序和反馈轮改走 `code`；画布上的“运行”执行下一步动作。
-- [ ] **T4-2** `WishPanel.tsx` / `WishCandidate.tsx` / `wishBlock.tsx`：
+- [x] **T4-1** `WishService.ts`：三种阶段；修程序和反馈轮改走 `code`；画布上的“运行”执行下一步动作。
+- [x] **T4-2** `WishPanel.tsx` / `WishCandidate.tsx` / `wishBlock.tsx`：
   - 主状态和下一步动作。
   - 按钮改为分析、编码、运行。
   - 删除 `direct_stale` 的提示和 approach 标签。
   - 中英文 i18n 同步。
-- [ ] **T4-3** `pnpm check`、lint、build。
+- [x] **T4-3** `pnpm check`、lint、build。
 
 ### M5：指南、提示词、手册、文档
 
-- [ ] **T5-1** 宏编写指南（§2.8）；`aiws/prompts/execute.md` 改为编码提示词并嵌入指南；`analyze.md` 去掉 direct。
-- [ ] **T5-2** 手册：
+- [x] **T5-1** 宏编写指南（§2.8）；`aiws/prompts/execute.md` 改为编码提示词并嵌入指南；`analyze.md` 去掉 direct。
+- [x] **T5-2** 手册：
   - `aiworkspace_run`：三种阶段；运行程序用新的 CLI 动词，不再 `-A`；`llm.map` 和 AICC 可用。
   - `aiworkspace_template_dev`：`proc.start` 的阶段名。
-- [ ] **T5-3** 文档：
+- [x] **T5-3** 文档：
   - 内核 [08](../doc/workspace/kernel/08-任务执行与AI.md)：程序隔离一节改为“以 Zone 为界”；许愿格的三个阶段。
   - [12](../doc/workspace/kernel/12-接口治理与验收.md)：方法、错误码、版本。
   - 服务 README。
@@ -289,17 +289,17 @@
 
 ### M6：分析交接与对象动作
 
-- [ ] **T6-1** Agent 发起分析运行（§2.9，依赖 §5 Q5），更新手册，做真实 Zone DV。
-- [ ] **T6-2** 对象入口声明许愿格三个阶段的启动动作（§2.10，依赖 B-6）。
+- [x] **T6-1** Agent 发起分析运行（§2.9，依赖 §5 Q5），更新手册，做真实 Zone DV。（DV 用 CLI 扮演 Agent，见 §7.4）
+- [x] **T6-2** 对象入口声明许愿格三个阶段的启动动作（§2.10，依赖 B-6）。（2026-11-15 随 AI Native 余下任务 C1-1 实施：B-6 定为维持现状）
 
 ### M7：测试与验收
 
-- [ ] **T7-1** 改写受影响的测试：
+- [x] **T7-1** 改写受影响的测试：
   - `server/tests/wish.rs`、`quality.rs`：q09 改为经 `code` 修程序；q10 的 HTML 结果改由程序产出。
   - `wish_control.rs`、`store/tests/wish.rs`。
   - Desktop `tests/aiworkspace/wish.spec.ts`，以及 `objects.spec.ts` 的 OX03 / OX13。
-- [ ] **T7-2** 新增 §4 的用例。
-- [ ] **T7-3** 真实 Zone DV：浏览器和托管两个位置，各走一遍分析 → 编码 → 应用 → 数据更新 → 运行；手机上走一遍运行。
+- [x] **T7-2** 新增 §4 的用例。
+- [ ] **T7-3** 真实 Zone DV：浏览器和托管两个位置，各走一遍分析 → 编码 → 应用 → 数据更新 → 运行；手机上走一遍运行。（2026-11-12 浏览器与托管（CLI 扮演 Agent）已通过；真实 Agent 按手册执行与手机一项转到余下任务 A6、A7）
 
 ## 4. 验收场景
 

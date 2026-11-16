@@ -39,6 +39,18 @@ pub fn is_standard_schema(id: &str) -> bool {
     matches!(id, TODO_SCHEMA | CALENDAR_SCHEMA)
 }
 
+/// The field ids of a built-in schema.
+pub fn schema_field_ids(id: &str) -> Vec<String> {
+    match id {
+        TODO_SCHEMA => TODO_FIELDS,
+        CALENDAR_SCHEMA => CALENDAR_FIELDS,
+        _ => &[],
+    }
+    .iter()
+    .map(|(f, _)| f.to_string())
+    .collect()
+}
+
 /// The standard fields of a table, `None` when it is not a standard table.
 pub fn standard_fields(e: &EntityRow) -> Option<Fields> {
     if e.type_id != TYPE_TABLE {
@@ -55,9 +67,85 @@ fn bad(m: impl Into<String>) -> WsError {
     WsError::invalid_schema(m)
 }
 
+/// `<ns>.<name>@<major>`: dot-separated lower-case names (letters, digits, `_`, `-`; each starts with a letter), at
+/// least a namespace and a name, then a major version ≥ 1.
+pub fn is_schema_id(id: &str) -> bool {
+    let Some((name, major)) = id.split_once('@') else { return false };
+    let part = |p: &str| p.as_bytes().first().is_some_and(u8::is_ascii_lowercase) && p.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    id.len() <= 128 && name.split('.').count() >= 2 && name.split('.').all(part) && !major.starts_with('0') && !major.is_empty() && major.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The table that defines a user schema (B0-1): the earliest created live table carrying `schema_id` and a
+/// `source.def`. Its fields (ids and types) and `def.primary_key` are the schema.
+pub fn user_schema_definer(ctx: &dyn ReadCtx, schema_id: &str) -> WsResult<Option<EntityRow>> {
+    let mut best: Option<EntityRow> = None;
+    let mut stack = vec![crate::model::ROOT_ID.to_string()];
+    while let Some(id) = stack.pop() {
+        for edge in ctx.children(&id)? {
+            let Some(c) = ctx.entity(&edge.child_id)?.filter(|c| c.alive()) else { continue };
+            if c.type_id == TYPE_TABLE && c.schema_id.as_deref() == Some(schema_id) && crate::types::source_def(&c).is_some()
+                && best.as_ref().is_none_or(|b| (c.created_seq, &c.entity_id) < (b.created_seq, &b.entity_id))
+            {
+                best = Some(c.clone());
+            }
+            stack.push(c.entity_id);
+        }
+    }
+    Ok(best)
+}
+
+/// The fields of a user schema: `(field_id, type)` of its definer's live fields.
+pub fn user_schema_fields(ctx: &dyn ReadCtx, schema_id: &str) -> WsResult<Option<(EntityRow, Vec<(String, FieldType)>)>> {
+    let Some(d) = user_schema_definer(ctx, schema_id)? else { return Ok(None) };
+    let fields = ctx.fields(&d.entity_id)?.into_iter().filter(|f| f.alive()).map(|f| (f.field_id, f.def.ty)).collect();
+    Ok(Some((d, fields)))
+}
+
+/// Validator class: schema. A table of a registered user schema either defines it (it carries `source.def`, and no live
+/// table did before) or has every field of the schema in its type. A `buckyos.` id is one of the built-in schemas.
+fn check_user_table(p: &Planner, e: &EntityRow) -> WsResult<()> {
+    let schema = e.schema_id.as_deref().unwrap_or_default();
+    if !is_schema_id(schema) {
+        return Err(bad(format!("schema_id {schema:?} must be <namespace>.<name>@<major>")));
+    }
+    if schema.starts_with("buckyos.") {
+        return Err(bad(format!("{schema} is not a built-in schema; the buckyos. namespace has {TODO_SCHEMA} and {CALENDAR_SCHEMA} only")));
+    }
+    // the table being created is not in the tree yet: it defines the schema when nothing did before; a schema nobody
+    // registered has no rules (a wish result must name a registered one)
+    let Some((definer, fields)) = user_schema_fields(&p.ov, schema)? else { return Ok(()) };
+    if definer.entity_id == e.entity_id {
+        return Ok(());
+    }
+    let have = p.ov.fields(&e.entity_id)?;
+    for (id, ty) in &fields {
+        match have.iter().find(|f| f.field_id == *id && f.alive()) {
+            Some(f) if f.def.ty == *ty => {}
+            Some(f) => return Err(bad(format!("{schema}: field {id} must be {}, not {}", ty.as_str(), f.def.ty.as_str()))),
+            None => return Err(bad(format!("{schema}: the table needs the field {id} ({})", ty.as_str()))),
+        }
+    }
+    Ok(())
+}
+
+/// Validator class: schema. A table of a Zone source names its primary key (B5-1): its rows are identified by it.
+fn check_keyed_source(e: &EntityRow) -> WsResult<()> {
+    let zone = e.payload.get("source").and_then(|s| s.get("kind")).and_then(Value::as_str) == Some("zone");
+    if zone && crate::types::source_def(e).and_then(|d| d.get("primary_key")).is_none() {
+        return Err(WsError::sub(crate::error::Code::InvalidSchema, "PRIMARY_KEY_REQUIRED", format!("{}: a table of a zone source names source.def.primary_key", e.entity_id)));
+    }
+    Ok(())
+}
+
 /// Validator class: schema. A standard table is created with every standard field in its type (the options of a
-/// select may differ), and its title field is `title`.
+/// select may differ), and its title field is `title`. A table of a user schema defines it or follows it.
 pub fn check_table(p: &Planner, before: Option<&EntityRow>, e: &EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    if changed.is_none_or(|c| c.iter().any(|k| k == "source")) {
+        check_keyed_source(e)?;
+    }
+    if e.schema_id.is_some() && standard_fields(e).is_none() && before.is_none() {
+        return check_user_table(p, e);
+    }
     let Some(standard) = standard_fields(e) else { return Ok(()) };
     let schema = e.schema_id.as_deref().unwrap_or_default();
     if before.is_none() {
@@ -77,8 +165,19 @@ pub fn check_table(p: &Planner, before: Option<&EntityRow>, e: &EntityRow, chang
 }
 
 /// Validator class: schema. A standard field is never deleted (`to: None`) and keeps its type (`to`: the type a
-/// migration would give it).
-pub fn check_field_change(src: &EntityRow, field_id: &str, to: Option<FieldType>) -> WsResult<()> {
+/// migration would give it); so does a field of a user schema in a table that follows it (its definer changes the
+/// schema, and the wishes reading it go back to coding).
+pub fn check_field_change(p: &Planner, src: &EntityRow, field_id: &str, to: Option<FieldType>) -> WsResult<()> {
+    if let (Some(schema), None) = (src.schema_id.as_deref(), standard_fields(src)) {
+        if let Some((definer, fields)) = user_schema_fields(&p.ov, schema)?.filter(|(d, _)| d.entity_id != src.entity_id) {
+            return match (fields.iter().find(|(id, _)| id == field_id), to) {
+                (Some(_), None) => Err(bad(format!("{field_id} is a field of {schema} (defined by {}) and cannot be deleted", definer.entity_id))),
+                (Some((_, ty)), Some(t)) if t != *ty => Err(bad(format!("{field_id} is a field of {schema} and stays {}", ty.as_str()))),
+                _ => Ok(()),
+            };
+        }
+        return Ok(());
+    }
     let Some(standard) = standard_fields(src) else { return Ok(()) };
     let schema = src.schema_id.as_deref().unwrap_or_default();
     match (standard.iter().find(|(id, _)| *id == field_id), to) {

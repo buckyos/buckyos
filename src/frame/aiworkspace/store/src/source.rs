@@ -326,17 +326,18 @@ impl Workspace {
         Ok((e, s))
     }
 
-    /// `proc.start { program: source.refresh@1, params: { entity_id } }`: a refresh run, `update` on the entity.
+    /// `proc.start { program: source.refresh@1, params: { entity_id } }`: a refresh run, `run` (or an editing right) on
+    /// the entity — triggering a sync is not the owner's alone (B4-1, §6 Q13).
     pub fn source_refresh_start(&mut self, caller: &Caller, entity_id: &str, idem_key: &str) -> WsResult<Value> {
         check_idempotency_key(idem_key)?;
         let access = self.require_ws_any(caller)?;
-        let (_, source) = self.source_of(entity_id)?;
+        let (e, source) = self.source_of(entity_id)?;
         if source["kind"] == json!("session") {
             return Err(WsError::invalid_op("a session feed is written by its session, not fetched"));
         }
         let now = self.now();
-        if !access.can(&self.ctx(&now), entity_id, Cap::Update)? {
-            return Err(WsError::denied("refreshing a Source needs update on its entity"));
+        if !access.entity_caps(&self.ctx(&now), &e)?.may_run() {
+            return Err(WsError::denied("refreshing a Source needs run on its entity"));
         }
         let params = json!({ "entity_id": entity_id, "source": source });
         let existing: Option<String> = self.local.query_row("SELECT run_id FROM runs WHERE principal = ?1 AND idem_key = ?2", params![caller.principal, idem_key], |r| r.get(0)).optional().map_err(db_err)?;
@@ -379,13 +380,51 @@ impl Workspace {
         Ok(json!({ "ok": true, "state": "cancelled", "already_applied": false }))
     }
 
+    /// A refresh run is seen by whoever may read its entity (B4-1).
     fn visible_source_run(&self, caller: &Caller, run_id: &str) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
         let run = self.run_json(run_id)?;
-        if run["program"] != json!(SOURCE_PROGRAM) || (run["principal"] != json!(caller.principal) && !access.ws_caps.may_run()) {
+        let now = self.now();
+        let readable = match self.ctx(&now).entity(run["params"]["entity_id"].as_str().unwrap_or(""))? {
+            Some(e) => access.can_read(&self.ctx(&now), &e)?,
+            None => false,
+        };
+        if run["program"] != json!(SOURCE_PROGRAM) || (run["principal"] != json!(caller.principal) && !readable) {
             return Err(WsError::not_found("run not found"));
         }
         Ok(run)
+    }
+
+    /// The last refresh attempt of a sourced entity (`meta.data.attempt`, B0-2): `{ at, status: running | succeeded |
+    /// failed, error?, run_id }`. Local state of this deployment: it never travels with an export.
+    pub fn source_attempt(&self, entity_id: &str) -> WsResult<Option<Value>> {
+        let row: Option<(String, String, Option<String>, String)> = self
+            .local
+            .query_row(
+                "SELECT run_id, state, result_json, updated_at FROM runs WHERE program = ?1 AND json_extract(params_json, '$.entity_id') = ?2 ORDER BY created_at DESC, updated_at DESC LIMIT 1",
+                params![SOURCE_PROGRAM, entity_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(row.map(|(run_id, state, result, at)| {
+            let result: Value = result.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or(Value::Null);
+            let status = match state.as_str() {
+                "succeeded" => "succeeded",
+                "failed" | "cancelled" => "failed",
+                _ => "running",
+            };
+            let mut v = json!({ "at": at, "status": status, "run_id": run_id });
+            match state.as_str() {
+                "cancelled" => v["error"] = json!({ "code": "RUN_CANCELLED", "detail": "the refresh was cancelled" }),
+                "failed" => v["error"] = result.get("error").cloned().or_else(|| result.get("errors").and_then(|e| e.get(0)).cloned()).unwrap_or(Value::Null),
+                _ => {}
+            }
+            if let Some(c) = result.get("schema_changes").filter(|c| c.as_array().is_some_and(|a| !a.is_empty())) {
+                v["schema_changes"] = c.clone();
+            }
+            v
+        }))
     }
 
     fn run_json(&self, run_id: &str) -> WsResult<Value> {
@@ -422,9 +461,11 @@ impl Workspace {
     }
 
     /// The fetched content becomes the entity's content in one Commit of origin `source` (D12): the diff
-    /// against the current content, written as the run's principal; on any failure nothing changes and the
-    /// run says why (§11.2: a failed refresh keeps the last valid version).
-    pub fn source_apply(&mut self, run_id: &str, fetched: &Fetched, bytes: u64, content_root: Option<&str>) -> WsResult<Value> {
+    /// against the current content and the new `data_version` (B0-2), written as the run's principal; on any failure
+    /// nothing changes and the run says why (§11.2: a failed refresh keeps the last valid version). `version` is what
+    /// the fetch knows of the data (`business_time`, `produced_at`, `program`, `truncated`); the same content and the
+    /// same version but for the time it was synced is no new version: nothing is written.
+    pub fn source_apply(&mut self, run_id: &str, fetched: &Fetched, bytes: u64, content_root: Option<&str>, version: &Value) -> WsResult<Value> {
         let run = self.run_json(run_id)?;
         if run["state"] != json!("queued") && run["state"] != json!("running") {
             return Err(WsError::invalid_op(format!("run is {}", run["state"].as_str().unwrap_or("?"))));
@@ -434,7 +475,7 @@ impl Workspace {
         // the service writes a refresh in its own declared name for the owner (权限需求 R14, I3/I4): the trigger's
         // `update` on the entity was judged when the refresh started; the Commit is recorded as the trigger
         let caller = Caller::internal(&self.owner()?.unwrap_or_default());
-        let ops = match self.source_ops(&caller, &entity_id, fetched) {
+        let (mut ops, schema_changes) = match self.source_ops(&caller, &entity_id, fetched) {
             Ok(ops) => ops,
             Err(e) => {
                 self.set_run(run_id, "failed", Some(&json!({ "error": e.to_json() })))?;
@@ -442,12 +483,40 @@ impl Workspace {
             }
         };
         let now = self.now();
-        if ops.is_empty() {
+        let current = {
+            let ctx = self.ctx(&now);
+            ctx.entity(&entity_id)?.ok_or_else(|| WsError::not_found(format!("entity {entity_id} not found")))?
+        };
+        let mut data_version = Map::new();
+        for k in ["business_time", "produced_at", "program", "truncated"] {
+            if let Some(v) = version.get(k).filter(|v| !v.is_null()) {
+                data_version.insert(k.into(), v.clone());
+            }
+        }
+        if let Fetched::Table { records, .. } = fetched {
+            data_version.insert("records".into(), json!(records.len()));
+            data_version.entry("truncated").or_insert(json!(false));
+        }
+        if let Some(r) = content_root {
+            data_version.insert("content_root".into(), json!(r));
+        }
+        // when the program produced it is no new version: the same data, business time and program write nothing
+        let same_version = current.payload.get("data_version").and_then(Value::as_object).is_some_and(|old| {
+            let (mut old, mut new) = (old.clone(), data_version.clone());
+            for k in ["synced_at", "produced_at"] {
+                old.remove(k);
+                new.remove(k);
+            }
+            old == new
+        });
+        if ops.is_empty() && same_version {
             let result = json!({ "status": "unchanged", "bytes": bytes, "content_root": content_root, "at": now });
             self.set_run(run_id, "succeeded", Some(&result))?;
             local_set(&self.local, &format!("source_refreshed:{entity_id}"), &now)?;
             return self.run_json(run_id);
         }
+        data_version.insert("synced_at".into(), json!(now));
+        ops.push(json!({ "op": "entity.set_keys", "entity_id": entity_id, "keys": [{ "key": "data_version", "value": data_version, "expect": { "rev": current.key_rev("data_version") } }] }));
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch, "idempotency_key": format!("source/{run_id}"),
                           "origin": "program", "run_id": run_id, "message": format!("refresh from source ({} bytes)", bytes), "operations": ops });
         let opts = CommitOpts { as_source: true, as_principal: Some(principal), ..CommitOpts::default() };
@@ -455,6 +524,10 @@ impl Workspace {
         result["bytes"] = json!(bytes);
         if let Some(r) = content_root {
             result["content_root"] = json!(r);
+        }
+        // fields the refresh deleted or retyped (B3-4): published, and every wish that reads them goes back to coding
+        if !schema_changes.is_empty() {
+            result["schema_changes"] = json!(schema_changes);
         }
         let accepted = result["status"] == json!("accepted");
         self.set_run(run_id, if accepted { "succeeded" } else { "failed" }, Some(&result))?;
@@ -468,8 +541,8 @@ impl Workspace {
         self.set_run(run_id, "failed", Some(&json!({ "error": error.to_json() })))
     }
 
-    /// Operations that turn the current content into `fetched`.
-    pub(crate) fn source_ops(&mut self, caller: &Caller, entity_id: &str, fetched: &Fetched) -> WsResult<Vec<Value>> {
+    /// Operations that turn the current content into `fetched`, and the fields they delete or retype.
+    pub(crate) fn source_ops(&mut self, caller: &Caller, entity_id: &str, fetched: &Fetched) -> WsResult<(Vec<Value>, Vec<Value>)> {
         let now = self.now();
         let (e, fields, records, ast) = {
             let ctx = self.ctx(&now);
@@ -488,6 +561,7 @@ impl Workspace {
             (e, fields, records, ast)
         };
         let mut ops = Vec::new();
+        let mut schema_changes = Vec::new();
         match (e.type_id.as_str(), fetched) {
             (TYPE_TABLE, Fetched::Table { fields: new_fields, records: new_records }) => {
                 let current: BTreeMap<String, &FieldRow> = fields.iter().map(|f| (f.field_id.clone(), f)).collect();
@@ -499,7 +573,13 @@ impl Workspace {
                 for (id, f) in &current {
                     match wanted.get(id) {
                         Some(def) if def.ty == f.def.ty => {}
-                        _ => ops.push(json!({ "op": "table.delete_field", "source_id": entity_id, "field_id": id, "expect": { "rev": f.def_rev } })),
+                        other => {
+                            schema_changes.push(match other {
+                                Some(def) => json!({ "field_id": id, "change": "type_changed", "from": f.def.ty.as_str(), "to": def.ty.as_str() }),
+                                None => json!({ "field_id": id, "change": "deleted", "from": f.def.ty.as_str() }),
+                            });
+                            ops.push(json!({ "op": "table.delete_field", "source_id": entity_id, "field_id": id, "expect": { "rev": f.def_rev } }));
+                        }
                     }
                 }
                 for (id, def) in &wanted {
@@ -593,7 +673,7 @@ impl Workspace {
             }
             (t, _) => return Err(WsError::invalid_op(format!("fetched content does not fit a {t}"))),
         }
-        Ok(ops)
+        Ok((ops, schema_changes))
     }
 
     /// Sourced entities whose `refresh.interval_s` elapsed since their last successful refresh (the timer's list).

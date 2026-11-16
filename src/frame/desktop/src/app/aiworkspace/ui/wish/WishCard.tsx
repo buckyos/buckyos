@@ -9,13 +9,14 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { CircleStop, Play, Sparkles } from 'lucide-react'
-import { needsCodingReasonText, runErrorText } from '../../api/session'
-import type { FreshnessInfo, Json, NeedsCodingReason, WishMainStatus, WishRunView, WishStage } from '../../api/types'
+import { externalDataWanted, needsCodingReasonText, runErrorText } from '../../api/session'
+import type { ExternalDataWanted, FreshnessInfo, Json, NeedsCodingReason, WishMainStatus, WishRunView, WishStage } from '../../api/types'
 import type { AiwsText } from '../../i18n'
 import { useEntity, useReadOnlyReason, useStore, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { useAiwsText } from '../../useAiwsText'
 import { consumeIntent, useIntent } from '../blocks/editorToolbar'
+import { openDataSourceRequest } from '../sources/sourceRequest'
 import { runMacro } from '../framework/macros'
 import { useInvalidation } from './confirm'
 import { holdsMacro, macroUsesAi } from './macro'
@@ -171,29 +172,32 @@ function nextStep(tab: WishTab, w: WishState, f: Facts, store: WorkspaceStore, w
   const { t } = text
   const run = w.run
   const blocked = f.writeReason ?? (!f.executorOk ? t('aiworkspace.wishcard.status.noExecutor') : null)
+  // analysis and coding call the model in this browser; so does a macro that calls AI
+  const noModel = store.wish.noModelReason()
   if (w.runningStage) {
     return { kind: 'cancel', label: t('aiworkspace.common.cancel'), primary: false, reason: w.active ? f.writeReason : t('aiworkspace.wishcard.reason.starting'), go: () => { if (w.active) void store.wish.cancel(w.active).catch(() => undefined) } }
   }
   if (run && store.wish.canResume(run)) {
-    return { kind: 'resume', label: t('aiworkspace.wishcard.next.resume'), primary: true, reason: blocked, go: () => { void store.wish.resume(run).catch(() => undefined) } }
+    return { kind: 'resume', label: t('aiworkspace.wishcard.next.resume'), primary: true, reason: blocked ?? (run.stage !== 'run' || macroUsesAi(w.payload?.program) ? noModel : null), go: () => { void store.wish.resume(run).catch(() => undefined) } }
   }
   const next = w.main?.next_action
   if (tab === 'prompt') {
     const again = f.hasAnalysis && !f.needsAnalysis
-    return { kind: 'analyze', label: t(again ? 'aiworkspace.wishcard.next.reanalyze' : 'aiworkspace.wishcard.next.analyze'), primary: next === 'analyze', reason: blocked,
+    return { kind: 'analyze', label: t(again ? 'aiworkspace.wishcard.next.reanalyze' : 'aiworkspace.wishcard.next.analyze'), primary: next === 'analyze', reason: blocked ?? noModel,
       go: () => { void store.wish.analyze(wishId, cellId).catch(() => undefined) } }
   }
   if (tab === 'analysis') {
     const failed = latestRecord(w.payload?.history)
     const repair = failed && !failed.ok && failed.stage !== 'analyze' && isCodingFailure(failed.error) ? failed.id : run?.state === 'failed' && run.stage !== 'analyze' && isCodingFailure(run.error) ? run.run_id : null
     const label = repair ? 'aiworkspace.wishcard.next.repair' : f.hasMacro && !f.needsCoding ? 'aiworkspace.wishcard.next.recode' : 'aiworkspace.wishcard.next.code'
-    const reason = blocked ?? (f.needsAnalysis ? t(f.hasAnalysis ? 'aiworkspace.wishcard.reason.requestChanged' : 'aiworkspace.wishcard.reason.analyzeFirst') : null)
+    const reason = blocked ?? (f.needsAnalysis ? t(f.hasAnalysis ? 'aiworkspace.wishcard.reason.requestChanged' : 'aiworkspace.wishcard.reason.analyzeFirst') : noModel)
     return { kind: repair ? 'repair' : 'code', label: t(label), primary: next === 'code', reason,
       go: () => { void store.wish.code(wishId, { cellId, parentRunId: repair ?? undefined }).catch(() => undefined) } }
   }
   const reason = blocked ?? (f.needsAnalysis ? t('aiworkspace.wishcard.reason.analysisStale')
     : !f.hasMacro ? t('aiworkspace.wishcard.reason.codeFirst')
-      : f.needsCoding ? t('aiworkspace.wishcard.reason.recodeFirst', { reason: needsCodingReasonText(f.needsCoding[0]) }) : null)
+      : f.needsCoding ? t('aiworkspace.wishcard.reason.recodeFirst', { reason: needsCodingReasonText(f.needsCoding[0]) })
+        : macroUsesAi(w.payload?.program) ? noModel : null)
   return { kind: 'run', label: t('aiworkspace.wishcard.next.run'), primary: next === 'run', reason, go: () => { void store.wish.runMacro(wishId, { cellId }).catch(() => undefined) } }
 }
 
@@ -208,6 +212,21 @@ function runReason(w: WishState, f: Facts, readOnly: boolean, windowReason: stri
   if (f.needsAnalysis) return t('aiworkspace.wishcard.reason.analysisStale')
   if (f.needsCoding) return t('aiworkspace.wishcard.reason.recodeFirst', { reason: needsCodingReasonText(f.needsCoding[0]) })
   return null
+}
+
+/** What the newest analysis failed for want of, when it needs data from outside the workspace (`NEEDS_EXTERNAL_DATA`). */
+function externalFailure(w: WishState): ExternalDataWanted | null {
+  const latest = latestRecord(w.payload?.history)
+  const fromRecord = latest && !latest.ok && latest.stage === 'analyze' && latest.error?.sub_code === 'NEEDS_EXTERNAL_DATA' ? latest.error : null
+  const fromRun = w.run?.state === 'failed' && w.run.stage === 'analyze' && w.run.error?.sub_code === 'NEEDS_EXTERNAL_DATA' ? w.run.error as { data?: unknown } : null
+  if (!fromRecord && !fromRun) return null
+  const items = externalDataWanted(fromRecord ? { missing_inputs: fromRecord.missing_inputs } : (fromRun?.data as Record<string, unknown> | undefined))
+  return items.find((i) => i.wanted)?.wanted ?? (items[0]?.message ? { meaning: items[0].message } : {})
+}
+
+/** Why the run button cannot run the macro here: `runReason`, or no model for a macro that calls AI. */
+function runButtonReason(w: WishState, f: Facts, store: WorkspaceStore, readOnly: boolean, windowReason: string | null, text: AiwsText): string | null {
+  return runReason(w, f, readOnly, windowReason, text) ?? (macroUsesAi(w.payload?.program) ? store.wish.noModelReason() : null)
 }
 
 /** The request, edited in place where the user may; the first change of an edit says what it makes out of date (§3.5). */
@@ -300,7 +319,7 @@ export function WishCard({ wishId, cellId, mode, readOnly, compact = false }: Wi
   const showRun = Boolean(program) && (!w.freshness || holdsMacro(w.entity, w.freshness))
   const ai = macroUsesAi(program)
   const runningRun = w.runningStage === 'run'
-  const blockedRun = runReason(w, f, readOnly, windowReason, text)
+  const blockedRun = runButtonReason(w, f, store, readOnly, windowReason, text)
   const runNow = () => {
     if (!w.entity) return
     void runMacro(store, { wishId, title, cellId: cellId ?? null, onSurface: true, busy: false }, ui.openEntity)
@@ -321,7 +340,17 @@ export function WishCard({ wishId, cellId, mode, readOnly, compact = false }: Wi
       {runButton}
     </div>
   )
-  const state = <div className={`aiws-wc-status is-${status.kind}`} data-testid="aiws-wish-status" data-kind={status.kind} role={status.kind === 'failed' ? 'alert' : undefined} title={status.text}>{status.text}</div>
+  // an analysis that needs data from outside (余下任务 B2-1): the owner hands it to the Agent, anyone else asks the owner
+  const external = externalFailure(w)
+  const state = (
+    <>
+      <div className={`aiws-wc-status is-${status.kind}`} data-testid="aiws-wish-status" data-kind={status.kind} role={status.kind === 'failed' ? 'alert' : undefined} title={status.text}>{status.text}</div>
+      {external && !compact && mode === 'edit' && (
+        <button type="button" className="aiws-link aiws-wc-external" data-testid="aiws-wish-request-source"
+          onClick={() => openDataSourceRequest({ wishId, blockId: cellId ?? null, wanted: external })}>{t('aiworkspace.wishcard.requestSource')}</button>
+      )}
+    </>
+  )
   const common = {
     className: `aiws-wish-card aiws-wc${compact ? ' is-compact' : ''}`, 'data-testid': `aiws-wish-card-${wishId}`,
     'data-tab': tab, 'data-main': w.main?.main ?? '', 'data-next': w.main?.next_action ?? '', 'data-running': w.runningStage ?? '', 'data-mode': mode,

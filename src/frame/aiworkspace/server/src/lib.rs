@@ -60,13 +60,16 @@ pub struct Limits {
     pub web_dir: Option<std::path::PathBuf>,
     /// URL Sources may fetch loopback and private addresses (权限需求 R38 forbids it; standalone tests only).
     pub fetch_private: bool,
+    /// The folder holding the Zone's `home/<user>/…` (B3-1, Zone sources): `$BUCKYOS_ROOT/data` on a node; `None` = Zone
+    /// files are not readable here.
+    pub zone_root: Option<std::path::PathBuf>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_media_bytes: 2 << 30, max_package_bytes: 2 << 30,
                  workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None, web_dir: None,
-                 fetch_private: false }
+                 fetch_private: false, zone_root: None }
     }
 }
 
@@ -178,6 +181,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             timer.tick().await;
             let Some(state) = weak.upgrade() else { break };
             ticks += 1;
+            // a stage left by an executor that went away (余下任务 D2)
+            let st = state.clone();
+            let _ = tokio::task::spawn_blocking(move || wish::release_lapsed(&st)).await;
             if ticks % 5 == 0 {
                 // Sources on a schedule (D24)
                 let st = state.clone();
@@ -473,7 +479,8 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         let c = caller.clone().expect("authenticated above");
         let st = state.clone();
         let m = method.clone();
-        match tokio::task::spawn_blocking(move || dispatch(&st, &m, &params, &c)).await {
+        let session = req["sys"][1].as_str().unwrap_or_default().to_string();
+        match tokio::task::spawn_blocking(move || dispatch(&st, &m, &params, &c, &session)).await {
             Ok(r) => r,
             Err(e) => Err(WsError::io(format!("handler panicked: {e}"))),
         }
@@ -558,7 +565,8 @@ fn precheck(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
 
 /// Synchronous method dispatch. Every method authorizes against the grants of
 /// the trusted `caller`.
-fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> WsResult<Value> {
+/// `session`: the caller's own token, for a call the service makes on the caller's behalf (a hosted run's dispatch).
+fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, session: &str) -> WsResult<Value> {
     let svc = &state.svc;
     let ws_id = || s(p, "workspace_id");
     Ok(okv(match method {
@@ -721,7 +729,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         }
         "ws.list_referrers" => state.with_ws(ws_id()?, |ws| ws.list_referrers(caller, s(p, "entity_id")?))?,
         "proc.start" if wish::is_wish(s(p, "program")?) => {
-            wish::start(state, caller, ws_id()?, s(p, "program")?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?)?
+            wish::start(state, caller, ws_id()?, s(p, "program")?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?, session)?
         }
         "proc.start" => return Err(WsError::new(Code::MissingExtension, format!("unknown program {}", s(p, "program")?))),
         "proc.get" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::get(state, caller, ws_id()?, s(p, "run_id")?)?,

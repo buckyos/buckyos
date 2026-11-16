@@ -139,6 +139,16 @@ impl ReadSet {
     }
 }
 
+/// The recorded inputs a wish's write is guarded by: all but the data sources (B7-2). A source refreshed while the run ran
+/// does not stop the write; the results record the version they read and read stale at once. Inputs people edit guard it.
+pub fn guarded(ctx: &dyn ReadCtx, inputs: &[Value]) -> Vec<Value> {
+    inputs
+        .iter()
+        .filter(|i| !ctx.entity(i["entity_id"].as_str().unwrap_or("")).ok().flatten().is_some_and(|e| aiworkspace_core::types::has_source(&e) && aiworkspace_core::types::session_feed(&e).is_none()))
+        .cloned()
+        .collect()
+}
+
 /// Commit preconditions guarding exactly the recorded cells (follow inputs only).
 pub fn preconditions(inputs: &[Value]) -> Vec<Value> {
     inputs

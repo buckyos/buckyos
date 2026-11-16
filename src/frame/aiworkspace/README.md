@@ -984,7 +984,12 @@ produced stays in the service.
   spot). When it ends it writes `analysis` (`wish.analysis.v3`, no `approach`: every result comes from the macro; `basis.digest` is
   computed by core) and the named `inputs`. An analysis that concludes inputs are missing (`status: needs_input` with `blockers`) is
   not written: the run fails with `NEEDS_INPUT` and its record names them (`error.missing_inputs`); the user binds the input in the
-  wish's properties and analyzes again — a stored `analysis.status` is always `ready`. An analysis made elsewhere (Jarvis in a
+  wish's properties and analyzes again — a stored `analysis.status` is always `ready`. A blocker `{ code: "external_data", message,
+  wanted: { meaning, origin?, freshness?, fields?: [{ name, type?, description? }] } }` says the task needs data from outside the
+  Workspace: the run fails with `NEEDS_EXTERNAL_DATA` (the record's `missing_inputs` carry `wanted`); a data source that syncs it is
+  built first — by an Agent, which may write one (the browser cannot) — and the wish analyzed again. A `table` result of the output
+  contract may name a `schema_id` (built-in or defined here, see “Sources”): its table is created with it, a result field named like a
+  field id of the schema takes that id, and the standard controls bind it by on_bind. An analysis made elsewhere (Jarvis in a
   conversation) is handed in with `proc.report { analysis }` on an analyze run the Agent started itself (`buckyos aiws run-start`).
 - **code** (`execute_model`): needs a current analysis (`NEEDS_ANALYSIS` otherwise). The read tools plus `run_program { source }` (the
   executor runs the macro and hands it in with `proc.program`), `check_results`, `finish`; there is no direct writing. `finish` needs
@@ -1355,7 +1360,9 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
   `fields`); `sqlview::compile_view` turns it into the SELECT that gives the rows, the order and the group counts of
   the evaluator (`filter::run_query`, kept for the browser replica, R16) — `store/tests/sql.rs` holds them side by side.
   It appears in the Block's `meta.shows.view_sql`, is what the stage tools and wish inputs (`table_view`,
-  `table_query`) read through, and what the Desktop runs when a tab holds no replica (WASM `view_sql`).
+  `table_query`) read through, and what the Desktop runs when a tab holds no replica (WASM `view_sql`). A view's
+  `row_limit` (B7-3) is a display limit only: the Block shows the first `row_limit` rows of that SQL (`meta.shows.row_limit`); the
+  data keeps every row.
 
 ### Objects
 
@@ -1367,6 +1374,15 @@ summary property is `meta`, then `body` (`?cursor=&max_bytes=&parts=true`, `?sel
 content; `?mode=fixed&version=<json>` reads that version or fails, R2). HTTP status by error code: `PERMISSION_DENIED`
 403; `NOT_FOUND`, `TARGET_DELETED`, `VERSION_NOT_RETAINED`, `REFERENCE_BROKEN` 404; `INVALID_OPERATION`, `INVALID_SCHEMA`,
 `UNSUPPORTED_VERSION` (a fixed version of `meta` / `body`) 400; others 500.
+
+Actions (AI Native 余下任务 C1; R43) are `proc.start` through the same kRPC entry with the caller's credentials, so an
+action is refused or started exactly as that call; there is no approval gate (Q11): the Profile gives each its
+`x-buckyos:risk`, and whether to ask the user first is the caller's (a page in its code, an Agent by its manual). An
+entity declares only those that apply to it (read from its `meta`, so a caller who cannot read it sees none): a wish
+`analyze`, `code`, `run` (`write`; `wish.xllm@1` with that stage, the input is the rest of its `params`), an entity a
+Source writes (`data.write: refresh`, not a session feed) `refresh` (`idempotent_write`; `source.refresh@1`). Each takes
+an `idempotency_key` (a new run per call without one) and answers the run. The root object's `controls` is the
+Block-controls catalogue (`control.list`).
 
 ### Writing
 
@@ -1477,16 +1493,54 @@ session is a kRPC failure `{ error, code: "access_denied", data: AccessDenial }`
 `ws.join_entry` (it serves the Zone's entry page, which reads the shared kRPC wire); its other failures are plain kRPC
 errors.
 
-### Sources (内核架构改进 D12, D24, D26)
+### Sources (内核架构改进 D12, D24, D26; AI Native 余下任务 B0)
 
 A data entity (table, rich text, record, asset, directory) may carry a `source` key in its payload:
-`{ kind: url | workspace, url?, zone?, workspace_id?, entity_id?, mode: live | fixed, version?: { content_root }, query?, refresh?: { interval_s }, auth_mode: none | hosted, name? }`
-(checked by `check_source` in [core/src/types.rs](core/src/types.rs); credentials never belong in it). Such an entity is **read-only** for
+`{ kind: url | workspace | zone | session, url?, zone?, workspace_id?, entity_id?, path?, mode: live | fixed, version?: { content_root }, query?, refresh?: { interval_s ≥ 900 }, auth_mode: none | hosted, name?, def? }`
+(checked by `check_source` in [core/src/types.rs](core/src/types.rs); credentials never belong in it). `def` says what the data is:
+`{ meaning (≤ 2000 chars), origin?, primary_key?: [1–4 field ids], freshness?: { max_age_s }, limit?: 1–100000 }`. Such an entity is **read-only** for
 people and Blocks: every content write (`table.*` data operations, `richtext.*`, `dir.*`, `entity.set_keys` beyond `source` / `title` /
 `description`) is refused with `INVALID_OPERATION/SOURCE_READ_ONLY`; only a refresh writes it, as one Commit of origin `source` with the
-run id: `proc.start { program: "source.refresh@1", params: { entity_id } }` (`update` on the entity) — the service fetches (another Workspace of this service as `public`; otherwise one credential-less HTTP GET; `auth_mode: hosted` Sources wait for an Agent), diffs and commits; `proc.get` ends `succeeded` (`result`: the commit, `bytes`, `content_root` of a fixed Source) or `failed` (the last valid content stays). A `refresh.interval_s` Source is refreshed on the service's timer as the owner; fetched bytes count against `traffic_quota_bytes` (`ws.get_info.traffic`). The outline envelope shows `source` (kind, mode, origin,
-schedule); `doc.read { as: "meta" }` gives `data { mode: synced, write: refresh, source }` (a URL table: `url_query`,
-`none`), the body and SQL of a sourced table are its last valid content. Publishing (`ws.publish`) is the other side: the `public` subject reads the entity, and its link
+run id: `proc.start { program: "source.refresh@1", params: { entity_id } }` (`run` or an editing right on the entity) — the service fetches (another Workspace of this service as `public`; a file of the owner's home; otherwise one credential-less HTTP GET; `auth_mode: hosted` Sources wait for an Agent), diffs and commits; `proc.get` (anyone who may read the entity) ends `succeeded` (`result`: the commit, `bytes`, `content_root` of a fixed Source, `schema_changes` — fields the refresh deleted or retyped, after which every wish reading them needs coding again) or `failed` (the last valid content stays). A `refresh.interval_s` Source is refreshed on the service's timer as the owner; fetched bytes count against `traffic_quota_bytes` (`ws.get_info.traffic`). Adding, changing (its `def` too) or removing an entity's `source` is the **workspace owner's** (an Agent judged as the owner included; `PERMISSION_DENIED` otherwise); imports, clones and the session service carry theirs.
+
+- **Zone files** (`kind: zone`, the “pull” of a sync program): `path` is `/home/<owner>/…` (no `.` / `..`), read as the workspace's current
+  owner — a path outside that owner's home fails, so a cloned workspace reads its new owner's home — from `zone_root/home/<owner>/…`
+  (`$BUCKYOS_ROOT/data` on a node, `--zone-root` standalone), never through a link out of the home, at most 32 MiB and 30 s. A table of
+  a Zone source names `def.primary_key` (`INVALID_SCHEMA/PRIMARY_KEY_REQUIRED`). The file is plain JSON / CSV / Markdown (read like a
+  URL's body), or a sync program's output `{ format: "aiws.sync.v1", status: ok | failed, error?, program?: { name, version },
+  business_time?, produced_at?, fields?, records: [{ <field_id>: value }], truncated? }`: `status: failed` fails the refresh with the
+  program's `error`; `fields` absent keeps the table's.
+- **Record identity** (B5-1): a fetched table (URL or Zone) is cut to `def.limit` rows in file order (`truncated`), and each row's
+  `record_id` is `wish::record_id_for_key` of its primary key values — `def.primary_key`, else an `id` column, else the refresh fails
+  with `PRIMARY_KEY_REQUIRED`; a row without its key fails the same way, two rows with one key fail with `DUPLICATE_KEY`; nothing is written.
+- **Full refresh** (B3-3): every refresh of a URL or Zone source replaces the whole data set — a record no longer in the output is
+  deleted (by the refresh's Commit, so it can be undone and read in history); there is no incremental sync on this path. A retry is
+  a new run with its own idempotency key; a failed fetch or a failed output writes nothing, and the same output again writes
+  nothing. Writing the output whole (a temporary file, then a rename) is the sync program's part.
+- **Data version** (B0-2): a refresh that changed the content or the version writes `data_version { synced_at, business_time?,
+  produced_at?, program?, records?, truncated?, content_root? }` in the same Commit (only a refresh writes it: `SOURCE_READ_ONLY`; it
+  goes with the Source); the same content and version again is `status: unchanged` and writes nothing.
+- **Pending** (B0-3): a fetched Source (not a session feed) on a table, rich text or asset without a `data_version` is defined but not
+  satisfied — no valid dependency: `doc.read { as: body }` gives its definition (`state: pending`, the fields of a table), a text query
+  covers its name and definition (`coverage.skipped: pending`), SQL and `table_rows` answer `INVALID_OPERATION/DATA_PENDING`. A wish
+  reading it has `input_problems: [{ input, entity_id, label?, reason: pending }]` (main status `waiting_data`); it can be analyzed and
+  coded (the snapshot holds the table with its fields and no rows, the coding brief says so), and its `run` stage is refused with
+  `NEEDS_INPUT` (`data.missing_inputs`).
+- **What a reader sees**: the outline envelope shows `source` (kind, mode, origin, schedule); `doc.read { as: "meta" }` gives
+  `data { mode: synced, write: refresh, source { kind, mode, url?, workspace_id?, entity_id?, path?, refresh? }, state: pending | valid,
+  version (the data_version), def, attempt: { at, status: running | succeeded | failed, error?, run_id } (the last refresh, this
+  deployment's own: never exported or cloned), expired }` — `expired` when the business time, else the last successful sync, is older
+  than `def.freshness.max_age_s` (display only: nothing runs because of it). A URL table is `url_query`, `none`.
+- **User schemas** (B0-1): a `schema_id` is `<namespace>.<name>@<major>`; `buckyos.` has only the built-in schemas. The earliest created
+  live table carrying a `schema_id` and a `source.def` defines that schema (its field ids and types); another table created with it
+  must have those fields in their types and keeps them (`INVALID_SCHEMA`). A schema nobody defines has no rules (schema class:
+  `standard::check_table`, `check_field_change`).
+- **Downstream** (B7): a refresh that changed the data makes the results reading it stale; nothing runs by itself. A source refreshed
+  while a wish run ran does not stop the run's write: it is no precondition of it, the results record the version they read and read
+  stale at once (inputs people edit still guard the write).
+- **Not yet**: the 50-version retention of refresh Commits (B5-2) — the history keeps every Commit until history compaction exists.
+
+Publishing (`ws.publish`) is the other side: the `public` subject reads the entity, and its link
 `https://aiws-<workspace_id>.<zonehost>/<workspace_name>/<name>` (or `GET /kapi/aiworkspace/pub/<workspace_id>/<name>`) answers the
 publication — JSON (`format: buckyos.ai-workspace/pub/1.0`, `reference`, `content`; `?fixed=1` adds `content_root`; `?fixed=<root>` reads
 that pinned version) or, for a browser or crawler (`Accept: text/html`), a static HTML page with the title and the table or text.
@@ -1532,8 +1586,9 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | table-source | `FieldDef::default_value`; `plan_table.rs` `insert_records`, `update_field`, `migrate_field`, `delete_option` | primitive | a default is a canonical value of the field's type, not null or a formula, not on a submitter, unique or object_ref field; filled into the fields an insert does not give (not on internal writes); converted by a migration, kept in step with option deletion |
 | table-source | `plan_table.rs` `check_body` | primitive | a record body is a live rich text under this table and the body of no other record |
 | table-source | `plan_table.rs` `delete_field` / `migrate_field` | primitive | the title field cannot be deleted and stays a text field |
-| table-source (standard) | `standard::check_table` (from `validate_schema`) | schema | `schema_id` `buckyos.todo@1` / `buckyos.calendar@1`: created with every standard field in its type; `title_field_id` is `title` |
-| table-source (standard) | `plan_table.rs` `delete_field` / `migrate_field` → `standard::check_field_change` | schema | a standard field is never deleted and keeps its type |
+| table-source (standard) | `standard::check_table` (from `validate_schema`) | schema | `schema_id` `buckyos.todo@1` / `buckyos.calendar@1`: created with every standard field in its type; `title_field_id` is `title`; a user `schema_id` is `<namespace>.<name>@<major>` outside `buckyos.`, a table created with a defined one has its fields; a Zone source names `def.primary_key` |
+| table-source (standard) | `plan_table.rs` `delete_field` / `migrate_field` → `standard::check_field_change` | schema | a standard field — or a field of a user schema in a table that follows it — is never deleted and keeps its type |
+| sourced entities | `check_source`, `check_data_version`, `require_source_owner` | primitive / schema | the Source's shape and `def`; `data_version` only with a Source and only from a refresh; a Source changed by the workspace owner only |
 | table-source (standard) | `standard::check_records` (end of `plan_commit`; records noted by `insert_records`, `set_values`, `unset_values`, `restore_records`) | schema | per record, on the Commit's final values: required fields; a timed event has `start` (and no dates), an all-day one `start_date` (and no times); `end` / `end_date` not before the start; `order` an order key; the `ext` keys with a meaning (RRULE subset, `exdate`, `recurrence_id` never with `rrule`, `tz`, `reminders`, …) |
 | richtext | `plan_richtext::create` / `apply_update` | primitive | document conforms to `buckyos.richtext.basic.v1`, block ids unique, CRDT update applies to a known base |
 | richtext | `entity_refs` (`richtext_ref_edge`) | reference | `object_embed` / `object_link` targets are indexed as references; existence judged by the planner's `check_ref_target` |
@@ -1552,7 +1607,7 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | cell | `check_slot` (from `validate_primitive`, `check_position`) | reference | `slot` only inside a control; inside a composite required and a slot of the definition (several Blocks may share one); elsewhere unique among the live siblings (`SLOT_CONFLICT`); re-judged by `tree.move`; a connector never turns into a box or back |
 | cell, container (composite) | `check_on_shape` (from `validate_primitive` / `container_primitive`) | primitive | `on` (扩展控件 P2): ≤ 16 event names, each one handler or ≤ 4, each an object whose `kind` is write / wish / open / notify, ≤ 16 KiB; never on a connector, ink, or a container other than a composite |
 | cell, container | `entity.set_props` (`plan.rs`) | primitive | `key` config / bindings / on, ≤ 64 property names `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`, values ≤ 64 KiB; the key then goes through the entity's validators like a `set_keys` of it |
-| cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `manual_order` only on table views, named fields live, ≤ 4 sorts, group field type |
+| cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `manual_order` only on table views, named fields live, ≤ 4 sorts, group field type; `row_limit` (1–100000, a table view only) |
 | cell | `validate_cell` (`config.snapshot`) | primitive | an embedded snapshot is an AssetRef (checked by `validate_asset`) |
 | cell (connector) | `validate_connector` (shapes) | schema | `flip`, `route`, ≤ 64 `controls`, `label.t` in [0, 1]; `start` / `end` are `{ entity_id, anchor { kind: named, id } }` |
 | cell (connector) | `validate_connector` (endpoints) | reference | a bound endpoint is a readable Block or group on the connector's Surface, never itself or another line |
@@ -1794,7 +1849,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `doc.restore_version` | experimental | `read` on `entity_id` |
 | `doc.checkpoint` | experimental | `export` on `/` |
 | `doc.export` | experimental | `export` on `/` |
-| `proc.start` | stable | a Source: `update` on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish |
+| `proc.start` | stable | a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish |
 | `proc.get` | stable | one's own run, or `update` / `manage` on its wish |
 | `proc.cancel` | stable | one's own run, or `update` / `manage` on its wish |
 | `proc.rollback` | stable | `update` on the run's wish; the Commit's operations as the caller |

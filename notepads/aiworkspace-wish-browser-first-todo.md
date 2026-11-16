@@ -2,7 +2,7 @@
 
 日期：2026-10-31
 
-状态：**2026-11-12 M1、M2 与 M4 的服务端部分随 [AI Native 第一期](aiws-ai-native-phase1-todo.md) 一并实施（未提交），出入见 §7；M3（xllm TS Worker 接入）仍未做。** 原状态：待开工；M3（Desktop 执行器）依赖 [xllm TypeScript 运行时 TODO](./xllm-ts-runtime-todo.md) 先独立验证通过（2026-10-31 用户裁决：浏览器里的模型循环是通用的 xllm Worker 运行时，不在 AiWorkspace 里手写；独立 TODO 验收后再集成）。M0–M2、M4 的服务端部分不依赖它，可先做。** 2026-11-07：xllm TS 单的 M1、M2、MW（程序 Worker 沙箱）已实施（未提交），M6 Worker 宿主未做，所以 M3 仍不能开工。 依据 [《核心架构设计冻结思路》](<../doc/workspace/BuckyOS AiWorkspace 核心架构设计冻结思路.md>) §1.2（计算扩展执行位置明确）、§7.1 表（“标准许愿格 = 带 AI 的客户端计算流程”，“Agent 型许愿格 = 计划增加”）、§7.2（Get → 客户端计算 → Set 是现有、低内核负担的基本路径）、§8.6（标准模型在当前登录用户的网页中运行；**从 Workspace 后端看，它没有参与 AI 执行过程**；依赖当前用户的 AICC 权限；三种授权分开）、§8.7–8.8（托管模型是第二种、面向互信协作者）、§13 冻结清单 F10 / F13，以及 [《内核架构改进》](<../doc/workspace/BuckyOS AiWorkspace 内核架构改进.md>) §12.3 M3 的已实施状态（T3-1～T3-8 已实施，T3-9 未做）与 §13.5 D14 / D21 / D22。本单只处理**标准模型（浏览器本地执行）**；托管模型（T3-5～T3-7）保持现状，不扩展也不拆。
+状态：**2026-11-12 M1、M2 与 M4 的服务端部分随 [AI Native 第一期](aiws-ai-native-phase1-todo.md) 一并实施（未提交），出入见 §7。2026-11-15 M3 按 [AI Native 余下任务](aiws-ai-native-remaining-todo.md) A 实施：模型循环改用 xllm TS，在页面主线程运行，不等 Worker（owner 裁决 Q1），见 §7。** 原状态：待开工；M3（Desktop 执行器）依赖 [xllm TypeScript 运行时 TODO](./xllm-ts-runtime-todo.md) 先独立验证通过（2026-10-31 用户裁决：浏览器里的模型循环是通用的 xllm Worker 运行时，不在 AiWorkspace 里手写；独立 TODO 验收后再集成）。M0–M2、M4 的服务端部分不依赖它，可先做。** 2026-11-07：xllm TS 单的 M1、M2、MW（程序 Worker 沙箱）已实施（未提交），M6 Worker 宿主未做，所以 M3 仍不能开工。 依据 [《核心架构设计冻结思路》](<../doc/workspace/BuckyOS AiWorkspace 核心架构设计冻结思路.md>) §1.2（计算扩展执行位置明确）、§7.1 表（“标准许愿格 = 带 AI 的客户端计算流程”，“Agent 型许愿格 = 计划增加”）、§7.2（Get → 客户端计算 → Set 是现有、低内核负担的基本路径）、§8.6（标准模型在当前登录用户的网页中运行；**从 Workspace 后端看，它没有参与 AI 执行过程**；依赖当前用户的 AICC 权限；三种授权分开）、§8.7–8.8（托管模型是第二种、面向互信协作者）、§13 冻结清单 F10 / F13，以及 [《内核架构改进》](<../doc/workspace/BuckyOS AiWorkspace 内核架构改进.md>) §12.3 M3 的已实施状态（T3-1～T3-8 已实施，T3-9 未做）与 §13.5 D14 / D21 / D22。本单只处理**标准模型（浏览器本地执行）**；托管模型（T3-5～T3-7）保持现状，不扩展也不拆。
 
 目标：把今天“可选的本地模式”变成**许愿格的默认且唯一的标准执行路径**——新建 Zone 与新建工作区默认在浏览器执行；服务不再持有进程内 xllm 循环、Deno 子进程与 `wish-host` HTTP 路由（T3-9 提前，条件改为“本地模式在真实 Zone 用浏览器 UI 全程 DV 通过”）；本地模式下**所有模型调用都出自发起者自己的 AICC 会话**（含程序里的 `aiws.llm.map`），服务只做数据内核的事：物化快照、回答 `ws_*` 只读工具、校验程序产物、规划候选、事务 Apply。
 
@@ -97,7 +97,7 @@
 - [ ] **T2-4** README 方法表 `proc.*` 升 `stable`，`METHOD_LEVELS` 同步；契约 fixture `AIWS_REGEN=1 cargo test -p aiworkspace --test contract` 重录（`ws.get_info` 形状变了）。
 - 完成条件：`rg -n "xllm|Deno|deno|wish-host|AIWS_HOST|allow_service_execution|wish_aicc" src/frame/aiworkspace/server src/frame/aiworkspace/store src/frame/aiworkspace/aiws src/kernel/buckyos-api/src/aiworkspace_client.rs` 只剩注释里的历史说明或托管手册引用；三 crate 编译通过。
 
-### M3 Desktop：浏览器执行器接入 xllm TS 运行时（**前置：[xllm TS 运行时 TODO](./xllm-ts-runtime-todo.md) M1、M2、M6（Worker 宿主；2026-11-07 起排在那边第三步之后）与 MW 完成、`buckyos/xllm` 已发布到 Desktop 依赖的 websdk 版本**）
+### M3 Desktop：浏览器执行器接入 xllm TS 运行时（**已实施（2026-11-15）**。前置改为 xllm TS 的 M1、M2、MW：2026-11-15 owner 裁决在页面主线程接入，不等 M6 的 Worker 宿主（AI Native 余下任务 Q1）；下面 T3-0～T3-4 的 Worker 写法因此不适用，实际做法见 §7）
 
 - [ ] **T3-0** 升级 Desktop 的 `buckyos` 依赖到含 `buckyos/xllm` 与 `buckyos/xllm/worker` 的版本；Vite 下 Worker 入口用 `new Worker(new URL('buckyos/xllm/worker', import.meta.url), { type: 'module' })` 或 `xllmWorkerBlobUrl()`（按打包结果择一，记入 §7）。
 - [ ] **T3-1** `executor/llmMap.ts`：移植 `llm.rs::llm_map`（分批 `batch` 默认 20、上限 50；`MAP_SYSTEM` 同文；schema 子集校验移植 `validate`——`type` / `enum` / `type: [..]` / `null`；失败项逐个重试；项数预算 `budget.llm_map_max_items` 超限返回 `{ error }`；返回 `{ results, calls, cached }`）；缓存：先 `proc.tool llm_cache{get}` 批量查，命中跳过，新结果 `llm_cache{put}`；模型 = `budget.map_model`，模型调用 = providers `LlmClient.infer({ json_schema })`（AICC 走用户 session；dev 覆盖用 `OpenAiLlmClient`——`mock-llm.mjs` 已按 system 含 `item-by-item judge` 回 `mapJudge`）。
@@ -156,6 +156,10 @@ rg -n "xllm|deno|wish-host|AIWS_HOST|allow_service_execution|wish_aicc|execution
 - **M1**：T1-1 设置项按 Q3 增删（另加第一期要的 `complete_model`、`ai_max_calls`、`ai_max_tokens`、`sql_max_calls`；`execute_model` 仍是编码阶段的模型）；非法 `default_execution` 在 `WishConfig` 里 `warn!` 后取 `local`。T1-2 `Mode` 去 `Service`；Mock 仍由服务规划。T1-3 `run_attribution(ws, caller, mode)`：本地 = 发起者（Account，或自己发起的 Agent），托管 = Owner；删 `ws.set_wish_aicc`、`wish_aicc_mode`、`ws.get_info.wish_execution.service`。T1-4 brief 带 `budget`。T1-5 `llm_cache { get | put }`，删 `llm_map` 分支；`proc.program` 读结果里的 `ai` 统计。T1-6 `proc.files` 超过 `snapshot_download_max_bytes` 返回 `SNAPSHOT_TOO_LARGE { bytes, limit }` 并置 run 为 failed。
 - **Q1（浏览器直接推理）**：提前做了，但没有写 `llmMap.ts`：`llm.map` 与 `ai.complete` 的执行器侧逻辑在 `aiws/host.js`，浏览器与 CLI 共用；模型调用是 `buckyos/xllm` 的 `AiccLlmClient`（dev 覆盖用 `OpenAiLlmClient`）。
 - **M2**：服务内 xllm、Deno 运行器、`wish-host` 路由与 `llm.rs`、`runner.rs`、`tests/runner.rs` 已删；`stages.rs` 只剩阶段宿主与 Mock；`aiws.js` 删 HTTP 分支与 `AIWS_HOST/AIWS_TOKEN`；`proc.*` 升 stable，契约 fixture 已重录。`Cargo.toml` 去 `agent_tool`、`llm_context`。
-- **M3**：未做（xllm TS M6 未完成）。浏览器仍用手写循环；拒绝改为按子码上报（`chat.ts` 用 `providerErrorFromRpc`），Q5 的前置提示未做。
+- **M3**：2026-11-12 未做（xllm TS M6 未完成），浏览器仍用手写循环。2026-11-15 按 AI Native 余下任务 A 实施（记录在那份 TODO 的 §7）：
+  - `executor/wishRuntime.ts`：brief 的工具成为 xllm site runtime `aiws.wish` 的页面工具，调用转 `proc.tool`；`run_program` 走 MW 沙箱（`programHost.ts`），程序不进循环。服务答 `status: error` 是模型看得到的失败调用；连不上服务（撤销、取消、离线、快照过大）不给模型看，直接结束这次运行。
+  - `localExecutor.ts` 的 `loop()` 改为 `XllmTask.prepareHosted`（`hostPromptSections: NONE`，阶段的系统提示原样，不当模板）→ `XllmRun.start({ input: brief.user })` → `execute`。迭代数取 `budget.iterations`；时长 21600 秒、单次调用 900 秒、上下文窗口 200000（brief 不带这些）。`chat.ts` 删除，`LocalExecutor` 不再接收 `ChatClient`。
+  - 续跑：新 attempt 从头跑（服务给新 attempt 重开阶段，上一次暂存的东西不保留），所以不用 `IndexedDbRunStore`，用 `MemoryRunStore`；之前 attempt 的用量记在 `localStorage['aiworkspace.claims.usage']`，并进最后的 `usage`。
+  - Q5：guest 没有 Zone 会话、调不了 AICC 时，卡片的分析、编码（以及调 AI 的宏）按钮旁写明“本浏览器无法调用模型”，开了托管执行时引导到属性里改用托管。
 - **M4**：T4-1 的“测试侧执行器”在 `server/tests/common/wishkit.rs`（领取、脚本化模型循环、本机 Deno 以 `--bridge` 跑宏、Rust 应答桥）；T4-2 的服务测试已全部改经它。e2e 与 DV 见第一期 TODO §7.4。
 - 遗留：托管模式的 `llm.map` 已可用（CLI `run-exec` 用 Agent 自己的 AICC），原遗留项关闭。

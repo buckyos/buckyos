@@ -214,6 +214,11 @@ impl Authenticator for RuntimeAuth {
                 Some(owner) => Caller::agent_of(&principal, &owner),
                 None => Caller::agent(&principal),
             },
+            // an Agent's own runtime signs in as its App (AppId = AgentId, the owner as subject): that is the Agent
+            TokenPrincipalKind::App => match app_agent(&principal, verified.appid.as_deref()).await {
+                Some(did) => Caller::agent_of(&did, &principal),
+                None => Caller::service(&principal),
+            },
             _ => Caller::service(&principal),
         };
         // a service names itself in `appid` (kernel and frame services sign in with the device as subject); anyone
@@ -362,6 +367,29 @@ impl Authenticator for RuntimeAuth {
 
 /// The account an Agent DID belongs to, from its AgentSpec (`users/<u>/agents/<id>/spec`): a trusted source, never
 /// a request parameter (权限需求 R16). Cached once found; `None` when it is no Agent of this Zone.
+/// The Agent an App session of `owner` is, as its DID: `app_id` names one of `owner`'s Agents.
+async fn app_agent(owner: &str, app_id: Option<&str>) -> Option<String> {
+    static CACHE: std::sync::Mutex<Option<HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+    let app = app_id.filter(|a| !a.is_empty())?;
+    let key = format!("{owner}\n{app}");
+    if let Some(hit) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(&key).cloned()) {
+        return hit;
+    }
+    let agent = buckyos_api::AgentId::parse(app).ok();
+    let found = match agent {
+        Some(agent) => {
+            let client = buckyos_api::get_buckyos_api_runtime().ok()?.get_system_config_client().await.ok()?;
+            match client.get(&buckyos_api::agent_spec_key(owner, &agent)).await {
+                Ok(spec) => serde_json::from_str::<buckyos_api::AgentSpec>(&spec.value).ok().map(|s| s.agent_doc.id.to_string()),
+                Err(_) => None,
+            }
+        }
+        None => None,
+    };
+    CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, found.clone());
+    found
+}
+
 pub async fn agent_owner(subject: &str) -> Option<String> {
     static CACHE: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
     if let Some(hit) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(subject).cloned()) {

@@ -41,6 +41,8 @@ import './table.css'
 
 export type CellRead = ReadOk<KeyedContent<CellPayload>>
 type SourceRead = ReadOk<TableSourceContent>
+/** "Show the first N rows" of a table view (PRD §4.3, §6 Q9). */
+const DEFAULT_ROW_LIMIT = 100
 
 export interface TableEditorBodyProps {
   /** The table-view Block, or the table's synthetic view (`sourceMode`). */
@@ -130,6 +132,11 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
     return new TablePager(store.session, query)
   }, [store, cellId, sourceId, savedKey, sessionKey, sourceMode])
   const rows = useSyncExternalStore(pager.subscribe, pager.snapshot)
+  // a Block may show only the first rows of its view (B7-3): a display limit, the data keeps every row
+  const savedLimit = (payload as { row_limit?: unknown }).row_limit
+  const rowLimit = !sourceMode && typeof savedLimit === 'number' ? savedLimit : null
+  const limited = rowLimit !== null && rows.total > rowLimit
+  const shown = limited ? { ...rows, rows: rows.rows.slice(0, rowLimit), total: rowLimit, done: rows.done || rows.rows.length >= rowLimit } : rows
   // A schema change (field added, renamed, deleted, migrated) changes what a row means: read again.
   const schemaKey = (source.data?.content.fields ?? []).map((field) => `${field.field_id}:${field.def_rev}`).join(',')
   const lastSchema = useRef<string | null>(null)
@@ -200,6 +207,13 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
     if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelection(null)
   }
 
+  const setRowLimit = (limit: number | null) => store.submit({
+    editId: `view:${cellId}`, label: t('aiworkspace.datasource.rows.edit'),
+    operations: [limit === null
+      ? { op: 'entity.unset_keys', entity_id: cellId, keys: [{ key: 'row_limit', expect: { rev: cell.content.key_revs.row_limit ?? 0 } }] }
+      : { op: 'entity.set_keys', entity_id: cellId, keys: [{ key: 'row_limit', value: limit, expect: { rev: cell.content.key_revs.row_limit ?? 0 } }] }],
+  })
+
   // ---- the title row's tools: in the near toolbar on a free canvas, drawn here elsewhere
   const togglePanel = (next: Panel) => setPanel(panel === next ? 'none' : next)
   const filtered = Boolean(sessionView.filter || sessionView.sorts)
@@ -212,6 +226,7 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
     ...(inline && phone && canFields ? [{ id: 'table-fields', label: t('aiworkspace.data.table.fields'), icon: <Columns3 size={14} />, run: () => togglePanel('fields') }] : []),
     { id: 'table-select', label: t('aiworkspace.table.selection.start'), icon: <ListChecks size={14} />, run: () => setSelection(new Set()) },
     { id: 'table-copy', label: t('aiworkspace.data.table.copyAsTable'), icon: <ClipboardCopy size={14} />, run: () => copyRows(null) },
+    ...(canEditView ? [{ id: 'table-rows', label: rowLimit ? t('aiworkspace.datasource.rows.all') : t('aiworkspace.datasource.rows.first', { count: DEFAULT_ROW_LIMIT }), icon: <Rows3 size={14} />, run: () => { void setRowLimit(rowLimit ? null : DEFAULT_ROW_LIMIT) } }] : []),
   ]
   const tools: ToolbarItem[] | null = compact || !source.data ? null : [
     { kind: 'button', id: 'table-filter', icon: ListFilter, label: filterLabel, active: panel === 'filter' || filtered, run: () => togglePanel('filter') },
@@ -249,6 +264,9 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
 
   if (source.error && !source.data) return <div className="aiws-error" role="alert">{t('aiworkspace.data.table.sourceReadError', { error: source.error })}</div>
   if (!source.data || !fields) return <div className="aiws-muted">{t('aiworkspace.data.table.sourceLoading')}</div>
+  // a data source defined but not synced yet (B0-3) is no empty table
+  const sourcePayload = source.data.content.payload as { source?: { kind?: string } | null; data_version?: unknown }
+  const pending = Boolean(sourcePayload.source) && sourcePayload.source?.kind !== 'session' && !sourcePayload.data_version
 
   const brokenFilter = rows.error?.subCode === 'VIEW_BROKEN'
   const diagnostics = [...(cell.content.diagnostics ?? [])]
@@ -347,17 +365,19 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
           {panel === 'filter' ? filterPanel : fieldManager}
         </SheetPanel>
       )}
-      {rows.error ? (
+      {pending ? (
+        <div className="aiws-muted aiws-table-empty" role="status" data-testid={`aiws-table-pending-${tableId}`}>{t('aiworkspace.datasource.pendingTable')}</div>
+      ) : rows.error ? (
         <div className="aiws-error" role="alert" data-testid={`aiws-table-error-${tableId}`}>
           {brokenFilter ? t('aiworkspace.data.table.viewBroken') : t('aiworkspace.data.table.queryFailed', { error: rows.error.text })}
           {brokenFilter && canEditView && <button type="button" onClick={() => { void clearSaved('filter') }}>{t('aiworkspace.data.table.removeBrokenFilter')}</button>}
           {!brokenFilter && <button type="button" onClick={() => pager.refresh()}>{t('aiworkspace.common.retry')}</button>}
         </div>
       ) : layout === 'cards' ? (
-        <TableCards tableId={tableId} fields={fields} columns={columns} titleField={titleField} rows={rows} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight}
+        <TableCards tableId={tableId} fields={fields} columns={columns} titleField={titleField} rows={shown} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight}
           selection={selection} onToggle={toggle} onStartSelect={(id) => setSelection(new Set([id]))} onOpen={(id) => setRecord({ kind: 'edit', recordId: id })} annotatedRecords={annotatedSet} />
       ) : (
-        <TableGrid tableId={tableId} sourceId={sourceId} fields={fields} columns={columns} rows={rows} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight} compact={Boolean(compact)} phone={phone}
+        <TableGrid tableId={tableId} sourceId={sourceId} fields={fields} columns={columns} rows={shown} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight} compact={Boolean(compact)} phone={phone}
           editable={canUpdate} resultTable={Boolean(source.data.derived)} titleField={titleField} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation}
           rowHead={!compact} selection={selection} onToggle={toggle} onToggleAll={toggleAll} onStartSelect={(id) => setSelection(new Set([id]))} onOpen={(id) => setRecord({ kind: 'edit', recordId: id })}
           annotatedRecords={annotatedSet} phoneCell={phoneCell} onPhoneCell={setPhoneCell} onPhoneEdit={(c) => { setPhoneCell(c); setEditBar(c) }}
@@ -375,7 +395,7 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
           }}
           onAddField={canStructure && !compact && !phone ? (button) => pops.open('add-field', button) : null} addFieldOpen={pops.pop?.kind === 'add-field'} />
       )}
-      {!compact && !rows.error && rows.done && rows.total === 0 && <div className="aiws-muted aiws-table-empty" data-testid={`aiws-table-empty-${tableId}`}>{canAppend ? t('aiworkspace.table.emptyAdd') : t('aiworkspace.table.empty')}</div>}
+      {!compact && !rows.error && !pending && rows.done && rows.total === 0 && <div className="aiws-muted aiws-table-empty" data-testid={`aiws-table-empty-${tableId}`}>{canAppend ? t('aiworkspace.table.emptyAdd') : t('aiworkspace.table.empty')}</div>}
       {!compact && (selection ? (
         <div className="aiws-table-foot aiws-table-selection" role="toolbar" aria-label={t('aiworkspace.table.selection.label')} data-testid={`aiws-table-selection-${tableId}`}>
           <span data-testid="aiws-table-selection-count">{t('aiworkspace.table.selection.count', { count: selection.size })}</span>
@@ -390,7 +410,9 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
             ? <button type="button" className="aiws-table-new" data-testid={`aiws-add-record-${tableId}`} onClick={() => setRecord({ kind: 'new' })}><Plus size={16} aria-hidden="true" />{t('aiworkspace.table.newRecord')}</button>
             : <NewRecordRow store={store} source={source.data} cellId={tableId} onNeedForm={() => setRecord({ kind: 'new' })} />)}
           <span className="aiws-grow" />
-          <span className="aiws-table-count" data-testid={`aiws-table-count-${tableId}`}>{rows.rows.length < rows.total
+          <span className="aiws-table-count" data-testid={`aiws-table-count-${tableId}`} data-limited={limited ? 'true' : undefined}>{pending ? '' : limited
+            ? t('aiworkspace.datasource.rows.limited', { count: rowLimit ?? 0, total: rows.total })
+            : rows.rows.length < rows.total
             ? t('aiworkspace.table.countLoaded', { loaded: rows.rows.length, count: rows.total })
             : rows.loading ? t('aiworkspace.data.table.countLoading', { count: rows.total }) : t('aiworkspace.data.table.count', { count: rows.total })}</span>
         </div>

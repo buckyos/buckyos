@@ -7,9 +7,9 @@
  * Nothing here runs because of change events: every run is started by the user. */
 
 import { describeError } from '../../api/session'
+import { devModelEndpoint, isGuestPrincipal } from '../../api/transport'
 import type { FreshnessInfo, Json, WishExecutionMode, WishMainStatus, WishPayloadRead, WishRecord, WishRollbackResult, WishRunView, WishStage } from '../../api/types'
 import { loadCore } from '../../api/wasm'
-import { resolveChatClient } from '../../executor/chat'
 import { createInfer } from '../../executor/infer'
 import { claims, LocalExecutor } from '../../executor/localExecutor'
 import { aiwsT } from '../../i18n'
@@ -185,6 +185,13 @@ export class WishService {
     this.changed()
   }
 
+  /** Why this browser cannot call the model of a stage it would execute (浏览器优先 Q5, 余下任务 A4): a guest has no
+   * Zone session to call AICC with. Hosted execution, when the owner turned it on, needs no model here. */
+  noModelReason(): string | null {
+    if (this.executionMode() !== 'local' || devModelEndpoint() || !isGuestPrincipal(this.store.session.info().principal)) return null
+    return aiwsT(this.executionModes().includes('hosted') ? 'aiworkspace.wish.noModel.hosted' : 'aiworkspace.wish.noModel')
+  }
+
   /** An interrupted local run resumes from this browser, which keeps its claim token. */
   canResume(run: WishRunView | undefined | null): boolean {
     return Boolean(run && run.state === 'interrupted' && run.execution?.mode === 'local' && claims.get(run.run_id))
@@ -192,7 +199,7 @@ export class WishService {
 
   private runLocally(runId: string, claimToken: string, wishId: string) {
     claims.set(runId, claimToken)
-    const executor = new LocalExecutor(this.store.session, resolveChatClient(), createInfer(), runId, claimToken)
+    const executor = new LocalExecutor(this.store.session, createInfer(), runId, claimToken)
     this.locals.set(runId, executor)
     executor.run()
       .then((outcome) => { if (outcome === 'finished') claims.forget(runId) })

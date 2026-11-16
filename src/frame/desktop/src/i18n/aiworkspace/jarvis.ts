@@ -1,0 +1,43 @@
+/* AI Workspace text: the Agent's panel (ui/jarvis), a conversation with the viewer's own Agent that is handed what is
+ * selected and where. English first; the Chinese table has the same keys. */
+export const en: Record<string, string> = {
+  'aiworkspace.jarvis.action': 'Talk to your Agent',
+  'aiworkspace.jarvis.actionHint': 'Talk to your Agent about what you are looking at; what you selected goes with your message',
+  'aiworkspace.jarvis.title': 'Conversation with {{name}}',
+  'aiworkspace.jarvis.yourAgent': 'your Agent',
+  'aiworkspace.jarvis.close': 'Close the conversation',
+  'aiworkspace.jarvis.sessionTitle': 'AI Workspace',
+  'aiworkspace.jarvis.loading': 'Opening the conversation…',
+  'aiworkspace.jarvis.none': 'You have no Agent yet.',
+  'aiworkspace.jarvis.noneHint': 'Create one in Users and Agents, then talk to it here about this workspace.',
+  'aiworkspace.jarvis.failed': 'The conversation with your Agent could not be opened.',
+  'aiworkspace.jarvis.placeholder': 'Message {{name}}…',
+  'aiworkspace.jarvis.empty': 'Ask {{name}} about this workspace. What you selected and where you are go with your message.',
+  'aiworkspace.jarvis.readOnly': 'Nothing can be sent in this conversation.',
+  'aiworkspace.jarvis.context.label': 'With your next message:',
+  'aiworkspace.jarvis.context.hint': 'Your Agent gets the workspace, where you are and what you selected as links it can read',
+  'aiworkspace.jarvis.context.selected': '{{count}} selected',
+  'aiworkspace.jarvis.context.step': 'step {{n}}',
+  'aiworkspace.jarvis.context.dismiss': 'Do not send this',
+}
+
+export const zh: Record<string, string> = {
+  'aiworkspace.jarvis.action': '与 Agent 对话',
+  'aiworkspace.jarvis.actionHint': '就眼前的内容和你的 Agent 对话，选中的内容随消息一起发给它',
+  'aiworkspace.jarvis.title': '与 {{name}} 对话',
+  'aiworkspace.jarvis.yourAgent': '你的 Agent',
+  'aiworkspace.jarvis.close': '关闭对话',
+  'aiworkspace.jarvis.sessionTitle': 'AI 工作区',
+  'aiworkspace.jarvis.loading': '正在打开对话…',
+  'aiworkspace.jarvis.none': '你还没有 Agent。',
+  'aiworkspace.jarvis.noneHint': '先在“用户与 Agent”里创建一个，再回到这里就这个工作区和它对话。',
+  'aiworkspace.jarvis.failed': '无法打开与 Agent 的对话。',
+  'aiworkspace.jarvis.placeholder': '给 {{name}} 发消息…',
+  'aiworkspace.jarvis.empty': '就这个工作区问问 {{name}}。你选中的内容和所在的位置会随消息一起发给它。',
+  'aiworkspace.jarvis.readOnly': '这个对话里不能发消息。',
+  'aiworkspace.jarvis.context.label': '随下一条消息发送：',
+  'aiworkspace.jarvis.context.hint': '你的 Agent 会收到工作区、你所在的位置和选中的内容，都是它能读取的链接',
+  'aiworkspace.jarvis.context.selected': '选中 {{count}} 项',
+  'aiworkspace.jarvis.context.step': '第 {{n}} 步',
+  'aiworkspace.jarvis.context.dismiss': '不发送这些内容',
+}

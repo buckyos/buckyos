@@ -21,7 +21,7 @@ import {
   type AnnotationRead, type ListAnnotationsParams, type DerivedRecord, type FreshnessInfo, type RelationsInfo,
   type Subject, type VersionInfo, type NeedsCodingReason, type WishRollbackResult, type WishRunView, type ShowLockInfo, type ServiceError, type WishClaim, type WishToolAnswer, type WishStageFiles, type HostedExecConfig, type Publication, type Referrer,
   type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtMigration, type ExtPackResult, type LibraryPackage, type TemplateSpec,
-  type PresenceList, type WorkLogFilter, type WorkLogPage,
+  type PresenceList, type WorkLogFilter, type WorkLogPage, type ExternalDataWanted,
 } from './types'
 
 export type SessionStatus =
@@ -929,12 +929,25 @@ export function needsCodingReasonText(reason: NeedsCodingReason): string {
 /** Wish runs refused or failed because of the macro or the place it runs (第一期 §2.1, §2.5; 浏览器优先 Q6), or because
  * of what a stage found (许愿格交互升级 §2.4–§2.5: inputs it could not find, error-level checks that failed), and a rollback
  * of a record that is no longer the current one — by sub-code, or by code where the code is the reason. */
+/** The data a `NEEDS_EXTERNAL_DATA` failure names: the run's blockers (`data.blockers`, `code: external_data`) or its
+ * record's `missing_inputs`. */
+export function externalDataWanted(data: Record<string, unknown> | undefined): { message?: string; wanted?: ExternalDataWanted }[] {
+  const blockers = Array.isArray(data?.blockers) ? (data.blockers as { code?: string; message?: string; wanted?: ExternalDataWanted }[]).filter((b) => b.code === 'external_data') : []
+  const missing = Array.isArray(data?.missing_inputs) ? (data.missing_inputs as { message?: string; wanted?: ExternalDataWanted }[]) : []
+  return blockers.length ? blockers : missing
+}
+
 export function wishRunCodeText(subCode: string | undefined, data: Record<string, unknown> | undefined): string | undefined {
   switch (subCode) {
     case 'NEEDS_INPUT': {
       const missing = Array.isArray(data?.missing_inputs) ? (data.missing_inputs as { label?: string; message?: string }[]) : []
       const names = missing.map((m) => m.label || m.message || '').filter(Boolean)
       return names.length ? aiwsT('aiworkspace.wishcard.error.needsInputNamed', { inputs: aiwsText().list(names) }) : aiwsT('aiworkspace.wishcard.error.needsInput')
+    }
+    case 'NEEDS_EXTERNAL_DATA': {
+      // 余下任务 B2-1: this browser cannot create a data source; an Agent executor can, or the owner prepares it
+      const what = externalDataWanted(data).map((b) => b.wanted?.meaning || b.message || '').filter(Boolean)
+      return aiwsT(what.length ? 'aiworkspace.wishcard.error.needsExternalDataNamed' : 'aiworkspace.wishcard.error.needsExternalData', { data: aiwsText().list(what) })
     }
     case 'CHECKS_FAILED': return aiwsT('aiworkspace.wishcard.error.checksFailed')
     case 'CODING_UNFINISHED': {

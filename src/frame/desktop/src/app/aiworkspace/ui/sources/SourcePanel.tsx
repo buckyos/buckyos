@@ -4,10 +4,32 @@
  * `source.refresh@1`, one Commit of origin `source`; its content stays read-only here. */
 
 import { useCallback, useState } from 'react'
+import { unwrap } from '../../api/client'
 import { describeError } from '../../api/session'
-import type { EntityEnvelope, Publication, Referrer, RunView } from '../../api/types'
+import type { EntityEnvelope, Publication, Referrer, Result, RunView } from '../../api/types'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+
+/** `meta.data` of a sourced entity (AI Native 余下任务 §7.2, B0-2/B0-3): defined but not synced, or the version its last
+ * refresh wrote; the last attempt; whether it is past its freshness. */
+interface DataState {
+  source?: { kind?: string; path?: string; url?: string } | null
+  state?: 'pending' | 'valid'
+  version?: { synced_at?: string; business_time?: string; program?: { name?: string; version?: string } | null; records?: number; truncated?: boolean } | null
+  attempt?: { at: string; status: 'running' | 'succeeded' | 'failed'; error?: { code?: string; sub_code?: string; detail?: string } | null; schema_changes?: { field_id: string }[] } | null
+  expired?: boolean
+  def?: { meaning?: string; primary_key?: string[]; freshness?: { max_age_s: number } | null; limit?: number } | null
+}
+
+const ATTEMPT_TEXT: Record<'running' | 'succeeded' | 'failed', string> = {
+  running: 'aiworkspace.datasource.attempt.running', succeeded: 'aiworkspace.datasource.attempt.succeeded', failed: 'aiworkspace.datasource.attempt.failed',
+}
+
+function ageText(seconds: number): string {
+  if (seconds % 86400 === 0) return `${seconds / 86400} d`
+  if (seconds % 3600 === 0) return `${seconds / 3600} h`
+  return `${Math.round(seconds / 60)} min`
+}
 
 const PUBLISHABLE = new Set(['buckyos.table-source', 'buckyos.richtext', 'buckyos.record', 'buckyos.asset-ref', 'buckyos.dir'])
 const ACTIVE = new Set(['queued', 'running', 'planning', 'validating', 'applying'])
@@ -67,17 +89,31 @@ export function PublicationSection({ entity }: { entity: EntityEnvelope }) {
   )
 }
 
-/** Where a sourced entity comes from, and its refresh. */
+/** Where a sourced entity comes from, what state its data is in, and its refresh. */
 export function SourceSection({ entity }: { entity: EntityEnvelope }) {
-  const { t } = useAiwsText()
+  const { t, dateTime } = useAiwsText()
   const store = useStore()
   const [run, setRun] = useState<RunView | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const version = useVersion(`e:${entity.entity_id}`)
+  const online = store.session.status().kind !== 'offline'
+  const loadData = useCallback(async () => {
+    if (!online) return null
+    const meta = unwrap(await store.session.call<Result<{ data?: DataState }>>('doc.read', { workspace_id: store.session.workspaceId, entity_id: entity.entity_id, as: 'meta' }))
+    return meta.data ?? null
+  }, [store, entity.entity_id, online])
+  const data = useLoad<DataState | null>(loadData, `${version}:${run?.state ?? ''}`).data ?? null
   const source = entity.source
   if (!source) return null
-  const canRefresh = entity.capabilities.includes('update') && store.session.status().kind !== 'offline'
-  const origin = source.kind === 'url' ? source.url ?? '' : `${source.zone ? `${source.zone} · ` : ''}${source.workspace_id ?? ''} / ${source.entity_id ?? ''}`
+  // triggering a sync is anyone's with `run` (B4-1); changing the source is the owner's
+  const canRefresh = entity.capabilities.some((c) => c === 'run' || c === 'update') && online
+  const zone = (source.kind as string) === 'zone'
+  const origin = zone ? `${t('aiworkspace.datasource.zone')} · ${data?.source?.path ?? ''}` : source.kind === 'url' ? source.url ?? '' : `${source.zone ? `${source.zone} · ` : ''}${source.workspace_id ?? ''} / ${source.entity_id ?? ''}`
+  const v = data?.version ?? null
+  const attempt = data?.attempt ?? null
+  const def = data?.def ?? null
+  const changed = attempt?.schema_changes?.map((c) => c.field_id) ?? []
   const refresh = async () => {
     setBusy(true)
     setMessage(null)
@@ -97,9 +133,30 @@ export function SourceSection({ entity }: { entity: EntityEnvelope }) {
     }
   }
   return (
-    <div className="aiws-wish-section" data-testid="aiws-source" data-kind={source.kind} data-mode={source.mode}>
+    <div className="aiws-wish-section" data-testid="aiws-source" data-kind={source.kind} data-mode={source.mode} data-state={data?.state ?? ''} data-expired={data?.expired ? 'true' : 'false'}>
       <div className="aiws-muted">{t(source.mode === 'fixed' ? 'aiworkspace.data.source.fixed' : 'aiworkspace.data.source.live')} · <code>{origin}</code></div>
+      {def?.meaning && <div data-testid="aiws-source-meaning">{t('aiworkspace.datasource.meaning', { text: def.meaning })}</div>}
+      {def && (def.primary_key?.length || def.limit) && (
+        <div className="aiws-muted">{[def.primary_key?.length ? t('aiworkspace.datasource.key', { fields: def.primary_key.join(', ') }) : '', def.limit ? t('aiworkspace.datasource.limit', { count: def.limit }) : ''].filter(Boolean).join(' · ')}</div>
+      )}
+      {data?.state === 'pending' && <div className="aiws-warning" role="status" data-testid="aiws-source-pending">{t('aiworkspace.datasource.pending')}</div>}
+      {v && (
+        <div className="aiws-muted" data-testid="aiws-source-version">
+          {[v.business_time ? t('aiworkspace.datasource.businessTime', { at: dateTime(v.business_time) }) : '',
+            v.synced_at ? t('aiworkspace.datasource.syncedAt', { at: dateTime(v.synced_at) }) : '',
+            v.program?.name ? t('aiworkspace.datasource.program', { name: v.program.name, version: v.program.version ?? '' }) : '',
+            typeof v.records === 'number' ? t('aiworkspace.datasource.records', { count: v.records }) + (v.truncated ? ` (${t('aiworkspace.datasource.truncated')})` : '') : ''].filter(Boolean).join(' · ')}
+        </div>
+      )}
+      {data?.expired && def?.freshness && <div className="aiws-warning" role="status" data-testid="aiws-source-expired">{t('aiworkspace.datasource.expired', { age: ageText(def.freshness.max_age_s) })}</div>}
+      {attempt && (
+        <div className={attempt.status === 'failed' ? 'aiws-error' : 'aiws-muted'} data-testid="aiws-source-attempt" data-status={attempt.status}>
+          {t(ATTEMPT_TEXT[attempt.status], { at: dateTime(attempt.at), error: attempt.error?.detail ?? attempt.error?.sub_code ?? attempt.error?.code ?? '' })}
+        </div>
+      )}
+      {changed.length > 0 && <div className="aiws-warning" role="status">{t('aiworkspace.datasource.schemaChanged', { fields: changed.join(', ') })}</div>}
       <div className="aiws-muted">{t('aiworkspace.data.source.readOnly')}{source.refresh ? ` · ${t('aiworkspace.data.source.schedule', { minutes: Math.round(source.refresh.interval_s / 60) })}` : ''}</div>
+      {!store.session.info().owner && source.kind !== 'session' && <div className="aiws-muted">{t('aiworkspace.datasource.ownerOnly')}</div>}
       <div className="aiws-inline-form">
         <button type="button" data-testid="aiws-source-refresh" disabled={!canRefresh || busy} onClick={() => { void refresh() }}>{t('aiworkspace.data.source.refresh')}</button>
         {run && <span className="aiws-muted" data-testid="aiws-source-run" data-state={run.state}>{STATE_LABEL[run.state] ? t(STATE_LABEL[run.state]) : run.state}</span>}

@@ -203,6 +203,9 @@ fn record_error(e: &Value) -> Value {
             if let Some(c) = b.get("candidates").filter(|c| c.is_array()) {
                 m["candidates"] = c.clone();
             }
+            if let Some(w) = b.get("wanted").filter(|w| w.is_object()) {
+                m["wanted"] = w.clone();
+            }
             m
         })
         .collect();

@@ -1,8 +1,8 @@
-/* Direct inference for a wish macro run in this browser (浏览器优先 Q1, AI Native 第一期 §2.4): `aiws.ai.complete` and
- * `aiws.llm.map` call the model with the user's own AICC session — the service calls no model. The client is xllm's
- * `AiccLlmClient` over the page's kRPC client (or, in development, the OpenAI-format endpoint of the dev override),
- * so a refusal arrives classified (`refused { code }`), never as text to match. `aiws.ai.image` / `ai.video` call
- * AICC the same way (`aiccCall`) and follow its tasks in the task manager (`aiccTask`). */
+/* The model of this browser's wish runs (浏览器优先 Q1, AI Native 第一期 §2.4, 余下任务 A): a stage's model loop and a
+ * macro's `aiws.ai.complete` / `aiws.llm.map` call it with the user's own AICC session — the service calls no model.
+ * The client is xllm's `AiccLlmClient` over the page's kRPC client (or, in development, the OpenAI-format endpoint of
+ * the dev override), so a refusal arrives classified (`refused { code }`), never as text to match. `aiws.ai.image` /
+ * `ai.video` call AICC the same way (`aiccCall`) and follow its tasks in the task manager (`aiccTask`). */
 
 import { buckyos, getActiveSessionToken } from 'buckyos'
 import { AiccLlmClient, LLMComputeException, providerErrorFromRpc, type AiMessage, type LlmClient } from 'buckyos/xllm'
@@ -21,6 +21,11 @@ const REFUSALS: Record<string, string> = {
   resource_not_permitted: 'AI_RESOURCE_NOT_PERMITTED',
   attribution_unavailable: 'AI_ATTRIBUTION_UNAVAILABLE',
   credentials: 'AI_UNAVAILABLE',
+}
+
+/** The run's sub-code of a refusal a model loop stopped on (xllm names the refusal code as the error's kind). */
+export function refusalCode(kind: string | undefined): string | undefined {
+  return kind ? REFUSALS[kind] : undefined
 }
 
 /** An error carrying the run's sub-code when the AI service refused, else as it came. */
@@ -69,7 +74,8 @@ export async function aiccTask(id: string): Promise<unknown> {
   return buckyos.getServiceRpcClient('task-manager').call('get_task', { task_id: id } as never, toAiccRpcCallOptions(await sessionToken()))
 }
 
-function llmClient(): LlmClient {
+/** The model client of this browser: AICC with the user's session, or the dev override's endpoint. */
+export function stageLlm(): LlmClient {
   const dev = devModelEndpoint()
   if (dev) return new OpenAiLlmClient({ baseUrl: dev.baseUrl, apiKey: dev.apiKey ?? 'dev' })
   return new AiccLlmClient(aiccClient() as unknown as ConstructorParameters<typeof AiccLlmClient>[0])
@@ -80,7 +86,7 @@ function textOf(message: AiMessage): string {
 }
 
 export function createInfer(signal?: AbortSignal): Infer {
-  const client = llmClient()
+  const client = stageLlm()
   return async (req) => {
     try {
       const r = await client.infer({

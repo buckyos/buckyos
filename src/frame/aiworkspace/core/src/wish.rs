@@ -363,7 +363,7 @@ fn check_views(v: &Value) -> WsResult<()> {
 /// One result of an output contract (§7.2).
 pub fn check_contract_result(r: &Value) -> WsResult<()> {
     let o = r.as_object().ok_or_else(|| bad("contract result must be an object"))?;
-    only(o, &["name", "type", "title", "key", "target", "views", "description", "fields", "kind", "def"], "contract result")?;
+    only(o, &["name", "type", "title", "key", "target", "views", "description", "fields", "kind", "def", "schema_id"], "contract result")?;
     let name = o.get("name").and_then(Value::as_str).filter(|s| is_result_name(s)).ok_or_else(|| bad("contract result needs a valid name"))?;
     let ty = o.get("type").and_then(Value::as_str).unwrap_or("");
     if !RESULT_TYPES.contains(&ty) {
@@ -397,6 +397,12 @@ pub fn check_contract_result(r: &Value) -> WsResult<()> {
         let ok = ty == "control" && o.get("kind").is_none_or(|k| k == crate::types::COMPOSITE) && d.as_str().and_then(|d| d.split_once('#')).is_some_and(|(a, n)| crate::types::is_author_did(a) && crate::types::is_renderer_id(n));
         if !ok {
             return Err(bad(format!("result {name}: def names a composite control of the Workspace (<author_did>#<name>) on a control result")));
+        }
+    }
+    // a table result of a business schema (B0-4): the standard controls bind it by on_bind
+    if let Some(sid) = o.get("schema_id") {
+        if ty != "table" || !sid.as_str().is_some_and(crate::standard::is_schema_id) {
+            return Err(bad(format!("result {name}: schema_id (<namespace>.<name>@<major>) is only valid on a table result")));
         }
     }
     if ty == "control" && o.contains_key("views") {
@@ -485,9 +491,12 @@ pub fn check_analysis(v: &Value) -> WsResult<()> {
     let blockers = o.get("blockers").and_then(Value::as_array).ok_or_else(|| bad("analysis.blockers must be an array"))?;
     for b in blockers {
         let bo = b.as_object().ok_or_else(|| bad("blocker must be an object"))?;
-        only(bo, &["code", "message", "input_label", "candidates"], "blocker")?;
+        only(bo, &["code", "message", "input_label", "candidates", "wanted"], "blocker")?;
         if !text_ok(bo.get("code"), 64) || !text_ok(bo.get("message"), 2000) || bo.get("input_label").is_some_and(|l| !text_ok(Some(l), 256)) {
             return Err(bad("blocker needs code and message"));
+        }
+        if let Some(w) = bo.get("wanted") {
+            check_wanted(w)?;
         }
         if let Some(c) = bo.get("candidates") {
             if !c.as_array().is_some_and(|a| a.len() <= 20 && a.iter().all(|x| x.as_str().is_some_and(is_valid_id))) {
@@ -508,6 +517,26 @@ pub fn check_analysis(v: &Value) -> WsResult<()> {
             if !r.as_array().is_some_and(|a| a.len() <= 200 && a.iter().all(Value::is_object)) {
                 return Err(bad("analysis.basis.reads must be a list of version cells"));
             }
+        }
+    }
+    Ok(())
+}
+
+/// The blocker code of an analysis that needs data from outside the Workspace (B2-1): a data source to be built.
+pub const EXTERNAL_DATA: &str = "external_data";
+
+/// `wanted { meaning, origin?, freshness?, fields? }` of an `external_data` blocker: the data source the analysis asks
+/// for, in the words of `source.def` (fields: `{ name, type?, description? }`).
+pub fn check_wanted(w: &Value) -> WsResult<()> {
+    let o = w.as_object().ok_or_else(|| bad("blocker.wanted must be an object"))?;
+    only(o, &["meaning", "origin", "freshness", "fields"], "blocker.wanted")?;
+    if !text_ok(o.get("meaning"), 2000) || o.get("origin").is_some_and(|x| !text_ok(Some(x), 2000)) || o.get("freshness").is_some_and(|x| !text_ok(Some(x), 256)) {
+        return Err(bad("blocker.wanted needs meaning (and origin / freshness as short texts)"));
+    }
+    if let Some(f) = o.get("fields") {
+        let ok = f.as_array().is_some_and(|a| a.len() <= MAX_MANIFEST_FIELDS && a.iter().all(|x| x.as_object().is_some_and(|x| text_ok(x.get("name"), 128) && x.keys().all(|k| matches!(k.as_str(), "name" | "type" | "description")) && x.get("type").is_none_or(|t| text_ok(Some(t), 32)) && x.get("description").is_none_or(|t| text_ok(Some(t), 1000)))));
+        if !ok {
+            return Err(bad("blocker.wanted.fields lists { name, type?, description? }"));
         }
     }
     Ok(())

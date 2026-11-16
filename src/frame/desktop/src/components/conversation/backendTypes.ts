@@ -44,6 +44,8 @@ export interface ConversationBackend {
   session(sessionId: string): ConversationSessionInfo | null
   /** Lists an Agent as someone the viewer talks to, under `name` until the directory names it. */
   addAgent(agentDid: DID, name?: string): void
+  /** Lists a person the same way (someone the viewer writes to first, such as a Workspace's owner). */
+  addPerson(did: DID, name?: string): void
   /** The viewer's default conversation with the entity, created when there is none. */
   ensureDefaultSession(entityId: string): Promise<ConversationSessionInfo | null>
   createSession(entityId: string, title: string): Promise<ConversationSessionInfo>

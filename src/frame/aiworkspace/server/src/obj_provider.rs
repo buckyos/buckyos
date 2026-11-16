@@ -3,7 +3,9 @@
 //! and `.../path/<...>`, served at `/kapi/aiworkspace/obj/...`. Reads are the kRPC
 //! methods (`ws.get_info`, `doc.index`, `doc.read`, `doc.resolve`, ...) through the
 //! service's own kRPC entry with the caller's credentials, so sessions, run tokens,
-//! guest tokens and Workspace grants decide exactly as for kRPC.
+//! guest tokens and Workspace grants decide exactly as for kRPC. So do the actions (AI Native 余下任务 C1, R43): a
+//! wish's stages and a Source's refresh are `proc.start`, authorized as that method, with no approval gate of their own
+//! (Q11); their `risk` says what kind of call it is, and whoever calls decides whether to ask first.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -12,7 +14,12 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use buckyos_api::{Captures, KrpcObjectProvider, ObjectKind, ProviderRpc, RpcBinding, AIWORKSPACE_HTTP_PATH};
+use aiworkspace_core::model::TYPE_WISH;
+use aiworkspace_core::wish::STAGES;
+use aiworkspace_store::source::SOURCE_PROGRAM;
+use aiworkspace_store::wish::runs::PROGRAM_XLLM;
+use aiworkspace_store::workspace::random_id;
+use buckyos_api::{ActionRisk, Captures, KrpcObjectProvider, ObjectKind, ProviderRpc, RpcBinding, AIWORKSPACE_HTTP_PATH};
 use buckyos_http_server::{DIDObjectError, DIDObjectHttpServer, HttpServer, StreamInfo};
 use http_body_util::BodyExt;
 use kRPC::RPCErrors;
@@ -197,11 +204,74 @@ fn workspace_rows(page: Value) -> Value {
     json!({ "rows": rows })
 }
 
+/// How a kRPC method is authorized: the methods table's words (an action is judged exactly as its method).
+fn authorization(method: &str) -> String {
+    crate::methods::spec(method).map(|s| s.checks.iter().map(|c| c.describe()).collect::<Vec<_>>().join("; ")).unwrap_or_default()
+}
+
+/// `proc.start` of `program` on the entity of the url: the action's input is the program's `params` (what the url
+/// names wins), its `idempotency_key` the call's (a new run each call without one).
+fn proc_start(program: &'static str, named: impl Fn(&Captures) -> Value + Send + Sync + 'static) -> RpcBinding {
+    RpcBinding::new("proc.start", move |c, input| {
+        let mut params = input.as_object().cloned().unwrap_or_default();
+        let key = params.remove("idempotency_key").and_then(|k| k.as_str().map(str::to_string)).unwrap_or_else(|| random_id("xcall/"));
+        if let Value::Object(m) = named(c) {
+            params.extend(m);
+        }
+        Ok(json!({ "workspace_id": cap(c, "ws"), "program": program, "params": params, "idempotency_key": key }))
+    })
+}
+
+/// The actions of an entity (declared by the entities they apply to, from their `meta`): a wish's three stages, the
+/// refresh of an entity a Source writes.
+fn entity_actions(mut entity: ObjectKind) -> ObjectKind {
+    let auth = authorization("proc.start");
+    let key = json!({ "type": "string", "description": "the same key with the same input answers the same run (a retry starts nothing new)" });
+    let stage_input = json!({ "type": "object", "properties": {
+        "execution": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["local", "hosted"] } },
+                       "description": "who executes it: local (the caller; the answer carries its claim_token), hosted (the owner's configured Agent); the service's default when absent" },
+        "request": { "type": "object", "description": "fixed parameters of the run (today, timezone)" },
+        "location": { "type": "object", "description": "where the task is: cell_id, surface_id, selection, viewport" },
+        "idempotency_key": key } });
+    for &stage in STAGES {
+        let what = match stage {
+            "analyze" => "settles the task contract (inputs, output contract, checks) and writes the analysis into the wish",
+            "code" => "writes the wish's macro and trial-runs it; only the macro is written",
+            _ => "runs the stored macro on current data and writes its results (results a person edited are overwritten)",
+        };
+        let description = format!(
+            "Start the {stage} stage of this wish: `proc.start {{ program: \"{PROGRAM_XLLM}\", params: {{ wish_id, stage: \"{stage}\", …input }} }}`. \
+             When it ends the service {what}, in one Commit, and adds a record to the wish's history (`proc.rollback` takes it back). \
+             Authorized as that kRPC method: {auth}. Answers the run; follow it with `proc.get`."
+        );
+        entity = entity
+            .action(stage, &description, stage_input.clone(), ActionRisk::Write, "write",
+                    proc_start(PROGRAM_XLLM, move |c| json!({ "wish_id": cap(c, "entity"), "stage": stage })))
+            .only_if(|meta| meta["type_id"] == TYPE_WISH);
+    }
+    entity
+        .action(
+            "refresh",
+            &format!(
+                "Refresh this entity from its Source: `proc.start {{ program: \"{SOURCE_PROGRAM}\", params: {{ entity_id }} }}`. The run writes what the \
+                 Source holds now in one Commit; a failure keeps the last valid version. Authorized as that kRPC method: {auth}. Answers the run; \
+                 follow it with `proc.get`."
+            ),
+            json!({ "type": "object", "properties": { "idempotency_key": key } }),
+            ActionRisk::IdempotentWrite,
+            "write",
+            proc_start(SOURCE_PROGRAM, |c| json!({ "entity_id": cap(c, "entity") })),
+        )
+        .only_if(|meta| meta["data"]["write"] == "refresh" && meta["data"]["source"]["kind"] != "session")
+}
+
 pub fn object_kinds() -> Vec<ObjectKind> {
     let object = json!({ "type": "object" });
     let list = || RpcBinding::new("ws.list", |_, _| Ok(json!({}))).map(|_, v| workspace_rows(v));
     let root = ObjectKind::new("", "aiworkspace.root", "AI Workspaces", "The AI Workspaces the caller can see. Rows link to the workspace objects.")
         .summary_property("workspaces", "The visible workspaces", object.clone(), list())
+        .property("controls", "The Block-controls a canvas offers: what each is and when to use it (control.list; one with the self-description \
+            to follow: control.describe { kind })", object.clone(), RpcBinding::new("control.list", |_, _| Ok(json!({}))))
         .index("List the visible workspaces", json!({ "title": "string", "head_seq": "integer" }), list());
     let workspace = ObjectKind::new(
         "{ws}",
@@ -220,7 +290,7 @@ pub fn object_kinds() -> Vec<ObjectKind> {
     )
     .event("head", "A new head was committed")
     .event("locks", "The lock table changed");
-    let entity = ObjectKind::new(
+    let entity = entity_actions(ObjectKind::new(
         "{ws}/entities/{entity}",
         "aiworkspace.entity",
         "AI Workspace entity",
@@ -246,7 +316,7 @@ pub fn object_kinds() -> Vec<ObjectKind> {
                 }
             }
             Ok(json!({ "workspace_id": cap(c, "ws"), "reference": reference }))
-        }));
+        })));
     let by_path = ObjectKind::new(
         "{ws}/path/{*path}",
         "aiworkspace.path",

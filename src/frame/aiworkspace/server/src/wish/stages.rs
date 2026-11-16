@@ -352,6 +352,12 @@ async fn finish_analysis(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st
     if v.analysis["status"] != json!("ready") {
         let blockers = v.analysis["blockers"].clone();
         let what: Vec<String> = blockers.as_array().into_iter().flatten().filter_map(|b| b["message"].as_str().map(str::to_string)).collect();
+        // data from outside the Workspace (B2-1): a data source must be built first — by an Agent, which may write one
+        let external = blockers.as_array().into_iter().flatten().any(|b| b["code"] == json!(aiworkspace_core::wish::EXTERNAL_DATA));
+        if external {
+            return Err(WsError::sub(Code::InvalidOperation, "NEEDS_EXTERNAL_DATA", format!("The task needs data from outside the Workspace: {}; a data source that syncs it must be built first (an Agent can build it), then analyze again", what.join("; ")))
+                .with_data(json!({ "blockers": blockers })));
+        }
         return Err(WsError::sub(Code::InvalidOperation, "NEEDS_INPUT", format!("The analysis could not find its inputs: {}; bind them in the wish's properties and analyze again", what.join("; ")))
             .with_data(json!({ "blockers": blockers })));
     }
@@ -381,6 +387,10 @@ fn input_lines(stage: &Stage) -> String {
         }
         if i.appended {
             l.push_str(" (input appended while coding)");
+        }
+        // a data source not synced yet (B2-2): an empty table here, written to its definition
+        if stage.snap.entity(&i.entity_id).ok().flatten().is_some_and(|e| aiworkspace_core::types::data_pending(&e)) {
+            l.push_str(" (a data source with no data yet: write the macro to its fields; it runs once the source has synced)");
         }
         l.push_str(&format!("; files in context/entities/{}/", i.entity_id));
         out.push(l);

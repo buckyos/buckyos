@@ -286,6 +286,13 @@ pub fn ready(ctx: &dyn ReadCtx, payload: &aiworkspace_core::model::JsonMap, stag
         return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "Documents the task description relies on (definitions, rules) changed after the analysis: analyze again first"));
     }
     if stage == STAGE_RUN {
+        // a data source without valid data is no input to run on (B0-3): the macro may be coded, not run
+        let pending = aiworkspace_core::freshness::pending_inputs(ctx, payload)?;
+        if !pending.is_empty() {
+            let what: Vec<String> = pending.iter().map(|p| p["label"].as_str().or_else(|| p["input"].as_str()).unwrap_or("").to_string()).collect();
+            return Err(WsError::sub(Code::InvalidOperation, "NEEDS_INPUT", format!("The data sources {} have no valid data yet: run the wish after their first sync", what.join(", ")))
+                .with_data(json!({ "missing_inputs": pending })));
+        }
         let reasons = aiworkspace_core::wish::macro_check(ctx, payload)?;
         if !reasons.is_empty() {
             let what: Vec<String> = reasons.iter().map(|r| match r["code"].as_str().unwrap_or("") {
@@ -431,7 +438,8 @@ fn view_for(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, rt: &
 }
 
 /// `proc.start` for `wish.xllm@1` (stages `analyze`, `code`, `run`).
-pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str, params: &Value, idem: &str) -> WsResult<Value> {
+/// `session`: the starter's own token: a hosted run is handed to the owner's Agent in the starter's name.
+pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str, params: &Value, idem: &str, session: &str) -> WsResult<Value> {
     let wish_id = s(params, "wish_id")?.to_string();
     let stage = s(params, "stage")?.to_string();
     if !STAGES.contains(&stage.as_str()) {
@@ -495,11 +503,11 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
     })?;
     let (run_id, replayed, mode, claim, hosted, context) = (run_id.0, run_id.1, run_id.2, run_id.3, run_id.4, run_id.5);
     if !replayed && mode == exec::Mode::Hosted {
-        let (st, w, rid, token, cfg, ctx) = (state.clone(), ws_id.to_string(), run_id.clone(), claim.clone().unwrap_or_default(), hosted.clone().unwrap_or(Value::Null), context.clone());
+        let (st, w, rid, token, cfg, ctx, session) = (state.clone(), ws_id.to_string(), run_id.clone(), claim.clone().unwrap_or_default(), hosted.clone().unwrap_or(Value::Null), context.clone(), session.to_string());
         tokio::runtime::Handle::current().spawn(async move {
             // the claim token goes to the configured Agent only, never into the run's detail (权限需求 S6, R30): when the
             // dispatch fails the run waits for a retry or a cancel
-            let dispatch = exec::dispatch_hosted(&st, &w, &rid, &token, &cfg, &ctx).await;
+            let dispatch = exec::dispatch_hosted(&st, &w, &rid, &token, &cfg, &ctx, &session).await;
             let _ = st.with_ws(&w, |ws| ws.wish_run_set(&rid, None, None, None, None, Some(&json!({ "dispatch": dispatch }))));
         });
     }
@@ -511,6 +519,23 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
         }
     }
     Ok(v)
+}
+
+/// The service's timer (余下任务 D2): a stage whose executor's lease lapsed is released even when nobody reads its run.
+/// Its snapshot holds a read transaction on the workspace database; while it stays open the WAL cannot be reused.
+pub fn release_lapsed(state: &Arc<AppState>) {
+    let open: Vec<(String, String)> = state.wish.hosted.lock().unwrap().iter().map(|(run, st)| (run.clone(), st.workspace_id.clone())).collect();
+    for (run_id, ws_id) in open {
+        let lapsed = state.with_ws(&ws_id, |ws| {
+            let owner = ws.owner()?.unwrap_or_default();
+            let run = ws.wish_run(&Caller::internal(&owner), &run_id)?;
+            exec::expire_if_due(ws, &run)
+        });
+        if matches!(lapsed, Ok(true)) {
+            state.wish.drop_hosted(&run_id);
+            state.wish.unregister(&run_id);
+        }
+    }
 }
 
 /// `proc.get`: state, progress, and — once it ended — its Commit and record.

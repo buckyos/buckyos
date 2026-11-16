@@ -46,6 +46,9 @@ import * as wishcard from '../../src/i18n/aiworkspace/wishcard.ts'
 import * as wishlinks from '../../src/i18n/aiworkspace/wishlinks.ts'
 import * as samplewish from '../../src/i18n/aiworkspace/samplewish.ts'
 import * as runlog from '../../src/i18n/aiworkspace/runlog.ts'
+import * as jarvis from '../../src/i18n/aiworkspace/jarvis.ts'
+import * as sourcereq from '../../src/i18n/aiworkspace/sourcereq.ts'
+import * as datasource from '../../src/i18n/aiworkspace/datasource.ts'
 
 type Table = Record<string, string>
 interface Part { name: string; prefixes: string[]; en: Table; zh: Table }
@@ -81,6 +84,9 @@ const PARTS: Part[] = [
   { name: 'wishlinks', prefixes: ['wishlinks'], ...wishlinks },
   { name: 'samplewish', prefixes: ['samplewish'], ...samplewish },
   { name: 'runlog', prefixes: ['runlog'], ...runlog },
+  { name: 'jarvis', prefixes: ['jarvis'], ...jarvis },
+  { name: 'sourcereq', prefixes: ['sourcereq'], ...sourcereq },
+  { name: 'datasource', prefixes: ['datasource'], ...datasource },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname

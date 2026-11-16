@@ -243,6 +243,29 @@ pub fn analysis_sources_changed(ctx: &dyn ReadCtx, payload: &JsonMap) -> WsResul
     Ok(changed)
 }
 
+fn pending_problem(input: &Value, entity_id: &str) -> Value {
+    let mut v = json!({ "entity_id": entity_id, "reason": "pending" });
+    for k in ["name", "label"] {
+        if let Some(x) = input.get(k).filter(|x| x.is_string()) {
+            v[if k == "name" { "input" } else { "label" }] = x.clone();
+        }
+    }
+    v
+}
+
+/// The declared inputs of a wish that are data sources not yet satisfied (B0-3): `{ input, label?, entity_id, reason:
+/// "pending" }`. The macro can be written to their definition; it cannot run on them.
+pub fn pending_inputs(ctx: &dyn ReadCtx, payload: &JsonMap) -> WsResult<Vec<Value>> {
+    let mut out = Vec::new();
+    for input in payload.get("inputs").and_then(Value::as_array).into_iter().flatten() {
+        let id = input.get("entity_id").and_then(Value::as_str).unwrap_or("");
+        if ctx.entity(id)?.is_some_and(|t| t.alive() && crate::types::data_pending(&t)) {
+            out.push(pending_problem(input, id));
+        }
+    }
+    Ok(out)
+}
+
 fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<Value> {
     let sources_changed = analysis_sources_changed(ctx, &e.payload)?;
     let needs_analysis = crate::wish::needs_analysis(&e.payload) || !sources_changed.is_empty();
@@ -254,6 +277,9 @@ fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult
         let id = input.get("entity_id").and_then(Value::as_str).unwrap_or("");
         match ctx.entity(id)? {
             Some(t) if t.alive() && access.can_read(ctx, &t)? => {
+                if crate::types::data_pending(&t) {
+                    input_problems.push(pending_problem(input, id));
+                }
                 if let Some(cell) = input.get("selector").filter(|s| s["kind"] == json!("table_view")).and_then(|s| s["cell_id"].as_str()) {
                     if !ctx.entity(cell)?.is_some_and(|c| c.alive()) {
                         input_problems.push(json!({ "entity_id": id, "reason": "view_missing", "cell_id": cell }));

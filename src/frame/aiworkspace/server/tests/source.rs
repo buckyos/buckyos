@@ -153,7 +153,7 @@ fn publish_insert_refresh_and_unpublish() {
     // a public URL: CSV and JSON become tables, Markdown a rich text; a failed fetch keeps the last version
     let http = csv_server().await;
     srv.commit(json!([
-        { "op": "entity.create", "entity_id": "csv", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "d", "name": "csv", "payload": { "source": { "kind": "url", "url": format!("{http}/data.csv"), "refresh": { "interval_s": 3600 } } } },
+        { "op": "entity.create", "entity_id": "csv", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "d", "name": "csv", "payload": { "source": { "kind": "url", "url": format!("{http}/data.csv"), "refresh": { "interval_s": 3600 }, "def": { "meaning": "名称与数量", "primary_key": ["f1"] } } } },
         { "op": "entity.create", "entity_id": "rows", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "e", "name": "rows", "payload": { "source": { "kind": "url", "url": format!("{http}/rows.json") } } },
         { "op": "entity.create", "entity_id": "md", "type_id": "buckyos.richtext", "parent_id": "data", "order_key": "f", "name": "md", "payload": { "content": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "empty" }, "content": [] }] }, "source": { "kind": "url", "url": format!("{http}/note.md") } } },
     ])).await;
@@ -169,11 +169,12 @@ fn publish_insert_refresh_and_unpublish() {
     assert_eq!(rows["rows"].as_array().unwrap().len(), 2);
     assert!(rows["rows"].as_array().unwrap().iter().any(|r| r["values"].as_object().unwrap().values().any(|v| v == &json!("a, b"))), "quoted cells: {rows}");
     let rows = json!({ "rows": srv.records("rows").await });
-    assert!(rows["rows"].as_array().unwrap().iter().any(|r| r["record_id"] == "x1"), "{rows}");
+    // identified by the id column (B5-1), not by the row position
+    assert!(rows["rows"].as_array().unwrap().iter().any(|r| r["record_id"] == json!(aiworkspace_core::wish::record_id_for_key(&[json!("x1")])) && r["values"]["id"] == "x1"), "{rows}");
     assert!(srv.rpc("doc.read", json!({ "entity_id": "md" })).await["content"]["content"]["content"][0]["type"] == json!("heading"));
     let info = srv.rpc("ws.get_info", json!({})).await;
     assert!(info["traffic"].as_u64().unwrap() > 0, "{info}");
-    srv.commit(json!([{ "op": "entity.set_keys", "entity_id": "csv", "keys": [{ "key": "source", "value": { "kind": "url", "url": format!("{http}/missing.csv") }, "expect": { "rev": srv.rpc("doc.read", json!({ "entity_id": "csv" })).await["content"]["key_revs"]["source"] } }] }])).await;
+    srv.commit(json!([{ "op": "entity.set_keys", "entity_id": "csv", "keys": [{ "key": "source", "value": { "kind": "url", "url": format!("{http}/missing.csv"), "def": { "meaning": "名称与数量", "primary_key": ["f1"] } }, "expect": { "rev": srv.rpc("doc.read", json!({ "entity_id": "csv" })).await["content"]["key_revs"]["source"] } }] }])).await;
     let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": "u4", "params": { "entity_id": "csv" } })).await;
     let done = srv.wait(run["run_id"].as_str().unwrap()).await;
     assert_eq!((done["state"].as_str(), done["result"]["error"]["code"].as_str()), (Some("failed"), Some("DEPENDENCY_UNAVAILABLE")), "{done}");

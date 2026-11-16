@@ -6,7 +6,11 @@
    "code": "INVALID_SCHEMA",
    "retryable": false,
    "status": "rejected",
-   "meaning": "Input does not match the type's schema."
+   "meaning": "Input does not match the type's schema.",
+   "sub_codes": [
+    "PRIMARY_KEY_REQUIRED",
+    "DUPLICATE_KEY"
+   ]
   },
   {
    "code": "INVALID_OPERATION",
@@ -30,8 +34,10 @@
     "SQL_NOT_ALLOWED",
     "SQL_ERROR",
     "NOT_MATERIALIZED",
+    "DATA_PENDING",
     "NEEDS_ANALYSIS",
     "NEEDS_INPUT",
+    "NEEDS_EXTERNAL_DATA",
     "NEEDS_CODING",
     "PROGRAM_FAILED",
     "MACRO_CODE_CHANGED",

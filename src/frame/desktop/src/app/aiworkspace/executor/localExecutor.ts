@@ -1,23 +1,35 @@
-/* The local executor (内核架构改进 §9, D14, T3-4; 浏览器优先; AI Native 第一期 §2): this browser executes a wish run
- * it started — analyze, code or run. It claims the run, keeps the lease alive, hosts the model loop of a model stage
- * (the stage's prompts and tools come from the service, every tool call goes back to it), runs the macro in a Worker on
- * the snapshot and answers its bridge with host.js (SQL through the service, AI with the user's own session, Zone
- * resources with the page's), and reports when done, with what the stage's model loop used. The service validates,
- * plans and writes the stage's outcome exactly as for any other executor; it calls no model.
+/* The local executor (内核架构改进 §9, D14, T3-4; 浏览器优先; AI Native 第一期 §2, 余下任务 A): this browser executes a
+ * wish run it started — analyze, code or run. It claims the run, keeps the lease alive, runs a model stage on xllm
+ * (`XllmTask.prepareHosted` with the stage's system text and no xllm sections, the stage's tools as the page tools of
+ * the site runtime `aiws.wish`, every call going back to the service), runs the macro in a Worker on the snapshot and
+ * answers its bridge with host.js (SQL through the service, AI with the user's own session, Zone resources with the
+ * page's), and reports when done, with what the stage's model loop used. The service validates, plans and writes the
+ * stage's outcome exactly as for any other executor; it calls no model.
  *
- * The claim token of a run is kept in this browser (localStorage) so a reload can claim it again: a run
- * whose lease lapsed is `interrupted` and resumes as a new attempt. */
+ * The claim token of a run is kept in this browser (localStorage) so a reload can claim it again: a run whose lease
+ * lapsed is `interrupted` and resumes as a new attempt. The service opens a new attempt's stage afresh (余下任务 §7.1
+ * 4: nothing the previous attempt staged is kept), so its loop starts from the beginning; what the earlier attempts
+ * used in this browser is kept beside the claim and reported with the stage. */
 
+import { MemoryRunStore, XllmRun, XllmTask, type AiResponse, type JsonValue, type LlmClient, type LlmInferenceRequest, type RunEvent, type RunOutcome } from 'buckyos/xllm'
 import { createBridgeHost } from '../../../../../aiworkspace/aiws/host.js'
 import type { Json, StagedAsset, WishBudget, WishClaim, WishStageBrief, WishStageFiles, WishToolAnswer } from '../api/types'
 import { aiwsT } from '../i18n'
-import { type ChatClient, type ChatMessage, type ChatTool } from './chat'
-import { aiccCall, aiccTask, classified, type Infer } from './infer'
+import { aiccCall, aiccTask, refusalCode, stageLlm, type Infer } from './infer'
 import { runProgram } from './programHost'
+import { wishRuntime } from './wishRuntime'
 
 const CLAIMS_KEY = 'aiworkspace.claims'
+const USAGE_KEY = 'aiworkspace.claims.usage'
 const DEFAULT_ITERATIONS = 60
 const DEFAULT_TIMEOUT_SECS = 120
+/** The loop's own limits (余下任务 §7.1): the brief has no stage duration, the lease and the iterations bound it. */
+const STAGE_TIMEOUT_SECS = 21600
+const LLM_TIMEOUT_SECS = 900
+const CONTEXT_WINDOW = 200000
+/** A model call that failed for a passing reason (the provider, a timeout) is tried again this many times. */
+const TRANSIENT_RETRIES = 2
+const TRANSIENT_KINDS = ['provider_transient', 'provider_timeout']
 
 /** Claim tokens of the runs this browser started, by run id. */
 export const claims = {
@@ -36,7 +48,42 @@ export const claims = {
     const all = this.all()
     delete all[runId]
     try { window.localStorage.setItem(CLAIMS_KEY, JSON.stringify(all)) } catch { /* nothing to forget */ }
+    claimUsage.set(runId, null)
   },
+}
+
+/** What the earlier attempts of a run used in this browser, beside its claim. */
+const claimUsage = {
+  all(): Record<string, RunUsage> {
+    try { return JSON.parse(window.localStorage.getItem(USAGE_KEY) ?? '{}') as Record<string, RunUsage> } catch { return {} }
+  },
+  get(runId: string): RunUsage | null { return this.all()[runId] ?? null },
+  set(runId: string, usage: RunUsage | null) {
+    const all = this.all()
+    if (usage) all[runId] = usage
+    else delete all[runId]
+    const ids = Object.keys(all)
+    for (const id of ids.slice(0, Math.max(0, ids.length - 50))) delete all[id]
+    try { window.localStorage.setItem(USAGE_KEY, JSON.stringify(all)) } catch { /* a private window: only this attempt is counted */ }
+  },
+}
+
+/** The stage's model, counting what its turns used (every call: the loop's and a compaction's). */
+class CountingLlm implements LlmClient {
+  private readonly inner: LlmClient
+  private readonly onTurn: (response: AiResponse, model: string) => void
+
+  constructor(inner: LlmClient, onTurn: (response: AiResponse, model: string) => void) {
+    this.inner = inner
+    this.onTurn = onTurn
+  }
+
+  async infer(req: LlmInferenceRequest): Promise<AiResponse> {
+    const response = await this.inner.infer(req)
+    const model = (response.extra as { model?: unknown } | undefined)?.model
+    this.onTurn(response, typeof model === 'string' && model ? model : req.model_alias)
+    return response
+  }
 }
 
 /** What a model stage used (`proc.report { usage }`): the model of its last turn (the stage's logical model when the
@@ -88,19 +135,21 @@ export class LocalExecutor {
   private said = ''
   private budget: Partial<WishBudget> = {}
   private manifest: Json = null
-  private readonly usage: Required<Omit<RunUsage, 'model'>> & Pick<RunUsage, 'model'> = { input_tokens: 0, output_tokens: 0, calls: 0 }
+  private usage: Required<Omit<RunUsage, 'model'>> & Pick<RunUsage, 'model'> = { input_tokens: 0, output_tokens: 0, calls: 0 }
+  /** A failure of the loop's infrastructure (a call that never reached the service): it ends the run, not the model. */
+  private fatal: unknown = null
+  private xllm: XllmRun | null = null
   private readonly session: ExecutorSession
-  private readonly chat: ChatClient
   private readonly infer: Infer
   readonly runId: string
   private readonly claimToken: string
 
-  constructor(session: ExecutorSession, chat: ChatClient, infer: Infer, runId: string, claimToken: string) {
+  constructor(session: ExecutorSession, infer: Infer, runId: string, claimToken: string) {
     this.session = session
-    this.chat = chat
     this.infer = infer
     this.runId = runId
     this.claimToken = claimToken
+    this.abort.signal.addEventListener('abort', () => this.xllm?.interrupter().interrupt('stopped by the page'))
   }
 
   /** Runs to the report (`finished`), or stops without one when cancelled, revoked or the page goes away
@@ -124,12 +173,14 @@ export class LocalExecutor {
       if (stage.kind === 'program') await this.program(stage.source ?? '')
       else await this.loop(stage)
       await this.session.procReport(this.runId, this.attempt, { finished: true, ...(this.said ? { summary: this.said } : {}), ...this.used() })
+      claimUsage.set(this.runId, null)
       return 'finished'
     } catch (error) {
       // stopped on purpose (cancel, the page going away) or revoked by the service: nothing to report
       if (this.abort.signal.aborted || codeOf(error) === 'RUN_REVOKED' || (error instanceof DOMException && error.name === 'AbortError')) return 'stopped'
       const detail = error instanceof Error ? error.message : String(error)
       const code = codeOf(error)?.startsWith('AI_') || codeOf(error) === 'SNAPSHOT_TOO_LARGE' ? codeOf(error)! : 'EXECUTOR_FAILED'
+      claimUsage.set(this.runId, null)
       await this.session.procReport(this.runId, this.attempt, { error: { code, detail }, ...this.used() }).catch(() => undefined)
       throw error
     } finally {
@@ -177,32 +228,62 @@ export class LocalExecutor {
     return this.session.procProgram(this.runId, this.attempt, { source, results: out.results, log: out.log, files: out.files })
   }
 
+  /** The stage's model loop on xllm (余下任务 §2.1): the brief's system text as the host's, no xllm sections (the
+   * stage's prompts carry their own rules and reply contract), its user text as the input, its tools as the page tools. */
   private async loop(stage: WishStageBrief) {
-    const tools: ChatTool[] = stage.tools ?? []
-    const messages: ChatMessage[] = [{ role: 'system', text: stage.system ?? '' }, { role: 'user', text: stage.user ?? '' }]
-    const iterations = stage.budget?.iterations ?? stage.iterations ?? DEFAULT_ITERATIONS
-    for (let i = 0; i < iterations; i++) {
-      this.checkAborted()
-      this.phase = 'waiting_model'
-      const turn = await this.chat.complete(stage.model ?? '', messages, tools, this.abort.signal).catch((error: unknown) => { throw classified(error) })
+    const tools = stage.tools ?? []
+    this.usage = { input_tokens: 0, output_tokens: 0, calls: 0, ...(claimUsage.get(this.runId) ?? {}) }
+    const llm = new CountingLlm(stageLlm(), (response, model) => {
       this.usage.calls += 1
-      this.usage.input_tokens += turn.usage.input_tokens ?? 0
-      this.usage.output_tokens += turn.usage.output_tokens ?? 0
-      this.usage.model = turn.usage.model ?? (stage.model || undefined)
-      messages.push({ role: 'assistant', text: turn.text, toolCalls: turn.toolCalls, raw: turn.raw })
-      if (turn.toolCalls.length === 0) { this.said = turn.text.trim().slice(0, 2000); return }
-      for (const call of turn.toolCalls) {
-        this.checkAborted()
-        this.phase = call.name
-        let answer: WishToolAnswer
-        if (call.name === 'run_program') {
-          answer = await this.program(String(call.args.source ?? ''))
-        } else {
-          answer = await this.session.procTool(this.runId, this.attempt, call.name, call.args)
-        }
-        messages.push({ role: 'tool', callId: call.id, text: answer.text ?? '', isError: answer.status === 'error' })
-      }
+      this.usage.input_tokens += response.usage?.input_tokens ?? 0
+      this.usage.output_tokens += response.usage?.output_tokens ?? 0
+      this.usage.model = model
+      claimUsage.set(this.runId, { ...this.usage })
+    })
+    const runtime = wishRuntime(
+      tools,
+      (name, args) => name === 'run_program' ? this.program(String(args.source ?? '')) : this.session.procTool(this.runId, this.attempt, name, args),
+      (error) => { this.fatal ??= error; this.xllm?.interrupter().interrupt('the service could not be reached') },
+    )
+    const observer = { onEvent: (_: string, event: RunEvent) => {
+      if (event.kind === 'llm_started') this.phase = 'waiting_model'
+      else if (event.kind === 'tool_started') this.phase = event.name
+    } }
+    // the run lives as long as this attempt: a new attempt starts its loop again (§7.1 4)
+    const deps = { llm, runtime, store: new MemoryRunStore(), observer, hostPromptSections: 'NONE' as const }
+    const llmContext: JsonValue = {
+      provider: { type: 'buckyos' },
+      ...(stage.model ? { model: stage.model } : {}),
+      loop_model: 'function_call',
+      max_tool_iterations: stage.budget?.iterations ?? stage.iterations ?? DEFAULT_ITERATIONS,
+      timeout: STAGE_TIMEOUT_SECS,
+      llm_timeout: LLM_TIMEOUT_SECS,
+      context_window: CONTEXT_WINDOW,
+      tools: { enabled: true, tools: tools.map((t) => ({ name: t.name })) },
     }
-    throw new Error(aiwsT('aiworkspace.wish.error.iterations', { count: iterations }))
+    this.checkAborted()
+    // the stage's text is the service's, verbatim: never an xllm template
+    const task = await XllmTask.prepareHosted(llmContext, 'aiws.wish', (stage.system ?? '').replaceAll('{{', '\\{{'), deps)
+    this.xllm = await XllmRun.start(task, deps, { input: stage.user ?? '' })
+    if (this.abort.signal.aborted) this.xllm.interrupter().interrupt('stopped by the page')
+    let outcome: RunOutcome = await this.xllm.execute()
+    for (let retry = 0; retry < TRANSIENT_RETRIES && outcome.status === 'paused' && TRANSIENT_KINDS.includes(outcome.record.last_error?.kind ?? '') && !this.fatal; retry++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000 * (retry + 1)))
+      outcome = await this.xllm.execute()
+    }
+    if (this.fatal) throw this.fatal
+    this.checkAborted()
+    const record = outcome.record
+    if (outcome.status === 'completed') {
+      this.said = (record.result?.raw ?? '').trim().slice(0, 2000)
+      return
+    }
+    if (outcome.status === 'interrupted') throw new DOMException('aborted', 'AbortError')
+    if (outcome.status === 'limit_reached') throw new Error(record.limit_reason ?? aiwsT('aiworkspace.wish.error.iterations', { count: record.config.limits.max_tool_iterations }))
+    const failure = record.last_error
+    const error = new Error([failure?.message, failure?.condition].filter(Boolean).join(' — ') || outcome.status) as Error & { code?: string }
+    const refused = refusalCode(failure?.kind)
+    if (refused) error.code = refused
+    throw error
   }
 }

@@ -924,7 +924,7 @@ fn delete_field(p: &mut Planner, op: &Value) -> OpResult {
         return Err(WsError::invalid_op("the title field cannot be deleted"));
     }
     if p.env.schema_checks {
-        crate::standard::check_field_change(&src, fid, None)?;
+        crate::standard::check_field_change(p, &src, fid, None)?;
     }
     for r in field_refs(p, &sid, &f)? {
         p.ov.del_ref(r);
@@ -1219,7 +1219,7 @@ fn migrate_field(p: &mut Planner, op: &Value) -> OpResult {
     }
     let mut target = FieldDef::from_value(&to_json)?;
     if p.env.schema_checks {
-        crate::standard::check_field_change(&src, fid, Some(target.ty))?;
+        crate::standard::check_field_change(p, &src, fid, Some(target.ty))?;
     }
     if !value::migration_supported(from.ty, target.ty) {
         return Err(WsError::sub(Code::InvalidOperation, "MIGRATION_UNSUPPORTED",

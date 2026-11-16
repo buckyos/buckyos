@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://buckyos.ai/schemas/aiworkspace/sync-envelope.schema.json",
+  "title": "aiws.sync.v1",
+  "description": "What a sync program leaves in the owner's home for a Zone source (source.kind zone, README “Sources”). status failed fails the refresh with error and keeps the last valid version; fields absent keeps the table's; business_time, produced_at and program go into the table's data_version. Rows are identified by source.def.primary_key and cut to source.def.limit.",
+  "type": "object",
+  "required": ["format", "status"],
+  "properties": {
+    "format": { "const": "aiws.sync.v1" },
+    "status": { "enum": ["ok", "failed"] },
+    "error": { "type": "string", "description": "Why the program failed (status failed), in its own words." },
+    "program": {
+      "type": "object",
+      "properties": { "name": { "type": "string" }, "version": { "type": "string" } }
+    },
+    "business_time": { "type": "string", "format": "date-time", "description": "When the data itself is from." },
+    "produced_at": { "type": "string", "format": "date-time", "description": "When the program wrote this file." },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field_id", "name", "type"],
+        "properties": { "field_id": { "type": "string" }, "name": { "type": "string" }, "type": { "type": "string" } }
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": { "type": "object", "description": "field_id → value, each value as the field's type takes it" }
+    },
+    "truncated": { "type": "boolean", "description": "The program left rows out on purpose." }
+  },
+  "if": { "properties": { "status": { "const": "ok" } } },
+  "then": { "required": ["records"] }
+}

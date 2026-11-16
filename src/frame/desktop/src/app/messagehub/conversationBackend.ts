@@ -57,6 +57,9 @@ export function createConversationBackend(): ConversationBackend {
     addAgent: (agentDid, name) => {
       if (!store.findEntity(context(), agentDid)) store.addPeer(context(), agentDid, { name, type: 'agent' })
     },
+    addPerson: (did, name) => {
+      if (!store.findEntity(context(), did)) store.addPeer(context(), did, { name, type: 'person' })
+    },
     async ensureDefaultSession(entityId) {
       await ensureReady()
       const session = await store.ensureDefaultSession(context(), entityId)

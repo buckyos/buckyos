@@ -250,6 +250,10 @@ fn table_for(ctx: &dyn ReadCtx, access: &Access, name: &str, names: Names) -> Ws
     if aiworkspace_core::types::is_url_table(&e) {
         return Err(WsError::sub(Code::InvalidOperation, "NOT_MATERIALIZED", format!("{name} is a URL table: its rows are remote (doc.source_query)")));
     }
+    if aiworkspace_core::types::data_pending(&e) {
+        return Err(WsError::sub(Code::InvalidOperation, "DATA_PENDING", format!("{name} is a data source without valid data yet: its first sync has not succeeded"))
+            .with_data(json!({ "entity_id": e.entity_id })));
+    }
     Ok(e)
 }
 

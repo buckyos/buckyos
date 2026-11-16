@@ -69,6 +69,7 @@ export function whenText(at: string, text: AiwsText): string {
 export function failureText(record: WishRecord, text: AiwsText): string {
   const error = record.error
   if (!error) return text.t('aiworkspace.wishcard.record.failedUnknown')
+  if (error.sub_code === 'NEEDS_EXTERNAL_DATA') return runErrorText({ code: error.code, sub_code: error.sub_code, detail: error.detail, missing_inputs: error.missing_inputs }) ?? error.code
   const missing = (error.missing_inputs ?? []).map((m) => m.label || m.message).filter(Boolean)
   if (missing.length) return text.t('aiworkspace.wishcard.error.needsInputNamed', { inputs: text.list(missing) })
   return runErrorText({ code: error.code, sub_code: error.sub_code, detail: error.detail, missing_inputs: error.missing_inputs, last_trial_error: error.last_trial_error, said: error.said }) ?? error.code

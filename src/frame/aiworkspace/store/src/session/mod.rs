@@ -1450,7 +1450,7 @@ impl Workspace {
                 _ => Vec::new(),
             };
             let fetched = Fetched::Table { fields: feeds::fields(&feed), records };
-            ops.extend(self.source_ops(owner, &entity_id, &fetched)?);
+            ops.extend(self.source_ops(owner, &entity_id, &fetched)?.0);
         }
         Ok(ops)
     }

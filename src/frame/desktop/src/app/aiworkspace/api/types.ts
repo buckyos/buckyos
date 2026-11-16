@@ -500,7 +500,7 @@ export interface WishRecord {
   usage?: WishUsage
   /** `last_trial_error` / `said`: a coding that stopped without `finish` (`CODING_UNFINISHED`) — why its last trial run failed, and
    * what the model said when it stopped. */
-  error?: { code: string; sub_code?: string; detail?: string; missing_inputs?: { label?: string; message: string; candidates?: string[] }[]; last_trial_error?: string; said?: string }
+  error?: { code: string; sub_code?: string; detail?: string; missing_inputs?: { label?: string; message: string; candidates?: string[]; wanted?: ExternalDataWanted }[]; last_trial_error?: string; said?: string }
   /** The important ones first: failed warning checks, overwritten manual edits, deleted rows and fields, the model's warnings.
    * The service's own are coded (`{ code, …params }`, said in the reader's language); the model's are its text. */
   warnings: WishRecordWarning[]
@@ -624,6 +624,9 @@ export interface WishBudget {
   video_max_calls: number
   media_timeout_secs: number
 }
+/** What an analysis said a task needs from outside the workspace (`NEEDS_EXTERNAL_DATA`, 余下任务 B2-1). */
+export interface ExternalDataWanted { meaning?: string; origin?: string; freshness?: string | { max_age_s?: number }; fields?: Array<string | { name?: string; field_id?: string }> }
+
 export interface WishStageBrief {
   kind: 'model' | 'program'
   stage: WishStage

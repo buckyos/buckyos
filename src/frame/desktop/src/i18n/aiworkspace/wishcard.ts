@@ -158,6 +158,9 @@ export const en: Record<string, string> = {
 
   'aiworkspace.wishcard.error.needsInput': 'An input could not be found',
   'aiworkspace.wishcard.error.needsInputNamed': 'Inputs not found: {{inputs}}',
+  'aiworkspace.wishcard.requestSource': 'Prepare this data source…',
+  'aiworkspace.wishcard.error.needsExternalData': 'The task needs data from outside the workspace. A browser cannot create a data source: run the analysis with an Agent (hosted execution in the properties), or ask the workspace owner for the data source',
+  'aiworkspace.wishcard.error.needsExternalDataNamed': 'The task needs data from outside the workspace: {{data}}. A browser cannot create a data source: run the analysis with an Agent (hosted execution in the properties), or ask the workspace owner for the data source',
   'aiworkspace.wishcard.error.checksFailed': 'An error-level acceptance check failed; nothing was written',
   'aiworkspace.wishcard.error.codingUnfinished': 'The model stopped before it finished the macro (it did not call finish).',
   'aiworkspace.wishcard.error.lastTrial': 'Its last trial run failed: {{error}}',
@@ -320,6 +323,9 @@ export const zh: Record<string, string> = {
 
   'aiworkspace.wishcard.error.needsInput': '找不到输入',
   'aiworkspace.wishcard.error.needsInputNamed': '找不到输入：{{inputs}}',
+  'aiworkspace.wishcard.requestSource': '准备这个数据源…',
+  'aiworkspace.wishcard.error.needsExternalData': '这个任务需要工作区以外的数据。浏览器里不能新建数据源：请改用 Agent 执行分析（属性里选托管执行），或请工作区 owner 准备这个数据源',
+  'aiworkspace.wishcard.error.needsExternalDataNamed': '这个任务需要工作区以外的数据：{{data}}。浏览器里不能新建数据源：请改用 Agent 执行分析（属性里选托管执行），或请工作区 owner 准备这个数据源',
   'aiworkspace.wishcard.error.checksFailed': '有错误级的验收检查没有通过，什么都没有写入',
   'aiworkspace.wishcard.error.codingUnfinished': '模型没有写完宏就停下了（没有调用 finish）。',
   'aiworkspace.wishcard.error.lastTrial': '最后一次试运行失败：{{error}}',

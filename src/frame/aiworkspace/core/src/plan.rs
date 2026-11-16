@@ -1717,6 +1717,9 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         }
         Some(_) => return Err(WsError::invalid_op("name must be a string")),
     };
+    if crate::types::SOURCE_TYPES.contains(&type_id) && payload.get("source").is_some_and(|s| !s.is_null()) {
+        crate::types::require_source_owner(p, id)?;
+    }
     let placement = connector_placement(op, PlaceRules::new(p, parent_id, type_id, &payload)?)?;
     let seq = p.seq();
     let mut row = EntityRow {
@@ -2038,8 +2041,11 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         return Err(WsError::new(code, format!("content of {id} cannot be edited ({d})")));
     }
     require_session_writer(p, &e)?;
-    if e.type_id == TYPE_RICHTEXT && get_array(op, "keys")?.iter().any(|k| k.get("key").and_then(Value::as_str) != Some("source")) {
+    if e.type_id == TYPE_RICHTEXT && get_array(op, "keys")?.iter().any(|k| !matches!(k.get("key").and_then(Value::as_str), Some("source" | "data_version"))) {
         return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
+    }
+    if crate::types::SOURCE_TYPES.contains(&e.type_id.as_str()) && get_array(op, "keys")?.iter().any(|k| k.get("key").and_then(Value::as_str) == Some("source")) {
+        crate::types::require_source_owner(p, id)?;
     }
     // a sourced entity keeps its content for its refresh; its Source and presentation keys stay editable
     if crate::types::has_source(&e) && get_array(op, "keys")?.iter().any(|k| k.get("key").and_then(Value::as_str).is_some_and(|k| !crate::types::SOURCE_FREE_KEYS.contains(&k))) {

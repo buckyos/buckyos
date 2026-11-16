@@ -80,6 +80,9 @@ impl Workspace {
                             m["availability"] = json!(self.objects.availability(obj).as_str());
                         }
                     }
+                    if m["data"].get("state").is_some() {
+                        self.data_source_state(&e, &mut m["data"])?;
+                    }
                     m
                 } else {
                     aiworkspace_core::body::read_body(&ctx, &access, &e, params, Some(&loader))?
@@ -89,6 +92,22 @@ impl Workspace {
             }
             other => Err(WsError::invalid_op(format!("as must be content, meta or body, not {other}"))),
         }
+    }
+
+    /// What only this deployment knows of a data source (B0-2): its last refresh attempt, and whether its data is older
+    /// than `def.freshness.max_age_s` — the business time, else the last successful sync.
+    fn data_source_state(&self, e: &EntityRow, data: &mut Value) -> WsResult<()> {
+        data["attempt"] = self.source_attempt(&e.entity_id)?.unwrap_or(Value::Null);
+        let version = e.payload.get("data_version");
+        let ms = |v: Option<&Value>| v.and_then(Value::as_str).and_then(aiworkspace_core::value::parse_datetime_ms);
+        let checked = crate::source::refreshed_at(self, &e.entity_id)?.and_then(|s| aiworkspace_core::value::parse_datetime_ms(&s));
+        let at = ms(version.and_then(|v| v.get("business_time"))).or_else(|| ms(version.and_then(|v| v.get("synced_at"))).max(checked));
+        let max_age = aiworkspace_core::types::source_def(e).and_then(|d| d["freshness"]["max_age_s"].as_i64());
+        data["expired"] = json!(match (at, max_age) {
+            (Some(at), Some(max)) => (self.clock)() - at > max * 1000,
+            _ => false,
+        });
+        Ok(())
     }
 
     /// The entity a request names: `entity_id`, or `path` (the one path syntax, every step readable).
@@ -460,6 +479,9 @@ impl Workspace {
         let source = read::readable_entity(&ctx, &access, source_id)?;
         if !source.alive() || source.type_id != TYPE_TABLE || types::is_url_table(&source) {
             return Err(WsError::invalid_op(format!("{source_id} is not a local table")));
+        }
+        if types::data_pending(&source) {
+            return Err(WsError::sub(Code::InvalidOperation, "DATA_PENDING", format!("{source_id} is a data source without valid data yet")));
         }
         let page = aiworkspace_core::filter::run_query(&ctx, &source, &QuerySpec { limit: limit.max(1), best_effort: true, ..Default::default() })?;
         Ok(page["rows"].as_array().cloned().unwrap_or_default())

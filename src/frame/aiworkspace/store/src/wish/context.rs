@@ -471,6 +471,15 @@ impl Stage {
             let f = aiworkspace_core::freshness::entity_freshness(&ctx, &self.snap.access, &e.entity_id).unwrap_or(Value::Null);
             p["generated"] = json!({ "wish_id": d.get("wish_id"), "at": d.get("at"), "status": f["status"], "model_judgment": d.get("model_judgment") });
         }
+        if let Some(sid) = &e.schema_id {
+            p["schema_id"] = json!(sid);
+        }
+        // a data source: what it is and whether it has data yet (B2-2: a pending one can be bound and coded for)
+        if let Some(def) = aiworkspace_core::types::source_def(e) {
+            p["data_source"] = json!({ "state": if aiworkspace_core::types::data_pending(e) { "pending" } else { "valid" }, "meaning": def.get("meaning"), "primary_key": def.get("primary_key") });
+        } else if aiworkspace_core::types::data_pending(e) {
+            p["data_source"] = json!({ "state": "pending" });
+        }
         Ok(p)
     }
 
@@ -1129,6 +1138,15 @@ impl Stage {
         if let Some(g) = p.get("generated").filter(|g| !g.is_null()) {
             let w = g["wish_id"].as_str().map(|w| self.handle_of(w)).unwrap_or_default();
             l.push_str(&format!(" · result of wish {w} ({})", g["status"].as_str().unwrap_or("")));
+        }
+        if let Some(sid) = p["schema_id"].as_str() {
+            l.push_str(&format!(" · schema_id {sid}"));
+        }
+        if let Some(d) = p.get("data_source").filter(|d| d.is_object()) {
+            l.push_str(&format!(" · data_source.state: {}", d["state"].as_str().unwrap_or("")));
+            if let Some(m) = d["meaning"].as_str() {
+                l.push_str(&format!(" ({})", m.chars().take(200).collect::<String>()));
+            }
         }
         l.push('\n');
         if e.type_id == TYPE_TABLE {

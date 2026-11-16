@@ -807,14 +807,23 @@ test('内核架构改进 T3-4: the local executor — this browser hosts the mod
   expect(((runs[0].context as { executor: { kind: string } }).executor).kind).toBe('browser')
   expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.program.api_version).toBe(3)
   // the executor dies with the page while the model is slow: the run's lease lapses (interrupted, AIWS_RUN_LEASE_MS);
-  // this browser still holds the claim and resumes the run as a new attempt
+  // this browser still holds the claim and resumes the run as a new attempt. The model answers the attempt's first turn
+  // only: what it used is kept beside the claim and counted with the second attempt, which starts its loop again
+  // (余下任务 §7.1 4: the service opens the new attempt's stage afresh)
   const before = (await api.history(ALICE, ws.workspace_id, WISH)).code[0].id
-  await page.route(`${llm}/chat/completions`, () => { /* the model never answers */ })
+  let calls = 0
+  let second = 0
+  await page.route(`${llm}/chat/completions`, (route) => {
+    calls += 1
+    if (calls === 1) return route.continue()
+    if (calls > 2) { second += 1; return route.continue() }
+    /* the model never answers the second turn */
+  })
   await card.getByTestId('aiws-wish-tab-analysis').click()
   await card.getByTestId('aiws-wish-next').click()
   await expect(card).toHaveAttribute('data-running', 'code')
   await expect.poll(async () => (await api.runs(ALICE, ws.workspace_id, WISH))[0].state).toBe('running')
-  await page.unroute(`${llm}/chat/completions`)
+  await expect.poll(() => calls).toBe(2)
   await openCanvas(page, ALICE, ws.workspace_id)
   // the lease lapses without the browser's heartbeats; the service notices on the next read
   await expect.poll(async () => { const latest = (await api.runs(ALICE, ws.workspace_id, WISH))[0]; await api.rpc(ALICE, 'proc.get', { workspace_id: ws.workspace_id, run_id: latest.run_id }); return latest.state }, { timeout: 30_000 }).toBe('interrupted')
@@ -825,4 +834,47 @@ test('内核架构改进 T3-4: the local executor — this browser hosts the mod
   const resumed = await wishStageEnded(page, api, ALICE, ws.workspace_id, WISH, 'code', before)
   expect(resumed.ok).toBe(true)
   expect(((await api.runs(ALICE, ws.workspace_id, WISH))[0].execution as { attempt: number }).attempt).toBe(2)
+  expect(second).toBeGreaterThan(1)
+  expect(resumed.usage.calls).toBe(second + 1)
+  await page.unroute(`${llm}/chat/completions`)
+})
+
+test('余下任务 B2-1: an analysis that needs data from outside fails NEEDS_EXTERNAL_DATA; the card says a browser cannot create a data source and opens the request', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `external ${Date.now()}`)
+  await setPrompt(api, ws, '按收盘价算每只股票的周涨跌 #external')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  await card.getByTestId('aiws-wish-next').click()
+  const failed = await wishStageEnded(page, api, ALICE, ws.workspace_id, WISH, 'analyze', undefined)
+  expect(failed, JSON.stringify(failed.error)).toMatchObject({ ok: false, error: { sub_code: 'NEEDS_EXTERNAL_DATA' } })
+  expect(failed.error.missing_inputs[0].wanted.meaning).toBe('Daily closing prices of the tracked stocks')
+  await expect(card.getByTestId('aiws-wish-status')).toContainText('工作区以外的数据：Daily closing prices of the tracked stocks')
+  await expect(card.getByTestId('aiws-wish-status')).toContainText('浏览器里不能新建数据源')
+  // alice owns the workspace: the request goes to her Agent
+  await card.getByTestId('aiws-wish-request-source').click()
+  await expect(page.getByTestId('aiws-source-request-meaning')).toHaveValue('Daily closing prices of the tracked stocks')
+  await expect(page.getByTestId('aiws-source-request-to')).toHaveAttribute('data-to', 'agent')
+})
+
+test('余下任务 A5: the stage loop runs on xllm — the iterations used up fail the stage as EXECUTOR_FAILED naming the limit; no analysis is written', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `iterations ${Date.now()}`)
+  // the deployment's limit comes with the claim: one tool round for this test's runs
+  await page.route('**/kapi/aiworkspace', async (route) => {
+    const body = route.request().postDataJSON() as { method?: string } | null
+    if (body?.method !== 'proc.claim') return route.fallback()
+    const response = await route.fetch()
+    const json = await response.json()
+    const stage = json?.result?.stage
+    if (stage) { stage.iterations = 1; if (stage.budget) stage.budget.iterations = 1 }
+    return route.fulfill({ response, json })
+  })
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  await card.getByTestId('aiws-wish-next').click()
+  const failed = await wishStageEnded(page, api, ALICE, ws.workspace_id, WISH, 'analyze', undefined)
+  expect(failed.ok).toBe(false)
+  expect(JSON.stringify(failed.error)).toContain('EXECUTOR_FAILED')
+  expect(JSON.stringify(failed.error)).toContain('tool iteration limit (1) reached')
+  expect((await api.read(ALICE, ws.workspace_id, WISH)).content.payload.analysis ?? null).toBeNull()
+  await expect(card.getByTestId('aiws-wish-status')).toHaveAttribute('data-kind', 'failed')
 })

@@ -360,7 +360,8 @@ impl Workspace {
         let payload = &wish.payload;
         // the wish as it was when the run started: any change since means the candidate answers an old question
         let basis = cand.get("basis").and_then(|b| b.get("key_revs")).cloned().unwrap_or(json!({}));
-        let mut preconditions: Vec<Value> = super::readset::preconditions(cand["read_set"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+        let guarded = super::readset::guarded(&p.ctx, cand["read_set"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+        let mut preconditions: Vec<Value> = super::readset::preconditions(&guarded);
         for k in GUARDED_KEYS {
             let at_start = basis.get(*k).and_then(Value::as_u64).unwrap_or(0);
             preconditions.push(json!({ "target": { "entity_id": wish_id, "selector": { "kind": "doc_key", "key": k } }, "expect": { "rev": at_start } }));
@@ -439,7 +440,15 @@ impl Workspace {
         }
 
         // ---- results
-        let results: Vec<Value> = cand["results"].as_array().cloned().unwrap_or_default();
+        let mut results: Vec<Value> = cand["results"].as_array().cloned().unwrap_or_default();
+        // a table result of a business schema (B0-4): its contract names the schema, its table carries it
+        let schemas: BTreeMap<String, String> = payload.get("analysis").and_then(|a| a["output_contract"]["results"].as_array()).into_iter().flatten()
+            .filter_map(|r| Some((r["name"].as_str()?.to_string(), r["schema_id"].as_str()?.to_string()))).collect();
+        for r in results.iter_mut().filter(|r| r["type"] == json!("table")) {
+            if let Some(sid) = r["name"].as_str().and_then(|n| schemas.get(n)) {
+                r["schema_id"] = json!(sid);
+            }
+        }
         // pass 1: identities (links between results need them before content is built)
         let mut items = Vec::new();
         for r in &results {
@@ -1047,7 +1056,7 @@ fn needed_scale(rows: &[&Map<String, Value>], name: &str) -> u8 {
     rows.iter().filter_map(|r| r.get(name)).map(digits).max().unwrap_or(0).min(6) as u8
 }
 
-fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRow], prefix: &str, taken_ids: &BTreeSet<String>) -> Vec<FieldPlan> {
+fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRow], prefix: &str, taken_ids: &BTreeSet<String>, schema_ids: &[String]) -> Vec<FieldPlan> {
     let mut ids: BTreeSet<String> = taken_ids.clone();
     let mut n = existing.len() + 1;
     let mut out = Vec::new();
@@ -1057,6 +1066,7 @@ fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRo
         let cur = existing.iter().find(|x| x.def.name == name && x.def.ty == ty);
         let field_id = match cur {
             Some(c) => c.field_id.clone(),
+            None if schema_ids.contains(&name) && ids.insert(name.clone()) => name.clone(),
             None => loop {
                 let id = format!("{prefix}{n}");
                 n += 1;
@@ -1154,7 +1164,25 @@ fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value, row
         Some(e) => p.ctx.fields(&e.entity_id)?.into_iter().map(|f| f.field_id).collect(),
         None => BTreeSet::new(),
     };
-    let fps = field_plans(&spec, &rows, &existing_fields, "f", &all_ids);
+    // the fields of its schema: a result field named like one of them takes its id
+    let schema = it.r()["schema_id"].as_str().map(str::to_string);
+    let schema_ids: Vec<String> = match schema.as_deref() {
+        None => Vec::new(),
+        Some(sid) if aiworkspace_core::standard::is_standard_schema(sid) => aiworkspace_core::standard::schema_field_ids(sid),
+        Some(sid) => match aiworkspace_core::standard::user_schema_fields(&p.ctx, sid)? {
+            Some((_, f)) => f.into_iter().map(|(id, _)| id).collect(),
+            None => {
+                p.problems.push(format!("Result \"{}\" names schema {sid}, which no table of this Workspace defines (a table with that schema_id and a source.def)", it.name()));
+                Vec::new()
+            }
+        },
+    };
+    if let (Some(e), Some(sid)) = (it.existing(), schema.as_deref()) {
+        if e.schema_id.as_deref() != Some(sid) {
+            p.problems.push(format!("Result \"{}\" now names schema {sid}, but its table was made without it: use a different result name, or switch to \"Create a new set each time\"", it.name()));
+        }
+    }
+    let fps = field_plans(&spec, &rows, &existing_fields, "f", &all_ids, &schema_ids);
     // record ids from the logical key (or the row position when the result has no key)
     let mut desired: Vec<(String, Map<String, Value>)> = Vec::new();
     let mut seen = BTreeSet::new();
@@ -1187,8 +1215,16 @@ fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value, row
             if let Some(kf) = key_field {
                 payload["title_field_id"] = json!(kf.field_id);
             }
+            // a standard table's title field is `title`
+            if schema.as_deref().is_some_and(aiworkspace_core::standard::is_standard_schema) && fps.iter().any(|f| f.field_id == "title") {
+                payload["title_field_id"] = json!("title");
+            }
             let k = p.next_key(parent)?;
-            p.ops.push(json!({ "op": "entity.create", "entity_id": sid, "type_id": TYPE_TABLE, "parent_id": parent, "order_key": k, "name": it.name(), "payload": payload }));
+            let mut create = json!({ "op": "entity.create", "entity_id": sid, "type_id": TYPE_TABLE, "parent_id": parent, "order_key": k, "name": it.name(), "payload": payload });
+            if let Some(s) = &schema {
+                create["schema_id"] = json!(s);
+            }
+            p.ops.push(create);
             for chunk in desired.chunks(CHUNK) {
                 p.ops.push(json!({ "op": "table.insert_records", "source_id": sid, "records": chunk.iter().map(|(id, v)| json!({ "record_id": id, "values": v })).collect::<Vec<_>>() }));
             }
@@ -1339,7 +1375,7 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, binding
     // fields: the wish's own by id; a new one must not collide with a person's field name
     let own_rows: Vec<FieldRow> = fields.iter().filter(|f| owned.values().any(|id| *id == f.field_id)).cloned().collect();
     let prefix = format!("w{}", short_hash(&format!("{wish_id}/{}", it.name()), 6));
-    let mut fps = field_plans(&spec, &rows, &own_rows, &format!("{prefix}-"), &all_ids);
+    let mut fps = field_plans(&spec, &rows, &own_rows, &format!("{prefix}-"), &all_ids, &[]);
     let mut ops = Vec::new();
     let mut changes = Vec::new();
     for f in &mut fps {
@@ -1892,9 +1928,9 @@ mod tests {
         let b = json!({ "price": { "amount": 2, "currency": "EUR" } });
         let c = json!({ "price": 3 });
         let rows: Vec<&Map<String, Value>> = vec![a.as_object().unwrap(), b.as_object().unwrap(), c.as_object().unwrap()];
-        let fps = field_plans(&[json!({ "name": "price", "type": "currency" })], &rows, &[], "f", &BTreeSet::new());
+        let fps = field_plans(&[json!({ "name": "price", "type": "currency" })], &rows, &[], "f", &BTreeSet::new(), &[]);
         assert_eq!(fps[0].def, json!({ "field_id": "f1", "name": "price", "type": "currency", "currency": "EUR" }));
-        let fps = field_plans(&[json!({ "name": "price", "type": "currency", "currency": "gbp", "scale": 0 })], &rows, &[], "f", &BTreeSet::new());
+        let fps = field_plans(&[json!({ "name": "price", "type": "currency", "currency": "gbp", "scale": 0 })], &rows, &[], "f", &BTreeSet::new(), &[]);
         assert_eq!(fps[0].def, json!({ "field_id": "f1", "name": "price", "type": "currency", "scale": 0, "currency": "GBP" }));
         aiworkspace_core::value::FieldDef::from_value(&fps[0].def).expect("a valid field definition");
     }

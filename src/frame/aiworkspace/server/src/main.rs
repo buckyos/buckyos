@@ -51,6 +51,7 @@ fn main() {
         .arg(Arg::new("wish-config").long("wish-config").help("Wish runs (standalone): JSON { analyze_model, execute_model, map_model, complete_model, program_timeout_secs, default_execution, … } (the stage budget executors get)"))
         .arg(Arg::new("public-base").long("public-base").help("Standalone: the origin publications are linked at, with {workspace_id} substituted, e.g. http://aiws-{workspace_id}.localhost:4120"))
         .arg(Arg::new("web").long("web").help("Standalone: the Desktop build directory (holds aiws.html) the AI Workspace page is served from on a Workspace's own host"))
+        .arg(Arg::new("zone-root").long("zone-root").help("Standalone: the folder holding home/<user>/… that Zone sources (source.kind zone) read, as $BUCKYOS_ROOT/data on a node"))
         .arg(Arg::new("log-level").long("log-level").default_value("info"))
         .get_matches();
     // deep futures need more than the default stack
@@ -83,7 +84,8 @@ fn main() {
             }
         }
         let nfs = matches.get_one::<String>("nfs-server").map(|origin| (origin.trim_end_matches('/').to_string(), PathBuf::from(matches.get_one::<String>("named-store-config").unwrap())));
-        let limits = Limits { public_base: matches.get_one::<String>("public-base").cloned(), web_dir: aiworkspace_server::pages::locate_web_dir(matches.get_one::<String>("web").map(String::as_str)), ..Limits::default() };
+        let limits = Limits { public_base: matches.get_one::<String>("public-base").cloned(), web_dir: aiworkspace_server::pages::locate_web_dir(matches.get_one::<String>("web").map(String::as_str)),
+                              zone_root: matches.get_one::<String>("zone-root").map(PathBuf::from), ..Limits::default() };
         rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), limits, fixtures, None, wish, Objects::Standalone(nfs)));
     } else {
         init_logging("aiworkspace", true);
@@ -153,6 +155,7 @@ async fn buckyos_service_main(fixtures: bool) {
         traffic_quota_bytes: settings.traffic_quota_bytes,
         public_base,
         web_dir,
+        zone_root: Some(buckyos_kit::get_buckyos_root_dir().join("data")),
         ..Limits::default()
     };
     // wake-up hints over kevent: only "there is a new head", never content or entity ids

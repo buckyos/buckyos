@@ -58,7 +58,7 @@
 
 ### 任务执行与 AI（[08](08-任务执行与AI.md)）
 
-- **许愿格默认仍在服务内执行**：`default_execution` 默认是 `service`，`allow_service_execution` 默认为 true（[buckyos-api aiworkspace_client.rs](../../../src/kernel/buckyos-api/src/aiworkspace_client.rs)）。托管执行已经能把 run 派给 Owner 的 Agent（[server/src/wish/exec.rs](../../../src/frame/aiworkspace/server/src/wish/exec.rs) `dispatch_hosted`），但服务内执行要等 hosted DV（T3-9）通过后才关闭。
+- **许愿格执行器只有浏览器与托管两种**：服务不再调用模型、不再运行程序（2026-11-12 下线服务内执行，`default_execution` 默认 `local`，[buckyos-api aiworkspace_client.rs](../../../src/kernel/buckyos-api/src/aiworkspace_client.rs)）。浏览器执行器的模型循环用 xllm TS，在页面主线程运行，没有循环 Worker；托管执行把 run 派给 Owner 的 Agent（[server/src/wish/exec.rs](../../../src/frame/aiworkspace/server/src/wish/exec.rs) `dispatch_hosted`）。新 attempt 从头跑阶段，不接着上一次的模型循环。
 - **心流未实现**：没有可选的心流工作模式和建议区。
 
 ### 扩展、导入与模板（[09](09-扩展包导入与模板.md)）
