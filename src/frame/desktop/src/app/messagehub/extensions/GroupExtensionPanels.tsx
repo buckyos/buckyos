@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useState, type ErrorInfo, type ReactNode
 import { useMediaQuery } from '@mui/material'
 import { ChevronDown, ChevronRight, LayoutPanelLeft, ShieldAlert, X } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
-import { hubButtonClass } from '../SessionDialogs'
+import { hubButtonClass } from '../../../components/conversation/DialogFocus'
 import { panelOriginTrusted, panelSrc, type GroupPanelRef, type PanelContext } from './model'
 
 /** A panel that has not fired `load` after this long is shown as unavailable. */

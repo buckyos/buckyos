@@ -2,7 +2,7 @@ import type { AgentPanelSource } from '../agentpanel/source'
 import { parseUiConversation, type AgentSummary, type Delivery, type UiGeneration, type UiSessionView } from '../agentpanel/model'
 import { getTaskWatchSource } from '../../../components/conversation/tasks'
 import { flattenWork, isWorkFinished, workChildren, type WorkCard, type WorkNode } from '../../../components/conversation/worksessions/model'
-import { MOCK_AGENT_TASKS, MOCK_SELF_DID } from './data'
+import { MOCK_AGENT_TASKS, MOCK_SELF_DID } from '../../../components/conversation/mock/ids'
 import { MockTaskSource } from '../../../components/conversation/mock/tasks'
 import { MOCK_WORK_UI_SESSION, mockSessionCards } from '../../../components/conversation/mock/worksessions'
 

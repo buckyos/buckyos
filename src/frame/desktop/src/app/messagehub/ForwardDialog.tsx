@@ -5,7 +5,7 @@ import { messageSummaryText } from '../../components/conversation/history/relati
 import { groupErrorText } from '../../components/conversation/model/groupNotice'
 import { HubAvatar } from './HubAvatar'
 import type { MessageObject } from '../../components/conversation/model/msgobj'
-import { DialogFocus, hubButtonClass, hubInputClass } from './SessionDialogs'
+import { DialogFocus, hubButtonClass, hubInputClass } from '../../components/conversation/DialogFocus'
 import { useMessageHubStore } from './store'
 import type { Entity, MessageHubContext } from './types'
 

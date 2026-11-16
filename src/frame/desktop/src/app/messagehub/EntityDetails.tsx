@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMessageHubStore } from './store'
-import { hubButtonClass, hubInputClass } from './SessionDialogs'
+import { hubButtonClass, hubInputClass } from '../../components/conversation/DialogFocus'
 import { RelationSection } from './RelationPanel'
 import { GroupPanel } from './GroupPanel'
 import {

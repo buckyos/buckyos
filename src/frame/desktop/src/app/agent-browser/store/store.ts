@@ -9,7 +9,7 @@ import { getBrowserBackend, type BrowserAgent, type BrowserBackend } from '../ap
 import { ScreenChannel, type ChannelFailure, type ChannelStatus } from '../api/channel'
 import { browserErrorCode, DEFAULT_GROUP } from '../api/types'
 import type { BrowserGroup, BrowserStatus, RequestResult, ScreenFocus, ScreenFrame, ScreenInput, ScreenRequest, ScreenState, ScreenUpstream } from '../api/types'
-import { subscribeMarks } from '../conversation/marks'
+import { subscribeSources } from '../../../components/conversation/agentSessions'
 import { subscribeDefaultBinding } from '../conversation/session'
 import { agentBrowserExtensions, type ThingContext } from '../extensions'
 import type { AgentBrowserLaunch, BrowserMode } from '../launch'
@@ -192,7 +192,7 @@ export class AgentBrowserStore {
       this.hubContext = context
       const unsubscribe = hub.subscribe(() => this.refreshThings())
       const stopSync = hub.startSync(context, null)
-      const stopMarks = subscribeMarks(() => this.refreshThings())
+      const stopMarks = subscribeSources(() => this.refreshThings())
       const stopBinding = subscribeDefaultBinding((agentId) => { if (agentId === this.snapshot.agent?.agentId) void this.refreshStatus() })
       this.stopHub = () => { unsubscribe(); stopSync(); stopMarks(); stopBinding() }
       this.update({ conversations: 'ready' })

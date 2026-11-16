@@ -1,5 +1,5 @@
 import type { TaskWatchDetail, TaskWatchEvent, TaskWatchNode, TaskWatchSource } from '../../../api/task_mgr'
-import { MOCK_AGENT_TASKS as MOCK_TASKS, MOCK_SELF_DID } from '../../../app/messagehub/mock/data'
+import { MOCK_AGENT_TASKS as MOCK_TASKS, MOCK_SELF_DID } from './ids'
 import { MOCK_WORK_UI_SESSION } from './worksessions'
 
 interface MockTask extends TaskWatchDetail {

@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 import { Pause, Play, Square } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useWindowDialog } from '../../../desktop/windows/dialogs'
-import { getAgentPanelSource } from '../../../app/messagehub/agentpanel/source'
-import { confirmGroupAction } from '../../../app/messagehub/confirmDialog'
+import { AgentControlsContext } from '../agentControls'
+import { confirmGroupAction } from '../confirmDialog'
 import { workControls, type WorkCard } from './model'
 
 type WorkAction = 'pause' | 'resume' | 'stop'
@@ -19,18 +19,18 @@ export function WorkControls({ agentDid, card, title, only, onChanged }: { agent
   const dialog = useWindowDialog()
   const [pending, setPending] = useState<WorkAction | null>(null)
   const [failed, setFailed] = useState(false)
+  const controls = useContext(AgentControlsContext)
   const can = workControls(card)
   const offered = (['pause', 'resume', 'stop'] as const).filter(action => can[action] && (!only || only.includes(action)))
-  if (offered.length === 0) return null
+  if (!controls || offered.length === 0) return null
   const run = async (action: WorkAction) => {
     if (pending) return
     if (action === 'stop' && !await confirmGroupAction(dialog, t, { title: t('messagehub.work.control.stop'), body: t('messagehub.work.control.stopConfirm', undefined, { title }), confirm: t('messagehub.work.control.stop') })) return
     setPending(action); setFailed(false)
     try {
-      const source = getAgentPanelSource()
-      if (action === 'pause') await source.pause(agentDid, card.session_id)
-      else if (action === 'resume') await source.resume(agentDid, card.session_id)
-      else await source.stop(agentDid, card.session_id, 'session')
+      if (action === 'pause') await controls.pause(agentDid, card.session_id)
+      else if (action === 'resume') await controls.resume(agentDid, card.session_id)
+      else await controls.stop(agentDid, card.session_id, 'session')
       onChanged()
     } catch {
       setFailed(true)

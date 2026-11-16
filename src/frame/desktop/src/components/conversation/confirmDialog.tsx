@@ -1,5 +1,5 @@
 import type { WindowDialogApi } from '../../desktop/windows/dialogs'
-import { DialogFocus, hubButtonClass } from './SessionDialogs'
+import { DialogFocus, hubButtonClass } from './DialogFocus'
 
 type Translate = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 

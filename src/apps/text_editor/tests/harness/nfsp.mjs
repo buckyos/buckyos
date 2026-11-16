@@ -26,6 +26,19 @@ addEventListener('message', async e => {
 })
 document.querySelector('#openwith').onclick = () => post('embed.openWith', { request: { source: init.source }, hints: { name: init.source.path.split('/').pop(), size: 3 } })
 </script>`
+// A stand-in for the system conversation page (`/embed/conversation`): speaks buckyos.conversation-embed by hand and
+// shows what the editor asked for and sent.
+const CONVERSATION = `<!doctype html><title>Conversation embed harness</title><pre id="init" data-testid="fake-conversation"></pre><ol id="sent"></ol><script>
+const params = new URLSearchParams(location.hash.slice(1)); const nonce = params.get('bce'); const parentOrigin = params.get('po')
+const post = (type, payload) => parent.postMessage({ protocol: 'buckyos.conversation-embed', version: 1, type, payload }, parentOrigin)
+const hello = setInterval(() => post('embed.hello', { nonce }), 250); post('embed.hello', { nonce })
+let ready = false
+addEventListener('message', e => {
+  const m = e.data; if (e.source !== parent || e.origin !== parentOrigin || m?.protocol !== 'buckyos.conversation-embed') return
+  if (m.type === 'embed.init' && m.payload.nonce === nonce) { clearInterval(hello); ready = true; document.querySelector('#init').textContent = JSON.stringify({ target: m.payload.target, theme: m.payload.theme, placeholder: m.payload.placeholder }); post('embed.state', { status: 'ready' }) }
+  if (m.type === 'embed.send' && ready) { const li = document.createElement('li'); li.textContent = JSON.stringify(m.payload); document.querySelector('#sent').append(li); post('embed.state', { status: 'ready', sessionId: 'session-from-editor' }) }
+})
+</script>`
 // A stand-in for the system file picker page (`/embed/sysdlg/select`): speaks buckyos.sysdlg-embed by hand and answers
 // with what the test types, so the editor's standalone path is exercised without the Desktop.
 const PICKER = `<!doctype html><title>Picker embed harness</title><pre id="params" data-testid="fake-picker"></pre>
@@ -67,6 +80,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/test/drop-commits') { dropCommits = JSON.parse(data).count; return send({}) }
   if (path === '/embed/preview') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(EMBED) }
   if (path === '/embed/sysdlg/select') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(PICKER) }
+  if (path === '/embed/conversation') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(CONVERSATION) }
   if (path.startsWith('/bucket/v1/')) {
     const id = path.slice('/bucket/v1/'.length)
     if (req.method === 'PUT') {

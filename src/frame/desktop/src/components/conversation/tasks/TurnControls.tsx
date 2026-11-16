@@ -2,8 +2,8 @@ import { useContext, useState } from 'react'
 import { Play, Square, Undo2 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useWindowDialog } from '../../../desktop/windows/dialogs'
-import { getAgentPanelSource } from '../../../app/messagehub/agentpanel/source'
-import { confirmGroupAction } from '../../../app/messagehub/confirmDialog'
+import { AgentControlsContext, type AgentSessionControls } from '../agentControls'
+import { confirmGroupAction } from '../confirmDialog'
 import type { MessageObject } from '../model/msgobj'
 import { ConversationMessageActionsContext, type ConversationMessageActions } from '../history/actions'
 import { turnMode, type ForegroundMode } from '../input/foregroundState'
@@ -28,11 +28,12 @@ const buttonClass = 'mh-turn-action'
  */
 export function TurnControls(props: { anchor: MessageObject; taskId: string }) {
   const { agentTurn } = useContext(ConversationMessageActionsContext)
+  const controls = useContext(AgentControlsContext)
   // Conversations without the owner's controls (another's Agent, an embedded conversation view) render nothing and need no dialog host.
-  return agentTurn ? <OwnerTurnControls {...props} agentTurn={agentTurn} /> : null
+  return agentTurn && controls ? <OwnerTurnControls {...props} agentTurn={agentTurn} controls={controls} /> : null
 }
 
-function OwnerTurnControls({ anchor, taskId, agentTurn }: { anchor: MessageObject; taskId: string; agentTurn: NonNullable<ConversationMessageActions['agentTurn']> }) {
+function OwnerTurnControls({ anchor, taskId, agentTurn, controls }: { anchor: MessageObject; taskId: string; agentTurn: NonNullable<ConversationMessageActions['agentTurn']>; controls: AgentSessionControls }) {
   const { t } = useI18n()
   const dialog = useWindowDialog()
   const { snapshot, children } = useTaskSummary(taskId)
@@ -58,8 +59,8 @@ function OwnerTurnControls({ anchor, taskId, agentTurn }: { anchor: MessageObjec
     setActing({ action, mode, revision: task?.revision ?? 0 })
     try {
       if (action === 'retract') await agentTurn.retract(input!)
-      else if (action === 'resume') await getAgentPanelSource().resume(target.agentDid, target.sessionId)
-      else await getAgentPanelSource().stop(target.agentDid, target.sessionId, 'turn')
+      else if (action === 'resume') await controls.resume(target.agentDid, target.sessionId)
+      else await controls.stop(target.agentDid, target.sessionId, 'turn')
     } catch {
       setActing(null)
       setFailed(true)

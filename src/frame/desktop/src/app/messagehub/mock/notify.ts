@@ -12,7 +12,8 @@ import { isNotifyClosed, NOTIFY_ACTION_DISMISS, TASK_ERR_ALREADY_COMPLETED, TASK
 import type { NotifyBackend, NotifyListQuery, NotifyTaskState } from '../notify/watch'
 import { sessionKey } from '../sessionModel'
 import type { Entity, Session } from '../types'
-import { getMockEntityDid, MOCK_SELF_DID } from './data'
+import { getMockEntityDid } from './data'
+import { MOCK_SELF_DID } from '../../../components/conversation/mock/ids'
 
 /** The system notify sender of the mock zone (its Zone DID). */
 export const MOCK_NOTIFY_SENDER = 'did:web:zone.buckyos.mock'

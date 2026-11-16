@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { isMessageHubMock } from '../../../app/messagehub/store'
+import { isMockRuntime } from '../../../runtime'
 import { mockWorklogSource } from '../mock/worklog'
 import type { WorklogEntry, WorklogPage, WorklogTarget } from './model'
 import { createWorklogSource } from './source'
@@ -8,7 +8,7 @@ export function useWorklog(target: WorklogTarget) {
   const { agentDid, sessionId, turn } = target
   const source = useMemo(() => {
     const binding = { agentDid, sessionId, turn }
-    return isMessageHubMock() ? mockWorklogSource(binding) : createWorklogSource(binding)
+    return isMockRuntime() ? mockWorklogSource(binding) : createWorklogSource(binding)
   }, [agentDid, sessionId, turn])
   const [view, setView] = useState<{ page?: WorklogPage; loading: boolean; error: boolean; older: boolean }>({ loading: true, error: false, older: false })
   const commands = useRef<{ older: () => void; retry: () => void } | null>(null)

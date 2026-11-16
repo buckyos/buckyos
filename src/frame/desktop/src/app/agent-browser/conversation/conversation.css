@@ -1,10 +1,5 @@
 /* Agent Browser: the conversation of a thing (APP7) and what the status strip asks before a handover (DG2, DG3). */
 .ab-chat-panel { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--cp-surface-opaque); }
-.ab-chat { position: relative; flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; background: var(--cp-message-canvas); }
-.ab-chat-history { position: relative; flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; }
-.ab-chat-runtime {
-  flex: none; overflow: hidden; padding: 2px 14px; color: var(--cp-accent); font-size: 12px; text-overflow: ellipsis; white-space: nowrap;
-}
 .ab-chat-status {
   flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 0;
   padding: 24px; color: var(--cp-muted); line-height: 1.5; text-align: center;

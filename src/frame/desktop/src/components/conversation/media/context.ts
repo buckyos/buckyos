@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext } from 'react'
-import { openPreview } from '../../../app/preview/launch'
+import { openPreview } from '../backend'
 import type { ConversationMessageReader } from '../history/types'
 import { installMessageHubPreviewSources, type AttachmentKind, type MessageAttachment } from './source'
 

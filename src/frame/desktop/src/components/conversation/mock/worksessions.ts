@@ -1,7 +1,7 @@
 import { parseWorkCards, type WorkCard, type WorkCards, type WorkTodo, type WorkUsage } from '../worksessions/model'
 import type { WorkCardsSource } from '../worksessions/source'
 import type { WorkSessionInfo } from '../worklog/model'
-import { MOCK_AGENT_TASKS } from '../../../app/messagehub/mock/data'
+import { MOCK_AGENT_TASKS } from './ids'
 
 /** The UI session the seeded work Turns belong to (the `session_id` of their tasks, `mock/tasks.ts`). */
 export const MOCK_WORK_UI_SESSION = 'ui-session-work'

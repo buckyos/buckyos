@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMediaQuery } from '@mui/material'
-import { ChevronRight, Lock, LogOut, MessageSquarePlus, ShieldAlert, Users } from 'lucide-react'
+import { ChevronRight, LogOut, MessageSquarePlus, ShieldAlert, Users } from 'lucide-react'
 import type { AccessDenial, CurrentIdentity } from 'buckyos'
 import '../messagehub.css'
 import { useI18n } from '../../../i18n/provider'
@@ -12,17 +12,12 @@ import { FirstPasswordPrompt } from '../../../sso/FirstPasswordPrompt'
 import { IdentityCard } from '../../../sso/IdentityCard'
 import { identityDisplayName } from '../../../sso/identity'
 import { HubAvatar, SenderPicture } from '../HubAvatar'
-import { hubButtonClass, hubPrimaryButtonClass } from '../SessionDialogs'
+import { hubButtonClass, hubPrimaryButtonClass } from '../../../components/conversation/DialogFocus'
 import { InMemoryConversationMessageReader } from '../../../components/conversation/history/data-source'
-import { ConversationHistoryPane, type ConversationHistoryPaneHandle } from '../../../components/conversation/history/ConversationHistoryPane'
-import { ConversationMessageActionsContext, type ConversationMessageActions } from '../../../components/conversation/history/actions'
+import { ConversationSurface } from '../../../components/conversation/ConversationSurface'
+import type { ConversationSource } from '../../../components/conversation/source'
 import { registerObjectAccess } from '../../../components/conversation/history/objectAccess'
-import { messageObjId, ownReactionId } from '../../../components/conversation/history/relations'
-import { ConversationComposer, type ComposerAnswer, type ComposerRelation, type ConversationComposerSubmitPayload } from '../../../components/conversation/input/ConversationComposer'
-import { conversationInputState } from '../../../components/conversation/input/inputState'
-import { ConversationMediaScopeContext } from '../../../components/conversation/media/context'
 import { MessageMediaHost } from '../../../components/conversation/media/MessageMediaHost'
-import type { MessageObject } from '../../../components/conversation/model/msgobj'
 import { loadGuestApi, type GuestApi } from './api'
 import { GuestHub, type GuestSnapshot } from './hub'
 import { guestEntryPath, guestPagePath, isGroupDid, type GuestSession } from './model'
@@ -231,7 +226,6 @@ function GuestConversation({ hub, snapshot, session }: { hub: GuestHub; snapshot
       <GroupExtensionPanels panels={session.panels} context={{ groupDid: hub.groupDid, sessionId: session.sessionId, session: session.address, locale }} hostDid={snapshot.hostDid} allowOrigins={isMessageHubMock() ? mockPanelOrigins() : undefined} defaultOpen />
     </div>
     : null
-  const historyRef = useRef<ConversationHistoryPaneHandle>(null)
   const { reader, members } = snapshot
   const selfDid = hub.selfDid
   useEffect(() => {
@@ -241,56 +235,40 @@ function GuestConversation({ hub, snapshot, session }: { hub: GuestHub; snapshot
     return () => { window.removeEventListener('online', sync); document.removeEventListener('visibilitychange', sync) }
   }, [hub])
   const canSend = session.lifecycle === 'active'
-  const [relation, setRelation] = useState<ComposerRelation | null>(null)
-  const inputState = useMemo(() => conversationInputState(reader.timeline ?? [], selfDid, { group: true }), [reader, selfDid])
-  const answerState = inputState.mode === 'answer' ? inputState : null
-  if (answerState && relation) setRelation(null)
-  const answer = useMemo<ComposerAnswer | null>(() => answerState ? { ...answerState, askerName: hub.nameOf(answerState.question.from) } : null, [answerState, hub])
-  const mediaScope = useMemo(() => ({ reader, hostContext: session.address }), [reader, session.address])
   const mentionCandidates = useMemo(() => members.filter(member => member.did !== selfDid).map(member => ({ did: member.did, name: member.name })), [members, selfDid])
-  const send = useCallback(async (payload: ConversationComposerSubmitPayload) => {
-    historyRef.current?.scrollToBottom()
-    await hub.send({ content: payload.content, attachments: [], ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}), ...(payload.machine ? { machine: payload.machine } : {}), ...(payload.localId ? { localId: payload.localId, submittedAt: payload.submittedAt } : {}) })
-    historyRef.current?.scrollToBottom()
-  }, [hub])
-  const actions = useMemo<ConversationMessageActions>(() => {
-    const relate = (target: string | undefined, rel: 'redact' | 'reaction', key?: string) => target
-      ? hub.send({ content: key ?? '', attachments: [], relatesTo: { rel, target, ...(key ? { key } : {}) } })
-      : Promise.reject(Error('not-found'))
-    return {
-      displayName: hub.nameOf,
-      senderAvatar: (did: string, name: string) => <SenderPicture did={did} name={name} size={32} />,
-      relations: canSend ? {
-        capabilities: () => ({ reply: !answerState, react: true, edit: false, redact: false, recall: false }),
-        reply: (message: MessageObject) => setRelation({ kind: 'reply', message }),
-        edit: () => undefined,
-        redact: () => Promise.reject(Error('permission_denied')),
-        react: (message: MessageObject, key: string) => relate(messageObjId(message), 'reaction', key),
-        unreact: (message: MessageObject, key: string) => relate(ownReactionId(message, selfDid, key), 'redact'),
-      } : undefined,
-    }
-  }, [hub, canSend, answerState, selfDid])
+  // S3: the guest page's conversation is the system component on the guest hub, not on MessageHub's store.
+  const source = useMemo<ConversationSource>(() => ({
+    sessionId: session.sessionId,
+    selfDid,
+    reader,
+    historyStatus: snapshot.historyLoaded ? 'ready' : 'loading',
+    hasOlder: false,
+    loadOlder: () => Promise.resolve(false),
+    markRead: () => undefined,
+    access: { mode: canSend ? 'read_write' : 'read_only', canManage: false, canEnableWrite: false, canEditPresentation: false, canEditSharedState: false, canEditOwnMemberState: false },
+    canAct: canSend,
+    attachments: false,
+    send: (payload) => hub.send({ ...payload, attachments: [] }),
+    displayName: hub.nameOf,
+    runtime: [],
+    preferences: { showActions: true, pinned: null },
+    // A Session Only guest may not recall or edit (v1), and may not ask others to delete their messages.
+    group: { mentionCandidates, canMentionAll: false, editWindowMs: 0, recallWindowMs: 0, redactAny: false, senderAvatar: (did, name) => <SenderPicture did={did} name={name} size={32} /> },
+    hostContext: session.address,
+  }), [session.sessionId, session.address, selfDid, reader, snapshot.historyLoaded, canSend, hub, mentionCandidates])
   return <WindowDialogProvider surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>
     <MessageMediaHost>
       <div className="flex min-h-0 flex-1">
       <div className="relative flex min-h-0 flex-1 flex-col" style={{ background: 'var(--cp-message-canvas)' }} data-testid="guest-conversation">
         {extensions && !isDesktop ? <div className="shrink-0 border-b border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-2 text-sm">{extensions}</div> : null}
         <div className="relative flex min-h-0 flex-1 flex-col">
-          <ConversationMediaScopeContext.Provider value={mediaScope}>
-            <ConversationMessageActionsContext.Provider value={actions}>
-              <ConversationHistoryPane ref={historyRef} reader={reader} selfDid={selfDid} isGroup emptyLabel={t(snapshot.historyLoaded ? 'messagehub.startConversation' : 'messagehub.loadingHistory')} />
-            </ConversationMessageActionsContext.Provider>
-          </ConversationMediaScopeContext.Provider>
+          <ConversationSurface
+            source={source}
+            features={{ search: false }}
+            emptyLabel={t('messagehub.startConversation')}
+            readOnlyLabel={text('archived')}
+          />
         </div>
-        {canSend ? <ConversationComposer
-          placeholder={t('messagehub.inputPlaceholder', 'Message...')}
-          onSendMessage={send}
-          relation={answer ? null : relation}
-          onCancelRelation={() => setRelation(null)}
-          answer={answer}
-          mentionCandidates={mentionCandidates}
-          allowFiles={false}
-        /> : <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="composer-readonly"><Lock size={14} className="shrink-0" aria-hidden /><span>{text('archived')}</span></div>}
       </div>
       {extensions && isDesktop ? <aside className="shell-scrollbar w-[320px] shrink-0 overflow-y-auto border-l border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] p-4 text-sm" data-testid="guest-side-panel">{extensions}</aside> : null}
       </div>

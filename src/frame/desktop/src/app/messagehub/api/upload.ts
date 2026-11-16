@@ -1,7 +1,7 @@
 import { buckyos, ndm } from 'buckyos'
 import { attachmentSize, oversizedAttachmentNames, type ComposerAttachmentInput } from '../../../components/conversation/input/attachmentDraft'
 import { currentSessionToken } from '../datamodel/sessionApi'
-import type { OutgoingUpload } from '../store/types'
+import type { OutgoingUpload } from '../../../components/conversation/model/outgoing'
 
 export interface UploadedAttachment {
   objId: string

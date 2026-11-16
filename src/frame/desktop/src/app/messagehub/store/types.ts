@@ -1,36 +1,13 @@
 import type { z } from 'zod'
 import type { ComposerAttachmentInput } from '../../../components/conversation/input/attachmentDraft'
+import type { OutgoingPayload, OutgoingUpload } from '../../../components/conversation/model/outgoing'
+
+export type { OutgoingPayload, OutgoingUpload }
 import type { ConversationMessageReader } from '../../../components/conversation/history/types'
-import type { ndn } from 'buckyos'
-import type { MessageObject, VoiceNote } from '../../../components/conversation/model/msgobj'
+import type { MessageObject } from '../../../components/conversation/model/msgobj'
 import type { createSessionSchema } from '../sessionModel'
 import type { createGroupSchema } from '../groupModel'
 import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
-
-/**
- * What the composer hands to the store: text plus the raw browser files, and
- * for a relation message (edit / redact / reaction / reply) the MsgObject v2
- * `relates_to` and structured `mentions`, which travel in the message itself.
- * `machine` becomes `content.machine` (an answer that picked an option).
- * `voice` marks the only attachment as a voice note (`MsgObject.voice`).
- */
-export interface OutgoingPayload {
-  signal?: AbortSignal
-  content: string
-  attachments: ComposerAttachmentInput[]
-  relatesTo?: ndn.MsgRelation
-  mentions?: ndn.MsgMentions
-  machine?: ndn.MachineContent
-  voice?: VoiceNote
-  localId?: string
-  submittedAt?: number
-}
-
-/** `ui_upload` of a pending outgoing bubble: waiting behind an earlier send, preparing the files, or uploading them. */
-export type OutgoingUpload =
-  | { phase: 'queued' }
-  | { phase: 'preparing' }
-  | { phase: 'uploading'; loaded: number; total: number }
 
 export interface ConnectionChoice {
   id: string

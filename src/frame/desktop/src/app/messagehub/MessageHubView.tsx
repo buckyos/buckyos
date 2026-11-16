@@ -10,7 +10,6 @@ import type { ConversationMessageReader } from '../../components/conversation/hi
 import type { MessageObject } from '../../components/conversation/model/msgobj'
 import { useMessageMediaHost } from '../../components/conversation/media/context'
 import { MessageMediaHost } from '../../components/conversation/media/MessageMediaHost'
-import type { ConversationComposerSubmitPayload } from '../../components/conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
 import { AgentSessionPanel } from './agentpanel/AgentSessionPanel'
 import { AgentWorklog } from '../../components/conversation/worklog/AgentWorklog'
@@ -25,15 +24,20 @@ import type { HeaderMenuItem, HubIdentity } from './EntityListHeader'
 import { CreateGroupForm } from './GroupDialogs'
 import { resolveMessageHubContext, type MessageHubContextRequest, type SharedLaunch } from './launch'
 import { ShareIntake } from './ShareIntake'
-import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime, type OutgoingPayload } from './store'
+import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime } from './store'
+import { AgentControlsContext } from '../../components/conversation/agentControls'
+import { ConversationClockContext } from '../../components/conversation/clock'
+import { getAgentPanelSource } from './agentpanel/source'
+import { messageHubClock } from './conversationSource'
 import { creationReason, latestActiveSession, sessionDescription, viewerSessionKey } from './sessionModel'
 import { usePaneResizer } from './paneResize'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
 import { SessionDetails } from './SessionDetails'
-import { CreateSessionForm, ManageSessionForm, hubButtonClass } from './SessionDialogs'
+import { CreateSessionForm, ManageSessionForm } from './SessionDialogs'
+import { hubButtonClass } from '../../components/conversation/DialogFocus'
 import { NewChatForm, type NewChatTarget } from './NewChatDialog'
 import { ProfileDetails } from './ProfileDetails'
-import { confirmGroupAction } from './confirmDialog'
+import { confirmGroupAction } from '../../components/conversation/confirmDialog'
 import { ENTITY_INFO_DIALOG_PATH, useSystemDialog, type EntityInfoDialogParams } from '../../sysdlg'
 import type { Entity, MessageHubContext, Session } from './types'
 import { SessionSidebar } from './SessionSidebar'
@@ -130,7 +134,7 @@ function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessage
   if (ownerStatus.phase === 'error') return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.loadFailed')}</p><p className="max-w-md break-words text-xs text-[color:var(--cp-muted)]">{ownerStatus.message}</p><button type="button" className={hubButtonClass} onClick={() => void store.ensureOwner(context, true)}>{t('messagehub.retry')}</button></div>
   return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
     {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {didDisplayName(context.ownerDid)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
-    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>{initialShare && context.mode === 'self' ? <ShareIntake context={context} share={initialShare} confirmationFor={noConfirmation} /> : null}<MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}:${initialMessageId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} linkedMessageDetails={linkedMessageDetails} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
+    <div className="relative min-h-0 flex-1"><ConversationClockContext.Provider value={messageHubClock(store)}><AgentControlsContext.Provider value={getAgentPanelSource()}><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>{initialShare && context.mode === 'self' ? <ShareIntake context={context} share={initialShare} confirmationFor={noConfirmation} /> : null}<MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}:${initialMessageId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} linkedMessageDetails={linkedMessageDetails} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></AgentControlsContext.Provider></ConversationClockContext.Provider></div>
   </div>
 }
 
@@ -484,18 +488,6 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const isResizingEntityList = entityListResizer.active
   const isResizingSessionSidebar = sessionSidebarResizer.active
 
-  const toOutgoing = (payload: ConversationComposerSubmitPayload): OutgoingPayload => ({ content: payload.content, signal: payload.signal, attachments: payload.attachments.map(({ file, relativePath, directory }) => ({ file, relativePath, directory })), ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}), ...(payload.machine ? { machine: payload.machine } : {}), ...(payload.voice ? { voice: payload.voice } : {}), ...(payload.localId ? { localId: payload.localId, submittedAt: payload.submittedAt } : {}) })
-  const handleSendMessage = async (payload: ConversationComposerSubmitPayload) => {
-    if (!activeSession || !selectedEntityId) throw Error('session_missing')
-    await store.send(context, activeSession.id, toOutgoing(payload), writeConfirmations[activeSession.id])
-  }
-  const handleQueueChange = (queued: ConversationComposerSubmitPayload[]) => {
-    if (activeSession) store.stageOutgoing(context, activeSession.id, queued.map(toOutgoing))
-  }
-  const handleResend = async (message: import('../../components/conversation/model/msgobj').MessageObject) => {
-    if (!activeSession) throw Error('session_missing')
-    await store.resend(context, activeSession.id, message, writeConfirmations[activeSession.id])
-  }
   const openForward = (message: import('../../components/conversation/model/msgobj').MessageObject) => {
     void dialog.open({ title: t('messagehub.forward.title'), size: 'sm', dismissible: false, renderBody: controls => <ForwardMessageForm context={context} message={message} confirmationFor={sessionId => writeConfirmations[sessionId]} onCancel={() => controls.close()} onDone={() => controls.close()} /> })
   }
@@ -508,29 +500,20 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     if (!isDesktop) setMobileView('details')
   }
   const conversationProps = {
-    onResend: handleResend,
     onOpenMessage: openMessageDetails,
     focusMessageId: locateMessageId ?? (activeSession && activeSession.id === initialSessionId ? linkedMessageId : null),
     agentPanel: selectedEntityId && store.isOwnAgent(context, selectedEntityId) ? { open: detailsTarget === 'agent' || detailsTarget === 'worklog', onToggle: toggleAgentPanel } : undefined,
     sendBlockedReason: rotating ? t('messagehub.agentPanel.newConversationPending') : undefined,
     onForward: openForward,
-    context, access, title: activeSession ? store.title(context, activeSession) : '', creationReason: createReason,
+    context, confirmation: activeSession ? writeConfirmations[activeSession.id] : undefined, confirmed,
+    title: activeSession ? store.title(context, activeSession) : '', creationReason: createReason,
     muted: activeSession ? store.preferences(context, activeSession.id).muted : false,
     onToggleMute: canManage ? () => { void toggleMute() } : undefined,
     onClearHistory: canManage ? () => { void clearHistory() } : undefined,
     onOpenProfile: openProfile,
     defaultSessionError, onRetryDefaultSession: () => { if (selectedEntityId) handleSelectEntity(selectedEntityId) },
-    historyStatus: activeSession ? store.historyStatus(context, activeSession.id) : 'ready' as const,
-    hasOlder: activeSession ? store.hasOlder(context, activeSession.id) : false,
-    onLoadOlder: () => activeSession ? store.loadOlder(context, activeSession.id) : Promise.resolve(false),
-    onVisibleMessages: (recordIds: string[]) => { if (activeSession) void store.markRead(context, activeSession.id, recordIds) },
     onOpenEntity: handleSelectEntity,
     onOpenSessionDetails: () => handleOpenDetails('session'), onOpenDetails: () => handleOpenDetails('entity'),
-    draft: activeSession ? store.draft(context, activeSession.id) : '',
-    draftAttachments: activeSession ? store.attachments(context, activeSession.id) : [],
-    onAttachmentsChange: (attachments: import('../../components/conversation/input/attachmentDraft').ComposerAttachmentInput[]) => activeSession ? store.saveAttachments(context, activeSession.id, attachments) : undefined,
-    onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
-    showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
   }
   // Pinning the entity's default session is enough to lift the entity and leaves its other sessions' order alone;
   // unpinning and muting cover every session, as the entity is pinned while any of them is and muted while all are.
@@ -538,7 +521,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     const targets = entityIds.flatMap(id => 'pinned' in patch && patch.pinned ? [store.defaultSession(context, id) ?? store.sessions(context, id)[0]].filter((session): session is Session => Boolean(session)) : store.sessions(context, id))
     await Promise.all(targets.map(session => store.updatePreferences(context, session.id, patch)))
   }
-  const sessionDetailsProps = activeSession && selectedEntity && access ? { session: activeSession, entity: selectedEntity, context, access, showActions: conversationProps.showActions, onShowActions: async (showActions: boolean) => { await store.updatePreferences(context, activeSession.id, { showActions }) }, onClose: handleCloseDetails, onManage: () => openManage(activeSession), onWrite: (enabled: boolean) => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' })) } : null
+  const sessionDetailsProps = activeSession && selectedEntity && access ? { session: activeSession, entity: selectedEntity, context, access, showActions: store.preferences(context, activeSession.id).showActions, onShowActions: async (showActions: boolean) => { await store.updatePreferences(context, activeSession.id, { showActions }) }, onClose: handleCloseDetails, onManage: () => openManage(activeSession), onWrite: (enabled: boolean) => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' })) } : null
   const timeline = (messageReader as ConversationMessageReader).timeline ?? EMPTY_TIMELINE
   const agentPane = (detailsTarget === 'agent' || detailsTarget === 'worklog') && entityDetail ? <AgentSessionPanel
     key={activeSession ? viewerSessionKey(context, activeSession.id) : entityDetail.id}
@@ -722,14 +705,9 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
               key={activeSession ? viewerSessionKey(context, activeSession.id) : selectedEntityId}
               entity={selectedEntity}
               session={activeSession}
-              messageReader={messageReader}
-              selfDid={context.ownerDid}
-              onBack={handleBack}
+                                          onBack={handleBack}
               onOpenSessionSidebar={() => setShowSessionSidebar(true)}
-              onSendMessage={handleSendMessage}
-              onQueueChange={handleQueueChange}
-              sessionCount={sessions.length}
-              otherSessionsUnread={otherSessionsUnread}
+                                                        otherSessionsUnread={otherSessionsUnread}
             />
 
             {showSessionSidebar ? (
@@ -857,14 +835,9 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
               key={activeSession ? viewerSessionKey(context, activeSession.id) : selectedEntityId}
             entity={selectedEntity}
             session={activeSession}
-            messageReader={messageReader}
-            selfDid={context.ownerDid}
-            onBack={handleBack}
+                                    onBack={handleBack}
             onOpenSessionSidebar={() => setShowSessionSidebar((prev) => !prev)}
-            onSendMessage={handleSendMessage}
-            onQueueChange={handleQueueChange}
-            sessionCount={sessions.length}
-            otherSessionsUnread={otherSessionsUnread}
+                                                otherSessionsUnread={otherSessionsUnread}
             leadingPane={desktopSessionSidebarPane}
             isSessionSidebarOpen={showSessionSidebar}
           />

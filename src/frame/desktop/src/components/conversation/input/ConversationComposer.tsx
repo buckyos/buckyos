@@ -1,4 +1,3 @@
-import { releaseAttachmentUploads } from '../../../app/messagehub/api/upload'
 import {
   forwardRef,
   memo,
@@ -131,6 +130,8 @@ interface ConversationComposerProps {
    * turn scope). Without it the button sends the `/stop` command as text.
    */
   onStopTurn?: () => Promise<void>
+  /** An attachment left the draft: what the data source prepared for its upload can go. */
+  onReleaseAttachments?: (attachments: ComposerAttachmentInput[]) => void
 }
 
 
@@ -138,7 +139,7 @@ const ConversationComposerInner = forwardRef<
   ConversationComposerHandle,
   ConversationComposerProps
 >(function ConversationComposer(
-  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false, allowFiles = true, sendBlocked = false, onStopTurn },
+  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false, allowFiles = true, sendBlocked = false, onStopTurn, onReleaseAttachments },
   ref,
 ) {
   const { t } = useI18n()
@@ -359,13 +360,13 @@ const ConversationComposerInner = forwardRef<
       const target = previous.find((item) => item.id === id)
 
       if (target) {
-        releaseAttachmentUploads([target])
+        onReleaseAttachments?.([target])
         revokeAttachmentItem(target)
       }
 
       return previous.filter((item) => item.id !== id)
     })
-  }, [])
+  }, [onReleaseAttachments])
 
   const restoreFailedSends = useCallback((failed: ConversationComposerSubmitPayload[]) => {
     const text = failed.map(item => item.content).filter(Boolean).join('\n')

@@ -5,11 +5,8 @@ import {
 import type { AppendableConversationMessageReader } from '../../components/conversation/history/types'
 import type { ndn } from 'buckyos'
 import type { ConversationStatusType, MessageDeliveryStatus, MessageObject } from '../../components/conversation/model/msgobj'
-import {
-  getMockEntityDid,
-  MOCK_SELF_DID,
-  mockSessions,
-} from '../messagehub/mock/data'
+import { getMockEntityDid, mockSessions } from '../messagehub/mock/data'
+import { MOCK_SELF_DID } from '../../components/conversation/mock/ids'
 
 const codeAssistantEntityId = getMockEntityDid('agent-coder')
 const storageNamespace = 'buckyos.mock.codeassistant.history'

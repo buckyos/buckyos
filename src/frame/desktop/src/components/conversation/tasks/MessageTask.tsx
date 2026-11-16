@@ -4,7 +4,7 @@ import { useI18n } from '../../../i18n/provider'
 import type { TaskWatchNode } from '../../../api/task_mgr'
 import { messageAgentTaskId, type MessageObject } from '../model/msgobj'
 import { relativeActivity } from '../model/activity'
-import { useMessageHubClock } from '../../../app/messagehub/store'
+import { useConversationClock } from '../clock'
 import { messageObjId, messageRelations } from '../history/relations'
 import { getTaskWatch, useTaskChildren, useTaskEvents, useTaskExpanded, useTaskSummary, useTaskTree } from './index'
 import { taskAreaView, taskNodeState, toneColor, type TaskText, type TaskTone } from './taskView'
@@ -37,7 +37,7 @@ function useTaskText() {
 export function MessageTaskArea({ message }: { message: MessageObject }) {
   const taskId = messageAgentTaskId(message)
   const { snapshot, children } = useTaskSummary(taskId)
-  const now = useMessageHubClock()
+  const now = useConversationClock()
   const { t } = useI18n()
   const text = useTaskText()
   const [expanded, setExpanded] = useTaskExpanded(messageObjId(message) ?? taskId ?? '')

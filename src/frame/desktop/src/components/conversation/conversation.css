@@ -1,0 +1,956 @@
+/* The conversation component (components/conversation): bubbles, cards, the composer and its panels. */
+
+.mh-markdown {
+  overflow-wrap: anywhere;
+}
+
+.mh-markdown > * + * {
+  margin-top: 0.6em;
+}
+
+.mh-markdown p,
+.mh-markdown ul,
+.mh-markdown ol,
+.mh-markdown blockquote,
+.mh-markdown pre {
+  margin-bottom: 0;
+}
+
+.mh-markdown ul,
+.mh-markdown ol {
+  padding-left: 1.35em;
+}
+
+.mh-markdown ul {
+  list-style: disc;
+}
+
+.mh-markdown ol {
+  list-style: decimal;
+}
+
+.mh-markdown li + li,
+.mh-markdown li > * + * {
+  margin-top: 0.25em;
+}
+
+.mh-markdown li::marker {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+}
+
+.mh-markdown .mh-md-heading {
+  font-weight: 650;
+}
+
+.mh-markdown .mh-md-heading[data-level='1'],
+.mh-markdown .mh-md-heading[data-level='2'] {
+  font-size: 1.08em;
+}
+
+.mh-markdown > .mh-md-heading:not(:first-child) {
+  margin-top: 0.9em;
+}
+
+.mh-markdown strong {
+  font-weight: 650;
+}
+
+.mh-link {
+  color: var(--mh-link, var(--cp-accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.mh-markdown code {
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+
+.mh-markdown pre {
+  overflow-x: auto;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mh-markdown pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.mh-markdown blockquote {
+  border-left: 3px solid color-mix(in srgb, currentColor 22%, transparent);
+  padding-left: 0.75em;
+  color: color-mix(in srgb, currentColor 82%, transparent);
+}
+
+.mh-markdown hr {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.mh-md-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.mh-markdown table {
+  border-collapse: collapse;
+  font-size: 0.93em;
+}
+
+.mh-markdown th,
+.mh-markdown td {
+  border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.mh-markdown th {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  font-weight: 600;
+}
+
+.mh-bubble {
+  position: relative;
+}
+
+.mh-hover-bar {
+  position: absolute;
+  bottom: calc(100% - 7px);
+  z-index: 5;
+  display: flex;
+  visibility: hidden;
+  width: max-content;
+  max-width: calc(100vw - 40px);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: var(--cp-panel-shadow, 0 4px 14px rgba(15, 23, 42, 0.12));
+  color: var(--cp-text);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.mh-hover-bar[data-side="peer"] {
+  left: 8px;
+}
+
+.mh-hover-bar[data-side="self"] {
+  right: 8px;
+}
+
+.mh-bubble[data-actions-open="true"] .mh-hover-bar,
+.mh-hover-bar[data-open="true"] {
+  visibility: visible;
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .mh-bubble:hover .mh-hover-bar,
+  .mh-bubble:focus-within .mh-hover-bar {
+    visibility: visible;
+    opacity: 1;
+  }
+
+  .mh-footer-actions {
+    display: none;
+  }
+}
+
+.mh-hover-bar button {
+  display: flex;
+  height: 28px;
+  min-width: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.mh-hover-bar button:hover,
+.mh-hover-bar button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  outline: none;
+}
+
+.mh-reaction-picker {
+  display: grid;
+  grid-template-columns: repeat(8, 32px);
+  gap: 2px;
+  padding: 6px;
+}
+
+.mh-reaction-picker button {
+  display: flex;
+  height: 32px;
+  width: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.mh-reaction-picker button:hover,
+.mh-reaction-picker button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  outline: none;
+}
+
+.mh-hover-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--cp-border);
+}
+
+/* Floating session panel (pinned message / host-defined state). Collapsed it
+   holds at most three 20px text lines; expanded it scrolls inside half the
+   viewport. */
+.mh-session-panel {
+  width: 100%;
+  max-width: 720px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--cp-shadow, #0f172a) 14%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-session-panel[data-expanded="true"] {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.mh-session-panel-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.mh-session-panel-text[data-clamped="true"] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mh-session-panel-button {
+  display: flex;
+  height: 28px;
+  width: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--cp-muted);
+}
+
+.mh-session-panel-button:hover,
+.mh-session-panel-button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  color: var(--cp-text);
+  outline: none;
+}
+
+.mh-bubble:focus-visible {
+  outline: 2px solid var(--cp-accent);
+  outline-offset: 2px;
+}
+
+.mh-sender-avatar {
+  position: relative;
+  display: inline-flex;
+  border-radius: 999px;
+  line-height: 0;
+}
+
+button.mh-sender-avatar {
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+button.mh-sender-avatar:hover {
+  opacity: 0.82;
+}
+
+button.mh-sender-avatar:focus-visible {
+  outline: 2px solid var(--cp-accent);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  button.mh-sender-avatar::after {
+    position: absolute;
+    inset: -6px;
+    content: "";
+  }
+}
+
+.mh-row[data-highlight="true"] .mh-bubble {
+  animation: mh-row-highlight 2.4s ease-out;
+}
+
+@keyframes mh-row-highlight {
+  0%, 40% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--cp-accent) 55%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+.mh-task {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.mh-task-spin {
+  animation: mh-task-spin 1.4s linear infinite;
+}
+
+/* Work session cards under an Agent bubble: narrow (phone) cards keep the output tokens and the time. */
+.mh-work {
+  container-type: inline-size;
+  width: 30rem;
+  max-width: 100%;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.mh-work-card {
+  cursor: pointer;
+}
+
+.mh-work-card:hover,
+.mh-work-toggle:hover {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+}
+
+.mh-work-card:active {
+  background: color-mix(in srgb, var(--cp-text) 10%, transparent);
+}
+
+@container (max-width: 359px) {
+  .mh-work-in,
+  .mh-work-model {
+    display: none;
+  }
+}
+
+/* Questions an Agent asked during a Turn and their answers, under its bubble. */
+.mh-qa {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.mh-qa-toggle:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.mh-qa-answer {
+  border-left: 2px solid color-mix(in srgb, var(--cp-accent) 45%, transparent);
+}
+
+.mh-qa-option {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  opacity: 0.8;
+}
+
+.mh-qa-option[data-picked] {
+  border-color: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
+  background: color-mix(in srgb, var(--cp-accent-soft) 22%, var(--cp-surface));
+  color: var(--cp-text);
+  font-weight: 600;
+  opacity: 1;
+}
+
+/* Composer locked to answering a question: option rows and small text actions. */
+.mh-answer-option {
+  display: flex;
+  min-height: 40px;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--cp-border);
+  border-radius: 12px;
+  background: var(--cp-message-canvas);
+  color: var(--cp-text);
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.mh-answer-option:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--cp-accent) 24%, var(--cp-border));
+  background: color-mix(in srgb, var(--cp-accent-soft) 12%, var(--cp-surface));
+}
+
+.mh-answer-option[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
+  background: color-mix(in srgb, var(--cp-accent-soft) 22%, var(--cp-surface));
+}
+
+.mh-answer-option:disabled {
+  cursor: default;
+}
+
+.mh-answer-option:disabled:not([aria-pressed="true"]) {
+  opacity: 0.6;
+}
+
+.mh-turn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mh-turn-action:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.mh-turn-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mh-work-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--cp-muted);
+}
+
+.mh-work-control:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+}
+
+.mh-work-control:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@media (pointer: coarse) {
+  .mh-turn-action {
+    min-height: 36px;
+  }
+
+  .mh-work-control {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+.mh-answer-action {
+  display: inline-flex;
+  min-height: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--cp-muted);
+  font-size: 12px;
+}
+
+.mh-answer-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-answer-action:disabled {
+  opacity: 0.5;
+}
+
+@keyframes mh-task-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mh-task-spin,
+  .mh-row[data-highlight="true"] .mh-bubble {
+    animation: none;
+  }
+}
+.mh-worklog-timeline {
+  margin-left: 5px;
+  border-left: 1px solid var(--cp-border);
+}
+
+.mh-worklog-row {
+  position: relative;
+  min-width: 0;
+  padding: 0 0 28px 20px;
+}
+
+.mh-worklog-dot {
+  position: absolute;
+  top: 6px;
+  left: -5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--cp-muted);
+}
+
+.mh-worklog-row[data-status='ok'] .mh-worklog-dot,
+.mh-worklog-row[data-status='completed'] .mh-worklog-dot {
+  background: var(--cp-success);
+}
+
+.mh-worklog-row[data-status='error'] .mh-worklog-dot,
+.mh-worklog-row[data-status='failed'] .mh-worklog-dot {
+  background: var(--cp-danger);
+}
+
+.mh-worklog-row[data-status='pending'] .mh-worklog-dot {
+  background: var(--cp-accent);
+}
+
+.mh-worklog-io {
+  overflow: hidden;
+  border: 1px solid var(--cp-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--cp-text) 3%, transparent);
+}
+
+.mh-worklog-value {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.mh-worklog-value + .mh-worklog-value {
+  border-top: 1px solid var(--cp-border);
+}
+
+.mh-worklog-value pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+}
+
+.mh-worklog-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--cp-accent);
+}
+
+/* Emoji: the composer panel (Telegram desktop layout: search, categories,
+   tab bar) and emoji-only messages shown large on the canvas. */
+.mh-emoji-panel,
+.mh-big-emoji {
+  --mh-emoji-font: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
+}
+
+.mh-emoji-panel {
+  display: flex;
+  flex-direction: column;
+  width: 352px;
+  max-width: 100%;
+  height: min(360px, 50vh);
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--cp-shadow, #0f172a) 18%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-emoji-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 8px 4px;
+  padding: 0 10px;
+  min-height: 34px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  color: var(--cp-muted);
+}
+
+.mh-emoji-search input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--cp-text);
+  font-size: 14px;
+  outline: none;
+}
+
+.mh-emoji-search:focus-within {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cp-accent) 45%, transparent);
+}
+
+.mh-emoji-scroll {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px 6px;
+}
+
+.mh-emoji-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 4px 4px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  color: var(--cp-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mh-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+}
+
+.mh-emoji-grid button {
+  display: flex;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-family: var(--mh-emoji-font);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.mh-emoji-grid button:hover,
+.mh-emoji-grid button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  outline: none;
+}
+
+.mh-emoji-grid button:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cp-accent) 60%, transparent);
+}
+
+.mh-emoji-empty {
+  display: flex;
+  justify-content: center;
+  padding: 24px 12px;
+  color: var(--cp-muted);
+  font-size: 13px;
+}
+
+.mh-emoji-tabs {
+  display: flex;
+  justify-content: space-between;
+  gap: 2px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--cp-border);
+}
+
+.mh-emoji-tabs button {
+  display: flex;
+  height: 32px;
+  min-width: 32px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--cp-muted);
+}
+
+.mh-emoji-tabs button:hover,
+.mh-emoji-tabs button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  outline: none;
+}
+
+.mh-emoji-tabs button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--cp-accent) 14%, transparent);
+  color: var(--cp-accent);
+}
+
+.mh-big-emoji {
+  font-family: var(--mh-emoji-font);
+  font-size: 36px;
+  line-height: 1.2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mh-big-emoji[data-count="1"] {
+  font-size: 56px;
+}
+
+.mh-big-emoji[data-count="2"] {
+  font-size: 44px;
+}
+
+/* Voice notes: the bubble player and the recording bar over the composer
+   input. Peer bubbles draw in the accent colour, own bubbles in their text
+   colour. */
+.mh-voice {
+  --mh-voice-ink: var(--cp-accent);
+  --mh-voice-on-ink: var(--cp-surface-opaque, #fff);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.mh-voice[data-self] {
+  --mh-voice-ink: var(--cp-message-self-text);
+  --mh-voice-on-ink: var(--cp-message-self-bg);
+}
+
+.mh-voice-play {
+  display: flex;
+  height: 44px;
+  width: 44px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--mh-voice-ink);
+  color: var(--mh-voice-on-ink);
+}
+
+.mh-voice-play:focus-visible,
+.mh-voice-wave:focus-visible,
+.mh-voice-rate:focus-visible {
+  outline: 2px solid var(--mh-voice-ink);
+  outline-offset: 2px;
+}
+
+.mh-voice-wave {
+  display: flex;
+  height: 22px;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 4px;
+}
+
+.mh-voice-wave > span {
+  width: 3px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--mh-voice-ink) 38%, transparent);
+}
+
+.mh-voice-wave > span[data-played] {
+  background: var(--mh-voice-ink);
+}
+
+.mh-voice-time {
+  opacity: 0.8;
+}
+
+.mh-voice-unplayed {
+  height: 6px;
+  width: 6px;
+  border-radius: 999px;
+  background: var(--mh-voice-ink);
+}
+
+.mh-voice-rate {
+  min-height: 20px;
+  border-radius: 999px;
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--mh-voice-ink) 16%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mh-voice-recording {
+  position: absolute;
+  inset: 0 46px 0 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  padding: 0 12px;
+  border-radius: 21px 0 0 21px;
+  background: var(--cp-message-canvas);
+  color: var(--cp-text);
+}
+
+.mh-voice-recording[data-mode="locked"] {
+  padding-left: 2px;
+}
+
+.mh-voice-discard {
+  display: flex;
+  height: 40px;
+  width: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--cp-danger);
+}
+
+.mh-voice-discard:hover,
+.mh-voice-discard:focus-visible {
+  background: color-mix(in srgb, var(--cp-danger) 12%, transparent);
+  outline: none;
+}
+
+.mh-voice-rec-dot {
+  height: 10px;
+  width: 10px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cp-muted) 60%, transparent);
+}
+
+.mh-voice-rec-dot[data-live] {
+  background: var(--cp-danger);
+  animation: mh-voice-blink 1s ease-in-out infinite;
+}
+
+@keyframes mh-voice-blink {
+  50% { opacity: 0.25; }
+}
+
+.mh-voice-slide {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--cp-muted);
+  font-size: 14px;
+}
+
+.mh-voice-warning {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--cp-warning) 75%, var(--cp-text));
+  font-size: 13px;
+}
+
+.mh-voice-live {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  height: 24px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.mh-voice-live > span {
+  width: 3px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: var(--cp-accent);
+}
+
+.mh-voice-lock {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: calc(50% - 15px);
+  display: flex;
+  width: 30px;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 0;
+  border-radius: 15px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--cp-shadow, #0f172a) 14%, transparent);
+  color: var(--cp-muted);
+  pointer-events: none;
+}
+
+.mh-voice-error {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: max-content;
+  max-width: 260px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--cp-shadow, #0f172a) 14%, transparent);
+  color: var(--cp-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mh-voice-button {
+  display: flex;
+  height: 32px;
+  width: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--cp-muted);
+  transition: transform 90ms linear, background-color 120ms ease;
+}
+
+.mh-voice-button[data-state="hold"],
+.mh-voice-button[data-state="locked"] {
+  background: var(--cp-accent);
+  color: var(--cp-surface-opaque, #fff);
+}
+
+.mh-voice-button[data-state="hold"] {
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--cp-accent) 22%, transparent);
+}
+
+
+/* The conversation component's own frame, for a host without a header: the search button over the history and the
+ * line of who is typing or working under it. The bound conversation (`SessionConversation`) with its loading and
+ * error states. */
+.mh-conversation-search {
+  position: absolute; right: 10px; z-index: 6; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px;
+  border: 1px solid var(--cp-border); border-radius: 999px; background: color-mix(in srgb, var(--cp-surface) 92%, transparent);
+  color: var(--cp-muted); box-shadow: 0 4px 14px color-mix(in srgb, var(--cp-shadow) 14%, transparent);
+}
+.mh-conversation-search:hover { color: var(--cp-text); }
+.mh-conversation-runtime {
+  flex: none; overflow: hidden; padding: 2px 14px; color: var(--cp-accent); font-size: 12px; text-overflow: ellipsis; white-space: nowrap;
+}
+.mh-session-conversation { position: relative; flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; }
+.mh-session-conversation-status {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 0;
+  padding: 24px; color: var(--cp-muted); line-height: 1.5; text-align: center;
+}

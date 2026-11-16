@@ -384,3 +384,17 @@ test('when nothing could be stored, closing does not pretend the draft is safe',
   await expect(page.locator('#app')).toHaveCount(1)
   await expect(editor.locator('.cm-content')).toContainText('unsafe')
 })
+
+test('Discuss with Agent embeds the system conversation beside the editor and asks about the open document', async ({ page }) => {
+  await open(page)
+  await action(page, 'Discuss with Agent')
+  const panel = page.getByRole('complementary', { name: 'Conversation with your Agent' })
+  await expect(panel).toHaveAttribute('data-status', 'ready')
+  const conversation = panel.frameLocator('iframe')
+  await expect(conversation.getByTestId('fake-conversation')).toHaveText(JSON.stringify({ target: { kind: 'agent' }, theme: 'light', placeholder: 'Ask about this document…' }))
+  // The document goes as a reference the Agent reads with its own rights, in the user's name, once.
+  await expect(conversation.locator('#sent li')).toHaveText([JSON.stringify({ text: 'Let’s talk about this document: demo.md', attachments: [{ kind: 'cyfs-path', path: 'cyfs://' + path }] })])
+  await expect(panel).toHaveAttribute('data-session', 'session-from-editor')
+  await page.getByRole('button', { name: 'Close the conversation' }).click()
+  await expect(panel).toHaveCount(0)
+})

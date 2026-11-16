@@ -19,7 +19,7 @@ import type {
 } from './types'
 import { HubAvatar } from './HubAvatar'
 import { EntityListHeader, type HeaderMenuItem, type HubIdentity } from './EntityListHeader'
-import { hubButtonClass } from './SessionDialogs'
+import { hubButtonClass } from '../../components/conversation/DialogFocus'
 
 /** Pin and mute apply to every session of the chosen entities. */
 export type EntityPreferencePatch = { pinned: boolean } | { muted: boolean }

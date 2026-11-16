@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, LoaderCircle } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { mockReadWorkSession } from '../mock/worksessions'
-import { isMessageHubMock } from '../../../app/messagehub/store'
+import { isMockRuntime } from '../../../runtime'
 import { MessageMarkdown } from '../history/MessageMarkdown'
 import { useTaskSummary } from '../tasks'
 import { TaskDetailsBody } from '../tasks/MessageTask'
@@ -141,7 +141,7 @@ function WorkInfo({ target, card }: { target: WorklogTarget; card?: WorkCard }) 
   const [full, setFull] = useState(false)
   useEffect(() => {
     let cancelled = false
-    void (isMessageHubMock() ? mockReadWorkSession : readWorkSession)(target.agentDid, target.sessionId).then(value => { if (!cancelled) setInfo({ value }) }, () => { if (!cancelled) setInfo({ failed: true }) })
+    void (isMockRuntime() ? mockReadWorkSession : readWorkSession)(target.agentDid, target.sessionId).then(value => { if (!cancelled) setInfo({ value }) }, () => { if (!cancelled) setInfo({ failed: true }) })
     return () => { cancelled = true }
   }, [target.agentDid, target.sessionId])
   const view = info.value

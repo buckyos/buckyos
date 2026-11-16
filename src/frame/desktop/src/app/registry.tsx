@@ -9,6 +9,7 @@ import type { AppContentLoader, AppContentLoaderProps, DesktopAppItem } from './
 import { desktopCatalogIdForLogicalApp } from './backend-apps'
 import { UnsupportedAppPanel } from './unsupported/UnsupportedAppPanel'
 import { LoadingOrb } from '../components/LoadingOrb'
+import { registerAgentSessionEntry } from './messagehub/agentpanel/entries'
 
 // Every app panel is code-split: the desktop shell only needs the loader
 // table at boot, and the panel module is fetched the first time a window for
@@ -27,6 +28,9 @@ const SystestAppPanel = lazyPanel(
 )
 
 const WebAppFramePanel = lazyPanel(() => import('./web-frame/WebAppFramePanel'), m => m.WebAppFramePanel)
+
+// The Agent browser's line in MessageHub's Agent panel (S5), loaded with the panel that shows it.
+registerAgentSessionEntry('agent-browser', lazy(() => import('./agent-browser/conversation/AgentBrowserEntry').then((m) => ({ default: m.AgentBrowserEntry }))))
 
 const appLoaders: Record<string, AppContentLoader> = {
   'agent-setup': lazyPanel(() => import('./agent-setup/AgentSetupAppPanel'), (m) => m.AgentSetupAppPanel),

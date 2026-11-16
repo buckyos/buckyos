@@ -22,6 +22,15 @@ export default defineConfig([
     },
   },
   {
+    // The conversation component does not depend on the apps (notepads/conversation-ui-component-todo.md C8): MessageHub
+    // and the other hosts use it, never the other way round. backend.ts is its one registration point.
+    files: ['src/components/conversation/**/*.{ts,tsx}'],
+    ignores: ['src/components/conversation/backend.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [{ group: ['**/app', '**/app/**'], message: 'components/conversation must not import app/** (go through components/conversation/backend.ts).' }] }],
+    },
+  },
+  {
     // Playwright / Deno tests are not React code: `use` in a fixture is the
     // Playwright fixture callback, `({}, use) => …` is the documented fixture
     // signature, and the specs poke at untyped page globals.

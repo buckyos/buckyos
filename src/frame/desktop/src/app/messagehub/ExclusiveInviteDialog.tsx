@@ -3,7 +3,7 @@ import { accessDenialOf, type AccessDenial } from 'buckyos'
 import { createExclusiveInvite, type ExclusiveInviteLink } from '../../api/sso'
 import { DenialNotice } from '../../sso/DenialNotice'
 import { OneTimeLink } from '../../sso/OneTimeLink'
-import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
+import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from '../../components/conversation/DialogFocus'
 import { isCustomerUserId, suggestCustomerUserId } from './guest/model'
 import { useGuestText } from './guest/text'
 

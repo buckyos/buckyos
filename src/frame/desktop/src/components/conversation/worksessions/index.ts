@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { mockWorkCardsSource, mockWorkCards } from '../mock/worksessions'
-import { isMessageHubMock } from '../../../app/messagehub/store'
+import { isMockRuntime } from '../../../runtime'
 import { ChoiceMemory, getTaskWatchSource, useRememberedChoice } from '../tasks'
 import { workCardsSource, type WorkCardsRequest } from './source'
 import { WorkCardsWatch, workCardsKey, type WorkCardsSnapshot } from './watch'
@@ -10,7 +10,7 @@ let instance: WorkCardsWatch | null = null
 /** One work-card cache for every MessageHub view; tree hints come from the shared TaskMgr watch source. */
 export function getWorkCardsWatch(): WorkCardsWatch {
   if (instance) return instance
-  const mock = isMessageHubMock()
+  const mock = isMockRuntime()
   const watch = new WorkCardsWatch(mock ? mockWorkCardsSource : workCardsSource, getTaskWatchSource())
   instance = watch
   if (typeof window !== 'undefined') {

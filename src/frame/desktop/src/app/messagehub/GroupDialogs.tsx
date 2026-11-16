@@ -5,7 +5,7 @@ import { peoplePickerInputSchema, type PickedPerson } from '../../components/net
 import { defaultGroupName, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT } from './groupModel'
 import { groupErrorText, isAgentGroupDisabled } from '../../components/conversation/model/groupNotice'
 import { AgentGroupSettingsLink } from './AgentGroupSettingsLink'
-import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
+import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from '../../components/conversation/DialogFocus'
 import { useMessageHubStore } from './store'
 import type { MessageHubContext } from './types'
 

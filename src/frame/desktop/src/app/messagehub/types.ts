@@ -1,7 +1,7 @@
 import type { GroupDisplayInfo, GroupHookInfo, GroupPanelRef } from './extensions/model'
-import type { GroupInvitation, GroupInvitationView, GroupRole, ReadReceipt, SessionPanelInfo } from '../../components/conversation/model/types'
+import type { GroupInvitation, GroupInvitationView, GroupRole, PinnedMessage, ReadReceipt, RuntimeState, SessionAccess, SessionPanelInfo } from '../../components/conversation/model/types'
 
-export type { GroupInvitation, GroupInvitationView, GroupRole, ReadReceipt, SessionPanelInfo }
+export type { GroupInvitation, GroupInvitationView, GroupRole, PinnedMessage, ReadReceipt, RuntimeState, SessionAccess, SessionPanelInfo }
 
 /* ── Entity ── */
 
@@ -96,15 +96,6 @@ export interface Session {
   panel?: SessionPanelInfo
 }
 
-/** Snapshot of the message a viewer pinned to the top of a session. */
-export interface PinnedMessage {
-  /** `messageObjId` of the pinned message. */
-  id: string
-  text: string
-  senderDid: string
-  createdAt: number
-}
-
 /* ── Entity Details ── */
 
 export interface EntityDetail extends Entity {
@@ -152,16 +143,6 @@ export type SessionBinding =
   | { kind: 'tunnel'; tunnelInstanceId: string; endpointDid: string; connectionName: string; remoteContextId?: string; supportsMultipleSessions: boolean; canCreateRemoteSession: boolean; canSend: boolean; connected: boolean; revision?: number }
   | { kind: 'unknown' }
 
-export interface SessionAccess {
-  mode: 'read_only' | 'read_write'
-  canManage: boolean
-  canEnableWrite: boolean
-  canEditPresentation: boolean
-  canEditSharedState: boolean
-  canEditOwnMemberState: boolean
-  readOnlyReason?: string
-}
-
 export interface SessionPreferences {
   title: string
   /** The owner's own description of the session (`ui.description`). */
@@ -177,13 +158,6 @@ export interface MessageHubContext {
   viewerDid: string
   ownerDid: string
   mode: 'self' | 'observe'
-}
-
-export interface RuntimeState {
-  memberDid: string
-  status: 'typing' | 'processing' | 'active'
-  statusLine?: string
-  expiresAt: number
 }
 
 /* ── Self-host Group v2 ── */

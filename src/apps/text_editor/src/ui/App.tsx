@@ -7,7 +7,7 @@ import { languages } from '../editor/languages.ts'
 import { extractOutline, type OutlineItem } from '../editor/outline/index.ts'
 import { Workspace, dirty, type EditorDocument, type Group } from '../model/workspace.ts'
 import { translate } from '../i18n/index.ts'
-import { PreviewEmbed, type PreviewEmbedState } from 'buckyos/app-frame'
+import { ConversationEmbed, PreviewEmbed, type ConversationEmbedState, type PreviewEmbedState } from 'buckyos/app-frame'
 
 export const controllers = new Map<string, DocumentEditor>()
 export let activeView: EditorView | undefined
@@ -44,11 +44,42 @@ function PreviewPane({ workspace: w, doc }: { workspace: Workspace; doc: EditorD
     <iframe ref={frame} src={embed.url} title={`${t('preview')}: ${doc.name}`} allow="fullscreen" />
   </div>
 }
+/**
+ * "Discuss with Agent" (Q9): the system conversation with the user's Agent, embedded beside the editor
+ * (`buckyos.conversation-embed`). The conversation is the one this App started; asking about a document sends a
+ * message that names it, in the user's name.
+ */
+function AgentPanel({ workspace: w, ask, onClose }: { workspace: Workspace; ask: { serial: number; doc?: EditorDocument }; onClose: () => void }) {
+  const frame = useRef<HTMLIFrameElement>(null)
+  const [state, setState] = useState<ConversationEmbedState>({ status: 'loading' })
+  const t = (key: string) => translate(w.locale, key)
+  const [embed] = useState(() => new ConversationEmbed({ systemOrigin: w.systemOrigin, frame: () => frame.current,
+    init: { target: { kind: 'agent' }, theme: w.theme === 'dark' ? 'dark' : 'light', locale: w.locale, placeholder: t('discussPlaceholder') },
+    onState: setState }))
+  useEffect(() => () => embed.dispose(), [embed])
+  useEffect(() => { embed.update({ theme: w.theme === 'dark' ? 'dark' : 'light', locale: w.locale }) }, [embed, w.theme, w.locale])
+  const asked = useRef(0)
+  useEffect(() => {
+    const doc = ask.doc
+    if (!doc || asked.current === ask.serial) return
+    asked.current = ask.serial
+    embed.send({ text: translate(w.locale, 'discussIntro').replace('{{name}}', doc.name), ...(doc.source ? { attachments: [doc.source] } : {}) })
+  }, [embed, ask, w.locale])
+  return <aside className="agent-panel" aria-label={t('discussTitle')} data-status={state.status} data-session={state.sessionId}>
+    <header><h2>{t('discussTitle')}</h2><button onClick={onClose} aria-label={t('discussClose')} title={t('discussClose')}>×</button></header>
+    <iframe ref={frame} src={embed.url} title={t('discussTitle')} />
+  </aside>
+}
 export function App({ workspace: w }: { workspace: Workspace }) {
   useSyncExternalStore(w.subscribe, w.getSnapshot)
   const [menu, setMenu] = useState(false)
   const [cursor, setCursor] = useState(0)
   const [outline, setOutline] = useState<OutlineItem[]>([])
+  const [agent, setAgent] = useState<{ serial: number; doc?: EditorDocument } | null>(null)
+  const discuss = (doc?: EditorDocument) => {
+    if (!w.systemOrigin) { w.notify('discussUnavailable'); return }
+    setAgent(previous => ({ serial: (previous?.serial ?? 0) + 1, doc: doc && !doc.preview?.draft ? doc : undefined }))
+  }
   const t = (key: string) => translate(w.locale, key)
   const doc = w.active
   const refreshCursor = () => setCursor(v => v + 1)
@@ -135,13 +166,14 @@ export function App({ workspace: w }: { workspace: Workspace }) {
           {group.active && w.documents.get(group.active)?.preview ? <PreviewPane key={`${group.active}:${w.documents.get(group.active)!.preview!.serial}`} workspace={w} doc={w.documents.get(group.active)!} /> : group.active && w.documents.has(group.active) ? <Editor workspace={w} doc={w.documents.get(group.active)!} group={group} onCursor={refreshCursor} /> : <div className="welcome"><div className="wordmark">Aa<span>_</span></div><h1>{t('title')}</h1><p className="muted">{t('empty')}</p><div className="welcome-actions"><button onClick={() => w.newDocument()}>{t('new')} <kbd>Alt N</kbd></button><button onClick={openLocation}>{t('open')} <kbd>↗</kbd></button><button onClick={() => { w.panel = 'buffers'; w.run(w.refreshRecords()) }}>{t('buffers')} <span>{w.abandoned.length}</span></button><button onClick={() => { w.panel = 'recovery'; w.run(w.refreshRecords()) }}>{t('recovery')}</button></div>{w.recent.length > 0 && <><h2>{t('recent')}</h2>{w.recent.map(source => <button className="recent" key={contentRefString(source)} onClick={() => w.run(w.open({ requestId: crypto.randomUUID(), source }))}>{contentRefString(source)}</button>)}</>}</div>}
         </section>)}
       </section>
+      {agent && <AgentPanel workspace={w} ask={agent} onClose={() => setAgent(null)} />}
     </div>
     {menu && <div className="menu" role="menu">{[
       ['new', () => w.newDocument()], ['open', openLocation], ['save', () => w.run(w.save())], ['saveAs', saveAs], ['close', () => doc && w.run(w.close(doc))],
       ['single', () => w.split('single')], ['columns', () => w.split('columns-2')], ['rows', () => w.split('rows-2')], ['quick', () => { w.panel = 'quick'; w.emit() }],
       ['find', () => activeView && openSearchPanel(activeView)], ['goto', () => activeView && gotoLine(activeView)],
       ['buffers', () => { w.panel = 'buffers'; w.run(w.refreshRecords()) }], ['recovery', () => { w.panel = 'recovery'; w.run(w.refreshRecords()) }], ['settings', () => { w.panel = 'settings'; w.emit() }],
-      ['files', () => { w.sidebar = !w.sidebar; w.emit() }], ['reload', () => doc && w.run(w.reload(doc))], ['preview', () => w.previewOf(doc)],
+      ['files', () => { w.sidebar = !w.sidebar; w.emit() }], ['reload', () => doc && w.run(w.reload(doc))], ['preview', () => w.previewOf(doc)], ['discuss', () => discuss(doc)],
     ].map(([key, fn]) => <button role="menuitem" key={String(key)} onClick={() => action(fn as () => void)}>{t(String(key))}</button>)}</div>}
     <footer><button aria-label={t('files')} onClick={() => { w.sidebar = !w.sidebar; w.emit() }}>▤</button><span>{t('line')} {line?.number ?? 1}, {t('column')} {position - (line?.from ?? 0) + 1}{state && !state.selection.main.empty ? ` · ${state.selection.main.to - state.selection.main.from} ${t('selected')}` : ''}</span>
       {doc && !doc.preview && <><select aria-label={t('encoding')} value={doc.encoding} onChange={e => { const encoding = e.target.value; if (['utf-8', 'utf-16le', 'utf-16be'].includes(encoding)) w.convertEncoding(doc, encoding); else w.run(w.reload(doc, encoding)) }}>{['utf-8', 'utf-16le', 'utf-16be', 'gb18030', 'big5', 'shift_jis', 'euc-kr', 'windows-1252'].map(c => <option key={c}>{c}</option>)}</select>

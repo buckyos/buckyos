@@ -70,7 +70,7 @@ UI DataModel 层（本文档定义，UI 需求驱动）
 | Panel C 会话详情 | `SessionDetails` | `Session` + `SessionAccess` + `SessionPreferences` |
 | 创建 / 归档 / 删除 | `SessionDialogs` | Zod 输入模型 + WindowDialogProvider |
 | 发起聊天 | `NewChatDialog` | `Entity[]` + `contact.lookup` 候选，见 §4.1.2 |
-| 会话内搜索 | `conversation/search/ConversationSearchBar` | 已加载时间线的行 + `loadOlder`，见 §5.3.1 |
+| 会话内搜索 | `components/conversation/search/ConversationSearchBar` | 已加载时间线的行 + `loadOlder`，见 §5.3.1 |
 | 参与者资料 | 系统对话框 `sysdlg/entity_info`（桌面）/ `ProfileDetails`（触屏详情页） | `components/network/EntityInfo`，见 §3.5.8 |
 
 ### 1.4a 2026-09-06 已落地原型（本节时间口径优先）
@@ -531,7 +531,7 @@ Agent 观察则连展示配置、已读、草稿都不能写入。后续代 Agen
 
 #### 3.3.6 会话浮动面板（Session Panel，2026-10-04）
 
-会话历史顶部可选的浮动面板（`conversation/SessionPanel.tsx`），没有内容时不渲染。折叠态最多三行文本高
+会话历史顶部可选的浮动面板（`components/conversation/SessionPanel.tsx`），没有内容时不渲染。折叠态最多三行文本高
 （标题一行，字段一行，正文占余下行并截断）；内容超出或带自定义内容时出现展开按钮，展开后显示全部字段、
 全文与自定义内容（最高 50vh，内部滚动）。折叠高度作为历史列表的顶部留白（`topInset`），首屏消息不被遮挡。
 
@@ -697,7 +697,7 @@ caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片
 （2026-11-11 起；以前附件在正文上方，Agent 回复带产物时要先翻过附件才看到结论）。
 类型在对象解析前按文件名判断，解析后以对象信息为准。
 
-附件（`conversation/media/`）与 Preview 的集成：
+附件（`components/conversation/media/`）与 Preview 的集成：
 
 - 每个 `data_obj` 引用映射为 Preview 的宿主 Source（`kind: 'messagehub-object'`，`value: { objId | uri, name, reference }`），
   由 MessageHub 注册的 Source Resolver 经 `ObjectAccess`（真实模式为 msg-center 对象路由，mock 模式为 `mock/objects.ts`）解析；
@@ -706,7 +706,7 @@ caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片
   （`components/preview/thumbnail.ts`：Pipeline `purpose: thumbnail` → 不可用时对 Runtime 可播放的视频截取一帧）；其余为文件卡片。
 - 点击任一附件打开 Preview：默认在 MessageHub 窗口内弹出 Preview Component（Esc / 关闭按钮 / 点击遮罩退出）；
   图片与视频以当前会话已加载的图片/视频为 Session（provider 形式，`navigation: bounded`），文件单独打开。
-- 媒体设置（`conversation/media/settings.ts`，localStorage `buckyos.messagehub.media.v1`）：`previewTarget: overlay | window`
+- 媒体设置（`components/conversation/media/settings.ts`，localStorage `buckyos.messagehub.media.v1`）：`previewTarget: overlay | window`
   （`window` 交给 Preview App，仅桌面窗口内可用）与 `autoplayGif`（关闭后消息流只显示 GIF 首帧）。
 - 显示加载、不可用、无权限与重试状态；单个附件失败不隐藏正文或其它引用；`service_did` 引用保留原样显示。
 - 其他 Zone 发来的附件（`objectFailure` 按对象路由的状态和正文分类）：读取慢于 1.2 秒显示“正在从对方 Zone 获取”；`api/objects.ts` 按 `Retry-After` 自动重试（拉取中最多 12 次，来源不可达最多 2 次），之后才显示不可用加重试。发送方未接受显示“接受后可查看附件”，不算失败，联系人变化后自动重新读取。目录（415）、超限（413）、校验失败（502）说明原因，不提供重试。卡片只取描述：描述带 `remote` 时视频不生成缩略图，点击后才下载，图片照旧在渲染时取内容。
@@ -764,14 +764,14 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 
 协议见 `doc/message_hub/Message Center.md` §2.1.1。UI 侧约定：
 
-**有效内容（`conversation/history/relations.ts`）**
+**有效内容（`components/conversation/history/relations.ts`）**
 
 - `foldMessageRelations` 把 `edit` 折叠到目标消息：`ui_relations.edited = { content: MsgContent, at, edits[] }`。`effectiveContent(message)` 返回最新一次编辑的完整 `MsgContent`，没有编辑时就是原内容；`displayedContent` / `messageSummaryText` 都从它取值。渲染器（`renderers.tsx`）、媒体会话（`media/source.ts`）、复制 / 转发 / 置顶 / 引用预览都读有效内容：格式、附件和 machine 部分随编辑整体替换。
 - 锚点不变：气泡的 ObjId（`messageObjId`）、时间线位置、发送时间和 `agent_task` 都取自原消息。
 - 忽略的编辑：作者与原消息不同；目标已被撤回（`redacted` 存在时丢弃 `edited`）；目标本身是一条 edit（最终 edit 始终指向原锚点）。edit 先于原消息到达、重复到达都得到同一结果；只加载到 edit 而原消息不在已加载历史里时，这条 edit 不成行也不折叠。
 - `messageAgentTaskId(message)`（`protocol/msgobj.ts`）只从非 edit 的消息上读取 `agent_task.task_id`，格式不对返回 `undefined`。
 
-**任务缓存（`conversation/tasks/taskWatch.ts` 的 `TaskWatch`，单例 `getTaskWatch()`）**
+**任务缓存（`components/conversation/tasks/taskWatch.ts` 的 `TaskWatch`，单例 `getTaskWatch()`）**
 
 - 数据源 `TaskWatchSource`（`src/api/task_mgr.ts` 的 `createTaskWatchSource()`，mock 为 `mock/tasks.ts`）：`getTask` / `getSubtasks` / `listEvents` / `subscribe('task' | 'tree')`，用登录用户自己的 TaskMgr 权限，不走 Task Center 的全量列表。
 - `watch(taskId)`：按 task_id 引用计数，已挂载的气泡共享一份快照和一个 `/obj/taskmgr/<id>/changed` 订阅。摘要 = task 本身 + 直接子任务第一页（20 条，用于计数和判断是否有子任务）。事件只是“重读”提示；同时有退避轮询兜底（2s → 30s，连续 120 次无新 revision 或 6 次失败后停止轮询，订阅保留）；比缓存 revision 旧的应答被丢弃；并发读上限 4，单次读 10s 超时。
@@ -780,7 +780,7 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 - 断线：`online` 与页面重新可见时 `resync()` 对未收敛的 task 补读。读失败但已有快照时标 `stale`。
 - 消息侧刷新仍只靠 msg-center `box_changed` + 轮询；TaskMgr 事件只刷新任务区，不产生消息、未读或通知。
 
-**气泡任务区（`conversation/tasks/MessageTask.tsx` 的 `MessageTaskArea`，规则在 `taskView.ts`）**
+**气泡任务区（`components/conversation/tasks/MessageTask.tsx` 的 `MessageTaskArea`，规则在 `taskView.ts`）**
 
 | 情况 | 展示 |
 |---|---|
@@ -796,7 +796,7 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 
 展开按钮显示本 Turn 的 task tree（节点状态、名称、简短活动、等待原因，逐层展开、分页加载）。task_id 不出现在气泡里。
 
-**work session 卡片（`conversation/worksessions/`，2026-11-02，`notepads/done/messagehub-worksession-ui-todo.md`）**
+**work session 卡片（`components/conversation/worksessions/`，2026-11-02，`notepads/done/messagehub-worksession-ui-todo.md`）**
 
 UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`renderers.tsx` 的任务区位置渲染 `MessageAgentWork`，有卡片时显示卡片树，否则仍是上面的 `MessageTaskArea`。Q/A 列表位置不变。
 
@@ -808,7 +808,7 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 - 失败：从未成功过 → 原任务区，按 3 s、6 s、12 s 退避自己重试（已结束的 Turn 不会再有 tree 提示），提示也会触发重读，连续 4 次失败后放弃；成功过之后失败 → 沿用上次结果并标 stale（图标停转，第 2 行加“状态可能已过期”），连续 6 次失败后停轮询，提示仍会重读。
 - 点击：整张卡 `role=button`（Enter / Space）。`openDetails(message, {target: {agentDid, sessionId}, title, card})` 打开详情的「工作日志」页签，显示该 session 的连续日志（`session.worklog` 不带 `turn`），返回回到 Turn 日志；头部「工作内容」折叠块读 `session.read {sid, worklog: 0, report: true}`：objective、创建时间、runtime / workspace、按模型分列的 token（来自卡片的 `usage.models`）、结束后的报告。
 
-**通用消息详情与 Turn 工作日志（`MessageDetails.tsx`、`conversation/worklog/`）**
+**通用消息详情与 Turn 工作日志（`MessageDetails.tsx`、`components/conversation/worklog/`）**
 
 - 入口：点击气泡（链接、附件、按钮、展开按钮和选中文本各自照常工作）、悬停栏 / 触屏菜单的「详情」图标（testid `message-details`）、聚焦气泡后按 Enter。观察模式同样可用（只读）。
 - Agent 消息默认打开「工作日志」页签：`agent_task.task_id` → `get_task.input.{agent_did,session_id,turn}` → `session.worklog`，严格定位此消息对应的 turn。只解释 `opendan.agent_turn/v1`，没有绑定或读不到 task 时给出说明；普通消息仍直接展示消息详情。
@@ -851,17 +851,17 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 - 回答 A（`buildAgentAskAnswer()`）：正文 = 输入文字或所选 label；总是 `relates_to = {rel: 'thread', target: anchor}`，没有 anchor 时 target = Q 自己（`agentAskTarget()`）；选项回答再带 `content.machine = {intent: 'agent_ask.answer', data: {call_id, option}}`。群会话里回答还带 `mentions = {dids: [提问者]}`（OpenDAN 群桥只收提及它的群消息）。
 - 谁读 / 谁忽略：`agent_ask` 只有 MessageHub（输入态、折叠）和发出它的 Agent 关心；`agent_ask.answer` 只是 Agent 的线索（`option`、`in_reply_to_question`），Agent 等待期间收到的下一条消息无论带不带它都是答案。其它客户端与 tunnel 把两者当作普通消息的不透明字段原样传递，读到的是正文。
 
-**问答折叠（`conversation/history/relations.ts` 的 `foldMessageRelations` → `foldAgentQuestions`）**
+**问答折叠（`components/conversation/history/relations.ts` 的 `foldMessageRelations` → `foldAgentQuestions`）**
 
 - `thread` 消息的目标是更早的、带 `agent_task` 的锚点（P，或被 edit 成 R 后的同一行）时，以下两种不占独立行，归入锚点的 `ui_relations.thread = [{id, from, senderName?, content, at, agent_ask?, option?, redacted?}]`（时间线顺序；`content` 是该条的有效内容）：
   - 问题：带 `agent_ask` 且发送者是锚点作者；
   - 回答：带 `agent_ask.answer` 的消息，或锚点有未答问题时、提问者以外的人发来的下一条 `thread` 消息。
 - 其它回复（没有未答问题时对 Agent 消息的回复、提问者自己的补充、对普通消息的回复）照旧占一行并引用目标。对 Q/A 的 edit / redact 照常折叠进该条（撤回的显示“消息已撤回”）。
 - 渲染（`AgentQuestions.tsx`，气泡内任务区下方）：标题“▸ N 条问答”可展开 / 收起；问题显示去掉选项列表的正文，选项问题另列选项，下一条回答选中的那项高亮；用户的回答带左侧色条。
-- 默认展开态取自时间线：锚点还没有 edit（Turn 未回复）→ 展开；最终 edit 到达 → 收起。用户手动展开 / 收起后按 viewer 记在本浏览器 `localStorage`（`buckyos.messagehub.qaExpanded.v1`，每个 viewer 最多记 200 个锚点，读写异常时只在本页生效），之后不再随默认值变化。实现与任务区展开态同在 `conversation/tasks/index.ts`（`useQaExpanded`）。
+- 默认展开态取自时间线：锚点还没有 edit（Turn 未回复）→ 展开；最终 edit 到达 → 收起。用户手动展开 / 收起后按 viewer 记在本浏览器 `localStorage`（`buckyos.messagehub.qaExpanded.v1`，每个 viewer 最多记 200 个锚点，读写异常时只在本页生效），之后不再随默认值变化。实现与任务区展开态同在 `components/conversation/tasks/index.ts`（`useQaExpanded`）。
 - 未读：`markRead` 把可见锚点下折叠的 Q/A 记录（`threadMessagesOf`）一并标为已读；历史面板在锚点新折进一条 Q/A 后重新上报可见消息。消息链接（`messageId`）指向折叠的 Q/A 时找不到对应行（未处理）。
 
-**会话输入态（`conversation/input/inputState.ts` 的 `conversationInputState`）**
+**会话输入态（`components/conversation/input/inputState.ts` 的 `conversationInputState`）**
 
 输入框的样式与目标由会话逻辑决定，不只是用户手动选的回复 / 编辑。目前只有一个来源：
 
@@ -958,7 +958,7 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 适用范围：对方是**查看者自己名下的 Agent**、且查看的是自己的消息（`store.isOwnAgent(context, entityId)`：real 取 `agent.list` 得到的 `agentDids`，
 观察模式和别人的 Agent 都为假）。其余会话的入口、详情栏和输入框不变。群和联系人的侧栏不在这一轮。
 
-**数据来源**。面板和控制都直接调 Agent 自己的 OpenDAN 服务（`conversation/worklog/source.ts` 的 `agentServiceClient(agentDid)`，
+**数据来源**。面板和控制都直接调 Agent 自己的 OpenDAN 服务（`components/conversation/worklog/source.ts` 的 `agentServiceClient(agentDid)`，
 用登录者自己的权限，只有 Agent 的 owner 调得通），封装在 `agentpanel/source.ts` 的 `AgentPanelSource`（mock：`mock/agentpanel.ts`，
 测试经 `window.__messageHubMockAgent` 驱动）。类型和解析在 `agentpanel/model.ts`；解析失败、身份不符都当读取失败。
 
@@ -982,7 +982,7 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 第几代对话（`generationNumber`）、子会话树、「开始新对话」、近期产物（默认收起）、高级信息（提示词版本，默认收起）、
 会话详情（原 `SessionDetails` 的全部内容，`embedded`，默认收起）、资料与权限（原 `EntityDetails` 的内容，`embedded`，默认收起）。
 
-**前台消息状态**（`conversation/input/foregroundState.ts`，纯函数）。`latestTurnAnchor(timeline, viewerDid)` 取时间线上最新一条
+**前台消息状态**（`components/conversation/input/foregroundState.ts`，纯函数）。`latestTurnAnchor(timeline, viewerDid)` 取时间线上最新一条
 带 `agent_task` 的对方消息（不算关系消息、自己的消息、已撤回的占位）；`turnMode(task)` 由它的 TaskMgr task 得出：
 
 | task | `ForegroundMode` | 输入框 |
@@ -996,7 +996,7 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 已提交未发出的保持排队（`ConversationComposer` 的 `sendBlocked`）。输入框上方的一行（`composer-blocked`）写明原因并带下面的控制按钮。
 「开始新对话」调用期间同样禁用（`sendBlockedReason`）。
 
-**前台 Turn 的控制**（`conversation/tasks/TurnControls.tsx`，只出现在输入框上方的 `composer-blocked` 一行，针对前台那条占位；
+**前台 Turn 的控制**（`components/conversation/tasks/TurnControls.tsx`，只出现在输入框上方的 `composer-blocked` 一行，针对前台那条占位；
 占位消息的任务区和工作卡片区不带这组按钮（v0.19 起，按钮挤在气泡里难看，输入框上的一组就够）；只对 Agent 的 owner，
 由 `ConversationMessageActions.agentTurn` 开启）。Session id 与 Agent DID 取自 Turn task 的 input（`taskWorklogTarget`）。
 
@@ -1039,7 +1039,7 @@ Todo 绑定的会话和更深的节点下面的内容默认收起（`work-branch
 
 ### 3.6 会话时间线投影模型
 
-当前原型接口如下（`conversation/history/types.ts`）；真实接入需补 §6.6 的记录更新与分页能力：
+当前原型接口如下（`components/conversation/history/types.ts`）；真实接入需补 §6.6 的记录更新与分页能力：
 
 ```ts
 export interface ConversationMessageReader {
@@ -1102,7 +1102,7 @@ Reader 的三种实现：
 ### 3.7 Self-host Group v2（2026-10-01 接入）
 
 依据 `doc/message_hub/Self-Host-Groupv2.md`、`src/frame/msg_center/doc/group-v2-backend.md` 与 2026-10-01 的「取消成员 proof」契约（`notepads/done/messagehub-group-v2-todo.md` §2.2）。
-纯规则在 `groupModel.ts`（通知解析、错误码、邀请链接、编辑窗口）和 `conversation/history/relations.ts`（消息关系折叠）；
+纯规则在 `groupModel.ts`（邀请链接、成员排序）、`components/conversation/model/groupNotice.ts`（通知解析、错误码、编辑窗口）和 `components/conversation/history/relations.ts`（消息关系折叠）；
 store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup / updateGroupProfile / inviteGroupMembers / removeGroupMember / approveGroupMember / rejectGroupMember / updateGroupMemberRole / moderateGroupMember / transferGroupOwner / cancelGroupOwnerTransfer / acceptGroupOwnerTransfer / createGroupInviteLink / revokeGroupInviteLink / requestGroupJoin / leaveGroup / deleteGroup / groupInvitation / acceptGroupInvitation / manageGroupSession / groupSessionMembers / ensureGroupSessionMembers / addGroupSessionMembers / removeGroupSessionMember / leaveGroupSession / inviteGroupSessionGuest / acceptGroupSessionInvitation / readReceipt`。
 
 **信任与同意**：入群不需要成员签名的 proof，只看群一方（Owner / Admin 的邀请、邀请链接、`join_policy`）和成员一方（本人在卡片上接受；好友邀请由 msg-center 自动接受；Agent 只自动接受其 owner 的邀请，其他人的邀请由 owner 代为接受）是否同意。请求认证只用登录 token。
@@ -1371,7 +1371,7 @@ export const uiSessionStateSchema = z.object({
   'ui.draft': z.string().max(32_768).optional(),
   /** 客户端已读水位（sort_key）。用于跨端对齐未读分割线。 */
   'ui.last_read_sort_key': z.number().int().nonnegative().optional(),
-  /** 这个会话是在哪个 App 里新建的。现在只有「Agent 浏览器」写 `agent-browser`（它的事情列表只列带这个标记的会话）。 */
+  /** 这个会话是哪个 App 新建的，值是 App 的 id：Agent 浏览器写 `agent-browser`（它的事情列表只列带这个标记的会话），内嵌会话页 `/embed/conversation` 写嵌入方 App 的 id。读写在 `components/conversation/agentSessions.ts`。 */
   'ui.source': z.string().trim().min(1).max(64).optional(),
 })
 

@@ -8,7 +8,7 @@ import { networkErrorText } from '../../components/network/relation'
 import type { LookupCandidate } from '../../components/network/types'
 import { rankEntities } from './entitySearch'
 import { HubAvatar } from './HubAvatar'
-import { DialogFocus, hubButtonClass, hubPrimaryButtonClass } from './SessionDialogs'
+import { DialogFocus, hubButtonClass, hubPrimaryButtonClass } from '../../components/conversation/DialogFocus'
 import { useMessageHubStore } from './store'
 import type { Entity, MessageHubContext } from './types'
 

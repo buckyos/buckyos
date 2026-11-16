@@ -1,6 +1,6 @@
 # 会话 UI 公共组件化 TODO
 
-> 状态：立项，未实施；§5 的 Q1–Q9 待裁决。现状核实于 2026-11-15（buckyos `e1a44183e`、buckyos-websdk `03d2dde`），下文行号以这两个提交为准。
+> 状态：2026-11-15 已实施（分支 `feat/conversation-component`，websdk 分支 `feat/conversation-embed`），§5 按“建议”一栏裁决，Q8 选了保留并改用 `ConversationSurface`；实施记录见 §7。§1 的现状核实于 2026-11-15（buckyos `e1a44183e`、buckyos-websdk `03d2dde`），行号以这两个提交为准。
 >
 > 起因：Agent 浏览器（`e1a44183e`）要在自己的界面里显示和 Agent 的对话。系统里没有能嵌入的会话组件，于是它把 MessageHub 的会话接线复制了一份（[ThingConversation.tsx](../src/frame/desktop/src/app/agent-browser/conversation/ThingConversation.tsx)），这已经是会话 UI 的第四份拼装（§1.1）。
 >
@@ -160,33 +160,33 @@ websdk 这一侧，`ConversationEmbed`（App 端）和 `ConversationEmbedHost`�
 
 ### 3.1 阶段一：组件落地，MessageHub 改用（不改行为）
 
-- [ ] **C1 搬家。** 把 `app/messagehub/conversation/` 整体移到 `components/conversation/`；会话要用到的纯模型（`protocol/msgobj`、`sessionModel` 里用到的函数、`friendNotice`、`groupModel` 的解析函数）一起搬过去，MessageHub 的其他文件改为从新位置引用。这一步只搬家、不改代码，单独提交，方便 review 和 bisect。
-- [ ] **C2 切断对 store 和 agentpanel 的引用**（§1.3 第 2、3 行）。时钟、上传状态、Agent 的停止和恢复改从 `ConversationSource` 取；tasks、worklog、worksessions 判断 mock 改用 `isMockRuntime`，和 `components/network/backend.ts` 的做法一致。`confirmDialog` 如果和 MessageHub 无关，就一起下沉。
-- [ ] **C3 渲染插槽。** `renderers.tsx` 对通知卡、群设置链接、好友关系的特化，改成按消息类型注册的渲染器，由 MessageHub 在启动时注册。其他宿主不注册时，这几类消息按普通消息显示。
-- [ ] **C4 抽出 `ConversationSurface`。** 把 `ConversationView` 里头部以下的部分（§0 列的那些）挪进去，`ConversationView` 只剩头部加 Surface。两份 `toOutgoing` 合成一份。消息操作的组装（`ConversationView.tsx:204-269`）变成一个函数，按 source 的能力和宿主给的回调决定开哪些操作。
-- [ ] **C5 `ConversationSource` 和 MessageHub 的适配。** 适配放在 `app/messagehub/conversationSource.ts`；MessageHubView 的 `conversationProps` 里只剩宿主相关的部分（打开详情、转发、打开实体、归档中的提示）。
-- [ ] **C6 `SessionConversation`。** 已绑定 store 的便捷组件，按 Q1 取得 store；自带 provider 和样式（§2.2）。
-- [ ] **C7 样式。** `messagehub.css` 里会话用到的类拆到 `components/conversation/conversation.css`，由组件自己引入。i18n 键见 Q6。
-- [ ] **C8 依赖方向检查。** 在 `eslint.config.js` 里对 `components/conversation/**` 加 `no-restricted-imports`，禁止引用 `app/**`（Q1 的注册点除外），让 `pnpm lint` 来守这条规则。
-- [ ] **C9 回归。** 先跑一遍基线并记下已经失败的用例；之后 `tests/e2e/pages/` 下的 `messagehub*.spec.ts`（18 个文件，含访客页）和 `agent-browser.conversation.spec.ts` 在不改用例的情况下通过。
+- [x] **C1 搬家。** 把 `app/messagehub/conversation/` 整体移到 `components/conversation/`；会话要用到的纯模型（`protocol/msgobj`、`sessionModel` 里用到的函数、`friendNotice`、`groupModel` 的解析函数）一起搬过去，MessageHub 的其他文件改为从新位置引用。这一步只搬家、不改代码，单独提交，方便 review 和 bisect。
+- [x] **C2 切断对 store 和 agentpanel 的引用**（§1.3 第 2、3 行）。时钟、上传状态、Agent 的停止和恢复改从 `ConversationSource` 取；tasks、worklog、worksessions 判断 mock 改用 `isMockRuntime`，和 `components/network/backend.ts` 的做法一致。`confirmDialog` 如果和 MessageHub 无关，就一起下沉。
+- [x] **C3 渲染插槽。** `renderers.tsx` 对通知卡、群设置链接、好友关系的特化，改成按消息类型注册的渲染器，由 MessageHub 在启动时注册。其他宿主不注册时，这几类消息按普通消息显示。
+- [x] **C4 抽出 `ConversationSurface`。** 把 `ConversationView` 里头部以下的部分（§0 列的那些）挪进去，`ConversationView` 只剩头部加 Surface。两份 `toOutgoing` 合成一份。消息操作的组装（`ConversationView.tsx:204-269`）变成一个函数，按 source 的能力和宿主给的回调决定开哪些操作。
+- [x] **C5 `ConversationSource` 和 MessageHub 的适配。** 适配放在 `app/messagehub/conversationSource.ts`；MessageHubView 的 `conversationProps` 里只剩宿主相关的部分（打开详情、转发、打开实体、归档中的提示）。
+- [x] **C6 `SessionConversation`。** 已绑定 store 的便捷组件，按 Q1 取得 store；自带 provider 和样式（§2.2）。
+- [x] **C7 样式。** `messagehub.css` 里会话用到的类拆到 `components/conversation/conversation.css`，由组件自己引入。i18n 键见 Q6。
+- [x] **C8 依赖方向检查。** 在 `eslint.config.js` 里对 `components/conversation/**` 加 `no-restricted-imports`，禁止引用 `app/**`（Q1 的注册点除外），让 `pnpm lint` 来守这条规则。
+- [x] **C9 回归。** 先跑一遍基线并记下已经失败的用例；之后 `tests/e2e/pages/` 下的 `messagehub*.spec.ts`（18 个文件，含访客页）和 `agent-browser.conversation.spec.ts` 在不改用例的情况下通过。
 
 ### 3.2 阶段二：系统 App 改用
 
-- [ ] **S1 Agent 浏览器。** `ThingConversation` 里的 `SessionConversation`（:46）换成组件，`ConversationSheet` 和 `ConversationPanel` 不用改。能力补齐的范围按 Q7。
-- [ ] **S2 提取 `agentSessions.ts`**（§2.2）。agent-browser 的 `session.ts` 只留 `bind_default` 和交接消息；`marks.ts` 挪进通用模块，来源取值参数化。按来源列会话的开销见 Q5。
-- [ ] **S3 访客页。** `GuestConversation` 改成 `ConversationSurface` 加 guest source。这一步顺带验证 `ConversationSource` 没有被做成 `MessageHubStore` 的形状。
-- [ ] **S4 CodeAssistant**：按 Q8 处理。
-- [ ] **S5 Agent 面板的入口插槽。** `AgentSessionPanel` 去掉对 agent-browser 的直接引用，改成一张注册表（比如 `registerAgentSessionEntry`），Agent 浏览器在应用登记时把 `AgentBrowserEntry` 注册进去。这样 MessageHub 不再需要知道有哪些 App 往 Agent 面板里放东西。
+- [x] **S1 Agent 浏览器。** `ThingConversation` 里的 `SessionConversation`（:46）换成组件，`ConversationSheet` 和 `ConversationPanel` 不用改。能力补齐的范围按 Q7。
+- [x] **S2 提取 `agentSessions.ts`**（§2.2）。agent-browser 的 `session.ts` 只留 `bind_default` 和交接消息；`marks.ts` 挪进通用模块，来源取值参数化。按来源列会话的开销见 Q5。
+- [x] **S3 访客页。** `GuestConversation` 改成 `ConversationSurface` 加 guest source。这一步顺带验证 `ConversationSource` 没有被做成 `MessageHubStore` 的形状。
+- [x] **S4 CodeAssistant**：按 Q8 处理。
+- [x] **S5 Agent 面板的入口插槽。** `AgentSessionPanel` 去掉对 agent-browser 的直接引用，改成一张注册表（比如 `registerAgentSessionEntry`），Agent 浏览器在应用登记时把 `AgentBrowserEntry` 注册进去。这样 MessageHub 不再需要知道有哪些 App 往 Agent 面板里放东西。
 
 ### 3.3 阶段三：第三方 App 嵌入
 
-- [ ] **E1 系统页 `/embed/conversation`**（`ConversationEmbedApp`）。嵌入方校验同 `SelectEmbedApp` 的 `acceptEmbedder`，包括 mock 运行时下放行 localhost；origin 换成 App id 的规则先核实（§2.3 第 1 条）；`target` 的参数过 zod schema。
-- [ ] **E2 websdk。** 实现 `ConversationEmbed` 和 `ConversationEmbedHost`，导出类型并补单测，测试写法参照 `tests/preview_embed.test.ts`。改动涉及 websdk 的 `app-frame` 导出，`buckyos-build.py` 会从源码重新构建 SDK。
+- [x] **E1 系统页 `/embed/conversation`**（`ConversationEmbedApp`）。嵌入方校验同 `SelectEmbedApp` 的 `acceptEmbedder`，包括 mock 运行时下放行 localhost；origin 换成 App id 的规则先核实（§2.3 第 1 条）；`target` 的参数过 zod schema。
+- [x] **E2 websdk。** 实现 `ConversationEmbed` 和 `ConversationEmbedHost`，导出类型并补单测，测试写法参照 `tests/preview_embed.test.ts`。改动涉及 websdk 的 `app-frame` 导出，`buckyos-build.py` 会从源码重新构建 SDK。
 - [ ] **E3 窄屏。** 系统页在 360px 宽度和软键盘弹出时都要能用，iframe 里的 `visualViewport` 在 iOS 上的表现要实测。按产品原则以手机为准评估。
-- [ ] **E4 第一个真实调用方**，按 Q9。
-- [ ] **E5 文档和手册。** 在 doc/sdk 下补一节嵌入会话的用法。[`buckyos_app_dev`](../src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev/SKILL.md) 补一句：要和 Agent 对话就嵌入系统会话页，不要自己连 msg-center 拼界面。这属于 AGENTS 里的 cmd_skills 联动，要记录并验证。
-- [ ] **E6 mock 运行时。** 系统页在 mock 下可用，补一个 e2e：用一个假的 App 页面嵌入它，完成发送、回答和停止。
-- [ ] **E7 核实 §1.4 的前提。** 逐个检查 msg-center 的发送、会话列表、`ui_session.*` 对 App token 的处理。如果有入口不把 App 当作用户本人，就回头修改 §2.3 第 2 条和 Q2、Q3 的依据。
+- [x] **E4 第一个真实调用方**，按 Q9。
+- [x] **E5 文档和手册。** 在 doc/sdk 下补一节嵌入会话的用法。[`buckyos_app_dev`](../src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev/SKILL.md) 补一句：要和 Agent 对话就嵌入系统会话页，不要自己连 msg-center 拼界面。这属于 AGENTS 里的 cmd_skills 联动，要记录并验证。
+- [x] **E6 mock 运行时。** 系统页在 mock 下可用，补一个 e2e：用一个假的 App 页面嵌入它，完成发送、回答和停止。
+- [x] **E7 核实 §1.4 的前提。** 逐个检查 msg-center 的发送、会话列表、`ui_session.*` 对 App token 的处理。如果有入口不把 App 当作用户本人，就回头修改 §2.3 第 2 条和 Q2、Q3 的依据。
 
 ## 4. 不做和以后再做
 
@@ -216,3 +216,43 @@ websdk 这一侧，`ConversationEmbed`（App 端）和 `ConversationEmbedHost`�
 - **阶段三**：websdk 嵌入协议的单测，`/embed/conversation` 的 mock e2e（E6）。
 - **真实 Zone**：在 MessageHub、Agent 浏览器和 Text Editor 的嵌入里，各走一遍发送、回答 `ask_user`、停止 Turn、撤回输入。
 - **手机**：Agent 浏览器的底部弹层，以及嵌入页在窄屏和软键盘弹出时的表现。
+
+## 7. 实施记录（2026-11-15）
+
+**落点**
+
+| 项 | 位置 |
+|---|---|
+| 组件 | `src/frame/desktop/src/components/conversation/`：`ConversationSurface.tsx`（会话正文）、`source.ts`（`ConversationSource`）、`messageActions.ts`（消息操作按 source 能力和宿主回调组装）、`SessionConversation.tsx`、`agentSessions.ts`、`backend.ts`（唯一引用 `app/` 的注册点：MessageHub 数据层按需加载，Preview App 的窗口）、`embed/ConversationEmbedApp.tsx`、`conversation.css` |
+| 纯模型 | `components/conversation/model/`：`msgobj`、`activity`（原 sessionModel 的三个函数）、`groupNotice`（原 groupModel 的通知解析、错误码、时间窗）、`friendNotice`、`outgoing`（`OutgoingPayload`、上传状态、唯一一份 `toOutgoing`）、`types`；MessageHub 的 `types.ts`、`store/types.ts` 转出这些类型 |
+| MessageHub 适配 | `app/messagehub/conversationSource.tsx`（`useMessageHubConversationSource`，同时注册通知卡、好友请求、群通知三种渲染器，卡片本身在 `conversationCards.tsx`）、`conversationBackend.ts` + `conversationSessions.tsx`（Q1 a） |
+| C2 | 时钟走 `ConversationClockContext`（source 的 `clock`），Agent 的暂停 / 恢复 / 停止走 `AgentControlsContext`（source 的 `agentControls`），上传释放走 composer 的 `onReleaseAttachments`；tasks / worklog / worksessions 判断 mock 用 `isMockRuntime`；`confirmDialog` 和 `DialogFocus`、按钮样式一起下沉 |
+| C3 | `history/messageRenderers.ts` 的 `registerMessageRenderer('notice' \| 'card', …)`，位置和原来的顺序一致（notice 在撤回之前，card 在撤回之后）；mock 的任务 id 和自身 DID 挪到 `mock/ids.ts` |
+| S5 | `app/messagehub/agentpanel/entries.ts` 的 `registerAgentSessionEntry`，Agent 浏览器在 `app/registry.tsx` 登记时注册（懒加载） |
+| E2 | websdk `src/app-frame.ts` 的 `ConversationEmbed` / `ConversationEmbedHost`，单测 `tests/conversation_embed.test.ts` |
+| E4 | Text Editor 操作菜单“和 Agent 讨论”：编辑区旁嵌入会话，把当前文档作为附件发过去（`src/ui/App.tsx` 的 `AgentPanel`），e2e 在 `tests/e2e/editor.spec.ts` |
+| E5 | `doc/sdk/conversation-embed.md`；`buckyos_app_dev` 手册补了一条 |
+
+**实施中定下的细节**
+
+- C1 单独提交（只搬家、改引用路径）。e2e 用例只改了在页面里加载的模块路径（`messagehub-upload.spec.ts`、`messagehub.spec.ts` 里的 `/src/...`），用例本身不变。`sessionApiReader.ts` 没有人用，挪到 `app/messagehub/datamodel/` 旁边。
+- 没有宿主头部的会话（`SessionConversation`）：搜索是浮在历史右上角的按钮，运行状态行在历史下方、只在有人在输入或处理时出现。最初做成历史上方一条常驻工具栏，在 Agent 浏览器的会话面板高度下触发了历史列表的一个旧问题：追加消息后虚拟列表在测量和贴底之间来回抖动，新消息不出现，滚动一下才出来。MessageHub 现有布局没有触发它，这里改为不改变历史区高度的做法绕开，列表本身没有改。
+- Agent 浏览器的“消息详情”（Q7）打开 MessageHub 并定位到那条消息；它没有转发目标选择器，所以不出现“转发”。
+- 来源标记的 mock 存储改为 `buckyos.conversation.mock.sources.v1`（`{ "<owner>\n<session>": "<appid>" }`），`agent-browser.conversation.spec.ts` 跟着改了一处断言。
+- E1：App id 取嵌入方 origin 的 web host（`<web host>.<zone>`）在 `apps.list` 里对应的 `app_id`；mock 运行时用 `*.localhost` 的第一段。`target` 过 zod schema。`{ kind: 'agent' }` 还没有会话时，第一条消息（App 的 `embed.send` 或用户在输入框里发的）用 `createSourcedSession` 新建并打上 App id，会话标题为空（MessageHub 按派生标题显示）。`cyfs-path` 附件不是对象，作为路径文字附在消息里；`object-id` 作为 `data_obj` 引用。
+- E7：读代码确认身份层（`caller_mailbox_identity`）对 `post_send`、`msg.list_sessions`、`ui_session.*` 都把非 Agent 的 App token 当作用户本人；之后的 RBAC（`authorize_resource`，`obj://msg-center/owners/<owner>`）对 App token 的结果没有在真实 Zone 上验证。
+
+**验证（mock 运行时）**
+
+- C9 基线（改动前，`messagehub*` + `agent-browser*` + `preview-embed` + `sysdlg-select`，6 个 worker）：243 通过、13 失败；2 个 worker 重跑后确定 10 个是已有失败（`messagehub-agent-task` 567 / 648×2、`messagehub-group` 309、`messagehub-voice-emoji` 112×2 / 165 / 281、`messagehub-actions` 87、`messagehub.spec` 764），3 个是负载下的偶发失败。
+- 改动后同一组加上 `conversation-embed.spec.ts`：250 通过；失败用例 2 个 worker 重跑，剩下的 5 个都在上面的已有失败里。MessageHub 的用例除 C1 改的模块路径外没有改动。
+- `pnpm check`、`vite build` 通过；`pnpm lint` 与改动前相同（12 个 error、40 个 warning，都是已有的），C8 规则生效。
+- `tests/datamodel/messagehub-*.test.ts`（deno）：109 通过、7 失败，与改动前相同（访客页的 7 个）。
+- websdk：`tests/conversation_embed.test.ts` 等 4 个文件 18 个用例通过。
+- Text Editor：`pnpm check`、单测通过；e2e 15 通过、10 失败，这 10 个在改动前的 HEAD 上同样失败（保存、冲突、预览相关），新加的“和 Agent 讨论”用例通过。
+
+**未做 / 未验证**
+
+- E3：360px 宽度在 mock e2e 里验证过；iOS 上 iframe 里 `visualViewport` 和软键盘的表现没有实测（页面按 `visualViewport.height` 设高度）。
+- 真实 Zone（§6 最后两条）没有跑：MessageHub、Agent 浏览器、Text Editor 嵌入里的发送、回答、停止、撤回。
+- 嵌入页没有给“经某 App 发送”的气泡标注（Q3 另议）。

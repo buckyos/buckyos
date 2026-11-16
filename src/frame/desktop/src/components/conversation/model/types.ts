@@ -31,3 +31,29 @@ export interface ReadReceipt {
   count: number
   readers?: string[]
 }
+
+/** Snapshot of the message a viewer pinned to the top of a session. */
+export interface PinnedMessage {
+  /** `messageObjId` of the pinned message. */
+  id: string
+  text: string
+  senderDid: string
+  createdAt: number
+}
+
+export interface SessionAccess {
+  mode: 'read_only' | 'read_write'
+  canManage: boolean
+  canEnableWrite: boolean
+  canEditPresentation: boolean
+  canEditSharedState: boolean
+  canEditOwnMemberState: boolean
+  readOnlyReason?: string
+}
+
+export interface RuntimeState {
+  memberDid: string
+  status: 'typing' | 'processing' | 'active'
+  statusLine?: string
+  expiresAt: number
+}

@@ -1,7 +1,7 @@
 import { localObjectIdFor } from '../../../components/conversation/history/objectAccess'
 import type { ndn } from 'buckyos'
 import type { MessageObject } from '../../../components/conversation/model/msgobj'
-import type { OutgoingPayload, OutgoingUpload } from './types'
+import type { OutgoingPayload, OutgoingUpload } from '../../../components/conversation/model/outgoing'
 
 export const pendingBubbleId = (localId: string) => `pending:${localId}`
 
@@ -43,9 +43,4 @@ export function pendingBubble(
     ...(staged ? { ui_staged: true } : {}),
     ...(upload && refs.length ? { ui_upload: upload } : {}),
   }
-}
-
-export function outgoingUpload(message: MessageObject): OutgoingUpload | undefined {
-  const upload = message.ui_upload as OutgoingUpload | undefined
-  return upload && typeof upload === 'object' && typeof upload.phase === 'string' ? upload : undefined
 }

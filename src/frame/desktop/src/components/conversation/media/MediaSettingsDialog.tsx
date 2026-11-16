@@ -2,7 +2,7 @@ import { FormControlLabel, Radio, RadioGroup, Switch } from '@mui/material'
 import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useI18n } from '../../../i18n/provider'
-import { DialogFocus } from '../../../app/messagehub/SessionDialogs'
+import { DialogFocus } from '../DialogFocus'
 import { mediaSettingsStore, useMediaSettings, type MediaPreviewTarget } from './settings'
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {

@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ConversationView } from '../messagehub/ConversationView'
+import { Menu } from 'lucide-react'
+import { useI18n } from '../../i18n/provider'
+import { ConversationSurface } from '../../components/conversation/ConversationSurface'
+import type { ConversationSource } from '../../components/conversation/source'
+import type { OutgoingPayload } from '../../components/conversation/model/outgoing'
+import { friendlyDidName } from '../messagehub/api/projection'
 import { InMemoryConversationMessageReader } from '../../components/conversation/history/data-source'
 import type { AppendableConversationMessageReader } from '../../components/conversation/history/types'
-import type { ConversationComposerSubmitPayload } from '../../components/conversation/input/ConversationComposer'
 import type { MessageObject } from '../../components/conversation/model/msgobj'
 import { EntityDetails } from '../messagehub/EntityDetails'
-import {
-  createOutgoingMockMessage,
-  MOCK_SELF_DID,
-  mockEntities,
-  mockEntityDetails,
-  mockSessions,
-} from '../messagehub/mock/data'
+import { createOutgoingMockMessage, mockEntities, mockEntityDetails, mockSessions } from '../messagehub/mock/data'
+import { MOCK_SELF_DID } from '../../components/conversation/mock/ids'
 import { SessionSidebar } from '../messagehub/SessionSidebar'
 import {
   PANEL_SPLITTER_WIDTH,
@@ -25,8 +24,13 @@ import { createCodeAssistantMockReaders } from './mockHistory'
 const codeAssistantEntityId = 'did:buckyos:agent:codeassistant'
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 
+/**
+ * A conversation that never reaches msg-center (Q8): the mock CodeAssistant history in memory, shown by the
+ * conversation component through a source of its own.
+ */
 export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
   void props
+  const { t } = useI18n()
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     () => mockSessions[codeAssistantEntityId]?.[0]?.id ?? null,
   )
@@ -127,9 +131,9 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
     [],
   )
 
-  const handleSendMessage = useCallback((payload: ConversationComposerSubmitPayload) => {
+  const handleSendMessage = useCallback(async (payload: OutgoingPayload) => {
     if (!activeSession) {
-      return
+      throw Error('session_missing')
     }
 
     const newMessage = createOutgoingMockMessage({
@@ -149,6 +153,24 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
       [activeSession.id]: (prev[activeSession.id] ?? EMPTY_READER).append(newMessage),
     }))
   }, [activeSession])
+
+  const entityName = entity?.name ?? ''
+  const source = useMemo<ConversationSource>(() => ({
+    sessionId: activeSession?.id ?? '',
+    selfDid: MOCK_SELF_DID,
+    reader: messageReader,
+    historyStatus: 'ready',
+    hasOlder: false,
+    loadOlder: () => Promise.resolve(false),
+    markRead: () => undefined,
+    access: activeSession ? { mode: 'read_write', canManage: false, canEnableWrite: false, canEditPresentation: false, canEditSharedState: false, canEditOwnMemberState: false } : null,
+    canAct: false,
+    send: handleSendMessage,
+    displayName: (did) => did === codeAssistantEntityId ? entityName : friendlyDidName(did, false),
+    runtime: [],
+    preferences: { showActions: true, pinned: null },
+    peerMarkdown: true,
+  }), [activeSession, messageReader, handleSendMessage, entityName])
 
   const handleSessionSidebarSplitterPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     sessionSidebarResizeRef.current = {
@@ -258,18 +280,19 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
       style={{ cursor: isResizingSessionSidebar ? 'col-resize' : 'default' }}
     >
       <div className="min-w-0 flex-1">
-        <ConversationView
-          entity={entity}
-          session={activeSession}
-          messageReader={messageReader}
-          selfDid={MOCK_SELF_DID}
-          onBack={() => undefined}
-          onOpenSessionSidebar={() => setShowSessionSidebar((prev) => !prev)}
-          onOpenDetails={() => setShowDetails((prev) => !prev)}
-          onSendMessage={handleSendMessage}
-          sessionCount={sessions.length}
+        <ConversationSurface
+          source={source}
           leadingPane={desktopSessionSidebarPane}
-          isSessionSidebarOpen={showSessionSidebar && sessions.length > 1}
+          header={({ searchButton }) => (
+            <div className="flex flex-shrink-0 items-center gap-1 border-b border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-2 py-1.5">
+              <button type="button" onClick={() => setShowSessionSidebar((prev) => !prev)} aria-label={t('messagehub.sessions')} title={t('messagehub.sessions')} className="flex min-h-11 min-w-11 items-center justify-center" style={{ color: showSessionSidebar ? 'var(--cp-accent)' : 'var(--cp-muted)' }}><Menu size={18} /></button>
+              <button type="button" onClick={() => setShowDetails((prev) => !prev)} className="flex min-h-11 min-w-0 flex-1 flex-col justify-center text-left" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}>
+                <span className="truncate text-[15px] font-semibold">{entity.name}</span>
+                <span className="truncate text-xs text-[color:var(--cp-muted)]">{activeSession?.title}</span>
+              </button>
+              {searchButton}
+            </div>
+          )}
         />
       </div>
 
@@ -291,7 +314,7 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
 function buildOutgoingDraftContent({
   attachments,
   content,
-}: ConversationComposerSubmitPayload): string {
+}: OutgoingPayload): string {
   const textContent = content.trim()
 
   if (attachments.length === 0) {

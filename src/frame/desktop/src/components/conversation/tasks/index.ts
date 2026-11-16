@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { createTaskWatchSource, type TaskWatchSource } from '../../../api/task_mgr'
 import { MockTaskSource } from '../mock/tasks'
-import { isMessageHubMock } from '../../../app/messagehub/store'
+import { isMockRuntime } from '../../../runtime'
 import { TaskWatch, type TaskChildren, type TaskEvents, type TaskSnapshot } from './taskWatch'
 
 let instance: TaskWatch | null = null
@@ -9,7 +9,7 @@ let source: TaskWatchSource | null = null
 
 /** TaskMgr reads and `/obj/taskmgr/<id>/changed` hints of MessageHub: one kevent stream for every follower (task areas, notification cards). */
 export function getTaskWatchSource(): TaskWatchSource {
-  return source ??= isMessageHubMock() ? new MockTaskSource() : createTaskWatchSource()
+  return source ??= isMockRuntime() ? new MockTaskSource() : createTaskWatchSource()
 }
 
 /**

@@ -4,6 +4,7 @@
 import { Globe } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { desktopUIStore } from '../../../models/DesktopUIDataModel'
+import type { AgentSessionEntryProps } from '../../messagehub/agentpanel/entries'
 import { usePanelResource } from '../../messagehub/agentpanel/hooks'
 import { getBrowserBackend, type BrowserAgent } from '../api/backend'
 import { DEFAULT_GROUP, type BrowserGroup, type BrowserStatus } from '../api/types'
@@ -40,7 +41,7 @@ async function groupOfSession(agentDid: string, sessionId: string): Promise<{ ag
 const atWork = (group: BrowserGroup) => group.controller === 'agent' || group.agent_state !== 'idle'
 
 /** `hintTaskId` (the Turn in front) and `signal` (the conversation's messages) say when to look again; while the Agent is at work the group is read every 15 seconds. */
-export function AgentBrowserEntry({ agentDid, agentName, sessionId, hintTaskId, signal }: { agentDid: string; agentName: string; sessionId: string; hintTaskId?: string; signal?: unknown }) {
+export function AgentBrowserEntry({ agentDid, agentName, sessionId, hintTaskId, signal }: AgentSessionEntryProps) {
   const { t } = useI18n()
   const available = desktopUIStore.getSnapshot().apps.some((app) => app.id === AGENT_BROWSER_APP_ID)
   const browser = usePanelResource(available ? `browser:${agentDid}:${sessionId}` : null, () => groupOfSession(agentDid, sessionId), { live: (value) => !!value && atWork(value.group), hintTaskId, signal })

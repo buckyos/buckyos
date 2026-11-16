@@ -16,7 +16,7 @@ const OWN = { viewerDid: SELF, ownerDid: SELF, mode: 'self' as const }
 const DOCS = 'session-coder-2'
 /** "Docs Cleanup": the Agent waits there for the answer to a question. */
 const ASKING = 'session-coder-ask'
-const MARKS = 'buckyos.agent-browser.mock.marks'
+const MARKS = 'buckyos.conversation.mock.sources.v1'
 
 type MockElement = 'input' | 'select' | 'alert' | 'signIn'
 interface Message { [field: string]: unknown; type: string; kind?: string; phase?: string }
@@ -184,7 +184,7 @@ test.describe('in a window', () => {
     // It is a new MessageHub session with the Agent, marked as started here.
     const created = (await sessionsOfAgent(page)).filter((session) => !before.includes(session.id))
     expect(created).toEqual([{ id: group, title: expect.stringMatching(/^Browser task /) }])
-    expect(await page.evaluate((key) => JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[], MARKS)).toEqual([`${SELF}\n${group}`])
+    expect(await page.evaluate((key) => JSON.parse(window.localStorage.getItem(key) ?? '{}') as Record<string, string>, MARKS)).toEqual({ [`${SELF}\n${group}`]: 'agent-browser' })
 
     await browse(page, 'docs.example.com')
     await expect.poll(async () => (await mockPage(page, group))?.url).toBe('https://docs.example.com')

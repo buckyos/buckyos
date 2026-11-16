@@ -5,8 +5,7 @@ import type { MessageHubStore } from '../messagehub/store'
 import type { MessageHubContext, Session } from '../messagehub/types'
 import type { BrowserAgent } from './api/backend'
 import type { BrowserGroup } from './api/types'
-import { isMarked } from './conversation/marks'
-import { afterHandover, createThing, sendToGroup } from './conversation/session'
+import { afterHandover, createThing, isBrowserThing, sendToGroup } from './conversation/session'
 import type { Thing } from './store/things'
 
 export interface ThingContext {
@@ -40,7 +39,7 @@ export interface AgentBrowserExtensions {
 }
 
 export const agentBrowserExtensions: AgentBrowserExtensions = {
-  listsThing: (session, context) => isMarked(context, session.id),
+  listsThing: (session) => isBrowserThing(session.id),
   createThing,
   afterHandover,
   askAgent: ({ group, text }, context) => sendToGroup(group, text, context),
