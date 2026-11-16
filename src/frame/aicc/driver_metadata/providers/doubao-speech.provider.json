@@ -2,20 +2,22 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 3,
+  "revision_seq": 4,
   "provider_profile_id": "doubao-speech",
   "static_inventory_models": [
     "doubao-seed-tts-2.0",
     "doubao-seed-icl-2.0",
     "doubao-seed-asr-2.0",
-    "doubao-seed-asr-2.0-fast"
+    "doubao-seed-asr-2.0-fast",
+    "doubao-seed-asr-2.0-idle"
   ],
   "supplemental_inventory_api_types": ["audio.asr", "audio.tts"],
   "models": [
     {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "standard", "doubao_tts_resource_id": "seed-tts-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}},
     {"id": "doubao-seed-icl-2.0", "exclude": true},
     {"id": "doubao-seed-asr-2.0", "operations": {"audio.asr": "asr.recognize.submit"}, "provider_options": {"doubao_asr_resource_id": "volc.seedasr.auc"}},
-    {"id": "doubao-seed-asr-2.0-fast", "operations": {"audio.asr": "asr.recognize.flash"}, "provider_options": {"doubao_asr_resource_id": "volc.bigasr.auc_turbo"}}
+    {"id": "doubao-seed-asr-2.0-fast", "operations": {"audio.asr": "asr.recognize.flash"}, "provider_options": {"doubao_asr_resource_id": "volc.bigasr.auc_turbo"}},
+    {"id": "doubao-seed-asr-2.0-idle", "operations": {"audio.asr": "asr.recognize.idle.submit"}, "provider_options": {"doubao_asr_resource_id": "volc.bigasr.auc_idle"}}
   ],
   "patterns": [],
   "variants": [],

@@ -5166,7 +5166,9 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
         const models = fixture.data as Array<Record<string, unknown>>;
         assert.ok(models.every((model) => Array.isArray(model.task_type)));
         const official = JSON.parse(await readFile(new URL("./fixtures/doubao-models.json", import.meta.url), "utf8"));
-        assert.deepEqual(models.find(model => model.id === official.data[0].id)?.task_type, official.data[0].task_type);
+        for (const officialModel of official.data) {
+          assert.deepEqual(models.find(model => model.id === officialModel.id)?.task_type, officialModel.task_type, officialModel.id);
+        }
         assert.ok(models.every((model) => model.id !== "doubao-seed-tts-2.0"));
       }
       if (provider.provider_driver === "qwen") {
@@ -6896,6 +6898,16 @@ test("targeted T1.5 model inventory keeps only the selected official preset cont
   assert.deepEqual(provider.official_variant_rules!.flatMap((rule) => rule.model_ids), [id]);
   assert.ok(Object.values(provider.official_first_party_model_ids!).flat().every((model) => model === id));
   assert.ok(source.providers.find((provider) => provider.provider_driver === "openrouter")!.official_variant_rules!.length > 1);
+  const imageId = "doubao-seedream-5-5-261028";
+  const imageScope = scopeProtocolModels(source, ["doubao"], [imageId]);
+  const imageCases = buildT15Manifest(imageScope).filter((testCase) =>
+    testCase.provider_driver === "doubao" && testCase.tags.includes("model_api_conformance")
+  );
+  assert.equal(imageCases.length, 4);
+  assert.ok(imageCases.every((testCase) => testCase.model_selector?.value === imageId));
+  assert.ok(source.providers.find((provider) => provider.provider_driver === "doubao")!.contracts.some((contract) =>
+    Object.values(contract.conformance_test_model_ids ?? {}).flat().includes("doubao-seedream-5-0-flash-260915")
+  ));
   assert.throws(() => scopeProtocolModels(source, ["openrouter"], ["unknown-model"]), /unknown model/);
 });
 
@@ -6933,11 +6945,12 @@ test("Kimi K3.1 Pro wire accepts fixed sampling values and rejects incompatible 
   }
 });
 
-test("Seedream Flash rejects sequential generation even when explicitly disabled", async () => {
+test("Seedream single-image models reject sequential generation even when explicitly disabled", async () => {
   const catalog = await loadProviderProtocolCatalog();
   for (const [driver, contractId, model] of [
     ["doubao-agent-plan", "doubao-agent-plan.images.plan-v3", "doubao-seedream-5.0-flash"],
     ["doubao", "doubao.images.v3", "doubao-seedream-5-0-flash-260915"],
+    ["doubao", "doubao.images.v3", "doubao-seedream-5-5-261028"],
   ]) {
     const contract = protocolContract(catalog, driver, contractId);
     const request = t15ProviderRequest("https://mock.invalid", contract, model, {}, "image.txt2img");

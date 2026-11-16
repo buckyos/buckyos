@@ -359,6 +359,15 @@ export function scopeProtocolModels(catalog: ProviderProtocolCatalog, drivers: r
     const models = provider[field];
     if (models) provider[field] = Object.fromEntries(Object.entries(models).map(([api, models]) => [api, models.filter((id) => ids.includes(id))]));
   }
+  for (const contract of provider.contracts) {
+    if (contract.conformance_test_model_ids) {
+      contract.conformance_test_model_ids = Object.fromEntries(
+        Object.entries(contract.conformance_test_model_ids).map(([api, models]) =>
+          [api, models.filter((id) => ids.includes(id))]
+        ),
+      );
+    }
+  }
   return copy;
 }
 

@@ -2751,3 +2751,84 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
             .contains(&api));
     }
 }
+
+#[test]
+fn doubao_november_inventory_resolves_official_models_and_operations() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    for (provider_id, channel_id, origin_id, api_type, operation) in [
+        (
+            "doubao",
+            "kimi-k3-1-pro-261024",
+            "kimi-k3.1-pro",
+            "llm",
+            "responses.create",
+        ),
+        (
+            "doubao",
+            "deepseek-v4-1-flash-261017",
+            "deepseek-v4.1-flash",
+            "llm",
+            "responses.create",
+        ),
+        (
+            "doubao",
+            "deepseek-v4-1-flash-economy-261017",
+            "deepseek-v4.1-flash-economy",
+            "llm",
+            "responses.create",
+        ),
+        (
+            "doubao",
+            "doubao-seedream-5-5-261028",
+            "doubao-seedream-5.5",
+            "image.img2img",
+            "ark.images.generate",
+        ),
+        (
+            "doubao",
+            "doubao-seedance-2-5-flash-261115",
+            "doubao-seedance-2.5-flash",
+            "video.edit",
+            "ark.contents.generate",
+        ),
+        (
+            "doubao-speech",
+            "doubao-seed-asr-2.0-idle",
+            "doubao-seed-asr-2.0-idle",
+            "audio.asr",
+            "asr.recognize.idle.submit",
+        ),
+    ] {
+        let profile = providers
+            .profiles()
+            .find(|p| p.provider_profile_id == provider_id)
+            .unwrap();
+        let inventory = InventoryBuilder::build(
+            profile,
+            &instance(profile, provider_id),
+            discovery(&[channel_id]),
+            &catalog,
+            &providers.codecs(),
+        )
+        .unwrap();
+        let model = inventory
+            .models
+            .iter()
+            .find(|m| m.provider_model_id == channel_id)
+            .unwrap();
+        assert_eq!(model.origin_model_id, origin_id);
+        assert_eq!(
+            model.operations.get(api_type).map(String::as_str),
+            Some(operation)
+        );
+        if channel_id == "doubao-seedance-2-5-flash-261115" {
+            let video = &model.capabilities["video_generation"];
+            assert_eq!(video["references"]["image"]["max"], 10);
+            assert_eq!(video["references"]["video"]["max"], 5);
+            assert_eq!(video["references"]["audio"]["max"], 5);
+            assert_eq!(video["output"]["durations"]["max"], 30);
+            assert_eq!(video["output"]["resolutions"].as_array().unwrap().len(), 2);
+        }
+    }
+}

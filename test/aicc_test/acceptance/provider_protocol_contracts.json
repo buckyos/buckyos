@@ -6684,7 +6684,8 @@
       "operation_endpoint_paths": {
         "tts.unidirectional": "/api/v3/tts",
         "asr.recognize.submit": "/api/v3/auc/bigmodel",
-        "asr.recognize.flash": "/api/v3/auc/bigmodel"
+        "asr.recognize.flash": "/api/v3/auc/bigmodel",
+        "asr.recognize.idle.submit": "/api/v3/auc/bigmodel/idle"
       },
       "credential_type": "bearer",
       "official_first_party_model_ids": {
@@ -6693,7 +6694,8 @@
         ],
         "audio.asr": [
           "doubao-seed-asr-2.0",
-          "doubao-seed-asr-2.0-fast"
+          "doubao-seed-asr-2.0-fast",
+          "doubao-seed-asr-2.0-idle"
         ]
       },
       "wire_distinct_model_ids": {
@@ -6956,6 +6958,104 @@
           "aicc_error_code_by_scenario": {
             "invalid_request": "invalid_request"
           }
+        },
+        {
+          "id": "doubao-speech.asr.idle.v3",
+          "protocol_adapter_id": "doubao-responses",
+          "error_fixture_key": "doubao-asr",
+          "api_version": "v3",
+          "api_types": [
+            "audio.asr"
+          ],
+          "test_model_ids": {
+            "audio.asr": "doubao-seed-asr-2.0-idle"
+          },
+          "operation": "asr.recognize.idle.submit",
+          "http_method": "POST",
+          "path": "/api/v3/auc/bigmodel/idle/submit",
+          "auth": {
+            "kind": "header",
+            "name": "x-api-key",
+            "prefix": ""
+          },
+          "required_headers": {
+            "x-api-resource-id": "volc.bigasr.auc_idle"
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "allowed_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "body_field_types": {
+            "user": [
+              "object"
+            ],
+            "audio": [
+              "object"
+            ],
+            "request": [
+              "object"
+            ]
+          },
+          "required_body_values": {
+            "/request/enable_speaker_info": true,
+            "/request/show_utterances": true
+          },
+          "required_body_paths": [
+            "/audio/url"
+          ],
+          "forbidden_body_paths": [
+            "/audio/data"
+          ],
+          "canonical_request_overrides": {
+            "audio": {
+              "kind": "url",
+              "url": "https://storage.googleapis.com/cloud-samples-data/speech/brooklyn_bridge.wav",
+              "mime_hint": "audio/wav"
+            }
+          },
+          "async_protocol": "doubao_asr",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "POST",
+              "path": "/api/v3/auc/bigmodel/idle/query"
+            },
+            {
+              "name": "result",
+              "http_method": "POST",
+              "path": "/api/v3/auc/bigmodel/idle/query"
+            }
+          ],
+          "success_fixture": {
+            "result": {
+              "text": "The quick brown fox jumps over the lazy dog.",
+              "utterances": [
+                {
+                  "text": "The quick brown fox jumps over the lazy dog.",
+                  "start_time": 0,
+                  "end_time": 2140
+                }
+              ]
+            },
+            "audio_info": {
+              "duration": 2140
+            }
+          },
+          "official_sources": [
+            "https://docs.volcengine.com/docs/6561/2608618?lang=zh",
+            "https://docs.volcengine.com/docs/6561/2608619?lang=zh"
+          ],
+          "evidence_summary": "Idle ASR submits and queries using dedicated /idle paths with volc.bigasr.auc_idle and the same X-Api-Request-Id, empty query JSON, and status headers as documented. Queued tasks may take 24 hours.",
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         }
       ]
     },
@@ -6976,41 +7076,51 @@
         "llm": [
           "doubao-seed-2-0-lite-260428",
           "doubao-seed-2-1-turbo-260628",
-          "doubao-seed-translation-250915"
+          "doubao-seed-translation-250915",
+          "kimi-k3-1-pro-261024",
+          "deepseek-v4-1-flash-261017",
+          "deepseek-v4-1-flash-economy-261017"
         ],
         "vision.ocr": [
           "doubao-seed-2-0-lite-260428",
-          "doubao-seed-2-1-turbo-260628"
+          "doubao-seed-2-1-turbo-260628",
+          "kimi-k3-1-pro-261024"
         ],
         "vision.caption": [
           "doubao-seed-2-0-lite-260428",
-          "doubao-seed-2-1-turbo-260628"
+          "doubao-seed-2-1-turbo-260628",
+          "kimi-k3-1-pro-261024"
         ],
         "embedding.multimodal": [
           "doubao-embedding-vision-251215"
         ],
         "image.txt2img": [
           "doubao-seedream-5-0-pro-260628",
-          "doubao-seedream-5-0-flash-260915"
+          "doubao-seedream-5-0-flash-260915",
+          "doubao-seedream-5-5-261028"
         ],
         "image.img2img": [
           "doubao-seedream-5-0-pro-260628",
-          "doubao-seedream-5-0-flash-260915"
+          "doubao-seedream-5-0-flash-260915",
+          "doubao-seedream-5-5-261028"
         ],
         "video.generate": [
           "doubao-seedance-2-0-260128",
           "doubao-seedance-2-0-fast-260128",
           "doubao-seedance-2-0-mini-260615",
-          "doubao-seedance-2-5-260628"
+          "doubao-seedance-2-5-260628",
+          "doubao-seedance-2-5-flash-261115"
         ],
         "video.edit": [
-          "doubao-seedance-2-5-260628"
+          "doubao-seedance-2-5-260628",
+          "doubao-seedance-2-5-flash-261115"
         ],
         "video.extend": [
           "doubao-seedance-2-0-260128",
           "doubao-seedance-2-0-fast-260128",
           "doubao-seedance-2-0-mini-260615",
-          "doubao-seedance-2-5-260628"
+          "doubao-seedance-2-5-260628",
+          "doubao-seedance-2-5-flash-261115"
         ]
       },
       "official_variant_sources": [
@@ -7043,6 +7153,56 @@
             "reasoning-high": {
               "reasoning": {
                 "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "kimi-k3-1-pro-261024"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek-v4-1-flash-261017",
+            "deepseek-v4-1-flash-economy-261017"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
               }
             }
           }
@@ -7150,7 +7310,20 @@
             "https://www.volcengine.com/docs/82379/1585128",
             "https://docs.volcengine.com/docs/82379/1362931?lang=zh"
           ],
-          "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics."
+          "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics.",
+          "conformance_test_model_ids": {
+            "llm": [
+              "kimi-k3-1-pro-261024",
+              "deepseek-v4-1-flash-261017",
+              "deepseek-v4-1-flash-economy-261017"
+            ],
+            "vision.ocr": [
+              "kimi-k3-1-pro-261024"
+            ],
+            "vision.caption": [
+              "kimi-k3-1-pro-261024"
+            ]
+          }
         },
         {
           "id": "doubao.translation.responses.v3",
@@ -7344,6 +7517,17 @@
           ],
           "aicc_error_code_by_scenario": {
             "invalid_request": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.generate": [
+              "doubao-seedance-2-5-flash-261115"
+            ],
+            "video.edit": [
+              "doubao-seedance-2-5-flash-261115"
+            ],
+            "video.extend": [
+              "doubao-seedance-2-5-flash-261115"
+            ]
           }
         },
         {
@@ -7484,14 +7668,20 @@
             "doubao-seedream-5-0-flash-260915": [
               "/sequential_image_generation",
               "/sequential_image_generation_options"
+            ],
+            "doubao-seedream-5-5-261028": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
             ]
           },
           "conformance_test_model_ids": {
             "image.txt2img": [
-              "doubao-seedream-5-0-flash-260915"
+              "doubao-seedream-5-0-flash-260915",
+              "doubao-seedream-5-5-261028"
             ],
             "image.img2img": [
-              "doubao-seedream-5-0-flash-260915"
+              "doubao-seedream-5-0-flash-260915",
+              "doubao-seedream-5-5-261028"
             ]
           }
         }

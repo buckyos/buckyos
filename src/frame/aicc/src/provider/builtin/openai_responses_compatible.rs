@@ -1276,7 +1276,8 @@ mod tests {
                 "doubao-seed-tts-2.0",
                 "doubao-seed-icl-2.0",
                 "doubao-seed-asr-2.0",
-                "doubao-seed-asr-2.0-fast"
+                "doubao-seed-asr-2.0-fast",
+                "doubao-seed-asr-2.0-idle"
             ]
         );
         assert_eq!(
@@ -1365,6 +1366,7 @@ mod tests {
             vec![
                 "doubao-seed-asr-2.0",
                 "doubao-seed-asr-2.0-fast",
+                "doubao-seed-asr-2.0-idle",
                 "doubao-seed-tts-2.0"
             ]
         );
@@ -1393,6 +1395,10 @@ mod tests {
                         .logical_mounts
                         .iter()
                         .any(|mount| mount == "audio.asr.doubao"));
+                }
+                "doubao-seed-asr-2.0-idle" => {
+                    assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
+                    assert_eq!(model.operations["audio.asr"], "asr.recognize.idle.submit");
                 }
                 other => panic!("unexpected doubao-speech static model `{other}`"),
             }

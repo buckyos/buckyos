@@ -5,6 +5,11 @@
   "revision_seq": 16,
   "provider_profile_id": "doubao",
   "model_driver_overrides": {
+    "kimi-k3-1-pro-261024": "kimi/kimi-k3.1-pro",
+    "deepseek-v4-1-flash-261017": "deepseek/deepseek-v4.1-flash",
+    "deepseek-v4-1-flash-economy-261017": "deepseek/deepseek-v4.1-flash-economy",
+    "doubao-seedream-5-5-261028": "doubao/doubao-seedream-5.5",
+    "doubao-seedance-2-5-flash-261115": "doubao/doubao-seedance-2.5-flash",
     "deepseek-v4-1-flash-260910": "deepseek/deepseek-v4.1-flash",
     "deepseek-v4-1-flash-261017": "deepseek/deepseek-v4.1-flash",
     "deepseek-v4-1-flash-economy-261017": "deepseek/deepseek-v4.1-flash",
@@ -50,7 +55,8 @@
     {"id": "doubao-seedance-2-5-260628", "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
       {"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
       {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}
-    ]}
+    ]},
+    {"id": "doubao-seedance-2-5-flash-261115", "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [{"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}}, {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}]}
   ],
   "patterns": [
     {"match": "doubao-smart-router-*", "exclude": true},
@@ -74,7 +80,10 @@
     {"model_driver": "deepseek", "variant": "reasoning-max", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
     {"model_driver": "glm", "variant": "reasoning-low", "match": {"origin_model_id": ["glm-5.3-flash"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
     {"model_driver": "glm", "variant": "reasoning-high", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "glm", "variant": "reasoning-max", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}}
+    {"model_driver": "glm", "variant": "reasoning-max", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
+    {"model_driver": "kimi", "variant": "reasoning-low", "match": {"origin_model_id": "kimi-k3.1-pro", "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "kimi", "variant": "reasoning-high", "match": {"origin_model_id": "kimi-k3.1-pro", "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "kimi", "variant": "reasoning-max", "match": {"origin_model_id": "kimi-k3.1-pro", "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}}
   ],
   "model_pricing": [
     {"match": {"provider_model_id": ["doubao-seedream-4-0-250828", "doubao-seedream-4-0-20260415"]}, "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-30", "currency": "CNY", "unit": "image", "amount": 0.2}},
