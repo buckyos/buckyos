@@ -2,8 +2,8 @@
 published schema (MS-VSDX) so it can be redistributed: the soffice smoke converts it, and nfs_server's Preview tests
 keep the copy it wrote as tests/fixtures/preview/drawing.vsdx.
 
-Page 1 "流程 Flow": three boxes with Chinese and Latin text, two connectors with arrow heads glued to them, and a group
-(a framed box with a label inside). Page 2 "图片 Picture": an embedded PNG picture and a caption.
+Page 1 "Flow" (Chinese and Latin name): three boxes with Chinese and Latin text, two connectors with arrow heads glued to them, and a group
+(a framed box with a label inside). Page 2 "Picture" (Chinese and Latin name): an embedded PNG picture and a caption.
 
     python3 make_visio.py <output.vsdx>
 """
@@ -68,7 +68,7 @@ def group(id, x, y, w, h):
             + cells(PinX=x, PinY=y, Width=w, Height=h, LocPinX=w / 2, LocPinY=h / 2, Angle=0)
             + "<Shapes>"
             + f'<Shape ID="{id + 1}" NameU="Frame" Name="Frame" Type="Shape">' + cells(PinX=w / 2, PinY=h / 2, Width=w, Height=h, LocPinX=w / 2, LocPinY=h / 2, FillForegnd="#e2efda", FillPattern=1, LineWeight=0.01, LineColor="#548235", LinePattern=2) + rect(w, h) + "</Shape>"
-            + box(id + 2, "Inner", w / 2, h / 2, w * 0.7, h * 0.45, "组合 Group", "#ffffff")
+            + box(id + 2, "Inner", w / 2, h / 2, w * 0.7, h * 0.45, "\u7ec4\u5408 Group", "#ffffff")
             + "</Shapes></Shape>")
 
 
@@ -84,9 +84,9 @@ def page_sheet(width, height):
 
 def build():
     flow = ('<PageContents ' + NS + '><Shapes>'
-            + box(1, "Start", 1.5, 6.5, 1.8, 0.8, "开始 Start", "#dae3f3")
-            + box(2, "Check", 5.0, 6.5, 2.2, 0.8, "检查 Check", "#fff2cc")
-            + box(3, "Done", 8.5, 6.5, 1.8, 0.8, "完成 Done", "#dae3f3")
+            + box(1, "Start", 1.5, 6.5, 1.8, 0.8, "\u5f00\u59cb Start", "#dae3f3")
+            + box(2, "Check", 5.0, 6.5, 2.2, 0.8, "\u68c0\u67e5 Check", "#fff2cc")
+            + box(3, "Done", 8.5, 6.5, 1.8, 0.8, "\u5b8c\u6210 Done", "#dae3f3")
             + connector(4, 2.4, 6.5, 3.9, 6.5)
             + connector(5, 6.1, 6.5, 7.6, 6.5)
             + group(6, 5.0, 3.0, 3.0, 1.6)
@@ -98,7 +98,7 @@ def build():
             + "</Connects></PageContents>")
     gallery = ('<PageContents ' + NS + '><Shapes>'
                + picture(1, 5.5, 4.75, 4.0, 3.0)
-               + box(2, "Caption", 5.5, 2.4, 4.0, 0.6, "图片说明 Picture caption", "#ffffff")
+               + box(2, "Caption", 5.5, 2.4, 4.0, 0.6, "\u56fe\u7247\u8bf4\u660e Picture caption", "#ffffff")
                + "</Shapes></PageContents>")
     document = ('<VisioDocument ' + NS + '><DocumentSettings TopPage="0" DefaultTextStyle="0" DefaultLineStyle="0" DefaultFillStyle="0" DefaultGuideStyle="0"/>'
                 '<Colors><ColorEntry IX="0" RGB="#000000"/><ColorEntry IX="1" RGB="#FFFFFF"/></Colors>'
@@ -108,8 +108,8 @@ def build():
                 + '<Section N="Character"><Row IX="0"><Cell N="Font" V="Calibri"/><Cell N="Color" V="0"/><Cell N="Size" V="0.1666666666666667"/></Row></Section>'
                 + '</StyleSheet></StyleSheets></VisioDocument>')
     pages = ('<Pages ' + NS + '>'
-             + f'<Page ID="0" NameU="Flow" Name="流程 Flow" ViewScale="1" ViewCenterX="5.5" ViewCenterY="4.25">{page_sheet(11, 8.5)}<Rel r:id="rId1"/></Page>'
-             + f'<Page ID="4" NameU="Picture" Name="图片 Picture" ViewScale="1" ViewCenterX="5.5" ViewCenterY="4.25">{page_sheet(11, 8.5)}<Rel r:id="rId2"/></Page>'
+             + f'<Page ID="0" NameU="Flow" Name="\u6d41\u7a0b Flow" ViewScale="1" ViewCenterX="5.5" ViewCenterY="4.25">{page_sheet(11, 8.5)}<Rel r:id="rId1"/></Page>'
+             + f'<Page ID="4" NameU="Picture" Name="\u56fe\u7247 Picture" ViewScale="1" ViewCenterX="5.5" ViewCenterY="4.25">{page_sheet(11, 8.5)}<Rel r:id="rId2"/></Page>'
              + "</Pages>")
     parts = {
         "[Content_Types].xml": '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/>'
@@ -117,7 +117,7 @@ def build():
         '<Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.page+xml"/><Override PartName="/visio/pages/page2.xml" ContentType="application/vnd.ms-visio.page+xml"/>'
         '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>',
         "_rels/.rels": f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL}/document" Target="visio/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>',
-        "docProps/core.xml": '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Preview sample 预览样例</dc:title><dc:creator>BuckyOS tests</dc:creator></cp:coreProperties>',
+        "docProps/core.xml": '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Preview sample \u9884\u89c8\u6837\u4f8b</dc:title><dc:creator>BuckyOS tests</dc:creator></cp:coreProperties>',
         "visio/document.xml": document,
         "visio/_rels/document.xml.rels": f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL}/pages" Target="pages/pages.xml"/></Relationships>',
         "visio/pages/pages.xml": pages,

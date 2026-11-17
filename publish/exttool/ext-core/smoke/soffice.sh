@@ -86,8 +86,8 @@ if ! grep -a -q '/Subtype */Image' out/a.pdf; then
   exit 1
 fi
 echo '[soffice] converting a VSDX drawing to PDF'
-flow_text="$(python3 -c 'print("开始 Start")')"
-caption_text="$(python3 -c 'print("图片说明 Picture caption")')"
+flow_text="$(python3 -c 'print("\u5f00\u59cb Start")')"
+caption_text="$(python3 -c 'print("\u56fe\u7247\u8bf4\u660e Picture caption")')"
 python3 "$smoke_dir/make_visio.py" c.vsdx
 if ! soffice "-env:UserInstallation=file://$dir/profile" --headless --convert-to pdf --outdir out c.vsdx >visio.log 2>&1 || [ ! -s out/c.pdf ]; then
   cat visio.log >&2
