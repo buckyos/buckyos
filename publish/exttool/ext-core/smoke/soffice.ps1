@@ -69,13 +69,15 @@ assert re.search(rb"/Subtype */Image", pdf), "DOCX PDF does not contain an image
   Require (Test-Path out\c.pdf)
   Require (Select-String -LiteralPath visio.log -Pattern 'as a Draw document' -Quiet)
   & pdftotext -enc UTF-8 out\c.pdf c.txt; Require ($LASTEXITCODE -eq 0)
+  # Windows PowerShell writes a redirect as UTF-16 with a BOM, so the page count is read here, where Get-Content
+  # detects it, not in python3.
   & pdfinfo out\c.pdf > c.info; Require ($LASTEXITCODE -eq 0)
+  Require ((Get-Content -LiteralPath c.info -Raw) -match '(?m)^Pages:\s+2\s*$')
   $visio = @'
 import re
 text = open("c.txt", encoding="utf-8").read()
 print("[soffice] VSDX PDF text:", ascii(text), flush=True)
 assert "\u5f00\u59cb Start" in text and "\u56fe\u7247\u8bf4\u660e Picture caption" in text, "VSDX PDF text mismatch"
-assert re.search(r"^Pages:\s+2\s*$", open("c.info", encoding="utf-8").read(), re.M), "VSDX PDF does not have 2 pages"
 assert re.search(rb"/Subtype */Image", open("out/c.pdf", "rb").read()), "VSDX PDF does not contain the picture"
 '@
   [IO.File]::WriteAllText("$dir\visio.py", $visio)
