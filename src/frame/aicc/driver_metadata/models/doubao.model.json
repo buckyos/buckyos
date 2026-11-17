@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "doubao",
-  "revision_seq": 12,
+  "revision_seq": 13,
   "required_features": [],
   "models": [
     {
@@ -123,15 +123,14 @@
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
-      "capabilities": {"image_generation": true}
+      "capabilities": {"image_generation": true, "max_images": 1}
     },
     {
       "id": "doubao-seedream-5.0-flash",
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
-      "capabilities": {"image_generation": true},
-      "canonical_fields": {"/n": {"converter": "omit", "fallback": {"action": "omit"}}}
+      "capabilities": {"image_generation": true, "max_images": 1}
     },
     {
       "id": "doubao-seedance-2.0",
@@ -596,15 +595,8 @@
         "image.img2img.{model}"
       ],
       "capabilities": {
-        "image_generation": true
-      },
-      "canonical_fields": {
-        "/n": {
-          "converter": "omit",
-          "fallback": {
-            "action": "omit"
-          }
-        }
+        "image_generation": true,
+        "max_images": 1
       }
     },
     {

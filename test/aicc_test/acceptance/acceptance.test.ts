@@ -120,6 +120,7 @@ import {
   variantWireDiagnostics,
   channelDisablesCase,
   scopeProtocolModels,
+  buildHealthRecoveryCase,
   protocolModelIds,
   TaskWaitTimeout,
   terminal as waitT15Task,
@@ -6951,6 +6952,8 @@ test("Seedream single-image models reject sequential generation even when explic
     ["doubao-agent-plan", "doubao-agent-plan.images.plan-v3", "doubao-seedream-5.0-flash"],
     ["doubao", "doubao.images.v3", "doubao-seedream-5-0-flash-260915"],
     ["doubao", "doubao.images.v3", "doubao-seedream-5-5-261028"],
+    ["doubao", "doubao.images.v3", "doubao-seedream-5-0-pro-260628"],
+    ["doubao-agent-plan", "doubao-agent-plan.images.plan-v3", "doubao-seedream-5-0-pro"],
   ]) {
     const contract = protocolContract(catalog, driver, contractId);
     const request = t15ProviderRequest("https://mock.invalid", contract, model, {}, "image.txt2img");
@@ -7066,6 +7069,66 @@ test("added OpenRouter presets are supported by the frozen official reasoning me
         const effort = variant.replace(/^reasoning-/, "");
         assert.ok(metadata.supported_efforts.includes(effort), `${model}/${effort}`);
         assert.deepEqual(options, {reasoning:{effort}});
+      }
+    }
+  }
+});
+
+
+test("single-image contracts reject multi-image requests before Provider dispatch", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog).filter(c => c.tags.includes("image_count_rejected"));
+  for (const [driver, models] of [
+    ["doubao", ["doubao-seedream-5-0-flash-260915", "doubao-seedream-5-5-261028", "doubao-seedream-5-0-pro-260628"]],
+    ["doubao-agent-plan", ["doubao-seedream-5.0-flash", "doubao-seedream-5-0-pro"]],
+  ] as const) {
+    assert.deepEqual(cases.filter(c => c.provider_driver === driver).map(c => c.model_selector?.value).sort(), [...models].sort());
+  }
+  assert.ok(cases.every(c => c.tags.includes("canonical_rejection") && c.expected_aicc_error_code === "invalid_request"));
+  const scope = scopeProtocolModels(catalog,["doubao"],["doubao-seedream-5-5-261028"]);
+  assert.equal(buildT15Manifest(scope).filter(c => c.provider_driver === "doubao" && c.tags.includes("image_count_rejected")).length, 1);
+});
+
+
+test("health recovery after canonical image rejection uses a valid success request", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const rejected = buildT15Manifest(catalog).find(c => c.tags.includes("image_count_rejected"))!;
+  const recovery = buildHealthRecoveryCase(rejected);
+  assert.equal(recovery.expected_task_status, "succeeded");
+  assert.equal(recovery.expected_error_class, null);
+  assert.equal(recovery.expected_aicc_error_code, undefined);
+  assert.equal(recovery.model_selector?.value, rejected.model_selector?.value);
+  assert.ok(!recovery.tags.includes("canonical_rejection"));
+  assert.ok(!recovery.tags.includes("image_count_rejected"));
+  const params = buildT15TypedParams(recovery.api_type!, "image@temporary", "recovery", recovery.execution_mode, recovery.case_id);
+  assert.equal(params.n, 1);
+});
+
+
+test("Doubao vision Mock accepts official reasoning levels and rejects unknown values", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  for (const [provider, id, model] of [
+    ["doubao", "doubao.responses.v3", "doubao-seed-2-1-pro-260915"],
+    ["doubao-agent-plan", "doubao-agent-plan.responses.plan-v3", "doubao-seed-2.1-pro"],
+  ]) {
+    const contract = protocolContract(catalog, provider, id);
+    for (const apiType of ["vision.ocr", "vision.caption"]) {
+      await fetch(`${baseUrl}/__mock/select`, {method: "POST", headers: {"content-type": "application/json"},
+        body: JSON.stringify({provider_driver: provider, contract_id: id, api_type: apiType, scenario: "success"})});
+      for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "invalid"]) {
+        const request = t15ProviderRequest(baseUrl, contract, model,
+          {max_output_tokens: 2048, reasoning: {effort}}, apiType);
+        const response = await fetch(request.url, request.init);
+        assert.equal(response.status, effort === "invalid" ? 400 : 200,
+          `${provider}/${apiType}/${effort}: ${await response.text()}`);
       }
     }
   }

@@ -1572,8 +1572,8 @@ export function createT15MockHandler(
         if (body.max_output_tokens !== 2048) {
           validationErrors.push("Doubao Seed derived vision requests require max_output_tokens=2048");
         }
-        if (reasoning?.effort !== "minimal") {
-          validationErrors.push("Doubao Seed derived vision requests require reasoning.effort=minimal");
+        if (!["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(reasoning?.effort))) {
+          validationErrors.push("Doubao Seed reasoning.effort must use an official reasoning level");
         }
       }
       requests.push({

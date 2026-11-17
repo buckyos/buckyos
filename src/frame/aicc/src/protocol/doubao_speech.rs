@@ -27,6 +27,7 @@ pub(crate) const DOUBAO_TTS_OPERATION_ID: &str = "tts.unidirectional";
 pub(crate) const DOUBAO_ASR_FLASH_OPERATION_ID: &str = "asr.recognize.flash";
 /// 录音文件识别标准版：`submit` + `query` 异步任务，音频只能以 URL 提交。
 pub(crate) const DOUBAO_ASR_TASK_OPERATION_ID: &str = "asr.recognize.submit";
+pub(crate) const DOUBAO_ASR_IDLE_OPERATION_ID: &str = "asr.recognize.idle.submit";
 
 /// `X-Api-Resource-Id` 默认值。标准版对应豆包录音文件识别模型 2.0。
 const DOUBAO_ASR_FLASH_RESOURCE_ID: &str = "volc.bigasr.auc_turbo";
@@ -106,7 +107,7 @@ pub(super) fn doubao_speech_registration() -> (Vec<OperationDescriptor>, CodecRe
         max_response_bytes: MAX_RESPONSE_BYTES,
     };
     let asr_idle = OperationDescriptor {
-        operation_id: "asr.recognize.idle.submit".to_owned(),
+        operation_id: DOUBAO_ASR_IDLE_OPERATION_ID.to_owned(),
         ..asr_task.clone()
     };
     let operation_codecs = vec![
@@ -1659,7 +1660,7 @@ mod tests {
             let wire = registry
                 .encode_native(
                     DOUBAO_SPEECH_ADAPTER_ID,
-                    "asr.recognize.idle.submit",
+                    DOUBAO_ASR_IDLE_OPERATION_ID,
                     ApiType::AudioSpeechRecognition,
                     &NativeTaskInput {
                         operation,

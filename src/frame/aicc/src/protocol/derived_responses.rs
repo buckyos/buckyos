@@ -735,10 +735,10 @@ mod tests {
                 let expected_operations = match descriptor.protocol_adapter_id.as_str() {
                     // `responses.create` + 3 Doubao media operations
                     // (`ark.images.generate`, `ark.contents.generate`,
-                    // `ark.embeddings.multimodal`) + 3 Doubao speech operations
+                    // `ark.embeddings.multimodal`) + 4 Doubao speech operations
                     // (`tts.unidirectional`, `asr.recognize.flash`,
-                    // `asr.recognize.submit`).
-                    DOUBAO_RESPONSES_ADAPTER_ID => 7,
+                    // `asr.recognize.submit`, `asr.recognize.idle.submit`).
+                    DOUBAO_RESPONSES_ADAPTER_ID => 8,
                     QWEN_RESPONSES_ADAPTER_ID => 6,
                     _ => 3,
                 };

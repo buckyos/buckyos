@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 13,
+  "revision_seq": 14,
   "provider_profile_id": "doubao-agent-plan",
   "static_inventory_models": [
     "doubao-seed-2.0-mini",

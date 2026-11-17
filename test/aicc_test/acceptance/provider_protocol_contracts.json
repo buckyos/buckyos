@@ -6113,7 +6113,7 @@
         "https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh",
         "https://docs.volcengine.com/docs/ark/model-list?lang=zh",
         "https://docs.volcengine.com/docs/ark/responses-api-deep-thinking?lang=zh",
-        "https://docs.volcengine.com/docs/ark/deepseek-v4-1-flash?lang=zh",
+        "https://docs.volcengine.com/docs/ark/deepseek-v4-1-flash?lang=zh"
       ],
       "official_variant_rules": [
         {
@@ -6498,6 +6498,10 @@
           "evidence_summary": "Agent Plan Seedream image generation uses POST /api/plan/v3/images/generations for text-to-image and image-to-image. Seedream 5.0 Flash generates one image and explicitly rejects sequential_image_generation, including disabled; the field must be absent.",
           "forbidden_body_paths_by_model": {
             "doubao-seedream-5.0-flash": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
+            ],
+            "doubao-seedream-5-0-pro": [
               "/sequential_image_generation",
               "/sequential_image_generation_options"
             ]
@@ -7670,6 +7674,10 @@
               "/sequential_image_generation_options"
             ],
             "doubao-seedream-5-5-261028": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
+            ],
+            "doubao-seedream-5-0-pro-260628": [
               "/sequential_image_generation",
               "/sequential_image_generation_options"
             ]

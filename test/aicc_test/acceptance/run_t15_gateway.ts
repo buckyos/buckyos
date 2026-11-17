@@ -1458,6 +1458,21 @@ export function variantWireDiagnostics(
   return diagnostics;
 }
 
+export function buildHealthRecoveryCase(testCase: AcceptanceCase): AcceptanceCase {
+  return {
+    ...testCase,
+    case_id: `${testCase.case_id}.health-recovery`,
+    mock_scenario: testCase.execution_mode === "stream" ? "stream_success" : "success",
+    expected_task_status: "succeeded",
+    expected_error_class: null,
+    expected_aicc_error_code: undefined,
+    expected_provider_error_code: undefined,
+    expected_retriable: undefined,
+    timeout_ms: 30_000,
+    tags: testCase.tags.filter(tag => !["official_error", "canonical_rejection", "image_count_rejected"].includes(tag)),
+  };
+}
+
 async function executeCase(
   session: GatewaySession,
   catalog: ProviderProtocolCatalog,
@@ -1522,6 +1537,7 @@ async function executeCase(
           { historyMessage },
         ),
         ...(contract.canonical_request_overrides ?? {}),
+        ...(testCase.tags.includes("image_count_rejected") ? {n:4} : {}),
       },
     ) as Record<string, unknown>;
     if (typeof result.task_id === "string") taskId = result.task_id;
@@ -1603,7 +1619,12 @@ async function executeCase(
   if (testCase.mock_scenario === "async_poll_timeout" && !(failed instanceof TaskWaitTimeout)) {
     diagnostics.push("expected the runner wait deadline with the native task still running");
   }
-  if (requests.length === 0) {
+  if (testCase.tags.includes("canonical_rejection")) {
+    if (requests.length !== 0) diagnostics.push("rejected canonical request reached the Provider");
+    if (!String(failed).includes(testCase.expected_aicc_error_code ?? "invalid_request")) {
+      diagnostics.push("missing canonical rejection error code");
+    }
+  } else if (requests.length === 0) {
     diagnostics.push("Provider mock received no request");
   }
   if (validationErrors.length > 0) {
@@ -2715,20 +2736,7 @@ async function main(): Promise<void> {
                 providerInstances.set(driver, instance);
                 providerInventories.set(driver, inventory);
               } else {
-                const recoveryCase: AcceptanceCase = {
-                  ...testCase,
-                  case_id: `${testCase.case_id}.health-recovery`,
-                  mock_scenario: testCase.execution_mode === "stream"
-                    ? "stream_success"
-                    : "success",
-                  expected_task_status: "succeeded",
-                  expected_error_class: null,
-                  expected_aicc_error_code: undefined,
-                  expected_provider_error_code: undefined,
-                  expected_retriable: undefined,
-                  timeout_ms: 30_000,
-                  tags: testCase.tags.filter((tag) => tag !== "official_error"),
-                };
+                const recoveryCase = buildHealthRecoveryCase(testCase);
                 const recovery = await executeCase(
                   session!,
                   catalog,

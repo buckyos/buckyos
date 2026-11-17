@@ -53,3 +53,6 @@ Agent Plan 最终 T2 实际发出 9 次调用（8 单元加一次参考图前置
 
 
 最终新进程回归的 Agent Plan T1.5 为 `t15-20261116033636-483042`，56/56 通过；标准渠道 T1.5 为 `t15-20261116033612-482495`，4/4 通过。标准渠道 T2 报告位于 `test/aicc_test/reports/acceptance/agent-plan-flash-standard-20261116/aicc-2026-11-16T03-37-05-215Z-d72865d4/`。最终共 10 个基础 T2 单元满足当前 rubric，机器报告保留 2 passed / 8 review，8 项均已完成视觉或文本复核。两渠道 metadata、AICC settings、临时凭据、库存和测试资源清理检查通过；NDN 下载无需改配置或逻辑。`deno check acceptance/run_t15_gateway.ts acceptance/t15_mock_provider.ts`、preflight、自测 163 项及 `git diff --check` 均通过。
+
+
+后续 PR #740 review 已发现 `/n` omit 不能保留多图请求语义。当前修正方案改为原厂 `max_images: 1`、公共 lowering 显式拒绝超限、豆包私有 codec 在单图时不发组图字段；原先的 omit 方案仅为历史调试记录。当前实现、公共组件修改必要性和本轮验证范围见 [PR #740 review 修复](pr740_review_fixes.md)。

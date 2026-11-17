@@ -231,6 +231,16 @@ fn validate_model_semantics(
                 });
             }
         }
+        if capabilities
+            .get("max_images")
+            .is_some_and(|value| value.as_u64().is_none_or(|limit| limit == 0))
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "capabilities.max_images",
+                reason: "expected a positive image count ceiling".into(),
+            });
+        }
         if let Some(contract) = capabilities.get(crate::video::VIDEO_CONTRACT_CAPABILITY) {
             validate_video_contract(owner, contract)?;
         }
@@ -431,6 +441,7 @@ fn validate_provider_rule_data(
                 key.as_str(),
                 "max_context_tokens"
                     | "max_output_tokens"
+                    | "max_images"
                     | "decision.max_questions"
                     | "decision.max_options"
                     | "decision.max_levels"

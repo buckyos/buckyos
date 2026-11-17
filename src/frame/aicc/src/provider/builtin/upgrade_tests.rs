@@ -1125,6 +1125,88 @@ async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
     assert_eq!(model("unsupported-3d").api_types.clone(), Some(vec![]));
 }
 
+#[tokio::test]
+async fn volcengine_ark_discovery_accepts_both_documented_task_spellings() {
+    for (snake, pascal, expected) in [
+        ("text_generation", "TextGeneration", vec![ApiType::Llm]),
+        (
+            "visual_question_answering",
+            "VisualQuestionAnswering",
+            vec![ApiType::VisionOcr, ApiType::VisionCaption],
+        ),
+        (
+            "text_embedding",
+            "TextEmbedding",
+            vec![ApiType::EmbeddingText],
+        ),
+        (
+            "image_embedding",
+            "ImageEmbedding",
+            vec![ApiType::EmbeddingMultimodal],
+        ),
+        (
+            "text_to_image",
+            "TextToImage",
+            vec![ApiType::ImageTextToImage],
+        ),
+        (
+            "image_to_image",
+            "ImageToImage",
+            vec![ApiType::ImageImageToImage],
+        ),
+        ("text_to_video", "TextToVideo", vec![ApiType::VideoGenerate]),
+        (
+            "image_to_video",
+            "ImageToVideo",
+            vec![ApiType::VideoGenerate],
+        ),
+        (
+            "multimodal_to_video",
+            "MultimodalToVideo",
+            vec![ApiType::VideoGenerate],
+        ),
+        ("video_editing", "VideoEditing", vec![ApiType::VideoEdit]),
+        (
+            "video_extension",
+            "VideoExtension",
+            vec![ApiType::VideoExtend],
+        ),
+    ] {
+        let body = json!({"object":"list","data":[
+            {"id":"snake","task_type":[snake]},
+            {"id":"pascal","task_type":[pascal]},
+            {"id":"mixed","task_type":[snake,pascal,"future_task"]},
+            {"id":"unknown","task_type":["future_task"]}
+        ]});
+        let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
+            &ModelsHttp(body),
+            HttpRequest::new(reqwest::Method::GET, "https://example.test/api/v3/models"),
+            "doubao",
+        )
+        .await
+        .unwrap();
+        for id in ["snake", "pascal", "mixed"] {
+            assert_eq!(
+                models
+                    .iter()
+                    .find(|m| m.provider_model_id == id)
+                    .unwrap()
+                    .api_types
+                    .as_ref(),
+                Some(&expected)
+            );
+        }
+        assert_eq!(
+            models
+                .iter()
+                .find(|m| m.provider_model_id == "unknown")
+                .unwrap()
+                .api_types,
+            Some(vec![])
+        );
+    }
+}
+
 #[test]
 fn claude_account_models_are_matched_with_every_declared_preset() {
     let catalog = catalog();
@@ -1321,7 +1403,7 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
                 ),
                 (
                     "deepseek-v4-1-flash-economy-261017",
-                    "deepseek-v4.1-flash",
+                    "deepseek-v4.1-flash-economy",
                     &["none", "low", "high", "max"][..],
                 ),
             ][..],
@@ -2757,6 +2839,13 @@ fn doubao_november_inventory_resolves_official_models_and_operations() {
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
     for (provider_id, channel_id, origin_id, api_type, operation) in [
+        (
+            "doubao",
+            "doubao-seedream-5-0-flash-260915",
+            "doubao-seedream-5.0-flash",
+            "image.txt2img",
+            "ark.images.generate",
+        ),
         (
             "doubao",
             "kimi-k3-1-pro-261024",

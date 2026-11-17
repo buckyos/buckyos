@@ -99,3 +99,6 @@ T1.5 必须使用包含新增闲时 operation 的 AICC 二进制。T2 仅在对�
 当前未通过项为标准账号缺少两个媒体模型的开通权限。Agent Plan 当前官方库存不包含这两个模型，speech 不提供图片/视频接口，因而没有同模型的可用替代渠道。需要在方舟控制台开通对应 Model ID，或使用已有权限的标准账号凭证后定向继续；不开通时保留为账号受限，不能宣称两个模型 T2 通过。
 
 本地原始报告目录为 `test/aicc_test/reports/acceptance/doubao-new-uncovered-20261116/` 与 `test/aicc_test/reports/acceptance/doubao-new-uncovered-speech-20261116/`；本次只提交本文的脱敏概要，不提交逐项报告、原始任务响应或本地配置。
+
+
+后续 PR #740 review 已发现 `/n` omit 不能保留多图请求语义。当前修正方案改为原厂 `max_images: 1`、公共 lowering 显式拒绝超限、豆包私有 codec 在单图时不发组图字段；原先的 omit 方案仅为历史调试记录。当前实现、公共组件修改必要性和本轮验证范围见 [PR #740 review 修复](pr740_review_fixes.md)。

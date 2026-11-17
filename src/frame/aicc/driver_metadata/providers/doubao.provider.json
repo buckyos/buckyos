@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 16,
+  "revision_seq": 17,
   "provider_profile_id": "doubao",
   "model_driver_overrides": {
     "kimi-k3-1-pro-261024": "kimi/kimi-k3.1-pro",
@@ -11,8 +11,6 @@
     "doubao-seedream-5-5-261028": "doubao/doubao-seedream-5.5",
     "doubao-seedance-2-5-flash-261115": "doubao/doubao-seedance-2.5-flash",
     "deepseek-v4-1-flash-260910": "deepseek/deepseek-v4.1-flash",
-    "deepseek-v4-1-flash-261017": "deepseek/deepseek-v4.1-flash",
-    "deepseek-v4-1-flash-economy-261017": "deepseek/deepseek-v4.1-flash",
     "deepseek-v4-flash-260425": "deepseek/deepseek-v4-flash",
     "deepseek-v4-flash-ga-260731": "deepseek/deepseek-v4-flash",
     "deepseek-v4-pro-260425": "deepseek/deepseek-v4-pro",
@@ -51,14 +49,10 @@
     ]},
     {"id": "doubao-seedance-2-0-260128", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
     {"id": "doubao-seedance-2-0-fast-260128", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2-0-mini-260615", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2-5-260628", "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
-      {"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
-      {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}
-    ]},
-    {"id": "doubao-seedance-2-5-flash-261115", "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [{"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}}, {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}]}
+    {"id": "doubao-seedance-2-0-mini-260615", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}}
   ],
   "patterns": [
+    {"match": {"provider_model_id": ["doubao-seedance-2-5-260628", "doubao-seedance-2-5-flash-261115"]}, "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [{"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}}, {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}]},
     {"match": "doubao-smart-router-*", "exclude": true},
     {"match": "*3d-*", "exclude": true},
     {"match": "doubao-seedream-*", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
@@ -74,10 +68,10 @@
     {"model_driver": "doubao", "variant": "reasoning-low", "match": {"origin_model_id": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "doubao-seed-2-0-lite-260215", "doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628", "doubao-seed-2.0-code-preview"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
     {"model_driver": "doubao", "variant": "reasoning-medium", "match": {"origin_model_id": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "doubao-seed-2-0-lite-260215", "doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628", "doubao-seed-2.0-code-preview"], "variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "medium"}}},
     {"model_driver": "doubao", "variant": "reasoning-high", "match": {"origin_model_id": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "doubao-seed-2-0-lite-260215", "doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628", "doubao-seed-2.0-code-preview"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "deepseek", "variant": "reasoning-none", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
-    {"model_driver": "deepseek", "variant": "reasoning-low", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
-    {"model_driver": "deepseek", "variant": "reasoning-high", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "deepseek", "variant": "reasoning-max", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
+    {"model_driver": "deepseek", "variant": "reasoning-none", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-economy"], "variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
+    {"model_driver": "deepseek", "variant": "reasoning-low", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-economy"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "deepseek", "variant": "reasoning-high", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-economy"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "deepseek", "variant": "reasoning-max", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-economy"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
     {"model_driver": "glm", "variant": "reasoning-low", "match": {"origin_model_id": ["glm-5.3-flash"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
     {"model_driver": "glm", "variant": "reasoning-high", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
     {"model_driver": "glm", "variant": "reasoning-max", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},

@@ -21,6 +21,7 @@ doubao-agent-plan|doubao-responses|video.generate|ark.contents.generate
 doubao-agent-plan|doubao-responses|vision.caption|responses.create
 doubao-agent-plan|doubao-responses|vision.ocr|responses.create
 doubao-speech|doubao-responses|audio.asr|asr.recognize.flash
+doubao-speech|doubao-responses|audio.asr|asr.recognize.idle.submit
 doubao-speech|doubao-responses|audio.asr|asr.recognize.submit
 doubao-speech|doubao-responses|audio.tts|tts.unidirectional
 doubao|doubao-responses|embedding.multimodal|ark.embeddings.multimodal

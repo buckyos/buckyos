@@ -312,18 +312,17 @@ impl OperationCodec for DoubaoImageCodec {
             if let Some(seed) = request.seed {
                 body.insert("seed".to_owned(), json!(seed));
             }
-            if let Some(n) = request.n {
-                let enabled = n > 1;
+            if request.n == Some(0) {
+                return Err(ProtocolError::invalid_request(
+                    "image count must be greater than zero",
+                ));
+            }
+            if let Some(n) = request.n.filter(|n| *n > 1) {
+                body.insert("sequential_image_generation".to_owned(), json!("auto"));
                 body.insert(
-                    "sequential_image_generation".to_owned(),
-                    json!(if enabled { "auto" } else { "disabled" }),
+                    "sequential_image_generation_options".to_owned(),
+                    json!({"max_images":n}),
                 );
-                if enabled {
-                    body.insert(
-                        "sequential_image_generation_options".to_owned(),
-                        json!({"max_images":n}),
-                    );
-                }
             }
         }
         json_request(
@@ -914,6 +913,45 @@ mod tests {
         VideoCondition, VideoEditRequest, VideoExtendRequest, VideoGenerateRequest,
         VideoOutputSpec, VideoSize,
     };
+
+    #[test]
+    fn image_count_keeps_batch_semantics_and_omits_single_image_fields() {
+        let (descriptor, registration) = doubao_media_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        for n in [None, Some(0), Some(1), Some(4)] {
+            let mut request = TextToImageInvokeRequest::new("ignored", "cat");
+            request.n = n;
+            let input = CodecInput {
+                canonical_request: AiccCall::ImagesGenerate(request),
+                resolved_parameters: BTreeMap::from([(
+                    "provider_model_id".into(),
+                    json!("doubao-seedream-4-0-250828"),
+                )]),
+            };
+            let wire = registry.encode(
+                DOUBAO_MEDIA_ADAPTER_ID,
+                DOUBAO_IMAGE_OPERATION_ID,
+                ApiType::ImageTextToImage,
+                &input,
+                &context(),
+            );
+            if n == Some(0) {
+                assert!(wire.is_err());
+                continue;
+            }
+            let HttpBody::Json(body) = wire.unwrap().body else {
+                panic!("expected JSON");
+            };
+            if n == Some(4) {
+                assert_eq!(body["sequential_image_generation"], "auto");
+                assert_eq!(body["sequential_image_generation_options"]["max_images"], 4);
+            } else {
+                assert!(body.get("sequential_image_generation").is_none());
+                assert!(body.get("sequential_image_generation_options").is_none());
+            }
+        }
+    }
 
     fn seedance_submit(
         model: &str,
