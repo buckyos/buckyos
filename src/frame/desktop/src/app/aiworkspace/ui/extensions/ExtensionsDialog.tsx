@@ -5,7 +5,7 @@
  * reached from the Desktop and from a Workspace's own host alike (Q24). Phones list only (no building, no adding). */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Download, FileUp, Hammer, Library, Package, PackagePlus, Plus, Puzzle, RefreshCw, Upload } from 'lucide-react'
+import { ArrowLeft, Download, FileUp, Hammer, Library, Package, PackagePlus, Plus, Puzzle, RefreshCw, Trash2, Upload, X } from 'lucide-react'
 import { ServiceFailure } from '../../api/client'
 import type { BlockDefPayload, BlockDefRead, BuildDiagnostic, ControlBinding, EntityEnvelope, ExtBuildResult, ExtMigration, ExtPackResult, Json, LibraryPackage } from '../../api/types'
 import { describeError, type ReadOk } from '../../api/session'
@@ -21,6 +21,7 @@ import {
 import { requestInsertDefinition } from './extEvents'
 import { desktopUIStore } from '../../../../models/DesktopUIDataModel'
 import { filesOpenLaunch } from '../../../filebrowser/launch'
+import './extensions.css'
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
@@ -54,42 +55,61 @@ export function ExtensionsDialog({ initialDefId, phone, onClose }: { initialDefI
       setImporting(false)
     }
   }
+  const upgrading = view.kind === 'upgrade' ? store.outline.get(view.defId) : null
+  const heading = view.kind === 'new' ? t('aiworkspace.ext.newTitle')
+    : view.kind === 'library' ? t('aiworkspace.ext.libraryTitle')
+      : view.kind === 'export' ? t('aiworkspace.ext.exportTitle')
+        : view.kind === 'upgrade' ? t('aiworkspace.ext.upgrade.title', { name: upgrading?.title ?? upgrading?.ident ?? '' })
+          : t('aiworkspace.ext.title')
   return (
-    <Modal label={t('aiworkspace.ext.title')} testId="aiws-ext-dialog" className="aiws-ext-dialog" onClose={onClose}>
-      <div className="aiws-dialog-head">
-        <Puzzle size={18} aria-hidden="true" /><b>{t('aiworkspace.ext.title')}</b><span className="aiws-grow" />
-        {canBuild && view.kind === 'list' && <>
+    <Modal label={t('aiworkspace.ext.title')} testId="aiws-ext-dialog" className="aiws-ext-dialog aiws-ext-manager" onClose={onClose}>
+      <div className="aiws-ext-head">
+        {view.kind === 'list'
+          ? <Puzzle size={18} aria-hidden="true" />
+          : <button type="button" className="aiws-tool aiws-tool-small" data-testid="aiws-ext-back" aria-label={t('aiworkspace.ext.back')} title={t('aiworkspace.ext.back')} onClick={() => setView({ kind: 'list' })}><ArrowLeft size={16} aria-hidden="true" /></button>}
+        <h2>{heading}</h2>
+        <button type="button" className="aiws-tool aiws-tool-small aiws-ext-close" data-testid="aiws-ext-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} onClick={onClose}><X size={16} aria-hidden="true" /></button>
+      </div>
+      {canBuild && view.kind === 'list' && (
+        <div className="aiws-ext-toolbar">
           <button type="button" data-testid="aiws-ext-new" onClick={() => setView({ kind: 'new' })}><Plus size={15} aria-hidden="true" />{t('aiworkspace.ext.new')}</button>
           <button type="button" data-testid="aiws-ext-library" onClick={() => setView({ kind: 'library' })}><Library size={15} aria-hidden="true" />{t('aiworkspace.ext.fromLibrary')}</button>
           <button type="button" data-testid="aiws-ext-import-pikg" disabled={importing} onClick={() => { void pickFile.file('.pikg').then((file) => { if (file) void importPikg(file) }) }}><FileUp size={15} aria-hidden="true" />{t('aiworkspace.ext.importPikg')}</button>
+          <span className="aiws-grow" />
           <button type="button" data-testid="aiws-ext-export" disabled={checked.size === 0} title={checked.size === 0 ? t('aiworkspace.ext.exportPick') : undefined} onClick={() => setView({ kind: 'export' })}><Upload size={15} aria-hidden="true" />{t('aiworkspace.ext.export', { count: checked.size })}</button>
-        </>}
-        {view.kind !== 'list' && <button type="button" className="aiws-link" onClick={() => setView({ kind: 'list' })}>{t('aiworkspace.ext.back')}</button>}
-        <button type="button" className="aiws-link" data-testid="aiws-ext-close" onClick={onClose}>{t('aiworkspace.common.close')}</button>
-      </div>
-      {view.kind === 'new' && <NewControl onDone={(id) => { setChosen(id); setView({ kind: 'list' }) }} />}
-      {view.kind === 'library' && <FromLibrary onDone={() => setView({ kind: 'list' })} onUpgrade={(defId, pkgId) => setView({ kind: 'upgrade', defId, pkgId })} />}
-      {view.kind === 'upgrade' && <UpgradeControl defId={view.defId} pkgId={view.pkgId} onDone={() => { setChosen(view.defId); setView({ kind: 'list' }) }} />}
-      {view.kind === 'export' && <ExportControls ids={[...checked]} onDone={() => setView({ kind: 'list' })} />}
-      {view.kind === 'list' && (
+        </div>
+      )}
+      {view.kind === 'list' ? (
         <div className="aiws-ext-body">
           <ul className="aiws-ext-list" data-testid="aiws-ext-list">
-            {defs.length === 0 && <li className="aiws-muted">{t('aiworkspace.ext.empty')}</li>}
+            {defs.length === 0 && <li className="aiws-ext-empty">{t('aiworkspace.ext.empty')}</li>}
             {defs.map((d) => (
               <li key={d.entity_id} className={d.entity_id === chosen ? 'is-active' : undefined}>
                 {canBuild && <input type="checkbox" aria-label={t('aiworkspace.ext.pick', { name: d.title ?? d.entity_id })} checked={checked.has(d.entity_id)} onChange={() => toggle(d.entity_id)} data-testid={`aiws-ext-check-${d.entity_id}`} />}
                 <button type="button" className="aiws-ext-row" data-testid={`aiws-ext-row-${d.entity_id}`} onClick={() => setChosen(d.entity_id)}>
                   <span className="aiws-ext-row-title">{d.title ?? d.def_id ?? d.entity_id}</span>
-                  <span className="aiws-muted">{kindLabel(d.def_kind, t)} · v{d.def_version ?? 1} · {d.provenance_pkg ? t('aiworkspace.ext.fromPackage', { pkg: d.provenance_pkg }) : d.source_dir_id ? t('aiworkspace.ext.localBuild') : t('aiworkspace.ext.inline')} · {t('aiworkspace.ext.instances', { count: instances(d.entity_id) })}</span>
+                  <span className="aiws-ext-row-meta">{kindLabel(d.def_kind, t)} · v{d.def_version ?? 1} · {t('aiworkspace.ext.instances', { count: instances(d.entity_id) })}</span>
                 </button>
               </li>
             ))}
           </ul>
-          {current ? <DefinitionPanel key={current.entity_id} def={current} canBuild={canBuild} onInsert={onClose} onUpgrade={(pkgId) => setView({ kind: 'upgrade', defId: current.entity_id, pkgId })} /> : <div className="aiws-muted">{t('aiworkspace.ext.chooseOne')}</div>}
+          {current ? <DefinitionPanel key={current.entity_id} def={current} canBuild={canBuild} onInsert={onClose} onUpgrade={(pkgId) => setView({ kind: 'upgrade', defId: current.entity_id, pkgId })} /> : <div className="aiws-ext-detail aiws-ext-empty">{t('aiworkspace.ext.chooseOne')}</div>}
+        </div>
+      ) : (
+        <div className="aiws-ext-page">
+          {view.kind === 'new' && <NewControl onDone={(id) => { setChosen(id); setView({ kind: 'list' }) }} />}
+          {view.kind === 'library' && <FromLibrary onDone={() => setView({ kind: 'list' })} onUpgrade={(defId, pkgId) => setView({ kind: 'upgrade', defId, pkgId })} />}
+          {view.kind === 'upgrade' && <UpgradeControl defId={view.defId} pkgId={view.pkgId} onDone={() => { setChosen(view.defId); setView({ kind: 'list' }) }} />}
+          {view.kind === 'export' && <ExportControls ids={[...checked]} onDone={() => setView({ kind: 'list' })} />}
         </div>
       )}
     </Modal>
   )
+}
+
+/** Where a definition came from: a package in the library, a build in this workspace, or inline. */
+function sourceLabel(def: EntityEnvelope, t: ReturnType<typeof useAiwsText>['t']): string {
+  return def.provenance_pkg ? t('aiworkspace.ext.fromPackage', { pkg: def.provenance_pkg }) : def.source_dir_id ? t('aiworkspace.ext.localBuild') : t('aiworkspace.ext.inline')
 }
 
 /** What a definition is: declarative, HTML or composite. */
@@ -178,16 +198,18 @@ function DefinitionPanel({ def, canBuild, onInsert, onUpgrade }: { def: EntityEn
   })
   return (
     <div className="aiws-ext-detail" data-testid="aiws-ext-detail" data-def={def.entity_id}>
-      <h3>{def.title ?? def.def_id}</h3>
-      <dl className="aiws-catalog-meta">
-        <dt>{t('aiworkspace.ext.ident')}</dt><dd><code data-testid="aiws-ext-ident">{def.ident ?? t('aiworkspace.ext.noIdent')}</code></dd>
+      <div className="aiws-ext-detail-head">
+        <h3>{def.title ?? def.def_id}</h3>
+        {payload?.description && <p>{payload.description}</p>}
+      </div>
+      <dl className="aiws-ext-meta">
+        <dt>{t('aiworkspace.ext.ident')}</dt><dd>{def.ident ? <code data-testid="aiws-ext-ident">{def.ident}</code> : <span data-testid="aiws-ext-ident">{t('aiworkspace.ext.noIdent')}</span>}</dd>
         <dt>{t('aiworkspace.canvas.catalog.type')}</dt><dd>{kindLabel(def.def_kind, t)} · v{payload?.version ?? def.def_version ?? 1}</dd>
         {payload?.deps && payload.deps.length > 0 && <><dt>{t('aiworkspace.ext.deps')}</dt><dd data-testid="aiws-ext-deps">{payload.deps.map((d) => d.ident).join(', ')}</dd></>}
-        {payload?.provenance && <><dt>{t('aiworkspace.ext.source')}</dt><dd>{t('aiworkspace.ext.fromPackage', { pkg: `${payload.provenance.pkg_id ?? ''} ${payload.provenance.version ?? ''}` })}</dd></>}
-        <dt>{t('aiworkspace.ext.lastBuild')}</dt><dd data-testid="aiws-ext-built-at">{build ? dateTime(build.built_at) : t('aiworkspace.ext.neverBuilt')}</dd>
+        <dt>{t('aiworkspace.ext.source')}</dt><dd>{payload?.provenance ? t('aiworkspace.ext.fromPackage', { pkg: `${payload.provenance.pkg_id ?? ''} ${payload.provenance.version ?? ''}` }) : sourceLabel(def, t)}</dd>
+        {(build || def.source_dir_id || payload?.provenance) && <><dt>{t('aiworkspace.ext.lastBuild')}</dt><dd data-testid="aiws-ext-built-at">{build ? dateTime(build.built_at) : t('aiworkspace.ext.neverBuilt')}</dd></>}
       </dl>
-      {payload?.description && <p className="aiws-muted">{payload.description}</p>}
-      {payload?.bindings && Object.keys(payload.bindings).length > 0 && <div className="aiws-muted">{t('aiworkspace.ext.bindingsList', { names: Object.entries(payload.bindings).map(([n, b]) => `${n}${b.required ? '*' : ''}`).join(', ') })}</div>}
+      {payload?.bindings && Object.keys(payload.bindings).length > 0 && <div className="aiws-ext-hint">{t('aiworkspace.ext.bindingsList', { names: Object.entries(payload.bindings).map(([n, b]) => `${n}${b.required ? '*' : ''}`).join(', ') })}</div>}
       {unbuilt && <div className="aiws-warning" data-testid="aiws-ext-unbuilt">{t('aiworkspace.ext.unbuilt')}</div>}
       {newer && (
         <div className="aiws-warning" data-testid="aiws-ext-new-version" data-version={newer.version}>
@@ -196,28 +218,34 @@ function DefinitionPanel({ def, canBuild, onInsert, onUpgrade }: { def: EntityEn
         </div>
       )}
       {canBuild && (
-        <>
-          <label className="aiws-field">{t('aiworkspace.ext.sourceFolder')}
+        <section className="aiws-ext-section">
+          <label className="aiws-field"><span className="aiws-ext-section-title">{t('aiworkspace.ext.sourceFolder')}</span>
             <input value={dir} data-testid="aiws-ext-dir" onChange={(event) => setDir(event.target.value)} />
-            <span className="aiws-muted">{t('aiworkspace.ext.sourceFolderHint')}</span>
+            <span className="aiws-ext-hint">{t('aiworkspace.ext.sourceFolderHint')}</span>
           </label>
-          <div className="aiws-dialog-actions">
-            <button type="button" data-testid="aiws-ext-edit" disabled={busy !== null} onClick={() => void editSource()}>{t('aiworkspace.ext.editSource')}</button>
+          <div className="aiws-ext-actions">
             <button type="button" className="is-primary" data-testid="aiws-ext-build" disabled={busy !== null} onClick={() => void doBuild()}><Hammer size={15} aria-hidden="true" />{busy === 'build' ? t('aiworkspace.ext.building') : t('aiworkspace.ext.build')}</button>
+            <button type="button" data-testid="aiws-ext-edit" disabled={busy !== null} onClick={() => void editSource()}>{t('aiworkspace.ext.editSource')}</button>
             <button type="button" data-testid="aiws-ext-pull" disabled={busy !== null} onClick={() => void pull()}><RefreshCw size={15} aria-hidden="true" />{t('aiworkspace.ext.pull')}</button>
-            <label className="aiws-inline-form"><input type="checkbox" data-testid="aiws-ext-watch" checked={watching !== null} onChange={(event) => { if (event.target.checked) { remember(dir); startWatch(store, def.entity_id, dir, setOutcome) } else stopWatch(def.entity_id) }} />{t('aiworkspace.ext.watch')}</label>
+            <span className="aiws-grow" />
+            <label className="aiws-ext-check"><input type="checkbox" data-testid="aiws-ext-watch" checked={watching !== null} onChange={(event) => { if (event.target.checked) { remember(dir); startWatch(store, def.entity_id, dir, setOutcome) } else stopWatch(def.entity_id) }} />{t('aiworkspace.ext.watch')}</label>
           </div>
-        </>
+          <Diagnostics outcome={outcome ?? watching?.last ?? null} />
+        </section>
       )}
-      <Diagnostics outcome={outcome ?? watching?.last ?? null} />
-      <div className="aiws-ext-users">
-        <b>{t('aiworkspace.ext.instances', { count: users.length })}</b>
-        <ul>{users.map((u) => <li key={u.entity_id}><code>{u.entity_id}</code> {u.title ?? ''}</li>)}</ul>
-      </div>
-      <div className="aiws-dialog-actions">
-        {canBuild && <button type="button" data-testid="aiws-ext-insert" onClick={() => { if (requestInsertDefinition(def.entity_id)) onInsert(); else store.notify('info', t('aiworkspace.ext.openCanvasFirst')) }}>{t('aiworkspace.ext.insertInstance')}</button>}
-        {canBuild && <button type="button" className="aiws-danger" data-testid="aiws-ext-remove" disabled={users.length > 0 || busy !== null} title={users.length > 0 ? t('aiworkspace.ext.removeBlocked') : undefined} onClick={() => void remove()}>{t('aiworkspace.ext.remove')}</button>}
-      </div>
+      <section className="aiws-ext-section aiws-ext-users">
+        <div className="aiws-ext-section-head">
+          <span className="aiws-ext-section-title">{t('aiworkspace.ext.instances', { count: users.length })}</span>
+          {canBuild && <button type="button" data-testid="aiws-ext-insert" onClick={() => { if (requestInsertDefinition(def.entity_id)) onInsert(); else store.notify('info', t('aiworkspace.ext.openCanvasFirst')) }}><Plus size={15} aria-hidden="true" />{t('aiworkspace.ext.insertInstance')}</button>}
+        </div>
+        {users.length > 0 && <ul>{users.map((u) => <li key={u.entity_id}><span>{u.title || u.entity_id}</span><code>{u.entity_id}</code></li>)}</ul>}
+      </section>
+      {canBuild && (
+        <div className="aiws-ext-detail-foot">
+          <button type="button" className="aiws-danger" data-testid="aiws-ext-remove" disabled={users.length > 0 || busy !== null} title={users.length > 0 ? t('aiworkspace.ext.removeBlocked') : undefined} onClick={() => void remove()}><Trash2 size={15} aria-hidden="true" />{t('aiworkspace.ext.removeControl')}</button>
+          {users.length > 0 && <span className="aiws-ext-hint">{t('aiworkspace.ext.removeBlocked')}</span>}
+        </div>
+      )}
     </div>
   )
 }
@@ -506,7 +534,6 @@ function UpgradeControl({ defId, pkgId, onDone }: { defId: string; pkgId?: strin
   const nothingChanges = changes && !changes.removedConfig.length && !changes.requiredConfig.length && !changes.removedBindings.length && !changes.removedSlots.length && !changes.removedEvents.length
   return (
     <div className="aiws-ext-form" data-testid="aiws-ext-upgrade-form" data-def={defId}>
-      <h3>{t('aiworkspace.ext.upgrade.title', { name: def?.title ?? ident })}</h3>
       <div data-testid="aiws-ext-upgrade-versions">{t('aiworkspace.ext.upgrade.versions', { pkg, from: current?.provenance?.version ?? t('aiworkspace.ext.localBuild'), to: target?.version ?? '?' })}</div>
       {(library.error || next.error || read.error) && <div className="aiws-error">{library.error ?? next.error ?? read.error}</div>}
       {unbuilt && <div className="aiws-warning" data-testid="aiws-ext-upgrade-unbuilt">{t('aiworkspace.ext.upgrade.unbuilt')}</div>}

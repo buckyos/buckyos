@@ -1,0 +1,98 @@
+/* The workspace controls dialog (ExtensionsDialog): a title row, the toolbar of ways in and out, then the controls on
+ * the left and the chosen one on the right; the other views (new, library, export, upgrade) are one scrolled column
+ * with their actions kept at the bottom. Narrow, the list goes above the detail. The forms are shared with the save
+ * template and define control dialogs. */
+
+.aiws-modal-backdrop:has(> .aiws-ext-manager) { align-items: center; padding: 20px; }
+.aiws-modal-backdrop > .aiws-dialog.aiws-ext-manager {
+  container: aiws-ext / inline-size;
+  width: min(880px, 100%); height: min(640px, 100%); max-height: 100%;
+  padding: 0; gap: 0; overflow: hidden;
+}
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop) > .aiws-dialog:not(.aiws-members-sheet):not(.aiws-bind-dialog).aiws-ext-manager {
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+
+.aiws-ext-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 14px 14px 12px 20px; }
+.aiws-ext-head > svg { flex: none; color: var(--cp-muted); }
+.aiws-root .aiws-ext-head > .aiws-tool:first-child { margin-left: -6px; }
+.aiws-ext-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-root .aiws-ext-head .aiws-ext-close { color: var(--cp-muted); }
+.aiws-root .aiws-ext-head .aiws-ext-close:hover:not(:disabled) { color: var(--cp-text); }
+.aiws-ext-head + .aiws-ext-body, .aiws-ext-head + .aiws-ext-page { border-top: 1px solid var(--cp-border); }
+
+.aiws-ext-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 20px 12px; border-bottom: 1px solid var(--cp-border); }
+.aiws-root .aiws-ext-manager button:not(.aiws-tool):not(.aiws-ext-row):not(.aiws-link) { min-height: 32px; padding: 0 12px; border-radius: 8px; gap: 6px; white-space: nowrap; }
+.aiws-root .aiws-ext-manager button svg { flex: none; }
+
+/* the controls of this workspace */
+.aiws-ext-body { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); flex: 1; min-height: 0; }
+.aiws-ext-list { display: flex; flex-direction: column; gap: 4px; min-height: 0; margin: 0; padding: 12px; overflow: auto; list-style: none; background: var(--cp-surface-2); border-right: 1px solid var(--cp-border); }
+.aiws-ext-list > li { display: flex; align-items: flex-start; border: 1px solid transparent; border-radius: 10px; }
+.aiws-ext-list > li:hover { background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-ext-list > li.is-active { background: var(--aiws-selected-bg); border-color: var(--aiws-selected-border); }
+.aiws-ext-list > li > input { flex: none; margin: 12px 0 0 10px; }
+.aiws-root .aiws-ext-list > li > button.aiws-ext-row,
+.aiws-root .aiws-ext-list > li > button.aiws-ext-row:hover:not(:disabled) { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; padding: 8px 10px; border: none; border-radius: 10px; background: none; text-align: left; }
+.aiws-ext-row-title { font-weight: 500; overflow-wrap: anywhere; }
+.aiws-ext-row-meta { color: var(--cp-muted); font-size: 12px; }
+.aiws-ext-empty { padding: 8px; color: var(--cp-muted); font-size: 12px; line-height: 1.6; }
+
+/* the chosen control */
+.aiws-ext-detail { display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; padding: 20px 24px; overflow: auto; }
+.aiws-ext-detail-head h3 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.aiws-ext-detail-head p { margin: 4px 0 0; color: var(--cp-muted); line-height: 1.6; overflow-wrap: anywhere; }
+.aiws-ext-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 20px; margin: 0; }
+.aiws-ext-meta dt { color: var(--cp-muted); }
+.aiws-ext-meta dd { margin: 0; overflow-wrap: anywhere; }
+.aiws-ext-meta code, .aiws-ext-users code { font-family: var(--aiws-mono); font-size: 12px; }
+.aiws-ext-hint { color: var(--cp-muted); font-size: 12px; line-height: 1.5; }
+.aiws-ext-detail .aiws-warning { margin: 0; border-radius: 0 6px 6px 0; padding: 6px 10px; }
+.aiws-ext-section { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--cp-border); }
+.aiws-ext-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.aiws-ext-section-title { font-weight: 600; }
+.aiws-ext-section .aiws-field { gap: 6px; }
+.aiws-ext-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aiws-ext-check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.aiws-ext-check > input { margin: 0; }
+.aiws-ext-section > [role='status'] { color: var(--cp-success); font-size: 12px; }
+.aiws-ext-section > .aiws-error { border-radius: 6px; padding: 8px 10px; background: color-mix(in srgb, var(--cp-danger) 8%, transparent); font-size: 12px; }
+.aiws-ext-diagnostics { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.aiws-ext-diagnostics li { overflow-wrap: anywhere; }
+.aiws-ext-users ul { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--cp-border); border-radius: 8px; }
+.aiws-ext-users li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; padding: 8px 12px; }
+.aiws-ext-users li + li { border-top: 1px solid var(--cp-border); }
+.aiws-ext-users li > span { min-width: 0; overflow-wrap: anywhere; }
+.aiws-ext-users li > code { flex: none; color: var(--cp-muted); }
+.aiws-ext-detail-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: auto; padding-top: 4px; }
+.aiws-root .aiws-ext-manager button.aiws-danger { color: var(--cp-danger); }
+.aiws-root .aiws-ext-manager button.aiws-danger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--cp-danger) 40%, var(--cp-border)); background: color-mix(in srgb, var(--cp-danger) 8%, transparent); }
+
+/* new, library, export, upgrade — and the forms of the sibling dialogs */
+.aiws-ext-page { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: auto; }
+.aiws-ext-page > .aiws-ext-form { flex: 1 0 auto; padding: 20px 24px 0; }
+.aiws-ext-page > .aiws-ext-form > :not(.aiws-dialog-actions) { max-width: 600px; }
+.aiws-ext-page > .aiws-ext-form > .aiws-dialog-actions:last-child { position: sticky; bottom: 0; margin: auto -24px 0; padding: 12px 24px; border-top: 1px solid var(--cp-border); background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-ext-form { display: flex; flex-direction: column; gap: 12px; }
+.aiws-ext-form > p { margin: 0; line-height: 1.6; }
+.aiws-ext-form .aiws-field { gap: 6px; }
+.aiws-root .aiws-ext-dialog .aiws-field > input:not([type='checkbox']):not([type='radio']), .aiws-root .aiws-ext-dialog .aiws-field > select { width: 100%; box-sizing: border-box; min-height: 32px; padding: 4px 10px; border-radius: 8px; }
+.aiws-ext-package { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; padding: 8px 14px 12px; border: 1px solid var(--cp-border); border-radius: 10px; }
+.aiws-ext-package > legend { padding: 0 4px; font-weight: 600; }
+.aiws-ext-package > .aiws-inline-form { padding: 4px 0; }
+.aiws-ext-package code { font-family: var(--aiws-mono); font-size: 12px; color: var(--cp-muted); }
+
+@container aiws-ext (max-width: 620px) {
+  .aiws-ext-head { padding: 12px 10px 10px 16px; }
+  .aiws-ext-toolbar { padding: 0 16px 12px; }
+  .aiws-ext-body { display: flex; flex-direction: column; overflow: auto; }
+  .aiws-ext-list { flex: none; max-height: 168px; border-right: none; border-bottom: 1px solid var(--cp-border); }
+  .aiws-ext-detail { flex: 1 0 auto; padding: 16px; overflow: visible; }
+  .aiws-ext-page > .aiws-ext-form { padding: 16px 16px 0; }
+  .aiws-ext-page > .aiws-ext-form > .aiws-dialog-actions:last-child { margin: auto -16px 0; padding: 12px 16px; }
+}
+
+@media (pointer: coarse) {
+  .aiws-root .aiws-ext-manager button:not(.aiws-tool):not(.aiws-ext-row):not(.aiws-link) { min-height: 44px; }
+  .aiws-root .aiws-ext-manager .aiws-tool { min-width: 44px; height: 44px; }
+}
