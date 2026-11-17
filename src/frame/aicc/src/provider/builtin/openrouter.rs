@@ -323,16 +323,7 @@ impl OpenRouterDiscovery {
             )
             .await
         {
-            Ok(response) => serde_json::from_slice::<VideoModelsResponse>(&response.body)
-                .map_err(|error| {
-                    ProviderError::DiscoveryResponse(format!(
-                        "OpenRouter video models response is invalid: {error}"
-                    ))
-                })?
-                .data
-                .into_iter()
-                .map(|model| (model.id.clone(), model))
-                .collect::<BTreeMap<_, _>>(),
+            Ok(response) => video_catalog(&response.body),
             Err(error) => {
                 log::warn!("OpenRouter video catalog is unavailable: {error}");
                 BTreeMap::new()
@@ -362,6 +353,7 @@ impl OpenRouterDiscovery {
                     .supported_durations
                     .iter()
                     .flatten()
+                    .filter(|seconds| **seconds > 0)
                     .map(|seconds| *seconds as f64)
                     .collect(),
                 resolutions: entry.supported_resolutions.clone().unwrap_or_default(),
@@ -380,15 +372,43 @@ impl OpenRouterDiscovery {
                 generate_audio: entry.generate_audio,
                 seed: entry.seed,
             });
-            model.pricing = entry
+            match entry
                 .pricing_skus
                 .as_ref()
                 .map(|skus| parse_video_pricing(id, skus))
-                .transpose()?
-                .flatten();
+                .transpose()
+            {
+                Ok(pricing) => model.pricing = pricing.flatten(),
+                Err(error) => {
+                    log::warn!("OpenRouter video model {id} is unavailable: {error}");
+                    model.availability = ModelAvailability::Unavailable;
+                }
+            }
         }
         Ok(())
     }
+}
+
+fn video_catalog(body: &[u8]) -> BTreeMap<String, VideoModelObject> {
+    let entries = match serde_json::from_slice::<VideoModelsResponse>(body) {
+        Ok(response) => response.data,
+        Err(error) => {
+            log::warn!("OpenRouter video models response is invalid: {error}");
+            return BTreeMap::new();
+        }
+    };
+    entries
+        .into_iter()
+        .filter_map(
+            |entry| match serde_json::from_value::<VideoModelObject>(entry) {
+                Ok(model) => Some((model.id.clone(), model)),
+                Err(error) => {
+                    log::warn!("OpenRouter video model entry is invalid: {error}");
+                    None
+                }
+            },
+        )
+        .collect()
 }
 
 /// `duration_seconds` is a per-second price, `duration_seconds_<resolution>`
@@ -744,7 +764,7 @@ struct ModelArchitecture {
 
 #[derive(Deserialize)]
 struct VideoModelsResponse {
-    data: Vec<VideoModelObject>,
+    data: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -754,7 +774,7 @@ struct VideoModelObject {
     supported_resolutions: Option<Vec<String>>,
     supported_aspect_ratios: Option<Vec<String>>,
     supported_sizes: Option<Vec<String>>,
-    supported_durations: Option<Vec<u64>>,
+    supported_durations: Option<Vec<i64>>,
     supported_frame_images: Option<Vec<String>>,
     generate_audio: Option<bool>,
     seed: Option<bool>,
@@ -1175,7 +1195,7 @@ mod tests {
             "id": "bytedance/seedance-2.0", "canonical_slug": "bytedance/seedance-2.0-20260414",
             "name": "ByteDance: Seedance 2.0", "created": 1776211362,
             "supported_resolutions": ["480p", "720p"], "supported_aspect_ratios": ratios,
-            "supported_sizes": null, "supported_durations": [4, 5],
+            "supported_sizes": null, "supported_durations": [-1, 4, 5],
             "supported_frame_images": ["first_frame"], "upscale_factor": null, "creativity": null,
             "generate_audio": true, "seed": true,
             "pricing_skus": {"video_tokens": "0.000007"},
@@ -1192,6 +1212,17 @@ mod tests {
         Vec<String>,
     ) {
         let (models, videos) = openrouter_video_catalogs(include_max);
+        video_inventory_from(models, videos).await
+    }
+
+    async fn video_inventory_from(
+        models: serde_json::Value,
+        videos: serde_json::Value,
+    ) -> (
+        crate::provider::ProviderDiscoverySnapshot,
+        crate::provider::ProviderInventorySnapshot,
+        Vec<String>,
+    ) {
         let transport = Arc::new(SequenceTransport {
             urls: Mutex::new(Vec::new()),
             responses: Mutex::new([models, videos].into()),
@@ -1284,6 +1315,14 @@ mod tests {
         assert_eq!(max_price.rules.len(), 2);
         // A token-metered SKU is not mistaken for a free or per-second price.
         assert!(discovered("bytedance/seedance-2.0").pricing.is_none());
+        assert_eq!(
+            discovered("bytedance/seedance-2.0")
+                .video
+                .as_ref()
+                .unwrap()
+                .durations,
+            [4.0, 5.0]
+        );
 
         let model = |id: &str| {
             inventory
@@ -1343,6 +1382,56 @@ mod tests {
             .iter()
             .find(|model| model.provider_model_id == "minimax/hailuo-3-max")
             .is_none_or(|model| model.api_types.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_video_catalog_only_disables_video_models() {
+        let (mut models, mut videos) = openrouter_video_catalogs(true);
+        models["data"].as_array_mut().unwrap().push(json!({
+            "id": "openai/gpt-5.5", "canonical_slug": "openai/gpt-5.5-20260423",
+            "context_length": 1050000,
+            "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+            "pricing": {"prompt": "0.000005", "completion": "0.00003"},
+            "supported_parameters": ["tools", "structured_outputs", "reasoning"],
+            "expiration_date": null
+        }));
+        let availability = |snapshot: &crate::provider::ProviderDiscoverySnapshot, id: &str| {
+            snapshot
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .unwrap()
+                .availability
+                .clone()
+        };
+        let entries = videos["data"].as_array_mut().unwrap();
+        entries[1]["supported_durations"] = json!(["five"]);
+        entries[2]["pricing_skus"] = json!({"duration_seconds": "free"});
+        let (snapshot, _, _) = video_inventory_from(models.clone(), videos).await;
+        assert_eq!(
+            availability(&snapshot, "minimax/hailuo-3"),
+            ModelAvailability::Available
+        );
+        for id in ["minimax/hailuo-3-max", "bytedance/seedance-2.0"] {
+            assert_eq!(availability(&snapshot, id), ModelAvailability::Unavailable);
+        }
+        assert_eq!(
+            availability(&snapshot, "openai/gpt-5.5"),
+            ModelAvailability::Available
+        );
+
+        let (snapshot, _, _) = video_inventory_from(models, json!({"data": "oops"})).await;
+        for id in [
+            "minimax/hailuo-3",
+            "minimax/hailuo-3-max",
+            "bytedance/seedance-2.0",
+        ] {
+            assert_eq!(availability(&snapshot, id), ModelAvailability::Unavailable);
+        }
+        assert_eq!(
+            availability(&snapshot, "openai/gpt-5.5"),
+            ModelAvailability::Available
+        );
     }
 
     async fn jev_inventory(
