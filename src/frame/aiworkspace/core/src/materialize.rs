@@ -443,6 +443,10 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
     let mut order: Vec<&String> = by_id.keys().filter(|id| !is_system_id(id)).collect();
     order.sort_by_key(|id| (rank(by_id[*id]["type_id"].as_str().unwrap_or("")), depth[*id], (*id).clone()));
     let (mut ops, mut inserts, mut later, mut types, mut assets) = (Vec::new(), Vec::new(), Vec::new(), BTreeMap::new(), Vec::new());
+    // all but one: the session folder is made the first time a session needs it, so a new Workspace has none yet
+    if by_id.contains_key(SESSION_ID) {
+        ops.push(json!({ "op": "system.ensure", "id": SESSION_ID }));
+    }
     for id in order {
         let entry = &by_id[id];
         let type_id = entry["type_id"].as_str().unwrap_or("");
