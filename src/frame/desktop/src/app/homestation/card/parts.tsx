@@ -20,6 +20,7 @@ import {
   VideoOff,
 } from 'lucide-react'
 import { useCallback, useState } from 'react'
+import { LinkifiedText } from '../../../components/conversation/history/MessageMarkdown'
 import { useI18n } from '../../../i18n/provider'
 import { useItemActions } from '../actions'
 import { audienceLabel, formatDuration, formatTimeAgo, restrictedLabel } from '../datamodel/format'
@@ -288,8 +289,8 @@ export function ContentBody({ view, mode = 'standard', onOpen, clampText = true 
   const text = content?.text
   const title = content?.title
   const textBlock = text ? (
-    <p className={clsx('mt-1.5 cursor-pointer whitespace-pre-line text-sm leading-relaxed', clamp)} style={{ color: 'color-mix(in srgb, var(--cp-text) 88%, transparent)' }} onClick={onOpen}>
-      {text}
+    <p className={clsx('mt-1.5 cursor-pointer whitespace-pre-line text-sm leading-relaxed', clamp)} style={{ color: 'color-mix(in srgb, var(--cp-text) 88%, transparent)' }} onClick={event => { if (!(event.target as Element).closest('a')) onOpen() }}>
+      <LinkifiedText text={text} />
     </p>
   ) : null
 

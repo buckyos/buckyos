@@ -300,6 +300,13 @@ button.hs-badge:hover {
   }
 }
 
+.hs-root .mh-link {
+  color: var(--cp-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
 .hs-article .mh-markdown > * + * {
   margin-top: 0.8em;
 }

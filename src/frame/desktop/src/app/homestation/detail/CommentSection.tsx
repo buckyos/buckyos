@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, History, Lock, MessageCircle, Send } from 'l
 import { useCallback, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import useSWR from 'swr'
+import { LinkifiedText } from '../../../components/conversation/history/MessageMarkdown'
 import { useI18n } from '../../../i18n/provider'
 import { VerificationBadge } from '../card/parts'
 import { formatCount, formatDateTime, formatTimeAgo, viewLabel } from '../datamodel/format'
@@ -42,7 +43,7 @@ function CommentRow({ comment, view }: { comment: CommentView; view: StatsViewKe
             {comment.onOldVersion ? <span className="hs-badge is-warning" data-testid="hs-old-version"><History size={10} />{t('homestation.comments.oldVersion', 'On an earlier version (v{{n}})', { n: comment.targetVersion })}</span> : null}
             {comment.item.audience.restricted ? <span className="hs-badge"><Lock size={10} />{t('homestation.comments.authorOnly', 'Visible to the author only')}</span> : null}
           </div>
-          {text ? <p className="mt-0.5 whitespace-pre-line text-sm leading-relaxed">{text}</p> : null}
+          {text ? <p className="mt-0.5 whitespace-pre-line text-sm leading-relaxed"><LinkifiedText text={text} /></p> : null}
           {view === 'local' && !comment.listedByAuthor ? (
             <p className="mt-1 text-[11px]" style={{ color: 'var(--cp-muted)' }} data-testid="hs-not-in-author-view">{t('homestation.comments.notInAuthorView', 'The author’s view doesn’t list this comment right now.')}</p>
           ) : null}

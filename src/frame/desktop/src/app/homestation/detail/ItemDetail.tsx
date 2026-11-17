@@ -4,7 +4,7 @@ import useSWR from 'swr'
 import { ContentPreview } from '../../../components/ContentPreview'
 import type { PreviewSessionContext } from '../../../components/preview/types'
 import { useI18n } from '../../../i18n/provider'
-import { MessageMarkdown } from '../../../components/conversation/history/MessageMarkdown'
+import { LinkifiedText, MessageMarkdown } from '../../../components/conversation/history/MessageMarkdown'
 import { ActionBar, ReadOnlyCounts } from '../card/ActionBar'
 import { ItemMenu } from '../card/ItemMenu'
 import { AudioBlock, CardHeader, EmbeddedCard, LinkPreview, ReasonLine, ResourceOverlay, TagRow } from '../card/parts'
@@ -127,7 +127,7 @@ function DetailBody({ view }: { view: CardView }) {
   const actions = useItemActions()
   const { item } = view
   const content = item.object.content
-  const text = content?.text ? <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed">{content.text}</p> : null
+  const text = content?.text ? <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed"><LinkifiedText text={content.text} /></p> : null
   switch (item.contentType) {
     case 'article':
       return <ArticleBody view={view} />
