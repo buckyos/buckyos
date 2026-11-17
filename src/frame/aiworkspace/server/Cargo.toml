@@ -41,6 +41,8 @@ url = { workspace = true }
 base64 = { workspace = true }
 # the audio SFU of presentation sessions (第四期规划 §7.3.1; confirmed 2026-10-30)
 str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
+# the Host mixes the voices of a session: libopus 1.5, built from source with cmake (多人发言 TODO V1, owner 2026-11-16)
+opus = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }

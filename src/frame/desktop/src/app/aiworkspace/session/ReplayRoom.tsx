@@ -120,6 +120,7 @@ function ReplayPlayer({ engine, store, path, live, channel, timeRef }: { engine:
   useSyncExternalStore(head.subscribe, head.snapshot)
   const steps = useSteps(store, path)
   const marks = useMemo(() => engine.marks(), [engine])
+  const spans = useMemo(() => engine.speakingSpans().filter((s) => s.principal !== live.info.presenter), [engine, live])
   const voice = useMemo(() => engine.voiceSegments(), [engine])
   const audio = useRef<HTMLAudioElement | null>(null)
   const [audioUrl, setAudioUrl] = useState<{ objectId: string; url: string } | null>(null)
@@ -170,6 +171,8 @@ function ReplayPlayer({ engine, store, path, live, channel, timeRef }: { engine:
             <input type="range" min={0} max={Math.max(1, engine.duration)} step={1} value={Math.round(now)} aria-label={t('aiworkspace.session.replay.position')} data-testid="aiws-session-replay-scrub"
               onChange={(event) => head.seek(Number(event.target.value))} />
             <div className="aiws-session-marks">
+              {spans.map((s, i) => <span key={`v${i}`} className="aiws-session-span" data-testid="aiws-session-speaking-span" title={t('aiworkspace.session.replay.spoke', { name: s.name || '…' })}
+                style={{ left: `${(s.start / Math.max(1, engine.duration)) * 100}%`, width: `${(Math.max(250, s.end - s.start) / Math.max(1, engine.duration)) * 100}%` }} />)}
               {marks.map((m, i) => <button key={i} type="button" className={`aiws-session-mark is-${m.kind}`} title={m.label} style={{ left: `${(m.t / Math.max(1, engine.duration)) * 100}%` }} onClick={() => head.seek(m.t)} />)}
             </div>
           </div>

@@ -8,6 +8,7 @@ pub mod buckets;
 pub mod control;
 pub mod ext;
 pub mod media;
+pub mod mixer;
 pub mod methods;
 pub mod obj_provider;
 pub mod pages;

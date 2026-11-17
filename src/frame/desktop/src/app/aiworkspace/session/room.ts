@@ -3,7 +3,11 @@
  * active control terminal. An external store for React (`subscribe` / `snapshot`). */
 
 import type { SessionChannel } from './channel'
-import type { MediaState, SessionEvent, SessionInfo, SessionStage } from './types'
+import type { MediaState, SessionEvent, SessionInfo, SessionStage, SpeakMode } from './types'
+
+/** One person's speaking as the voice track says it (多人发言 §4.6): the right (`voice.allow`; the participant reads
+ * only their own, the managers everyone's), the mode they picked, a request to speak. */
+export interface VoicePerson { allow?: boolean; startMode?: 'auto' | 'manual'; mode?: SpeakMode; request?: boolean; name?: string }
 
 export interface FlyingReaction { id: number; kind: 'feedback' | 'danmaku'; text: string; symbol?: string; name?: string; x?: number; y?: number; surfaceId?: string; at: number }
 
@@ -19,7 +23,42 @@ export interface RoomSnapshot {
   controller: string | null
   /** The last voice event (start / stop) and whether a recording is under way. */
   voice: 'on' | 'off'
+  voices: Record<string, VoicePerson>
+  /** Who is speaking now (`voice.speaking`): principal → name (empty when the room shows no names). */
+  speaking: Record<string, string>
+  /** The event that last muted everyone (Q7), 0 for none. */
+  muteAll: number
   lastCommitSeq: number
+}
+
+/** The voice track's part of a snapshot after `e` (a live room and the replay alike). */
+export function applyVoice(snap: Pick<RoomSnapshot, 'voices' | 'speaking' | 'muteAll'>, e: SessionEvent): Pick<RoomSnapshot, 'voices' | 'speaking' | 'muteAll'> | null {
+  if (!e.type.startsWith('voice.') && e.type !== 'session.end') return null
+  const d = (e.data ?? {}) as Record<string, unknown>
+  const who = typeof d.principal === 'string' ? d.principal : ''
+  const person = (patch: VoicePerson) => ({ voices: { ...snap.voices, [who]: { ...snap.voices[who], ...patch } }, speaking: snap.speaking, muteAll: snap.muteAll })
+  switch (e.type) {
+    case 'voice.allow':
+      // a manager's decision answers the request either way
+      return person({ allow: d.allow === true, startMode: d.speak_mode === 'auto' ? 'auto' : 'manual', request: false, ...(typeof d.name === 'string' ? { name: d.name } : {}) })
+    case 'voice.mode':
+      return person({ mode: d.mode === 'auto' || d.mode === 'manual' ? d.mode : 'mute' })
+    case 'voice.request':
+      return person({ request: d.on === true, ...(typeof d.name === 'string' ? { name: d.name } : {}) })
+    case 'voice.speaking': {
+      const speaking = { ...snap.speaking }
+      if (d.on === true) speaking[who] = typeof d.name === 'string' ? d.name : ''
+      else delete speaking[who]
+      return { ...snap, speaking }
+    }
+    case 'voice.mute_all':
+      return { ...snap, muteAll: e.seq }
+    case 'voice.stop':
+    case 'session.end':
+      return { ...snap, speaking: {} }
+    default:
+      return null
+  }
 }
 
 const REACTION_MS = 6000
@@ -31,7 +70,7 @@ export class RoomModel {
   private sweeper = 0
 
   constructor(info: SessionInfo, controller: string | null) {
-    this.snap = { state: info.state, stage: info.stage ?? {}, pointer: null, camera: null, reactions: [], presence: {}, controller, voice: 'off', lastCommitSeq: 0 }
+    this.snap = { state: info.state, stage: info.stage ?? {}, pointer: null, camera: null, reactions: [], presence: {}, controller, voice: 'off', voices: {}, speaking: {}, muteAll: 0, lastCommitSeq: 0 }
   }
 
   subscribe = (listener: () => void) => {
@@ -68,6 +107,8 @@ export class RoomModel {
 
   apply(e: SessionEvent) {
     const d = e.data as Record<string, unknown>
+    const voice = applyVoice(this.snap, e)
+    if (voice) this.set(voice)
     switch (e.type) {
       case 'session.start':
         this.set({ state: 'live', stage: (d.stage as SessionStage) ?? this.snap.stage })

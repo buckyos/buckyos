@@ -8,7 +8,7 @@
 
 - Rust workspace 位于 `src/Cargo.toml`，Cargo 命令在 `src/` 下执行；在仓库根目录执行时使用 `--manifest-path src/Cargo.toml`。
 - Python 开发脚本使用 `uv run`，依赖由根目录 `pyproject.toml` 管理，要求 Python 3.12+，通过 Git `main` 分支引入 `buckyos-devkit`。
-- 完整构建需要 Rust、当前平台的 C/C++ 构建工具、Node.js/npm、pnpm 和 Deno；运行容器应用需要 Docker。环境准备入口见 `README_zhCN.md` 和 `devenv.py`。
+- 完整构建需要 Rust、当前平台的 C/C++ 构建工具、CMake（aiworkspace 的 libopus 从源码编译）、Node.js/npm、pnpm 和 Deno；运行容器应用需要 Docker。环境准备入口见 `README_zhCN.md` 和 `devenv.py`。
 - `src/buckyos-build.py` 是仓库构建入口：先准备 SDK/CLI 分发包，再调用 devkit 的 `buckyos-build`。直接运行 devkit 命令会绕过这一步。
 - 同级 `buckyos-websdk` 仓库存在时从源码构建 SDK/CLI；不存在时使用 npm 发布的 `buckyos@latest`。本地源码构建失败会中止，不回退到发布包。可通过 `BUCKYOS_SDK_TOOL_SOURCE` 指定源码位置、`BUCKYOS_SDK_TOOL_DENO` 指定 Deno。
 - `--skip-web` 和 `-s` 构建也会准备 SDK/CLI。使用预构建分发包时，`BUCKYOS_SDK_TOOL_ARTIFACT`、`BUCKYOS_SDK_TOOL_RELEASE_MANIFEST`、`BUCKYOS_SDK_TOOL_DENO`、`BUCKYOS_SDK_TOOL_SBOM` 四项必须齐全；单独设置 Deno 路径不会进入预构建模式。具体判断以 `src/buckyos-build.py` 为准。

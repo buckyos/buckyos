@@ -207,13 +207,13 @@ binds every live asset under the run Workspace's own key in the owner's `assets`
 Workspaces are not listed, not swept as show clones and not counted among them.
 
 `policy`: `guest_interact` (false: guests watch only), `voice` (true), `show_names` (true), `expected_audience` (50),
-`media_limit_mib` (2048), and `readers_of` — set by the service, never in the `policy` parameter: the session's
+`media_limit_mib` (2048), `speak` (`granted | all`, `granted`) and `speak_mode` (`auto | manual`, `manual`) — see “Voice” below —, and `readers_of` — set by the service, never in the `policy` parameter: the session's
 permission object (see “Readers of the permission object”). States: `prepared → live → ended → archived`, or `expired`
 (an ended, unsaved session past `session_retention_days`, 7 by default: the run Workspace goes, the row stays); `access`
 (`open | closed`: new audience) and `posts` (`open | closed`) are switches of their own, `session.delete` a third.
-`session.set_access { access?, posts?, guest_interact?, readers_of? }` (owner, presenter or prompter; `guest_interact`
-the owner only; `readers_of` the owner or the presenter in person, not a prompter link) answers `{ access, posts,
-policy, readers_of }`.
+`session.set_access { access?, posts?, guest_interact?, readers_of?, speak?, speak_mode? }` (owner, presenter or prompter;
+`guest_interact` the owner only; `readers_of` the owner or the presenter in person, not a prompter link) answers `{ access,
+posts, policy, readers_of }`.
 
 **Roles and links (Q14).** The presenter controls the stage and runs tasks; the owner (when not the presenter) manages,
 saves, deletes and reads everything; participants joined through a link. `session.invite { kind, label?, config? }`
@@ -268,6 +268,33 @@ their own; a Commit's details only to reviewers). The client sends `ping { c }` 
 = a heartbeat within 30 s), `follow { on }`, and `call { id, method, params }` for any `session.*` method (→ `result { id,
 result | error }`). Presence (`presence.join` / `presence.leave`, presenter track) follows the first and last connection
 while the session runs; after `session.end` people watching the replay are not recorded.
+
+**Voice (第四期规划 §7.3; 多人发言, `notepads/aiws-session-multi-speaker-todo.md`).** One WebRTC connection per terminal to
+the host's media port (`AIWS_MEDIA_PORT`, default 4122, `off`; `AIWS_MEDIA_HOSTS`; ICE-lite, UDP only, no TURN): everyone
+receives one Opus track, the host's mix; whoever may speak also sends on the same connection. `session.rtc { op: offer,
+sdp, send? }` → `{ sdp, send }` (`send` is a wish, the answer says whether this connection sends into the mix; an offer
+with the connection's ICE ufrag and DTLS fingerprint renegotiates it — a right that comes or goes changes its direction
+in place), `{ op: close }`. Opus is answered with `usedtx=1`. The host (`server/src/mixer.rs`, libopus through the `opus`
+crate; one thread per session, 20 ms ticks) keeps a jitter buffer per sender (60 ms to start, 40–120 ms), mixes at most
+`AIWS_VOICE_MAX_SPEAKERS` (4) voices chosen by the browsers' `ssrc-audio-level` (the presenter always while they speak,
+then the loudest, with hysteresis; packets of the others are dropped undecoded), encodes the total mix once for every
+connection and, for each voice in it, the mix without itself; nobody speaking, nothing is sent. Who may speak (§4.2): the
+presenter and the prompter always, a display never, anyone else by the participant row's `speak` (NULL: the room's
+`policy.speak` — `all` covers guests only with `guest_interact`; 1 / 0: a manager's own setting, kept across reconnects
+and restarts, dropped with the row when its link is revoked); an `at_` link with `config.speak: true` sets it to 1 for who
+joins through it, unless set already. One sending connection per person: a newer one takes over. `session.voice { op }`:
+`allow { principal, allow }` and `mute_all {}` (owner, presenter, prompter), `mode { mode: auto | manual | mute }` and
+`request { on? }` (one's own; `VOICE_NOT_ALLOWED` for a speaking mode without the right). A withdrawn right and "mute all"
+take effect in the host at once (mute all holds everyone but the presenter until they pick a speaking mode again).
+`session.get` adds `my_speak`, `speak`, `speak_mode`, `voice_service.mixing.max_speakers` and, for reviewers,
+`participants[].speak | speak_set | request`; the `participants` feed has `speak`. Voice track events: `voice.allow
+{ principal, name, allow, by, via: manager | room | link, speak_mode }` (`participant:<p>`), `voice.request { principal,
+name, on }` (`participant:<p>`), `voice.mode { principal, mode }` (presenter), `voice.speaking { principal, on, name? }`
+(public; in the mix and audible for 300 ms, off after 1 s), `voice.mute_all { by }` (public), `voice.start` / `voice.stop`
+(the first sending connection up in a started session, the last gone), `voice.segment` (the recording: the total mix,
+10 s segments, silence frames for ticks nobody spoke in; `lost_ms` is 0), diag `voice.uplink { principal, conn, bytes,
+packets, active_ms, longest_ms }` (every minute while a connection sends, and when it ends) and `voice.mix { principal,
+decoded, skipped, late, concealed, with_level }` (when a sender leaves the mix).
 
 **After the class (§8).** `session.save` (owner, after `session.end`) writes the archive manifest
 (`buckyos.ai-workspace/session-archive/1`: baseline, final snapshot, event range, voice segments, gaps, missing objects,
@@ -1830,7 +1857,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `presence.heartbeat` / `presence.leave` / `presence.list` | internal | `conn_id` (heartbeat, leave), `surface_id?`, `name?` (a guest's) — see “Presence and the work log” |
 | `ws.work_log` | experimental | `before?`, `limit?` (≤ 200, default 50), `filter?: all \| mine \| automation` → `entries`, `next_before`, `more` — see “Presence and the work log” |
 | `session.create`, `session.list`, `session.list_mine`, `session.list_open`, `session.get`, `session.join`, `session.start`, `session.end`, `session.save`, `session.delete`, `session.set_access` | experimental | see “Presentation sessions” |
-| `session.invite`, `session.list_invites`, `session.revoke_invite`, `session.takeover`, `session.command`, `session.sample`, `session.notes`, `session.rtc` | experimental | see “Presentation sessions” |
+| `session.invite`, `session.list_invites`, `session.revoke_invite`, `session.takeover`, `session.command`, `session.sample`, `session.notes`, `session.rtc`, `session.voice` | experimental | see “Presentation sessions” |
 | `session.task`, `session.claim`, `session.respond`, `session.review`, `session.publish`, `session.react`, `session.feed_sample` | experimental | see “Presentation sessions” |
 | `session.events`, `session.watch`, `session.replay`, `session.post`, `session.list_posts`, `session.delete_post` | experimental | see “Presentation sessions” |
 | `asset.stream_url` | stable | `object_id` (read access as for the asset route; an uploader its own staged upload) → `url` (`/kapi/aiworkspace/stream/<token>`, 6 h), `media_type`, `size`, `expires_at` |
@@ -1981,6 +2008,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `session.list_posts` | experimental | the session's roles and links |
 | `session.delete_post` | experimental | the session's roles and links |
 | `session.rtc` | experimental | the session's roles and links |
+| `session.voice` | experimental | the session's roles and links |
 <!-- authorization-table:end -->
 
 **Commit size.** Two limits. One *request* (`doc.commit`, `doc.stage`, any kRPC call) is at most `Limits.max_commit_bytes` (8 MiB, the HTTP body limit). One *Commit* — the staged parts plus the final request, and a compensating Commit of `doc.undo` — is at most `max_commit_total_bytes` (32 MiB) and `max_ops` (50 000 operations, `aiworkspace-core` `Limits`, shared with the browser replica). A client sends a Commit that does not fit one request as `doc.stage { part: 0..N-2 }` + `doc.commit { staged: [digests], operations: <last part> }`; the service assembles it and runs the ordinary pipeline: one transaction, one `commit_id`, one change event, one undo unit. Parts live one hour under `(principal, idempotency_key, part)`, count as `staged` usage and are consumed by the final `doc.commit` whatever its outcome (`doc.prepare` does not consume); missing or expired parts answer `SNAPSHOT_EXPIRED` / `STAGED_PARTS_MISSING` (stage again), a part whose digest is not the one named `IDEMPOTENCY_MISMATCH`, an assembled Commit over the limits `LIMIT_EXCEEDED`. The websdk's `commitWithParts` (used by `AiWorkspaceClient.commit` and the Desktop client) does the cutting (6 MiB parts): callers make one `commit` call per Commit. Importers (PDF, Office, draw.io, tables) write one Commit per import and refuse an import over the limits before sending anything.

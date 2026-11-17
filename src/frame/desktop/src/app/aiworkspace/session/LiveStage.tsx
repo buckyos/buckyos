@@ -14,6 +14,7 @@ import { useAiwsText } from '../useAiwsText'
 import type { WorkspaceStore } from '../state/store'
 import type { Camera } from '../ui/canvas/render/camera'
 import type { SessionChannel } from './channel'
+import { useSession } from './context'
 import type { RoomSnapshot } from './room'
 import { stepOf } from './steps'
 
@@ -132,6 +133,23 @@ export function LiveStage(props: LiveStageProps) {
       ) : (
         <div className="aiws-session-empty aiws-muted" data-testid="aiws-session-empty">{t('aiworkspace.session.stage.noSteps')}</div>
       )}
+      <SpeakingBadge speaking={snap.speaking} />
+    </div>
+  )
+}
+
+/** Who is speaking (多人发言 §4.8, Q8): in a corner of the stage, not for the presenter's own voice; without names
+ * where the room shows none. */
+function SpeakingBadge({ speaking }: { speaking: Record<string, string> }) {
+  const { t } = useAiwsText()
+  const session = useSession()
+  const others = Object.entries(speaking).filter(([who]) => who !== session?.info.presenter)
+  if (others.length === 0) return null
+  const named = session?.info.show_names !== false && others.every(([, name]) => name)
+  return (
+    <div className="aiws-session-speaking" role="status" data-testid="aiws-session-speaking" data-count={others.length}>
+      <span className="aiws-session-speaking-dot" aria-hidden="true" />
+      {named ? t('aiworkspace.session.voice.speakingNames', { names: others.map(([, name]) => name).join(', ') }) : t('aiworkspace.session.voice.speakingSomeone')}
     </div>
   )
 }

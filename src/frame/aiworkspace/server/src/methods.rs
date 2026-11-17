@@ -203,6 +203,7 @@ pub const METHODS: &[MethodSpec] = &[
     m("session.list_posts", "experimental", &[SESSION_ROLE]),
     m("session.delete_post", "experimental", &[SESSION_ROLE]),
     m("session.rtc", "experimental", &[SESSION_ROLE]),
+    m("session.voice", "experimental", &[SESSION_ROLE]),
 ];
 
 pub fn spec(method: &str) -> Option<&'static MethodSpec> {

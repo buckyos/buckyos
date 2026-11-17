@@ -350,3 +350,162 @@ fn ending_saving_and_restarting_keep_what_was_confirmed() {
     // the archived one is still readable
     assert!(env.svc.with_run(&fresh(&env, &s), |ws| Ok(ws.stage())).is_ok());
 }
+
+/// The `voice.*` events `who` may read, as `(type, principal, allow|on|mode)`.
+fn voice_events(env: &Env, s: &SessionRow, who: &Actor) -> Vec<(String, String, Value)> {
+    env.svc
+        .with_run(s, |ws| Ok(ws.events_after(&who.access(), 0, 2000, None)?.0))
+        .unwrap()
+        .into_iter()
+        .filter(|e| e["type"].as_str().is_some_and(|t| t.starts_with("voice.")))
+        .map(|e| {
+            let d = &e["data"];
+            let v = d.get("allow").or(d.get("on")).or(d.get("mode")).cloned().unwrap_or(Value::Null);
+            (e["type"].as_str().unwrap().to_string(), d["principal"].as_str().unwrap_or("").to_string(), v)
+        })
+        .collect()
+}
+
+fn speaks(env: &Env, s: &SessionRow, who: &str) -> (bool, Value) {
+    let got = env.svc.session_get(&fresh(env, s), &presenter(env, s)).unwrap();
+    let p = got["participants"].as_array().unwrap().iter().find(|p| p["principal"] == who).unwrap().clone();
+    (p["speak"].as_bool().unwrap(), p["speak_set"].clone())
+}
+
+#[test]
+fn speaking_is_granted_one_by_one_kept_and_seen_only_by_whom_it_concerns() {
+    let env = env();
+    let src = courseware(&env);
+    let s = session(&env, &src, json!({}));
+    // the defaults (多人发言 §4.7): only those granted speak, they start in manual mode
+    assert_eq!(s.policy["speak"], "granted");
+    assert_eq!(s.policy["speak_mode"], "manual");
+    let p = presenter(&env, &s);
+    let at = invite(&env, &s, "at");
+    let b = join(&env, &s, &bob(), &at);
+    let c = join(&env, &s, &Caller::user("carol"), &at);
+    assert!(env.svc.actor_speaks(&s, &p).unwrap(), "the presenter always speaks");
+    assert!(!env.svc.actor_speaks(&s, &b).unwrap());
+    assert_eq!(env.svc.session_get(&s, &b).unwrap()["my_speak"], false);
+    // only a manager grants; nobody grants the presenter
+    let denied = env.svc.session_voice(&s, &b, &json!({ "op": "allow", "principal": "carol", "allow": true })).unwrap_err();
+    assert_eq!(denied.code.as_str(), "PERMISSION_DENIED");
+    assert!(env.svc.session_voice(&s, &p, &json!({ "op": "allow", "principal": "alice", "allow": false })).is_err());
+    // bob asks; the request shows in the presenter's view until a manager answers it
+    env.svc.session_voice(&s, &b, &json!({ "op": "request" })).unwrap();
+    let got = env.svc.session_get(&s, &p).unwrap();
+    assert_eq!(got["participants"].as_array().unwrap().iter().find(|x| x["principal"] == "bob").unwrap()["request"], true);
+    env.svc.session_voice(&s, &p, &json!({ "op": "allow", "principal": "bob", "allow": true })).unwrap();
+    assert!(env.svc.actor_speaks(&s, &b).unwrap());
+    assert_eq!(speaks(&env, &s, "bob"), (true, json!(true)));
+    assert_eq!(env.svc.session_get(&s, &b).unwrap()["my_speak"], true);
+    let got = env.svc.session_get(&s, &p).unwrap();
+    assert_eq!(got["participants"].as_array().unwrap().iter().find(|x| x["principal"] == "bob").unwrap()["request"], false);
+    // modes: one's own, recorded for the managers; a mode that speaks needs the right
+    env.svc.session_voice(&s, &b, &json!({ "op": "mode", "mode": "auto" })).unwrap();
+    assert_eq!(env.svc.session_voice(&s, &c, &json!({ "op": "mode", "mode": "auto" })).unwrap_err().sub.as_deref(), Some("VOICE_NOT_ALLOWED"));
+    env.svc.session_voice(&s, &c, &json!({ "op": "mode", "mode": "mute" })).unwrap();
+    env.svc.session_voice(&s, &p, &json!({ "op": "mute_all" })).unwrap();
+    assert!(env.svc.session_voice(&s, &b, &json!({ "op": "mute_all" })).is_err());
+    // what each one reads: bob his own allow and request, the public mute; the presenter everything
+    let bobs = voice_events(&env, &s, &b);
+    assert_eq!(bobs, vec![("voice.request".into(), "bob".into(), json!(true)), ("voice.allow".into(), "bob".into(), json!(true)), ("voice.mute_all".into(), "".into(), Value::Null)]);
+    assert!(voice_events(&env, &s, &c).iter().all(|(t, who, _)| t == "voice.mute_all" || who == "carol"));
+    let all = voice_events(&env, &s, &p);
+    assert!(all.contains(&("voice.mode".into(), "bob".into(), json!("auto"))));
+    assert!(all.contains(&("voice.mode".into(), "carol".into(), json!("mute"))));
+    let allow = env.svc.with_run(&s, |ws| Ok(ws.events_after(&p.access(), 0, 2000, None)?.0)).unwrap().into_iter().find(|e| e["type"] == "voice.allow").unwrap();
+    assert_eq!(allow["data"]["speak_mode"], "manual", "the mode one starts in (S3a)");
+    assert_eq!(allow["data"]["by"], "alice");
+    // the setting is on the participant row: a restart keeps it
+    let env = env.reopen();
+    let s = fresh(&env, &s);
+    assert!(env.svc.actor_speaks(&s, &env.svc.require_actor(&s, &bob(), None).unwrap()).unwrap());
+    assert_eq!(env.svc.speakers(&s).unwrap().into_iter().collect::<Vec<_>>(), vec!["alice".to_string(), "bob".to_string()]);
+}
+
+#[test]
+fn a_small_class_lets_everyone_speak_but_one_can_still_be_stopped() {
+    let env = env();
+    let src = courseware(&env);
+    // “小班课”: everyone speaks, in auto mode
+    let mut s = session(&env, &src, json!({ "speak": "all", "speak_mode": "auto" }));
+    assert!(env.svc.session_create(&alice(), &json!({ "workspace_id": src, "path_id": "path-intro", "policy": { "speak": "everyone" } })).is_err());
+    let p = presenter(&env, &s);
+    let at = invite(&env, &s, "at");
+    let b = join(&env, &s, &bob(), &at);
+    let c = join(&env, &s, &Caller::user("carol"), &at);
+    let g = join(&env, &s, &guest(), &at);
+    assert!(env.svc.actor_speaks(&s, &b).unwrap() && env.svc.actor_speaks(&s, &c).unwrap());
+    assert_eq!(env.svc.session_get(&s, &b).unwrap()["speak_mode"], "auto");
+    // a guest is covered by `all` only while guests may interact (Q5)
+    assert!(!env.svc.actor_speaks(&s, &g).unwrap());
+    env.svc.session_set_access(&mut s, &p, &alice(), &json!({ "guest_interact": true })).unwrap();
+    assert!(env.svc.actor_speaks(&s, &g).unwrap());
+    // stopping one person in an all room
+    env.svc.session_voice(&s, &p, &json!({ "op": "allow", "principal": "carol", "allow": false })).unwrap();
+    assert_eq!(speaks(&env, &s, "carol"), (false, json!(false)));
+    // back to granted: those without a setting of their own stop speaking, those with one keep it; and again to all
+    env.svc.session_voice(&s, &p, &json!({ "op": "allow", "principal": "bob", "allow": true })).unwrap();
+    env.svc.session_set_access(&mut s, &p, &alice(), &json!({ "speak": "granted" })).unwrap();
+    assert_eq!(speaks(&env, &s, "bob"), (true, json!(true)));
+    assert_eq!(speaks(&env, &s, "carol"), (false, json!(false)));
+    assert!(!env.svc.actor_speaks(&s, &g).unwrap());
+    env.svc.session_set_access(&mut s, &p, &alice(), &json!({ "speak": "all", "speak_mode": "manual" })).unwrap();
+    assert_eq!(speaks(&env, &s, "carol"), (false, json!(false)));
+    assert!(env.svc.actor_speaks(&s, &g).unwrap());
+    assert_eq!(fresh(&env, &s).policy["speak_mode"], "manual");
+    // every change of who speaks is on the time line: the guest twice by the room, plus the guest_interact switch
+    let all = voice_events(&env, &s, &p);
+    let guest_allows: Vec<Value> = all.iter().filter(|(t, who, _)| t == "voice.allow" && *who == g.principal).map(|(_, _, v)| v.clone()).collect();
+    assert_eq!(guest_allows, vec![json!(true), json!(false), json!(true)]);
+    assert!(!all.iter().any(|(t, who, _)| t == "voice.allow" && who == "bob" && all.iter().filter(|(t2, w2, _)| t2 == t && w2 == who).count() > 1), "bob's own setting kept him speaking");
+    // a participant cannot change the room's settings
+    assert!(env.svc.session_set_access(&mut s, &b, &bob(), &json!({ "speak": "granted" })).is_err());
+}
+
+#[test]
+fn a_speaker_link_lets_its_guests_of_honour_speak() {
+    let env = env();
+    let src = courseware(&env);
+    let s = session(&env, &src, json!({}));
+    let p = presenter(&env, &s);
+    assert!(env.svc.session_invite(&s, &p, &json!({ "kind": "at", "config": { "speak": "yes" } })).is_err());
+    let v = env.svc.session_invite(&s, &p, &json!({ "kind": "at", "config": { "speak": true } })).unwrap();
+    let speaker_link = env.svc.sessions.invite_by_token(v["invite"]["token"].as_str().unwrap()).unwrap().unwrap();
+    let b = join(&env, &s, &bob(), &speaker_link);
+    assert!(env.svc.actor_speaks(&s, &b).unwrap());
+    assert_eq!(speaks(&env, &s, "bob"), (true, json!(true)));
+    // a manager's later decision wins over the link, also when bob comes back through it
+    env.svc.session_voice(&s, &p, &json!({ "op": "allow", "principal": "bob", "allow": false })).unwrap();
+    join(&env, &s, &bob(), &speaker_link);
+    assert!(!env.svc.actor_speaks(&s, &b).unwrap());
+    // revoking the link takes the participant row and with it the setting
+    env.svc.session_revoke_invite(&s, &p, &speaker_link.invite_id).unwrap();
+    assert!(env.svc.sessions.participant(&s.session_id, "bob").unwrap().is_none());
+    assert!(!env.svc.speakers(&s).unwrap().contains("bob"));
+}
+
+#[test]
+fn a_registry_from_before_gets_the_speaking_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions.sqlite");
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE session_participants (session_id TEXT NOT NULL, principal TEXT NOT NULL, class TEXT NOT NULL, level TEXT NOT NULL, name TEXT NOT NULL, \
+             role TEXT NOT NULL, via_invite TEXT, joined_ms INTEGER NOT NULL, last_seen_ms INTEGER NOT NULL, online INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_id, principal)); \
+             INSERT INTO session_participants VALUES ('se_1', 'bob', 'account', 'verified', 'Bob', 'audience', NULL, 1, 1, 0);",
+        )
+        .unwrap();
+    }
+    let reg = aiworkspace_store::session::registry::Sessions::open(&path).unwrap();
+    let bob = reg.participant("se_1", "bob").unwrap().unwrap();
+    assert_eq!(bob.speak, None);
+    assert!(reg.set_speak("se_1", "bob", Some(true), "alice", 2).unwrap());
+    assert_eq!(reg.participant("se_1", "bob").unwrap().unwrap().speak, Some(true));
+    drop(reg);
+    // and opening it again changes nothing
+    let reg = aiworkspace_store::session::registry::Sessions::open(&path).unwrap();
+    assert_eq!(reg.participant("se_1", "bob").unwrap().unwrap().speak_by.as_deref(), Some("alice"));
+}

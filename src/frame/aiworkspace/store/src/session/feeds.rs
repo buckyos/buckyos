@@ -16,6 +16,7 @@ pub fn columns(feed: &str) -> &'static [(&'static str, &'static str, &'static st
             ("online", "Online", "boolean"),
             ("last_seen", "Last seen", "text"),
             ("joined_at", "Joined", "text"),
+            ("speak", "Can speak", "boolean"),
         ],
         "stage" => &[
             ("step_id", "Step", "text"),
@@ -128,8 +129,8 @@ pub fn sample_records(feed: &str) -> Vec<Value> {
     let rec = |id: &str, values: Value| json!({ "record_id": id, "values": values });
     match feed {
         "participants" => vec![
-            rec("sample-a", json!({ "name": "Student A", "principal": "did:example:a", "role": "audience", "level": "verified", "online": true, "joined_at": "" })),
-            rec("sample-b", json!({ "name": "Student B", "principal": "did:example:b", "role": "audience", "level": "verified", "online": false, "joined_at": "" })),
+            rec("sample-a", json!({ "name": "Student A", "principal": "did:example:a", "role": "audience", "level": "verified", "online": true, "joined_at": "", "speak": true })),
+            rec("sample-b", json!({ "name": "Student B", "principal": "did:example:b", "role": "audience", "level": "verified", "online": false, "joined_at": "", "speak": false })),
         ],
         "stage" => vec![rec("stage", json!({ "step_id": "", "step_index": 1, "step_count": 1, "step_title": "Step 1", "black": false, "free": false, "followers": 0 }))],
         "tasks" => vec![rec("sample-task", json!({ "task_id": "sample-task", "title": "Question 1", "mode": "open", "state": "open", "answered": 0, "claimed": 0 }))],

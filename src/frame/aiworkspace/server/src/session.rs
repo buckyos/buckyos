@@ -148,6 +148,13 @@ async fn pump(state: &Arc<AppState>, room: &Arc<Room>) {
     }
 }
 
+/// Broadcast what the timeline gained outside a call (the voice service's events).
+pub async fn nudge(state: &Arc<AppState>, session_id: &str) {
+    if let Some(room) = state.rooms.get(session_id) {
+        pump(state, &room).await;
+    }
+}
+
 /// Who learns of a Commit: everyone when it touched shared content, else the participants whose own data it touched.
 fn commit_vis(ws: &aiworkspace_store::Workspace, ev: &Value, _now: &str) -> WsResult<Vis> {
     let mut participants = BTreeSet::new();
@@ -307,10 +314,20 @@ async fn call(state: &Arc<AppState>, s: SessionRow, actor: &Actor, caller: &Call
     let mut row = s.clone();
     let result = match method {
         "session.get" => return get(state, &s, actor).await,
-        "session.start" => blocking(move || st.svc.session_start(&mut row, &a)).await?,
+        "session.start" => {
+            let v = blocking(move || st.svc.session_start(&mut row, &a)).await?;
+            if let Ok(fresh) = state.svc.sessions.require(&s.session_id) {
+                if let Some(t0) = fresh.started_ms {
+                    state.media.started(&s.session_id, t0);
+                }
+            }
+            v
+        }
         "session.end" => {
             let retention = state.svc.session_retention_ms;
-            blocking(move || st.svc.session_end(&mut row, &a, retention)).await?
+            let v = blocking(move || st.svc.session_end(&mut row, &a, retention)).await?;
+            state.media.ended(&s.session_id);
+            v
         }
         "session.save" => blocking(move || st.svc.session_save(&mut row, &a)).await?,
         "session.delete" => {
@@ -318,12 +335,39 @@ async fn call(state: &Arc<AppState>, s: SessionRow, actor: &Actor, caller: &Call
             state.rooms.map.lock().unwrap().remove(&s.session_id);
             return Ok(v);
         }
-        "session.set_access" => blocking(move || st.svc.session_set_access(&mut row, &a, &c, &p2)).await?,
+        "session.set_access" => {
+            let v = blocking(move || st.svc.session_set_access(&mut row, &a, &c, &p2)).await?;
+            if let Ok(fresh) = state.svc.sessions.require(&s.session_id) {
+                state.media.recheck(state, &fresh);
+            }
+            if let Some(room) = state.rooms.get(&s.session_id) {
+                mark(&room, "participants");
+            }
+            v
+        }
+        "session.voice" => {
+            let op = p.get("op").and_then(Value::as_str).unwrap_or("").to_string();
+            let v = blocking(move || st.svc.session_voice(&row, &a, &p2)).await?;
+            match op.as_str() {
+                "allow" => {
+                    state.media.recheck(state, &s);
+                    if let Some(room) = state.rooms.get(&s.session_id) {
+                        mark(&room, "participants");
+                    }
+                }
+                "mute_all" => state.media.mute_all(&s.session_id),
+                "mode" => state.media.mode(&s.session_id, &actor.principal, v["mode"].as_str().unwrap_or("")),
+                _ => {}
+            }
+            v
+        }
         "session.invite" => blocking(move || st.svc.session_invite(&row, &a, &p2)).await?,
         "session.list_invites" => blocking(move || st.svc.session_invites(&row, &a)).await?,
         "session.revoke_invite" => {
             let id = s_owned(p, "invite_id")?;
-            blocking(move || st.svc.session_revoke_invite(&row, &a, &id)).await?
+            let v = blocking(move || st.svc.session_revoke_invite(&row, &a, &id)).await?;
+            state.media.recheck(state, &s);
+            v
         }
         "session.command" => {
             let cmd = p.get("command").cloned().ok_or_else(|| WsError::invalid_op("command required"))?;

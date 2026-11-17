@@ -6,7 +6,12 @@ export type SessionState = 'prepared' | 'live' | 'ended' | 'archived' | 'expired
 export type SessionRole = 'presenter' | 'owner' | 'audience' | 'display' | 'prompter'
 export type LinkKind = 'at' | 'dt' | 'pt'
 
-export interface SessionPolicy { guest_interact: boolean; voice: boolean; show_names: boolean; expected_audience: number; media_limit_mib: number; readers_of?: string }
+/** Who speaks (多人发言 §4.2, Q4): only those a manager allowed, or everyone unless a manager said otherwise for them. */
+export type SpeakPolicy = 'granted' | 'all'
+/** The speaking modes (§4.3): one's own choice; `speak_mode` is the one people start in (Q3). */
+export type SpeakMode = 'auto' | 'manual' | 'mute'
+
+export interface SessionPolicy { guest_interact: boolean; voice: boolean; show_names: boolean; expected_audience: number; media_limit_mib: number; readers_of?: string; speak: SpeakPolicy; speak_mode: 'auto' | 'manual' }
 
 /** The session's permission object (UI 框架 PRD Q19): an entity of the source Workspace (`root`: the Workspace) whose
  * readers may come in without a link; `alive: false` when it is gone (then only a link lets people in). The presenter's
@@ -51,6 +56,8 @@ export interface SessionInfo {
   guest_interact: boolean
   voice: boolean
   show_names: boolean
+  speak: SpeakPolicy
+  speak_mode: 'auto' | 'manual'
   created_at: string
   started_at: string | null
   ended_at: string | null
@@ -70,7 +77,9 @@ export interface SessionInfo {
   steps?: SessionStep[]
   head_event?: number
   t_rel_ms?: number
-  voice_service?: { available: boolean; reason?: string; port?: number; hosts?: string[] }
+  voice_service?: { available: boolean; reason?: string; port?: number; hosts?: string[]; mixing?: { max_speakers: number } }
+  /** Whether the caller may speak now (多人发言 §4.2). */
+  my_speak?: boolean
   online?: number
   my_feeds?: Record<string, string>
   participants?: SessionParticipant[]
@@ -101,7 +110,9 @@ export interface OpenSession extends Omit<SessionInfo, 'online'> {
   url?: string
 }
 
-export interface SessionParticipant { principal: string; name: string; class: string; level: 'verified' | 'guest'; role: string; online: boolean; joined_at: string; last_seen: string }
+/** `speak`: whether the person speaks now; `speak_set`: a manager's own setting for them (null: the room's); `request`:
+ * they asked to speak (Q6). */
+export interface SessionParticipant { principal: string; name: string; class: string; level: 'verified' | 'guest'; role: string; online: boolean; joined_at: string; last_seen: string; speak: boolean; speak_set: boolean | null; request: boolean }
 
 export interface SessionEvent {
   seq: number

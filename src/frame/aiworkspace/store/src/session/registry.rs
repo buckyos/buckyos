@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS session_participants (
   joined_ms    INTEGER NOT NULL,
   last_seen_ms INTEGER NOT NULL,
   online       INTEGER NOT NULL DEFAULT 0,
+  speak        INTEGER,
+  speak_by     TEXT,
+  speak_ms     INTEGER,
+  speak_req_ms INTEGER,
   PRIMARY KEY (session_id, principal)
 );
 CREATE TABLE IF NOT EXISTS session_posts (
@@ -150,6 +154,14 @@ impl SessionRow {
     pub fn guest_interact(&self) -> bool {
         self.policy["guest_interact"] == json!(true)
     }
+    /// `policy.speak = all` (多人发言 §4.2, Q4): everyone speaks unless a manager said otherwise for them.
+    pub fn speak_all(&self) -> bool {
+        self.policy["speak"] == json!("all")
+    }
+    /// The mode someone starts in when they first may speak (Q3): `auto | manual`.
+    pub fn speak_mode(&self) -> &str {
+        if self.policy["speak_mode"] == json!("auto") { "auto" } else { "manual" }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -202,7 +214,25 @@ pub struct ParticipantRow {
     pub joined_ms: i64,
     pub last_seen_ms: i64,
     pub online: bool,
+    /// The managers' own setting for this person (多人发言 §4.2): `None` follows the room's `policy.speak`.
+    pub speak: Option<bool>,
+    pub speak_by: Option<String>,
+    pub speak_ms: Option<i64>,
+    /// When the person asked to speak (Q6), while the request stands.
+    pub speak_req_ms: Option<i64>,
+    /// Whether the person speaks now (not stored: [`crate::session::participant_speaks`] fills it in).
+    pub speaks: bool,
 }
+
+impl ParticipantRow {
+    /// A row as joining writes it: no speaking setting of its own yet.
+    pub fn joined(principal: &str, class: &str, level: &str, name: &str, role: &str, via_invite: Option<String>, now_ms: i64) -> ParticipantRow {
+        ParticipantRow { principal: principal.into(), class: class.into(), level: level.into(), name: name.into(), role: role.into(), via_invite, joined_ms: now_ms,
+                         last_seen_ms: now_ms, online: true, speak: None, speak_by: None, speak_ms: None, speak_req_ms: None, speaks: false }
+    }
+}
+
+const PARTICIPANT_COLS: &str = "principal, class, level, name, role, via_invite, joined_ms, last_seen_ms, online, speak, speak_by, speak_ms, speak_req_ms";
 
 pub struct Sessions {
     conn: Mutex<Connection>,
@@ -215,6 +245,15 @@ impl Sessions {
         conn.pragma_update(None, "synchronous", "FULL").map_err(db_err)?;
         conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
         conn.execute_batch(DDL).map_err(db_err)?;
+        // the speaking columns came with 多人发言 (S1): a registry from before gets them
+        let speak: bool = conn.query_row("SELECT 1 FROM pragma_table_info('session_participants') WHERE name = 'speak'", [], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+        if !speak {
+            conn.execute_batch(
+                "ALTER TABLE session_participants ADD COLUMN speak INTEGER; ALTER TABLE session_participants ADD COLUMN speak_by TEXT; \
+                 ALTER TABLE session_participants ADD COLUMN speak_ms INTEGER; ALTER TABLE session_participants ADD COLUMN speak_req_ms INTEGER;",
+            )
+            .map_err(db_err)?;
+        }
         Ok(Sessions { conn: Mutex::new(conn) })
     }
 
@@ -364,23 +403,44 @@ impl Sessions {
 
     pub fn participant(&self, session_id: &str, principal: &str) -> WsResult<Option<ParticipantRow>> {
         self.with(|c| {
-            c.query_row(
-                "SELECT principal, class, level, name, role, via_invite, joined_ms, last_seen_ms, online FROM session_participants WHERE session_id = ?1 AND principal = ?2",
-                params![session_id, principal],
-                participant_row,
-            )
-            .optional()
+            c.query_row(&format!("SELECT {PARTICIPANT_COLS} FROM session_participants WHERE session_id = ?1 AND principal = ?2"), params![session_id, principal], participant_row)
+                .optional()
         })
     }
 
     pub fn participants(&self, session_id: &str) -> WsResult<Vec<ParticipantRow>> {
         self.with(|c| {
-            let mut st = c.prepare(
-                "SELECT principal, class, level, name, role, via_invite, joined_ms, last_seen_ms, online FROM session_participants WHERE session_id = ?1 ORDER BY joined_ms, principal",
-            )?;
+            let mut st = c.prepare(&format!("SELECT {PARTICIPANT_COLS} FROM session_participants WHERE session_id = ?1 ORDER BY joined_ms, principal"))?;
             let rows = st.query_map([session_id], participant_row)?.collect::<rusqlite::Result<Vec<_>>>();
             rows
         })
+    }
+
+    /// A manager's setting of whether `principal` speaks (`None`: follow the room again); a decision answers the request.
+    pub fn set_speak(&self, session_id: &str, principal: &str, speak: Option<bool>, by: &str, now_ms: i64) -> WsResult<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE session_participants SET speak = ?3, speak_by = ?4, speak_ms = ?5, speak_req_ms = NULL WHERE session_id = ?1 AND principal = ?2",
+                params![session_id, principal, speak, by, now_ms],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// The speaking setting a link gives (Q10), unless the person already has one of their own.
+    pub fn set_speak_if_unset(&self, session_id: &str, principal: &str, speak: bool, by: &str, now_ms: i64) -> WsResult<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE session_participants SET speak = ?3, speak_by = ?4, speak_ms = ?5 WHERE session_id = ?1 AND principal = ?2 AND speak IS NULL",
+                params![session_id, principal, speak, by, now_ms],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// Asking to speak (Q6) or taking the request back.
+    pub fn set_speak_request(&self, session_id: &str, principal: &str, at_ms: Option<i64>) -> WsResult<bool> {
+        self.with(|c| c.execute("UPDATE session_participants SET speak_req_ms = ?3 WHERE session_id = ?1 AND principal = ?2", params![session_id, principal, at_ms]).map(|n| n > 0))
     }
 
     pub fn set_presence(&self, session_id: &str, principal: &str, online: bool, now_ms: i64) -> WsResult<()> {
@@ -452,5 +512,10 @@ fn participant_row(r: &Row) -> rusqlite::Result<ParticipantRow> {
         joined_ms: r.get(6)?,
         last_seen_ms: r.get(7)?,
         online: r.get(8)?,
+        speak: r.get(9)?,
+        speak_by: r.get(10)?,
+        speak_ms: r.get(11)?,
+        speak_req_ms: r.get(12)?,
+        speaks: false,
     })
 }

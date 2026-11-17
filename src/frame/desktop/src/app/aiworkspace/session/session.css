@@ -93,3 +93,22 @@
 /* my public classes, on the workspace list */
 .aiws-my-sessions { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; }
 .aiws-my-sessions .aiws-session-list > li { flex-wrap: wrap; }
+
+/* the voice (多人发言 §4.8) */
+.aiws-session-voice { display: inline-flex; align-items: center; gap: 2px; }
+.aiws-session-voice-modes { display: inline-flex; gap: 1px; padding: 1px; border-radius: 8px; background: var(--cp-border); }
+.aiws-session-voice-level { display: inline-block; width: 44px; height: 6px; margin: 0 4px; border-radius: 3px; background: var(--cp-border); overflow: hidden; flex: none; }
+.aiws-session-voice-level > span { display: block; height: 100%; background: var(--cp-muted); transition: width 90ms linear; }
+.aiws-session-voice-level.is-sending > span { background: var(--cp-success, #16a34a); }
+.aiws-root .aiws-session-voice-talk { touch-action: none; user-select: none; -webkit-user-select: none; }
+.aiws-session-voice.is-folded { position: relative; }
+.aiws-session-voice-pop { position: fixed; left: 12px; right: 12px; bottom: 76px; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; box-sizing: border-box; }
+.aiws-session-voice-note { position: absolute; left: 50%; bottom: 112px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: min(560px, calc(100% - 32px)); padding: 6px 12px; box-sizing: border-box; font-size: 13px; }
+.aiws-session-speaking { position: absolute; top: 12px; left: 12px; z-index: 9; display: inline-flex; align-items: center; gap: 6px; max-width: calc(100% - 24px); padding: 4px 10px; border-radius: 999px; background: rgb(0 0 0 / 0.55); color: #fff; font-size: 13px; pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-session-speaking-dot { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; flex: none; animation: aiws-speaking 1.2s ease-in-out infinite; }
+@keyframes aiws-speaking { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.aiws-session-people-voice { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 0; }
+.aiws-session-tag { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--cp-accent-soft, var(--cp-border)); white-space: nowrap; }
+.aiws-session-span { position: absolute; top: 10px; height: 4px; border-radius: 2px; background: #16a34a; opacity: 0.75; }
+.aiws-session-create-speak { display: flex; flex-direction: column; gap: 6px; }
+.aiws-session-create-speak > summary { cursor: pointer; }

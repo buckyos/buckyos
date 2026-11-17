@@ -32,15 +32,16 @@ LINUX_CORE_PACKAGES = {
         "wget",
         "git",
         "pkg-config",
+        "cmake",
         "libssl-dev",
         "clang",
         "libclang-dev",
         "llvm-dev",
     ],
-    "dnf": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconf-pkg-config", "openssl-devel"],
-    "yum": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconfig", "openssl-devel"],
-    "pacman": ["base-devel", "curl", "wget", "git", "pkgconf", "openssl"],
-    "zypper": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkg-config", "libopenssl-devel"],
+    "dnf": ["gcc", "gcc-c++", "make", "cmake", "curl", "wget", "git", "pkgconf-pkg-config", "openssl-devel"],
+    "yum": ["gcc", "gcc-c++", "make", "cmake", "curl", "wget", "git", "pkgconfig", "openssl-devel"],
+    "pacman": ["base-devel", "cmake", "curl", "wget", "git", "pkgconf", "openssl"],
+    "zypper": ["gcc", "gcc-c++", "make", "cmake", "curl", "wget", "git", "pkg-config", "libopenssl-devel"],
 }
 
 LINUX_PYTHON_CHOICES = {
@@ -129,7 +130,7 @@ LINUX_BINDGEN_PACKAGE_CHOICES = {
     ],
 }
 
-BREW_FORMULAE = ["git", "wget", "pkgconf", "openssl@3", "python@3.12", "node", "pnpm", "rustup", "uv", "deno"]
+BREW_FORMULAE = ["git", "wget", "pkgconf", "cmake", "openssl@3", "python@3.12", "node", "pnpm", "rustup", "uv", "deno"]
 BREW_CASKS = ["docker"]
 
 WINGET_PACKAGE_CHOICES = {
@@ -140,6 +141,7 @@ WINGET_PACKAGE_CHOICES = {
     "rustup": [["Rustlang.Rustup"]],
     "uv": [["astral-sh.uv"]],
     "deno": [["DenoLand.Deno"]],
+    "cmake": [["Kitware.CMake"]],
     "docker": [["Docker.DockerDesktop"]],
     "wsl": [["Microsoft.WSL"]],
     "msvc": [["Microsoft.VisualStudio.2022.BuildTools"]],
@@ -821,7 +823,7 @@ class Bootstrapper:
     def install_windows_environment(self) -> None:
         self.update_package_index()
 
-        for feature in ("git", "python", "node", "pnpm", "rustup", "uv", "deno"):
+        for feature in ("git", "python", "node", "pnpm", "rustup", "uv", "deno", "cmake"):
             package_ids = self.resolve_package_set(WINGET_PACKAGE_CHOICES[feature], kind="winget")
             if not package_ids:
                 raise BootstrapError(f"winget could not find the package for {feature}")

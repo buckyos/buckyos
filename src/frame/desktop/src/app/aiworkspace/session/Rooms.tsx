@@ -1,8 +1,8 @@
 /* The rooms of a running session (第四期规划 §4, §5): what the presenter, an audience member, a public display and a
  * prompter see and do. Every control is a `session.*` call the service confirms; the stage follows the confirmation. */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Hand, Link2, ListOrdered, LogOut, MessageSquare, Mic, MicOff, MousePointer2, NotebookText, Pencil, Play, RotateCcw, Square, Users, Volume2, VolumeX } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Hand, Link2, ListOrdered, LogOut, MessageSquare, Mic, MicOff, MousePointer2, NotebookText, Pencil, Play, RotateCcw, Square, Users } from 'lucide-react'
 import { describeError } from '../api/session'
 import { randomId } from '../api/ids'
 import type { ShowPathPayload } from '../api/types'
@@ -17,17 +17,12 @@ import { LiveStage } from './LiveStage'
 import { SessionReadersOf } from './ReadersOf'
 import type { RoomModel, RoomSnapshot } from './room'
 import { stepOf, useSteps } from './steps'
-import type { Invite, SessionParticipant, SessionStage } from './types'
-import { VoiceListener, VoicePublisher, VoiceUnreachable } from './voice'
+import type { Invite, SessionParticipant, SessionStage, SpeakPolicy } from './types'
+import { useVoice } from './useVoice'
+import { VoiceControl, VoiceNotes } from './VoiceControl'
 import { CHANNEL_KEY, LINK_KEY, STATE_KEY } from './labels'
 
 const INK_COLORS = ['#ef4444', '#2563eb', '#16a34a', '#111827', '#f59e0b']
-
-/** The media addresses a browser elsewhere would use (the loopback one is for the host itself). */
-function mediaHosts(welcome: Welcome): string {
-  const service = welcome.session.voice_service
-  return (service?.hosts ?? []).filter((h) => !h.startsWith('127.') && !h.startsWith('[::1]')).join(', ') || `UDP ${service?.port ?? ''}`
-}
 const SYMBOLS = ['👍', '❓', '👏', '💡']
 
 function sessionLink(welcome: Welcome, token: string | null): string {
@@ -58,8 +53,7 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
   const [inkColor, setInkColor] = useState(INK_COLORS[0])
   const [panel, setPanel] = useState<'none' | 'links' | 'people' | 'notes' | 'steps'>('none')
   const [problem, setProblem] = useState<string | null>(null)
-  const [voice, setVoice] = useState<VoicePublisher | null>(null)
-  const [muted, setMuted] = useState(false)
+  const voice = useVoice({ channel, welcome, snap, auto: false })
   const [editing, setEditing] = useState<string | null>(null)
   const [notes, setNotes] = useState<Record<string, string>>({})
   const live = snap.state === 'live'
@@ -97,7 +91,6 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
   }, [run, editing, live, controls, panel, tool, snap.stage.free])
 
   useEffect(() => { if (tool !== 'pointer' && live) void channel.call('session.sample', { kind: 'pointer', data: null }).catch(() => undefined) }, [tool, live, channel])
-  useEffect(() => () => { void voice?.stop() }, [voice])
 
   const start = async () => {
     setProblem(null)
@@ -110,14 +103,6 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
   const end = async () => {
     if (!window.confirm(t('aiworkspace.session.presenter.endConfirm'))) return
     try { await channel.call('session.end', {}); model.setState('ended') } catch (error) { setProblem(describeError(error)) }
-  }
-  const toggleVoice = async () => {
-    if (voice) { await voice.stop(); setVoice(null); return }
-    setProblem(null)
-    const v = new VoicePublisher(channel, () => { setVoice(null); setProblem(t('aiworkspace.session.voice.lost')) })
-    try { await v.start(); setVoice(v); setMuted(false) } catch (error) {
-      setProblem(error instanceof VoiceUnreachable ? t('aiworkspace.session.voice.unreachable', { hosts: mediaHosts(welcome) }) : t('aiworkspace.session.voice.failed', { detail: describeError(error) }))
-    }
   }
   const takeover = async () => {
     try { await channel.call('session.takeover', {}) } catch (error) { setProblem(describeError(error)) }
@@ -159,13 +144,7 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
         <button type="button" className="aiws-tool" aria-label={t('aiworkspace.session.presenter.notes')} aria-pressed={panel === 'notes'} data-testid="aiws-session-notes" onClick={() => setPanel(panel === 'notes' ? 'none' : 'notes')}><NotebookText size={16} /></button>
         <button type="button" className="aiws-tool" aria-label={t('aiworkspace.session.links.title')} aria-pressed={panel === 'links'} data-testid="aiws-session-links" onClick={() => setPanel(panel === 'links' ? 'none' : 'links')}><Link2 size={16} /></button>
         <button type="button" className="aiws-tool" aria-label={t('aiworkspace.session.people.title')} aria-pressed={panel === 'people'} data-testid="aiws-session-people" onClick={() => setPanel(panel === 'people' ? 'none' : 'people')}><Users size={16} /></button>
-        {welcome.session.voice && presenter && (
-          <>
-            <button type="button" className="aiws-tool" aria-label={voice ? t('aiworkspace.session.voice.stop') : t('aiworkspace.session.voice.start')} aria-pressed={voice !== null} data-testid="aiws-session-voice"
-              disabled={!voiceService?.available} title={voiceService?.available ? undefined : voiceService?.reason} onClick={() => { void toggleVoice() }}>{voice ? <Mic size={16} /> : <MicOff size={16} />}</button>
-            {voice && <button type="button" className="aiws-tool" aria-label={muted ? t('aiworkspace.session.voice.unmute') : t('aiworkspace.session.voice.mute')} aria-pressed={muted} onClick={() => { voice.setMuted(!muted); setMuted(!muted) }}>{muted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>}
-          </>
-        )}
+        {welcome.session.voice && <><span className="aiws-show-sep" /><VoiceControl voice={voice} interact toggle /></>}
         <span className="aiws-show-sep" />
         {presenter && !controls && live && <button type="button" className="aiws-tool aiws-tool-text" data-testid="aiws-session-takeover" onClick={() => { void takeover() }}><Hand size={16} /><span>{t('aiworkspace.session.presenter.takeover')}</span></button>}
         <span className="aiws-show-status" data-testid="aiws-session-status">{t(STATE_KEY[snap.state])}{channelStatus !== 'open' ? ` · ${t(CHANNEL_KEY[channelStatus])}` : ''}</span>
@@ -173,6 +152,7 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
       </div>
       </ContextZone>
       {problem && <div className="aiws-show-note aiws-stage-ui aiws-warning" role="status" data-testid="aiws-session-problem">{problem}</div>}
+      <VoiceNotes voice={voice} />
       {panel === 'steps' && (
         <div className="aiws-show-panel aiws-panel aiws-stage-ui" data-testid="aiws-session-steps" role="listbox">
           {steps.map((s, i) => (
@@ -190,7 +170,7 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
         </div>
       )}
       {panel === 'links' && <LinksPanel channel={channel} welcome={welcome} onClose={() => setPanel('none')} />}
-      {panel === 'people' && <PeoplePanel channel={channel} snap={snap} onClose={() => setPanel('none')} />}
+      {panel === 'people' && <PeoplePanel channel={channel} snap={snap} welcome={welcome} onClose={() => setPanel('none')} />}
       <TableImportHost />
     </div>
   )
@@ -214,7 +194,7 @@ function LinksPanel({ channel, welcome, onClose }: { channel: SessionChannel; we
     const link = sessionLink(welcome, invite.token)
     void navigator.clipboard?.writeText(link).then(() => { setCopied(invite.invite_id); window.setTimeout(() => setCopied(null), 1500) }, () => undefined)
   }
-  const label = (i: Invite) => t(LINK_KEY[i.kind]) + (i.kind === 'dt' && i.config.voice === true ? ` · ${t('aiworkspace.session.links.withVoice')}` : '')
+  const label = (i: Invite) => t(LINK_KEY[i.kind]) + (i.kind === 'dt' && i.config.voice === true ? ` · ${t('aiworkspace.session.links.withVoice')}` : '') + (i.kind === 'at' && i.config.speak === true ? ` · ${t('aiworkspace.session.links.withSpeak')}` : '')
   return (
     <div className="aiws-show-panel aiws-panel aiws-stage-ui aiws-session-links" data-testid="aiws-session-links-panel">
       <div className="aiws-dialog-head"><b>{t('aiworkspace.session.links.title')}</b><span className="aiws-grow" /><button type="button" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
@@ -222,6 +202,7 @@ function LinksPanel({ channel, welcome, onClose }: { channel: SessionChannel; we
       <SessionReadersOf channel={channel} initial={welcome.session.readers_of} editable={welcome.role === 'presenter' || welcome.role === 'owner'} />
       <div className="aiws-dialog-actions">
         <button type="button" data-testid="aiws-session-new-at" onClick={() => { void make('at') }}>{t('aiworkspace.session.links.newAudience')}</button>
+        {welcome.session.voice && <button type="button" data-testid="aiws-session-new-speaker" title={t('aiworkspace.session.links.speakerHelp')} onClick={() => { void make('at', { speak: true }) }}>{t('aiworkspace.session.links.newSpeaker')}</button>}
         <button type="button" data-testid="aiws-session-new-dt" onClick={() => { void make('dt', { voice: false }) }}>{t('aiworkspace.session.links.newDisplay')}</button>
         <button type="button" onClick={() => { void make('dt', { voice: true }) }}>{t('aiworkspace.session.links.newRemoteDisplay')}</button>
         <button type="button" data-testid="aiws-session-new-pt" onClick={() => { void make('pt') }}>{t('aiworkspace.session.links.newPrompter')}</button>
@@ -241,30 +222,79 @@ function LinksPanel({ channel, welcome, onClose }: { channel: SessionChannel; we
   )
 }
 
-/** Who came in and who is here now (§5.4); the presenter's own view. */
-function PeoplePanel({ channel, snap, onClose }: { channel: SessionChannel; snap: RoomSnapshot; onClose: () => void }) {
+/** Who came in and who is here now (§5.4); the presenter's own view — and who speaks (多人发言 §4.8, C6): each person's
+ * right to speak (a switch: the manager's own setting for them), their mode, whether they speak now or asked to; the
+ * room's speaking settings and "mute everyone". The list loads when people come in; the rest follows the time line. */
+function PeoplePanel({ channel, snap, welcome, onClose }: { channel: SessionChannel; snap: RoomSnapshot; welcome: Welcome; onClose: () => void }) {
   const { t } = useAiwsText()
   const [people, setPeople] = useState<SessionParticipant[]>([])
+  const [room, setRoom] = useState<{ speak: SpeakPolicy; speak_mode: 'auto' | 'manual' }>({ speak: welcome.session.speak ?? 'granted', speak_mode: welcome.session.speak_mode ?? 'manual' })
+  const [problem, setProblem] = useState<string | null>(null)
+  // a switch flipped shows at once, until the time line says how it came out
+  const [pending, setPending] = useState<{ principal: string; allow: boolean; voices: RoomSnapshot['voices'] } | null>(null)
+  const arrivals = Object.values(snap.presence).filter((p) => p.online).length
   useEffect(() => {
     let alive = true
-    const load = () => channel.call<{ participants?: SessionParticipant[] }>('session.get', {}).then((r) => { if (alive) setPeople(r.participants ?? []) }, () => undefined)
-    void load()
-    const timer = window.setInterval(() => { void load() }, 5000)
-    return () => { alive = false; window.clearInterval(timer) }
-  }, [channel])
+    const timer = window.setTimeout(() => {
+      channel.call<{ participants?: SessionParticipant[]; speak?: SpeakPolicy; speak_mode?: 'auto' | 'manual' }>('session.get', {}).then((r) => {
+        if (!alive) return
+        setPeople(r.participants ?? [])
+        setRoom({ speak: r.speak ?? 'granted', speak_mode: r.speak_mode ?? 'manual' })
+      }, () => undefined)
+    }, 300)
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [channel, arrivals])
+  const call = (method: string, params: Record<string, unknown>) => { void channel.call(method, params).then(() => setProblem(null), (e: unknown) => setProblem(describeError(e))) }
   const online = (p: SessionParticipant) => snap.presence[p.principal]?.online ?? p.online
+  const speaks = (p: SessionParticipant) => pending?.principal === p.principal && pending.voices === snap.voices ? pending.allow : snap.voices[p.principal]?.allow ?? p.speak
+  const allow = (principal: string, value: boolean) => {
+    setPending({ principal, allow: value, voices: snap.voices })
+    void channel.call('session.voice', { op: 'allow', principal, allow: value }).then(() => setProblem(null), (e: unknown) => { setPending(null); setProblem(describeError(e)) })
+  }
+  const asks = (p: SessionParticipant) => !speaks(p) && (snap.voices[p.principal]?.request ?? p.request)
   const audience = people.filter((p) => p.role === 'audience')
+  const listed = people.filter((p) => p.role !== 'presenter')
+  const voice = welcome.session.voice
   return (
-    <div className="aiws-show-panel aiws-panel aiws-stage-ui" data-testid="aiws-session-people-panel">
-      <div className="aiws-dialog-head"><b>{t('aiworkspace.session.people.title')}</b><span className="aiws-muted">{t('aiworkspace.session.people.count', { online: audience.filter(online).length, all: audience.length })}</span><span className="aiws-grow" /><button type="button" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+    <div className="aiws-show-panel aiws-panel aiws-stage-ui aiws-session-people" data-testid="aiws-session-people-panel">
+      <div className="aiws-dialog-head">
+        <b>{t('aiworkspace.session.people.title')}</b><span className="aiws-muted">{t('aiworkspace.session.people.count', { online: audience.filter(online).length, all: audience.length })}</span><span className="aiws-grow" />
+        {voice && <button type="button" data-testid="aiws-session-mute-all" onClick={() => call('session.voice', { op: 'mute_all' })}><MicOff size={14} aria-hidden="true" />{t('aiworkspace.session.people.muteAll')}</button>}
+        <button type="button" onClick={onClose}>{t('aiworkspace.common.close')}</button>
+      </div>
+      {voice && (
+        <div className="aiws-session-people-voice">
+          <label className="aiws-check"><input type="checkbox" data-testid="aiws-session-room-speak" checked={room.speak === 'all'}
+            onChange={(event) => { const speak: SpeakPolicy = event.target.checked ? 'all' : 'granted'; setRoom({ ...room, speak }); call('session.set_access', { speak }) }} />{t('aiworkspace.session.people.roomSpeak')}</label>
+          <label className="aiws-inline-form">{t('aiworkspace.session.people.startMode')}
+            <select data-testid="aiws-session-room-speak-mode" value={room.speak_mode} onChange={(event) => { const speak_mode = event.target.value === 'auto' ? 'auto' : 'manual'; setRoom({ ...room, speak_mode }); call('session.set_access', { speak_mode }) }}>
+              <option value="manual">{t('aiworkspace.session.voice.mode.manual')}</option>
+              <option value="auto">{t('aiworkspace.session.voice.mode.auto')}</option>
+            </select>
+          </label>
+        </div>
+      )}
+      {problem && <div className="aiws-error" role="alert">{problem}</div>}
       <ul className="aiws-session-list">
-        {audience.map((p) => (
-          <li key={p.principal} data-online={online(p) ? 'true' : 'false'}>
-            <span className={`aiws-session-dot${online(p) ? ' is-on' : ''}`} />
-            <span className="aiws-grow">{p.name}</span>
-            {p.level === 'guest' && <span className="aiws-muted">{t('aiworkspace.session.people.guest')}</span>}
-          </li>
-        ))}
+        {listed.map((p) => {
+          const mode = snap.voices[p.principal]?.mode
+          const speaking = p.principal in snap.speaking
+          return (
+            <li key={p.principal} data-testid="aiws-session-person" data-principal={p.principal} data-online={online(p) ? 'true' : 'false'} data-speak={speaks(p) ? 'true' : 'false'} data-speaking={speaking ? 'true' : undefined}>
+              <span className={`aiws-session-dot${online(p) ? ' is-on' : ''}`} />
+              <span className="aiws-grow">{p.name}</span>
+              {p.level === 'guest' && <span className="aiws-muted">{t('aiworkspace.session.people.guest')}</span>}
+              {asks(p) && <span className="aiws-session-tag" data-testid="aiws-session-person-request">{t('aiworkspace.session.people.requested')}</span>}
+              {speaking && <span className="aiws-session-speaking-dot" title={t('aiworkspace.session.people.speaking')} />}
+              {voice && speaks(p) && mode && <span className="aiws-muted" title={t(`aiworkspace.session.voice.mode.${mode}`)} data-testid="aiws-session-person-mode" data-mode={mode}>
+                {mode === 'auto' ? <Mic size={14} /> : mode === 'manual' ? <Hand size={14} /> : <MicOff size={14} />}</span>}
+              {voice && (
+                <label className="aiws-check"><input type="checkbox" data-testid="aiws-session-person-speak" checked={speaks(p)}
+                  onChange={(event) => allow(p.principal, event.target.checked)} />{t('aiworkspace.session.people.speak')}</label>
+              )}
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
@@ -284,23 +314,9 @@ export function AudienceRoom({ store, path, channel, welcome, snap, following, s
   const [picking, setPicking] = useState<string | null>(null)
   const [text, setText] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
-  const listener = useRef<VoiceListener | null>(null)
-  const [voiceOn, setVoiceOn] = useState(false)
-  const [muted, setMuted] = useState(false)
-  const wantsVoice = welcome.session.voice && welcome.session.voice_service?.available === true && snap.state === 'live'
+  // the voice: in it from the start of the class (the join button was the gesture); speaking where allowed
+  const voice = useVoice({ channel, welcome, snap, auto: true })
   const channelStatus = useChannelStatus(channel)
-
-  // the voice: listened to from the start of the class (the join button was the gesture), muted on request
-  useEffect(() => {
-    if (!wantsVoice) return
-    const l = new VoiceListener(channel)
-    listener.current = l
-    let alive = true
-    l.start().then(() => { if (alive) setVoiceOn(true) }, (e: unknown) => {
-      if (alive && !display) setProblem(e instanceof VoiceUnreachable ? t('aiworkspace.session.voice.unreachable', { hosts: mediaHosts(welcome) }) : t('aiworkspace.session.voice.listenFailed', { detail: describeError(e) }))
-    })
-    return () => { alive = false; if (listener.current === l) listener.current = null; void l.stop() }
-  }, [wantsVoice, channel, display, welcome, t])
 
   const react = async (params: Record<string, unknown>) => {
     try { await channel.call('session.react', { command_id: randomId('re'), ...params }); setProblem(null) } catch (e) { setProblem(describeError(e)) }
@@ -336,7 +352,7 @@ export function AudienceRoom({ store, path, channel, welcome, snap, following, s
           )}
           <span className="aiws-show-sep" />
           <button type="button" className="aiws-tool" aria-label={pure ? t('aiworkspace.session.audience.showReactions') : t('aiworkspace.session.audience.pure')} aria-pressed={pure} data-testid="aiws-session-pure" onClick={() => setPure(!pure)}>{pure ? <EyeOff size={16} /> : <Eye size={16} />}</button>
-          {voiceOn && <button type="button" className="aiws-tool" aria-label={muted ? t('aiworkspace.session.voice.unmute') : t('aiworkspace.session.voice.mute')} aria-pressed={muted} data-testid="aiws-session-listen" onClick={() => { listener.current?.setMuted(!muted); setMuted(!muted) }}>{muted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>}
+          {welcome.session.voice && <VoiceControl voice={voice} interact={interact && live} />}
           {!interact && !display && <span className="aiws-muted" data-testid="aiws-session-watch-only">{t('aiworkspace.session.audience.watchOnly')}</span>}
           <span className="aiws-show-status">{welcome.name}{channelStatus !== 'open' ? ` · ${t(CHANNEL_KEY[channelStatus])}` : ''}</span>
         </div>
@@ -344,6 +360,7 @@ export function AudienceRoom({ store, path, channel, welcome, snap, following, s
       )}
       {picking && <div className="aiws-show-hint aiws-stage-ui" role="status">{t('aiworkspace.session.audience.pickHint')}</div>}
       {problem && <div className="aiws-show-note aiws-stage-ui aiws-warning" role="status" data-testid="aiws-session-problem">{problem}</div>}
+      {!display && <VoiceNotes voice={voice} />}
     </div>
   )
 }

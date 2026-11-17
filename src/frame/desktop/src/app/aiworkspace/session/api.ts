@@ -56,7 +56,8 @@ export class SessionApi {
   post(params: { kind: 'comment' | 'rating' | 'moment'; body?: string; score?: number; t_rel_ms?: number }) { return this.call<{ post_id: string }>('session.post', params) }
   posts() { return this.call<{ posts: SessionPost[]; open: boolean }>('session.list_posts') }
   deletePost(post_id: string) { return this.call<{ deleted: boolean }>('session.delete_post', { post_id }) }
-  rtc(params: Record<string, unknown>) { return this.call<{ sdp?: string; role?: 'publish' | 'listen' }>('session.rtc', params) }
+  rtc(params: Record<string, unknown>) { return this.call<{ sdp?: string; send?: boolean }>('session.rtc', params) }
+  voice(params: { op: 'allow' | 'mode' | 'request' | 'mute_all'; principal?: string; allow?: boolean; mode?: 'auto' | 'manual' | 'mute'; on?: boolean }) { return this.call<object>('session.voice', params) }
 }
 
 /** Calls that name no session: creating one, a Workspace's sessions, a courseware's sample feed, a media address. */

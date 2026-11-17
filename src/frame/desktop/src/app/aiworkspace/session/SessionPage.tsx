@@ -152,7 +152,12 @@ function JoinGate({ info, transport, onJoin }: { info: SessionInfo | null; trans
   }, [transport])
   return (
     <div className="aiws-session-center">
-      <form className="aiws-panel aiws-session-gate" data-testid="aiws-session-gate" onSubmit={(event) => { event.preventDefault(); onJoin(name.trim()) }}>
+      <form className="aiws-panel aiws-session-gate" data-testid="aiws-session-gate" onSubmit={(event) => {
+        event.preventDefault()
+        // a room where everyone speaks asks for the microphone with this click (多人发言 §4.8); a refusal is mute mode
+        if (info?.voice && info.speak === 'all' && info.my_speak) void navigator.mediaDevices?.getUserMedia({ audio: true }).then((s) => s.getTracks().forEach((track) => track.stop()), () => undefined)
+        onJoin(name.trim())
+      }}>
         <b className="aiws-session-gate-title">{info?.title ?? t('aiworkspace.session.page.publicClass')}</b>
         {info?.state === 'prepared' && <span className="aiws-muted">{t('aiworkspace.session.page.notStarted')}</span>}
         <label className="aiws-inline-form">{t('aiworkspace.session.page.yourName')}

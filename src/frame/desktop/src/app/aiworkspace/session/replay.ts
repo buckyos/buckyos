@@ -11,7 +11,7 @@ import type { ChangesPage, CommitEvent, CommitOutcome, EntityEnvelope, Json } fr
 import type { AiwsClient } from '../api/client'
 import { unwrap } from '../api/client'
 import type { SessionApi } from './api'
-import type { FlyingReaction, RoomSnapshot } from './room'
+import { applyVoice, type FlyingReaction, type RoomSnapshot } from './room'
 import type { MediaState, ReplayBundle, SessionEvent, SessionStage } from './types'
 
 type Replica = InstanceType<AiwsCore['Replica']>
@@ -141,8 +141,10 @@ export class ReplayEngine {
     let camera: RoomSnapshot['camera'] = null
     const reactions: FlyingReaction[] = []
     let voice: 'on' | 'off' = 'off'
+    let voices: Pick<RoomSnapshot, 'voices' | 'speaking' | 'muteAll'> = { voices: {}, speaking: {}, muteAll: 0 }
     for (const e of this.data.events) {
       if (e.t_rel_ms > t) break
+      voices = applyVoice(voices, e) ?? voices
       const d = e.data as Record<string, Json>
       if ((e.type === 'stage' || e.type === 'media.state' || e.type === 'session.start') && d.stage) stage = d.stage as unknown as SessionStage
       else if (e.type === 'sample.pointer') pointer = d && typeof d.x === 'number' && typeof d.y === 'number' && t - e.t_rel_ms < 2000 ? { x: d.x, y: d.y } : null
@@ -154,7 +156,7 @@ export class ReplayEngine {
       else if (e.type === 'voice.stop') voice = 'off'
     }
     if (!stage.free) camera = null
-    return { state, stage, pointer, camera, reactions, presence: {}, controller: null, voice, lastCommitSeq: this.seq }
+    return { state, stage, pointer, camera, reactions, presence: {}, controller: null, voice, ...voices, lastCommitSeq: this.seq }
   }
 
   mediaAt(t: number, entityId: string): MediaState | undefined {
@@ -167,6 +169,25 @@ export class ReplayEngine {
       const d = e.data as Record<string, Json>
       return { objectId: String(d.segment_id), start: Number(d.t_rel_start), end: Number(d.t_rel_end) }
     }).sort((a, b) => a.start - b.start)
+  }
+
+  /** Who spoke when (`voice.speaking`, Q8): one span per turn, open turns end with the session. */
+  speakingSpans(): { principal: string; name: string; start: number; end: number }[] {
+    const open = new Map<string, { name: string; start: number }>()
+    const out: { principal: string; name: string; start: number; end: number }[] = []
+    for (const e of this.data.events) {
+      if (e.type !== 'voice.speaking') continue
+      const d = e.data as Record<string, Json>
+      const who = String(d.principal ?? '')
+      if (d.on === true) {
+        if (!open.has(who)) open.set(who, { name: typeof d.name === 'string' ? d.name : '', start: e.t_rel_ms })
+      } else {
+        const o = open.get(who)
+        if (o) { out.push({ principal: who, name: o.name, start: o.start, end: e.t_rel_ms }); open.delete(who) }
+      }
+    }
+    for (const [who, o] of open) out.push({ principal: who, name: o.name, start: o.start, end: this.duration })
+    return out.sort((a, b) => a.start - b.start)
   }
 
   /** Navigation (§7.1): the steps and the tasks on the time line. */

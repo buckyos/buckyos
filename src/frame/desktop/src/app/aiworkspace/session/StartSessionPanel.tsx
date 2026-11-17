@@ -14,7 +14,7 @@ import { useAiwsText } from '../useAiwsText'
 import { entityLabel } from '../ui/sources/dataOps'
 import { createSession, listSessions } from './api'
 import { ReadersOfRow } from './ReadersOf'
-import type { ReadersOf, SessionInfo } from './types'
+import type { ReadersOf, SessionInfo, SpeakPolicy } from './types'
 import { STATE_KEY } from './labels'
 
 /** The permission object as this window's outline names it (the service names it once the room exists). */
@@ -42,6 +42,10 @@ export function StartSessionPanel({ store, transport, pathId, title, firstSurfac
   const [name, setName] = useState(title)
   const [guests, setGuests] = useState(false)
   const [voice, setVoice] = useState(true)
+  // “小班课” (多人发言 §2 裁决 5): a preset of the two speaking settings, nothing kept of its own
+  const [speak, setSpeak] = useState<SpeakPolicy>('granted')
+  const [speakMode, setSpeakMode] = useState<'auto' | 'manual'>('manual')
+  const small = speak === 'all' && speakMode === 'auto'
   const [expected, setExpected] = useState(50)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -49,7 +53,7 @@ export function StartSessionPanel({ store, transport, pathId, title, firstSurfac
     setBusy(true)
     setError(null)
     try {
-      const { session } = await createSession(transport, { workspace_id: store.session.workspaceId, path_id: pathId, title: name.trim() || title, policy: { guest_interact: guests, voice, expected_audience: expected }, readers_of: readersOf })
+      const { session } = await createSession(transport, { workspace_id: store.session.workspaceId, path_id: pathId, title: name.trim() || title, policy: { guest_interact: guests, voice, expected_audience: expected, speak, speak_mode: speakMode }, readers_of: readersOf })
       await openWorkspacePage(sessionPageUrl(store, session.session_id), { newTab: true })
       onStarted()
     } catch (e) {
@@ -66,6 +70,29 @@ export function StartSessionPanel({ store, transport, pathId, title, firstSurfac
       </label>
       <label className="aiws-check"><input type="checkbox" data-testid="aiws-session-create-guests" checked={guests} onChange={(event) => setGuests(event.target.checked)} />{t('aiworkspace.session.create.guests')}</label>
       <label className="aiws-check"><input type="checkbox" data-testid="aiws-session-create-voice" checked={voice} onChange={(event) => setVoice(event.target.checked)} />{t('aiworkspace.session.create.voice')}</label>
+      {voice && (
+        <>
+          <label className="aiws-check" title={t('aiworkspace.session.create.smallHelp')}>
+            <input type="checkbox" data-testid="aiws-session-create-small" checked={small} onChange={(event) => { setSpeak(event.target.checked ? 'all' : 'granted'); setSpeakMode(event.target.checked ? 'auto' : 'manual') }} />
+            {t('aiworkspace.session.create.small')}<span className="aiws-muted">{t('aiworkspace.session.create.smallHelp')}</span>
+          </label>
+          <details className="aiws-session-create-speak">
+            <summary>{t('aiworkspace.session.create.speakSettings')}</summary>
+            <label className="aiws-inline-form">{t('aiworkspace.session.create.speak')}
+              <select data-testid="aiws-session-create-speak" value={speak} onChange={(event) => setSpeak(event.target.value === 'all' ? 'all' : 'granted')}>
+                <option value="granted">{t('aiworkspace.session.create.speakGranted')}</option>
+                <option value="all">{t('aiworkspace.session.create.speakAll')}</option>
+              </select>
+            </label>
+            <label className="aiws-inline-form">{t('aiworkspace.session.create.speakMode')}
+              <select data-testid="aiws-session-create-speak-mode" value={speakMode} onChange={(event) => setSpeakMode(event.target.value === 'auto' ? 'auto' : 'manual')}>
+                <option value="manual">{t('aiworkspace.session.voice.mode.manual')}</option>
+                <option value="auto">{t('aiworkspace.session.voice.mode.auto')}</option>
+              </select>
+            </label>
+          </details>
+        </>
+      )}
       <label className="aiws-inline-form">{t('aiworkspace.session.create.expected')}
         <input type="number" min={1} max={10000} value={expected} onChange={(event) => setExpected(Math.max(1, Math.min(10000, Number(event.target.value) || 1)))} />
       </label>
