@@ -1,16 +1,13 @@
-import { IconButton, Tab, Tabs } from '@mui/material'
+import { IconButton, Tab, Tabs, Tooltip } from '@mui/material'
 import {
-  Camera,
   Clock,
-  FolderClosed,
-  Hash,
+  Copy,
+  FolderOpen,
   Info,
   Link2,
-  MapPin,
   MessageSquare,
   Share2,
-  Sparkles,
-  Wand2,
+  Unlink,
   X,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -35,11 +32,21 @@ interface PreviewPanelProps {
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[84px_1fr] items-start gap-2 text-[12px] leading-5">
+    <div className="grid grid-cols-[88px_1fr] items-start gap-2 text-[13px] leading-5">
       <span className="text-[color:var(--cp-muted)]">{label}</span>
-      <span className="min-w-0 break-words text-[color:var(--cp-text)]">{children}</span>
+      <span className="min-w-0 break-words tabular-nums text-[color:var(--cp-text)]">{children}</span>
     </div>
   )
+}
+
+/** A path that wraps after its slashes instead of mid-name. */
+function WrappingPath({ path }: { path: string }) {
+  const parts = path.split('/')
+  return <>{parts.map((part, index) => <span key={index}>{part}{index < parts.length - 1 ? <>/<wbr /></> : null}</span>)}</>
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <p className="files-label mb-2">{children}</p>
 }
 
 /** Section skeleton — enrichment namespaces resolving (§4.5 Loading/Progress). */
@@ -47,7 +54,7 @@ function SectionSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <div className="space-y-2" data-testid="preview-skeleton">
       {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className="grid grid-cols-[84px_1fr] items-center gap-2">
+        <div key={i} className="grid grid-cols-[88px_1fr] items-center gap-2">
           <span className="h-3 w-14 animate-pulse rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_50%,transparent)]" />
           <span
             className="h-3 animate-pulse rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]"
@@ -78,14 +85,22 @@ export function PreviewPanel({
     const known = items.filter((item) => item.entry.sizeBytes !== undefined)
     const kinds = new Map<string, number>()
     items.forEach((item) => kinds.set(item.entry.kind, (kinds.get(item.entry.kind) ?? 0) + 1))
-    return <div className="space-y-3 p-4 text-sm"><strong>{t('filebrowser.status.selectedCount', '{{count}} selected', { count: items.length })}</strong>{[...kinds].map(([kind, count]) => <p key={kind}>{t(`filebrowser.kind.${kind}`, kind)}: {count}</p>)}<p>{t('filebrowser.meta.knownSize', 'Known size ({{count}}/{{total}} items)', { count: known.length, total: items.length })}: {formatBytes(known.reduce((sum, item) => sum + item.entry.sizeBytes!, 0), locale)}</p></div>
+    return (
+      <div className="space-y-4 p-4">
+        <p className="text-[15px] font-medium text-[color:var(--cp-text)]">{t('filebrowser.status.selectedCount', '{{count}} selected', { count: items.length })}</p>
+        <div className="space-y-2">
+          {[...kinds].map(([kind, count]) => <Row key={kind} label={t(`filebrowser.kind.${kind}`, kind)}>{count}</Row>)}
+        </div>
+        <p className="text-[13px] tabular-nums text-[color:var(--cp-muted)]">{t('filebrowser.meta.knownSize', 'Known size ({{count}}/{{total}} items)', { count: known.length, total: items.length })}: <span className="text-[color:var(--cp-text)]">{formatBytes(known.reduce((sum, item) => sum + item.entry.sizeBytes!, 0), locale)}</span></p>
+      </div>
+    )
   }
   if (!item) {
     return (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-6 text-center text-[color:var(--cp-muted)]">
-        <Info size={24} className="opacity-60" />
-        <p className="text-sm">
-          {t('filebrowser.preview.empty', 'Select a file to inspect its meta and story.')}
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center text-[color:var(--cp-muted)]">
+        <Info size={20} strokeWidth={1.5} />
+        <p className="text-[13px]">
+          {t('filebrowser.preview.empty', 'Select a file to see its details')}
         </p>
       </div>
     )
@@ -102,38 +117,46 @@ export function PreviewPanel({
 
   return (
     <div className="flex h-full w-full flex-col">
-      {entry.kind !== 'folder' && onOpenFile && !entry.link?.broken && !item.ref?.broken && <button className="m-3 min-h-11 shrink-0 rounded-xl bg-[color:var(--cp-accent)] px-4 text-sm font-semibold text-white" onClick={() => onOpenFile(item)}>{t('filebrowser.operation.openFile', 'Open file')}</button>}
-      <div className="flex items-start gap-3 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-4 py-3">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
-          {fileIcon(entry, 22)}
+      <div className="flex items-start gap-3 px-4 pb-4 pt-4">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-[color:var(--cp-surface-2-opaque)]">
+          {fileIcon(entry, 24)}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="line-clamp-2 font-display text-[15px] font-semibold text-[color:var(--cp-text)]">
+          <div className="line-clamp-2 break-words text-[15px] font-medium leading-5 text-[color:var(--cp-text)]">
             {entry.name}
           </div>
           {refPath ? (
-            <div className="mt-0.5 truncate font-mono text-[10px] text-[color:var(--cp-muted)]">
+            <div className="mt-1 truncate font-[family-name:var(--files-mono)] text-[12px] text-[color:var(--cp-muted)]">
               {refPath}
             </div>
           ) : null}
-          <button
-            type="button"
-            onClick={() => onJumpToPath(originalParent)}
-            title={t('filebrowser.preview.jumpOriginal', 'Jump to original location')}
-            className="mt-0.5 block max-w-full break-all text-left font-mono text-xs text-[color:var(--cp-muted)] hover:text-[color:var(--cp-accent)] hover:underline"
-          >
-            {displayPath(originalPath)}
-          </button>
-          <button className="min-h-8 text-xs underline" onClick={() => void navigator.clipboard.writeText(copyPathText(originalPath))}>{t('filebrowser.topbar.copyPath', 'Copy path')}</button>
+          <div className="mt-1 flex items-start gap-1">
+            <button
+              type="button"
+              onClick={() => onJumpToPath(originalParent)}
+              title={t('filebrowser.preview.jumpOriginal', 'Jump to original location')}
+              className="min-w-0 text-left font-[family-name:var(--files-mono)] text-[12px] leading-[18px] text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)] hover:underline"
+            >
+              <WrappingPath path={displayPath(originalPath)} />
+            </button>
+            <Tooltip title={t('filebrowser.topbar.copyPath', 'Copy path')}>
+              <button type="button" className="files-icon-btn -mt-[3px] !h-6 !min-w-6 !p-0" aria-label={t('filebrowser.topbar.copyPath', 'Copy path')} onClick={() => void navigator.clipboard.writeText(copyPathText(originalPath))}>
+                <Copy size={14} />
+              </button>
+            </Tooltip>
+          </div>
           {entry.link?.broken || item.ref?.broken ? (
-            <span className="mt-1 inline-block rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,var(--cp-surface))] px-2 py-0.5 text-[10px] font-semibold text-[color:var(--cp-warning)]">
-              {t('filebrowser.preview.brokenRef', 'Dangling reference')}
+            <span className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-[color:var(--files-warning-ink)]">
+              <Unlink size={14} /> {t('filebrowser.preview.brokenRef', 'Dangling reference')}
             </span>
+          ) : null}
+          {entry.kind !== 'folder' && onOpenFile && !entry.link?.broken && !item.ref?.broken ? (
+            <button type="button" className="files-btn files-btn-primary mt-3 w-full" onClick={() => onOpenFile(item)}>{t('filebrowser.operation.openFile', 'Open file')}</button>
           ) : null}
         </div>
         {!embedded && onClose ? (
           <IconButton size="small" onClick={onClose} aria-label={t('common.close', 'Close')}>
-            <X size={14} />
+            <X size={16} />
           </IconButton>
         ) : null}
       </div>
@@ -142,18 +165,19 @@ export function PreviewPanel({
         value={tab}
         onChange={(_, value) => setTab(value)}
         variant="fullWidth"
-        className="border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)]"
+        className="border-y border-[color:var(--files-hairline)]"
+        sx={{ minHeight: 40, '& .MuiTab-root': { minHeight: 40, fontSize: 13, textTransform: 'none', color: 'var(--cp-muted)' }, '& .Mui-selected': { color: 'var(--cp-text) !important', fontWeight: 500 }, '& .MuiTabs-indicator': { height: 2, backgroundColor: 'var(--cp-text)' } }}
       >
         <Tab label={t('filebrowser.preview.tab.meta', 'Meta')} />
         <Tab label={t('filebrowser.preview.tab.story', 'Story')} />
         <Tab label={t('filebrowser.preview.tab.triggers', 'AI')} />
       </Tabs>
 
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
         {tab === 0 && enriching ? <SectionSkeleton rows={5} /> : null}
         {tab === 0 && !enriching ? (
           <>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Row label={t('filebrowser.preview.size', 'Size')}>
                 {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes)}
               </Row>
@@ -177,9 +201,9 @@ export function PreviewPanel({
                     href={entry.publicUrl}
                     target="_blank"
                     rel="noreferrer noopener"
-                    className="inline-flex items-center gap-1 font-mono text-[11px] text-[color:var(--cp-accent)] hover:underline"
+                    className="inline-flex items-start gap-1 break-all font-[family-name:var(--files-mono)] text-[12px] text-[color:var(--files-link)] hover:underline"
                   >
-                    <Link2 size={11} />
+                    <Link2 size={14} className="mt-0.5 shrink-0" />
                     {entry.publicUrl}
                   </a>
                 </Row>
@@ -187,11 +211,9 @@ export function PreviewPanel({
             </div>
 
             {entry.exif ? (
-              <div className="rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)] p-3">
-                <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">
-                  <Camera size={12} /> {t('filebrowser.preview.exif', 'EXIF')}
-                </p>
-                <div className="space-y-1 text-[11px]">
+              <div>
+                <SectionLabel>{t('filebrowser.preview.exif', 'EXIF')}</SectionLabel>
+                <div className="space-y-2">
                   {entry.exif.camera ? (
                     <Row label={t('filebrowser.preview.camera', 'Camera')}>{entry.exif.camera}</Row>
                   ) : null}
@@ -200,16 +222,12 @@ export function PreviewPanel({
                   ) : null}
                   {entry.exif.takenAt ? (
                     <Row label={t('filebrowser.preview.takenAt', 'Taken')}>
-                      <span className="inline-flex items-center gap-1">
-                        <Clock size={11} /> {entry.exif.takenAt}
-                      </span>
+                      {entry.exif.takenAt}
                     </Row>
                   ) : null}
                   {entry.exif.location ? (
                     <Row label={t('filebrowser.preview.location', 'Location')}>
-                      <span className="inline-flex items-center gap-1">
-                        <MapPin size={11} /> {entry.exif.location}
-                      </span>
+                      {entry.exif.location}
                     </Row>
                   ) : null}
                 </div>
@@ -217,11 +235,9 @@ export function PreviewPanel({
             ) : null}
 
             {entry.summary ? (
-              <div className="rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-accent-soft)_50%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,var(--cp-surface))] p-3">
-                <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-accent)]">
-                  <Sparkles size={12} /> {t('filebrowser.preview.aiSummary', 'AI summary')}
-                </p>
-                <p className="text-[12px] leading-5 text-[color:var(--cp-text)]">
+              <div>
+                <SectionLabel>{t('filebrowser.preview.aiSummary', 'AI summary')}</SectionLabel>
+                <p className="text-[13px] leading-[22px] text-[color:var(--cp-text)]">
                   {entry.summary}
                 </p>
               </div>
@@ -229,16 +245,11 @@ export function PreviewPanel({
 
             {entry.tags?.length ? (
               <div>
-                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">
-                  {t('filebrowser.preview.tags', 'Tags')}
-                </p>
+                <SectionLabel>{t('filebrowser.preview.tags', 'Tags')}</SectionLabel>
                 <div className="flex flex-wrap gap-1">
                   {entry.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-2)_90%,transparent)] px-2 py-0.5 text-[11px] text-[color:var(--cp-muted)]"
-                    >
-                      <Hash size={10} /> {tag}
+                    <span key={tag} className="files-chip">
+                      #{tag}
                     </span>
                   ))}
                 </div>
@@ -247,18 +258,16 @@ export function PreviewPanel({
 
             {topicChips.length ? (
               <div>
-                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">
-                  {t('filebrowser.preview.topics', 'Topics')}
-                </p>
-                <div className="flex flex-wrap gap-1.5">
+                <SectionLabel>{t('filebrowser.preview.topics', 'Topics')}</SectionLabel>
+                <div className="flex flex-wrap gap-1">
                   {topicChips.map((topic) => (
                     <button
                       key={topic.id}
                       type="button"
                       onClick={() => onJumpToTopic(topic.id)}
-                      className="inline-flex items-center gap-1 rounded-full border border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_22%,var(--cp-surface))] px-2.5 py-0.5 text-[11px] font-semibold text-[color:var(--cp-accent)]"
+                      className="files-chip !text-[color:var(--cp-text)] transition-colors hover:!bg-[color:var(--files-pressed)]"
                     >
-                      <Sparkles size={10} /> {topic.title}
+                      {topic.title}
                     </button>
                   ))}
                 </div>
@@ -268,9 +277,9 @@ export function PreviewPanel({
             <button
               type="button"
               onClick={() => onJumpToPath(originalParent)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--cp-border)] px-3 py-1 text-[11px] text-[color:var(--cp-muted)] hover:border-[color:var(--cp-accent)] hover:text-[color:var(--cp-accent)]"
+              className="files-btn"
             >
-              <FolderClosed size={12} /> {t('filebrowser.preview.reveal', 'Reveal in folder')}
+              <FolderOpen size={16} /> {t('filebrowser.preview.reveal', 'Reveal in folder')}
             </button>
           </>
         ) : null}
@@ -282,22 +291,24 @@ export function PreviewPanel({
               {entry.story.map((story) => (
                 <div
                   key={story.id}
-                  className="rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] p-3"
+                  className="rounded-[10px] border border-[color:var(--files-hairline)] p-3"
                 >
-                  <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">
-                    {story.kind === 'chat' ? (
-                      <MessageSquare size={11} />
-                    ) : story.kind === 'share' ? (
-                      <Share2 size={11} />
-                    ) : (
-                      <Clock size={11} />
-                    )}
-                    {story.title}
+                  <div className="flex items-center gap-2 text-[13px] font-medium text-[color:var(--cp-text)]">
+                    <span className="shrink-0 text-[color:var(--cp-muted)]">
+                      {story.kind === 'chat' ? (
+                        <MessageSquare size={16} />
+                      ) : story.kind === 'share' ? (
+                        <Share2 size={16} />
+                      ) : (
+                        <Clock size={16} />
+                      )}
+                    </span>
+                    <span className="min-w-0 truncate">{story.title}</span>
                   </div>
-                  <p className="mt-1.5 text-[12px] leading-5 text-[color:var(--cp-text)]">
+                  <p className="mt-1.5 text-[13px] leading-5 text-[color:var(--cp-text)]">
                     {story.excerpt}
                   </p>
-                  <p className="mt-1 text-[10px] text-[color:var(--cp-muted)]">
+                  <p className="mt-1.5 text-[12px] tabular-nums text-[color:var(--cp-muted)]">
                     {formatDate(story.occurredAt)}
                     {story.source ? ` · ${story.source}` : ''}
                   </p>
@@ -305,7 +316,7 @@ export function PreviewPanel({
               ))}
             </div>
           ) : (
-            <div className="rounded-[16px] border border-dashed border-[color:var(--cp-border)] p-4 text-center text-[12px] text-[color:var(--cp-muted)]">
+            <div className="px-2 py-6 text-center text-[13px] leading-5 text-[color:var(--cp-muted)]">
               {t(
                 'filebrowser.preview.storyEmpty',
                 'No story attached yet. Stories appear when the file has chat, share, or session context.',
@@ -315,13 +326,13 @@ export function PreviewPanel({
         ) : null}
 
         {tab === 2 ? (
-          <div className="space-y-2 text-[12px] text-[color:var(--cp-muted)]">
-            <div className="rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] p-3">
-              <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">
-                <Wand2 size={12} className="text-[color:var(--cp-accent)]" />{' '}
+          <div className="space-y-3 text-[13px] text-[color:var(--cp-muted)]">
+            <div>
+              <p className="files-label mb-2 flex items-center gap-2">
+                {entry.triggersActive ? <span className="files-dot" aria-hidden /> : null}
                 {t('filebrowser.preview.aiStatus', 'AI pipeline status')}
               </p>
-              <p className="mt-2 leading-5 text-[color:var(--cp-text)]">
+              <p className="leading-5 text-[color:var(--cp-text)]">
                 {entry.triggersActive === undefined
                   ? t('filebrowser.preview.aiUnknown', 'AI processing status is unknown.')
                   : entry.triggersActive
@@ -331,7 +342,7 @@ export function PreviewPanel({
 
               </p>
             </div>
-            <p className="text-[11px] leading-5">
+            <p className="text-[12px] leading-5">
               {t(
                 'filebrowser.preview.aiHint',
                 'Trigger policies ride alongside access permissions and can be managed per folder.',

@@ -22,6 +22,7 @@ import { NamePromptDialog } from '../../app/filebrowser/dialogs/NamePromptDialog
 import { formatBytes } from '../../app/filebrowser/fileDisplay'
 import type { FileEntry, SortDir, SortKey } from '../../app/filebrowser/types'
 import { checkSelectDialogResult, type SelectDialogInput } from './schemas'
+import '../../components/preview/files.css'
 
 const RECENT_URL = 'view://recent'
 const lastDirKey = (callerId: string) => `sysdlg.select.lastDir:${callerId}`
@@ -258,12 +259,12 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
   const locations = useMemo(() => {
     // Roots that are not real folders (a collection shown as a root) are places to pick from, not to write to.
     const out: Array<{ key: string; label: string; url: string; icon: ReactNode }> = [
-      ...(home ? [{ key: 'my-files', url: normalizeUrl(home.path), icon: <House size={15} aria-hidden="true" />, label: t('sysdlg.select.home', 'My files') }] : []),
-      ...(dfs.state.data ?? []).map((node) => ({ key: node.id, url: normalizeUrl(node.path), icon: <HardDrive size={15} aria-hidden="true" />, label: node.name })),
+      ...(home ? [{ key: 'my-files', url: normalizeUrl(home.path), icon: <House size={16} aria-hidden="true" className="shrink-0 text-[color:var(--cp-muted)]" />, label: t('sysdlg.select.home', 'My files') }] : []),
+      ...(dfs.state.data ?? []).map((node) => ({ key: node.id, url: normalizeUrl(node.path), icon: <HardDrive size={16} aria-hidden="true" className="shrink-0 text-[color:var(--cp-muted)]" />, label: node.name })),
     ].filter((location) => mode === 'open' || dfsPathOf(location.url) !== null)
     if (mode === 'open') {
-      out.push({ key: 'recent', label: t('sysdlg.select.recent', 'Recent'), url: RECENT_URL, icon: <History size={15} aria-hidden="true" /> })
-      for (const collection of collections) out.push({ key: `c-${collection.id}`, label: collection.title, url: collectionUrl(collection.id), icon: <Library size={15} aria-hidden="true" /> })
+      out.push({ key: 'recent', label: t('sysdlg.select.recent', 'Recent'), url: RECENT_URL, icon: <History size={16} aria-hidden="true" className="shrink-0 text-[color:var(--cp-muted)]" /> })
+      for (const collection of collections) out.push({ key: `c-${collection.id}`, label: collection.title, url: collectionUrl(collection.id), icon: <Library size={16} aria-hidden="true" className="shrink-0 text-[color:var(--cp-muted)]" /> })
     }
     return out
   }, [collections, dfs.state.data, home, mode, t])
@@ -286,11 +287,11 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
       : list.status === 'error' ? list.error?.message ?? ''
         : notice ?? (mode === 'open' && selected.size ? t('sysdlg.select.selectedCount', '{{count}} selected', { count: selected.size }) : '')
   const confirmLabel = input.confirmLabel ?? t(`sysdlg.select.confirm.${mode}`)
-  const buttonClass = 'min-h-10 rounded-full px-4 text-sm font-medium disabled:opacity-50'
+  const buttonClass = 'files-btn files-btn-lg'
 
   return (
     <div ref={root} tabIndex={-1} onKeyDown={onKeyDown} data-testid="select-dialog" data-mode={mode}
-      className={clsx('flex min-h-0 flex-col gap-3 text-[color:var(--cp-text)] outline-none', compact ? 'h-[min(70dvh,560px)]' : 'h-[min(60vh,520px)]')}>
+      className={clsx('files-ui relative flex min-h-0 flex-col gap-3 text-[color:var(--cp-text)] outline-none', compact ? 'h-[min(70dvh,560px)]' : 'h-[min(60vh,520px)]')}>
       <div className="sr-only" role="status" aria-live="polite" data-testid="select-status">{status}</div>
       {localEntry && <input ref={localInput} type="file" hidden data-testid="select-local-input" multiple={input.multiple || mode === 'folder'} accept={mode === 'open' ? inputAccept(input.accept) : undefined}
         {...(mode === 'folder' ? { webkitdirectory: '' } : {})}
@@ -299,63 +300,63 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
       <div className={clsx('flex min-h-0 flex-1 gap-3', compact && 'flex-col')}>
         {compact ? (
           <select aria-label={t('sysdlg.select.locations', 'Locations')} data-testid="select-locations" value={activeLocation?.url ?? ''} onChange={(event) => { if (event.target.value) navigate(event.target.value) }}
-            className="min-h-10 w-full min-w-0 rounded-xl border border-[color:var(--cp-border)] bg-transparent px-2 text-sm">
+            className="files-input !min-h-10 !rounded-[10px] !px-2">
             {!activeLocation && <option value="">{t('sysdlg.select.locations', 'Locations')}</option>}
             {locations.map((location) => <option key={location.key} value={location.url}>{location.label}</option>)}
           </select>
         ) : (
           <nav aria-label={t('sysdlg.select.locations', 'Locations')} className="desktop-scrollbar w-44 shrink-0 overflow-y-auto" data-testid="select-locations">
             {locations.map((location) => <button type="button" key={location.key} aria-current={activeLocation?.key === location.key ? 'location' : undefined} onClick={() => navigate(location.url)}
-              className={clsx('flex min-h-9 w-full items-center gap-2 rounded-xl px-2 text-left text-sm', activeLocation?.key === location.key && 'bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)] font-medium')}>{location.icon}<span className="truncate">{location.label}</span></button>)}
-            {dfs.state.status === 'error' && <button type="button" className="min-h-9 px-2 text-left text-sm underline" onClick={dfs.retry}>{t('sysdlg.select.retry', 'Retry')}</button>}
+              className={clsx('flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-[14px] transition-colors', activeLocation?.key === location.key ? 'bg-[color:var(--files-selected)] font-medium' : 'hover:bg-[color:var(--files-hover)]')}>{location.icon}<span className="truncate">{location.label}</span></button>)}
+            {dfs.state.status === 'error' && <button type="button" className="files-btn files-btn-ghost mt-1" onClick={dfs.retry}>{t('sysdlg.select.retry', 'Retry')}</button>}
           </nav>
         )}
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
           <div className="relative">
-            <Search size={15} aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--cp-muted)]" />
+            <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--cp-muted)]" />
             <input type="search" value={query} data-testid="select-search" aria-label={t('sysdlg.select.search', 'Search files')} placeholder={t('sysdlg.select.search', 'Search files')}
               enterKeyHint="search" autoComplete="off" spellCheck={false} onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Escape' && query) { event.stopPropagation(); setQuery('') } }}
-              className="min-h-10 w-full rounded-xl border border-[color:var(--cp-border)] bg-transparent pl-9 pr-9 text-sm [&::-webkit-search-cancel-button]:hidden" />
+              className="files-input !min-h-10 !rounded-[10px] !pl-9 !pr-9 [&::-webkit-search-cancel-button]:hidden" />
             {query && <button type="button" data-testid="select-search-clear" aria-label={t('sysdlg.select.searchClear', 'Clear search')} onClick={() => setQuery('')}
-              className="absolute right-1 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-lg text-[color:var(--cp-muted)]"><X size={15} aria-hidden="true" /></button>}
+              className="files-icon-btn absolute right-1 top-1/2 -translate-y-1/2"><X size={16} aria-hidden="true" /></button>}
           </div>
-          {searching ? <p className="min-h-8 px-1.5 text-sm leading-8 text-[color:var(--cp-muted)]" data-testid="select-search-scope">{t('sysdlg.select.searchScope', 'Results from all your files')}</p> :
-          <nav aria-label={t('sysdlg.select.path', 'Path')} className="flex flex-wrap items-center gap-0.5 text-sm" data-testid="select-crumbs">
+          {searching ? <p className="min-h-8 px-1.5 text-[13px] leading-8 text-[color:var(--cp-muted)]" data-testid="select-search-scope">{t('sysdlg.select.searchScope', 'Results from all your files')}</p> :
+          <nav aria-label={t('sysdlg.select.path', 'Path')} className="flex flex-wrap items-center gap-0.5 text-[13px] text-[color:var(--cp-muted)]" data-testid="select-crumbs">
             {crumbsForUrl(url, url === RECENT_URL ? t('sysdlg.select.recent', 'Recent') : list.meta?.title).map((crumb, index, all) => <span key={crumb.url} className="flex items-center">
               {index > 0 && <ChevronRight size={14} aria-hidden="true" className="text-[color:var(--cp-muted)]" />}
               <button type="button" disabled={index === all.length - 1} aria-current={index === all.length - 1 ? 'page' : undefined} onClick={() => navigate(crumb.url)}
-                className="min-h-8 max-w-40 truncate rounded-lg px-1.5 disabled:font-medium">{crumb.label === 'root' && index === 0 ? '/' : crumb.label}</button>
+                className="min-h-8 max-w-40 truncate rounded-[6px] px-1.5 transition-colors hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)] disabled:font-medium disabled:text-[color:var(--cp-text)] disabled:hover:bg-transparent">{crumb.label === 'root' && index === 0 ? '/' : crumb.label}</button>
             </span>)}
-            {mode !== 'open' && path !== null && writable && <button type="button" data-testid="select-new-folder" onClick={() => setCreating(true)} className="ml-auto flex min-h-8 items-center gap-1 rounded-lg px-2 text-sm"><FolderPlus size={15} aria-hidden="true" />{t('sysdlg.select.newFolder', 'New folder')}</button>}
+            {mode !== 'open' && path !== null && writable && <button type="button" data-testid="select-new-folder" onClick={() => setCreating(true)} className="files-btn files-btn-ghost ml-auto"><FolderPlus size={16} aria-hidden="true" />{t('sysdlg.select.newFolder', 'New folder')}</button>}
           </nav>}
 
           <div role="listbox" aria-label={t('sysdlg.select.items', 'Files and folders')} aria-multiselectable={input.multiple || undefined} aria-busy={loading} data-testid="select-list" data-layout={grid ? 'grid' : 'list'}
-            className="desktop-scrollbar min-h-0 flex-1 overflow-y-auto rounded-xl border border-[color:var(--cp-border)]"
+            className="desktop-scrollbar min-h-0 flex-1 overflow-y-auto rounded-[10px] border border-[color:var(--cp-border)]"
             onScroll={(event) => { const el = event.currentTarget; if (more && !loading && el.scrollTop + el.clientHeight > el.scrollHeight - 120) loadMore() }}>
             {!searching && list.status === 'error' ? (
-              <div role="alert" className="flex flex-col items-start gap-2 p-4 text-sm" data-testid="select-error">
+              <div role="alert" className="flex flex-col items-start gap-3 p-4 text-[14px]" data-testid="select-error">
                 <p>{signedOut ? t('sysdlg.select.signInHint', 'Your session has ended. Sign in again, then retry — your selection is kept.') : list.error?.message}</p>
                 <div className="flex gap-2">
-                  {signedOut && <a className="underline" href={new URL('/login', window.location.origin).href} target="_blank" rel="noreferrer">{t('sysdlg.select.signIn', 'Sign in again')}</a>}
-                  <button type="button" className="underline" onClick={() => list.reload()}>{t('sysdlg.select.retry', 'Retry')}</button>
+                  {signedOut && <a className="files-btn files-btn-primary" href={new URL('/login', window.location.origin).href} target="_blank" rel="noreferrer">{t('sysdlg.select.signIn', 'Sign in again')}</a>}
+                  <button type="button" className="files-btn" onClick={() => list.reload()}>{t('sysdlg.select.retry', 'Retry')}</button>
                 </div>
               </div>
             ) : searching && search.state.status === 'error' && !rows.length ? (
-              <div role="alert" className="flex flex-col items-start gap-2 p-4 text-sm" data-testid="select-error">
+              <div role="alert" className="flex flex-col items-start gap-3 p-4 text-[14px]" data-testid="select-error">
                 <p>{search.state.error?.fallback}</p>
-                {search.state.error?.retryable !== false && <button type="button" className="underline" onClick={search.retry}>{t('sysdlg.select.retry', 'Retry')}</button>}
+                {search.state.error?.retryable !== false && <button type="button" className="files-btn" onClick={search.retry}>{t('sysdlg.select.retry', 'Retry')}</button>}
               </div>
             ) : <>
-              <div className={grid ? 'grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-1 p-1.5' : undefined}>
+              <div className={grid ? 'grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-1 p-2' : undefined}>
                 {rows.map((item) => {
                   const { entry } = item
                   const folder = entry.kind === 'folder'
                   const isSelected = selected.has(entry.path)
                   const usable = folder ? !isExcluded(entry.path) : mode === 'save' || (selectable(entry) && (isSelected || !full))
                   const reason = usable ? undefined : folder || mode !== 'open' ? t('sysdlg.select.excluded', 'This folder cannot be the destination') : selectable(entry) ? t('sysdlg.select.limitReached', 'You can choose up to {{limit}} items', { limit: input.limit }) : t('sysdlg.select.notAccepted', 'This type cannot be chosen here')
-                  const check = mode === 'open' && input.multiple && !folder && <span aria-hidden="true" className={clsx('flex size-4 shrink-0 items-center justify-center rounded border', isSelected ? 'border-[color:var(--cp-accent)] bg-[color:var(--cp-accent)] text-white' : 'border-[color:var(--cp-border)] bg-[color:var(--cp-surface)]')}>{isSelected && <Check size={12} />}</span>
+                  const check = mode === 'open' && input.multiple && !folder && <span aria-hidden="true" className={clsx('flex size-4 shrink-0 items-center justify-center rounded-[4px] border', isSelected ? 'border-transparent bg-[color:var(--files-primary)] text-[color:var(--files-on-primary)]' : 'border-[color:color-mix(in_srgb,var(--cp-text)_28%,transparent)] bg-[color:var(--cp-surface-opaque)]')}>{isSelected && <Check size={12} />}</span>
                   const common = {
                     type: 'button' as const, role: 'option', 'aria-selected': isSelected, 'aria-disabled': !usable, title: reason ?? (searching ? entry.path : undefined),
                     'data-testid': 'select-row', 'data-name': entry.name, 'data-kind': folder ? 'folder' : 'file',
@@ -363,29 +364,29 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
                     onDoubleClick: () => { if (mode === 'open' && !input.multiple && selectable(entry) && clicks.current[0] === item.key) finish({ action: 'selected', items: [zoneContent(entry)] }) },
                   }
                   if (grid) return <button key={item.key} {...common}
-                    className={clsx('relative flex min-w-0 flex-col gap-1 rounded-xl p-1 text-left text-xs', isSelected && 'bg-[color:color-mix(in_srgb,var(--cp-accent)_16%,transparent)] ring-2 ring-[color:var(--cp-accent)]', !usable && 'cursor-not-allowed opacity-45')}>
-                    <span className="flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]"><Thumb entry={entry} size={28} box={256} scope="all" /></span>
+                    className={clsx('relative flex min-w-0 flex-col gap-1.5 rounded-[10px] border border-transparent p-1.5 text-left text-[12px] transition-colors', isSelected ? 'border-[color:var(--files-selected-line)] bg-[color:var(--files-selected)]' : 'hover:bg-[color:var(--files-hover)]', !usable && 'cursor-not-allowed opacity-45')}>
+                    <span className="flex aspect-square w-full items-center justify-center overflow-hidden rounded-[6px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-2-opaque)]"><Thumb entry={entry} size={28} box={256} scope="all" /></span>
                     <span className="w-full truncate px-0.5">{entry.name}</span>
                     {check && <span className="absolute right-2 top-2">{check}</span>}
                   </button>
                   return <button key={item.key} {...common}
-                    className={clsx('flex min-h-11 w-full items-center gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-3 text-left text-sm',
-                      isSelected && 'bg-[color:color-mix(in_srgb,var(--cp-accent)_16%,transparent)]', !usable && 'cursor-not-allowed opacity-45', mode === 'save' && !folder && 'text-[color:var(--cp-muted)]')}>
+                    className={clsx('flex min-h-11 w-full items-center gap-3 border-b border-[color:var(--files-hairline)] px-3 text-left text-[14px] transition-colors',
+                      isSelected ? 'bg-[color:var(--files-selected)]' : 'hover:bg-[color:var(--files-hover)]', !usable && 'cursor-not-allowed opacity-45', mode === 'save' && !folder && 'text-[color:var(--cp-muted)]')}>
                     {check}
                     <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md"><Thumb entry={entry} size={18} box={256} scope="media" /></span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">{entry.name}</span>
-                      {searching && <span className="block truncate text-xs text-[color:var(--cp-muted)]">{entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'}</span>}
+                      {searching && <span className="block truncate text-[12px] text-[color:var(--cp-muted)]">{entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'}</span>}
                     </span>
-                    {!folder && entry.sizeBytes !== undefined && <span className="shrink-0 text-xs text-[color:var(--cp-muted)]">{formatBytes(entry.sizeBytes)}</span>}
-                    {folder && <ChevronRight size={15} aria-hidden="true" className="shrink-0 text-[color:var(--cp-muted)]" />}
+                    {!folder && entry.sizeBytes !== undefined && <span className="shrink-0 text-[12px] tabular-nums text-[color:var(--cp-muted)]">{formatBytes(entry.sizeBytes)}</span>}
+                    {folder && <ChevronRight size={16} aria-hidden="true" className="shrink-0 text-[color:var(--cp-muted)]" />}
                   </button>
                 })}
               </div>
-              {loading && <p className="p-4 text-sm text-[color:var(--cp-muted)]">{searching ? t('sysdlg.select.searching', 'Searching…') : t('sysdlg.select.loading', 'Loading…')}</p>}
-              {!loading && (searching ? search.state.status === 'success' : ready) && !rows.length && !more && <p className="p-4 text-sm text-[color:var(--cp-muted)]" data-testid="select-empty">
+              {loading && <p className="p-4 text-[13px] text-[color:var(--cp-muted)]">{searching ? t('sysdlg.select.searching', 'Searching…') : t('sysdlg.select.loading', 'Loading…')}</p>}
+              {!loading && (searching ? search.state.status === 'success' : ready) && !rows.length && !more && <p className="p-4 text-[13px] text-[color:var(--cp-muted)]" data-testid="select-empty">
                 {searching ? t('sysdlg.select.noMatches', 'No matching files') : mode === 'folder' ? t('sysdlg.select.emptyFolders', 'No folders here') : t('sysdlg.select.empty', 'Nothing here')}</p>}
-              {!loading && more && <button type="button" data-testid="select-load-more" className="min-h-11 w-full text-sm underline" onClick={loadMore}>{t('sysdlg.select.loadMore', 'Load more')}</button>}
+              {!loading && more && <button type="button" data-testid="select-load-more" className="min-h-11 w-full text-[13px] text-[color:var(--cp-muted)] transition-colors hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)]" onClick={loadMore}>{t('sysdlg.select.loadMore', 'Load more')}</button>}
             </>}
           </div>
         </div>
@@ -394,22 +395,22 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
       {mode !== 'open' && path !== null && ready && !writable && (mode === 'save' || input.writable) && <p role="alert" className="text-sm text-[color:var(--cp-danger)]" data-testid="select-readonly">{t('sysdlg.select.readOnly', 'You cannot save to this location. Choose another folder.')}</p>}
       {excluded && <p role="alert" className="text-sm text-[color:var(--cp-danger)]" data-testid="select-excluded">{t('sysdlg.select.excluded', 'This folder cannot be the destination')}</p>}
       {notice && <p role="alert" className="text-sm text-[color:var(--cp-danger)]" data-testid="select-notice">{notice}</p>}
-      {conflict && <div role="alertdialog" aria-label={t('sysdlg.select.replace', 'Replace')} className="flex flex-wrap items-center gap-2 rounded-xl border border-[color:var(--cp-border)] p-3 text-sm" data-testid="select-conflict">
+      {conflict && <div role="alertdialog" aria-label={t('sysdlg.select.replace', 'Replace')} className="flex flex-wrap items-center gap-2 rounded-[10px] border border-[color:var(--cp-border)] p-3 text-[14px]" data-testid="select-conflict">
         <p className="min-w-0 flex-1">{t('sysdlg.select.exists', '“{{name}}” already exists here. Replace it?', { name: conflict })}</p>
-        <button type="button" className={clsx(buttonClass, 'border border-[color:var(--cp-border)]')} onClick={() => setConflict(null)}>{t('sysdlg.select.keep', 'Keep editing')}</button>
-        <button type="button" autoFocus data-testid="select-replace" className={clsx(buttonClass, 'bg-[color:var(--cp-danger)] text-white')} onClick={() => void confirm(true)}>{t('sysdlg.select.replace', 'Replace')}</button>
+        <button type="button" className={buttonClass} onClick={() => setConflict(null)}>{t('sysdlg.select.keep', 'Keep editing')}</button>
+        <button type="button" autoFocus data-testid="select-replace" className={clsx(buttonClass, 'files-btn-danger')} onClick={() => void confirm(true)}>{t('sysdlg.select.replace', 'Replace')}</button>
       </div>}
 
       <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); void confirm() }}>
         {mode === 'save' && <input aria-label={t('sysdlg.select.fileName', 'File name')} data-testid="select-name" value={name} maxLength={255} enterKeyHint="done" autoComplete="off" spellCheck={false}
           aria-invalid={!!name && !nameCheck.success} onChange={(event) => { setName(event.target.value); setConflict(null); setNotice(null) }}
-          className="min-h-10 min-w-0 flex-[1_1_12rem] rounded-xl border border-[color:var(--cp-border)] bg-transparent px-3 text-sm" placeholder={t('sysdlg.select.fileName', 'File name')} />}
-        {mode === 'open' && <p className="min-w-0 flex-1 truncate text-sm text-[color:var(--cp-muted)]" data-testid="select-count">
+          className="files-input !min-h-10 !w-auto flex-[1_1_12rem] !rounded-[10px]" placeholder={t('sysdlg.select.fileName', 'File name')} />}
+        {mode === 'open' && <p className="min-w-0 flex-1 truncate text-[13px] tabular-nums text-[color:var(--cp-muted)]" data-testid="select-count">
           {full ? t('sysdlg.select.limitReached', 'You can choose up to {{limit}} items', { limit: input.limit }) : selected.size ? t('sysdlg.select.selectedCount', '{{count}} selected', { count: selected.size }) : ''}</p>}
         {mode === 'folder' && <span className="flex-1" />}
-        {localEntry && <button type="button" data-testid="select-local" onClick={openLocal} className={clsx(buttonClass, 'flex items-center gap-1.5 border border-[color:var(--cp-border)]')}>
-          <MonitorSmartphone size={15} aria-hidden="true" />{t(`sysdlg.select.fromDevice.${mode}`)}</button>}
-        <button type="submit" data-testid="select-confirm" disabled={!canConfirm || !!conflict} className={clsx(buttonClass, 'bg-[color:var(--cp-accent)] text-white')}>{confirmLabel}</button>
+        {localEntry && <button type="button" data-testid="select-local" onClick={openLocal} className={buttonClass}>
+          <MonitorSmartphone size={16} aria-hidden="true" />{t(`sysdlg.select.fromDevice.${mode}`)}</button>}
+        <button type="submit" data-testid="select-confirm" disabled={!canConfirm || !!conflict} className={clsx(buttonClass, 'files-btn-primary')}>{confirmLabel}</button>
       </form>
 
       <NamePromptDialog request={creating && path !== null ? { title: t('sysdlg.select.newFolder', 'New folder'), label: t('sysdlg.select.folderName', 'Folder name'), submitLabel: t('sysdlg.select.create', 'Create'), schema: entryNameSchema,

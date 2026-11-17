@@ -22,7 +22,7 @@ function PrincipalIcon({ principal }: { principal: string }) {
   return <User size={16} aria-hidden />
 }
 
-const selectClass = 'rounded border bg-[color:var(--cp-surface)] p-1.5 text-sm'
+const selectClass = 'h-8 rounded-[8px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] px-2 text-[13px]'
 
 /** Common ACL editor: built-in and inherited rows are read-only, the item's own rows are editable. */
 export function PermissionsDialog({ request, onClose }: { request: PermissionsRequest; onClose: () => void }) {
@@ -95,7 +95,7 @@ export function PermissionsDialog({ request, onClose }: { request: PermissionsRe
   return <Dialog open onClose={onClose} maxWidth="sm" fullWidth data-testid="permissions-dialog">
     <DialogTitle>{t('filebrowser.permissions.title', 'Permissions')} · {request.name}</DialogTitle>
     <DialogContent>
-      <p className="break-all font-mono text-xs text-[color:var(--cp-muted)]">{request.path}</p>
+      <p className="break-all font-mono text-[12px] text-[color:var(--cp-muted)]">{request.path}</p>
       {!source && <p className="mt-3">{t('filebrowser.permissions.unavailable', 'This location does not support permissions.')}</p>}
       {loading && source && <p className="mt-3 text-sm" data-testid="permissions-loading">{t('filebrowser.permissions.loading', 'Loading permissions…')}</p>}
       {acl && <p className="mt-2 text-sm" data-testid="permissions-own-access">
@@ -109,7 +109,7 @@ export function PermissionsDialog({ request, onClose }: { request: PermissionsRe
           label={t('filebrowser.permissions.inherit', 'Inherit permissions from the parent folder')}
         />
         {!draft.inherit && <p className="text-xs text-[color:var(--cp-muted)]">{t('filebrowser.permissions.inheritOff', 'Only the entries below apply here and in subfolders that inherit from this item.')}</p>}
-        <h3 className="mb-1 mt-3 text-sm font-semibold">{t('filebrowser.permissions.whoHasAccess', 'Who has access')}</h3>
+        <h3 className="mb-1 mt-4 text-[14px] font-medium">{t('filebrowser.permissions.whoHasAccess', 'Who has access')}</h3>
         <table className="w-full text-sm" data-testid="acl-table">
           <tbody>
             {acl.builtin.map((rule) => <tr key={`builtin-${rule.principal}-${rule.reason}`} className="border-t border-[color:var(--cp-border)]" data-testid={`acl-builtin-${rule.principal}`}>
@@ -164,7 +164,7 @@ export function PermissionsDialog({ request, onClose }: { request: PermissionsRe
           </select>
           <Button size="small" variant="outlined" disabled={!addingPrincipal} onClick={add} data-testid="acl-add">{t('filebrowser.permissions.add', 'Add')}</Button>
         </div>
-        {hasPublic && <p className="mt-3 rounded border border-[color:var(--cp-warning)] p-2 text-xs" data-testid="acl-public-warning">{t('filebrowser.permissions.publicWarning', 'Anyone can open this without signing in, including anyone who gets a link to it.')}</p>}
+        {hasPublic && <p className="mt-3 rounded-[8px] bg-[color:color-mix(in_srgb,var(--cp-warning)_14%,var(--cp-surface-opaque))] px-3 py-2 text-[12px] text-[color:color-mix(in_srgb,var(--cp-warning)_55%,var(--cp-text))]" data-testid="acl-public-warning">{t('filebrowser.permissions.publicWarning', 'Anyone can open this without signing in, including anyone who gets a link to it.')}</p>}
       </>}
       {error && <p className="mt-3 text-sm text-[color:var(--cp-danger)]" role="alert">{error}</p>}
     </DialogContent>

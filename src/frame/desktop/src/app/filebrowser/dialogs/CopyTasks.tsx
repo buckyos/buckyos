@@ -1,11 +1,12 @@
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle } from '@mui/material'
+import { ListTodo } from 'lucide-react'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import { folderOps, type BatchOptions, type OperationResult } from '../data/folderOps'
 import { operationFeedback } from '../data/operationFeedback'
 import { toUiError } from '../data/state'
 
-export function CopyTasks({ ownerId, reveal }: { ownerId?: string; reveal: (path: string) => void }) {
+export function CopyTasks({ ownerId, reveal, compact = false }: { ownerId?: string; reveal: (path: string) => void; compact?: boolean }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [tasks, setTasks] = useState<{ task_id: string; name: string; phase: string }[]>([])
@@ -38,7 +39,9 @@ export function CopyTasks({ ownerId, reveal }: { ownerId?: string; reveal: (path
   }
   if (!folderOps().listCopies) return null
   return <>
-    <button data-testid="copy-tasks" className="absolute bottom-1 right-3 z-20 rounded bg-[color:var(--cp-surface)] px-3 py-1 text-xs underline" onClick={() => { setOpen(true); void refresh() }}>{t('filebrowser.operation.copyTasks', 'Copy tasks')}</button>
+    {compact
+      ? <button type="button" data-testid="copy-tasks" aria-label={t('filebrowser.operation.copyTasks', 'Copy tasks')} title={t('filebrowser.operation.copyTasks', 'Copy tasks')} className="flex shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:var(--files-pressed)]" onClick={() => { setOpen(true); void refresh() }}><ListTodo size={20} /></button>
+      : <button type="button" data-testid="copy-tasks" className="inline-flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[12px] text-[color:var(--cp-muted)] hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)]" onClick={() => { setOpen(true); void refresh() }}><ListTodo size={14} />{t('filebrowser.operation.copyTasks', 'Copy tasks')}</button>}
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm" data-testid="copy-tasks-dialog">
       <DialogTitle>{t('filebrowser.operation.copyTasks', 'Copy tasks')}</DialogTitle>
       <DialogContent>

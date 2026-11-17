@@ -56,6 +56,7 @@ import { commandState } from './menu/commands'
 import { SELECT_DIALOG_PATH, SHARE_DIALOG_PATH, useSystemDialog } from '../../sysdlg'
 import type { SelectedContent } from 'buckyos/content'
 import { classifyFileKind } from './data/fileKinds'
+import '../../components/preview/files.css'
 import './filebrowser.css'
 import type { FileItem } from './data/FolderReader'
 import { fileBrowserDataMode, installFileBrowserData } from './data/install'
@@ -133,7 +134,7 @@ type FileBrowserProps = { windowId?: string; openRequest?: { requestId: string; 
 /** Files opens on "My files" — the signed-in user's own home — once it is known, so `/home` never flashes. */
 export function FileBrowserView(props: FileBrowserProps) {
   const home = useMyHome()
-  if (!home) return <div className="filebrowser flex h-full w-full items-center justify-center" style={{ background: 'var(--cp-bg)' }} data-testid="filebrowser-starting" aria-busy="true" />
+  if (!home) return <div className="filebrowser files-ui flex h-full w-full items-center justify-center" style={{ background: 'var(--cp-bg)' }} data-testid="filebrowser-starting" aria-busy="true" />
   return <FileBrowserWindow {...props} home={home} />
 }
 
@@ -1254,19 +1255,20 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     },
   })
   const dialogs = <>
-    {defaultApp && <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 p-4"><section role="dialog" aria-modal="true" aria-label={t('filebrowser.menu.chooseDefault', 'Choose default app…')} className="flex w-96 flex-col gap-4 rounded-xl bg-[color:var(--cp-surface)] p-5 shadow-xl">
-      <h2>{t('filebrowser.menu.chooseDefault', 'Choose default app…')}</h2>
-      {defaultApp.plans.map(plan => <label key={plan.handlerKey}><input type="radio" name="content-handler" checked={defaultApp.key === plan.handlerKey} onChange={() => setDefaultApp({ ...defaultApp, key: plan.handlerKey })} /> {handlerLabel(plan)}</label>)}
-      <label><input type="checkbox" checked={defaultApp.always} onChange={event => setDefaultApp({ ...defaultApp, always: event.target.checked })} /> {t('filebrowser.menu.alwaysUse', 'Always use this app for {{selector}}', { selector: defaultApp.selector })}</label>
-      <div className="flex justify-end gap-4"><button onClick={() => setDefaultApp(null)}>{t('common.cancel', 'Cancel')}</button><button onClick={() => { const choice = defaultApp; void (async () => { if (choice.always) await (await contentRegistry())?.setDefault('open', choice.selector, choice.key); setDefaultApp(null); await openContent(choice.request, { handlerKey: choice.key, name: choice.name, size: choice.size }) })().catch(error => showToast(String(error))) }}>{t('filebrowser.menu.open', 'Open')}</button></div>
+    {defaultApp && <div className="files-scrim absolute inset-0 z-50 flex items-center justify-center p-4"><section role="dialog" aria-modal="true" aria-label={t('filebrowser.menu.chooseDefault', 'Choose default app…')} className="flex w-[min(384px,100%)] flex-col gap-4 rounded-[12px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] p-5 shadow-[var(--cp-panel-shadow)]">
+      <h2 className="text-[16px] font-medium">{t('filebrowser.menu.chooseDefault', 'Choose default app…')}</h2>
+      <div className="flex flex-col gap-0.5">
+        {defaultApp.plans.map(plan => <label key={plan.handlerKey} className="fb-row flex h-9 cursor-pointer items-center gap-3 rounded-[8px] px-2 text-[14px]"><input type="radio" name="content-handler" checked={defaultApp.key === plan.handlerKey} onChange={() => setDefaultApp({ ...defaultApp, key: plan.handlerKey })} /> {handlerLabel(plan)}</label>)}
+      </div>
+      <label className="flex items-start gap-3 px-2 text-[13px] text-[color:var(--cp-muted)]"><input type="checkbox" className="mt-0.5" checked={defaultApp.always} onChange={event => setDefaultApp({ ...defaultApp, always: event.target.checked })} /> {t('filebrowser.menu.alwaysUse', 'Always use this app for {{selector}}', { selector: defaultApp.selector })}</label>
+      <div className="flex justify-end gap-2"><button type="button" className="files-btn" onClick={() => setDefaultApp(null)}>{t('common.cancel', 'Cancel')}</button><button type="button" className="files-btn files-btn-primary" onClick={() => { const choice = defaultApp; void (async () => { if (choice.always) await (await contentRegistry())?.setDefault('open', choice.selector, choice.key); setDefaultApp(null); await openContent(choice.request, { handlerKey: choice.key, name: choice.name, size: choice.size }) })().catch(error => showToast(String(error))) }}>{t('filebrowser.menu.open', 'Open')}</button></div>
     </section></div>}
 
     <DeleteDialog request={deleteRequest} onClose={() => setDeleteRequest(null)} />
     <ConflictDialog request={conflictRequest?.ownerId === windowId ? conflictRequest : null} />
-    <CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} />
     {permissionsRequest && <PermissionsDialog key={permissionsRequest.path} request={permissionsRequest} onClose={() => setPermissionsRequest(null)} />}
     <BatchResults task={batchTask?.ownerId === windowId ? batchTask : null} onClose={() => setBatchTask(null)} />
-    {dragTarget && <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-[color:var(--cp-accent)] bg-[color:var(--cp-surface)]/90 p-6">{t('filebrowser.operation.dropDestination', 'Drop into {{path}}', { path: displayPath(dragTarget) })}</div>}
+    {dragTarget && <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-[12px] border-2 border-dashed border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_90%,transparent)] p-6 text-[14px] font-medium">{t('filebrowser.operation.dropDestination', 'Drop into {{path}}', { path: displayPath(dragTarget) })}</div>}
   </>
 
   const sidebarProps = (pane: BrowserPane) => ({
@@ -1305,9 +1307,9 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     onSortChange: (key: SortKey, dir: SortDir) => { pane.setSortKey(key); pane.setSortDir(dir) },
   })
   const selectionProgress = (pane: BrowserPane) => <>
-    {pane.enumerating && <div role="status" className="flex items-center gap-2 px-3 py-1 text-xs">{t('filebrowser.operation.enumerating', 'Loading the full selection / locating file…')}<button className="min-h-8 underline" onClick={pane.cancelEnumeration}>{t('common.cancel', 'Cancel')}</button></div>}
-    {pane.selectionNotice && <p role="status" className="px-3 text-xs">{t('filebrowser.operation.loadedRange', 'Range selection includes loaded rows only. Use Select all for the full folder.')}</p>}
-    {pane.selectionError && <p role="alert" className="px-3 text-xs">{pane.selectionError}</p>}
+    {pane.enumerating && <div role="status" className="flex items-center gap-2 border-b border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-4 py-1 text-[12px] text-[color:var(--cp-muted)]">{t('filebrowser.operation.enumerating', 'Loading the full selection / locating file…')}<button type="button" className="files-btn files-btn-ghost !min-h-7 !px-2" onClick={pane.cancelEnumeration}>{t('common.cancel', 'Cancel')}</button></div>}
+    {pane.selectionNotice && <p role="status" className="border-b border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-4 py-2 text-[12px] text-[color:var(--cp-muted)]">{t('filebrowser.operation.loadedRange', 'Range selection includes loaded rows only. Use Select all for the full folder.')}</p>}
+    {pane.selectionError && <p role="alert" className="border-b border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-4 py-2 text-[12px] text-[color:var(--cp-danger)]">{pane.selectionError}</p>}
   </>
 
   // ─── Mobile layout ───
@@ -1315,21 +1317,18 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     const crumbs = crumbsForUrl(left.currentUrl, left.list.meta?.title, hostInfo?.label)
 
     return (
-      <div ref={rootRef} data-testid="filebrowser" tabIndex={-1} onKeyDown={handleKeyDown} {...dropProps(left)} className="filebrowser fb-mobile relative flex h-full w-full flex-col overflow-hidden" style={{ background: 'var(--cp-bg)' }}>
+      <div ref={rootRef} data-testid="filebrowser" tabIndex={-1} onKeyDown={handleKeyDown} {...dropProps(left)} className="filebrowser files-ui fb-mobile relative flex h-full w-full flex-col overflow-hidden" style={{ background: 'var(--cp-surface-opaque)' }}>
         {/* Operations bar: drawer toggle + search + menu — or the selection bar */}
         {mobileSelectMode ? (
-          <div className="flex items-center gap-1 px-3 pt-2 pb-1">
+          <div className="flex items-center gap-1 px-2 pt-2 pb-1">
             <IconButton
               size="small"
               onClick={exitMobileSelectMode}
               aria-label={t('filebrowser.mobile.exitSelect', 'Exit selection')}
             >
-              <X size={18} />
+              <X size={20} />
             </IconButton>
-            <span
-              className="min-w-0 flex-1 truncate text-[15px] font-semibold"
-              style={{ color: 'var(--cp-text)' }}
-            >
+            <span className="min-w-0 flex-1 truncate text-[16px] font-medium tabular-nums text-[color:var(--cp-text)]">
               {t('filebrowser.mobile.selectedCount', '{{count}} selected', {
                 count: left.selectedKeys.size,
               })}
@@ -1339,7 +1338,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
               onClick={left.selectAll}
               aria-label={t('filebrowser.menu.selectAll', 'Select all')}
             >
-              <ListChecks size={18} />
+              <ListChecks size={20} />
             </IconButton>
             {left.list.capabilities.removal !== null ? (
               <IconButton
@@ -1351,7 +1350,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
                     : t('filebrowser.actions.delete', 'Delete')
                 }
               >
-                <Trash2 size={18} />
+                <Trash2 size={20} />
               </IconButton>
             ) : null}
             <IconButton
@@ -1359,34 +1358,27 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
               onClick={() => openMobileMenu([...left.selectedItemsMap.values()])}
               aria-label={t('filebrowser.mobile.moreActions', 'More actions')}
             >
-              <MoreVertical size={18} />
+              <MoreVertical size={20} />
             </IconButton>
           </div>
         ) : (
-          <div className="flex items-center gap-2 px-3 pt-2 pb-1">
+          <div className="flex items-center gap-1 px-2 pt-2 pb-1">
             <IconButton
               size="small"
               onClick={() => setMobileSidebarOpen((v) => !v)}
               aria-label={t('filebrowser.mobile.places', 'Places')}
-              className={clsx(
-                mobileSidebarOpen &&
-                  '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
-              )}
+              className={clsx(mobileSidebarOpen && '!bg-[color:var(--files-pressed)]')}
             >
-              <MenuIcon size={16} />
+              <MenuIcon size={20} />
             </IconButton>
-            <div className="relative flex min-w-0 flex-1 items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] px-2 py-1">
-              <Search size={14} className="ml-1 shrink-0 text-[color:var(--cp-muted)]" />
+            <div className="relative flex h-10 min-w-0 flex-1 items-center gap-2 rounded-[10px] bg-[color:var(--cp-surface-2-opaque)] pl-3 pr-1">
+              <Search size={18} className="shrink-0 text-[color:var(--cp-muted)]" />
               <input
                 type="text"
                 value={left.searchQuery}
                 onChange={(event) => left.setSearchQuery(event.target.value)}
-                placeholder={t(
-                  'filebrowser.topbar.searchPlaceholder',
-                  'Search across files, folders, AI summaries…',
-                )}
-                className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-[color:var(--cp-muted)]"
-                style={{ color: 'var(--cp-text)' }}
+                placeholder={t('filebrowser.topbar.searchPlaceholder', 'Search files')}
+                className="min-w-0 flex-1 bg-transparent text-[16px] text-[color:var(--cp-text)] outline-none placeholder:text-[color:var(--cp-muted)] focus-visible:!outline-none"
               />
               {left.searchQuery ? (
                 <IconButton
@@ -1394,7 +1386,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
                   onClick={() => left.setSearchQuery('')}
                   aria-label={t('common.close', 'Close')}
                 >
-                  <X size={12} />
+                  <X size={16} />
                 </IconButton>
               ) : null}
             </div>
@@ -1403,12 +1395,12 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
               onClick={() => openMobileMenu([])}
               aria-label={t('filebrowser.mobile.moreActions', 'More actions')}
             >
-              <MoreVertical size={18} />
+              <MoreVertical size={20} />
             </IconButton>
           </div>
         )}
 
-        {mobileSelectMode && <div className="flex flex-wrap gap-1 px-3 text-xs">{[
+        {mobileSelectMode && <div className="flex gap-2 overflow-x-auto px-3 pb-2">{[
           { command: 'download', label: t('filebrowser.menu.download', 'Download') },
           { command: 'copy', label: t('filebrowser.menu.copyFiles', 'Copy files') },
           { command: 'paste', label: t('filebrowser.menu.paste', 'Paste') },
@@ -1416,36 +1408,37 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
           { command: 'copy-other', label: t('filebrowser.menu.copyOther', 'Copy to other pane') },
           { command: 'move-to', label: t('filebrowser.actions.moveTo', 'Move to') },
           { command: 'copy-references', label: t('filebrowser.menu.copyReferences', 'Copy references for a collection') },
-        ].map(({ command, label }) => <button key={command} className="rounded-lg border border-[color:var(--cp-border)] px-2 disabled:opacity-40" disabled={commandState(command, contextFor(left, leftSelectedItems)).state !== 'available'} onClick={() => runMenuAction(left, contextFor(left, leftSelectedItems), { type: 'action', id: command, command, label: { key: '', fallback: label } })}>{label}</button>)}</div>}
+        ].map(({ command, label }) => <button type="button" key={command} className="files-btn !rounded-[10px]" disabled={commandState(command, contextFor(left, leftSelectedItems)).state !== 'available'} onClick={() => runMenuAction(left, contextFor(left, leftSelectedItems), { type: 'action', id: command, command, label: { key: '', fallback: label } })}>{label}</button>)}</div>}
         {selectionProgress(left)}
         {/* Address bar: path crumbs + refresh on the right */}
-        <div className="flex items-center gap-2 px-3 pb-2 pt-1">
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-[13px] text-[color:var(--cp-muted)]">
+        <div className="flex items-center border-b border-[color:var(--files-hairline)] px-2">
+          <div className="flex min-w-0 flex-1 items-center overflow-x-auto text-[14px] text-[color:var(--cp-muted)]">
             {crumbs.map((crumb, idx) => (
-              <div key={crumb.url} className="flex shrink-0 items-center gap-1">
+              <div key={crumb.url} className="flex shrink-0 items-center">
                 <button
                   type="button"
                   className={clsx(
-                    'truncate rounded-md px-1.5 py-1',
-                    idx === crumbs.length - 1 && 'font-semibold text-[color:var(--cp-text)]',
+                    '!min-w-0 truncate rounded-[8px] px-2',
+                    idx === crumbs.length - 1 && 'font-medium text-[color:var(--cp-text)]',
                   )}
                   onClick={() => left.navigate(crumb.url)}
                 >
                   {crumb.label}
                 </button>
                 {idx < crumbs.length - 1 ? (
-                  <ChevronRight size={13} className="opacity-60" />
+                  <ChevronRight size={16} className="shrink-0 opacity-70" />
                 ) : null}
               </div>
             ))}
           </div>
+          <CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} compact />
           <button
             type="button"
             onClick={() => left.list.reload()}
             aria-label={t('filebrowser.topbar.refresh', 'Refresh')}
-            className="shrink-0 p-1 text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]"
+            className="flex shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:var(--files-pressed)]"
           >
-            <RefreshCw size={16} />
+            <RefreshCw size={20} />
           </button>
         </div>
 
@@ -1483,10 +1476,9 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
             type="button"
             onClick={() => left.list.capabilities.acceptsReferences ? requestExisting(left) : setMobileUploadOpen(true)}
             aria-label={left.list.capabilities.acceptsReferences ? t('filebrowser.operation.addExisting', 'Add existing files') : t('filebrowser.actions.upload', 'Upload')}
-            className="absolute bottom-5 right-5 z-20 flex h-14 w-14 items-center justify-center rounded-full text-white shadow-[0_10px_28px_rgba(0,0,0,0.22)] transition active:scale-95"
-            style={{ background: 'var(--cp-accent)' }}
+            className="absolute bottom-5 right-4 z-20 flex h-14 w-14 items-center justify-center rounded-[16px] bg-[color:var(--files-primary)] text-[color:var(--files-on-primary)] shadow-[var(--files-float-shadow)] transition-transform active:scale-95"
           >
-            <Plus size={26} />
+            <Plus size={24} />
           </button>
         ) : null}
 
@@ -1494,18 +1486,15 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         {mobileUploadOpen ? (
           <div className="absolute inset-0 z-40 flex items-end">
             <div
-              className="absolute inset-0 bg-black/50"
+              className="files-scrim absolute inset-0"
               onClick={() => setMobileUploadOpen(false)}
             />
-            <div
-              className="relative w-full rounded-t-[28px] border-t border-[color:var(--cp-border)] pb-5 pt-2"
-              style={{ background: 'var(--cp-surface)' }}
-            >
-              <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-[color:var(--cp-border)]" />
-              <div className="px-5 pb-1 text-[13px] font-semibold text-[color:var(--cp-text)]">
+            <div className="files-sheet relative w-full pb-6 pt-2">
+              <div className="files-sheet-grip mb-3" />
+              <div className="px-5 pb-1 text-[16px] font-medium text-[color:var(--cp-text)]">
                 {t('filebrowser.upload.title', 'Add to this folder')}
               </div>
-              <div className="grid grid-cols-3 gap-1 px-3 py-3">
+              <div className="grid grid-cols-3 gap-2 px-3 py-3">
                 {[
                   {
                     key: 'files',
@@ -1534,18 +1523,12 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
                         requestNewFolder(left)
                       }
                     }}
-                    className="flex flex-col items-center gap-1.5 rounded-[16px] p-2 text-[11px] text-[color:var(--cp-text)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
+                    className="flex flex-col items-center gap-2 rounded-[12px] p-2 text-[13px] text-[color:var(--cp-text)] active:bg-[color:var(--files-pressed)]"
                   >
-                    <div
-                      className="flex h-12 w-12 items-center justify-center rounded-full text-[color:var(--cp-accent)]"
-                      style={{
-                        background:
-                          'color-mix(in srgb, var(--cp-accent-soft) 32%, var(--cp-surface))',
-                      }}
-                    >
+                    <div className="flex h-12 w-12 items-center justify-center rounded-[12px] bg-[color:var(--cp-surface-2-opaque)] text-[color:var(--cp-text)]">
                       {action.icon}
                     </div>
-                    <span className="text-center leading-tight">{action.label}</span>
+                    <span className="text-center leading-4">{action.label}</span>
                   </button>
                 ))}
               </div>
@@ -1557,13 +1540,10 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         {mobileSidebarOpen ? (
           <div className="absolute inset-0 z-40 flex">
             <div
-              className="absolute inset-0 bg-black/50"
+              className="files-scrim absolute inset-0"
               onClick={() => setMobileSidebarOpen(false)}
             />
-            <div
-              className="relative flex h-full w-2/3 flex-col gap-3 border-r border-[color:var(--cp-border)] p-3"
-              style={{ background: 'var(--cp-surface)' }}
-            >
+            <div className="relative flex h-full w-[min(320px,80%)] flex-col gap-3 border-r border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-2 py-3">
               <Sidebar
                 {...sidebarProps(left)}
                 activeUrl={left.currentUrl}
@@ -1579,23 +1559,22 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         {mobilePreviewOpen && leftSelectedItem ? (
           <div className="absolute inset-0 z-30 flex items-end">
             <div
-              className="absolute inset-0 bg-black/40"
+              className="files-scrim absolute inset-0"
               onClick={() => setMobilePreviewOpen(false)}
             />
-            <div
-              className="relative flex h-2/3 w-full flex-col rounded-t-[28px] border-t border-[color:var(--cp-border)]"
-              style={{ background: 'var(--cp-surface)' }}
-            >
-              <div className="flex items-center justify-between px-4 py-2">
-                <span className="shell-kicker">
-                  {t('filebrowser.mobile.preview', 'Preview')}
+            <div className="files-sheet relative flex h-2/3 w-full flex-col pt-2">
+              <div className="files-sheet-grip" />
+              <div className="flex items-center justify-between pl-5 pr-2">
+                <span className="text-[16px] font-medium text-[color:var(--cp-text)]">
+                  {t('filebrowser.mobile.preview', 'Details')}
                 </span>
                 <button
                   type="button"
                   onClick={() => setMobilePreviewOpen(false)}
-                  className="rounded-full border border-[color:var(--cp-border)] px-2.5 py-1 text-xs"
+                  aria-label={t('common.close', 'Close')}
+                  className="flex items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:var(--files-pressed)]"
                 >
-                  {t('common.close', 'Close')}
+                  <X size={20} />
                 </button>
               </div>
               <div className="flex-1 overflow-hidden">
@@ -1632,7 +1611,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         <NamePromptDialog request={namePrompt} onClose={() => setNamePrompt(null)} />
 
         {toast ? (
-          <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-3 py-1.5 text-xs text-white">
+          <div className="files-toast pointer-events-none absolute bottom-24 left-1/2 max-w-[calc(100%-32px)] -translate-x-1/2">
             {toast}
           </div>
         ) : null}
@@ -1649,13 +1628,13 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       data-testid="filebrowser"
       tabIndex={-1}
       onKeyDown={handleKeyDown}
-      className="filebrowser relative flex h-full w-full overflow-hidden"
+      className={clsx('filebrowser files-ui relative flex h-full w-full overflow-hidden', splitActive && 'fb-split')}
       style={{ background: 'var(--cp-bg)' }}
     >
       {((!navCollapsed && (!splitActive || width >= 1300)) || navOverlayOpen) && <aside
-        style={{ width: navWidth, resize: 'horizontal', minWidth: 180, maxWidth: 300, ...(navOverlayOpen && splitActive && width < 1300 ? { position: 'absolute' as const, top: 128, bottom: 0, left: 0, zIndex: 25, background: 'var(--cp-surface)' } : {}) }}
+        style={{ width: navWidth, resize: 'horizontal', minWidth: 180, maxWidth: 300, ...(navOverlayOpen && splitActive && width < 1300 ? { position: 'absolute' as const, top: 129, bottom: 0, left: 0, zIndex: 25, background: 'var(--cp-bg)', boxShadow: 'var(--files-float-shadow)' } : {}) }}
         onPointerUp={(event) => { const value = event.currentTarget.getBoundingClientRect().width; setNavWidth(value); localStorage.setItem('files.navWidth', String(value)) }}
-        className="flex shrink-0 flex-col overflow-hidden border-r border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_82%,transparent)] px-2 pt-2"
+        className="flex shrink-0 flex-col overflow-hidden border-r border-[color:var(--files-hairline)] px-2 pt-2"
       >
         <Sidebar
           {...sidebarProps(focusedPane)}
@@ -1668,7 +1647,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         data-pane="left" data-list-status={left.list.status} data-location={left.currentUrl}
         data-active={!focusedIsRight}
         {...dropProps(left)}
-        className="fb-pane flex min-w-0 flex-1 flex-col"
+        className="fb-pane flex min-w-0 flex-1 flex-col bg-[color:var(--cp-surface-opaque)]"
         onMouseDownCapture={() => setFocusedSide('left')}
       >
         <TopBar
@@ -1740,6 +1719,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
               ? () => setPreviewCollapsed(false)
               : undefined
           }
+          trailing={<CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} />}
         />
       </main>
 
@@ -1748,7 +1728,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
           data-pane="right" data-list-status={right.list.status} data-location={right.currentUrl}
           data-active={focusedIsRight}
           {...dropProps(right)}
-          className="fb-pane flex min-w-0 flex-1 flex-col border-l border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)]"
+          className="fb-pane flex min-w-0 flex-1 flex-col border-l border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)]"
           onMouseDownCapture={() => setFocusedSide('right')}
         >
           <TopBar
@@ -1820,18 +1800,19 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       ) : null}
 
       {!previewCollapsed ? (
-        <aside className={clsx("flex w-[320px] max-w-full shrink-0 flex-col overflow-hidden border-l border-[color:var(--cp-border)] bg-[color:var(--cp-surface)]", (width < 1300 || splitActive) && "absolute bottom-0 top-[128px] right-0 z-20 shadow-xl")}>
-          <div className="flex items-center justify-between border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-4 py-2">
-            <span className="shell-kicker">
-              {t('filebrowser.preview.title', 'Preview & Meta')}
+        <aside className={clsx("flex w-[320px] max-w-full shrink-0 flex-col overflow-hidden border-l border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)]", (width < 1300 || splitActive) && "absolute bottom-0 top-[129px] right-0 z-20 shadow-[var(--files-float-shadow)]")}>
+          <div className="flex h-10 shrink-0 items-center justify-between border-b border-[color:var(--files-hairline)] pl-4 pr-2">
+            <span className="files-label">
+              {t('filebrowser.preview.title', 'Details')}
             </span>
-            <IconButton
-              size="small"
+            <button
+              type="button"
+              className="files-icon-btn"
               onClick={() => setPreviewCollapsed(true)}
               aria-label={t('filebrowser.preview.collapse', 'Collapse sidebar')}
             >
-              <PanelRightClose size={14} />
-            </IconButton>
+              <PanelRightClose size={16} />
+            </button>
           </div>
           <div className="flex-1 overflow-hidden">
             <PreviewPanel
@@ -1869,7 +1850,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         </div>
       ) : null}
       {toast ? (
-        <div className="pointer-events-none absolute bottom-8 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-3 py-1.5 text-xs text-white">
+        <div className="files-toast pointer-events-none absolute bottom-12 left-1/2 max-w-[calc(100%-32px)] -translate-x-1/2">
           {toast}
         </div>
       ) : null}

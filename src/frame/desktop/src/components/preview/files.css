@@ -1,0 +1,158 @@
+/* Files, Preview and the file picker share one quiet chrome over the Desktop theme: neutral hover and hairlines,
+   the accent only for selection and the primary action, colour only in the files themselves. A derived variable is
+   computed where it is declared, so the set is declared again under a subtree that has its own theme. */
+
+.files-ui, .files-ui .cp-theme-light, .files-ui .cp-theme-dark {
+  --files-hover: color-mix(in srgb, var(--cp-text) 5%, transparent);
+  --files-pressed: color-mix(in srgb, var(--cp-text) 9%, transparent);
+  --files-selected: color-mix(in srgb, var(--cp-accent-soft) 26%, var(--cp-surface-opaque));
+  --files-selected-line: color-mix(in srgb, var(--cp-accent) 30%, transparent);
+  --files-hairline: color-mix(in srgb, var(--cp-text) 9%, transparent);
+  --files-primary: var(--cp-accent);
+  --files-primary-hover: color-mix(in oklab, var(--cp-accent) 88%, #000);
+  --files-on-primary: #fff;
+  --files-danger: color-mix(in oklab, var(--cp-danger) 80%, #000);
+  --files-on-danger: #fff;
+  --files-link: color-mix(in oklab, var(--cp-accent) 88%, var(--cp-text));
+  --files-warning-ink: color-mix(in srgb, var(--cp-warning) 55%, var(--cp-text));
+  --files-float-shadow: 0 1px 2px color-mix(in srgb, var(--cp-shadow) 10%, transparent), 0 6px 20px color-mix(in srgb, var(--cp-shadow) 12%, transparent);
+  --files-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Noto Sans Mono CJK SC', monospace;
+  /* File type glyphs: colour says the type, never a status. */
+  --files-type-blue: var(--cp-app-blue);
+  --files-type-green: var(--cp-app-green);
+  --files-type-amber: var(--cp-app-amber);
+  --files-type-red: var(--cp-app-red);
+  --files-type-violet: var(--cp-app-violet);
+  --files-type-slate: var(--cp-app-slate);
+  accent-color: var(--cp-accent);
+}
+
+:root[data-theme='dark'] .files-ui, .cp-theme-dark .files-ui, .cp-theme-dark.files-ui, .files-ui .cp-theme-dark {
+  --files-primary: var(--cp-text);
+  --files-primary-hover: #fff;
+  --files-on-primary: var(--cp-bg);
+  --files-danger: var(--cp-danger);
+  --files-on-danger: var(--cp-bg);
+  --files-link: var(--cp-accent);
+  --files-type-blue: oklch(0.72 0.12 265);
+  --files-type-green: oklch(0.75 0.11 162);
+  --files-type-amber: oklch(0.79 0.11 65);
+  --files-type-red: oklch(0.72 0.13 27);
+  --files-type-violet: oklch(0.73 0.11 292);
+  --files-type-slate: oklch(0.72 0.02 260);
+}
+
+.files-label {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--cp-muted);
+}
+
+.files-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--files-hairline);
+  border-radius: 8px;
+  background: var(--cp-surface-opaque);
+  color: var(--cp-text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  transition: background-color 120ms var(--cp-ease-smooth), border-color 120ms var(--cp-ease-smooth), color 120ms var(--cp-ease-smooth), transform 120ms var(--cp-ease-smooth);
+}
+.files-btn:hover { background: color-mix(in srgb, var(--cp-text) 4%, var(--cp-surface-opaque)); border-color: color-mix(in srgb, var(--cp-text) 18%, transparent); }
+.files-btn:active { transform: scale(0.98); }
+.files-btn:disabled { opacity: 0.45; pointer-events: none; }
+.files-btn:focus-visible, .files-icon-btn:focus-visible { outline: 2px solid var(--cp-focus-ring); outline-offset: 1px; }
+.files-btn-lg { min-height: 40px; padding: 0 16px; border-radius: 10px; font-size: 14px; }
+.files-btn-primary { border-color: transparent; background: var(--files-primary); color: var(--files-on-primary); }
+.files-btn-primary:hover { border-color: transparent; background: var(--files-primary-hover); }
+.files-btn-danger { border-color: transparent; background: var(--files-danger); color: var(--files-on-danger); }
+.files-btn-danger:hover { border-color: transparent; background: color-mix(in oklab, var(--files-danger) 90%, #000); }
+.files-btn-ghost { border-color: transparent; background: transparent; color: var(--cp-muted); }
+.files-btn-ghost:hover { border-color: transparent; background: var(--files-hover); color: var(--cp-text); }
+
+.files-icon-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 6px;
+  border-radius: 8px;
+  color: var(--cp-muted);
+  transition: background-color 120ms var(--cp-ease-smooth), color 120ms var(--cp-ease-smooth);
+}
+.files-icon-btn:hover { background: var(--files-hover); color: var(--cp-text); }
+.files-icon-btn:disabled { opacity: 0.4; pointer-events: none; }
+.files-icon-btn[aria-pressed='true'], .files-icon-btn[aria-expanded='true'], .files-icon-btn.is-active { background: var(--files-pressed); color: var(--cp-text); }
+
+.files-input {
+  min-height: 36px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--cp-border);
+  border-radius: 8px;
+  background: var(--cp-surface-opaque);
+  color: var(--cp-text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 120ms var(--cp-ease-smooth);
+}
+.files-input::placeholder { color: var(--cp-muted); }
+.files-input:focus { border-color: var(--cp-accent); }
+
+.files-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--files-hover);
+  color: var(--cp-muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* The signature: a 6px dot for "the AI pipeline is working on this file". */
+.files-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--cp-accent);
+}
+
+.files-toast {
+  border-radius: 8px;
+  background: var(--cp-text);
+  color: var(--cp-bg);
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 16px;
+  box-shadow: var(--files-float-shadow);
+}
+
+.files-sheet {
+  border-top: 1px solid var(--files-hairline);
+  border-radius: 16px 16px 0 0;
+  background: var(--cp-surface-opaque);
+}
+.files-sheet-grip {
+  width: 36px;
+  height: 4px;
+  margin: 0 auto;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cp-text) 18%, transparent);
+}
+.files-scrim { background: color-mix(in srgb, #000 40%, transparent); }

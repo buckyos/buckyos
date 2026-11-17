@@ -93,12 +93,12 @@ function EmbeddedPreview({ init }: { init: PreviewEmbedInit }) {
           data-testid="preview-embed-share"
           onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setSharing(null) } }}
         >
-          <div role="dialog" aria-modal="true" aria-label={t('share.dialog.title', 'Share')} className="max-h-full w-full max-w-md overflow-auto rounded-[20px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] p-4 shadow-[var(--cp-panel-shadow)]">
+          <div role="dialog" aria-modal="true" aria-label={t('share.dialog.title', 'Share')} className="files-ui max-h-full w-full max-w-md overflow-auto rounded-[12px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] p-4 shadow-[var(--cp-panel-shadow)]">
             <Suspense fallback={null}>
               <ShareDialog params={sharing} shell={false} onDone={() => setSharing(null)} />
             </Suspense>
             <div className="mt-3 flex justify-end">
-              <button type="button" className="rounded-xl border border-[color:var(--cp-border)] px-4 py-2 text-sm" onClick={() => setSharing(null)} data-testid="preview-embed-share-close">
+              <button type="button" className="files-btn" onClick={() => setSharing(null)} data-testid="preview-embed-share-close">
                 {t('common.close', 'Close')}
               </button>
             </div>
@@ -106,7 +106,7 @@ function EmbeddedPreview({ init }: { init: PreviewEmbedInit }) {
         </div>
       ) : null}
       {notice ? (
-        <div role="status" className="pointer-events-none fixed bottom-4 left-1/2 z-[2000] max-w-[90%] -translate-x-1/2 rounded-full bg-[color:var(--cp-surface-opaque)] px-4 py-2 text-[12px] shadow" data-testid="preview-embed-notice">
+        <div role="status" className="files-ui files-toast pointer-events-none fixed bottom-4 left-1/2 z-[2000] max-w-[90%] -translate-x-1/2" data-testid="preview-embed-notice">
           {notice}
         </div>
       ) : null}

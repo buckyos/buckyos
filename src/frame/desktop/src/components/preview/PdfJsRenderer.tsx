@@ -216,7 +216,7 @@ export function PdfJsRenderer({
         </div>
       </div>
       <form
-        className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_92%,transparent)] px-3 py-1 text-[12px] tabular-nums text-[color:var(--cp-text)] shadow"
+        className="absolute bottom-3 left-1/2 z-10 flex h-8 -translate-x-1/2 items-center gap-1 rounded-[8px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-3 text-[13px] tabular-nums text-[color:var(--cp-text)] shadow-[var(--files-float-shadow)]"
         onSubmit={(event) => {
           event.preventDefault()
           goToPage(pageDraft ?? '')

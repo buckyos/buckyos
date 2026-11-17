@@ -313,8 +313,8 @@ function SudoPasswordForm({
 
   return (
     <form className="space-y-4" onSubmit={(event) => void handleSubmit(event)}>
-      <div className="rounded-[18px] border border-[color:color-mix(in_srgb,var(--cp-border)_76%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_54%,var(--cp-surface))] px-4 py-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[color:var(--cp-muted)]">
+      <div className="rounded-[12px] border border-[color:color-mix(in_srgb,var(--cp-border)_76%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_54%,var(--cp-surface))] px-4 py-3">
+        <p className="text-[12px] font-medium leading-4 text-[color:var(--cp-muted)]">
           {t('sudo.account', 'Account')}
         </p>
         <p className="mt-1 break-all text-sm font-medium text-[color:var(--cp-text)]">

@@ -1,4 +1,4 @@
-import { Copy, CornerUpRight, Link2, PanelRightOpen, Wand2 } from 'lucide-react'
+import { Copy, CornerUpRight, Link2, PanelRightOpen } from 'lucide-react'
 import { Tooltip } from '@mui/material'
 import { useI18n } from '../../i18n/provider'
 import { formatBytes } from './fileDisplay'
@@ -18,6 +18,8 @@ interface StatusBarProps {
   onCopy: (text: string) => void
   /** When set, shows an expand-sidebar button at the right edge (collapsed sidebar state). */
   onExpandSidebar?: () => void
+  /** Quiet extras at the right edge (the copy-task list). */
+  trailing?: React.ReactNode
 }
 
 export function StatusBar({
@@ -28,6 +30,7 @@ export function StatusBar({
   selectedItems,
   onCopy,
   onExpandSidebar,
+  trailing,
 }: StatusBarProps) {
   const { t } = useI18n()
 
@@ -47,8 +50,8 @@ export function StatusBar({
     : null
 
   return (
-    <div className="flex min-w-0 items-center gap-2 overflow-hidden border-t border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_90%,transparent)] px-3 py-1.5 text-[11px] text-[color:var(--cp-muted)]">
-      <span>
+    <div className="flex h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] pl-4 pr-2 text-[12px] tabular-nums text-[color:var(--cp-muted)]">
+      <span className="shrink-0">
         {totalCount !== undefined
           ? t('filebrowser.status.items', '{{count}} items', { count: totalCount })
           : loadedCount
@@ -62,7 +65,7 @@ export function StatusBar({
       {multiSelection ? (
         <>
           <span className="opacity-60">·</span>
-          <span className="font-semibold text-[color:var(--cp-text)]">
+          <span className="shrink-0 font-medium text-[color:var(--cp-text)]">
             {totalCount !== undefined && multiSelection.length < totalCount
               ? t('filebrowser.status.selectedOf', 'selected {{count}} of {{total}}', {
                   count: multiSelection.length,
@@ -75,7 +78,7 @@ export function StatusBar({
           {multiSelection.length > 0 ? (
             <>
               <span className="opacity-60">·</span>
-              <span className="shrink-0">{formatBytes(multiBytes)} · {t('filebrowser.meta.knownSize', 'Known size ({{count}}/{{total}} items)', { count: multiSelection.filter((item) => item.entry.sizeBytes !== undefined).length, total: multiSelection.length })}</span>
+              <span className="min-w-0 truncate">{formatBytes(multiBytes)} · {t('filebrowser.meta.knownSize', 'Known size ({{count}}/{{total}} items)', { count: multiSelection.filter((item) => item.entry.sizeBytes !== undefined).length, total: multiSelection.length })}</span>
             </>
           ) : null}
         </>
@@ -86,15 +89,14 @@ export function StatusBar({
             {t('filebrowser.status.selected', 'Selected')}: {entry.name}
           </span>
           <span className="opacity-60">·</span>
-          <span>{entry.kind === 'folder' ? '—' : formatBytes(entry.sizeBytes)}</span>
-          <span className="opacity-60">·</span>
+          <span className="shrink-0">{entry.kind === 'folder' ? '—' : formatBytes(entry.sizeBytes)}</span>
           <Tooltip title={t('filebrowser.topbar.copyPath', 'Copy path')}>
             <button
               type="button"
               onClick={() => onCopy(copyPathText(entry.path))}
-              className="hidden min-w-0 max-w-48 truncate items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-2 py-0.5 font-mono text-[10px] hover:border-[color:var(--cp-accent)] hover:text-[color:var(--cp-accent)]"
+              className="hidden"
             >
-              <Copy size={10} /> {displayPath(entry.path)}
+              <Copy size={14} /> {displayPath(entry.path)}
             </button>
           </Tooltip>
           {originalHint ? (
@@ -102,9 +104,9 @@ export function StatusBar({
               <button
                 type="button"
                 onClick={() => onCopy(copyPathText(originalHint))}
-                className="hidden min-w-0 max-w-48 truncate items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-2 py-0.5 font-mono text-[10px] hover:border-[color:var(--cp-accent)] hover:text-[color:var(--cp-accent)]"
+                className="hidden"
               >
-                <CornerUpRight size={10} /> {originalHint}
+                <CornerUpRight size={14} /> {originalHint}
               </button>
             </Tooltip>
           ) : null}
@@ -115,9 +117,9 @@ export function StatusBar({
                 <button
                   type="button"
                   onClick={() => onCopy(entry.publicUrl!)}
-                  className="inline-flex items-center gap-1 rounded-full border border-[color:var(--cp-accent)] px-2 py-0.5 font-mono text-[10px] text-[color:var(--cp-accent)]"
+                  className="inline-flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[color:var(--cp-text)] hover:bg-[color:var(--files-hover)]"
                 >
-                  <Link2 size={10} /> URL
+                  <Link2 size={14} /> URL
                 </button>
               </Tooltip>
             </>
@@ -125,8 +127,8 @@ export function StatusBar({
           {entry.triggersActive ? (
             <>
               <span className="opacity-60">·</span>
-              <span className="inline-flex items-center gap-1 text-[color:var(--cp-accent)]">
-                <Wand2 size={10} /> {t('filebrowser.status.aiActive', 'AI pipeline active')}
+              <span className="inline-flex shrink-0 items-center gap-1.5">
+                <span className="files-dot" aria-hidden /> {t('filebrowser.status.aiActive', 'AI pipeline active')}
               </span>
             </>
           ) : null}
@@ -134,18 +136,20 @@ export function StatusBar({
       ) : (
         <>
           <span className="opacity-60">·</span>
-          <span className="truncate font-mono text-[10px]">{displayPath(currentUrl)}</span>
+          <span className="min-w-0 truncate font-[family-name:var(--files-mono)]">{displayPath(currentUrl)}</span>
         </>
       )}
+      <span className="ml-auto" />
+      {trailing}
       {onExpandSidebar ? (
         <Tooltip title={t('filebrowser.preview.expand', 'Expand sidebar')}>
           <button
             type="button"
             onClick={onExpandSidebar}
-            className="ml-auto inline-flex shrink-0 items-center rounded-md p-0.5 hover:text-[color:var(--cp-text)]"
+            className="files-icon-btn !h-6 !min-w-6 !p-0"
             aria-label={t('filebrowser.preview.expand', 'Expand sidebar')}
           >
-            <PanelRightOpen size={13} />
+            <PanelRightOpen size={14} />
           </button>
         </Tooltip>
       ) : null}

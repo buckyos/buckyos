@@ -135,7 +135,7 @@ export function DiagramRenderer({
                     data-testid="content-preview-diagram-tab"
                     className={clsx(
                       'max-w-[200px] shrink-0 truncate border-r border-[color:var(--cp-border)] px-3',
-                      index === active ? 'bg-[color:var(--cp-surface-opaque)] font-semibold text-[color:var(--cp-accent)]' : 'text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]',
+                      index === active ? 'bg-[color:var(--cp-surface-opaque)] font-medium text-[color:var(--files-link)]' : 'text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]',
                     )}
                     onClick={() => setActive(index)}
                   >
@@ -146,7 +146,7 @@ export function DiagramRenderer({
           {textView ? (
             <button
               type="button"
-              className="shrink-0 border-l border-[color:var(--cp-border)] px-3 font-medium text-[color:var(--cp-text)] hover:text-[color:var(--cp-accent)]"
+              className="shrink-0 border-l border-[color:var(--cp-border)] px-3 font-medium text-[color:var(--cp-text)] hover:bg-[color:var(--files-hover)]"
               data-testid="content-preview-diagram-text-toggle"
               onClick={() => setAsText((value) => !value)}
             >

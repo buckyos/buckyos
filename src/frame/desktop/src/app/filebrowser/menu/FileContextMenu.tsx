@@ -54,7 +54,7 @@ export function FileContextMenu({ position, sections, onInvoke, onClose }: FileC
       >
         {Icon ? (
           <ListItemIcon sx={item.danger ? { color: 'var(--cp-danger)' } : undefined}>
-            <Icon size={15} />
+            <Icon size={16} />
           </ListItemIcon>
         ) : null}
         <ListItemText primary={resolve(item.label)} secondary={item.disabledReason ? t(`filebrowser.commandReason.${item.disabledReason}`, item.disabledReason) : undefined} primaryTypographyProps={{ fontSize: 13 }} />
@@ -77,7 +77,7 @@ export function FileContextMenu({ position, sections, onInvoke, onClose }: FileC
       >
         {Icon ? (
           <ListItemIcon>
-            <Icon size={15} />
+            <Icon size={16} />
           </ListItemIcon>
         ) : null}
         <ListItemText primary={resolve(item.label)} primaryTypographyProps={{ fontSize: 13 }} />

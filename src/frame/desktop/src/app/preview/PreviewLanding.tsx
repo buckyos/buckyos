@@ -5,6 +5,7 @@
  */
 
 import { FolderOpen, History, ScanEye, Settings2, Upload } from 'lucide-react'
+import '../../components/preview/files.css'
 import { useEffect, useState, type DragEvent } from 'react'
 import type { SelectedContent } from 'buckyos/content'
 import type { ContentRef, PreviewSessionContext, PreviewSessionItemInput } from '../../components/preview/types'
@@ -85,7 +86,7 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
 
   return (
     <div
-      className="flex h-full w-full flex-col items-center overflow-y-auto bg-[color:var(--cp-bg)] px-6 py-10"
+      className="files-ui flex h-full w-full flex-col items-center overflow-y-auto bg-[color:var(--cp-surface-opaque)] px-4 py-12 sm:px-6"
       data-testid="preview-landing"
       onDragOver={(event) => {
         event.preventDefault()
@@ -95,12 +96,12 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
       onDrop={handleDrop}
     >
       <div className="flex w-full max-w-xl flex-col items-center gap-5 text-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-[22px] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-accent)]">
-          <ScanEye size={30} />
+        <div className="text-[color:var(--cp-muted)]">
+          <ScanEye size={32} strokeWidth={1.5} />
         </div>
         <div>
-          <h1 className="font-display text-[20px] font-semibold text-[color:var(--cp-text)]">{t('apps.preview', 'Preview')}</h1>
-          <p className="mt-1 text-[13px] leading-6 text-[color:var(--cp-muted)]">
+          <h1 className="text-[20px] font-medium text-[color:var(--cp-text)]">{t('apps.preview', 'Preview')}</h1>
+          <p className="mt-1 text-[14px] leading-6 text-[color:var(--cp-muted)]">
             {t('previewApp.landing.body', 'Quick look at any file, CYFS path or Object ID. Content first — the toolbar appears when you move.')}
           </p>
         </div>
@@ -118,12 +119,12 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
             placeholder={t('previewApp.landing.placeholder', 'cyfs:///home/… or an Object ID')}
             aria-label={t('previewApp.landing.placeholder', 'cyfs:///home/… or an Object ID')}
             data-testid="preview-landing-input"
-            className="h-10 flex-1 rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] px-4 font-mono text-[12px] text-[color:var(--cp-text)] outline-none focus:border-[color:var(--cp-accent)]"
+            className="files-input !min-h-10 flex-1 !rounded-[10px] font-[family-name:var(--files-mono)] !text-[13px]"
           />
           <button
             type="submit"
             data-testid="preview-landing-open"
-            className="h-10 rounded-full bg-[color:var(--cp-accent)] px-4 text-[13px] font-semibold text-white disabled:opacity-40"
+            className="files-btn files-btn-primary files-btn-lg"
             disabled={!value.trim()}
           >
             {t('common.open', 'Open')}
@@ -131,20 +132,20 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
         </form>
 
         <div
-          className={`flex w-full flex-col items-center gap-2 rounded-[20px] border border-dashed px-6 py-6 text-[12px] text-[color:var(--cp-muted)] transition-colors ${
-            dragOver ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,var(--cp-surface))]' : 'border-[color:var(--cp-border)]'
+          className={`flex w-full flex-col items-center gap-3 rounded-[12px] border border-dashed px-6 py-8 text-[13px] text-[color:var(--cp-muted)] transition-colors ${
+            dragOver ? 'border-[color:var(--cp-accent)] bg-[color:var(--files-selected)]' : 'border-[color:var(--cp-border)]'
           }`}
           data-testid="preview-landing-dropzone"
         >
-          <Upload size={18} />
+          <Upload size={20} strokeWidth={1.5} />
           <span>{t('previewApp.landing.drop', 'Drop files here to preview them (several files become one session)')}</span>
           <button
             type="button"
             onClick={() => void chooseFiles()}
             data-testid="preview-landing-choose"
-            className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-[color:var(--cp-border)] px-3 py-1 text-[12px] text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
+            className="files-btn"
           >
-            <FolderOpen size={13} /> {t('previewApp.landing.chooseFiles', 'Choose files…')}
+            <FolderOpen size={16} /> {t('previewApp.landing.chooseFiles', 'Choose files…')}
           </button>
         </div>
 
@@ -153,27 +154,27 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
             <button
               type="button"
               onClick={() => onOpen(lastSession)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--cp-border)] px-3 py-1.5 text-[12px] text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
+              className="files-btn files-btn-ghost"
             >
-              <History size={13} /> {t('previewApp.landing.restore', 'Reopen last session')}
+              <History size={16} /> {t('previewApp.landing.restore', 'Reopen last session')}
             </button>
           ) : null}
           <button
             type="button"
             onClick={onOpenSettings}
-            className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--cp-border)] px-3 py-1.5 text-[12px] text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
+            className="files-btn files-btn-ghost"
             data-testid="preview-landing-settings"
           >
-            <Settings2 size={13} /> {t('previewApp.action.settings', 'Preview settings…')}
+            <Settings2 size={16} /> {t('previewApp.action.settings', 'Preview settings…')}
           </button>
         </div>
 
         {samples?.items.length ? (
           <div className="w-full text-left">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">
+            <p className="files-label mb-2">
               {t('previewApp.landing.samples', 'Sample gallery (mock runtime)')}
             </p>
-            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {samples.items.map((item) => (
                 <button
                   key={item.title}
@@ -186,7 +187,7 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
                       origin: ORIGIN,
                     })
                   }
-                  className="truncate rounded-xl border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] px-3 py-2 text-left font-mono text-[11px] text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
+                  className="fb-row h-9 truncate rounded-[8px] border border-[color:var(--files-hairline)] px-3 text-left font-[family-name:var(--files-mono)] text-[12px] text-[color:var(--cp-text)] transition-colors hover:bg-[color:var(--files-hover)]"
                   title={item.title}
                 >
                   {item.title}

@@ -13,11 +13,14 @@ import type { MenuPosition, SelectModifiers } from './MainContent'
 import clsx from 'clsx'
 import {
   AlertTriangle,
+  Check,
   FileText,
   FolderClosed,
+  Hash,
+  MoreVertical,
+  ScanSearch,
   Search,
-  Sparkles,
-  Wand2,
+  TextSearch,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { SearchResultItem } from './types'
@@ -53,32 +56,32 @@ const reasonMeta: Record<
   filename: {
     labelKey: 'filebrowser.search.reason.filename',
     fallback: 'File name',
-    icon: <FileText size={12} />,
-    tone: 'text-[color:var(--cp-accent)]',
+    icon: <FileText size={14} />,
+    tone: 'text-[color:var(--cp-muted)]',
   },
   folder: {
     labelKey: 'filebrowser.search.reason.folder',
     fallback: 'Folder',
-    icon: <FolderClosed size={12} />,
+    icon: <FolderClosed size={14} />,
     tone: 'text-[color:var(--cp-muted)]',
   },
   fulltext: {
     labelKey: 'filebrowser.search.reason.fulltext',
     fallback: 'Full-text',
-    icon: <FileText size={12} />,
-    tone: 'text-[color:var(--cp-warning)]',
+    icon: <TextSearch size={14} />,
+    tone: 'text-[color:var(--cp-muted)]',
   },
   ai_semantic: {
     labelKey: 'filebrowser.search.reason.aiSemantic',
     fallback: 'AI semantic',
-    icon: <Sparkles size={12} />,
-    tone: 'text-[color:var(--cp-success)]',
+    icon: <ScanSearch size={14} />,
+    tone: 'text-[color:var(--cp-muted)]',
   },
   ai_topic: {
     labelKey: 'filebrowser.search.reason.aiTopic',
     fallback: 'AI topic',
-    icon: <Wand2 size={12} />,
-    tone: 'text-[color:var(--cp-success)]',
+    icon: <Hash size={14} />,
+    tone: 'text-[color:var(--cp-muted)]',
   },
 }
 
@@ -88,7 +91,7 @@ function metaFor(reason: string) {
     reasonMeta[reason] ?? {
       labelKey: `filebrowser.search.reason.${reason}`,
       fallback: reason.replaceAll('_', ' '),
-      icon: <Search size={12} />,
+      icon: <Search size={14} />,
       tone: 'text-[color:var(--cp-muted)]',
     }
   )
@@ -118,20 +121,20 @@ function HitButton({
       onDoubleClick={() => onOpen(item)}
       onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); onOpen(item) } }}
       onContextMenu={(event) => { event.preventDefault(); onMenu(item, { top: event.clientY, left: event.clientX }) }}
-      style={selected ? { borderColor: 'var(--cp-accent)', background: 'var(--cp-accent-soft)' } : undefined}
-      className="flex w-full items-start gap-3 rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] p-3 text-left hover:border-[color:var(--cp-accent)]"
+      data-selected={selected}
+      className={clsx('fb-row flex w-full items-start gap-3 rounded-[10px] px-3 py-2.5 text-left', mobile && 'pr-12')}
     >
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)]">
-        {selected ? <span aria-hidden>✓</span> : fileIcon(entry, 16)}
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[color:var(--cp-surface-2-opaque)]">
+        {selected ? <Check size={16} aria-hidden className="text-[color:var(--cp-text)]" /> : fileIcon(entry, 18)}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-semibold text-[color:var(--cp-text)]">
+        <div className="truncate text-[14px] text-[color:var(--cp-text)]">
           {entry.name}
         </div>
-        <div className="mt-0.5 truncate font-mono text-[10px] text-[color:var(--cp-muted)]">
+        <div className="mt-0.5 truncate font-[family-name:var(--files-mono)] text-[12px] text-[color:var(--cp-muted)]">
           {entry.path}
         </div>
-        <div className={clsx('mt-1 inline-flex items-center gap-1 text-[11px]', meta.tone)}>
+        <div className={clsx('mt-1 inline-flex items-center gap-1.5 text-[12px] tabular-nums', meta.tone)}>
           {meta.icon}
           {t(meta.labelKey, meta.fallback)}
           <span className="text-[color:var(--cp-muted)]"> · {item.detail}</span>
@@ -143,19 +146,19 @@ function HitButton({
           ) : null}
         </div>
       </div>
-    </button>{mobile && <button className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-full bg-[color:var(--cp-surface)]" aria-label={t('filebrowser.mobile.moreActions', 'More actions')} onClick={(event) => onMenu(item, { left: event.clientX, top: event.clientY })}>⋮</button>}</div>
+    </button>{mobile && <button type="button" className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:var(--files-pressed)]" aria-label={t('filebrowser.mobile.moreActions', 'More actions')} onClick={(event) => onMenu(item, { left: event.clientX, top: event.clientY })}><MoreVertical size={20} /></button>}</div>
   )
 }
 
 function SkeletonHits() {
   return (
-    <div className="space-y-1.5 px-4 py-4" data-testid="search-skeleton">
+    <div className="space-y-1 px-3 py-3" data-testid="search-skeleton">
       {Array.from({ length: 5 }, (_, i) => (
         <div
           key={i}
-          className="flex items-start gap-3 rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)] p-3"
+          className="flex items-start gap-3 rounded-[10px] px-3 py-2.5"
         >
-          <span className="h-9 w-9 shrink-0 animate-pulse rounded-[12px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" />
+          <span className="h-9 w-9 shrink-0 animate-pulse rounded-[8px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" />
           <div className="flex min-w-0 flex-1 flex-col gap-1.5 pt-1">
             <span
               className="inline-block h-3 animate-pulse rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_55%,transparent)]"
@@ -213,13 +216,13 @@ export function SearchResultsPanel({
   let body: React.ReactNode
   if (state.status === 'error' && !items.length) {
     body = (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center text-sm text-[color:var(--cp-muted)]">
-        <AlertTriangle size={22} className="text-[color:var(--cp-warning)]" />
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center text-[14px] text-[color:var(--cp-muted)]">
+        <AlertTriangle size={24} strokeWidth={1.5} className="text-[color:var(--files-warning-ink)]" />
         <p>{state.error ? t(state.error.messageKey, state.error.fallback) : null}</p>
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-full border border-[color:var(--cp-border)] px-4 py-1.5 text-sm text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
+          className="files-btn"
         >
           {t('filebrowser.retry', 'Retry')}
         </button>
@@ -229,7 +232,7 @@ export function SearchResultsPanel({
     body = <SkeletonHits />
   } else if (!items.length) {
     body = (
-      <div className="flex flex-1 items-center justify-center p-10 text-center text-sm text-[color:var(--cp-muted)]">
+      <div className="flex flex-1 items-center justify-center p-10 text-center text-[14px] leading-6 text-[color:var(--cp-muted)]">
         {t(
           'filebrowser.search.empty',
           'No results. Try a simpler keyword, or switch to Topic mode to browse by memory.',
@@ -238,13 +241,13 @@ export function SearchResultsPanel({
     )
   } else {
     body = (
-      <div className="flex-1 space-y-4 px-4 py-4">
+      <div className="flex-1 space-y-5 px-3 py-4">
         {sections.map(({ key, label, list }) => {
           if (!list.length) return null
           return (
             <div key={key}>
-              <p className="shell-kicker mb-1.5 !text-[10px]">{label}</p>
-              <div className="space-y-1.5">
+              <p className="files-label mb-1 px-3">{label}</p>
+              <div className="space-y-0.5">
                 {list.map((item) => (
                   <HitButton
                     key={`${item.reason}-${item.entry.id}`}
@@ -265,7 +268,7 @@ export function SearchResultsPanel({
             type="button"
             onClick={onLoadMore}
             disabled={loading}
-            className="w-full rounded-[14px] border border-dashed border-[color:var(--cp-border)] px-4 py-2 text-sm text-[color:var(--cp-muted)] hover:border-[color:var(--cp-accent)] hover:text-[color:var(--cp-accent)] disabled:opacity-60"
+            className="files-btn w-full"
             data-testid="search-load-more"
           >
             {loading
@@ -273,7 +276,7 @@ export function SearchResultsPanel({
               : t('filebrowser.search.loadMore', 'Load more results')}
           </button>
         ) : loading ? (
-          <p className="py-1 text-center text-[11px] text-[color:var(--cp-muted)]">
+          <p className="py-1 text-center text-[12px] text-[color:var(--cp-muted)]">
             {t('filebrowser.search.loadingMore', 'Loading…')}
           </p>
         ) : null}
@@ -283,38 +286,33 @@ export function SearchResultsPanel({
 
   return (
     <div ref={scroller} onScroll={(event) => onScroll(event.currentTarget.scrollTop)} className="flex h-full w-full flex-col overflow-y-auto">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[color:var(--cp-border)] p-3 text-xs">
-        <label>{t('filebrowser.search.scope', 'Search in')} <select aria-label={t('filebrowser.search.scope', 'Search in')} value={scope} onChange={(event) => onScopeChange(event.target.value as 'current' | 'all')} className="max-w-52 rounded border bg-[color:var(--cp-surface)] p-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-[color:var(--files-hairline)] px-4 py-2 text-[13px] text-[color:var(--cp-muted)]">
+        <label>{t('filebrowser.search.scope', 'Search in')} <select aria-label={t('filebrowser.search.scope', 'Search in')} value={scope} onChange={(event) => onScopeChange(event.target.value as 'current' | 'all')} className="files-input ml-1 !min-h-8 !w-auto max-w-52 !px-2 !text-[13px]">
           <option value="current">{t('filebrowser.search.currentScope', 'Current folder and subfolders')} · {currentUrl}</option><option value="all">{t('filebrowser.search.allScope', 'All accessible files')}</option>
         </select></label>
-        <label>{t('filebrowser.column.kind', 'Kind')} <select aria-label={t('filebrowser.column.kind', 'Kind')} value={kind} onChange={(event) => onFilterChange(event.target.value, modified)} className="rounded border bg-[color:var(--cp-surface)] p-2"><option value="">{t('filebrowser.search.allKinds', 'All types')}</option>{['folder','document','image','video','audio','archive','code','other'].map((kind) => <option key={kind} value={kind}>{t(`filebrowser.kind.${kind}`, kind)}</option>)}</select></label>
-        <label>{t('filebrowser.search.modifiedSince', 'Modified since')} <input aria-label={t('filebrowser.search.modifiedSince', 'Modified since')} type="date" value={modified} onChange={(event) => onFilterChange(kind, event.target.value)} className="min-h-9 rounded border bg-transparent px-2" /></label>
-        {(kind || modified) && <button className="min-h-9 underline" onClick={() => onFilterChange('', '')}>{t('filebrowser.search.clearFilters', 'Clear filters')}</button>}
-        <button className="min-h-9 underline" onClick={onExit}>{t('filebrowser.search.exit', 'Exit search')}</button>
-        {(kind || modified) && <p className="w-full">{t('filebrowser.search.loadedFilters', 'Filters apply to returned results. Load more to check the remaining results.')}</p>}
+        <label>{t('filebrowser.column.kind', 'Kind')} <select aria-label={t('filebrowser.column.kind', 'Kind')} value={kind} onChange={(event) => onFilterChange(event.target.value, modified)} className="files-input ml-1 !min-h-8 !w-auto !px-2 !text-[13px]"><option value="">{t('filebrowser.search.allKinds', 'All types')}</option>{['folder','document','image','video','audio','archive','code','other'].map((kind) => <option key={kind} value={kind}>{t(`filebrowser.kind.${kind}`, kind)}</option>)}</select></label>
+        <label>{t('filebrowser.search.modifiedSince', 'Modified since')} <input aria-label={t('filebrowser.search.modifiedSince', 'Modified since')} type="date" value={modified} onChange={(event) => onFilterChange(kind, event.target.value)} className="files-input ml-1 !min-h-8 !w-auto !px-2 !text-[13px]" /></label>
+        {(kind || modified) && <button type="button" className="files-btn files-btn-ghost" onClick={() => onFilterChange('', '')}>{t('filebrowser.search.clearFilters', 'Clear filters')}</button>}
+        <button type="button" className="files-btn files-btn-ghost ml-auto" onClick={onExit}>{t('filebrowser.search.exit', 'Exit search')}</button>
+        {(kind || modified) && <p className="w-full text-[12px]">{t('filebrowser.search.loadedFilters', 'Filters apply to returned results. Load more to check the remaining results.')}</p>}
       </div>
-      <div className="border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-5 py-3">
-        <div className="shell-kicker">{t('filebrowser.search.title', 'Search results')}</div>
-        <div className="mt-1 text-sm text-[color:var(--cp-text)]">
+      <div className="border-b border-[color:var(--files-hairline)] px-4 py-3">
+        <div className="files-label">{t('filebrowser.search.title', 'Search results')}</div>
+        <div className="mt-1 text-[14px] text-[color:var(--cp-text)]">
           {t('filebrowser.search.query', 'For “{{query}}”', { query })}
-          <span className="ml-2 text-[color:var(--cp-muted)]">
+          <span className="ml-2 tabular-nums text-[color:var(--cp-muted)]">
             {loading && !page
               ? t('filebrowser.search.searching', 'searching…')
               : t('filebrowser.search.count', '{{count}} results', { count: items.length })}
           </span>
         </div>
         {page?.sources.length ? (
-          <details className="mt-1.5 text-xs text-[color:var(--cp-muted)]"><summary>{t('filebrowser.search.sourceDetails', 'Search source details')}</summary><div className="flex flex-wrap gap-1.5">
+          <details className="mt-2 text-[12px] text-[color:var(--cp-muted)]"><summary className="cursor-pointer">{t('filebrowser.search.sourceDetails', 'Search source details')}</summary><div className="flex flex-wrap gap-1.5">
             {page.sources.map((source) => (
               <span
                 key={source.mode}
                 title={source.reason}
-                className={clsx(
-                  'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
-                  source.state === 'ok'
-                    ? 'border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]'
-                    : 'border-[color:var(--cp-warning)] text-[color:var(--cp-warning)]',
-                )}
+                className={clsx('files-chip mt-1.5 tabular-nums', source.state !== 'ok' && '!text-[color:var(--files-warning-ink)]')}
               >
                 {source.mode}
                 {source.state !== 'ok' ? ` · ${source.state}` : ''}
@@ -325,10 +323,10 @@ export function SearchResultsPanel({
         ) : null}
         {incomplete ? (
           <div
-            className="mt-2 flex items-center gap-1.5 rounded-[10px] bg-[color:color-mix(in_srgb,var(--cp-warning)_14%,var(--cp-surface))] px-2.5 py-1.5 text-[11px] text-[color:var(--cp-warning)]"
+            className="mt-2 flex items-center gap-2 rounded-[8px] bg-[color:color-mix(in_srgb,var(--cp-warning)_14%,var(--cp-surface-opaque))] px-3 py-2 text-[12px] text-[color:var(--files-warning-ink)]"
             data-testid="search-partial-banner"
           >
-            <AlertTriangle size={12} />
+            <AlertTriangle size={14} className="shrink-0" />
             {t(
               'filebrowser.search.partial',
               'Some sources are unavailable — coverage is incomplete.',
@@ -337,7 +335,7 @@ export function SearchResultsPanel({
         ) : null}
       </div>
       {body}
-      {!items.length && page?.nextCursor && <button className="min-h-11 underline" onClick={onLoadMore} disabled={loading}>{t('filebrowser.search.loadMore', 'Load more results')}</button>}
+      {!items.length && page?.nextCursor && <button type="button" className="files-btn mx-4 mb-4" onClick={onLoadMore} disabled={loading}>{t('filebrowser.search.loadMore', 'Load more results')}</button>}
     </div>
   )
 }

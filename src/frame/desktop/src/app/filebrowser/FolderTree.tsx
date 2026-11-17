@@ -11,17 +11,17 @@ export function SectionError({ message, onRetry, indent = 0 }: { message: string
   const { t } = useI18n()
   return (
     <div
-      className="mx-2 flex items-center gap-2 rounded-[12px] bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,var(--cp-surface))] px-2.5 py-2 text-[11px] text-[color:var(--cp-warning)]"
+      className="mx-2 flex items-center gap-2 rounded-[8px] bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,var(--cp-surface))] px-2 py-2 text-[12px] text-[color:var(--files-warning-ink)]"
       style={indent ? { marginLeft: indent } : undefined}
       data-testid="sidebar-section-error"
     >
-      <AlertTriangle size={12} className="shrink-0" />
+      <AlertTriangle size={14} className="shrink-0" />
       <span className="min-w-0 flex-1 leading-4">{message}</span>
       <button
         type="button"
         onClick={onRetry}
         aria-label={t('filebrowser.retry', 'Retry')}
-        className="shrink-0 rounded-full p-1 hover:bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,transparent)]"
+        className="shrink-0 rounded-[6px] p-1 hover:bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,transparent)]"
       >
         <RefreshCw size={12} />
       </button>
@@ -167,47 +167,42 @@ function FolderTreeNode({
   const active = activeUrl === url
   const empty = children.status === 'ready' && children.folders.length === 0 && !children.nextCursor
   const expandable = !leaf && !folder.locked && !empty
-  const indent = depth * 12 + 8
+  const indent = depth * 16
 
   return (
     <div role="treeitem" aria-expanded={expandable ? expanded : undefined} aria-selected={active}>
       <div
-        className={clsx(
-          'group flex w-full items-center gap-1 rounded-[14px] text-sm transition',
-          active
-            ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]'
-            : 'text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]',
-        )}
+        className={clsx('fb-nav-row group flex w-full items-center rounded-[8px] text-[14px] text-[color:var(--cp-text)]', active && 'is-active font-medium')}
         style={{ paddingLeft: indent }}
       >
         {expandable ? (
           <button
             type="button"
-            className="flex h-7 w-5 shrink-0 items-center justify-center"
+            className="flex h-8 w-7 shrink-0 items-center pl-[9px] text-[color:var(--cp-muted)]"
             aria-label={`${expanded ? t('filebrowser.tree.collapse', 'Collapse') : t('filebrowser.tree.expand', 'Expand')} ${folder.name}`}
             onClick={toggle}
           >
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </button>
         ) : (
-          <span className="w-5 shrink-0" />
+          <span className="w-7 shrink-0" />
         )}
         <button
           type="button"
           aria-label={folder.name}
           disabled={folder.locked}
           title={folder.locked ? t('filebrowser.tree.locked', 'You cannot open this folder') : undefined}
-          className="flex min-h-8 min-w-0 flex-1 items-center gap-2 pr-2 text-left disabled:cursor-not-allowed disabled:opacity-60"
+          className="flex h-8 min-w-0 flex-1 items-center gap-2 pr-2 text-left disabled:cursor-not-allowed disabled:opacity-60"
           onClick={() => onNavigate(url)}
         >
-          {folder.locked ? <Lock size={14} className="shrink-0 text-[color:var(--cp-muted)]" /> : icon ?? <FolderClosed size={14} className="shrink-0 text-[color:var(--cp-muted)]" />}
-          <span className="min-w-0 truncate font-medium">{folder.name}</span>
+          {folder.locked ? <Lock size={16} className="shrink-0 text-[color:var(--cp-muted)]" /> : icon ?? <FolderClosed size={16} className="shrink-0 text-[color:var(--cp-muted)]" />}
+          <span className="min-w-0 truncate">{folder.name}</span>
         </button>
       </div>
       {expanded && expandable ? (
         <div className="space-y-0.5" role="group">
           {children.status === 'loading' && !children.folders.length ? (
-            <div className="flex items-center gap-2 py-1" style={{ paddingLeft: indent + 32 }} data-testid="tree-node-loading">
+            <div className="flex h-8 items-center gap-2" style={{ paddingLeft: indent + 44 }} data-testid="tree-node-loading">
               <span className="inline-block h-3 w-24 animate-pulse rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_50%,transparent)]" />
             </div>
           ) : null}
@@ -227,8 +222,8 @@ function FolderTreeNode({
           {children.nextCursor ? (
             <button
               type="button"
-              className="min-h-8 w-full rounded-[12px] text-left text-xs text-[color:var(--cp-accent)] hover:underline disabled:opacity-60"
-              style={{ paddingLeft: indent + 32 }}
+              className="fb-nav-row h-8 w-full rounded-[8px] text-left text-[13px] text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)] disabled:opacity-60"
+              style={{ paddingLeft: indent + 44 }}
               disabled={children.loadingMore}
               onClick={loadMore}
             >

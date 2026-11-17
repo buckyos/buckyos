@@ -24,22 +24,31 @@ import {
 import { extensionOf, mediaTypeFromExtension, TEXT_CODE_EXTENSIONS } from 'buckyos/content'
 import type { FileEntry } from './types'
 
+const TYPE_TONE = {
+  blue: 'var(--files-type-blue, var(--cp-app-blue))',
+  green: 'var(--files-type-green, var(--cp-app-green))',
+  amber: 'var(--files-type-amber, var(--cp-app-amber))',
+  red: 'var(--files-type-red, var(--cp-app-red))',
+  violet: 'var(--files-type-violet, var(--cp-app-violet))',
+  slate: 'var(--files-type-slate, var(--cp-app-slate))',
+}
+
 export function kindIcon(kind: FileEntry['kind'], size = 18) {
   switch (kind) {
     case 'folder':
-      return <FolderClosed size={size} className="text-[color:var(--cp-accent)]" />
+      return <FolderClosed size={size} style={{ color: TYPE_TONE.blue }} />
     case 'image':
-      return <ImageIcon size={size} className="text-[color:var(--cp-success)]" />
+      return <ImageIcon size={size} style={{ color: TYPE_TONE.green }} />
     case 'video':
-      return <FileVideo size={size} className="text-[color:var(--cp-warning)]" />
+      return <FileVideo size={size} style={{ color: TYPE_TONE.violet }} />
     case 'audio':
-      return <FileAudio size={size} className="text-[color:var(--cp-warning)]" />
+      return <FileAudio size={size} style={{ color: TYPE_TONE.violet }} />
     case 'archive':
-      return <Archive size={size} className="text-[color:var(--cp-muted)]" />
+      return <Archive size={size} style={{ color: TYPE_TONE.amber }} />
     case 'code':
-      return <Code size={size} className="text-[color:var(--cp-accent)]" />
+      return <Code size={size} style={{ color: TYPE_TONE.slate }} />
     default:
-      return <FileText size={size} className="text-[color:var(--cp-muted)]" />
+      return <FileText size={size} style={{ color: TYPE_TONE.slate }} />
   }
 }
 
@@ -107,24 +116,24 @@ export function fileVisual(entry: { kind: FileEntry['kind']; name: string; mime?
   }
 }
 
-/** Icon + theme color per visual type; shapes differ, colors only help. */
+/** Icon + type colour per visual type; shapes differ, colours only help. */
 const VISUAL_ICON: Record<FileVisual, [LucideIcon, string]> = {
-  folder: [FolderClosed, 'var(--cp-accent)'],
-  image: [FileImage, 'var(--cp-success)'],
-  video: [FileVideo, 'var(--cp-danger)'],
-  audio: [FileAudio, 'var(--cp-warning)'],
-  pdf: [FileType, 'var(--cp-danger)'],
-  doc: [FileText, 'var(--cp-accent)'],
-  sheet: [FileSpreadsheet, 'var(--cp-success)'],
-  slides: [Presentation, 'var(--cp-warning)'],
-  text: [ScrollText, 'var(--cp-muted)'],
-  markdown: [FileText, 'var(--cp-text)'],
-  code: [FileCode, 'var(--cp-accent)'],
-  archive: [FileArchive, 'var(--cp-warning)'],
-  ebook: [BookOpen, 'var(--cp-ink-accent)'],
-  drawing: [Shapes, 'var(--cp-accent)'],
-  installer: [Package, 'var(--cp-text)'],
-  file: [FileIconGeneric, 'var(--cp-muted)'],
+  folder: [FolderClosed, TYPE_TONE.blue],
+  image: [FileImage, TYPE_TONE.green],
+  video: [FileVideo, TYPE_TONE.violet],
+  audio: [FileAudio, TYPE_TONE.violet],
+  pdf: [FileType, TYPE_TONE.red],
+  doc: [FileText, TYPE_TONE.blue],
+  sheet: [FileSpreadsheet, TYPE_TONE.green],
+  slides: [Presentation, TYPE_TONE.amber],
+  text: [ScrollText, TYPE_TONE.slate],
+  markdown: [FileText, TYPE_TONE.slate],
+  code: [FileCode, TYPE_TONE.slate],
+  archive: [FileArchive, TYPE_TONE.amber],
+  ebook: [BookOpen, TYPE_TONE.violet],
+  drawing: [Shapes, TYPE_TONE.violet],
+  installer: [Package, TYPE_TONE.slate],
+  file: [FileIconGeneric, TYPE_TONE.slate],
 }
 
 /** The icon for an entry the caller knows the name of (use `kindIcon` when only the kind is known). */

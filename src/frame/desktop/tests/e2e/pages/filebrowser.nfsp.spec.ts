@@ -164,12 +164,12 @@ test.describe('File browser on real nfs_server', () => {
 
     // Search rides the server's name mode.
     await win.getByRole('button', { name: 'Search', exact: true }).click()
-    await page.getByPlaceholder(/Search across files/).fill('notes')
+    await page.getByPlaceholder(/^Search files$/).fill('notes')
     await win.getByRole('combobox', { name: 'Search in' }).selectOption('all')
     await expect(page.getByText('Search results')).toBeVisible()
     await expect(page.getByText(/Traditional matches/)).toBeVisible({ timeout: 15000 })
     // Blank input leaves search and restores the listing (§4.4 idle).
-    await page.getByPlaceholder(/Search across files/).fill('')
+    await page.getByPlaceholder(/^Search files$/).fill('')
 
     // Destroy-semantics delete (confirm dialog) removes the created folder.
     await sidebar.getByRole('button', { name: 'Documents', exact: true }).click()

@@ -86,22 +86,21 @@ export function NamePromptDialog({
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/40" onClick={() => { if (!isSubmitting) onClose() }} />
+      <div className="files-scrim absolute inset-0" onClick={() => { if (!isSubmitting) onClose() }} />
       <form
         role="dialog"
         aria-modal="true"
         aria-label={request.title}
         onKeyDown={(event) => { if (event.key === 'Escape' && !isSubmitting) { event.stopPropagation(); onClose() } }}
         onSubmit={(event) => void submit(event)}
-        className="relative w-[min(92vw,380px)] rounded-[20px] border border-[color:var(--cp-border)] p-4 shadow-[0_18px_48px_rgba(0,0,0,0.28)]"
-        style={{ background: 'var(--cp-surface)' }}
+        className="relative w-[min(92vw,384px)] rounded-[12px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] p-5 shadow-[var(--cp-panel-shadow)]"
         data-testid="name-prompt-dialog"
       >
-        <div className="mb-3 text-[15px] font-semibold text-[color:var(--cp-text)]">
+        <div className="mb-4 text-[16px] font-medium text-[color:var(--cp-text)]">
           {request.title}
         </div>
         <label className="block">
-          <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">
+          <span className="files-label mb-1.5 block">
             {request.label}
           </span>
           <input
@@ -110,35 +109,33 @@ export function NamePromptDialog({
             onFocus={(event) => { const name = request.defaultValue; if (name) { const dot = request.selectStem ? name.lastIndexOf('.') : -1; event.currentTarget.setSelectionRange(0, dot > 0 ? dot : name.length) } }}
             {...register('value')}
             ref={(element) => { register('value').ref(element); inputRef.current = element }}
-            className="w-full rounded-[12px] border border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] px-3 py-2 text-sm outline-none focus:border-[color:var(--cp-accent)]"
-            style={{ color: 'var(--cp-text)' }}
+            className="files-input"
           />
         </label>
-        {request.selectStem && request.defaultValue?.includes('.') && currentValue.slice(currentValue.lastIndexOf('.')) !== request.defaultValue.slice(request.defaultValue.lastIndexOf('.')) && <p role="status" className="mt-2 text-xs text-[color:var(--cp-warning)]">{t('filebrowser.operation.extensionChanged', 'Changing the extension may change which app opens this file.')}</p>}
+        {request.selectStem && request.defaultValue?.includes('.') && currentValue.slice(currentValue.lastIndexOf('.')) !== request.defaultValue.slice(request.defaultValue.lastIndexOf('.')) && <p role="status" className="mt-2 text-[12px] text-[color:var(--files-warning-ink)]">{t('filebrowser.operation.extensionChanged', 'Changing the extension may change which app opens this file.')}</p>}
         {fieldError ? (
-          <p className="mt-1.5 text-[11px] text-[color:var(--cp-warning)]" role="alert">
+          <p className="mt-1.5 text-[12px] text-[color:var(--cp-danger)]" role="alert">
             {t(fieldError, validationFallback[fieldError] ?? fieldError)}
           </p>
         ) : null}
         {rootError ? (
-          <p className="mt-1.5 text-[11px] text-[color:var(--cp-warning)]" role="alert">
+          <p className="mt-1.5 text-[12px] text-[color:var(--cp-danger)]" role="alert">
             {rootError}
           </p>
         ) : null}
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            className="rounded-full border border-[color:var(--cp-border)] px-4 py-1.5 text-sm text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]"
+            className="files-btn"
           >
             {t('common.cancel', 'Cancel')}
           </button>
           <button
             type="submit"
             disabled={isSubmitting}
-            className="rounded-full px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
-            style={{ background: 'var(--cp-accent)' }}
+            className="files-btn files-btn-primary"
           >
             {request.submitLabel}
           </button>

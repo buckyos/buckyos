@@ -61,7 +61,7 @@ export function MobileMenuSheet({
         aria-label={resolve(item.label)}
         onClick={() => invoke(item)}
         className={clsx(
-          'flex w-full items-center gap-3 px-5 py-3 text-left text-[14px] transition active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] disabled:opacity-40',
+          'flex min-h-12 w-full items-center gap-4 px-5 py-2 text-left text-[15px] transition-colors active:bg-[color:var(--files-pressed)] disabled:opacity-40',
           item.danger ? 'text-[color:var(--cp-danger)]' : 'text-[color:var(--cp-text)]',
         )}
       >
@@ -71,9 +71,9 @@ export function MobileMenuSheet({
             !item.danger && 'text-[color:var(--cp-muted)]',
           )}
         >
-          {Icon ? <Icon size={17} /> : null}
+          {Icon ? <Icon size={20} /> : null}
         </span>
-        <span className="min-w-0 flex-1 truncate">{resolve(item.label)}{item.disabledReason && <small className="block whitespace-normal text-xs">{t(`filebrowser.commandReason.${item.disabledReason}`, item.disabledReason)}</small>}</span>
+        <span className="min-w-0 flex-1 truncate">{resolve(item.label)}{item.disabledReason && <small className="block whitespace-normal text-[12px] text-[color:var(--cp-muted)]">{t(`filebrowser.commandReason.${item.disabledReason}`, item.disabledReason)}</small>}</span>
       </button>
     )
   }
@@ -85,25 +85,22 @@ export function MobileMenuSheet({
         key={item.id}
         type="button"
         onClick={() => setSubmenu(item)}
-        className="flex w-full items-center gap-3 px-5 py-3 text-left text-[14px] text-[color:var(--cp-text)] transition active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)]"
+        className="flex min-h-12 w-full items-center gap-4 px-5 py-2 text-left text-[15px] text-[color:var(--cp-text)] transition-colors active:bg-[color:var(--files-pressed)]"
       >
         <span className="flex w-5 shrink-0 justify-center text-[color:var(--cp-muted)]">
-          {Icon ? <Icon size={17} /> : null}
+          {Icon ? <Icon size={20} /> : null}
         </span>
         <span className="min-w-0 flex-1 truncate">{resolve(item.label)}</span>
-        <ChevronRight size={16} className="shrink-0 opacity-60" />
+        <ChevronRight size={20} className="shrink-0 text-[color:var(--cp-muted)]" />
       </button>
     )
   }
 
   return (
     <div className="absolute inset-0 z-50 flex items-end">
-      <div className="absolute inset-0 bg-black/50" onClick={close} />
-      <div
-        className="relative flex max-h-[70%] w-full flex-col rounded-t-[28px] border-t border-[color:var(--cp-border)] pb-4 pt-2"
-        style={{ background: 'var(--cp-surface)' }}
-      >
-        <div className="mx-auto mb-1 h-1 w-10 rounded-full bg-[color:var(--cp-border)]" />
+      <div className="files-scrim absolute inset-0" onClick={close} />
+      <div className="files-sheet relative flex max-h-[70%] w-full flex-col pb-4 pt-2">
+        <div className="files-sheet-grip mb-2" />
         {submenu ? (
           <div className="flex items-center gap-1 px-3 py-1">
             <button
@@ -112,14 +109,14 @@ export function MobileMenuSheet({
               aria-label={t('common.back', 'Back')}
               className="flex h-8 w-8 items-center justify-center rounded-full text-[color:var(--cp-muted)]"
             >
-              <ChevronLeft size={18} />
+              <ChevronLeft size={20} />
             </button>
-            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-[color:var(--cp-text)]">
+            <span className="min-w-0 flex-1 truncate text-[16px] font-medium text-[color:var(--cp-text)]">
               {resolve(submenu.label)}
             </span>
           </div>
         ) : title ? (
-          <div className="truncate px-5 py-1 text-[13px] font-semibold text-[color:var(--cp-text)]">
+          <div className="truncate px-5 pb-2 pt-1 text-[16px] font-medium text-[color:var(--cp-text)]">
             {title}
           </div>
         ) : null}
@@ -129,7 +126,7 @@ export function MobileMenuSheet({
             : sections.map((section, index) => (
                 <div key={index}>
                   {index > 0 ? (
-                    <div className="mx-5 my-1 h-px bg-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" />
+                    <div className="mx-5 my-1 h-px bg-[color:var(--files-hairline)]" />
                   ) : null}
                   {section.map((item) =>
                     item.type === 'action' ? renderAction(item) : renderSubmenu(item),

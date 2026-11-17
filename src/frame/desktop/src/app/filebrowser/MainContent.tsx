@@ -1,17 +1,18 @@
 import clsx from 'clsx'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
   Circle,
   CornerUpRight,
   FolderClosed,
+  Layers,
   Library,
   Lock,
   LockOpen,
   MoreVertical,
-  Sparkles,
   Upload,
-  Wand2,
 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../../i18n/provider'
@@ -24,6 +25,8 @@ import type { ContentRef } from '../../components/preview/types'
 import { ICON_GRID, useIconSize } from './data/iconSize'
 import { isSudoRequired } from './data/hostRealm'
 import type { ViewMode, SortKey, SortDir } from './types'
+import '../../components/preview/files.css'
+import './filebrowser.css'
 
 /** A list item is a reference when it's a link entry or a collection member (not a group). */
 function isReferenceItem(item: FileItem): boolean {
@@ -44,6 +47,11 @@ function entryIcon(entry: FileItem['entry'], size: number) {
   return isLockedEntry(entry)
     ? <Lock size={size} className="text-[color:var(--cp-muted)]" aria-label="locked" data-locked="true" />
     : fileIcon(entry, size)
+}
+
+/** The signature dot: the AI pipeline is working on this entry. */
+function AiDot({ title }: { title: string }) {
+  return <span className="files-dot" title={title} aria-label={title} role="img" data-testid="ai-active" />
 }
 
 /** Finder-alias style corner badge for reference items. */
@@ -259,25 +267,25 @@ export function MainContent({
   // ─── Location banner (views & collections — replaces the old topic banner) ───
   const banner =
     capabilities.kind !== 'folder' && meta ? (
-      <div className="flex items-center gap-3 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,var(--cp-surface))] px-4 py-2.5">
+      <div className="flex items-center gap-3 border-b border-[color:var(--files-hairline)] px-4 py-3">
         {capabilities.kind === 'collection' ? (
-          <Library size={16} className="text-[color:var(--cp-accent)]" />
+          <Library size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
         ) : (
-          <Sparkles size={16} className="text-[color:var(--cp-accent)]" />
+          <Layers size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
         )}
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-[color:var(--cp-text)]">
+          <div className="truncate text-[14px] font-medium text-[color:var(--cp-text)]">
             {capabilities.kind === 'collection'
               ? `${t('filebrowser.collection.badge', 'Collection')}: ${meta.title}`
               : `${t('filebrowser.view.badge', 'View')}: ${meta.title}`}
           </div>
           {meta.description ? (
-            <div className="mt-0.5 line-clamp-1 text-[11px] text-[color:var(--cp-muted)]">
+            <div className="mt-0.5 line-clamp-1 text-[12px] text-[color:var(--cp-muted)]">
               {meta.description}
             </div>
           ) : null}
         </div>
-        <span className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface)_86%,transparent)] px-2 py-0.5 text-[11px] font-semibold text-[color:var(--cp-muted)]">
+        <span className="shrink-0 text-[12px] tabular-nums text-[color:var(--cp-muted)]">
           {capabilities.kind === 'collection'
             ? t('filebrowser.collection.itemCount', '{{count}} items · originals stay in place', {
                 count: list.totalCount ?? '…',
@@ -291,44 +299,44 @@ export function MainContent({
   let body: React.ReactNode
   if (list.status === 'error' && isSudoRequired(list.error)) {
     body = (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-host-locked">
-        <Lock size={40} className="opacity-60" />
-        <p className="font-display text-lg text-[color:var(--cp-text)]">{t('filebrowser.host.lockedTitle', 'This computer is locked')}</p>
-        <p className="max-w-sm text-sm leading-6">{t('filebrowser.host.lockedBody', 'Confirm your password to see every folder on this computer. The unlock lasts 30 minutes, or until this window closes.')}</p>
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-host-locked">
+        <Lock size={32} strokeWidth={1.5} />
+        <p className="mt-2 text-[16px] font-medium text-[color:var(--cp-text)]">{t('filebrowser.host.lockedTitle', 'This computer is locked')}</p>
+        <p className="max-w-sm text-[14px] leading-6">{t('filebrowser.host.lockedBody', 'Confirm your password to see every folder on this computer. The unlock lasts 30 minutes, or until this window closes.')}</p>
         {presentation.onUnlock ? (
           <button
             type="button"
             onClick={presentation.onUnlock}
-            className="inline-flex min-h-10 items-center gap-2 rounded-full bg-[color:var(--cp-accent)] px-5 text-sm font-semibold text-white"
+            className="files-btn files-btn-primary files-btn-lg mt-2"
           >
-            <LockOpen size={15} /> {t('filebrowser.host.unlock', 'Unlock')}
+            <LockOpen size={16} /> {t('filebrowser.host.unlock', 'Unlock')}
           </button>
         ) : null}
       </div>
     )
   } else if (list.status === 'error' && presentation.onArchivePassword && (list.error as { code?: unknown } | null)?.code === 'PASSWORD_REQUIRED') {
     body = (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-archive-locked">
-        <Lock size={40} className="opacity-60" />
-        <p className="font-display text-lg text-[color:var(--cp-text)]">{t('archive.locked.title', 'This archive is encrypted')}</p>
-        <p className="max-w-sm text-sm leading-6">{t('archive.locked.body', 'Even the names inside are encrypted. Enter the password to see them.')}</p>
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-archive-locked">
+        <Lock size={32} strokeWidth={1.5} />
+        <p className="mt-2 text-[16px] font-medium text-[color:var(--cp-text)]">{t('archive.locked.title', 'This archive is encrypted')}</p>
+        <p className="max-w-sm text-[14px] leading-6">{t('archive.locked.body', 'Even the names inside are encrypted. Enter the password to see them.')}</p>
         <button
           type="button"
           onClick={presentation.onArchivePassword}
-          className="inline-flex min-h-10 items-center gap-2 rounded-full bg-[color:var(--cp-accent)] px-5 text-sm font-semibold text-white"
+          className="files-btn files-btn-primary files-btn-lg mt-2"
         >
-          <LockOpen size={15} /> {t('archive.password.enter', 'Enter password')}
+          <LockOpen size={16} /> {t('archive.password.enter', 'Enter password')}
         </button>
       </div>
     )
   } else if (list.status === 'error') {
     body = (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-10 text-center text-[color:var(--cp-muted)]">
-        <p className="text-sm">{list.error?.message ?? t('filebrowser.error', 'Failed to load')}</p>
+        <p className="text-[14px]">{list.error?.message ?? t('filebrowser.error', 'Failed to load')}</p>
         <button
           type="button"
           onClick={() => list.reload()}
-          className="rounded-full border border-[color:var(--cp-border)] px-4 py-1.5 text-sm text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
+          className="files-btn"
         >
           {t('filebrowser.retry', 'Retry')}
         </button>
@@ -342,7 +350,7 @@ export function MainContent({
       <div className="flex-1 overflow-hidden px-4 py-3" data-testid="filebrowser-skeleton">
         {Array.from({ length: 12 }, (_, i) => (
           <div key={i} className="flex items-center gap-3 py-2.5">
-            <span className="h-5 w-5 animate-pulse rounded-md bg-[color:color-mix(in_srgb,var(--cp-border)_55%,transparent)]" />
+            <span className="h-4 w-4 animate-pulse rounded-[4px] bg-[color:color-mix(in_srgb,var(--cp-border)_55%,transparent)]" />
             <SkeletonBar width={`${36 - (i % 4) * 6}%`} />
             <span className="flex-1" />
             <SkeletonBar width="48px" />
@@ -354,9 +362,9 @@ export function MainContent({
   } else if (virtualCountOf(list) === 0 && list.status === 'ready' && presentation.emptyState) {
     body = (
       <div className="flex h-full w-full flex-col items-center justify-center p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-empty">
-        {presentation.emptyState.icon ?? <FolderClosed size={40} className="opacity-50" />}
-        <p className="mt-3 font-display text-lg text-[color:var(--cp-text)]">{presentation.emptyState.title}</p>
-        {presentation.emptyState.body ? <p className="mt-1 max-w-sm text-sm leading-6">{presentation.emptyState.body}</p> : null}
+        {presentation.emptyState.icon ?? <FolderClosed size={32} strokeWidth={1.5} />}
+        <p className="mt-4 text-[16px] font-medium text-[color:var(--cp-text)]">{presentation.emptyState.title}</p>
+        {presentation.emptyState.body ? <p className="mt-1 max-w-sm text-[14px] leading-6">{presentation.emptyState.body}</p> : null}
       </div>
     )
   } else if (virtualCountOf(list) === 0 && list.status === 'ready') {
@@ -366,20 +374,20 @@ export function MainContent({
         onContextMenu={handleViewContextMenu}
       >
         {capabilities.kind === 'collection' ? (
-          <Library size={40} className="opacity-50" />
+          <Library size={32} strokeWidth={1.5} />
         ) : capabilities.kind === 'view' ? (
-          <Sparkles size={40} className="opacity-50" />
+          <Layers size={32} strokeWidth={1.5} />
         ) : (
-          <FolderClosed size={40} className="opacity-50" />
+          <FolderClosed size={32} strokeWidth={1.5} />
         )}
-        <p className="mt-3 font-display text-lg text-[color:var(--cp-text)]">
+        <p className="mt-4 text-[16px] font-medium text-[color:var(--cp-text)]">
           {capabilities.kind === 'collection'
             ? t('filebrowser.empty.collectionTitle', 'This collection is empty')
             : capabilities.kind === 'view'
               ? t('filebrowser.empty.viewTitle', 'Nothing here')
               : t('filebrowser.empty.title', 'This folder is empty')}
         </p>
-        <p className="mt-1 max-w-sm text-sm leading-6">
+        <p className="mt-1 max-w-sm text-[14px] leading-6">
           {capabilities.kind === 'collection'
             ? t(
                 'filebrowser.empty.collectionBody',
@@ -396,9 +404,9 @@ export function MainContent({
           <button
             type="button"
             onClick={onUpload}
-            className="mt-4 inline-flex items-center gap-2 rounded-full border border-[color:var(--cp-border)] px-4 py-1.5 text-sm text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
+            className="files-btn mt-4"
           >
-            <Upload size={14} /> {t('filebrowser.actions.upload', 'Upload')}
+            <Upload size={16} /> {t('filebrowser.actions.upload', 'Upload')}
           </button>
         ) : null}
       </div>
@@ -452,8 +460,8 @@ export function MainContent({
   return (
     <div className="fb-content flex h-full w-full flex-col">
       {banner}
-      {list.capabilities.availability === 'loading' && <p role="status" className="px-3 py-1 text-xs">{t('filebrowser.operation.permissionsLoading', 'Permissions are loading')}</p>}
-      {list.capabilities.kind === 'folder' && !list.capabilities.acceptsContent && list.capabilities.availability !== 'loading' && <p className="px-3 py-1 text-xs" data-testid="filebrowser-read-only">{presentation.readOnlyNote ?? t('filebrowser.operation.readOnly', 'Read-only folder')}</p>}
+      {list.capabilities.availability === 'loading' && <p role="status" className="border-b border-[color:var(--files-hairline)] px-4 py-2 text-[12px] text-[color:var(--cp-muted)]">{t('filebrowser.operation.permissionsLoading', 'Permissions are loading')}</p>}
+      {list.capabilities.kind === 'folder' && !list.capabilities.acceptsContent && list.capabilities.availability !== 'loading' && <p className="border-b border-[color:var(--files-hairline)] px-4 py-2 text-[12px] text-[color:var(--cp-muted)]" data-testid="filebrowser-read-only">{presentation.readOnlyNote ?? t('filebrowser.operation.readOnly', 'Read-only folder')}</p>}
       {body}
     </div>
   )
@@ -476,7 +484,7 @@ function useScrollState(parent: React.RefObject<HTMLDivElement | null>, settings
   useEffect(() => { if (revealTop !== null && parent.current) parent.current.scrollTo({ top: revealTop }) }, [parent, revealTop])
 }
 
-const LIST_ROW_HEIGHT = 37
+const LIST_ROW_HEIGHT = 36
 
 function DesktopListView({
   presentation,
@@ -529,9 +537,15 @@ function DesktopListView({
     setFocusIndex(null)
   }, [focusIndex, list, list.snapshot, onSelect])
   const gridTemplateColumns = undefined
+  const sortMark = (key: SortKey) => presentation.sortKey === key
+    ? presentation.sortDir === 'desc' ? <ArrowDown size={12} className="shrink-0" aria-hidden /> : <ArrowUp size={12} className="shrink-0" aria-hidden />
+    : null
+  const sortButton = (label: string, key: SortKey) => (
+    <button type="button" className="inline-flex items-center gap-1 rounded-[4px] hover:text-[color:var(--cp-text)] disabled:hover:text-inherit" disabled={!list.capabilities.sortKeys.includes(key)} onClick={() => presentation.onSortChange?.(key, presentation.sortKey === key && presentation.sortDir === 'asc' && (list.capabilities.sortDirs?.includes('desc') ?? true) ? 'desc' : 'asc')}>{label}{sortMark(key)}</button>
+  )
   const headerCell = (label: string, column: string, key?: SortKey) => (
-    <div role="columnheader" className={`fb-column-${column} px-2 py-2 font-medium`} aria-sort={key && presentation.sortKey === key ? presentation.sortDir === 'desc' ? 'descending' : 'ascending' : undefined}>
-      {key ? <button disabled={!list.capabilities.sortKeys.includes(key)} onClick={() => presentation.onSortChange?.(key, presentation.sortKey === key && presentation.sortDir === 'asc' && (list.capabilities.sortDirs?.includes('desc') ?? true) ? 'desc' : 'asc')}>{label}{presentation.sortKey === key ? presentation.sortDir === 'desc' ? ' ↓' : ' ↑' : ''}</button> : label}
+    <div role="columnheader" className={`fb-column-${column} flex h-8 items-center px-2`} aria-sort={key && presentation.sortKey === key ? presentation.sortDir === 'desc' ? 'descending' : 'ascending' : undefined}>
+      {key ? sortButton(label, key) : label}
     </div>
   )
 
@@ -542,15 +556,15 @@ function DesktopListView({
       onContextMenu={handleViewContextMenu}
       onClick={handleBlankClick}
     >
-      <div role="table" className={clsx("fb-table w-full select-none text-sm", isPublic && "fb-public", presentation.fullColumns && "fb-full")} style={presentation.fullColumns ? { minWidth: (presentation.nameWidth ?? 260) + 459 + (isPublic ? 160 : 0), '--fb-name-width': `${presentation.nameWidth ?? 260}px` } as React.CSSProperties : undefined}>
+      <div role="table" className={clsx("fb-table w-full select-none text-sm", isPublic && "fb-public", presentation.fullColumns && "fb-full")} style={presentation.fullColumns ? { minWidth: (presentation.nameWidth ?? 260) + 462 + (isPublic ? 160 : 0), '--fb-name-width': `${presentation.nameWidth ?? 260}px` } as React.CSSProperties : undefined}>
         <div
           role="row"
-          className="fb-list-row sticky top-0 z-10 grid bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] text-left text-[11px] uppercase tracking-wider text-[color:var(--cp-muted)] backdrop-blur"
+          className="fb-list-row fb-list-head sticky top-0 z-10 grid items-center border-b border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] text-left text-[12px] font-medium text-[color:var(--cp-muted)]"
           style={{ gridTemplateColumns }}
         >
-          <div role="columnheader" className="relative flex items-center gap-2 py-2 pl-3 pr-2 font-medium" aria-sort={presentation.sortKey === 'name' ? presentation.sortDir === 'desc' ? 'descending' : 'ascending' : undefined}>
+          <div role="columnheader" className="relative flex h-8 items-center gap-2 pl-4 pr-2" aria-sort={presentation.sortKey === 'name' ? presentation.sortDir === 'desc' ? 'descending' : 'ascending' : undefined}>
             <input type="checkbox" aria-label={t('filebrowser.menu.selectLoaded', 'Select loaded {{count}} items', { count: list.loadedKeys().length })} checked={list.loadedKeys().length > 0 && list.loadedKeys().every((key) => selectedKeys.has(key))} ref={(el) => { if (el) el.indeterminate = selectedKeys.size > 0 && !list.loadedKeys().every((key) => selectedKeys.has(key)) }} onChange={(event) => event.target.checked ? presentation.onSelectLoaded?.() : presentation.onClearSelection?.()} />
-            <button disabled={!list.capabilities.sortKeys.includes('name')} onClick={() => presentation.onSortChange?.('name', presentation.sortKey === 'name' && presentation.sortDir === 'asc' && (list.capabilities.sortDirs?.includes('desc') ?? true) ? 'desc' : 'asc')}>{t('filebrowser.column.name', 'Name')}{presentation.sortKey === 'name' ? presentation.sortDir === 'desc' ? ' ↓' : ' ↑' : ''}</button>
+            {sortButton(t('filebrowser.column.name', 'Name'), 'name')}
             {presentation.fullColumns && <span role="separator" aria-label={t('filebrowser.view.resizeName', 'Resize name column')} aria-orientation="vertical" tabIndex={0} className="absolute inset-y-0 right-0 w-2 cursor-col-resize touch-none border-r border-[color:var(--cp-border)]" onPointerDown={(event) => { resizeStart.current = { x: event.clientX, width: presentation.nameWidth ?? 260 }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={(event) => { if (resizeStart.current) presentation.onNameWidthChange?.(Math.max(160, Math.min(600, resizeStart.current.width + event.clientX - resizeStart.current.x))) }} onPointerUp={() => { resizeStart.current = null }} onPointerCancel={() => { resizeStart.current = null }} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); presentation.onNameWidthChange?.(Math.max(160, Math.min(600, (presentation.nameWidth ?? 260) + (event.key === 'ArrowLeft' ? -20 : 20)))) } }} />}
           </div>
           {headerCell(t('filebrowser.column.kind', 'Kind'), 'kind', 'kind')}
@@ -581,7 +595,7 @@ function DesktopListView({
                 <div
                   key={`skeleton-${virtualRow.index}`}
                   role="row"
-                  className="grid items-center border-b border-[color:color-mix(in_srgb,var(--cp-border)_40%,transparent)]"
+                  className="fb-list-row grid items-center"
                   style={rowStyle}
                 >
                   <div className="py-2 pl-4 pr-2">
@@ -609,10 +623,7 @@ function DesktopListView({
                 key={item.key}
                 role="row"
                 className={clsx(
-                  'fb-list-row grid cursor-pointer items-center border-b border-[color:color-mix(in_srgb,var(--cp-border)_40%,transparent)] transition',
-                  selected
-                    ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))]'
-                    : 'hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,transparent)]',
+                  'fb-list-row fb-row grid cursor-default items-center text-[13px]',
                   (broken || presentation.cutIds?.has(entry.id)) && 'opacity-50',
                 )}
                 style={rowStyle}
@@ -636,42 +647,32 @@ function DesktopListView({
                 onDoubleClick={() => openItem(item)}
                 onContextMenu={handleItemContextMenu(item)}
               >
-                <div role="cell" aria-label={entry.name} className="min-w-0 py-2 pl-4 pr-2">
-                  <div className="flex items-center gap-2">
+                <div role="cell" aria-label={entry.name} className="min-w-0 pl-4 pr-2">
+                  <div className="flex items-center gap-2.5">
                     <input type="checkbox" aria-label={t('filebrowser.operation.selectName', 'Select {{name}}', { name: entry.name })} checked={selected} onClick={(event) => event.stopPropagation()} onChange={() => onSelect(item, { toggle: true })} />
                     <span className="relative inline-flex shrink-0">
                       {entryIcon(entry, 16)}
                       {isReferenceItem(item) ? <LinkBadge size={8} /> : null}
                     </span>
-                    <span className="truncate font-medium text-[color:var(--cp-text)]">
+                    <span className="truncate text-[14px] text-[color:var(--cp-text)]">
                       {entry.name}
                     </span>
-                    {entry.triggersActive ? (
-                      <span
-                        title={t('filebrowser.status.aiActive', 'AI pipeline active')}
-                        className="inline-flex items-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--cp-accent)]"
-                      >
-                        <Wand2 size={10} className="mr-1" /> AI
-                      </span>
-                    ) : null}
+                    {entry.triggersActive ? <AiDot title={t('filebrowser.status.aiActive', 'AI pipeline active')} /> : null}
                   </div>
                 </div>
-                <div role="cell" className="fb-column-kind px-2 py-2 capitalize text-[color:var(--cp-muted)]">
+                <div role="cell" className="fb-column-kind truncate px-2 capitalize text-[color:var(--cp-muted)]">
                   {t(`filebrowser.kind.${entry.kind}`, entry.kind)}
                 </div>
-                <div role="cell" className="fb-column-size px-2 py-2 text-[color:var(--cp-muted)]">
-                  {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes)}
+                <div role="cell" className="fb-column-size px-2 text-[color:var(--cp-muted)]">
+                  {entry.kind === 'folder' ? <span title={t('filebrowser.meta.notCalculated', 'Not calculated')}>—</span> : formatBytes(entry.sizeBytes)}
                 </div>
-                <div role="cell" className="fb-column-modified truncate px-2 py-2 text-[color:var(--cp-muted)]">
+                <div role="cell" className="fb-column-modified truncate px-2 text-[color:var(--cp-muted)]">
                   {formatDate(entry.modifiedAt)}
                 </div>
-                <div role="cell" className="fb-column-tags min-w-0 px-2 py-2">
-                  <div className="flex min-w-0 gap-1 overflow-hidden">
+                <div role="cell" className="fb-column-tags min-w-0 px-2">
+                  <div className="flex min-w-0 gap-2 overflow-hidden text-[12px] text-[color:var(--cp-muted)]">
                     {entry.tags?.slice(0, 2).map((tag) => (
-                      <span
-                        key={tag}
-                        className="min-w-0 truncate rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_16%,var(--cp-surface))] px-2 py-0.5 text-[10px] text-[color:var(--cp-muted)]"
-                      >
+                      <span key={tag} className="min-w-0 truncate">
                         #{tag}
                       </span>
                     ))}
@@ -680,7 +681,7 @@ function DesktopListView({
                 {isPublic ? (
                   <div
                     role="cell"
-                    className="truncate px-2 py-2 font-mono text-[10px] text-[color:var(--cp-accent)]"
+                    className="fb-column-url truncate px-2 font-[family-name:var(--files-mono)] text-[12px] text-[color:var(--cp-muted)]"
                   >
                     {entry.publicUrl ?? '—'}
                   </div>
@@ -805,9 +806,9 @@ function IconGridView({
                   return (
                     <div
                       key={`skeleton-${index}`}
-                      className="flex flex-col items-center gap-2 rounded-[18px] p-3"
+                      className="flex flex-col items-center gap-2 rounded-[12px] p-3"
                     >
-                      <span className="animate-pulse rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" style={{ width: box, height: box }} />
+                      <span className="animate-pulse rounded-[8px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" style={{ width: box, height: box }} />
                       <SkeletonBar width="70%" />
                     </div>
                   )
@@ -884,28 +885,28 @@ function IconGridCell({
           }
           onContextMenu(event)
         }}
+        data-selected={selected}
         className={clsx(
-          'flex h-full w-full flex-col items-center gap-2 rounded-[18px] border border-transparent p-3 text-center transition',
-          selected
-            ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))]'
-            : 'hover:border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_8%,transparent)]',
+          'fb-row flex h-full w-full flex-col items-center gap-2 rounded-[12px] border border-transparent p-3 text-center',
+          selected && 'border-[color:var(--files-selected-line)]',
           (broken || cut) && 'opacity-50',
         )}
       >
         <div className="relative shrink-0" style={{ width: box, height: box }}>
-          <div className="flex size-full items-center justify-center overflow-hidden rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
+          <div className="flex size-full items-center justify-center overflow-hidden rounded-[8px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-2-opaque)]">
             {isLockedEntry(entry) ? entryIcon(entry, Math.round(Math.min(56, box * 0.42))) : <FileThumb entry={entry} source={source} iconSize={Math.round(Math.min(56, box * 0.42))} box={box} marks />}
           </div>
           {isReferenceItem(item) ? <LinkBadge /> : null}
         </div>
         <span
           title={entry.name}
-          className="line-clamp-2 w-full break-words text-[12px] font-medium text-[color:var(--cp-text)]"
+          className="line-clamp-2 w-full break-words text-[13px] leading-[18px] text-[color:var(--cp-text)]"
         >
           {entry.name}
+          {entry.triggersActive ? <span className="ml-1.5 inline-block align-middle"><AiDot title={t('filebrowser.status.aiActive', 'AI pipeline active')} /></span> : null}
         </span>
-        <span className="text-[10px] text-[color:var(--cp-muted)]">
-          {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes)}
+        <span className="text-[12px] tabular-nums text-[color:var(--cp-muted)]">
+          {entry.kind === 'folder' ? '\u00a0' : formatBytes(entry.sizeBytes)}
         </span>
       </button>
       {selectionMode ? (
@@ -915,7 +916,7 @@ function IconGridCell({
             selected ? 'text-[color:var(--cp-accent)]' : 'text-[color:var(--cp-muted)]',
           )}
         >
-          {selected ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+          {selected ? <CheckCircle2 size={20} /> : <Circle size={20} />}
         </span>
       ) : onMenu ? (
         <button
@@ -925,9 +926,9 @@ function IconGridCell({
             event.stopPropagation()
             onMenu()
           }}
-          className="absolute right-0.5 top-0.5 flex h-11 w-11 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
+          className="absolute right-0.5 top-0.5 flex h-11 w-11 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:var(--files-pressed)]"
         >
-          <MoreVertical size={16} />
+          <MoreVertical size={20} />
         </button>
       ) : null}
     </div>
@@ -989,10 +990,10 @@ function MobileListView({
             return (
               <div
                 key={`skeleton-${virtualRow.index}`}
-                className="flex items-center gap-3 px-2.5 py-2"
+                className="flex items-center gap-3 px-2 py-2"
                 style={rowStyle}
               >
-                <span className="h-12 w-12 shrink-0 animate-pulse rounded-[14px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" />
+                <span className="h-11 w-11 shrink-0 animate-pulse rounded-[10px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" />
                 <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                   <SkeletonBar width="48%" />
                   <SkeletonBar width="32%" />
@@ -1064,36 +1065,27 @@ function MobileListRow({
         // Mobile long-press is selection mode, not the browser menu.
         if (onLongPress) event.preventDefault()
       }}
+      data-selected={selected}
       className={clsx(
-        'flex select-none items-center gap-3 rounded-[14px] px-2.5 py-2 text-left transition',
-        selected
-          ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))]'
-          : 'hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,transparent)]',
+        'fb-row flex select-none items-center gap-3 rounded-[12px] px-2 py-2 text-left active:bg-[color:var(--files-pressed)]',
         broken && 'opacity-50',
       )}
     >
-      <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-[14px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
-        {entryIcon(entry, 26)}
+      <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-[color:var(--cp-surface-2-opaque)]">
+        {entryIcon(entry, 24)}
         {isReferenceItem(item) ? <LinkBadge /> : null}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-[13px] font-medium text-[color:var(--cp-text)]">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-[15px] leading-5 text-[color:var(--cp-text)]">
             {entry.name}
           </span>
-          {entry.triggersActive ? (
-            <span
-              title={t('filebrowser.status.aiActive', 'AI pipeline active')}
-              className="inline-flex shrink-0 items-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] px-1.5 py-0.5 text-[9px] font-semibold text-[color:var(--cp-accent)]"
-            >
-              <Wand2 size={9} className="mr-1" /> AI
-            </span>
-          ) : null}
+          {entry.triggersActive ? <AiDot title={t('filebrowser.status.aiActive', 'AI pipeline active')} /> : null}
         </div>
-        <div className="mt-0.5 truncate text-[11px] text-[color:var(--cp-muted)]">
+        <div className="mt-0.5 truncate text-[13px] leading-[18px] tabular-nums text-[color:var(--cp-muted)]">
           {meta}
           {isPublic && entry.publicUrl ? (
-            <span className="ml-1 font-mono text-[color:var(--cp-accent)]">
+            <span className="ml-1 font-[family-name:var(--files-mono)]">
               · {entry.publicUrl}
             </span>
           ) : null}
@@ -1116,9 +1108,9 @@ function MobileListRow({
             event.stopPropagation()
             onMenu()
           }}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:var(--files-pressed)]"
         >
-          <MoreVertical size={18} />
+          <MoreVertical size={20} />
         </button>
       ) : null}
     </div>

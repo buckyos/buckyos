@@ -8,9 +8,11 @@
  */
 
 import { useMediaQuery } from '@mui/material'
-import { ArrowLeft, Copy, FileArchive, FolderDown, KeyRound, Lock, MoreHorizontal, SquareArrowOutUpRight, X } from 'lucide-react'
+import clsx from 'clsx'
+import { ArrowLeft, ChevronRight, Copy, FileArchive, FolderDown, KeyRound, Lock, MoreHorizontal, SquareArrowOutUpRight, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useI18n } from '../../i18n/provider'
+import './files.css'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
 import { MainContent } from '../../app/filebrowser/MainContent'
 import type { FileItem } from '../../app/filebrowser/data/FolderReader'
@@ -183,7 +185,7 @@ export function ArchivePreview({ target, viewerProps, Viewer, onFallback }: Arch
   const askFolderPassword = useCallback(() => setPassword({ name: target.name, url: archiveRootOfUrl(page.url) }), [target.name, page.url])
 
   return (
-    <div className="relative flex h-full w-full flex-col bg-[color:var(--cp-bg)]" data-testid="archive-preview">
+    <div className="files-ui relative flex h-full w-full flex-col bg-[color:var(--cp-surface-opaque)]" data-testid="archive-preview">
       {file ? (
         <Viewer
           key={viewerKey}
@@ -217,9 +219,9 @@ export function ArchivePreview({ target, viewerProps, Viewer, onFallback }: Arch
         />
       )}
       {stale ? (
-        <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-center gap-3 bg-[color:var(--cp-surface)] px-4 py-2 text-sm shadow" role="alert" data-testid="archive-stale">
+        <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-center gap-3 border-b border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-4 py-2 text-[13px]" role="alert" data-testid="archive-stale">
           <span>{t('archive.stale', 'The archive has changed since it was opened.')}</span>
-          <button type="button" className="rounded-full border border-[color:var(--cp-border)] px-3 py-1 text-xs font-semibold" onClick={reopen}>
+          <button type="button" className="files-btn" onClick={reopen}>
             {t('archive.reopen', 'Open again')}
           </button>
         </div>
@@ -227,7 +229,7 @@ export function ArchivePreview({ target, viewerProps, Viewer, onFallback }: Arch
       {password ? <PasswordDialog name={password.name} url={password.url} onUnlocked={unlocked} onCancel={() => setPassword(null)} /> : null}
       {notice ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-6 z-30 flex justify-center" role="status">
-          <span className="rounded-full bg-[color:var(--cp-surface-opaque,var(--cp-surface))] px-4 py-1.5 text-xs shadow">{notice}</span>
+          <span className="files-toast">{notice}</span>
         </div>
       ) : null}
     </div>
@@ -323,21 +325,21 @@ function ArchiveFolder({
 
   return (
     <div className="flex h-full w-full flex-col" data-testid="archive-folder" data-archive-url={page.url}>
-      <header className="flex min-h-12 items-center gap-1 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-2">
+      <header className="flex h-12 shrink-0 items-center gap-1 border-b border-[color:var(--files-hairline)] px-2">
         {canBack ? (
-          <button type="button" aria-label={t('archive.back', 'Back')} title={t('archive.back', 'Back')} onClick={onBack} className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-[color:var(--cp-surface-hover,rgba(0,0,0,0.06))]" data-testid="archive-back">
-            <ArrowLeft size={18} />
+          <button type="button" aria-label={t('archive.back', 'Back')} title={t('archive.back', 'Back')} onClick={onBack} className="files-icon-btn" data-testid="archive-back">
+            <ArrowLeft size={16} />
           </button>
         ) : null}
-        <FileArchive size={16} className="ml-1 shrink-0 text-[color:var(--cp-muted)]" />
-        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-sm" aria-label={name}>
+        <FileArchive size={16} className="ml-1 shrink-0" style={{ color: 'var(--files-type-amber)' }} />
+        <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden pl-1 text-[13px]" aria-label={name}>
           {crumbs.map((crumb, i) => (
-            <span key={crumb.url} className="flex min-w-0 items-center gap-1">
-              {i > 0 ? <span className="text-[color:var(--cp-muted)]">/</span> : null}
+            <span key={crumb.url} className="flex min-w-0 items-center gap-0.5">
+              {i > 0 ? <ChevronRight size={14} className="shrink-0 text-[color:var(--cp-muted)]" /> : null}
               {i === crumbs.length - 1 ? (
-                <span className="truncate font-semibold text-[color:var(--cp-text)]">{i === 0 ? name : crumb.label}</span>
+                <span className="truncate px-1 font-medium text-[color:var(--cp-text)]">{i === 0 ? name : crumb.label}</span>
               ) : (
-                <button type="button" className="truncate text-[color:var(--cp-muted)] hover:underline" onClick={() => onOpenFolder(crumb.url)}>
+                <button type="button" className="h-6 truncate rounded-[6px] px-1 text-[color:var(--cp-muted)] transition-colors hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)]" onClick={() => onOpenFolder(crumb.url)}>
                   {i === 0 ? name : crumb.label}
                 </button>
               )}
@@ -346,45 +348,45 @@ function ArchiveFolder({
         </nav>
         {summary && summary.encrypted_entries > 0 ? <Lock size={14} className="shrink-0 text-[color:var(--cp-muted)]" aria-label={t('archive.encrypted', 'Encrypted')} /> : null}
         <div className="relative">
-          <button type="button" aria-label={t('archive.more', 'More')} onClick={() => setMenu((v) => !v)} className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-[color:var(--cp-surface-hover,rgba(0,0,0,0.06))]" data-testid="archive-menu">
-            <MoreHorizontal size={18} />
+          <button type="button" aria-label={t('archive.more', 'More')} onClick={() => setMenu((v) => !v)} className={clsx('files-icon-btn', menu && 'is-active')} data-testid="archive-menu">
+            <MoreHorizontal size={16} />
           </button>
           {menu ? (
-            <div className="absolute right-0 top-10 z-30 min-w-56 rounded-xl border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] py-1 text-sm shadow-lg" role="menu">
-              <button type="button" role="menuitem" className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[color:var(--cp-surface-hover,rgba(0,0,0,0.06))]" onClick={forget}>
-                <KeyRound size={14} /> {t('archive.forget', 'Forget this archive\'s password')}
+            <div className="absolute right-0 top-10 z-30 min-w-56 rounded-[12px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] p-1 text-[14px] shadow-[var(--cp-panel-shadow)]" role="menu">
+              <button type="button" role="menuitem" className="flex h-9 w-full items-center gap-3 rounded-[8px] px-2 text-left hover:bg-[color:var(--files-hover)]" onClick={forget}>
+                <KeyRound size={16} className="text-[color:var(--cp-muted)]" /> {t('archive.forget', 'Forget this archive\'s password')}
               </button>
             </div>
           ) : null}
         </div>
         {showClose && onClose ? (
-          <button type="button" aria-label={t('common.close', 'Close')} onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-[color:var(--cp-surface-hover,rgba(0,0,0,0.06))]">
-            <X size={18} />
+          <button type="button" aria-label={t('common.close', 'Close')} onClick={onClose} className="files-icon-btn">
+            <X size={16} />
           </button>
         ) : null}
       </header>
       {root && summary && summary.hidden_entries > 0 ? (
-        <p className="px-4 py-1.5 text-xs text-[color:var(--cp-muted)]" data-testid="archive-hidden">
+        <p className="border-b border-[color:var(--files-hairline)] px-4 py-2 text-[12px] text-[color:var(--cp-muted)]" data-testid="archive-hidden">
           {t('archive.hidden', '{{count}} item(s) in this archive cannot be shown (unsafe or duplicate names, or links).', { count: summary.hidden_entries })}
         </p>
       ) : null}
       <div className="min-h-0 flex-1">
         {list.status === 'error' && errorCode !== 'STALE' ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center text-sm text-[color:var(--cp-muted)]" data-testid="archive-error" data-code={errorCode}>
-            <FileArchive size={40} className="opacity-50" />
-            <p className="text-[color:var(--cp-text)]">{errorMessage}</p>
-            <div className="flex gap-2">
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center text-[14px] text-[color:var(--cp-muted)]" data-testid="archive-error" data-code={errorCode}>
+            <FileArchive size={32} strokeWidth={1.5} />
+            <p className="mt-1 text-[16px] font-medium text-[color:var(--cp-text)]">{errorMessage}</p>
+            <div className="mt-1 flex gap-2">
               {errorCode === 'PASSWORD_REQUIRED' ? (
-                <button type="button" onClick={onPassword} className="rounded-full bg-[color:var(--cp-accent)] px-4 py-1.5 font-semibold text-white" data-testid="archive-enter-password">
+                <button type="button" onClick={onPassword} className="files-btn files-btn-primary" data-testid="archive-enter-password">
                   {t('archive.password.enter', 'Enter password')}
                 </button>
               ) : (
-                <button type="button" onClick={() => list.reload()} className="rounded-full border border-[color:var(--cp-border)] px-4 py-1.5 text-[color:var(--cp-text)]">
+                <button type="button" onClick={() => list.reload()} className="files-btn">
                   {t('filebrowser.retry', 'Retry')}
                 </button>
               )}
               {onOpenAsFile ? (
-                <button type="button" onClick={onOpenAsFile} className="rounded-full bg-[color:var(--cp-accent)] px-4 py-1.5 font-semibold text-white" data-testid="archive-open-as-file">
+                <button type="button" onClick={onOpenAsFile} className="files-btn files-btn-primary" data-testid="archive-open-as-file">
                   {t('archive.openAsFile', 'Open as a file')}
                 </button>
               ) : null}
@@ -416,7 +418,7 @@ function ArchiveFolder({
             emptyState={{
               title: crumbs.length <= 1 ? t('archive.empty.title', 'This archive is empty') : t('archive.emptyFolder.title', 'This folder is empty'),
               body: crumbs.length <= 1 ? t('archive.empty.body', 'There are no files in it.') : '',
-              icon: <FileArchive size={40} className="opacity-50" />,
+              icon: <FileArchive size={32} strokeWidth={1.5} />,
             }}
           />
         )}

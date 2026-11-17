@@ -1,5 +1,7 @@
 import clsx from 'clsx'
 import {
+  ChevronDown,
+  ChevronRight,
   Clock,
   Cpu,
   FlaskConical,
@@ -12,9 +14,10 @@ import {
   Lock,
   LockOpen,
   Monitor,
+  Pin,
+  PinOff,
   Plus,
   Share2,
-  Sparkles,
   Star,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -58,47 +61,50 @@ interface SidebarProps {
 function nodeIcon(kind: DfsNode['kind']) {
   switch (kind) {
     case 'public':
-      return <Globe size={14} className="text-[color:var(--cp-success)]" />
+      return <Globe size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
     case 'shared':
-      return <Share2 size={14} className="text-[color:var(--cp-accent)]" />
+      return <Share2 size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
     case 'privacy':
-      return <Lock size={14} className="text-[color:var(--cp-warning)]" />
+      return <Lock size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
     case 'home':
-      return <FolderOpen size={14} className="text-[color:var(--cp-muted)]" />
+      return <FolderOpen size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
     default:
-      return <FolderClosed size={14} className="text-[color:var(--cp-muted)]" />
+      return <FolderClosed size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
   }
 }
 
 function SectionHeader({
-  icon,
   label,
   hint,
+  collapsed,
   action,
 }: {
-  icon: React.ReactNode
   label: string
   hint?: string
+  /** Set for a collapsible section: draws the disclosure chevron. */
+  collapsed?: boolean
   action?: React.ReactNode
 }) {
   return (
-    <div className="flex items-center gap-2 px-2 pb-1.5 pt-3">
-      <span className="text-[color:var(--cp-muted)]">{icon}</span>
-      <span className="shell-kicker !text-[10px]">{label}</span>
+    <div className="flex h-7 items-center gap-2 px-2 pt-4 box-content">
+      <span className="files-label min-w-0 flex-1 truncate">{label}</span>
       {hint ? (
-        <span className="ml-auto text-[10px] text-[color:var(--cp-muted)]">{hint}</span>
+        <span className="text-[12px] tabular-nums text-[color:var(--cp-muted)]">{hint}</span>
       ) : null}
-      {action ? <span className={hint ? '' : 'ml-auto'}>{action}</span> : null}
+      {collapsed !== undefined ? (
+        collapsed ? <ChevronRight size={14} className="shrink-0 text-[color:var(--cp-muted)]" /> : <ChevronDown size={14} className="shrink-0 text-[color:var(--cp-muted)]" />
+      ) : null}
+      {action ? <span className="shrink-0">{action}</span> : null}
     </div>
   )
 }
 
 function SectionSkeleton({ rows = 3 }: { rows?: number }) {
   return (
-    <div className="space-y-1.5 px-2 py-1" data-testid="sidebar-section-skeleton">
+    <div className="space-y-2 px-2 py-2" data-testid="sidebar-section-skeleton">
       {Array.from({ length: rows }, (_, i) => (
         <div key={i} className="flex items-center gap-2">
-          <span className="h-4 w-4 animate-pulse rounded-md bg-[color:color-mix(in_srgb,var(--cp-border)_50%,transparent)]" />
+          <span className="h-4 w-4 animate-pulse rounded-[4px] bg-[color:color-mix(in_srgb,var(--cp-border)_50%,transparent)]" />
           <span
             className="inline-block h-3 animate-pulse rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_50%,transparent)]"
             style={{ width: `${64 - (i % 3) * 14}%` }}
@@ -134,7 +140,7 @@ function SourceSection<T>({
         {state.data.length ? (
           children(state.data)
         ) : (
-          <p className="px-2 py-1 text-[11px] text-[color:var(--cp-muted)]">{empty}</p>
+          <p className="px-2 py-1 text-[12px] leading-4 text-[color:var(--cp-muted)]">{empty}</p>
         )}
       </>
     )
@@ -171,17 +177,12 @@ function navButton({
       onClick={onClick}
       title={title}
       aria-current={active ? 'page' : undefined}
-      className={clsx(
-        'flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition',
-        active
-          ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]'
-          : 'text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]',
-      )}
+      className={clsx('fb-nav-row flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-[14px]', active ? 'font-medium' : 'text-[color:var(--cp-text)]')}
     >
       {icon}
-      <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
       {hint ? (
-        <span className="shrink-0 text-[11px] text-[color:var(--cp-muted)]">{hint}</span>
+        <span className="shrink-0 text-[12px] tabular-nums text-[color:var(--cp-muted)]">{hint}</span>
       ) : null}
     </button>
   )
@@ -214,14 +215,14 @@ export function Sidebar({
   const [activeSection, setActiveSection] = useState<Section | null>(compact ? 'dfs' : null)
 
   const sections: { id: Section; label: string; icon: React.ReactNode }[] = [
-    { id: 'dfs', label: t('filebrowser.sidebar.myFiles', 'My files'), icon: <FolderOpen size={14} /> },
-    { id: 'views', label: t('filebrowser.sidebar.views', 'Views'), icon: <Sparkles size={14} /> },
+    { id: 'dfs', label: t('filebrowser.sidebar.myFiles', 'My files'), icon: <FolderOpen size={16} /> },
+    { id: 'views', label: t('filebrowser.sidebar.views', 'Views'), icon: <Hash size={16} /> },
     {
       id: 'collections',
       label: t('filebrowser.sidebar.collections', 'Collections'),
-      icon: <Library size={14} />,
+      icon: <Library size={16} />,
     },
-    ...(hostInfo ? [{ id: 'devices' as const, label: t('filebrowser.sidebar.devices', 'Devices'), icon: <Cpu size={14} /> }] : []),
+    ...(hostInfo ? [{ id: 'devices' as const, label: t('filebrowser.sidebar.devices', 'Devices'), icon: <Cpu size={16} /> }] : []),
   ]
 
   const goto = (url: string) => {
@@ -233,14 +234,14 @@ export function Sidebar({
     <div className="space-y-0.5">
       {navButton({
         key: 'my-files',
-        icon: <House size={14} className="shrink-0 text-[color:var(--cp-accent)]" />,
+        icon: <House size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
         label: t('filebrowser.sidebar.myFiles', 'My files'),
         active: activeUrl === homeUrl,
         onClick: () => goto(homeUrl),
       })}
       {navButton({
         key: 'recent',
-        icon: <Clock size={14} className="shrink-0 text-[color:var(--cp-accent)]" />,
+        icon: <Clock size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
         label: t('filebrowser.sidebar.recent', 'Recent'),
         active: activeUrl === 'view://recent',
         onClick: () => goto('view://recent'),
@@ -248,26 +249,22 @@ export function Sidebar({
       {pins.map((url) =>
         navButton({
           key: `pin:${url}`,
-          icon: <Star size={14} className="shrink-0 text-[color:var(--cp-warning)]" />,
+          icon: <Star size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
           label: url.split('/').filter(Boolean).at(-1) ?? url,
           title: displayPath(url),
           active: normalizeUrl(url) === activeUrl,
           onClick: () => goto(url),
         }),
       )}
-      <button className="min-h-9 w-full px-2 text-left text-xs text-[color:var(--cp-muted)] underline" onClick={pinCurrent}>{pins.includes(activeUrl) ? t('filebrowser.sidebar.unpin', 'Unpin current folder') : t('filebrowser.sidebar.pin', 'Pin current folder')}</button>
+      <button type="button" className="fb-nav-row flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-[13px] text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]" onClick={pinCurrent}>
+        {pins.includes(activeUrl) ? <PinOff size={16} className="shrink-0" /> : <Pin size={16} className="shrink-0" />}
+        <span className="min-w-0 flex-1 truncate">{pins.includes(activeUrl) ? t('filebrowser.sidebar.unpin', 'Unpin current folder') : t('filebrowser.sidebar.pin', 'Pin current folder')}</span>
+      </button>
     </div>
   )
   // Views — recent + AI topics, all read-only query results.
   const renderViews = (
     <div className="space-y-0.5">
-      {navButton({
-        key: 'view-recent',
-        icon: <Clock size={12} className="shrink-0 text-[color:var(--cp-accent)]" />,
-        label: t('filebrowser.sidebar.recent', 'Recent'),
-        active: activeUrl === 'view://recent',
-        onClick: () => goto('view://recent'),
-      })}
       <SourceSection
         source={topics}
         empty={t('filebrowser.sidebar.topicsEmpty', 'No AI topics yet')}
@@ -277,7 +274,7 @@ export function Sidebar({
             {list.map((topic) =>
               navButton({
                 key: topic.id,
-                icon: <Hash size={12} className="shrink-0 text-[color:var(--cp-accent)]" />,
+                icon: <Hash size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
                 label: topic.title,
                 hint: `${topic.coverageCount}`,
                 active: activeUrl === `view://topic/${topic.id}`,
@@ -289,10 +286,7 @@ export function Sidebar({
       </SourceSection>
       {isMockRuntime() ? (
         <div>
-          <SectionHeader
-            icon={<FlaskConical size={13} />}
-            label={t('filebrowser.sidebar.diagnostics', 'Diagnostics (mock)')}
-          />
+          <SectionHeader label={t('filebrowser.sidebar.diagnostics', 'Diagnostics (mock)')} />
           {(
             [
               ['view://demo/unknown-total', 'Unknown total'],
@@ -302,7 +296,7 @@ export function Sidebar({
           ).map(([url, label]) =>
             navButton({
               key: url,
-              icon: <FlaskConical size={12} className="shrink-0 text-[color:var(--cp-muted)]" />,
+              icon: <FlaskConical size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
               label,
               active: activeUrl === url,
               onClick: () => goto(url),
@@ -318,7 +312,7 @@ export function Sidebar({
       {collections.map((collection) =>
         navButton({
           key: collection.id,
-          icon: <Library size={12} className="shrink-0 text-[color:var(--cp-accent)]" />,
+          icon: <Library size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
           label: collection.title,
           hint: `${collection.refCount}`,
           active: activeUrl.startsWith(collectionUrl(collection.id)),
@@ -328,9 +322,9 @@ export function Sidebar({
       <button
         type="button"
         onClick={onCreateCollection}
-        className="flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]"
+        className="fb-nav-row flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-[13px] text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]"
       >
-        <Plus size={12} className="shrink-0" />
+        <Plus size={16} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">
           {t('filebrowser.sidebar.newCollection', 'New collection…')}
         </span>
@@ -342,7 +336,7 @@ export function Sidebar({
     hostUnlocked && hostRootUrl ? (
       <FolderTree
         key={hostRootUrl}
-        roots={[{ name: hostInfo.label, url: hostRootUrl, defaultExpanded: true, icon: <Monitor size={14} className="shrink-0 text-[color:var(--cp-accent)]" /> }]}
+        roots={[{ name: hostInfo.label, url: hostRootUrl, defaultExpanded: true, icon: <Monitor size={16} className="shrink-0 text-[color:var(--cp-muted)]" /> }]}
         activeUrl={activeUrl}
         openedAt={openedAt}
         onNavigate={goto}
@@ -353,12 +347,12 @@ export function Sidebar({
         type="button"
         data-testid="sidebar-unlock-host"
         onClick={onUnlockHost}
-        className="flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]"
+        className="fb-nav-row flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-[14px] text-[color:var(--cp-text)]"
         title={t('filebrowser.host.unlockHint', 'Confirm your password to see every folder on this computer')}
       >
-        <Monitor size={14} className="shrink-0 text-[color:var(--cp-muted)]" />
-        <span className="min-w-0 flex-1 truncate font-medium">{hostInfo.label}</span>
-        <Lock size={13} className="shrink-0" aria-label={t('filebrowser.host.locked', 'Locked')} />
+        <Monitor size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
+        <span className="min-w-0 flex-1 truncate">{hostInfo.label}</span>
+        <Lock size={14} className="shrink-0 text-[color:var(--cp-muted)]" aria-label={t('filebrowser.host.locked', 'Locked')} />
       </button>
     )
   ) : null
@@ -397,17 +391,18 @@ export function Sidebar({
   if (compact) {
     return (
       <div className="flex h-full w-full flex-col gap-3" data-testid="files-places">
-        <div className="flex gap-1 overflow-x-auto pb-1">
+        <div className="flex gap-1 overflow-x-auto">
           {sections.map((section) => (
             <button
               key={section.id}
               type="button"
+              aria-pressed={activeSection === section.id}
               onClick={() => setActiveSection(section.id)}
               className={clsx(
-                'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold',
+                'flex shrink-0 items-center gap-2 rounded-[8px] px-3 text-[14px]',
                 activeSection === section.id
-                  ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] text-[color:var(--cp-text)]'
-                  : 'border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)] text-[color:var(--cp-muted)]',
+                  ? 'bg-[color:var(--files-pressed)] font-medium text-[color:var(--cp-text)]'
+                  : 'text-[color:var(--cp-muted)]',
               )}
             >
               {section.icon}
@@ -417,7 +412,7 @@ export function Sidebar({
         </div>
         <div className="flex-1 overflow-y-auto pr-1">
           {activeSection === 'dfs' && favorites}
-          {activeSection === 'dfs' && <SectionHeader icon={<FolderOpen size={13} />} label={t('filebrowser.sidebar.folders', 'Folders')} />}
+          {activeSection === 'dfs' && <SectionHeader label={t('filebrowser.sidebar.folders', 'Folders')} />}
           {activeSection ? bodies[activeSection] : null}
         </div>
       </div>
@@ -426,20 +421,19 @@ export function Sidebar({
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden" data-testid="files-places">
-      <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+      <div className="flex-1 space-y-0.5 overflow-y-auto pb-3 pr-1">
         {favorites}
-        <SectionHeader icon={<FolderOpen size={13} />} label={t('filebrowser.sidebar.folders', 'Folders')} />
+        <SectionHeader label={t('filebrowser.sidebar.folders', 'Folders')} />
         {bodies.dfs}
-        <button className="w-full text-left" onClick={() => toggleGroup('topics')} aria-expanded={groups.topics ?? true}><SectionHeader icon={<Sparkles size={13} />} label={t('filebrowser.sidebar.views', 'AI Topics')} hint={`${topics.state.data?.length ?? '…'} ${groups.topics === false ? '›' : '⌄'}`} /></button>
+        <button className="w-full rounded-[8px] text-left" onClick={() => toggleGroup('topics')} aria-expanded={groups.topics ?? true}><SectionHeader label={t('filebrowser.sidebar.views', 'AI Topics')} hint={`${topics.state.data?.length ?? '…'}`} collapsed={groups.topics === false} /></button>
         {(groups.topics ?? true) && renderViews}
-        <button className="w-full text-left" onClick={() => toggleGroup('collections')} aria-expanded={groups.collections ?? true}><SectionHeader icon={<Library size={13} />} label={t('filebrowser.sidebar.collections', 'Collections')} hint={`${collections.length} ${groups.collections === false ? '›' : '⌄'}`} /></button>
+        <button className="w-full rounded-[8px] text-left" onClick={() => toggleGroup('collections')} aria-expanded={groups.collections ?? true}><SectionHeader label={t('filebrowser.sidebar.collections', 'Collections')} hint={`${collections.length}`} collapsed={groups.collections === false} /></button>
         {(groups.collections ?? true) && renderCollections}
         {hostInfo ? (
           <>
             <SectionHeader
-              icon={<Cpu size={13} />}
               label={t('filebrowser.sidebar.devices', 'Devices')}
-              action={hostUnlocked ? <LockOpen size={12} className="text-[color:var(--cp-success)]" aria-label={t('filebrowser.host.unlocked', 'Unlocked')} /> : undefined}
+              action={hostUnlocked ? <LockOpen size={14} className="text-[color:var(--cp-muted)]" aria-label={t('filebrowser.host.unlocked', 'Unlocked')} /> : undefined}
             />
             {renderDevices}
           </>

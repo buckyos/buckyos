@@ -4,6 +4,7 @@
  */
 
 import { FormControlLabel, MenuItem, Radio, RadioGroup, Select, Slider, Switch } from '@mui/material'
+import '../../components/preview/files.css'
 import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useI18n } from '../../i18n/provider'
@@ -14,7 +15,7 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
     <div className="flex items-start justify-between gap-4 py-2">
       <div className="min-w-0">
         <div className="text-[13px] font-medium text-[color:var(--cp-text)]">{label}</div>
-        {hint ? <div className="text-[11px] leading-4 text-[color:var(--cp-muted)]">{hint}</div> : null}
+        {hint ? <div className="mt-0.5 text-[12px] leading-4 text-[color:var(--cp-muted)]">{hint}</div> : null}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -31,14 +32,14 @@ export function PreviewSettingsDialog({ onClose }: { onClose: () => void }) {
       <div
         role="dialog"
         aria-label={t('previewApp.settings.title', 'Preview settings')}
-        className="flex max-h-full w-full max-w-md flex-col rounded-[20px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] shadow-[var(--cp-panel-shadow)]"
+        className="files-ui flex max-h-full w-full max-w-md flex-col rounded-[12px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] shadow-[var(--cp-panel-shadow)]"
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-[color:var(--cp-border)] px-4 py-3">
-          <div className="text-[14px] font-semibold">{t('previewApp.settings.title', 'Preview settings')}</div>
-          <button type="button" onClick={onClose} aria-label={t('common.close', 'Close')} className="rounded-full p-1 hover:bg-[color:var(--cp-surface-2)]">
-            <X size={14} />
+          <div className="text-[16px] font-medium">{t('previewApp.settings.title', 'Preview settings')}</div>
+          <button type="button" onClick={onClose} aria-label={t('common.close', 'Close')} className="files-icon-btn -mr-2">
+            <X size={16} />
           </button>
         </div>
         <div className="desktop-scrollbar flex-1 overflow-y-auto px-4 py-2">
@@ -85,10 +86,10 @@ export function PreviewSettingsDialog({ onClose }: { onClose: () => void }) {
           </Row>
         </div>
         <div className="flex justify-end gap-2 border-t border-[color:var(--cp-border)] px-4 py-3">
-          <button type="button" onClick={() => previewSettingsStore.reset()} className="rounded-full border border-[color:var(--cp-border)] px-3 py-1.5 text-[12px] hover:border-[color:var(--cp-accent)]">
+          <button type="button" onClick={() => previewSettingsStore.reset()} className="files-btn">
             {t('common.reset', 'Reset')}
           </button>
-          <button type="button" onClick={onClose} className="rounded-full bg-[color:var(--cp-accent)] px-4 py-1.5 text-[12px] font-semibold text-white">
+          <button type="button" onClick={onClose} className="files-btn files-btn-primary">
             {t('common.close', 'Close')}
           </button>
         </div>

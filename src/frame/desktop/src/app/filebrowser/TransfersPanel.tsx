@@ -36,16 +36,16 @@ function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (p
     <div className="px-3 py-2" data-testid={`transfer-${task.status}`}>
       <div className="flex items-center gap-2">
         {task.status === 'success' ? (
-          <CheckCircle2 size={14} className="shrink-0 text-[color:var(--cp-success)]" />
+          <CheckCircle2 size={16} className="shrink-0 text-[color:var(--cp-success)]" />
         ) : task.status === 'error' ? (
-          <XCircle size={14} className="shrink-0 text-[color:var(--cp-warning)]" />
+          <XCircle size={16} className="shrink-0 text-[color:var(--files-warning-ink)]" />
         ) : (
-          <Upload size={14} className="shrink-0 text-[color:var(--cp-accent)]" />
+          <Upload size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
         )}
-        <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[color:var(--cp-text)]">
+        <span className="min-w-0 flex-1 truncate text-[13px] text-[color:var(--cp-text)]">
           {task.candidate.name}
         </span>
-        <span className="shrink-0 text-[10px] uppercase tracking-wider text-[color:var(--cp-muted)]">
+        <span className="shrink-0 text-[12px] text-[color:var(--cp-muted)]">
           {t(stage.key, stage.fallback)}
         </span>
         {task.status === 'error' || task.status === 'cancelled' ? (
@@ -54,9 +54,9 @@ function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (p
               type="button"
               onClick={() => transferStore.retry(task.id)}
               aria-label={t('filebrowser.retry', 'Retry')}
-              className="shrink-0 rounded-full p-1 text-[color:var(--cp-muted)] hover:text-[color:var(--cp-accent)]"
+              className="files-icon-btn !h-6 !min-w-6 !p-0"
             >
-              <RotateCcw size={12} />
+              <RotateCcw size={14} />
             </button>
           ) : null
         ) : null}
@@ -65,37 +65,37 @@ function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (p
             type="button"
             onClick={() => transferStore.cancel(task.id)}
             aria-label={t('common.cancel', 'Cancel')}
-            className="shrink-0 rounded-full p-1 text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]"
+            className="files-icon-btn !h-6 !min-w-6 !p-0"
           >
-            <X size={12} />
+            <X size={14} />
           </button>
         ) : (
           <button
             type="button"
             onClick={() => transferStore.dismiss(task.id)}
             aria-label={t('common.close', 'Close')}
-            className="shrink-0 rounded-full p-1 text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]"
+            className="files-icon-btn !h-6 !min-w-6 !p-0"
           >
-            <X size={12} />
+            <X size={14} />
           </button>
         )}
       </div>
-      <button className="mt-1 block min-h-8 max-w-full truncate text-left text-xs underline" onClick={() => onOpenTarget?.(task.committedEntry?.path ?? `${task.targetUrl}/${task.candidate.name}`)}>{task.targetUrl}{task.status === 'success' ? ` · ${t('filebrowser.operation.openLocation', 'Open location')}` : ''}</button>
+      <button type="button" className="mt-0.5 block min-h-6 max-w-full truncate pl-6 text-left text-[12px] text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)] hover:underline" onClick={() => onOpenTarget?.(task.committedEntry?.path ?? `${task.targetUrl}/${task.candidate.name}`)}>{task.targetUrl}{task.status === 'success' ? ` · ${t('filebrowser.operation.openLocation', 'Open location')}` : ''}</button>
       {running ? (
-        <div className="mt-1.5 flex items-center gap-2">
-          <div className="h-1 flex-1 overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_55%,transparent)]">
+        <div className="mt-1.5 flex items-center gap-2 pl-6">
+          <div className="h-1 flex-1 overflow-hidden rounded-[2px] bg-[color:color-mix(in_srgb,var(--cp-border)_55%,transparent)]">
             <div
-              className="h-full rounded-full transition-all"
-              style={{ width: `${percent}%`, background: 'var(--cp-accent)' }}
+              className="h-full w-full origin-left rounded-[2px] transition-transform duration-200"
+              style={{ transform: `scaleX(${percent / 100})`, background: 'var(--cp-accent)' }}
             />
           </div>
-          <span className="shrink-0 text-[10px] text-[color:var(--cp-muted)]">
+          <span className="shrink-0 text-[12px] tabular-nums text-[color:var(--cp-muted)]">
             {formatBytes(task.bytesSent)} / {formatBytes(task.totalBytes)}
           </span>
         </div>
       ) : null}
       {task.status === 'error' && task.error ? (
-        <p className="mt-1 text-[11px] text-[color:var(--cp-warning)]">
+        <p className="mt-1 pl-6 text-[12px] text-[color:var(--files-warning-ink)]">
           {t(task.error.messageKey, task.error.fallback)}
         </p>
       ) : null}
@@ -114,23 +114,22 @@ export function TransfersPanel({ onOpenTarget, mobile = false }: { onOpenTarget?
 
   return (
     <div
-      className="absolute bottom-20 right-3 z-30 w-[min(300px,calc(100%-24px))] overflow-hidden rounded-[18px] border border-[color:var(--cp-border)] shadow-[0_14px_40px_rgba(0,0,0,0.24)]"
-      style={{ background: 'var(--cp-surface)' }}
+      className="absolute bottom-20 right-3 z-30 w-[min(320px,calc(100%-24px))] overflow-hidden rounded-[12px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] shadow-[var(--cp-panel-shadow)]"
       data-testid="transfers-panel"
     >
-      <div className="flex items-center gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-3 py-2">
-        <span className="shell-kicker">
+      <div className="flex h-10 items-center gap-2 border-b border-[color:var(--files-hairline)] px-3">
+        <span className="text-[13px] font-medium text-[color:var(--cp-text)]">
           {t('filebrowser.transfer.title', 'Transfers')}
         </span>
-        <span className="ml-auto text-[10px] text-[color:var(--cp-muted)]">
+        <span className="ml-auto text-[12px] tabular-nums text-[color:var(--cp-muted)]">
           {active
             ? t('filebrowser.transfer.active', '{{count}} active', { count: active })
             : t('filebrowser.transfer.idle', 'idle')}
         </span>
       </div>
-      <button className="min-h-9 w-full px-3 text-left text-xs" onClick={() => setCollapsed(!collapsed)}>{collapsed ? t('filebrowser.transfer.showTasks', 'Show {{count}} tasks', { count: tasks.length }) : t('filebrowser.transfer.collapse', 'Collapse tasks')}</button>
-      {!collapsed && <div className="flex gap-2 px-3 text-xs">{active > 0 && <button className="min-h-9 underline" onClick={() => tasks.forEach(task => transferStore.cancel(task.id))}>{t('filebrowser.transfer.cancelAll', 'Cancel all')}</button>}<button className="min-h-9 underline" onClick={() => tasks.filter((task) => task.status === 'error' && task.error?.retryable !== false).forEach((task) => transferStore.retry(task.id))}>{t('filebrowser.operation.retryFailed', 'Retry failed items')}</button><button className="min-h-9 underline" onClick={() => tasks.filter((task) => task.status === 'success').forEach((task) => transferStore.dismiss(task.id))}>{t('filebrowser.transfer.clearCompleted', 'Clear completed')}</button></div>}
-      {!collapsed && <div className="max-h-[40vh] divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_40%,transparent)] overflow-y-auto">
+      <button type="button" className="fb-row h-9 w-full px-3 text-left text-[13px] text-[color:var(--cp-muted)]" onClick={() => setCollapsed(!collapsed)}>{collapsed ? t('filebrowser.transfer.showTasks', 'Show {{count}} tasks', { count: tasks.length }) : t('filebrowser.transfer.collapse', 'Collapse tasks')}</button>
+      {!collapsed && <div className="flex flex-wrap gap-1 px-2 pb-2">{active > 0 && <button type="button" className="files-btn files-btn-ghost !min-h-7 !px-2 !text-[12px]" onClick={() => tasks.forEach(task => transferStore.cancel(task.id))}>{t('filebrowser.transfer.cancelAll', 'Cancel all')}</button>}<button type="button" className="files-btn files-btn-ghost !min-h-7 !px-2 !text-[12px]" onClick={() => tasks.filter((task) => task.status === 'error' && task.error?.retryable !== false).forEach((task) => transferStore.retry(task.id))}>{t('filebrowser.operation.retryFailed', 'Retry failed items')}</button><button type="button" className="files-btn files-btn-ghost !min-h-7 !px-2 !text-[12px]" onClick={() => tasks.filter((task) => task.status === 'success').forEach((task) => transferStore.dismiss(task.id))}>{t('filebrowser.transfer.clearCompleted', 'Clear completed')}</button></div>}
+      {!collapsed && <div className="max-h-[40vh] divide-y divide-[color:var(--files-hairline)] overflow-y-auto border-t border-[color:var(--files-hairline)]">
         {tasks.map((task) => (
           <TaskRow key={task.id} task={task} onOpenTarget={onOpenTarget} />
         ))}

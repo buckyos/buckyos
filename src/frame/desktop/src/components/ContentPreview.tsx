@@ -15,6 +15,7 @@
  */
 
 import { Menu, MenuItem } from '@mui/material'
+import './preview/files.css'
 import clsx from 'clsx'
 import {
   AlertTriangle,
@@ -1230,7 +1231,7 @@ function ContentViewer(props: ContentPreviewProps) {
       aria-busy={status === 'resolving' || status === 'converting' || status === 'rendering'}
       tabIndex={0}
       className={clsx(
-        'relative isolate flex h-full w-full min-h-0 select-none overflow-hidden bg-[color:var(--cp-bg-strong)] text-[color:var(--cp-text)] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--cp-focus-ring)]',
+        'files-ui relative isolate flex h-full w-full min-h-0 select-none overflow-hidden bg-[color:var(--cp-bg-strong)] text-[color:var(--cp-text)] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--cp-focus-ring)]',
         className,
       )}
       style={style}
@@ -1306,17 +1307,15 @@ function ContentViewer(props: ContentPreviewProps) {
             aria-hidden={!showToolbar}
             inert={!showToolbar}
             className={clsx(
-              'absolute left-1/2 top-2 z-20 flex max-w-[calc(100%-16px)] -translate-x-1/2 items-center gap-0.5 rounded-full border px-1 py-1',
+              'absolute left-1/2 top-2 z-20 flex max-w-[calc(100%-16px)] -translate-x-1/2 items-center gap-0.5 rounded-[12px] border p-1',
               !showToolbar && 'pointer-events-none',
             )}
             style={{
               opacity: showToolbar ? 1 : 0,
               transition,
-              borderColor: 'color-mix(in srgb, var(--cp-border) 85%, transparent)',
-              background: 'color-mix(in srgb, var(--cp-surface-opaque) 80%, transparent)',
-              backdropFilter: 'blur(14px) saturate(1.3)',
-              WebkitBackdropFilter: 'blur(14px) saturate(1.3)',
-              boxShadow: '0 6px 20px color-mix(in srgb, var(--cp-shadow, #000) 16%, transparent)',
+              borderColor: 'var(--files-hairline)',
+              background: 'var(--cp-surface-opaque)',
+              boxShadow: 'var(--files-float-shadow)',
             }}
             onPointerLeave={showUi}
             onFocus={(event) => holdUi('focus', event.target.matches(':focus-visible'))}
@@ -1331,11 +1330,11 @@ function ContentViewer(props: ContentPreviewProps) {
             ) : null}
             {!titleInHost ? (
               <div className="min-w-0 max-w-[260px] shrink px-1.5" title={displayName}>
-                <div className="truncate text-[13px] font-medium" data-testid="content-preview-title">
+                <div className="truncate text-[13px] font-medium leading-4" data-testid="content-preview-title">
                   {displayName}
                 </div>
                 {sessionCount > 1 ? (
-                  <div className="text-[11px] leading-4 text-[color:var(--cp-muted)]" data-testid="content-preview-counter">
+                  <div className="text-[12px] leading-4 tabular-nums text-[color:var(--cp-muted)]" data-testid="content-preview-counter">
                     {t('preview.counter', '{{index}} of {{count}}', { index: index + 1, count: sessionCount })}
                   </div>
                 ) : null}
@@ -1349,11 +1348,11 @@ function ContentViewer(props: ContentPreviewProps) {
             {capabilities.zoom && toolbarLayout !== 'tiny' ? (
               <div className="flex shrink-0 items-center">
                 <ToolButton label={t('preview.action.zoomOut', 'Zoom out')} shortcut="-" onClick={zoomOut} testId="content-preview-zoom-out">
-                  <ZoomOut size={15} />
+                  <ZoomOut size={16} />
                 </ToolButton>
                 <button
                   type="button"
-                  className="h-8 min-w-[44px] rounded-full px-1 text-[11px] font-medium tabular-nums text-[color:var(--cp-text)] hover:bg-[color:color-mix(in_srgb,var(--cp-surface-2)_90%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)]"
+                  className="h-8 min-w-[48px] rounded-[8px] px-1 text-[12px] font-medium tabular-nums text-[color:var(--cp-text)] transition-colors hover:bg-[color:var(--files-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)]"
                   onClick={fitToView}
                   title={t('preview.action.fit', 'Fit to view')}
                   data-testid="content-preview-zoom-level"
@@ -1361,7 +1360,7 @@ function ContentViewer(props: ContentPreviewProps) {
                   {zoomPercent !== null ? `${zoomPercent}%` : '—'}
                 </button>
                 <ToolButton label={t('preview.action.zoomIn', 'Zoom in')} shortcut="+" onClick={zoomIn} testId="content-preview-zoom-in">
-                  <ZoomIn size={15} />
+                  <ZoomIn size={16} />
                 </ToolButton>
                 {capabilities.pan && toolbarLayout === 'full' ? (
                   <ToolButton
@@ -1369,7 +1368,7 @@ function ContentViewer(props: ContentPreviewProps) {
                     shortcut={imageView?.mode === 'fit' ? '1' : '0'}
                     onClick={imageView?.mode === 'fit' ? actualSize : fitToView}
                   >
-                    {imageView?.mode === 'fit' ? <Maximize2 size={15} /> : <Minimize2 size={15} />}
+                    {imageView?.mode === 'fit' ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
                   </ToolButton>
                 ) : null}
               </div>
@@ -1378,29 +1377,29 @@ function ContentViewer(props: ContentPreviewProps) {
               <>
                 {capabilities.rotate ? (
                   <ToolButton label={t('preview.action.rotate', 'Rotate')} shortcut="R" onClick={rotate} testId="content-preview-rotate">
-                    <RotateCw size={15} />
+                    <RotateCw size={16} />
                   </ToolButton>
                 ) : null}
                 {capabilities.search ? (
                   <ToolButton label={t('preview.action.find', 'Find')} shortcut={`${MOD_KEY}+F`} onClick={() => setFindOpen(true)} testId="content-preview-find">
-                    <Search size={15} />
+                    <Search size={16} />
                   </ToolButton>
                 ) : null}
                 <ToolButton label={t('preview.action.info', 'Info')} shortcut="I" onClick={() => setInfoOpen((v) => !v)} active={infoOpen} testId="content-preview-info">
-                  <Info size={15} />
+                  <Info size={16} />
                 </ToolButton>
               </>
             ) : null}
             {capabilities.share ? (
               <ToolButton label={t('preview.action.share', 'Share')} onClick={requestShare} testId="content-preview-share">
-                <Share2 size={15} />
+                <Share2 size={16} />
               </ToolButton>
             ) : null}
             {toolbarLayout === 'full' ? (
               <>
                 {capabilities.openWith ? (
                   <ToolButton label={t('preview.action.openWith', 'Open with…')} onClick={requestOpenWith} testId="content-preview-open-with">
-                    <ExternalLink size={15} />
+                    <ExternalLink size={16} />
                   </ToolButton>
                 ) : null}
                 {toolbarHostActions.map((action) => (
@@ -1411,7 +1410,7 @@ function ContentViewer(props: ContentPreviewProps) {
                     onClick={() => runHostAction(action)}
                     testId={`content-preview-host-${action.id}`}
                   >
-                    {action.icon ?? <span className="px-1 text-[11px]">{action.label}</span>}
+                    {action.icon ?? <span className="px-1 text-[12px]">{action.label}</span>}
                   </ToolButton>
                 ))}
                 <ToolButton
@@ -1420,68 +1419,68 @@ function ContentViewer(props: ContentPreviewProps) {
                   active={toolbarPinned}
                   testId="content-preview-pin-toolbar"
                 >
-                  {toolbarPinned ? <PinOff size={15} /> : <Pin size={15} />}
+                  {toolbarPinned ? <PinOff size={16} /> : <Pin size={16} />}
                 </ToolButton>
               </>
             ) : null}
             <ToolButton label={t('preview.action.more', 'More')} onClick={(event) => setMenuAnchor(event.currentTarget)} testId="content-preview-more">
-              <MoreHorizontal size={15} />
+              <MoreHorizontal size={16} />
             </ToolButton>
             <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => setMenuAnchor(null)}>
               {toolbarLayout !== 'full'
                 ? [
                     capabilities.zoom && toolbarLayout === 'tiny' ? (
                       <MenuItem key="fit" onClick={() => closeMenuThen(fitToView)} data-testid="content-preview-menu-fit">
-                        <Minimize2 size={14} className="mr-2" /> {t('preview.action.fit', 'Fit to view')}
+                        <Minimize2 size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.fit', 'Fit to view')}
                       </MenuItem>
                     ) : null,
                     capabilities.rotate ? (
                       <MenuItem key="rotate" onClick={() => closeMenuThen(rotate)} data-testid="content-preview-menu-rotate">
-                        <RotateCw size={14} className="mr-2" /> {t('preview.action.rotate', 'Rotate')}
+                        <RotateCw size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.rotate', 'Rotate')}
                       </MenuItem>
                     ) : null,
                     capabilities.search ? (
                       <MenuItem key="find" onClick={() => closeMenuThen(() => setFindOpen(true))} data-testid="content-preview-menu-find">
-                        <Search size={14} className="mr-2" /> {t('preview.action.find', 'Find')}
+                        <Search size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.find', 'Find')}
                       </MenuItem>
                     ) : null,
                     <MenuItem key="info" onClick={() => closeMenuThen(() => setInfoOpen((v) => !v))} data-testid="content-preview-menu-info">
-                      <Info size={14} className="mr-2" /> {t('preview.action.info', 'Info')}
+                      <Info size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.info', 'Info')}
                     </MenuItem>,
                     capabilities.openWith ? (
                       <MenuItem key="open-with" onClick={() => closeMenuThen(requestOpenWith)} data-testid="content-preview-menu-open-with">
-                        <ExternalLink size={14} className="mr-2" /> {t('preview.action.openWith', 'Open with…')}
+                        <ExternalLink size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.openWith', 'Open with…')}
                       </MenuItem>
                     ) : null,
                     ...toolbarHostActions.map((action) => (
                       <MenuItem key={action.id} disabled={action.disabled} onClick={() => closeMenuThen(() => runHostAction(action))} data-testid={`content-preview-menu-${action.id}`}>
-                        {action.icon ? <span className="mr-2 inline-flex">{action.icon}</span> : null}
+                        {action.icon ? <span className="mr-3 inline-flex text-[color:var(--cp-muted)]">{action.icon}</span> : null}
                         {action.label}
                       </MenuItem>
                     )),
                     <MenuItem key="pin-toolbar" onClick={() => closeMenuThen(toggleToolbarPin)} data-testid="content-preview-menu-pin-toolbar">
-                      {toolbarPinned ? <PinOff size={14} className="mr-2" /> : <Pin size={14} className="mr-2" />}
+                      {toolbarPinned ? <PinOff size={16} className="mr-3 text-[color:var(--cp-muted)]" /> : <Pin size={16} className="mr-3 text-[color:var(--cp-muted)]" />}
                       {toolbarPinned ? t('preview.action.unpinToolbar', 'Hide the toolbar when idle') : t('preview.action.pinToolbar', 'Keep the toolbar shown')}
                     </MenuItem>,
                   ]
                 : null}
               {capabilities.export ? (
                 <MenuItem onClick={() => closeMenuThen(downloadCurrent)}>
-                  <Download size={14} className="mr-2" /> {t('preview.action.download', 'Download original')}
+                  <Download size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.download', 'Download original')}
                 </MenuItem>
               ) : null}
               <MenuItem onClick={() => closeMenuThen(copySource)}>
-                <Copy size={14} className="mr-2" /> {t('preview.action.copySource', 'Copy path / object id')}
+                <Copy size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.copySource', 'Copy path / object id')}
               </MenuItem>
               {capabilities.fullscreen ? (
                 <MenuItem onClick={() => closeMenuThen(toggleFullscreen)}>
-                  <Fullscreen size={14} className="mr-2" /> {isFullscreen ? t('preview.action.exitFullscreen', 'Exit fullscreen') : t('preview.action.fullscreen', 'Fullscreen')}
-                  <span className="ml-auto pl-4 text-[11px] text-[color:var(--cp-muted)]">F</span>
+                  <Fullscreen size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {isFullscreen ? t('preview.action.exitFullscreen', 'Exit fullscreen') : t('preview.action.fullscreen', 'Fullscreen')}
+                  <kbd className="ml-auto min-w-5 rounded-[4px] border border-[color:var(--cp-border)] px-1 pl-1 text-center font-sans text-[11px] leading-4 text-[color:var(--cp-muted)]">F</kbd>
                 </MenuItem>
               ) : null}
               {overflowHostActions.map((action) => (
                 <MenuItem key={action.id} disabled={action.disabled} onClick={() => closeMenuThen(() => runHostAction(action))} data-testid={`content-preview-menu-${action.id}`}>
-                  {action.icon ? <span className="mr-2 inline-flex">{action.icon}</span> : null}
+                  {action.icon ? <span className="mr-3 inline-flex text-[color:var(--cp-muted)]">{action.icon}</span> : null}
                   {action.label}
                 </MenuItem>
               ))}
@@ -1508,7 +1507,7 @@ function ContentViewer(props: ContentPreviewProps) {
         {/* Fidelity note (Pipeline results, §6.4) */}
         {status === 'ready' && current?.result?.fidelityNote && showToolbar ? (
           <div
-            className="pointer-events-none absolute left-1/2 top-[52px] z-10 max-w-[80%] -translate-x-1/2 rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_86%,transparent)] px-3 py-1 text-[11px] text-[color:var(--cp-muted)] shadow"
+            className="pointer-events-none absolute left-1/2 top-[56px] z-10 max-w-[80%] -translate-x-1/2 rounded-[8px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-3 py-1 text-[12px] text-[color:var(--cp-muted)]"
             style={{ transition }}
             data-testid="content-preview-fidelity"
           >
@@ -1576,8 +1575,8 @@ function ToolButton({
       data-testid={testId}
       onClick={onClick}
       className={clsx(
-        'inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full px-1.5 text-[color:var(--cp-text)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-surface-2)_90%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)] disabled:opacity-40',
-        active && 'bg-[color:color-mix(in_srgb,var(--cp-accent)_22%,transparent)] text-[color:var(--cp-accent)]',
+        'inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-[8px] px-1.5 text-[color:var(--cp-text)] transition-colors hover:bg-[color:var(--files-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)] disabled:opacity-40',
+        active && 'bg-[color:var(--files-pressed)]',
       )}
     >
       {children}
@@ -1586,7 +1585,7 @@ function ToolButton({
 }
 
 function ToolbarDivider() {
-  return <span aria-hidden="true" className="mx-0.5 h-5 w-px shrink-0 bg-[color:color-mix(in_srgb,var(--cp-border)_90%,transparent)]" />
+  return <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-[color:var(--files-hairline)]" />
 }
 
 function EdgeNav({
@@ -1612,13 +1611,13 @@ function EdgeNav({
       data-testid={side === 'left' ? 'content-preview-prev' : 'content-preview-next'}
       onClick={onClick}
       className={clsx(
-        'absolute top-1/2 z-10 flex h-14 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_80%,transparent)] text-[color:var(--cp-text)] shadow hover:bg-[color:var(--cp-surface-opaque)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)] disabled:opacity-25',
-        side === 'left' ? 'left-2' : 'right-2',
+        'absolute top-1/2 z-10 flex h-12 w-10 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[color:var(--files-hairline)] bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_92%,transparent)] text-[color:var(--cp-text)] shadow-[var(--files-float-shadow)] transition-colors hover:bg-[color:var(--cp-surface-opaque)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)] disabled:opacity-25',
+        side === 'left' ? 'left-3' : 'right-3',
         !visible && 'pointer-events-none',
       )}
       style={{ opacity: visible ? 1 : 0, transition }}
     >
-      {side === 'left' ? <ChevronLeft size={22} /> : <ChevronRight size={22} />}
+      {side === 'left' ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
     </button>
   )
 }
@@ -1647,11 +1646,11 @@ function FindBar({
   }, [])
   return (
     <div
-      className="absolute right-3 top-12 z-30 flex items-center gap-1 rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] px-2 py-1 shadow"
+      className="absolute right-3 top-14 z-30 flex items-center gap-1 rounded-[10px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] py-1 pl-3 pr-1 shadow-[var(--files-float-shadow)]"
       data-testid="content-preview-findbar"
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <Search size={13} className="text-[color:var(--cp-muted)]" />
+      <Search size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
       <input
         ref={inputRef}
         value={query}
@@ -1664,19 +1663,19 @@ function FindBar({
         }}
         placeholder={t('preview.find.placeholder', 'Find in text')}
         aria-label={t('preview.find.placeholder', 'Find in text')}
-        className="w-40 bg-transparent text-[12px] text-[color:var(--cp-text)] outline-none placeholder:text-[color:var(--cp-muted)]"
+        className="w-40 bg-transparent px-1 text-[13px] text-[color:var(--cp-text)] outline-none placeholder:text-[color:var(--cp-muted)]"
       />
-      <span className="min-w-[48px] text-center text-[11px] tabular-nums text-[color:var(--cp-muted)]" data-testid="content-preview-find-count">
+      <span className="min-w-[48px] text-center text-[12px] tabular-nums text-[color:var(--cp-muted)]" data-testid="content-preview-find-count">
         {query ? `${count === 0 ? 0 : active + 1} / ${count}` : ''}
       </span>
       <ToolButton label={t('preview.find.previous', 'Previous match')} onClick={() => onStep(-1)} disabled={count === 0}>
-        <ChevronLeft size={14} />
+        <ChevronLeft size={16} />
       </ToolButton>
       <ToolButton label={t('preview.find.next', 'Next match')} onClick={() => onStep(1)} disabled={count === 0}>
-        <ChevronRight size={14} />
+        <ChevronRight size={16} />
       </ToolButton>
       <ToolButton label={t('common.close', 'Close')} onClick={onClose}>
-        <X size={14} />
+        <X size={16} />
       </ToolButton>
     </div>
   )
@@ -1704,17 +1703,17 @@ function StatusOverlay({
   const percent = progress?.total ? Math.round(((progress.completed ?? 0) / progress.total) * 100) : null
   return (
     <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center" data-testid="content-preview-loading" data-phase={status}>
-      <div className="flex min-w-[220px] flex-col items-center gap-3 rounded-2xl bg-[color:color-mix(in_srgb,var(--cp-surface-opaque)_88%,transparent)] px-6 py-5 shadow-[var(--cp-panel-shadow)]">
-        <Loader2 size={22} className={clsx('text-[color:var(--cp-accent)]', !reducedMotion && 'animate-spin')} />
+      <div className="flex min-w-[220px] flex-col items-center gap-3 rounded-[12px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-6 py-5 shadow-[var(--files-float-shadow)]">
+        <Loader2 size={20} className={clsx('text-[color:var(--cp-muted)]', !reducedMotion && 'animate-spin')} />
         <div className="text-[13px] font-medium">
           {converting ? t('preview.status.preparing', 'Preparing preview') : t('preview.status.loading', 'Loading')}
         </div>
-        {converting && progress?.message ? <div className="text-[11px] text-[color:var(--cp-muted)]">{progress.message}</div> : null}
+        {converting && progress?.message ? <div className="text-[12px] text-[color:var(--cp-muted)]">{progress.message}</div> : null}
         {converting ? (
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)]" role="progressbar" aria-valuenow={percent ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+          <div className="h-1 w-full overflow-hidden rounded-[2px] bg-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)]" role="progressbar" aria-valuenow={percent ?? undefined} aria-valuemin={0} aria-valuemax={100}>
             <div
-              className={clsx('h-full rounded-full bg-[color:var(--cp-accent)]', percent === null && !reducedMotion && 'animate-pulse')}
-              style={{ width: percent === null ? '40%' : `${percent}%`, transition: reducedMotion ? 'none' : 'width 200ms ease' }}
+              className="h-full w-full origin-left rounded-[2px] bg-[color:var(--cp-accent)]"
+              style={{ transform: `scaleX(${percent === null ? 0.4 : percent / 100})`, transition: reducedMotion ? 'none' : 'transform 200ms var(--cp-ease-smooth)' }}
             />
           </div>
         ) : null}
@@ -1741,7 +1740,7 @@ function ErrorState({
   onInfo?: () => void
 }) {
   const icon =
-    error.kind === 'permission-denied' ? <Lock size={28} /> : error.kind === 'corrupted' ? <FileX size={28} /> : error.kind === 'unsupported' ? <FileQuestion size={28} /> : <AlertTriangle size={28} />
+    error.kind === 'permission-denied' ? <Lock size={32} strokeWidth={1.5} /> : error.kind === 'corrupted' ? <FileX size={32} strokeWidth={1.5} /> : error.kind === 'unsupported' ? <FileQuestion size={32} strokeWidth={1.5} /> : <AlertTriangle size={32} strokeWidth={1.5} />
   const title =
     error.kind === 'permission-denied'
       ? t('preview.error.permission', 'You need access to view this content')
@@ -1758,31 +1757,31 @@ function ErrorState({
   return (
     <div className="absolute inset-0 z-10 flex items-center justify-center p-6" data-testid="content-preview-error" data-error-kind={error.kind} role="alert">
       <div className="flex max-w-md flex-col items-center gap-3 text-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)] text-[color:var(--cp-muted)]">{icon}</div>
-        <div className="text-[15px] font-semibold">{title}</div>
+        <div className="text-[color:var(--cp-muted)]">{icon}</div>
+        <div className="mt-1 text-[16px] font-medium">{title}</div>
         {contentLabel && error.kind !== 'permission-denied' ? (
-          <div className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)] px-2.5 py-0.5 font-mono text-[11px] text-[color:var(--cp-muted)]">{contentLabel}</div>
+          <div className="font-[family-name:var(--files-mono)] text-[12px] text-[color:var(--cp-muted)]">{contentLabel}</div>
         ) : null}
-        {detail ? <div className="text-[12px] leading-5 text-[color:var(--cp-muted)]">{detail}</div> : null}
+        {detail ? <div className="text-[13px] leading-5 text-[color:var(--cp-muted)]">{detail}</div> : null}
         <div className="mt-1 flex flex-wrap justify-center gap-2">
           {onRetry ? (
             <ActionChip onClick={onRetry} testId="content-preview-retry">
-              <RefreshCw size={13} /> {t('common.retry', 'Retry')}
+              <RefreshCw size={16} /> {t('common.retry', 'Retry')}
             </ActionChip>
           ) : null}
           {onOpenWith ? (
             <ActionChip onClick={onOpenWith} testId="content-preview-error-open-with">
-              <ExternalLink size={13} /> {t('preview.action.openWith', 'Open with…')}
+              <ExternalLink size={16} /> {t('preview.action.openWith', 'Open with…')}
             </ActionChip>
           ) : null}
           {onDownload ? (
             <ActionChip onClick={onDownload}>
-              <Download size={13} /> {t('preview.action.download', 'Download original')}
+              <Download size={16} /> {t('preview.action.download', 'Download original')}
             </ActionChip>
           ) : null}
           {onInfo ? (
             <ActionChip onClick={onInfo}>
-              <Info size={13} /> {t('preview.action.info', 'Info')}
+              <Info size={16} /> {t('preview.action.info', 'Info')}
             </ActionChip>
           ) : null}
         </div>
@@ -1797,7 +1796,7 @@ function ActionChip({ onClick, children, testId }: { onClick: () => void; childr
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] px-3 py-1.5 text-[12px] font-medium text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)] hover:text-[color:var(--cp-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-focus-ring)]"
+      className="files-btn"
     >
       {children}
     </button>
@@ -1846,17 +1845,17 @@ function InfoPanel({
   if (item) {
     rows.push([
       t('preview.info.source', 'Source'),
-      <button type="button" onClick={onCopy} className="inline-flex max-w-full items-start gap-1 text-left font-mono text-[11px] text-[color:var(--cp-accent)] hover:underline" title={t('common.copy', 'Copy')}>
+      <button type="button" onClick={onCopy} className="inline-flex max-w-full items-start gap-1 text-left font-[family-name:var(--files-mono)] text-[12px] text-[color:var(--files-link)] hover:underline" title={t('common.copy', 'Copy')}>
         <span className="break-all">{sourceLabel(item.source)}</span>
-        <Copy size={11} className="mt-0.5 shrink-0" />
+        <Copy size={14} className="mt-0.5 shrink-0" />
       </button>,
     ])
   }
-  if (resolved?.inputObjectId) rows.push([t('preview.info.objectId', 'Object ID'), <span className="break-all font-mono text-[11px]">{resolved.inputObjectId}</span>])
+  if (resolved?.inputObjectId) rows.push([t('preview.info.objectId', 'Object ID'), <span className="break-all font-[family-name:var(--files-mono)] text-[12px]">{resolved.inputObjectId}</span>])
   if (resolved?.sourceObjectId && resolved.sourceObjectId !== resolved.inputObjectId) {
-    rows.push([t('preview.info.sourceObject', 'Source object'), <span className="break-all font-mono text-[11px]">{resolved.sourceObjectId}</span>])
+    rows.push([t('preview.info.sourceObject', 'Source object'), <span className="break-all font-[family-name:var(--files-mono)] text-[12px]">{resolved.sourceObjectId}</span>])
   }
-  if (resolved?.versionToken) rows.push([t('preview.info.version', 'Version'), <span className="font-mono text-[11px]">{resolved.versionToken}</span>])
+  if (resolved?.versionToken) rows.push([t('preview.info.version', 'Version'), <span className="font-[family-name:var(--files-mono)] text-[12px]">{resolved.versionToken}</span>])
   if (session && item) {
     rows.push([
       t('preview.info.session', 'Session'),
@@ -1870,20 +1869,20 @@ function InfoPanel({
   }
   return (
     <aside
-      className="z-30 flex w-[300px] max-w-full shrink-0 flex-col border-l border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)]"
+      className="z-30 flex w-[320px] max-w-full shrink-0 flex-col border-l border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)]"
       data-testid="content-preview-info-panel"
       aria-label={t('preview.action.info', 'Info')}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <div className="flex items-center justify-between border-b border-[color:var(--cp-border)] px-3 py-2">
-        <span className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--cp-muted)]">{t('preview.action.info', 'Info')}</span>
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-[color:var(--files-hairline)] pl-4 pr-1">
+        <span className="files-label">{t('preview.action.info', 'Info')}</span>
         <ToolButton label={t('common.close', 'Close')} onClick={onClose}>
-          <X size={14} />
+          <X size={16} />
         </ToolButton>
       </div>
-      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
+      <div className="flex-1 space-y-2 overflow-y-auto px-4 py-4">
         {rows.map(([label, value]) => (
-          <div key={label} className="grid grid-cols-[84px_1fr] items-start gap-2 text-[12px] leading-5">
+          <div key={label} className="grid grid-cols-[96px_1fr] items-start gap-2 text-[13px] leading-5 tabular-nums">
             <span className="text-[color:var(--cp-muted)]">{label}</span>
             <span className="min-w-0 select-text break-words text-[color:var(--cp-text)]">{value}</span>
           </div>
@@ -2394,7 +2393,7 @@ function TextRenderer({
       {text?.truncated ? (
         // Bottom edge: never under the toolbar, never over the first lines (§15.2 progressive reads).
         <div
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 border-t border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,var(--cp-surface-opaque))] px-4 py-1.5 text-center text-[11px] text-[color:var(--cp-text)]"
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 border-t border-[color:var(--files-hairline)] bg-[color:color-mix(in_srgb,var(--cp-warning)_16%,var(--cp-surface-opaque))] px-4 py-2 text-center text-[12px] tabular-nums text-[color:var(--cp-text)]"
           data-testid="content-preview-text-truncated"
         >
           {t('preview.text.truncated', 'Showing the first {{shown}} of {{total}}', {
@@ -2579,10 +2578,10 @@ function MediaRenderer({
   }
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 p-6" data-testid="content-preview-audio-stage">
-      <div className="flex h-28 w-28 items-center justify-center rounded-[36px] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_30%,var(--cp-surface))] text-[color:var(--cp-accent)]">
-        <Music size={44} />
+      <div className="flex h-24 w-24 items-center justify-center rounded-[16px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)]" style={{ color: 'var(--files-type-violet)' }}>
+        <Music size={40} strokeWidth={1.5} />
       </div>
-      <div className="max-w-md truncate text-[14px] font-medium">{title}</div>
+      <div className="max-w-md truncate text-[15px] font-medium">{title}</div>
       <audio
         ref={(el) => {
           elementRef.current = el

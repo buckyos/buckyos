@@ -55,8 +55,8 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   const [openWithState, setOpenWithState] = useState<{ requestId: string; request: PreviewOpenWithRequest } | null>(null)
   const previewRef = useRef<ContentPreviewHandle | null>(null)
   const systemDialog = useSystemDialog()
-  const [mobileTitle, setMobileTitle] = useState<{ requestId: string; title: string } | null>(null)
-  useMobileTitleOverride(isMobile && mobileTitle?.requestId === payload?.requestId && mobileTitle ? { title: mobileTitle.title } : null)
+  const [mobileTitle, setMobileTitle] = useState<{ requestId: string; title: string; subtitle: string } | null>(null)
+  useMobileTitleOverride(isMobile && mobileTitle?.requestId === payload?.requestId && mobileTitle ? { title: mobileTitle.title, subtitle: mobileTitle.subtitle } : null)
 
   useEffect(() => {
     if (windowId && payload) previewWindowManager.register(windowId, payload)
@@ -115,7 +115,7 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
       {
         id: 'open-new-window',
         label: t('previewApp.action.newWindow', 'Open in new window'),
-        icon: <AppWindow size={15} />,
+        icon: <AppWindow size={16} />,
         placement: 'toolbar',
         onInvoke: ({ item }) => {
           openPreviewInNewWindow({
@@ -130,14 +130,14 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
       {
         id: 'pin',
         label: pinned ? t('previewApp.action.unpin', 'Stop keeping this window') : t('previewApp.action.pin', 'Keep this window (for comparison)'),
-        icon: <Columns2 size={14} className={pinned ? 'text-[color:var(--cp-accent)]' : undefined} />,
+        icon: <Columns2 size={16} />,
         placement: 'overflow',
         onInvoke: () => togglePin(),
       },
       {
         id: 'settings',
         label: t('previewApp.action.settings', 'Preview settings…'),
-        icon: <Settings2 size={14} />,
+        icon: <Settings2 size={16} />,
         placement: 'overflow',
         onInvoke: () => setSettingsOpen(true),
       },
@@ -183,9 +183,9 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
         onItemChanged={(item) => {
           // Open with… belongs to the item it was asked for.
           setOpenWithState((prev) => (prev && refIdentity(prev.request.item.source) !== refIdentity(item.source) ? null : prev))
-          setMobileTitle({ requestId: payload.requestId, title: item.title })
+          setMobileTitle({ requestId: payload.requestId, title: item.title, subtitle: item.count > 1 ? t('preview.counter', '{{index}} of {{count}}', { index: item.index + 1, count: item.count }) : '' })
           if (!windowId) return
-          desktopUIStore.updateWindow(windowId, { title: pinned ? `📌 ${item.title}` : item.title })
+          desktopUIStore.updateWindow(windowId, { title: pinned ? `${item.title} · ${t('previewApp.kept', 'Kept')}` : item.title })
           previewWindowManager.touch(windowId, { currentKey: refIdentity(item.source) })
         }}
         onReady={(info) => {

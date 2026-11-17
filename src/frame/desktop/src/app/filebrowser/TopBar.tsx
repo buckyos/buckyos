@@ -1,12 +1,10 @@
 import clsx from 'clsx'
 import {
   Divider,
-  IconButton,
   ListItemIcon,
   ListItemText,
   Menu,
   MenuItem,
-  TextField,
   Tooltip,
 } from '@mui/material'
 import {
@@ -122,11 +120,7 @@ function ToolbarIconButton({
           disabled={disabled}
           onClick={onClick}
           aria-label={title}
-          className={clsx(
-            'flex h-7 min-w-7 shrink-0 items-center justify-center rounded-md px-1.5 text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] hover:text-[color:var(--cp-text)] disabled:pointer-events-none disabled:opacity-40',
-            active &&
-              'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]',
-          )}
+          className={clsx('files-icon-btn', active && 'is-active')}
         >
           {children}
         </button>
@@ -150,14 +144,14 @@ function PathCrumbs({
   const crumbs = crumbsForUrl(url, rootLabel, computerLabel)
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm text-[color:var(--cp-muted)]">
+    <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto text-[13px] text-[color:var(--cp-muted)]">
       {crumbs.map((crumb, idx) => (
-        <div key={crumb.url} className="flex shrink-0 items-center gap-1">
+        <div key={crumb.url} className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             className={clsx(
-              'truncate rounded-md px-1.5 py-0.5 hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)]',
-              idx === crumbs.length - 1 && 'font-semibold text-[color:var(--cp-text)]',
+              'h-6 truncate rounded-[6px] px-1.5 transition-colors hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)]',
+              idx === crumbs.length - 1 && 'font-medium text-[color:var(--cp-text)]',
             )}
             onClick={(event) => {
               event.stopPropagation()
@@ -166,7 +160,7 @@ function PathCrumbs({
           >
             {crumb.label}
           </button>
-          {idx < crumbs.length - 1 ? <ChevronRight size={12} className="opacity-60" /> : null}
+          {idx < crumbs.length - 1 ? <ChevronRight size={14} className="shrink-0 opacity-70" /> : null}
         </div>
       ))}
     </div>
@@ -293,7 +287,7 @@ export function TopBar({
   }
 
   return (
-    <div className="flex flex-col gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-2 sm:px-4">
+    <div className="flex flex-col gap-2 border-b border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] px-3 py-2">
       {/* Tabs row */}
       <div className="flex items-center gap-1 overflow-x-auto" role="tablist">
         {tabs.map((tab) => {
@@ -302,10 +296,10 @@ export function TopBar({
             <div
               key={tab.id}
               className={clsx(
-                'group flex shrink-0 items-center gap-2 rounded-t-[12px] border-b-2 px-3 py-1.5 text-sm',
+                'group flex h-8 shrink-0 items-center gap-1 rounded-[8px] pl-3 pr-1.5 text-[13px] transition-colors',
                 active
-                  ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,var(--cp-surface))] text-[color:var(--cp-text)]'
-                  : 'border-transparent text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,transparent)]',
+                  ? 'bg-[color:var(--files-pressed)] text-[color:var(--cp-text)]'
+                  : 'text-[color:var(--cp-muted)] hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)]',
               )}
               onContextMenu={(event) => {
                 if (!onSendTabToRight) return
@@ -318,7 +312,7 @@ export function TopBar({
                 role="tab"
                 aria-selected={active}
                 onClick={() => onSelectTab(tab.id)}
-                className="max-w-[180px] truncate font-medium"
+                className={clsx('max-w-[180px] truncate', active && 'font-medium')}
               >
                 {tab.title}
               </button>
@@ -326,10 +320,10 @@ export function TopBar({
                 <button
                   type="button"
                   onClick={() => onCloseTab(tab.id)}
-                  className="opacity-0 transition group-hover:opacity-100"
+                  className="flex size-5 items-center justify-center rounded-[4px] opacity-0 transition-opacity hover:bg-[color:var(--files-pressed)] focus-visible:opacity-100 group-hover:opacity-100"
                   aria-label={t('common.close', 'Close')}
                 >
-                  <X size={12} />
+                  <X size={14} />
                 </button>
               ) : null}
             </div>
@@ -341,25 +335,22 @@ export function TopBar({
           <button
             type="button"
             onClick={onNewTab}
-            className="flex h-7 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] hover:text-[color:var(--cp-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--cp-accent)]"
+            className="files-icon-btn"
             aria-label={t('filebrowser.topbar.newTab', 'New tab')}
           >
-            <Plus size={14} />
+            <Plus size={16} />
           </button>
         </Tooltip>
         <Tooltip title={t('filebrowser.topbar.closedTabs', 'Recently closed tabs')}>
           <button
             type="button"
             onClick={(event) => setTabMenuAnchor(event.currentTarget)}
-            className={clsx(
-              'flex h-7 shrink-0 items-center rounded-md px-1 text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] hover:text-[color:var(--cp-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--cp-accent)]',
-              tabMenuAnchor && 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] text-[color:var(--cp-text)]',
-            )}
+            className="files-icon-btn"
             aria-label={t('filebrowser.topbar.closedTabs', 'Recently closed tabs')}
             aria-haspopup="menu"
             aria-expanded={Boolean(tabMenuAnchor)}
           >
-            <ChevronDown size={14} />
+            <ChevronDown size={16} />
           </button>
         </Tooltip>
         <Menu
@@ -445,67 +436,43 @@ export function TopBar({
       </div>
 
       {/* Address row: history navigation + path / search input */}
-      <div className="flex items-center gap-1.5">
-        <div className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_80%,transparent)]">
-          <IconButton
-            size="small"
-            disabled={!canBack}
-            onClick={onBack}
-            aria-label="back"
-            className="!h-auto !w-9 !rounded-none !p-0"
-          >
-            <ArrowLeft size={16} />
-          </IconButton>
-          <IconButton
-            size="small"
-            disabled={!canForward}
-            onClick={onForward}
-            aria-label="forward"
-            className="!h-auto !w-9 !rounded-none !p-0"
-          >
-            <ArrowRight size={16} />
-          </IconButton>
-        </div>
-        <IconButton size="small" disabled={!canUp} onClick={onUp} aria-label="up">
+      <div className="flex items-center gap-1">
+        <button type="button" className="files-icon-btn" disabled={!canBack} onClick={onBack} aria-label="back">
+          <ArrowLeft size={16} />
+        </button>
+        <button type="button" className="files-icon-btn" disabled={!canForward} onClick={onForward} aria-label="forward">
+          <ArrowRight size={16} />
+        </button>
+        <button type="button" className="files-icon-btn" disabled={!canUp} onClick={onUp} aria-label="up">
           <ArrowUp size={16} />
-        </IconButton>
+        </button>
 
         <div
           className={clsx(
-            'relative ml-1 flex h-8 min-w-0 flex-1 items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] pl-2 pr-1.5',
+            'relative ml-1 flex h-8 min-w-0 flex-1 items-center gap-1 rounded-[8px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-2-opaque)] pl-1.5 pr-1 transition-colors',
             !searchVisible && !pathEditing && 'cursor-text',
+            (searchVisible || pathEditing) && 'border-[color:var(--cp-accent)] bg-[color:var(--cp-surface-opaque)]',
           )}
           onClick={startPathEdit}
         >
           {searchVisible ? (
             <>
-              <Search size={14} className="ml-1 shrink-0 text-[color:var(--cp-muted)]" />
-              <TextField
-                inputRef={searchInputRef}
-                fullWidth
-                variant="standard"
-                placeholder={t(
-                  'filebrowser.topbar.searchPlaceholder',
-                  'Search across files, folders, AI summaries…',
-                )}
+              <Search size={16} className="ml-0.5 shrink-0 text-[color:var(--cp-muted)]" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder={t('filebrowser.topbar.searchPlaceholder', 'Search files')}
                 value={searchQuery}
                 onChange={(event) => onSearchChange(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Escape') closeSearch()
                 }}
-                InputProps={{ disableUnderline: true }}
-                sx={{
-                  '& .MuiInputBase-input': {
-                    fontSize: 13,
-                    padding: '2px 0',
-                    color: 'var(--cp-text)',
-                  },
-                }}
+                className="min-w-0 flex-1 bg-transparent px-1 text-[13px] text-[color:var(--cp-text)] outline-none placeholder:text-[color:var(--cp-muted)] focus-visible:!outline-none"
               />
               <Tooltip title={t('common.close', 'Close')}>
-                <IconButton size="small" onClick={closeSearch} aria-label="close-search">
-                  <X size={13} />
-                </IconButton>
+                <button type="button" className="files-icon-btn !h-6 !min-w-6 !p-0" onClick={closeSearch} aria-label="close-search">
+                  <X size={14} />
+                </button>
               </Tooltip>
             </>
           ) : pathEditing ? (
@@ -520,8 +487,7 @@ export function TopBar({
               onBlur={() => setPathEditing(false)}
               spellCheck={false}
               aria-label="path"
-              className="min-w-0 flex-1 bg-transparent px-1 font-mono text-[13px] outline-none"
-              style={{ color: 'var(--cp-text)' }}
+              className="min-w-0 flex-1 bg-transparent px-1.5 font-[family-name:var(--files-mono)] text-[13px] text-[color:var(--cp-text)] outline-none focus-visible:!outline-none"
             />
           ) : (
             <>
@@ -534,9 +500,9 @@ export function TopBar({
                     event.stopPropagation()
                     onCopyPath()
                   }}
-                  className="ml-auto flex shrink-0 items-center self-stretch pl-2 pr-1 text-[color:var(--cp-muted)] transition hover:text-[color:var(--cp-text)]"
+                  className="files-icon-btn ml-auto !h-6 !min-w-6 !p-0"
                 >
-                  <Copy size={13} />
+                  <Copy size={14} />
                 </button>
               </Tooltip>
             </>
@@ -556,14 +522,12 @@ export function TopBar({
               aria-haspopup="menu"
               aria-expanded={Boolean(uploadMenuAnchor)}
               aria-controls={uploadMenuAnchor ? uploadMenuId : undefined}
-              className={clsx(
-                'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] hover:text-[color:var(--cp-text)] disabled:pointer-events-none disabled:opacity-40',
-                uploadMenuAnchor && 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]',
-              )}
+              aria-label={t('filebrowser.actions.upload', 'Upload')}
+              className="files-icon-btn gap-1.5 !px-2 text-[13px]"
             >
-              <Upload size={14} />
-              {t('filebrowser.actions.upload', 'Upload')}
-              <ChevronDown size={10} />
+              <Upload size={16} />
+              <span className="fb-toolbar-label">{t('filebrowser.actions.upload', 'Upload')}</span>
+              <ChevronDown size={14} className="-ml-0.5 opacity-70" />
             </button>
             <Menu
               id={uploadMenuId}
@@ -580,7 +544,7 @@ export function TopBar({
                     onUpload()
                   }}
                 >
-                  <ListItemIcon><Upload size={15} /></ListItemIcon>
+                  <ListItemIcon><Upload size={16} /></ListItemIcon>
                   <ListItemText primary={t('filebrowser.operation.uploadFiles', 'Upload files')} />
                 </MenuItem>
               ) : null}
@@ -592,7 +556,7 @@ export function TopBar({
                     onFolderUpload()
                   }}
                 >
-                  <ListItemIcon><FolderUp size={15} /></ListItemIcon>
+                  <ListItemIcon><FolderUp size={16} /></ListItemIcon>
                   <ListItemText primary={t('filebrowser.operation.uploadFolder', 'Upload folder')} />
                 </MenuItem>
               ) : null}
@@ -607,9 +571,9 @@ export function TopBar({
               active={Boolean(newMenuAnchor)}
               onClick={(event) => setNewMenuAnchor(event.currentTarget)}
             >
-              <span className="flex items-center">
-                <Plus size={14} />
-                <ChevronDown size={10} />
+              <span className="flex items-center gap-0.5">
+                <Plus size={16} />
+                <ChevronDown size={14} className="opacity-70" />
               </span>
             </ToolbarIconButton>
             <Menu
@@ -626,7 +590,7 @@ export function TopBar({
                   }}
                 >
                   <ListItemIcon>
-                    <FolderPlus size={15} />
+                    <FolderPlus size={16} />
                   </ListItemIcon>
                   <ListItemText primary={t('filebrowser.actions.newFolder', 'New folder')} />
                 </MenuItem>
@@ -639,7 +603,7 @@ export function TopBar({
                   }}
                 >
                   <ListItemIcon>
-                    <FilePlus size={15} />
+                    <FilePlus size={16} />
                   </ListItemIcon>
                   <ListItemText primary={t('filebrowser.actions.newTextFile', 'New text file')} />
                 </MenuItem>
@@ -651,10 +615,10 @@ export function TopBar({
         {onCopy && <ToolbarIconButton title={t('filebrowser.menu.copyFiles', 'Copy files')} onClick={onCopy}><Copy size={16} /></ToolbarIconButton>}
         {onPaste && <ToolbarIconButton title={t('filebrowser.menu.paste', 'Paste')} onClick={onPaste}><ClipboardPaste size={16} /></ToolbarIconButton>}
         {onCopyTo && <ToolbarIconButton title={t('filebrowser.actions.copyTo', 'Copy to')} onClick={onCopyTo}><FolderInput size={16} /></ToolbarIconButton>}
-        {onAddExisting && <button className="min-h-7 px-2 text-xs" onClick={onAddExisting}>{t('filebrowser.operation.addExisting', 'Add existing files')}</button>}
+        {onAddExisting && <button type="button" className="files-icon-btn !px-2 text-[13px]" onClick={onAddExisting}>{t('filebrowser.operation.addExisting', 'Add existing files')}</button>}
         <ToolbarIconButton title={t('filebrowser.mobile.moreActions', 'More actions')} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); onMore({ left: box.left, top: box.bottom }) }}><MoreHorizontal size={16} /></ToolbarIconButton>
         <ToolbarIconButton title={t('filebrowser.menu.details', 'Details')} onClick={onDetails}><PanelRightOpen size={16} /></ToolbarIconButton>
-        {selectedCount > 0 && <span className="text-xs text-[color:var(--cp-accent)]">{selectedCount}</span>}
+        {selectedCount > 0 && <span className="ml-0.5 text-[12px] tabular-nums text-[color:var(--cp-muted)]" title={t('filebrowser.status.selectedCount', '{{count}} selected', { count: selectedCount })}>{selectedCount}</span>}
         <div className="min-w-2 flex-1" />
 
         <ToolbarIconButton
@@ -662,9 +626,9 @@ export function TopBar({
           active={Boolean(viewMenuAnchor)}
           onClick={(event) => setViewMenuAnchor(event.currentTarget)}
         >
-          <span className="flex items-center">
-            {viewMode === 'list' ? <List size={14} /> : <LayoutGrid size={14} />}
-            <ChevronDown size={10} />
+          <span className="flex items-center gap-0.5">
+            {viewMode === 'list' ? <List size={16} /> : <LayoutGrid size={16} />}
+            <ChevronDown size={14} className="opacity-70" />
           </span>
         </ToolbarIconButton>
         <Menu
@@ -681,7 +645,7 @@ export function TopBar({
             }}
           >
             <ListItemIcon>
-              <List size={15} />
+              <List size={16} />
             </ListItemIcon>
             <ListItemText primary={t('filebrowser.view.list', 'List view')} />
           </MenuItem>
@@ -693,7 +657,7 @@ export function TopBar({
             }}
           >
             <ListItemIcon>
-              <LayoutGrid size={15} />
+              <LayoutGrid size={16} />
             </ListItemIcon>
             <ListItemText primary={t('filebrowser.view.icon', 'Icon view')} />
           </MenuItem>
@@ -716,7 +680,7 @@ export function TopBar({
             : null}
           <Divider />
           <MenuItem selected={browseArchives} onClick={() => setBrowseArchives(!browseArchives)} data-testid="browse-archives-toggle">
-            <ListItemIcon>{browseArchives ? <Check size={15} /> : null}</ListItemIcon>
+            <ListItemIcon>{browseArchives ? <Check size={16} /> : null}</ListItemIcon>
             <ListItemText primary={t('archive.browseSetting', 'Browse archives as folders')} />
           </MenuItem>
           <Divider />
@@ -730,18 +694,14 @@ export function TopBar({
         <button
           type="button"
           onClick={(event) => setSortMenuAnchor(event.currentTarget)}
-          className={clsx(
-            'flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] hover:text-[color:var(--cp-text)]',
-            sortMenuAnchor &&
-              'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]',
-          )}
+          className="files-icon-btn gap-1.5 !px-2 text-[13px]"
           aria-label={t('filebrowser.topbar.sort', 'Sort by')}
           aria-haspopup="menu"
           aria-expanded={Boolean(sortMenuAnchor)}
         >
-          <ArrowUpDown size={13} />
+          <ArrowUpDown size={16} />
           <span className="fb-sort-label">{sortLabels[sortKey]}</span>
-          <ChevronDown size={10} />
+          <ChevronDown size={14} className="-ml-0.5 opacity-70" />
         </button>
         <Menu
           anchorEl={sortMenuAnchor}
@@ -793,7 +753,7 @@ export function TopBar({
           }
           onClick={() => (searchVisible ? closeSearch() : setSearchOpen(true))}
         >
-          {searchVisible ? <SearchX size={14} /> : <Search size={14} />}
+          {searchVisible ? <SearchX size={16} /> : <Search size={16} />}
         </ToolbarIconButton>
       </div>
     </div>

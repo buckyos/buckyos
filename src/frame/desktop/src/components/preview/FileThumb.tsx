@@ -71,7 +71,7 @@ export function FileThumb({ entry, source, iconSize, box, scope = 'all', marks =
         </span>
       ) : null}
       {picture && marks && visual !== 'video' && visual !== 'image' ? (
-        <span className="pointer-events-none absolute bottom-1 right-1 flex size-6 items-center justify-center rounded-md bg-[color:var(--cp-surface)] shadow-sm" data-testid="thumb-type">
+        <span className="pointer-events-none absolute bottom-1 right-1 flex size-6 items-center justify-center rounded-[6px] bg-[color:var(--cp-surface-opaque)] shadow-[0_1px_2px_color-mix(in_srgb,var(--cp-shadow)_20%,transparent)]" data-testid="thumb-type">
           {fileIcon(entry, 14)}
         </span>
       ) : null}

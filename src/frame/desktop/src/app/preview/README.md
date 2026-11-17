@@ -92,7 +92,7 @@ Completed AICC tasks expose their named-object artifacts in Task Center's Result
 - `newWindow: true` → always a fresh manual window, never auto-reused, not counted against the cap.
 - Smart mode → relevance (same session > same container > parent/child > same host > same media type > recency); strong matches reuse (jump / append / replace), otherwise create until the automatic cap (default 8), then reuse the most relevant unpinned automatic window.
 - Single mode → the oldest automatic window is the main window.
-- Kept windows ("Keep this window (for comparison)", in the toolbar's More menu; shown as 📌 in the title) are protected from unrelated requests. Keeping a window is not pinning the toolbar: each has its own state, label and icon.
+- Kept windows ("Keep this window (for comparison)", in the toolbar's More menu; shown as "· Kept" after the title) are protected from unrelated requests. Keeping a window is not pinning the toolbar: each has its own state, label and icon.
 
 Windows carry a `WindowLaunch` (`requestId` + payload) through the desktop store (`openAppWindow` / `updateWindow`); the panel reacts to new request ids and updates the window title on item change. The window title bar is the only title: the component runs with `titleInHost`. "Open in new window" (toolbar, window icon) opens the current item in a new independent window; Open with… keeps its arrow icon.
 

@@ -58,7 +58,7 @@ test.describe('File browser app panel', () => {
       .locator('[data-testid="window-files"]')
       .getByRole('button', { name: 'Search', exact: true })
       .click()
-    await page.getByPlaceholder(/Search across files/).fill('trip')
+    await page.getByPlaceholder(/^Search files$/).fill('trip')
     await page.getByRole('combobox', { name: 'Search in' }).selectOption('all')
     await expect(page.getByText('Search results')).toBeVisible()
     await expect(page.getByText(/AI-enhanced matches/)).toBeVisible()
@@ -190,7 +190,7 @@ test.describe('File browser app panel', () => {
     const win = page.getByTestId('window-files')
 
     await win.getByRole('button', { name: 'Search', exact: true }).click()
-    const input = page.getByPlaceholder(/Search across files/)
+    const input = page.getByPlaceholder(/^Search files$/)
 
     // Deterministic partial scenario: degraded sources surface a banner but
     // results stay usable.
@@ -210,10 +210,10 @@ test.describe('File browser app panel', () => {
     // Broad query pages at 8 hits — the cursor continuation appends more.
     await input.fill('e')
     await expect(page.getByTestId('search-load-more')).toBeVisible()
-    const countBefore = await win.locator('[class*="rounded-[16px]"]').count()
+    const countBefore = await win.getByTestId('search-hit').count()
     await page.getByTestId('search-load-more').click()
     await expect
-      .poll(() => win.locator('[class*="rounded-[16px]"]').count())
+      .poll(() => win.getByTestId('search-hit').count())
       .toBeGreaterThan(countBefore)
   })
 
