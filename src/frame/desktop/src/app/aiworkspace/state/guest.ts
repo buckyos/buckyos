@@ -27,8 +27,9 @@ export function guestLabel(principal: string): string {
 
 /** The author line of an annotation: the chosen name of a guest, else its short label, else the principal. */
 export function authorLabel(payload: Pick<AnnotationPayload, 'author' | 'author_name'>): string | null {
-  const name = payload.author_name?.trim()
-  if (name) return name
-  if (!payload.author) return null
-  return isGuestPrincipal(payload.author) ? guestLabel(payload.author) : payload.author
+  const { author, author_name } = payload
+  if (!author) return null
+  if (!isGuestPrincipal(author)) return author
+  const name = typeof author_name === 'string' ? author_name.trim() : ''
+  return name || guestLabel(author)
 }
