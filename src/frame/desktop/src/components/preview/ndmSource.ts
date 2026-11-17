@@ -38,6 +38,41 @@ async function readContent(response: Response, type: string, signal?: AbortSigna
   }
 }
 
+/** Name and size of a FileObject from its metadata alone (the content is not read). */
+export async function readFileObjectMeta(
+  objectId: string,
+  endpoint: string,
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<{ name: string; size: number } | null> {
+  let id: ndn.ObjId
+  try {
+    id = ndn.ObjId.fromString(objectId)
+  } catch {
+    return null
+  }
+  if (!id.isFileObject()) return null
+  const response = await fetch(`${endpoint}/ndm/v1/store/get_object`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    credentials: 'include',
+    body: JSON.stringify({ obj_id: id.toString() }),
+    signal,
+  })
+  if (!response.ok) {
+    await response.body?.cancel()
+    return null
+  }
+  try {
+    const value = JSON.parse((await response.json()).obj_data)
+    const file = ndn.FileObject.fromJSON(value)
+    const name = typeof file.content_obj.name === 'string' ? file.content_obj.name : ''
+    return name ? { name, size: file.size } : null
+  } catch {
+    return null
+  }
+}
+
 export async function resolveNdmSource(
   source: ObjectIdRef,
   endpoint: string,

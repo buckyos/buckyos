@@ -32,6 +32,7 @@ pub struct AppState {
     pub ndm: crate::ndm::NdmMgr,
     pub buckets: crate::bucket::BucketHost,
     pub preview: crate::preview::PreviewMgr,
+    pub archive: crate::archive::cache::ArchiveMgr,
     pub ndn_egress: Arc<crate::ndn::EgressLimit>,
     pub ambient: crate::ndn::ambient::AmbientFetches,
 }
@@ -69,6 +70,7 @@ impl AppState {
         if matches!(config.auth, crate::config::AuthMode::Runtime) {
             seed_default_acls(&config, &db, &acls)?;
         }
+        let archive = crate::archive::cache::ArchiveMgr::new(&config.data_dir, config.archive.clone())?;
         let preview = config.preview_tool_dirs.clone().map(crate::preview::PreviewMgr::with_dirs).unwrap_or_default();
         if crate::share::ShareMgr::store_configured(&config) {
             preview.refresh();
@@ -89,6 +91,7 @@ impl AppState {
             ndm,
             buckets: Default::default(),
             preview,
+            archive,
             ndn_egress: crate::ndn::EgressLimit::new(config.ndn_anonymous_bytes_per_sec),
             ambient: Default::default(),
             db,

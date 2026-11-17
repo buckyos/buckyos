@@ -21,6 +21,7 @@ import { extensionOf, mediaTypeFromExtension, pipelineDocumentProfile, rendererF
 import { asBucketObjectRef, bucketRefOf, resolveBucketSource } from './bucketSource'
 import { resolveNdmSource } from './ndmSource'
 import { cyfsPathToLocal, normalizeCyfsPath, parentCyfsPath } from './session'
+import { parentInnerPath } from '../../app/filebrowser/data/urls'
 import {
   isBlobRef,
   isCyfsPathRef,
@@ -53,6 +54,13 @@ function toPreviewError(err: unknown): PreviewError {
         return new PreviewError('UNSUPPORTED', 'The server does not support this operation', { detail: err.code })
       case 'NEED_PULL':
         return new PreviewError('NOT_FOUND', 'The content is not available on this node yet', { detail: err.code, retryable: true })
+      case 'PASSWORD_REQUIRED':
+      case 'PASSWORD_INVALID':
+        return new PreviewError('PERMISSION_DENIED', 'This archive member is encrypted', { detail: err.code })
+      case 'ARCHIVE_CORRUPT':
+        return new PreviewError('CORRUPTED', 'The archive is damaged', { detail: err.code })
+      case 'QUOTA_EXCEEDED':
+        return new PreviewError('TOO_LARGE', 'The content is larger than the server allows here', { detail: err.code })
       default:
         return new PreviewError(err.httpStatus >= 500 ? 'NETWORK' : 'INTERNAL', 'The content server rejected the request', { detail: err.code })
     }
@@ -75,7 +83,7 @@ export interface NfspPreviewSession {
 
 function defaultLocate(source: ContentRef): LocatorLike {
   if (isCyfsPathRef(source)) return cyfsPathToLocal(source.path)
-  if (isObjectIdRef(source)) return { type: 'object', obj_id: source.objectId }
+  if (isObjectIdRef(source)) return source.innerPath ? { type: 'object', obj_id: source.objectId, inner_path: source.innerPath } : { type: 'object', obj_id: source.objectId }
   throw new PreviewError('INVALID_SOURCE', `Unsupported source kind "${source.kind}"`)
 }
 
@@ -187,7 +195,7 @@ export function createNfspPreviewProvider(session: NfspPreviewSession = DEFAULT_
     async resolvePreviewSource(source, { signal }) {
       const bucketRef = asBucketObjectRef(source)
       if (bucketRef) return resolveBucketSource(bucketRef, signal)
-      if (isObjectIdRef(source)) {
+      if (isObjectIdRef(source) && !source.innerPath) {
         const endpoint = nfspBaseUrl()
         const token = new URL(endpoint).origin === window.location.origin ? await getActiveSessionToken() : null
         return resolveNdmSource(source, endpoint, token, signal)
@@ -208,6 +216,7 @@ export function createNfspPreviewProvider(session: NfspPreviewSession = DEFAULT_
       const name = info.name ?? (isCyfsPathRef(source) ? cyfsPathToLocal(source.path).split('/').pop() : undefined)
       const hint = name ? mediaTypeFromExtension(extensionOf(name)) : undefined
       const containerPath = isCyfsPathRef(source) ? parentCyfsPath(normalizeCyfsPath(source.path)) : null
+      const archiveParent = isObjectIdRef(source) && source.innerPath ? parentInnerPath(source.innerPath) : null
       return {
         originalSource: source,
         sourceObjectId: info.ref.type === 'object' ? info.ref.obj_id : undefined,
@@ -218,7 +227,9 @@ export function createNfspPreviewProvider(session: NfspPreviewSession = DEFAULT_
         objectType: info.kind,
         mediaTypeHints: hint ? [hint] : [],
         readRef: readRefOf(info, name, session),
-        containerRef: containerPath ? { kind: 'cyfs-path', path: containerPath } : undefined,
+        containerRef: containerPath
+          ? { kind: 'cyfs-path', path: containerPath }
+          : archiveParent && isObjectIdRef(source) ? { kind: 'object-id', objectId: source.objectId, innerPath: archiveParent } : undefined,
         providerHandle: info.ref,
       }
     },
@@ -250,7 +261,8 @@ export function createNfspPreviewProvider(session: NfspPreviewSession = DEFAULT_
             const path = containerLocal === '/' ? `/${entry.name}` : `${containerLocal}/${entry.name}`
             items.push({ id: entry.entry_ref, source: { kind: 'cyfs-path', path: normalizeCyfsPath(path) }, title: entry.name })
           } else if (entry.target.ref.type === 'object') {
-            items.push({ id: entry.entry_ref, source: { kind: 'object-id', objectId: entry.target.ref.obj_id }, title: entry.name })
+            const { obj_id: objectId, inner_path: innerPath } = entry.target.ref
+            items.push({ id: entry.entry_ref, source: innerPath ? { kind: 'object-id', objectId, innerPath } : { kind: 'object-id', objectId }, title: entry.name })
           }
           if (items.length >= MAX_ITEMS) return items
         }

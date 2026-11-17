@@ -93,6 +93,7 @@ impl AppState {
             Node::Collection(c) => collection_level(actor, c),
             Node::CollectionGroup { collection, .. } => collection_level(actor, collection),
             Node::Projection(p) => self.acls.level(actor, HOME_ROOT, &p.rel),
+            Node::Archive(a) => self.archive_level(actor, a),
             Node::View(_) | Node::ViewGroup { .. } => match actor {
                 Actor::Anonymous | Actor::Delegated { .. } => Level::None,
                 _ => Level::Read,
@@ -110,6 +111,13 @@ impl AppState {
     }
 
     pub fn require(&self, actor: &Actor, node: &Node, min: Level, op: &str) -> NfsResult<Level> {
+        if let Node::Archive(a) = node {
+            let level = self.archive_require(actor, a, min, op)?;
+            if let (false, crate::archive::Outer::Native { root, rel, .. }) = (actor.is_admin(), &a.outer) {
+                self.require_no_symlink_ancestor(actor, root, rel, op)?;
+            }
+            return Ok(level);
+        }
         let level = self.node_level(actor, node);
         let ok = if min == Level::Traverse { Self::is_visible(node, level) } else { level >= min };
         if !ok {
@@ -301,6 +309,7 @@ impl AppState {
                 let level = self.acls.level(actor, root, rel);
                 level >= Level::Read || level >= Level::Traverse && data.get("hint").is_none()
             }
+            Some(ContainerKey::Archive(_)) => false,
             Some(ContainerKey::Node(id)) => self
                 .resolve_node_id(*id, None)
                 .map(|n| self.node_level(actor, &n) >= Level::Read)

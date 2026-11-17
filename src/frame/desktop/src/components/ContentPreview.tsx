@@ -72,6 +72,9 @@ import {
 import { PdfJsRenderer } from './preview/PdfJsRenderer'
 import type { ZoomHandle } from './preview/pinchZoom'
 import { ensurePreviewProvider } from './preview/provider'
+import { archiveTargetOf, type ArchiveTarget } from './preview/archive'
+import { ArchivePreview } from './preview/ArchiveBrowser'
+import { archiveSplit, isArchiveName } from '../app/filebrowser/data/urls'
 import { SheetRenderer } from './preview/SheetRenderer'
 import {
   locateIndex,
@@ -259,7 +262,9 @@ function errorStateFrom(err: unknown, contentLabel?: string): PreviewErrorState 
                 : err.code === 'UNSUPPORTED' || err.code === 'TOO_LARGE'
                   ? 'unsupported'
                   : 'error'
-    return { kind, code: err.code, message: err.message, retryable: err.retryable, contentLabel }
+    // A server code the host acts on (an archive password, a changed archive) stays visible to it.
+    const code = err.detail === 'PASSWORD_REQUIRED' || err.detail === 'PASSWORD_INVALID' || err.detail === 'STALE' ? err.detail : err.code
+    return { kind, code, message: err.message, retryable: err.retryable, contentLabel }
   }
   if (err instanceof DOMException && err.name === 'AbortError') {
     return { kind: 'cancelled', code: 'CANCELLED', message: 'Cancelled', retryable: false, contentLabel }
@@ -408,7 +413,77 @@ const sameImageView = (a: ImageViewInfo | null, b: ImageViewInfo | null): boolea
 
 // ─── Component ───
 
+/**
+ * The Preview Component. A ZIP (or a folder or member inside one) opens as the archive's folder page with its own
+ * back stack (`preview/ArchiveBrowser.tsx`); everything else goes straight to the viewer.
+ */
 export function ContentPreview(props: ContentPreviewProps) {
+  // Browsing onto an archive inside a session enters it; leaving its root returns to the item before it.
+  const [returned, setReturned] = useState<{ key: number; source: ContentRef } | null>(null)
+  const [entered, setEntered] = useState<{ target: ArchiveTarget; back: ContentRef } | null>(null)
+  const lastItem = useRef<ContentRef | null>(null)
+  const source = returned?.source ?? props.source
+  const identity = refIdentity(source)
+  const quick = props.variant === 'inline' || returned ? 'viewer' : archiveVerdict(source)
+  const [decided, setDecided] = useState<{ identity: string; target: ArchiveTarget | null; fallback?: boolean } | null>(null)
+  useEffect(() => {
+    if (quick === 'viewer') return
+    const abort = new AbortController()
+    archiveTargetOf(source, abort.signal).then(
+      (target) => { if (!abort.signal.aborted) setDecided({ identity, target }) },
+      () => { if (!abort.signal.aborted) setDecided({ identity, target: null }) },
+    )
+    return () => abort.abort()
+    // The source's identity decides; a new object with the same identity is the same source.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity, quick])
+  const hostItemChanged = props.onItemChanged
+  const onItemChanged = useCallback((item: PreviewItemInfo) => {
+    hostItemChanged?.(item)
+    if (props.variant === 'inline' || archiveVerdict(item.source) === 'viewer' || !isArchiveName(item.title)) {
+      lastItem.current = item.source
+      return
+    }
+    const back = lastItem.current
+    void archiveTargetOf(item.source).then((target) => {
+      if (target && back) setEntered({ target, back })
+    }, () => undefined)
+  }, [hostItemChanged, props.variant])
+  if (entered) {
+    const leave = () => {
+      setReturned((r) => ({ key: (r?.key ?? 0) + 1, source: entered.back }))
+      setEntered(null)
+    }
+    return <ArchivePreview target={entered.target} viewerProps={{ ...props, onRequestExit: leave }} Viewer={ContentViewer} onFallback={leave} />
+  }
+  if (quick === 'viewer') return <ContentViewer key={returned?.key} {...props} source={source} onItemChanged={onItemChanged} />
+  const current = decided?.identity === identity ? decided : null
+  if (!current) {
+    return (
+      <div className={clsx('flex h-full w-full items-center justify-center', props.className)} style={props.style} data-testid={props['data-testid']} data-status="resolving" role="status">
+        <Loader2 className="animate-spin text-[color:var(--cp-muted)]" size={22} />
+      </div>
+    )
+  }
+  if (current.target && !current.fallback) {
+    return <ArchivePreview target={current.target} viewerProps={props} Viewer={ContentViewer} onFallback={() => setDecided({ ...current, fallback: true })} />
+  }
+  return <ContentViewer {...props} onItemChanged={onItemChanged} />
+}
+
+/** Whether a source might be an archive (then it is checked before anything is read). */
+function archiveVerdict(source: ContentRef): 'viewer' | 'check' {
+  if (isCyfsPathRef(source)) {
+    const local = source.path.replace(/^(cyfs|dfs):\/\//, '')
+    return archiveSplit(local) || isArchiveName(local.split('/').pop() ?? '') ? 'check' : 'viewer'
+  }
+  if (isObjectIdRef(source)) return 'check'
+  if (isBlobRef(source) || isBucketObjectRef(source)) return 'viewer'
+  const name = extensionRefField(source, 'name')
+  return name && isArchiveName(name) ? 'check' : 'viewer'
+}
+
+function ContentViewer(props: ContentPreviewProps) {
   const {
     source,
     session: sessionContext,

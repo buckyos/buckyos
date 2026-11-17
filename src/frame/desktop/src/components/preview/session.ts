@@ -18,6 +18,7 @@ import {
   type PreviewSessionContext,
   type PreviewSessionItemInput,
 } from './types'
+import { archiveSplit, parentInnerPath } from '../../app/filebrowser/data/urls'
 
 export interface SessionItem {
   id: string
@@ -58,6 +59,9 @@ export function cyfsPathToLocal(canonical: string): string {
 export function parentCyfsPath(canonical: string): string | null {
   const local = cyfsPathToLocal(canonical)
   if (local === '/') return null
+  // An archive's root (`<file>/@/archive`) sits in the archive file's folder.
+  const split = archiveSplit(local)
+  if (split && !split.member) return normalizeCyfsPath(split.outer.split('/').slice(0, -1).join('/') || '/')
   const parent = local.split('/').slice(0, -1).join('/') || '/'
   return normalizeCyfsPath(parent)
 }
@@ -69,7 +73,7 @@ export function lastSegment(path: string): string {
 /** Stable identity string for matching items, windows and cache keys. */
 export function refIdentity(ref: ContentRef): string {
   if (isCyfsPathRef(ref)) return `path:${normalizeCyfsPath(ref.path)}${ref.version ? `@${ref.version}` : ''}`
-  if (isObjectIdRef(ref)) return `obj:${ref.objectId}${ref.version ? `@${ref.version}` : ''}`
+  if (isObjectIdRef(ref)) return `obj:${ref.objectId}${ref.innerPath ? `:${ref.innerPath}` : ''}${ref.version ? `@${ref.version}` : ''}`
   if (isBucketObjectRef(ref)) return `bucket:${ref.url}${ref.version !== undefined ? `@${ref.version}` : ''}`
   if (isBlobRef(ref)) {
     const { blob, name } = ref.value
@@ -92,6 +96,7 @@ export function sameRef(a: ContentRef | undefined, b: ContentRef | undefined): b
 export function refDisplayName(ref: ContentRef): string {
   if (isCyfsPathRef(ref)) return lastSegment(ref.path) || cyfsPathToLocal(ref.path)
   if (isObjectIdRef(ref)) {
+    if (ref.innerPath && ref.innerPath !== '/archive') return ref.innerPath.split('/').pop() ?? ''
     const id = ref.objectId
     return id.length > 20 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id
   }
@@ -105,6 +110,10 @@ export function implicitContainerOf(ref: ContentRef): ContentRef | undefined {
   if (isCyfsPathRef(ref)) {
     const parent = parentCyfsPath(ref.path)
     return parent ? { kind: 'cyfs-path', path: parent } : undefined
+  }
+  if (isObjectIdRef(ref) && ref.innerPath) {
+    const parent = parentInnerPath(ref.innerPath)
+    return parent ? { kind: 'object-id', objectId: ref.objectId, innerPath: parent } : undefined
   }
   return undefined
 }

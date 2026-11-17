@@ -12,6 +12,7 @@
 
 pub mod access;
 pub mod acl;
+pub mod archive;
 pub mod auth;
 pub mod bucket;
 pub mod config;

@@ -63,6 +63,8 @@ import { collectionTitleSchema, entryNameSchema, validationFallback } from './da
 import { dfsFolderChildren, forgetFolderChildren, useSidebarDfs, useSidebarHost, useSidebarTopics } from './data/sidebarSources'
 import { useMyHome, type MyHome } from './data/myHome'
 import { setIconSize, useIconSize, type IconSize } from './data/iconSize'
+import { useBrowseArchives } from './data/archiveBrowse'
+import { nfspClient } from './data/nfsp/client'
 import { hostChildren, hostContentRef, hostGrantExpiry, hostRootUrl, isHostUnlocked, isSudoRequired, lockHost, newHostSessionKey, onHostChanged, unlockHost } from './data/hostRealm'
 import { useSudoByPassword } from '../../components/sudo'
 import { isMockRuntime } from '../../runtime'
@@ -83,6 +85,10 @@ import {
   parseDeviceUrl,
   pathOfFileUri,
   deviceUrl,
+  archiveRootOf,
+  archiveRootUrl,
+  archiveSplit,
+  isArchiveName,
 } from './data/urls'
 import type {
   BrowserTab,
@@ -201,6 +207,11 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   const hostSource = useSidebarHost()
   const topicsSource = useSidebarTopics()
   const iconSize = useIconSize()
+  const browseArchivesOn = useBrowseArchives()
+  /** A `.zip` this server opens, with "Browse archives as folders" on, opens as a folder. */
+  const enterArchives = (item: FileItem) =>
+    browseArchivesOn && item.entry.kind !== 'folder' && item.entry.path.startsWith('/') && !archiveSplit(item.entry.path) &&
+    isArchiveName(item.entry.name) && nfspClient().raw.opensArchive(item.entry.name)
 
   // ─── The computer (Desktop Lite): unlocked per window with BuckyOS sudo ───
   const [hostKey] = useState(newHostSessionKey)
@@ -397,7 +408,8 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       : { kind: 'cyfs-path', path: normalizeCyfsPath(item.entry.path) }
   /** Icon-view thumbnails read files in the Zone and on the unlocked computer. */
   const thumbnailSource = useCallback((entry: FileEntry): ContentRef | null => {
-    if (entry.kind === 'folder' || entry.accessLevel === 'none') return null
+    // Members of an archive are decoded on read: no thumbnails for a whole listing of them.
+    if (entry.kind === 'folder' || entry.accessLevel === 'none' || archiveSplit(entry.path)) return null
     if (entry.path.startsWith('/')) return { kind: 'cyfs-path', path: normalizeCyfsPath(entry.path) }
     return parseDeviceUrl(entry.path) ? hostContentRef(entry) : null
   }, [])
@@ -425,6 +437,10 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   }
 
   const handleOpenFile = (pane: BrowserPane, item: FileItem, opts?: { newWindow?: boolean }) => {
+    if (!opts?.newWindow && enterArchives(item)) {
+      pane.navigate(archiveRootUrl(item.entry.path))
+      return
+    }
     void openContent({
       source: previewSourceOf(item),
       session: previewSessionOf(pane, item),
@@ -947,6 +963,9 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       case 'preview-new-window':
         if (first && first.entry.kind !== 'folder') handleOpenFile(pane, first, { newWindow: true })
         break
+      case 'preview-archive':
+        if (first && first.entry.kind !== 'folder') openPreview({ source: previewSourceOf(first), origin: { app: 'files', hostContext: pane.currentUrl, windowId } })
+        break
       case 'preview-selection':
         handlePreviewItems(pane, items)
         break
@@ -1265,6 +1284,10 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   })
   const listProps = (pane: BrowserPane) => ({
     ...listPreferences, onNameWidthChange: (nameWidth: number) => changeListPreferences({ nameWidth }),
+    ...(archiveRootOf(pane.currentUrl) ? {
+      readOnlyNote: t('archive.readOnly', 'Files in an archive are read-only'),
+      emptyState: { title: archiveSplit(dfsPathOf(pane.currentUrl) ?? '')?.member ? t('archive.emptyFolder.title', 'This folder is empty') : t('archive.empty.title', 'This archive is empty') },
+    } : {}),
     thumbnailSource,
     onUnlock: () => void unlockComputer().then((ok) => { if (ok) pane.list.reload() }),
     scroll: pane.scroll, onScroll: pane.setScroll, revealIndex: pane.revealIndex,

@@ -37,6 +37,16 @@ Implementation of `product/bucky_file/BuckyOS Preview App-Component PRD.md` (Dra
 
 Shortcuts: `Esc` exit · `←/→` previous/next (media: seek ±5 s; use `PageUp/PageDown` or `[`/`]`) · `Home/End` · `Space` play/pause · `+ − 0 1` zoom/fit/100 % · `R` rotate · `I` info · `F` fullscreen · `Ctrl/⌘+F` find (text) · `Ctrl/⌘ + wheel` zoom · drag (left or right button) pan · double-click fit ⇄ 100 %.
 
+## Archives (ZIP)
+
+`ContentPreview` checks a source before reading it when it may be a ZIP (`.zip` by name, an object id, a path inside `<file>/@/archive`, or a host source whose name is `.zip`) and the server opens it (`hello.archive`). Then it shows the archive's folder page (`preview/ArchiveBrowser.tsx`) instead of the viewer: Files' own list (`MainContent`, list or icon view as in Files, no thumbnails, an empty archive says so, unaddressable entries are counted in a notice). Folders open in place, files open in the viewer with the folder as their container session (previous / next stay in that folder). Back (the arrow, Esc / the viewer's exit, the phone's back) goes member → its folder → parent folder → archive root → leaves Preview; an archive reached by previous / next inside another session returns to the item before it. A member named directly (a deep link) opens over its folder.
+
+- Path sources stay `dfs://<file>/@/archive/...` (live; a changed archive shows "The archive has changed" with Open again). Object sources (chat attachments) use `{ kind: 'object-id', objectId, innerPath: '/archive/...' }`, read through NFSP, not `ndmSource`; a MessageHub attachment is first handed to the user's session by its resolver's `pipelineObjectId()` (`msg.prepare_save_attachment`).
+- `PASSWORD_REQUIRED` from a member read opens the password dialog (`archive.unlock`, states: input, checking, wrong, failed); success reopens the member. The folder menu forgets the archive's password.
+- Member actions: Download (built in), Save to Files… (folder picker, then an nfs copy task), Copy reference / path, Preview in a new window. Members are read-only; relative resources of an HTML member are not resolved.
+- A damaged or unsupported archive shows the error with Retry and Open as a file (the ordinary viewer: Open with, Download).
+- The mock runtime opens no archives (no `hello.archive`).
+
 ## Host-resolved sources (§10.2, §11.5)
 
 A host that owns content the system provider cannot address registers a resolver for its own source kind (`components/preview/hostSources.ts` → `registerPreviewSourceResolver(kind, resolver)`). `ensurePreviewProvider()` routes resolution of that kind to the host; Pipeline work stays with the system provider, keyed by `inputObjectId`. An extension ref's `value.name` / `value.reference` (strings) are used as display name and copyable reference. MessageHub registers `messagehub-object` (msg-center attachments, trusted external images); AI Workspace registers `aiworkspace-asset` (workspace assets read with the workspace session into a blob; the source value carries its reader function, which is not part of the source identity).

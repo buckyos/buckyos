@@ -14,6 +14,7 @@ import {
   ArrowRight,
   ArrowUp,
   ArrowUpDown,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -39,6 +40,7 @@ import { useI18n } from '../../i18n/provider'
 import type { LocationCapabilities } from './data/FolderReader'
 import { crumbsForUrl, displayPath } from './data/urls'
 import { ICON_SIZES, type IconSize } from './data/iconSize'
+import { setBrowseArchives, useBrowseArchives } from './data/archiveBrowse'
 import type { BrowserTab, SortDir, SortKey, ViewMode } from './types'
 
 interface TopBarProps {
@@ -217,6 +219,7 @@ export function TopBar({
   const uploadMenuId = useId()
   const [newMenuAnchor, setNewMenuAnchor] = useState<HTMLElement | null>(null)
   const [viewMenuAnchor, setViewMenuAnchor] = useState<HTMLElement | null>(null)
+  const browseArchives = useBrowseArchives()
   const [sortMenuAnchor, setSortMenuAnchor] = useState<HTMLElement | null>(null)
   const [tabContextMenu, setTabContextMenu] = useState<
     { tabId: string; top: number; left: number } | null
@@ -711,6 +714,11 @@ export function TopBar({
                 </MenuItem>
               ))
             : null}
+          <Divider />
+          <MenuItem selected={browseArchives} onClick={() => setBrowseArchives(!browseArchives)} data-testid="browse-archives-toggle">
+            <ListItemIcon>{browseArchives ? <Check size={15} /> : null}</ListItemIcon>
+            <ListItemText primary={t('archive.browseSetting', 'Browse archives as folders')} />
+          </MenuItem>
           <Divider />
           <MenuItem selected={!listPreferences.fullColumns} onClick={() => onListPreferences({ fullColumns: false })}>{t('filebrowser.view.responsiveColumns', 'Responsive columns')}</MenuItem>
           <MenuItem selected={listPreferences.fullColumns} onClick={() => onListPreferences({ fullColumns: true })}>{t('filebrowser.view.fullColumns', 'All columns (horizontal scroll)')}</MenuItem>

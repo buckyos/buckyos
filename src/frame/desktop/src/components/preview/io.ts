@@ -28,7 +28,19 @@ function totalFromHeaders(resp: Response): number | null {
   return null
 }
 
+/** The structured `error.code` of an nfs_server JSON error body (`PASSWORD_REQUIRED`, `STALE`, …). */
+export async function serverErrorCode(resp: Response): Promise<string | undefined> {
+  if (!resp.headers.get('Content-Type')?.includes('json')) return undefined
+  try {
+    const body = await resp.json() as { error?: { code?: unknown } }
+    return typeof body.error?.code === 'string' ? body.error.code : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function httpStatusToError(status: number, detail?: string): PreviewError {
+  if (detail === 'ARCHIVE_CORRUPT') return new PreviewError('CORRUPTED', 'The archive member is damaged', { detail, status })
   if (status === 401 || status === 403) return new PreviewError('PERMISSION_DENIED', 'Access to this content is not allowed', { detail, status })
   if (status === 404 || status === 410) return new PreviewError('NOT_FOUND', 'This content no longer exists', { detail, status })
   if (status === 408 || status === 504) return new PreviewError('TIMEOUT', 'The content server timed out', { detail, status })
@@ -59,7 +71,7 @@ export async function readProbe(
     if (signal?.aborted) throw new PreviewError('CANCELLED', 'Cancelled')
     throw new PreviewError('NETWORK', 'Could not reach the content server', { detail: String(err) })
   }
-  if (!resp.ok) throw httpStatusToError(resp.status)
+  if (!resp.ok) throw httpStatusToError(resp.status, await serverErrorCode(resp))
   const contentType = resp.headers.get('Content-Type')
   const totalLength = totalFromHeaders(resp)
   const acceptsRanges = resp.status === 206 || resp.headers.get('Accept-Ranges') === 'bytes'
@@ -134,7 +146,7 @@ export async function readAll(readRef: PreviewReadRef, maxBytes: number, signal?
     if (signal?.aborted) throw new PreviewError('CANCELLED', 'Cancelled')
     throw new PreviewError('NETWORK', 'Could not reach the content server', { detail: String(err) })
   }
-  if (!resp.ok) throw httpStatusToError(resp.status)
+  if (!resp.ok) throw httpStatusToError(resp.status, await serverErrorCode(resp))
   const length = Number(resp.headers.get('Content-Length') ?? '0')
   if (length > maxBytes) throw new PreviewError('TOO_LARGE', 'The content is too large to preview directly')
   const blob = await resp.blob()

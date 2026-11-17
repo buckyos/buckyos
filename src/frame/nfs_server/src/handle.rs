@@ -69,6 +69,27 @@ impl HandleCodec {
         format!("nh_{}.{}", B64.encode(&payload), B64.encode(mac))
     }
 
+    /// Seals an opaque payload as `<prefix><b64(payload)>.<b64(mac16)>`.
+    pub fn seal(&self, prefix: &str, payload: &[u8]) -> String {
+        let mut tagged = prefix.as_bytes().to_vec();
+        tagged.extend_from_slice(payload);
+        format!("{}{}.{}", prefix, B64.encode(payload), B64.encode(hmac16(&self.key, &tagged)))
+    }
+
+    /// Authenticates a sealed payload; tampered or foreign ones are STALE.
+    pub fn open(&self, prefix: &str, sealed: &str) -> NfsResult<Vec<u8>> {
+        let rest = sealed.strip_prefix(prefix).ok_or_else(|| invalid(format!("not a {prefix} handle")))?;
+        let (p64, m64) = rest.split_once('.').ok_or_else(|| stale("malformed handle"))?;
+        let payload = B64.decode(p64).map_err(|_| stale("malformed handle"))?;
+        let mac = B64.decode(m64).map_err(|_| stale("malformed handle"))?;
+        let mut tagged = prefix.as_bytes().to_vec();
+        tagged.extend_from_slice(&payload);
+        if mac.len() != 16 || !constant_time_eq(&mac, &hmac16(&self.key, &tagged)) {
+            return Err(stale("handle signature mismatch"));
+        }
+        Ok(payload)
+    }
+
     /// Decodes and authenticates a `nh_*` node_id. Tampered or foreign handles
     /// return STALE (the client must re-resolve from a trusted locator).
     pub fn decode(&self, node_id: &str) -> NfsResult<NativeHandle> {

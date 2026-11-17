@@ -172,6 +172,9 @@ impl AppState {
                 e
             }
         })?;
+        if let Node::Archive(_) = &node {
+            return Err(crate::archive::read_only());
+        }
         let Node::Native { root, rel, meta, .. } = &node else {
             return Err(reason(ErrorCode::Unsupported, "source_unsupported", "only files and folders can be shared"));
         };

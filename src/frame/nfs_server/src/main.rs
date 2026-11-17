@@ -310,6 +310,7 @@ async fn serve(config: ServerConfig) {
     nfs_server::share::rpc::recover_operations(&state);
     tokio::spawn(nfs_server::share::sweeper_loop(state.clone()));
     tokio::spawn(nfs_server::ndm::sweeper_loop(state.clone()));
+    tokio::spawn(nfs_server::archive::maintenance_loop(state.clone()));
     if nfs_server::share::ShareMgr::store_configured(&state.config) {
         tokio::spawn(nfs_server::bucket::tasks::maintenance_loop(state.clone()));
         nfs_server::preview::recover(&state);

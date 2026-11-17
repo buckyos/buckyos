@@ -120,10 +120,18 @@ fn bucket_nfs_error(e: BucketError) -> NfsError {
 }
 
 /// `(input, input ObjId)` of the named source, after the caller's read check.
-async fn resolve_source(state: &SharedState, actor: &Actor, env: &Envelope, args: &ReprArgs, headers: &HeaderMap) -> NfsResult<Result<(Input, String), Value>> {
+async fn resolve_source(state: &SharedState, actor: &Actor, env: &Envelope, args: &ReprArgs, headers: &HeaderMap) -> NfsResult<Result<(Input, String, Option<String>), Value>> {
     let ndm = || async { state.share.store(&state.config).await.map(|s| s.clone()) };
     if let Some(at) = &env.at {
         let node = state.resolve_for(actor, at, Level::Read, "read")?;
+        if let Node::Archive(a) = &node {
+            if a.is_dir() {
+                return Ok(Err(unsupported("not-content", "folders and containers have no preview")));
+            }
+            let path = crate::archive::materialize(state, actor, a).await?;
+            let id = super::native_obj_id(&state.db, &format!("archive:{}", path.display()), &path).await?;
+            return Ok(Ok((Input::Path(path), id, Some(a.name()))));
+        }
         return Ok(match &node {
             Node::Native { meta, .. } if meta.special => Err(unsupported("not-content", "device files, FIFOs and sockets have no preview")),
             Node::Native { root, rel, meta, .. } if meta.kind == "file" || meta.kind == "symlink" => {
@@ -133,13 +141,13 @@ async fn resolve_source(state: &SharedState, actor: &Actor, env: &Envelope, args
                     state.require_symlink_target(actor, &full)?;
                 }
                 let id = super::native_obj_id(&state.db, &format!("{root}/{rel}"), &full).await?;
-                Ok((Input::Path(full), id))
+                Ok((Input::Path(full), id, None))
             }
             Node::Projection(p) => match &p.at {
                 crate::bucket::projection::ProjAt::File { binding, .. } => {
                     let id = ObjId::new(binding.obj_id.as_deref().unwrap_or_default()).map_err(|e| invalid(e.to_string()))?;
                     let content = super::content_of(&ndm().await?, &id).await.map_err(|e| not_found(e.message))?;
-                    Ok((Input::Object(id), content.to_string()))
+                    Ok((Input::Object(id), content.to_string(), None))
                 }
                 _ => Err(unsupported("not-content", "folders and containers have no preview")),
             },
@@ -173,7 +181,7 @@ async fn resolve_source(state: &SharedState, actor: &Actor, env: &Envelope, args
         return Ok(Err(unsupported("not-content", "the object holds no file content")));
     }
     let content = super::content_of(&ndm().await?, &id).await.map_err(|e| not_found(e.message))?;
-    Ok(Ok((Input::Object(id), content.to_string())))
+    Ok(Ok((Input::Object(id), content.to_string(), None)))
 }
 
 fn profile_for(kind: Kind, purpose: &str) -> Result<Profile, Value> {
@@ -252,12 +260,15 @@ pub async fn op_repr(state: &SharedState, actor: &Actor, env: &Envelope, headers
     if !probe.available() {
         return Ok(unsupported("no-pipeline", probe.missing_detail().unwrap_or_default()));
     }
-    let (input, input_obj_id) = match resolve_source(state, actor, env, &args, headers).await? {
+    let (input, input_obj_id, name_hint) = match resolve_source(state, actor, env, &args, headers).await? {
         Ok(found) => found,
         Err(planned) => return Ok(planned),
     };
     let head = super::sniff_bytes(state, &input).await.map_err(|e| not_found(e.message))?;
-    let name = super::name_of(state, &input).await;
+    let name = match name_hint {
+        Some(name) => Some(name),
+        None => super::name_of(state, &input).await,
+    };
     let Some(kind) = super::media::sniff(&head, name.as_deref()) else {
         return Ok(unsupported("no-pipeline", "no converter for this content type"));
     };

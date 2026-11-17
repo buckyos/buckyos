@@ -4,7 +4,7 @@ import type { BrowserTab, HistoryState, PaneLocation, SortDir, SortKey, ViewMode
 import type { FileItem } from './FolderReader'
 import { useFolderList } from './useFolderList'
 import { useSearch } from './search'
-import { displayPath, fallbackTitle, normalizeUrl, parentUrl } from './urls'
+import { displayPath, fallbackTitle, normalizeUrl, parentTarget, parentUrl } from './urls'
 
 interface TabState {
   tab: BrowserTab
@@ -266,7 +266,13 @@ export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string, h
     revealOriginal: (path: string) => { pendingReveal.current = { path: displayPath(path), tabId: activeTabId }; navigate(parentUrl(normalizeUrl(path)) ?? '/'); if (normalizeUrl(parentUrl(normalizeUrl(path)) ?? '/') === currentUrl) list.reload() },
     back: () => { const prev = state.history.back.at(-1); if (prev) changeLocation(prev, 'back') },
     forward: () => { const next = state.history.forward[0]; if (next) changeLocation(next, 'forward') },
-    goUp: () => { const up = parentUrl(currentUrl); if (up) navigate(up) },
+    goUp: () => {
+      const up = parentTarget(currentUrl)
+      if (!up) return
+      // Leaving an archive selects the archive file in its folder.
+      if (up.select) pendingReveal.current = { path: up.select, tabId: activeTabId }
+      navigate(up.url)
+    },
     adoptTab: (tab: BrowserTab, history?: HistoryState, snapshot?: TabState) => { const next = snapshot ? { ...snapshot, tab: { ...tab, path: normalizeUrl(tab.path) } } : stateOf(tab); if (history) next.history = history; setStates((prev) => [...prev, next]); setActiveTabId(tab.id) },
     detachTab: (id: string) => {
       const found = states.find((state) => state.tab.id === id)

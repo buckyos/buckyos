@@ -136,6 +136,8 @@ pub struct ServerConfig {
     pub ndn_anonymous_bytes_per_sec: u64,
     /// What one app may keep in the `public-cache` bucket.
     pub public_cache_app_bytes: u64,
+    /// Archive browsing limits (index, decode workers, disk budget).
+    pub archive: crate::archive::ArchiveConfig,
 }
 
 impl ServerConfig {
@@ -162,6 +164,7 @@ impl ServerConfig {
             preview_tool_dirs: None,
             ndn_anonymous_bytes_per_sec: buckyos_api::NfsServerSettings::default().ndn_anonymous_bytes_per_sec,
             public_cache_app_bytes: buckyos_api::NfsServerSettings::default().public_cache_app_mib * 1024 * 1024,
+            archive: Default::default(),
         }
     }
 

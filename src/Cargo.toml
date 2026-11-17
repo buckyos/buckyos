@@ -143,6 +143,8 @@ hashbrown = "0.16.1"
 rustix = "1.1.3"
 itertools = "0.14.0"
 zip = "2.2.0"
+encoding_rs = "0.8.44"
+chardetng = "1.0.0"
 
 # Other
 upon = "0.10.0"

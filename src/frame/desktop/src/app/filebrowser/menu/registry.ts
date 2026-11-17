@@ -1,4 +1,5 @@
 import { commandState } from './commands'
+import { archiveSplit, isArchiveName } from '../data/urls'
 /**
  * Context-menu registry and the built-in (default) providers.
  *
@@ -127,6 +128,9 @@ const openProvider: FileMenuProvider = {
         action('preview-new-window', label('openNewWindow', 'Open in new window'), {
           icon: 'open-new-tab',
         }),
+        ...(isArchiveName(entry.name) && entry.path.startsWith('/') && !archiveSplit(entry.path)
+          ? [action('preview-archive', label('previewArchive', 'Preview archive'), { icon: 'preview' })]
+          : []),
       ],
     ]
   },

@@ -17,6 +17,8 @@ pub enum ContainerKey {
     Root,
     Dir { root: String, rel: String },
     Node(i64),
+    /// A directory inside an archive (never changes; no events).
+    Archive(String),
 }
 
 impl ContainerKey {
@@ -25,6 +27,7 @@ impl ContainerKey {
             ContainerKey::Root => "root".to_string(),
             ContainerKey::Dir { root, rel } => format!("dir:{}\u{0}{}", root, rel),
             ContainerKey::Node(id) => format!("node:{}", id),
+            ContainerKey::Archive(key) => format!("archive:{}", key),
         }
     }
 }

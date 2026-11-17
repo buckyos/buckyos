@@ -279,6 +279,7 @@ impl FileDb {
         conn.execute_batch(crate::share::db::SCHEMA)?;
         conn.execute_batch(crate::ndm::SCHEMA)?;
         conn.execute_batch(crate::preview::SCHEMA)?;
+        conn.execute_batch(crate::archive::password::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 
@@ -288,6 +289,7 @@ impl FileDb {
         conn.execute_batch(crate::share::db::SCHEMA)?;
         conn.execute_batch(crate::ndm::SCHEMA)?;
         conn.execute_batch(crate::preview::SCHEMA)?;
+        conn.execute_batch(crate::archive::password::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 

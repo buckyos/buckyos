@@ -90,6 +90,9 @@ struct Row {
     modified: Option<SystemTime>,
     mode: u32,
     ctime: Option<(i64, i64)>,
+    /// An archive member source: `{"ref": <its ref>, "user": <task creator>}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    archive: Option<Value>,
 }
 impl Row {
     fn follows_source(&self) -> bool {
@@ -279,6 +282,22 @@ fn native(state: &SharedState, value: &Value) -> NfsResult<(String, Identity)> {
         )),
     }
 }
+/// The archive a source or destination ref points into, if any.
+fn archive_ref(value: &Value) -> Option<WireRef> {
+    let r: WireRef = serde_json::from_value(value.clone()).ok()?;
+    match &r {
+        WireRef::Object { inner_path: Some(p), .. } if p == crate::archive::INNER_ROOT || p.starts_with("/archive/") => Some(r),
+        WireRef::Live { node_id, .. } if node_id.starts_with("na_") || node_id.starts_with("no_") => Some(r),
+        _ => None,
+    }
+}
+fn archive_node(state: &SharedState, r: &WireRef) -> NfsResult<crate::archive::ArchiveNode> {
+    match state.resolve_ref(r)? {
+        Node::Archive(a) if !a.is_dir() => Ok(*a),
+        Node::Archive(_) => Err(NfsError::new(ErrorCode::Unsupported, "folders in an archive cannot be copied; copy its files").with("reason", json!("archive_folder"))),
+        _ => Err(stale("not an archive member")),
+    }
+}
 fn handle_path(state: &SharedState, value: &Value) -> Option<(String, String)> {
     match serde_json::from_value::<WireRef>(value.clone()).ok()? {
         WireRef::Live { node_id, .. } if node_id.starts_with("nh_") => {
@@ -297,7 +316,17 @@ fn authorize_input(state: &SharedState, actor: &Actor, input: &NfsCopyInput, sta
             state.acls.level(actor, root, rel) >= Level::Write
         }
     };
+    if archive_ref(&input.destination_ref).is_some() {
+        return Err(crate::archive::read_only());
+    }
     for source in &input.sources {
+        if let Some(r) = archive_ref(&source.source_ref) {
+            if !started {
+                let node = state.resolve_ref(&r)?;
+                state.require(actor, &node, Level::Read, "read")?;
+            }
+            continue;
+        }
         if let Some((root, rel)) = handle_path(state, &source.source_ref) {
             if root == HOST_ROOT {
                 if !host_ok(&root, &rel) {
@@ -324,12 +353,35 @@ fn authorize_input(state: &SharedState, actor: &Actor, input: &NfsCopyInput, sta
 async fn authorize_task(state: &SharedState, task: &Task) -> NfsResult<()> {
     let input: NfsCopyInput = serde_json::from_value(task.input.clone())?;
     let user = task.creator.user_id.clone();
-    let actor = if crate::auth::is_zone_owner(state, &user).await {
-        Actor::Admin(Some(user))
-    } else {
-        Actor::User(user)
-    };
-    authorize_input(state, &actor, &input, true)
+    let owner = crate::auth::is_zone_owner(state, &user).await;
+    let actor = if owner { Actor::Admin(Some(user.clone())) } else { Actor::User(user.clone()) };
+    authorize_input(state, &actor, &input, true)?;
+    let ctx = crate::archive::current();
+    for source in &input.sources {
+        let Some(r) = archive_ref(&source.source_ref) else { continue };
+        let obj = match &r {
+            WireRef::Object { obj_id, .. } => Some(obj_id.clone()),
+            WireRef::Live { node_id, .. } if node_id.starts_with("no_") => state
+                .handles
+                .open("no_", node_id)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .and_then(|v| v["o"].as_str().map(String::from)),
+            _ => None,
+        };
+        if let Some(obj) = obj {
+            let principal = crate::ndm::Principal::new(user.clone(), format!("app:{}", task.creator.app_id), task.creator.app_id.clone(), None);
+            if !(owner || crate::ndm::holds(state, &principal, &obj)) {
+                return Err(crate::access::denied("read", &actor));
+            }
+            if let Some(ctx) = &ctx {
+                ctx.grant(&obj);
+            }
+        }
+        let at = serde_json::to_value(&r).unwrap_or(Value::Null);
+        crate::archive::prepare(state, &actor, &axum::http::HeaderMap::new(), &[&at]).await;
+    }
+    Ok(())
 }
 fn local(state: &SharedState, path: &str) -> NfsResult<PathBuf> {
     let normalized = normalize_rel(path)?;
@@ -590,7 +642,8 @@ pub async fn dispatch(
 
 fn spawn(state: SharedState, id: String) {
     tokio::spawn(async move {
-        if let Err(e) = execute(&state, &id).await {
+        let ctx = std::sync::Arc::new(crate::archive::RequestCtx::default());
+        if let Err(e) = crate::archive::scope(ctx, execute(&state, &id)).await {
             log::error!("copy task {id}: {e}");
         }
     });
@@ -690,7 +743,29 @@ fn initialize(state: &SharedState, task: &Task) -> NfsResult<()> {
             modified: None,
             mode: 0,
             ctime: None,
+            archive: None,
         };
+        if let Some(r) = archive_ref(&source.source_ref) {
+            match archive_node(state, &r) {
+                Ok(a) => {
+                    let m = a.member().cloned().ok_or_else(|| stale("the member is gone"))?;
+                    row.identity = Some(Identity { dev: 0, ino: 0, kind: "file".into(), birth: None });
+                    row.size = m.size;
+                    row.modified = std::time::UNIX_EPOCH.checked_add(Duration::from_secs(m.mtime.max(0) as u64));
+                    row.mode = 0o644;
+                    row.archive = Some(json!({"ref": r, "user": task.creator.user_id}));
+                }
+                Err(e) => {
+                    row.state = "failed".into();
+                    row.error = Some(e.to_json());
+                }
+            }
+            tx.execute(
+                "INSERT INTO copy_item(task,id,parent,state,payload) VALUES(?1,?2,NULL,?3,?4)",
+                params![task.task_id, row.id, row.state, serde_json::to_string(&row)?],
+            )?;
+            continue;
+        }
         let result = (|| -> NfsResult<()> {
             let (source_path, identity) = native(state, &source.source_ref)?;
             if source_path != source.source_path {
@@ -1104,6 +1179,9 @@ async fn process(
         state.copies.save(id, row)?;
         return Ok(());
     }
+    if row.archive.is_some() {
+        return process_archive(state, api, id, row).await;
+    }
     let source = local(state, &row.source)?;
     let follow = row.follows_source();
     let baseline = row
@@ -1228,7 +1306,63 @@ async fn process(
     state.copies.save(id, row)?;
     commit_file(state, id, row)
 }
+async fn process_archive(state: &SharedState, api: &TaskManagerClient, id: &str, row: &mut Row) -> NfsResult<()> {
+    let spec = row.archive.clone().unwrap_or_default();
+    let r: WireRef = serde_json::from_value(spec["ref"].clone())?;
+    let a = archive_node(state, &r)?;
+    let actor = Actor::User(spec["user"].as_str().unwrap_or_default().to_string());
+    if !choose_target(state, id, row)? {
+        return Ok(());
+    }
+    let temporary = join(parent(&row.target), &format!(".bucky-copy-{id}-{}", row.id));
+    row.temporary = Some(temporary.clone());
+    row.state = "creating".into();
+    state.copies.save(id, row)?;
+    let temporary = local(state, &temporary)?;
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&temporary)?;
+    row.copy_identity = Some(Identity::of(&file.metadata()?)?);
+    state.copies.save(id, row)?;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let copy = crate::archive::copy_member_to(state, &actor, &a, file, cancel.clone(), progress.clone());
+    tokio::pin!(copy);
+    let result = loop {
+        tokio::select! {
+            done = &mut copy => break done,
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                if cancelled(api, id).await? {
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                row.written = progress.load(std::sync::atomic::Ordering::Relaxed);
+                state.copies.save(id, row)?;
+                checkpoint(state, api, id).await?;
+            }
+        }
+    };
+    result?;
+    row.written = progress.load(std::sync::atomic::Ordering::Relaxed);
+    preserve(row, &temporary)?;
+    File::open(temporary.parent().unwrap())?.sync_all()?;
+    check_parent(state, id, row)?;
+    if cancelled(api, id).await? {
+        return Err(internal("copy cancellation requested"));
+    }
+    row.state = "prepared".into();
+    state.copies.save(id, row)?;
+    commit_file(state, id, row)
+}
 fn check_recorded_source(state: &SharedState, row: &Row) -> NfsResult<()> {
+    if let Some(spec) = &row.archive {
+        let r: WireRef = serde_json::from_value(spec["ref"].clone())?;
+        return archive_node(state, &r).map(|_| ());
+    }
     let source = local(state, &row.source)?;
     let current = row.identity.as_ref().unwrap().check_at(&source, row.follows_source())?;
     if current.modified().ok() != row.modified || (current.is_file() && current.len() != row.size) {
@@ -1325,6 +1459,7 @@ fn expand_directory(state: &SharedState, id: &str, row: &mut Row) -> NfsResult<(
             modified: None,
             mode: 0,
             ctime: None,
+            archive: None,
         };
         match std::fs::symlink_metadata(entry.path())
             .map_err(NfsError::from)
@@ -1377,6 +1512,7 @@ fn expand_directory(state: &SharedState, id: &str, row: &mut Row) -> NfsResult<(
                 modified: None,
                 mode: 0,
                 ctime: None,
+                archive: None,
             };
             tx.execute(
                 "INSERT INTO copy_item(task,id,parent,state,payload) VALUES(?1,?2,?3,?4,?5)",

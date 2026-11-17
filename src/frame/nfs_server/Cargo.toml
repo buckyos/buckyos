@@ -44,6 +44,8 @@ http-body-util = { workspace = true }
 pbkdf2 = "0.12"
 hmac = "0.12"
 zip = { workspace = true }
+encoding_rs = { workspace = true }
+chardetng = { workspace = true }
 sysinfo = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

@@ -22,7 +22,7 @@ import type {
 } from '../FolderReader'
 import { registerReaderProvider } from '../readerRegistry'
 import { registerTargetResolver } from '../targetResolver'
-import { dfsPathOf, parseViewUrl } from '../urls'
+import { archiveObjectUrl, archiveSplit, dfsPathOf, parseArchiveObjectUrl, parseViewUrl } from '../urls'
 import type { NfsBrowserClient } from '../../../../api/nfs_browser_client'
 import { effectiveListLimit, ensureSession, nfspClient } from './client'
 import { nfspToError } from './errors'
@@ -260,10 +260,40 @@ class NfspDfsReader extends NfspContainerReader {
     return this.dfsPath ?? '/'
   }
 
+  /** Inside an archive the container's ref follows the archive file's version: list it fresh each time. */
+  protected cacheMode(): 'no-cache' | undefined {
+    return archiveSplit(this.dfsPath ?? '') ? 'no-cache' : undefined
+  }
+
   protected mapListing(listing: Listing): FileItem[] {
     return listing.entries.map((entry) =>
       mapEntryToItem(entry, { containerDfsPath: this.dfsPath ?? '/' }),
     )
+  }
+}
+
+/** archive://<objId>/archive/<member> reader: a folder inside an archive object (a chat attachment). */
+class NfspArchiveObjectReader extends NfspContainerReader {
+  private readonly objectId: string
+  private readonly innerPath: string
+
+  constructor(url: string, objectId: string, innerPath: string) {
+    super(url, { ...PROVISIONAL_FOLDER, acceptsContent: false })
+    this.objectId = objectId
+    this.innerPath = innerPath
+  }
+
+  protected async locator(): Promise<LocatorLike> {
+    return { type: 'object', obj_id: this.objectId, inner_path: this.innerPath }
+  }
+
+  protected mapListing(listing: Listing): FileItem[] {
+    return listing.entries.map((entry) => {
+      const item = mapEntryToItem(entry, {})
+      const inner = entry.target.ref.type === 'object' && entry.target.ref.inner_path ? entry.target.ref.inner_path : `${this.innerPath}/${entry.name}`
+      item.entry.path = archiveObjectUrl(this.objectId, inner)
+      return item
+    })
   }
 }
 
@@ -295,6 +325,14 @@ export function registerNfspReaders() {
   registerReaderProvider({
     scheme: 'dfs',
     create: (url) => new NfspDfsReader(url),
+  })
+  registerReaderProvider({
+    scheme: 'archive',
+    create: (url) => {
+      const parts = parseArchiveObjectUrl(url)
+      if (!parts) throw new Error(`filebrowser: bad archive url "${url}"`)
+      return new NfspArchiveObjectReader(url, parts.objectId, parts.innerPath)
+    },
   })
   registerReaderProvider({
     scheme: 'view',

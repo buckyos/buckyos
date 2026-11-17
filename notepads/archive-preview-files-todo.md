@@ -1,6 +1,6 @@
 # 压缩包浏览与 Preview 支持 TODO
 
-状态：待实施，方案已定稿。日期：2026-11-16。源码基线：buckyos `f3d914288`、buckyos-websdk `39f2127`、cyfs-ndn `e36948c`，下文的行号以这些提交为准。
+状态：已实施（2026-11-16），T8 的真实 Zone / 真机 / 基准未做，见 §8。方案定稿日期：2026-11-16。源码基线：buckyos `f3d914288`、buckyos-websdk `39f2127`、cyfs-ndn `e36948c`，下文的行号以这些提交为准。
 
 2026-11-16 的定稿过程：
 
@@ -433,4 +433,58 @@ T8 要用真实样本复核这两个阈值。
 
 ## 8. 实施记录
 
-（实施 agent 在这里记录：§1 / §2 之外的取舍、样本实测结果、偏差及理由、未验证项。）
+2026-11-16 实施，未提交。
+
+### 8.1 落地位置
+
+| 任务 | 状态 | 位置 |
+| --- | --- | --- |
+| T1 | 完成 | `nfs_server/src/archive/`：`names.rs`（§2.7、D12）、`zip.rs`（读取器、中央目录遍历、成员读取）、`cache.rs`（索引、落盘、物化、预算、单飞）、`mod.rs`（`Node::Archive`、解析、stat/list、能力、`hello`、只读）；`namespace.rs` / `access.rs` / `handle.rs`（`seal` / `open`）/ `error.rs` / `watch.rs` 接入 |
+| T2 | 完成 | `archive/mod.rs` 数据面；`server.rs` 抽出 `serve_file` 供原生文件和成员共用；`preview/rpc.rs` repr 分支；`copy.rs` 包内来源 |
+| T3 | 完成 | `archive::prepare`（请求级预备：对象鉴权、落盘、建索引）+ task-local 请求上下文 |
+| T4 | 完成 | websdk `nfsp.ts`（错误码、`hello.archive`、`archiveUnlock` / `archiveForget`、地址工具）、`content.ts`（`innerPath`、`obj://<id>/archive/...` 往返、`parseSystemOpen`）；Desktop `urls.ts` 边界工具、Preview `types.ts` / `session.ts` / `nfspProvider.ts` |
+| T5 | 完成 | `archive/password.rs` + `archive/mod.rs` 的 `password_for` / `settle` / `op_unlock` / `op_forget` |
+| T6 | 完成 | `components/preview/archive.ts`（识别）、`ArchiveBrowser.tsx`（目录页、导航栈、密码框、成员操作）、`ContentPreview.tsx`（导出的组件先识别再分派，原组件改为内部 `ContentViewer`） |
+| T7 | 完成 | `data/archiveBrowse.ts`（设置）、`TopBar.tsx`（视图菜单开关）、`FileBrowserView.tsx`（进包、“预览压缩包”、只读提示、空态、包内不取缩略图）、`useBrowserPane.ts`（上级选中原包）、`menu/registry.ts`、`MainContent.tsx`（`emptyState` / `readOnlyNote`）、`data/nfsp/readers.ts`（`archive://` reader；包内路径列表不走客户端缓存） |
+| T8 | 部分 | 单测、集成测试、本机浏览器验证、文档；真实 Zone、真机、MessageHub 端到端、基准未做（§8.4） |
+
+新增文件 `archive/password.rs`（§4 只列了四个文件，密码逻辑单独成文件更清楚）。新增依赖 `chardetng 1.0.0`、`encoding_rs`（workspace 直接依赖，owner 已确认）。
+
+### 8.2 §1 / §2 之外的取舍
+
+- **重复条目**：`zip` crate 的索引按解码后的名字去重，同名记录只留最后一条。所以中央目录自己遍历一遍（原始名字节、标志、0x7075、0x9901、0x5455、ZIP64），按 crate 的键映射到 crate 的下标；同一个 crate 键对应多条记录的，全部视为不可读，路径标为 `AMBIGUOUS_ENTRY`。
+- **目录重复**：显式目录项和隐式目录、或两条同名的显式目录项合并为一个目录，不算同名冲突；文件与目录同名、两个文件同名才是冲突。冲突目录下的条目也计入 `hidden_entries`。
+- **成员身份**：`raw` = 按分隔符切出的原始段用 `/` 连接（反斜杠分隔的名字，分隔符位置按所选编码判定，CP932 的“表”`95 5C` 不会被拆）；带 0x7075 的条目用 crate 替换后的 UTF-8 字节。
+- **`"preference"` 的缓存**：按编码缓存整棵树（每种候选编码最多建一次），不是每请求现解码；结果相同，开销更小。
+- **请求上下文**：解析层是同步的，对象来源的鉴权（`may_read`）和落盘是异步的。实现为：控制面、数据面、copy 在进入同步解析前扫描 `at` / `args` 里的对象 ref、`na_` / `no_` 句柄和含 `/@/` 的路径，做鉴权、落盘、建索引（`spawn_blocking`），结果放进 task-local 上下文；同步解析只查缓存。原生路径没预备到时同步建索引兜底。
+- **加密成员的缓存按用户分开**：ZipCrypto 的快速校验只有 1 字节，误判的密码不能拿到别人已解出的明文；各用户自己的物化在 CRC 通过后才可见。命中缓存前同样先过密码检查（集成测试覆盖“忘记密码后不能再读缓存”）。
+- **ETag**：路径来源用弱校验值，对象来源强校验值并带 `immutable`；projection 外层用 binding etag。
+- **DOS 时间**：按服务器本地时区解释（unix 用 `mktime`，与压缩工具的显示一致；Windows 退回按 UTC）。有 0x5455 扩展时间戳时用它。
+- **copy 执行时的对象鉴权**：执行时没有请求 token，按任务创建者 (user, app) 的 holding 检查，zone owner 放行；提交时仍走完整的 `may_read`。
+- **projection 外层**：projection 文件的内容按对象落盘（与对象来源共用），`na_` 句柄里带 obj_id 和 etag，etag 变了即 `STALE`。
+- **Desktop 归档 URL**：对象来源的目录在 Files 数据层用 `archive://<objId>/archive/...`（只在 Preview 里用）；路径来源仍是 `dfs://`。客户端判断“进包边界”用“`@` + `archive` 紧跟一个 `.zip` 名字”，服务端仍以“紧跟普通文件”为准。
+- **Files 包内列表不走客户端缓存**：包内目录的容器 ref 随外层版本变化，stale-while-revalidate 的失效通知匹配不到，外层被替换后会一直显示旧列表；服务端有索引缓存，直接重列开销很小。
+- **Preview 会话内翻到 zip**：自动进入它的目录页，从包根返回时回到进包前的那一项（“回到打开它之前的那一项”）。
+- **缩略图**：包内条目不取缩略图（图标视图会为整页成员触发解压 / 物化）。
+- **路径来源 `STALE`**：Files 和 Preview 按路径浏览目录，外层被替换后看到的就是新包（live 语义），不会出现 `STALE`；`STALE` 只发生在 `na_` 句柄上（例如打开着的成员），Preview 显示“压缩包已变化 / 重新打开”。
+- **MessageHub**：附件来源是 `messagehub-object`，Preview 用它的 resolver 的 `pipelineObjectId()`（`msg.prepare_save_attachment`，把对象 holding 授给当前用户经当前 App）拿到可读的 obj_id，再按对象来源打开；没有 Zone 账号或尚未发送的附件按原样显示。
+- **mock 运行时**：没有 `hello.archive`，压缩包按原来的方式交给 Preview。
+
+### 8.3 样本实测
+
+- **压缩方法**（`zip.rs` 单测）：Stored、Deflate、BZip2、Zstd、XZ 由 zip crate 写出后解码一致；**LZMA 用 Python zipfile 写的成员解码失败**（`LzmaError: LZ distance … beyond output size`），所以 LZMA 不进 `hello.methods`，读取时返回 `UNSUPPORTED{reason:"method"}`；Deflate64 本机没有能写它的工具，未验证，不对外宣告，但读取时仍交给 crate 尝试。
+- **加密**：ZipCrypto（macOS `zip -P`，浏览器验证；zip crate 写出，集成测试）、AES-256（集成测试）。错误密码 `PASSWORD_INVALID`，正确密码可读，记住后新会话可读，其他用户不可读，忘记后不可读。
+- **文件名**：UTF-8 标志、无标志 UTF-8、GBK / Big5 / Shift_JIS / EUC-KR 长名、GBK 短名的偏好与回退、CP437 西文、反斜杠分隔、CP932 含 0x5C（表、ソ、十）、不安全 / 同名 / 符号链接 / 文件与目录同名，见 `names.rs` 单测；真实 GBK 包在浏览器里按 `detected` 正确显示（浏览器语言 en-US）。§2.7 的阈值未用真实样本复核。
+- **其他**：空包、损坏包（`ARCHIVE_CORRUPT`）、条目上限（`QUOTA_EXCEEDED`）、声明大小大于 / 小于实际（`ARCHIVE_CORRUPT`）、外层 rename 替换后旧句柄 `STALE` 而旧描述符仍读旧字节、名叫 `@` 的成员和真实名叫 `@` 的目录。ZIP64、成员数超过 65535、4 GiB 成员、分卷、真实 Windows / PowerShell 打的包没有样本。
+
+### 8.4 验证
+
+- `cargo test -p nfs_server -- --test-threads=1`：除 `tests/preview.rs` 的 `stills_go_through_imagemagick`、`videos_remux_or_transcode_by_runtime_hint` 外全部通过；这两个失败是本机缺 `darktable-cli` 和 ffmpeg 的 zscale 滤镜，与本改动无关。新增：`archive` 单测 18 个、`tests/archive.rs` 7 个。
+- websdk：`tests/archive_refs.test.ts` 与相关的 `content_open`、`conversation_embed`、`object_url` 测试通过；`pnpm build` 通过。
+- Desktop：`pnpm check`（`tsc -b`）通过；改动文件 `eslint` 无错误（仓库里已有 12 个错误都在未改动的文件）；`node --experimental-strip-types tests/datamodel/archive-urls.test.ts` 通过。
+- 浏览器（独立 nfs_server + `VITE_NFS_PROXY` 的 Desktop，`?fbData=nfsp`）：Files 进包、面包屑、只读提示、隐藏条目提示、上级回到原目录并选中原包、空包、GBK 名字；Preview 打开 zip 的目录页、进子目录、打开 Deflate 文本和 Stored / Deflate 图片、同目录上一项 / 下一项、返回链、成员菜单、加密包的密码框（错误 / 正确）、损坏包的错误页与“作为文件打开”、会话内翻到 zip 后进入与返回。
+- **未验证**：真实 Zone（含 Preview 走 NFSP 时的 principal 与读 `/ndm/...` 时一致）、MessageHub 收发 zip 的端到端、对象来源的浏览器界面（只有集成测试）、保存到 Zone 的 copy 任务（需要 TaskMgr）、手机真机与系统返回、Windows（`seek_read`、空闲关闭描述符）、基准和 T2 初值调整、Playwright 用例。
+
+### 8.5 手册检查（AGENTS.md cmd_skills 表）
+
+不需要修改：没有新增 CLI、设置项或运行路径；成员地址就是普通的 `cyfs:///<文件>/@/archive/...` 路径，`ui_core` 的 `read` 与 `buckyos obj read`（DFS 对象走 nfs_server 的 `resolve_for` / `node_info` / `list_node`）原样可用；`buckyos_admin` 只记录 `hello.repr` 这类可调设置，归档上限目前只在 `ServerConfig` 默认值里，不是 system-config 设置。

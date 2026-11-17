@@ -88,6 +88,10 @@ interface PresentationProps {
   thumbnailSource?: (entry: FileItem['entry']) => ContentRef | null
   /** The location is the locked computer: offer BuckyOS sudo. */
   onUnlock?: () => void
+  /** The host's own empty state (an archive is not a folder you upload into). */
+  emptyState?: { title: string; body?: string; icon?: React.ReactNode }
+  /** The host's wording for a read-only location (default: "Read-only folder"). */
+  readOnlyNote?: string
 }
 interface MainContentProps extends PresentationProps {
   list: FileItemList
@@ -330,6 +334,14 @@ export function MainContent({
         ))}
       </div>
     )
+  } else if (virtualCountOf(list) === 0 && list.status === 'ready' && presentation.emptyState) {
+    body = (
+      <div className="flex h-full w-full flex-col items-center justify-center p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-empty">
+        {presentation.emptyState.icon ?? <FolderClosed size={40} className="opacity-50" />}
+        <p className="mt-3 font-display text-lg text-[color:var(--cp-text)]">{presentation.emptyState.title}</p>
+        {presentation.emptyState.body ? <p className="mt-1 max-w-sm text-sm leading-6">{presentation.emptyState.body}</p> : null}
+      </div>
+    )
   } else if (virtualCountOf(list) === 0 && list.status === 'ready') {
     body = (
       <div
@@ -424,7 +436,7 @@ export function MainContent({
     <div className="fb-content flex h-full w-full flex-col">
       {banner}
       {list.capabilities.availability === 'loading' && <p role="status" className="px-3 py-1 text-xs">{t('filebrowser.operation.permissionsLoading', 'Permissions are loading')}</p>}
-      {list.capabilities.kind === 'folder' && !list.capabilities.acceptsContent && list.capabilities.availability !== 'loading' && <p className="px-3 py-1 text-xs">{t('filebrowser.operation.readOnly', 'Read-only folder')}</p>}
+      {list.capabilities.kind === 'folder' && !list.capabilities.acceptsContent && list.capabilities.availability !== 'loading' && <p className="px-3 py-1 text-xs" data-testid="filebrowser-read-only">{presentation.readOnlyNote ?? t('filebrowser.operation.readOnly', 'Read-only folder')}</p>}
       {body}
     </div>
   )

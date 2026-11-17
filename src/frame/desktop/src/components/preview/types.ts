@@ -23,6 +23,8 @@ export interface CyfsPathRef {
 export interface ObjectIdRef {
   kind: 'object-id'
   objectId: string
+  /** A member of an archive object: `/archive` (its root) or `/archive/<member path>` — as fixed as the object. */
+  innerPath?: string
   version?: string
 }
 

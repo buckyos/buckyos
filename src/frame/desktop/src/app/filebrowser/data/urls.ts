@@ -19,6 +19,8 @@ export const VIEW_SCHEME = 'view://'
 export const COLLECTION_SCHEME = 'collection://'
 export const DEVICE_SCHEME = 'device://'
 export const FILE_URI_SCHEME = 'file://'
+/** `archive://<objId>/archive/<member>`: a folder inside an archive object (a chat attachment), Preview only. */
+export const ARCHIVE_SCHEME = 'archive://'
 
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
 
@@ -154,6 +156,84 @@ export function copyPathText(pathOrUrl: string): string {
   return `cyfs://${path.replace(/[%?#]/g, (c) => encodeURIComponent(c))}`
 }
 
+// ─── Archives (`<file>/@/archive/<member>`, archive TODO §2.1) ───
+
+const ARCHIVE_EXTENSIONS = ['zip']
+
+/** Whether a name has an archive extension (the server's `hello.archive` decides whether it opens). */
+export function isArchiveName(name: string): boolean {
+  const dot = name.lastIndexOf('.')
+  return dot > 0 && ARCHIVE_EXTENSIONS.includes(name.slice(dot + 1).toLowerCase())
+}
+
+export interface ArchiveSplit {
+  /** The archive file (`/home/a.zip`). */
+  outer: string
+  /** Member path inside it (`''` = the archive root). */
+  member: string
+}
+
+/**
+ * Where a DFS path enters an archive: the first `@` segment followed by `archive` that comes right after a name
+ * with an archive extension. The server only enters at a regular file, so a real folder named `@` stays a folder.
+ */
+export function archiveSplit(path: string): ArchiveSplit | null {
+  const segments = path.split('/')
+  for (let i = 2; i + 1 < segments.length; i += 1) {
+    if (segments[i] === '@' && segments[i + 1] === 'archive' && isArchiveName(segments[i - 1])) {
+      return { outer: segments.slice(0, i).join('/') || '/', member: segments.slice(i + 2).join('/') }
+    }
+  }
+  return null
+}
+
+/** `dfs://` url of an archive's root (or of a member path inside it). */
+export function archiveRootUrl(outerPath: string, member = ''): string {
+  return `${DFS_SCHEME}${outerPath.replace(/\/+$/, '')}/@/archive${member ? `/${member}` : ''}`
+}
+
+/** The archive root of a location inside an archive, else null. */
+export function archiveRootOf(url: string): string | null {
+  const path = dfsPathOf(url)
+  const split = path ? archiveSplit(path) : null
+  return split ? archiveRootUrl(split.outer) : null
+}
+
+export interface ArchiveObjectUrlParts {
+  objectId: string
+  /** `/archive` or `/archive/<member>`. */
+  innerPath: string
+}
+
+export function archiveObjectUrl(objectId: string, innerPath = '/archive'): string {
+  return `${ARCHIVE_SCHEME}${objectId}${innerPath.split('/').filter(Boolean).map((s) => `/${encodeURIComponent(s)}`).join('')}`
+}
+
+export function parseArchiveObjectUrl(url: string): ArchiveObjectUrlParts | null {
+  if (!url.startsWith(ARCHIVE_SCHEME)) return null
+  const [objectId, ...segments] = url.slice(ARCHIVE_SCHEME.length).split('/')
+  if (!objectId || segments[0] !== 'archive') return null
+  return { objectId, innerPath: `/${segments.map(decodeSegment).join('/')}` }
+}
+
+/** Parent of an archive member's inner path; null at the archive root. */
+export function parentInnerPath(innerPath: string): string | null {
+  if (innerPath === '/archive') return null
+  return innerPath.slice(0, innerPath.lastIndexOf('/')) || '/archive'
+}
+
+/** Where "up" goes and, leaving an archive, which entry (the archive file) to select there. */
+export function parentTarget(url: string): { url: string; select?: string } | null {
+  const path = dfsPathOf(url)
+  const split = path ? archiveSplit(path) : null
+  if (split && !split.member) {
+    const parent = split.outer.split('/').slice(0, -1).join('/') || '/'
+    return { url: `${DFS_SCHEME}${parent}`, select: split.outer }
+  }
+  const parent = parentUrl(url)
+  return parent ? { url: parent } : null
+}
+
 export interface CollectionUrlParts {
   collectionId: string
   /**
@@ -214,8 +294,16 @@ export function parentUrl(url: string): string | null {
   const path = dfsPathOf(url)
   if (path !== null) {
     if (path === '/') return null
-    const parent = path.split('/').slice(0, -1).join('/') || '/'
+    const split = archiveSplit(path)
+    // Above an archive's root is the folder holding the archive file.
+    const from = split && !split.member ? split.outer : path
+    const parent = from.split('/').slice(0, -1).join('/') || '/'
     return `${DFS_SCHEME}${parent}`
+  }
+  const object = parseArchiveObjectUrl(url)
+  if (object) {
+    const parent = parentInnerPath(object.innerPath)
+    return parent ? archiveObjectUrl(object.objectId, parent) : null
   }
   const collection = parseCollectionUrl(url)
   if (collection && collection.groupPath.length) {
@@ -230,6 +318,8 @@ export function fallbackTitle(url: string): string {
   if (device) return device.path.split('/').filter(Boolean).pop() ?? ''
   const path = dfsPathOf(url)
   if (path !== null) {
+    const split = archiveSplit(path)
+    if (split && !split.member) return split.outer.split('/').pop() ?? 'root'
     return path.split('/').filter(Boolean).pop() ?? 'root'
   }
   const segments = url.split('/').filter((seg) => seg && !seg.endsWith(':'))
@@ -260,10 +350,30 @@ export function crumbsForUrl(url: string, rootLabel?: string, computerLabel?: st
   const path = dfsPathOf(url)
   if (path !== null) {
     const crumbs: UrlCrumb[] = [{ label: 'root', url: `${DFS_SCHEME}/` }]
+    const split = archiveSplit(path)
     let running = ''
-    for (const segment of path.split('/').filter(Boolean)) {
+    for (const segment of (split ? split.outer : path).split('/').filter(Boolean)) {
       running += `/${segment}`
       crumbs.push({ label: segment, url: `${DFS_SCHEME}${running}` })
+    }
+    if (split) {
+      // The archive file is one crumb (its root); `@` and `archive` are not shown.
+      crumbs[crumbs.length - 1].url = archiveRootUrl(split.outer)
+      let member = ''
+      for (const segment of split.member.split('/').filter(Boolean)) {
+        member = member ? `${member}/${segment}` : segment
+        crumbs.push({ label: segment, url: archiveRootUrl(split.outer, member) })
+      }
+    }
+    return crumbs
+  }
+  const object = parseArchiveObjectUrl(url)
+  if (object) {
+    const crumbs: UrlCrumb[] = [{ label: rootLabel ?? 'archive', url: archiveObjectUrl(object.objectId) }]
+    let inner = '/archive'
+    for (const segment of object.innerPath.split('/').slice(2)) {
+      inner = `${inner}/${segment}`
+      crumbs.push({ label: segment, url: archiveObjectUrl(object.objectId, inner) })
     }
     return crumbs
   }

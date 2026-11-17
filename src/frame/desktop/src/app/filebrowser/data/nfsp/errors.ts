@@ -14,6 +14,21 @@ interface ErrorShape {
 }
 
 const BY_CODE: Record<string, ErrorShape> = {
+  ARCHIVE_CORRUPT: {
+    messageKey: 'archive.corrupt',
+    fallback: 'The archive is damaged or not a ZIP file.',
+    retryable: false,
+  },
+  PASSWORD_REQUIRED: {
+    messageKey: 'archive.password.title',
+    fallback: 'Password required',
+    retryable: false,
+  },
+  PASSWORD_INVALID: {
+    messageKey: 'archive.password.invalid',
+    fallback: 'The password is not right.',
+    retryable: false,
+  },
   NOT_FOUND: {
     messageKey: 'filebrowser.error.notFound',
     fallback: 'This item no longer exists',

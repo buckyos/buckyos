@@ -29,6 +29,9 @@ pub enum ErrorCode {
     Unsupported,
     Internal,
     SudoRequired,
+    PasswordRequired,
+    PasswordInvalid,
+    ArchiveCorrupt,
 }
 
 impl ErrorCode {
@@ -54,6 +57,9 @@ impl ErrorCode {
             ErrorCode::Unsupported => "UNSUPPORTED",
             ErrorCode::Internal => "INTERNAL",
             ErrorCode::SudoRequired => "SUDO_REQUIRED",
+            ErrorCode::PasswordRequired => "PASSWORD_REQUIRED",
+            ErrorCode::PasswordInvalid => "PASSWORD_INVALID",
+            ErrorCode::ArchiveCorrupt => "ARCHIVE_CORRUPT",
         }
     }
 
@@ -79,6 +85,9 @@ impl ErrorCode {
             ErrorCode::Unsupported => 400,
             ErrorCode::Internal => 500,
             ErrorCode::SudoRequired => 403,
+            ErrorCode::PasswordRequired => 403,
+            ErrorCode::PasswordInvalid => 403,
+            ErrorCode::ArchiveCorrupt => 422,
         }
     }
 }

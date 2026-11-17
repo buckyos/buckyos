@@ -40,6 +40,8 @@ pub enum Node {
     },
     /// A read-only projection of the user's buckets (`home/<user>/Apps|Collected/...`).
     Projection(Box<Projection>),
+    /// A member (or the root) of a ZIP archive, read-only (archive/).
+    Archive(Box<crate::archive::ArchiveNode>),
 }
 
 impl Node {
@@ -52,6 +54,7 @@ impl Node {
             Node::ViewGroup { .. } | Node::CollectionGroup { .. } => "group",
             Node::Projection(p) if p.is_file() => "file",
             Node::Projection(_) => "dir",
+            Node::Archive(a) => a.kind(),
         }
     }
 
@@ -59,6 +62,7 @@ impl Node {
         match self {
             Node::Native { meta, .. } => meta.kind == "dir",
             Node::Projection(p) => !p.is_file(),
+            Node::Archive(a) => a.is_dir(),
             _ => true,
         }
     }
@@ -74,6 +78,7 @@ impl Node {
             Node::ViewGroup { group, .. } => group.label.clone(),
             Node::CollectionGroup { name, .. } => name.clone(),
             Node::Projection(p) => p.name(),
+            Node::Archive(a) => a.name(),
         }
     }
 
@@ -90,6 +95,8 @@ impl Node {
             Node::CollectionGroup { entity, .. } => Some(ContainerKey::Node(entity.node_id)),
             Node::Projection(p) if p.is_file() => None,
             Node::Projection(p) => Some(ContainerKey::Dir { root: HOME_ROOT.to_string(), rel: p.rel.clone() }),
+            Node::Archive(a) if a.is_dir() => Some(ContainerKey::Archive(a.container_key())),
+            Node::Archive(_) => None,
         }
     }
 }
@@ -211,13 +218,22 @@ impl AppState {
             .ok_or_else(|| not_found(format!("export root '{}' not found", root_id)))?;
         if root_id == HOST_ROOT {
             let full = host_join(&root.path, rel).ok_or_else(|| not_found(format!("'/{}' not found", rel)))?;
-            let meta = host_meta(&full)?;
+            let meta = host_meta(&full).map_err(|e| match e.code {
+                ErrorCode::NotFound | ErrorCode::NotAContainer => Self::host_archive_unsupported(rel).unwrap_or(e),
+                _ => e,
+            })?;
             return Ok(Node::Native { root: root_id.to_string(), rel: rel.to_string(), meta, anchored: None });
         }
         let full = join_root(&root.path, rel);
         let meta = match lstat(&full) {
             Ok(meta) => meta,
-            Err(e) if e.code == ErrorCode::NotFound => {
+            Err(e) if e.code == ErrorCode::NotFound || e.code == ErrorCode::NotAContainer => {
+                if let Some(node) = self.archive_split(root_id, rel)? {
+                    return Ok(node);
+                }
+                if e.code == ErrorCode::NotAContainer {
+                    return Err(e);
+                }
                 if let Some(p) = self.projection_at(root_id, rel)? {
                     return Ok(Node::Projection(Box::new(p)));
                 }
@@ -259,6 +275,9 @@ impl AppState {
 
     pub fn resolve_ref(&self, r: &WireRef) -> NfsResult<Node> {
         match r {
+            WireRef::Object { obj_id, inner_path: Some(p) } if p == crate::archive::INNER_ROOT || p.starts_with("/archive/") => {
+                self.resolve_archive_object(obj_id, p)
+            }
             WireRef::Object { .. } => Err(NfsError::new(
                 ErrorCode::Unsupported,
                 "object refs are not resolvable in v1 (no frozen subtrees)",
@@ -266,6 +285,9 @@ impl AppState {
             WireRef::Live { node_id, gen } => {
                 if node_id == ROOT_NODE_ID {
                     return Ok(Node::Root);
+                }
+                if node_id.starts_with("na_") || node_id.starts_with("no_") {
+                    return self.resolve_archive_handle(node_id);
                 }
                 if node_id.starts_with("nh_") {
                     return self.resolve_handle(node_id);
@@ -445,10 +467,14 @@ impl AppState {
                 WireRef::live(format!("n_{}", entity.node_id), entity.gen)
             }
             Node::Projection(p) => WireRef::live(format!("bk_{}", projection::encode_rel(&p.rel)), 0),
+            Node::Archive(a) => self.archive_ref(a),
         }
     }
 
     pub fn copy_ref(&self, node: &Node) -> Option<WireRef> {
+        if let Node::Archive(a) = node {
+            return (!a.is_dir()).then(|| self.archive_ref(a));
+        }
         if let Node::Native { root, rel, meta, .. } = node {
             Some(self.node_ref(&Node::Native {
                 root: root.clone(), rel: rel.clone(), meta: meta.clone(), anchored: None,
@@ -474,12 +500,16 @@ impl AppState {
             }
             Node::Projection(p) if p.is_file() => None,
             Node::Projection(p) => Some(self.projection_revision(p)),
+            Node::Archive(a) => a.is_dir().then(|| a.revision()),
         }
     }
 
     // ---------- node info (resolve/stat result) ----------
 
     pub fn node_info(&self, actor: &Actor, node: &Node, want: &WantMask) -> NfsResult<Value> {
+        if let Node::Archive(a) = node {
+            return self.archive_info(actor, a, want);
+        }
         let kind = node.kind();
         let level = self.reported_level(actor, node);
         let mut out = json!({
@@ -487,7 +517,7 @@ impl AppState {
             "state": "live",
             "ref": self.node_ref(node),
             "copy_ref": self.copy_ref(node),
-            "capabilities": Capabilities::for_kind(kind, Self::writable(node, level)),
+            "capabilities": Self::capabilities(node, level),
             "access_level": level,
         });
         if let Some(rev) = self.node_revision(node) {
@@ -585,13 +615,21 @@ impl AppState {
     }
 
     fn writable(node: &Node, level: Level) -> bool {
-        level >= Level::Write && !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. } | Node::Projection(_))
+        level >= Level::Write && !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. } | Node::Projection(_) | Node::Archive(_))
+    }
+
+    fn capabilities(node: &Node, level: Level) -> Capabilities {
+        match node {
+            Node::Archive(a) if a.is_dir() => crate::archive::archive_dir_capabilities(),
+            Node::Archive(_) => crate::archive::archive_file_capabilities(),
+            _ => Capabilities::for_kind(node.kind(), Self::writable(node, level)),
+        }
     }
 
     pub fn node_flags(&self, node: &Node) -> Vec<&'static str> {
         let mut flags = Vec::new();
         match node {
-            Node::Root | Node::View(_) | Node::ViewGroup { .. } | Node::Projection(_) => flags.push("read_only"),
+            Node::Root | Node::View(_) | Node::ViewGroup { .. } | Node::Projection(_) | Node::Archive(_) => flags.push("read_only"),
             Node::Native { root, rel, meta, .. } if meta.kind == "file" => {
                 if self.leases.get(root, rel).is_some() {
                     flags.push("writing");
@@ -627,6 +665,7 @@ impl AppState {
             Node::ViewGroup { group, .. } => (None, Some(group.node_id)),
             Node::CollectionGroup { entity, .. } => (None, Some(entity.node_id)),
             Node::Projection(p) => (Some(canonical_path(HOME_ROOT, &p.rel)), None),
+            Node::Archive(a) => (a.canonical(), None),
         };
         if let Some(url) = direct {
             out.push(json!({"url": url, "via": "direct"}));
@@ -740,6 +779,7 @@ impl AppState {
                 Vec::new(),
             ),
             Node::Projection(p) => ("name", self.projection_entries(actor, p, want)?, Vec::new()),
+            Node::Archive(a) => ("name", self.archive_rows(a), Vec::new()),
         };
         let revision = if recent::is_recent(node) {
             recent::recent_revision(&rows)
@@ -812,7 +852,13 @@ impl AppState {
             None
         };
 
-        let entries: Vec<Value> = page.iter().map(|r| r.json.clone()).collect();
+        let entries: Vec<Value> = page
+            .iter()
+            .map(|r| match node {
+                Node::Archive(a) => self.archive_entry_json(actor, a, r.order_index as usize, want),
+                _ => r.json.clone(),
+            })
+            .collect();
         let kind = node.kind();
         let level = self.reported_level(actor, node);
         let mut out = json!({
@@ -820,7 +866,7 @@ impl AppState {
                 "ref": self.node_ref(node),
                 "kind": kind,
                 "revision": revision,
-                "capabilities": Capabilities::for_kind(kind, Self::writable(node, level)),
+                "capabilities": Self::capabilities(node, level),
                 "access_level": level,
             },
             "entries": entries,
@@ -830,6 +876,15 @@ impl AppState {
         });
         if let Some(c) = next_cursor {
             out["next_cursor"] = json!(c);
+        }
+        if let Node::Archive(a) = node {
+            out["container"]["name"] = json!(a.name());
+            if let Some(cp) = a.canonical() {
+                out["container"]["canonical_path"] = json!(cp);
+            }
+            if a.is_root() {
+                out["container"]["attrs"] = json!({"archive": self.archive_summary(a)});
+            }
         }
         if revision_changed {
             out["revision_changed"] = json!(true);
@@ -1168,6 +1223,7 @@ impl AppState {
                 Err(not_found(format!("no group '{}' in view", name)))
             }
             Node::Projection(p) => Ok(Node::Projection(Box::new(self.projection_child(p, name)?))),
+            Node::Archive(a) => self.archive_walk(a, name),
             _ => Err(NfsError::new(
                 ErrorCode::NotAContainer,
                 format!("cannot walk into {}", node.kind()),

@@ -440,6 +440,7 @@ impl AppState {
             Node::CollectionGroup { entity, name, .. } => Ok((entity.node_id, name.clone())),
             Node::Root => Err(invalid("the namespace root cannot be a reference target")),
             Node::Projection(_) => Err(invalid("projected bucket entries cannot be reference targets")),
+            Node::Archive(_) => Err(crate::archive::read_only()),
         }
     }
 }

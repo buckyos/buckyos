@@ -154,7 +154,8 @@ async fn control_handler(
         let sudo_exp = state.sessions.sudo_exp(&session)?;
         (sudo_exp > crate::fsutil::unix_now() as u64).then_some(HostGrant { exp: g.exp.min(sudo_exp) })
     });
-    with_host_grant(grant, control_in_session(state, method, env, actor, session, creds, headers)).await
+    let ctx = crate::archive::RequestCtx::from_headers(&headers);
+    crate::archive::scope(ctx, with_host_grant(grant, control_in_session(state, method, env, actor, session, creds, headers))).await
 }
 
 async fn control_in_session(
@@ -166,6 +167,8 @@ async fn control_in_session(
     creds: Credentials,
     headers: HeaderMap,
 ) -> Response {
+    let at = env.at.as_ref().and_then(|a| serde_json::to_value(a).ok()).unwrap_or(Value::Null);
+    crate::archive::prepare(&state, &actor, &headers, &[&at, &env.args]).await;
     if method.starts_with("copy_") {
         return match crate::copy::dispatch(&state, &actor, &method, &env.args, creds.bearer()).await {
             Ok(value) => envelope_ok(&state, value),
@@ -299,6 +302,7 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor, grant: Option<Hos
         },
         "realms": realms,
         "repr": repr.map(|p| p.describe()).unwrap_or_else(|| json!({"available": false, "detail": "the named store is not configured"})),
+        "archive": crate::archive::describe(state),
     });
     if let Some(g) = grant {
         out["sudo_exp"] = json!(g.exp);
@@ -382,6 +386,8 @@ async fn dispatch(
         "list_acls" => state.op_list_acls(actor),
         "repr" => crate::preview::rpc::op_repr(state, actor, env, headers).await,
         "get_repr" => crate::preview::rpc::op_get_repr(state, actor, args).await,
+        "archive.unlock" => crate::archive::op_unlock(state, actor, env).await,
+        "archive.forget" => crate::archive::op_forget(state, actor, env).await,
         other => Err(NfsError::new(
             ErrorCode::Unsupported,
             format!("unknown method '{}'", other),
@@ -579,7 +585,12 @@ async fn read_handler(
     } else {
         None
     };
-    with_host_grant(grant, read_node(state, node_id, q, headers, actor)).await
+    let ctx = crate::archive::RequestCtx::from_headers(&headers);
+    crate::archive::scope(ctx, async move {
+        crate::archive::prepare(&state, &actor, &headers, &[&Value::String(node_id.clone())]).await;
+        with_host_grant(grant, read_node(state, node_id, q, headers, actor)).await
+    })
+    .await
 }
 
 async fn read_node(state: SharedState, node_id: String, q: HashMap<String, String>, headers: HeaderMap, actor: Actor) -> Response {
@@ -587,6 +598,9 @@ async fn read_node(state: SharedState, node_id: String, q: HashMap<String, Strin
         Ok(n) => n,
         Err(e) => return envelope_error(&state, e),
     };
+    if let Node::Archive(a) = &node {
+        return crate::archive::read_member(&state, &actor, a, &headers, &q).await;
+    }
     if matches!(&node, Node::Native { meta, .. } if meta.special) {
         return envelope_error(
             &state,
@@ -636,10 +650,8 @@ async fn read_node(state: SharedState, node_id: String, q: HashMap<String, Strin
     {
         return StatusCode::NOT_MODIFIED.into_response();
     }
-    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-    let (start, end, status) = match parse_range(range, len) {
-        Ok(Some((s, e))) => (s, e, StatusCode::PARTIAL_CONTENT),
-        Ok(None) => (0, len.saturating_sub(1), StatusCode::OK),
+    let range = match parse_range(headers.get(header::RANGE).and_then(|v| v.to_str().ok()), len) {
+        Ok(r) => r,
         Err(_) => {
             return (
                 StatusCode::RANGE_NOT_SATISFIABLE,
@@ -648,14 +660,35 @@ async fn read_node(state: SharedState, node_id: String, q: HashMap<String, Strin
                 .into_response()
         }
     };
-    let mut file = match tokio::fs::File::open(&full).await {
+    let file = match tokio::fs::File::open(&full).await {
         Ok(f) => f,
         Err(e) => return envelope_error(&state, NfsError::from(e)),
     };
-    if start > 0 {
+    serve_file(file, 0, len, range, &etag, &name, &q, false).await
+}
+
+/// Serves `len` bytes of `file` starting at `base` as a whole body or a
+/// parsed range of it, under the Desktop-origin content policy (D24).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_file(
+    mut file: tokio::fs::File,
+    base: u64,
+    len: u64,
+    range: Option<(u64, u64)>,
+    etag: &str,
+    name: &str,
+    q: &HashMap<String, String>,
+    immutable: bool,
+) -> Response {
+    let (start, end, status) = match range {
+        Some((s, e)) => (s, e, StatusCode::PARTIAL_CONTENT),
+        None => (0, len.saturating_sub(1), StatusCode::OK),
+    };
+    if base + start > 0 {
         use tokio::io::AsyncSeekExt;
-        if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
-            return envelope_error(&state, NfsError::from(e));
+        if let Err(e) = file.seek(std::io::SeekFrom::Start(base + start)).await {
+            let e = NfsError::from(e);
+            return (StatusCode::from_u16(e.code.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), axum::Json(json!({"ok": false, "error": e.to_json()}))).into_response();
         }
     }
     let content_len = if len == 0 { 0 } else { end - start + 1 };
@@ -665,7 +698,7 @@ async fn read_node(state: SharedState, node_id: String, q: HashMap<String, Strin
         .header(header::CONTENT_LENGTH, content_len)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, etag)
-        .header(header::CACHE_CONTROL, "private, no-cache");
+        .header(header::CACHE_CONTROL, if immutable { "private, max-age=31536000, immutable" } else { "private, no-cache" });
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(
             header::CONTENT_RANGE,
@@ -673,10 +706,10 @@ async fn read_node(state: SharedState, node_id: String, q: HashMap<String, Strin
         );
     }
     let want_download = q.contains_key("download");
-    let file_name = q.get("name").filter(|_| want_download).unwrap_or(&name);
+    let file_name = q.get("name").filter(|_| want_download).map(String::as_str).unwrap_or(name);
     let mut response = builder.body(body).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     // This route shares the Desktop origin: what is in a file never runs here (D24).
-    ndn_lib::apply_content_policy(response.headers_mut(), content_type_for(&name), Some(file_name), want_download);
+    ndn_lib::apply_content_policy(response.headers_mut(), content_type_for(name), Some(file_name), want_download);
     response
 }
 
