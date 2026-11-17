@@ -11,7 +11,7 @@ export function MarketAppPanel() {
       labelKey: 'apps.settings',
       bodyKey: 'market.card.settings.body',
       iconKey: 'settings',
-      accent: 'var(--cp-accent)',
+      accent: 'var(--cp-app-blue)',
       tier: 'system' as const,
     },
     {
@@ -19,7 +19,7 @@ export function MarketAppPanel() {
       labelKey: 'apps.files',
       bodyKey: 'market.card.files.body',
       iconKey: 'files',
-      accent: 'var(--cp-success)',
+      accent: 'var(--cp-app-green)',
       tier: 'sdk' as const,
     },
     {
@@ -27,7 +27,7 @@ export function MarketAppPanel() {
       labelKey: 'apps.studio',
       bodyKey: 'market.card.studio.body',
       iconKey: 'studio',
-      accent: 'var(--cp-warning)',
+      accent: 'var(--cp-app-amber)',
       tier: 'sdk' as const,
     },
     {
@@ -35,7 +35,7 @@ export function MarketAppPanel() {
       labelKey: 'apps.docs',
       bodyKey: 'market.card.docs.body',
       iconKey: 'docs',
-      accent: 'var(--cp-accent-soft)',
+      accent: 'var(--cp-app-violet)',
       tier: 'external' as const,
     },
     {
@@ -43,7 +43,7 @@ export function MarketAppPanel() {
       labelKey: 'apps.demos',
       bodyKey: 'market.card.demos.body',
       iconKey: 'demos',
-      accent: 'var(--cp-accent-soft)',
+      accent: 'var(--cp-app-violet)',
       tier: 'sdk' as const,
     },
   ]
@@ -61,11 +61,8 @@ export function MarketAppPanel() {
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
                 <span
-                  className="flex h-12 w-12 items-center justify-center rounded-[18px] border shadow-[0_14px_28px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)]"
-                  style={{
-                    borderColor: `color-mix(in srgb, ${app.accent} 26%, white)`,
-                    ...appIconSurfaceStyle(app.accent),
-                  }}
+                  className="flex h-12 w-12 items-center justify-center rounded-[12px]"
+                  style={appIconSurfaceStyle(app.accent)}
                 >
                   <AppIcon iconKey={app.iconKey} className="text-white" />
                 </span>

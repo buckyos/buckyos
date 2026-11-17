@@ -24,7 +24,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'ai-center',
     labelKey: 'apps.aiCenter',
     summaryKey: 'appSummary.aiCenter',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -50,7 +50,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'settings',
     labelKey: 'apps.settings',
     summaryKey: 'appSummary.settings',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -76,7 +76,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'files',
     labelKey: 'apps.files',
     summaryKey: 'appSummary.files',
-    accent: 'var(--cp-success)',
+    accent: 'var(--cp-app-green)',
     tier: 'sdk',
     manifest: {
       defaultMode: 'windowed',
@@ -102,7 +102,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'studio',
     labelKey: 'apps.studio',
     summaryKey: 'appSummary.studio',
-    accent: 'var(--cp-warning)',
+    accent: 'var(--cp-app-amber)',
     tier: 'sdk',
     manifest: {
       defaultMode: 'windowed',
@@ -127,7 +127,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'market',
     labelKey: 'apps.market',
     summaryKey: 'appSummary.market',
-    accent: 'var(--cp-ink-accent)',
+    accent: 'var(--cp-app-slate)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -152,7 +152,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'diagnostics',
     labelKey: 'apps.diagnostics',
     summaryKey: 'appSummary.diagnostics',
-    accent: 'var(--cp-danger)',
+    accent: 'var(--cp-app-red)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -177,7 +177,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'demos',
     labelKey: 'apps.demos',
     summaryKey: 'appSummary.demos',
-    accent: 'var(--cp-accent-soft)',
+    accent: 'var(--cp-app-violet)',
     tier: 'sdk',
     manifest: {
       defaultMode: 'windowed',
@@ -202,7 +202,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'codeassistant',
     labelKey: 'apps.codeassistant',
     summaryKey: 'appSummary.codeassistant',
-    accent: 'var(--cp-success)',
+    accent: 'var(--cp-app-green)',
     tier: 'sdk',
     manifest: {
       defaultMode: 'windowed',
@@ -229,7 +229,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'messagehub',
     labelKey: 'apps.messagehub',
     summaryKey: 'appSummary.messagehub',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -256,7 +256,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'homestation',
     labelKey: 'apps.homestation',
     summaryKey: 'appSummary.homestation',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -283,7 +283,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'users-agents',
     labelKey: 'apps.usersAgents',
     summaryKey: 'appSummary.usersAgents',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -309,7 +309,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'agent-setup',
     labelKey: 'apps.agentSetup',
     summaryKey: 'appSummary.agentSetup',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -336,7 +336,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'agent-guide',
     labelKey: 'apps.agentGuide',
     summaryKey: 'appSummary.agentGuide',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -355,7 +355,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'my-network',
     labelKey: 'apps.myNetwork',
     summaryKey: 'appSummary.myNetwork',
-    accent: 'var(--cp-success)',
+    accent: 'var(--cp-app-green)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -381,7 +381,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'my-content',
     labelKey: 'apps.myContent',
     summaryKey: 'appSummary.myContent',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -407,7 +407,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'agent-browser',
     labelKey: 'apps.agentBrowser',
     summaryKey: 'appSummary.agentBrowser',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -433,7 +433,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'task-center',
     labelKey: 'apps.taskCenter',
     summaryKey: 'appSummary.taskCenter',
-    accent: 'var(--cp-warning)',
+    accent: 'var(--cp-app-amber)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -460,7 +460,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'workflow',
     labelKey: 'apps.workflow',
     summaryKey: 'appSummary.workflow',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -486,7 +486,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'aiworkspace',
     labelKey: 'apps.aiworkspace',
     summaryKey: 'appSummary.aiworkspace',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -513,7 +513,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'preview',
     labelKey: 'apps.preview',
     summaryKey: 'appSummary.preview',
-    accent: 'var(--cp-accent-soft)',
+    accent: 'var(--cp-app-violet)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -539,7 +539,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'app-service',
     labelKey: 'apps.appService',
     summaryKey: 'appSummary.appService',
-    accent: 'var(--cp-accent)',
+    accent: 'var(--cp-app-blue)',
     tier: 'system',
     manifest: {
       defaultMode: 'windowed',
@@ -565,7 +565,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'systest',
     labelKey: 'apps.systest',
     summaryKey: 'appSummary.systest',
-    accent: 'var(--cp-success)',
+    accent: 'var(--cp-app-green)',
     tier: 'sdk',
     manifest: {
       defaultMode: 'windowed',
@@ -592,7 +592,7 @@ const appCatalog: AppDefinition[] = [
     iconKey: 'docs',
     labelKey: 'apps.docs',
     summaryKey: 'appSummary.docs',
-    accent: 'var(--cp-accent-soft)',
+    accent: 'var(--cp-app-violet)',
     tier: 'external',
     manifest: {
       defaultMode: 'maximized',

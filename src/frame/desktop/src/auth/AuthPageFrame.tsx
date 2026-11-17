@@ -27,8 +27,7 @@ export function AuthPageFrame({
         display: 'flex',
         alignItems: { xs: 'flex-start', sm: 'center' },
         justifyContent: 'center',
-        background:
-          'linear-gradient(135deg, var(--cp-bg) 0%, var(--cp-bg-strong) 100%)',
+        background: 'var(--cp-bg)',
         px: 2,
         pt: { xs: 6, sm: 4 },
         pb: 4,
@@ -40,9 +39,8 @@ export function AuthPageFrame({
           elevation={0}
           sx={{
             p: { xs: 3, sm: 4 },
-            borderRadius: 4,
+            borderRadius: '16px',
             border: '1px solid var(--cp-border)',
-            backdropFilter: 'blur(24px)',
             boxShadow: 'var(--cp-panel-shadow)',
           }}
         >
@@ -63,7 +61,7 @@ export function AuthPageFrame({
                   sx={{
                     width: 48,
                     height: 48,
-                    borderRadius: 3,
+                    borderRadius: '12px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -78,7 +76,7 @@ export function AuthPageFrame({
             />
             <Typography
               variant="h5"
-              sx={{ fontWeight: 700, fontFamily: '"Space Grotesk", sans-serif', textAlign: 'center' }}
+              sx={{ fontWeight: 500, textAlign: 'center' }}
             >
               {title}
             </Typography>

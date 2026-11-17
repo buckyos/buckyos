@@ -30,7 +30,7 @@ export function StandaloneAppTitleBar({
 
   return (
     <header
-      className={clsx('shrink-0 border-b backdrop-blur-xl', className)}
+      className={clsx('shrink-0 border-b', className)}
       style={{
         paddingTop: 'env(safe-area-inset-top, 0px)',
         borderColor: 'var(--cp-border)',
@@ -44,13 +44,13 @@ export function StandaloneAppTitleBar({
               type="button"
               aria-label={t('common.back', 'Back')}
               onClick={handleBack}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_82%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] shadow-[0_10px_24px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] shadow-[0_1px_2px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]"
             >
               <ChevronLeft size={20} />
             </button>
           ) : (
             <div
-              className="flex h-9 w-9 items-center justify-center rounded-full border bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] shadow-[0_10px_24px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)]"
+              className="flex h-9 w-9 items-center justify-center rounded-full border bg-[color:var(--cp-surface-opaque)] shadow-[0_1px_2px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
               style={
                 {
                   '--icon-size': '36px',
@@ -64,7 +64,7 @@ export function StandaloneAppTitleBar({
         </div>
 
         <div className="absolute left-1/2 top-1/2 flex min-w-0 max-w-[58vw] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center">
-          <p className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]">
+          <p className="truncate text-sm font-medium text-[color:var(--cp-text)]">
             {mobileNav.titleOverride?.title ?? t(titleKey)}
           </p>
           <p className="line-clamp-1 text-xs text-[color:var(--cp-muted)]">

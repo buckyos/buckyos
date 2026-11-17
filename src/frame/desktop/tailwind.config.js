@@ -4,17 +4,12 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        body: [
-          '"Plus Jakarta Sans"',
-          '"PingFang SC"',
-          '"Hiragino Sans GB"',
-          '"Microsoft YaHei"',
-          'sans-serif',
-        ],
-        display: ['"Sora"', '"Plus Jakarta Sans"', 'sans-serif'],
+        sans: ['var(--cp-font-sans)'],
+        body: ['var(--cp-font-sans)'],
+        display: ['var(--cp-font-sans)'],
       },
       boxShadow: {
-        desktop: '0 24px 80px color-mix(in srgb, var(--cp-shadow) 42%, transparent)',
+        desktop: 'var(--cp-panel-shadow)',
       },
     },
   },

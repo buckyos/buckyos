@@ -71,10 +71,10 @@ function RailButton({
       onClick={onClick}
       onContextMenu={onContextMenu}
       className={clsx(
-        'relative flex size-12 shrink-0 select-none items-center justify-center rounded-[14px] border transition-[background-color,border-color,color,transform] duration-150 ease-[var(--cp-ease-emphasis)] [-webkit-touch-callout:none] active:scale-[0.94]',
+        'relative flex size-12 shrink-0 select-none items-center justify-center rounded-[12px] border transition-[background-color,border-color,color,transform] duration-150 ease-[var(--cp-ease-smooth)] [-webkit-touch-callout:none] active:scale-[0.97]',
         selected
-          ? 'border-[color:color-mix(in_srgb,var(--cp-accent)_24%,var(--cp-border))] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] text-[color:var(--cp-text)]'
-          : 'border-transparent text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)]',
+          ? 'border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-text)_7%,transparent)] text-[color:var(--cp-text)]'
+          : 'border-transparent text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-text)_8%,transparent)]',
       )}
     >
       {children}
@@ -83,7 +83,7 @@ function RailButton({
 }
 
 function RailDivider() {
-  return <div className="my-1 h-px w-8 shrink-0 bg-[color:color-mix(in_srgb,var(--cp-border)_80%,transparent)]" />
+  return <div className="my-2 h-px w-8 shrink-0 bg-[color:var(--cp-border)]" />
 }
 
 /**
@@ -219,14 +219,14 @@ export function MobileTaskbar({
           type="button"
           aria-label={t('common.close')}
           onClick={close}
-          className="absolute inset-0 bg-[color:color-mix(in_srgb,var(--cp-shadow)_32%,transparent)] backdrop-blur-[2px]"
+          className="absolute inset-0 bg-[color:color-mix(in_srgb,var(--cp-shadow)_32%,transparent)]"
         />
         <aside
           aria-label={t('shell.taskbar', 'Taskbar')}
           data-testid="mobile-taskbar"
           data-open={open}
           className={clsx(
-            'absolute inset-y-0 left-0 flex flex-col items-center border-r border-[color:color-mix(in_srgb,var(--cp-border)_88%,transparent)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface)_98%,transparent),color-mix(in_srgb,var(--cp-surface-2)_96%,transparent))] shadow-[0_18px_56px_color-mix(in_srgb,var(--cp-shadow)_18%,transparent)] backdrop-blur-xl transition-transform duration-250 ease-[var(--cp-ease-emphasis)]',
+            'absolute inset-y-0 left-0 flex flex-col items-center border-r border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] shadow-[var(--cp-panel-shadow)] transition-transform duration-300 ease-[var(--cp-ease-smooth)]',
             open ? 'translate-x-0' : '-translate-x-full',
           )}
           style={{ width: safeArea.left + railWidth, paddingLeft: safeArea.left }}
@@ -243,7 +243,7 @@ export function MobileTaskbar({
               data-testid="mobile-taskbar-avatar"
               {...profileCard.hoverProps}
               onClick={profileCard.toggleHeld}
-              className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_82%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] text-[color:var(--cp-text)] shadow-[0_10px_24px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.94]"
+              className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] text-[color:var(--cp-text)] transition-transform duration-150 ease-[var(--cp-ease-smooth)] active:scale-[0.96]"
               style={{ width: avatarSize, height: avatarSize }}
             >
               <UserAvatar size={avatarSize} user={user} />
@@ -264,7 +264,7 @@ export function MobileTaskbar({
           </div>
           <nav
             aria-label={t('shell.taskbarApps', 'Apps')}
-            className="desktop-scrollbar flex min-h-0 w-full flex-1 flex-col items-center gap-1.5 overflow-y-auto overflow-x-hidden pb-2"
+            className="desktop-scrollbar flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden pb-2"
           >
             {taskbarApps.map((app) => (
               <RailButton
@@ -297,8 +297,8 @@ export function MobileTaskbar({
               {...statusCard.hoverProps}
               onClick={statusCard.toggleHeld}
               className={clsx(
-                'flex w-[52px] items-center justify-center rounded-[10px] py-1.5 transition-colors',
-                statusCard.held ? 'bg-[color:color-mix(in_srgb,var(--cp-accent)_12%,transparent)]' : '',
+                'flex w-[52px] items-center justify-center rounded-[8px] py-1.5 transition-colors',
+                statusCard.held ? 'bg-[color:color-mix(in_srgb,var(--cp-text)_7%,transparent)]' : '',
               )}
             >
               <SystemStatusLines connectionState={connectionState} status={systemStatus} />

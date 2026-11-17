@@ -1411,11 +1411,11 @@ function InstallerContent({
   return (
     <section
       data-testid="app-installer-dialog"
-      className="min-w-0 rounded-[22px] border border-[var(--cp-border)] bg-[var(--cp-surface)] text-[var(--cp-text)] shadow-[var(--cp-window-shadow)]"
+      className="min-w-0 rounded-[16px] border border-[var(--cp-border)] bg-[var(--cp-surface)] text-[var(--cp-text)] shadow-[var(--cp-window-shadow)]"
     >
       <header className="flex items-start justify-between gap-3 border-b border-[var(--cp-border)] p-5">
         <div>
-          <h1 className="font-display text-lg font-semibold">
+          <h1 className="text-lg font-medium">
             {t('app22.title')}
           </h1>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">

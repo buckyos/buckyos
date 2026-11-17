@@ -86,12 +86,12 @@ function TaskbarButton({
         onContextMenu={onContextMenu}
         style={style}
         className={clsx(
-          'relative flex size-11 select-none [-webkit-touch-callout:none] shrink-0 items-center justify-center rounded-[12px] border transition-[background-color,border-color,color,transform] duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]',
+          'relative flex size-11 select-none [-webkit-touch-callout:none] shrink-0 items-center justify-center rounded-[10px] border transition-[background-color,border-color,color,transform] duration-150 ease-[var(--cp-ease-smooth)] active:scale-[0.97]',
           selected
-            ? 'border-[color:color-mix(in_srgb,var(--cp-accent)_24%,var(--cp-border))] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] text-[color:var(--cp-text)]'
+            ? 'border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-text)_7%,transparent)] text-[color:var(--cp-text)]'
             : expanded
-              ? 'border-transparent bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)] text-[color:var(--cp-accent)]'
-              : 'border-transparent text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]',
+              ? 'border-transparent bg-[color:color-mix(in_srgb,var(--cp-text)_7%,transparent)] text-[color:var(--cp-text)]'
+              : 'border-transparent text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] hover:text-[color:var(--cp-text)]',
         )}
       >
         {children}
@@ -102,7 +102,7 @@ function TaskbarButton({
 
 function TaskbarDivider() {
   return (
-    <div className="my-1 h-px w-7 shrink-0 bg-[color:color-mix(in_srgb,var(--cp-border)_80%,transparent)]" />
+    <div className="my-2 h-px w-6 shrink-0 bg-[color:var(--cp-border)]" />
   )
 }
 
@@ -296,10 +296,10 @@ export function DesktopTaskbar({
           setMenu({ x: event.clientX, y: event.clientY })
         }}
         className={clsx(
-          'absolute inset-y-0 left-0 z-[55] flex flex-col items-center border-r border-[color:color-mix(in_srgb,var(--cp-border)_88%,transparent)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface)_96%,transparent),color-mix(in_srgb,var(--cp-surface-2)_94%,transparent))] backdrop-blur-xl transition-[transform,box-shadow] duration-200 ease-[var(--cp-ease-emphasis)]',
+          'absolute inset-y-0 left-0 z-[55] flex flex-col items-center border-r border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] transition-[transform,box-shadow] duration-200 ease-[var(--cp-ease-smooth)]',
           visible ? 'translate-x-0' : '-translate-x-full',
           // No shadow while hidden, or it would peek in at the left edge.
-          autoHide ? 'shadow-[0_18px_48px_color-mix(in_srgb,var(--cp-shadow)_18%,transparent)]' : '',
+          autoHide ? 'shadow-[var(--cp-panel-shadow)]' : '',
         )}
         style={{
           width: safeArea.left + desktopTaskbarWidth,
@@ -366,10 +366,10 @@ export function DesktopTaskbar({
             {...statusCard.hoverProps}
             onClick={statusCard.toggleHeld}
             className={clsx(
-              'mx-1 mb-1.5 flex w-[52px] items-center justify-center rounded-[10px] py-1 transition-colors',
+              'mb-2 flex w-[52px] items-center justify-center rounded-[8px] py-1 transition-colors',
               statusCard.held
-                ? 'bg-[color:color-mix(in_srgb,var(--cp-accent)_12%,transparent)]'
-                : 'hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)]',
+                ? 'bg-[color:color-mix(in_srgb,var(--cp-text)_7%,transparent)]'
+                : 'hover:bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)]',
             )}
           >
             <SystemStatusLines connectionState={connectionState} status={systemStatus} />
@@ -383,7 +383,7 @@ export function DesktopTaskbar({
                 closeLayers()
                 onShowDesktop()
               }}
-              className="h-3.5 w-full shrink-0 border-t border-[color:color-mix(in_srgb,var(--cp-border)_88%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-border)_22%,transparent)] transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_30%,transparent)] active:bg-[color:color-mix(in_srgb,var(--cp-accent)_22%,transparent)]"
+              className="h-3 w-full shrink-0 border-t border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-text)_3%,transparent)] transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--cp-text)_8%,transparent)] active:bg-[color:color-mix(in_srgb,var(--cp-text)_12%,transparent)]"
               style={{ marginBottom: safeArea.bottom }}
             />
           </Tooltip>
@@ -456,7 +456,7 @@ export function DesktopTaskbar({
                 onToggleOpen()
               }
         }
-        className="absolute z-[56] inline-flex items-center justify-center overflow-hidden rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_82%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] text-[color:var(--cp-text)] shadow-[0_6px_16px_color-mix(in_srgb,var(--cp-shadow)_14%,transparent)] backdrop-blur-md transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.94]"
+        className="absolute z-[56] inline-flex items-center justify-center overflow-hidden rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] text-[color:var(--cp-text)] shadow-[0_1px_2px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-smooth)] active:scale-[0.96]"
         style={{
           left: safeArea.left + desktopAvatarOffset.left,
           top: safeArea.top + desktopAvatarOffset.top,

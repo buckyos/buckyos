@@ -13,7 +13,7 @@ function UnsupportedWidget({ item }: { item: WidgetItem }) {
   const { t } = useI18n()
 
   return (
-    <div className="flex h-full items-center justify-center rounded-[22px] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface-3)_86%,transparent),color-mix(in_srgb,var(--cp-surface-2)_96%,transparent))] p-4 text-center text-sm text-[color:var(--cp-muted)]">
+    <div className="flex h-full items-center justify-center rounded-[15px] bg-[color:var(--cp-surface)] p-4 text-center text-sm text-[color:var(--cp-muted)]">
       {t('common.unsupportedPanel', item.widgetType)}
     </div>
   )

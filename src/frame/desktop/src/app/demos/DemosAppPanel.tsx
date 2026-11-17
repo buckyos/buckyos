@@ -235,7 +235,7 @@ export function DemosAppPanel({
             <div className="flex items-center gap-3">
               <span
                 className="flex h-12 w-12 items-center justify-center rounded-[18px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
-                style={appIconSurfaceStyle('var(--cp-accent-soft)', 'window')}
+                style={appIconSurfaceStyle('var(--cp-app-violet)')}
               >
                 <AppIcon iconKey="demos" className="text-white" />
               </span>
@@ -617,7 +617,7 @@ export function DemosAppPanel({
                   <div className="flex items-start gap-4">
                     <span
                       className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
-                      style={appIconSurfaceStyle('var(--cp-accent-soft)', 'window')}
+                      style={appIconSurfaceStyle('var(--cp-app-violet)')}
                     >
                       <AppIcon iconKey="demos" className="text-white" />
                     </span>

@@ -183,7 +183,7 @@ function TrayPopover({
             style={{ left: placement.arrow ?? 24, visibility: placement.arrow === null ? 'hidden' : undefined }}
           />
           <div
-            className="shell-panel flex flex-col overflow-hidden rounded-[20px] shadow-[0_20px_52px_color-mix(in_srgb,var(--cp-shadow)_18%,transparent)] backdrop-blur-xl"
+            className="shell-panel flex flex-col overflow-hidden"
             style={{ maxHeight: 'inherit' }}
           >
             {children(close)}
@@ -198,7 +198,7 @@ function TrayPopover({
 function PanelHeader({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)] px-4 py-2.5">
-      <h2 className="min-w-0 flex-1 truncate font-display text-[13px] font-semibold text-[color:var(--cp-text)]">{title}</h2>
+      <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[color:var(--cp-text)]">{title}</h2>
       {children}
     </div>
   )

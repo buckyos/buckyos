@@ -83,7 +83,7 @@ function WindowChromeButton({
       type="button"
       aria-label={ariaLabel}
       className={clsx(
-        'flex h-6 w-6 items-center justify-center border-0 bg-transparent text-[color:var(--cp-muted)] transition-colors duration-150 hover:[background:linear-gradient(to_top,color-mix(in_srgb,var(--cp-text)_8%,transparent),transparent)] hover:text-[color:var(--cp-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--cp-accent)]',
+        'flex h-6 w-6 items-center justify-center rounded-[6px] border-0 bg-transparent text-[color:var(--cp-muted)] transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--cp-text)_8%,transparent)] hover:text-[color:var(--cp-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--cp-accent)]',
         className,
       )}
       onPointerDown={(event) => event.stopPropagation()}
@@ -156,42 +156,17 @@ export function DesktopWindowContainer({
   const hasFullBleedContent = app.manifest.contentPadding === 'none'
   const titleBarOpacity = clampOpacityPercent(windowAppearance.titleBarOpacity)
   const backgroundOpacity = clampOpacityPercent(windowAppearance.backgroundOpacity)
-  const activeTitleBarMix =
-    themeMode === 'light'
-      ? {
-          start: `color-mix(in srgb, ${app.accent} 38%, var(--cp-surface-2-opaque))`,
-          end: `color-mix(in srgb, ${app.accent} 22%, var(--cp-surface-opaque))`,
-          border: `color-mix(in srgb, ${app.accent} 32%, var(--cp-border-opaque))`,
-        }
-      : {
-          start: `color-mix(in srgb, ${app.accent} 20%, var(--cp-surface-2-opaque))`,
-          end: `color-mix(in srgb, ${app.accent} 9%, var(--cp-surface-opaque))`,
-          border: `color-mix(in srgb, ${app.accent} 18%, var(--cp-border-opaque))`,
-        }
-  const titleBarStyle = isFront
-    ? {
-        background: `linear-gradient(180deg, ${mixWithTransparency(activeTitleBarMix.start, titleBarOpacity)}, ${mixWithTransparency(activeTitleBarMix.end, titleBarOpacity)})`,
-        borderBottomColor: mixWithTransparency(activeTitleBarMix.border, titleBarOpacity),
-      }
-    : {
-        background:
-          `linear-gradient(180deg, ${mixWithTransparency('var(--cp-surface-2-opaque)', titleBarOpacity)}, ${mixWithTransparency('var(--cp-surface-opaque)', titleBarOpacity)})`,
-      }
+  const titleBarStyle = {
+    background: mixWithTransparency(
+      isFront ? 'var(--cp-surface-2-opaque)' : 'var(--cp-surface-opaque)',
+      titleBarOpacity,
+    ),
+  }
   const windowStyle = {
     ...style,
-    background: `linear-gradient(180deg, ${mixWithTransparency('var(--cp-surface-opaque)', backgroundOpacity)}, ${mixWithTransparency('var(--cp-surface-2-opaque)', backgroundOpacity)})`,
+    background: mixWithTransparency('var(--cp-surface-opaque)', backgroundOpacity),
   } satisfies CSSProperties
-  const activeTitleTextColor =
-    themeMode === 'light'
-      ? 'color-mix(in srgb, var(--cp-text) 96%, black)'
-      : 'var(--cp-text)'
-  const inactiveTitleTextColor =
-    'color-mix(in srgb, var(--cp-text) 88%, var(--cp-muted))'
-  const titleTextColor = isFront ? activeTitleTextColor : inactiveTitleTextColor
-  const activeChromeButtonClass =
-    themeMode === 'light'
-      ? 'text-[color:color-mix(in_srgb,var(--cp-text)_82%,black)] hover:[background:linear-gradient(to_top,color-mix(in_srgb,var(--cp-text)_10%,transparent),transparent)] hover:text-[color:color-mix(in_srgb,var(--cp-text)_96%,black)]'
-      : 'text-[color:color-mix(in_srgb,var(--cp-text)_82%,var(--cp-muted))]'
+  const titleTextColor = isFront ? 'var(--cp-text)' : 'var(--cp-muted)'
 
   return (
     <div
@@ -200,7 +175,7 @@ export function DesktopWindowContainer({
       // Positioned by `transform` (see desktopWindowTransform) so a move is
       // compositor-only; `left/top` stay at 0.
       className={clsx(
-        'pointer-events-auto shell-window absolute left-0 top-0 flex flex-col overflow-hidden transition-[box-shadow,opacity] duration-200 ease-[var(--cp-ease-emphasis)]',
+        'pointer-events-auto shell-window absolute left-0 top-0 flex flex-col overflow-hidden transition-[box-shadow,opacity] duration-200 ease-[var(--cp-ease-smooth)]',
         // A maximized window fills the workspace edge to edge.
         isMaximized ? 'rounded-none border-0' : 'rounded-[12px] border border-[color:var(--cp-border)]',
         isFront ? 'opacity-100' : 'opacity-[0.97]',
@@ -220,7 +195,7 @@ export function DesktopWindowContainer({
       >
         <div
           data-testid={`window-drag-${app.id}`}
-          className="relative flex h-8 cursor-move select-none items-center justify-end py-0.5 pr-1"
+          className="relative flex h-8 cursor-move select-none items-center justify-end border-b border-[color:var(--cp-border)] pr-1"
           style={titleBarStyle}
           onPointerDown={onDragPointerDown}
           onDoubleClick={(event) => {
@@ -268,7 +243,7 @@ export function DesktopWindowContainer({
             {app.manifest.allowMinimize ? (
               <WindowChromeButton
                 ariaLabel={t('common.minimize')}
-                className={isFront ? activeChromeButtonClass : undefined}
+                className={isFront ? 'text-[color:var(--cp-text)]' : undefined}
                 onClick={onMinimize}
               >
                 <WindowMinimizeIcon />
@@ -281,7 +256,7 @@ export function DesktopWindowContainer({
                     ? t('common.restoreWindow')
                     : t('common.maximize')
                 }
-                className={isFront ? activeChromeButtonClass : undefined}
+                className={isFront ? 'text-[color:var(--cp-text)]' : undefined}
                 onClick={onMaximize}
               >
                 {isMaximized ? <WindowRestoreIcon /> : <WindowMaximizeIcon />}
@@ -289,7 +264,7 @@ export function DesktopWindowContainer({
             ) : null}
             <WindowChromeButton
               ariaLabel={t('common.close')}
-              className={isFront ? activeChromeButtonClass : undefined}
+              className={isFront ? 'text-[color:var(--cp-text)]' : undefined}
               onClick={onClose}
             >
               <X className="size-[12px] stroke-[2]" />

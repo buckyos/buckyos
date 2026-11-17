@@ -1,16 +1,10 @@
 import { Divider, ListItemIcon, Menu, MenuItem } from '@mui/material'
 import clsx from 'clsx'
 import {
-  CircleCheck,
   LayoutGrid,
   LogOut,
-  OctagonAlert,
   Pin,
   PinOff,
-  ShieldAlert,
-  ShieldCheck,
-  ShieldX,
-  TriangleAlert,
   UserRound,
   X,
 } from 'lucide-react'
@@ -26,7 +20,7 @@ import { initialOf } from '../presentation/model'
 import { useDesktopUIStore } from '../models/DesktopUIDataModel'
 import { ObjectImage } from '../presentation/ObjectIcon'
 import type { TaskbarAppItem } from '../models/ui'
-import { connectionLabel, type ConnectionState } from './shell'
+import { connectionLabel, connectionTone, type ConnectionState } from './shell'
 import type { CurrentUser, SystemStatusState, useHoverCard } from './taskbarHooks'
 
 type TranslateFn = ReturnType<typeof useI18n>['t']
@@ -186,7 +180,7 @@ export function TaskbarMenu({
 // ---------------------------------------------------------------------------
 
 export const taskbarPopupSurface =
-  'border border-[color:var(--cp-border)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface)_96%,transparent),color-mix(in_srgb,var(--cp-surface-2)_97%,transparent))] shadow-[var(--cp-panel-shadow)] backdrop-blur-xl'
+  'border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] shadow-[var(--cp-panel-shadow)]'
 
 function TaskbarCard({
   cardRef,
@@ -213,7 +207,7 @@ function TaskbarCard({
       data-testid={testId}
       {...hoverProps}
       className={clsx(
-        'absolute z-[57] rounded-[18px] text-[color:var(--cp-text)] [animation:cp-taskbar-pop_160ms_var(--cp-ease-emphasis)]',
+        'absolute z-[57] rounded-[14px] text-[color:var(--cp-text)] [animation:cp-taskbar-pop_180ms_var(--cp-ease-smooth)]',
         taskbarPopupSurface,
         className,
       )}
@@ -237,7 +231,7 @@ export function UserAvatar({ size, user }: { size: number; user: CurrentUser | n
       fallback={
         <span
           aria-hidden
-          className="font-display font-semibold tracking-[-0.04em]"
+          className="font-medium"
           style={{ fontSize: Math.round(size * 0.46) }}
         >
           {initial}
@@ -270,8 +264,6 @@ export function ProfileCard({
   user: CurrentUser | null
 }) {
   const { t } = useI18n()
-  const ConnectionIcon =
-    connectionState === 'online' ? ShieldCheck : connectionState === 'degraded' ? ShieldAlert : ShieldX
   const rowClassName = 'flex min-w-0 items-baseline gap-3 text-[12px] leading-5'
   const rowLabelClassName = 'w-14 shrink-0 text-[color:var(--cp-muted)]'
 
@@ -284,21 +276,21 @@ export function ProfileCard({
       testId="taskbar-profile-card"
     >
       <div className="flex items-center gap-3 px-4 pb-3 pt-4">
-        <span className="inline-flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_82%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,var(--cp-surface))]">
+        <span className="inline-flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-2)]">
           <UserAvatar size={48} user={user} />
         </span>
         <div className="min-w-0">
-          <p className="truncate font-display text-[15px] font-semibold">
+          <p className="truncate text-[15px] font-medium leading-5">
             {user?.displayName ?? t('shell.profileLoading', 'Loading account...')}
           </p>
           {user ? (
-            <p className="truncate text-[12px] text-[color:var(--cp-muted)]">
+            <p className="truncate text-xs text-[color:var(--cp-muted)]">
               {user.userType ? `${user.userId} · ${user.userType}` : user.userId}
             </p>
           ) : null}
         </div>
       </div>
-      <div className="space-y-1 border-t border-[color:color-mix(in_srgb,var(--cp-border)_72%,transparent)] px-4 py-3">
+      <div className="space-y-1 border-t border-[color:var(--cp-border)] px-4 py-3">
         {user?.did ? (
           <div className={rowClassName}>
             <span className={rowLabelClassName}>DID</span>
@@ -310,19 +302,19 @@ export function ProfileCard({
         <div className={rowClassName}>
           <span className={rowLabelClassName}>{t('shell.session', 'Session')}</span>
           <span className="flex min-w-0 items-center gap-1.5">
-            <ConnectionIcon className="size-3.5 shrink-0 self-center text-[color:var(--cp-muted)]" />
+            <span className="size-1.5 shrink-0 self-center rounded-full" style={{ background: connectionTone(connectionState) }} />
             <span className="truncate">
               {t(`runtime.${runtimeContainer}`, runtimeContainer)} · {connectionLabel(connectionState, t)}
             </span>
           </span>
         </div>
       </div>
-      <div className="flex items-center gap-2 border-t border-[color:color-mix(in_srgb,var(--cp-border)_72%,transparent)] px-3 py-3">
+      <div className="flex items-center gap-2 border-t border-[color:var(--cp-border)] px-3 py-3">
         {onOpenAccount ? (
           <button
             type="button"
             onClick={onOpenAccount}
-            className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-[12px] px-3 text-[13px] font-medium text-[color:var(--cp-text)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_16%,transparent)]"
+            className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-[8px] px-3 text-[13px] font-medium text-[color:var(--cp-text)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]"
           >
             <UserRound className="size-4 shrink-0 text-[color:var(--cp-muted)]" />
             <span className="truncate">{t('shell.manageAccount', 'Manage account')}</span>
@@ -335,7 +327,7 @@ export function ProfileCard({
           aria-disabled={isLoggingOut || undefined}
           onClick={isLoggingOut ? undefined : onLogout}
           className={clsx(
-            'inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-[12px] px-3 text-[13px] font-medium text-[color:var(--cp-danger)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-danger)_10%,transparent)]',
+            'inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-[8px] px-3 text-[13px] font-medium text-[color:var(--cp-danger)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-danger)_10%,transparent)]',
             isLoggingOut ? 'pointer-events-none opacity-55' : '',
           )}
         >
@@ -432,9 +424,9 @@ export function SystemStatusLines({
   return (
     <span className="flex w-full flex-col items-center text-[10px] leading-[13px] tabular-nums">
       {lines.map((line) => (
-        <span key={line.label} className="flex max-w-full items-center gap-[3px] whitespace-nowrap">
+        <span key={line.label} className="flex max-w-full items-center gap-1 whitespace-nowrap">
           {line.level !== 'normal' ? (
-            <span className="size-[5px] shrink-0 rounded-full" style={{ background: levelColor[line.level] }} />
+            <span className="size-1.5 shrink-0 rounded-full" style={{ background: levelColor[line.level] }} />
           ) : null}
           <span className="truncate text-[color:var(--cp-muted)]">{line.label}</span>
           {line.value ? <span className="font-medium text-[color:var(--cp-text)]">{line.value}</span> : null}
@@ -456,11 +448,11 @@ function UsageRow({
   const level = usageLevel(percent)
   return (
     <div className="space-y-1">
-      <div className="flex items-baseline justify-between gap-3 text-[12px]">
-        <span className="text-[color:var(--cp-muted)]">{label}</span>
-        <span className="font-medium tabular-nums">{formatPercent(percent)}</span>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[13px] text-[color:var(--cp-muted)]">{label}</span>
+        <span className="text-[20px] font-medium leading-6 tabular-nums">{formatPercent(percent)}</span>
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]">
+      <div className="h-1 overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--cp-text)_8%,transparent)]">
         <div
           className="h-full rounded-full transition-[width] duration-300"
           style={{
@@ -469,7 +461,7 @@ function UsageRow({
           }}
         />
       </div>
-      <p className="truncate text-[11px] text-[color:var(--cp-muted)]">{detail}</p>
+      <p className="truncate text-xs text-[color:var(--cp-muted)]">{detail}</p>
     </div>
   )
 }
@@ -484,19 +476,19 @@ function TokenUsageChart({ usage, failed }: { usage: SystemTokenUsage | null; fa
   const outputLabel = t('shell.status.tokenOutput', 'Output')
 
   return (
-    <div className="space-y-1 px-4 pb-2" data-testid="taskbar-token-chart">
-      <div className="flex items-center justify-between gap-2 text-[12px]">
-        <span className="whitespace-nowrap text-[10px] tabular-nums text-[color:var(--cp-muted)]">
+    <div className="space-y-2 px-4 pb-4" data-testid="taskbar-token-chart">
+      <div className="flex items-center justify-between gap-2 text-xs text-[color:var(--cp-muted)]">
+        <span className="whitespace-nowrap tabular-nums">
           {t('shell.status.tokenPeak', 'AI Token peak {{count}}', { count: usage ? formatTokens(peak) : '--' })}
         </span>
-        <span className="flex gap-2.5 text-[10px] text-[color:var(--cp-muted)]">
-          <span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-sm bg-[#60a5fa]" />{inputLabel}</span>
-          <span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-sm bg-[#fb923c]" />{outputLabel}</span>
+        <span className="flex gap-3">
+          <span className="inline-flex items-center gap-1"><span className="size-2 rounded-[2px] bg-[color:var(--cp-chart-input)]" />{inputLabel}</span>
+          <span className="inline-flex items-center gap-1"><span className="size-2 rounded-[2px] bg-[color:var(--cp-chart-output)]" />{outputLabel}</span>
         </span>
       </div>
-      <div className="relative h-8">
+      <div className="relative h-12 border-b border-[color:var(--cp-border)]">
         {usage ? (
-          <div className="relative flex h-full items-end gap-0.5" role="group" aria-label={t('shell.status.tokenInterval', 'Last hour · 5 min / bar')}>
+          <div className="relative flex h-full items-end gap-[2px]" role="group" aria-label={t('shell.status.tokenInterval', 'Last hour · 5 min / bar')}>
             {usage.buckets.map((bucket) => {
               const label = `${formatTime(Math.max(usage.startTimeMs, bucket.startTimeMs))}–${formatTime(Math.min(usage.endTimeMs, bucket.startTimeMs + 300_000))} · ${inputLabel}: ${bucket.inputTokens.toLocaleString(locale)} · ${outputLabel}: ${bucket.outputTokens.toLocaleString(locale)}`
               return (
@@ -507,15 +499,15 @@ function TokenUsageChart({ usage, failed }: { usage: SystemTokenUsage | null; fa
                   aria-label={label}
                   title={label}
                   tabIndex={0}
-                  className="relative h-full w-px shrink-0 outline-offset-2 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[color:var(--cp-accent)]"
+                  className="relative h-full min-w-px flex-1 outline-offset-2 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[color:var(--cp-accent)]"
                 >
                   <div
                     aria-hidden
                     className="absolute inset-0 flex flex-col justify-end"
-                    style={{ maskImage: 'repeating-linear-gradient(to top, #000 0 1px, transparent 1px 3px)' }}
+                    style={{ maskImage: 'repeating-linear-gradient(to top, #000 0 2px, transparent 2px 3px)' }}
                   >
-                    <span className="w-full bg-[#fb923c]" style={{ height: `${bucket.outputTokens / scaleMax * 100}%` }} />
-                    <span className="w-full bg-[#60a5fa]" style={{ height: `${bucket.inputTokens / scaleMax * 100}%` }} />
+                    <span className="w-full bg-[color:var(--cp-chart-output)]" style={{ height: bucket.outputTokens > 0 ? `max(2px, ${bucket.outputTokens / scaleMax * 100}%)` : 0 }} />
+                    <span className="w-full bg-[color:var(--cp-chart-input)]" style={{ height: bucket.inputTokens > 0 ? `max(2px, ${bucket.inputTokens / scaleMax * 100}%)` : 0 }} />
                   </div>
                 </div>
               )
@@ -523,7 +515,7 @@ function TokenUsageChart({ usage, failed }: { usage: SystemTokenUsage | null; fa
           </div>
         ) : null}
         {!usage || empty ? (
-          <p role="status" className="absolute inset-0 flex items-center justify-center text-[11px] text-[color:var(--cp-muted)]">
+          <p role="status" className="absolute inset-0 flex items-center justify-center text-xs text-[color:var(--cp-muted)]">
             {failed
               ? t('shell.status.tokensUnavailable', 'Token usage is unavailable.')
               : usage
@@ -554,7 +546,6 @@ export function SystemStatusCard({
   const { locale, t } = useI18n()
   const { metrics, tokenUsage } = status
   const level = metrics ? worstLevel(metrics) : null
-  const LevelIcon = level === 'critical' ? OctagonAlert : level === 'warning' ? TriangleAlert : CircleCheck
   const levelLabel =
     level === 'critical'
       ? t('shell.status.critical', 'Critical')
@@ -571,17 +562,17 @@ export function SystemStatusCard({
       style={{ width: 296, ...style }}
       testId="taskbar-status-card"
     >
-      <div className="flex items-center justify-between gap-3 px-4 pb-2 pt-4">
-        <p className="font-display text-[15px] font-semibold">{t('shell.status.title', 'System status')}</p>
+      <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-4">
+        <p className="text-[15px] font-medium leading-5">{t('shell.status.title', 'System status')}</p>
         {level ? (
-          <span className="inline-flex items-center gap-1.5 text-[12px] font-medium">
-            <LevelIcon className="size-3.5" style={{ color: levelColor[level] }} />
+          <span className="inline-flex items-center gap-2 text-xs text-[color:var(--cp-muted)]">
+            <span className="size-1.5 rounded-full" style={{ background: levelColor[level] }} />
             {levelLabel}
           </span>
         ) : null}
       </div>
       {metrics ? (
-        <div className="space-y-3 px-4 pb-3 pt-1">
+        <div className="space-y-4 px-4 pb-4">
           <UsageRow
             label={t('shell.status.cpu', 'CPU')}
             percent={metrics.cpu.usagePercent}
@@ -597,15 +588,15 @@ export function SystemStatusCard({
           />
         </div>
       ) : (
-        <p className="px-4 pb-3 text-[12px] text-[color:var(--cp-muted)]">
+        <p className="px-4 pb-4 text-xs text-[color:var(--cp-muted)]">
           {status.failed
             ? t('shell.status.unavailable', 'System status is unavailable right now.')
             : t('shell.status.loading', 'Reading system status...')}
         </p>
       )}
       <TokenUsageChart usage={tokenUsage} failed={status.tokenUsageFailed} />
-      <div className="space-y-0.5 border-t border-[color:color-mix(in_srgb,var(--cp-border)_72%,transparent)] px-4 py-3">
-        <div className="mb-2 grid grid-cols-3 gap-2 text-[11px]" data-testid="taskbar-token-totals" aria-label={t('shell.status.tokenTotals', 'Total tokens')}>
+      <div className="space-y-1 border-t border-[color:var(--cp-border)] px-4 py-3">
+        <div className="mb-2 grid grid-cols-3 gap-3 text-xs" data-testid="taskbar-token-totals" aria-label={t('shell.status.tokenTotals', 'Total tokens')}>
           {([
             ['hour', t('shell.status.tokensHour', '1h')],
             ['fiveHours', t('shell.status.tokensFiveHours', '5h')],

@@ -33,19 +33,24 @@ function StatusLogoButton({
   user: CurrentUser | null
 }) {
   return (
-    <button
-      type="button"
-      aria-label="BuckyOS"
-      onClick={onClick}
-      className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] text-[color:var(--cp-text)] shadow-[0_10px_24px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]"
-      style={{
-        borderColor: highlightBorder
-          ? `color-mix(in srgb, ${connectionTone(connectionState)} 76%, var(--cp-border))`
-          : 'color-mix(in srgb, var(--cp-border) 82%, transparent)',
-      }}
-    >
-      <UserAvatar size={36} user={user} />
-    </button>
+    <span className="relative inline-flex shrink-0">
+      <button
+        type="button"
+        aria-label="BuckyOS"
+        onClick={onClick}
+        className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] text-[color:var(--cp-text)] shadow-[0_1px_2px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-smooth)] active:scale-[0.96]"
+      >
+        <UserAvatar size={36} user={user} />
+      </button>
+      {highlightBorder ? (
+        <span
+          aria-hidden="true"
+          data-testid="status-connection-dot"
+          className="pointer-events-none absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-[color:var(--cp-bg)]"
+          style={{ background: connectionTone(connectionState) }}
+        />
+      ) : null}
+    </span>
   )
 }
 
@@ -55,7 +60,7 @@ function MobileBackButton({ onClick }: { onClick: () => void }) {
       type="button"
       aria-label="Back"
       onClick={onClick}
-      className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_82%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] text-[color:var(--cp-text)] shadow-[0_10px_24px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]"
+      className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] text-[color:var(--cp-text)] shadow-[0_1px_2px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-smooth)] active:scale-[0.96]"
     >
       <ChevronLeft size={20} />
     </button>
@@ -118,7 +123,7 @@ export function StatusBar({
   // as opaque anyway, and may render backdrop-filter as solid white.
   const showSurface = activeMode === 'standard'
   const surfaceColor =
-    showSurface && activeApp ? `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2-opaque))` : undefined
+    showSurface && activeApp ? 'var(--cp-surface-2-opaque)' : undefined
 
   const appControls = (
     <div
@@ -137,7 +142,7 @@ export function StatusBar({
           border: 0,
           backgroundColor: 'transparent',
           color: 'var(--cp-text)',
-          '&.Mui-focusVisible': { backgroundColor: 'var(--cp-accent-soft)' },
+          '&.Mui-focusVisible': { backgroundColor: 'color-mix(in srgb, var(--cp-text) 8%, transparent)' },
         }}
       >
         <Ellipsis size={18} />
@@ -156,7 +161,7 @@ export function StatusBar({
               border: 0,
               backgroundColor: 'transparent',
               color: 'var(--cp-text)',
-              '&.Mui-focusVisible': { backgroundColor: 'var(--cp-accent-soft)' },
+              '&.Mui-focusVisible': { backgroundColor: 'color-mix(in srgb, var(--cp-text) 8%, transparent)' },
             }}
           >
             <Minus size={18} />
@@ -197,20 +202,20 @@ export function StatusBar({
               <button
                 type="button"
                 onClick={onToggleTheme}
-                className="pointer-events-auto hidden rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_88%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_78%,transparent)] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--cp-muted)] sm:inline-flex"
+                className="pointer-events-auto hidden rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-1.5 text-xs font-medium text-[color:var(--cp-muted)] sm:inline-flex"
               >
                 {t(themeMode === 'light' ? 'common.light' : 'common.dark')}
               </button>
               <button
                 type="button"
                 onClick={onCycleLocale}
-                className="pointer-events-auto hidden rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_88%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_78%,transparent)] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--cp-muted)] sm:inline-flex"
+                className="pointer-events-auto hidden rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-1.5 text-xs font-medium uppercase text-[color:var(--cp-muted)] sm:inline-flex"
               >
                 {locale}
               </button>
             </div>
             <div className="absolute left-1/2 top-1/2 flex min-w-0 max-w-[46vw] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center">
-              <p className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]">
+              <p className="truncate text-sm font-medium text-[color:var(--cp-text)]">
                 {mobileNav.titleOverride?.title ?? appText(activeApp).title}
               </p>
               <p className="line-clamp-1 text-xs text-[color:var(--cp-muted)]">
@@ -234,7 +239,7 @@ export function StatusBar({
               )}
               {activeMode === 'compact' && activeApp ? (
                 <div className="min-w-0">
-                  <p className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]">
+                  <p className="truncate text-sm font-medium text-[color:var(--cp-text)]">
                     {appText(activeApp).title}
                   </p>
                 </div>

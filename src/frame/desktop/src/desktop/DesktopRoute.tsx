@@ -1287,11 +1287,11 @@ function LoadingState() {
   // One tip per load, kept across re-renders and language switches.
   const [tipKey] = useState(() => loadingTipKeys[Math.floor(Math.random() * loadingTipKeys.length)])
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-surface)]/72 px-4 backdrop-blur-xl">
+    <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-bg)] px-4">
       <div className="flex max-w-md flex-col items-center text-center">
         <LoadingOrb size={48} label={t('states.loading')} />
-        <p className="mt-6 text-base font-medium text-[color:var(--cp-text)]">{t('states.loading')}</p>
-        <p className="mt-3 text-sm leading-6 text-[color:var(--cp-muted)]" data-testid="desktop-loading-tip">
+        <p className="mt-4 text-base font-medium text-[color:var(--cp-text)]">{t('states.loading')}</p>
+        <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]" data-testid="desktop-loading-tip">
           <span className="font-medium text-[color:var(--cp-text)]">{t('states.tipLabel')}</span>
           {' · '}
           {t(tipKey)}
@@ -1304,10 +1304,9 @@ function LoadingState() {
 function ErrorState({ onRetry }: { onRetry: () => void }) {
   const { t } = useI18n()
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-surface)]/78 backdrop-blur-xl">
-      <div className="shell-panel max-w-lg px-7 py-8 text-center">
-        <p className="shell-kicker">Recovery</p>
-        <p className="mt-2 font-display text-2xl font-semibold">
+    <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-bg)]">
+      <div className="shell-panel max-w-lg p-8 text-center">
+        <p className="text-xl font-medium">
           {t('states.errorTitle')}
         </p>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[color:var(--cp-muted)]">
@@ -1325,9 +1324,8 @@ function EmptyState({ height, onRestore }: { height: number; onRestore: () => vo
   const { t } = useI18n()
   return (
     <div className="flex items-center justify-center px-4" style={{ height }}>
-      <div className="shell-panel max-w-lg border-dashed px-7 py-8 text-center">
-        <p className="shell-kicker">Layout</p>
-        <p className="mt-2 font-display text-2xl font-semibold">
+      <div className="shell-panel max-w-lg border-dashed p-8 text-center">
+        <p className="text-xl font-medium">
           {t('states.emptyTitle')}
         </p>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[color:var(--cp-muted)]">
@@ -1456,10 +1454,11 @@ function DesktopTile({
       testId: `desktop-app-${app.id}`,
       icon: (
         <span
-          className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
+          className="relative flex shrink-0 items-center justify-center overflow-hidden"
           style={{
             width: 'var(--icon-size)',
             height: 'var(--icon-size)',
+            borderRadius: 'calc(var(--icon-size) * 0.28)',
             ...appIconSurfaceStyle(app.accent),
           }}
         >
@@ -1477,14 +1476,14 @@ function DesktopTile({
       data-item-type={item.type}
       data-widget-type={item.type === 'widget' ? item.widgetType : undefined}
       className={clsx(
-        'desktop-tile-shell group relative h-full border border-transparent transition-[transform,border-color,box-shadow,background-color] duration-200 ease-[var(--cp-ease-emphasis)]',
-        item.type === 'widget' ? 'rounded-[22px]' : 'rounded-[28px]',
+        'desktop-tile-shell group relative h-full border border-transparent transition-[border-color,background-color] duration-150 ease-[var(--cp-ease-smooth)]',
+        'rounded-[16px]',
         item.type === 'widget' ? 'overflow-hidden' : 'overflow-visible',
         isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
         isSelected
-          ? 'border-[color:color-mix(in_srgb,var(--cp-accent)_46%,transparent)] shadow-[0_0_0_4px_color-mix(in_srgb,var(--cp-accent)_15%,transparent)]'
+          ? 'border-[color:color-mix(in_srgb,var(--cp-accent)_50%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-accent)_8%,transparent)]'
           : item.type === 'widget'
-            ? 'hover:border-[color:color-mix(in_srgb,var(--cp-border)_84%,transparent)]'
+            ? 'border-[color:var(--cp-border)]'
             : '',
       )}
       onContextMenu={(event) => onOpenContextMenu(item, event)}
@@ -1503,7 +1502,7 @@ function DesktopTile({
           data-testid={tile.testId}
           title={tile.title}
           className={clsx(
-            'flex h-full w-full flex-col items-center rounded-[28px] bg-transparent text-center transition-[background-color,box-shadow] duration-200 ease-[var(--cp-ease-emphasis)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,var(--cp-surface))]',
+            'flex h-full w-full flex-col items-center rounded-[16px] bg-transparent text-center transition-colors duration-150 focus-visible:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]',
             isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
           )}
           // Size-query container for the label: desktop cells are capped at
@@ -1526,7 +1525,7 @@ function DesktopTile({
             />
           ) : null}
           <span
-            className="desktop-icon-label max-w-full break-words overflow-hidden px-0.5 font-display font-semibold text-[color:var(--cp-text)]"
+            className="desktop-icon-label max-w-full break-words overflow-hidden px-0.5 font-medium text-[color:var(--cp-text)]"
             style={{
               paddingTop: 'var(--label-padding-top)',
               fontSize: isDesktop
@@ -1557,8 +1556,8 @@ function DesktopFileIcon({ item }: { item: FileIconItem }) {
   const kind = item.fileKind === 'folder' ? 'folder' : classifyFileKind(item.id)
   return (
     <span
-      className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] border border-[color:color-mix(in_srgb,var(--cp-border)_80%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
-      style={{ width: 'var(--icon-size)', height: 'var(--icon-size)' }}
+      className="relative flex shrink-0 items-center justify-center overflow-hidden border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)]"
+      style={{ width: 'var(--icon-size)', height: 'var(--icon-size)', borderRadius: 'calc(var(--icon-size) * 0.28)' }}
     >
       {fileIcon({ kind, name: item.id }, 26)}
     </span>

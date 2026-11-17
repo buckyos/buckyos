@@ -137,17 +137,17 @@ export function AllAppsPanel({
         'flex flex-col text-[color:var(--cp-text)]',
         fullscreen
           ? 'fixed inset-0 z-[80] bg-[color:var(--cp-bg)]'
-          : clsx('absolute z-[54] rounded-r-[20px] border-l-0 [animation:cp-taskbar-pop_200ms_var(--cp-ease-emphasis)]', taskbarPopupSurface),
+          : clsx('absolute z-[54] rounded-r-[14px] border-l-0 [animation:cp-taskbar-pop_200ms_var(--cp-ease-smooth)]', taskbarPopupSurface),
       )}
       style={{
         ...(fullscreen ? { paddingTop: insets.top, paddingBottom: insets.bottom } : {}),
         ...style,
       }}
     >
-      <div className={clsx('flex shrink-0 items-center gap-2', fullscreen ? 'px-4 pb-2 pt-3' : 'px-3 pb-2 pt-3')}>
+      <div className="flex shrink-0 items-center gap-2 px-4 pb-2 pt-3">
         <label
           className={clsx(
-            'flex min-w-0 flex-1 items-center gap-2 rounded-[12px] border border-[color:color-mix(in_srgb,var(--cp-border)_88%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_80%,transparent)] px-3 transition-[border-color] focus-within:border-[color:color-mix(in_srgb,var(--cp-accent)_42%,var(--cp-border))]',
+            'flex min-w-0 flex-1 items-center gap-2 rounded-[8px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-2)] px-3 transition-[border-color] focus-within:border-[color:color-mix(in_srgb,var(--cp-accent)_50%,transparent)]',
             fullscreen ? 'h-11' : 'h-9',
           )}
         >
@@ -186,7 +186,7 @@ export function AllAppsPanel({
           </button>
         ) : null}
       </div>
-      <p className={clsx('shrink-0 pb-1 text-[11px] font-medium text-[color:var(--cp-muted)]', fullscreen ? 'px-5' : 'px-4')}>
+      <p className="shrink-0 px-4 pb-1 text-xs text-[color:var(--cp-muted)]">
         {needle
           ? t('shell.allAppsMatches', '{{count}} matching', { count: results.length })
           : t('shell.allAppsCount', 'All apps · {{count}}', { count: results.length })}
@@ -195,7 +195,7 @@ export function AllAppsPanel({
         <ul
           ref={listRef}
           onKeyDown={handleListKeyDown}
-          className={clsx('desktop-scrollbar min-h-0 flex-1 overflow-y-auto', fullscreen ? 'px-2 pb-4' : 'px-1.5 pb-3')}
+          className="desktop-scrollbar min-h-0 flex-1 overflow-y-auto px-2 pb-4"
         >
           {results.map(({ app, label, summary }) => (
             <li key={app.id}>
@@ -216,15 +216,16 @@ export function AllAppsPanel({
                     : undefined
                 }
                 className={clsx(
-                  'flex w-full min-w-0 select-none items-center gap-3 rounded-[12px] px-2.5 text-left transition-colors [-webkit-touch-callout:none] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)]',
+                  'flex w-full min-w-0 select-none items-center gap-3 rounded-[8px] px-2 text-left transition-colors [-webkit-touch-callout:none] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)]',
                   fullscreen ? 'py-2.5' : 'py-2',
                 )}
               >
                 <span
-                  className="flex shrink-0 items-center justify-center overflow-hidden rounded-[10px]"
+                  className="flex shrink-0 items-center justify-center overflow-hidden"
                   style={{
                     width: fullscreen ? 40 : 32,
                     height: fullscreen ? 40 : 32,
+                    borderRadius: fullscreen ? 11 : 9,
                     '--icon-size': `${fullscreen ? 40 : 32}px`,
                     ...appIconSurfaceStyle(app.accent),
                   } as CSSProperties}
@@ -236,7 +237,7 @@ export function AllAppsPanel({
                     {label}
                   </span>
                   {summary ? (
-                    <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{summary}</span>
+                    <span className="block truncate text-xs text-[color:var(--cp-muted)]">{summary}</span>
                   ) : null}
                 </span>
                 {pinnedAppIds?.has(app.id) ? (

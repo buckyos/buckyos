@@ -78,7 +78,7 @@ export function createBackendAppDefinitionMapper(catalog: AppDefinition[], optio
       iconKey: summary.app_id,
       labelKey: summary.app_id,
       summaryKey: '',
-      accent: 'var(--cp-accent)',
+      accent: 'var(--cp-app-blue)',
       tier: webHosts.length > 0 ? 'sdk' : 'external',
       manifest: {
         defaultMode: 'windowed',

@@ -33,28 +33,27 @@ export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ m
   }, [themeMode, mode])
 
   const theme = useMemo(() => {
-    const primaryMain = themeMode === 'light' ? '#5f67e8' : '#95a3ff'
-    const secondaryMain = themeMode === 'light' ? '#9887ea' : '#b19cff'
-    const successMain = themeMode === 'light' ? '#3ea67e' : '#69c49c'
-    const backgroundDefault = themeMode === 'light' ? '#f6f1fb' : '#2a2737'
-    const backgroundPaper = themeMode === 'light' ? '#fcfaff' : '#39354a'
-    const textPrimary = themeMode === 'light' ? '#3a3553' : '#f2effa'
-    const textSecondary = themeMode === 'light' ? '#726c89' : '#c2bbd6'
-    const divider = themeMode === 'light' ? 'rgba(117, 109, 148, 0.24)' : 'rgba(165, 157, 195, 0.24)'
-    const primaryButton = themeMode === 'light'
+    const light = themeMode === 'light'
+    const primaryMain = light ? '#406ad5' : '#87aaf1'
+    const secondaryMain = light ? '#6a7587' : '#a1a1a6'
+    const successMain = light ? '#3ea67e' : '#69c49c'
+    const backgroundDefault = light ? '#f3f3f2' : '#141415'
+    const backgroundPaper = light ? '#fdfdfc' : '#1c1c1e'
+    const textPrimary = light ? '#1b1b1a' : '#ededed'
+    const textSecondary = light ? '#6b6b69' : '#a1a1a6'
+    const divider = light ? 'rgba(27, 27, 26, 0.12)' : 'rgba(237, 237, 237, 0.1)'
+    const primaryButton = light
       ? {
-          background: 'oklch(0.58 0.108 258)',
-          hoverBackground: 'oklch(0.54 0.118 258)',
-          activeBackground: 'oklch(0.51 0.112 258)',
-          text: 'oklch(0.985 0.006 286)',
-          outlineHover: 'color-mix(in srgb, var(--cp-accent) 12%, var(--cp-surface))',
+          background: '#406ad5',
+          hoverBackground: '#3a60c4',
+          activeBackground: '#3557b3',
+          text: '#ffffff',
         }
       : {
-          background: 'oklch(0.72 0.082 258)',
-          hoverBackground: 'oklch(0.75 0.086 258)',
-          activeBackground: 'oklch(0.68 0.078 258)',
-          text: 'oklch(0.24 0.02 272)',
-          outlineHover: 'color-mix(in srgb, var(--cp-accent) 16%, var(--cp-surface))',
+          background: '#ededed',
+          hoverBackground: '#ffffff',
+          activeBackground: '#d6d6d6',
+          text: '#141415',
         }
 
     return createTheme({
@@ -80,19 +79,18 @@ export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ m
         divider,
       },
       typography: {
-        fontFamily: '"Work Sans", sans-serif',
-        h1: { fontFamily: '"Space Grotesk", sans-serif' },
-        h2: { fontFamily: '"Space Grotesk", sans-serif' },
-        h3: { fontFamily: '"Space Grotesk", sans-serif' },
+        fontFamily: 'var(--cp-font-sans)',
+        h1: { fontWeight: 500 },
+        h2: { fontWeight: 500 },
+        h3: { fontWeight: 500 },
         button: {
-          fontFamily: '"Space Grotesk", sans-serif',
-          fontWeight: 700,
-          letterSpacing: '0.02em',
+          fontWeight: 500,
+          letterSpacing: 0,
           textTransform: 'none',
         },
       },
       shape: {
-        borderRadius: 20,
+        borderRadius: 12,
       },
       components: {
         MuiButton: {
@@ -102,27 +100,24 @@ export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ m
           },
           styleOverrides: {
             root: {
-              minHeight: 44,
-              borderRadius: 16,
-              paddingInline: 18,
-              boxShadow:
-                '0 14px 30px color-mix(in srgb, var(--cp-accent) 16%, transparent)',
+              minHeight: 40,
+              borderRadius: 10,
+              paddingInline: 16,
+              boxShadow: 'none',
               transition:
-                'transform 180ms var(--cp-ease-emphasis), background-color 180ms var(--cp-ease-smooth), border-color 180ms var(--cp-ease-smooth), box-shadow 180ms var(--cp-ease-smooth)',
+                'transform 120ms var(--cp-ease-smooth), background-color 150ms var(--cp-ease-smooth), border-color 150ms var(--cp-ease-smooth), color 150ms var(--cp-ease-smooth)',
               '&:hover': {
-                transform: 'translateY(-1px)',
-                boxShadow:
-                  '0 18px 36px color-mix(in srgb, var(--cp-accent) 22%, transparent)',
+                boxShadow: 'none',
               },
               '&:active': {
-                transform: 'translateY(0)',
+                transform: 'scale(0.98)',
               },
               '&.Mui-disabled': {
                 boxShadow: 'none',
                 transform: 'none',
               },
             },
-            contained: {
+            containedPrimary: {
               background: primaryButton.background,
               color: primaryButton.text,
               '&:hover': {
@@ -131,60 +126,51 @@ export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ m
               '&:active': {
                 background: primaryButton.activeBackground,
               },
+            },
+            contained: {
               '&.Mui-disabled': {
-                background: 'color-mix(in srgb, var(--cp-text) 10%, var(--cp-surface-2))',
-                color: 'color-mix(in srgb, var(--cp-muted) 82%, transparent)',
+                background: 'color-mix(in srgb, var(--cp-text) 8%, var(--cp-surface-2))',
+                color: 'var(--cp-muted)',
               },
             },
             outlined: {
               borderColor: 'var(--cp-border)',
-              backgroundColor: 'color-mix(in srgb, var(--cp-surface) 78%, transparent)',
+              backgroundColor: 'var(--cp-surface)',
               color: 'var(--cp-text)',
-              boxShadow: 'none',
               '&:hover': {
-                borderColor: 'color-mix(in srgb, var(--cp-accent) 28%, var(--cp-border))',
-                backgroundColor: primaryButton.outlineHover,
-                boxShadow: 'none',
+                borderColor: 'color-mix(in srgb, var(--cp-text) 22%, transparent)',
+                backgroundColor: 'color-mix(in srgb, var(--cp-text) 4%, var(--cp-surface))',
               },
             },
             text: {
               color: 'var(--cp-text)',
-              boxShadow: 'none',
               '&:hover': {
-                backgroundColor:
-                  'color-mix(in srgb, var(--cp-accent-soft) 10%, transparent)',
-                boxShadow: 'none',
+                backgroundColor: 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
               },
             },
             sizeSmall: {
-              minHeight: 36,
-              paddingInline: 14,
-              borderRadius: 12,
+              minHeight: 32,
+              paddingInline: 12,
+              borderRadius: 8,
             },
             sizeLarge: {
-              minHeight: 50,
-              paddingInline: 22,
-              borderRadius: 18,
+              minHeight: 48,
+              paddingInline: 20,
+              borderRadius: 12,
             },
           },
         },
         MuiIconButton: {
           styleOverrides: {
             root: {
-              border: '1px solid color-mix(in srgb, var(--cp-border) 78%, transparent)',
-              backgroundColor:
-                'color-mix(in srgb, var(--cp-surface) 84%, transparent)',
               color: 'var(--cp-text)',
               '&:hover': {
-                backgroundColor:
-                  'color-mix(in srgb, var(--cp-accent-soft) 10%, var(--cp-surface))',
-                borderColor:
-                  'color-mix(in srgb, var(--cp-accent) 24%, var(--cp-border))',
+                backgroundColor: 'color-mix(in srgb, var(--cp-text) 7%, transparent)',
               },
             },
             sizeSmall: {
-              width: 34,
-              height: 34,
+              width: 32,
+              height: 32,
             },
           },
         },
@@ -198,15 +184,13 @@ export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ m
         MuiOutlinedInput: {
           styleOverrides: {
             root: {
-              borderRadius: 18,
-              backgroundColor:
-                'color-mix(in srgb, var(--cp-surface) 88%, transparent)',
+              borderRadius: 10,
+              backgroundColor: 'var(--cp-surface)',
               '& .MuiOutlinedInput-notchedOutline': {
                 borderColor: 'var(--cp-border)',
               },
               '&:hover .MuiOutlinedInput-notchedOutline': {
-                borderColor:
-                  'color-mix(in srgb, var(--cp-accent) 24%, var(--cp-border))',
+                borderColor: 'color-mix(in srgb, var(--cp-text) 24%, transparent)',
               },
               '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                 borderColor: 'var(--cp-accent)',
@@ -228,30 +212,28 @@ export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ m
           styleOverrides: {
             paper: {
               border: '1px solid var(--cp-border)',
-              borderRadius: 18,
-              background:
-                'linear-gradient(180deg, color-mix(in srgb, var(--cp-surface) 94%, transparent), color-mix(in srgb, var(--cp-surface-2) 96%, transparent))',
+              borderRadius: 12,
+              background: 'var(--cp-surface-opaque)',
               boxShadow: 'var(--cp-panel-shadow)',
-              backdropFilter: 'blur(18px)',
             },
           },
         },
         MuiMenuItem: {
           styleOverrides: {
             root: {
-              minHeight: 42,
-              borderRadius: 12,
-              marginInline: 6,
+              minHeight: 36,
+              borderRadius: 8,
+              marginInline: 4,
               marginBlock: 2,
+              fontSize: 14,
             },
           },
         },
         MuiAlert: {
           styleOverrides: {
             root: {
-              borderRadius: 18,
+              borderRadius: 10,
               border: '1px solid var(--cp-border)',
-              boxShadow: 'var(--cp-panel-shadow)',
             },
           },
         },

@@ -175,7 +175,7 @@ function WindowDialogOverlay({
     >
       <div
         aria-hidden="true"
-        className="absolute inset-0 bg-[color:color-mix(in_srgb,var(--cp-shadow)_24%,transparent)] backdrop-blur-[2px]"
+        className="absolute inset-0 bg-[color:color-mix(in_srgb,var(--cp-shadow)_24%,transparent)]"
         data-testid="window-dialog-backdrop"
         onClick={() => {
           if (closeOnBackdrop && dismissible) {
@@ -197,12 +197,8 @@ function WindowDialogOverlay({
           role="dialog"
           data-testid="window-dialog"
           className={clsx(
-            'relative flex max-h-full w-full flex-col overflow-hidden border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] shadow-[0_24px_64px_color-mix(in_srgb,var(--cp-shadow)_22%,transparent)]',
-            isFullscreen
-              ? 'h-full rounded-[16px] sm:rounded-[20px]'
-              : isSheet
-                ? 'rounded-[24px] rounded-b-[18px]'
-                : 'rounded-[24px]',
+            'relative flex max-h-full w-full flex-col overflow-hidden rounded-[16px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] shadow-[var(--cp-panel-shadow)]',
+            isFullscreen && 'h-full',
             dialogSizeClass(size, presentation),
           )}
         >
@@ -220,7 +216,7 @@ function WindowDialogOverlay({
           {dialog.options.title || dialog.options.description ? (
             <header className="border-b border-[color:color-mix(in_srgb,var(--cp-border)_74%,transparent)] px-5 pb-4 pt-5 pr-14">
               {dialog.options.title ? (
-                <h2 className="font-display text-xl font-semibold text-[color:var(--cp-text)]">
+                <h2 className="text-lg font-medium text-[color:var(--cp-text)]">
                   {dialog.options.title}
                 </h2>
               ) : null}

@@ -9,15 +9,9 @@ export const panelToneClasses = {
     'bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] text-[color:var(--cp-muted)]',
 } as const
 
-export function appIconSurfaceStyle(
-  accent: string,
-  tone: 'tile' | 'window' = 'tile',
-) {
-  // Keep the app colour dominant so icon surfaces don't wash out in light themes.
-  const baseMix = tone === 'tile' ? '82%' : '76%'
-  const edgeMix = tone === 'tile' ? '72%' : '66%'
-
+export function appIconSurfaceStyle(accent: string) {
   return {
-    background: `linear-gradient(165deg, color-mix(in srgb, ${accent} ${baseMix}, var(--cp-surface-2)), color-mix(in srgb, ${accent} ${edgeMix}, var(--cp-surface-2)))`,
+    background: `linear-gradient(180deg, color-mix(in srgb, ${accent} 90%, white), ${accent})`,
+    boxShadow: 'inset 0 1px 0 rgb(255 255 255 / 0.16), 0 1px 2px rgb(0 0 0 / 0.12)',
   }
 }
