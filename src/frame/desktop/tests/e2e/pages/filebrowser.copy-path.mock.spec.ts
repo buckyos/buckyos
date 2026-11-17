@@ -6,7 +6,7 @@ test('Copy path puts the cyfs:/// URL on the clipboard', async ({ page, context 
   await page.goto('/?scenario=normal&fbData=mock')
   await page.getByTestId('desktop-app-files').click()
   const win = page.getByTestId('window-files')
-  await win.locator('aside').first().getByRole('button', { name: 'Documents', exact: true }).click()
+  await win.getByRole('cell', { name: 'Documents', exact: true }).dblclick()
   const clipboard = () => page.evaluate(() => navigator.clipboard.readText())
 
   await win.getByRole('cell', { name: 'Kyoto Trip Plan.md', exact: true }).click({ button: 'right' })

@@ -23,6 +23,7 @@ import { useI18n } from '../../i18n/provider'
 import type { SearchResultItem } from './types'
 import type { SearchViewState } from './data/state'
 import { groupSearchItems } from './data/search'
+import { fileIcon } from './fileDisplay'
 
 interface SearchResultsProps {
   state: SearchViewState
@@ -121,11 +122,7 @@ function HitButton({
       className="flex w-full items-start gap-3 rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] p-3 text-left hover:border-[color:var(--cp-accent)]"
     >
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)]">
-        {selected ? <span aria-hidden>✓</span> : entry.kind === 'folder' ? (
-          <FolderClosed size={16} className="text-[color:var(--cp-accent)]" />
-        ) : (
-          <FileText size={16} className="text-[color:var(--cp-muted)]" />
-        )}
+        {selected ? <span aria-hidden>✓</span> : fileIcon(entry, 16)}
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-semibold text-[color:var(--cp-text)]">

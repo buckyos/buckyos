@@ -60,6 +60,9 @@ impl AppState {
                     .map_err(|_| invalid("bad search scope"))?;
                 match self.resolve_for(actor, &loc, Level::Traverse, "read")? {
                     Node::Root => self.visible_exports(actor),
+                    Node::Native { root, .. } if root == crate::acl::HOST_ROOT => {
+                        return Err(crate::access::host_unsupported("Search"))
+                    }
                     Node::Native { root, rel, meta, .. } if meta.kind == "dir" => {
                         vec![(root, rel)]
                     }

@@ -28,16 +28,22 @@ impl server::SessionTokenVerifier for Verifier {
     }
 }
 fn token(user: &str, service: &str, kind: TokenPrincipalKind) -> String {
+    signed(user, service, kind, false, 86400)
+}
+fn sudo_token(user: &str, ttl: u64) -> String {
+    signed(user, CONTROL_PANEL_SERVICE_NAME, TokenPrincipalKind::User, true, ttl)
+}
+fn signed(user: &str, service: &str, kind: TokenPrincipalKind, sudo: bool, ttl: u64) -> String {
     let mut token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
         token: None,
-        aud: None,
-        exp: Some(buckyos_kit::buckyos_get_unix_timestamp() + 86400),
+        aud: sudo.then(|| "nfs-server".to_string()),
+        exp: Some(buckyos_kit::buckyos_get_unix_timestamp() + ttl),
         iss: Some(VERIFY_HUB_UNIQUE_ID.into()),
         jti: None,
         sub: Some(user.into()),
         appid: None,
-        sudo: false,
+        sudo,
         extra: Default::default(),
     };
     bind_token_principal_kind(&mut token, kind);
@@ -74,6 +80,8 @@ async fn main() {
     );
     service.ensure_builtin_schemas().await.unwrap();
     std::fs::write(dir.join("nfs-copy-test.json"),json!({"task_mgr_url":format!("http://127.0.0.1:{port}/kapi/task-manager"),"service_token":token("copy-test-node",NFS_SERVER_SERVICE_NAME,TokenPrincipalKind::System),"public_key":PUBLIC}).to_string()).unwrap();
+    std::fs::write(dir.join("sudo-token"), sudo_token("copy-test-user", 1800)).unwrap();
+    std::fs::write(dir.join("sudo-token-short"), sudo_token("copy-test-user", 20)).unwrap();
     std::fs::write(
         dir.join("user-token"),
         token(

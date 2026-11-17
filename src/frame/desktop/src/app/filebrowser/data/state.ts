@@ -7,7 +7,7 @@
 
 import type {
   CollectionSummary,
-  DeviceNode,
+  HostInfo,
   DfsNode,
   FileEntry,
   ISODateTime,
@@ -112,7 +112,7 @@ export type LocationListState = DataState<LocationListData>
 
 export interface FileBrowserSidebarState {
   dfs: DataState<DfsNode[]>
-  devices: DataState<DeviceNode[]>
+  host: DataState<HostInfo | null>
   topics: DataState<Topic[]>
   collections: DataState<CollectionSummary[]>
 }

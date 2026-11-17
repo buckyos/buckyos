@@ -6,7 +6,7 @@ async function setup(page: Page) {
   await page.goto('/?scenario=normal&fbData=mock')
   await page.getByTestId('desktop-app-files').click()
   const win = page.getByTestId('window-files')
-  await win.locator('aside').first().getByRole('button', { name: 'Documents', exact: true }).click()
+  await win.getByRole('cell', { name: 'Documents', exact: true }).dblclick()
   return win
 }
 

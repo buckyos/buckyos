@@ -25,6 +25,26 @@ pub const PUBLIC: &str = "public";
 pub const ZONE_USERS: &str = "zone_users";
 pub const USER_PREFIX: &str = "user:";
 pub const HOME_ROOT: &str = "home";
+pub const HOST_ROOT: &str = "@host";
+pub const HOST_AUDIENCE: &str = "nfs-server";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostGrant {
+    pub exp: u64,
+}
+
+tokio::task_local! {
+    static HOST_GRANT: Option<HostGrant>;
+}
+
+pub async fn with_host_grant<F: std::future::Future>(grant: Option<HostGrant>, f: F) -> F::Output {
+    HOST_GRANT.scope(grant, f).await
+}
+
+pub fn host_grant() -> Option<HostGrant> {
+    let now = crate::fsutil::unix_now() as u64;
+    HOST_GRANT.try_with(|g| *g).ok().flatten().filter(|g| g.exp > now)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -204,6 +224,9 @@ impl AclTable {
     }
 
     pub fn level(&self, actor: &Actor, root: &str, rel: &str) -> Level {
+        if root == HOST_ROOT {
+            return if matches!(actor, Actor::Admin(Some(_))) && host_grant().is_some() { Level::Manage } else { Level::None };
+        }
         if actor.is_admin() {
             return Level::Manage;
         }

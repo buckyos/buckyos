@@ -90,6 +90,21 @@ impl HandleCodec {
     }
 }
 
+impl HandleCodec {
+    pub fn sign_read(&self, node_id: &str, exp: u64) -> String {
+        let mac = hmac16(&self.key, format!("hx\0{}\0{}", node_id, exp).as_bytes());
+        format!("{}.{}", exp, B64.encode(mac))
+    }
+
+    pub fn verify_read(&self, node_id: &str, hx: &str) -> Option<u64> {
+        let (exp, mac) = hx.split_once('.')?;
+        let exp: u64 = exp.parse().ok()?;
+        let mac = B64.decode(mac).ok()?;
+        let expect = hmac16(&self.key, format!("hx\0{}\0{}", node_id, exp).as_bytes());
+        (mac.len() == 16 && constant_time_eq(&mac, &expect)).then_some(exp)
+    }
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -183,6 +198,17 @@ mod tests {
         let c2 = HandleCodec::new(vec![9u8; 32]);
         let s = c.encode(&h);
         assert!(c2.decode(&s).is_err());
+    }
+
+    #[test]
+    fn read_capability() {
+        let c = codec();
+        let hx = c.sign_read("nh_a.b", 100);
+        assert_eq!(c.verify_read("nh_a.b", &hx), Some(100));
+        assert_eq!(c.verify_read("nh_a.c", &hx), None);
+        assert_eq!(c.verify_read("nh_a.b", &hx.replacen("100", "200", 1)), None);
+        assert_eq!(c.verify_read("nh_a.b", "100"), None);
+        assert_eq!(HandleCodec::new(vec![9u8; 32]).verify_read("nh_a.b", &hx), None);
     }
 
     #[test]

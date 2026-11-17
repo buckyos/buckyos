@@ -16,7 +16,8 @@ import type { TransferControls, TransferExecutor } from '../data/transfers'
 import { registerTransferExecutor, takeLocalFile, TransferCancelledError } from '../data/transfers'
 import type { TransferTask } from '../data/state'
 import { classifyFileKind } from '../data/fileKinds'
-import { dfsPathOf } from '../data/urls'
+import { DEVICE_SCHEME, dfsPathOf } from '../data/urls'
+import { hostConnectionOf } from '../data/hostRealm'
 import { invalidateMockPath, mockDelay } from '../data/mockReader'
 import { mockAddEntry, mockNameExists } from './data'
 import { mockSetContent } from './content'
@@ -31,6 +32,10 @@ async function runMockTransfer(
   task: TransferTask,
   controls: TransferControls,
 ): Promise<FileEntry> {
+  if (task.targetUrl.startsWith(DEVICE_SCHEME)) {
+    const upload = hostConnectionOf(task.targetUrl).upload
+    if (upload) return upload(task, controls)
+  }
   const parentPath = dfsPathOf(task.targetUrl)
   const failureKey = takeLocalFile(task.candidate.localId) ?? task
   if (parentPath === null) {

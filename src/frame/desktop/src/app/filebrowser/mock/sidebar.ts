@@ -1,14 +1,16 @@
 /**
  * Mock sidebar source fetchers (UI_DATAMODEL.md §4.3, §7.2).
  *
- * Deterministic failure scenario: `?fbFail=<source>[,<source>]` (dfs, devices,
- * topics) makes that source's FIRST load fail; retry succeeds — exercising the
+ * Deterministic failure scenario: `?fbFail=<source>[,<source>]` (dfs, host,
+ * topics, children) makes that source's FIRST load fail; retry succeeds — exercising the
  * per-section inline error without timing dependence.
  */
 
 import { registerSidebarSources } from '../data/sidebarSources'
 import { mockDelay } from '../data/mockReader'
-import { fileBrowserSnapshot } from './data'
+import { dfsPathOf, normalizeUrl } from '../data/urls'
+import { fileBrowserSnapshot, mockEntriesAtPath } from './data'
+import { mockHostInfo } from './host'
 
 const failedOnce = new Set<string>()
 const pending = new Map<string, Promise<unknown>>()
@@ -39,7 +41,23 @@ function load<T>(source: string, data: T): Promise<T> {
 export function registerMockSidebarSources() {
   return registerSidebarSources({
     dfs: () => load('dfs', fileBrowserSnapshot.dfsRoots),
-    devices: () => load('devices', fileBrowserSnapshot.devices),
+    host: () => load('host', mockHostInfo()),
     topics: () => load('topics', fileBrowserSnapshot.topics),
+    children: async (url) => {
+      await mockDelay(40, 90)
+      if (failRequested('children') && !failedOnce.has(`children:${url}`)) {
+        failedOnce.add(`children:${url}`)
+        throw new Error('Mock folder failure (?fbFail=children) — retry succeeds')
+      }
+      const path = dfsPathOf(url)
+      const entries = path === null ? undefined : mockEntriesAtPath(path)
+      if (!entries) throw new Error('This folder no longer exists')
+      return {
+        folders: entries
+          .filter((entry) => entry.kind === 'folder')
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((entry) => ({ name: entry.name, url: normalizeUrl(entry.path) })),
+      }
+    },
   })
 }

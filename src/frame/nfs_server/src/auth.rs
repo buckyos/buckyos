@@ -126,6 +126,25 @@ async fn verify(state: &AppState, token: &str) -> NfsResult<Actor> {
     }
 }
 
+pub async fn host_grant_for(state: &AppState, creds: &Credentials, actor: &Actor) -> Option<crate::acl::HostGrant> {
+    state.config.host.as_ref()?;
+    let Actor::Admin(Some(user)) = actor else { return None };
+    let test_key = match &state.config.auth {
+        AuthMode::TestKey { public_key, .. } => Some(public_key.as_str()),
+        AuthMode::Runtime => None,
+        AuthMode::Disabled => return None,
+    };
+    let claims = buckyos_api::verify_nfs_session_token(creds.bearer()?, test_key).await.ok()?;
+    let exp = claims.exp?;
+    let granted = claims.sudo
+        && claims.aud.as_deref() == Some(crate::acl::HOST_AUDIENCE)
+        && claims.principal_kind == TokenPrincipalKind::User
+        && &claims.subject == user
+        && exp > crate::fsutil::unix_now() as u64
+        && is_zone_owner(state, user).await;
+    granted.then_some(crate::acl::HostGrant { exp })
+}
+
 /// Rejects App/Agent sessions outside `share.*`.
 pub fn require_file_actor(actor: &Actor) -> NfsResult<()> {
     match actor {

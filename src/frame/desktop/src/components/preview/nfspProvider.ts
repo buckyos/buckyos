@@ -14,7 +14,8 @@
  */
 
 import { bucket, getActiveSessionToken } from 'buckyos'
-import { NfspError, type NodeInfo, type ReprRecord, type ReprResult, type ReprSource, type WireRef } from '../../api/nfsp_client'
+import type { NfsBrowserClient } from '../../api/nfs_browser_client'
+import { NfspError, type LocatorLike, type NodeInfo, type ReprRecord, type ReprResult, type ReprSource, type WireRef } from '../../api/nfsp_client'
 import { effectiveListLimit, ensureSession, nfspBaseUrl, nfspClient } from '../../app/filebrowser/data/nfsp/client'
 import { extensionOf, mediaTypeFromExtension, pipelineDocumentProfile, rendererForMediaType } from './mediaTypes'
 import { asBucketObjectRef, bucketRefOf, resolveBucketSource } from './bucketSource'
@@ -65,14 +66,37 @@ function nodeIdOf(info: NodeInfo): string {
   return ref.type === 'live' ? ref.node_id : ref.obj_id
 }
 
+/** Which NFSP session a provider talks through and how it turns a source into a locator (the default: the user's session, DFS paths). */
+export interface NfspPreviewSession {
+  client: () => NfsBrowserClient
+  ensure: () => Promise<unknown>
+  locate: (source: ContentRef) => LocatorLike
+}
+
+function defaultLocate(source: ContentRef): LocatorLike {
+  if (isCyfsPathRef(source)) return cyfsPathToLocal(source.path)
+  if (isObjectIdRef(source)) return { type: 'object', obj_id: source.objectId }
+  throw new PreviewError('INVALID_SOURCE', `Unsupported source kind "${source.kind}"`)
+}
+
+const DEFAULT_SESSION: NfspPreviewSession = { client: nfspClient, ensure: ensureSession, locate: defaultLocate }
+
 function absoluteUrl(url: string): string {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `${nfspClient().raw.baseUrl}${url}`
 }
 
-function readRefOf(info: NodeInfo, name: string | undefined): PreviewReadRef {
+function readRefOf(info: NodeInfo, name: string | undefined, session: NfspPreviewSession): PreviewReadRef {
   const access = info.access_urls?.find((u) => u.kind === 'read')
   const nodeId = nodeIdOf(info)
-  const raw = nfspClient().raw
+  const raw = session.client().raw
+  if (access && session !== DEFAULT_SESSION) {
+    // Capability read URLs (the computer's) already carry their grant; downloads add to them.
+    const url = absoluteUrl(access.url)
+    const download = new URL(url, window.location.href)
+    download.searchParams.set('download', '1')
+    if (name) download.searchParams.set('name', name)
+    return { kind: 'url', url, downloadUrl: download.toString() }
+  }
   return {
     kind: 'url',
     url: access ? absoluteUrl(access.url) : raw.readUrl(nodeId),
@@ -80,18 +104,12 @@ function readRefOf(info: NodeInfo, name: string | undefined): PreviewReadRef {
   }
 }
 
-function locatorOf(source: ContentRef): string | WireRef {
-  if (isCyfsPathRef(source)) return cyfsPathToLocal(source.path)
-  if (isObjectIdRef(source)) return { type: 'object', obj_id: source.objectId }
-  throw new PreviewError('INVALID_SOURCE', `Unsupported source kind "${source.kind}"`)
-}
-
-async function resolveNode(source: ContentRef, signal?: AbortSignal): Promise<NodeInfo> {
-  await ensureSession()
+async function resolveNode(source: ContentRef, session: NfspPreviewSession, signal?: AbortSignal): Promise<NodeInfo> {
+  await session.ensure()
   if (signal?.aborted) throw new PreviewError('CANCELLED', 'Cancelled')
   let info: NodeInfo | null
   try {
-    info = await nfspClient().resolve(locatorOf(source), [...WANT])
+    info = await session.client().resolve(session.locate(source), [...WANT])
   } catch (err) {
     throw toPreviewError(err)
   }
@@ -162,7 +180,7 @@ async function reprTarget(resolved: ResolvedPreviewSource): Promise<{ at: WireRe
   return null
 }
 
-export function createNfspPreviewProvider(): PreviewProvider {
+export function createNfspPreviewProvider(session: NfspPreviewSession = DEFAULT_SESSION): PreviewProvider {
   return {
     id: 'nfsp',
 
@@ -186,7 +204,7 @@ export function createNfspPreviewProvider(): PreviewProvider {
           readRef: { kind: 'blob', blob },
         }
       }
-      const info = await resolveNode(source, signal)
+      const info = await resolveNode(source, session, signal)
       const name = info.name ?? (isCyfsPathRef(source) ? cyfsPathToLocal(source.path).split('/').pop() : undefined)
       const hint = name ? mediaTypeFromExtension(extensionOf(name)) : undefined
       const containerPath = isCyfsPathRef(source) ? parentCyfsPath(normalizeCyfsPath(source.path)) : null
@@ -199,16 +217,16 @@ export function createNfspPreviewProvider(): PreviewProvider {
         size: info.size,
         objectType: info.kind,
         mediaTypeHints: hint ? [hint] : [],
-        readRef: readRefOf(info, name),
+        readRef: readRefOf(info, name, session),
         containerRef: containerPath ? { kind: 'cyfs-path', path: containerPath } : undefined,
         providerHandle: info.ref,
       }
     },
 
     async enumerateContainer(container, { signal }) {
-      await ensureSession()
-      const client = nfspClient()
-      const at = locatorOf(container)
+      await session.ensure()
+      const client = session.client()
+      const at = session.locate(container)
       const containerLocal = isCyfsPathRef(container) ? cyfsPathToLocal(container.path) : null
       const items: PreviewSessionItemInput[] = []
       let cursor: string | undefined
@@ -242,8 +260,8 @@ export function createNfspPreviewProvider(): PreviewProvider {
     },
 
     async ensurePreviewWork(request) {
-      await ensureSession()
-      const raw = nfspClient().raw
+      await session.ensure()
+      const raw = session.client().raw
       const capability = raw.reprCapability
       const profile = reprProfileOf(request)
       const profiles = capability?.available ? capability.profiles : []
@@ -285,7 +303,7 @@ export function createNfspPreviewProvider(): PreviewProvider {
     async getPreviewWork(workKey, { signal }) {
       if (signal?.aborted) throw new PreviewError('CANCELLED', 'Cancelled')
       try {
-        const record = await nfspClient().raw.getRepr(workKey)
+        const record = await session.client().raw.getRepr(workKey)
         if (record.state === 'unsupported') throw new PreviewError('UNSUPPORTED', record.detail ?? 'No Preview Pipeline for this content')
         return mapWireRecord(record)
       } catch (err) {

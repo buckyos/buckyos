@@ -1,7 +1,7 @@
 //! HTTP binding (NFSP §4): control plane `POST /nfs/v1/{method}`, batch,
 //! watch SSE, the data-plane read endpoint, and the minimal tus upload area.
 
-use crate::acl::{Actor, Level};
+use crate::acl::{with_host_grant, Actor, HostGrant, Level, HOST_ROOT};
 use crate::auth::{authenticate, Credentials};
 use crate::error::*;
 use crate::fsutil::{content_type_for, join_root};
@@ -129,6 +129,9 @@ async fn control_handler(
     let creds = Credentials::from_headers(&headers);
     let actor = match authenticate(&state, &creds).await {
         Ok(a) => a,
+        Err(e) if env.session.as_deref().and_then(|s| state.sessions.sudo_exp(s)).is_some() => {
+            return envelope_error(&state, sudo_required(format!("the sudo session ended ({}); unlock again", e.message)))
+        }
         Err(e) => return envelope_error(&state, e),
     };
     if !(method == "hello" || method == "bye" || method.starts_with("share.")) {
@@ -136,8 +139,9 @@ async fn control_handler(
             return envelope_error(&state, e);
         }
     }
+    let grant = crate::auth::host_grant_for(&state, &creds, &actor).await;
     if method == "hello" {
-        return match op_hello(&state, &env, actor) {
+        return match op_hello(&state, &env, actor, grant) {
             Ok(v) => envelope_ok(&state, v),
             Err(e) => envelope_error(&state, e),
         };
@@ -146,6 +150,22 @@ async fn control_handler(
         Ok(s) => s,
         Err(e) => return envelope_error(&state, e),
     };
+    let grant = grant.and_then(|g| {
+        let sudo_exp = state.sessions.sudo_exp(&session)?;
+        (sudo_exp > crate::fsutil::unix_now() as u64).then_some(HostGrant { exp: g.exp.min(sudo_exp) })
+    });
+    with_host_grant(grant, control_in_session(state, method, env, actor, session, creds, headers)).await
+}
+
+async fn control_in_session(
+    state: SharedState,
+    method: String,
+    env: Envelope,
+    actor: Actor,
+    session: String,
+    creds: Credentials,
+    headers: HeaderMap,
+) -> Response {
     if method.starts_with("copy_") {
         return match crate::copy::dispatch(&state, &actor, &method, &env.args, creds.bearer()).await {
             Ok(value) => envelope_ok(&state, value),
@@ -225,7 +245,7 @@ fn envelope_error(state: &SharedState, e: NfsError) -> Response {
     (status, axum::Json(body)).into_response()
 }
 
-fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Value> {
+fn op_hello(state: &SharedState, env: &Envelope, actor: Actor, grant: Option<HostGrant>) -> NfsResult<Value> {
     if let Some(versions) = env.args["versions"].as_array() {
         if !versions.iter().any(|v| v.as_str() == Some(PROTOCOL_VERSION)) {
             return Err(NfsError::new(
@@ -258,8 +278,15 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Valu
     if let Err(e) = state.ensure_home(&actor) {
         log::warn!("create home for {:?} failed: {}", actor.user_id(), e.message);
     }
-    let session = state.sessions.create(actor);
-    Ok(json!({
+    let mut realms = vec![json!({"id": "dfs", "writable": true})];
+    if let (Some(host), Actor::Admin(Some(_))) = (&state.config.host, &actor) {
+        realms.push(json!({"id": "host", "writable": true, "label": host.label}));
+    }
+    if let Some(g) = grant {
+        crate::access::host_audit(&actor, "unlock", format_args!("exp={}", g.exp));
+    }
+    let session = state.sessions.create(actor, grant.map(|g| g.exp));
+    let mut out = json!({
         "version": PROTOCOL_VERSION,
         "session": session,
         "identity": identity,
@@ -270,9 +297,13 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Valu
             "replay_window": state.config.replay_window,
             "attr_ttl_ms": 5000,
         },
-        "realms": [ {"id": "dfs", "writable": true} ],
+        "realms": realms,
         "repr": repr.map(|p| p.describe()).unwrap_or_else(|| json!({"available": false, "detail": "the named store is not configured"})),
-    }))
+    });
+    if let Some(g) = grant {
+        out["sudo_exp"] = json!(g.exp);
+    }
+    Ok(out)
 }
 
 async fn dispatch(
@@ -534,10 +565,34 @@ async fn read_handler(
     if let Err(e) = crate::auth::require_file_actor(&actor) {
         return envelope_error(&state, e);
     }
+    let host = node_id.starts_with("nh_") && state.handles.decode(&node_id).is_ok_and(|h| h.r == HOST_ROOT);
+    let grant = if host {
+        let exp = q.get("hx").and_then(|hx| state.handles.verify_read(&node_id, hx));
+        let owner = match &actor {
+            Actor::Admin(Some(user)) => crate::auth::is_zone_owner(&state, user).await,
+            _ => false,
+        };
+        match exp.filter(|&exp| owner && exp > crate::fsutil::unix_now() as u64) {
+            Some(exp) => Some(HostGrant { exp }),
+            None => return envelope_error(&state, crate::access::host_denied(&actor)),
+        }
+    } else {
+        None
+    };
+    with_host_grant(grant, read_node(state, node_id, q, headers, actor)).await
+}
+
+async fn read_node(state: SharedState, node_id: String, q: HashMap<String, String>, headers: HeaderMap, actor: Actor) -> Response {
     let node = match state.resolve_ref_for(&actor, &WireRef::live(node_id, 0), Level::Read, "read") {
         Ok(n) => n,
         Err(e) => return envelope_error(&state, e),
     };
+    if matches!(&node, Node::Native { meta, .. } if meta.special) {
+        return envelope_error(
+            &state,
+            NfsError::new(ErrorCode::PermissionDenied, "device files, FIFOs and sockets cannot be read").with("reason", json!("special_file")),
+        );
+    }
     let (root, rel, name) = match &node {
         Node::Native { root, rel, meta, .. } if meta.kind != "dir" => {
             (root.clone(), rel.clone(), node.display_name())

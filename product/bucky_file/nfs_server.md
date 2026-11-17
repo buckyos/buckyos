@@ -599,3 +599,76 @@ zone 协议 §2.4。
   由本主体持有（manage 除外）；pin 类调用要求 manage，或 retain 且 owner 在 `<App 主体>/<用户>/` 前缀下。
 - **已知边界**：`chunk_hash` 秒传不证明持有内容；读写模式之外的 Agent 没有对象读取权；独立模式未鉴权时所有调用者
   视为 `local` 且全部放行。
+
+## 14. 本机目录（host realm，实现扩展）
+
+2026-11-16 实现（任务见 `notepads/filebrowser-interaction-optimization-todo.md` T8–T10）。BuckyOS Desktop Lite 上，
+Zone owner 用 BuckyOS sudo 解锁后可以浏览、读写运行该节点的这台电脑的文件系统。代码集中在
+`src/frame/nfs_server/src/{config,acl,auth,access,namespace,mutate,copy}.rs`，回归见 `tests/host.rs`。
+
+### 14.1 何时存在、通告给谁
+
+- 服务模式只在已安装的产品 profile 为 Lite（`$BUCKYOS_ROOT/etc/product.json`，`ProductProfile::is_lite()`，与 node_daemon、
+  control-panel 同一来源）时存在；名字（`label`）取电脑的主机名。独立模式用 `--host-root <dir>` 与 `--host-label <name>`
+  开启（与 `--auth-test-config` 一样须 loopback + `--debug-api`），行为等同 Lite。
+- 内部是一个隐藏的导出根 `@host`：不在 `cyfs:///` 根列表、搜索、最近使用、Reconciler、ACL 列表中出现；DFS 路径
+  `/@host/...`、`cyfs:///@host/...`、从根 walk `@host` 一律 `NOT_FOUND`。
+- `hello.realms` 在 host realm 存在且调用者是 Zone owner（`identity.role = admin` 且有 `user_id`）时追加
+  `{"id": "host", "writable": true, "label": "<电脑名>"}`；普通用户、System/Device 主体与未鉴权模式都没有这一项。
+  前端只凭这一项决定是否显示“设备”分区。
+
+### 14.2 授权：只认 BuckyOS sudo 会话
+
+- 一个请求持有 host 授权，当且仅当：`Authorization: Bearer` 的 token 经 verify-hub 签名校验通过，`sudo = true`，
+  `aud = "nfs-server"`，principal 为 User 且是 Zone owner，未过 `exp`；并且控制面请求所用的 session 是用这样的
+  token `hello` 出来的。cookie 永不授权。verify-hub `sudo_by_password` 的 `expires_in_secs` 可申请最长 30 分钟
+  （超过按 30 分钟签发，不传或 0 为 3 分钟）；Files 申请 30 分钟。
+- sudo 会话记下 token 的 `exp`（hello 结果带 `sudo_exp`），过期后该会话不能再访问 host；换新 token 要重新 `hello`。
+  授权期限取 token `exp` 与会话 `sudo_exp` 的较小者。
+- 错误：owner 没有授权（普通会话、非 sudo token、`aud` 不对、已过期、cookie、会话已过 `sudo_exp`，以及已知
+  sudo 会话上 token 校验失败）访问 host 时一律 `SUDO_REQUIRED`（HTTP 403）。非 owner 访问 host 为
+  `PERMISSION_DENIED`（`reason: "host_owner_only"`）；host realm 不存在为 `NOT_FOUND`。授权检查在访问文件系统之前。
+- 长操作只在开始时检查：复制任务提交时需要授权，之后的执行与重启恢复只要求创建者仍是 Zone owner 且 host realm
+  仍存在；已经开始的下载不受 token 过期影响。上传（`open_write` + `commit_file`）需在 token 有效期内提交。
+- 所有修改类操作写审计日志（`log::info!`，前缀 `host-audit`，含用户、操作、路径）：解锁、mkdir、move、delete、
+  写入（commit_file / commit_object）、提交复制。
+
+### 14.3 路径与 locator
+
+- locator 为 `{"realm": "host", "path": "/Users/alice"}`；`/` 是电脑根。Unix 为文件系统 `/`；Windows 为虚拟根，列出现有
+  盘符（`C:`、`D:` …，只读），`/C:/Users` 对应 `C:\Users`。路径按 `normalize_rel` 规范化，`..`、`\` 等被拒绝
+  （`INVALID_ARGUMENT`）。
+- ref 是普通的签名 `nh_` handle（`r = "@host"`，没有锚点、没有 `n_` id），`copy_ref` 同 ref。
+- `canonical_path`、`locations[].url`、`access_urls` 的 `fs` 为 RFC 8089 file URI，按 Node `pathToFileURL` 的规则
+  百分号编码（控制字符、空格、`"#%<>?[\]^`{|}~` 与非 ASCII）：`file:///Users/alice/My%20Doc.txt`、
+  `file:///C:/Users/alice/a.txt`，盘符根为 `file:///C:/`。它按 realm 路径生成；独立模式 `--host-root` 指向子目录时
+  不是真实的系统路径。不会出现 `cyfs:///@host/...`。
+
+### 14.4 列表与读取
+
+- 列表项形状与 DFS 相同。符号链接按目标显示：指向目录的是 `kind: "dir"`（可按路径或 ref 进入），指向文件的是
+  `kind: "file"`，`flags` 含 `"symlink"`；断链保持 `kind: "symlink"`。非 owner 的符号链接限制不适用于 host。
+- `access_level`：节点进程的系统账户读不了的（Unix `access(2)`：文件 `R_OK`，目录 `R_OK|X_OK`；Windows 暂不判断）
+  为 `"none"`，其余为 `"manage"`。进入或读取被系统拒绝的路径返回 `PERMISSION_DENIED`。
+- 设备文件、FIFO、socket：`kind: "file"`、`flags: ["special"]`、`access_level: "none"`，数据面读取返回
+  `PERMISSION_DENIED`（`reason: "special_file"`），`repr` 返回 `unsupported`。这条规则对 DFS 同样生效。
+- 数据面读取：浏览器的 `<img>`/下载只带 cookie，所以 host 文件的 `read` URL 是能力 URL
+  `/nfs/v1/read/<nh_handle>?hx=<exp>.<sig>`，`sig = HMAC(handle 密钥, node_id + exp)`，`exp` 为授权期限；只在持有授权的
+  响应里出现。读取时要求 `hx` 有效未过期，且请求（cookie 或 Bearer）认证为 Zone owner；否则 owner 得到
+  `SUDO_REQUIRED`、其他人得到 `PERMISSION_DENIED`。`download=1&name=`、`Range` 照常可用。DFS 的 read URL 不变。
+- `repr`（预览、缩略图）接受 host locator / ref，结果照常经 bucket read URL 返回。按路径缓存的输入哈希
+  （filedb `preview_inputs`，key 为 `@host/<rel>`）会写入，这是预览缓存。
+
+### 14.5 修改与复制
+
+- mkdir（ref 形式与路径形式）、move（host 内改名/移动）、delete（含递归）、上传（`open_write` + tus PATCH +
+  `commit_file`，以及 NDM 上传后 `commit_object`），能否成功由系统权限决定，失败按现有错误码返回。暂存文件跨文件系统
+  时先复制到目标目录旁、fsync 后再 rename。
+- host 与 DFS 之间的 `move` 返回 `UNSUPPORTED`（`reason: "cross_realm"`），客户端改为复制 + 删除源；host 内跨磁盘的
+  move 返回 `UNSUPPORTED`（`reason: "cross_device"`）。
+- 跨 realm 复制复用 §10 的复制任务：源可以是 host 的 `copy_ref`、目标是 DFS 目录，反之亦然。`source_path` 与
+  条目结果里的 host 路径写作 `/@host/<path>`（例如 `/@host/Users/alice/a.txt`）。用户直接选中的源与目标目录若是
+  符号链接，按目标复制；目录内部的符号链接照 §10 复制为链接本身。复制按 Unix 原生 ID 校验，Windows 上与 DFS 一样不支持。
+- host 节点从不建锚点、实体、meta、ACL 记录、content index、最近使用或 watch 事件。以下能力对 host 节点返回
+  `UNSUPPORTED`：`get_acl` / `set_acl`、`set_meta`、`bind_ref`（父目录或目标在 host）、Collection 添加、`grant`、
+  `share.*`（`reason: "source_unsupported"`）、以 host 目录为范围的 `search`。`get_meta` 返回空记录。

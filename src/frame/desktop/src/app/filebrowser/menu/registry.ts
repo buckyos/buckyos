@@ -80,6 +80,8 @@ const isItem = (ctx: FileMenuContext) => ctx.target === 'item'
 const isSelection = (ctx: FileMenuContext) => ctx.target === 'selection'
 const isView = (ctx: FileMenuContext) => ctx.target === 'view'
 const hasItems = (ctx: FileMenuContext) => isItem(ctx) || isSelection(ctx)
+/** The computer (host realm): no shares, collections, permissions or AI meta there. */
+const onComputer = (ctx: FileMenuContext) => ctx.currentUrl.startsWith('device://') || ctx.entries.some((entry) => entry.path.startsWith('device://'))
 
 /** Open / preview — single item only. */
 const openProvider: FileMenuProvider = {
@@ -147,7 +149,7 @@ const transferProvider: FileMenuProvider = {
     } else if (ctx.entries[0]?.kind !== 'folder') {
       section.push(action('download', label('download', 'Download'), { icon: 'download' }))
     }
-    if (isItem(ctx)) {
+    if (isItem(ctx) && !onComputer(ctx)) {
       section.push(action('share', label('share', 'Share…'), { icon: 'share' }))
       if (ctx.entries[0]?.path.startsWith('/')) section.push(action('permissions', label('permissions', 'Permissions…'), { icon: 'permissions' }))
     }
@@ -166,7 +168,7 @@ const clipboardProvider: FileMenuProvider = {
     const section: FileMenuSection = [
       action('cut', label('cut', 'Cut'), { icon: 'move', shortcut: 'Ctrl/⌘X' }),
       action('copy', label('copyFiles', 'Copy files'), { icon: 'copy', shortcut: 'Ctrl/⌘C' }),
-      action('copy-references', label('copyReferences', 'Copy references for a collection'), { icon: 'collection' }),
+      ...(onComputer(ctx) ? [] : [action('copy-references', label('copyReferences', 'Copy references for a collection'), { icon: 'collection' })]),
       isSelection(ctx)
         ? action('copy-path', label('copyPaths', 'Copy {{count}} paths', { count }), {
             icon: 'copy',
@@ -224,7 +226,7 @@ const organizeProvider: FileMenuProvider = {
 const addToCollectionProvider: FileMenuProvider = {
   id: 'default.add-to-collection',
   order: 450,
-  when: (ctx) => hasItems(ctx) && ctx.capabilities.kind !== 'collection',
+  when: (ctx) => hasItems(ctx) && ctx.capabilities.kind !== 'collection' && !onComputer(ctx),
   build: (ctx) => [
     [
       {
@@ -378,6 +380,13 @@ const viewDisplayProvider: FileMenuProvider = {
       }),
       action('refresh', label('refresh', 'Refresh'), { icon: 'refresh' }),
     ],
+    ...(ctx.viewMode === 'icon'
+      ? [[
+          action('icon-size-small', label('iconSmall', 'Small icons'), { command: 'icon-size', args: { size: 'small' }, icon: 'view-icon', disabled: ctx.iconSize === 'small' }),
+          action('icon-size-medium', label('iconMedium', 'Medium icons'), { command: 'icon-size', args: { size: 'medium' }, icon: 'view-icon', disabled: ctx.iconSize === 'medium' }),
+          action('icon-size-large', label('iconLarge', 'Large icons'), { command: 'icon-size', args: { size: 'large' }, icon: 'view-icon', disabled: ctx.iconSize === 'large' }),
+        ]]
+      : []),
   ],
 }
 
@@ -385,7 +394,7 @@ const viewDisplayProvider: FileMenuProvider = {
 const viewPermissionsProvider: FileMenuProvider = {
   id: 'default.view-permissions',
   order: 350,
-  when: (ctx) => isView(ctx) && ctx.capabilities.kind === 'folder' && !ctx.searching,
+  when: (ctx) => isView(ctx) && ctx.capabilities.kind === 'folder' && !ctx.searching && !onComputer(ctx),
   build: () => [[action('folder-permissions', label('folderPermissions', 'Folder permissions…'), { icon: 'permissions' })]],
 }
 

@@ -16,7 +16,7 @@ async function openFilesAndGoToDocuments(page: Page) {
   await page.getByTestId('desktop-app-files').click()
   const win = page.getByTestId('window-files')
   await expect(win).toBeVisible()
-  await page.locator('aside').getByRole('button', { name: /Documents/ }).first().click()
+  await page.getByTestId('window-files').getByRole('cell', { name: 'Documents', exact: true }).dblclick()
   await expect(page.getByText('Kyoto Trip Plan.md')).toBeVisible()
   return win
 }

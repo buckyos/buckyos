@@ -92,7 +92,6 @@ export type FileEntryId = string
 export type ListItemKey = string
 export type CollectionId = string
 export type TopicId = string
-export type DeviceId = string
 export type LocationUrl = string
 export type DfsPath = string
 export type ISODateTime = string
@@ -127,9 +126,19 @@ Every tab and pane stores a canonical URL:
 | <code>dfs://</code> | Folder | <code>dfs:///home/Pictures</code> |
 | <code>view://</code> | View | <code>view://recent</code>, <code>view://topic/topic-kyoto</code> |
 | <code>collection://</code> | Collection/group | <code>collection://reading-list/papers</code> |
+| <code>device://</code> | The computer behind a Desktop Lite node (NFSP <code>host</code> realm) | <code>device://w3f2a9c1d07/Users/alice</code>, Windows <code>device://w3f2a9c1d07/C:/Users</code> |
 
-Bare paths normalize to <code>dfs://</code>. DFS locations are displayed as bare paths; other locations retain
-their scheme. Trailing slashes are removed except for the root.
+Bare paths normalize to <code>dfs://</code>. DFS locations are displayed as bare paths; computer
+locations as readable <code>file:///</code> URIs (never as <code>device://</code>); other locations
+retain their scheme. Trailing slashes are removed except for the root.
+
+The <code>device://</code> authority is not a node name: it is the Files window's sudo-session key
+(<code>data/hostRealm.ts</code>). The computer is unlocked per window with BuckyOS sudo, so the global
+reader registry, the folder-op router and the Preview resolvers find that window's connection from
+the URL alone; another window, or the same window after it relocked, does not reach it. "Copy path"
+gives the RFC 8089 <code>file:///</code> URI of a computer location (percent-encoded like Node's
+<code>pathToFileURL</code>), and the address bar accepts a pasted <code>file:</code> URI (encoded or
+not) and opens the matching computer folder in the window.
 
 ~~~ts
 export interface CollectionUrlParts {
@@ -205,11 +214,11 @@ export interface FileEntry {
   kind: FileKind
   /** Current original DFS/display location, not persistent identity. */
   path: DfsPath | LocationUrl
-  /** Prototype-only device anchor until device:// or referral integration exists. */
-  devicePath?: string
   /** Externally usable URL supplied by access metadata. */
   publicUrl?: string
   thumbnailUrl?: string
+  /** The backend's read address (the computer's are expiring capability URLs). */
+  readUrl?: string
   operations?: Partial<Record<'rename' | 'move' | 'delete' | 'download' | 'share' | 'copy',
     'available' | 'denied' | 'unsupported' | 'loading'>>
   /** Omitted for folders and when the source did not request base attributes. */
@@ -248,20 +257,19 @@ export interface DfsNode {
   path: DfsPath | LocationUrl
   icon?: string
   kind: 'home' | 'public' | 'shared' | 'privacy' | 'generic'
-  children?: DfsNode[]
 }
 
-export interface DeviceRoot {
-  path: string
-  label: string
-}
-
-export interface DeviceNode {
-  id: DeviceId
+/** One folder of a lazily loaded sidebar tree (DFS or the computer). */
+export interface TreeFolder {
   name: string
-  host: string
-  status: 'online' | 'offline' | 'syncing'
-  roots: DeviceRoot[]
+  url: LocationUrl
+  /** The backend says this account cannot open it. */
+  locked?: boolean
+}
+
+/** The computer behind a Desktop Lite node, from NFSP hello.realms (`host`). */
+export interface HostInfo {
+  label: string
 }
 
 export interface TopicGroup {
@@ -290,9 +298,23 @@ export interface CollectionSummary {
 }
 ~~~
 
-<code>DfsNode</code>, <code>DeviceNode</code>, <code>Topic</code>, and
+<code>DfsNode</code>, <code>HostInfo</code>, <code>Topic</code>, and
 <code>CollectionSummary</code> are sidebar projections, not one combined bootstrap DTO. Each
-source has its own loading/error state in the formal state model.
+source has its own loading/error state in the formal state model. Folder trees (the DFS roots and
+the unlocked computer) load their sub-folders on expand (<code>dfsFolderChildren</code> /
+<code>hostChildren</code>: dirs only, by name, one page plus "More…", first page cached per
+session) and start collapsed: only folders the user expanded by hand stay open
+(<code>files.tree:&lt;url&gt;</code> = <code>'true'</code>); later navigation reveals the current
+location's ancestors. The front end does not filter roots by role — the tree shows what nfs_server
+lists.
+
+The Devices section exists only when <code>hello.realms</code> contains <code>host</code> (Desktop Lite,
+Zone owner). Locked, it is one row (the computer's name + a lock); the row opens the system BuckyOS
+sudo dialog (<code>aud: nfs-server</code>, 30 minutes). The grant lives only in that window's memory
+and is dropped when the window closes; an expired grant (or a server <code>SUDO_REQUIRED</code>)
+relocks the window, interactions ask for sudo again and retry, and a tab standing on a computer
+location shows a locked placeholder with an Unlock button. Share, collections, permissions and AI
+meta are not offered for computer items.
 
 The prototype's <code>TriggerRule</code> and <code>FileBrowserSnapshot</code> are Mock fixture
 shapes. No rendered view consumes the trigger list or the snapshot indexes directly, so neither is
@@ -927,7 +949,7 @@ The sidebar uses separate states so one unavailable source does not blank the en
 ~~~ts
 export interface FileBrowserSidebarState {
   dfs: DataState<DfsNode[]>
-  devices: DataState<DeviceNode[]>
+  host: DataState<HostInfo | null>
   topics: DataState<Topic[]>
   collections: DataState<CollectionSummary[]>
 }
@@ -1274,7 +1296,7 @@ Search is a separate scoped query and MUST NOT be emulated by filtering only the
 | Runtime <code>Error</code> object | Volatile | Integration normalizes to <code>UiError</code> |
 | Set/Map selection storage | Volatile | Runtime representation only |
 | <code>Date.now()</code> tab IDs | Volatile | Session-local implementation |
-| Device navigation string <code>DeviceName:/path</code> | Volatile | No registered device reader |
+| <code>device://</code> authority (window sudo-session key) | Volatile | Per-window session binding, never persisted |
 | Mock transfer executor stage timing | Volatile | Real executor imports and finalizes SDK named objects, then calls NFSP commit_object |
 | Human-readable source label | Volatile | Presentation/provenance copy |
 | Toast duration and menu anchors | Volatile | Rendering behavior |
@@ -1383,7 +1405,7 @@ export const mockSearchPage: SearchResultPage = {
 | Collection structure | Nested group and reference to a real folder |
 | Duplicate target | Same target referenced twice with different item keys |
 | Broken reference | Preserved occurrence marked broken |
-| Device states | Online, syncing, and offline |
+| Computer (host realm) | <code>?fbHost=1</code>: locked/unlocked, wrong password ("wrong"), expiry (<code>?fbHostTtl=</code>), no-access folders, copies to and from the Zone |
 | Topic | Multiple grouping axes and overlapping file IDs |
 | Preview enrichment | Full metadata, missing metadata, Story present/empty |
 | Search | Traditional, AI, empty, partial/degraded, error, cursor continuation |
@@ -1392,9 +1414,9 @@ export const mockSearchPage: SearchResultPage = {
 | Upload | Queued through success, retryable failure, conflict, cancellation |
 
 The Mock implements the normal/boundary rows above (10k folder, public URL, soft link,
-nested/duplicate/broken Collection references, all device statuses, topics, empty folder
+nested/duplicate/broken Collection references, the mock computer, topics, empty folder
 buckets) plus the deterministic scenarios: fetch errors and retry recovery
-(<code>view://demo/error</code>, <code>view://demo/flaky</code>, reachable from the advanced-mode
+(<code>view://demo/error</code>, <code>view://demo/flaky</code>, reachable from the mock-only
 Diagnostics section), unknown-total paging (<code>view://demo/unknown-total</code>), partial and
 failing search (<code>partial:</code>/<code>error:</code>/<code>unknown:</code> query prefixes),
 sidebar source failure (<code>?fbFail=</code>), schema validation failures (the form dialogs),
@@ -1565,9 +1587,10 @@ Items 1–5 and 11 are DONE in the prototype; items 6–9 are DONE in the NFSP i
    story/triggers_active</code>) into the entry projection via the preview enricher
    (<code>data/usePreview.ts</code>); v1 nfs-server only persists the <code>user</code>
    namespace, so AI enrichment stays absent until its pipeline exists.
-10. Replace the current device navigation placeholder with a registered device/referral reader.
-    The NFSP sidebar source returns an empty device list (explicit empty state, no fabricated
-    data) until referral readers exist.
+10. ~~Replace the current device navigation placeholder with a registered device/referral reader.~~
+    Done for Desktop Lite: the <code>device://</code> reader lists the NFSP <code>host</code> realm
+    through the window's sudo session (<code>data/hostRealm.ts</code>, <code>data/nfsp/host.ts</code>).
+    Devices of a full (non-Lite) Zone and cross-node referral readers remain a later stage.
 11. ~~Add explicit async states for sidebar sources and partial Preview metadata.~~ Done —
     <code>data/sidebarSources.ts</code>, <code>data/usePreview.ts</code>.
 12. Keep share UI feature-gated until authorization and data-plane cap enforcement are complete.

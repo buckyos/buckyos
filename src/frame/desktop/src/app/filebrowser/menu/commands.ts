@@ -29,7 +29,7 @@ export function commandState(command: string, ctx: FileMenuContext): CommandStat
   if (['copy', 'copy-to', 'copy-other'].includes(command)) {
     if (!folderOps().supportsCopy) return unsupported(folderOps().copyUnavailableReason ?? 'File content copying is not supported')
     if (!ctx.entries.length) return unsupported('Select a file first')
-    if (ctx.entries.some((entry) => !entry.path.startsWith('/'))) return unsupported('This item does not resolve to a local filesystem entity')
+    if (ctx.entries.some((entry) => !entry.path.startsWith('/') && !entry.path.startsWith('device://'))) return unsupported('This item does not resolve to a local filesystem entity')
     if (command === 'copy-other' && !ctx.otherPath) return unsupported('Open a destination in the other pane')
   }
   if (command === 'paste') {

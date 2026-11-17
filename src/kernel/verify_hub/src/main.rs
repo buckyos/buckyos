@@ -36,6 +36,7 @@ use federation::{
 // Session token: short-lived, used for API requests
 const SESSION_TOKEN_EXPIRE_SECONDS: u64 = 15 * 60; // 15 minutes
 const SUDO_SESSION_TOKEN_EXPIRE_SECONDS: u64 = 3 * 60;
+const SUDO_SESSION_TOKEN_MAX_EXPIRE_SECONDS: u64 = 30 * 60;
 // Refresh token: long-lived, used to obtain new token pairs
 const REFRESH_TOKEN_EXPIRE_SECONDS: u64 = 7 * 24 * 3600; // 7 days
 const MAX_LOGIN_NONCE_AGE_SECONDS: u64 = 3600 * 8; // 8 hours
@@ -199,6 +200,13 @@ fn login_assertion_denied(detail: &str) -> RPCErrors {
 
 fn family_invalidated() -> RPCErrors {
     refresh_credential_denied("refresh_session_invalidated")
+}
+
+fn sudo_session_expire_seconds(requested: Option<u64>) -> u64 {
+    match requested {
+        None | Some(0) => SUDO_SESSION_TOKEN_EXPIRE_SECONDS,
+        Some(secs) => secs.min(SUDO_SESSION_TOKEN_MAX_EXPIRE_SECONDS),
+    }
 }
 
 /// Sign one token of a family's pair, or a sudo token, for `session`.
@@ -1699,6 +1707,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
         target: &AuthTarget,
         aud: Option<String>,
         login_nonce: u64,
+        expires_in_secs: Option<u64>,
     ) -> Result<SudoByPasswordResponse> {
         self.gc().await;
         reject_root_session_subject(username)?;
@@ -1722,7 +1731,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             session_id: login_nonce,
             claims: FamilyClaims::account(AuthMethod::Password, user_settings.user_type),
         };
-        let exp = buckyos_get_unix_timestamp() + SUDO_SESSION_TOKEN_EXPIRE_SECONDS;
+        let exp = buckyos_get_unix_timestamp() + sudo_session_expire_seconds(expires_in_secs);
         let jti = rand::thread_rng().gen::<u64>().to_string();
         let session_token =
             sign_session_token(&session, TokenUse::Session, &jti, exp, aud, true).await?;
@@ -3174,6 +3183,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 &target,
                 Some("system-config".to_string()),
                 9003,
+                None,
             )
             .await;
         assert!(
@@ -3926,6 +3936,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 &target,
                 Some("system-config".to_string()),
                 nonce,
+                None,
             )
             .await
             .unwrap_err();
@@ -3944,10 +3955,43 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 &target,
                 Some("system-config".to_string()),
                 nonce,
+                None,
             )
             .await
             .unwrap();
         assert!(decoded(&sudo.session_token).sudo);
+        let sudo_lifetime = |requested: Option<u64>| {
+            let hub = &hub;
+            let hal = hal.clone();
+            let target = target.clone();
+            async move {
+                let nonce = login_nonce();
+                let before = buckyos_get_unix_timestamp();
+                let sudo = hub
+                    .handle_sudo_by_password(
+                        &hal,
+                        &password_proof("stored-hal", nonce),
+                        &target,
+                        Some("nfs-server".to_string()),
+                        nonce,
+                        requested,
+                    )
+                    .await
+                    .unwrap();
+                let token = decoded(&sudo.session_token);
+                assert!(token.sudo);
+                assert_eq!(token.aud.as_deref(), Some("nfs-server"));
+                token.exp.unwrap() - before
+            }
+        };
+        let default_lifetime = sudo_lifetime(None).await;
+        assert!((180..=182).contains(&default_lifetime), "{default_lifetime}");
+        let zero_lifetime = sudo_lifetime(Some(0)).await;
+        assert!((180..=182).contains(&zero_lifetime), "{zero_lifetime}");
+        let long_lifetime = sudo_lifetime(Some(1800)).await;
+        assert!((1800..=1802).contains(&long_lifetime), "{long_lifetime}");
+        let clamped_lifetime = sudo_lifetime(Some(86400)).await;
+        assert!((1800..=1802).contains(&clamped_lifetime), "{clamped_lifetime}");
         let nonce = login_nonce();
         assert!(matches!(
             hub.handle_login_by_password(&hal, &password_proof("wrong", nonce), &target, nonce)
@@ -3990,6 +4034,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 &target,
                 None,
                 nonce,
+                None,
             )
             .await
             .unwrap_err();

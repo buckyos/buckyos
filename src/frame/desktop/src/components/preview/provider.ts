@@ -53,7 +53,11 @@ function withHostSources(base: PreviewProvider): PreviewProvider {
         return host ? host.resolvePreviewSource(source, opts) : base.resolvePreviewSource(source, opts)
       },
       enumerateContainer: (container, opts) => base.enumerateContainer(container, opts),
-      ensurePreviewWork: (request) => base.ensurePreviewWork(request),
+      ensurePreviewWork(request) {
+        const kind = request.source.originalSource.kind
+        const host = CORE_SOURCE_KINDS.has(kind) ? undefined : previewSourceResolverFor(kind)
+        return host?.ensurePreviewWork ? host.ensurePreviewWork(request) : base.ensurePreviewWork(request)
+      },
       getPreviewWork: (workKey, opts) => base.getPreviewWork(workKey, opts),
     }
     routed.set(base, wrapped)

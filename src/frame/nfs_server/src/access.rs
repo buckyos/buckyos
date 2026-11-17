@@ -26,6 +26,27 @@ pub fn denied(op: &str, actor: &Actor) -> NfsError {
     }
 }
 
+pub fn host_denied(actor: &Actor) -> NfsError {
+    if matches!(actor, Actor::Admin(Some(_))) {
+        sudo_required("this computer's files need a BuckyOS sudo session")
+    } else {
+        denied("read", actor).with("reason", json!("host_owner_only"))
+    }
+}
+
+pub fn host_unsupported(what: &str) -> NfsError {
+    NfsError::new(ErrorCode::Unsupported, format!("{} is not available for this computer's files", what))
+        .with("reason", json!("host_realm"))
+}
+
+pub fn host_audit(actor: &Actor, op: &str, detail: std::fmt::Arguments) {
+    log::info!("host-audit user={} op={} {}", actor.label(), op, detail);
+}
+
+pub fn is_host(node: &Node) -> bool {
+    matches!(node, Node::Native { root, .. } if root == HOST_ROOT)
+}
+
 fn collection_level(actor: &Actor, c: &CollectionRow) -> Level {
     match (actor, &c.owner) {
         (Actor::Admin(_), _) => Level::Manage,
@@ -92,9 +113,9 @@ impl AppState {
         let level = self.node_level(actor, node);
         let ok = if min == Level::Traverse { Self::is_visible(node, level) } else { level >= min };
         if !ok {
-            return Err(denied(op, actor));
+            return Err(if is_host(node) { host_denied(actor) } else { denied(op, actor) });
         }
-        if let (false, Node::Native { root, rel, .. }) = (actor.is_admin(), node) {
+        if let (false, Node::Native { root, rel, .. }) = (actor.is_admin() || is_host(node), node) {
             self.require_no_symlink_ancestor(actor, root, rel, op)?;
         }
         Ok(level)
@@ -147,7 +168,18 @@ impl AppState {
 
     fn precheck_path(&self, actor: &Actor, path: &str, op: &str) -> NfsResult<()> {
         if self.path_level(actor, path)? < Level::Traverse {
-            return Err(denied(op, actor));
+            let host = normalize_rel(path)?.split('/').next() == Some(HOST_ROOT);
+            return Err(if host { host_denied(actor) } else { denied(op, actor) });
+        }
+        Ok(())
+    }
+
+    pub fn precheck_host(&self, actor: &Actor) -> NfsResult<()> {
+        if self.config.host.is_none() {
+            return Err(not_found("unknown realm 'host'"));
+        }
+        if self.acls.level(actor, HOST_ROOT, "") < Level::Traverse {
+            return Err(host_denied(actor));
         }
         Ok(())
     }
@@ -167,15 +199,31 @@ impl AppState {
     }
 
     pub fn resolve_for(&self, actor: &Actor, at: &Locator, min: Level, op: &str) -> NfsResult<Node> {
+        if let Some(r) = &at.r#ref {
+            self.precheck_ref(actor, r)?;
+        }
         if let Some(path) = Self::locator_dfs_path(at)? {
             self.precheck_path(actor, &path, op)?;
+        }
+        if at.r#ref.is_none() && at.uri.is_none() && at.realm.as_deref() == Some("host") {
+            self.precheck_host(actor)?;
         }
         let node = self.resolve_locator(at)?;
         self.require(actor, &node, min, op)?;
         Ok(node)
     }
 
+    fn precheck_ref(&self, actor: &Actor, r: &WireRef) -> NfsResult<()> {
+        if let WireRef::Live { node_id, .. } = r {
+            if node_id.starts_with("nh_") && self.handles.decode(node_id).is_ok_and(|h| h.r == HOST_ROOT) {
+                self.precheck_host(actor)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn resolve_ref_for(&self, actor: &Actor, r: &WireRef, min: Level, op: &str) -> NfsResult<Node> {
+        self.precheck_ref(actor, r)?;
         let node = self.resolve_ref(r)?;
         self.require(actor, &node, min, op)?;
         Ok(node)
@@ -196,7 +244,7 @@ impl AppState {
         let child = self.walk_child(node, name)?;
         // A reference binding is only visible inside a readable directory.
         if let (Node::Native { .. }, Some(p)) = (node, &child_path) {
-            let native = matches!(&child, Node::Native { root, rel, .. } if canonical_path(root, rel) == format!("cyfs:///{}", p));
+            let native = matches!(&child, Node::Native { root, rel, .. } if format!("{}/{}", root, rel) == *p);
             if !native && parent_level < Level::Read {
                 return Err(denied(op, actor));
             }
@@ -278,6 +326,7 @@ impl AppState {
             _ => return Err(invalid("missing target (at or ref)")),
         };
         match node {
+            Node::Native { root, .. } if root == HOST_ROOT => Err(host_unsupported("ACL")),
             Node::Native { root, rel, .. } => Ok((root, rel)),
             Node::Root => Err(invalid("the namespace root has no ACL; set it on export roots or below")),
             _ => Err(invalid("ACLs apply to files and directories")),
@@ -389,9 +438,12 @@ impl AppState {
             Ok(t) => t,
             // Orphaned records (target removed outside the protocol) can still be cleared.
             Err(e) if e.code == ErrorCode::NotFound && clearing => {
-                let path = at.and_then(|l| Self::locator_dfs_path(l).ok().flatten()).ok_or(e)?;
+                let path = at.and_then(|l| Self::locator_dfs_path(l).ok().flatten()).ok_or(e.clone())?;
                 let rel_all = normalize_rel(&path)?;
                 let (root, rel) = rel_all.split_once('/').unwrap_or((&rel_all, ""));
+                if root == HOST_ROOT {
+                    return Err(e);
+                }
                 (root.to_string(), rel.to_string())
             }
             Err(e) => return Err(e),
@@ -425,7 +477,7 @@ impl AppState {
         self.acls.set(&self.db, record)?;
         // Visibility of this node changed for others: let watchers re-list its parent.
         let parent = match crate::fsutil::rel_split(&rel) {
-            Some((p, _)) => self.resolve_dfs_path(&format!("{}/{}", root, p)).ok(),
+            Some((p, _)) => self.resolve_native(&root, &p).ok(),
             None => Some(Node::Root),
         };
         if let Some(node) = parent {

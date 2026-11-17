@@ -21,6 +21,7 @@ pub struct SessionMgr {
 struct Session {
     /// The principal that said hello; every later request must be the same one.
     actor: Actor,
+    sudo_exp: Option<u64>,
     /// seq → cached response body (write ops only)
     replay: HashMap<u64, Value>,
     max_seq: u64,
@@ -39,13 +40,17 @@ impl SessionMgr {
         SessionMgr { sessions: Mutex::new(HashMap::new()), replay_window }
     }
 
-    pub fn create(&self, actor: Actor) -> String {
+    pub fn create(&self, actor: Actor, sudo_exp: Option<u64>) -> String {
         let id = format!("sess_{}", uuid::Uuid::new_v4().simple());
         self.sessions.lock().unwrap().insert(
             id.clone(),
-            Session { actor, replay: HashMap::new(), max_seq: 0 },
+            Session { actor, sudo_exp, replay: HashMap::new(), max_seq: 0 },
         );
         id
+    }
+
+    pub fn sudo_exp(&self, id: &str) -> Option<u64> {
+        self.sessions.lock().unwrap().get(id).and_then(|s| s.sudo_exp)
     }
 
     pub fn exists(&self, id: &str) -> bool {
@@ -230,8 +235,10 @@ mod tests {
     #[test]
     fn replay_window() {
         let m = SessionMgr::new(4);
-        let s = m.create(Actor::Anonymous);
+        let s = m.create(Actor::Anonymous, None);
         assert_eq!(m.actor(&s), Some(Actor::Anonymous));
+        assert_eq!(m.sudo_exp(&s), None);
+        assert_eq!(m.sudo_exp(&m.create(Actor::Anonymous, Some(9))), Some(9));
         assert!(m.exists(&s));
         match m.check_seq(&s, 1).unwrap() {
             SeqDisposition::Execute => {}

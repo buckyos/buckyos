@@ -783,6 +783,9 @@ export function createMockPreviewProvider(): PreviewProvider {
 
     async ensurePreviewWork(request) {
       const { source, options } = request
+      // e2e hook: how often each file asked the Pipeline (thumbnail negative caching).
+      const calls = ((window as { __mockPreviewWork?: Record<string, number> }).__mockPreviewWork ??= {})
+      calls[source.displayName ?? ''] = (calls[source.displayName ?? ''] ?? 0) + 1
       const ext = extensionOf(source.displayName)
       const plan = request.targetProfile.purpose === 'thumbnail' ? THUMBNAIL_CATALOG[ext] : CATALOG[ext]
       if (!plan) {

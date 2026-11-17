@@ -23,7 +23,9 @@ import {
 
 const VERIFY_HUB_ENDPOINT = '/kapi/verify-hub'
 const DEFAULT_APP_ID = 'control-panel'
-const SUDO_TOKEN_FALLBACK_TTL_MS = 3 * 60 * 1000
+const DEFAULT_SUDO_SECONDS = 3 * 60
+const MAX_SUDO_SECONDS = 30 * 60
+const SUDO_TOKEN_FALLBACK_TTL_MS = DEFAULT_SUDO_SECONDS * 1000
 
 export type SudoErrorCode =
   | 'missing_account'
@@ -47,6 +49,8 @@ export interface SudoByPasswordParams {
   appid: string
   appInstanceId?: string
   aud?: string
+  /** Requested lifetime; Verify Hub defaults to 3 minutes and caps at 30. */
+  expiresInSecs?: number
 }
 
 export interface SudoGrant {
@@ -64,6 +68,8 @@ export interface SudoDialogOptions {
   appid?: string
   appInstanceId?: string
   aud?: string
+  /** How long the token should live (seconds, up to 30 minutes); default 3 minutes. */
+  expiresInSecs?: number
   title?: string
   description?: string
   reason?: string
@@ -178,6 +184,7 @@ export async function sudoByPassword({
   appid,
   appInstanceId,
   aud,
+  expiresInSecs,
 }: SudoByPasswordParams): Promise<SudoGrant> {
   const normalizedUsername = username.trim()
   const normalizedAppId = appid.trim()
@@ -209,6 +216,7 @@ export async function sudoByPassword({
           ? { kind: 'app', app_instance_id: normalizedAppInstanceId }
           : { kind: 'system', service_id: normalizedAppId },
         ...(aud ? { aud } : {}),
+        ...(expiresInSecs ? { expires_in_secs: expiresInSecs } : {}),
         login_nonce: nonce,
       },
     )
@@ -249,6 +257,7 @@ function SudoPasswordForm({
   appid,
   appInstanceId,
   aud,
+  expiresInSecs,
   cancelLabel,
   confirmLabel,
   controls,
@@ -260,6 +269,7 @@ function SudoPasswordForm({
   appid: string
   appInstanceId?: string
   aud?: string
+  expiresInSecs?: number
   cancelLabel: string
   confirmLabel: string
   controls: WindowDialogControls<SudoGrant>
@@ -290,6 +300,7 @@ function SudoPasswordForm({
         appid,
         appInstanceId,
         aud,
+        expiresInSecs,
       })
       setPassword('')
       controls.close(grant)
@@ -362,7 +373,8 @@ function SudoPasswordForm({
       <p className="text-xs leading-5 text-[color:var(--cp-muted)]">
         {t(
           'sudo.tokenHint',
-          'The sudo token is returned to this operation only and expires in about 3 minutes.',
+          'The sudo token is returned to this operation only and expires in about {{minutes}} minutes.',
+          { minutes: Math.max(1, Math.round(Math.min(expiresInSecs || DEFAULT_SUDO_SECONDS, MAX_SUDO_SECONDS) / 60)) },
         )}
       </p>
 
@@ -432,6 +444,7 @@ export function useSudoByPassword() {
             appid={appid}
             appInstanceId={appInstanceId}
             aud={options.aud}
+            expiresInSecs={options.expiresInSecs}
             cancelLabel={cancelLabel}
             confirmLabel={confirmLabel}
             controls={controls}

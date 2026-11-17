@@ -99,6 +99,8 @@ export interface FileMenuContext {
   /** Canonical location url of the invoking pane. */
   currentUrl: string
   viewMode: ViewMode
+  /** Icon-view size (global setting). */
+  iconSize?: import('../data/iconSize').IconSize
   /** Location capabilities — providers trim themselves by these, never by scheme. */
   capabilities: LocationCapabilities
   /** Active sort key (manual ordering actions only make sense under 'manual'). */

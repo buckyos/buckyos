@@ -60,7 +60,8 @@ Calls the script's default export once and prints what it returns as JSON:
            of a reflow refresh: leave that alone, use pages
   args     the --arg values, as strings
 
-The lease is renewed while the script runs. If the user takes over, the script is stopped (exit code 5).
+The lease is renewed while the script runs. If the user takes over, the service closes the connection at once and
+the script is stopped (exit code 5).
 Actions time out after ${ACTION_TIMEOUT_MS / 1000} seconds unless the script sets its own timeout.
 The viewport follows the user's device: do not change it.
 page.screenshot() needs the tab in front of its window: call page.bringToFront() first. Pass scale: 'css': the
@@ -170,11 +171,13 @@ async function acquire(call) {
   return call('browser.acquire', { session_id: sessionId() });
 }
 
-// acquire, work(lease, stopped), release. `stopped` rejects when the lease is lost or the process is told to end.
+// acquire, work(lease, stopped, leaseEnded), release. `stopped` rejects when the lease is lost or the process is told
+// to end; `leaseEnded()` asks the service whether the lease is over and gives the error to stop with when it is.
 async function withLease(work) {
   const call = rpc();
   const lease = await acquire(call);
   let lost = false;
+  let lostError = null;
   let stop;
   const stopped = new Promise((_, reject) => {
     stop = reject;
@@ -184,14 +187,27 @@ async function withLease(work) {
     call('browser.renew', { lease_id: lease.lease_id }).catch((e) => {
       if (e.exitCode !== EXIT_LEASE_LOST) return;
       lost = true;
+      lostError = e;
       stop(e);
     });
   }, Math.max(1000, lease.ttl_ms / 3));
   const onSignal = (signal) => stop(new CliError(`interrupted by ${signal}`, EXIT_INTERRUPTED));
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
+  const leaseEnded = async () => {
+    if (lost) return lostError;
+    try {
+      await call('browser.renew', { lease_id: lease.lease_id });
+      return null;
+    } catch (e) {
+      if (e.exitCode !== EXIT_LEASE_LOST) return null;
+      lost = true;
+      lostError = e;
+      return e;
+    }
+  };
   try {
-    return await work(lease, stopped);
+    return await work(lease, stopped, leaseEnded);
   } finally {
     clearInterval(renewing);
     if (!lost) await call('browser.release', { lease_id: lease.lease_id }).catch((e) => note(`could not release the lease: ${e.message}`));
@@ -206,6 +222,7 @@ async function silentTabs(cdpUrl) {
   } catch {
     return [];
   }
+  if (!Array.isArray(targets)) return [];
   const probe = (target) =>
     new Promise((resolve) => {
       const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -318,7 +335,7 @@ async function joinTabs(browser, tabIds) {
 
 // acquire, connect, work({ page, pages, context }), disconnect, release.
 function withPage(work) {
-  return withLease(async (lease, stopped) => {
+  return withLease(async (lease, stopped, leaseEnded) => {
     let browser;
     let ended = false;
     const running = (async () => {
@@ -338,6 +355,14 @@ function withPage(work) {
     running.catch(() => {});
     try {
       return await Promise.race([running, stopped]);
+    } catch (e) {
+      // The service closes the connection of a lease that ended (the user took over): whatever failed with the
+      // connection, or failed to connect, failed because of that.
+      if (!(e instanceof CliError) || e.exitCode === 1) {
+        const lostIt = await leaseEnded();
+        if (lostIt) throw lostIt;
+      }
+      throw e;
     } finally {
       ended = true;
       // Disconnecting also fails whatever the script is still waiting for.

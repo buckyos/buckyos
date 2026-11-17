@@ -1,6 +1,6 @@
 # Agent 浏览器普通浏览与登录兼容性 TODO
 
-状态：Linux 部分已实施（2026-11-16，未提交），部署本机 Zone 并做了不调模型的真实环境验证；Google 登录在用户手动验收中，macOS / Windows 仍是无头。实施记录在 §9，待 owner 定的在 §10。日期：2026-11-16。源码核对基线：`6c0e2eef8`；行号以本次核对为准，实施时重新定位。
+状态：Linux 部分已实施并提交（`2c390732f`），部署本机 Zone 验证，owner 手动 Google 登录成功。owner 定（2026-11-16）：本版发布时 Linux 用有窗口 + Xvnc，Windows / macOS 继续无头，发布后收集不同环境用户的反馈再定下一步（§11）。实施记录在 §9，待 owner 定的在 §10。日期：2026-11-16。源码核对基线：`6c0e2eef8`；行号以本次核对为准，实施时重新定位。
 
 前置：[Agent 浏览器实施 TODO](agent-runtime-browser-todo.md) 的主体能力已实现；现有接口见 [Agent Browser Protocol](<../doc/opendan/protocol/Agent Browser Protocol.md>)。本文规划后续改造，尚未改变现有协议和运行方式。
 
@@ -264,18 +264,37 @@ BC2 需要收口三件事：显示/传输组件及所属安装层；CfT 是否�
 | 2026-11-16 | BC6 | `browser/rfb.rs`：RFB 3.8 客户端（None 安全类型、Raw/CopyRect/DesktopSize/ExtendedDesktopSize/LastRect、没人看时暂停更新请求）。`display.rs` 把帧缓冲按要的像素比做面积平均缩小、用工作区已有的 `image` crate 编 JPEG（新增的是 opendan 对它的引用），出帧上限取各连接帧率的最大值；输入：鼠标按键位、滚轮按 53 px 一格累计、键用 X keysym（命名键表 + 字符的 Latin-1/Unicode keysym，修饰键按消息同步）、`text` 逐字符打（Xvnc 给 Unicode keysym 临时分配键位）。`screen.rs` 的连接在 `virtual` 下取显示器的帧、把输入做在显示器上 | 剪贴板只解析了 Latin-1 的 ServerCutText，没下发给 App；没测“关掉服务端调试连接时画面与输入”（结构上不依赖它） |
 | 2026-11-16 | BC7 | `browser/proxy.rs` + `http.rs` 的 `…/browser/cdp/<lease_id>/{json/version,devtools/browser}`：`browser.acquire` 的 `cdp_url` 指向本服务（有 `OPENDAN_BROWSER_RPC` 时），只收回环地址、租约有效的连接，消息原样转发；租约结束（`release`、过期、`take_over`、`request_handover`）立刻关掉它的连接（`cut_agent`），失效租约再连回 410 `lease_lost`。浏览器窗口：标签页窗口铺满显示器（弹出窗口保持大小、挪进显示器），组的当前标签页变化或标签页集合变化时 `Target.activateTarget` 把它放到最前（后台重排的窗口压在下面） | 后台重排（`_reflow` 组，服务自己的直连）在接手时不中止，见 §10 |
 | 2026-11-16 | BC10 | 协议 §1、§2.1–2.5、§3（新增 §3.6）、§6；`doc/app_service/paios容器需求.md` §6.3/§6.4；`browser` 手册（有窗口、不改身份、权限提示要交给用户、交接时连接被切断）；Desktop `api/types.ts`（`display`、`device_scale_factor`、`no_display`）、`AgentBrowserShell` 文案（中英）、mock（`headless`）；`test/agent_browser_dv/README.md`；`main.py` 的屏幕检查改为在自己开的标签页里用键盘登录、只关自己的标签页 | `src/frame/opendan/README.md` 没提浏览器显示方式，未改 |
+| 2026-11-16 | 无头能调到多像（E-fix） | owner 问“无头只影响 HTTP 头、能否直接调”。实测：无头本身只让 `User-Agent` 头带 `HeadlessChrome`（`sec-ch-ua` 不变）；`--user-agent` 只能改这一个头，并让 UA-CH 高熵头和 JS 值变空。E-fix = 无头 + 经 DevTools 给每个页面（自动附着、停在启动处直到设好）设 UA 和完整 UA-CH 元数据 + 单屏 `--screen-info` + `--blink-settings` 声明有悬停的精细指针：顶层页、弹窗、导航后与 A 只差窗口内外尺寸（无头没有真工具栏）；但跨源 iframe 是独立 target，没被附着到，`navigator.userAgent` 仍是 `HeadlessChrome`。要做全得覆盖 OOPIF、各类 worker，品牌和 GREASE 值随 Chrome 版本硬编码维护（违背 §2）；Google 能否接受没测 | 可作为 macOS / Windows 的过渡方案之一（Q8） |
+| 2026-11-16 | Google 登录 | owner 在 Linux 上手动登录 Google 成功（Q1）| macOS / Windows 未做（Q8） |
+| 2026-11-16 | 无头能否过 Google | owner 授权用他的账号自动测到“输入邮箱 → 下一步”（之后加一次错误密码）。在一次性容器里（同机、同出口、同一份 CfT 159）：旧的生产无头配置（无头 + `--user-agent` + 主世界权限包装 + 全局拒绝 + 焦点模拟）邮箱后进了密码页，错误密码回 “Wrong password”（浏览器被接受）；加上手机伪装（Android UA/UA-CH）邮箱后也进了密码页。随后 owner 把 `jarvis` 临时切回 `display = "headless"`（完整的旧链路：截屏流、隔离环境脚本、手机伪装都在），先清空 profile，用 App 手动以正确密码登录也成功。和基线 `6c0e2eef8` 比，无头路径的代码只差调试端口（0 → 服务端分配）、Agent 经代理连接、`nav` 等标签页附着，解释不了当初的拒绝 | 结论不干净：今天所有无头成功都发生在同一账号、同一 IP、同一机器与二进制（同一指纹）有窗口登录成功之后；清空 profile 去不掉服务端对账号 + IP + 指纹的记忆。当初的拒绝可能被这份“信任”掩盖，也可能是当时的情形（手机伪装、第三方网站的“用 Google 登录”、风控状态）。要干净的对照需要一个没在这台机器 / 这个 IP 上登录过的账号。`jarvis` 测完已改回 `virtual` |
 | 2026-11-16 | 验证 | `cargo test -p opendan`（全部）通过：lib 101、loader 集成 30（loader 的假浏览器是无头的，测试的 `agent.toml` 明确写 `display = "headless"`；`acquire` 的 `cdp_url` 改为断言代理地址、代理的 `json/version`、租约结束后 410）；其中 `browser::` 70 通过；无头真浏览器 13 条全部通过（`OPENDAN_CHROMIUM` 指本机 CfT 159）；新增有窗口真浏览器 3 条（`browser::screen_tests::headed`，在 Debian 13 + Xvnc 的一次性容器里跑本机构建的测试二进制）全部通过：身份（无 Headless/Android、`webdriver` 假、UA-CH 完整、DPR 2、权限 `prompt`、API 原生、无注入 Symbol）、帧尺寸与缩放、视口改窗口、点击聚焦、打中文、退格、Ctrl+A、Shift、原生下拉框用方向键选、原生 `confirm` 回车确认、滚轮、没有 select/dialog/permission 请求、杀掉 Xvnc 后浏览器和显示器连同标签页回来。Desktop `pnpm check` 通过。`build_aios --local-test` 后 `start.py --skip-update` 部署本机 Zone：`AGENT_BROWSER_DV=1 main.py`（Agent `jarvis`）三项通过；租约代理在真实容器里：Playwright 经代理 17 ms 连上，`take_over` 后在途命令立刻失败，旧租约再连被拒，持有期间 `acquire` 回 `user_in_control`。资源（本机 Zone，滚动字幕页，10 秒）：桌面 1280×800 / 倍率 2：opendan 0.20 核、浏览器 0.06 核、Xvnc 0.01 核，PSS 分别 59 / 620 / 76 MiB；手机视口（显示器 500×915）：0.12 / 0.03 / 0.01 核，50 / 565 / 41 MiB | DV 的第一次跑法在 `jarvis` 恢复出来的知乎登录页上按了键（`nav` 撞上标签页还没 attach 的竞态：已修，DV 改为自己开标签页）：没有字段被填写、没有提交，回车点开了“下载 App”链接；那个标签页被 `close-tabs` 关掉后已经重新打开。交接检查往 `jarvis` 的浏览器会话写了 `take_over`/`hand_back` 记录 |
 
 ## 10. 待 owner 确认
 
 | # | 问题 | 现状 / 建议 |
 | --- | --- | --- |
-| Q1 | Google 登录（A2、BC2 第一条）：在 Xvnc 上的原生基线能否登录 | 已在本机起好一次性容器（条件 A：有窗口、无调试端口、新 profile，VNC 只在 127.0.0.1:5901）给 owner 手动登录；结果回来后填 §9。也可以直接在部署好的 Agent 浏览器 App 里试（A2 本身） |
+| Q1 | ~~Google 登录（A2、BC2 第一条）：在 Xvnc 上的原生基线能否登录~~ | 已答（2026-11-16）：owner 在 Linux 上手动登录 Google 成功 |
 | Q2 | Xvnc 的指针不被 Chromium 当成鼠标：`(hover: hover)`、`(pointer: fine)` 为假，和无头一样 | 三个办法：A 维持（同一显示环境下原生如此，Q1 的结果能说明 Google 在不在意）；B 给浏览器加 `--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2`，按显示器实际是鼠标操作来声明（不加新依赖，但这是一个显式设定）；C 改用 Xvfb（带 MOUSE 类型的设备）+ x11vnc（`-unixsock`），opendan 的 RFB 客户端不用改，镜像多一个组件。建议先看 Q1 |
 | Q3 | 浏览器发行版（F） | CfT 的启动窗口有“只用于自动化测试”的信息条（服务端经 CDP 开的窗口没有），UA-CH 品牌是 `Chromium` 不是 `Google Chrome`。Chrome Stable 没有 Linux arm64、再分发另议。建议 Q1 通过就维持 CfT |
 | Q4 | 时区、语言 | 容器里是 UTC、`C.UTF-8`，浏览器照实报告；真人的浏览器一般是本地时区。要和节点一致需要 node_daemon 把宿主时区传进容器，没做 |
 | Q5 | App 的地址栏与浏览器自己的工具栏同时出现 | 现在两者都在（App 的地址栏、标签列表经 CDP 操作）。手机上浏览器工具栏约占 90 CSS px。11-16 owner 定：App 的地址栏保留，桌面上并进顶部一行（Agent 名字后面是地址栏，标签页按钮在 ⋮ 左边），手机仍是两行，已实施（Desktop `shell/AgentBrowserShell.tsx`）。屏幕里浏览器自己的标签栏、地址栏、书签栏是否收起，未定 |
 | Q6 | 剪贴板、输入法 | 远端复制的文字带回手机（需要 TigerVNC 扩展剪贴板，UTF-8 走 zlib）没做；输入法组字中间态不再画进页面（手机输入法自己显示），上屏后才到页面 |
 | Q7 | 接手时的后台重排 | 重排在自己的 `_reflow` 标签页里跑，用服务端自己的连接，不碰用户的标签页和输入；接手不中止它（有超时上限）。要不要接手时一并中止 |
-| Q8 | macOS / Windows | 仍是无头（`display = auto` 的取值），身份补偿和注入在那里照旧；它们的显示器和画面捕获没做 |
+| Q8 | ~~macOS / Windows~~ | 已定（2026-11-16）：本版继续无头（`display = auto` 的取值，身份补偿和注入照旧）。Windows、macOS 上没有容器环境，这是 BuckyOS Desktop Lite 的核心约束，Xvnc 方案只用于 Linux。发布后按 §11 收集反馈再定；可选的方向（无头 + 完整身份覆盖、真窗口 + 系统截屏输入）记在 §9 的 E-fix 一行和对话记录里 |
+
+## 11. 发布与反馈
+
+发布顺序：先发新的 paios/aios 镜像（带 Xvnc），再发新的 opendan。节点上还是旧镜像时，Linux 上的浏览器报 `no_display`（不会退回无头）。
+
+ext-core 升到 1.3.2（owner 同意，2026-11-16）：`agent-browser` 在连接断开或连不上而失败时先 `renew` 一次，租约已结束就按 `EXIT_LEASE_LOST`（5）退出，不再按普通脚本失败（1）；`json/list` 读不出列表时不报错。opendan 的租约代理同时转发 `json/list`，连不上时的“哪些标签页卡在弹框上”提示照旧有效。测试的假服务改为每个租约一个可切断的 TCP 转发（和代理一样在租约结束时切断），新增“接手时在途命令立刻以 5 退出”。发布顺序：aios 镜像、ext-core 1.3.2、opendan 一起发；旧的 ext-core 1.3.1 配新 opendan 也能用，只是接手时 Agent 多重试一次。
+
+反馈要收集的（每个登录被拒或成功的案例）：
+
+| 项 | 为什么 |
+| --- | --- |
+| 节点平台、`browser.status` 的 `display`、`version.browser` | 有窗口（Linux）和无头（Windows / macOS）分开统计 |
+| 用户看的设备（手机 / 电脑），App 的画质档 | 无头时手机会被模拟成 Android |
+| 站点、入口（直接登录 / 第三方网站的“用 Google 登录”）、被拒在哪一步（账号之后 / 密码之后 / 二次验证） | 区分站点规则和浏览器问题 |
+| 这个账号以前是否在这台节点、这个出口 IP 上登录成功过；profile 是新的还是用过的 | 今天的测试表明，曾经成功过会掩盖问题 |
+| 节点的出口网络（家宽、云主机、代理）和时区 | 云主机 IP 和 UTC 时区都可能加分风险 |
 

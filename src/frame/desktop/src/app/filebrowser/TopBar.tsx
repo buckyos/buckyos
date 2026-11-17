@@ -38,6 +38,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useI18n } from '../../i18n/provider'
 import type { LocationCapabilities } from './data/FolderReader'
 import { crumbsForUrl, displayPath } from './data/urls'
+import { ICON_SIZES, type IconSize } from './data/iconSize'
 import type { BrowserTab, SortDir, SortKey, ViewMode } from './types'
 
 interface TopBarProps {
@@ -59,6 +60,8 @@ interface TopBarProps {
   currentPath: string
   /** Title for non-dfs locations (drives the breadcrumb root label). */
   locationTitle?: string
+  /** The computer's name: the root crumb of its folders. */
+  computerLabel?: string
   onNavigate: (path: string) => void
   onBack: () => void
   onForward: () => void
@@ -68,6 +71,8 @@ interface TopBarProps {
   canUp: boolean
   viewMode: ViewMode
   onViewModeChange: (mode: ViewMode) => void
+  iconSize?: IconSize
+  onIconSizeChange?: (size: IconSize) => void
   searchQuery: string
   onSearchChange: (query: string) => void
   onCopyPath: () => void
@@ -131,14 +136,16 @@ function ToolbarIconButton({
 function PathCrumbs({
   url,
   rootLabel,
+  computerLabel,
   onNavigate,
 }: {
   url: string
   /** Title for non-dfs roots (collection/view name from reader meta). */
   rootLabel?: string
+  computerLabel?: string
   onNavigate: (url: string) => void
 }) {
-  const crumbs = crumbsForUrl(url, rootLabel)
+  const crumbs = crumbsForUrl(url, rootLabel, computerLabel)
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm text-[color:var(--cp-muted)]">
@@ -178,6 +185,7 @@ export function TopBar({
   canSendToRight = false,
   currentPath,
   locationTitle,
+  computerLabel,
   onNavigate,
   onBack,
   onForward,
@@ -186,6 +194,8 @@ export function TopBar({
   canForward,
   canUp,
   viewMode,
+  iconSize,
+  onIconSizeChange,
   onViewModeChange,
   searchQuery,
   onSearchChange,
@@ -282,7 +292,7 @@ export function TopBar({
   return (
     <div className="flex flex-col gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-2 sm:px-4">
       {/* Tabs row */}
-      <div className="flex items-center gap-1 overflow-x-auto">
+      <div className="flex items-center gap-1 overflow-x-auto" role="tablist">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
           return (
@@ -302,6 +312,8 @@ export function TopBar({
             >
               <button
                 type="button"
+                role="tab"
+                aria-selected={active}
                 onClick={() => onSelectTab(tab.id)}
                 className="max-w-[180px] truncate font-medium"
               >
@@ -510,7 +522,7 @@ export function TopBar({
             />
           ) : (
             <>
-              <PathCrumbs url={currentPath} rootLabel={locationTitle} onNavigate={onNavigate} />
+              <PathCrumbs url={currentPath} rootLabel={locationTitle} computerLabel={computerLabel} onNavigate={onNavigate} />
               <Tooltip title={t('filebrowser.topbar.copyPath', 'Copy path')}>
                 <button
                   type="button"
@@ -682,6 +694,23 @@ export function TopBar({
             </ListItemIcon>
             <ListItemText primary={t('filebrowser.view.icon', 'Icon view')} />
           </MenuItem>
+          {onIconSizeChange
+            ? ICON_SIZES.map((size) => (
+                <MenuItem
+                  key={size}
+                  disabled={viewMode !== 'icon'}
+                  selected={viewMode === 'icon' && iconSize === size}
+                  onClick={() => {
+                    setViewMenuAnchor(null)
+                    onIconSizeChange(size)
+                  }}
+                  sx={{ pl: 6 }}
+                  data-testid={`icon-size-${size}`}
+                >
+                  {t(`filebrowser.view.icon.${size}`, size === 'small' ? 'Small icons' : size === 'medium' ? 'Medium icons' : 'Large icons')}
+                </MenuItem>
+              ))
+            : null}
           <Divider />
           <MenuItem selected={!listPreferences.fullColumns} onClick={() => onListPreferences({ fullColumns: false })}>{t('filebrowser.view.responsiveColumns', 'Responsive columns')}</MenuItem>
           <MenuItem selected={listPreferences.fullColumns} onClick={() => onListPreferences({ fullColumns: true })}>{t('filebrowser.view.fullColumns', 'All columns (horizontal scroll)')}</MenuItem>

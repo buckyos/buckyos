@@ -175,6 +175,9 @@ impl AppState {
         let Node::Native { root, rel, meta, .. } = &node else {
             return Err(reason(ErrorCode::Unsupported, "source_unsupported", "only files and folders can be shared"));
         };
+        if root == crate::acl::HOST_ROOT {
+            return Err(reason(ErrorCode::Unsupported, "source_unsupported", "files on this computer cannot be shared; copy them into the Zone first"));
+        }
         let cfg = self.config.root(root).ok_or_else(|| stale("root gone"))?;
         let disk = join_root(&cfg.path, rel);
         let name = node.display_name();

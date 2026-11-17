@@ -75,7 +75,7 @@ test('an invalid target for opened content falls back to Preview', async ({ page
   const callbacks = await routeAppHost(page, /http:\/\/(notes|reader)-fixture\.localhost:4173\//, '<title>Handler fixture</title>')
   await page.goto('/?scenario=normal&contentApps=1')
   await page.getByTestId('desktop-app-files').click()
-  await page.locator('aside').getByRole('button', { name: /Documents/ }).first().click()
+  await page.getByTestId('window-files').getByRole('cell', { name: 'Documents', exact: true }).dblclick()
   await page.getByRole('cell', { name: /^Kyoto Trip Plan\.md/ }).first().dblclick()
   await expect(page.getByTestId('window-preview')).toBeVisible()
   await expect(page.getByTestId('window-notes-fixture').getByTestId('app-launch-error')).toHaveAttribute('data-launch-status', 'invalid_target')

@@ -2,7 +2,7 @@
 //! service: the screen (`GET …/browser/screen`, upgraded to a WebSocket),
 //! the upload of a local file for a page's file chooser
 //! (`PUT …/browser/upload/<request_id>`), and the agent's DevTools
-//! connection of a lease (`GET …/browser/cdp/<lease_id>/…`, loopback only).
+//! connection of a lease (`GET …/browser/cdp/<lease_id>/{json/version,json/list,devtools/browser}`, loopback only).
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -80,13 +80,13 @@ pub async fn serve(service: &StateService, route: BrowserRoute, req: Request, in
     match route {
         BrowserRoute::Screen => screen(service, req, ip),
         BrowserRoute::Upload(request_id) => upload(service, &request_id, req, ip).await,
-        BrowserRoute::Cdp(lease_id, rest) => cdp(service, &lease_id, &rest, req, ip),
+        BrowserRoute::Cdp(lease_id, rest) => cdp(service, &lease_id, &rest, req, ip).await,
     }
 }
 
 /// The agent's DevTools connection of a lease: only from this node's
 /// loopback interface, only while the lease lasts (`proxy`).
-fn cdp(service: &StateService, lease_id: &str, rest: &str, mut req: Request, ip: IpAddr) -> Response {
+async fn cdp(service: &StateService, lease_id: &str, rest: &str, mut req: Request, ip: IpAddr) -> Response {
     if !ip.is_loopback() {
         return json_response(http::StatusCode::FORBIDDEN, json!({ "code": "unauthorized", "message": "the browser's DevTools connection is for the agent's own runtime" }));
     }
@@ -101,6 +101,17 @@ fn cdp(service: &StateService, lease_id: &str, rest: &str, mut req: Request, ip:
             let host = req.headers().get(http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("127.0.0.1");
             let mount = req.uri().path().split("/browser/cdp/").next().unwrap_or_default();
             json_response(http::StatusCode::OK, proxy::version(&format!("http://{host}{mount}"), lease_id, version.as_deref()))
+        }
+        // The browser's own list of its tabs: `agent-browser` reads it to name the tabs that do not answer when it cannot connect.
+        "json/list" => {
+            let list = browser_url.split("/devtools/").next().unwrap_or_default().replacen("ws://", "http://", 1) + "/json/list";
+            match reqwest::get(&list).await {
+                Ok(answer) => match answer.json::<serde_json::Value>().await {
+                    Ok(tabs) => json_response(http::StatusCode::OK, tabs),
+                    Err(e) => failed(BrowserError::unavailable(format!("the browser's list of tabs: {e}"))),
+                },
+                Err(e) => failed(BrowserError::unavailable(format!("the browser's list of tabs: {e}"))),
+            }
         }
         "devtools/browser" => {
             let invalid = || buckyos_http_server::server_err!(buckyos_http_server::ServerErrorCode::BadRequest, "invalid websocket request");

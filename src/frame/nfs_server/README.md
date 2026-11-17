@@ -44,7 +44,8 @@ nfs_server --listen 127.0.0.1:3260 \
            --data-dir /var/lib/nfs_server \
            --export home=/srv/home --export media=/srv/media \
            --scan-interval-secs 30 \
-           [--debug-api] [--auth-test-config auth.json] [--log-level info]
+           [--debug-api] [--auth-test-config auth.json] [--log-level info] \
+           [--host-root /abs/dir [--host-label "Test PC"]]
 ```
 
 - `--export name=/abs/path`(可重复):每个 export root 成为当前 Zone 的 `cyfs:///` 命名空间一级子目录。
@@ -54,6 +55,9 @@ nfs_server --listen 127.0.0.1:3260 \
 - 不鉴权:独立模式默认所有请求全权限。`--auth-test-config`(须 loopback + `--debug-api`)给出
   `{"public_key": "<ed25519 x>", "zone_owner": "<user_id>"}` 后,按该测试密钥验证 token,
   路径 ACL 规则与服务模式相同；AgentSpec 权限查询仅在服务模式生效。
+- `--host-root`（须 loopback + `--debug-api`，配合 `--auth-test-config`）：把该目录作为“这台电脑”的
+  host realm，行为等同服务模式下的 Desktop Lite；`--host-label` 为显示名，默认主机名。见
+  [产品协议 §14](../../../product/bucky_file/nfs_server.md#14-本机目录host-realm实现扩展)。
 
 ```bash
 cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
@@ -125,6 +129,7 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 | `NOT_EMPTY` | 409 | 非递归 delete 非空目录 |
 | `UNSUPPORTED` | 400 | 未知方法 / v1 未实现能力(如 object ref 解析) |
 | `INTERNAL` | 500 | 服务器内部错误 |
+| `SUDO_REQUIRED` | 403 | Zone owner 访问 host realm（本机目录）但请求不在有效的 BuckyOS sudo 会话里 |
 
 ## 已知边界(接受并记录)
 

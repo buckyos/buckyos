@@ -20,9 +20,18 @@ import { registerMockSidebarSources } from '../mock/sidebar'
 import { registerMockTransferExecutor } from '../mock/transfers'
 import { mockDelay, registerMockReaders } from './mockReader'
 import { installNfspFileBrowserData } from './nfsp/install'
+import { registerMyHomeProvider } from './myHome'
+import { registerHostReaders } from './hostRealm'
+import { registerMockHostBackend } from '../mock/host'
 import { registerPreviewEnricher } from './usePreview'
 
 let installed = false
+let installedMode: 'mock' | 'nfsp' = 'mock'
+
+/** Which backend the File Browser runs on (mock fixtures or NFSP). */
+export function fileBrowserDataMode(): 'mock' | 'nfsp' {
+  return installedMode
+}
 
 function dataModeOverride(): 'mock' | 'nfsp' | null {
   try {
@@ -41,6 +50,8 @@ function installMockData() {
   registerMockTransferExecutor()
   registerMockFolderOps()
   registerMockPermissionSource()
+  // The mock fixtures treat `/home` itself as the signed-in user's home.
+  registerMyHomeProvider(async () => ({ path: '/home', userId: null }))
   // Preview enrichment: simulated latency over the already-projected entry.
   registerPreviewEnricher(async (item) => {
     await mockDelay(50, 120)
@@ -52,6 +63,10 @@ export function installFileBrowserData() {
   if (installed) return
   installed = true
   const mode = dataModeOverride() ?? (isMockRuntime() ? 'mock' : 'nfsp')
-  if (mode === 'mock') installMockData()
-  else installNfspFileBrowserData()
+  installedMode = mode
+  registerHostReaders()
+  if (mode === 'mock') {
+    installMockData()
+    registerMockHostBackend()
+  } else installNfspFileBrowserData()
 }

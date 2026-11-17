@@ -38,7 +38,7 @@ const SCROLL_COMMIT_MS = 200
 const withScroll = (state: TabState, scroll: number | undefined): TabState =>
   scroll === undefined || scroll === state.location.scroll ? state : { ...state, location: { ...state.location, scroll } }
 
-export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
+export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string, homePath = '/home') {
   const [states, setStates] = useState(() => {
     const saved = sessionKey ? sessions.get(sessionKey) : undefined
     return saved ? saved.states.map((state) => ({ ...state, selected: new Map<string, FileItem>(), revision: state.revision + 1 })) : initialTabs.map(stateOf)
@@ -84,7 +84,7 @@ export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
       if (saved && pending.size > 0) sessions.set(key!, { ...saved, states: saved.states.map((state) => withScroll(state, pending.get(state.tab.id))) })
     }
   }, [])
-  const fallback = stateOf({ id: '', title: 'Home', path: '/home' })
+  const fallback = stateOf({ id: '', title: '', path: homePath })
   const state = active ?? fallback
   const { location, selected, revision } = state
   const currentUrl = location.path

@@ -1,10 +1,10 @@
 import clsx from 'clsx'
-import { Check, ChevronRight, FolderPlus, HardDrive, History, Library, MonitorSmartphone, Search, X } from 'lucide-react'
+import { Check, ChevronRight, FolderPlus, HardDrive, History, House, Library, MonitorSmartphone, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { contentDescriptor, matchSelector, mediaTypeFromExtension, type ContentSelector, type SelectDialogResult, type SelectedContent, type ZoneContent } from 'buckyos/content'
 import { useI18n } from '../../i18n/provider'
 import { normalizeCyfsPath } from '../../components/preview/session'
-import { usePreviewThumbnail } from '../../components/preview/thumbnail'
+import { FileThumb } from '../../components/preview/FileThumb'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
 import { useCollections } from '../../app/filebrowser/data/collectionDirectory'
 import type { FileItem } from '../../app/filebrowser/data/FolderReader'
@@ -13,16 +13,16 @@ import { installFileBrowserData } from '../../app/filebrowser/data/install'
 import { resolveReader } from '../../app/filebrowser/data/readerRegistry'
 import { entryNameSchema } from '../../app/filebrowser/data/schemas'
 import { useSidebarDfs } from '../../app/filebrowser/data/sidebarSources'
+import { myHome, useMyHome } from '../../app/filebrowser/data/myHome'
 import { toUiError } from '../../app/filebrowser/data/state'
 import { collectionUrl, crumbsForUrl, dfsPathOf, normalizeUrl, parentUrl } from '../../app/filebrowser/data/urls'
 import { useFolderList } from '../../app/filebrowser/data/useFolderList'
 import { useSearch } from '../../app/filebrowser/data/search'
 import { NamePromptDialog } from '../../app/filebrowser/dialogs/NamePromptDialog'
-import { formatBytes, kindIcon } from '../../app/filebrowser/fileDisplay'
+import { formatBytes } from '../../app/filebrowser/fileDisplay'
 import type { FileEntry, SortDir, SortKey } from '../../app/filebrowser/types'
 import { checkSelectDialogResult, type SelectDialogInput } from './schemas'
 
-const HOME = '/home'
 const RECENT_URL = 'view://recent'
 const lastDirKey = (callerId: string) => `sysdlg.select.lastDir:${callerId}`
 
@@ -64,31 +64,10 @@ function mediaOnly(accept: ContentSelector[]): boolean {
   })
 }
 
-const THUMB_REQUEST = { width: 256, height: 256, prefer: 'pipeline' as const }
-
-/**
- * An image's or video's thumbnail: the listing's own when it has one, else the Preview Pipeline's (as HomeStation's
- * feed), asked for only once the item scrolls near the view.
- */
-function Thumb({ entry, size }: { entry: FileEntry; size: number }) {
-  const media = entry.kind === 'image' || entry.kind === 'video'
-  const wanted = media && !entry.thumbnailUrl && entry.path.startsWith('/')
-  const box = useRef<HTMLSpanElement>(null)
-  const [near, setNear] = useState(() => typeof IntersectionObserver === 'undefined')
-  useEffect(() => {
-    const el = box.current
-    if (!wanted || near || !el) return
-    const observer = new IntersectionObserver((records) => { if (records.some((record) => record.isIntersecting)) setNear(true) }, { rootMargin: '200px' })
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [wanted, near])
-  const source = useMemo(() => wanted && near ? refOf(entry.path) : null, [wanted, near, entry.path])
-  const preview = usePreviewThumbnail(source, THUMB_REQUEST)
-  const [failed, setFailed] = useState<string | null>(null)
-  const url = entry.thumbnailUrl ?? (preview.status === 'ready' ? preview.thumbnail.url : undefined)
-  return <span ref={box} className="flex size-full items-center justify-center">
-    {media && url && failed !== url ? <img src={url} loading="lazy" decoding="async" alt="" className="size-full object-cover" onError={() => setFailed(url)} /> : kindIcon(entry.kind, size)}
-  </span>
+/** The picker's thumbnail: shared with Files' icon view; small list rows only ask for images and videos. */
+function Thumb({ entry, size, box, scope }: { entry: FileEntry; size: number; box: number; scope: 'media' | 'all' }) {
+  const source = useMemo(() => entry.path.startsWith('/') ? refOf(entry.path) : null, [entry.path])
+  return <FileThumb entry={entry} source={source} iconSize={size} box={box} scope={scope} marks={scope === 'all'} />
 }
 
 const canPickLocalFolder = () => 'webkitdirectory' in document.createElement('input') && !window.matchMedia?.('(pointer: coarse)').matches
@@ -112,7 +91,7 @@ async function resolveStart(input: SelectDialogInput, callerId: string): Promise
     if (found) return found
   }
   // Where a pick most often starts from: what the user touched lately. Choosing a folder or a place to save starts at home.
-  return { url: input.mode === 'open' ? RECENT_URL : normalizeUrl(HOME) }
+  return { url: input.mode === 'open' ? RECENT_URL : normalizeUrl((await myHome()).path) }
 }
 
 export interface SelectDialogProps {
@@ -174,6 +153,7 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
   }, [url])
   const list = useFolderList(url, sortKey, sortDir)
   const dfs = useSidebarDfs()
+  const home = useMyHome()
   const collections = useCollections()
 
   const path = list.capabilities.kind === 'folder' ? dfsPathOf(url) : null
@@ -277,16 +257,16 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
 
   const locations = useMemo(() => {
     // Roots that are not real folders (a collection shown as a root) are places to pick from, not to write to.
-    const out: Array<{ key: string; label: string; url: string; icon: ReactNode }> = (dfs.state.data ?? []).map((node) => ({
-      key: node.id, url: normalizeUrl(node.path), icon: <HardDrive size={15} aria-hidden="true" />,
-      label: node.kind === 'home' ? t('sysdlg.select.home', 'My files') : node.name,
-    })).filter((location) => mode === 'open' || dfsPathOf(location.url) !== null)
+    const out: Array<{ key: string; label: string; url: string; icon: ReactNode }> = [
+      ...(home ? [{ key: 'my-files', url: normalizeUrl(home.path), icon: <House size={15} aria-hidden="true" />, label: t('sysdlg.select.home', 'My files') }] : []),
+      ...(dfs.state.data ?? []).map((node) => ({ key: node.id, url: normalizeUrl(node.path), icon: <HardDrive size={15} aria-hidden="true" />, label: node.name })),
+    ].filter((location) => mode === 'open' || dfsPathOf(location.url) !== null)
     if (mode === 'open') {
       out.push({ key: 'recent', label: t('sysdlg.select.recent', 'Recent'), url: RECENT_URL, icon: <History size={15} aria-hidden="true" /> })
       for (const collection of collections) out.push({ key: `c-${collection.id}`, label: collection.title, url: collectionUrl(collection.id), icon: <Library size={15} aria-hidden="true" /> })
     }
     return out
-  }, [collections, dfs.state.data, mode, t])
+  }, [collections, dfs.state.data, home, mode, t])
   const activeLocation = [...locations].sort((a, b) => b.url.length - a.url.length).find((location) => url === location.url || url.startsWith(`${location.url}/`))
   const localEntry = input.allowLocal && (mode === 'open' || (mode === 'folder' && canPickLocalFolder()))
   const openLocal = () => { setNotice(null); localInput.current?.click() }
@@ -384,7 +364,7 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
                   }
                   if (grid) return <button key={item.key} {...common}
                     className={clsx('relative flex min-w-0 flex-col gap-1 rounded-xl p-1 text-left text-xs', isSelected && 'bg-[color:color-mix(in_srgb,var(--cp-accent)_16%,transparent)] ring-2 ring-[color:var(--cp-accent)]', !usable && 'cursor-not-allowed opacity-45')}>
-                    <span className="flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]"><Thumb entry={entry} size={28} /></span>
+                    <span className="flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]"><Thumb entry={entry} size={28} box={256} scope="all" /></span>
                     <span className="w-full truncate px-0.5">{entry.name}</span>
                     {check && <span className="absolute right-2 top-2">{check}</span>}
                   </button>
@@ -392,7 +372,7 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
                     className={clsx('flex min-h-11 w-full items-center gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-3 text-left text-sm',
                       isSelected && 'bg-[color:color-mix(in_srgb,var(--cp-accent)_16%,transparent)]', !usable && 'cursor-not-allowed opacity-45', mode === 'save' && !folder && 'text-[color:var(--cp-muted)]')}>
                     {check}
-                    <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md"><Thumb entry={entry} size={18} /></span>
+                    <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md"><Thumb entry={entry} size={18} box={256} scope="media" /></span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">{entry.name}</span>
                       {searching && <span className="block truncate text-xs text-[color:var(--cp-muted)]">{entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'}</span>}

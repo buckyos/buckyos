@@ -24,7 +24,7 @@ import type {
 } from '../../types'
 import type { FileItem, LocationCapabilities, LocationMeta } from '../FolderReader'
 import { classifyFileKind } from '../fileKinds'
-import { DFS_SCHEME } from '../urls'
+import { DEVICE_SCHEME, DFS_SCHEME } from '../urls'
 import { nfspBaseUrl } from './client'
 
 /** Stable serialized Ref identity — never a canonical path (§8.2). */
@@ -152,7 +152,7 @@ export function mapEntryToItem(entry: Entry, context: EntryMapContext): FileItem
     id: refIdOf(target.ref),
     copyRef: target.copy_ref ? JSON.stringify(target.copy_ref) : undefined,
     operations: {
-      copy: !broken && !!target.copy_ref && ['dir', 'file', 'symlink'].includes(target.kind) && path.startsWith('/') && !(context.containerDfsPath !== undefined && entry.binding === 'reference') ? 'available' : 'unsupported',
+      copy: !broken && !!target.copy_ref && ['dir', 'file', 'symlink'].includes(target.kind) && (path.startsWith('/') || path.startsWith(DEVICE_SCHEME)) && !(context.containerDfsPath !== undefined && entry.binding === 'reference') ? 'available' : 'unsupported',
       ...(writable ? {} : { rename: 'denied', move: 'denied', delete: 'denied' } as const),
     },
     accessLevel: level,
@@ -170,6 +170,8 @@ export function mapEntryToItem(entry: Entry, context: EntryMapContext): FileItem
   // nfs_server still puts a whole-file digest (`sha256:`) here for plain files; that is not an object ID.
   const objId = target.attrs?.obj_id
   if (typeof objId === 'string' && objId && !objId.startsWith('sha256:')) fileEntry.objId = objId
+  const read = target.attrs?.access_urls?.find((url) => url.kind === 'read')
+  if (read && target.kind !== 'dir') fileEntry.readUrl = absoluteUrl(read.url)
   const thumbnail = target.attrs?.access_urls?.find((url) => url.kind === 'thumbnail')
   if (thumbnail) fileEntry.thumbnailUrl = absoluteUrl(thumbnail.url)
   const publicUrl = publicUrlOf(target.attrs)

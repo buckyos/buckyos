@@ -53,7 +53,7 @@ export interface ExtensionRef {
   value?: unknown
 }
 
-export function extensionRefField(ref: ContentRef, field: 'name' | 'reference'): string | undefined {
+export function extensionRefField(ref: ContentRef, field: 'name' | 'reference' | 'url'): string | undefined {
   const value = (ref as ExtensionRef).value
   if (!value || typeof value !== 'object') return undefined
   const found = (value as Record<string, unknown>)[field]

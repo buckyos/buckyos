@@ -204,6 +204,8 @@ pub struct SudoByPasswordRequest {
     pub aud: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_nonce: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_secs: Option<u64>,
 }
 
 impl SudoByPasswordRequest {
@@ -213,6 +215,7 @@ impl SudoByPasswordRequest {
         target: AuthTarget,
         aud: Option<String>,
         login_nonce: Option<u64>,
+        expires_in_secs: Option<u64>,
     ) -> Self {
         Self {
             username,
@@ -220,6 +223,7 @@ impl SudoByPasswordRequest {
             target,
             aud,
             login_nonce,
+            expires_in_secs,
         }
     }
 
@@ -593,20 +597,35 @@ impl VerifyHubClient {
         target: AuthTarget,
         aud: Option<String>,
         login_nonce: Option<u64>,
+        expires_in_secs: Option<u64>,
     ) -> Result<SudoByPasswordResponse> {
         match self {
             Self::InProcess(handler) => {
                 let login_nonce = login_nonce.unwrap_or_else(current_login_nonce_millis);
                 handler
-                    .handle_sudo_by_password(&username, &password, &target, aud, login_nonce)
+                    .handle_sudo_by_password(
+                        &username,
+                        &password,
+                        &target,
+                        aud,
+                        login_nonce,
+                        expires_in_secs,
+                    )
                     .await
             }
             Self::KRPC(client) => {
                 client.reset_session_token().await;
                 let login_nonce = login_nonce.or_else(|| Some(current_login_nonce_millis()));
                 let params =
-                    SudoByPasswordRequest::new(username, password, target, aud, login_nonce)
-                        .to_json()?;
+                    SudoByPasswordRequest::new(
+                        username,
+                        password,
+                        target,
+                        aud,
+                        login_nonce,
+                        expires_in_secs,
+                    )
+                    .to_json()?;
                 let result = client.call("sudo_by_password", params).await?;
                 let sudo_by_password_response: SudoByPasswordResponse =
                     serde_json::from_value(result)
@@ -795,6 +814,7 @@ pub trait VerifyHubApiHandler: Send + Sync {
         target: &AuthTarget,
         aud: Option<String>,
         login_nonce: u64,
+        expires_in_secs: Option<u64>,
     ) -> Result<SudoByPasswordResponse>;
 
     async fn handle_delegate_user_session(
@@ -947,6 +967,7 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                         &request.target,
                         request.aud,
                         login_nonce,
+                        request.expires_in_secs,
                     )
                     .await?;
                 RPCResult::Success(
@@ -1230,7 +1251,7 @@ mod tests {
     struct MockCalls {
         login_jwt: Option<(String, AuthTarget)>,
         login_password: Option<(String, String, AuthTarget, u64)>,
-        sudo_password: Option<(String, String, AuthTarget, Option<String>, u64)>,
+        sudo_password: Option<(String, String, AuthTarget, Option<String>, u64, Option<u64>)>,
         verify_token: Option<(String, Option<AuthTarget>)>,
         refresh_token: Option<String>,
         logout: Option<String>,
@@ -1287,6 +1308,7 @@ mod tests {
             target: &AuthTarget,
             aud: Option<String>,
             login_nonce: u64,
+            expires_in_secs: Option<u64>,
         ) -> Result<SudoByPasswordResponse> {
             let mut calls = self.calls.lock().unwrap();
             calls.sudo_password = Some((
@@ -1295,6 +1317,7 @@ mod tests {
                 target.clone(),
                 aud,
                 login_nonce,
+                expires_in_secs,
             ));
             Ok(SudoByPasswordResponse {
                 session_token: "sudo-session-1".to_string(),
@@ -1385,6 +1408,7 @@ mod tests {
                 control_panel_target.clone(),
                 Some("system-config".to_string()),
                 Some(123),
+                Some(1800),
             )
             .await
             .unwrap();
@@ -1403,12 +1427,14 @@ mod tests {
             expected_target,
             Some(AuthTarget::system("kernel".parse().unwrap()))
         );
-        let (username, password, target, aud, login_nonce) = calls.sudo_password.clone().unwrap();
+        let (username, password, target, aud, login_nonce, expires_in_secs) =
+            calls.sudo_password.clone().unwrap();
         assert_eq!(username, "alice");
         assert_eq!(password, "password-hash");
         assert_eq!(target, control_panel_target);
         assert_eq!(aud, Some("system-config".to_string()));
         assert_eq!(login_nonce, 123);
+        assert_eq!(expires_in_secs, Some(1800));
         assert_eq!(calls.logout.as_deref(), Some("refresh-1"));
     }
 
@@ -1468,7 +1494,8 @@ mod tests {
                 "password": "password-hash",
                 "target": {"kind": "system", "service_id": "control-panel"},
                 "aud": "system-config",
-                "login_nonce": 123
+                "login_nonce": 123,
+                "expires_in_secs": 1800
             }),
             seq: 10,
             token: None,
@@ -1557,12 +1584,14 @@ mod tests {
             expected_target,
             Some(AuthTarget::system("kernel".parse().unwrap()))
         );
-        let (username, password, target, aud, login_nonce) = calls.sudo_password.clone().unwrap();
+        let (username, password, target, aud, login_nonce, expires_in_secs) =
+            calls.sudo_password.clone().unwrap();
         assert_eq!(username, "alice");
         assert_eq!(password, "password-hash");
         assert_eq!(target, AuthTarget::system("control-panel".parse().unwrap()));
         assert_eq!(aud, Some("system-config".to_string()));
         assert_eq!(login_nonce, 123);
+        assert_eq!(expires_in_secs, Some(1800));
         assert_eq!(calls.logout.as_deref(), Some("refresh-2"));
     }
 }

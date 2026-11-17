@@ -25,7 +25,8 @@ use buckyos_api::{
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use clap::{Arg, ArgAction, Command};
 use nfs_server::config::{
-    config_from_data_root, parse_export_spec, AuthMode, AuthTestConfig, NamedStoreSource, ServerConfig,
+    config_from_data_root, host_label, parse_export_spec, AuthMode, AuthTestConfig, HostRealm, NamedStoreSource,
+    ServerConfig,
 };
 use nfs_server::state::AppState;
 
@@ -70,6 +71,16 @@ fn main() {
                 .help("Test token key + zone owner JSON enabling ACL auth; standalone loopback + --debug-api only"),
         )
         .arg(
+            Arg::new("host-root")
+                .long("host-root")
+                .help("Directory served as this computer's file tree (realm host); standalone loopback + --debug-api only"),
+        )
+        .arg(
+            Arg::new("host-label")
+                .long("host-label")
+                .help("Name shown for --host-root (default: the computer's host name)"),
+        )
+        .arg(
             Arg::new("named-store")
                 .long("named-store")
                 .help("Directory of a local named store for share snapshots (standalone mode)"),
@@ -108,6 +119,11 @@ fn main() {
         let level = matches.get_one::<String>("log-level").unwrap().clone();
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).init();
         let config = standalone_config(&matches);
+        if let AuthMode::TestKey { zone_owner, .. } = &config.auth {
+            let groups = format!("g, {}, admin\ng, system:control-panel, system\n", zone_owner);
+            let policy = buckyos_api::overlap_rbac_policy(buckyos_api::DEFAULT_RBAC_POLICY, &groups);
+            rt.block_on(rbac::create_enforcer(buckyos_api::DEFAULT_RBAC_MODEL.trim(), policy.trim())).expect("test RBAC");
+        }
         rt.block_on(serve(config));
     } else {
         init_logging("nfs_server", true);
@@ -161,6 +177,13 @@ fn standalone_config(matches: &clap::ArgMatches) -> ServerConfig {
         assert!(config.debug_api && config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()), "auth test config requires standalone loopback and --debug-api");
         let test: AuthTestConfig = serde_json::from_slice(&std::fs::read(path).expect("auth test config")).expect("auth test config JSON");
         config.auth = AuthMode::TestKey { public_key: test.public_key, zone_owner: test.zone_owner };
+    }
+    if let Some(root) = matches.get_one::<String>("host-root") {
+        assert!(config.debug_api && config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()), "host root requires standalone loopback and --debug-api");
+        let root = std::path::PathBuf::from(root);
+        assert!(root.is_absolute() && root.is_dir(), "--host-root must be an absolute directory");
+        let label = matches.get_one::<String>("host-label").cloned().unwrap_or_else(host_label);
+        config.host = Some(HostRealm::new(root, label));
     }
     config
 }
@@ -226,6 +249,11 @@ async fn buckyos_service_main(matches: &clap::ArgMatches) {
     };
     config.listen = format!("127.0.0.1:{}", NFS_SERVER_SERVICE_PORT);
     config.auth = AuthMode::Runtime;
+    match buckyos_api::ProductProfile::load_installed(&get_buckyos_root_dir()) {
+        Ok(product) if product.is_lite() => config.host = Some(HostRealm::computer()),
+        Ok(_) => {}
+        Err(e) => log::warn!("read product profile failed, this computer's files stay hidden: {}", e),
+    }
     // Share links live on their own origin (`share.<zone>`, routed here by the
     // gateway's APP_INFO), Public is the gateway's `public.<zone>` dir server.
     config.named_store = NamedStoreSource::Runtime;
@@ -268,6 +296,9 @@ async fn serve(config: ServerConfig) {
     };
     for export in &state.config.exports {
         log::info!("export cyfs:///{} -> {}", export.id, export.path.display());
+    }
+    if let Some(host) = &state.config.host {
+        log::info!("host realm '{}' -> {}", host.label, host.export.path.display());
     }
     if scan_interval > 0 {
         log::info!("reconciler scan every {}s", scan_interval);

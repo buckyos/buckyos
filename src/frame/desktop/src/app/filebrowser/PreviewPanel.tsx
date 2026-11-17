@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { useI18n } from '../../i18n/provider'
-import { formatBytes, formatDate, kindIcon } from './fileDisplay'
+import { fileIcon, formatBytes, formatDate } from './fileDisplay'
 import type { FileItem } from './data/FolderReader'
 import { usePreview } from './data/usePreview'
 import { copyPathText, displayPath } from './data/urls'
@@ -105,7 +105,7 @@ export function PreviewPanel({
       {entry.kind !== 'folder' && onOpenFile && !entry.link?.broken && !item.ref?.broken && <button className="m-3 min-h-11 shrink-0 rounded-xl bg-[color:var(--cp-accent)] px-4 text-sm font-semibold text-white" onClick={() => onOpenFile(item)}>{t('filebrowser.operation.openFile', 'Open file')}</button>}
       <div className="flex items-start gap-3 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-4 py-3">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
-          {kindIcon(entry.kind, 22)}
+          {fileIcon(entry, 22)}
         </div>
         <div className="min-w-0 flex-1">
           <div className="line-clamp-2 font-display text-[15px] font-semibold text-[color:var(--cp-text)]">
@@ -122,7 +122,7 @@ export function PreviewPanel({
             title={t('filebrowser.preview.jumpOriginal', 'Jump to original location')}
             className="mt-0.5 block max-w-full break-all text-left font-mono text-xs text-[color:var(--cp-muted)] hover:text-[color:var(--cp-accent)] hover:underline"
           >
-            {originalPath}
+            {displayPath(originalPath)}
           </button>
           <button className="min-h-8 text-xs underline" onClick={() => void navigator.clipboard.writeText(copyPathText(originalPath))}>{t('filebrowser.topbar.copyPath', 'Copy path')}</button>
           {entry.link?.broken || item.ref?.broken ? (

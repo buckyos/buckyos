@@ -30,7 +30,7 @@ const ROOT = process.getuid?.() === 0
 const WINDOW = { width: 1280, height: 800 }
 mkdirSync(OUT, { recursive: true })
 
-const ALL = ['A', 'A2', 'B', 'C', 'D-ua', 'D-mobile', 'D-inject', 'D-focus', 'D-screencast', 'D-permissions', 'D-playwright', 'H', 'E']
+const ALL = ['A', 'A2', 'B', 'C', 'D-ua', 'D-mobile', 'D-inject', 'D-focus', 'D-screencast', 'D-permissions', 'D-playwright', 'H', 'E', 'E-fix']
 const CONDITIONS = (opt('--conditions', ALL.join(','))).split(',').map((c) => c.trim()).filter(Boolean)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -196,8 +196,10 @@ async function runCondition(name, site, version) {
   rmSync(profile, { recursive: true, force: true }); rmSync(`${profile}-cache`, { recursive: true, force: true })
   mkdirSync(profile, { recursive: true })
   const url = `${site.base}/diag?run=${encodeURIComponent(runId)}&navigate_after=${NAVIGATE_AFTER}`
-  // H: headless with nothing else (no debugging port, no override); E: the Agent's browser as it is started today.
-  const headless = name === 'E' || name === 'H'
+  // H: headless with nothing else (no debugging port, no override); E: the Agent's browser as it was started headless;
+  // E-fix: headless with everything that can be set to look headed (UA and UA-CH metadata over DevTools on every page
+  // before its first request, one screen of the window's size, a pointer with hover declared): how far adjusting goes.
+  const headless = name === 'E' || name === 'H' || name === 'E-fix'
   const display = headless ? null : DISPLAY
   if (!headless && !display) return { name, skipped: 'no X display (--display or --xvfb)' }
   const port = ['A', 'A2', 'H'].includes(name) ? null : await freePort()
@@ -205,6 +207,8 @@ async function runCondition(name, site, version) {
   if (ROOT) base.push('--no-sandbox')
   let args
   if (name === 'H') args = ['--headless=new', ...base, url]
+  else if (name === 'E-fix') args = ['--headless=new', ...base, `--remote-debugging-port=${port}`, '--no-startup-window', `--screen-info={0,0 ${WINDOW.width}x${WINDOW.height}}`,
+    '--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2']
   else if (headless) args = [...productionArgs(profile).map((a) => a === '--remote-debugging-port=0' ? `--remote-debugging-port=${port}` : a), ...(ROOT ? ['--no-sandbox'] : []), `--user-agent=${desktopUA(version)}`]
   else args = [...base, ...(port ? [`--remote-debugging-port=${port}`] : []), ...(name === 'D-ua' ? [`--user-agent=${desktopUA(version)}`] : []), url]
   log(`${name}: starting (${headless ? 'headless' : `headed on ${display}`}${port ? `, debugging port ${port}` : ', no debugging port'})`)
@@ -213,6 +217,31 @@ async function runCondition(name, site, version) {
   let cdp = null
   try {
     let session = null
+    if (name === 'E-fix') {
+      cdp = await cdpConnect(await devtoolsEndpoint(profile, port))
+      const full = (/(\d+\.\d+\.\d+\.\d+)/.exec(version) || [])[1]; const major = majorOf(version)
+      const override = {
+        userAgent: desktopUA(version),
+        userAgentMetadata: {
+          brands: [{ brand: 'Chromium', version: major }, { brand: 'Not/A)Brand', version: '8' }],
+          fullVersionList: [{ brand: 'Chromium', version: full }, { brand: 'Not/A)Brand', version: '8.0.0.0' }],
+          platform: 'Linux', platformVersion: '', architecture: 'x86', bitness: '64', model: '', mobile: false, wow64: false, formFactors: ['Desktop'],
+        },
+      }
+      // Every page (popups too) is held at its start until it has the override.
+      cdp.on(async (m) => {
+        if (m.method !== 'Target.attachedToTarget' || m.params.targetInfo.type !== 'page') return
+        const s = m.params.sessionId
+        await cdp.send('Emulation.setUserAgentOverride', override, s).catch(() => {})
+        await cdp.send('Runtime.runIfWaitingForDebugger', {}, s).catch(() => {})
+      })
+      await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true })
+      const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true })
+      await sleep(500)
+      session = (await cdp.send('Target.attachToTarget', { targetId, flatten: true })).sessionId
+      await cdp.send('Emulation.setUserAgentOverride', override, session)
+      await cdp.send('Page.navigate', { url }, session)
+    }
     if (name === 'E') {
       cdp = await cdpConnect(await devtoolsEndpoint(profile, port))
       await cdp.send('Target.setDiscoverTargets', { discover: true })

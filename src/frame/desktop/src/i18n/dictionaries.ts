@@ -18,6 +18,7 @@ import { myNetworkEn, myNetworkZh } from './my-network'
 import { loadingTipsEn, loadingTipsZh } from './loading-tips'
 import { sharesEn, sharesZh } from './shares'
 import { sysdlgSelectEn, sysdlgSelectZh } from './sysdlg-select'
+import { fileBrowserFilesEn, fileBrowserFilesZh } from './filebrowser-files'
 import { appLaunchEn, appLaunchZh } from './app-launch'
 import { ssoEn, ssoZh } from './sso'
 import { agentBrowserEn, agentBrowserZh } from './agent-browser'
@@ -422,14 +423,9 @@ const en: Dictionary = {
   'files.actionCopied': 'Copied {{count}} item(s)',
   'files.actionOpened': 'Opened {{name}}',
   'files.actionDownloaded': 'Queued download for {{name}}',
-  'filebrowser.sidebar.dfs': 'DFS · Logical view',
   'filebrowser.sidebar.topics': 'AI Topics',
   'filebrowser.sidebar.devices': 'Devices',
   'filebrowser.sidebar.triggers': 'Triggers & pipelines',
-  'filebrowser.sidebar.advanced': 'Advanced',
-  'filebrowser.sidebar.devices.hint':
-    'Device view is only available to advanced users. Enable advanced mode to browse raw device paths.',
-  'filebrowser.sidebar.devices.enable': 'Enable advanced mode',
   'filebrowser.topbar.newTab': 'New tab',
   'filebrowser.topbar.closedTabs': 'Recently closed tabs',
   'filebrowser.topbar.noClosedTabs': 'No recently closed tabs',
@@ -1224,13 +1220,9 @@ const zhCN: Dictionary = {
   'files.actionCopied': '已复制 {{count}} 个项目',
   'files.actionOpened': '已打开 {{name}}',
   'files.actionDownloaded': '已加入下载队列 {{name}}',
-  'filebrowser.sidebar.dfs': 'DFS · 逻辑视图',
   'filebrowser.sidebar.topics': 'AI 主题',
   'filebrowser.sidebar.devices': '设备',
   'filebrowser.sidebar.triggers': '触发器与管线',
-  'filebrowser.sidebar.advanced': '高级',
-  'filebrowser.sidebar.devices.hint': '设备视图仅对高级用户开放。开启高级模式后可浏览设备裸盘路径。',
-  'filebrowser.sidebar.devices.enable': '开启高级模式',
   'filebrowser.topbar.newTab': '新标签页',
   'filebrowser.topbar.closedTabs': '最近关闭的标签页',
   'filebrowser.topbar.noClosedTabs': '暂无最近关闭的标签页',
@@ -1781,8 +1773,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn },
-  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...fileBrowserFilesEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...fileBrowserFilesZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh },
   ja,
   ko,
   fr,

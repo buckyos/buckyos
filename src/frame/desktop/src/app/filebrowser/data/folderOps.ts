@@ -2,6 +2,8 @@ import type { FileEntry } from '../types'
 import { toUiError } from './state'
 import type { UiError } from './state'
 import { entryNameSchema } from './schemas'
+import { hostConnectionOf } from './hostRealm'
+import { DEVICE_SCHEME } from './urls'
 
 export type ConflictChoice = 'keep-both' | 'skip' | 'cancel'
 export interface OperationConflict {
@@ -115,4 +117,63 @@ export function registerFolderOps(ops: FolderWriteOps): () => void {
   active = ops
   return () => { if (active === ops) active = noOps }
 }
-export function folderOps(): FolderWriteOps { return active }
+
+// ─── Realm routing: computer paths (device://) go to the window's sudo connection ───
+
+const isDevice = (path: string) => path.startsWith(DEVICE_SCHEME)
+function opsFor(path: string): FolderWriteOps {
+  return isDevice(path) ? hostConnectionOf(path).ops : active
+}
+const routed = <T>(path: string, call: (ops: FolderWriteOps) => Promise<T>): Promise<T> => {
+  try { return call(opsFor(path)) } catch (err) { return Promise.reject(err) }
+}
+/** The connection that can submit a copy touching the computer (null = DFS only). */
+function hostSide(entries: FileEntry[], target: string): FolderWriteOps | null {
+  const device = isDevice(target) ? target : entries.find((entry) => isDevice(entry.path))?.path
+  return device ? hostConnectionOf(device).ops : null
+}
+
+/** Between the computer and the Zone a move is a copy, then the originals that copied are deleted. */
+async function moveAcross(entries: FileEntry[], target: string, options: BatchOptions = {}): Promise<OperationResult[]> {
+  const copied = await (hostSide(entries, target) ?? active).copyEntries(entries, target, options)
+  const results: OperationResult[] = []
+  for (const result of copied) {
+    const original = entries.find((entry) => entry.path === result.entry.path)
+    if (result.status !== 'success' || !original) { results.push(result); continue }
+    const [removed] = await opsFor(original.path).deleteEntries([original]).catch((err: unknown) => [{ entry: original, status: 'failed' as const, error: toUiError(err) }])
+    results.push(removed?.status === 'success' ? { ...result, entry: original } : { ...result, entry: original, status: 'failed', error: operationError('MOVE_SOURCE_KEPT', 'Copied, but the original could not be removed') })
+    options.onProgress?.([...results])
+  }
+  return results
+}
+
+const router: FolderWriteOps = {
+  get supportsCopy() { return active.supportsCopy },
+  get copyUnavailableReason() { return active.copyUnavailableReason },
+  copyEntries(entries, target, options) {
+    try { return (hostSide(entries, target) ?? active).copyEntries(entries, target, options) } catch (err) { return Promise.reject(err) }
+  },
+  resumeCopy: (taskId, options) => active.resumeCopy ? active.resumeCopy(taskId, options) : Promise.reject(operationError('UNSUPPORTED', 'Copy tasks are not available')),
+  listCopies: () => active.listCopies ? active.listCopies() : Promise.resolve([]),
+  nameExists: (parent, name) => routed(parent, (ops) => ops.nameExists(parent, name)),
+  statEntry: (parent, name) => routed(parent, (ops) => ops.statEntry(parent, name)),
+  createFolder: (parent, name) => routed(parent, (ops) => ops.createFolder(parent, name)),
+  renameEntry: (entry, name) => routed(entry.path, (ops) => ops.renameEntry(entry, name)),
+  deleteEntries: (entries, options) => routed(entries[0]?.path ?? '', (ops) => ops.deleteEntries(entries, options)),
+  async moveEntries(entries, target, options) {
+    const across = entries.some((entry) => isDevice(entry.path) !== isDevice(target))
+    if (across) return moveAcross(entries, target, options)
+    const results = await routed(target, (ops) => ops.moveEntries(entries, target, options))
+    if (!isDevice(target)) return results
+    // On the computer a rename across disks is refused; those items move as copy + delete.
+    const acrossDisks = results.filter((result) => result.status === 'failed' && result.error?.code === 'UNSUPPORTED')
+    if (!acrossDisks.length) return results
+    const retried = await moveAcross(acrossDisks.map((result) => result.entry), target, options)
+    return results.map((result) => retried.find((moved) => moved.entry.path === result.entry.path && acrossDisks.includes(result)) ?? result)
+  },
+  downloadUrl(entry) {
+    try { return opsFor(entry.path).downloadUrl(entry) } catch { return null }
+  },
+  readContent: (path) => routed(path, (ops) => ops.readContent(path)),
+}
+export function folderOps(): FolderWriteOps { return router }

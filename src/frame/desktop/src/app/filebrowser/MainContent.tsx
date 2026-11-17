@@ -6,6 +6,8 @@ import {
   CornerUpRight,
   FolderClosed,
   Library,
+  Lock,
+  LockOpen,
   MoreVertical,
   Sparkles,
   Upload,
@@ -16,7 +18,11 @@ import { useI18n } from '../../i18n/provider'
 import type { FileItemList } from './data/FileItemList'
 import type { FileItem } from './data/FolderReader'
 import { COLLECTION_SCHEME, displayPath } from './data/urls'
-import { formatBytes, formatDate, kindIcon } from './fileDisplay'
+import { fileIcon, formatBytes, formatDate } from './fileDisplay'
+import { FileThumb } from '../../components/preview/FileThumb'
+import type { ContentRef } from '../../components/preview/types'
+import { ICON_GRID, useIconSize } from './data/iconSize'
+import { isSudoRequired } from './data/hostRealm'
 import type { ViewMode, SortKey, SortDir } from './types'
 
 /** A list item is a reference when it's a link entry or a collection member (not a group). */
@@ -27,6 +33,17 @@ function isReferenceItem(item: FileItem): boolean {
 
 function isBrokenItem(item: FileItem): boolean {
   return !!item.ref?.broken || !!item.entry.link?.broken
+}
+
+/** A folder or file on the computer that its OS account cannot open. */
+function isLockedEntry(entry: FileItem['entry']): boolean {
+  return entry.accessLevel === 'none' && entry.path.startsWith('device://')
+}
+
+function entryIcon(entry: FileItem['entry'], size: number) {
+  return isLockedEntry(entry)
+    ? <Lock size={size} className="text-[color:var(--cp-muted)]" aria-label="locked" data-locked="true" />
+    : fileIcon(entry, size)
 }
 
 /** Finder-alias style corner badge for reference items. */
@@ -67,6 +84,10 @@ interface PresentationProps {
   sortKey?: SortKey
   sortDir?: SortDir
   onSortChange?: (key: SortKey, dir: SortDir) => void
+  /** Where the icon view's thumbnails read an entry's content (null = icon only). */
+  thumbnailSource?: (entry: FileItem['entry']) => ContentRef | null
+  /** The location is the locked computer: offer BuckyOS sudo. */
+  onUnlock?: () => void
 }
 interface MainContentProps extends PresentationProps {
   list: FileItemList
@@ -223,8 +244,10 @@ export function MainContent({
   }
 
   const openItem = (item: FileItem) => {
-    if (item.entry.kind === 'folder') onOpenFolder(item.entry.path)
-    else onOpenFile?.(item)
+    if (item.entry.kind === 'folder') {
+      // The computer's account cannot open it (shown with a lock).
+      if (!isLockedEntry(item.entry)) onOpenFolder(item.entry.path)
+    } else onOpenFile?.(item)
   }
 
   // ─── Location banner (views & collections — replaces the old topic banner) ───
@@ -260,7 +283,24 @@ export function MainContent({
 
   // ─── Error / initial loading / empty states ───
   let body: React.ReactNode
-  if (list.status === 'error') {
+  if (list.status === 'error' && isSudoRequired(list.error)) {
+    body = (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-host-locked">
+        <Lock size={40} className="opacity-60" />
+        <p className="font-display text-lg text-[color:var(--cp-text)]">{t('filebrowser.host.lockedTitle', 'This computer is locked')}</p>
+        <p className="max-w-sm text-sm leading-6">{t('filebrowser.host.lockedBody', 'Confirm your password to see every folder on this computer. The unlock lasts 30 minutes, or until this window closes.')}</p>
+        {presentation.onUnlock ? (
+          <button
+            type="button"
+            onClick={presentation.onUnlock}
+            className="inline-flex min-h-10 items-center gap-2 rounded-full bg-[color:var(--cp-accent)] px-5 text-sm font-semibold text-white"
+          >
+            <LockOpen size={15} /> {t('filebrowser.host.unlock', 'Unlock')}
+          </button>
+        ) : null}
+      </div>
+    )
+  } else if (list.status === 'error') {
     body = (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-10 text-center text-[color:var(--cp-muted)]">
         <p className="text-sm">{list.error?.message ?? t('filebrowser.error', 'Failed to load')}</p>
@@ -375,6 +415,7 @@ export function MainContent({
         selectionMode={isMobile ? selectionMode : false}
         onItemMenu={isMobile ? onItemMenu : undefined}
         onLongPress={isMobile ? onLongPress : undefined}
+        isMobile={isMobile}
       />
     )
   }
@@ -404,11 +445,6 @@ function useScrollState(parent: React.RefObject<HTMLDivElement | null>, settings
     return () => el.removeEventListener('scroll', listener)
   }, [parent, initialScroll])
   useEffect(() => { if (revealTop !== null && parent.current) parent.current.scrollTo({ top: revealTop }) }, [parent, revealTop])
-}
-
-function EntryThumbnail({ entry, size }: { entry: FileItem['entry']; size: number }) {
-  const [failed, setFailed] = useState(false)
-  return entry.thumbnailUrl && !failed ? <img src={entry.thumbnailUrl} loading="lazy" alt="" className="h-full w-full rounded-xl object-cover" onError={() => setFailed(true)} /> : kindIcon(entry.kind, size)
 }
 
 const LIST_ROW_HEIGHT = 37
@@ -575,7 +611,7 @@ function DesktopListView({
                   <div className="flex items-center gap-2">
                     <input type="checkbox" aria-label={t('filebrowser.operation.selectName', 'Select {{name}}', { name: entry.name })} checked={selected} onClick={(event) => event.stopPropagation()} onChange={() => onSelect(item, { toggle: true })} />
                     <span className="relative inline-flex shrink-0">
-                      {kindIcon(entry.kind, 16)}
+                      {entryIcon(entry, 16)}
                       {isReferenceItem(item) ? <LinkBadge size={8} /> : null}
                     </span>
                     <span className="truncate font-medium text-[color:var(--cp-text)]">
@@ -629,10 +665,10 @@ function DesktopListView({
   )
 }
 
-// ─── Icon grid (virtualized by row, column count tracks container width) ───
+// ─── Icon grid (virtualized by row; three icon sizes — desktop by cell width, phones by columns) ───
 
-const GRID_CELL_WIDTH = 172
-const GRID_ROW_HEIGHT = 160
+const GRID_GAP = 12
+const GRID_PADDING = 32
 
 function IconGridView({
   presentation,
@@ -646,6 +682,7 @@ function IconGridView({
   selectionMode = false,
   onItemMenu,
   onLongPress,
+  isMobile = false,
 }: {
   presentation: PresentationProps
   list: FileItemList
@@ -658,31 +695,43 @@ function IconGridView({
   selectionMode?: boolean
   onItemMenu?: (item: FileItem) => void
   onLongPress?: (item: FileItem) => void
+  isMobile?: boolean
 }) {
   const parentRef = useRef<HTMLDivElement>(null)
-  const [columns, setColumns] = useState(4)
+  const [width, setWidth] = useState(0)
+  const iconSize = useIconSize()
+  const metrics = ICON_GRID[iconSize]
 
   useEffect(() => {
     const element = parentRef.current
     if (!element) return
-    const compute = () =>
-      setColumns(Math.max(1, Math.floor((element.clientWidth - 32) / GRID_CELL_WIDTH)))
+    const compute = () => setWidth(element.clientWidth)
     compute()
     const observer = new ResizeObserver(compute)
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
 
+  const inner = Math.max(0, width - GRID_PADDING)
+  const columns = isMobile ? metrics.columns : Math.max(1, Math.floor((inner + GRID_GAP) / (metrics.cell + GRID_GAP)))
+  const cellWidth = columns > 0 ? (inner - GRID_GAP * (columns - 1)) / columns : metrics.cell
+  // The cell pads 12px on each side; the box never outgrows a narrow cell.
+  const box = Math.max(48, Math.min(metrics.box, Math.floor(cellWidth - 24)))
+  const rowHeight = box + 96
+
   const count = virtualCountOf(list)
   const rowCount = Math.ceil(count / columns)
-  useScrollState(parentRef, presentation, presentation.revealIndex != null ? Math.floor(presentation.revealIndex / columns) * GRID_ROW_HEIGHT : null)
+  useScrollState(parentRef, presentation, presentation.revealIndex != null ? Math.floor(presentation.revealIndex / columns) * rowHeight : null)
 
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => GRID_ROW_HEIGHT,
-    overscan: 6,
+    estimateSize: () => rowHeight,
+    overscan: 4,
   })
+  useLayoutEffect(() => {
+    virtualizer.measure()
+  }, [virtualizer, rowHeight, columns])
   const virtualRows = virtualizer.getVirtualItems()
   const firstIndex = (virtualRows[0]?.index ?? 0) * columns
   const lastIndex = ((virtualRows[virtualRows.length - 1]?.index ?? 0) + 1) * columns - 1
@@ -694,6 +743,9 @@ function IconGridView({
       className="flex-1 overflow-y-auto p-4"
       onContextMenu={handleViewContextMenu}
       onClick={handleBlankClick}
+      data-testid="icon-grid"
+      data-icon-size={iconSize}
+      data-columns={columns}
     >
       <div
         className="relative w-full select-none"
@@ -709,11 +761,12 @@ function IconGridView({
           return (
             <div
               key={virtualRow.index}
-              className="absolute left-0 grid w-full gap-3"
+              className="absolute left-0 grid w-full"
               style={{
                 top: 0,
                 transform: `translateY(${virtualRow.start}px)`,
                 height: virtualRow.size,
+                columnGap: GRID_GAP,
                 gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
               }}
             >
@@ -725,7 +778,7 @@ function IconGridView({
                       key={`skeleton-${index}`}
                       className="flex flex-col items-center gap-2 rounded-[18px] p-3"
                     >
-                      <span className="h-16 w-16 animate-pulse rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" />
+                      <span className="animate-pulse rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]" style={{ width: box, height: box }} />
                       <SkeletonBar width="70%" />
                     </div>
                   )
@@ -734,6 +787,8 @@ function IconGridView({
                   <IconGridCell
                     key={item.key}
                     item={item}
+                    box={box}
+                    thumbnailSource={presentation.thumbnailSource}
                     cut={presentation.cutIds?.has(item.entry.id)}
                     selected={selectedKeys.has(item.key)}
                     selectionMode={selectionMode}
@@ -754,7 +809,7 @@ function IconGridView({
 }
 
 function IconGridCell({
-  item, cut,
+  item, cut, box, thumbnailSource,
   selected,
   selectionMode,
   onSelect,
@@ -764,6 +819,8 @@ function IconGridCell({
   onLongPress,
 }: {
   cut?: boolean
+  box: number
+  thumbnailSource?: (entry: FileItem['entry']) => ContentRef | null
   item: FileItem
   selected: boolean
   selectionMode: boolean
@@ -777,6 +834,7 @@ function IconGridCell({
   const { handlers, consumeLongPress } = useLongPress(onLongPress)
   const { entry } = item
   const broken = isBrokenItem(item)
+  const source = useMemo(() => thumbnailSource?.(entry) ?? null, [thumbnailSource, entry])
   return (
     <div className="relative min-w-0">
       <button
@@ -805,8 +863,10 @@ function IconGridCell({
           (broken || cut) && 'opacity-50',
         )}
       >
-        <div className="relative flex h-16 w-16 items-center justify-center rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
-          <EntryThumbnail entry={entry} size={28} />
+        <div className="relative shrink-0" style={{ width: box, height: box }}>
+          <div className="flex size-full items-center justify-center overflow-hidden rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
+            {isLockedEntry(entry) ? entryIcon(entry, Math.round(Math.min(56, box * 0.42))) : <FileThumb entry={entry} source={source} iconSize={Math.round(Math.min(56, box * 0.42))} box={box} marks />}
+          </div>
           {isReferenceItem(item) ? <LinkBadge /> : null}
         </div>
         <span
@@ -962,6 +1022,7 @@ function MobileListRow({
       role="button"
       tabIndex={0}
       style={style}
+      data-item-key={item.key}
       {...handlers}
       onClick={() => {
         if (consumeLongPress()) return
@@ -983,7 +1044,7 @@ function MobileListRow({
       )}
     >
       <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-[14px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
-        {kindIcon(entry.kind, 26)}
+        {entryIcon(entry, 26)}
         {isReferenceItem(item) ? <LinkBadge /> : null}
       </div>
       <div className="min-w-0 flex-1">

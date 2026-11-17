@@ -41,7 +41,7 @@ async function openFixture(page: Page, source: string) {
   await routeAppHost(page, /http:\/\/(notes|reader)-fixture\.localhost:4173\//, fixture(source))
   await page.goto('/?scenario=normal&contentApps=1')
   await page.getByTestId('desktop-app-files').click()
-  await page.locator('aside').getByRole('button', { name: /Documents/ }).first().click()
+  await page.getByTestId('window-files').getByRole('cell', { name: 'Documents', exact: true }).dblclick()
   await page.getByRole('cell', { name: /^Kyoto Trip Plan\.md/ }).first().dblclick()
   await expect(page.getByTestId('window-notes-fixture')).toBeVisible()
   const app = page.frameLocator('[data-testid="web-app-frame"]')

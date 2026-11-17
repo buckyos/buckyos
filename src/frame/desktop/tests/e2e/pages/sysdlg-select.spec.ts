@@ -46,7 +46,7 @@ async function openInWindow(page: Page, query = '') {
   await routeFixture(page)
   await page.goto(`/?scenario=normal&contentApps=1${query}`)
   await page.getByTestId('desktop-app-files').click()
-  await page.locator('aside').getByRole('button', { name: /Documents/ }).first().click()
+  await page.getByTestId('window-files').getByRole('cell', { name: 'Documents', exact: true }).dblclick()
   await page.getByRole('cell', { name: /^Kyoto Trip Plan\.md/ }).first().dblclick()
   const win = page.getByTestId('window-notes-fixture')
   await expect(win).toBeVisible()

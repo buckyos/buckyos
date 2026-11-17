@@ -69,6 +69,11 @@ const BY_CODE: Record<string, ErrorShape> = {
     fallback: 'This operation is not supported by the server',
     retryable: false,
   },
+  SUDO_REQUIRED: {
+    messageKey: 'filebrowser.host.sudoRequired',
+    fallback: 'Unlock this computer to see its folders',
+    retryable: true,
+  },
   INVALID_ARGUMENT: {
     messageKey: 'filebrowser.error.invalidRequest',
     fallback: 'The server rejected this request',

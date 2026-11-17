@@ -5,7 +5,7 @@
 //! entries win name conflicts, conflicting bindings surface via `conflicts[]`
 //! (never silently覆盖 or rebound — nfs_server.md §3.5).
 
-use crate::acl::{Actor, Level, HOME_ROOT};
+use crate::acl::{Actor, Level, HOME_ROOT, HOST_ROOT};
 use crate::bucket::projection::{self, Projection};
 use crate::error::*;
 use crate::filedb::{Anchor, BindingRow, CollectionRow, Entity, ViewGroupRow, ViewRow};
@@ -95,6 +95,9 @@ impl Node {
 }
 
 pub fn canonical_path(root: &str, rel: &str) -> String {
+    if root == HOST_ROOT {
+        return file_uri(rel);
+    }
     if rel.is_empty() {
         format!("cyfs:///{}", root)
     } else {
@@ -155,11 +158,11 @@ impl AppState {
             return self.resolve_uri(uri);
         }
         if let Some(path) = &at.path {
-            let realm = at.realm.as_deref().unwrap_or("dfs");
-            if realm != "dfs" {
-                return Err(not_found(format!("unknown realm '{}'", realm)));
-            }
-            return self.resolve_dfs_path(path);
+            return match at.realm.as_deref().unwrap_or("dfs") {
+                "dfs" => self.resolve_dfs_path(path),
+                "host" if self.config.host.is_some() => self.resolve_native(HOST_ROOT, &normalize_rel(path)?),
+                realm => Err(not_found(format!("unknown realm '{}'", realm))),
+            };
         }
         Err(invalid("locator requires ref, uri or path"))
     }
@@ -194,27 +197,45 @@ impl AppState {
         if rel_all.is_empty() {
             return Ok(Node::Root);
         }
-        let (root_id, rel) = match rel_all.split_once('/') {
-            Some((r, rest)) => (r.to_string(), rest.to_string()),
-            None => (rel_all.clone(), String::new()),
-        };
+        let (root_id, rel) = rel_all.split_once('/').unwrap_or((&rel_all, ""));
+        if root_id == HOST_ROOT {
+            return Err(not_found(format!("export root '{}' not found", root_id)));
+        }
+        self.resolve_native(root_id, rel)
+    }
+
+    pub fn resolve_native(&self, root_id: &str, rel: &str) -> NfsResult<Node> {
         let root = self
             .config
-            .root(&root_id)
+            .root(root_id)
             .ok_or_else(|| not_found(format!("export root '{}' not found", root_id)))?;
-        let full = join_root(&root.path, &rel);
+        if root_id == HOST_ROOT {
+            let full = host_join(&root.path, rel).ok_or_else(|| not_found(format!("'/{}' not found", rel)))?;
+            let meta = host_meta(&full)?;
+            return Ok(Node::Native { root: root_id.to_string(), rel: rel.to_string(), meta, anchored: None });
+        }
+        let full = join_root(&root.path, rel);
         let meta = match lstat(&full) {
             Ok(meta) => meta,
             Err(e) if e.code == ErrorCode::NotFound => {
-                if let Some(p) = self.projection_at(&root_id, &rel)? {
+                if let Some(p) = self.projection_at(root_id, rel)? {
                     return Ok(Node::Projection(Box::new(p)));
                 }
-                return Err(not_found(format!("path '/{}' not found", rel_all)));
+                let shown = if rel.is_empty() { root_id.to_string() } else { format!("{}/{}", root_id, rel) };
+                return Err(not_found(format!("path '/{}' not found", shown)));
             }
             Err(e) => return Err(e),
         };
-        let anchored = self.lookup_anchor_entity(&root_id, &rel, &meta)?;
-        Ok(Node::Native { root: root_id, rel, meta, anchored })
+        let anchored = self.lookup_anchor_entity(root_id, rel, &meta)?;
+        Ok(Node::Native { root: root_id.to_string(), rel: rel.to_string(), meta, anchored })
+    }
+
+    pub fn native_meta(&self, root_id: &str, rel: &str) -> NfsResult<NodeMeta> {
+        let root = self.config.root(root_id).ok_or_else(|| stale("root gone"))?;
+        if root_id == HOST_ROOT {
+            return host_meta(&host_join(&root.path, rel).ok_or_else(|| not_found(format!("'/{}' not found", rel)))?);
+        }
+        lstat(&join_root(&root.path, rel))
     }
 
     /// Pure-read anchor lookup: attaches the entity only when the anchor row
@@ -270,12 +291,10 @@ impl AppState {
 
     fn resolve_handle(&self, node_id: &str) -> NfsResult<Node> {
         let h: NativeHandle = self.handles.decode(node_id)?;
-        let root = self
-            .config
-            .root(&h.r)
-            .ok_or_else(|| stale(format!("export root '{}' no longer exists", h.r)))?;
-        let full = join_root(&root.path, &h.p);
-        let meta = lstat(&full).map_err(|e| {
+        if self.config.root(&h.r).is_none() {
+            return Err(stale(format!("export root '{}' no longer exists", h.r)));
+        }
+        let meta = self.native_meta(&h.r, &h.p).map_err(|e| {
             if e.code == ErrorCode::NotFound {
                 stale(format!("'{}' is gone; re-resolve from a trusted locator", h.p))
             } else {
@@ -288,7 +307,7 @@ impl AppState {
                 h.p
             )));
         }
-        let anchored = self.lookup_anchor_entity(&h.r, &h.p, &meta)?;
+        let anchored = if h.r == HOST_ROOT { None } else { self.lookup_anchor_entity(&h.r, &h.p, &meta)? };
         Ok(Node::Native { root: h.r, rel: h.p, meta, anchored })
     }
 
@@ -462,7 +481,7 @@ impl AppState {
 
     pub fn node_info(&self, actor: &Actor, node: &Node, want: &WantMask) -> NfsResult<Value> {
         let kind = node.kind();
-        let level = self.node_level(actor, node);
+        let level = self.reported_level(actor, node);
         let mut out = json!({
             "kind": kind,
             "state": "live",
@@ -547,6 +566,24 @@ impl AppState {
         Ok(out)
     }
 
+    pub fn reported_level(&self, actor: &Actor, node: &Node) -> Level {
+        let level = self.node_level(actor, node);
+        if let Node::Native { root, rel, meta, .. } = node {
+            if root == HOST_ROOT && level > Level::None {
+                let readable = !meta.special
+                    && self
+                        .config
+                        .root(root)
+                        .and_then(|r| host_join(&r.path, rel))
+                        .is_some_and(|p| p.as_os_str().is_empty() || os_readable(&p, meta.kind == "dir"));
+                if !readable {
+                    return Level::None;
+                }
+            }
+        }
+        level
+    }
+
     fn writable(node: &Node, level: Level) -> bool {
         level >= Level::Write && !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. } | Node::Projection(_))
     }
@@ -561,6 +598,14 @@ impl AppState {
                 }
             }
             _ => {}
+        }
+        if let Node::Native { root, meta, .. } = node {
+            if root == HOST_ROOT && (meta.link || meta.kind == "symlink") {
+                flags.push("symlink");
+            }
+            if meta.special {
+                flags.push("special");
+            }
         }
         flags
     }
@@ -616,6 +661,15 @@ impl AppState {
         }
         let Node::Native { root, rel, meta, .. } = node else { return Vec::new() };
         let mut out = vec![json!({"kind": "fs", "url": canonical_path(root, rel), "primary": true})];
+        if root == HOST_ROOT {
+            if meta.kind != "dir" && !meta.special {
+                if let (Some(grant), WireRef::Live { node_id, .. }) = (crate::acl::host_grant(), self.node_ref(node)) {
+                    let hx = self.handles.sign_read(&node_id, grant.exp);
+                    out.push(json!({"kind": "read", "url": format!("/nfs/v1/read/{}?hx={}", node_id, hx)}));
+                }
+            }
+            return out;
+        }
         if meta.kind != "dir" {
             if let WireRef::Live { node_id, .. } = self.node_ref(node) {
                 out.push(json!({"kind": "read", "url": format!("/nfs/v1/read/{}", node_id)}));
@@ -760,7 +814,7 @@ impl AppState {
 
         let entries: Vec<Value> = page.iter().map(|r| r.json.clone()).collect();
         let kind = node.kind();
-        let level = self.node_level(actor, node);
+        let level = self.reported_level(actor, node);
         let mut out = json!({
             "container": {
                 "ref": self.node_ref(node),
@@ -825,18 +879,30 @@ impl AppState {
             _ => return Err(NfsError::new(ErrorCode::NotAContainer, "not a directory")),
         };
         let root_cfg = self.config.root(&root).ok_or_else(|| stale("root gone"))?;
-        let full = join_root(&root_cfg.path, &rel);
+        let host = root == HOST_ROOT;
+        let full = if host {
+            host_join(&root_cfg.path, &rel).ok_or_else(|| stale("path gone"))?
+        } else {
+            join_root(&root_cfg.path, &rel)
+        };
         let dir_level = self.acls.level(actor, &root, &rel);
         let mut rows = Vec::new();
         let mut native_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for dent in std::fs::read_dir(&full)? {
-            let dent = dent?;
-            let name = match dent.file_name().into_string() {
-                Ok(n) => n,
-                Err(_) => continue, // non-UTF8 names are not representable in the protocol
-            };
+        let children: Vec<(String, std::path::PathBuf)> = if host && full.as_os_str().is_empty() {
+            windows_drives().into_iter().map(|d| (d.clone(), std::path::PathBuf::from(format!("{}\\", d)))).collect()
+        } else {
+            let mut out = Vec::new();
+            for dent in std::fs::read_dir(&full)? {
+                let dent = dent?;
+                if let Ok(name) = dent.file_name().into_string() {
+                    out.push((name, dent.path()));
+                }
+            }
+            out
+        };
+        for (name, path) in children {
             if validate_name(&name).is_err() { continue; }
-            let meta = match lstat(&dent.path()) {
+            let meta = match if host { host_meta(&path) } else { lstat(&path) } {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -914,7 +980,7 @@ impl AppState {
             }
         }
         // Attach ident info for anchored children in one batch query (no N+1).
-        if want.has("ident") {
+        if want.has("ident") && !host {
             let rels: Vec<String> = rows
                 .iter()
                 .filter(|r| r.json["binding"] == "native")
@@ -979,7 +1045,7 @@ impl AppState {
             "copy_ref": self.copy_ref(node),
             "kind": node.kind(),
             "attrs": Value::Object(attrs),
-            "access_level": self.node_level(actor, node),
+            "access_level": self.reported_level(actor, node),
         }))
     }
 
@@ -1036,11 +1102,15 @@ impl AppState {
     pub fn walk_child(&self, node: &Node, name: &str) -> NfsResult<Node> {
         match node {
             Node::Root => {
-                if self.config.root(name).is_some() {
+                if name != HOST_ROOT && self.config.root(name).is_some() {
                     self.resolve_dfs_path(name)
                 } else {
                     Err(not_found(format!("export root '{}' not found", name)))
                 }
+            }
+            Node::Native { root, rel, meta, .. } if meta.kind == "dir" && root == HOST_ROOT => {
+                validate_name(name)?;
+                self.resolve_native(root, &rel_join(rel, name))
             }
             Node::Native { root, rel, meta, anchored } if meta.kind == "dir" => {
                 validate_name(name)?;

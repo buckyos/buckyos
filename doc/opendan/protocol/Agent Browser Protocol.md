@@ -134,7 +134,7 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 | `browser.reflow_action` | `{url, selector}` | 见 §5.3 | owner |
 
 - `status` 不启动浏览器。`ensure` 没在运行就启动。`acquire` 也会启动（等于先 `ensure`）；用户接手着的时候先回 `user_in_control`，不为此启动浏览器。
-- `cdp_url` 给 `chromium.connectOverCDP` 用，是这个服务上这个租约的入口：`<OPENDAN_BROWSER_RPC>/browser/cdp/<lease_id>`（§2.5）。Playwright 先读它的 `json/version`，再连上它给的 WebSocket（`…/browser/cdp/<lease_id>/devtools/browser`），服务端把消息原样转给浏览器。只收本机回环地址上的连接；租约无效时回 `lease_lost`。租约一结束（`release`、过期、`take_over`、`request_handover`、浏览器停掉），这个租约的连接立刻被服务端关掉：正在执行的命令马上失败，之后的命令到不了浏览器，用户接手时不用等 Agent 停手。服务端没有 `OPENDAN_BROWSER_RPC` 时（测试）`cdp_url` 是浏览器自己的 `http://127.0.0.1:<端口>`。这只是让交接干净，不是安全边界：同一个运行环境里自己去找浏览器端口的进程拦不住。
+- `cdp_url` 给 `chromium.connectOverCDP` 用，是这个服务上这个租约的入口：`<OPENDAN_BROWSER_RPC>/browser/cdp/<lease_id>`（§2.5）。Playwright 先读它的 `json/version`，再连上它给的 WebSocket（`…/browser/cdp/<lease_id>/devtools/browser`），服务端把消息原样转给浏览器。`json/list` 原样转发浏览器自己的标签页列表（`agent-browser` 连不上时用它找出因为弹框没人回应而卡住的标签页；列表里的地址是浏览器自己的端口，只用于这种诊断）。只收本机回环地址上的连接；租约无效时回 `lease_lost`。租约一结束（`release`、过期、`take_over`、`request_handover`、浏览器停掉），这个租约的连接立刻被服务端关掉：正在执行的命令马上失败，之后的命令到不了浏览器，用户接手时不用等 Agent 停手。服务端没有 `OPENDAN_BROWSER_RPC` 时（测试）`cdp_url` 是浏览器自己的 `http://127.0.0.1:<端口>`。这只是让交接干净，不是安全边界：同一个运行环境里自己去找浏览器端口的进程拦不住。
 - `active_tab_id` 是当前的标签页，没有标签页时为 `null`。`acquire` 不替 Agent 开标签页。
 - 再次 `acquire`（同一个会话或别的会话）得到另一个租约，原来的照旧有效：几个会话同时操作的是同一组标签页。`renew`、`release` 用到已经过期或被作废的租约回 `lease_lost`（`release` 带的 `state` 这时不生效）。浏览器停掉或崩溃时，所有租约作废。
 - `request_handover` 作废全部租约，并置 `user_hold`。
@@ -179,7 +179,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 
 `agent-browser`（`publish/exttool/ext-core/browser/agent-browser.mjs`）这样用这些方法：
 
-- 要操作页面的子命令（`run`、`open`、`snapshot`、`screenshot`）依次调 `browser.ensure`、`browser.acquire`，用 Playwright 的 `connectOverCDP(cdp_url)` 连上（经过服务端，§2.2），做完断开，再调 `browser.release`。用户接手时连接被服务端关掉，命令按“被切断”退出。`tabs` 只取租约、不连接。`done`、`stuck` 取到租约后立刻带 `state` 释放。
+- 要操作页面的子命令（`run`、`open`、`snapshot`、`screenshot`）依次调 `browser.ensure`、`browser.acquire`，用 Playwright 的 `connectOverCDP(cdp_url)` 连上（经过服务端，§2.2），做完断开，再调 `browser.release`。用户接手时连接被服务端关掉，命令按“被切断”退出：连接断开（或连不上）而失败时，`agent-browser` 先 `renew` 一次，租约已结束就按 `lease_lost`（退出码 5）退出，不当成脚本出错（ext-core 1.3.2 起）。`tabs` 只取租约、不连接。`done`、`stuck` 取到租约后立刻带 `state` 释放。
 - 持有租约期间每隔 `ttl_ms / 3` 调一次 `browser.renew`。返回 `lease_lost` 时断开连接、中止脚本，不再 `release`。
 - 错误的 `code` 从 kRPC 的 `error` 文本里的 JSON 取：先取 `code`，没有时取 `kind`。
 - 连接带 `noDefaults`：Playwright 不改默认上下文的下载行为、媒体模拟和焦点模拟。

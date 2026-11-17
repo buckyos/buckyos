@@ -1,5 +1,5 @@
 import { test, expect, type CopyServices } from '../fixtures/nfs-copy'
-import { selectDialog, selectGoto, selectRow } from '../fixtures/selectDialog'
+import { closeSelect, selectDialog, selectGoto, selectRow } from '../fixtures/selectDialog'
 import type { Page } from '@playwright/test'
 import { readFile, stat, lstat, readdir, chmod, unlink, symlink, link, readlink, rename, writeFile, utimes, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
@@ -330,7 +330,9 @@ test.describe('FB-04 real copy tasks', () => {
     await services.write('Documents/drag.txt', 'drag bytes')
     await services.large('Documents/slow-selection.bin', 128)
     const win = await openFiles(page)
-    await win.getByRole('button', { name: 'Pictures', exact: true }).last().click({ button: 'right' })
+    await win.getByRole('button', { name: 'New tab', exact: true }).click()
+    await win.getByRole('cell', { name: 'Pictures', exact: true }).dblclick()
+    await win.getByRole('tab', { name: 'Pictures', exact: true }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Send to Right', exact: true }).click()
     const left = win.locator('[data-pane="left"]')
     const right = win.locator('[data-pane="right"]')
@@ -354,7 +356,7 @@ test.describe('FB-04 real copy tasks', () => {
     await selectGoto(target, '/home/Dest/a/b')
     await target.press('Control+a'); await target.press('Control+c'); await target.press('Control+v')
     await expect(target.getByTestId('select-crumbs')).toContainText('b')
-    await target.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await closeSelect(page)
     await services.restartNfs({ NFS_COPY_TEST_SLOW: '1' })
     await left.getByRole('cell', { name: 'slow-selection.bin', exact: true }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Copy to other pane', exact: true }).click()

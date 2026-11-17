@@ -58,7 +58,7 @@ import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
 import { openDesktopFile, showFolderInFiles } from './desktopFolderActions'
 import { watchDfsPath } from '../app/filebrowser/data/nfsp/invalidation'
 import { classifyFileKind } from '../app/filebrowser/data/fileKinds'
-import { kindIcon } from '../app/filebrowser/fileDisplay'
+import { fileIcon } from '../app/filebrowser/fileDisplay'
 import { DesktopWindowLayer } from './windows/DesktopWindowLayer'
 import {
   getDesktopWindowWorkspaceBounds,
@@ -1560,7 +1560,7 @@ function DesktopFileIcon({ item }: { item: FileIconItem }) {
       className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] border border-[color:color-mix(in_srgb,var(--cp-border)_80%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
       style={{ width: 'var(--icon-size)', height: 'var(--icon-size)' }}
     >
-      {kindIcon(kind, 26)}
+      {fileIcon({ kind, name: item.id }, 26)}
     </span>
   )
 }

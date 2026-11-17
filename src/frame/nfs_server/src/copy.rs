@@ -1,4 +1,4 @@
-use crate::acl::{Actor, Level};
+use crate::acl::{Actor, Level, HOST_ROOT};
 use crate::error::*;
 use crate::fsutil::{file_id, join_root, normalize_rel, validate_name};
 use crate::namespace::Node;
@@ -47,12 +47,26 @@ impl Identity {
         })
     }
     fn check(&self, path: &Path) -> NfsResult<Metadata> {
-        let m = std::fs::symlink_metadata(path)?;
+        self.check_at(path, false)
+    }
+    fn check_at(&self, path: &Path, follow: bool) -> NfsResult<Metadata> {
+        let m = meta_of(path, follow)?;
         if Self::of(&m)? != *self {
             return Err(stale("file identity changed"));
         }
         Ok(m)
     }
+}
+
+fn meta_of(path: &Path, follow: bool) -> std::io::Result<Metadata> {
+    if follow {
+        std::fs::metadata(path)
+    } else {
+        std::fs::symlink_metadata(path)
+    }
+}
+fn is_host_path(path: &str) -> bool {
+    path.trim_start_matches('/').split('/').next() == Some(HOST_ROOT)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +92,9 @@ struct Row {
     ctime: Option<(i64, i64)>,
 }
 impl Row {
+    fn follows_source(&self) -> bool {
+        self.parent.is_none() && is_host_path(&self.source)
+    }
     fn result(&self) -> NfsCopyItemResult {
         NfsCopyItemResult {
             id: self.id,
@@ -254,7 +271,7 @@ fn native(state: &SharedState, value: &Value) -> NfsResult<(String, Identity)> {
         Node::Native { root, rel, .. } => {
             let path = format!("/{root}{}{}", if rel.is_empty() { "" } else { "/" }, rel);
             let full = local(state, &path)?;
-            Ok((path, Identity::of(&std::fs::symlink_metadata(full)?)?))
+            Ok((path, Identity::of(&meta_of(&full, root == HOST_ROOT)?)?))
         }
         _ => Err(NfsError::new(
             ErrorCode::Unsupported,
@@ -272,14 +289,31 @@ fn handle_path(state: &SharedState, value: &Value) -> Option<(String, String)> {
 }
 /// Checked on the paths the signed handles name, so stale sources still
 /// become per-item failures instead of rejecting the task.
-fn authorize_input(state: &SharedState, actor: &Actor, input: &NfsCopyInput) -> NfsResult<()> {
+fn authorize_input(state: &SharedState, actor: &Actor, input: &NfsCopyInput, started: bool) -> NfsResult<()> {
+    let host_ok = |root: &str, rel: &str| {
+        if started {
+            state.config.host.is_some() && matches!(actor, Actor::Admin(Some(_)))
+        } else {
+            state.acls.level(actor, root, rel) >= Level::Write
+        }
+    };
     for source in &input.sources {
         if let Some((root, rel)) = handle_path(state, &source.source_ref) {
+            if root == HOST_ROOT {
+                if !host_ok(&root, &rel) {
+                    return Err(crate::access::host_denied(actor));
+                }
+                continue;
+            }
             state.require_subtree(actor, &root, &rel, Level::Read, "read")?;
         }
     }
     if let Some((root, rel)) = handle_path(state, &input.destination_ref) {
-        if state.acls.level(actor, &root, &rel) < Level::Write {
+        if root == HOST_ROOT {
+            if !host_ok(&root, &rel) {
+                return Err(crate::access::host_denied(actor));
+            }
+        } else if state.acls.level(actor, &root, &rel) < Level::Write {
             return Err(crate::access::denied("write", actor));
         }
     }
@@ -295,7 +329,7 @@ async fn authorize_task(state: &SharedState, task: &Task) -> NfsResult<()> {
     } else {
         Actor::User(user)
     };
-    authorize_input(state, &actor, &input)
+    authorize_input(state, &actor, &input, true)
 }
 fn local(state: &SharedState, path: &str) -> NfsResult<PathBuf> {
     let normalized = normalize_rel(path)?;
@@ -306,7 +340,7 @@ fn local(state: &SharedState, path: &str) -> NfsResult<PathBuf> {
         .ok_or_else(|| stale("export no longer exists"))?;
     let root_path = std::fs::canonicalize(&root.path)?;
     let full = join_root(&root_path, rel);
-    if !rel.is_empty() {
+    if !rel.is_empty() && root_id != HOST_ROOT {
         let parent = full.parent().ok_or_else(|| invalid("missing parent"))?;
         let mut current = root_path.clone();
         for component in parent
@@ -396,7 +430,11 @@ pub async fn dispatch(
             for source in &input.sources {
                 validate_name(&source.name)?;
             }
-            authorize_input(state, nfs_actor, &input)?;
+            authorize_input(state, nfs_actor, &input, false)?;
+            let host_destination = handle_path(state, &input.destination_ref).is_some_and(|(root, _)| root == HOST_ROOT);
+            if host_destination || input.sources.iter().any(|s| is_host_path(&s.source_path)) {
+                crate::access::host_audit(nfs_actor, "copy", format_args!("sources={:?} destination_ref={}", input.sources.iter().map(|s| &s.source_path).collect::<Vec<_>>(), input.destination_ref));
+            }
             let existing = api
                 .list_tasks(ListTasksReq {
                     creator_user_id: Some(actor.user_id.clone()),
@@ -695,7 +733,7 @@ fn check_parent(state: &SharedState, id: &str, row: &Row) -> NfsResult<PathBuf> 
         row.target_parent.clone()
     }
     .ok_or_else(|| stale("destination parent identity unavailable"))?;
-    identity.check(&path)?;
+    identity.check_at(&path, row.parent.is_none() && is_host_path(&row.target))?;
     Ok(path)
 }
 fn check_baseline(baseline: &Metadata, current: &Metadata) -> NfsResult<()> {
@@ -1067,11 +1105,12 @@ async fn process(
         return Ok(());
     }
     let source = local(state, &row.source)?;
+    let follow = row.follows_source();
     let baseline = row
         .identity
         .as_ref()
         .ok_or_else(|| stale("source identity unavailable"))?
-        .check(&source)?;
+        .check_at(&source, follow)?;
     let kind = row.identity.as_ref().unwrap().kind.clone();
     if kind == "special" {
         return Err(NfsError::new(
@@ -1131,7 +1170,7 @@ async fn process(
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            source_options.custom_flags(0x20000 | 0x800);
+            source_options.custom_flags(if follow { 0x800 } else { 0x20000 | 0x800 });
         }
         let source_file = source_options.open(&source)?;
         check_baseline(&baseline, &source_file.metadata()?)?;
@@ -1177,7 +1216,7 @@ async fn process(
         output.flush().await?;
         output.sync_all().await?;
         check_baseline(&baseline, &source_file.metadata().await?)?;
-        check_baseline(&baseline, &std::fs::symlink_metadata(&source)?)?;
+        check_baseline(&baseline, &meta_of(&source, follow)?)?;
         preserve(row, &temporary)?;
     }
     File::open(temporary.parent().unwrap())?.sync_all()?;
@@ -1191,7 +1230,7 @@ async fn process(
 }
 fn check_recorded_source(state: &SharedState, row: &Row) -> NfsResult<()> {
     let source = local(state, &row.source)?;
-    let current = row.identity.as_ref().unwrap().check(&source)?;
+    let current = row.identity.as_ref().unwrap().check_at(&source, row.follows_source())?;
     if current.modified().ok() != row.modified || (current.is_file() && current.len() != row.size) {
         return Err(stale("source changed before copy commit"));
     }
@@ -1251,7 +1290,7 @@ fn commit_file(state: &SharedState, id: &str, row: &mut Row) -> NfsResult<()> {
 }
 fn expand_directory(state: &SharedState, id: &str, row: &mut Row) -> NfsResult<()> {
     let source = local(state, &row.source)?;
-    row.identity.as_ref().unwrap().check(&source)?;
+    row.identity.as_ref().unwrap().check_at(&source, row.follows_source())?;
     let mut db = state.copies.db.lock().unwrap();
     let tx = db.transaction()?;
     let mut next: i64 = tx.query_row(
@@ -1309,10 +1348,11 @@ fn expand_directory(state: &SharedState, id: &str, row: &mut Row) -> NfsResult<(
         )?;
         next += 1;
     }
-    if let Node::Native {
+    let bindings_parent = if is_host_path(&row.source) { None } else { Some(state.resolve_dfs_path(&row.source)?) };
+    if let Some(Node::Native {
         anchored: Some(entity),
         ..
-    } = state.resolve_dfs_path(&row.source)?
+    }) = bindings_parent
     {
         for binding in state.db.bindings_by_parent(entity.node_id)? {
             let child = Row {

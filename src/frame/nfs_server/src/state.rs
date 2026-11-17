@@ -53,6 +53,11 @@ impl AppState {
                 )));
             }
         }
+        if let Some(host) = &config.host {
+            if !host.export.path.as_os_str().is_empty() && !host.export.path.is_dir() {
+                return Err(crate::error::invalid(format!("host root {} is not a directory", host.export.path.display())));
+            }
+        }
         let db = FileDb::open(&config.db_path())?;
         let handle_key = db.handle_key()?;
         let uploads = UploadMgr::new(config.staging_dir())?;

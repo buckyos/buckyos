@@ -16,7 +16,6 @@ export type FileEntryId = string
 export type ListItemKey = string
 export type CollectionId = string
 export type TopicId = string
-export type DeviceId = string
 /** Canonical location URL (dfs:// | view:// | collection://). */
 export type LocationUrl = string
 /** A DFS display/locator path — not persistent identity. */
@@ -103,13 +102,13 @@ export interface FileEntry {
   /** The signed-in user's effective permission, when the backend reports it. */
   accessLevel?: import('./data/permissions').AccessLevel
   thumbnailUrl?: string
+  /** The backend's read address for the content, when the listing carried one (the computer's are capability URLs). */
+  readUrl?: string
   name: string
   kind: FileKind
   /** Current original DFS/display location, not persistent identity. */
   path: DfsPath | LocationUrl
-  /** Prototype-only device anchor until device:// or referral integration exists. */
-  devicePath?: string
-  /** Externally usable URL supplied by access metadata. */
+    /** Externally usable URL supplied by access metadata. */
   publicUrl?: string
   /** Omitted for folders and when the source did not request base attributes. */
   sizeBytes?: number
@@ -138,20 +137,21 @@ export interface DfsNode {
   path: DfsPath | LocationUrl
   icon?: string
   kind: 'home' | 'public' | 'shared' | 'privacy' | 'generic'
-  children?: DfsNode[]
 }
 
-export interface DeviceRoot {
-  path: string
-  label: string
-}
-
-export interface DeviceNode {
-  id: DeviceId
+/** One folder in a lazily loaded sidebar tree (DFS or the computer). */
+export interface TreeFolder {
   name: string
-  host: string
-  status: 'online' | 'offline' | 'syncing'
-  roots: DeviceRoot[]
+  /** Canonical location URL (dfs:// or device://). */
+  url: LocationUrl
+  /** The backend says this account cannot open it. */
+  locked?: boolean
+}
+
+/** The computer a Desktop Lite node runs on (NFSP `host` realm). */
+export interface HostInfo {
+  /** The computer's name, also the root crumb of its tree. */
+  label: string
 }
 
 export interface TopicGroup {

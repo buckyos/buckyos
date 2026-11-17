@@ -23,6 +23,7 @@ import type {
 import { registerReaderProvider } from '../readerRegistry'
 import { registerTargetResolver } from '../targetResolver'
 import { dfsPathOf, parseViewUrl } from '../urls'
+import type { NfsBrowserClient } from '../../../../api/nfs_browser_client'
 import { effectiveListLimit, ensureSession, nfspClient } from './client'
 import { nfspToError } from './errors'
 import { watchDfsPath } from './invalidation'
@@ -100,6 +101,15 @@ export abstract class NfspContainerReader implements FolderReader {
   /** Locator of the container (may resolve asynchronously for groups). */
   protected abstract locator(): Promise<LocatorLike>
 
+  /** The NFSP session this reader lists through (the computer uses its window's sudo session). */
+  protected client(): NfsBrowserClient {
+    return nfspClient()
+  }
+
+  protected ensure(): Promise<unknown> {
+    return ensureSession()
+  }
+
   /**
    * Cache mode for list calls. Group containers bypass the cache: direct
    * collection_patch invalidation and watch events address the collection
@@ -113,7 +123,7 @@ export abstract class NfspContainerReader implements FolderReader {
   protected abstract mapListing(listing: Listing, offset: number): FileItem[]
 
   async list(query: ListQuery): Promise<FileItemPage> {
-    await ensureSession()
+    await this.ensure()
     const at = await this.locator()
     const order = NFSP_ORDER_BY_SORT_KEY[query.sortKey]
     if (order !== this.chainOrder) {
@@ -152,7 +162,7 @@ export abstract class NfspContainerReader implements FolderReader {
     order: string | undefined,
     limit: number,
   ): Promise<Listing> {
-    const client = nfspClient()
+    const client = this.client()
     const base: ListOptions = { limit }
     if (order) base.order = order as ListOptions['order']
     const opts = { cache: this.cacheMode() }
@@ -215,7 +225,7 @@ export abstract class NfspContainerReader implements FolderReader {
     if (!this.clientUnsub) {
       // Cache-layer signal: watch SSE container_changed/resync and background
       // revalidation both land here (§8.4).
-      this.clientUnsub = nfspClient().onInvalidate((ref) => {
+      this.clientUnsub = this.client().onInvalidate((ref) => {
         if (ref === null || this.containerRefIds.has(refIdOf(ref))) this.notifyLocal()
       })
     }

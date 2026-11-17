@@ -67,15 +67,19 @@ test.describe('File permissions on real nfs_server', () => {
   })
 
   test('another user sees only their home until the owner shares a folder', async ({ browser }) => {
+    // Files opens in each user's own home; one level up lists only what nfs_server lets them see.
     let page = await filesAs(browser, otherToken)
     let win = page.getByTestId('window-files')
-    await expect(win.getByRole('cell', { name: OTHER, exact: true })).toBeVisible({ timeout: 15000 })
+    await expect(win.locator('main[data-pane="left"]')).toHaveAttribute('data-location', `dfs:///home/${OTHER}`, { timeout: 15000 })
+    await expect(win.getByRole('cell', { name: 'notes.txt', exact: true })).toBeVisible()
+    await win.getByRole('button', { name: 'up', exact: true }).click()
+    await expect(win.getByRole('cell', { name: OTHER, exact: true })).toBeVisible()
     await expect(win.getByRole('cell', { name: OWNER, exact: true })).toHaveCount(0)
     await page.context().close()
 
     page = await filesAs(browser, ownerToken)
     win = page.getByTestId('window-files')
-    await win.getByRole('cell', { name: OWNER, exact: true }).dblclick()
+    await expect(win.locator('main[data-pane="left"]')).toHaveAttribute('data-location', `dfs:///home/${OWNER}`, { timeout: 15000 })
     await win.getByRole('cell', { name: 'shared', exact: true }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Permissions…', exact: true }).click()
     const dialog = page.getByTestId('permissions-dialog')
@@ -89,6 +93,7 @@ test.describe('File permissions on real nfs_server', () => {
 
     page = await filesAs(browser, otherToken)
     win = page.getByTestId('window-files')
+    await win.getByRole('button', { name: 'up', exact: true }).click()
     await win.getByRole('cell', { name: OWNER, exact: true }).dblclick()
     await expect(win.getByRole('cell', { name: 'shared', exact: true })).toBeVisible()
     await expect(win.getByRole('cell', { name: 'private.txt', exact: true })).toHaveCount(0)

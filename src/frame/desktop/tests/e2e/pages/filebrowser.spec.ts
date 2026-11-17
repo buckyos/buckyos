@@ -15,7 +15,7 @@ test.describe('File browser app panel', () => {
 
     // Top bar tabs are present.
     await expect(
-      page.locator('[data-testid="window-files"]').getByText('Home', { exact: true }).first(),
+      page.locator('[data-testid="window-files"]').getByRole('tab', { name: 'My files', exact: true }),
     ).toBeVisible()
 
     // Sidebar header "AI Topics".
@@ -28,12 +28,8 @@ test.describe('File browser app panel', () => {
       page.getByRole('cell', { name: /^Pictures(\s|$)/ }).first(),
     ).toBeVisible()
 
-    // Navigate to Documents from the sidebar (DFS tree).
-    await page
-      .locator('aside')
-      .getByRole('button', { name: /Documents/ })
-      .first()
-      .click()
+    // Open Documents from My files (the sidebar tree starts collapsed).
+    await page.getByTestId('window-files').getByRole('cell', { name: 'Documents', exact: true }).dblclick()
     await expect(page.getByText('Kyoto Trip Plan.md')).toBeVisible()
 
     // Select Kyoto Trip Plan → preview panel renders AI summary.
@@ -111,7 +107,7 @@ test.describe('File browser app panel', () => {
     const sidebar = win.locator('aside').first()
 
     // Add a Documents file to the seed collection from the context menu.
-    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await win.getByRole('cell', { name: 'Documents', exact: true }).dblclick()
     await win.getByRole('cell', { name: /2026 Q1 Review/ }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Add to Collection' }).click()
     await page.getByRole('menuitem', { name: 'Reading List' }).click()
@@ -143,7 +139,8 @@ test.describe('File browser app panel', () => {
     await expect(reviewRow).toHaveCount(0)
 
     // …the original file is untouched in its folder.
-    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await sidebar.getByRole('button', { name: 'My files', exact: true }).click()
+    await win.getByRole('cell', { name: 'Documents', exact: true }).dblclick()
     await expect(win.getByRole('cell', { name: /2026 Q1 Review/ })).toBeVisible()
   })
 
@@ -156,8 +153,7 @@ test.describe('File browser app panel', () => {
     const win = page.getByTestId('window-files')
     const sidebar = win.locator('aside').first()
 
-    // The diagnostics views live behind advanced mode.
-    await sidebar.getByRole('button', { name: 'Enable advanced mode' }).click()
+    // The diagnostics views are listed in mock runs.
     await sidebar.getByRole('button', { name: 'Unknown total' }).click()
 
     // First cursor page (40 items) leaves the skeleton; status shows "40+".
@@ -242,7 +238,8 @@ test.describe('File browser app panel', () => {
 
     // New folder in a writable location: reserved names are rejected, valid
     // names create a real (mock) folder that shows up after invalidation.
-    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await sidebar.getByRole('button', { name: 'My files', exact: true }).click()
+    await win.getByRole('cell', { name: 'Documents', exact: true }).dblclick()
     await win
       .locator('div.overflow-y-auto')
       .filter({ has: page.locator('[role="table"]') })
@@ -271,8 +268,7 @@ test.describe('File browser app panel', () => {
     await page.goto('/?scenario=normal')
     await page.getByTestId('desktop-app-files').click()
     const win = page.getByTestId('window-files')
-    const sidebar = win.locator('aside').first()
-    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await win.getByRole('cell', { name: 'Documents', exact: true }).dblclick()
     await expect(win.getByText('Kyoto Trip Plan.md')).toBeVisible()
 
     // Success path: the committed entry appears in the destination listing.
@@ -319,7 +315,7 @@ test.describe('File browser app panel', () => {
     // Topics failed — inline error in that section only; DFS still works.
     const sectionError = sidebar.getByTestId('sidebar-section-error')
     await expect(sectionError).toBeVisible()
-    await expect(sidebar.getByRole('button', { name: /Documents/ }).first()).toBeVisible()
+    await expect(sidebar.getByRole('button', { name: 'Home', exact: true })).toBeVisible()
 
     // Retry recovers the source.
     await sectionError.getByRole('button', { name: 'Retry' }).click()

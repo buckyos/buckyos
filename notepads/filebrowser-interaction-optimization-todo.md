@@ -1,6 +1,6 @@
 # Files 交互优化 TODO
 
-状态：待实施，供后续 Code Agent 执行。owner 已于 2026-11-16 答复 §5 的 Q1–Q12（原话保留在 §5），没有待确认项。第二批按 BuckyOS sudo 方案实施，可以和第一批一起做。
+状态：2026-11-16 两批都已实施，未提交。mock / NFSP e2e、cargo 测试已过；真实 Zone DV 与 Lite（Windows / macOS）DV 未做。实施记录、偏差和未验证项见 §6。
 
 日期：2026-11-16。源码基线：buckyos `3036f52fb`，工作区另有与本任务无关的改动（Agent 浏览器等），不要动它们。
 
@@ -254,4 +254,56 @@ Q1–Q10 的答复原话照录（11-16 owner 写在本文件中），“落实�
 
 ## 6. 实施记录
 
-（实施时填写：改动入口、偏差与理由、测试命令和结果、DV 环境与结果、未验证的平台。）
+2026-11-16 实施，未提交。前端（`src/frame/desktop`）与后端（nfs_server、verify-hub、buckyos-api、websdk）并行完成；改动前工作区里与本任务无关的改动没有动。
+
+### 6.1 改动入口
+
+前端：
+
+| 任务 | 入口 |
+| --- | --- |
+| T1 | `data/myHome.ts`（home 提供者 + `useMyHome`；NFSP 取 `hello.identity.user_id`，mock 为 `/home`，由 `data/install.ts`、`data/nfsp/install.ts` 注册）。`FileBrowserView.tsx` 拆成 `FileBrowserView`（等 home 解析，期间只渲染空白占位，不列 `/home`）和 `FileBrowserWindow`：初始只有一个 tab，有 `openRequest` 时直接建在那个位置，不多一步后退历史；位于我的 home 的 tab 显示“我的文件”。`useBrowserPane` 兜底改用 home。选择器 `sysdlg/select/SelectDialog.tsx`：“我的文件”入口指向我的 home，起点用 `myHome()` |
+| T2 | `Sidebar.tsx`：“我的文件”（`House`）、“最近使用”（`Clock`）、钉住目录（`Star`）都用 `navButton`，带 `aria-current` 选中态；桌面和手机同一块 |
+| T3 | `FolderTree.tsx`（展开时加载、只列 dir、一页 + “更多…”、节点内错误与重试、空目录去掉箭头、`files.tree:<url>` 为 `'true'` 才展开、窗口打开后的导航才展开祖先）；`data/sidebarSources.ts`（`children` 数据源、首页会话缓存 `dfsFolderChildren`、`forgetFolderChildren` 让新建 / 改名 / 删除 / 移动后的树节点重载）；`data/nfsp/sidebar.ts` 去掉预取 |
+| T4 | 前端本来就不按角色过滤；NFSP e2e 用普通用户确认（见 §6.3） |
+| T5 | `fileDisplay.tsx`：`fileVisual` / `fileIcon` / `wantsThumbnail`，16 类，颜色只用 `--cp-*`；调用方：列表行、手机行、网格兜底、预览面板、搜索结果、桌面文件图标、选择器。`EntityAvatar.tsx` 的 `kindIcon` 是另一个同名映射（用户 / Agent 头像），不相关，未改 |
+| T6 | `components/preview/FileThumb.tsx`（列表自带缩略图优先；接近视口才请求，`prefer: 'pipeline'`；`UNSUPPORTED` 按 `refIdentity + modifiedAt` 会话内负缓存；视频播放标记、PDF / 文档角标），Files 图标网格与选择器共用 |
+| T7 | `data/iconSize.ts`（`files.iconSize`）；`TopBar.tsx` 视图菜单在“图标视图”下加三档（只在图标模式可用）；`menu/registry.ts` 在图标模式下给手机菜单加三档；`MainContent.tsx` 的 `IconGridView` 按档位算列数、单元和图标框，档位或列数变化时重新测量 |
+| T11 | `data/hostRealm.ts`（每个窗口一个会话 key、`device://<key>/<path>`、按 URL 找连接、上锁 / 解锁事件、reader 每页重新绑定连接）；`data/nfsp/host.ts`（sudo 客户端：只用内存缓存、不开 watch；reader、文件操作、复制、上传、树、Preview 解析）；`data/folderOps.ts` 按 realm 路由；`data/urls.ts`（设备 URL、`file:///` 生成与解析、面包屑）；`components/sudo.tsx`（`expiresInSecs`、按时长显示提示）；`components/preview/{nfspProvider,provider,hostSources}.ts`；`menu/registry.ts`、`menu/commands.ts`；`MainContent.tsx`（上锁占位、带锁条目）；`mock/host.ts` |
+
+后端（并行子 agent 实施，我复核了 diff 并重跑了测试）：verify-hub `sudo_by_password` 的 `expires_in_secs`；buckyos-api `SudoByPasswordRequest.expires_in_secs`、`NfsSessionClaims.aud/exp`；nfs_server 的 host realm（`config.rs` 的隐藏导出根 `@host`、`acl.rs` 的 task-local 授权、`auth.rs` 的 `host_grant_for`、`session.rs` 的 `sudo_exp`、`namespace.rs` / `access.rs` / `mutate.rs` / `copy.rs` / `server.rs`、`tests/host.rs`）；`task_manager/examples/nfs_copy_fixture.rs` 多写 `sudo-token`、`sudo-token-short`；websdk `verify-hub-client.ts`、`nfsp.ts`（`realms[].label`）并重建 `dist/`。后端行为写在 [nfs_server.md](../product/bucky_file/nfs_server.md) §14。
+
+### 6.2 偏差与理由
+
+1. **设备 URL 的 authority 是窗口的 sudo 会话 key，不是节点名**：`device://w3f2a9c1d07/Users/alice`。token 只属于一个窗口，全局的 reader 注册表、文件操作路由、Preview 解析靠 URL 就能找到那个窗口的连接；别的窗口或重新上锁后都访问不到。地址栏、状态栏、复制路径都显示 `file:///`，用户看不到 key。设备 URL 不适合钉住（换窗口就失效）。
+2. **预览来源**：新增 ContentRef 种类 `buckyos-host-file`（`value: { url, name }`），用已有的 `hostSources` 注册表解析（HomeStation、MessageHub 已在用），并给注册表加了可选的 `ensurePreviewWork`，让转换请求走 sudo 会话；`get_repr` 仍走普通会话（nfs_server 按身份授权）。比让 nfspProvider 认识 realm 改动小。限制：Preview 必须和 Files 在同一页面里；在新浏览器标签页打开的 Preview 拿不到 sudo 会话。
+3. **下载与预览字节用能力 URL**：`<a download>`、`<img>` 只带 cookie，带不上 sudo token，所以 nfs_server 只在持有授权的响应里给 host 文件签发 `?hx=<exp>.<sig>` 的 read URL，到 token 过期为止，且请求仍须认证为 Zone owner。
+4. verify-hub 时长超过 30 分钟时按 30 分钟签发（不拒绝）；不传或传 0 仍为 3 分钟。
+5. 非 owner 访问 host 返回 `PERMISSION_DENIED`（`reason: host_owner_only`），不是 `SUDO_REQUIRED`；非 owner 本来就拿不到 host realm。
+6. 电脑内跨磁盘的移动，服务端返回 `UNSUPPORTED`（`cross_device`），前端改为复制 + 删除源，与跨 realm 移动相同。
+7. 系统选择器（“移动到”“复制到”）仍只选 Zone 位置；往电脑里放文件用粘贴、双栏拖放或上传。上传和 DFS 一样走 NDM 导入 + `commit_object`，token 用 sudo token。
+8. “移动到”的快捷目标原来是根目录及其第一层（来自预取），现在改为我的 home 加各根目录。
+9. 高级模式整体删除；mock 的 `view://demo/*` 诊断入口在 mock 运行时一直显示（在 AI 主题分组里）。
+10. sudo 对话框的账户取 NFSP 的 `identity.user_id`；mock 数据模式下注入 mock 密码校验（密码为 `wrong` 时失败，`?fbHostTtl=<秒>` 缩短有效期）。
+11. 后端顺带的改动：DFS 里读 FIFO 之类的特殊文件以前会挂住，现在和 host 一样返回 `PERMISSION_DENIED`；独立模式 `--auth-test-config` 会初始化 RBAC（否则 NDM 上传在该模式下一律 403）。nfs_server 新增直接依赖 `sysinfo`（workspace 已有，取电脑名）和 unix 下的 `libc`（`access(2)`，已在依赖树中）。
+
+### 6.3 测试与结果
+
+- cargo（`src/` 下）：`cargo test -p nfs_server -- --test-threads=1` 全过，其中 `tests/host.rs` 9 条（通告范围、各类拒绝、符号链接与 file URI、路径穿越、能力 URL 的有效 / 缺失 / 篡改 / 过期、chmod 000 目录与 FIFO、增删改与上传不写 filedb、`commit_object`、复制授权、视频缩略图）；`cargo test -p verify_hub -- --test-threads=1` 42 过（默认 180 秒、0 为默认、1800 秒、86400 秒压到 1800 秒）；`cargo test -p buckyos-api -- --test-threads=1` 全过。真实复制（task manager 夹具）host→DFS、DFS→host、源不可读时失败且源不动，由子 agent 用脚本验证（不是 cargo 测试，`task_manager` 没有可链接的 lib）。
+- websdk：`npx jest tests/verify_hub_client.test.ts`、`pnpm run build` 通过。
+- desktop：`npx tsc -p tsconfig.app.json --noEmit` 通过；改动文件 eslint 0 error（4 个既有的 TanStack Virtual 警告）。
+- 新增 e2e：`tests/e2e/data/file-uri.spec.ts`（与 Node `pathToFileURL` 对拍：空格、中文、`#`、`%`、`?`、Windows 盘符、根目录；粘贴的编码 / 未编码 `file:` 都能解析）；`tests/e2e/pages/filebrowser.interaction.spec.ts`（6 个场景 × 桌面 1440×900 与手机 390×844：默认位置与单 tab、树收起 / 按需展开到第四层 / 记住展开、三档图标并持久化、图片 / 视频缩略图与 PDF `unsupported` 不重复请求、无 host realm 时没有设备分区、sudo 解锁 / 密码错误 / 无权限目录 / 复制路径为 `file:///` / 跨 realm 复制往返、过期后上锁占位与重新解锁 / 粘贴 `file:///` 打开目录）；`tests/e2e/pages/filebrowser.host.nfsp.spec.ts`（`FB_HOST_E2E=1`，真实 nfs_server + 夹具：owner 与普通用户的“我的文件”分别是自己的 home、普通用户没有设备分区；普通会话列 host 得到 `SUDO_REQUIRED`；解锁请求带 `aud: nfs-server` 与 `expires_in_secs: 1800`、无权限目录、复制路径、电脑文件复制进我的文件且字节一致）。
+- 改了依赖旧默认值的 e2e：`filebrowser-review.spec.ts`（先显式建 Pictures tab、展开 Home；tab 改用 `role=tab`）、`filebrowser.spec.ts`、`filebrowser.copy*.spec.ts`、`filebrowser.permissions.nfsp.spec.ts`、`filebrowser.nfsp.spec.ts`（加了“无鉴权时我的文件是 `/home`”）、`sysdlg-select.spec.ts`、`content-open.spec.ts`、`preview*.spec.ts`、`app-launch.spec.ts`（从树里点 Documents 改为双击主区域的 Documents）。
+- 结果：受影响的 mock 套件（filebrowser 全部、sysdlg-select、desktop-folder、share、content-open、preview、preview-embed、app-launch、`tests/e2e/data`）105 条在新起的 dev server 上全过（最后两条定位器冲突修正后单独重跑通过）。NFSP：`filebrowser.host.nfsp` 2/2、`filebrowser.permissions.nfsp` 2/2、`filebrowser.nfsp`（`FB_NFSP_AUTO=1`）1/1、`filebrowser.copy.nfsp` 中改过的“复制到另一栏”1/1。
+- 基线失败（与本任务无关，已顺手修正用例）：选择器 11-10 去掉了 Cancel 按钮，`filebrowser-review.spec.ts` FB-04/05 和 `filebrowser.copy.nfsp.spec.ts` 的“复制到另一栏”还在点 Cancel，改为 `closeSelect(page)`。`content-open.spec.ts:49` 在 4 个 worker 并发时偶发失败，单独跑通过。
+
+### 6.4 未验证与风险
+
+- **真实 Zone DV 未做**：owner 与普通用户的默认位置、普通用户看到的内容与 nfs_server 一致、JPEG / HEIC / MP4 / PDF / 带内嵌缩略图的 docx 缩略图、手机宽度下的图标大小，都只在 mock 和单机 nfs_server 上验过。几百个视频的大目录滚动时的预览并发槽和 CPU 没有观察。部署需要重建 nfs_server、Desktop web 并重启服务（要 sudo）。
+- **Lite DV 未做**：Windows / macOS 测试 VM 上的 Lite 安装、`product.json` 判定、主机名、30 分钟 `exp`、关窗后重新解锁、`file:///` 在 Finder / 资源管理器里打开同一文件、手机宽度下的解锁与复制，都没跑。
+- Windows：盘符虚拟根、`C:` 路径映射只有纯函数单测；Windows 上 host 的无权限条目不会标成 `none`；复制任务在 Windows 上本来就不支持（DFS 也一样），所以 Windows 上电脑与我的文件之间不能复制 / 移动。
+- macOS：`/tmp → /private/tmp` 这类符号链接的系统目录只在 Linux 上测过符号链接逻辑。
+- 复制进 DFS 的目录里嵌套的符号链接仍指向电脑上的路径；owner 之后可以经 DFS 读到它而不用 sudo（其他用户跟不过去）。
+- host 文件做预览时，filedb `preview_inputs` 会写一行按路径的输入哈希（预览缓存）。
+- 用普通会话轮询 sudo 会话提交的复制任务，要求 sudo token 的 target（appid）与 Desktop 会话一致（都是 `control-panel`）。
+- 上传进行中 token 过期：上传本身失败，要先解锁再在传输面板里重试；其余交互（新建、改名、复制、移动、删除、下载）会自动弹出 sudo 对话框并在通过后重试。

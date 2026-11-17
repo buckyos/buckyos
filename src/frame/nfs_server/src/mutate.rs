@@ -6,8 +6,8 @@
 //! (server-local processes) are detected at commit via the (size, mtime)
 //! snapshot taken at open_write (nfs_server.md §4.2: 劝告性租约, 显式冲突).
 
-use crate::access::denied;
-use crate::acl::{Actor, Level};
+use crate::access::{denied, host_audit, host_unsupported, is_host};
+use crate::acl::{Actor, Level, HOST_ROOT};
 use crate::error::*;
 use crate::fsutil::*;
 use crate::handle::native_entry_ref;
@@ -68,6 +68,13 @@ impl AppState {
 
     fn dir_parts(&self, node: &Node) -> NfsResult<(String, String, PathBuf)> {
         match node {
+            Node::Native { root, rel, .. } if root == HOST_ROOT => {
+                let cfg = self.config.root(root).ok_or_else(|| stale("root gone"))?;
+                match host_join(&cfg.path, rel) {
+                    Some(full) if !full.as_os_str().is_empty() => Ok((root.clone(), rel.clone(), full)),
+                    _ => Err(NfsError::new(ErrorCode::Unsupported, "the drive list is read-only")),
+                }
+            }
             Node::Native { root, rel, .. } => {
                 let cfg = self.config.root(root).ok_or_else(|| stale("root gone"))?;
                 Ok((root.clone(), rel.clone(), join_root(&cfg.path, rel)))
@@ -93,6 +100,9 @@ impl AppState {
             None => return String::new(),
         };
         let revision = self.revisions.bump(&key);
+        if is_host(node) {
+            return revision;
+        }
         self.bus.emit_container_changed(
             &key,
             json!(self.node_ref(node)),
@@ -122,6 +132,9 @@ impl AppState {
     /// A path that did not exist may still carry records of an item removed
     /// outside the protocol; a new item there must not inherit them.
     fn clear_stale_acls(&self, root: &str, rel: &str) -> NfsResult<()> {
+        if root == HOST_ROOT {
+            return Ok(());
+        }
         self.acls.delete_subtree(&self.db, root, rel)
     }
 
@@ -161,7 +174,7 @@ impl AppState {
         let (root, rel, full) = self.dir_parts(&parent)?;
         let target = full.join(name);
         let child_rel = rel_join(&rel, name);
-        let existed = match std::fs::symlink_metadata(&target) {
+        let existed = match if root == HOST_ROOT { std::fs::metadata(&target) } else { std::fs::symlink_metadata(&target) } {
             Ok(m) if m.is_dir() => true,
             Ok(_) => {
                 return Err(NfsError::new(
@@ -180,11 +193,15 @@ impl AppState {
         } else {
             self.bump_dir(&parent, "entries_changed", Some(json!({"added":[name]})))
         };
-        let node = self.resolve_dfs_path(&format!("{}/{}", root, child_rel))?;
+        if root == HOST_ROOT && !existed {
+            host_audit(actor, "mkdir", format_args!("path=/{}", child_rel));
+        }
+        let node = self.resolve_native(&root, &child_rel)?;
         Ok(json!({"ref": self.node_ref(&node), "existed": existed, "revision": revision}))
     }
 
     fn mkdir_path(&self, actor: &Actor, at: &Locator) -> NfsResult<Value> {
+        let host = at.uri.is_none() && at.realm.as_deref() == Some("host");
         let path = if let Some(path) = &at.path {
             path.clone()
         } else if let Some(uri) = &at.uri {
@@ -195,10 +212,21 @@ impl AppState {
             return Err(invalid("mkdir path form requires a current-Zone CYFS path"));
         };
         let rel_all = normalize_rel(&path)?;
-        let (root_id, rel) = match rel_all.split_once('/') {
-            Some((r, rest)) => (r.to_string(), rest.to_string()),
-            None if !rel_all.is_empty() => (rel_all.clone(), String::new()),
-            _ => return Err(invalid("cannot mkdir the namespace root")),
+        let (root_id, rel) = if host {
+            self.precheck_host(actor)?;
+            if rel_all.is_empty() {
+                return Err(invalid("cannot mkdir the computer root"));
+            }
+            (HOST_ROOT.to_string(), rel_all.clone())
+        } else {
+            let (r, rest) = rel_all.split_once('/').unwrap_or((&rel_all, ""));
+            if r.is_empty() {
+                return Err(invalid("cannot mkdir the namespace root"));
+            }
+            if r == HOST_ROOT {
+                return Err(not_found(format!("export root '{}' not found", r)));
+            }
+            (r.to_string(), rest.to_string())
         };
         if self.acls.level(actor, &root_id, &rel) < Level::Traverse {
             return Err(denied("write", actor));
@@ -213,7 +241,7 @@ impl AppState {
             for seg in rel.split('/') {
                 let next = rel_join(&cur, seg);
                 let p = join_root(&root.path, &next);
-                match std::fs::symlink_metadata(&p) {
+                match if host { std::fs::metadata(&p) } else { std::fs::symlink_metadata(&p) } {
                     Ok(m) if m.is_dir() => {}
                     Ok(_) => {
                         return Err(NfsError::new(
@@ -231,18 +259,17 @@ impl AppState {
                         }
                         self.clear_stale_acls(&root_id, &next)?;
                         existed = false;
-                        let parent = self.resolve_dfs_path(&format!(
-                            "{}/{}",
-                            root_id,
-                            cur
-                        ))?;
+                        if host {
+                            host_audit(actor, "mkdir", format_args!("path=/{}", next));
+                        }
+                        let parent = self.resolve_native(&root_id, &cur)?;
                         self.bump_dir(&parent, "entries_changed", Some(json!({"added":[seg]})));
                     }
                 }
                 cur = next;
             }
         }
-        let node = self.resolve_dfs_path(&rel_all)?;
+        let node = self.resolve_native(&root_id, &rel)?;
         Ok(json!({"ref": self.node_ref(&node), "existed": existed}))
     }
 
@@ -271,6 +298,11 @@ impl AppState {
         let (from_root, from_rel, from_full) = self.dir_parts(&from_parent)?;
         let (to_root, to_rel, to_full) = self.dir_parts(&to_parent)?;
         validate_name(from_name)?;
+        let host = from_root == HOST_ROOT;
+        if host != (to_root == HOST_ROOT) {
+            return Err(NfsError::new(ErrorCode::Unsupported, "moving between this computer and the Zone is a copy followed by a delete")
+                .with("reason", json!("cross_realm")));
+        }
         let src_rel = rel_join(&from_rel, from_name);
         let dst_rel = rel_join(&to_rel, to_name);
         if from_root == to_root && src_rel == dst_rel {
@@ -297,17 +329,23 @@ impl AppState {
         self.check_no_binding(&to_parent, to_name)?;
         self.clear_stale_acls(&to_root, &dst_rel)?;
         std::fs::rename(&src, &dst).map_err(|e| {
-            if e.raw_os_error() == Some(18) {
-                // EXDEV
+            if e.kind() == std::io::ErrorKind::CrossesDevices && host {
+                NfsError::new(ErrorCode::Unsupported, "the destination is on another disk; copy it instead")
+                    .with("reason", json!("cross_device"))
+            } else if e.kind() == std::io::ErrorKind::CrossesDevices {
                 internal("cross-device move is not supported in v1")
             } else {
                 NfsError::from(e).ctx("move")
             }
         })?;
-        // Anchors and the content cache follow the move (meta/LiveRefs survive).
-        self.db.anchors_move_prefix(&from_root, &src_rel, &to_root, &dst_rel)?;
-        self.db.content_index_move_prefix(&from_root, &src_rel, &to_root, &dst_rel)?;
-        self.acls.move_prefix(&self.db, &from_root, &src_rel, &to_root, &dst_rel)?;
+        if host {
+            host_audit(actor, "move", format_args!("from=/{} to=/{}", src_rel, dst_rel));
+        } else {
+            // Anchors and the content cache follow the move (meta/LiveRefs survive).
+            self.db.anchors_move_prefix(&from_root, &src_rel, &to_root, &dst_rel)?;
+            self.db.content_index_move_prefix(&from_root, &src_rel, &to_root, &dst_rel)?;
+            self.acls.move_prefix(&self.db, &from_root, &src_rel, &to_root, &dst_rel)?;
+        }
         let from_revision =
             self.bump_dir(&from_parent, "entries_changed", Some(json!({"removed":[from_name]})));
         let to_revision = if from_parent.container_key() == to_parent.container_key() {
@@ -369,9 +407,13 @@ impl AppState {
         } else {
             std::fs::remove_file(&target)?;
         }
-        // Destroyed natives: anchors marked deleted, inbound references go stale.
-        self.db.anchors_delete_subtree(&root, &target_rel)?;
-        self.acls.delete_subtree(&self.db, &root, &target_rel)?;
+        if root == HOST_ROOT {
+            host_audit(actor, "delete", format_args!("path=/{} recursive={}", target_rel, recursive));
+        } else {
+            // Destroyed natives: anchors marked deleted, inbound references go stale.
+            self.db.anchors_delete_subtree(&root, &target_rel)?;
+            self.acls.delete_subtree(&self.db, &root, &target_rel)?;
+        }
         let revision =
             self.bump_dir(&parent, "entries_changed", Some(json!({"removed":[name]})));
         Ok(json!({ "revision": revision }))
@@ -379,6 +421,9 @@ impl AppState {
 
     pub fn op_bind_ref(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
         let parent = self.parent_dir(actor, None, args)?;
+        if is_host(&parent) {
+            return Err(host_unsupported("A reference entry"));
+        }
         let name = args["name"].as_str().ok_or_else(|| invalid("bind_ref requires name"))?;
         validate_name(name)?;
         let target_ref: WireRef = serde_json::from_value(args["target_ref"].clone())
@@ -412,7 +457,7 @@ impl AppState {
             }
         };
         // Re-resolve the parent so the bump sees its anchored identity.
-        let parent = self.resolve_dfs_path(&format!("{}/{}", root, rel))?;
+        let parent = self.resolve_native(&root, &rel)?;
         let revision =
             self.bump_dir(&parent, "entries_changed", Some(json!({"added":[name]})));
         Ok(json!({"entry_ref": format!("be_{}", entry_id), "revision": revision}))
@@ -663,25 +708,29 @@ impl AppState {
         if !identical { place_file(&staged_tmp, &target_path)?; }
         let final_meta = lstat(&target_path)?;
 
-        // Refresh anchor if this path is anchored (edit keeps node identity).
-        if let Some(a) = self.db.anchor_get_by_path(&root, &target_rel)? {
-            self.db.anchor_rebind(
-                a.node_id,
-                final_meta.id.ino,
-                final_meta.id.dev,
-                final_meta.size as i64,
-                final_meta.mtime,
-            )?;
-            self.db.anchor_set_hash(a.node_id, final_meta.size as i64, final_meta.mtime, &hash)?;
+        if root == HOST_ROOT {
+            host_audit(actor, "write", format_args!("path=/{} size={} overwrite={}", target_rel, size, current.is_some()));
+        } else {
+            // Refresh anchor if this path is anchored (edit keeps node identity).
+            if let Some(a) = self.db.anchor_get_by_path(&root, &target_rel)? {
+                self.db.anchor_rebind(
+                    a.node_id,
+                    final_meta.id.ino,
+                    final_meta.id.dev,
+                    final_meta.size as i64,
+                    final_meta.mtime,
+                )?;
+                self.db.anchor_set_hash(a.node_id, final_meta.size as i64, final_meta.mtime, &hash)?;
+            }
+            self.db
+                .content_index_put(&hash, &root, &target_rel, size as i64, final_meta.mtime)?;
         }
-        self.db
-            .content_index_put(&hash, &root, &target_rel, size as i64, final_meta.mtime)?;
         if let Some(h) = &held {
             self.leases.release(&root, &target_rel, &h.lease_id);
         }
         let revision =
             self.bump_dir(&parent, "entries_changed", Some(json!({"added":[name]})));
-        let node = self.resolve_dfs_path(&format!("{}/{}", root, target_rel))?;
+        let node = self.resolve_native(&root, &target_rel)?;
         Ok(json!({
             "ref": self.node_ref(&node),
             "entry_ref": native_entry_ref(&root, &rel, name, final_meta.id.ino),
@@ -764,7 +813,10 @@ impl AppState {
             let final_meta = lstat(&target)?;
             let revision = if existed { self.revisions.current(&parent.container_key().unwrap()) }
                 else { self.bump_dir(&parent, "entries_changed", Some(json!({"added":[name]}))) };
-            let node = self.resolve_dfs_path(&format!("{root}/{target_rel}"))?;
+            if root == HOST_ROOT && !existed {
+                host_audit(actor, "write", format_args!("path=/{} dir_object={}", target_rel, obj_id));
+            }
+            let node = self.resolve_native(&root, &target_rel)?;
             Ok(json!({"ref":self.node_ref(&node), "entry_ref":native_entry_ref(&root, &rel, name, final_meta.id.ino), "revision":revision, "obj_id":obj_id.to_string(), "kind":"dir", "obj":{"size":size}}))
         }.await;
         if obj_id.is_dir_object() { let _ = std::fs::remove_dir_all(&staged); }
@@ -875,6 +927,9 @@ impl AppState {
 
     pub fn op_set_meta(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
         let node = self.meta_target(actor, at, args, Level::Write, "write")?;
+        if is_host(&node) {
+            return Err(host_unsupported("Metadata"));
+        }
         let records = args["records"]
             .as_array()
             .ok_or_else(|| invalid("set_meta requires records[]"))?;
@@ -932,9 +987,7 @@ impl AppState {
 
     fn re_resolve(&self, node: &Node) -> NfsResult<Node> {
         match node {
-            Node::Native { root, rel, .. } => {
-                self.resolve_dfs_path(&format!("{}/{}", root, rel))
-            }
+            Node::Native { root, rel, .. } => self.resolve_native(root, rel),
             n => Ok(n.clone()),
         }
     }
@@ -946,6 +999,7 @@ impl AppState {
             let loc: Locator = serde_json::from_value(s.clone())
                 .map_err(|_| invalid("bad subtree locator"))?;
             match self.resolve_for(actor, &loc, Level::Manage, "manage")? {
+                Node::Native { root, .. } if root == HOST_ROOT => return Err(host_unsupported("A capability")),
                 Node::Native { root, rel, .. } => canonical_path(&root, &rel),
                 Node::Root => "cyfs:///".to_string(),
                 Node::View(v) => format!("view://{}", v.view_id),
@@ -956,6 +1010,7 @@ impl AppState {
             let r: WireRef =
                 serde_json::from_value(args["ref"].clone()).map_err(|_| invalid("bad ref"))?;
             match self.resolve_ref_for(actor, &r, Level::Manage, "manage")? {
+                Node::Native { root, .. } if root == HOST_ROOT => return Err(host_unsupported("A capability")),
                 Node::Native { root, rel, .. } => canonical_path(&root, &rel),
                 Node::View(v) => format!("view://{}", v.view_id),
                 Node::Collection(c) => format!("collection://{}", c.collection_id),
@@ -1061,10 +1116,12 @@ fn place_file(staged: &Path, target: &Path) -> NfsResult<()> {
         Err(_) => {
             let dir = target.parent().ok_or_else(|| internal("target has no parent"))?;
             let tmp = dir.join(format!(".nfs_tmp_{}", uuid::Uuid::new_v4().simple()));
-            std::fs::copy(staged, &tmp).map_err(|e| {
-                let _ = std::fs::remove_file(&tmp);
-                NfsError::from(e).ctx("stage copy")
-            })?;
+            std::fs::copy(staged, &tmp)
+                .and_then(|_| std::fs::File::open(&tmp)?.sync_all())
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp);
+                    NfsError::from(e).ctx("stage copy")
+                })?;
             let _ = std::fs::remove_file(staged);
             std::fs::rename(&tmp, target).map_err(|e| {
                 let _ = std::fs::remove_file(&tmp);

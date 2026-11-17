@@ -412,6 +412,9 @@ impl AppState {
     /// lazily anchoring native nodes.
     pub fn require_stable_node(&self, node: &Node) -> NfsResult<(i64, String)> {
         match node {
+            Node::Native { root, .. } if root == crate::acl::HOST_ROOT => {
+                Err(crate::access::host_unsupported("A reference"))
+            }
             Node::Native { root, rel, meta, anchored } => {
                 if let Some(e) = anchored {
                     return Ok((e.node_id, node.display_name()));

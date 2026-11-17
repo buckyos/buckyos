@@ -5,17 +5,41 @@ import { operationError } from '../folderOps'
 import { copyEntryOf as entryOf, copyResultOf as resultOf } from '../copyResult'
 import { ensureSession, nfspClient } from './client'
 import { notifyDfsPath } from './invalidation'
-import { NfspError, type WireRef } from '../../../../api/nfsp_client'
+import { NfspError, type NodeInfo, type WireRef } from '../../../../api/nfsp_client'
 
-const call = async <T>(method: string, args: Record<string, unknown>): Promise<T> => {
-  await ensureSession()
-  return nfspClient().copyCall<T>(method, args)
+/** Who submits and watches copy tasks: the user's session, or a window's sudo session when the computer is involved. */
+export interface CopyChannel {
+  call<T>(method: string, args: Record<string, unknown>): Promise<T>
+  /** The destination folder (copy_ref is the server-signed local handle). */
+  statDir(path: string): Promise<NodeInfo | null>
+  /** Server task paths → UI paths (the computer's `/@host/...` → `device://...`). */
+  uiPath(path: string): string
+  /** UI paths → the server's task path form. */
+  serverPath(path: string): string
+  /** A destination folder changed. */
+  touched(path: string): Promise<void>
 }
-export async function listCopies() {
+
+const dfsChannel: CopyChannel = {
+  async call<T>(method: string, args: Record<string, unknown>) {
+    await ensureSession()
+    return nfspClient().copyCall<T>(method, args)
+  },
+  statDir: (path) => nfspClient().stat(path, { cache: 'no-cache' }),
+  uiPath: (path) => path,
+  serverPath: (path) => path,
+  touched: (path) => nfspClient().invalidateContainer(path).catch(() => undefined).then(() => notifyDfsPath(path)),
+}
+
+export function createNfspCopy(channel: CopyChannel) {
+const call = <T>(method: string, args: Record<string, unknown>) => channel.call<T>(method, args)
+const ui = (item: CopyItem): CopyItem => ({ ...item, source_path: channel.uiPath(item.source_path), target_path: channel.uiPath(item.target_path) })
+const uiView = (view: CopyView): CopyView => ({ ...view, items: view.items.map(ui), conflict: view.conflict ? ui(view.conflict) : view.conflict })
+async function listCopies() {
   return (await call<{ tasks: { task_id: string; name: string; phase: string }[] }>('copy_list', {})).tasks
 }
 const pendingSubmissions = new Map<string, CopyInput>()
-export async function copyEntries(entries: FileEntry[], target: string, options: BatchOptions = {}) {
+async function copyEntries(entries: FileEntry[], target: string, options: BatchOptions = {}) {
   const key = options.requestKey ?? crypto.randomUUID()
   let input: CopyInput
   const pendingInput = pendingSubmissions.get(key)
@@ -24,10 +48,10 @@ export async function copyEntries(entries: FileEntry[], target: string, options:
     const previous = await call<CopyView>('copy_get', { task_id: options.retryOf })
     input = { ...previous.task.input as unknown as CopyInput, retry_of: options.retryOf }
   } else {
-    const destination = await nfspClient().stat(target, { cache: 'no-cache' })
+    const destination = await channel.statDir(target)
     if (!destination) throw operationError('NOT_FOUND', 'The destination folder no longer exists')
     input = {
-      sources: entries.map((entry) => ({ source_ref: entry.copyRef ? JSON.parse(entry.copyRef) as WireRef : { type: 'live', node_id: entry.id }, source_path: entry.path, name: entry.name })),
+      sources: entries.map((entry) => ({ source_ref: entry.copyRef ? JSON.parse(entry.copyRef) as WireRef : { type: 'live', node_id: entry.id }, source_path: channel.serverPath(entry.path), name: entry.name })),
       destination_ref: destination.copy_ref ?? destination.ref, conflict: 'ask', retry_of: null,
     }
   }
@@ -46,7 +70,7 @@ export async function copyEntries(entries: FileEntry[], target: string, options:
 /** Progress polls notify touched destination folders at most this often (ms); Terminal flushes unconditionally. */
 const NOTIFY_INTERVAL_MS = 1000
 const parentOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
-export async function resumeCopy(taskId: string, options: BatchOptions = {}): Promise<OperationResult[]> {
+async function resumeCopy(taskId: string, options: BatchOptions = {}): Promise<OperationResult[]> {
   let cancelSent = false
   let next: number | null = null
   const rows = new Map<number, CopyItem>()
@@ -60,12 +84,12 @@ export async function resumeCopy(taskId: string, options: BatchOptions = {}): Pr
     lastNotified = Date.now()
     const parents = [...dirty]
     dirty.clear()
-    await Promise.all(parents.map((parent) => nfspClient().invalidateContainer(parent).catch(() => undefined).then(() => notifyDfsPath(parent))))
+    await Promise.all(parents.map((parent) => channel.touched(parent)))
   }
   const completed = () => [...rows.values()].filter((item) => ['success', 'failed', 'skipped', 'cancelled'].includes(item.status)).map(resultOf)
   const loadMore = async () => {
     if (next === null) return
-    const page = await call<CopyView>('copy_get', { task_id: taskId, after: next })
+    const page = uiView(await call<CopyView>('copy_get', { task_id: taskId, after: next }))
     page.items.forEach((item) => rows.set(item.id, item))
     next = page.next
     options.onProgress?.(completed())
@@ -84,7 +108,7 @@ export async function resumeCopy(taskId: string, options: BatchOptions = {}): Pr
         await call('copy_cancel', { task_id: taskId, request_id: `cancel:${taskId}` })
         cancelSent = true
       }
-      view = await call<CopyView>('copy_get', { task_id: taskId })
+      view = uiView(await call<CopyView>('copy_get', { task_id: taskId }))
       errors = 0
     } catch (error) {
       if (++errors > 30) throw error
@@ -104,13 +128,13 @@ export async function resumeCopy(taskId: string, options: BatchOptions = {}): Pr
       const lastLoaded = [...rows.keys()].reduce((max, id) => Math.max(max, id), 0)
       let after = view.next
       while (after !== null && after < lastLoaded) {
-        const page = await call<CopyView>('copy_get', { task_id: taskId, after })
+        const page = uiView(await call<CopyView>('copy_get', { task_id: taskId, after }))
         page.items.forEach((item) => rows.set(item.id, item))
         after = page.next
       }
       options.onProgress?.(completed())
       const input = view.task.input as unknown as CopyInput
-      const sourcePaths = new Set(input.sources.map((source) => source.source_path))
+      const sourcePaths = new Set(input.sources.map((source) => channel.uiPath(source.source_path)))
       for (const item of view.items) if (sourcePaths.has(item.source_path)) dirty.add(parentOf(item.target_path))
       await flushDirty(true)
       if (!view.items.length && view.task.error) throw operationError(view.task.error.code, view.task.error.message)
@@ -127,6 +151,10 @@ export async function resumeCopy(taskId: string, options: BatchOptions = {}): Pr
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
 }
-export async function copyCapability(): Promise<boolean> {
+async function copyCapability(): Promise<boolean> {
   return (await call<{ supported: boolean }>('copy_capabilities', {})).supported
 }
+return { copyEntries, resumeCopy, listCopies, copyCapability }
+}
+
+export const { copyEntries, resumeCopy, listCopies, copyCapability } = createNfspCopy(dfsChannel)

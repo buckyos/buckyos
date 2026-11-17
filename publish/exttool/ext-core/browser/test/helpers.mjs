@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -173,6 +174,34 @@ export async function startChromium() {
   };
 }
 
+// What the service's lease proxy does (opendan `browser/proxy.rs`): a lease reaches the browser through a way of its
+// own, closed when the lease ends. Here a TCP relay to the browser's debugging port.
+async function relay(cdpUrl) {
+  const sockets = new Set();
+  const server = net.createServer((client) => {
+    const upstream = net.connect(Number(new URL(cdpUrl).port), '127.0.0.1');
+    for (const socket of [client, upstream]) {
+      sockets.add(socket);
+      socket.on('error', () => {});
+      socket.on('close', () => {
+        client.destroy();
+        upstream.destroy();
+      });
+    }
+    client.pipe(upstream);
+    upstream.pipe(client);
+  });
+  const port = await listen(server);
+  // The browser names its WebSocket addresses after the Host it was asked at: they lead through the relay too.
+  return {
+    url: `http://127.0.0.1:${port}`,
+    cut() {
+      server.close();
+      for (const socket of sockets) socket.destroy();
+    },
+  };
+}
+
 // The browser.* methods of the protocol, over the real browser's tabs. Tests set `groups`, `sessions`, `ttlMs` and
 // read `calls`.
 export async function startAgentService(chromium) {
@@ -197,6 +226,7 @@ export async function startAgentService(chromium) {
       this.unavailable = null;
     },
     revoke(groupId) {
+      this.group(groupId).lease?.relay.cut();
       this.group(groupId).lease = null;
     },
   };
@@ -241,16 +271,18 @@ export async function startAgentService(chromium) {
       const groupId = groupOf(params.session_id);
       const group = service.group(groupId);
       if (group.user_hold) throw fail('user_in_control', 'the user has taken over this group');
+      group.lease?.relay.cut();
       group.lease = {
         lease_id: `lease-${++service.nextLease}`,
         session_id: params.session_id,
         expires_at_ms: Date.now() + service.ttlMs,
         known: new Set((await chromium.targets()).map((target) => target.id)),
+        relay: await relay(chromium.cdpUrl),
       };
       group.agent_state = 'idle';
       group.note = null;
       const { tabs } = await view(groupId);
-      return { lease_id: group.lease.lease_id, group_id: groupId, ttl_ms: service.ttlMs, expires_at_ms: group.lease.expires_at_ms, cdp_url: chromium.cdpUrl, tabs, active_tab_id: group.active };
+      return { lease_id: group.lease.lease_id, group_id: groupId, ttl_ms: service.ttlMs, expires_at_ms: group.lease.expires_at_ms, cdp_url: group.lease.relay.url, tabs, active_tab_id: group.active };
     },
     'browser.renew'(params) {
       const [, group] = leased(params.lease_id);
@@ -263,6 +295,7 @@ export async function startAgentService(chromium) {
       for (const target of await chromium.targets()) {
         if (!group.lease.known.has(target.id)) group.tabs.push(target.id);
       }
+      group.lease.relay.cut();
       group.lease = null;
       group.agent_state = params.state ?? 'idle';
       group.note = params.note ?? null;
@@ -271,6 +304,7 @@ export async function startAgentService(chromium) {
     'browser.request_handover'(params) {
       const groupId = groupOf(params.session_id);
       const group = service.group(groupId);
+      group.lease?.relay.cut();
       group.lease = null;
       group.user_hold = true;
       group.handover = { reason: params.reason, note: params.note ?? null, at_ms: Date.now() };

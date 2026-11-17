@@ -64,8 +64,11 @@ test.describe('File browser on real nfs_server', () => {
     })
     await expect(win.getByRole('cell', { name: /^Pictures(\s|$)/ })).toBeVisible()
 
-    // Navigate into Documents from the sidebar tree (loaded from the server).
-    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    // Without auth there is no user: "My files" is /home itself.
+    await expect(win.locator('main[data-pane="left"]')).toHaveAttribute('data-location', 'dfs:///home')
+    // Navigate into Documents from the sidebar tree (collapsed; children load from the server on expand).
+    await sidebar.getByRole('button', { name: 'Expand Home' }).click()
+    await sidebar.getByRole('button', { name: 'Documents', exact: true }).click()
     await expect(win.getByText('notes.txt')).toBeVisible()
 
     // mkdir through the schema dialog → server mkdir → listing invalidates.
@@ -139,7 +142,7 @@ test.describe('File browser on real nfs_server', () => {
       expect(await readNfspText(page, `/home/Documents/${rootName}/zero.txt`)).toBe('')
       expect(legacyUploads).toBe(0)
       expect(await uploadedBytes()).toBe(Buffer.byteLength(payload) + Buffer.byteLength('root contentnested content'))
-      await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+      await sidebar.getByRole('button', { name: 'Documents', exact: true }).click()
     } finally { await rm(source, { recursive: true, force: true }) }
 
     // Server-owned collection: create, add a reference, verify membership.
@@ -150,7 +153,7 @@ test.describe('File browser on real nfs_server', () => {
     await expect(win.getByText(`Collection: ${collectionTitle}`)).toBeVisible({
       timeout: 15000,
     })
-    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await sidebar.getByRole('button', { name: 'Documents', exact: true }).click()
     await win.getByRole('cell', { name: /notes\.txt/ }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Add to Collection' }).click()
     await page.getByRole('menuitem', { name: collectionTitle }).click()
@@ -169,7 +172,7 @@ test.describe('File browser on real nfs_server', () => {
     await page.getByPlaceholder(/Search across files/).fill('')
 
     // Destroy-semantics delete (confirm dialog) removes the created folder.
-    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await sidebar.getByRole('button', { name: 'Documents', exact: true }).click()
     await win
       .getByRole('cell', { name: new RegExp(`^${folderName}-v2`) })
       .click({ button: 'right' })

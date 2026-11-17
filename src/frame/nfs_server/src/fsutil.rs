@@ -48,6 +48,10 @@ pub fn normalize_rel(path: &str) -> NfsResult<String> {
 
 /// Joins a normalized relative path onto an export root.
 pub fn join_root(root: &Path, rel: &str) -> PathBuf {
+    #[cfg(windows)]
+    if root.as_os_str().is_empty() {
+        return windows_drive_path(rel).map(PathBuf::from).unwrap_or_default();
+    }
     if rel.is_empty() {
         root.to_path_buf()
     } else {
@@ -57,6 +61,51 @@ pub fn join_root(root: &Path, rel: &str) -> PathBuf {
         }
         p
     }
+}
+
+pub fn is_drive_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+pub fn windows_drive_path(rel: &str) -> Option<String> {
+    let mut parts = rel.split('/').filter(|s| !s.is_empty());
+    let drive = parts.next().filter(|d| is_drive_name(d))?;
+    let rest: Vec<&str> = parts.collect();
+    Some(format!("{}\\{}", drive.to_ascii_uppercase(), rest.join("\\")))
+}
+
+pub fn host_join(root: &Path, rel: &str) -> Option<PathBuf> {
+    if root.as_os_str().is_empty() {
+        return if rel.is_empty() { Some(PathBuf::new()) } else { windows_drive_path(rel).map(PathBuf::from) };
+    }
+    Some(join_root(root, rel))
+}
+
+pub fn windows_drives() -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    (b'A'..=b'Z')
+        .map(|d| format!("{}:", d as char))
+        .filter(|d| Path::new(&format!("{}\\", d)).is_dir())
+        .collect()
+}
+
+pub fn file_uri(rel: &str) -> String {
+    const SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+        .add(b' ').add(b'"').add(b'#').add(b'%').add(b'<').add(b'>').add(b'?')
+        .add(b'[').add(b'\\').add(b']').add(b'^').add(b'`').add(b'{').add(b'|').add(b'}').add(b'~');
+    let segs: Vec<String> = rel
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| percent_encoding::utf8_percent_encode(s, SET).to_string())
+        .collect();
+    let mut out = format!("file:///{}", segs.join("/"));
+    if segs.len() == 1 && is_drive_name(&segs[0]) {
+        out.push('/');
+    }
+    out
 }
 
 pub fn rel_join(rel: &str, name: &str) -> String {
@@ -104,6 +153,8 @@ pub struct NodeMeta {
     pub ctime: i64,
     pub id: FileId,
     pub birth: Option<std::time::SystemTime>,
+    pub link: bool,
+    pub special: bool,
 }
 
 pub fn node_meta(meta: &Metadata) -> NodeMeta {
@@ -126,12 +177,41 @@ pub fn node_meta(meta: &Metadata) -> NodeMeta {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(mtime);
-    NodeMeta { kind, size: meta.len(), mtime, ctime, id: file_id(meta), birth: meta.created().ok() }
+    let ft = meta.file_type();
+    let special = !ft.is_dir() && !ft.is_file() && !ft.is_symlink();
+    NodeMeta { kind, size: meta.len(), mtime, ctime, id: file_id(meta), birth: meta.created().ok(), link: false, special }
 }
 
 /// lstat: does not follow a final symlink (list semantics).
 pub fn lstat(path: &Path) -> NfsResult<NodeMeta> {
     Ok(node_meta(&std::fs::symlink_metadata(path)?))
+}
+
+pub fn host_meta(path: &Path) -> NfsResult<NodeMeta> {
+    if path.as_os_str().is_empty() {
+        return Ok(NodeMeta { kind: "dir", size: 0, mtime: 0, ctime: 0, id: FileId { ino: 0, dev: 0 }, birth: None, link: false, special: false });
+    }
+    let own = std::fs::symlink_metadata(path)?;
+    if !own.file_type().is_symlink() {
+        return Ok(node_meta(&own));
+    }
+    match std::fs::metadata(path) {
+        Ok(target) => Ok(NodeMeta { link: true, ..node_meta(&target) }),
+        Err(_) => Ok(node_meta(&own)),
+    }
+}
+
+#[cfg(unix)]
+pub fn os_readable(path: &Path, dir: bool) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    let mode = if dir { libc::R_OK | libc::X_OK } else { libc::R_OK };
+    unsafe { libc::access(c.as_ptr(), mode) == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn os_readable(_path: &Path, _dir: bool) -> bool {
+    true
 }
 
 /// stat: follows symlinks (resolve default per NFSP D2).
@@ -214,6 +294,23 @@ mod tests {
         assert!(normalize_rel("../x").is_err());
         assert!(normalize_rel("a/../../b").is_err());
         assert!(normalize_rel("a/b\\c").is_err());
+    }
+
+    #[test]
+    fn host_paths() {
+        assert_eq!(windows_drive_path("C:/Users/alice").as_deref(), Some("C:\\Users\\alice"));
+        assert_eq!(windows_drive_path("d:").as_deref(), Some("D:\\"));
+        assert_eq!(windows_drive_path(""), None);
+        assert_eq!(windows_drive_path("Users/alice"), None);
+        assert_eq!(file_uri(""), "file:///");
+        assert_eq!(file_uri("Users/alice/My Doc.txt"), "file:///Users/alice/My%20Doc.txt");
+        assert_eq!(file_uri("C:/Users/alice/a.txt"), "file:///C:/Users/alice/a.txt");
+        assert_eq!(file_uri("C:"), "file:///C:/");
+        assert_eq!(file_uri("a/中文/x#y?z%w.txt"), "file:///a/%E4%B8%AD%E6%96%87/x%23y%3Fz%25w.txt");
+        assert_eq!(file_uri("a/^`{}|[]<>\"';=&+$,!~*()@:"), "file:///a/%5E%60%7B%7D%7C%5B%5D%3C%3E%22';=&+$,!%7E*()@:");
+        assert_eq!(file_uri("tmp/\u{7f}\u{1}é"), "file:///tmp/%7F%01%C3%A9");
+        assert!(normalize_rel("/Users/../etc").is_err());
+        assert!(normalize_rel("C:/..").is_err());
     }
 
     #[test]

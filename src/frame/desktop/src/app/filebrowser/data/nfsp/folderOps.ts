@@ -1,6 +1,8 @@
 import { copyEntries, resumeCopy, listCopies, copyCapability } from './copy'
-import type { NodeInfo } from '../../../../api/nfsp_client'
+import type { NfsBrowserClient } from '../../../../api/nfs_browser_client'
+import type { LocatorLike, NodeInfo } from '../../../../api/nfsp_client'
 import type { FileEntry } from '../../types'
+import type { FolderWriteOps } from '../folderOps'
 import { registerFolderOps, runEntryBatch, operationError } from '../folderOps'
 import { classifyFileKind } from '../fileKinds'
 import { ensureSession, nfspClient } from './client'
@@ -8,54 +10,64 @@ import { nfspToUiError } from './errors'
 import { notifyDfsPath } from './invalidation'
 import { refIdOf, unixToIso } from './mapping'
 
+/** One NFSP realm as the folder ops see it: UI paths (DFS paths or device URLs) and the session that serves them. */
+export interface NfspRealm {
+  client(): NfsBrowserClient
+  ensure(): Promise<unknown>
+  at(path: string): LocatorLike
+  copy: Pick<FolderWriteOps, 'copyEntries' | 'resumeCopy' | 'listCopies'>
+  /** Signed read address of a file, for downloads. */
+  downloadUrl(entry: FileEntry): string | null
+}
+
 const parentOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
-async function resolveDirRef(path: string): Promise<NodeInfo> {
-  const info = await nfspClient().stat(path, { cache: 'no-cache' })
-  if (!info) throw operationError('NOT_FOUND', 'The destination folder no longer exists')
-  if (!info.capabilities.accepts_content) throw operationError('PERMISSION_DENIED', 'The destination does not accept file content')
-  return info
-}
-async function run<T>(op: () => Promise<T>): Promise<T> {
-  try { await ensureSession(); return await op() }
-  catch (err) { if (err instanceof Error && err.name === 'AbortError') throw err; throw nfspToUiError(err) }
-}
-async function statEntry(parent: string, name: string): Promise<FileEntry | null> {
-  return run(async () => {
-    try {
-      const info = await nfspClient().stat(parent, { name, cache: 'no-cache', want: ['base'] })
-      if (!info) return null
-      return { id: refIdOf(info.ref), copyRef: info.copy_ref ? JSON.stringify(info.copy_ref) : undefined, name, path: `${parent === '/' ? '' : parent}/${name}`, kind: info.kind === 'dir' ? 'folder' : classifyFileKind(name), modifiedAt: unixToIso(info.mtime), sizeBytes: info.size }
-    } catch (err) {
-      if (nfspToUiError(err).code === 'NOT_FOUND') return null
-      throw err
-    }
-  })
-}
-async function validate(entry: FileEntry) {
-  const parent = await nfspClient().stat(parentOf(entry.path), { cache: 'no-cache' })
-  if (!parent) throw operationError('STALE', 'The original folder no longer exists')
-  const live = await statEntry(parentOf(entry.path), entry.name)
-  if (!live || live.id !== entry.id) throw operationError('STALE', 'This item moved or changed. Refresh before retrying.')
-  return parent
-}
-export function registerNfspFolderOps() {
-  let supportsCopy = false
-  let copyUnavailableReason = 'Copy capability is loading'
-  void copyCapability().then((supported) => { supportsCopy = supported; copyUnavailableReason = supported ? '' : 'Server does not support local file copying' }).catch((error: unknown) => { copyUnavailableReason = nfspToUiError(error).fallback }).finally(() => window.dispatchEvent(new Event('files-copy-capability')))
-  return registerFolderOps({
-    get supportsCopy() { return supportsCopy },
-    get copyUnavailableReason() { return copyUnavailableReason },
-    copyEntries, resumeCopy, listCopies,
+const childOf = (parent: string, name: string) => `${parent === '/' ? '' : parent}/${name}`
+
+export function createNfspFolderOps(realm: NfspRealm, capability: { supportsCopy: boolean; copyUnavailableReason?: string }): FolderWriteOps {
+  const client = () => realm.client()
+  async function resolveDirRef(path: string): Promise<NodeInfo> {
+    const info = await client().stat(realm.at(path), { cache: 'no-cache' })
+    if (!info) throw operationError('NOT_FOUND', 'The destination folder no longer exists')
+    if (!info.capabilities.accepts_content) throw operationError('PERMISSION_DENIED', 'The destination does not accept file content')
+    return info
+  }
+  async function run<T>(op: () => Promise<T>): Promise<T> {
+    try { await realm.ensure(); return await op() }
+    catch (err) { if (err instanceof Error && err.name === 'AbortError') throw err; throw nfspToUiError(err) }
+  }
+  async function statEntry(parent: string, name: string): Promise<FileEntry | null> {
+    return run(async () => {
+      try {
+        const info = await client().stat(realm.at(parent), { name, cache: 'no-cache', want: ['base'] })
+        if (!info) return null
+        return { id: refIdOf(info.ref), copyRef: info.copy_ref ? JSON.stringify(info.copy_ref) : undefined, name, path: childOf(parent, name), kind: info.kind === 'dir' ? 'folder' : classifyFileKind(name), modifiedAt: unixToIso(info.mtime), sizeBytes: info.size }
+      } catch (err) {
+        if (nfspToUiError(err).code === 'NOT_FOUND') return null
+        throw err
+      }
+    })
+  }
+  async function validate(entry: FileEntry) {
+    const parent = await client().stat(realm.at(parentOf(entry.path)), { cache: 'no-cache' })
+    if (!parent) throw operationError('STALE', 'The original folder no longer exists')
+    const live = await statEntry(parentOf(entry.path), entry.name)
+    if (!live || live.id !== entry.id) throw operationError('STALE', 'This item moved or changed. Refresh before retrying.')
+    return parent
+  }
+  return {
+    get supportsCopy() { return capability.supportsCopy },
+    get copyUnavailableReason() { return capability.copyUnavailableReason },
+    ...realm.copy,
     nameExists: async (parent, name) => (await statEntry(parent, name)) !== null,
     statEntry,
     createFolder(parent, name) {
-      return run(async () => { const info = await resolveDirRef(parent); if (await statEntry(parent, name)) throw operationError('CONFLICT', 'This name already exists here'); await nfspClient().mkdir(info.ref, name, { expectedRevision: info.revision }); notifyDfsPath(parent) })
+      return run(async () => { const info = await resolveDirRef(parent); if (await statEntry(parent, name)) throw operationError('CONFLICT', 'This name already exists here'); await client().mkdir(info.ref, name, { expectedRevision: info.revision }); notifyDfsPath(parent) })
     },
     renameEntry(entry, name) {
       return run(async () => {
         const info = await validate(entry)
         const parent = parentOf(entry.path)
-        await nfspClient().move({ parentRef: info.ref, name: entry.name }, { parentRef: info.ref, name }, { expectedFromRevision: info.revision, expectedToRevision: info.revision })
+        await client().move({ parentRef: info.ref, name: entry.name }, { parentRef: info.ref, name }, { expectedFromRevision: info.revision, expectedToRevision: info.revision })
         notifyDfsPath(parent)
       })
     },
@@ -64,7 +76,7 @@ export function registerNfspFolderOps() {
         const info = await validate(entry)
         const parent = parentOf(entry.path)
         options?.signal?.throwIfAborted()
-        await nfspClient().delete(parent, entry.name, { recursive: entry.kind === 'folder', expectedRevision: info.revision })
+        await client().delete(realm.at(parent), entry.name, { recursive: entry.kind === 'folder', expectedRevision: info.revision })
         notifyDfsPath(parent)
       }), undefined, options)
     },
@@ -74,20 +86,30 @@ export function registerNfspFolderOps() {
         const parent = parentOf(entry.path)
         const toInfo = await resolveDirRef(target)
         options?.signal?.throwIfAborted()
-        await nfspClient().move({ parentRef: fromInfo.ref, name: entry.name }, { parentRef: toInfo.ref, name }, { expectedFromRevision: fromInfo.revision, expectedToRevision: toInfo.revision })
+        await client().move({ parentRef: fromInfo.ref, name: entry.name }, { parentRef: toInfo.ref, name }, { expectedFromRevision: fromInfo.revision, expectedToRevision: toInfo.revision })
         notifyDfsPath(parent)
         notifyDfsPath(target)
       }), target, options)
     },
-    downloadUrl(entry) {
-      return entry.kind === 'folder' ? null : nfspClient().raw.readUrl(entry.id, { download: true, name: entry.name })
-    },
+    downloadUrl: (entry) => entry.kind === 'folder' ? null : realm.downloadUrl(entry),
     readContent(path) {
       return run(async () => {
         const entry = await statEntry(parentOf(path), path.slice(path.lastIndexOf('/') + 1))
         if (!entry || entry.kind === 'folder') throw operationError('NOT_FOUND', 'This file no longer exists')
-        return (await nfspClient().raw.readFile(entry.id)).blob()
+        return (await client().raw.readFile(entry.id)).blob()
       })
     },
-  })
+  }
+}
+
+export function registerNfspFolderOps() {
+  const capability = { supportsCopy: false, copyUnavailableReason: 'Copy capability is loading' }
+  void copyCapability().then((supported) => { capability.supportsCopy = supported; capability.copyUnavailableReason = supported ? '' : 'Server does not support local file copying' }).catch((error: unknown) => { capability.copyUnavailableReason = nfspToUiError(error).fallback }).finally(() => window.dispatchEvent(new Event('files-copy-capability')))
+  return registerFolderOps(createNfspFolderOps({
+    client: nfspClient,
+    ensure: ensureSession,
+    at: (path) => path,
+    copy: { copyEntries, resumeCopy, listCopies },
+    downloadUrl: (entry) => nfspClient().raw.readUrl(entry.id, { download: true, name: entry.name }),
+  }, capability))
 }

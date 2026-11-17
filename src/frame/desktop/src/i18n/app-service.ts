@@ -8,7 +8,7 @@ export const appServiceEn: Record<string, string> = {
   'sudo.hidePassword': 'Hide password',
   'sudo.showPassword': 'Show password',
   'sudo.tokenHint':
-    'Authorization is used for this operation only and expires in about 3 minutes.',
+    'Authorization is used for this operation only and expires in about {{minutes}} minutes.',
   'sudo.requesting': 'Requesting…',
   'sudo.title': 'Administrator permission',
   'sudo.descriptionWithAudience':
@@ -368,7 +368,7 @@ export const appServiceZh: Record<string, string> = {
   'sudo.password': '密码',
   'sudo.hidePassword': '隐藏密码',
   'sudo.showPassword': '显示密码',
-  'sudo.tokenHint': '授权仅用于本次操作，约 3 分钟后过期。',
+  'sudo.tokenHint': '授权仅用于本次操作，约 {{minutes}} 分钟后过期。',
   'sudo.requesting': '正在请求…',
   'sudo.title': '管理员授权',
   'sudo.descriptionWithAudience': '确认密码，为 {{aud}} 授予临时 sudo 权限。',

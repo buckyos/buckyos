@@ -2,8 +2,6 @@ import { MOCK_DESKTOP_PATH, mockDesktopFolderEntries } from '../../../api/deskto
 import { classifyFileKind } from '../data/fileKinds'
 import { mockThumbnailUrl } from './thumbnail'
 import type {
-  BrowserTab,
-  DeviceNode,
   DfsNode,
   FileEntry,
   SearchResultItem,
@@ -25,7 +23,6 @@ export interface TriggerRule {
 /** In-memory fixture source. Rendered views consume readers, never this. */
 export interface FileBrowserSnapshot {
   dfsRoots: DfsNode[]
-  devices: DeviceNode[]
   topics: Topic[]
   triggers: TriggerRule[]
   entriesByPath: Record<string, FileEntry[]>
@@ -411,69 +408,8 @@ function buildIndex(list: FileEntry[]) {
 }
 
 const dfsRoots: DfsNode[] = [
-  {
-    id: 'dfs-home',
-    name: 'Home',
-    path: '/home',
-    kind: 'home',
-    children: [
-      { id: 'dfs-home-docs', name: 'Documents', path: '/home/Documents', kind: 'generic' },
-      {
-        id: 'dfs-home-pics',
-        name: 'Pictures',
-        path: '/home/Pictures',
-        kind: 'generic',
-        children: [
-          {
-            id: 'dfs-home-pics-trips',
-            name: 'Trips',
-            path: '/home/Pictures/Trips',
-            kind: 'generic',
-            children: [
-              {
-                id: 'dfs-home-pics-trips-kyoto',
-                name: 'Kyoto',
-                path: '/home/Pictures/Trips/Kyoto',
-                kind: 'generic',
-              },
-            ],
-          },
-          { id: 'dfs-home-pics-work', name: 'Work', path: '/home/Pictures/Work', kind: 'generic' },
-          {
-            id: 'dfs-home-pics-sketches',
-            name: 'sketches',
-            path: '/home/Pictures/sketches',
-            kind: 'generic',
-          },
-        ],
-      },
-      { id: 'dfs-home-downloads', name: 'Downloads', path: '/home/Downloads', kind: 'generic' },
-      {
-        id: 'dfs-home-projects',
-        name: 'Projects',
-        path: '/home/Projects',
-        kind: 'generic',
-        children: [
-          {
-            id: 'dfs-home-projects-buckyos',
-            name: 'buckyos',
-            path: '/home/Projects/buckyos',
-            kind: 'generic',
-          },
-        ],
-      },
-      { id: 'dfs-home-private', name: 'Private', path: '/home/Private', kind: 'privacy' },
-    ],
-  },
-  {
-    id: 'dfs-public',
-    name: 'Public',
-    path: '/public',
-    kind: 'public',
-    children: [
-      { id: 'dfs-public-talks', name: 'talks', path: '/public/talks', kind: 'public' },
-    ],
-  },
+  { id: 'dfs-home', name: 'Home', path: '/home', kind: 'home' },
+  { id: 'dfs-public', name: 'Public', path: '/public', kind: 'public' },
   {
     // "Shares" is, by the three-kind model, a collection — the sidebar entry
     // points at the seed collection that absorbs the old /shared root.
@@ -481,33 +417,6 @@ const dfsRoots: DfsNode[] = [
     name: 'Shared',
     path: 'collection://shares',
     kind: 'shared',
-  },
-]
-
-const devices: DeviceNode[] = [
-  {
-    id: 'device-alpha',
-    name: 'Workstation Alpha',
-    host: 'alpha.local',
-    status: 'online',
-    roots: [
-      { path: '/opt', label: '/opt' },
-      { path: '/usr/local', label: '/usr/local' },
-    ],
-  },
-  {
-    id: 'device-node-2',
-    name: 'Node 2 · NAS',
-    host: 'nas-2.local',
-    status: 'syncing',
-    roots: [{ path: '/mnt/pool0', label: '/mnt/pool0' }],
-  },
-  {
-    id: 'device-mini',
-    name: 'Travel Mini',
-    host: 'mini.local',
-    status: 'offline',
-    roots: [{ path: '/data', label: '/data' }],
   },
 ]
 
@@ -615,7 +524,6 @@ const { byPath, byId } = buildIndex([...entries, ...stressEntries()])
 
 export const fileBrowserSnapshot: FileBrowserSnapshot = {
   dfsRoots,
-  devices,
   topics,
   triggers,
   entriesByPath: byPath,
@@ -774,17 +682,6 @@ export function mockMoveEntry(id: string, toParentPath: string): string | null {
   if (entry.kind === 'folder') repathDescendants(oldPath, newPath)
   return fromParent
 }
-
-export const defaultTab: BrowserTab = {
-  id: 'tab-home',
-  title: 'Home',
-  path: '/home',
-}
-
-export const defaultTabs: BrowserTab[] = [
-  defaultTab,
-  { id: 'tab-pictures', title: 'Pictures', path: '/home/Pictures' },
-]
 
 /** Search over the mock snapshot — returns explained hits (§2.9 shape). */
 export function searchFiles(query: string): SearchResultItem[] {

@@ -1,10 +1,12 @@
-import type { ContentRef, ResolvedPreviewSource } from './types'
+import type { ContentRef, PreviewProvider, ResolvedPreviewSource } from './types'
 
 export interface PreviewSourceResolver {
   resolvePreviewSource(
     source: ContentRef,
     opts: { signal?: AbortSignal; permissionsContext?: unknown },
   ): Promise<ResolvedPreviewSource>
+  /** Pipeline work for this kind when it needs another session than the system provider's. */
+  ensurePreviewWork?: PreviewProvider['ensurePreviewWork']
 }
 
 const resolvers = new Map<string, PreviewSourceResolver>()

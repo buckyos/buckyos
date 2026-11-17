@@ -125,6 +125,7 @@ async fn resolve_source(state: &SharedState, actor: &Actor, env: &Envelope, args
     if let Some(at) = &env.at {
         let node = state.resolve_for(actor, at, Level::Read, "read")?;
         return Ok(match &node {
+            Node::Native { meta, .. } if meta.special => Err(unsupported("not-content", "device files, FIFOs and sockets have no preview")),
             Node::Native { root, rel, meta, .. } if meta.kind == "file" || meta.kind == "symlink" => {
                 let cfg = state.config.root(root).ok_or_else(|| stale("root gone"))?;
                 let full = join_root(&cfg.path, rel);

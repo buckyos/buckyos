@@ -77,6 +77,27 @@ impl Default for NdmConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct HostRealm {
+    pub export: ExportRoot,
+    pub label: String,
+}
+
+impl HostRealm {
+    pub fn new(root: PathBuf, label: String) -> Self {
+        HostRealm { export: ExportRoot { id: crate::acl::HOST_ROOT.to_string(), path: root }, label }
+    }
+
+    pub fn computer() -> Self {
+        let root = if cfg!(windows) { PathBuf::new() } else { PathBuf::from("/") };
+        HostRealm::new(root, host_label())
+    }
+}
+
+pub fn host_label() -> String {
+    sysinfo::System::host_name().filter(|n| !n.is_empty()).unwrap_or_else(|| "Computer".to_string())
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct AuthTestConfig {
     pub public_key: String,
@@ -89,6 +110,7 @@ pub struct ServerConfig {
     /// Directory holding filedb.sqlite and the upload staging area.
     pub data_dir: PathBuf,
     pub exports: Vec<ExportRoot>,
+    pub host: Option<HostRealm>,
     /// Reconciler scan interval; 0 disables the background loop.
     pub scan_interval_secs: u64,
     /// Enables `POST /nfs/v1/debug/{action}` (test/dev only).
@@ -122,6 +144,7 @@ impl ServerConfig {
             listen: "127.0.0.1:3260".to_string(),
             data_dir,
             exports,
+            host: None,
             scan_interval_secs: 0,
             debug_api: false,
             max_list: 1000,
@@ -143,6 +166,9 @@ impl ServerConfig {
     }
 
     pub fn root(&self, id: &str) -> Option<&ExportRoot> {
+        if id == crate::acl::HOST_ROOT {
+            return self.host.as_ref().map(|h| &h.export);
+        }
         self.exports.iter().find(|r| r.id == id)
     }
 
@@ -175,7 +201,7 @@ pub fn config_from_data_root(data_root: &Path) -> std::io::Result<ServerConfig> 
             Ok(n) => n,
             Err(_) => continue, // non-UTF-8 name: cannot be addressed over the protocol
         };
-        if name.starts_with('.') {
+        if name.starts_with('.') || name.starts_with('@') {
             continue;
         }
         if !entry.file_type()?.is_dir() {

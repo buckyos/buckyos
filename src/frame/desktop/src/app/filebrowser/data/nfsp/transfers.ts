@@ -5,7 +5,10 @@ import { classifyFileKind } from '../fileKinds'
 import type { TransferControls } from '../transfers'
 import { registerTransferExecutor, takeLocalInput, TransferCancelledError } from '../transfers'
 import type { TransferTask } from '../state'
-import { dfsPathOf } from '../urls'
+import type { NfsBrowserClient } from '../../../../api/nfs_browser_client'
+import type { LocatorLike } from '../../../../api/nfsp_client'
+import { hostConnectionOf } from '../hostRealm'
+import { DEVICE_SCHEME, dfsPathOf } from '../urls'
 import { ensureSession, nfspBaseUrl, nfspClient } from './client'
 import { nfspToUiError } from './errors'
 import { notifyDfsPath } from './invalidation'
@@ -29,24 +32,49 @@ function committedEntry(task: TransferTask, parentPath: string, result: CommitOb
   }
 }
 
+/** Where an upload lands: the session that commits it and the parent folder in its realm. */
+export interface UploadTarget {
+  client: NfsBrowserClient
+  /** Session token for the NDM import (null = cookies). */
+  token: () => Promise<string | null>
+  /** Parent folder: its locator and the UI path entries get. */
+  at: LocatorLike
+  parentPath: string
+}
+
 async function runNfspTransfer(task: TransferTask, controls: TransferControls): Promise<FileEntry> {
+  if (task.targetUrl.startsWith(DEVICE_SCHEME)) {
+    const upload = hostConnectionOf(task.targetUrl).upload
+    if (!upload) throw { code: 'UNSUPPORTED', fallback: 'This location does not accept uploads', retryable: false }
+    return upload(task, controls)
+  }
   const parentPath = dfsPathOf(task.targetUrl)
   if (parentPath === null) throw { code: 'UNSUPPORTED', fallback: 'This location does not accept uploads', retryable: false }
+  await ensureSession()
+  const endpoint = nfspBaseUrl()
+  return uploadInto(task, controls, {
+    client: nfspClient(),
+    token: async () => (new URL(endpoint).origin === window.location.origin ? await getActiveSessionToken() : null),
+    at: parentPath,
+    parentPath,
+  })
+}
+
+export async function uploadInto(task: TransferTask, controls: TransferControls, target: UploadTarget): Promise<FileEntry> {
   const input = takeLocalInput(task.candidate.localId)
   if (!input) throw { code: 'INTERNAL', fallback: 'The selected files are no longer available — pick them again', retryable: false }
-  await ensureSession()
-  const client = nfspClient()
+  const { client, parentPath } = target
   const name = task.candidate.name
   try {
     checkCancelled(controls)
     controls.setStatus('probing')
-    const existing = await client.stat(parentPath, { name, cache: 'no-cache' }).catch((error: unknown) => {
+    const existing = await client.stat(target.at, { name, cache: 'no-cache' }).catch((error: unknown) => {
       if (nfspToUiError(error).code === 'NOT_FOUND') return null
       throw error
     })
     if (existing && !imports.has(task.candidate.localId)) throw { code: 'NAMESPACE_CONFLICT', fallback: `"${name}" already exists here; choose another destination name`, retryable: true }
     const endpoint = nfspBaseUrl()
-    const sessionToken = new URL(endpoint).origin === window.location.origin ? await getActiveSessionToken() : null
+    const sessionToken = await target.token()
     const options = { endpoint, sessionToken, signal: controls.signal, autoStartUpload: false }
     let imported = imports.get(task.candidate.localId)
     if (!imported) {
@@ -70,7 +98,7 @@ async function runNfspTransfer(task: TransferTask, controls: TransferControls): 
     if (status.objectStatus !== 'ready') throw new Error('The imported object is not ready')
     checkCancelled(controls)
     controls.setStatus('committing')
-    const result = await client.commitObject(parentPath, name, imported.objectId)
+    const result = await client.commitObject(target.at, name, imported.objectId)
     notifyDfsPath(parentPath)
     imports.delete(task.candidate.localId)
     ndm.releaseImportSession(imported.sessionId)

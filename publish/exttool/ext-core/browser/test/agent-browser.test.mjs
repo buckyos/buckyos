@@ -253,6 +253,26 @@ test('the lease is renewed while a script runs, and losing it stops the script',
   assert.equal(called('browser.release').length, 0);
 });
 
+test('taking over closes the connection: a command at work stops at once with exit code 5', async () => {
+  const file = script(
+    'waits.mjs',
+    `export default async ({ page, args }) => {
+  await fetch(args.site + '/signal/connected');
+  await page.waitForTimeout(60_000);
+};
+`,
+  );
+  const running = agentBrowser(['run', file, '--arg', `site=${site.url}`]);
+  await site.received('connected');
+  const cut = Date.now();
+  service.revoke('default');
+  const result = await running;
+  assert.equal(result.code, 5, result.stderr);
+  assert.match(result.stderr, /the lease on the browser is gone/);
+  assert.ok(Date.now() - cut < 5000, 'not at the next renewal, which is 20 seconds away');
+  assert.equal(called('browser.release').length, 0);
+});
+
 test('a group without tabs gets one, and tabs lists it', async () => {
   service.sessions.set('session-2', 'trip');
   const opened = await agentBrowser(['open', `${site.url}/form`], { OPENDAN_SESSION_ID: 'session-2' });

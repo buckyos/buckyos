@@ -1,8 +1,5 @@
 import clsx from 'clsx'
 import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
   Clock,
   Cpu,
   FlaskConical,
@@ -10,33 +7,47 @@ import {
   FolderOpen,
   Globe,
   Hash,
-  HardDrive,
+  House,
   Library,
   Lock,
+  LockOpen,
+  Monitor,
   Plus,
-  RefreshCw,
   Share2,
   Sparkles,
+  Star,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useI18n } from '../../i18n/provider'
-import type { CollectionSummary, DeviceNode, DfsNode, Topic } from './types'
-import type { SidebarSource } from './data/sidebarSources'
-import { collectionUrl, normalizeUrl } from './data/urls'
+import { isMockRuntime } from '../../runtime'
+import type { CollectionSummary, DfsNode, HostInfo, Topic } from './types'
+import type { FolderChildrenPage, SidebarSource } from './data/sidebarSources'
+import { collectionUrl, displayPath, normalizeUrl } from './data/urls'
+import { FolderTree, SectionError, type FolderTreeRoot } from './FolderTree'
 
 type Section = 'dfs' | 'devices' | 'views' | 'collections'
 
 interface SidebarProps {
   /** Per-source async states (§4.3) — one failing source never blanks the rest. */
   dfs: SidebarSource<DfsNode[]>
-  devices: SidebarSource<DeviceNode[]>
+  /** The computer (host realm); null data = not offered to this user. */
+  host: SidebarSource<HostInfo | null>
+  /** The computer tree is unlocked (BuckyOS sudo held by this window). */
+  hostUnlocked: boolean
+  onUnlockHost: () => void
+  /** Root of the unlocked computer tree. */
+  hostRootUrl: string | null
+  loadHostChildren: (url: string, cursor?: string) => Promise<FolderChildrenPage>
   topics: SidebarSource<Topic[]>
   /** Live store projection (mock in-memory today). */
   collections: CollectionSummary[]
   /** Canonical url of the active pane location. */
   activeUrl: string
-  advancedMode: boolean
-  onToggleAdvanced: (value: boolean) => void
+  /** "My files": the signed-in user's own home. */
+  homeUrl: string
+  /** Where this window opened (the folder tree stays collapsed until the location moves on). */
+  openedAt: string
+  loadChildren: (url: string, cursor?: string) => Promise<FolderChildrenPage>
   /** Accepts bare paths and canonical urls alike (normalized by the pane). */
   onNavigate: (url: string) => void
   onCreateCollection: () => void
@@ -57,61 +68,6 @@ function nodeIcon(kind: DfsNode['kind']) {
     default:
       return <FolderClosed size={14} className="text-[color:var(--cp-muted)]" />
   }
-}
-
-function DfsTreeNode({
-  node,
-  activeUrl,
-  onNavigate,
-  depth,
-}: {
-  node: DfsNode
-  activeUrl: string
-  onNavigate: (path: string) => void
-  depth: number
-}) {
-  const hasChildren = !!node.children?.length
-  const nodeUrl = normalizeUrl(node.path)
-  const [expanded, setExpanded] = useState(() => localStorage.getItem(`files.tree:${nodeUrl}`) !== 'false' && (depth < 1 || activeUrl.startsWith(`${nodeUrl}/`)))
-  const [previousUrl, setPreviousUrl] = useState(activeUrl)
-  if (previousUrl !== activeUrl) { setPreviousUrl(activeUrl); if (activeUrl.startsWith(`${nodeUrl}/`)) setExpanded(true) }
-  const active = activeUrl === nodeUrl
-
-  return (
-    <div>
-      <button
-        type="button"
-        aria-label={node.name}
-        className={clsx(
-          'group flex w-full items-center gap-2 rounded-[14px] px-2 py-1.5 text-left text-sm transition',
-          active
-            ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]'
-            : 'text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]',
-        )}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        onClick={() => {
-          onNavigate(node.path)
-        }}
-      >
-        {hasChildren ? <span role="button" tabIndex={0} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${node.name}`} onClick={(event) => { event.stopPropagation(); const next = !expanded; setExpanded(next); localStorage.setItem(`files.tree:${nodeUrl}`, String(next)) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(!expanded) } }}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span> : <span className="w-[14px] shrink-0" />}
-        {nodeIcon(node.kind)}
-        <span className="min-w-0 truncate font-medium">{node.name}</span>
-      </button>
-      {hasChildren && expanded ? (
-        <div className="space-y-0.5">
-          {node.children!.map((child) => (
-            <DfsTreeNode
-              key={child.id}
-              node={child}
-              activeUrl={activeUrl}
-              onNavigate={onNavigate}
-              depth={depth + 1}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
 }
 
 function SectionHeader({
@@ -149,27 +105,6 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
           />
         </div>
       ))}
-    </div>
-  )
-}
-
-function SectionError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  const { t } = useI18n()
-  return (
-    <div
-      className="mx-2 flex items-center gap-2 rounded-[12px] bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,var(--cp-surface))] px-2.5 py-2 text-[11px] text-[color:var(--cp-warning)]"
-      data-testid="sidebar-section-error"
-    >
-      <AlertTriangle size={12} className="shrink-0" />
-      <span className="min-w-0 flex-1 leading-4">{message}</span>
-      <button
-        type="button"
-        onClick={onRetry}
-        aria-label={t('filebrowser.retry', 'Retry')}
-        className="shrink-0 rounded-full p-1 hover:bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,transparent)]"
-      >
-        <RefreshCw size={12} />
-      </button>
     </div>
   )
 }
@@ -217,6 +152,7 @@ function navButton({
   icon,
   label,
   hint,
+  title,
   active,
   onClick,
 }: {
@@ -224,6 +160,7 @@ function navButton({
   icon: React.ReactNode
   label: string
   hint?: string
+  title?: string
   active: boolean
   onClick: () => void
 }) {
@@ -232,8 +169,10 @@ function navButton({
       key={key}
       type="button"
       onClick={onClick}
+      title={title}
+      aria-current={active ? 'page' : undefined}
       className={clsx(
-        'flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition',
+        'flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition',
         active
           ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]'
           : 'text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]',
@@ -250,12 +189,17 @@ function navButton({
 
 export function Sidebar({
   dfs,
-  devices,
+  host,
+  hostUnlocked,
+  onUnlockHost,
+  hostRootUrl,
+  loadHostChildren,
   topics,
   collections,
   activeUrl,
-  advancedMode,
-  onToggleAdvanced,
+  homeUrl,
+  openedAt,
+  loadChildren,
   onNavigate,
   onCreateCollection,
   compact = false,
@@ -266,6 +210,7 @@ export function Sidebar({
   const [groups, setGroups] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem('files.sidebarGroups') ?? '{}') } catch { return {} } })
   const toggleGroup = (key: string) => setGroups((prev) => { const next = { ...prev, [key]: !(prev[key] ?? true) }; localStorage.setItem('files.sidebarGroups', JSON.stringify(next)); return next })
   const pinCurrent = () => setPins((prev) => { const next = prev.includes(activeUrl) ? prev.filter((url) => url !== activeUrl) : [...prev, activeUrl]; localStorage.setItem('files.pins', JSON.stringify(next)); return next })
+  const hostInfo = host.state.data ?? null
   const [activeSection, setActiveSection] = useState<Section | null>(compact ? 'dfs' : null)
 
   const sections: { id: Section; label: string; icon: React.ReactNode }[] = [
@@ -276,7 +221,7 @@ export function Sidebar({
       label: t('filebrowser.sidebar.collections', 'Collections'),
       icon: <Library size={14} />,
     },
-    { id: 'devices', label: t('filebrowser.sidebar.devices', 'Devices'), icon: <Cpu size={14} /> },
+    ...(hostInfo ? [{ id: 'devices' as const, label: t('filebrowser.sidebar.devices', 'Devices'), icon: <Cpu size={14} /> }] : []),
   ]
 
   const goto = (url: string) => {
@@ -284,12 +229,35 @@ export function Sidebar({
     onAfterNavigate?.()
   }
 
-  const favorites = <div className="space-y-1">
-    <button className="min-h-9 w-full truncate rounded-xl px-2 text-left text-sm" onClick={() => goto('/home')}>{t('filebrowser.sidebar.myFiles', 'My files')}</button>
-    <button className="min-h-9 w-full truncate rounded-xl px-2 text-left text-sm" onClick={() => goto('view://recent')}>{t('filebrowser.sidebar.recent', 'Recent')}</button>
-    {pins.map((url) => <button key={url} className={clsx('block min-h-9 w-full truncate rounded-xl px-2 text-left text-xs', normalizeUrl(url) === activeUrl && 'bg-[color:var(--cp-accent-soft)]')} title={url} onClick={() => goto(url)}>★ {url.split('/').filter(Boolean).at(-1)}</button>)}
-    <button className="min-h-9 w-full px-2 text-left text-xs underline" onClick={pinCurrent}>{pins.includes(activeUrl) ? t('filebrowser.sidebar.unpin', 'Unpin current folder') : t('filebrowser.sidebar.pin', 'Pin current folder')}</button>
-  </div>
+  const favorites = (
+    <div className="space-y-0.5">
+      {navButton({
+        key: 'my-files',
+        icon: <House size={14} className="shrink-0 text-[color:var(--cp-accent)]" />,
+        label: t('filebrowser.sidebar.myFiles', 'My files'),
+        active: activeUrl === homeUrl,
+        onClick: () => goto(homeUrl),
+      })}
+      {navButton({
+        key: 'recent',
+        icon: <Clock size={14} className="shrink-0 text-[color:var(--cp-accent)]" />,
+        label: t('filebrowser.sidebar.recent', 'Recent'),
+        active: activeUrl === 'view://recent',
+        onClick: () => goto('view://recent'),
+      })}
+      {pins.map((url) =>
+        navButton({
+          key: `pin:${url}`,
+          icon: <Star size={14} className="shrink-0 text-[color:var(--cp-warning)]" />,
+          label: url.split('/').filter(Boolean).at(-1) ?? url,
+          title: displayPath(url),
+          active: normalizeUrl(url) === activeUrl,
+          onClick: () => goto(url),
+        }),
+      )}
+      <button className="min-h-9 w-full px-2 text-left text-xs text-[color:var(--cp-muted)] underline" onClick={pinCurrent}>{pins.includes(activeUrl) ? t('filebrowser.sidebar.unpin', 'Unpin current folder') : t('filebrowser.sidebar.pin', 'Pin current folder')}</button>
+    </div>
+  )
   // Views — recent + AI topics, all read-only query results.
   const renderViews = (
     <div className="space-y-0.5">
@@ -319,6 +287,29 @@ export function Sidebar({
           </>
         )}
       </SourceSection>
+      {isMockRuntime() ? (
+        <div>
+          <SectionHeader
+            icon={<FlaskConical size={13} />}
+            label={t('filebrowser.sidebar.diagnostics', 'Diagnostics (mock)')}
+          />
+          {(
+            [
+              ['view://demo/unknown-total', 'Unknown total'],
+              ['view://demo/flaky', 'Flaky view'],
+              ['view://demo/error', 'Failing view'],
+            ] as const
+          ).map(([url, label]) =>
+            navButton({
+              key: url,
+              icon: <FlaskConical size={12} className="shrink-0 text-[color:var(--cp-muted)]" />,
+              label,
+              active: activeUrl === url,
+              onClick: () => goto(url),
+            }),
+          )}
+        </div>
+      ) : null}
     </div>
   )
 
@@ -347,100 +338,38 @@ export function Sidebar({
     </div>
   )
 
-  const renderDevices = (
-    <div className="space-y-2">
-      {!advancedMode ? (
-        <div className="rounded-[16px] border border-dashed border-[color:var(--cp-border)] px-3 py-3 text-[11px] leading-5 text-[color:var(--cp-muted)]">
-          {t(
-            'filebrowser.sidebar.devices.hint',
-            'Device view is only available to advanced users. Enable advanced mode to browse raw device paths.',
-          )}
-          <button
-            type="button"
-            onClick={() => onToggleAdvanced(true)}
-            className="mt-2 inline-flex items-center gap-1 rounded-full border border-[color:var(--cp-border)] px-2.5 py-1 text-[11px] font-semibold text-[color:var(--cp-accent)] hover:border-[color:var(--cp-accent)]"
-          >
-            {t('filebrowser.sidebar.devices.enable', 'Enable advanced mode')}
-          </button>
-        </div>
-      ) : (
-        <SourceSection
-          source={devices}
-          empty={t('filebrowser.sidebar.devicesEmpty', 'No devices registered')}
-        >
-          {(list) => (
-            <>
-              {list.map((device) => (
-                <div
-                  key={device.id}
-                  className="rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_80%,transparent)] px-2.5 py-2"
-                >
-                  <div className="flex items-center gap-2 text-sm font-semibold text-[color:var(--cp-text)]">
-                    <HardDrive size={14} className="text-[color:var(--cp-muted)]" />
-                    <span className="truncate">{device.name}</span>
-                    <span
-                      className={clsx(
-                        'ml-auto text-[10px] font-semibold uppercase tracking-wider',
-                        device.status === 'online'
-                          ? 'text-[color:var(--cp-success)]'
-                          : device.status === 'syncing'
-                            ? 'text-[color:var(--cp-warning)]'
-                            : 'text-[color:var(--cp-muted)]',
-                      )}
-                    >
-                      {device.status}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[10px] text-[color:var(--cp-muted)]">
-                    {device.host}
-                  </div>
-                  <div className="mt-1.5 space-y-0.5">
-                    {device.roots.map((root) => (
-                      <button
-                        key={root.path}
-                        type="button"
-                        className="block w-full truncate rounded-[10px] px-2 py-1 text-left font-mono text-[11px] text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]"
-                        onClick={() => goto(`${device.name}:${root.path}`)}
-                      >
-                        {root.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </SourceSection>
-      )}
-      {advancedMode ? (
-        <div>
-          <SectionHeader
-            icon={<FlaskConical size={13} />}
-            label={t('filebrowser.sidebar.diagnostics', 'Diagnostics (mock)')}
-          />
-          <div className="space-y-0.5">
-            {(
-              [
-                ['view://demo/unknown-total', 'Unknown total'],
-                ['view://demo/flaky', 'Flaky view'],
-                ['view://demo/error', 'Failing view'],
-              ] as const
-            ).map(([url, label]) =>
-              navButton({
-                key: url,
-                icon: (
-                  <FlaskConical size={12} className="shrink-0 text-[color:var(--cp-muted)]" />
-                ),
-                label,
-                active: activeUrl === url,
-                onClick: () => goto(url),
-              }),
-            )}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
+  const renderDevices = hostInfo ? (
+    hostUnlocked && hostRootUrl ? (
+      <FolderTree
+        key={hostRootUrl}
+        roots={[{ name: hostInfo.label, url: hostRootUrl, defaultExpanded: true, icon: <Monitor size={14} className="shrink-0 text-[color:var(--cp-accent)]" /> }]}
+        activeUrl={activeUrl}
+        openedAt={openedAt}
+        onNavigate={goto}
+        loadChildren={loadHostChildren}
+      />
+    ) : (
+      <button
+        type="button"
+        data-testid="sidebar-unlock-host"
+        onClick={onUnlockHost}
+        className="flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]"
+        title={t('filebrowser.host.unlockHint', 'Confirm your password to see every folder on this computer')}
+      >
+        <Monitor size={14} className="shrink-0 text-[color:var(--cp-muted)]" />
+        <span className="min-w-0 flex-1 truncate font-medium">{hostInfo.label}</span>
+        <Lock size={13} className="shrink-0" aria-label={t('filebrowser.host.locked', 'Locked')} />
+      </button>
+    )
+  ) : null
+
+  const dfsRoots = (roots: DfsNode[]): FolderTreeRoot[] =>
+    roots.map((root) => ({
+      name: root.name,
+      url: normalizeUrl(root.path),
+      icon: nodeIcon(root.kind),
+      leaf: !normalizeUrl(root.path).startsWith('dfs://'),
+    }))
 
   const bodies: Record<Section, React.ReactNode> = {
     dfs: (
@@ -449,17 +378,13 @@ export function Sidebar({
         empty={t('filebrowser.sidebar.dfsEmpty', 'No accessible locations — check your access.')}
       >
         {(roots) => (
-          <div className="space-y-0.5">
-            {roots.map((root) => (
-              <DfsTreeNode
-                key={root.id}
-                node={root}
-                activeUrl={activeUrl}
-                onNavigate={goto}
-                depth={0}
-              />
-            ))}
-          </div>
+          <FolderTree
+            roots={dfsRoots(roots)}
+            activeUrl={activeUrl}
+            openedAt={openedAt}
+            onNavigate={goto}
+            loadChildren={loadChildren}
+          />
         )}
       </SourceSection>
     ),
@@ -471,7 +396,7 @@ export function Sidebar({
   // Compact mode (mobile) — section pills + single active body
   if (compact) {
     return (
-      <div className="flex h-full w-full flex-col gap-3">
+      <div className="flex h-full w-full flex-col gap-3" data-testid="files-places">
         <div className="flex gap-1 overflow-x-auto pb-1">
           {sections.map((section) => (
             <button
@@ -492,6 +417,7 @@ export function Sidebar({
         </div>
         <div className="flex-1 overflow-y-auto pr-1">
           {activeSection === 'dfs' && favorites}
+          {activeSection === 'dfs' && <SectionHeader icon={<FolderOpen size={13} />} label={t('filebrowser.sidebar.folders', 'Folders')} />}
           {activeSection ? bodies[activeSection] : null}
         </div>
       </div>
@@ -499,21 +425,25 @@ export function Sidebar({
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden">
+    <div className="flex h-full w-full flex-col overflow-hidden" data-testid="files-places">
       <div className="flex-1 space-y-1 overflow-y-auto pr-1">
         {favorites}
-        <SectionHeader icon={<FolderOpen size={13} />} label={advancedMode ? t('filebrowser.sidebar.dfs', 'DFS · Logical view') : t('filebrowser.sidebar.folders', 'Folders')} />
+        <SectionHeader icon={<FolderOpen size={13} />} label={t('filebrowser.sidebar.folders', 'Folders')} />
         {bodies.dfs}
         <button className="w-full text-left" onClick={() => toggleGroup('topics')} aria-expanded={groups.topics ?? true}><SectionHeader icon={<Sparkles size={13} />} label={t('filebrowser.sidebar.views', 'AI Topics')} hint={`${topics.state.data?.length ?? '…'} ${groups.topics === false ? '›' : '⌄'}`} /></button>
         {(groups.topics ?? true) && renderViews}
         <button className="w-full text-left" onClick={() => toggleGroup('collections')} aria-expanded={groups.collections ?? true}><SectionHeader icon={<Library size={13} />} label={t('filebrowser.sidebar.collections', 'Collections')} hint={`${collections.length} ${groups.collections === false ? '›' : '⌄'}`} /></button>
         {(groups.collections ?? true) && renderCollections}
-        <SectionHeader
-          icon={<Cpu size={13} />}
-          label={t('filebrowser.sidebar.devices', 'Devices')}
-          hint={advancedMode ? t('filebrowser.sidebar.advanced', 'Advanced') : ''}
-        />
-        {renderDevices}
+        {hostInfo ? (
+          <>
+            <SectionHeader
+              icon={<Cpu size={13} />}
+              label={t('filebrowser.sidebar.devices', 'Devices')}
+              action={hostUnlocked ? <LockOpen size={12} className="text-[color:var(--cp-success)]" aria-label={t('filebrowser.host.unlocked', 'Unlocked')} /> : undefined}
+            />
+            {renderDevices}
+          </>
+        ) : null}
       </div>
     </div>
   )
