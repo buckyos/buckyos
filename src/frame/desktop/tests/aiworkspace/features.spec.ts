@@ -258,6 +258,23 @@ test('unknown commit results are resolved through doc.get_submission and a same-
   expect(new Set(seen.map((item) => item.key)).size).toBe(1)
 })
 
+test('an account annotation shows the recorded author when a legacy display name is present', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `annotation author ${Date.now()}`)
+  const result = await api.commit(ALICE, ws, [{
+    op: 'entity.create', entity_id: 'legacy-author-note', type_id: 'buckyos.annotation', parent_id: 'data', order_key: 'zz',
+    payload: { target: { entity_id: 'notes' }, kind: 'note', body: '旧版批注', author_name: '旧称呼' },
+  }])
+  expect(result.status).toBe('accepted')
+  expect((await api.read(ALICE, ws.workspace_id, 'legacy-author-note')).content.payload).toMatchObject({
+    author: 'alice', author_name: '旧称呼',
+  })
+
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await openSide(page, 'annotations')
+  const note = page.getByTestId('aiws-annotation').filter({ hasText: '旧版批注' })
+  await expect(note.getByTestId('aiws-annotation-author')).toHaveText('alice')
+})
+
 test('annotations, field and option management, migration pre-check, broken view diagnostics', async ({ page, api }) => {
   const ws = await api.sample(ALICE, `schema ${Date.now()}`)
   await openWorkspace(page, ALICE, ws.workspace_id)
