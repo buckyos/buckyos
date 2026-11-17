@@ -16,6 +16,7 @@ import {
   Upload as UploadIcon,
   X,
 } from 'lucide-react'
+import { ArchivePasswordDialog } from '../../components/preview/ArchivePasswordDialog'
 import { normalizeCyfsPath } from '../../components/preview/session'
 import type { ContentRef, PreviewSessionContext } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
@@ -186,6 +187,8 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     return next
   })
   const [toast, setToast] = useState<string | null>(null)
+  /** The root of an archive whose names are encrypted, waiting for its password. */
+  const [archivePassword, setArchivePassword] = useState<{ pane: BrowserPane; url: string; name: string } | null>(null)
   const [defaultApp, setDefaultApp] = useState<{ plans: HandlerPlan[]; request: Parameters<typeof openContent>[0]; name: string; size?: number; key: string; always: boolean; selector: string } | null>(null)
   const [previewCollapsed, setPreviewCollapsed] = useState(true)
   /** Toolbar clipboard, shared by both panes. */
@@ -1285,6 +1288,11 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   const listProps = (pane: BrowserPane) => ({
     ...listPreferences, onNameWidthChange: (nameWidth: number) => changeListPreferences({ nameWidth }),
     ...(archiveRootOf(pane.currentUrl) ? {
+      onArchivePassword: () => {
+        const url = archiveRootOf(pane.currentUrl)
+        const outer = archiveSplit(dfsPathOf(pane.currentUrl) ?? '')?.outer ?? ''
+        if (url) setArchivePassword({ pane, url, name: outer.split('/').pop() ?? '' })
+      },
       readOnlyNote: t('archive.readOnly', 'Files in an archive are read-only'),
       emptyState: { title: archiveSplit(dfsPathOf(pane.currentUrl) ?? '')?.member ? t('archive.emptyFolder.title', 'This folder is empty') : t('archive.empty.title', 'This archive is empty') },
     } : {}),
@@ -1850,6 +1858,16 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       <TransfersPanel onOpenTarget={(path) => focusedPane.revealOriginal(path)} />
       <NamePromptDialog request={namePrompt} onClose={() => setNamePrompt(null)} />
 
+      {archivePassword ? (
+        <div className="fixed inset-0 z-[70]">
+          <ArchivePasswordDialog
+            name={archivePassword.name}
+            url={archivePassword.url}
+            onUnlocked={() => { archivePassword.pane.list.reload(); setArchivePassword(null) }}
+            onCancel={() => setArchivePassword(null)}
+          />
+        </div>
+      ) : null}
       {toast ? (
         <div className="pointer-events-none absolute bottom-8 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-3 py-1.5 text-xs text-white">
           {toast}

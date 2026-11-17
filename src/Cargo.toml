@@ -145,6 +145,10 @@ itertools = "0.14.0"
 zip = "2.2.0"
 encoding_rs = "0.8.44"
 chardetng = "1.0.0"
+xz2 = "0.1.7"
+bzip2 = "0.5.2"
+zstd = "0.13.5"
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "bzip2", "ppmd", "deflate"] }
 
 # Other
 upon = "0.10.0"

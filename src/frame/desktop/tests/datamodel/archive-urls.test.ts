@@ -6,6 +6,7 @@ import {
   copyPathText,
   crumbsForUrl,
   fallbackTitle,
+  isArchiveName,
   parentTarget,
   parentUrl,
   parseArchiveObjectUrl,
@@ -24,6 +25,17 @@ assertEquals(archiveSplit('/home/a/@/archive/x'), null, 'a folder named @ is a f
 assertEquals(archiveSplit('/home/a/x.zip/@/content'), null, 'other branches are not archives')
 assertEquals(archiveSplit('/home/a/x.zip'), null, 'the archive file itself')
 assertEquals(archiveRootOf('dfs:///home/a/x.zip/@/archive/docs'), 'dfs:///home/a/x.zip/@/archive', 'root of a folder inside')
+
+// 1b. Other formats (more-formats TODO §4): longest extension, any case.
+for (const name of ['a.7z', 'b.tar', 'c.TAR.GZ', 'd.tgz', 'e.tar.xz', 'f.tbz2', 'g.tar.zst', 'server.log.gz', 'dump.sql.xz']) {
+  assertEquals(isArchiveName(name), true, `archive name ${name}`)
+}
+for (const name of ['a.docx', 'b.rar', '.gz', 'notes.txt']) {
+  assertEquals(isArchiveName(name), false, `not an archive name ${name}`)
+}
+assertEquals(archiveSplit('/home/a/b.tar.gz/@/archive/docs/a.txt'), { outer: '/home/a/b.tar.gz', member: 'docs/a.txt' }, 'a tar.gz member')
+assertEquals(archiveSplit('/home/a/p.7z/@/archive'), { outer: '/home/a/p.7z', member: '' }, 'a 7z root')
+assertEquals(parentTarget('dfs:///home/a/b.tgz/@/archive'), { url: 'dfs:///home/a', select: '/home/a/b.tgz' }, 'leaving a tgz selects it')
 
 // 2. Up from an archive root goes to the archive file's folder and selects it.
 assertEquals(parentUrl('dfs:///home/a/x.zip/@/archive'), 'dfs:///home/a', 'parent of the root')

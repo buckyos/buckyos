@@ -16,7 +16,7 @@ interface ErrorShape {
 const BY_CODE: Record<string, ErrorShape> = {
   ARCHIVE_CORRUPT: {
     messageKey: 'archive.corrupt',
-    fallback: 'The archive is damaged or not a ZIP file.',
+    fallback: 'The archive is damaged.',
     retryable: false,
   },
   PASSWORD_REQUIRED: {

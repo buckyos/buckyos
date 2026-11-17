@@ -1,6 +1,7 @@
 /**
- * Archives in Preview (notepads/archive-preview-files-todo.md T6): whether a
- * source opens as a ZIP directory, and the addresses its folders and members
+ * Archives in Preview (notepads/archive-preview-files-todo.md T6, and
+ * archive-preview-more-formats-todo.md for 7z / tar): whether a source opens
+ * as an archive directory, and the addresses its folders and members
  * use. Path sources stay `dfs://<file>/@/archive/...` (live); object sources
  * (chat attachments) are `archive://<objId>/archive/...` folders and
  * `{ object-id, innerPath }` members (fixed).
@@ -41,7 +42,7 @@ async function archiveSupport(): Promise<((name: string) => boolean) | null> {
   return raw.archiveCapability ? (name: string) => raw.opensArchive(name) : null
 }
 
-/** What a source opens as when it is a ZIP or something inside one; null = an ordinary item. */
+/** What a source opens as when it is an archive or something inside one; null = an ordinary item. */
 export async function archiveTargetOf(source: ContentRef, signal?: AbortSignal): Promise<ArchiveTarget | null> {
   const opens = await archiveSupport().catch(() => null)
   if (!opens) return null
@@ -131,12 +132,15 @@ export async function unlockArchive(url: string, password: string): Promise<void
   await nfspClient().raw.archiveUnlock(locatorOfArchiveUrl(url), password)
 }
 
+/** The root folder url of the archive an archive folder url is in. */
+export function archiveRootOfUrl(url: string): string {
+  const object = parseArchiveObjectUrl(url)
+  if (object) return archiveObjectUrl(object.objectId)
+  const split = archiveSplit(dfsPathOf(url) ?? '')
+  return split ? archiveRootUrl(split.outer) : url
+}
+
 export async function forgetArchivePassword(url: string): Promise<void> {
   await ensureSession()
-  const object = parseArchiveObjectUrl(url)
-  const root = object ? archiveObjectUrl(object.objectId) : (() => {
-    const split = archiveSplit(dfsPathOf(url) ?? '')
-    return split ? archiveRootUrl(split.outer) : url
-  })()
-  await nfspClient().raw.archiveForget(locatorOfArchiveUrl(root))
+  await nfspClient().raw.archiveForget(locatorOfArchiveUrl(archiveRootOfUrl(url)))
 }

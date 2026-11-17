@@ -1,10 +1,13 @@
-//! Archive caches (archive TODO T1–T3): parsed indexes by outer version,
-//! object outers landed on disk with their sha256 (D16), materialized members
-//! (D9), one disk budget for the last two with least-recently-used eviction,
-//! and single-flight work that stops when its last waiter leaves.
+//! Archive caches (archive TODO T1–T3, more-formats TODO E3/E8): parsed
+//! indexes by outer version, object outers landed on disk with their sha256
+//! (D16), compressed outers decompressed once, materialized members (D9), one
+//! disk budget for all of these with least-recently-used eviction, and
+//! single-flight work that stops when its last waiter leaves.
 
+use super::format::{self, Body, Compression, Format, Kind, Member, Sniffed};
 use super::names::Naming;
-use super::zip::{self, Member, PosReader, Source, Stamp};
+use super::source::*;
+use super::{sevenz, tar, zip};
 use super::ArchiveConfig;
 use crate::error::*;
 use crate::state::AppState;
@@ -24,36 +27,94 @@ const TMP_PREFIX: &str = ".tmp-";
 /// A parsed archive, shared by every request on the same outer version.
 #[derive(Debug)]
 pub struct Index {
-    /// `n:<root>/<rel>:<ino>:<dev>:<birth>:<size>:<mtime>` or `o:<obj_id>`.
+    /// `n:<root>/<rel>:<ino>:<dev>:<birth>:<size>:<mtime>` or `o:<obj_id>`;
+    /// a user's view of an encrypted-header 7z adds `|u:<user>`.
     pub key: String,
+    /// The outer file.
     pub src: Arc<Source>,
-    pub zip: ::zip::ZipArchive<PosReader>,
+    /// Where `Loc::Range` members are: the outer, or what it decompressed to.
+    pub data: Arc<Source>,
+    pub body: Body,
+    pub format: Format,
     pub members: Vec<Member>,
     pub naming: Naming,
     /// Outer file name (the archive root's display name).
     pub name: String,
     /// Whole-file sha256 (hex) when known without hashing (object outers).
     pub sha256: Option<String>,
+    pub limits: Limits,
+}
+
+/// How far `Index::build` may go: decompressing a whole outer runs only off
+/// the async threads, where it can be cancelled.
+pub struct Build<'a> {
+    pub mgr: &'a ArchiveMgr,
+    pub unpack: bool,
+    pub cancel: &'a AtomicBool,
 }
 
 impl Index {
-    pub fn build(key: String, path: PathBuf, stamp: Option<Stamp>, name: String, sha256: Option<String>, limits: zip::Limits) -> NfsResult<Index> {
-        let src = Source::open(path, stamp).map_err(zip::io_error)?;
-        let parsed = zip::parse(&src, limits)?;
-        Ok(Index { key, src, zip: parsed.zip, members: parsed.members, naming: parsed.naming, name, sha256 })
+    pub fn build(b: Build<'_>, key: String, path: PathBuf, stamp: Option<Stamp>, name: String, sha256: Option<String>) -> NfsResult<Index> {
+        let limits = b.mgr.limits();
+        let src = Source::open(path, stamp).map_err(io_error)?;
+        let head = read_exact_at(&mut src.reader(), 0, (src.len as usize).min(512)).map_err(io_error)?;
+        let mut data = src.clone();
+        let (body, format, members) = match format::sniff(&head) {
+            Sniffed::SevenZ => {
+                let (body, members, solid) = sevenz::parse(&src, limits)?;
+                let header_encrypted = matches!(body, Body::Locked);
+                (body, Format { kind: Kind::SevenZ, compression: None, solid, header_encrypted }, members)
+            }
+            Sniffed::Tar => (Body::Ranges, Format::of(Kind::Tar), tar::parse_plain(&src, limits)?),
+            Sniffed::Compressed(comp) => {
+                let (unpacked, u) = b.mgr.unpacked(&key, &src, comp, &name, &b)?;
+                data = unpacked;
+                (Body::Ranges, Format { kind: u.kind, compression: Some(comp), solid: false, header_encrypted: false }, u.members)
+            }
+            Sniffed::Refused(f) => return Err(unsupported("format", format!("{f} archives are not supported")).with("format", json!(f))),
+            Sniffed::Zip | Sniffed::Unknown => match zip::parse(&src, limits) {
+                Ok((z, members)) => (Body::Zip(z), Format::of(Kind::Zip), members),
+                Err(e) if matches!(format::sniff(&head), Sniffed::Unknown) && e.code == ErrorCode::ArchiveCorrupt => {
+                    return Err(unsupported("format", "this file is not an archive this server opens"));
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        Ok(Index::assemble(key, src, data, body, format, members, name, sha256, limits))
     }
 
-    pub fn member_key(&self, raw: &[u8]) -> String {
-        let mut h = Sha256::new();
-        h.update(self.key.as_bytes());
-        h.update([0]);
-        h.update(raw);
-        hex::encode(h.finalize())
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(key: String, src: Arc<Source>, data: Arc<Source>, body: Body, format: Format, members: Vec<Member>, name: String, sha256: Option<String>, limits: Limits) -> Index {
+        let flags = members.iter().map(|m| (m.hidden, m.readable)).collect();
+        let backslash = format.kind != Kind::Tar;
+        let naming = Naming::new(members.iter().map(|m| m.name.clone()).collect(), flags, backslash);
+        Index { key, src, data, body, format, members, naming, name, sha256, limits }
+    }
+
+    /// An encrypted-header 7z still waiting for a password (E7).
+    pub fn locked(&self) -> bool {
+        matches!(self.body, Body::Locked)
+    }
+
+    /// `user`'s view of a locked index, opened with `password` (blocking).
+    pub fn unlocked(&self, user: &str, password: &str) -> NfsResult<Index> {
+        let (body, members, solid) = sevenz::unlock(&self.src, password, self.limits)?;
+        let format = Format { solid, ..self.format.clone() };
+        Ok(Index::assemble(view_key(&self.key, user), self.src.clone(), self.src.clone(), body, format, members, self.name.clone(), self.sha256.clone(), self.limits))
+    }
+
+    /// The key passwords are remembered under: the archive's, not a user's view of it.
+    pub fn password_key(&self) -> &str {
+        self.key.split_once("|u:").map(|(k, _)| k).unwrap_or(&self.key)
     }
 
     pub fn encrypted_entries(&self) -> usize {
         self.members.iter().filter(|m| m.encrypted).count()
     }
+}
+
+pub fn view_key(key: &str, user: &str) -> String {
+    format!("{key}|u:{user}")
 }
 
 struct Flight<T> {
@@ -144,15 +205,25 @@ pub struct ArchiveMgr {
     pub objects: Flights<(PathBuf, String, String)>,
     pub members: Flights<PathBuf>,
     pub indexing: Flights<Arc<Index>>,
+    /// Solid 7z blocks being extracted: how far each got (E8).
+    pub blocks: Mutex<HashMap<String, tokio::sync::watch::Receiver<BlockState>>>,
     pub workers: Arc<tokio::sync::Semaphore>,
     pub passwords: super::password::Sessions,
+}
+
+/// Progress of one block extraction: files before `ready_before` are done
+/// (cached, or skipped when they were already), `end` once it stopped.
+#[derive(Debug, Clone, Default)]
+pub struct BlockState {
+    pub ready_before: usize,
+    pub end: Option<Result<(), NfsError>>,
 }
 
 impl ArchiveMgr {
     pub fn new(data_dir: &Path, config: ArchiveConfig) -> NfsResult<ArchiveMgr> {
         let dir = data_dir.join("archive");
         let mut budget = Budget::default();
-        for sub in ["objects", "members"] {
+        for sub in ["objects", "members", "unpacked"] {
             let d = dir.join(sub);
             std::fs::create_dir_all(&d)?;
             for e in std::fs::read_dir(&d)?.flatten() {
@@ -179,13 +250,19 @@ impl ArchiveMgr {
             objects: Default::default(),
             members: Default::default(),
             indexing: Default::default(),
+            blocks: Default::default(),
             workers,
             passwords: Default::default(),
         })
     }
 
-    pub fn limits(&self) -> zip::Limits {
-        zip::Limits { max_central_directory_bytes: self.config.max_central_directory_bytes, max_entries: self.config.max_entries }
+    pub fn limits(&self) -> Limits {
+        Limits {
+            max_central_directory_bytes: self.config.max_central_directory_bytes,
+            max_entries: self.config.max_entries,
+            max_materialize_bytes: self.config.max_materialize_bytes.min(self.config.disk_budget_bytes),
+            max_decoder_memory: self.config.max_decoder_memory,
+        }
     }
 
     pub fn cached(&self, key: &str) -> Option<Arc<Index>> {
@@ -214,6 +291,7 @@ impl ArchiveMgr {
         let idle = Duration::from_secs(self.config.idle_close_secs);
         for (index, _) in self.indexes.lock().unwrap().values() {
             index.src.close_idle(idle);
+            index.data.close_idle(idle);
         }
     }
 
@@ -223,6 +301,39 @@ impl ArchiveMgr {
 
     pub fn members_dir(&self) -> PathBuf {
         self.dir.join("members")
+    }
+
+    pub fn unpacked_dir(&self) -> PathBuf {
+        self.dir.join("unpacked")
+    }
+
+    pub fn remove(&self, key: &str) {
+        self.indexes.lock().unwrap().remove(key);
+    }
+
+    /// Drops every view `user` opened of an encrypted-header archive.
+    pub fn remove_views(&self, user: &str) {
+        let suffix = view_key("", user);
+        self.indexes.lock().unwrap().retain(|k, _| !k.ends_with(&suffix));
+    }
+
+    /// What a compressed outer decompresses to: from the cache, else decoded now (E3).
+    fn unpacked(&self, key: &str, src: &Arc<Source>, comp: Compression, name: &str, b: &Build<'_>) -> NfsResult<(Arc<Source>, tar::Unpacked)> {
+        let dest = self.unpacked_dir().join(hex::encode(Sha256::digest(key.as_bytes())));
+        if self.touch(&dest) {
+            if let Ok(data) = Source::open(dest.clone(), None) {
+                if let Ok(u) = tar::reopen(&data, name, comp, self.limits()) {
+                    return Ok((data, u));
+                }
+            }
+        }
+        if !b.unpack {
+            return Err(unsupported("archive_not_prepared", "this request cannot open compressed archives"));
+        }
+        let tmp = self.tmp_path(&self.unpacked_dir());
+        let u = tar::unpack(src, comp, name, &dest, &tmp, self, self.limits(), b.cancel)?;
+        let data = Source::open(dest, None).map_err(io_error)?;
+        Ok((data, u))
     }
 
     pub fn tmp_path(&self, dir: &Path) -> PathBuf {
@@ -245,10 +356,7 @@ impl ArchiveMgr {
                 let _ = std::fs::remove_file(path.with_extension("json"));
                 b.files.remove(&path);
                 b.total = b.total.saturating_sub(len);
-                if path.parent() == Some(self.objects_dir().as_path()) {
-                    let obj_key = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.indexes.lock().unwrap().retain(|_, (i, _)| !i.src_path_ends_with(&obj_key));
-                }
+                self.indexes.lock().unwrap().retain(|_, (i, _)| i.src.path() != path && i.data.path() != path);
             }
         }
         if b.total + size > self.config.disk_budget_bytes {
@@ -281,14 +389,17 @@ impl ArchiveMgr {
         }
     }
 
-    pub fn member_path(&self, index: &Index, raw: &[u8]) -> PathBuf {
-        self.members_dir().join(index.member_key(raw))
-    }
-}
-
-impl Index {
-    fn src_path_ends_with(&self, file_name: &str) -> bool {
-        self.key.starts_with("o:") && hex::encode(Sha256::digest(&self.key.as_bytes()[2..])) == file_name
+    /// Cache file of member `entry`; `user` keeps an encrypted member's plaintext to that user.
+    pub fn member_path(&self, index: &Index, entry: usize, user: Option<&str>) -> PathBuf {
+        let mut h = Sha256::new();
+        h.update(index.key.as_bytes());
+        h.update([0]);
+        h.update(entry.to_le_bytes());
+        if let Some(u) = user {
+            h.update([0]);
+            h.update(u.as_bytes());
+        }
+        self.members_dir().join(hex::encode(h.finalize()))
     }
 }
 
@@ -337,13 +448,13 @@ async fn land_object(state: Arc<AppState>, id: ObjId, path: PathBuf, cancel: Arc
             }
             total += n as u64;
             if total > file.size {
-                return Err(zip::corrupt("the object is longer than its FileObject says"));
+                return Err(corrupt("the object is longer than its FileObject says"));
             }
             hash.update(&buf[..n]);
             out.write_all(&buf[..n]).await?;
         }
         if total != file.size {
-            return Err(zip::corrupt("the object is shorter than its FileObject says"));
+            return Err(corrupt("the object is shorter than its FileObject says"));
         }
         out.sync_all().await?;
         Ok(hex::encode(hash.finalize()))
@@ -383,12 +494,10 @@ pub fn create_private_sync(path: &Path) -> NfsResult<std::fs::File> {
 
 /// Decodes a member completely into the cache (blocking); the file becomes
 /// visible only after the whole member checked out.
-pub fn materialize_blocking(index: &Index, m: &Member, password: Option<&[u8]>, tmp: &Path, dest: &Path, cancel: &AtomicBool) -> NfsResult<bool> {
+pub fn materialize_blocking(index: &Index, m: &Member, password: Option<&str>, tmp: &Path, dest: &Path, cancel: &AtomicBool) -> NfsResult<bool> {
     use std::io::Write;
-    let mut zip = index.zip.clone();
-    let reader = zip::open(&mut zip, m, password)?;
     let mut out = std::io::BufWriter::new(create_private_sync(tmp)?);
-    let done = zip::pump(reader, m.size, None, cancel, &mut |chunk| out.write_all(chunk).map(|_| true));
+    let done = format::decode(index, m, password, None, cancel, &mut |chunk| out.write_all(chunk).map(|_| true));
     let finished = match done {
         Ok(true) => {
             let file = out.into_inner().map_err(|e| NfsError::from(e.into_error()))?;
@@ -410,9 +519,27 @@ pub fn materialize_blocking(index: &Index, m: &Member, password: Option<&[u8]>, 
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
+
+    /// A copy of `index`'s parts, for tests that swap one of them.
+    pub fn shell(index: &Index) -> Index {
+        let names = index.members.iter().map(|m| m.name.clone()).collect();
+        let flags = index.members.iter().map(|m| (m.hidden, m.readable)).collect();
+        Index {
+            key: index.key.clone(),
+            src: index.src.clone(),
+            data: index.data.clone(),
+            body: Body::Ranges,
+            format: index.format.clone(),
+            members: index.members.clone(),
+            naming: Naming::new(names, flags, true),
+            name: index.name.clone(),
+            sha256: index.sha256.clone(),
+            limits: index.limits,
+        }
+    }
 
     #[tokio::test]
     async fn concurrent_callers_share_one_run() {

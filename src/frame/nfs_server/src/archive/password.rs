@@ -85,6 +85,11 @@ pub fn stored(db: &FileDb, user: &str, sha256: &str) -> NfsResult<Vec<String>> {
     Ok(rows)
 }
 
+/// Whether `user` keeps any password at all (before hashing an outer to look one up).
+pub fn has_any(db: &FileDb, user: &str) -> bool {
+    db.lock().query_row("SELECT 1 FROM archive_passwords WHERE user_id=?1 LIMIT 1", params![user], |_| Ok(())).is_ok()
+}
+
 pub fn store(db: &FileDb, user: &str, sha256: &str, password: &str) -> NfsResult<()> {
     db.lock().execute(
         "INSERT INTO archive_passwords(user_id, archive_sha256, password, verified_at) VALUES (?1, ?2, ?3, ?4)

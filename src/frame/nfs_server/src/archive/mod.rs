@@ -1,14 +1,21 @@
-//! Archive browsing (notepads/archive-preview-files-todo.md): the members of a
-//! ZIP file as a read-only tree, addressed as `<file>/@/archive/<member>`
-//! (path sources: DFS files and projected bucket files) or as
-//! `ObjectRef { obj_id, inner_path: "/archive/<member>" }` (object sources such
-//! as chat attachments). Nothing is extracted by default: listings come from
-//! the central directory, members are read by range (stored), decoded as a
-//! stream, or materialized into a bounded cache (D9).
+//! Archive browsing (notepads/archive-preview-files-todo.md, and
+//! archive-preview-more-formats-todo.md for 7z / tar / compressed files): the
+//! members of an archive as a read-only tree, addressed as
+//! `<file>/@/archive/<member>` (path sources: DFS files and projected bucket
+//! files) or as `ObjectRef { obj_id, inner_path: "/archive/<member>" }`
+//! (object sources such as chat attachments). Nothing is extracted by
+//! default: listings come from the archive's directory, members are read by
+//! range (stored), decoded as a stream, or materialized into a bounded cache
+//! (D9); compressed tars and solid 7z blocks are decoded once into the cache
+//! (E3, E8).
 
 pub mod cache;
+pub mod format;
 pub mod names;
 pub mod password;
+pub mod sevenz;
+pub mod source;
+pub mod tar;
 pub mod zip;
 
 use crate::acl::{Actor, Level, HOME_ROOT, HOST_ROOT};
@@ -31,9 +38,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use format::{Compression, Kind, Member};
+use source::{unsupported, Stamp};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use zip::{Member, Stamp};
 
 pub const SEGMENT: &str = "@";
 pub const BRANCH: &str = "archive";
@@ -49,6 +57,8 @@ pub struct ArchiveConfig {
     pub max_materialize_bytes: u64,
     pub workers: usize,
     pub idle_close_secs: u64,
+    /// Dictionary / window memory one 7z or xz decoder may use (E11).
+    pub max_decoder_memory: u64,
 }
 
 impl Default for ArchiveConfig {
@@ -62,6 +72,7 @@ impl Default for ArchiveConfig {
             max_materialize_bytes: budget,
             workers: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2),
             idle_close_secs: 60,
+            max_decoder_memory: 256 * 1024 * 1024,
         }
     }
 }
@@ -160,15 +171,15 @@ impl ArchiveNode {
     fn etag(&self, m: &Member) -> (String, String) {
         match &self.outer {
             Outer::Object { obj_id } => {
-                let v = format!("{obj_id}-{:08x}", m.crc32);
+                let v = format!("{obj_id}-{}", m.tag);
                 (v.clone(), format!("\"{v}\""))
             }
             Outer::Native { meta, .. } => {
-                let v = format!("{}-{}-{:08x}", meta.size, meta.mtime, m.crc32);
+                let v = format!("{}-{}-{}", meta.size, meta.mtime, m.tag);
                 (v.clone(), format!("W/\"{v}\""))
             }
             Outer::Projection { etag, .. } => {
-                let v = format!("{etag}-{:08x}", m.crc32);
+                let v = format!("{etag}-{}", m.tag);
                 (v.clone(), format!("W/\"{v}\""))
             }
         }
@@ -176,8 +187,8 @@ impl ArchiveNode {
 
     fn mtime(&self) -> i64 {
         match self.member() {
-            Some(m) => m.mtime,
-            None => match &self.outer {
+            Some(m) if m.mtime != 0 => m.mtime,
+            _ => match &self.outer {
                 Outer::Native { meta, .. } => meta.mtime,
                 _ => 0,
             },
@@ -197,20 +208,22 @@ pub fn read_only() -> NfsError {
     NfsError::new(ErrorCode::PermissionDenied, "files in an archive are read-only").with("reason", json!("archive_read_only"))
 }
 
-fn unsupported(reason: &str, msg: impl Into<String>) -> NfsError {
-    NfsError::new(ErrorCode::Unsupported, msg).with("reason", json!(reason))
+fn password_required() -> NfsError {
+    NfsError::new(ErrorCode::PasswordRequired, "this archive is encrypted; unlock it first")
 }
 
 // ---------- request context ----------
 
 /// What a request brings to the synchronous namespace: the encoding
 /// preference of its `Accept-Language`, the objects its principal may read,
-/// and failures of the asynchronous preparation.
+/// who it is (for users' views of encrypted-header archives), and failures
+/// of the asynchronous preparation.
 #[derive(Debug, Default)]
 pub struct RequestCtx {
     pub pref: Option<&'static encoding_rs::Encoding>,
     granted: Mutex<HashSet<String>>,
     failed: Mutex<HashMap<String, NfsError>>,
+    user: Mutex<Option<String>>,
 }
 
 impl RequestCtx {
@@ -246,6 +259,10 @@ pub fn granted(obj_id: &str) -> bool {
 
 fn failure(key: &str) -> Option<NfsError> {
     current().and_then(|c| c.failed.lock().unwrap().get(key).cloned())
+}
+
+fn ctx_user() -> Option<String> {
+    current().and_then(|c| c.user.lock().unwrap().clone())
 }
 
 // ---------- handles ----------
@@ -362,9 +379,13 @@ impl AppState {
                 if let Some(index) = self.archive.cached(&key) {
                     return Ok(index);
                 }
+                if let Some(e) = failure(&key) {
+                    return Err(e);
+                }
                 let cfg = self.config.root(root).ok_or_else(|| stale("root gone"))?;
                 let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
-                let index = Arc::new(Index::build(key.clone(), join_root(&cfg.path, rel), Some(stamp_of(meta)), name, None, self.archive.limits())?);
+                let build = cache::Build { mgr: &self.archive, unpack: false, cancel: &AtomicBool::new(false) };
+                let index = Arc::new(Index::build(build, key.clone(), join_root(&cfg.path, rel), Some(stamp_of(meta)), name, None)?);
                 self.archive.forget_versions(&native_prefix(root, rel), &key);
                 self.archive.insert(index.clone());
                 Ok(index)
@@ -385,12 +406,23 @@ impl AppState {
         }
     }
 
+    /// A locked index is replaced by the requester's view of it once they unlocked it (E7).
+    fn archive_view(&self, base: Arc<Index>) -> Arc<Index> {
+        if !base.locked() {
+            return base;
+        }
+        ctx_user().and_then(|u| self.archive.cached(&cache::view_key(&base.key, &u))).unwrap_or(base)
+    }
+
     fn archive_at(&self, outer: Outer, member: &str) -> NfsResult<Node> {
         for seg in member.split('/').filter(|s| !s.is_empty()) {
             validate_name(seg)?;
         }
         let member = member.trim_matches('/');
-        let index = self.archive_index(&outer)?;
+        let index = self.archive_view(self.archive_index(&outer)?);
+        if index.locked() && !member.is_empty() {
+            return Err(password_required());
+        }
         let trees = index.naming.trees_for(pref());
         for tree in &trees {
             if let Some(idx) = tree.by_path(member) {
@@ -449,7 +481,10 @@ impl AppState {
             (outer, h.e, h.k)
         };
         let raw = B64.decode(raw).map_err(|_| stale("malformed handle payload"))?;
-        let index = self.archive_index(&outer)?;
+        let index = self.archive_view(self.archive_index(&outer)?);
+        if index.locked() {
+            return Err(password_required());
+        }
         for tree in index.naming.trees_for(pref()) {
             if let Some(idx) = tree.by_raw(&raw) {
                 if (kind == "d") != tree.nodes[idx].dir {
@@ -518,9 +553,11 @@ impl AppState {
             attrs.insert("mtime".into(), json!(a.mtime()));
             attrs.insert("flags".into(), json!(["read_only"]));
             if let (Some(m), false) = (&m, a.is_dir()) {
-                attrs.insert("compressed_size".into(), json!(m.compressed));
+                if let Some(c) = m.compressed {
+                    attrs.insert("compressed_size".into(), json!(c));
+                }
                 attrs.insert("encrypted".into(), json!(m.encrypted));
-                attrs.insert("method".into(), json!(zip::method_name(m.method)));
+                attrs.insert("method".into(), json!(m.method));
             }
         }
         if want.has("ident") {
@@ -548,16 +585,29 @@ impl AppState {
 
     pub fn archive_summary(&self, a: &ArchiveNode) -> Value {
         let tree = &a.tree;
-        json!({
-            "format": "zip",
+        let f = &a.index.format;
+        let mut out = json!({
+            "format": f.kind.name(),
             "entries": a.index.members.len(),
             "hidden_entries": tree.hidden,
             "encrypted_entries": a.index.encrypted_entries(),
             "name_encoding": {"encoding": tree.codec.name(), "by": tree.by},
-        })
+        });
+        if let Some(c) = f.compression {
+            out["compression"] = json!(c.name());
+        }
+        if f.kind == Kind::SevenZ {
+            out["solid"] = json!(f.solid);
+            out["header_encrypted"] = json!(f.header_encrypted);
+            out["name_encoding"] = sevenz::summary_encoding();
+        }
+        out
     }
 
     pub fn archive_info(&self, actor: &Actor, a: &ArchiveNode, want: &WantMask) -> NfsResult<Value> {
+        if a.index.locked() {
+            return Err(password_required());
+        }
         let level = self.archive_level(actor, a);
         let caps = if a.is_dir() { archive_dir_capabilities() } else { archive_file_capabilities() };
         let mut out = json!({
@@ -602,8 +652,11 @@ impl AppState {
     }
 
     /// List rows; their JSON is filled in for the emitted page only.
-    pub fn archive_rows(&self, a: &ArchiveNode) -> Vec<EntryRow> {
-        a.tnode()
+    pub fn archive_rows(&self, a: &ArchiveNode) -> NfsResult<Vec<EntryRow>> {
+        if a.index.locked() {
+            return Err(password_required());
+        }
+        Ok(a.tnode()
             .children
             .iter()
             .map(|&c| {
@@ -618,7 +671,7 @@ impl AppState {
                     json: Value::Null,
                 }
             })
-            .collect()
+            .collect())
     }
 
     pub fn archive_entry_json(&self, actor: &Actor, a: &ArchiveNode, child: usize, want: &WantMask) -> Value {
@@ -643,6 +696,9 @@ impl AppState {
 
     pub fn archive_walk(&self, a: &ArchiveNode, name: &str) -> NfsResult<Node> {
         validate_name(name)?;
+        if a.index.locked() {
+            return Err(password_required());
+        }
         if !a.is_dir() {
             return Err(NfsError::new(ErrorCode::NotAContainer, "cannot walk into a file"));
         }
@@ -704,6 +760,8 @@ fn scan(v: &Value, out: &mut Wanted, budget: &mut usize) {
 /// the async threads. Failures are kept for the resolution to report.
 pub async fn prepare(state: &SharedState, actor: &Actor, headers: &HeaderMap, values: &[&Value]) {
     let Some(ctx) = current() else { return };
+    let user = user_key(actor);
+    *ctx.user.lock().unwrap() = Some(user.clone());
     let mut wanted = Wanted::default();
     let mut budget = 32;
     for v in values {
@@ -752,35 +810,47 @@ pub async fn prepare(state: &SharedState, actor: &Actor, headers: &HeaderMap, va
             continue;
         }
         let key = native_key(&root, &rel, &meta);
-        if state.archive.cached(&key).is_some() {
-            continue;
-        }
-        let (st, k) = (state.clone(), key.clone());
-        let built = state
-            .archive
-            .indexing
-            .run(&key, move |_| async move {
-                let path = join_root(&st.config.root(&root).ok_or_else(|| stale("root gone"))?.path, &rel);
-                let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
-                let limits = st.archive.limits();
-                let stamp = stamp_of(&meta);
-                let index = tokio::task::spawn_blocking(move || Index::build(k, path, Some(stamp), name, None, limits)).await.map_err(|e| internal(format!("index task: {e}")))??;
-                let index = Arc::new(index);
-                st.archive.forget_versions(&native_prefix(&root, &rel), &index.key);
-                st.archive.insert(index.clone());
-                Ok(index)
-            })
-            .await;
-        if let Err(e) = built {
-            ctx.failed.lock().unwrap().insert(key, e);
+        let built = match state.archive.cached(&key) {
+            Some(index) => Ok(index),
+            None => {
+                let (st, k, (r, l)) = (state.clone(), key.clone(), (root.clone(), rel.clone()));
+                state
+                    .archive
+                    .indexing
+                    .run(&key, move |cancel| async move {
+                        let path = join_root(&st.config.root(&r).ok_or_else(|| stale("root gone"))?.path, &l);
+                        let name = l.rsplit('/').next().unwrap_or(&l).to_string();
+                        let stamp = stamp_of(&meta);
+                        let s2 = st.clone();
+                        let index = tokio::task::spawn_blocking(move || Index::build(cache::Build { mgr: &s2.archive, unpack: true, cancel: &cancel }, k, path, Some(stamp), name, None))
+                            .await
+                            .map_err(|e| internal(format!("index task: {e}")))??;
+                        let index = Arc::new(index);
+                        st.archive.forget_versions(&native_prefix(&r, &l), &index.key);
+                        st.archive.insert(index.clone());
+                        Ok(index)
+                    })
+                    .await
+            }
+        };
+        match built {
+            Ok(index) if index.locked() => open_view(state, &user, &index, Some((root, rel))).await,
+            Ok(_) => {}
+            Err(e) => {
+                ctx.failed.lock().unwrap().insert(key, e);
+            }
         }
     }
     for (rel, obj) in projections {
         if state.acls.level(actor, HOME_ROOT, &rel) < Level::Read {
             continue;
         }
-        if let Err(e) = prepare_object(state, &obj).await {
-            ctx.failed.lock().unwrap().insert(object_key(&obj), e);
+        match prepare_object(state, &obj).await {
+            Ok(index) if index.locked() => open_view(state, &user, &index, None).await,
+            Ok(_) => {}
+            Err(e) => {
+                ctx.failed.lock().unwrap().insert(object_key(&obj), e);
+            }
         }
     }
     objects.sort();
@@ -801,8 +871,37 @@ pub async fn prepare(state: &SharedState, actor: &Actor, headers: &HeaderMap, va
             }
             ctx.grant(&obj);
         }
-        if let Err(e) = prepare_object(state, &obj).await {
-            ctx.failed.lock().unwrap().insert(object_key(&obj), e);
+        match prepare_object(state, &obj).await {
+            Ok(index) if index.locked() => open_view(state, &user, &index, None).await,
+            Ok(_) => {}
+            Err(e) => {
+                ctx.failed.lock().unwrap().insert(object_key(&obj), e);
+            }
+        }
+    }
+}
+
+/// Opens `user`'s view of a locked index with a password they gave before
+/// (this session's, or a remembered one); otherwise it stays locked (E7).
+async fn open_view(state: &SharedState, user: &str, base: &Arc<Index>, native: Option<(String, String)>) {
+    if state.archive.cached(&cache::view_key(&base.key, user)).is_some() {
+        return;
+    }
+    let (mut candidates, _) = state.archive.passwords.session_candidates(user, base.password_key());
+    let sha = match (&base.sha256, native) {
+        (Some(sha), _) => Some(sha.clone()),
+        (None, Some((root, rel))) if password::has_any(&state.db, user) => native_sha(state, &root, &rel).await,
+        _ => None,
+    };
+    if let Some(sha) = sha {
+        candidates.extend(password::stored(&state.db, user, &sha).unwrap_or_default());
+    }
+    for pw in candidates {
+        let (b, u, p) = (base.clone(), user.to_string(), pw.clone());
+        if let Ok(Ok(view)) = tokio::task::spawn_blocking(move || b.unlocked(&u, &p)).await {
+            state.archive.insert(Arc::new(view));
+            state.archive.passwords.promote(user, base.password_key(), &pw);
+            return;
         }
     }
 }
@@ -817,11 +916,13 @@ pub async fn prepare_object(state: &SharedState, obj_id: &str) -> NfsResult<Arc<
     state
         .archive
         .indexing
-        .run(&key, move |_| async move {
+        .run(&key, move |cancel| async move {
             let (path, sha, name) = cache::object_outer(&st, &obj).await?;
-            let limits = st.archive.limits();
             let key = object_key(&obj);
-            let index = tokio::task::spawn_blocking(move || Index::build(key, path, None, name, Some(sha), limits)).await.map_err(|e| internal(format!("index task: {e}")))??;
+            let s2 = st.clone();
+            let index = tokio::task::spawn_blocking(move || Index::build(cache::Build { mgr: &s2.archive, unpack: true, cancel: &cancel }, key, path, None, name, Some(sha)))
+                .await
+                .map_err(|e| internal(format!("index task: {e}")))??;
             let index = Arc::new(index);
             st.archive.insert(index.clone());
             Ok(index)
@@ -831,31 +932,29 @@ pub async fn prepare_object(state: &SharedState, obj_id: &str) -> NfsResult<Arc<
 
 // ---------- passwords ----------
 
+async fn native_sha(state: &SharedState, root: &str, rel: &str) -> Option<String> {
+    let path = join_root(&state.config.root(root)?.path, rel);
+    crate::preview::native_obj_id(&state.db, &format!("{root}/{rel}"), &path).await.ok().map(|id| id.trim_start_matches("sha256:").to_string())
+}
+
 /// Whole-file sha256 (hex) of the outer, when it can be had.
 async fn outer_sha(state: &SharedState, a: &ArchiveNode) -> Option<String> {
     if let Some(sha) = &a.index.sha256 {
         return Some(sha.clone());
     }
     let Outer::Native { root, rel, .. } = &a.outer else { return None };
-    let path = join_root(&state.config.root(root)?.path, rel);
-    crate::preview::native_obj_id(&state.db, &format!("{root}/{rel}"), &path).await.ok().map(|id| id.trim_start_matches("sha256:").to_string())
+    native_sha(state, root, rel).await
 }
 
 async fn quick_check(index: &Arc<Index>, m: &Member, password: &str) -> bool {
     let (index, m, pw) = (index.clone(), m.clone(), password.to_string());
-    tokio::task::spawn_blocking(move || {
-        let mut zip = index.zip.clone();
-        let ok = zip::open(&mut zip, &m, Some(pw.as_bytes())).is_ok();
-        ok
-    })
-    .await
-    .unwrap_or(false)
+    tokio::task::spawn_blocking(move || format::quick_check(&index, &m, &pw)).await.unwrap_or(false)
 }
 
 /// The password this user reads `m` with: verified in the session, stored, then pending.
 async fn password_for(state: &SharedState, actor: &Actor, a: &ArchiveNode, m: &Member) -> NfsResult<(String, Origin)> {
     let user = user_key(actor);
-    let (verified, pending) = state.archive.passwords.session_candidates(&user, &a.index.key);
+    let (verified, pending) = state.archive.passwords.session_candidates(&user, a.index.password_key());
     for pw in verified {
         if quick_check(&a.index, m, &pw).await {
             return Ok((pw, Origin::Verified));
@@ -880,13 +979,14 @@ async fn password_for(state: &SharedState, actor: &Actor, a: &ArchiveNode, m: &M
 /// once the archive's hash is known); one that did not is no longer pending.
 async fn settle(state: &SharedState, user: &str, a: &ArchiveNode, pw: &(String, Origin), ok: bool) {
     let sessions = &state.archive.passwords;
+    let key = a.index.password_key();
     if !ok {
         if pw.1 == Origin::Pending {
-            sessions.drop_pending(user, &a.index.key, &pw.0);
+            sessions.drop_pending(user, key, &pw.0);
         }
         return;
     }
-    sessions.promote(user, &a.index.key, &pw.0);
+    sessions.promote(user, key, &pw.0);
     if pw.1 != Origin::Stored {
         if let Some(sha) = outer_sha(state, a).await {
             if let Err(e) = password::store(&state.db, user, &sha, &pw.0) {
@@ -901,18 +1001,32 @@ pub async fn op_unlock(state: &SharedState, actor: &Actor, env: &Envelope) -> Nf
     let node = state.resolve_for(actor, at, Level::Read, "read")?;
     let Node::Archive(a) = node else { return Err(invalid("archive.unlock needs an archive or a member")) };
     let password = env.args["password"].as_str().filter(|p| !p.is_empty()).ok_or_else(|| invalid("archive.unlock requires args.password"))?;
+    let user = user_key(actor);
+    let pkey = a.index.password_key().to_string();
+    let lock = state.archive.passwords.unlock_lock(&user, &pkey);
+    let _held = lock.lock().await;
+    if a.index.locked() {
+        // The header carries a CRC: opening it is a complete check (E7).
+        let (b, u, p) = (a.index.clone(), user.clone(), password.to_string());
+        let view = tokio::task::spawn_blocking(move || b.unlocked(&u, &p)).await.map_err(|e| internal(format!("unlock task: {e}")))??;
+        state.archive.insert(Arc::new(view));
+        state.archive.passwords.promote(&user, &pkey, password);
+        if let Some(sha) = outer_sha(state, &a).await {
+            if let Err(e) = password::store(&state.db, &user, &sha, password) {
+                log::warn!("archive: keeping a verified password failed: {}", e.message);
+            }
+        }
+        return Ok(json!({"ok": true, "encrypted": true}));
+    }
     let target = match a.member().filter(|m| !a.is_dir() && m.encrypted) {
         Some(m) => Some(m.clone()),
-        None => a.index.members.iter().find(|m| m.encrypted && m.index.is_some() && m.supported().is_ok()).cloned(),
+        None => a.index.members.iter().find(|m| m.encrypted && m.readable && m.supported().is_ok()).cloned(),
     };
     let Some(m) = target else { return Ok(json!({"ok": true, "encrypted": false})) };
-    let user = user_key(actor);
-    let lock = state.archive.passwords.unlock_lock(&user, &a.index.key);
-    let _held = lock.lock().await;
     if !quick_check(&a.index, &m, password).await {
         return Err(NfsError::new(ErrorCode::PasswordInvalid, "the password is not right for this archive"));
     }
-    state.archive.passwords.add_pending(&user, &a.index.key, password);
+    state.archive.passwords.add_pending(&user, &pkey, password);
     Ok(json!({"ok": true, "encrypted": true}))
 }
 
@@ -920,13 +1034,15 @@ pub async fn op_forget(state: &SharedState, actor: &Actor, env: &Envelope) -> Nf
     let user = user_key(actor);
     if env.args["all"].as_bool() == Some(true) {
         state.archive.passwords.forget(&user, None);
+        state.archive.remove_views(&user);
         let n = password::forget(&state.db, &user, None)?;
         return Ok(json!({"forgotten": n}));
     }
     let at = env.at.as_ref().ok_or_else(|| invalid("archive.forget requires at or args.all"))?;
     let node = state.resolve_for(actor, at, Level::Read, "read")?;
     let Node::Archive(a) = node else { return Err(invalid("archive.forget needs an archive")) };
-    state.archive.passwords.forget(&user, Some(&a.index.key));
+    state.archive.passwords.forget(&user, Some(a.index.password_key()));
+    state.archive.remove(&cache::view_key(a.index.password_key(), &user));
     let n = match outer_sha(state, &a).await {
         Some(sha) => password::forget(&state.db, &user, Some(&sha))?,
         None => 0,
@@ -934,20 +1050,34 @@ pub async fn op_forget(state: &SharedState, actor: &Actor, env: &Envelope) -> Nf
     Ok(json!({"forgotten": n}))
 }
 
+/// `(tar extensions, single compressed file extensions)`.
+fn stream_extensions() -> (Vec<&'static str>, Vec<&'static str>) {
+    let mut tar_ext = vec!["tar"];
+    let mut single_ext = Vec::new();
+    for comp in Compression::ALL {
+        tar_ext.extend_from_slice(comp.tar_extensions());
+        single_ext.extend_from_slice(comp.extensions());
+    }
+    (tar_ext, single_ext)
+}
+
 pub fn describe(state: &AppState) -> Value {
     let c = &state.archive.config;
+    let (tar_ext, single_ext) = stream_extensions();
+    let compression: Vec<&str> = std::iter::once("none").chain(Compression::ALL.iter().map(|c| c.name())).collect();
     json!({
         "available": true,
-        "formats": [{
-            "format": "zip",
-            "extensions": ["zip"],
-            "methods": zip::VERIFIED_METHODS,
-            "encryption": zip::ENCRYPTION,
-        }],
+        "formats": [
+            {"format": "zip", "extensions": ["zip"], "methods": zip::VERIFIED_METHODS, "encryption": zip::ENCRYPTION},
+            {"format": "tar", "extensions": tar_ext, "compression": compression},
+            {"format": "7z", "extensions": ["7z"], "methods": sevenz::METHODS, "filters": sevenz::FILTERS, "encryption": sevenz::ENCRYPTION},
+            {"format": "compressed", "extensions": single_ext, "compression": &compression[1..]},
+        ],
         "limits": {
             "max_central_directory_bytes": c.max_central_directory_bytes,
             "max_entries": c.max_entries,
             "max_materialize_bytes": c.max_materialize_bytes,
+            "max_decoder_memory": c.max_decoder_memory,
         },
     })
 }
@@ -957,15 +1087,9 @@ pub fn describe(state: &AppState) -> Value {
 /// Cache file of a member: encrypted members are kept per user, so nobody
 /// reads plaintext another user's password produced.
 fn cache_path(state: &AppState, actor: &Actor, a: &ArchiveNode, m: &Member) -> PathBuf {
-    let raw = &a.tnode().raw;
-    if m.encrypted {
-        let mut keyed = raw.clone();
-        keyed.push(0);
-        keyed.extend_from_slice(user_key(actor).as_bytes());
-        state.archive.member_path(&a.index, &keyed)
-    } else {
-        state.archive.member_path(&a.index, raw)
-    }
+    let entry = a.tnode().entry.unwrap_or(usize::MAX);
+    let user = m.encrypted.then(|| user_key(actor));
+    state.archive.member_path(&a.index, entry, user.as_deref())
 }
 
 /// Decodes a member into the cache (once for concurrent callers) and returns the file.
@@ -976,6 +1100,9 @@ pub async fn materialize(state: &SharedState, actor: &Actor, a: &ArchiveNode) ->
     let dest = cache_path(state, actor, a, &m);
     if state.archive.touch(&dest) {
         return Ok(dest);
+    }
+    if m.solid().is_some() {
+        return block_member(state, actor, a, &m, password).await;
     }
     state.archive.reserve(m.size)?;
     let key = dest.to_string_lossy().into_owned();
@@ -989,7 +1116,7 @@ pub async fn materialize(state: &SharedState, actor: &Actor, a: &ArchiveNode) ->
             let (index, mm, pw, d) = (node.index.clone(), m.clone(), password.clone(), dest.clone());
             let done = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                cache::materialize_blocking(&index, &mm, pw.as_ref().map(|p| p.0.as_bytes()), &tmp, &d, &cancel)
+                cache::materialize_blocking(&index, &mm, pw.as_ref().map(|p| p.0.as_str()), &tmp, &d, &cancel)
             })
             .await
             .map_err(|e| internal(format!("materialize task: {e}")))?;
@@ -1005,6 +1132,123 @@ pub async fn materialize(state: &SharedState, actor: &Actor, a: &ArchiveNode) ->
             }
         })
         .await
+}
+
+// ---------- solid 7z blocks (E8) ----------
+
+fn block_key(index: &Index, block: usize, user: Option<&str>) -> String {
+    format!("{}#b{block}#{}", index.key, user.unwrap_or(""))
+}
+
+/// Joins the extraction of a solid block, starting it when none runs: one
+/// pass that writes every file of the block into the member cache, in
+/// order, each as soon as its CRC checked out. It runs to the block's end
+/// whoever still waits (the next and previous files are likely wanted soon).
+fn join_block(state: &SharedState, actor: &Actor, a: &ArchiveNode, block: usize, password: Option<String>) -> tokio::sync::watch::Receiver<cache::BlockState> {
+    let encrypted = password.is_some();
+    let user = encrypted.then(|| user_key(actor));
+    let key = block_key(&a.index, block, user.as_deref());
+    let mut jobs = state.archive.blocks.lock().unwrap();
+    if let Some(rx) = jobs.get(&key) {
+        if rx.borrow().end.is_none() {
+            return rx.clone();
+        }
+    }
+    let (tx, rx) = tokio::sync::watch::channel(cache::BlockState::default());
+    jobs.insert(key.clone(), rx.clone());
+    drop(jobs);
+    let (st, index) = (state.clone(), a.index.clone());
+    tokio::spawn(async move {
+        let result = async {
+            let permit = st.archive.workers.clone().acquire_owned().await.map_err(|e| internal(e.to_string()))?;
+            let s2 = st.clone();
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                extract_block(&s2.archive, &index, block, password.as_deref(), user.as_deref(), &tx)
+            })
+            .await
+            .map_err(|e| internal(format!("block task: {e}")))?
+        }
+        .await;
+        let mut jobs = st.archive.blocks.lock().unwrap();
+        if let Some(rx) = jobs.get(&key) {
+            if rx.borrow().end.is_none() {
+                jobs.remove(&key);
+            }
+        }
+        drop(jobs);
+        if let Err(e) = &result {
+            log::info!("archive: extracting block {block} of {key} stopped: {}", e.message);
+        }
+        result
+    });
+    rx
+}
+
+fn extract_block(mgr: &cache::ArchiveMgr, index: &Index, block: usize, password: Option<&str>, user: Option<&str>, tx: &tokio::sync::watch::Sender<cache::BlockState>) -> NfsResult<()> {
+    use std::io::Write;
+    let cancel = AtomicBool::new(false);
+    let result = sevenz::for_block(index, block, password, &mut |file, r| {
+        tx.send_modify(|s| s.ready_before = file);
+        let m = &index.members[file];
+        if m.size == 0 || m.solid().is_none() {
+            return Ok(true);
+        }
+        let dest = mgr.member_path(index, file, m.encrypted.then_some(user).flatten());
+        if mgr.touch(&dest) || mgr.reserve(m.size).is_err() {
+            return Ok(true);
+        }
+        let tmp = mgr.tmp_path(&mgr.members_dir());
+        let mut out = std::io::BufWriter::new(cache::create_private_sync(&tmp)?);
+        let done = source::pump(r, m.size, None, &cancel, &mut |chunk| out.write_all(chunk).map(|_| true));
+        let kept = match done {
+            Ok(true) => out.into_inner().map_err(|e| NfsError::from(e.into_error())).and_then(|f| Ok(f.sync_all()?)).and_then(|_| Ok(std::fs::rename(&tmp, &dest)?)),
+            Ok(false) => Err(internal("cancelled")),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = kept {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        mgr.record(&dest, m.size);
+        Ok(true)
+    });
+    tx.send_modify(|s| {
+        if result.is_ok() {
+            s.ready_before = usize::MAX;
+        }
+        s.end = Some(result.clone());
+    });
+    result
+}
+
+/// A solid member: from the cache, else once its block's extraction got past it.
+async fn block_member(state: &SharedState, actor: &Actor, a: &ArchiveNode, m: &Member, password: Option<(String, Origin)>) -> NfsResult<PathBuf> {
+    let (block, file) = m.solid().ok_or_else(|| internal("not a solid member"))?;
+    let dest = cache_path(state, actor, a, m);
+    for _ in 0..2 {
+        if state.archive.touch(&dest) {
+            break;
+        }
+        let mut rx = join_block(state, actor, a, block, password.as_ref().map(|p| p.0.clone()));
+        let state_now = rx.wait_for(|s| s.ready_before > file || s.end.is_some()).await.map_err(|_| internal("block extraction ended without a result"))?.clone();
+        if state.archive.touch(&dest) {
+            break;
+        }
+        if let Some(Err(e)) = state_now.end {
+            if let Some(pw) = &password {
+                settle(state, &user_key(actor), a, pw, false).await;
+            }
+            return Err(e);
+        }
+    }
+    if !state.archive.touch(&dest) {
+        return Err(NfsError::new(ErrorCode::QuotaExceeded, "the archive cache cannot keep this file").with("limit", json!(state.archive.config.disk_budget_bytes)));
+    }
+    if let Some(pw) = &password {
+        settle(state, &user_key(actor), a, pw, true).await;
+    }
+    Ok(dest)
 }
 
 fn error_response(e: NfsError) -> Response {
@@ -1034,15 +1278,21 @@ async fn read_member_inner(state: &SharedState, actor: &Actor, a: &ArchiveNode, 
     };
     let view = FileView { etag, name, q: q.clone(), immutable: a.object_id().is_some() };
     if m.direct() {
-        let (src, mm) = (a.index.src.clone(), m.clone());
-        let start = tokio::task::spawn_blocking(move || zip::data_start(&src, &mm)).await.map_err(|e| internal(e.to_string()))??;
-        let file = open_outer(state, a).await?;
-        return Ok(crate::server::serve_file(file, start, m.size, range, &view.etag, &view.name, &view.q, view.immutable).await);
+        let (index, mm) = (a.index.clone(), m.clone());
+        let (start, file) = tokio::task::spawn_blocking(move || -> NfsResult<(u64, std::fs::File)> { Ok((format::data_start(&index, &mm)?, index.data.std_file().map_err(source::io_error)?)) })
+            .await
+            .map_err(|e| internal(e.to_string()))??;
+        return Ok(crate::server::serve_file(tokio::fs::File::from_std(file), start, m.size, range, &view.etag, &view.name, &view.q, view.immutable).await);
     }
     let password = if m.encrypted { Some(password_for(state, actor, a, &m).await?) } else { None };
     let cached = cache_path(state, actor, a, &m);
     if state.archive.touch(&cached) {
         let file = tokio::fs::File::open(&cached).await?;
+        return Ok(crate::server::serve_file(file, 0, m.size, range, &view.etag, &view.name, &view.q, view.immutable).await);
+    }
+    if m.solid().is_some() {
+        let path = block_member(state, actor, a, &m, password).await?;
+        let file = tokio::fs::File::open(&path).await?;
         return Ok(crate::server::serve_file(file, 0, m.size, range, &view.etag, &view.name, &view.q, view.immutable).await);
     }
     match range {
@@ -1063,25 +1313,9 @@ struct FileView {
     immutable: bool,
 }
 
-/// The outer file, checked against the version the index was built from.
-async fn open_outer(state: &SharedState, a: &ArchiveNode) -> NfsResult<tokio::fs::File> {
-    let path = match &a.outer {
-        Outer::Native { root, rel, .. } => join_root(&state.config.root(root).ok_or_else(|| stale("root gone"))?.path, rel),
-        Outer::Projection { obj_id, .. } | Outer::Object { obj_id } => state.archive.objects_dir().join(hex::encode(Sha256::digest(obj_id.as_bytes()))),
-    };
-    let file = tokio::fs::File::open(&path).await.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { stale("the archive is gone; open it again") } else { e.into() })?;
-    if let Outer::Native { meta, .. } = &a.outer {
-        let now = file.metadata().await?;
-        if Stamp::of(&now) != stamp_of(meta) {
-            return Err(stale("the archive changed; open it again"));
-        }
-    }
-    Ok(file)
-}
-
 /// Decodes on a worker into a bounded channel (backpressure; a client that
-/// leaves stops it). Headers go out once the member opened; a failure later
-/// can only cut the connection (§7).
+/// leaves stops it). Headers go out once the first bytes decoded (or the
+/// member turned out empty); a failure later can only cut the connection (§7).
 #[allow(clippy::too_many_arguments)]
 async fn stream(state: &SharedState, actor: &Actor, a: &ArchiveNode, m: &Member, password: Option<(String, Origin)>, limit: Option<u64>, view: FileView) -> NfsResult<Response> {
     let permit = state.archive.workers.clone().acquire_owned().await.map_err(|e| internal(e.to_string()))?;
@@ -1090,25 +1324,34 @@ async fn stream(state: &SharedState, actor: &Actor, a: &ArchiveNode, m: &Member,
     let (index, mm, pw) = (a.index.clone(), m.clone(), password.as_ref().map(|p| p.0.clone()));
     let worker = tokio::task::spawn_blocking(move || -> NfsResult<bool> {
         let _permit = permit;
-        let mut zip = index.zip.clone();
-        let reader = match zip::open(&mut zip, &mm, pw.as_deref().map(str::as_bytes)) {
-            Ok(r) => {
-                let _ = ready_tx.send(Ok(()));
-                r
-            }
-            Err(e) => {
-                let _ = ready_tx.send(Err(e.clone()));
-                return Err(e);
-            }
-        };
+        let mut ready = Some(ready_tx);
         let cancel = AtomicBool::new(false);
-        let done = zip::pump(reader, mm.size, limit, &cancel, &mut |chunk| Ok(tx.blocking_send(Ok(Bytes::copy_from_slice(chunk))).is_ok()));
-        if let Err(e) = &done {
-            let _ = tx.blocking_send(Err(std::io::Error::other(e.message.clone())));
+        let done = format::decode(&index, &mm, pw.as_deref(), limit, &cancel, &mut |chunk| {
+            if let Some(r) = ready.take() {
+                let _ = r.send(Ok(()));
+            }
+            Ok(tx.blocking_send(Ok(Bytes::copy_from_slice(chunk))).is_ok())
+        });
+        match (ready.take(), &done) {
+            (Some(r), Err(e)) => {
+                let _ = r.send(Err(e.clone()));
+            }
+            (Some(r), Ok(_)) => {
+                let _ = r.send(Ok(()));
+            }
+            (None, Err(e)) => {
+                let _ = tx.blocking_send(Err(std::io::Error::other(e.message.clone())));
+            }
+            (None, Ok(_)) => {}
         }
         done
     });
     if let Ok(Err(e)) = ready_rx.await {
+        if let Some(pw) = &password {
+            if e.code == ErrorCode::ArchiveCorrupt || e.code == ErrorCode::PasswordInvalid {
+                settle(state, &user_key(actor), a, pw, false).await;
+            }
+        }
         return Err(e);
     }
     if let Some(pw) = password {
@@ -1141,29 +1384,32 @@ async fn stream(state: &SharedState, actor: &Actor, a: &ArchiveNode, m: &Member,
 }
 
 /// Writes a whole member to `out` (copy tasks): streamed, password checked
-/// like a read, settled at the end.
+/// like a read, settled at the end; a solid member comes from its block's extraction.
 pub async fn copy_member_to(state: &SharedState, actor: &Actor, a: &ArchiveNode, out: std::fs::File, cancel: Arc<AtomicBool>, progress: Arc<std::sync::atomic::AtomicU64>) -> NfsResult<()> {
     let m = a.member().filter(|_| !a.is_dir()).ok_or_else(|| invalid("only files can be copied out of an archive"))?.clone();
     m.supported()?;
     let password = if m.encrypted { Some(password_for(state, actor, a, &m).await?) } else { None };
+    let from_cache = if m.solid().is_some() { Some(block_member(state, actor, a, &m, password.clone()).await?) } else { None };
     let permit = state.archive.workers.clone().acquire_owned().await.map_err(|e| internal(e.to_string()))?;
     let (index, mm, pw) = (a.index.clone(), m.clone(), password.as_ref().map(|p| p.0.clone()));
     let done = tokio::task::spawn_blocking(move || -> NfsResult<bool> {
         use std::io::Write;
         let _permit = permit;
-        let mut zip = index.zip.clone();
-        let reader = zip::open(&mut zip, &mm, pw.as_deref().map(str::as_bytes))?;
         let mut w = std::io::BufWriter::new(out);
-        let ok = zip::pump(reader, mm.size, None, &cancel, &mut |chunk| {
+        let mut sink = |chunk: &[u8]| {
             progress.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
             w.write_all(chunk).map(|_| true)
-        })?;
+        };
+        let ok = match &from_cache {
+            Some(path) => source::pump(std::fs::File::open(path)?, mm.size, None, &cancel, &mut sink)?,
+            None => format::decode(&index, &mm, pw.as_deref(), None, &cancel, &mut sink)?,
+        };
         w.into_inner().map_err(|e| NfsError::from(e.into_error()))?.sync_all()?;
         Ok(ok)
     })
     .await
     .map_err(|e| internal(format!("copy task: {e}")))?;
-    if let Some(pw) = &password {
+    if let (Some(pw), None) = (&password, m.solid()) {
         settle(state, &user_key(actor), a, pw, matches!(done, Ok(true))).await;
     }
     match done? {
@@ -1178,5 +1424,21 @@ pub async fn maintenance_loop(state: SharedState) {
     loop {
         tick.tick().await;
         state.archive.sweep();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn desktop_knows_every_extension_hello_lists() {
+        let urls = include_str!("../../../desktop/src/app/filebrowser/data/urls.ts");
+        let start = urls.find("export const ARCHIVE_EXTENSIONS = [").expect("Desktop's ARCHIVE_EXTENSIONS");
+        let list = &urls[start..start + urls[start..].find(']').unwrap()];
+        let mut desktop: Vec<&str> = list.split('\'').skip(1).step_by(2).collect();
+        let (tar_ext, single_ext) = super::stream_extensions();
+        let mut server: Vec<&str> = ["zip", "7z"].into_iter().chain(tar_ext).chain(single_ext).collect();
+        desktop.sort();
+        server.sort();
+        assert_eq!(desktop, server);
     }
 }

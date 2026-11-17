@@ -88,6 +88,8 @@ interface PresentationProps {
   thumbnailSource?: (entry: FileItem['entry']) => ContentRef | null
   /** The location is the locked computer: offer BuckyOS sudo. */
   onUnlock?: () => void
+  /** The location is an archive whose names are encrypted (7z `-mhe`): offer its password. */
+  onArchivePassword?: () => void
   /** The host's own empty state (an archive is not a folder you upload into). */
   emptyState?: { title: string; body?: string; icon?: React.ReactNode }
   /** The host's wording for a read-only location (default: "Read-only folder"). */
@@ -302,6 +304,21 @@ export function MainContent({
             <LockOpen size={15} /> {t('filebrowser.host.unlock', 'Unlock')}
           </button>
         ) : null}
+      </div>
+    )
+  } else if (list.status === 'error' && presentation.onArchivePassword && (list.error as { code?: unknown } | null)?.code === 'PASSWORD_REQUIRED') {
+    body = (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-10 text-center text-[color:var(--cp-muted)]" data-testid="filebrowser-archive-locked">
+        <Lock size={40} className="opacity-60" />
+        <p className="font-display text-lg text-[color:var(--cp-text)]">{t('archive.locked.title', 'This archive is encrypted')}</p>
+        <p className="max-w-sm text-sm leading-6">{t('archive.locked.body', 'Even the names inside are encrypted. Enter the password to see them.')}</p>
+        <button
+          type="button"
+          onClick={presentation.onArchivePassword}
+          className="inline-flex min-h-10 items-center gap-2 rounded-full bg-[color:var(--cp-accent)] px-5 text-sm font-semibold text-white"
+        >
+          <LockOpen size={15} /> {t('archive.password.enter', 'Enter password')}
+        </button>
       </div>
     )
   } else if (list.status === 'error') {

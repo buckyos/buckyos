@@ -158,12 +158,17 @@ export function copyPathText(pathOrUrl: string): string {
 
 // ─── Archives (`<file>/@/archive/<member>`, archive TODO §2.1) ───
 
-const ARCHIVE_EXTENSIONS = ['zip']
+/** Every extension nfs_server opens (`archive::describe`; a Rust test keeps the two lists equal). */
+export const ARCHIVE_EXTENSIONS = [
+  'zip', '7z',
+  'tar', 'tar.gz', 'tgz', 'tar.xz', 'txz', 'tar.bz2', 'tbz2', 'tbz', 'tar.zst', 'tzst',
+  'gz', 'xz', 'bz2', 'zst',
+]
 
 /** Whether a name has an archive extension (the server's `hello.archive` decides whether it opens). */
 export function isArchiveName(name: string): boolean {
-  const dot = name.lastIndexOf('.')
-  return dot > 0 && ARCHIVE_EXTENSIONS.includes(name.slice(dot + 1).toLowerCase())
+  const lower = name.toLowerCase()
+  return ARCHIVE_EXTENSIONS.some((ext) => lower.length > ext.length + 1 && lower.endsWith(`.${ext}`))
 }
 
 export interface ArchiveSplit {

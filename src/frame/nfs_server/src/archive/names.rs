@@ -168,15 +168,16 @@ pub enum Unaddressable {
 }
 
 /// `(segments, raw segments, is_dir)` of one entry, after decoding and the
-/// separator rules of step 5.
+/// separator rules of step 5 (`backslash`: a lone `\` separates, as Windows
+/// tools write it; tar names keep it as a character).
 #[allow(clippy::type_complexity)]
-pub fn split_entry(name: &RawName, codec: Codec) -> Result<(Vec<String>, Vec<Vec<u8>>, bool), Unaddressable> {
+pub fn split_entry(name: &RawName, codec: Codec, backslash: bool) -> Result<(Vec<String>, Vec<Vec<u8>>, bool), Unaddressable> {
     let (decoded, raw_codec) = match &name.unicode {
         Some(u) => (u.clone(), Codec::Utf8),
         None => (codec.decode(&name.raw).ok_or(Unaddressable::Undecodable)?, codec),
     };
     let slash = decoded.contains('/');
-    let backslash = decoded.contains('\\');
+    let backslash = backslash && decoded.contains('\\');
     if slash && backslash {
         return Err(Unaddressable::Separators);
     }
@@ -246,7 +247,7 @@ pub const ROOT: usize = 0;
 impl Tree {
     /// `entries[i]` is `(name, symlink, readable)`; `readable` is false for
     /// entries the zip crate cannot address on its own (shadowed duplicates).
-    pub fn build(entries: &[(&RawName, bool, bool)], codec: Codec, by: &'static str) -> Tree {
+    pub fn build(entries: &[(&RawName, bool, bool)], codec: Codec, by: &'static str, backslash: bool) -> Tree {
         let mut tree = Tree {
             codec,
             by,
@@ -263,7 +264,7 @@ impl Tree {
             if *symlink {
                 continue;
             }
-            let Ok((segments, raw_segments, is_dir)) = split_entry(name, codec) else { continue };
+            let Ok((segments, raw_segments, is_dir)) = split_entry(name, codec, backslash) else { continue };
             let mut parent = ROOT;
             let mut blocked = false;
             for k in 1..segments.len() {
@@ -362,13 +363,15 @@ pub struct Naming {
     pub decision: Decision,
     names: Vec<RawName>,
     flags: Vec<(bool, bool)>,
+    backslash: bool,
     trees: std::sync::Mutex<HashMap<&'static str, Arc<Tree>>>,
 }
 
 impl Naming {
-    pub fn new(names: Vec<RawName>, flags: Vec<(bool, bool)>) -> Naming {
+    /// `flags[i]` is `(hidden kind, readable)` of entry `i`.
+    pub fn new(names: Vec<RawName>, flags: Vec<(bool, bool)>, backslash: bool) -> Naming {
         let decision = decide(&names);
-        Naming { decision, names, flags, trees: Default::default() }
+        Naming { decision, names, flags, backslash, trees: Default::default() }
     }
 
     pub fn tree(&self, codec: Codec, by: &'static str) -> Arc<Tree> {
@@ -377,7 +380,7 @@ impl Naming {
             .entry(codec.name())
             .or_insert_with(|| {
                 let entries: Vec<(&RawName, bool, bool)> = self.names.iter().zip(&self.flags).map(|(n, (symlink, readable))| (n, *symlink, *readable)).collect();
-                Arc::new(Tree::build(&entries, codec, by))
+                Arc::new(Tree::build(&entries, codec, by, self.backslash))
             })
             .clone()
     }
@@ -420,7 +423,7 @@ mod tests {
     }
 
     fn tree_of(names: &[RawName], pref: Option<&'static Encoding>) -> Arc<Tree> {
-        let naming = Naming::new(names.to_vec(), vec![(false, true); names.len()]);
+        let naming = Naming::new(names.to_vec(), vec![(false, true); names.len()], true);
         naming.trees_for(pref).remove(0)
     }
 
@@ -466,7 +469,7 @@ mod tests {
     #[test]
     fn short_names_follow_the_preference() {
         let names = vec![enc(GBK, "报告.txt")];
-        let naming = Naming::new(names.clone(), vec![(false, true)]);
+        let naming = Naming::new(names.clone(), vec![(false, true)], true);
         assert!(matches!(naming.decision, Decision::Preference { .. }));
         let zh = naming.trees_for(Some(GBK)).remove(0);
         assert_eq!((zh.codec, zh.by), (Codec::Enc(GBK), "preference"));
@@ -507,7 +510,7 @@ mod tests {
         let names = vec![raw(b"../evil.txt"), raw(b"/abs.txt"), raw(b"a/./b"), raw(b"ok.txt"), raw(b"dup.txt"), raw(b"dup.txt"), raw(b"link"), raw(b"C:/x.txt"), raw(b"d/"), raw(b"d/x")];
         let mut flags = vec![(false, true); names.len()];
         flags[6].0 = true;
-        let naming = Naming::new(names, flags);
+        let naming = Naming::new(names, flags, true);
         let t = naming.trees_for(None).remove(0);
         assert_eq!(paths(&t), vec!["d", "d/x", "ok.txt"]);
         assert!(t.is_ambiguous("dup.txt"));

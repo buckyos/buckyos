@@ -64,6 +64,10 @@ struct Client {
 }
 
 async fn start() -> Server {
+    start_with(|_| {}).await
+}
+
+async fn start_with(tune: impl FnOnce(&mut ServerConfig)) -> Server {
     init_rbac().await;
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("exports");
@@ -73,6 +77,7 @@ async fn start() -> Server {
     let mut config = ServerConfig::new(tmp.path().join("fsdb"), vec![ExportRoot { id: "home".into(), path: data.join("home") }]);
     config.auth = AuthMode::TestKey { public_key: PUBLIC.into(), zone_owner: "owner".into() };
     config.named_store = NamedStoreSource::Dir(tmp.path().join("store"));
+    tune(&mut config);
     let state = AppState::new(config).unwrap();
     let app = nfs_server::server::build_router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -473,4 +478,277 @@ async fn one_remembered_password_for_chat_and_zone_copies() {
     let chat = alice.ok("stat", json!({"at": {"ref": {"type": "object", "obj_id": obj, "inner_path": "/archive/secret.txt"}}, "want": ["access"]})).await;
     let (status, body, _) = alice.read(&read_url(&chat), None).await;
     assert_eq!((status, body.as_slice()), (200, &b"top secret"[..]), "{}", String::from_utf8_lossy(&body));
+}
+
+// ---------- more formats (archive-preview-more-formats-todo.md) ----------
+
+fn tar_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut b = tar::Builder::new(Vec::new());
+    for (name, data) in entries {
+        let mut h = tar::Header::new_gnu();
+        h.set_mtime(1_700_000_000);
+        h.set_mode(0o644);
+        if let Some((link, target)) = name.split_once("->") {
+            h.set_entry_type(tar::EntryType::Symlink);
+            h.set_size(0);
+            b.append_link(&mut h, link, target).unwrap();
+        } else if name.ends_with('/') {
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_size(0);
+            b.append_data(&mut h, name, std::io::empty()).unwrap();
+        } else {
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_size(data.len() as u64);
+            b.append_data(&mut h, name, *data).unwrap();
+        }
+    }
+    b.into_inner().unwrap()
+}
+
+fn compress(kind: &str, bytes: &[u8]) -> Vec<u8> {
+    match kind {
+        "gz" => {
+            let mut w = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            w.write_all(bytes).unwrap();
+            w.finish().unwrap()
+        }
+        "xz" => {
+            let mut w = xz2::write::XzEncoder::new(Vec::new(), 6);
+            w.write_all(bytes).unwrap();
+            w.finish().unwrap()
+        }
+        "bz2" => {
+            let mut w = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+            w.write_all(bytes).unwrap();
+            w.finish().unwrap()
+        }
+        "zst" => zstd::encode_all(bytes, 3).unwrap(),
+        _ => bytes.to_vec(),
+    }
+}
+
+fn tar_sample() -> Vec<u8> {
+    tar_of(&[("./", b""), ("./docs/", b""), ("./docs/a.txt", b"hello tar"), ("./docs/big.txt", &big_text()), ("./link->docs/a.txt", b""), ("./top.txt", b"top")])
+}
+
+async fn names_at(c: &Client, uri: &str) -> Vec<String> {
+    let list = c.ok("list", json!({"at": {"uri": uri}, "want": ["base"]})).await;
+    list["entries"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect()
+}
+
+#[tokio::test]
+async fn tar_family_browse_and_read() {
+    let srv = start().await;
+    let alice = srv.client("alice").await;
+    let hello = alice.post("hello", json!({})).await;
+    let formats = hello["result"]["archive"]["formats"].as_array().unwrap().clone();
+    let tar_ext = formats.iter().find(|f| f["format"] == "tar").unwrap()["extensions"].clone();
+    assert!(tar_ext.as_array().unwrap().iter().any(|e| e == "tar.gz"));
+    assert!(formats.iter().any(|f| f["format"] == "7z"));
+    for (file, kind, compression) in [("t.tar", "", None), ("t.tar.gz", "gz", Some("gzip")), ("t.tgz", "gz", Some("gzip")), ("t.tar.xz", "xz", Some("xz")), ("t.tar.bz2", "bz2", Some("bzip2")), ("t.tar.zst", "zst", Some("zstd"))] {
+        srv.write_zip(&format!("home/alice/{file}"), &compress(kind, &tar_sample()));
+        let root_uri = format!("cyfs:///home/alice/{file}/@/archive");
+        let root = alice.ok("stat", json!({"at": {"uri": root_uri}, "want": ["base"]})).await;
+        let summary = &root["attrs"]["archive"];
+        assert_eq!(summary["format"], "tar", "{file}");
+        assert_eq!(summary["compression"].as_str(), compression, "{file}");
+        assert_eq!(summary["hidden_entries"], 1, "{file}: the symlink");
+        assert_eq!(names_at(&alice, &root_uri).await, vec!["docs", "top.txt"], "{file}");
+        let a = alice.ok("stat", json!({"at": {"uri": format!("{root_uri}/docs/a.txt")}, "want": ["base", "access", "ident"]})).await;
+        assert_eq!(a["attrs"]["method"], "stored");
+        assert_eq!(a["size"], 9);
+        let url = read_url(&a);
+        assert_eq!(alice.read(&url, None).await.1, b"hello tar");
+        let (status, body, _) = alice.read(&url, Some("bytes=6-")).await;
+        assert_eq!((status, body.as_slice()), (206, &b"tar"[..]), "{file}");
+        let big = alice.ok("stat", json!({"at": {"uri": format!("{root_uri}/docs/big.txt")}, "want": ["access"]})).await;
+        let (status, body, _) = alice.read(&read_url(&big), Some("bytes=200000-200099")).await;
+        assert_eq!((status, body.as_slice()), (206, &big_text()[200_000..200_100]), "{file}");
+    }
+    // decompressed once: a second index of the same outer reuses the cached tar
+    let unpacked = srv._tmp.path().join("fsdb/archive/unpacked");
+    let files = std::fs::read_dir(&unpacked).unwrap().filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".json")).count();
+    assert_eq!(files, 5);
+}
+
+#[tokio::test]
+async fn single_compressed_files_are_one_member_archives() {
+    let srv = start().await;
+    let alice = srv.client("alice").await;
+    let mut gz = flate2::GzBuilder::new().filename("server.log").write(Vec::new(), flate2::Compression::default());
+    gz.write_all(b"line one\nline two\n").unwrap();
+    srv.write_zip("home/alice/today.gz", &gz.finish().unwrap());
+    srv.write_zip("home/alice/dump.sql.zst", &compress("zst", b"select 1;"));
+    assert_eq!(names_at(&alice, "cyfs:///home/alice/today.gz/@/archive").await, vec!["server.log"]);
+    let root = alice.ok("stat", json!({"at": {"uri": "cyfs:///home/alice/today.gz/@/archive"}, "want": ["base"]})).await;
+    assert_eq!(root["attrs"]["archive"]["format"], "compressed");
+    let m = alice.ok("stat", json!({"at": {"uri": "cyfs:///home/alice/today.gz/@/archive/server.log"}, "want": ["access", "base"]})).await;
+    assert_eq!(alice.read(&read_url(&m), None).await.1, b"line one\nline two\n");
+    assert_eq!(names_at(&alice, "cyfs:///home/alice/dump.sql.zst/@/archive").await, vec!["dump.sql"]);
+}
+
+#[tokio::test]
+async fn decompressing_past_the_limit_is_refused() {
+    let srv = start_with(|c| c.archive.max_materialize_bytes = 100_000).await;
+    srv.write_zip("home/alice/big.tar.gz", &compress("gz", &tar_of(&[("big.txt", &big_text())])));
+    let alice = srv.client("alice").await;
+    let e = alice.err("list", json!({"at": {"uri": "cyfs:///home/alice/big.tar.gz/@/archive"}})).await;
+    assert_eq!(e["code"], "QUOTA_EXCEEDED", "{e}");
+    let leftovers: Vec<_> = std::fs::read_dir(srv._tmp.path().join("fsdb/archive/unpacked")).unwrap().collect();
+    assert!(leftovers.is_empty(), "no partial file stays behind");
+}
+
+#[tokio::test]
+async fn unsupported_formats_say_so() {
+    let srv = start().await;
+    srv.write_zip("home/alice/old.rar", b"Rar!\x1a\x07\x01\x00 the rest of a rar file");
+    srv.write_zip("home/alice/plain.txt", b"not an archive at all, just some words");
+    let alice = srv.client("alice").await;
+    let e = alice.err("stat", json!({"at": {"uri": "cyfs:///home/alice/old.rar/@/archive"}})).await;
+    assert_eq!((e["code"].as_str(), e["reason"].as_str(), e["format"].as_str()), (Some("UNSUPPORTED"), Some("format"), Some("rar")), "{e}");
+    let e = alice.err("stat", json!({"at": {"uri": "cyfs:///home/alice/plain.txt/@/archive"}})).await;
+    assert_eq!((e["code"].as_str(), e["reason"].as_str()), (Some("UNSUPPORTED"), Some("format")), "{e}");
+}
+
+fn sevenz_of(entries: &[(&str, &[u8])], solid: bool, password: Option<&str>, encrypt_header: bool, copy: bool) -> Vec<u8> {
+    use sevenz_rust2::encoder_options::{AesEncoderOptions, Lzma2Options};
+    use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, Password};
+    let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+    let mut methods: Vec<EncoderConfiguration> = Vec::new();
+    if let Some(p) = password {
+        methods.push(AesEncoderOptions::new(Password::new(p)).into());
+    }
+    methods.push(if copy { EncoderMethod::COPY.into() } else { Lzma2Options::from_level(1).into() });
+    w.set_content_methods(methods);
+    w.set_encrypt_header(encrypt_header);
+    for (n, _) in entries.iter().filter(|(n, _)| n.ends_with('/')) {
+        w.push_archive_entry::<&[u8]>(ArchiveEntry::new_directory(n.trim_end_matches('/')), None).unwrap();
+    }
+    let files: Vec<&(&str, &[u8])> = entries.iter().filter(|(n, _)| !n.ends_with('/')).collect();
+    if solid {
+        let list = files.iter().map(|(n, _)| ArchiveEntry::new_file(n)).collect();
+        w.push_archive_entries(list, files.iter().map(|(_, d)| (*d).into()).collect()).unwrap();
+    } else {
+        for (n, d) in files {
+            w.push_archive_entry(ArchiveEntry::new_file(n), Some(*d)).unwrap();
+        }
+    }
+    w.finish().unwrap().into_inner()
+}
+
+fn sevenz_sample() -> Vec<(&'static str, Vec<u8>)> {
+    vec![("docs/", Vec::new()), ("docs/a.txt", b"hello 7z".to_vec()), ("docs/big.txt", big_text()), ("empty.txt", Vec::new()), ("z-last.txt", b"the last one".to_vec())]
+}
+
+fn sevenz_sample_of(solid: bool, password: Option<&str>, encrypt_header: bool, copy: bool) -> Vec<u8> {
+    let s = sevenz_sample();
+    let refs: Vec<(&str, &[u8])> = s.iter().map(|(n, d)| (*n, d.as_slice())).collect();
+    sevenz_of(&refs, solid, password, encrypt_header, copy)
+}
+
+#[tokio::test]
+async fn sevenz_solid_plain_and_copy_blocks() {
+    let srv = start().await;
+    let alice = srv.client("alice").await;
+    let cached = || std::fs::read_dir(srv._tmp.path().join("fsdb/archive/members")).unwrap().count();
+    let mut added = Vec::new();
+    for (file, solid, copy) in [("solid.7z", true, false), ("plain.7z", false, false), ("copy.7z", true, true)] {
+        let before = cached();
+        srv.write_zip(&format!("home/alice/{file}"), &sevenz_sample_of(solid, None, false, copy));
+        let root_uri = format!("cyfs:///home/alice/{file}/@/archive");
+        let root = alice.ok("stat", json!({"at": {"uri": root_uri}, "want": ["base"]})).await;
+        let summary = &root["attrs"]["archive"];
+        assert_eq!(summary["format"], "7z");
+        assert_eq!(summary["header_encrypted"], false);
+        assert_eq!(summary["name_encoding"]["by"], "format");
+        assert_eq!(names_at(&alice, &root_uri).await, vec!["docs", "empty.txt", "z-last.txt"], "{file}");
+        for (path, want) in [("docs/a.txt", b"hello 7z".to_vec()), ("z-last.txt", b"the last one".to_vec()), ("empty.txt", Vec::new()), ("docs/big.txt", big_text())] {
+            let m = alice.ok("stat", json!({"at": {"uri": format!("{root_uri}/{path}")}, "want": ["access", "base"]})).await;
+            let url = read_url(&m);
+            let (status, body, _) = alice.read(&url, None).await;
+            assert_eq!((status, body.len()), (200, want.len()), "{file} {path}: {}", String::from_utf8_lossy(&body[..body.len().min(200)]));
+            assert_eq!(body, want, "{file} {path}");
+            if want.len() > 10 {
+                let (status, body, _) = alice.read(&url, Some("bytes=3-9")).await;
+                assert_eq!((status, body.as_slice()), (206, &want[3..10]), "{file} {path}");
+            }
+        }
+        added.push(cached() - before);
+    }
+    // solid: the block's 3 files with data, extracted once; plain: the 2 members read from an offset
+    // (materialized); copy: byte ranges of the outer, nothing cached
+    assert_eq!(added, vec![3, 2, 0]);
+}
+
+#[tokio::test]
+async fn sevenz_encrypted_data_needs_a_password_to_read() {
+    let srv = start().await;
+    srv.write_zip("home/alice/enc.7z", &sevenz_sample_of(true, Some("pw-7z"), false, false));
+    let alice = srv.client("alice").await;
+    let at = json!({"uri": "cyfs:///home/alice/enc.7z/@/archive"});
+    let root = alice.ok("stat", json!({"at": at})).await;
+    assert_eq!(root["attrs"]["archive"]["encrypted_entries"], 3);
+    let m = alice.ok("stat", json!({"at": {"uri": "cyfs:///home/alice/enc.7z/@/archive/z-last.txt"}, "want": ["access", "base"]})).await;
+    assert_eq!(m["attrs"]["encrypted"], true);
+    let url = read_url(&m);
+    assert_eq!(alice.read(&url, None).await.0, 403);
+    assert_eq!(alice.err("archive.unlock", json!({"at": at, "args": {"password": "nope"}})).await["code"], "PASSWORD_INVALID");
+    alice.ok("archive.unlock", json!({"at": at, "args": {"password": "pw-7z"}})).await;
+    let (status, body, _) = alice.read(&url, None).await;
+    assert_eq!((status, body.as_slice()), (200, &b"the last one"[..]), "{}", String::from_utf8_lossy(&body));
+    let bob = srv.client("bob").await;
+    assert_eq!(bob.read(&url, None).await.0, 403);
+}
+
+#[tokio::test]
+async fn sevenz_encrypted_header_needs_a_password_to_list() {
+    let srv = start().await;
+    srv.write_zip("home/alice/hidden.7z", &sevenz_sample_of(true, Some("pw-h"), true, false));
+    let alice = srv.client("alice").await;
+    let root_uri = "cyfs:///home/alice/hidden.7z/@/archive";
+    let at = json!({"uri": root_uri});
+    assert_eq!(alice.err("list", json!({"at": at})).await["code"], "PASSWORD_REQUIRED");
+    assert_eq!(alice.err("stat", json!({"at": at})).await["code"], "PASSWORD_REQUIRED");
+    assert_eq!(alice.err("stat", json!({"at": {"uri": format!("{root_uri}/docs")}})).await["code"], "PASSWORD_REQUIRED");
+    assert_eq!(alice.err("archive.unlock", json!({"at": at, "args": {"password": "wrong"}})).await["code"], "PASSWORD_INVALID");
+    alice.ok("archive.unlock", json!({"at": at, "args": {"password": "pw-h"}})).await;
+    assert_eq!(names_at(&alice, root_uri).await, vec!["docs", "empty.txt", "z-last.txt"]);
+    let root = alice.ok("stat", json!({"at": at})).await;
+    assert_eq!(root["attrs"]["archive"]["header_encrypted"], true);
+    let m = alice.ok("stat", json!({"at": {"uri": format!("{root_uri}/docs/a.txt")}, "want": ["access"]})).await;
+    assert_eq!(alice.read(&read_url(&m), None).await.1, b"hello 7z");
+
+    // remembered for alice's next session; never visible to bob
+    let again = srv.client("alice").await;
+    assert_eq!(names_at(&again, root_uri).await, vec!["docs", "empty.txt", "z-last.txt"]);
+    std::fs::copy(srv.data.join("home/alice/hidden.7z"), srv.data.join("home/bob/hidden.7z")).unwrap();
+    let bob = srv.client("bob").await;
+    assert_eq!(bob.err("list", json!({"at": {"uri": "cyfs:///home/bob/hidden.7z/@/archive"}})).await["code"], "PASSWORD_REQUIRED");
+
+    again.ok("archive.forget", json!({"at": at})).await;
+    let fresh = srv.client("alice").await;
+    assert_eq!(fresh.err("list", json!({"at": at})).await["code"], "PASSWORD_REQUIRED");
+
+    // forgetting every password closes what was opened with them too
+    fresh.ok("archive.unlock", json!({"at": at, "args": {"password": "pw-h"}})).await;
+    fresh.ok("list", json!({"at": at})).await;
+    fresh.ok("archive.forget", json!({"args": {"all": true}})).await;
+    assert_eq!(srv.client("alice").await.err("list", json!({"at": at})).await["code"], "PASSWORD_REQUIRED");
+}
+
+#[tokio::test]
+async fn sevenz_and_tar_attachments_open_as_objects() {
+    let srv = start().await;
+    let seven = put_object(&srv, "chat.7z", &sevenz_sample_of(true, None, false, false)).await;
+    let targz = put_object(&srv, "chat.tar.gz", &compress("gz", &tar_sample())).await;
+    let alice = srv.client("alice").await;
+    for (obj, member, want) in [(&seven, "/archive/z-last.txt", &b"the last one"[..]), (&targz, "/archive/docs/a.txt", &b"hello tar"[..])] {
+        hold(&srv, "alice", obj).await;
+        let m = alice.ok("stat", json!({"at": {"ref": {"type": "object", "obj_id": obj, "inner_path": member}}, "want": ["access", "ident"]})).await;
+        let (status, body, headers) = alice.read(&read_url(&m), None).await;
+        assert_eq!((status, body.as_slice()), (200, want));
+        assert!(headers["etag"].to_str().unwrap().starts_with('"'));
+    }
+    let bob = srv.client("bob").await;
+    assert_eq!(bob.err("list", json!({"at": {"ref": {"type": "object", "obj_id": seven, "inner_path": "/archive"}}})).await["code"], "PERMISSION_DENIED");
 }

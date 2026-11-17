@@ -46,6 +46,12 @@ hmac = "0.12"
 zip = { workspace = true }
 encoding_rs = { workspace = true }
 chardetng = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+xz2 = { workspace = true }
+bzip2 = { workspace = true }
+zstd = { workspace = true }
+sevenz-rust2 = { workspace = true }
 sysinfo = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -53,6 +59,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+sevenz-rust2 = { workspace = true, features = ["compress"] }
 reqwest = { workspace = true }
 jsonwebtoken = { workspace = true }
 chrono = { workspace = true }

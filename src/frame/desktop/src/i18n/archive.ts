@@ -1,4 +1,4 @@
-/** Archives (ZIP) in Preview and Files: browsing, passwords, read-only notes. */
+/** Archives (zip, 7z, tar…) in Preview and Files: browsing, passwords, read-only notes. */
 export const archiveEn: Record<string, string> = {
   'archive.empty.title': 'This archive is empty',
   'archive.empty.body': 'There are no files in it.',
@@ -10,8 +10,12 @@ export const archiveEn: Record<string, string> = {
   'archive.back': 'Back',
   'archive.openAsFile': 'Open as a file',
   'archive.error': 'This archive cannot be opened.',
-  'archive.corrupt': 'The archive is damaged or not a ZIP file.',
+  'archive.corrupt': 'The archive is damaged.',
   'archive.unsupported': 'This kind of archive is not supported.',
+  'archive.tooLarge': 'This archive is too large to open here.',
+  'archive.locked.title': 'This archive is encrypted',
+  'archive.locked.body': 'Even the names inside are encrypted. Enter the password to see them.',
+  'archive.password.enter': 'Enter password',
   'archive.password.title': 'Password required',
   'archive.password.body': '"{{name}}" is encrypted. Enter the archive password.',
   'archive.password.label': 'Password',
@@ -47,8 +51,12 @@ export const archiveZh: Record<string, string> = {
   'archive.back': '返回',
   'archive.openAsFile': '作为文件打开',
   'archive.error': '无法打开这个压缩包。',
-  'archive.corrupt': '压缩包已损坏，或不是 ZIP 文件。',
+  'archive.corrupt': '压缩包已损坏。',
   'archive.unsupported': '不支持这种压缩包。',
+  'archive.tooLarge': '这个压缩包太大，无法在这里打开。',
+  'archive.locked.title': '压缩包已加密',
+  'archive.locked.body': '连里面的文件名也加密了，输入密码后才能看到。',
+  'archive.password.enter': '输入密码',
   'archive.password.title': '需要密码',
   'archive.password.body': '“{{name}}”已加密，请输入压缩包密码。',
   'archive.password.label': '密码',

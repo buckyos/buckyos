@@ -779,7 +779,7 @@ impl AppState {
                 Vec::new(),
             ),
             Node::Projection(p) => ("name", self.projection_entries(actor, p, want)?, Vec::new()),
-            Node::Archive(a) => ("name", self.archive_rows(a), Vec::new()),
+            Node::Archive(a) => ("name", self.archive_rows(a)?, Vec::new()),
         };
         let revision = if recent::is_recent(node) {
             recent::recent_revision(&rows)

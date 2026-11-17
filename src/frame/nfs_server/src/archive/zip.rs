@@ -1,17 +1,13 @@
-//! ZIP provider (archive TODO T1/T2): a cloneable positional reader over the
-//! outer file, the central directory walked on its own (raw names, flags,
-//! duplicates the `zip` crate folds together), and member reads through the
-//! crate by index.
+//! ZIP provider (archive TODO T1/T2): the central directory walked on its
+//! own (raw names, flags, duplicates the `zip` crate folds together), and
+//! member reads through the crate by index.
 
+use super::format::{Loc, Member};
 use super::names::{self, RawName};
+use super::source::*;
 use crate::error::*;
-use serde_json::json;
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::io;
+use std::sync::Arc;
 use zip::result::ZipError;
 use zip::ZipArchive;
 
@@ -28,184 +24,14 @@ pub fn method_name(method: u16) -> String {
     }
 }
 
-/// What the outer file must still be when it is opened again.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stamp {
-    pub ino: u64,
-    pub dev: u64,
-    pub size: u64,
-    pub mtime: i64,
-}
-
-impl Stamp {
-    pub fn of(meta: &std::fs::Metadata) -> Stamp {
-        let id = crate::fsutil::file_id(meta);
-        let n = crate::fsutil::node_meta(meta);
-        Stamp { ino: id.ino, dev: id.dev, size: meta.len(), mtime: n.mtime }
+pub fn supported(method: u16, strong: bool) -> NfsResult<()> {
+    if strong {
+        return Err(unsupported("encryption", "PKWARE strong encryption is not supported"));
     }
-}
-
-#[derive(Debug)]
-pub struct StaleOuter;
-
-impl std::fmt::Display for StaleOuter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the archive changed since it was indexed")
+    if !METHODS.iter().any(|(m, _)| *m == method) {
+        return Err(unsupported("method", format!("compression method {method} is not supported")));
     }
-}
-
-impl std::error::Error for StaleOuter {}
-
-pub fn is_stale(e: &io::Error) -> bool {
-    e.get_ref().is_some_and(|inner| inner.is::<StaleOuter>())
-}
-
-/// The outer file behind an index. The descriptor closes when idle and is
-/// reopened on demand; a reopened file must match the stamp it was indexed at.
-#[derive(Debug)]
-pub struct Source {
-    path: PathBuf,
-    stamp: Option<Stamp>,
-    pub len: u64,
-    slot: Mutex<Option<(Arc<File>, Instant)>>,
-}
-
-impl Source {
-    pub fn open(path: PathBuf, stamp: Option<Stamp>) -> io::Result<Arc<Source>> {
-        let file = File::open(&path)?;
-        let meta = file.metadata()?;
-        if let Some(s) = &stamp {
-            if Stamp::of(&meta) != *s {
-                return Err(io::Error::other(StaleOuter));
-            }
-        }
-        Ok(Arc::new(Source { path, stamp, len: meta.len(), slot: Mutex::new(Some((Arc::new(file), Instant::now()))) }))
-    }
-
-    fn file(&self) -> io::Result<Arc<File>> {
-        let mut slot = self.slot.lock().unwrap();
-        if let Some((f, used)) = slot.as_mut() {
-            *used = Instant::now();
-            return Ok(f.clone());
-        }
-        let file = File::open(&self.path)?;
-        let meta = file.metadata()?;
-        if meta.len() != self.len || self.stamp.as_ref().is_some_and(|s| Stamp::of(&meta) != *s) {
-            return Err(io::Error::other(StaleOuter));
-        }
-        let file = Arc::new(file);
-        *slot = Some((file.clone(), Instant::now()));
-        Ok(file)
-    }
-
-    /// Drops an idle descriptor (readers in flight keep their own).
-    pub fn close_idle(&self, idle: Duration) {
-        let mut slot = self.slot.lock().unwrap();
-        if slot.as_ref().is_some_and(|(_, used)| used.elapsed() >= idle) {
-            *slot = None;
-        }
-    }
-
-    pub fn reader(self: &Arc<Self>) -> PosReader {
-        PosReader { src: self.clone(), file: None, pos: 0 }
-    }
-}
-
-#[cfg(unix)]
-fn read_at(f: &File, buf: &mut [u8], off: u64) -> io::Result<usize> {
-    std::os::unix::fs::FileExt::read_at(f, buf, off)
-}
-
-#[cfg(windows)]
-fn read_at(f: &File, buf: &mut [u8], off: u64) -> io::Result<usize> {
-    std::os::windows::fs::FileExt::seek_read(f, buf, off)
-}
-
-/// `Read + Seek` by position over a shared descriptor; clones keep their own cursor.
-#[derive(Debug, Clone)]
-pub struct PosReader {
-    src: Arc<Source>,
-    file: Option<Arc<File>>,
-    pos: u64,
-}
-
-impl Read for PosReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.file.is_none() {
-            self.file = Some(self.src.file()?);
-        }
-        let n = read_at(self.file.as_ref().unwrap(), buf, self.pos)?;
-        self.pos += n as u64;
-        Ok(n)
-    }
-}
-
-impl Seek for PosReader {
-    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
-        let next = match to {
-            SeekFrom::Start(p) => Some(p),
-            SeekFrom::End(d) => self.src.len.checked_add_signed(d),
-            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
-        };
-        self.pos = next.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek out of range"))?;
-        Ok(self.pos)
-    }
-}
-
-/// One central directory record.
-#[derive(Debug, Clone)]
-pub struct Member {
-    pub name: RawName,
-    pub method: u16,
-    pub encrypted: bool,
-    pub aes: bool,
-    pub strong: bool,
-    pub crc32: u32,
-    pub compressed: u64,
-    pub size: u64,
-    pub header_offset: u64,
-    pub mtime: i64,
-    pub symlink: bool,
-    /// Index in the `zip` crate (None when another record shares its name there).
-    pub index: Option<usize>,
-}
-
-impl Member {
-    pub fn supported(&self) -> NfsResult<()> {
-        if self.strong {
-            return Err(NfsError::new(ErrorCode::Unsupported, "PKWARE strong encryption is not supported").with("reason", json!("encryption")));
-        }
-        if !METHODS.iter().any(|(m, _)| *m == self.method) {
-            return Err(NfsError::new(ErrorCode::Unsupported, format!("compression method {} is not supported", self.method))
-                .with("reason", json!("method")));
-        }
-        Ok(())
-    }
-
-    /// Readable as a byte range of the outer file.
-    pub fn direct(&self) -> bool {
-        self.method == 0 && !self.encrypted
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Limits {
-    pub max_central_directory_bytes: u64,
-    pub max_entries: u64,
-}
-
-pub fn corrupt(msg: impl Into<String>) -> NfsError {
-    NfsError::new(ErrorCode::ArchiveCorrupt, msg)
-}
-
-pub fn io_error(e: io::Error) -> NfsError {
-    if is_stale(&e) {
-        return stale("the archive changed; open it again");
-    }
-    match e.kind() {
-        io::ErrorKind::UnexpectedEof | io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput => corrupt(format!("archive data: {e}")),
-        _ => NfsError::from(e),
-    }
+    Ok(())
 }
 
 pub fn zip_error(e: ZipError) -> NfsError {
@@ -214,7 +40,7 @@ pub fn zip_error(e: ZipError) -> NfsError {
         ZipError::InvalidArchive(m) => corrupt(format!("invalid archive: {m}")),
         ZipError::InvalidPassword => NfsError::new(ErrorCode::PasswordInvalid, "the password does not open this member"),
         ZipError::UnsupportedArchive(m) if m == ZipError::PASSWORD_REQUIRED => NfsError::new(ErrorCode::PasswordRequired, "this member is encrypted"),
-        ZipError::UnsupportedArchive(m) => NfsError::new(ErrorCode::Unsupported, format!("unsupported archive: {m}")).with("reason", json!("zip")),
+        ZipError::UnsupportedArchive(m) => unsupported("zip", format!("unsupported archive: {m}")),
         other => corrupt(format!("archive: {other}")),
     }
 }
@@ -229,16 +55,9 @@ fn le64(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
 }
 
-fn read_exact_at(r: &mut PosReader, at: u64, len: usize) -> io::Result<Vec<u8>> {
-    let mut buf = vec![0u8; len];
-    r.seek(SeekFrom::Start(at))?;
-    r.read_exact(&mut buf)?;
-    Ok(buf)
-}
-
 /// `(entries, central directory size)` from the end records, before the crate parses anything.
 fn end_records(r: &mut PosReader) -> io::Result<Option<(u64, u64)>> {
-    let len = r.src.len;
+    let len = r.size();
     let tail_len = len.min(22 + 65535) as usize;
     if tail_len < 22 {
         return Ok(None);
@@ -327,7 +146,6 @@ fn walk(cd: &[u8], archive_offset: u64) -> NfsResult<Vec<Member>> {
         let mut unicode = (flags & (1 << 11) != 0).then(|| String::from_utf8_lossy(&raw).into_owned());
         let mut name_raw = raw;
         let mut mtime = dos_time(date, time);
-        let mut aes = false;
         let mut e = 0usize;
         while e + 4 <= extra.len() {
             let (kind, len) = (le16(extra, e), le16(extra, e + 2) as usize);
@@ -347,7 +165,6 @@ fn walk(cd: &[u8], archive_offset: u64) -> NfsResult<Vec<Member>> {
                     take(&mut header_offset, h);
                 }
                 0x9901 if body.len() >= 7 => {
-                    aes = true;
                     method = le16(body, 5);
                 }
                 0x5455 if !body.is_empty() && body[0] & 1 != 0 && body.len() >= 5 => {
@@ -364,37 +181,28 @@ fn walk(cd: &[u8], archive_offset: u64) -> NfsResult<Vec<Member>> {
             e += 4 + len;
         }
         let symlink = made_by >> 8 == 3 && (external >> 16) & 0o170000 == 0o120000;
+        let strong = flags & (1 << 6) != 0;
         out.push(Member {
             name: RawName { raw: name_raw, unicode },
-            method,
-            encrypted: flags & 1 != 0,
-            aes,
-            strong: flags & (1 << 6) != 0,
-            crc32,
-            compressed,
             size,
-            header_offset: header_offset + archive_offset,
+            compressed: Some(compressed),
+            tag: format!("{crc32:08x}"),
             mtime,
-            symlink,
-            index: None,
+            encrypted: flags & 1 != 0,
+            hidden: symlink,
+            readable: false,
+            method: method_name(method),
+            loc: Loc::Zip { method, strong, header_offset: header_offset + archive_offset, index: None },
         });
         at = end;
     }
     Ok(out)
 }
 
-/// The parsed archive: the crate's archive (cloned per request; clones share
-/// its metadata and the descriptor) and every central directory record.
-#[derive(Debug)]
-pub struct Parsed {
-    pub zip: ZipArchive<PosReader>,
-    pub members: Vec<Member>,
-    pub naming: names::Naming,
-}
-
-pub fn parse(src: &Arc<Source>, limits: Limits) -> NfsResult<Parsed> {
+/// Parses the central directory: the crate's archive (cloned per request;
+/// clones share its metadata and the descriptor) and every record.
+pub fn parse(src: &Arc<Source>, limits: Limits) -> NfsResult<(ZipArchive<PosReader>, Vec<Member>)> {
     let mut reader = src.reader();
-    let quota = |what: &str, limit: u64| NfsError::new(ErrorCode::QuotaExceeded, format!("the archive's {what} exceeds the limit")).with("limit", json!(limit));
     match end_records(&mut reader).map_err(io_error)? {
         Some((entries, _)) if entries > limits.max_entries => return Err(quota("entry count", limits.max_entries)),
         Some((_, size)) if size > limits.max_central_directory_bytes => return Err(quota("central directory", limits.max_central_directory_bytes)),
@@ -420,26 +228,28 @@ pub fn parse(src: &Arc<Source>, limits: Limits) -> NfsResult<Parsed> {
     for m in members.iter_mut() {
         let k = key(m);
         if uses[&k] == 1 {
-            m.index = zip.index_for_name(&k);
-            if m.index.is_none() {
+            let found = zip.index_for_name(&k);
+            if found.is_none() {
                 log::warn!("archive: central directory record '{k}' has no crate index");
             }
+            if let Loc::Zip { index, .. } = &mut m.loc {
+                *index = found;
+            }
+            m.readable = found.is_some();
         }
     }
-    let flags = members.iter().map(|m| (m.symlink, m.index.is_some())).collect();
-    let naming = names::Naming::new(members.iter().map(|m| m.name.clone()).collect(), flags);
-    Ok(Parsed { zip, members, naming })
+    Ok((zip, members))
 }
 
 /// Where a stored, unencrypted member's bytes start in the outer file.
-pub fn data_start(src: &Arc<Source>, m: &Member) -> NfsResult<u64> {
+pub fn data_start(src: &Arc<Source>, header_offset: u64, compressed: u64) -> NfsResult<u64> {
     let mut r = src.reader();
-    let h = read_exact_at(&mut r, m.header_offset, 30).map_err(io_error)?;
+    let h = read_exact_at(&mut r, header_offset, 30).map_err(io_error)?;
     if le32(&h, 0) != 0x0403_4b50 {
         return Err(corrupt("bad local header"));
     }
-    let start = m.header_offset + 30 + le16(&h, 26) as u64 + le16(&h, 28) as u64;
-    if start.checked_add(m.compressed).is_none_or(|end| end > src.len) {
+    let start = header_offset + 30 + le16(&h, 26) as u64 + le16(&h, 28) as u64;
+    if start.checked_add(compressed).is_none_or(|end| end > src.len) {
         return Err(corrupt("member data runs past the archive"));
     }
     Ok(start)
@@ -449,7 +259,8 @@ pub fn data_start(src: &Arc<Source>, m: &Member) -> NfsResult<u64> {
 /// member's encryption header here: the quick check).
 pub fn open<'a>(zip: &'a mut ZipArchive<PosReader>, m: &Member, password: Option<&[u8]>) -> NfsResult<zip::read::ZipFile<'a, PosReader>> {
     m.supported()?;
-    let index = m.index.ok_or_else(|| NfsError::new(ErrorCode::AmbiguousEntry, "another record has the same name"))?;
+    let Loc::Zip { index, .. } = &m.loc else { return Err(internal("not a ZIP member")) };
+    let index = index.ok_or_else(|| NfsError::new(ErrorCode::AmbiguousEntry, "another record has the same name"))?;
     match (m.encrypted, password) {
         (true, None) => Err(NfsError::new(ErrorCode::PasswordRequired, "this member is encrypted")),
         (true, Some(p)) => zip.by_index_decrypt(index, p).map_err(zip_error),
@@ -457,47 +268,13 @@ pub fn open<'a>(zip: &'a mut ZipArchive<PosReader>, m: &Member, password: Option
     }
 }
 
-/// Feeds exactly the declared size of a decoding member to `sink`, then
-/// checks the member ends there (CRC / AES authentication are checked at the
-/// end by the crate). `limit` stops early (a partial range): no end check.
-pub fn pump(mut r: impl Read, declared: u64, limit: Option<u64>, cancel: &AtomicBool, sink: &mut dyn FnMut(&[u8]) -> io::Result<bool>) -> NfsResult<bool> {
-    let want = limit.map(|l| l.min(declared)).unwrap_or(declared);
-    let mut left = want;
-    let mut buf = vec![0u8; 64 * 1024];
-    while left > 0 {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(false);
-        }
-        let n = r.read(&mut buf[..left.min(64 * 1024) as usize]).map_err(decode_error)?;
-        if n == 0 {
-            return Err(corrupt("the member is shorter than declared").with("reason", json!("decrypt_or_integrity")));
-        }
-        left -= n as u64;
-        if !sink(&buf[..n]).map_err(NfsError::from)? {
-            return Ok(false);
-        }
-    }
-    if want < declared {
-        return Ok(true);
-    }
-    let mut extra = [0u8; 1];
-    match r.read(&mut extra).map_err(decode_error)? {
-        0 => Ok(true),
-        _ => Err(corrupt("the member is longer than declared").with("reason", json!("decrypt_or_integrity"))),
-    }
-}
-
-fn decode_error(e: io::Error) -> NfsError {
-    if is_stale(&e) {
-        return stale("the archive changed; open it again");
-    }
-    corrupt(format!("the member does not decode: {e}")).with("reason", json!("decrypt_or_integrity"))
-}
-
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use std::io::Write;
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
     use zip::write::SimpleFileOptions;
 
     pub fn build(path: &std::path::Path, entries: &[(&str, &[u8], zip::CompressionMethod)]) {
@@ -513,8 +290,15 @@ pub mod tests {
         w.finish().unwrap();
     }
 
-    fn limits() -> Limits {
-        Limits { max_central_directory_bytes: 1 << 20, max_entries: 1000 }
+    pub fn limits() -> Limits {
+        Limits { max_central_directory_bytes: 1 << 20, max_entries: 1000, max_materialize_bytes: 1 << 30, max_decoder_memory: 256 << 20 }
+    }
+
+    fn header_offset(m: &Member) -> u64 {
+        match m.loc {
+            Loc::Zip { header_offset, .. } => header_offset,
+            _ => unreachable!(),
+        }
     }
 
     #[test]
@@ -525,17 +309,17 @@ pub mod tests {
         build(&p, &[("docs/", b"", zip::CompressionMethod::Stored), ("docs/a.txt", b"hello", zip::CompressionMethod::Stored), ("big.bin", &big, zip::CompressionMethod::Deflated)]);
         let meta = std::fs::metadata(&p).unwrap();
         let src = Source::open(p.clone(), Some(Stamp::of(&meta))).unwrap();
-        let mut parsed = parse(&src, limits()).unwrap();
-        assert_eq!(parsed.members.len(), 3);
-        let a = parsed.members.iter().find(|m| m.name.raw == b"docs/a.txt").unwrap().clone();
+        let (mut z, members) = parse(&src, limits()).unwrap();
+        assert_eq!(members.len(), 3);
+        let a = members.iter().find(|m| m.name.raw == b"docs/a.txt").unwrap().clone();
         assert!(a.direct());
-        let start = data_start(&src, &a).unwrap();
+        let start = data_start(&src, header_offset(&a), a.compressed.unwrap()).unwrap();
         let mut r = src.reader();
         assert_eq!(read_exact_at(&mut r, start, 5).unwrap(), b"hello");
-        let b = parsed.members.iter().find(|m| m.name.raw == b"big.bin").unwrap().clone();
-        assert_eq!(method_name(b.method), "deflate");
+        let b = members.iter().find(|m| m.name.raw == b"big.bin").unwrap().clone();
+        assert_eq!(b.method, "deflate");
         let mut out = Vec::new();
-        let file = open(&mut parsed.zip, &b, None).unwrap();
+        let file = open(&mut z, &b, None).unwrap();
         assert!(pump(file, b.size, None, &AtomicBool::new(false), &mut |c| {
             out.extend_from_slice(c);
             Ok(true)
@@ -544,11 +328,11 @@ pub mod tests {
         assert_eq!(out, big);
         let mut lying = b.clone();
         lying.size = 1000;
-        let file = open(&mut parsed.zip, &lying, None).unwrap();
+        let file = open(&mut z, &lying, None).unwrap();
         let e = pump(file, lying.size, None, &AtomicBool::new(false), &mut |_| Ok(true)).unwrap_err();
         assert_eq!(e.code, ErrorCode::ArchiveCorrupt);
         lying.size = 300_000;
-        let file = open(&mut parsed.zip, &lying, None).unwrap();
+        let file = open(&mut z, &lying, None).unwrap();
         assert_eq!(pump(file, lying.size, None, &AtomicBool::new(false), &mut |_| Ok(true)).unwrap_err().code, ErrorCode::ArchiveCorrupt);
     }
 
@@ -558,11 +342,11 @@ pub mod tests {
         let p = dir.path().join("a.zip");
         build(&p, &[("a.txt", b"one", zip::CompressionMethod::Stored)]);
         let src = Source::open(p.clone(), Some(Stamp::of(&std::fs::metadata(&p).unwrap()))).unwrap();
-        let parsed = parse(&src, limits()).unwrap();
+        let (z, _) = parse(&src, limits()).unwrap();
         let tmp = dir.path().join("b.zip");
         build(&tmp, &[("a.txt", b"two!", zip::CompressionMethod::Stored)]);
         std::fs::rename(&tmp, &p).unwrap();
-        let mut held = parsed.zip.clone();
+        let mut held = z.clone();
         assert!(held.by_index(0).is_ok(), "an open descriptor still reads the indexed bytes");
         src.close_idle(Duration::ZERO);
         let mut fresh = src.reader();
@@ -580,18 +364,18 @@ pub mod tests {
         let refs: Vec<(&str, &[u8], zip::CompressionMethod)> = entries.iter().map(|(n, m)| (n.as_str(), data.as_slice(), *m)).collect();
         build(&p, &refs);
         let src = Source::open(p, None).unwrap();
-        let mut parsed = parse(&src, limits()).unwrap();
+        let (mut z, members) = parse(&src, limits()).unwrap();
         let mut seen = Vec::new();
-        for m in parsed.members.clone() {
+        for m in members {
             let mut out = Vec::new();
-            let file = open(&mut parsed.zip, &m, None).unwrap();
+            let file = open(&mut z, &m, None).unwrap();
             pump(file, m.size, None, &AtomicBool::new(false), &mut |c| {
                 out.extend_from_slice(c);
                 Ok(true)
             })
             .unwrap();
-            assert_eq!(out, data, "{}", method_name(m.method));
-            seen.push(method_name(m.method));
+            assert_eq!(out, data, "{}", m.method);
+            seen.push(m.method.clone());
         }
         assert_eq!(seen, vec!["stored", "deflate", "bzip2", "zstd", "xz"]);
         // LZMA (written by Python's zipfile): the crate's decoder fails on it, so it is refused up front.
@@ -599,10 +383,10 @@ pub mod tests {
         let p = dir.path().join("lzma.zip");
         std::fs::write(&p, lzma).unwrap();
         let src = Source::open(p, None).unwrap();
-        let mut parsed = parse(&src, limits()).unwrap();
-        let m = parsed.members[0].clone();
-        assert_eq!(method_name(m.method), "lzma");
-        let e = open(&mut parsed.zip, &m, None).err().unwrap();
+        let (mut z, members) = parse(&src, limits()).unwrap();
+        let m = members[0].clone();
+        assert_eq!(m.method, "lzma");
+        let e = open(&mut z, &m, None).err().unwrap();
         assert_eq!((e.code, e.details["reason"].as_str()), (ErrorCode::Unsupported, Some("method")));
     }
 
@@ -612,7 +396,7 @@ pub mod tests {
         let p = dir.path().join("a.zip");
         build(&p, &[("a", b"1", zip::CompressionMethod::Stored), ("b", b"2", zip::CompressionMethod::Stored)]);
         let src = Source::open(p, None).unwrap();
-        let e = parse(&src, Limits { max_central_directory_bytes: 1 << 20, max_entries: 1 }).unwrap_err();
+        let e = parse(&src, Limits { max_entries: 1, ..limits() }).unwrap_err();
         assert_eq!(e.code, ErrorCode::QuotaExceeded);
         let not_zip = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(not_zip.path(), b"just text, not an archive").unwrap();

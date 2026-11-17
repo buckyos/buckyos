@@ -83,7 +83,7 @@ cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 | 派生 | `repr` / `get_repr`(实现扩展) | ✅ Preview Pipeline:ffmpeg/ffprobe(媒体)、LibreOffice `soffice`(文档→PDF、旧表格→xlsx)、ImageMagick(RAW 等图片)、poppler(PDF 缩略图)、pandoc(EPUB / ipynb / Markdown→HTML)五组,每组有则用、没有就 `unsupported`;产物进 zone 桶 `zone/nfs-server/_/preview-cache`;见下文「预览管线」 |
 | 通知 | `watch`(SSE) | ✅ `container_changed`/`meta_changed`/`resync`;连接首事件恒为 `resync`(D11);watch_token 过滤 |
 | 数据面 | `GET /nfs/v1/read/{node_id}` | ✅ Range/ETag(弱)/If-None-Match/Content-Disposition;**不发 immutable**(link 语义,§4.2) |
-| 压缩包 | `resolve`/`stat`/`list`/`read`/`repr`/`copy_submit` 进入 ZIP + `archive.unlock` / `archive.forget`(实现扩展) | ✅ 只读;见下文「压缩包浏览」 |
+| 压缩包 | `resolve`/`stat`/`list`/`read`/`repr`/`copy_submit` 进入 ZIP / 7z / tar(含 .tar.gz 等)/ 单个压缩文件 + `archive.unlock` / `archive.forget`(实现扩展) | ✅ 只读;见下文「压缩包浏览」 |
 
 `hello` 广告的 features:`view` `collection` `reference-binding` `watch.sse` `search.name` `acl` `share`,
 找到任一组转换器时再加 `repr`;并返回 `identity {user_id, role}`、`repr`(转换器能力,见「预览管线」)与
@@ -154,8 +154,14 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 
 ## 压缩包浏览
 
-需求与冻结协议见 `notepads/archive-preview-files-todo.md` §1–§2；实现在 `src/archive/`(`names.rs` 文件名编码与可寻址规则,
-`zip.rs` 中央目录遍历与成员读取,`cache.rs` 索引/落盘/物化缓存与磁盘预算,`password.rs` 密码)。
+需求与冻结协议见 `notepads/archive-preview-files-todo.md` §1–§2,7z / tar / 单个压缩文件的增量见
+`notepads/archive-preview-more-formats-todo.md` §3–§4；实现在 `src/archive/`(`format.rs` 魔数识别与统一的成员读取,
+`names.rs` 文件名编码与可寻址规则,`zip.rs` 中央目录遍历,`tar.rs` tar 索引与压缩流解压,`sevenz.rs` 7z 头部与块解码,
+`source.rs` 按位置读取与解码泵,`cache.rs` 索引/落盘/物化缓存与磁盘预算,`password.rs` 密码)。
+
+- **格式**:按外层开头的魔数识别,不看扩展名:zip、7z、tar、gzip / xz / bzip2 / zstd 压缩流(里面是 tar 就是压缩 tar,
+  否则是只含一个成员的 `compressed`;成员名取 gzip 头的 FNAME,没有时取外层名去掉压缩扩展名)。RAR 返回
+  `UNSUPPORTED{reason:"format", format:"rar"}`,不认识的文件 `UNSUPPORTED{reason:"format"}`。
 
 - **地址**:路径来源 `<文件>/@/archive/<成员路径>`(DFS 原生文件与 bucket projection 文件;`@` 只有紧跟一个普通文件时才进包,
   `a.zip/@`、`a.zip/@/<其他分支>` 为 `NOT_FOUND`);对象来源 `ObjectRef { obj_id: <FileObject>, inner_path: "/archive/<成员路径>" }`
@@ -164,22 +170,33 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 - **鉴权**:路径来源要求对外层文件有 `read`(目录只 `traverse` 不够);projection 沿用 projection 的读检查;对象来源每个请求按
   `ndm::may_read`(holding 或通用读权)检查,索引/缓存命中也一样。
 - **只读**:归档节点上的写操作、`share.*`、以它为目的地的 copy 一律 `PERMISSION_DENIED{reason:"archive_read_only"}`;以包内文件为来源的 copy 允许。
-- **列表与 stat**:列表项与原生一致,`attrs` 另有 `compressed_size` / `encrypted` / `method`;包根 `stat`(和根列表的 `container`)带
-  `attrs.archive = {format, entries, hidden_entries, encrypted_entries, name_encoding{encoding, by}}`。能力 `remove_semantics: none`。
+- **列表与 stat**:列表项与原生一致,`attrs` 另有 `compressed_size`(未知时省略)/ `encrypted` / `method`;包根 `stat`(和根列表的
+  `container`)带 `attrs.archive = {format, entries, hidden_entries, encrypted_entries, name_encoding{encoding, by}}`,tar 与
+  `compressed` 加 `compression`,7z 加 `solid`、`header_encrypted`(7z 的名字是 UTF-16,`by` 为 `"format"`)。能力 `remove_semantics: none`。
 - **文件名编码**:无 UTF-8 标志的名字以整包为单位在 GBK/Big5/Shift_JIS/EUC-KR/EUC-JP 中探测(chardetng),名字短时参考请求的
-  `Accept-Language`,探测不出用 CP437;分隔符在解码后处理。不安全、同时含 `/` 和 `\`、符号链接、规范化后同名的条目不列出,数量在
+  `Accept-Language`,探测不出用 CP437;分隔符在解码后处理。tar 里有 pax `path` 的名字按 UTF-8,其余按同样规则探测,`\` 不当分隔符;
+  tar 名字开头的 `./` 去掉。tar 的链接、设备文件、GNU sparse 和 7z 的反项、符号链接不列出,计入 `hidden_entries`。不安全、同时含 `/` 和 `\`、符号链接、规范化后同名的条目不列出,数量在
   `hidden_entries`;同名的按路径读返回 `AMBIGUOUS_ENTRY`。
-- **读取**:Stored 未加密成员直接映射外层字节区间(任意 Range);其他成员无 Range 或 Range 从 0 开始时流式解压(有界 channel,客户端断开即停);
-  起点不为 0 时先完整物化到缓存再按文件响应。成员数据面一律套用与原生文件相同的内容安全策略。
-- **密码**:`archive.unlock {at, args.password}` 用目标成员(或第一个加密成员)快速校验,通过后进会话“待验证”;第一次完整读到成员末尾且
-  CRC / HMAC 对上才升级为“已验证”,并在外层整文件 sha256 可用时按(用户, sha256)写进 `archive_passwords`(明文,见已知边界)。
-  `archive.forget {at}` / `{args.all:true}` 删除记住的密码和会话状态。加密成员的物化缓存按用户分开。
-- **`hello.archive`**:`{available, formats:[{format:"zip", extensions:["zip"], methods, encryption}], limits}`。
-- **上限(`ServerConfig.archive`,初值)**:中央目录 64 MiB、条目 200,000、索引缓存 64 个、物化与对象落盘共用磁盘预算 4 GiB(LRU 驱逐,
-  单个成员上限同预算)、解压 worker = CPU 数、空闲 60 秒关闭外层文件描述符。缓存目录 `<data_dir>/archive/{objects,members}`,启动时清理残留临时文件。
+- **读取**:Stored 未加密的 zip 成员、tar 成员、7z 的 Copy 块成员直接映射字节区间(任意 Range);其他成员无 Range 或 Range 从 0 开始时
+  流式解压(有界 channel,客户端断开即停);起点不为 0 时先完整物化到缓存再按文件响应。压缩 tar 和单个压缩文件第一次访问时整条流解到
+  `<data_dir>/archive/unpacked/`(边解边建索引,之后按普通 tar 读);7z 的 solid 块(一块里有多个文件)第一次读到其中任一成员时整块解一遍,
+  每个成员 CRC 通过后写进成员缓存,请求方等到自己的成员就绪即返回,整块解完为止(加密块按用户分开)。成员数据面一律套用与原生文件相同的内容安全策略。
+- **密码**:`archive.unlock {at, args.password}` 用目标成员(或第一个加密成员)快速校验(7z 是开始解该成员所在的块),通过后进会话“待验证”;
+  第一次完整读到成员末尾且 CRC / HMAC 对上才升级为“已验证”,并在外层整文件 sha256 可用时按(用户, sha256)写进 `archive_passwords`
+  (明文,见已知边界)。7z 加密了头部(`-mhe`)时连列目录、`stat` 都返回 `PASSWORD_REQUIRED`:`archive.unlock` 的 `at` 必须是包根,
+  用密码解头部(带 CRC,是完整校验,直接记为已验证并持久化),之后这个用户看到的是自己的解锁视图;别的用户仍要自己的密码。
+  `archive.forget {at}` / `{args.all:true}` 删除记住的密码、会话状态和解锁视图。加密成员的物化缓存按用户分开。
+- **`hello.archive`**:`{available, formats, limits}`。`formats` 四项:`zip`(`methods`、`encryption`)、`tar`(扩展名 `tar`、`tar.gz`/`tgz`、
+  `tar.xz`/`txz`、`tar.bz2`/`tbz2`/`tbz`、`tar.zst`/`tzst`,`compression`)、`7z`(`methods`、`filters`、`encryption: ["aes256"]`)、
+  `compressed`(`gz`、`xz`、`bz2`、`zst`)。扩展名可以带点,客户端按最长后缀匹配;Desktop `data/urls.ts` 的 `ARCHIVE_EXTENSIONS`
+  由 `archive::tests` 保证与这里一致。
+- **上限(`ServerConfig.archive`,初值)**:中央目录 64 MiB、条目 200,000、索引缓存 64 个、物化 / 对象落盘 / 压缩流解压共用磁盘预算 4 GiB
+  (LRU 驱逐,单项上限同预算,压缩流解压时边写边检查)、7z 与 xz 解码器字典内存 256 MiB(`max_decoder_memory`,超出 `QUOTA_EXCEEDED`)、
+  解压 worker = CPU 数、空闲 60 秒关闭外层文件描述符。缓存目录 `<data_dir>/archive/{objects,members,unpacked}`,启动时清理残留临时文件。
 - **已知边界**:同一秒内原地改写成同样大小且不换 inode 时识别不到外层变化;记住的密码明文存在服务库里;非 ASCII 字节少于 16 的短名
   依赖请求方语言偏好;对象来源第一次打开要整份落盘;流式输出中途发现 CRC 不符只能断开连接;大的 Deflate 成员第一次被非 0 起点 Range 读时要等完整物化;
-  DOS 时间按服务器本地时区解释;嵌套包、分卷包、7z/RAR/tar、host realm 归档不支持(`UNSUPPORTED`)。
+  DOS 时间按服务器本地时区解释;压缩 tar 和 solid 7z 块第一次打开要等整条流 / 整块解完(bz2 最慢),并占用磁盘预算;
+  7z 的 Deflate64 和 7-Zip-zstd 分支的 Zstd / Brotli / LZ4 不支持;嵌套包、分卷包、RAR、host realm 归档不支持(`UNSUPPORTED`)。
 
 ## 文件复制真实 E2E
 
