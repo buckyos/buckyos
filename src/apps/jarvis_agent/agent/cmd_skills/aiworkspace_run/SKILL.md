@@ -40,7 +40,7 @@ When you worked out a wish's task with the user in a conversation, hand it over 
 
 #### Asked from the AI Workspace panel
 The workspace's "Talk to your Agent" panel sends the user's message with a block after it, saying where they are and what they selected (only the lines that apply; a later message without one is about the same place):
-```
+```text
 [aiworkspace context]
 workspace: <title> obj://aiworkspace/<ws>
 page: <the page the user is on>

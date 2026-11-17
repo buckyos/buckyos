@@ -86,6 +86,11 @@ impl Rfb {
         Self::over(stream).await
     }
 
+    #[cfg(not(unix))]
+    pub async fn connect(socket: &std::path::Path) -> std::io::Result<Self> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, format!("the display's socket {} needs a Unix socket", socket.display())))
+    }
+
     /// The handshake over `stream`, then the connection.
     pub async fn over<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S) -> std::io::Result<Self> {
         let (mut read, mut write) = tokio::io::split(stream);

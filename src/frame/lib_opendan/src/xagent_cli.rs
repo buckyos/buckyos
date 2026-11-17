@@ -3406,14 +3406,21 @@ fn session_cli() -> Option<PathBuf> {
 
 /// Run the `xagent` command line and exit with its status.
 pub fn main() -> ! {
-    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
-    let code = match rt.block_on(real_main()) {
-        Ok(code) => code,
-        Err(f) => {
-            eprintln!("xagent: {}", f.msg);
-            f.code
-        }
-    };
+    let code = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            match rt.block_on(real_main()) {
+                Ok(code) => code,
+                Err(f) => {
+                    eprintln!("xagent: {}", f.msg);
+                    f.code
+                }
+            }
+        })
+        .expect("start xagent thread")
+        .join()
+        .unwrap_or_else(|e| std::panic::resume_unwind(e));
     std::process::exit(code);
 }
 

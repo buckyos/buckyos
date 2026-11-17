@@ -59,6 +59,18 @@ pub use session::{Session, SessionDir};
 pub use state::{AgentStateClient, FsAgentStateClient};
 pub use template::SessionTemplate;
 
+/// `fs::canonicalize`, with a Windows drive path in its plain form (`C:\a`,
+/// not `\\?\C:\a`): a session opened by its registered location then has the
+/// path it has when opened by its directory.
+pub fn canonical_path(path: impl AsRef<std::path::Path>) -> std::io::Result<std::path::PathBuf> {
+    let path = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    if let Some(plain) = path.to_str().and_then(|p| p.strip_prefix(r"\\?\")).filter(|p| p.as_bytes().get(1) == Some(&b':')) {
+        return Ok(std::path::PathBuf::from(plain));
+    }
+    Ok(path)
+}
+
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()

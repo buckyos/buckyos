@@ -33,6 +33,7 @@ use opendan::tasks::{NewTask, TaskService, TaskView};
 use opendan::ui::MailService;
 use serde_json::{json, Value};
 
+#[cfg(unix)]
 mod fake_browser;
 
 const AGENT: &str = "did:bns:jarvis.alice";
@@ -583,6 +584,12 @@ fn finished(sd: &SessionDir) -> bool {
     sd.state().map(|s| s.is_finished()).unwrap_or(false)
 }
 
+/// The registry's copy of a session's status: what the service decides on,
+/// published after the session's own state.
+fn registered_status(agent: &dyn AgentStateClient, sid: &str) -> Option<SessionStatus> {
+    futures_block(agent.sessions().lookup(sid)).ok().flatten().map(|e| e.status)
+}
+
 /// M1: sessions registered for this driver are hosted without anything
 /// touching them — those left over from before the start and those created
 /// while the Loader runs. A work left unfinished by an earlier process is
@@ -850,7 +857,10 @@ async fn the_owner_controls_a_work_session_that_takes_no_message() {
     let started = Instant::now();
     let stopped = rpc(port, "session.stop", json!({ "sid": work.sid(), "reason": "enough" })).await.unwrap();
     assert!(stopped["index"].as_u64().is_some(), "{stopped}");
-    until("stopped", || finished(&work)).await;
+    until("stopped", || {
+        finished(&work) && registered_status(loader.agent.as_ref(), work.sid()).is_some_and(|s| s.run_state == RunState::Finished)
+    })
+    .await;
     assert!(started.elapsed() < Duration::from_secs(15), "the command was interrupted, not waited for");
     assert_eq!(work.state().unwrap().outcome, Some(Outcome::Stopped));
     let again = rpc(port, "session.stop", json!({ "sid": work.sid() })).await.unwrap_err();
@@ -1026,10 +1036,11 @@ async fn agent_state_over_krpc_matches_the_files() {
     let local = fs_agent(&w);
     assert!(remote.agent_root().is_none());
     assert_eq!(remote.agent_id(), local.agent_id());
-    assert_eq!(
-        remote.sessions().lookup(done.sid()).await.unwrap(),
-        local.sessions().lookup(done.sid()).await.unwrap()
-    );
+    // A finished session's record is written once more as its runner lets it go.
+    until("the record over kRPC is the file's", || {
+        futures_block(remote.sessions().lookup(done.sid())).unwrap() == futures_block(local.sessions().lookup(done.sid())).unwrap()
+    })
+    .await;
     assert_eq!(remote.sessions().lookup("no-such").await.unwrap(), None);
     let q = RegistryQuery {
         driver: Some(WHO.into()),
@@ -1185,6 +1196,7 @@ async fn agent_state_over_krpc_matches_the_files() {
         "operation_id": "homepage-workspace", "name": "Shared project", "description": "A long-term project",
         "location": { "runtime_id": "local", "directory": directory }, "usage": "collaborative"
     }})).await.unwrap();
+    let canonical = std::fs::canonicalize(&directory).unwrap();
     let workspace_id = registered["workspace_id"].as_str().unwrap();
     let annotated = rpc(port, "workspaces.update", json!({
         "workspace_id": workspace_id, "request": { "expected_revision": registered["revision"], "private_notes": "private cognition" }
@@ -1199,7 +1211,7 @@ async fn agent_state_over_krpc_matches_the_files() {
     let known = rpc(port, "home.workspaces", json!({})).await.unwrap();
     assert_eq!(known.as_array().unwrap().len(), 1);
     assert_eq!(known[0]["workspace_id"], workspace_id);
-    assert_eq!(known[0]["location"]["directory"], json!(directory));
+    assert_eq!(known[0]["location"]["directory"], json!(canonical));
     assert_eq!(known[0]["lifecycle"], "archived");
     assert_eq!(known[0]["availability"], "missing");
     assert!(known[0]["last_error"].is_string());
@@ -1209,7 +1221,11 @@ async fn agent_state_over_krpc_matches_the_files() {
     // The three operations are records on the session's bus.
     let posted = rpc(port, "session.post", json!({ "sid": ui.sid(), "text": "second" })).await.unwrap();
     assert!(posted["key"].as_str().unwrap().starts_with("cymsg:"));
-    until("second turn", || ui.state().map(|s| s.turns_completed == 2).unwrap_or(false)).await;
+    until("second turn", || {
+        ui.state().map(|s| s.turns_completed == 2).unwrap_or(false)
+            && registered_status(loader.agent.as_ref(), ui.sid()).is_some_and(|s| !s.turn_open)
+    })
+    .await;
     // A conversation is not stopped: a stop is for the message in
     // progress, and its context is dropped by archiving it.
     let refused = rpc(port, "session.stop", json!({ "sid": ui.sid(), "reason": "enough" })).await.unwrap_err();
@@ -1800,7 +1816,13 @@ async fn the_jarvis_package_loads_and_answers() {
     assert!(!system.contains("<<"), "{system}");
     let mut tools = tools.lock().unwrap().clone();
     tools.sort();
-    assert_eq!(tools, ["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]);
+    // Without the task bridge (a Unix socket) a session follows its commands with `cancel_task`.
+    let expected: &[&str] = if cfg!(unix) {
+        &["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+    } else {
+        &["cancel_task", "edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+    };
+    assert_eq!(tools, expected);
     assert_eq!(cfg_max_tokens(&loader.config.llm_context), Some(8192));
     let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session))
         .unwrap()
@@ -1964,7 +1986,13 @@ async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
     assert!(first.force_json && first.json_schema.is_some());
     let mut tools: Vec<&str> = first.tool_specs.iter().map(|t| t.name.as_str()).collect();
     tools.sort();
-    assert_eq!(tools, ["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]);
+    // Without the task bridge (a Unix socket) a session follows its commands with `cancel_task`.
+    let expected: &[&str] = if cfg!(unix) {
+        &["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+    } else {
+        &["cancel_task", "edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+    };
+    assert_eq!(tools, expected);
     let input = last_user(first);
     assert!(input.starts_with("<<background_context>>\n- current_time "), "{input}");
     assert!(input.ends_with("<</background_context>>\n你好 Jarvis"), "{input}");
@@ -2706,11 +2734,17 @@ async fn a_session_process_elsewhere_reaches_its_session_through_the_service() {
     let port = free_port();
     let bin = w.root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
+    let exe = |name: &str| bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     for name in ["xagent", "agent-session"] {
-        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_opendan"), bin.join(name)).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_opendan"), exe(name)).unwrap();
+        #[cfg(not(unix))]
+        std::fs::hard_link(env!("CARGO_BIN_EXE_opendan"), exe(name))
+            .or_else(|_| std::fs::copy(env!("CARGO_BIN_EXE_opendan"), exe(name)).map(|_| ()))
+            .unwrap();
     }
     let mut env = w.env(Llm::new(|_, _| "done".into()), port).await;
-    env.session_cli = Some(bin.join("xagent"));
+    env.session_cli = Some(exe("xagent"));
     let loader = Loader::start(env).await.unwrap();
     until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
     let mut spec = work_spec("work driven elsewhere", "go");
@@ -2743,12 +2777,16 @@ async fn a_session_process_elsewhere_reaches_its_session_through_the_service() {
     };
     let helper = |args: &[&str], stdin: Option<&str>| {
         use std::io::Write;
-        let mut cmd = std::process::Command::new(bin.join("agent-session"));
+        let mut cmd = std::process::Command::new(exe("agent-session"));
         cmd.args(args).current_dir(&deep).env_clear().env("PATH", "/usr/bin:/bin")
             .env(buckyos_api::ENV_EXECUTOR_CALL_ID, "call-7")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            cmd.env("SystemRoot", root);
+        }
         let mut child = cmd.spawn().unwrap();
         child.stdin.take().unwrap().write_all(stdin.unwrap_or_default().as_bytes()).unwrap();
         child.wait_with_output().unwrap()
@@ -2803,6 +2841,7 @@ async fn a_session_process_elsewhere_reaches_its_session_through_the_service() {
 
 /// A kRPC call as the wire shows it: the result, or the error's JSON
 /// (`kind`, `code`, `message`).
+#[cfg(unix)]
 async fn rpc_wire(port: u16, method: &str, params: Value) -> Result<Value, Value> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let body = json!({ "method": method, "params": params, "sys": [1] }).to_string();
@@ -2829,6 +2868,7 @@ async fn rpc_wire(port: u16, method: &str, params: Value) -> Result<Value, Value
 
 /// The agent's browser is the fake one (`tests/fake_browser`), in the
 /// AgentRoot's cache directory as on a host without an instance volume.
+#[cfg(unix)]
 async fn fake_browser_of(w: &World) -> Arc<fake_browser::FakeBrowser> {
     std::env::set_var("OPENDAN_CHROMIUM", fake_browser::chromium());
     std::env::remove_var("OPENDAN_BROWSER_DIR");
@@ -2840,6 +2880,7 @@ async fn fake_browser_of(w: &World) -> Arc<fake_browser::FakeBrowser> {
 /// service in their environment, a lease makes the agent the operating
 /// party until the user takes over, errors carry their `code`, and the
 /// screen and upload entries are routed.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_agents_browser_is_served_over_krpc() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2973,6 +3014,7 @@ async fn the_agents_browser_is_served_over_krpc() {
 }
 
 /// One HTTP request to the service: `(status, body)`.
+#[cfg(unix)]
 async fn http_request(port: u16, head: &str, body: &[u8]) -> (u16, Value) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -2985,9 +3027,11 @@ async fn http_request(port: u16, head: &str, body: &[u8]) -> (u16, Value) {
     (status, serde_json::from_str(body).unwrap_or(Value::Null))
 }
 
+#[cfg(unix)]
 type ScreenSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// The next message of `kind` on a screen connection (frames are acknowledged), `None` once it is closed.
+#[cfg(unix)]
 async fn screen_message(ws: &mut ScreenSocket, kind: &str) -> Option<Value> {
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
@@ -3010,6 +3054,7 @@ async fn screen_message(ws: &mut ScreenSocket, kind: &str) -> Option<Value> {
 }
 
 /// Connect to the screen below `path` and say `hello`.
+#[cfg(unix)]
 async fn screen_hello(port: u16, path: &str, token: Option<&str>) -> ScreenSocket {
     use futures::SinkExt;
     let (mut ws, response) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}{path}/browser/screen")).await.unwrap();
@@ -3023,6 +3068,7 @@ async fn screen_hello(port: u16, path: &str, token: Option<&str>) -> ScreenSocke
 /// every mount becomes a WebSocket whose `hello` is admitted like a kRPC
 /// call of the owner's, and `PUT …/browser/upload/<request>` gives a file
 /// of the App's device to the page that asked for one.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_browsers_screen_and_uploads_are_served_over_http() {
     let w = World::new();
@@ -3109,6 +3155,7 @@ async fn the_browsers_screen_and_uploads_are_served_over_http() {
 /// An agent without a browser says why on every entry: `browser.status`,
 /// the error of a kRPC call, the screen's handshake and the upload carry
 /// `unavailable_code` beside `browser_unavailable`.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_without_a_browser_says_why_on_every_entry() {
     let w = World::new();
@@ -3152,6 +3199,7 @@ async fn an_agent_without_a_browser_says_why_on_every_entry() {
 /// the browser shows the agent waiting for. Its UI sessions have the
 /// browser's manual, no other conversation's has; a UI session it had before
 /// it was bound is archived, and its next message opens one with the manual.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn taking_the_browser_over_is_told_to_the_browser_conversation() {
     use libopendan::notify::NotifyHost;

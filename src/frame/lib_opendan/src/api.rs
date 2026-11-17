@@ -524,10 +524,7 @@ pub async fn create_session(
     {
         return Err(OpenDanError::SessionIdConflict(sid));
     }
-    let canonical = sd
-        .path()
-        .canonicalize()
-        .unwrap_or_else(|_| sd.path().to_path_buf());
+    let canonical = crate::canonical_path(sd.path()).unwrap_or_else(|_| sd.path().to_path_buf());
     let entry = RegistryEntry {
         session_id: sid.clone(),
         kind: existing.session.kind,

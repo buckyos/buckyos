@@ -507,7 +507,7 @@ fn xllm_takes_over_the_live_run_and_xagent_commits_its_end() {
     let command = v["command"].as_str().unwrap();
     assert!(
         command.contains("xllm --resume --run") && command.contains(&run_id)
-            && command.contains(".opendan_agent_session/runs"),
+            && command.contains(&Path::new(".opendan_agent_session").join("runs").display().to_string()),
         "{command}"
     );
 
@@ -695,6 +695,8 @@ fn workspace_commands_preserve_identity_and_create_fixed_session_bindings() {
     );
 }
 
+/// The commands are `sh` words; a PowerShell target's quoting is `a_powershell_target_calls_the_command_with_its_words_quoted`.
+#[cfg(unix)]
 #[test]
 fn run_keeps_the_words_of_a_command_apart() {
     use libopendan::state::{AgentStateClient, FsAgentStateClient};

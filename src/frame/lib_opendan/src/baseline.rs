@@ -597,15 +597,14 @@ pub fn is_deno_command(name: &str) -> bool {
             .any(|t| t.name == name && t.source == AGENT_TOOLS_SOURCE)
 }
 
-/// `$BUCKYOS_ROOT` as this program sees it: the environment, else two
-/// levels above the program (`bin/<dir>/<program>`).
+/// `$BUCKYOS_ROOT` as this program sees it: the environment (read on every
+/// call), else [`buckyos_kit::get_buckyos_root_dir`] (the install holding
+/// the program, else the OS default).
 pub fn buckyos_root() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os("BUCKYOS_ROOT").filter(|r| !r.is_empty()) {
         return Some(PathBuf::from(root));
     }
-    let exe = std::env::args_os().next().map(PathBuf::from)?;
-    let exe = if exe.is_absolute() { exe } else { std::env::current_exe().ok()? };
-    exe.parent()?.parent()?.parent().map(Path::to_path_buf)
+    Some(buckyos_kit::get_buckyos_root_dir())
 }
 
 pub fn managed_tool_dirs() -> Vec<PathBuf> {

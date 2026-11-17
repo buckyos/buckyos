@@ -227,7 +227,7 @@ pub fn node_agent_dir(target: &RemoteNodeTarget, runtime_id: &str, agent_id: &st
 /// Join path parts below `base` with the separator of the target OS (a
 /// drive path is a Windows path whatever this side runs on).
 pub fn target_join(base: &str, parts: &[&str]) -> String {
-    let windows = buckyos_api::is_absolute_node_path(base) && !base.starts_with('/');
+    let windows = (buckyos_api::is_absolute_node_path(base) && !base.starts_with('/')) || base.starts_with(r"\\");
     let sep = if windows { '\\' } else { '/' };
     let mut out = base.trim_end_matches(['/', '\\']).to_string();
     for part in parts {
