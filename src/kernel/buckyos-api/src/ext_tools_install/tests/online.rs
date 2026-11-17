@@ -496,6 +496,43 @@ fn a_zip_cannot_reach_outside_its_directory() {
     assert!(!scratch.0.join("outside/evil").exists());
 }
 
+/// The font package as publish/exttool/ext-fonts declares it: every font from its upstream's release on GitHub, and the
+/// directory its fonts.conf names in each, from where the package is active. By hand:
+/// `cargo test -p buckyos-api --lib -- --ignored --nocapture the_fonts_come_from_their_upstreams`.
+#[test]
+#[ignore = "downloads about 110 MB from github.com"]
+fn the_fonts_come_from_their_upstreams() {
+    let scratch = Scratch::new("online-fonts");
+    let root = ToolsRoot::new(scratch.0.join("tools"));
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../publish/exttool/ext-fonts");
+    let tree = scratch.0.join("tree");
+    fs::create_dir_all(tree.join("store/ext-fonts")).unwrap();
+    fs::copy(source.join(EXT_TOOLS_MANIFEST_FILE), tree.join(EXT_TOOLS_MANIFEST_FILE)).unwrap();
+    fs::copy(source.join("fonts.conf"), tree.join("store/ext-fonts/fonts.conf")).unwrap();
+    let tar_path = scratch.0.join("ext-fonts.tar.gz");
+    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(fs::File::create(&tar_path).unwrap(), flate2::Compression::fast()));
+    builder.append_dir_all(".", &tree).unwrap();
+    builder.into_inner().unwrap().finish().unwrap();
+    root.install(&apply(&tar_path, "ext-fonts"), &mut |_| {}).unwrap();
+
+    let conf = fs::read_to_string(root.path().join("store/ext-fonts/fonts.conf")).unwrap();
+    let fonts_dir = fs::canonicalize(root.path().join("store/ext-fonts")).unwrap();
+    let dirs: Vec<&str> = conf.split("<dir prefix=\"relative\">").skip(1).filter_map(|rest| rest.split("</dir>").next()).collect();
+    let items: Vec<String> = root.online().into_keys().collect();
+    assert_eq!(dirs.len(), items.len());
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    for item in &items {
+        let record = runtime.block_on(ext_tools_online_install(root.path(), item, &ExtToolsOnlineLimits::default(), &ExtToolsOnlineJob::new(0))).unwrap();
+        assert_eq!(record.state, ExtToolsOnlineState::Ready, "{item}");
+        let dir = dirs.iter().find(|dir| dir.contains(&format!("/online/{item}/"))).unwrap_or_else(|| panic!("{item}: not in fonts.conf"));
+        let fonts = fs::canonicalize(fonts_dir.join(dir)).unwrap_or_else(|e| panic!("{item}: {dir}: {e}"));
+        let ttf = fs::read_dir(&fonts).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|ext| ext == "ttf")).count();
+        assert!(ttf > 0, "{item}: no TrueType font in {}", fonts.display());
+        println!("{item} {}: {} bytes, {ttf} fonts in {dir}", record.version, record.size_bytes);
+    }
+    assert!(staging_is_empty(&root));
+}
+
 /// The real thing, as `ext-core` declares it: Chrome for Testing from Google's download site. By hand:
 /// `cargo test -p buckyos-api --lib -- --ignored --nocapture chrome_for_testing`.
 #[test]

@@ -5,7 +5,7 @@
  * does not stop it), within the `html` budget. While mounted, the extension talks to the host through
  * `window.aiws`. Crashes and silence fall back to the snapshot; other Blocks are unaffected. */
 
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { FileCode2, Play } from 'lucide-react'
 import type { Json } from '../../api/types'
 import { aiwsT } from '../../i18n'
@@ -21,6 +21,13 @@ import { EventNote } from './EventNote'
 import { raiseEvent } from './events'
 import { HtmlRuntime } from './htmlRuntime'
 import { onForwardedAction } from './actions'
+import { PrintFragmentContext } from '../../print/renderer/context'
+import { holdPrint } from '../../print/renderer/ready'
+
+/** How long a printed page waits for an HTML Block to say it is ready, and then for its document to stop changing. */
+const PRINT_READY_MS = 15_000
+const PRINT_QUIET_MS = 300
+const PRINT_QUIET_MAX_MS = 4000
 
 function Snapshot(context: RenderContext & { label?: string }) {
   const { t } = useAiwsText()
@@ -58,6 +65,83 @@ function HtmlStatic(context: RenderContext) {
       <EventNote cellId={cellId} />
     </>
   )
+}
+
+/** The iframe's document has drawn: its pictures loaded and nothing changed for a moment (a cross-origin document: a
+ * short wait). */
+function frameQuiet(frame: HTMLIFrameElement | null): Promise<void> {
+  let doc: Document | null = null
+  try { doc = frame?.contentDocument ?? null } catch { doc = null }
+  if (!doc?.body) return new Promise((resolve) => window.setTimeout(resolve, 500))
+  const body = doc.body
+  return new Promise((resolve) => {
+    const start = performance.now()
+    let last = start
+    const observer = new MutationObserver(() => { last = performance.now() })
+    observer.observe(body, { subtree: true, childList: true, attributes: true, characterData: true })
+    const check = () => {
+      const now = performance.now()
+      const loading = [...body.querySelectorAll('img')].some((img) => !img.complete)
+      if (now - start > PRINT_QUIET_MAX_MS || (!loading && now - last >= PRINT_QUIET_MS)) { observer.disconnect(); resolve(); return }
+      window.setTimeout(check, 50)
+    }
+    check()
+  })
+}
+
+/** A printed page (打印 TODO T8): the definition's HTML runs as on a canvas — its reads come from the printed copy, its
+ * writes are refused (`modePolicy('print')`) — and the page waits until it said it is ready and stopped drawing. One
+ * that does not get there in time, or fails, prints its snapshot; without one, a placeholder. The pass that measures a
+ * flow page keeps the snapshot (the Block's box is the same either way). */
+function HtmlPrint(context: RenderContext) {
+  const store = useStore()
+  const { t } = useAiwsText()
+  const fragment = useContext(PrintFragmentContext)
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [failed, setFailed] = useState(false)
+  const source = context.documentDefinition
+  const html = source?.kind === 'html' ? source.html : undefined
+  const htmlKey = html ? JSON.stringify(html) : ''
+  const measure = fragment?.measure ?? false
+  const cellId = context.cell.entity_id
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host || !htmlKey || measure) return
+    const cell = store.outline.get(cellId)
+    if (!cell) return
+    const release = holdPrint()
+    const runtime = new HtmlRuntime(JSON.parse(htmlKey) as { html: string; css?: string; js?: string }, makeBridge(store, { cell, payload: context.payload, keyRevs: context.keyRevs, source: context.source, mode: 'print', interactive: false }))
+    let done = false
+    const finish = (ok: boolean) => {
+      if (done) return
+      done = true
+      window.clearTimeout(timer)
+      if (!ok) { runtime.dispose(); setFailed(true) }
+      release()
+    }
+    const timer = window.setTimeout(() => finish(false), PRINT_READY_MS)
+    // an extension that fails after it was ready prints its snapshot all the same
+    runtime.onCrash = () => { finish(false); runtime.dispose(); setFailed(true) }
+    runtime.mount(host).then(() => frameQuiet(host.querySelector('iframe'))).then(() => finish(true), () => finish(false))
+    return () => { finish(true); runtime.dispose() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one run per definition on a printed page
+  }, [store, htmlKey, cellId, measure])
+  const box = fragment ? { height: context.size.h } : undefined
+  if (!html || measure || failed) {
+    const snapshot = context.payload.config?.snapshot
+    return (
+      <div className="aiws-html-print" style={box}>
+        {snapshot?.object_id
+          ? <div className="aiws-html-static"><AssetBlobImage objectId={snapshot.object_id} mediaType={snapshot.media_type} alt={context.payload.title ?? ''} /></div>
+          : <div className="aiws-html-placeholder">{source?.title ?? context.payload.title ?? t('aiworkspace.extension.html.title')}<div className="aiws-muted">{t('aiworkspace.printrender.unprintable')}</div></div>}
+      </div>
+    )
+  }
+  return <div className="aiws-html-active aiws-html-print" style={box} data-testid={`aiws-html-print-${cellId}`}><div ref={hostRef} className="aiws-html-host" /></div>
+}
+
+function HtmlStaticOrPrint(context: RenderContext) {
+  return context.mode === 'print' ? <HtmlPrint {...context} /> : <HtmlStatic {...context} />
 }
 
 /** View mode: running while the canvas runs, as long as a slot of the `html` budget is free — not tied to what is
@@ -136,7 +220,7 @@ function HtmlActive(context: RenderContext & { live?: boolean }) {
 export const htmlBlock: BlockDefinition = {
   type: 'html', version: 1, definitionKind: 'html', get title() { return aiwsT('aiworkspace.extension.html.title') }, accepts: ['buckyos.table-source', 'buckyos.richtext', 'buckyos.record', 'buckyos.asset-ref', 'buckyos.wish', 'buckyos.annotation'], allowNoSource: true,
   defaultSize: { w: 480, h: 320 }, cost: { editor: true, html: true },
-  Static: HtmlStatic, View: HtmlView, Editor: HtmlActive,
+  Static: HtmlStaticOrPrint, View: HtmlView, Editor: HtmlActive,
   catalog: { group: 'extension', get description() { return aiwsT('aiworkspace.extension.html.description') }, needs: 'definition' },
   actions: [
     // primary (UI 框架 PRD §10.1): buttons of its toolbar, and in its menu

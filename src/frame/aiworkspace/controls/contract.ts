@@ -3,7 +3,7 @@
  * the two agree. */
 
 /** Container kinds that are controls (脑图方案 §6.2, R2): the kind is the control id. */
-export const CONTROL_KINDS: readonly string[] = ['mindmap', 'composite', 'todo', 'calendar']
+export const CONTROL_KINDS: readonly string[] = ['mindmap', 'composite', 'todo', 'calendar', 'pdf-frame']
 
 /** Data controls (控件机制 TODO G2, Q19): they show the records of the tables they bind as projected Blocks (computed
  * by the reader, never stored), hold no Blocks and have the numeric size their user gives them. */

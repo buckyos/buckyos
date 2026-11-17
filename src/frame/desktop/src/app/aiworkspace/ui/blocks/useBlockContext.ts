@@ -87,12 +87,12 @@ export function useBlockContext(options: BlockContextOptions) {
   // run mode (Q27): the canvas runs its Blocks (on stage only the operable ones). An HTML Block runs code: it mounts in
   // run mode (view mode included, within the `html` budget) or by "Run once" while editing — never on a stage that does
   // not run (a public session, a replay: its snapshot only)
-  const interactive = runMode.interactive && depth === 0 && (mode !== 'show' || payload.presentation?.live === true)
+  const interactive = runMode.interactive && depth === 0 && mode !== 'print' && (mode !== 'show' || payload.presentation?.live === true)
   const html = Boolean(resolution?.ok && resolution.definition.cost.html)
   const activatable = depth === 0 && (html ? interactive || (editable && mode !== 'show') : editable)
   const readOnlyReason = readOnlyNow ? readOnlyNow
     : depth > 0 ? t('aiworkspace.blocks.readOnly.embedded')
-      : !policy.writes ? mode === 'view' ? t('aiworkspace.blocks.readOnly.viewMode') : t('aiworkspace.blocks.readOnly.pathEdit')
+      : !policy.writes ? mode === 'view' ? t('aiworkspace.blocks.readOnly.viewMode') : mode === 'print' ? t('aiworkspace.printrender.readOnly') : t('aiworkspace.blocks.readOnly.pathEdit')
         : !editable ? t('aiworkspace.blocks.readOnly.show')
         : !cell.capabilities.includes('update') ? t('aiworkspace.blocks.noPermission')
           : dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded' ? t('aiworkspace.blocks.readOnly.dataUnavailable')

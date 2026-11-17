@@ -78,7 +78,7 @@ function AudienceStatic(context: RenderContext) {
       {presenter && !session?.replay && !pub && (
         <button type="button" className="aiws-link" data-testid="aiws-audience-import" onPointerDown={(e) => e.stopPropagation()} onClick={() => { void pickFile.file(TABULAR_ACCEPT).then((file) => { if (file) void importRoster(file) }) }}>{t('aiworkspace.session.audience.importRoster')}</button>
       )}
-      {!session && context.mode !== 'show' && <div className="aiws-muted aiws-classroom-meta">{pub ? t('aiworkspace.session.audience.publicHint') : t('aiworkspace.session.audience.designHint')}</div>}
+      {!session && context.mode !== 'show' && context.mode !== 'print' && <div className="aiws-muted aiws-classroom-meta">{pub ? t('aiworkspace.session.audience.publicHint') : t('aiworkspace.session.audience.designHint')}</div>}
     </div>
   )
 }

@@ -312,6 +312,45 @@ Their memberships (`group:` / `contact:`) are settled against the courseware's e
 the object in `session.create`, `session.get` and `session.set_access` as `readers_of { entity_id, path, title, type_id,
 kind, alive }`; nobody else is told.
 
+## Printing (导出可打印 PDF, `notepads/aiws-print-pdf-export-todo.md` T5, T7)
+
+`print.package` builds the **print package** of one canvas (`store/src/print.rs`; the contract is
+[print/package.ts](print/package.ts)), which the caller's own Workflow run `media.page` turns into a PDF. In one go under the
+Workspace's writer (one head; nothing is written to the document):
+
+- **What prints.** A flow canvas: itself (`path_id` is refused). A free canvas: the steps of a presentation path
+  (`purpose: presentation`; a guide is `PRINT_PATH_UNUSABLE` `reason: guide`) on every canvas the path visits; it needs a
+  step printed on this canvas (`reason: not_on_surface`), and no path is `PRINT_PATH_REQUIRED`. Steps are resolved as a show
+  does: a disabled one, a missing target, a Frame not placed on a free canvas (`surface`) or on a flow canvas (`flow`) is
+  `step_skipped` with that `detail`.
+- **Permissions.** `export` on the canvas (else `PERMISSION_DENIED`); a step on a canvas the caller may not read is
+  `surface_unreadable` (the canvas unnamed), on one it may not export `surface_not_exportable` (`surface_id`); either way
+  nothing of that canvas travels. A PDF Frame (`frame_id`) is decoration: it needs to be readable
+  (else `NOT_FOUND`) and a `buckyos.container` of kind `pdf-frame` (else `PRINT_FRAME_UNUSABLE`), no `export`.
+- **The rows** (`rows`: the WASM `Replica`'s `tables_json`, the shape of a session's `baseline.json`): the printed canvases'
+  subtrees, the path and the Viewports of its printed steps, the PDF Frame's subtree, and what those show through `bind`,
+  `owns`, `embed`, `value`, `body`, `def`, `def_dep` and `member` references (tables with their live fields and records,
+  rich texts with pending updates folded in, records' bodies, Block definitions); then every ancestor, whole when readable,
+  else only its id and kind (as the outline's path nodes). Only `shared` scope; speaker notes (`without_notes`) are left
+  out, captions stay; comments — an annotation with a `target` and a Block showing one — are left out (Q7), a sticky note
+  (an annotation without one) is content. What the caller may not read is left out and counted per canvas
+  (`content_unreadable`, `detail` = the count).
+- **Assets** (`assets/<obj_id_to_filename>.<ext>`, the extension by media type — svg, png, jpg, gif, webp, avif, bmp, pdf,
+  none otherwise — since Chromium types `file://` by it; listed in `assets`): the AssetRefs' files and posters and the Blocks'
+  `config.snapshot`; audio and video travel as their poster only (`asset_omitted`, `detail` = the media type), bytes not in
+  the store are `asset_missing`; past 384 MiB or 5000 files `asset_omitted` `detail: package_limit`.
+- **The zip**: every file of the Desktop build's `aiws-print/` (the service's `web_dir`, `--web` standalone; without it
+  `DEPENDENCY_UNAVAILABLE` / `PRINT_RENDERER_MISSING`), `data.js` (`window.__AIWS_PRINT__ = <package>;`) and the assets. It is
+  bound under `<workspace_id>/print/<id>.zip` in the owner's `exports` bucket (7 days) and handed to the caller's App session
+  with nfs-server `bucket.grant_holdings` (the caller's `app_id`, the session's target; a test identity without `app_id`
+  receives nothing). The same head and job give the same bytes (fixed entry times; `printed_at` is the head Commit's time),
+  so `media.page`, which keys its cache on the content, answers a reprint from it.
+- `job`: `mode` from the canvas's `layout.mode`, `title` the canvas's title, `fonts` the root's `config.fonts` (`sans`,
+  `serif`, `mono`, non-empty names only), the rest as given.
+
+`AIWS_PRINT_SAMPLE_DIR=<dir> [AIWS_PRINT_RENDERER=<desktop dist>/aiws-print] cargo test -p aiworkspace-store --test print
+sample_packages -- --ignored` writes a flow and a free sample package (zipped and unpacked).
+
 ## Presence and the work log (UI 框架 PRD §4.2, §4.5, §12, K2, K3)
 
 **Presence** is in memory, like the shows: nothing of it reaches the document, its history or a package, and a restart
@@ -388,8 +427,8 @@ It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not ins
 
 Design: [脑图对象方案讨论](<../../../doc/workspace/脑图对象方案讨论.md>) v0.4. A **control** is a BlockTree container
 whose `kind` is a control id (`mindmap`; `composite` — the host of every composite extension control, see
-“Composite controls” below; and the data controls `todo` and `calendar`, see “Data controls” at the end of this
-section; the list is `controls/core.json`, read by the core with `include_str!` and by the
+“Composite controls” below; the data controls `todo` and `calendar`, see “Data controls” at the end of this
+section; and `pdf-frame`, see “PDF Frame” there; the list is `controls/core.json`, read by the core with `include_str!` and by the
 Desktop): it lays out the Blocks it holds with a named algorithm the clients run (the shared module `controls/`), the
 core only judges shapes. A mind map's nodes are ordinary Cells: `parent_id` is the
 tree (a node's children are Cells under it), `order_key` the sibling order; edges are drawn, never stored.
@@ -452,6 +491,20 @@ Their tables are the standard business tables (“Standard business tables” ab
 `user_state`, `bindings` with `schema_id`, `templates`, `layouts`, `gestures`, `actions`, `agent`), generated from
 `controls/contracts.ts` by `deno run -A tools/build_catalog.ts` and returned by `control.describe { kind }` as
 `control.contract`.
+
+### PDF Frame (打印 TODO §3.3, T3)
+
+`pdf-frame` is the page decoration of a print: header, footer and page numbers, a standard control any canvas may hold
+(a Workspace may have several). Its `config` (checked by the core, unknown keys refused): `page` (`A` — A3, A4 and A5
+share it —, `Letter`, `16:9`, `4:3`, `custom` with `custom_w` / `custom_h` in mm), `orientation`, `header`, `footer`
+and `margin` (side margins, both sides) in the frame's own canvas units. Its numeric size keeps the page's shape: the
+width is stored, the height follows. Its only children are two groups with `slot: "header"` and `slot: "footer"` (one
+each, `SLOT_CONFLICT`), the bands the clients place full-width at the top and bottom; their Blocks (labels, pictures,
+shapes) are ordinary Cells with numeric placements relative to the band. A label's text may hold `{page}`, `{pages}`,
+`{title}` and `{date}`, filled per page by the print renderer. The layout and operations are `controls/pdfframe.ts`;
+the Desktop's control is `ui/controls/pdfframe/`. A print takes one frame of the page's shape (`print.package
+{ frame_id }`, “Printing” above): the frame scales to the page, its content area receives the page's content, the
+instance itself is never printed as content.
 
 ## Extension controls (扩展控件 P0 + P1, `notepads/done/aiworkspace-extension-p0-todo.md`, `notepads/done/aiworkspace-extension-p1-todo.md`)
 
@@ -1607,7 +1660,7 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | richtext | `entity_refs` (`richtext_ref_edge`) | reference | `object_embed` / `object_link` targets are indexed as references; existence judged by the planner's `check_ref_target` |
 | asset | `validate_asset` | primitive | `object_id` is a `type:hex` object id; `media_type` / `size` come from the verified content, never the client; `image { width, height }`; `poster` (an uploaded PNG / JPEG / WebP / GIF asset picturing the content: a video frame, a PDF's first page, a cover), `duration_ms`, `page_count` (positive integers); a new `object_id` without new values drops `image`, `poster`, `duration_ms`, `page_count` (`ASSET_CONTENT_KEYS`; doc/workspace/BuckyOS AI Workspace 多媒体对象.md) |
 | asset | `validate_asset` (object lookup) | reference | the object was uploaded and verified (`DEPENDENCY_UNAVAILABLE`); import tolerates a listed but missing object |
-| container | `container_primitive` (keys, kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group` and the control kinds (`mindmap`, `composite`, `todo`, `calendar`); `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` (implied by a control's kind; `def` for a composite, `data` for a data control); `system` only on a folder, `surface_id` only on a folder; `def_ref` / `on` only on a composite, `bindings` on a composite or a data control |
+| container | `container_primitive` (keys, kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group` and the control kinds (`mindmap`, `composite`, `todo`, `calendar`, `pdf-frame`; a `pdf-frame`'s `config` keys and values, its bands' `slot`); `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` (implied by a control's kind; `def` for a composite, `data` for a data control); `system` only on a folder, `surface_id` only on a folder; `def_ref` / `on` only on a composite, `bindings` on a composite or a data control |
 | container | `container_primitive` (`content_folder_id`) | reference | a Surface's content folder exists, is a folder and sits under `canvas-content` |
 | container (root) | `root_cover` (`config.cover`, UI 框架 PRD Q37) | primitive, reference | judged when it changes: only `object_id`, `media_type`, `size`; the object is uploaded and a PNG, JPEG, GIF, WebP, AVIF or BMP picture of at most 8 MiB, media type and size from the verified content; a load takes one whose bytes it did not bring when it names `media_type` and `size` |
 | container (composite) | `composite_refs` | reference | `def_ref` is required, local, names a live `kind: composite` definition when created and never changes; `bindings` targets are data entities |
@@ -1754,6 +1807,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `doc.checkpoint`, `doc.export` | experimental | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?`; `doc.export` → `export_id`, `manifest`, `download: { bucket_id, key, version, obj_id, token }` (the package in the owner's `exports` bucket, 7 days; `GET /bucket/v1/<bucket_id>/<key>?token=`) |
 | `asset.import_object` | stable | `workspace_id` and either `bucket_id` + `key` (the uploader's own binding in `user/aiworkspace/<user>/assets`) or `obj_id` (an unbound, ready NDM FileObject the caller may read) → `object_id`, `media_type`, `size`, `expires_at`, `bucket_id`, `key`, `version` (staged under `<workspace_id>/<object_id>` in the owner's `assets` bucket) |
 | `replica.bootstrap` | internal | → `replica_id`, `epoch`, `head_seq`, `principal`, `prepared_at`, `download` (as `doc.export`) |
+| `print.package` | experimental | `surface_id`, `path_id?` (a free canvas: a presentation path through it), `paper: { name, width_mm, height_mm }` (as printed), `frame_id?` (a PDF Frame), `date`, `locale` → `obj_id` (the print package, a FileObject the caller's App session holds), `size`, `job`, `issues` — see “Printing” |
 | `proc.start` / `proc.get` / `proc.cancel` | stable | `program` (`wish.xllm@1`, `source.refresh@1`), `params`, `idempotency_key`; `run_id` — wish programs below; another program is `MISSING_EXTENSION` |
 | `proc.rollback` | stable | `run_id`, `confirm?`, `session_id?` — rolls a wish stage's current record back (“Wish runs”) → `{ status: needs_confirm, lost, hidden_lost }` or `{ status: accepted, commit, record }`; another record is `INVALID_OPERATION` / `NOT_CURRENT_RECORD` |
 | `proc.list` | stable | `wish_id?`, `limit?` — wish runs, newest first |
@@ -1861,6 +1915,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `doc.restore_version` | experimental | `read` on `entity_id` |
 | `doc.checkpoint` | experimental | `export` on `/` |
 | `doc.export` | experimental | `export` on `/` |
+| `print.package` | experimental | may enter; `export` on the canvas, and on each canvas of a free canvas's path (the steps on others are left out); `read` on the PDF Frame; what is printed is what the caller may read |
 | `proc.start` | stable | a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish; hosted: an account, executed by one of its own Agents |
 | `proc.get` | stable | one's own run, or `update` / `manage` on its wish |
 | `proc.cancel` | stable | one's own run, or `update` / `manage` on its wish |

@@ -1,0 +1,51 @@
+/* The print renderer (打印 TODO §3.2, T7): one box of the page's size per page, the page's own background and theme, the
+ * Workspace's fonts (`--aiws-font-*`), nothing of the Desktop's chrome. @page (size, no margin) is written by main.tsx. */
+
+html, body { margin: 0; padding: 0; background: #fff; }
+body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+.aiws-root.aiws-print-root { display: block; height: auto; min-height: 0; background: none; font-family: var(--aiws-font-sans); user-select: text; }
+.aiws-print-root, .aiws-print-root * { scrollbar-width: none; }
+.aiws-print-root ::-webkit-scrollbar { display: none; }
+.aiws-print-root :is(.aiws-prose code, .aiws-prose pre, kbd, samp) { font-family: var(--aiws-font-mono); }
+
+/* contained: a Block reaching past the page (clipped) must not make Chromium shrink the whole print to fit it */
+.aiws-print-page { position: relative; overflow: hidden; contain: strict; box-sizing: border-box; break-after: page; break-inside: avoid; color: var(--cp-text); }
+.aiws-print-page:last-child { break-after: auto; }
+.aiws-print-decoration { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.aiws-print-failure { margin: 16px; white-space: pre-wrap; font: 12px monospace; color: #b00; }
+
+/* a free canvas step: the canvas under a mask that leaves the step's rectangle open */
+.aiws-print-free { position: absolute; inset: 0; }
+.aiws-print-free .aiws-canvas { background: var(--aiws-print-bg); background-image: none; user-select: text; cursor: default; }
+.aiws-print-mask { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; }
+.aiws-print-mask path { fill: var(--aiws-print-letterbox, #fff); }
+
+/* a flow canvas: the measuring column (off the page, removed before printing) and the parts of each page */
+.aiws-root .aiws-flow.aiws-print-measure, .aiws-root .aiws-flow.aiws-print-flow { max-width: none; margin: 0; padding: 0; }
+.aiws-print-measure { position: absolute; left: 0; top: 0; visibility: hidden; }
+.aiws-print-flow { position: absolute; overflow: hidden; }
+.aiws-print-item { display: flow-root; }
+.aiws-print-frag { position: absolute; left: 0; right: 0; overflow: hidden; }
+.aiws-print-frag-body { transform-origin: 0 0; }
+.aiws-print-root .aiws-flow .aiws-cell { margin: 0; padding: 0; }
+.aiws-print-root .aiws-page-title { margin: 0 0 6px; padding: 0; }
+.aiws-print-root .aiws-fblock-title { margin-right: 0; white-space: normal; }
+.aiws-print-root .aiws-fgroup-title { padding: 2px 0 2px; }
+
+/* what a page cannot show: nothing that names it */
+.aiws-print-blank { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--cp-muted); font-size: 12px; overflow: hidden; }
+.aiws-print-blank img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* HTML extension Blocks: the box of the Block, running or as its snapshot */
+.aiws-html-print { height: 100%; display: flex; flex-direction: column; }
+.aiws-html-print > .aiws-html-static { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
+.aiws-html-print .aiws-blob-image { max-height: 100%; object-fit: contain; }
+.aiws-html-print .aiws-html-host { flex: 1 1 auto; min-height: 0; }
+
+/* a table view, every row (T9) */
+.aiws-print-table { border-collapse: collapse; table-layout: fixed; font-size: 12px; line-height: 1.4; color: var(--cp-text); }
+.aiws-print-table th, .aiws-print-table td { border: 1px solid var(--cp-border-opaque); padding: 4px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.aiws-print-table th { background: var(--cp-surface-2-opaque, var(--cp-surface-2)); font-weight: 600; }
+.aiws-print-table td:is([data-type='number'], [data-type='decimal'], [data-type='currency']) { text-align: right; font-variant-numeric: tabular-nums; }
+.aiws-print-table .aiws-pills { flex-wrap: wrap; }

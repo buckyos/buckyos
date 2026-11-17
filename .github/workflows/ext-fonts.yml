@@ -1,0 +1,174 @@
+name: ext-fonts Release
+
+# Builds the font package ext-fonts (publish/exttool/ext-fonts) and, on a release tag
+# or an explicit dispatch, publishes it:
+#   ext-fonts-v<version>   immutable
+# and mirrors it to R2 (ext-tools/ext-fonts/<version>/), next to ext-core.
+# The package carries no font: every font is an online item a node downloads from
+# its upstream's release on GitHub. The gate is every online item downloading from
+# the manifest's address with the manifest's size and SHA256, and the directory
+# fonts.conf names in it holding TrueType fonts that fontconfig reads under the
+# family names the print module lists. Any failure publishes nothing.
+# Pull requests and plain dispatches only build and upload workflow artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the version in ext-manifest.json
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'ext-fonts-v*'
+  pull_request:
+    paths:
+      - 'publish/exttool/ext-fonts/**'
+      - '.github/workflows/ext-fonts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ext-fonts-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Manifest, fonts.conf and the print module agree; every font downloads
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 -m unittest discover -s publish/exttool/ext-fonts -p 'test_*.py'
+      - id: version
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("publish/exttool/ext-fonts/ext-manifest.json"))["version"])')" >> "$GITHUB_OUTPUT"
+      - name: The tag names the version
+        if: startsWith(github.ref, 'refs/tags/ext-fonts-v')
+        run: test "$GITHUB_REF_NAME" = "ext-fonts-v${{ steps.version.outputs.version }}"
+      - name: fontconfig
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fontconfig
+      # The tools directory of a node: the payload in a version directory, store/ext-fonts pointing into it, and the
+      # online items downloaded into online/ as a node does it.
+      - name: Download every font as a node does, from the manifest's addresses
+        run: |
+          set -euo pipefail
+          python3 publish/exttool/ext-fonts/build.py --out "$RUNNER_TEMP/payload"
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools/versions/ext-fonts" "$tools/store"
+          cp -R "$RUNNER_TEMP/payload/linux-x86_64" "$tools/versions/ext-fonts/ci"
+          ln -s ../versions/ext-fonts/ci/store/ext-fonts "$tools/store/ext-fonts"
+          python3 publish/exttool/ext-core/place_online.py --payload "$tools/versions/ext-fonts/ci" --tools "$tools" --platform linux-x86_64
+      - name: fontconfig finds every family the print module lists
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/tools"
+          printf '<?xml version="1.0"?>\n<fontconfig><include>%s</include><cachedir>%s</cachedir></fontconfig>\n' \
+            "$tools/store/ext-fonts/fonts.conf" "$RUNNER_TEMP/fc-cache" > "$RUNNER_TEMP/fonts.conf"
+          FONTCONFIG_FILE="$RUNNER_TEMP/fonts.conf" fc-list : family > "$RUNNER_TEMP/families.txt"
+          python3 - "$RUNNER_TEMP/families.txt" <<'PY'
+          import re, sys
+          listed = {name.strip() for line in open(sys.argv[1]) for name in line.strip().split(",")}
+          text = open("src/frame/aiworkspace/print/fonts.ts", encoding="utf-8").read()
+          block = text[text.index("export const PACK_FONTS"):]
+          families = re.findall(r"family: '([^']+)'", block[: block.index("]\n")])
+          missing = [family for family in families if family not in listed]
+          if missing:
+              sys.exit(f"fontconfig does not see: {missing}")
+          print(f"fontconfig sees all {len(families)} families")
+          PY
+
+  pikg:
+    name: Package and manifest
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: One .pikg with every payload
+        working-directory: publish/exttool/ext-fonts
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 build.py --archive --dist "$RUNNER_TEMP/dist"
+          npx --yes buckyos@latest --non-interactive pikg doctor dapp_meta --catalog ..
+          npx --yes buckyos@latest --non-interactive pikg build dapp_meta
+          rm -rf payload
+          npx --yes buckyos@latest --non-interactive pikg pack dapp_dist
+          mv "dapp_dist/ext-fonts-$VERSION.pikg" "$RUNNER_TEMP/dist/"
+          python3 build.py release --dist "$RUNNER_TEMP/dist" --pikg "$RUNNER_TEMP/dist/ext-fonts-$VERSION.pikg"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ext-fonts-release
+          path: |
+            ${{ runner.temp }}/dist/ext-fonts-*.tar.gz
+            ${{ runner.temp }}/dist/ext-fonts-*.pikg
+            ${{ runner.temp }}/dist/manifest.json
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [check, pikg]
+    if: >-
+      startsWith(github.ref, 'refs/tags/ext-fonts-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          name: ext-fonts-release
+          path: ${{ runner.temp }}/dist
+      - name: A version does not change
+        run: |
+          set -euo pipefail
+          if gh release view "ext-fonts-v$VERSION" --json assets --jq '.assets | length' 2>/dev/null | grep -qv '^0$'; then
+            echo "::error::ext-fonts-v$VERSION already has assets; raise the version in ext-manifest.json" >&2
+            exit 1
+          fi
+      - name: Lay the files out for R2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          dist = Path(os.environ["RUNNER_TEMP"]) / "dist"
+          r2 = Path(os.environ["RUNNER_TEMP"]) / "r2"
+          package = json.loads((dist / "manifest.json").read_text())["packages"]["ext-fonts"]
+          for entry in list(package["platforms"].values()) + [package["pikg"]]:
+              target = r2 / entry["path"]
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(dist / entry["file"], target)
+          shutil.copy2(dist / "manifest.json", r2 / "ext-tools" / "ext-fonts" / os.environ["VERSION"] / "manifest.json")
+          PY
+      - name: Mirror to R2
+        uses: ryand56/r2-upload-action@latest
+        with:
+          r2-account-id: 87e0bdf811b13ee87fd0bcec7a4fd1e7
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: buckyos-installer
+          source-dir: ${{ runner.temp }}/r2/ext-tools
+          destination-dir: ext-tools
+          multipart-concurrent: false
+          keep-file-fresh: false
+          output-file-url: false
+      - name: Publish ext-fonts-v${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/dist"
+          notes="ext-fonts $VERSION: the font package. It carries no font; each font is an online item a node downloads from its upstream's release on GitHub. [Release manifest](https://buckyos-installer.tbudr.top/ext-tools/ext-fonts/$VERSION/manifest.json)."
+          gh release create "ext-fonts-v$VERSION" --target "$GITHUB_SHA" --title "ext-fonts $VERSION" --notes "$notes" --latest=false ext-fonts-*.tar.gz ext-fonts-*.pikg manifest.json

@@ -264,8 +264,10 @@ function scrollerWithin(target: Element | null, frame: HTMLElement | undefined):
   return null
 }
 
-/** Three culling levels with hysteresis (§9.3 rule 3): mounted near the viewport, hidden in the DOM further out, unmounted beyond. */
-function computeMounts(prev: Map<string, MountState>, camera: Camera, laid: Map<string, Laid>, index: SpatialIndex, pinned: Set<string>): Map<string, MountState> {
+/** Three culling levels with hysteresis (§9.3 rule 3): mounted near the viewport, hidden in the DOM further out, unmounted beyond.
+ * A printed page (`print`) mounts exactly what its page shows (`prefetch`), all of it at full detail. */
+function computeMounts(prev: Map<string, MountState>, camera: Camera, laid: Map<string, Laid>, index: SpatialIndex, pinned: Set<string>, print = false): Map<string, MountState> {
+  if (print) return new Map([...pinned].filter((id) => laid.has(id)).map((id) => [id, 'mounted' as const]))
   const free = (item: { id: string; line?: unknown }) => Boolean(item.line) || laid.get(item.id)?.entity.view_type === INK_VIEW
   const near = camera.visibleWorld(MOUNT_MARGIN)
   const far = camera.visibleWorld(HIDE_MARGIN)
@@ -406,7 +408,7 @@ export function RenderHost(props: RenderHostProps) {
     const observer = root ? new ResizeObserver(() => { camera.setViewportSize(root.clientWidth, root.clientHeight); setSettled((n) => n + 1); inkCanvas.redraw() }) : null
     if (root && observer) observer.observe(root)
     // a show's stage draws no overlay: a flight moves the transform only, React renders nothing per frame (第三期规划 §9.3)
-    const offChange = mode === 'show' ? () => undefined : camera.onChange(() => forceOverlay((n) => n + 1))
+    const offChange = mode === 'show' || mode === 'print' ? () => undefined : camera.onChange(() => forceOverlay((n) => n + 1))
     return () => { offChange(); observer?.disconnect(); camera.attach(null) }
   }, [camera, mode, inkCanvas])
 
@@ -419,14 +421,15 @@ export function RenderHost(props: RenderHostProps) {
     for (const id of prefetch ?? []) set.add(id)
     return set
   }, [selection, editing, hover, prefetch])
-  const [mounts, setMounts] = useState<Map<string, MountState>>(() => computeMounts(new Map(), camera, laid, index, pinned))
+  const print = mode === 'print'
+  const [mounts, setMounts] = useState<Map<string, MountState>>(() => computeMounts(new Map(), camera, laid, index, pinned, print))
   // the camera settling is an event: recompute from the listener (never inside an effect)
-  useEffect(() => camera.onSettle(() => { setSettled((n) => n + 1); setMounts((prev) => computeMounts(prev, camera, laid, index, pinned)) }), [camera, laid, index, pinned])
+  useEffect(() => camera.onSettle(() => { setSettled((n) => n + 1); setMounts((prev) => computeMounts(prev, camera, laid, index, pinned, print)) }), [camera, laid, index, pinned, print])
   // a new layout or a new pinned set recomputes during render (derived state)
   const [inputsSeen, setInputsSeen] = useState({ laid, index, pinned })
   if (inputsSeen.laid !== laid || inputsSeen.index !== index || inputsSeen.pinned !== pinned) {
     setInputsSeen({ laid, index, pinned })
-    setMounts((prev) => computeMounts(prev, camera, laid, index, pinned))
+    setMounts((prev) => computeMounts(prev, camera, laid, index, pinned, print))
     // erased strokes leave the hidden set once they left the layout
     if ([...erasing].some((id) => !laid.has(id))) setErasing(new Set([...erasing].filter((id) => laid.has(id))))
   }
@@ -1498,7 +1501,7 @@ export function RenderHost(props: RenderHostProps) {
     rootRef.current?.setPointerCapture(event.pointerId)
     setDragging(true)
     shiftHeld.current = event.shiftKey
-    dragRef.current = { kind: 'resize', id, handle, startX: event.clientX, startY: event.clientY, start: { ...l.rect }, rotation: l.rotation, aspect: metaSink.get(id)?.aspect ?? 'free', current: { ...l.rect }, lines: [...(adjacency.get(id) ?? []), ...(l.backingId ? adjacency.get(l.backingId) ?? [] : [])], backing: l.backingId }
+    dragRef.current = { kind: 'resize', id, handle, startX: event.clientX, startY: event.clientY, start: { ...l.rect }, rotation: l.rotation, aspect: metaSink.get(id)?.aspect ?? controlRegistry.get(l.control?.kind)?.resize?.aspect ?? 'free', current: { ...l.rect }, lines: [...(adjacency.get(id) ?? []), ...(l.backingId ? adjacency.get(l.backingId) ?? [] : [])], backing: l.backingId }
     worldRef.current?.classList.add('is-moving')
   }
   const beginRotate = (event: ReactPointerEvent<Element>, id: string) => {
@@ -1713,7 +1716,7 @@ export function RenderHost(props: RenderHostProps) {
   // fold handles of mind map nodes (脑图方案 §7.3): screen-sized, just past the side the branch grows from, outside the
   // resize zones; shown on the hovered and selected nodes and always on folded ones. Folding is the reader's own state:
   // every mode may fold (not a show's stage, not while writing or dragging).
-  const folds = mode === 'show' || inkOn || dragging || props.placing ? [] : [...laid.values()].flatMap((l) => {
+  const folds = mode === 'show' || mode === 'print' || inkOn || dragging || props.placing ? [] : [...laid.values()].flatMap((l) => {
     const n = l.node
     const id = l.entity.entity_id
     if (!n?.hasChildren || !(n.collapsed || hover === id || selection.has(id))) return []

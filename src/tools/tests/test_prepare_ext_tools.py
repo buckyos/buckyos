@@ -73,6 +73,27 @@ class PrepareExtToolsTest(unittest.TestCase):
         self.assertEqual(list(pin["platforms"]), ["linux-x86_64"], "the pin only says what is in the directory")
         self.assertEqual(pin["pikg_digest"], "sha256:pikg")
 
+    def test_the_font_package_is_seeded_next_to_ext_core_and_without_it(self):
+        tool.add_fonts(self.out, "linux-x86_64")
+        pin = json.loads((self.out / "ext_tools.json").read_text())
+        self.assertEqual(list(pin["packages"]), ["ext-fonts"], "ext-core could not be had: the fonts are seeded all the same")
+        tool.from_local(self.out, self.payload(), "linux-x86_64")
+        tool.add_fonts(self.out, "linux-x86_64")
+        pin = json.loads((self.out / "ext_tools.json").read_text())
+        self.assertEqual(sorted(pin["packages"]), ["ext-core", "ext-fonts"])
+        fonts = pin["packages"]["ext-fonts"]
+        entry = fonts["platforms"]["linux-x86_64"]
+        tar = self.out / entry["file"]
+        self.assertEqual(entry["sha256"], "sha256:" + hashlib.sha256(tar.read_bytes()).hexdigest())
+        with tarfile.open(tar) as archive:
+            self.assertIn("store/ext-fonts/fonts.conf", archive.getnames())
+        self.assertEqual(fonts["manifest"]["provides"], [])
+        tool.add_fonts(self.out, "linux-x86_64")
+        again = json.loads((self.out / "ext_tools.json").read_text())["packages"]["ext-fonts"]["platforms"]["linux-x86_64"]
+        self.assertEqual(again, entry, "the same bytes every time: node_daemon has nothing new to seed")
+        self.assertEqual(len(list(self.out.glob("ext-fonts-*.tar.gz"))), 1)
+        self.assertTrue(tool.ready(self.out, "1.2.3", "linux-x86_64"))
+
     def test_no_request_carries_the_default_user_agent(self):
         seen = []
 

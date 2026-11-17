@@ -5,14 +5,21 @@
  * data and shows what is there now. Its size is its text's within a width (a text view: `"auto"` inside a control).
  *
  * `LabelArt` is the same drawing without a Block around it: what data controls use for the labels they project from
- * records (G2, G7), so hundreds of them cost a span each. */
+ * records (G2, G7), so hundreds of them cost a span each.
+ *
+ * A constant label of a PDF Frame's header or footer, or of a printed page, may hold page context values (打印 TODO §3.3):
+ * `{page}`, `{pages}`, `{title}`, `{date}` are the page's (`PageContextValue`), samples while the frame is edited. */
 
-import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import { AlignCenter, AlignLeft, AlignRight, Baseline, Bold, Tag, Type, WrapText } from 'lucide-react'
+import { useCallback, useContext, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { AlignCenter, AlignLeft, AlignRight, Baseline, Bold, Hash, Tag, Type, WrapText } from 'lucide-react'
+import { fillPageContext } from '@print/page.ts'
 import type { Json, RecordContent } from '../../api/types'
 import { aiwsT, aiwsText } from '../../i18n'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+import { PAGE_VALUES, PageContextValue, samplePageContext } from '../controls/pdfframe/context'
+import { frameOfBlock, surfaceOf } from '../controls/pdfframe/model'
+import { PAGE_VALUE_LABEL } from '../controls/pdfframe/labels'
 import { consumeIntent, useIntent } from './editorToolbar'
 import type { BlockDefinition, ConfigField, RenderContext } from './registry'
 
@@ -167,11 +174,22 @@ function lookOf(config: Record<string, Json> | undefined): LabelLook {
   return (config ?? {}) as LabelLook
 }
 
+/** A constant text with its page context values filled: the printed page's, or samples in an edited PDF Frame. */
+function usePageText(context: RenderContext, text: string): string {
+  const store = useStore()
+  const page = useContext(PageContextValue)
+  if (!text.includes('{')) return text
+  if (page) return fillPageContext(text, page)
+  if (!frameOfBlock(store.outline, context.cell.entity_id)) return text
+  return fillPageContext(text, samplePageContext(surfaceOf(store.outline, context.cell.entity_id)?.title))
+}
+
 function LabelStatic(context: RenderContext) {
   const { t } = useAiwsText()
   const config = context.payload.config ?? {}
   const { value, bound } = useBoundValue(context)
-  const text = bound ? formatLabelValue(value, config.format as string | undefined) : context.payload.title ?? ''
+  const constant = usePageText(context, context.payload.title ?? '')
+  const text = bound ? formatLabelValue(value, config.format as string | undefined) : constant
   const empty = !text && context.mode === 'edit'
   return (
     <div className="aiws-label-block" data-testid={`aiws-label-${context.cell.entity_id}`}>
@@ -245,6 +263,18 @@ const labelFields = (): ConfigField[] => [
   { key: 'wrap', id: 'label-wrap', label: aiwsT('aiworkspace.label.wrap'), kind: 'boolean', quick: true, icon: WrapText },
   { key: 'format', id: 'label-format', label: aiwsT('aiworkspace.label.format'), kind: 'select', quick: true, icon: Baseline, default: 'text', when: (context) => Boolean(context.source),
     options: FORMATS.map((f) => ({ value: f, label: aiwsT(FORMAT_LABEL[f]!) })) },
+  // in a PDF Frame's header or footer: a page context value added at the end of the text
+  { key: 'page_value', id: 'label-page-value', label: aiwsT('aiworkspace.pdfframe.insertValue'), kind: 'select', quick: true, icon: Hash,
+    when: (context, store) => !context.source && frameOfBlock(store.outline, context.cell.entity_id) !== null, get: () => '',
+    options: PAGE_VALUES.map((v) => ({ value: v, label: PAGE_VALUE_LABEL[v] })),
+    ops: async (context, _store, value) => {
+      if (!PAGE_VALUES.includes(value as never)) return []
+      const before = context.payload.title ?? ''
+      const gap = before && !/[\s\u3000-\u9fff\uff00-\uffef]$/.test(before) ? ' ' : ''
+      const next = [...`${before}${gap}{${value as string}}`].slice(0, 256).join('')
+      return [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'title', value: next, expect: { rev: context.keyRevs.title ?? 0 } }] }]
+    },
+    editLabel: (value) => aiwsT('aiworkspace.pdfframe.inserted', { value: PAGE_VALUE_LABEL[value as keyof typeof PAGE_VALUE_LABEL] ?? String(value) }) },
 ]
 
 export const labelDefinition: BlockDefinition = {

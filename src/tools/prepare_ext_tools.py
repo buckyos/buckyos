@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The seed payload of ext-core for this machine: rootfs/bin/ext-tools/ (ExtTools TODO section 3.10, T2d).
+"""The seed payloads of ext-core and ext-fonts for this machine: rootfs/bin/ext-tools/ (ExtTools TODO section 3.10, T2d).
 
-node_daemon unpacks it into $BUCKYOS_ROOT/tools the first time, on a developer's machine as on an installed one. This
-script only gets the file there, and only when it is not there yet:
+node_daemon unpacks them into $BUCKYOS_ROOT/tools the first time, on a developer's machine as on an installed one. This
+script only gets the files there, and ext-core only when it is not there yet:
 
   prepare_ext_tools.py                    the version publish/exttool/ext-core/ext-manifest.json pins, from R2
   prepare_ext_tools.py --latest           the newest release instead
@@ -10,23 +10,29 @@ script only gets the file there, and only when it is not there yet:
   prepare_ext_tools.py --local <payload>  package a payload built by publish/exttool/ext-core/build.sh; start.py
                                           then has node_daemon seed it in place of an ext-core an earlier seed put
                                           there (not of one the Zone asked for)
+
+ext-fonts, the font package, carries no font (its fonts are online items an administrator downloads), so it is built
+here from publish/exttool/ext-fonts every time, whichever way ext-core came or did not.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform as host_platform
 import shutil
 import sys
 import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent.parent
 MANIFEST = SRC_DIR.parent / "publish" / "exttool" / "ext-core" / "ext-manifest.json"
+FONTS_BUILD = SRC_DIR.parent / "publish" / "exttool" / "ext-fonts" / "build.py"
 DEFAULT_OUT = SRC_DIR / "rootfs" / "bin" / "ext-tools"
 PIN_FILE = "ext_tools.json"
 PIN_SCHEMA = "buckyos.ext-tools/v1"
@@ -133,6 +139,28 @@ def from_local(out: Path, payload: Path, platform: str) -> None:
     print(f"{out / name}: {entry['size'] // (1024 * 1024)} MiB, {entry['sha256']}")
 
 
+def add_fonts(out: Path, platform: str, build_script: Path = FONTS_BUILD) -> None:
+    """ext-fonts next to whatever ext-core the pin has, also when this one could not be had: the same bytes every time."""
+    spec = importlib.util.spec_from_file_location("ext_fonts_build", build_script)
+    fonts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fonts)
+    manifest = fonts.manifest()
+    out.mkdir(parents=True, exist_ok=True)
+    pin = json.loads((out / PIN_FILE).read_text()) if (out / PIN_FILE).is_file() else {"schema": PIN_SCHEMA, "packages": {}}
+    pin["packages"].pop("ext-fonts", None)
+    for old in out.glob("ext-fonts-*.tar.gz"):
+        old.unlink()
+    if platform in manifest["platforms"]:
+        name = fonts.tar_name(manifest["version"], platform)
+        with tempfile.TemporaryDirectory() as temporary:
+            payload = Path(temporary) / platform
+            fonts.write_payload(payload, platform)
+            fonts.write_tar(payload, out / name)
+        entry = {"file": name, "sha256": sha256_of(out / name), "size": (out / name).stat().st_size}
+        pin["packages"]["ext-fonts"] = {"version": manifest["version"], "manifest": manifest, "platforms": {platform: entry}}
+    (out / PIN_FILE).write_text(json.dumps(pin, indent=2) + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--latest", action="store_true")
@@ -142,6 +170,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args(argv)
     platform = args.platform or current_platform()
+    status = prepare_core(args, platform)
+    add_fonts(args.out, platform)
+    return status
+
+
+def prepare_core(args: argparse.Namespace, platform: str) -> int:
     if args.local:
         from_local(args.out, args.local, platform)
         return 0

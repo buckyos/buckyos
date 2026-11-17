@@ -490,6 +490,25 @@ install_official() {
 # platform: the font set is part of a conversion's fingerprint.
 LIBREOFFICE_DEBS="libreoffice{v} libreoffice{v}-ure libobasis{v}-core libobasis{v}-writer libobasis{v}-calc libobasis{v}-impress libobasis{v}-draw libobasis{v}-math libobasis{v}-graphicfilter libobasis{v}-xsltfilter libobasis{v}-ooofonts libobasis{v}-en-us"
 
+# The font package ext-fonts (publish/exttool/ext-fonts) keeps in <tools>/store/ext-fonts/fonts.conf the directories of
+# its online items that a node may have downloaded; everything here that uses fontconfig takes it in, and a node without
+# the package has nothing at that name. fontconfig looks a relative <include> up in FONTCONFIG_PATH, this prefix's
+# etc/fonts, and the kernel resolves its `..` from where that directory really is: <tools> is eight levels up from a
+# version directory, seven from staging, five when the payload is unpacked as the tools directory. Only one of the three
+# has the file.
+ext_fonts_include() {
+  local store="$1"
+  cat > "$store/conda/etc/fonts/conf.d/64-ext-fonts.conf" <<'XML'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">../../../../../../../../store/ext-fonts/fonts.conf</include>
+  <include ignore_missing="yes">../../../../../../../store/ext-fonts/fonts.conf</include>
+  <include ignore_missing="yes">../../../../../store/ext-fonts/fonts.conf</include>
+</fontconfig>
+XML
+}
+
 install_soffice() {
   local payload="$1" platform="$2" store="$1/store/ext-core" lo="$1/store/ext-core/libreoffice" tmp="$1/store/ext-core/.tmp/libreoffice"
   local base="https://download.documentfoundation.org/libreoffice/stable/$LIBREOFFICE_VERSION" file fonts found
@@ -540,6 +559,7 @@ PY
   <alias><family>monospace</family><prefer><family>Noto Sans CJK SC</family></prefer></alias>
 </fontconfig>
 XML
+      ext_fonts_include "$store"
       ;;
     darwin-*)
       case "$platform" in

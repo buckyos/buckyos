@@ -24,7 +24,7 @@
 | `ffmpeg` | ≥ 6.0，带 `libmp3lame`（音轨输出）、PNG 编码 | `media.extract_frames`、`media.extract_audio`；`media.fit_image` 的可选依赖（`image` crate 解不了的格式先转 PNG） | 均匀抽帧、提取音轨、非常见图片格式解码 | `ffmpeg -hide_banner -version` |
 | `soffice`（LibreOffice headless：core、writer、impress、calc、draw；`ext-core` 带的是 26.8） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
 | `page-render`（`ext-core` 的命令：Node 脚本，用 `playwright-core` 起一个一次性的无头 Chromium；浏览器本身不在包里，是包的在线项，由节点下载，见 §3.2；参数和输出见 [Agent 浏览器 TODO §5.7](../../notepads/agent-runtime-browser-todo.md)） | — | `media.page_to_pdf`、`media.page_snapshot` | HTML 页面（一份 HTML，或带 `index.html` 的 zip）输出成 PDF 或 PNG；Browser lane 并发 1，隔离运行（§3.1） | `page-render --version` 退出码为 0 时取第一行（`page-render <版本> chromium <版本> playwright-core <版本>`），整行就是它的版本；这一步不启动浏览器，浏览器没下载时照样取得到 |
-| 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体；1.3.1 起包里所有用 fontconfig 的工具都读得到这些字体和简体中文优先的回退规则，另外也读机器上的系统字体目录和用户字体目录（`/usr/share/fonts`、`~/.local/share/fonts`），见 [paios容器需求.md](../app_service/paios容器需求.md) 表 B） | — | `media.to_pdf`（经 soffice）、`media.page_to_pdf`、`media.page_snapshot`（经 Chromium；一个字体都没有时渲染文字会崩溃） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf`、`page_to_pdf`、`page_snapshot` 的指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
+| 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体；1.3.1 起包里所有用 fontconfig 的工具都读得到这些字体和简体中文优先的回退规则，另外也读机器上的系统字体目录和用户字体目录（`/usr/share/fonts`、`~/.local/share/fonts`）；1.3.3 起在 Linux 上还读字体包 `ext-fonts` 已经下载的字体。见 [paios容器需求.md](../app_service/paios容器需求.md) 表 B 和“字体包”） | — | `media.to_pdf`（经 soffice）、`media.page_to_pdf`、`media.page_snapshot`（经 Chromium；一个字体都没有时渲染文字会崩溃） | 中西文文档的字形与度量；缺字体会改变页图内容 | 进 `to_pdf`、`page_to_pdf`、`page_snapshot` 的指纹：`fc-list` 的摘要（`env/fonts`，探测时算，没有 `fc-list` 时记为 `unknown`），加上每次取指纹时现读的 `ext-core` 版本（`env/ext-core`）和已经就绪的字体包在线项（`env/ext-fonts`），见 §2 |
 | locale：`C.UTF-8` 可用（glibc 自带；`ext-core` 的 soffice launcher 在环境没有 UTF-8 locale 时自己设 `LC_ALL=C.UTF-8`） | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
 | `tesseract`，带常用语言数据（`ext-core` 保留的 28 种加 `osd`，见 [paios容器需求.md](../app_service/paios容器需求.md) §6.4） | ≥ 5.0 | `media.ocr_pages`（软依赖：缺它时各页保留文字层，步骤输出 `status: tools_missing`，结果不进缓存） | 文字层缺失或乱码的页重新识别；按窗口抽样选语言（试各文字系统的代表模型比置信度，都不像时问 `osd`）；竖排中日韩用 `_vert` 模型 | `tesseract --version` 取第二个 token；`tesseract --list-langs` 的语言表进 `ocr_pages` 指纹（`env/ocr_langs`），增减语言包使旧结果失效 |
 
@@ -34,11 +34,12 @@
 
 ## 2. 版本如何进入执行指纹
 
-- 服务启动时 `probe_default()` 对上表每个命令定位并取版本，之后每隔 30 秒在后台重新探测并替换环境快照；安装、升级或删除工具后不需要重启 workflow，下一次探测完成后生效。快照为 `ToolEnvironment { tools, missing, searched, revision }`；`revision` 是工具 (path, version)、字体集和 OCR 语言的 hash，`get_capabilities` RPC 与 `media.capabilities` 步骤都返回它。已经失败的 run 不会自动重试，确认工具就绪后重新发起。
+- 服务启动时 `probe_default()` 对上表每个命令定位并取版本，之后每隔 30 秒在后台重新探测并替换环境快照；安装、升级或删除工具后不需要重启 workflow，下一次探测完成后生效。快照为 `ToolEnvironment { tools, missing, searched, ext_tools, revision }`（`ext_tools` 是扩展包的工具根 `$BUCKYOS_ROOT/tools`，字体指纹从这里现读）；`revision` 是工具 (path, version)、字体集和 OCR 语言的 hash，`get_capabilities` RPC 与 `media.capabilities` 步骤都返回它。已经失败的 run 不会自动重试，确认工具就绪后重新发起。
 - 每个函数只把**自己依赖**的工具放进指纹：`fingerprint = { "cmd/<tool>": <version> | "missing" }`；`step_cache_key = hash(thunk_obj_id, fingerprint)`。因此升级 poppler 使 PDF 步骤不命中旧缓存，但不影响 `fit_image`（验收 6）。
 - `create_run(ensure=true)` 的合并键包含 `environment_revision`；执行前 runner 再核对指纹，不一致返回 `environment_changed`（retryable），不以旧 key 缓存新环境结果。
-- `to_pdf` 的 `is_pure: true` 表示结果可复用，不表示字节相同：LibreOffice 每次写入不同的 `CreationDate`、`/ID`、`DocChecksum`。第一次的结果写入缓存，之后 `pdf_content_id` 稳定，后续页面步骤全部命中（WF-DV-015）。它的指纹是 soffice、pdfinfo 版本加字体集摘要，字体变化使旧结果失效。
-- `page_to_pdf`、`page_snapshot` 同样是“可复用”意义上的 pure（Chromium 把生成时间写进 PDF）。指纹是 `cmd/page-render`（`--version` 那一行，含脚本、Chromium、playwright-core 三个版本）加字体集摘要 `env/fonts`：换浏览器、换脚本或字体变化都使旧结果失效。
+- `to_pdf` 的 `is_pure: true` 表示结果可复用，不表示字节相同：LibreOffice 每次写入不同的 `CreationDate`、`/ID`、`DocChecksum`。第一次的结果写入缓存，之后 `pdf_content_id` 稳定，后续页面步骤全部命中（WF-DV-015）。它的指纹是 soffice、pdfinfo 版本加下面的字体三项，字体变化使旧结果失效。
+- `page_to_pdf`、`page_snapshot` 同样是“可复用”意义上的 pure（Chromium 把生成时间写进 PDF）。指纹是 `cmd/page-render`（`--version` 那一行，含脚本、Chromium、playwright-core 三个版本）加下面的字体三项：换浏览器、换脚本或字体变化都使旧结果失效。
+- 字体三项（`tools::insert_font_fingerprint`）：`env/fonts` 是探测时宿主 `fc-list` 的摘要；`env/ext-core` 是 `$BUCKYOS_ROOT/tools/current.json` 里 `ext-core` 的 `<版本> <摘要>`（它带的字体和回退规则随包变），没有时是 `none`；`env/ext-fonts` 是 `tools/online/*.json` 里 `package` 为 `ext-fonts`、`state` 为 `ready` 且目录在的在线项，`<在线项>@<版本>` 排序后用逗号连接，没有时是 `none`。后两项在每次取指纹时现读，不等 30 秒的探测：管理员下载一个字体以后，下一次打印就换了缓存键，不用重启 workflow。调度时和执行前各取一次，中间刚好下载完时执行前的核对返回 `environment_changed`（retryable）。
 - locale 目前不进指纹，由宿主预置固定。
 
 ## 3. 宿主预置与检查
@@ -99,5 +100,5 @@ Chrome for Testing 不随 `ext-core` 分发。包装好以后，节点从官方�
 ## 6. 未完成项
 
 - `ext-core` 1.2.0 的 soffice 只在 linux-x86_64 上实测（干净的 Ubuntu 24.04 / 22.04 容器，无网络）；linux-aarch64、macOS、Windows 的 payload 未运行过。
-- macOS / Windows 上 soffice 的字体回退走系统字体（CoreText / GDI），没写字体的中日韩文字不一定落到随包的 Noto CJK；`to_pdf` 指纹里的字体摘要取自 `fc-list`，看不到 `ext-core` 自带的字体。两项都未处理。`page_to_pdf`、`page_snapshot` 的字体摘要是同一个值，同样看不到随包的字体。
+- macOS / Windows 上 soffice 的字体回退走系统字体（CoreText / GDI），没写字体的中日韩文字不一定落到随包的 Noto CJK；Chromium 也不读 fontconfig，`ext-core` 的字体和字体包都看不到。未处理。指纹里 `env/fonts` 仍取自宿主的 `fc-list`，`ext-core` 和字体包靠 `env/ext-core`、`env/ext-fonts` 两项跟上（§2）。
 - `page-render` 的隔离运行只在 Linux x86_64 上验证过（§3.1）。macOS、Windows 的分支没有运行过。真实 Zone 上以 root 运行的 workflow 跑过 `media.page`：2026-11-15 本机 Zone 上 WF-DV-017 通过（HTML 对象出 PDF、第二次命中缓存、没有读权限的调用者被拒），渲染期间的进程属主都是 `nobody`，PDF 里的外部请求全部失败；进程的环境没有读到，只验了属主（[Agent 浏览器实施 TODO](../../notepads/agent-runtime-browser-todo.md) §12）。

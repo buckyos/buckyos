@@ -86,4 +86,9 @@ impl Buckets for ZoneBuckets {
         let session = self.session().await?;
         Ok(self.client(&session).create_access_token(&id(bucket)?, &req).await.map_err(err)?.token)
     }
+
+    async fn grant_holdings(&self, user_id: &str, app_id: &str, obj_ids: &[String]) -> WsResult<()> {
+        let session = self.session().await?;
+        self.client(&session).grant_holdings(user_id, app_id, obj_ids).await.map_err(err)
+    }
 }

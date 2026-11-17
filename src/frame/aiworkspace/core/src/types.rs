@@ -1099,6 +1099,12 @@ pub fn is_block_container(e: &EntityRow) -> bool {
 /// The host kind of every composite control instance (扩展控件 P1, K4): which control it is, is its `def_ref`.
 pub const COMPOSITE: &str = "composite";
 
+/// The PDF Frame (打印 TODO §3.3, T3): a page shape with a header and a footer band that printing scales onto every
+/// page. Its only children are its two bands, groups slotted `header` and `footer` (placed by the frame); its size is
+/// numeric (the clients derive the height from the width and the shape, `controls/pdfframe.ts`).
+pub const PDF_FRAME: &str = "pdf-frame";
+const PDF_FRAME_BANDS: &[&str] = &["header", "footer"];
+
 /// The layout mode a control kind implies (stored in `layout`, never chosen by the writer). A composite's layout is
 /// its definition's (`composition.layout`).
 fn control_layout(kind: &str) -> &'static str {
@@ -1141,6 +1147,9 @@ pub fn is_slot(s: &str) -> bool {
 
 /// The configuration of a control container (its `attr_def`, §6.2).
 pub fn check_control_config(kind: &str, c: &JsonMap) -> WsResult<()> {
+    if kind == PDF_FRAME {
+        return check_pdf_frame_config(c);
+    }
     if kind != "mindmap" {
         return Ok(());
     }
@@ -1157,6 +1166,27 @@ pub fn check_control_config(kind: &str, c: &JsonMap) -> WsResult<()> {
         if !ok {
             return Err(bad(format!(
                 "mindmap config.{k} is invalid (direction: right | left | both | down; edge: curve | elbow | straight; spacing: {{ sibling?, level? }} in [0, 2000]; branch_colors: up to 64 colors)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A PDF Frame's page shape and bands (`controls/pdfframe.ts` `pdfFrameConfig`): `page` A | Letter | 16:9 | 4:3 | custom
+/// (`custom_w` / `custom_h` in mm, (0, 10000]), `orientation`, and the band heights and side margin in the frame's units.
+fn check_pdf_frame_config(c: &JsonMap) -> WsResult<()> {
+    for (k, v) in c {
+        let n = finite(Some(v));
+        let ok = match k.as_str() {
+            "page" => matches!(v.as_str(), Some("A" | "Letter" | "16:9" | "4:3" | "custom")),
+            "orientation" => matches!(v.as_str(), Some("portrait" | "landscape")),
+            "custom_w" | "custom_h" => n.is_some_and(|n| n > 0.0 && n <= 10000.0),
+            "header" | "footer" | "margin" => n.is_some_and(|n| (0.0..=20000.0).contains(&n)),
+            _ => return Err(bad(format!("pdf-frame config: unknown key {k}"))),
+        };
+        if !ok {
+            return Err(bad(format!(
+                "pdf-frame config.{k} is invalid (page: A | Letter | 16:9 | 4:3 | custom; orientation: portrait | landscape; custom_w, custom_h: mm in (0, 10000]; header, footer, margin: [0, 20000])"
             )));
         }
     }
@@ -1206,10 +1236,17 @@ fn check_slot(p: &Planner, e: &EntityRow) -> WsResult<()> {
         }
         return Ok(());
     }
-    let Some(slot) = e.payload.get("slot") else { return Ok(()) };
+    // a PDF Frame's children are its bands: each names one, once
+    let band = p.ov.entity(&edge.parent_id)?.is_some_and(|parent| parent.type_id == TYPE_CONTAINER && container_kind_of(&parent) == PDF_FRAME);
+    let Some(slot) = e.payload.get("slot") else {
+        return if band { Err(bad("a band of a PDF Frame needs slot (header or footer)")) } else { Ok(()) };
+    };
     let slot = slot.as_str().filter(|s| is_slot(s)).ok_or_else(|| bad("slot must match ^[a-z0-9][a-z0-9_-]{0,31}$"))?;
     if !laid_out_by_control(&p.ov, &edge.parent_id)? {
         return Err(bad("slot is only valid on a Block inside a control"));
+    }
+    if band && !PDF_FRAME_BANDS.contains(&slot) {
+        return Err(bad(format!("slot {slot:?} is not a band of a PDF Frame (header, footer)")));
     }
     for sibling in p.ov.children(&edge.parent_id)? {
         if sibling.child_id == e.entity_id {

@@ -12,6 +12,7 @@ import type {
   PresenceList, WorkLogFilter, WorkLogPage,
 } from './types'
 import { commitWithParts, parseAccessDenial, type AccessDenial } from 'buckyos'
+import type { PrintPackageParams, PrintPackageResult } from '@print/package'
 import { testHooks } from './testHooks'
 import type { Transport } from './transport'
 
@@ -166,6 +167,9 @@ export class AiwsClient {
   export(ws: Ws, mode: 'share' | 'personal_backup', self_contained: boolean, include_notes?: boolean) {
     return this.call<Result<ExportResult>>('doc.export', { ...ws, mode, self_contained, ...(include_notes === undefined ? {} : { include_notes }) })
   }
+
+  // ---- printing (打印 TODO T7): one canvas as a print package the caller holds, for `media.page`
+  printPackage(params: PrintPackageParams, signal?: AbortSignal) { return this.call<Result<Omit<PrintPackageResult, 'ok'>>>('print.package', { ...params }, signal) }
 
   // ---- shows (第三期规划 §11.3): the stage's calls; a prompter uses `prompterCall` with the show's token
   showStart(ws: Ws, path_id: string, live: boolean) { return this.call<Result<ShowStart>>('show.start', { ...ws, path_id, live }) }

@@ -86,7 +86,7 @@ function ChoiceStatic(context: RenderContext) {
       {result && <div className="aiws-classroom-result" data-testid="aiws-choice-result">{t('aiworkspace.session.choice.published', { answer: answerOf(result).map(letter).join(', ') || text(result, 'content') })}</div>}
       {task && <div className="aiws-muted aiws-classroom-meta" data-testid="aiws-choice-meta">{t(TASK_MODE_KEY[text(task, 'mode')] ?? TASK_MODE_KEY.open)} · {t(TASK_STATE_KEY[text(task, 'state')] ?? TASK_STATE_KEY.open)}{text(task, 'picked') ? ` · ${t('aiworkspace.session.choice.picked', { names: text(task, 'picked') })}` : ''} · {t('aiworkspace.session.choice.answered', { count: Number(task.values.answered ?? 0) })}</div>}
       {presenting && <Controls context={context} config={config} task={task} answers={answers} responses={responses ?? []} blockTasks={blockTasks} counts={counts} />}
-      {!session && context.mode !== 'show' && <div className="aiws-muted aiws-classroom-meta">{t('aiworkspace.session.choice.designHint')}</div>}
+      {!session && context.mode !== 'show' && context.mode !== 'print' && <div className="aiws-muted aiws-classroom-meta">{t('aiworkspace.session.choice.designHint')}</div>}
     </div>
   )
 }

@@ -49,6 +49,9 @@ import * as runlog from '../../src/i18n/aiworkspace/runlog.ts'
 import * as jarvis from '../../src/i18n/aiworkspace/jarvis.ts'
 import * as sourcereq from '../../src/i18n/aiworkspace/sourcereq.ts'
 import * as datasource from '../../src/i18n/aiworkspace/datasource.ts'
+import * as print from '../../src/i18n/aiworkspace/print.ts'
+import * as printrender from '../../src/i18n/aiworkspace/printrender.ts'
+import * as pdfframe from '../../src/i18n/aiworkspace/pdfframe.ts'
 
 type Table = Record<string, string>
 interface Part { name: string; prefixes: string[]; en: Table; zh: Table }
@@ -87,6 +90,9 @@ const PARTS: Part[] = [
   { name: 'jarvis', prefixes: ['jarvis'], ...jarvis },
   { name: 'sourcereq', prefixes: ['sourcereq'], ...sourcereq },
   { name: 'datasource', prefixes: ['datasource'], ...datasource },
+  { name: 'print', prefixes: ['print'], ...print },
+  { name: 'printrender', prefixes: ['printrender'], ...printrender },
+  { name: 'pdfframe', prefixes: ['pdfframe'], ...pdfframe },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname

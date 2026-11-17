@@ -18,6 +18,7 @@ import { mayCustomize, requestCustomize, setZonesRevealed, zonesRevealed } from 
 import { listMacros, runMacro } from './macros'
 import { requestPageSettings } from './pageSettings'
 import { requestCoverDialog } from '../cover/cover'
+import { beginPrint, requestPrintFonts } from '../print/request'
 
 const notOnCanvas = () => aiwsT('aiworkspace.shell.notOnCanvas')
 const caps = ({ store }: ActionContext) => store.session.info().capabilities
@@ -124,6 +125,11 @@ export const BUILTIN_ACTIONS: ActionDef[] = [
     menu: { group: 'workspace', order: 65, id: 'cover' },
     reason: (ctx) => (!caps(ctx).includes('manage') ? aiwsT('aiworkspace.cover.needManage') : !live(ctx) ? aiwsT('aiworkspace.shell.needsOnline') : null),
     run: () => requestCoverDialog() },
+  // the families a print uses for sans / serif / mono (打印 TODO T6, Q17): a Workspace setting, like the cover
+  { id: 'ws.print-fonts', label: () => aiwsT('aiworkspace.print.fonts.menu'), phone: true, visible: member,
+    menu: { group: 'workspace', order: 66, id: 'print-fonts' },
+    reason: (ctx) => (!caps(ctx).includes('manage') ? aiwsT('aiworkspace.settings.needManage') : !live(ctx) ? aiwsT('aiworkspace.shell.needsOnline') : null),
+    run: () => requestPrintFonts() },
   { id: 'ws.offline', label: () => aiwsT('aiworkspace.shell.menu.offline'), visible: member,
     menu: { group: 'workspace', order: 70, id: 'offline', submenu: true },
     candidates: (ctx) => {
@@ -160,6 +166,18 @@ export const BUILTIN_ACTIONS: ActionDef[] = [
   { id: 'surface.export-drawio', label: () => aiwsT('aiworkspace.framework.surface.exportDrawio'),
     menu: { group: 'surface', order: 40, id: 'export-drawio', testId: 'aiws-menu-export-drawio', separator: true, hint: () => aiwsT('aiworkspace.shell.menu.exportDrawioHint') },
     ...command((canvas) => canvas.exportDrawio) },
+  // the canvas as a PDF (打印 TODO §3.1, T4): `export` on it, online; a free canvas needs a presentation path through it
+  { id: 'surface.export-pdf', label: () => aiwsT('aiworkspace.print.menu'), phone: true, visible: member,
+    menu: { group: 'surface', order: 45, id: 'export-pdf', hint: () => aiwsT('aiworkspace.print.menuHint') },
+    reason: ({ store, shell }) => (shell.topMode !== 'canvas' || !shell.activeSurface ? notOnCanvas()
+      : !shell.activeSurface.capabilities.includes('export') ? aiwsT('aiworkspace.shell.menu.noExportPermission')
+        : store.session.status().kind !== 'live' ? aiwsT('aiworkspace.shell.needsOnline') : null),
+    run: (ctx) => {
+      const surface = ctx.shell.activeSurface
+      if (!surface) return
+      const editPaths = caps(ctx).includes('structure') && !ctx.shell.phone ? () => ctx.store.userState.set('canvas:mode', 'presentation_edit') : null
+      void beginPrint(ctx.store, surface, editPaths)
+    } },
   // a Workspace template of chosen Surfaces into the library (扩展控件 P3, Q32): online, with `export`
   { id: 'surface.save-template', label: () => aiwsT('aiworkspace.shell.menu.saveTemplate'), visible: member,
     menu: { group: 'surface', order: 50, id: 'save-template', testId: 'aiws-menu-save-template', hint: () => aiwsT('aiworkspace.shell.menu.saveTemplateHint') },

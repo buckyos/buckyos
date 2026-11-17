@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import https from 'node:https'
 import { join, relative, resolve, sep } from 'node:path'
 import { build, defineConfig, searchForWorkspaceRoot, type Plugin, type Rolldown } from 'vite'
@@ -25,7 +25,7 @@ function desktopServiceWorker(): Plugin {
         }
       }
       try { walk(outDir) } catch { return } // the build failed before writing anything
-      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map') && !file.startsWith(PDFJS_PREFIX) && !file.startsWith('open-source/')).sort()
+      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map') && !file.startsWith(PDFJS_PREFIX) && !file.startsWith(PRINT_PREFIX) && !file.startsWith('open-source/')).sort()
       if (!precache.includes('index.html')) return
       const hash = createHash('sha256')
       for (const file of precache) hash.update(file).update('\0').update(readFileSync(join(outDir, file)))
@@ -104,6 +104,8 @@ const TABLE_DIR = resolve(import.meta.dirname, '../aiworkspace/import-table')
 const OFFICE_DIR = resolve(import.meta.dirname, '../aiworkspace/import-office')
 // The Block-controls shared with Deno and Agents (脑图 TODO M1): layout, measuring, outline conversion, catalogue.
 const CONTROLS_DIR = resolve(import.meta.dirname, '../aiworkspace/controls')
+// The page model and flow pagination of printing (打印 TODO T1, T2), shared with the print renderer and Deno tests.
+const PRINT_DIR = resolve(import.meta.dirname, '../aiworkspace/print')
 // The local executor's program runner (src/app/aiworkspace/executor/program.worker.ts with the program host
 // src/frame/aiworkspace/aiws/aiws.js, the file the service runs) as one classic script text,
 // `import runner from 'virtual:aiws-program-runner'`: programHost.ts starts it from a blob inside a sandboxed iframe,
@@ -129,6 +131,85 @@ function aiwsProgramRunner(): Plugin {
     },
   }
 }
+
+// The print renderer (打印 TODO T7, Q20): `dist/aiws-print/` — index.html, print.css and print.js — which the aiworkspace
+// service copies into every print package next to the package's data.js. `media.page` opens a package over file://,
+// where Chromium runs no module script and fetches no local file: print.js is one classic script (IIFE) with every
+// dynamic import and every WASM (the aiworkspace core, loro) inlined as data: URLs. Built after the Desktop bundle by a
+// nested build with the same aliases; not precached by the Desktop's service worker.
+const PRINT_PREFIX = 'aiws-print/'
+const PRINT_ENTRY = resolve(import.meta.dirname, 'src/app/aiworkspace/print/renderer/main.tsx')
+const PRINT_HTML = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AI Workspace print</title>
+<link rel="stylesheet" href="print.css">
+</head>
+<body>
+<div id="aiws-print"></div>
+<script src="data.js"></script>
+<script src="print.js"></script>
+</body>
+</html>
+`
+function aiwsPrintRenderer(): Plugin {
+  let outDir = 'dist'
+  // wasm-bindgen's fallback `new URL('<name>_bg.wasm', import.meta.url)` would inline each module a second time: the
+  // renderer always hands init() the inlined module
+  const noWasmFallback: Plugin = {
+    name: 'aiws-print-no-wasm-fallback',
+    enforce: 'pre',
+    transform(code, id) { return /_wasm\.js$/.test(id) ? code.replace(/new URL\((['"])[\w.-]+_bg\.wasm\1,\s*import\.meta\.url\)/g, 'undefined') : null },
+  }
+  // a print loads nothing from the network (the Desktop's web fonts included) and starts no Worker: no wish program,
+  // no replica, no importer, no pdf.js — their scripts stay out of the package
+  const offline: Plugin = {
+    name: 'aiws-print-offline',
+    enforce: 'pre',
+    resolveId(id) { return id === PROGRAM_RUNNER_ID || /pdf\.worker[\w.]*\.mjs\?url$/.test(id) ? `\0aiws-print-empty:${id}` : null },
+    load(id) { return id.startsWith('\0aiws-print-empty:') ? 'export default ""' : null },
+    transform(code, id) {
+      if (id.endsWith('.css')) return code.replace(/@import\s+url\(['"]?https?:[^)]*\)\s*;?/g, '')
+      if (/\.(ts|tsx|js|mjs)$/.test(id) && code.includes('new Worker(new URL(')) return code.replace(/new Worker\(new URL\((['"])[^'"]+\1,\s*import\.meta\.url\)/g, "new Worker('data:,'")
+      return null
+    },
+  }
+  return {
+    name: 'aiworkspace-print-renderer',
+    apply: 'build',
+    configResolved(config) { outDir = resolve(config.root, config.build.outDir) },
+    async writeBundle() {
+      const dir = join(outDir, 'aiws-print')
+      await build({
+        configFile: false,
+        root: import.meta.dirname,
+        publicDir: false,
+        logLevel: 'warn',
+        plugins: [offline, noWasmFallback, react()],
+        resolve: { alias: ALIASES },
+        define: { 'process.env.NODE_ENV': JSON.stringify('production') },
+        build: {
+          outDir: dir, emptyOutDir: true, copyPublicDir: false, assetsInlineLimit: () => true, cssCodeSplit: false, reportCompressedSize: false,
+          lib: { entry: PRINT_ENTRY, formats: ['iife'], name: 'aiwsPrint', fileName: () => 'print.js', cssFileName: 'print' },
+        },
+      })
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'index.html'), PRINT_HTML)
+    },
+  }
+}
+
+// The loro `web` build and the code shared with Deno (see `resolve.alias` below), for the Desktop and the print renderer.
+const ALIASES = [
+  { find: /^loro-crdt$/, replacement: 'loro-crdt/web' },
+  { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` },
+  { find: /^@pdf\//, replacement: `${PDF_DIR}/` },
+  { find: /^@table\//, replacement: `${TABLE_DIR}/` },
+  { find: /^@office\//, replacement: `${OFFICE_DIR}/` },
+  { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` },
+  { find: /^@print\//, replacement: `${PRINT_DIR}/` },
+]
 
 // NFSP dev proxy: nfs-server has no CORS (in production the zone gateway
 // forwards the same-origin root path /nfs/v1/* to it), so dev mirrors that
@@ -186,7 +267,7 @@ export default defineConfig(() => {
     : {}
   return {
     base: '/',
-    plugins: [react(), pdfjsAssets(), aiwsHostPages(), aiwsProgramRunner(), desktopServiceWorker()],
+    plugins: [react(), pdfjsAssets(), aiwsHostPages(), aiwsProgramRunner(), aiwsPrintRenderer(), desktopServiceWorker()],
     // two pages of one build: the Desktop (index.html) and a Workspace's own page (aiws.html), sharing their chunks
     build: { rollupOptions: { input: { index: resolve(import.meta.dirname, 'index.html'), aiws: resolve(import.meta.dirname, 'aiws.html') } } },
     // The Replica Worker (src/app/aiworkspace/offline/replica.worker.ts) is a module worker.
@@ -199,10 +280,10 @@ export default defineConfig(() => {
       // (called in src/app/aiworkspace/richtext/loro.ts); loro-prosemirror must see the same instance.
       // The draw.io importer and the canvas geometry it shares live outside the app (they also run in Deno):
       // src/frame/aiworkspace/import-drawio (draw.io 导入 TODO §3).
-      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }, { find: /^@pdf\//, replacement: `${PDF_DIR}/` }, { find: /^@table\//, replacement: `${TABLE_DIR}/` }, { find: /^@office\//, replacement: `${OFFICE_DIR}/` }, { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` }],
+      alias: ALIASES,
     },
     server: {
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, TABLE_DIR, OFFICE_DIR, CONTROLS_DIR] },
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, TABLE_DIR, OFFICE_DIR, CONTROLS_DIR, PRINT_DIR] },
       host: '0.0.0.0',
       port: 5174,
       proxy: {

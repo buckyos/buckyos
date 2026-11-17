@@ -13,7 +13,7 @@
 | [事件、宏与公式](07-事件宏与公式预留.md) | 定义事件和动作、JavaScript 宏的稳定对象 API，以及公式的值格式、前端显示求值与物化；服务端本版本不求值。 |
 | [任务执行与 AI](08-任务执行与AI.md) | 定义本地/托管执行、身份与输出授权、运行恢复和取消，以及许愿格结果管理与可选心流。 |
 | [扩展包、导入与模板](09-扩展包导入与模板.md) | 定义 PIKG 扩展的安装、引入、build 与升级，统一文件/剪贴板 Import 流水线，并说明模板与工作区 Clone 的业务语义。 |
-| [演示与打印](10-演示与打印.md) | 定义实时视角、固定演示、独立会话与回放边界，以及 Frame 手工排版、流式分页和 PDF/打印输出。 |
+| [演示与打印](10-演示与打印.md) | 定义实时视角、固定演示、独立会话与回放边界，以及打印（导出可打印 PDF）：页面规格与 PDF Frame、自由画布按演示路径出页、流式分页和字体。 |
 | [权限、资源与保留](11-权限资源与保留.md) | 定义路径 ACL、Workspace 权限组、资源计量与准入、满额维护，以及对象保留和回收。 |
 | [接口治理与验收](12-接口治理与验收.md) | 定义 API 分级、错误语义、格式治理和跨模块验收要求，并列明后续扩展边界。 |
 | [设计来源与决策索引](13-设计来源与决策索引.md) | 记录历史设计依据、D01–D26 的落点，以及本轮 core 范围对应的主题文档。 |
@@ -42,7 +42,7 @@
 
 ### Block、控件与标准库（[05](05-Block控件与标准库.md)）
 
-- **扩展控件不能定义 context menu 等入口**（已部分解决）：内置 Block 的 TS 定义有 `actions`、近身工具栏 `toolbar`、`anchors`、`shape`、`resize`、`Simplified` / `Inspector` 入口（[ui/blocks/registry.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/registry.ts) `BlockDefinition`）。扩展的 `component.json` 自 manifest 4 起可以声明 `actions`（H2，[store/src/ext.rs](../../../src/frame/aiworkspace/store/src/ext.rs) `check_actions`），宿主按 `modes`、`needs` 放到近身工具栏，见 [05 扩展声明的动作](05-Block控件与标准库.md#扩展声明的动作)。2026-11-14 起（[UI 框架 PRD](<../BuckyOS AI Workspace UI 框架PRD.md>) §10.1），声明的动作和内置 Block 的动作用同一套语义：进 Block 工具栏、通用右键菜单和手机情境窗口。manifest 仍不接受 `primary`（扩展动作因此都算主要动作）和 `config_schema` 的“快速”标记；仍无法声明快捷键、连接锚点、最小尺寸/缩放方式、简化入口或打印能力。
+- **扩展控件不能定义 context menu 等入口**（已部分解决）：内置 Block 的 TS 定义有 `actions`、近身工具栏 `toolbar`、`anchors`、`shape`、`resize`、`Simplified` / `Inspector` 入口（[ui/blocks/registry.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/registry.ts) `BlockDefinition`）。扩展的 `component.json` 自 manifest 4 起可以声明 `actions`（H2，[store/src/ext.rs](../../../src/frame/aiworkspace/store/src/ext.rs) `check_actions`），宿主按 `modes`、`needs` 放到近身工具栏，见 [05 扩展声明的动作](05-Block控件与标准库.md#扩展声明的动作)。2026-11-14 起（[UI 框架 PRD](<../BuckyOS AI Workspace UI 框架PRD.md>) §10.1），声明的动作和内置 Block 的动作用同一套语义：进 Block 工具栏、通用右键菜单和手机情境窗口。manifest 仍不接受 `primary`（扩展动作因此都算主要动作）和 `config_schema` 的“快速”标记；仍无法声明快捷键、连接锚点、最小尺寸/缩放方式或简化入口；打印这一期不要求 Block 声明能力（[10](10-演示与打印.md#pdf-导出与打印)）。
 - **需要梳理系统自带的标准 Block**（已部分解决）：现在注册的有 table、richtext、record、asset（媒体）、label、note、shape、frame、connector、ink、wish，扩展宿主 html / declarative，课堂互动 Block（`ui/classroom`），以及 `sample.*` 示例（bar-chart、line-chart、metric、video）；控件有 mindmap、composite（含 grid 布局）和数据控件 todo、calendar。label 已实现（G1，[ui/blocks/labelBlock.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/labelBlock.tsx)）。只有 todo、calendar 两个官方控件有带版本的公开契约（G13，`aiws/contracts/<kind>.json`，`control.describe` 返回）；其余内置 Block 和 mindmap 的契约仍只写在 TS 代码里，扩展开发者无法拿它作参照；`sample.*` 是否进入标准库也还没定。
 
 ### 布局、模式与工具栏（[06](06-布局模式与用户状态.md)）
@@ -69,7 +69,7 @@
 
 ### 演示与打印（[10](10-演示与打印.md)）
 
-- **导出 PDF 与打印未实现**：没有打印宿主，没有页面定义（手工排版的区域、页序、纸张、边距），没有流式自动分页，也没有 PDF 输出。`BlockDefinition` 和 component.json 都不能声明打印能力（是否可拆分、断点、重复表头）。Surface `config.page_size` 是 draw.io 导入带来的页面设置，不参与分页。
+- **打印（导出可打印 PDF）已实现第一期**（[打印 TODO](../../../notepads/aiws-print-pdf-export-todo.md)）：画布菜单“导出可打印 PDF”，服务生成打印包（kRPC `print.package`），Workflow `media.page` 用无头 Chromium 输出 PDF，存入 Zone 或下载到本机；自由画布按演示路径出页，流模式自动分页；PDF Frame 控件提供页眉、页脚和页码；工作区设置把 `sans` / `serif` / `mono` 对应到具体字体，字体包 `ext-fonts` 由节点按需下载。仍缺：Block 不能声明自己的分页表现（是否可拆分、断点由打印渲染入口按 Block 类型判断），自建渲染管线只在[讨论](<../BuckyOS AI Workspace 渲染管线方案讨论.md>)里；Agent 和 CLI 打印、页码范围、PDF 书签不在本期。Surface `config.page_size` 是 draw.io 导入带来的页面设置，不参与分页。
 
 ### 权限（[11](11-权限资源与保留.md)）
 

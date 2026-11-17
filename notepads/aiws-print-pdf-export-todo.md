@@ -1,6 +1,6 @@
 # AIWS 打印（导出 PDF）TODO
 
-状态：立项，未实施。owner 四轮答复（2026-11-14）已定页面规格、PDF Frame 的匹配、按路径打印的定位、字体缺失的处理（§6.1）。2026-11-16 owner 定了渲染路线：从交付功能的角度，打印走无头浏览器方案，用 Workflow 的 `media.page`（§4）。自建渲染管线以后仍有价值，继续在[渲染管线方案讨论](<../doc/workspace/BuckyOS AI Workspace 渲染管线方案讨论.md>)里讨论，本文的任务不再等它。同日 owner 答复了当时待确认的全部问题（§6.1），字体包带出的 Q21、Q22 和字体的两处实现缺口，owner 同日也定了：按建议做，缺口都修（§3.5、T12）。
+状态：2026-11-16 已按本文实施（T1–T12），未提交；本机 Zone 上真实 DV 通过（§9）。实施中新出现的待确认问题见 §6.2（Q23–Q38）。立项时的说明：owner 四轮答复（2026-11-14）已定页面规格、PDF Frame 的匹配、按路径打印的定位、字体缺失的处理（§6.1）。2026-11-16 owner 定了渲染路线：从交付功能的角度，打印走无头浏览器方案，用 Workflow 的 `media.page`（§4）。自建渲染管线以后仍有价值，继续在[渲染管线方案讨论](<../doc/workspace/BuckyOS AI Workspace 渲染管线方案讨论.md>)里讨论。同日 owner 答复了当时待确认的全部问题（§6.1），字体包带出的 Q21、Q22 和字体的两处实现缺口，owner 同日也定了：按建议做，缺口都修（§3.5、T12）。
 
 2026-11-16 更新：当时“另行讨论”的无头浏览器已经实现，就是 Workflow 的系统定义 `media.page`（在 [Agent 浏览器实施 TODO](agent-runtime-browser-todo.md) §5.7–§5.9 里定案）。本文按已提交的实现和 owner 的路线裁决改了结论（§0）、现状（§2）、渲染路线（§4）、要做的（§5）和确认项（§6），新增 Q18–Q20。owner 答复 §6.2 以后，答案并进了设计（§3）、任务（§5）和验收（§7）。
 
@@ -208,29 +208,29 @@ owner 当时说无头浏览器另行讨论，别处也有这个需求。它后�
 
 页面与界面：
 
-- [ ] **T1 页面模型与取页。**
+- [x] **T1 页面模型与取页。**
   - 页面规格、内容区、页面装饰的结构。问题清单的结构。
   - 自由画布按演示路径取页：复用 `resolveSteps`、`playable`、`stageView`，取整条路径的可播放步骤。
   - 自由画布没有可用路径时的判定和提示。
-- [ ] **T2 分页规则。**
+- [x] **T2 分页规则。**
   - 按 §3.2 的规则选分页点，做成纯函数，输入是各块的高度和断点，便于单测。它在打印包里运行（Q18）。
   - 重复表头、超高内容缩小到一页的规则。
-- [ ] **T3 PDF Frame 控件。**
+- [x] **T3 PDF Frame 控件。**
   - 标准库里的组合控件：页面比例、方向、页眉 slot、页脚 slot、内容区。
   - label 的“页面上下文”取值来源，编辑时的示例值。
   - 等比套用到页面规格上，比例一致才可选。
   - 控件目录、图标和 i18n。
-- [ ] **T4 入口、对话框与保存。**
+- [x] **T4 入口、对话框与保存。**
   - `surface` 菜单组里的入口和手机主菜单里的入口。文案“导出可打印 PDF”，英文建议 “Export printable PDF”。
   - 对话框：演示路径、页面规格、PDF Frame、字体提示、页数和问题清单。手机上整屏。
   - 保存：复用 `useSaveToZone` 存入 Zone，其次下载到本机。不放回工作区（Q10）。
   - 进度和取消。
-- [ ] **T5 基线、权限与失败行为。**
+- [x] **T5 基线、权限与失败行为。**
   - 固定基线（§3.4）。
   - `export` 检查，读不到的内容留空。
   - 讲稿备注、选区、个人状态不输出。
   - 失败和取消不留文件。
-- [ ] **T6 工作区字体与检查提示（§3.5）。**
+- [x] **T6 工作区字体与检查提示（§3.5）。**
   - 工作区设置：`sans`、`serif`、`mono` 各对应一个具体字体，可选默认字体和字体包里的字体（Q17）。打印包按这个对应生成 CSS。
   - 进入对话框时检查三个对应的字体是否就绪；缺失时提示，带去字体包的入口。
   - ext-core 的 fontconfig 加上字体包的目录。
@@ -238,7 +238,7 @@ owner 当时说无头浏览器另行讨论，别处也有这个需求。它后�
 
 输出（无头浏览器路线，§4）：
 
-- [ ] **T7 打印包与 PDF 输出。**
+- [x] **T7 打印包与 PDF 输出。**
   - 打印呈现模式：各类 Block 在打印包里的表现，不运行宏和许愿格、不产生写入（§3.2）。
   - 打印用的渲染入口：用 Desktop 现有的 Block 组件构建，只带打印模式，随打印包一起放（Q20）。
   - 打印包的格式：快照、每页的尺寸、页面装饰、资源怎么放进包里，分页脚本和“排好了”的标记（Q18、Q19）。
@@ -246,25 +246,25 @@ owner 当时说无头浏览器另行讨论，别处也有这个需求。它后�
   - 调 `workflow.create_run`、`start_run`，等结果，取消。
   - 节点还没下载 Chromium 时的提示和下载入口。
   - 把 `pdf_obj_id` 交给 `useSaveToZone` 存进 Zone；下载到本机时从 NDM 读。
-- [ ] **T8 HTML 扩展 Block。** 扩展 Block 的 HTML 和它要的数据一起放进打印包。打印包里没有网络、没有 AIWS 接口，做不到时用快照图片，并列入问题清单。
-- [ ] **T9 表格的打印内容。** 全部行、列宽、按行分页、重复表头。表格在屏幕上是虚拟滚动，打印包里要放全部行。
+- [x] **T8 HTML 扩展 Block。** 扩展 Block 的 HTML 和它要的数据一起放进打印包。打印包里没有网络、没有 AIWS 接口，做不到时用快照图片，并列入问题清单。
+- [x] **T9 表格的打印内容。** 全部行、列宽、按行分页、重复表头。表格在屏幕上是虚拟滚动，打印包里要放全部行。
 
 字体包：
 
-- [ ] **T11 按语言的字体包（Q16、Q21、Q22）。**
+- [x] **T11 按语言的字体包（Q16、Q21、Q22）。**
   - 一个 ext-tool 包（名字实施时定，暂称 `ext-fonts`），每种语言一个在线项，`auto: false`：装上包不自动下载，管理员在缺字体提示或“设置 › 扩展工具”里下载。下载、失败、重试走在线项的现有流程。
   - 首批：阿拉伯文、希伯来文、泰文、天城文，各一套无衬线和衬线，用 SIL OFL 1.1 的 Noto 系列；拉丁文另加几套常用的 OFL 字体。下载地址只用 notofonts 等上游在 GitHub 上的官方发布。
   - ext-tool 包和在线项：每个字体的官方下载地址、`sha256`、许可证文本，按 `doc/app_service/paios容器需求.md` §6.4 的在线项规则写清单。
   - 只收许可证允许嵌入 PDF 的字体；合规清单里写明我们不分发。
   - “设置 › 扩展工具”里能看到、下载、重试；打印对话框的缺字体提示能跳过去。
-- [ ] **T12 字体的两处缺口（§3.5）。**
+- [x] **T12 字体的两处缺口（§3.5）。**
   - 缓存：`media.page`（以及同样带字体摘要的 `media.to_pdf`）的指纹改为包含 ext-core 的包版本和已就绪的字体在线项（id、版本），每次调用时现读，不依赖启动时的探测，下载字体包以后不用重启 Workflow。宿主系统字体的 `fc-list` 摘要照旧保留。这一项现在就能做，不等 T11。
   - 让 Chromium 看得到字体包：建议字体包在自己的包目录里带一份 fontconfig 片段，列出它各个在线项的目录（用相对路径）；ext-core 的 fontconfig 配置用 `<include ignore_missing="yes">` 引入这份片段。没装字体包时什么都不发生。和 T11 一起做。
   - 验证：下载一个字体包以后，不重启服务，`page-render` 输出的 PDF 用上了新字体，第二次打印不命中旧缓存；`soffice` 的冒烟照常通过。
 
 收尾：
 
-- [ ] **T10 文档、手册与测试。**
+- [x] **T10 文档、手册与测试。**
   - 内核文档 10：手工排版改写为“自由画布的页面取自演示路径”，“背景控件”对应 PDF Frame，去掉“打印整个工作区”，写明页面规格在打印时选择、字体缺失的提示。
   - 内核文档 10 里“各 Block/control 声明打印能力”改写为：这一期 Block 不声明打印能力，打印经打印包和 `media.page` 输出。
   - 内核文档 05（Frame 的打印页用途）、06（呈现模式）、12（验收行），以及 kernel/README 的缺口清单。
@@ -313,7 +313,26 @@ owner 2026-11-16 对当时待确认问题的答复。写“按建议”的，是
 
 ### 6.2 待确认
 
-暂无。
+2026-11-16 实施中出现的，都已按括号里的做法实施，owner 不同意再改：
+
+| # | 问题 | 现在的做法 |
+| --- | --- | --- |
+| Q23 | 字体包的在线项按什么分 | 每个字体族一个在线项。上游（notofonts 等）每个字体族单独发布一个归档，而一个在线项只能有一个归档，做不到 Q21 的“每种语言一个”。界面按字体名列出 |
+| Q24 | 阿拉伯文、希伯来文进不进字体包 | 不进。ext-core 的 LibreOffice 字体目录已经带 Noto Sans Arabic、Noto Naskh Arabic、Noto Sans Hebrew、Noto Serif Hebrew（常规体和粗体），列为默认字体；再放进包会有同名族的两份。要更多字重时再定怎么处理重名 |
+| Q25 | 首批拉丁文字体 | Inter、Source Sans 3、Source Serif 4、JetBrains Mono，都是 OFL、有 GitHub 官方发布。Source Sans 3 的发布归档里没有许可证文件（许可证在上游仓库和字体的 name 表里），我们不分发，节点直接从 Adobe 的发布下载，认为可以收 |
+| Q26 | 正式安装包是否播种 ext-fonts | 开发环境和 exttool 种子镜像已经播种（包里没有字体，只有在线项声明）；正式安装包是否钉版播种待定 |
+| Q27 | macOS、Windows 节点 | 那里的 Chromium 不读 fontconfig，ext-core 的默认字体和字体包都看不到，对话框的字体检查会显示“就绪”。要不要特别处理 |
+| Q28 | 工作区字体设置放在哪里 | 仓库里没有统一的工作区设置页：做成“工作区 ▸ 打印字体…”（同“设置封面…”，要 `manage`），打印对话框里给管理员一个链接 |
+| Q29 | 字体是否就绪怎么判断、谁能看 | 所有报告了 ext-fonts 的节点都就绪才算就绪（不知道 Workflow 在哪个节点渲染）。非管理员读不到扩展工具状态，显示“无法检查”；要不要给普通成员一个只读接口 |
+| Q30 | 便签算内容还是批注 | 便签（不挂在内容上的批注）照常打印，回复不打印；挂在内容上的评论和批注不输出（Q7） |
+| Q31 | 未经管理者确认的 HTML 扩展代码打印时运行吗 | 运行。打印环境断网、没有令牌、写入全部拒绝；这样才满足 §7“只提供 HTML 的扩展 Block 不改动就能出现在 PDF 里” |
+| Q32 | PDF Frame 的名字和默认内容 | “PDF 页框”（英文 “PDF page frame”）；插入时页眉是 `{title}`、页脚是 `{page} / {pages}` |
+| Q33 | PDF Frame 的单位与默认值 | 用 Frame 自身的画布单位，自然尺寸下 1 单位 = 1 pt（A4 纵向 595 × 842）；页眉、页脚、左右边距默认 56（约 20 mm），左右边距一个值 |
+| Q34 | PDF Frame 的编辑细节 | 换比例时保持缩放倍数，页眉页脚里的 Block 按左中右三分区保持靠边；用手柄缩放时松手才回到比例；流式页上只显示预览，编辑页眉页脚要去自由画布；带外的内容打印时裁掉 |
+| Q35 | 页面信息替换的范围 | `{page}` 等只在 PDF Frame 里（编辑时示例值）和打印时替换，画布其他地方的 label 原样显示 |
+| Q36 | 流模式打印的版式 | 第一行是画布标题；组打印成“组标题 + 缩进的内容”，不是一个整体 |
+| Q37 | 自由画布上的表格 | 只打印 Block 框里放得下的行（与屏幕和放映一致）；全部行只在流模式 |
+| Q38 | 页码上下文的日期格式 | 打印人语言的长日期（“2026年11月16日”），与 PDF Frame 在画布上的示例值一致 |
 
 ## 7. 验收
 
@@ -344,3 +363,66 @@ owner 2026-11-16 对当时待确认问题的答复。写“按建议”的，是
 - Agent 和 CLI 打印（Q9）。
 - 用户上传自己的字体文件。字体只来自默认字体和字体包。
 - 屏幕上用字体包里的字体显示。屏幕仍用设备上的字体（§3.5）。
+
+## 9. 实施记录（2026-11-16）
+
+源码基线 `565220b7d`，全部未提交。做法：先写共享模块和契约，再分五个包并行（字体与 Workflow、打印包服务、打印渲染器、对话框与流程、PDF Frame），最后集成并在本机 Zone 上做真实 DV。
+
+### 9.1 链路
+
+1. 画布菜单“导出可打印 PDF…”（`surface.export-pdf`，手机精简菜单里同样有）→ 对话框（路径、页面规格与方向、PDF Frame、字体提示、页数和问题）。
+2. 先选位置：`useSaveToZone`（系统文件选择器的保存模式，默认 Zone），在它的 `grant()` 里才生成；其次“下载到本机”。
+3. kRPC `print.package`：服务在一次 `with_ws` 里取出要打印的行（固定基线），在锁外打成 zip，存进工作区 owner 的 `exports` 桶，用 `bucket.grant_holdings(caller.principal, caller.app_id, [obj_id])` 交给调用者（aiworkspace 属于 `frame` 组，有 `obj://ndm/grant`）。
+4. Desktop 以用户自己的身份跑 Workflow 系统定义 `media.page`：`paper` 总是 `宽x高mm`、`margin_mm: 0`、`wait_ready: window.__AIWS_PRINT_READY__ === true`。Run 结束时 Workflow 把 PDF 的持有登记给调用者，`pdf_obj_id` 直接交给 `commit_object` 存进所选文件夹；下载到本机时从 NDM 按对象读。取消就是 `cancel_run`。
+5. 打印包里的渲染器读 `data.js`，用 WASM `Replica` 从包里的行建出只读 Workspace（同会话回放），用 Desktop 现有的 Block 在新的呈现模式 `print` 下排页，排好后置就绪标记。
+
+渲染器是 Desktop 构建里的第二份嵌套构建 `dist/aiws-print/`（`index.html`、`print.css`、一个经典脚本 `print.js`，两份 WASM 以 data: URL 内联）：page-render 以 `file://` 打开打印包，Chromium 在 file:// 下拦模块脚本和本地 fetch。服务从它找到的 Desktop 构建目录（`locate_web_dir`）取 `aiws-print/` 放进包根。
+
+### 9.2 落点
+
+| 部分 | 位置 |
+| --- | --- |
+| 共享纯函数（页面规格、内容区、PDF Frame 比例匹配、步骤适配、页面上下文、流式分页、字体目录、打印包契约） | `src/frame/aiworkspace/print/`（Desktop 别名 `@print/*`，`deno test -A`） |
+| 打印包服务 | `store/src/print.rs`、`server/src/print.rs`，`methods.rs` 登记（experimental），`objects.rs` / `server/src/buckets.rs` 的 `grant_holdings`，`session/mod.rs` 提出 `query_rows` 共用；错误子码 `PRINT_PATH_REQUIRED`、`PRINT_PATH_UNUSABLE`、`PRINT_FRAME_UNUSABLE`、`PRINT_RENDERER_MISSING`；服务 README “Printing” |
+| 打印渲染器 | Desktop `src/app/aiworkspace/print/renderer/`（`main.tsx`、`session.ts` 的 `PrintSession`、`FreePages.tsx`、`FlowPages.tsx`、`PrintTable.tsx`、`ready.ts` 等），`vite.config.ts` 的 `aiwsPrintRenderer()`；`print` 模式进了 `registry.ts` 的 `modePolicy`、`RenderHost`、`BlockHost`、资产与媒体、HTML 扩展 Block（`HtmlPrint`）、许愿格和课堂 Block |
+| 对话框与流程 | Desktop `ui/print/`（`request.ts`、`generate.ts`、`PrintDialog.tsx`、`PrintFontsDialog.tsx`、`fonts.ts`、`extTools.ts`），`builtin.ts` 入口（另有 `ws.print-fonts`），`api/client.ts` 的 `printPackage`，`FrameworkHost` 挂 `PrintHost` |
+| PDF Frame 控件 | `buckyos.container` kind `pdf-frame`（`controls/core.json`，核心校验 `config` 和两个带的 `slot`）；`controls/pdfframe.ts`；Desktop `ui/controls/pdfframe/`（`api.tsx` 是给打印用的接口：`listPdfFrames`、`PdfFrameDecoration`、`PageContextValue`、`partOfPdfFrame`）；label 的 `{page}` `{pages}` `{title}` `{date}`；服务 README “PDF Frame”；Agent 手册 `aiws/controls.json` 重新生成 |
+| 字体缓存指纹（T12） | Workflow `functions/media/tools.rs` 的 `insert_font_fingerprint`：`media.page` 和 `media.to_pdf` 的指纹含宿主 `fc-list` 摘要、`env/ext-core`（调用时读 `current.json`）、`env/ext-fonts`（调用时读 `online/*.json` 里就绪的 ext-fonts 在线项） |
+| Chromium 看得到字体包（T12） | ext-core 1.3.3 的 `conf.d/64-ext-fonts.conf` 相对 `<include>` 字体包的 `store/ext-fonts/fonts.conf`（实测 fontconfig 2.18.3：include 的相对名按物理路径解析，三个候选只有一个存在）；`build.sh` 的 `ext_fonts_include` |
+| 字体包 ext-fonts（T11） | `publish/exttool/ext-fonts/`（清单只有在线项、`provides` 为空，`fonts.conf`、`build.py`、测试、合规说明）；8 个在线项（Noto Sans/Serif Thai、Noto Sans/Serif Devanagari、Inter、Source Sans 3、Source Serif 4、JetBrains Mono），`auto: false`；`prepare_ext_tools.py` 每次本地构建它；CI `.github/workflows/ext-fonts.yml`；没有命令的包：buckyos-api `ext_tools.rs` 校验与 `ext_tools_install.rs` 安装，websdk `cli/modules/pikg_protocol.ts` 同步（另一个仓库） |
+| 文档 | 内核文档 05、06、10、12 和 kernel/README 的缺口清单，UI 框架 PRD 的菜单表（桌面和手机），`paios容器需求.md` §6.4 字体包，`media tool baseline.md` 指纹，`doc/pikg/format.md`，`AGENTS.md` 在线项一句，Desktop AIWS README “Printing” |
+
+### 9.3 与本文的偏差
+
+- 字体包每个字体族一个在线项，阿拉伯文和希伯来文用 ext-core 自带的默认字体（Q23、Q24）。
+- 工作区字体做成“打印字体…”单独入口（Q28）；“去安装”只能跳到“设置 › 扩展工具”，定位不到字体包（设置的启动参数只有页面）。
+- PDF Frame 只要求读得到，不要求 `export`：导出权限按被打印的画布判定。
+- 页码上下文的日期用长日期格式（Q38），§3.3 写的是“日期 `date`”，没规定格式。
+- 打印包里的资产文件按媒体类型带扩展名（`assets/<对象文件名>.svg` 等）：file:// 下 Chromium 不嗅探 SVG。
+- 同一 head、同一参数生成的打印包内容字节相同（zip 时间固定、`printed_at` 取 head Commit 的时间），重复打印命中 `media.page` 的缓存；包的对象 ID 因文件名带随机 id 而不同，缓存按内容命中，不受影响。
+
+### 9.4 验证
+
+- Rust：`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace -- --test-threads=1` 407 过、0 失败；`cargo test -p workflow` 101 过；`cargo test -p buckyos-api --lib` 411 过。打印包测试 `store/tests/print.rs`（跨画布路径、去讲稿备注、guide / 无路径 / 不经过本画布被拒、无 `export` 被拒、读不到的画布和 Block 不进包、批注不进包、表格残留列、资产与扩展名、视频本体不进包、PDF Frame、zip 结构、无写入、字节确定、core 的 Replica 能装下）、`server/tests/print.rs`（持有只交给调用者、各种拒绝）。
+- Deno：`print/` 18 条、`controls/` 38 条。字体包 python 测试 6 条、ext-core 31 条、`src/tools/tests` 134 条。
+- Desktop：`tsc -p tsconfig.app.json`、`tsconfig.node.json` 无错误，58 个改动文件 `eslint` 干净；文案守护只有本来就失败的 “backend speaks English”（34 处都在旧的服务代码里）；`npx vite build` 产出 `dist/aiws-print/`（`print.js` 18.4 MB，打成包压缩后约 5.9 MB）。
+- 渲染器离线验证：样例包用节点上的 `page-render` 出 PDF，逐页看图（P3 另有加长样例：A4 14 页、A5 30 页，段落在行间断开，跨页表格重复表头，PDF Frame 每页页眉页脚，深色主题，`sans` 映射后嵌入的字体随之改变，HTML 扩展 Block 真跑、崩溃的出占位，`pdftotext` 里跨页内容不重复）。
+- 本机 Zone 真实 DV（`tests/dv/aiworkspace.print.spec.ts`，`BUCKYOS_UI_DV_BASE_URL=https://test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=… pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/aiworkspace.print.spec.ts`，3 条全过）：
+  - 流模式：90 行表格加富文本的画布，A4 存进 Zone 里新建的文件夹（`commit_object` 直接用 Workflow 登记给用户的 PDF 对象，验证了 Q20 留下的“PDF 怎么交到调用者手里”）；A5 加放在流式页上的 A 系列 PDF Frame 下载到本机：页面 148 × 210 mm、8 页、每页页眉“DV 项目工作区”和页脚“P n / 8”、表格的行全在且各只出现一次、Frame 实例本身没作为内容输出。
+  - 自由画布：演示 fixture 的五步跨画布路径，默认 16:9，PDF 5 页 297 × 167 mm，选了另一画布上的 16:9 PDF Frame，每页“P n / 5”。
+  - 手机（Pixel 7）：对话框占满屏幕，从精简主菜单进入，存进 Zone。
+  - 都在工作区自己的源（`aiws-<id>.<zone>`）上跑：`print.package` 登记的持有、Workflow 的读权限判定、NDM 读取和 `commit_object` 用的是同一个会话，一致。
+- 本机 Zone 上的 API 探针（脚本在会话 scratchpad）：`print.package` 0.7 s，Run 3 s；同一画布打两次，包内容相同，第二次 0.6 s 命中缓存、PDF 相同。字体包：工作区 `sans` 设为 Noto Sans Thai，在线项未下载时打印，PDF 里没有它；管理员 `buckyos ext-tools download ext-fonts noto-sans-thai`（6 s 就绪，不重启任何服务）后再打同一份内容，Run 没有命中旧缓存，PDF 嵌入 NotoSansThai-Regular / Bold。本机节点装的是 ext-core 1.3.1，这一条是把 1.3.3 新增的那一个 `conf.d` 文件临时放进已安装的 ext-core 测的，测完已删除。
+- 本机 Zone 在 16:26 被重新部署过一次（同一工作树的构建），上面的 DV 跑在它上面；`ext-fonts` 已由 node_daemon 从种子装上，`noto-sans-thai` 已下载。
+
+### 9.5 没做、没验证的，和风险
+
+- ext-core 1.3.3 没有完整构建（只单独执行了新增的函数），没有发布；R2 上只有 1.3.1（1.3.2 没发过，1.3.3 会带上它的改动）。在那之前节点上的 Chromium 看不到字体包。
+- 发布顺序：先把 websdk 的 pikg 校验（允许没有命令、只有在线项的包）发到 npm，再打 `ext-core-v1.3.3`、`ext-fonts-v1.0.0`；`ext-fonts.yml` 没在 GitHub 上跑过。
+- macOS、Windows、aarch64 没验证；macOS / Windows 上 Chromium 不读 fontconfig（Q27）。真机手机没验证（只有 Playwright 的 Pixel 7）。
+- 节点还没下载 Chromium 的情况只在 e2e（模拟 Workflow）里验证，真实节点上没删浏览器测。
+- 打印里没测过的 Block：待办、日历、脑图、手写笔迹、连接线、音频卡片、旋转的 Frame、超高不可拆内容的缩小（代码路径有，没有样例触发）。
+- HTML 扩展 Block 在打印里用不了 `aiws.asset()`（file:// 读不到字节）和 `aiws.query(sql)`（打印 store 没有 SQL），用到的退回快照图片。`buckyos.dir` 成员文件的字节、URL 查询表的远端数据不进包，这类 Block 打印出来没有内容。
+- `print.js` 18.4 MB：两份 WASM 约 9 MB，其余是 Block 注册连带的模块图。瘦身要把一些 import 改成懒加载，这次没做。
+- `create_run(ensure)` 的合并键不含字体包状态；打印走普通 `create_run`，不受影响。
+- 系统文件选择器的保存模式会 `stat` 用户给的名字，不存在时浏览器控制台记一条 404；真实 Zone DV 的夹具已忽略这一条。

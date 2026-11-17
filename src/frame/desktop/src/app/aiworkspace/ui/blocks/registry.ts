@@ -19,11 +19,13 @@ import type { AnchorDef, Shape } from '../canvas/connectors/anchors'
 import { aiwsT, aiwsText, localizedLabels } from '../../i18n'
 import { htmlApiOf } from '../extensions/htmlRuntime'
 
-/** `show` is not a sub-mode the user picks: it is the stage of a show (第三期规划 §10.1). */
-export type CanvasMode = 'edit' | 'view' | 'presentation_edit' | 'show'
+/** `show` is not a sub-mode the user picks: it is the stage of a show (第三期规划 §10.1); nor is `print`, the pages of a
+ * printed PDF (打印 TODO §3.2), rendered in the print package. */
+export type CanvasMode = 'edit' | 'view' | 'presentation_edit' | 'show' | 'print'
 export const CANVAS_MODES: CanvasMode[] = ['edit', 'view', 'presentation_edit']
 export const CANVAS_MODE_LABEL = localizedLabels<CanvasMode>({
   edit: 'aiworkspace.blocks.mode.edit', view: 'aiworkspace.blocks.mode.view', presentation_edit: 'aiworkspace.blocks.mode.presentationEdit', show: 'aiworkspace.blocks.mode.show',
+  print: 'aiworkspace.printrender.mode',
 })
 
 export type DataState = 'ready' | 'missing' | 'unreadable' | 'degraded' | 'none'
@@ -441,5 +443,8 @@ export function modePolicy(mode: CanvasMode): ModePolicy {
     // only Blocks marked "operable on stage" take input (the host checks `presentation.live`, §10.2)
     case 'show':
       return { select: false, layout: false, editContent: true, insert: false, annotate: false, readingInteraction: true, writes: true, events: 'live' }
+    // a page of a printed PDF: nothing is selected, edited, written, played or run (打印 TODO §3.2)
+    case 'print':
+      return { select: false, layout: false, editContent: false, insert: false, annotate: false, readingInteraction: false, writes: false, events: 'off' }
   }
 }

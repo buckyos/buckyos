@@ -5,6 +5,7 @@
 
 import { solveComposite } from './composite.ts'
 import { COMPOSITE, isControlKind, isDataControl, isTextView } from './contract.ts'
+import { PDF_FRAME, solvePdfFrame } from './pdfframe.ts'
 import { NODE_PAD, NodeMeasurer } from './measure.ts'
 import { num, type StoredPlacement } from './placement.ts'
 import { layoutTree, mindmapConfig, type LaidNode, type MindmapConfig, type Rect, type TreeLayout, type TreeNode } from './tree.ts'
@@ -106,12 +107,13 @@ export function solveBox(src: ControlSource, containerId: string, opts: SolveOpt
   return { id: containerId, config: mindmapConfig(undefined), layout: { nodes: new Map(), bounds: { x: 0, y: 0, w, h } }, nested: new Map() }
 }
 
-/** Solve any control by its kind: a composite from its definition's composition, a data control by its box, a mind
- * map as a tree. */
+/** Solve any control by its kind: a composite from its definition's composition, a data control by its box, a PDF
+ * Frame by its page shape, a mind map as a tree. */
 export function solveAny(src: ControlSource, containerId: string, opts: SolveOptions): SolvedControl {
   const kind = src.get(containerId)?.kind
   if (kind === COMPOSITE) return solveComposite(src, containerId, opts)
   if (isDataControl(kind)) return solveBox(src, containerId, opts)
+  if (kind === PDF_FRAME) return solvePdfFrame(src, containerId, opts)
   return solveControl(src, containerId, opts)
 }
 

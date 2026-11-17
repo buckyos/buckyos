@@ -47,6 +47,11 @@ pub trait Buckets: Send + Sync {
     async fn delete(&self, bucket: &str, key: &str) -> WsResult<()>;
     /// A single-key read token (`bkt_…`) for the data plane, valid for `ttl_ms` from now (the bucket service's clock).
     async fn read_token(&self, bucket: &str, key: &str, ttl_ms: i64) -> WsResult<String>;
+    /// Hand these objects to a user's App session (nfs-server `bucket.grant_holdings`): it may read them through
+    /// NDM. Buckets of this process have no NDM gateway and nobody to hand anything to.
+    async fn grant_holdings(&self, _user_id: &str, _app_id: &str, _obj_ids: &[String]) -> WsResult<()> {
+        Ok(())
+    }
 }
 
 pub fn bucket_err(e: BucketError) -> WsError {
@@ -338,6 +343,11 @@ impl ObjectStore {
     pub fn read_token(&self, bucket: &str, key: &str, ttl_ms: i64) -> WsResult<String> {
         let (b, bucket, key) = (self.buckets.clone(), bucket.to_string(), key.to_string());
         block_on(async move { b.read_token(&bucket, &key, ttl_ms).await })
+    }
+
+    pub fn grant_holdings(&self, user_id: &str, app_id: &str, obj_ids: &[String]) -> WsResult<()> {
+        let (b, user_id, app_id, obj_ids) = (self.buckets.clone(), user_id.to_string(), app_id.to_string(), obj_ids.to_vec());
+        block_on(async move { b.grant_holdings(&user_id, &app_id, &obj_ids).await })
     }
 
     /// Bind a retention set: one DirObject naming every member (`<hex>.<type>` → id, time fields 0), so the

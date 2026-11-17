@@ -11,7 +11,7 @@ import type { ControlDescriptor } from '@controls/catalog'
 import type { ControlSource, SolveOptions, SolvedControl } from '@controls/solve'
 import type { EntityEnvelope, Json, Operation } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
-import type { BlockAction, BlockDefinition, CanvasMode, ConfigField, CreateArgs } from '../blocks/registry'
+import type { BlockAction, BlockDefinition, CanvasMode, CatalogGroup, ConfigField, CreateArgs } from '../blocks/registry'
 import type { Laid } from '../canvas/layout'
 
 /** What the chrome of a control is drawn with (in its container's frame, local coordinates). */
@@ -82,6 +82,10 @@ export interface ContainerDefinition {
   sizing?: 'layout' | 'box'
   /** A box control's size when inserted. */
   defaultSize?: { w: number; h: number }
+  /** A box control's resize rule, as a Block type's (`locked`: corner handles keep the proportions; a PDF Frame). */
+  resize?: { aspect?: 'free' | 'locked' }
+  /** The insert catalog's group (default: `data` for a box control, `layout` otherwise). */
+  catalogGroup?: CatalogGroup
   /** A data control's content: what it projects from the tables it binds, with its own gestures and pop-overs. */
   Body?: ComponentType<ControlBodyProps>
   /** Drawn in the container's frame under its children: implicit edges, fold handles, pins (R23: template children). */

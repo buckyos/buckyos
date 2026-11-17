@@ -22,7 +22,7 @@ import { isActive } from './WishService'
 function WishBlockView(context: RenderContext) {
   const id = context.source?.entity_id ?? ''
   const mode = context.mode === 'edit' || (context.mode === 'show' && context.interactive) ? 'edit' : 'view'
-  return <WishCard wishId={id} cellId={context.cell.entity_id} mode={mode} readOnly={context.depth > 0 || (context.mode === 'show' && !context.interactive)} />
+  return <WishCard wishId={id} cellId={context.cell.entity_id} mode={mode} readOnly={context.depth > 0 || context.mode === 'print' || (context.mode === 'show' && !context.interactive)} />
 }
 
 function WishBlockSmall(context: RenderContext) {

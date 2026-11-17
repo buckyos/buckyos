@@ -66,9 +66,10 @@ export interface HomeCover { workspace_id: string; object_id: string; media_type
 export type WorkspaceCover = { object_id: string; media_type: string; size: number }
 
 /** The Workspace's shared settings (UI 框架 PRD §4.6, K4): the root's `config`, read in `ws.get_info`, written by
- * `manage`. The keys are the client's — `toolbar` is the shared toolbar layer of the Workspace — but `cover`, which the
- * service checks (an uploaded picture, Q37). */
-export interface WorkspaceSettings { toolbar?: Json; cover?: WorkspaceCover; [key: string]: Json | undefined }
+ * `manage`. The keys are the client's — `toolbar` is the shared toolbar layer of the Workspace, `fonts` the families a
+ * print maps `sans` / `serif` / `mono` to (打印 TODO Q17, read through `@print/fonts` `readFontSettings`) — but
+ * `cover`, which the service checks (an uploaded picture, Q37). */
+export interface WorkspaceSettings { toolbar?: Json; cover?: WorkspaceCover; fonts?: Record<string, string>; [key: string]: Json | undefined }
 
 /** The caller's own preferences across Workspaces (`user.get_prefs` / `user.set_prefs`, K4): top-level keys merge. */
 export interface UserPrefsRead { prefs: Record<string, Json>; revision: number; updated_at: string | null }

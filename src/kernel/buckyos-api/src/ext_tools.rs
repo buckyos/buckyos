@@ -214,8 +214,8 @@ impl ExtToolsManifest {
         if self.version.trim().is_empty() || !self.version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-')) {
             return fail(format!("version `{}` must be letters, digits and `._+-`", self.version));
         }
-        if self.provides.is_empty() {
-            return fail("provides must not be empty".to_string());
+        if self.provides.is_empty() && self.online.is_empty() {
+            return fail("a package provides commands or declares online items".to_string());
         }
         let mut items = BTreeSet::new();
         for item in &self.online {
@@ -928,6 +928,9 @@ mod tests {
     fn an_online_item_names_an_https_archive_and_stays_inside_its_directory() {
         let manifest = online_manifest();
         manifest.validate().unwrap();
+        let mut fonts = manifest.clone();
+        fonts.provides.clear();
+        fonts.validate().expect("a package may only declare online items");
         let raw = serde_json::to_string(&manifest).unwrap();
         assert_eq!(ExtToolsManifest::parse(&raw).unwrap(), manifest);
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -973,6 +976,25 @@ mod tests {
         assert!(ExtToolsManifest::parse(&unknown.to_string()).is_err(), "the upstream's address is the only one");
         assert!(online_url_allowed("http://127.0.0.1:1/x"), "this crate's own tests serve from the loopback address");
         assert!(!online_url_allowed("http://localhost:1/x"));
+    }
+
+    /// publish/exttool/ext-fonts: online items only, none downloaded without being asked, and its payload passes.
+    #[test]
+    fn the_font_package_declares_its_fonts_and_provides_no_command() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../publish/exttool/ext-fonts");
+        let raw = std::fs::read_to_string(source.join(EXT_TOOLS_MANIFEST_FILE)).unwrap();
+        let manifest = ExtToolsManifest::parse(&raw).unwrap();
+        assert!(manifest.provides.is_empty());
+        assert!(!manifest.online.is_empty() && manifest.online.iter().all(|item| !item.auto));
+        let dir = std::env::temp_dir().join(format!("ext-tools-payload-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("store/ext-fonts")).unwrap();
+        std::fs::write(dir.join(EXT_TOOLS_MANIFEST_FILE), &raw).unwrap();
+        std::fs::copy(source.join("fonts.conf"), dir.join("store/ext-fonts/fonts.conf")).unwrap();
+        for platform in &manifest.platforms {
+            assert!(ext_tools_payload_errors(&manifest, ext_tools_platform(platform).unwrap(), &dir).is_empty(), "{platform}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

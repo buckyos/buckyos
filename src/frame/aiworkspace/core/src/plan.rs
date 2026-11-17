@@ -1453,6 +1453,8 @@ pub fn child_allowed(parent: &EntityRow, in_control: bool, in_surfaces: bool, ch
             "surface" | "group" => block(child_type),
             // a data control's content is projected from its tables, never stored (控件机制 TODO Q19)
             k if crate::types::is_data_control(k) => false,
+            // a PDF Frame holds its two bands, groups (打印 TODO §3.3)
+            crate::types::PDF_FRAME => child_type == TYPE_CONTAINER && child_kind == Some("group"),
             k if crate::types::is_control_kind(k) => block(child_type),
             _ => false,
         },
@@ -1534,9 +1536,9 @@ impl<'a> PlaceRules<'a> {
             _ => false,
         };
         let laid_out = !fixed && host.as_ref().is_some_and(|c| crate::types::is_control_kind(container_kind(c)));
-        // a data control has the size its user gives it (it holds no Blocks to wrap)
+        // a data control and a PDF Frame have the size their user gives them (nothing of theirs to wrap)
         let control = type_id == TYPE_CONTAINER
-            && payload.get("kind").and_then(Value::as_str).is_some_and(|k| crate::types::is_control_kind(k) && !crate::types::is_data_control(k));
+            && payload.get("kind").and_then(Value::as_str).is_some_and(|k| crate::types::is_control_kind(k) && !crate::types::is_data_control(k) && k != crate::types::PDF_FRAME);
         let text = type_id == TYPE_CELL && payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str).is_some_and(crate::types::is_text_view);
         Ok(PlaceRules { connector, internal: p.env.internal, laid_out, auto_size: control || (laid_out && text) })
     }

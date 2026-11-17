@@ -1,0 +1,22 @@
+/* The PDF Frame control (打印 TODO §3.3): its page on a canvas, its bands and content placeholder, and the scaled drawing
+ * printing and flow pages use. */
+
+.aiws-frame-block.is-control > .aiws-pdfframe-chrome { position: absolute; left: 0; top: 0; box-sizing: border-box; pointer-events: none;
+  background: var(--cp-surface); border: 1px solid var(--cp-border); box-shadow: 0 1px 4px var(--cp-shadow); }
+.aiws-pdfframe-band { position: absolute; box-sizing: border-box; background: color-mix(in srgb, var(--cp-accent) 6%, transparent); }
+.aiws-pdfframe-band.is-header { border-bottom: 1px dashed color-mix(in srgb, var(--cp-accent) 45%, transparent); }
+.aiws-pdfframe-band.is-footer { border-top: 1px dashed color-mix(in srgb, var(--cp-accent) 45%, transparent); }
+.aiws-pdfframe-content { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  border: 1px dashed var(--cp-border); color: var(--cp-muted); font-size: 13px; text-align: center; overflow: hidden; }
+.aiws-pdfframe-content-title { font-weight: 600; }
+.aiws-pdfframe-tag { position: absolute; right: calc(100% + 6px); white-space: nowrap; font-size: 11px; line-height: 16px; color: var(--cp-muted); }
+
+/* the frame scaled as a whole: the page in the frame's units, its Blocks cut to their bands */
+.aiws-pdfframe-art { position: relative; overflow: hidden; pointer-events: none; }
+.aiws-pdfframe-art.is-outlined { border: 1px solid var(--cp-border); background: var(--cp-surface); box-sizing: content-box; }
+.aiws-pdfframe-art-page { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.aiws-pdfframe-art-band { position: absolute; overflow: hidden; }
+.aiws-pdfframe-art.is-outlined .aiws-pdfframe-art-band.is-header { border-bottom: 1px dashed var(--cp-border); box-sizing: border-box; }
+.aiws-pdfframe-art.is-outlined .aiws-pdfframe-art-band.is-footer { border-top: 1px dashed var(--cp-border); box-sizing: border-box; }
+.aiws-pdfframe-group { position: absolute; }
+.aiws-pdfframe-flow { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 4px 0; }

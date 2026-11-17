@@ -6,7 +6,7 @@
  * what hovering it offers and the type section of the near toolbar. They are registered like any
  * extension would be. */
 
-import { useCallback, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useContext, type CSSProperties, type ReactNode } from 'react'
 import { ALargeSmall, ClipboardCopy, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, LetterText, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, StickyNote, Table } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
@@ -31,6 +31,8 @@ import { assetMediaType, mediaKindOf, playsInPlace } from '../media/kinds'
 import type { StagedPayload } from '../media/stage'
 import { freeTableName, standardTableOf } from '../controls/data/source'
 import { blockRegistry, type BlockDefinition, type CreateArgs, type RenderContext } from './registry'
+import { PrintFragmentContext } from '../../print/renderer/context'
+import { PrintTable } from '../../print/renderer/PrintTable'
 import { frameDefinition } from './frameBlock'
 import { shapeDefinition } from './shapeBlock'
 
@@ -59,8 +61,11 @@ function useEmbedRenderer(depth: number) {
 
 function TableStatic(context: RenderContext) {
   const ui = useWorkspaceUi()
+  const flow = useContext(PrintFragmentContext)
   const source = context.source
   if (!source) return null
+  // a printed page has every row, laid out whole (打印 TODO T9)
+  if (context.mode === 'print') return <div className="aiws-block-static"><PrintTable cellId={context.cell.entity_id} width={flow?.width ?? context.size.w} height={flow ? null : context.size.h} /></div>
   return (
     <div className="aiws-block-static">
       <TableViewCell cellId={context.cell.entity_id} readOnly compact annotations={ui.annotations} onActivateAnnotation={ui.setActiveAnnotation} />
@@ -243,13 +248,14 @@ function kindOfSource(context: RenderContext) {
 
 /** On a free canvas in edit mode "play" activates the Block: its Editor plays, and the canvas leaves it the pointer. */
 function AssetStatic(context: RenderContext) {
-  // a flow page has no near toolbar: the file facts and "replace" stay under the picture there
-  const bare = useOnFreeCanvas()
+  // a flow page has no near toolbar: the file facts and "replace" stay under the picture there (not on a printed page)
+  const print = context.mode === 'print'
+  const bare = useOnFreeCanvas() || print
   if (!context.source) return null
   return (
     <div className="aiws-block-static aiws-block-asset">
       <AssetCell entityId={context.source.entity_id} fit={fitOf(context)} readOnly={bare || context.readOnlyReason !== null || context.mode !== 'edit'} bare={bare}
-        media={{ cellId: context.cell.entity_id, onActivate: bare && context.mode === 'edit' ? context.activateEditor : undefined }} />
+        media={{ cellId: context.cell.entity_id, onActivate: bare && context.mode === 'edit' ? context.activateEditor : undefined, print }} />
     </div>
   )
 }
@@ -393,7 +399,7 @@ function NoteStatic(context: RenderContext) {
   return (
     <div className="aiws-note aiws-block-static" style={style} data-size={typeof payload?.style?.size === 'string' ? payload.style.size : 'm'} data-testid={`aiws-note-${id}`}>
       <div className="aiws-note-body">{payload?.body ?? '…'}</div>
-      <NoteReplies noteId={id} />
+      {context.mode !== 'print' && <NoteReplies noteId={id} />}
       {payload && authorLabel(payload) && <span className="aiws-note-author">{authorLabel(payload)}</span>}
       {entry && entry.state !== 'committed' && <span className="aiws-note-dot" data-testid="aiws-edit-state" data-state={entry.state} title={entry.detail ?? entry.state} />}
     </div>

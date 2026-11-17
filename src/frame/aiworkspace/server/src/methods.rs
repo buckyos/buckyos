@@ -137,6 +137,7 @@ pub const METHODS: &[MethodSpec] = &[
     m("doc.restore_version", "experimental", &[Entity(Cap::Read, "entity_id")]),
     m("doc.checkpoint", "experimental", &[Ws(Cap::Export)]),
     m("doc.export", "experimental", &[Ws(Cap::Export)]),
+    m("print.package", "experimental", &[Member, Handler("`export` on the canvas, and on each canvas of a free canvas's path (the steps on others are left out); `read` on the PDF Frame; what is printed is what the caller may read")]),
     m("proc.start", "stable", &[Handler("a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish; hosted: an account, executed by one of its own Agents")]),
     m("proc.get", "stable", &[RUN_OWN]),
     m("proc.cancel", "stable", &[RUN_OWN]),

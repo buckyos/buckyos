@@ -5,6 +5,7 @@
 
 import { COMPOSITE_CONTROL } from './composite.ts'
 import { MINDMAP } from './mindmap.ts'
+import { PDF_FRAME_CONTROL } from './pdfframe.ts'
 import { CALENDAR_CONTROL, TODO_CONTROL } from './schedule.ts'
 
 export interface ControlDescriptor {
@@ -21,7 +22,7 @@ export interface ControlDescriptor {
   agent: string
 }
 
-export const CONTROLS: readonly ControlDescriptor[] = [MINDMAP, COMPOSITE_CONTROL, TODO_CONTROL, CALENDAR_CONTROL]
+export const CONTROLS: readonly ControlDescriptor[] = [MINDMAP, COMPOSITE_CONTROL, TODO_CONTROL, CALENDAR_CONTROL, PDF_FRAME_CONTROL]
 
 export function controlDescriptor(kind: string): ControlDescriptor | undefined {
   return CONTROLS.find((c) => c.kind === kind)

@@ -132,7 +132,7 @@ online/<item>/...     # 在线项的 overlay（见下），只能是清单 onlin
 }
 ```
 
-`id`、`version` 必须等于 AppDoc 的 `name`、`version`。标准层的命令（`baseline::STANDARD_TOOLS`）不能被任何包提供：`tools/bin` 在 PATH 上排在 `bin/agent-tools` 之前，会遮蔽 Agent 的身份与控制命令。`provides` 是系统对“哪个包提供哪个命令”的全部知识；同一命令被两个包提供时，至少一方要在 `conflicts` 里列出另一方，两者不能同时启用。`ext-core`（[publish/exttool/ext-core](../../publish/exttool/ext-core)）是第一个包，它的 `provides` 由单测与 `baseline::EXTENDED_TOOLS` 绑定。
+`id`、`version` 必须等于 AppDoc 的 `name`、`version`。标准层的命令（`baseline::STANDARD_TOOLS`）不能被任何包提供：`tools/bin` 在 PATH 上排在 `bin/agent-tools` 之前，会遮蔽 Agent 的身份与控制命令。`provides` 是系统对“哪个包提供哪个命令”的全部知识；同一命令被两个包提供时，至少一方要在 `conflicts` 里列出另一方，两者不能同时启用。`provides` 只有在包声明了在线项时才可以为空：字体包 `ext-fonts`（[publish/exttool/ext-fonts](../../publish/exttool/ext-fonts)）只有字体在线项、没有命令，也就没有 `bin/`。`ext-core`（[publish/exttool/ext-core](../../publish/exttool/ext-core)）是第一个包，它的 `provides` 由单测与 `baseline::EXTENDED_TOOLS` 绑定。
 
 **在线项**（可选的 `online`，以及 `provides[].needs`）：包只声明、不携带的东西，节点在包装好以后从上游下载到 `$BUCKYOS_ROOT/tools/online/<id>/`（机制、状态和触发见 [paios 容器需求 §6.4 “在线项”](../app_service/paios容器需求.md)）。
 

@@ -195,7 +195,7 @@ function PackageCard({ pkg, onChange, busy, online, t }: { pkg: ExtToolsPackage;
       </div>
       {manifest?.desc ? <p className="text-sm text-[color:var(--cp-muted)]">{manifest.desc}</p> : null}
       {manifest ? (
-        <p className="break-words text-sm">
+        manifest.provides.length === 0 ? null : <p className="break-words text-sm">
           <span className="text-[color:var(--cp-muted)]">{t('settings.extTools.provides', 'Commands')}: </span>
           {manifest.provides.map((p, index) => (
             <span key={p.command}>

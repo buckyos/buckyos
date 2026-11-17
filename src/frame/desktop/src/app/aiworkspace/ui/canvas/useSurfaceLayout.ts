@@ -39,6 +39,8 @@ export function useSurfaceLayout(surfaceId: string) {
   const index = useMemo(() => {
     const idx = new SpatialIndex()
     for (const [id, l] of laid) {
+      // a PDF Frame's band is pressed and picked as its frame (Blocks still drop into it, layout.ts groupAt)
+      if (l.band) continue
       const line = l.connector
       const ink = l.entity.view_type === INK_VIEW ? book.world(id, l.rect, l.rotation) : null
       idx.insert({ id, rect: l.bounds, paint: l.paint, ...(l.rotation ? { turned: { rect: l.rect, rotation: l.rotation } } : {}),

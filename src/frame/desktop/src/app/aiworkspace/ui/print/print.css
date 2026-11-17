@@ -1,0 +1,22 @@
+/* The print dialog and the print fonts dialog (打印 TODO T4, T6): one column of fields; full screen on a phone (phone.css). */
+
+.aiws-modal-backdrop > .aiws-dialog.aiws-print-dialog { width: min(520px, 100%); gap: 10px; }
+.aiws-print-hint, .aiws-print-note { font-size: 12px; line-height: 1.45; }
+.aiws-print-fields { display: flex; flex-direction: column; gap: 10px; }
+.aiws-print-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.aiws-print-field > select, .aiws-print-paper > select { width: 100%; min-height: 32px; box-sizing: border-box; }
+.aiws-print-paper { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aiws-print-paper > select { flex: 1 1 200px; width: auto; }
+.aiws-root .aiws-print-paper .aiws-segmented > button { min-height: 32px; padding: 2px 12px; font-size: 13px; }
+.aiws-print-pages { font-weight: 600; }
+.aiws-print-issues { margin: 0; padding-left: 18px; font-size: 12px; color: var(--cp-muted); display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.aiws-print-fonts { display: flex; flex-direction: column; gap: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.aiws-print-fonts-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aiws-print-progress { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--cp-surface-2); }
+.aiws-print-spinner { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid var(--cp-border); border-top-color: var(--cp-accent); animation: aiws-print-spin 0.9s linear infinite; }
+@keyframes aiws-print-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .aiws-print-spinner { animation: none; } }
+.aiws-print-browser { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--cp-border); border-radius: 8px; font-size: 13px; }
+.aiws-print-browser-node { display: flex; flex-direction: column; gap: 4px; }
+.aiws-print-done { overflow-wrap: anywhere; }
+.aiws-root .aiws-print-dialog .aiws-dialog-actions > button { min-height: 36px; }

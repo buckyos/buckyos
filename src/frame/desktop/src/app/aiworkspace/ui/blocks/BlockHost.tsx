@@ -72,10 +72,25 @@ export function GenericFallback({ cell, payload, reason, detail, source }: { cel
   )
 }
 
+/** What a printed page shows of a Block it cannot render: nothing for content it may not read, the snapshot of an HTML
+ * Block this host is too old for, else a neutral placeholder. */
+function PrintBlank({ cellId, reason, payload }: { cellId: string; reason: string; payload: CellPayload | null }) {
+  const { t } = useAiwsText()
+  const unreadable = reason === 'data_unavailable' || reason === 'read_failed'
+  const snapshot = reason === 'unsupported_api' ? payload?.config?.snapshot : undefined
+  return (
+    <div className="aiws-print-blank" data-testid={`aiws-block-fallback-${cellId}`} data-reason={reason}>
+      {snapshot?.object_id ? <AssetBlobImage objectId={snapshot.object_id} mediaType={snapshot.media_type} alt="" /> : unreadable ? null : t('aiworkspace.printrender.unprintable')}
+    </div>
+  )
+}
+
 /** Memoised: pans and overlay updates re-render the frame list only; a Block re-renders when its own props change. */
 export const BlockHost = memo(function BlockHost(props: BlockHostProps) {
   const { t } = useAiwsText()
   const { cell, context, resolution, error, registryVersion } = useBlockContext(props)
+  // a printed page names nothing it cannot show (打印 TODO §3.4): what cannot be read stays empty
+  if (props.mode === 'print' && ((!context && error) || resolution?.ok === false)) return <PrintBlank cellId={props.cellId} reason={resolution?.ok === false ? resolution.reason : 'read_failed'} payload={context?.payload ?? null} />
   if (!context && error) return <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${props.cellId}`} data-reason="read_failed"><div className="aiws-error" role="alert">{t('aiworkspace.blocks.readFailed', { error })}</div></div>
   if (!context && cell?.view_type === INK_VIEW) return null
   if (!context) return <div className="aiws-block-loading" data-testid={`aiws-block-loading-${props.cellId}`}>{t('aiworkspace.blocks.loading')}</div>

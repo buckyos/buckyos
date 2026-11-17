@@ -407,33 +407,39 @@ fn transition(from: Option<&Value>, to: &Value) -> &'static str {
 // the run Workspace
 // ---------------------------------------------------------------------------
 
+/// The rows `sql` selects, as `replica::load_rows` reads them: an object per row by column name, BLOBs as base64.
+pub(crate) fn query_rows(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> WsResult<Vec<Value>> {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut st = conn.prepare(sql).map_err(db_err)?;
+    let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+    let rows = st
+        .query_map(params, |r| {
+            let mut m = Map::new();
+            for (i, n) in names.iter().enumerate() {
+                let v = match r.get_ref(i)? {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(x) => json!(x),
+                    rusqlite::types::ValueRef::Real(x) => json!(x),
+                    rusqlite::types::ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
+                    rusqlite::types::ValueRef::Blob(b) => json!(b64.encode(b)),
+                };
+                m.insert(n.clone(), v);
+            }
+            Ok(Value::Object(m))
+        })
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db_err)?;
+    Ok(rows)
+}
+
 /// Every row of the document tables, as `replica::load_rows` reads them (rich texts folded into their snapshot): the
 /// baseline a replay starts from (§7.1, TODO I12).
 pub fn dump_doc_rows(ws: &Workspace) -> WsResult<Value> {
     let b64 = base64::engine::general_purpose::STANDARD;
     let mut out = Map::new();
     for table in ["entities", "tree_edges", "refs", "table_fields", "table_records", "richtext_states", "assets"] {
-        let mut st = ws.doc.prepare(&format!("SELECT * FROM {table}")).map_err(db_err)?;
-        let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
-        let rows: Vec<Value> = st
-            .query_map([], |r| {
-                let mut m = Map::new();
-                for (i, n) in names.iter().enumerate() {
-                    let v = match r.get_ref(i)? {
-                        rusqlite::types::ValueRef::Null => Value::Null,
-                        rusqlite::types::ValueRef::Integer(x) => json!(x),
-                        rusqlite::types::ValueRef::Real(x) => json!(x),
-                        rusqlite::types::ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
-                        rusqlite::types::ValueRef::Blob(b) => json!(b64.encode(b)),
-                    };
-                    m.insert(n.clone(), v);
-                }
-                Ok(Value::Object(m))
-            })
-            .map_err(db_err)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(db_err)?;
-        out.insert(table.to_string(), Value::Array(rows));
+        out.insert(table.to_string(), Value::Array(query_rows(&ws.doc, &format!("SELECT * FROM {table}"), [])?));
     }
     // a rich text with pending updates: its snapshot as the replica would need it
     let now = ws.now();

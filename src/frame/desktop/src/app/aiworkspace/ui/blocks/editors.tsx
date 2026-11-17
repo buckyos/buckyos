@@ -222,7 +222,7 @@ export function AssetCell({ entityId, fit, readOnly, bare = false, media }: {
     <div className="aiws-asset" data-testid={`aiws-asset-${entityId}`} data-availability={availability}>
       {availability !== 'available' ? (
         <div className="aiws-asset-placeholder">{t('aiworkspace.blocks.asset.unavailable', { reason: availabilityText ?? '' })}</div>
-      ) : <AssetMedia asset={asset.data} fit={fit} cellId={media?.cellId ?? null} activated={media?.activated} onActivate={media?.onActivate} onDone={media?.onDone} />}
+      ) : <AssetMedia asset={asset.data} fit={fit} cellId={media?.cellId ?? null} activated={media?.activated} onActivate={media?.onActivate} onDone={media?.onDone} print={media?.print} />}
       {!bare && <div className="aiws-asset-meta">
         <span>{payload.file_name ?? entityId}</span>
         <span>{payload.media_type}</span>

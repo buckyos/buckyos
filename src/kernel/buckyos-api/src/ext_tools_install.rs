@@ -528,11 +528,15 @@ impl ToolsRoot {
         return fs::remove_dir(&link).map_err(|e| format!("{}: {e}", link.display()));
     }
 
-    /// Launcher files of a version directory.
+    /// Launcher files of a version directory. A package of online items only has no `bin/`.
     fn launchers_of(&self, id: &str, dir: &str) -> ExtToolsResult<Vec<String>> {
         let bin = self.version_dir(id, dir).join("bin");
-        let mut names: Vec<String> = fs::read_dir(&bin)
-            .map_err(|e| format!("{}: {e}", bin.display()))?
+        let entries = match fs::read_dir(&bin) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && self.version_dir(id, dir).is_dir() => return Ok(Vec::new()),
+            Err(error) => return Err(format!("{}: {error}", bin.display())),
+        };
+        let mut names: Vec<String> = entries
             .flatten()
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
@@ -1099,6 +1103,47 @@ mod tests {
         assert!(fs::symlink_metadata(root.path().join("store/ext-a")).is_err());
         assert!(root.install_record("ext-a").is_none());
         assert!(!root.path().join("versions/ext-a").exists());
+    }
+
+    /// A package of online items only (the font package): no commands, no `bin/`, nothing downloaded until asked.
+    #[cfg(unix)]
+    #[test]
+    fn a_package_of_online_items_only_is_installed_and_removed() {
+        let scratch = Scratch::new("online-only");
+        let root = ToolsRoot::new(scratch.0.join("tools"));
+        let mut m = manifest("ext-fonts", "1.0.0", &[], &[]);
+        m.online = vec![ExtToolsOnlineItem {
+            id: "noto-sans-thai".to_string(),
+            version: "2.002".to_string(),
+            desc: String::new(),
+            license: "SIL OFL 1.1".to_string(),
+            auto: false,
+            platforms: BTreeMap::from([(
+                "linux-x86_64".to_string(),
+                ExtToolsOnlineSource { url: "https://github.com/notofonts/thai/releases/download/x/x.zip".to_string(), sha256: "ab".repeat(32), size_bytes: 1, format: "zip".to_string(), into: None, rename: vec![], overlay: None },
+            )]),
+        }];
+        let tree = scratch.0.join("tree");
+        fs::create_dir_all(tree.join("store/ext-fonts")).unwrap();
+        fs::write(tree.join(EXT_TOOLS_MANIFEST_FILE), serde_json::to_string(&m).unwrap()).unwrap();
+        fs::write(tree.join("store/ext-fonts/fonts.conf"), "<fontconfig/>").unwrap();
+        let tar_path = scratch.0.join("ext-fonts.tar.gz");
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(fs::File::create(&tar_path).unwrap(), flate2::Compression::fast()));
+        builder.append_dir_all(".", &tree).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let install = root.install(&apply(&tar_path, "ext-fonts"), &mut |_| {}).unwrap();
+        assert!(install.launchers.is_empty() && install.commands.is_empty() && install.waiting.is_empty());
+        root.health("ext-fonts").unwrap();
+        assert!(root.path().join("store/ext-fonts/fonts.conf").is_file());
+        let online = root.online();
+        assert_eq!(online["noto-sans-thai"].package, "ext-fonts");
+        assert!(!online["noto-sans-thai"].auto);
+        assert_eq!(online["noto-sans-thai"].status.state, ExtToolsOnlineState::Missing);
+
+        root.remove("ext-fonts").unwrap();
+        assert!(root.install_record("ext-fonts").is_none());
+        assert!(root.online().is_empty());
     }
 
     #[cfg(unix)]

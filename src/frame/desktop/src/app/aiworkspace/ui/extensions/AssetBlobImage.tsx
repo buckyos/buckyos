@@ -5,12 +5,16 @@ import { useEffect, useState } from 'react'
 import { describeError } from '../../api/session'
 import { useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+import { printAssetUrl } from '../../print/renderer/assets'
 
 export function AssetBlobImage({ objectId, mediaType, alt, fit = 'contain' }: { objectId: string; mediaType: string; alt: string; fit?: 'contain' | 'cover' }) {
   const store = useStore()
   const { t } = useAiwsText()
+  // a print package has the file next to the page
+  const packaged = printAssetUrl(objectId)
   const [state, setState] = useState<{ url: string | null; error: string | null }>({ url: null, error: null })
   useEffect(() => {
+    if (packaged) return
     let live = true
     let url: string | null = null
     store.session.fetchAsset(objectId).then(
@@ -22,9 +26,10 @@ export function AssetBlobImage({ objectId, mediaType, alt, fit = 'contain' }: { 
       (error: unknown) => { if (live) setState({ url: null, error: describeError(error) }) },
     )
     return () => { live = false; if (url) URL.revokeObjectURL(url) }
-  }, [store, objectId, mediaType])
-  if (state.error) return <div className="aiws-error">{state.error}</div>
-  if (!state.url) return <div className="aiws-muted">{t('aiworkspace.extension.loadingImage')}</div>
-  if (mediaType.startsWith('video/')) return <video className="aiws-blob-image" src={state.url} aria-label={alt} controls preload="metadata" style={{ objectFit: fit }} data-object-id={objectId} />
-  return <img className="aiws-blob-image" src={state.url} alt={alt} style={{ objectFit: fit }} data-object-id={objectId} />
+  }, [store, objectId, mediaType, packaged])
+  const url = packaged ?? state.url
+  if (state.error && !packaged) return <div className="aiws-error">{state.error}</div>
+  if (!url) return <div className="aiws-muted">{t('aiworkspace.extension.loadingImage')}</div>
+  if (mediaType.startsWith('video/')) return <video className="aiws-blob-image" src={url} aria-label={alt} controls preload="metadata" style={{ objectFit: fit }} data-object-id={objectId} />
+  return <img className="aiws-blob-image" src={url} alt={alt} style={{ objectFit: fit }} data-object-id={objectId} />
 }

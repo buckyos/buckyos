@@ -56,10 +56,7 @@ impl NativeFunction for ToPdf {
     /// The rendered pages depend on the installed fonts; the page count on pdfinfo.
     fn fingerprint(&self, env: &ToolEnvironment) -> BTreeMap<String, String> {
         let mut fingerprint = env.fingerprint_for(&[tools::SOFFICE, tools::PDFINFO]);
-        fingerprint.insert(
-            "env/fonts".to_string(),
-            env.fonts.clone().unwrap_or_else(|| "unknown".to_string()),
-        );
+        tools::insert_font_fingerprint(env, &mut fingerprint);
         fingerprint
     }
 

@@ -132,6 +132,8 @@ function observe(page: Page, errors: string[]) {
   page.on('console', (message) => {
     if (message.type() !== 'error') return
     if (message.location().url.endsWith('/sso_refresh') && message.text().includes('401')) return
+    // the picker's save mode stats the name it was given: not found means the name is free
+    if (message.location().url.endsWith('/nfs/v1/stat') && message.text().includes('404')) return
     errors.push(message.text())
   })
 }

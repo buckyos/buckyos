@@ -109,10 +109,7 @@ pub fn snapshot_function_object() -> FunctionObject {
 /// What the page looks like depends on the browser and on the installed fonts.
 fn fingerprint(env: &ToolEnvironment) -> BTreeMap<String, String> {
     let mut fingerprint = env.fingerprint_for(&[tools::PAGE_RENDER]);
-    fingerprint.insert(
-        "env/fonts".to_string(),
-        env.fonts.clone().unwrap_or_else(|| "unknown".to_string()),
-    );
+    tools::insert_font_fingerprint(env, &mut fingerprint);
     fingerprint
 }
 

@@ -5,6 +5,8 @@
 //! whose per-tool versions form function fingerprints.
 
 use crate::native::{EnvironmentProvider, ToolEnvironment, ToolInfo};
+use buckyos_api::ext_tools_install::ExtToolsOnlineRecord;
+use buckyos_api::ExtToolsOnlineState;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,6 +31,11 @@ pub fn exe_name(name: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+/// The extension packages' tools root: `$BUCKYOS_ROOT/tools`.
+pub fn ext_tools_root() -> PathBuf {
+    buckyos_kit::get_buckyos_root_dir().join("tools")
 }
 
 /// Directories searched, in order.
@@ -67,7 +74,7 @@ pub fn search_dirs() -> Vec<PathBuf> {
         }
     }
     // Last: a machine keeps the converter it had. ext-core's ffmpeg has no `zscale`, so taking it over a system one would lose HDR tone mapping.
-    dirs.push(root.join("tools").join("bin"));
+    dirs.push(ext_tools_root().join("bin"));
     dirs
 }
 
@@ -215,7 +222,60 @@ fn digest_of_font_list(listed: &str) -> String {
 }
 
 pub fn probe_default() -> ToolEnvironment {
-    probe(&search_dirs())
+    let mut env = probe(&search_dirs());
+    env.ext_tools = Some(ext_tools_root());
+    env
+}
+
+/// The package whose fontconfig setup (fonts, rules, and the font package it takes in) the tools of the extension
+/// packages share, and the package whose online items are fonts (doc/app_service/paios容器需求.md §6.4).
+pub const FONT_RULES_PACKAGE: &str = "ext-core";
+pub const FONT_PACKAGE: &str = "ext-fonts";
+
+/// What a font-dependent function's output follows: the host's fonts (`env/fonts`, from the probe), and what the extension
+/// packages give fontconfig, read now and not by the probe, so that a font downloaded a moment ago changes the cache key
+/// without a restart: the version of ext-core (`env/ext-core`) and the font package's online items that are ready
+/// (`env/ext-fonts`).
+pub fn insert_font_fingerprint(env: &ToolEnvironment, fingerprint: &mut BTreeMap<String, String>) {
+    fingerprint.insert("env/fonts".to_string(), env.fonts.clone().unwrap_or_else(|| "unknown".to_string()));
+    let root = env.ext_tools.as_deref();
+    fingerprint.insert(
+        "env/ext-core".to_string(),
+        root.and_then(|root| active_package(root, FONT_RULES_PACKAGE)).unwrap_or_else(|| "none".to_string()),
+    );
+    let fonts = root.map(ready_fonts).unwrap_or_default();
+    fingerprint.insert("env/ext-fonts".to_string(), if fonts.is_empty() { "none".to_string() } else { fonts.join(",") });
+}
+
+/// `<version> <digest>` of an active package, from the root's `current.json`.
+fn active_package(root: &Path, id: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(root.join("current.json")).ok()?;
+    let current: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let package = current.get("packages")?.get(id)?;
+    let version = package.get("version")?.as_str()?;
+    let digest = package.get("digest").and_then(serde_json::Value::as_str).unwrap_or("");
+    Some(format!("{version} {digest}").trim_end().to_string())
+}
+
+/// `<id>@<version>` of every online item of the font package that is in place, sorted.
+fn ready_fonts(root: &Path) -> Vec<String> {
+    let online = root.join("online");
+    let mut fonts: Vec<String> = std::fs::read_dir(&online)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                return None;
+            }
+            let record: ExtToolsOnlineRecord = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+            (record.package == FONT_PACKAGE && record.state == ExtToolsOnlineState::Ready && online.join(&record.id).is_dir())
+                .then(|| format!("{}@{}", record.id, record.version))
+        })
+        .collect();
+    fonts.sort();
+    fonts
 }
 
 pub struct MediaEnvironment(RwLock<Arc<ToolEnvironment>>);
@@ -324,6 +384,69 @@ mod tests {
         env.fonts = Some("set-b".to_string());
         assert_ne!(first, ToPdf.fingerprint(&env));
         assert!(first.contains_key("cmd/soffice") && first.contains_key("cmd/pdfinfo"));
+    }
+
+    /// A tools root that a node's reconciler is changing while Workflow runs: the fingerprint reads it on every call.
+    #[test]
+    fn font_fingerprints_follow_the_extension_packages_without_a_new_probe() {
+        use crate::functions::media::document::ToPdf;
+        use crate::functions::media::page::{PageSnapshot, PageToPdf};
+        use crate::native::NativeFunction;
+
+        fn record(root: &Path, id: &str, package: &str, version: &str, state: &str) {
+            let raw = serde_json::json!({
+                "schema": "buckyos.ext_tools.online/1", "id": id, "version": version, "package": package,
+                "platform": "linux-x86_64", "sha256": "ab".repeat(32), "state": state, "size_bytes": 1,
+                "downloaded_bytes": 1, "error": null, "updated_at_ms": 1,
+            });
+            std::fs::write(root.join("online").join(format!("{id}.json")), raw.to_string()).unwrap();
+        }
+        fn current(root: &Path, version: &str) {
+            let raw = serde_json::json!({"packages": {"ext-core": {"version": version, "digest": format!("sha256:{version}")}}});
+            std::fs::write(root.join("current.json"), raw.to_string()).unwrap();
+        }
+
+        let mut env = ToolEnvironment::default();
+        env.fonts = Some("host".to_string());
+        let unknown = PageToPdf.fingerprint(&env);
+        assert_eq!(unknown["env/ext-core"], "none");
+        assert_eq!(unknown["env/ext-fonts"], "none");
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("online")).unwrap();
+        env.ext_tools = Some(root.to_path_buf());
+        let empty = PageToPdf.fingerprint(&env);
+        assert_eq!(empty, unknown);
+
+        current(root, "1.3.3");
+        let core = PageToPdf.fingerprint(&env);
+        assert_eq!(core["env/ext-core"], "1.3.3 sha256:1.3.3");
+        assert_eq!(core["env/fonts"], "host");
+
+        record(root, "chromium", "ext-core", "159", "ready");
+        std::fs::create_dir_all(root.join("online/chromium")).unwrap();
+        record(root, "noto-sans-thai", "ext-fonts", "2.002", "downloading");
+        record(root, "inter", "ext-fonts", "4.1", "failed");
+        record(root, "jetbrains-mono", "ext-fonts", "2.304", "ready");
+        assert_eq!(PageToPdf.fingerprint(&env), core, "not ready, not a font, or ready without its directory: nothing new");
+
+        std::fs::create_dir_all(root.join("online/noto-sans-thai")).unwrap();
+        record(root, "noto-sans-thai", "ext-fonts", "2.002", "ready");
+        let thai = PageToPdf.fingerprint(&env);
+        assert_eq!(thai["env/ext-fonts"], "noto-sans-thai@2.002");
+        assert_eq!(thai, PageSnapshot.fingerprint(&env));
+        assert_eq!(ToPdf.fingerprint(&env)["env/ext-fonts"], "noto-sans-thai@2.002");
+
+        std::fs::create_dir_all(root.join("online/jetbrains-mono")).unwrap();
+        let both = PageToPdf.fingerprint(&env);
+        assert_eq!(both["env/ext-fonts"], "jetbrains-mono@2.304,noto-sans-thai@2.002");
+
+        record(root, "noto-sans-thai", "ext-fonts", "2.003", "ready");
+        assert_ne!(PageToPdf.fingerprint(&env), both, "another version of a font is another font set");
+
+        current(root, "1.3.4");
+        assert_ne!(PageToPdf.fingerprint(&env)["env/ext-core"], both["env/ext-core"]);
     }
 
     #[test]

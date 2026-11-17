@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:ext-fonts.buckyos",
+  "name": "ext-fonts",
+  "version": "1.0.0",
+  "owner": "did:bns:buckyos",
+  "author": "did:bns:buckyos",
+  "show_name": "BuckyOS fonts for printing",
+  "categories": [
+    "ext_tools"
+  ],
+  "permissions": [],
+  "selector_type": "single",
+  "service_config_tips": {}
+}

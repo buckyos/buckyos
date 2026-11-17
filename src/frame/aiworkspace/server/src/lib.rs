@@ -12,6 +12,7 @@ pub mod methods;
 pub mod obj_provider;
 pub mod pages;
 pub mod presence;
+pub mod print;
 pub mod session;
 pub mod show;
 pub mod source;
@@ -478,6 +479,8 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         ext::install(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if method == "ws.import" {
         import_package(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
+    } else if method == "print.package" {
+        print::package(&state, &params, caller.as_ref().expect("authenticated above")).await
     } else {
         let c = caller.clone().expect("authenticated above");
         let st = state.clone();

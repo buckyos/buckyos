@@ -1,0 +1,125 @@
+{
+  "schema": "buckyos.ext_tools/1",
+  "id": "ext-fonts",
+  "version": "1.0.0",
+  "requires": [],
+  "conflicts": [],
+  "online": [
+    {
+      "id": "noto-sans-thai",
+      "version": "2.002",
+      "desc": "Noto Sans Thai: Thai, sans-serif, with Latin; 9 weights in 4 widths",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by the Noto Project Authors (OFL.txt in the archive). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSansThai-v2.002/NotoSansThai-v2.002.zip", "sha256": "af889cc673fc714060ce5e4e088fbad32aa4c0571a19958efeaff128a22da485", "size_bytes": 4720990, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSansThai-v2.002/NotoSansThai-v2.002.zip", "sha256": "af889cc673fc714060ce5e4e088fbad32aa4c0571a19958efeaff128a22da485", "size_bytes": 4720990, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSansThai-v2.002/NotoSansThai-v2.002.zip", "sha256": "af889cc673fc714060ce5e4e088fbad32aa4c0571a19958efeaff128a22da485", "size_bytes": 4720990, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSansThai-v2.002/NotoSansThai-v2.002.zip", "sha256": "af889cc673fc714060ce5e4e088fbad32aa4c0571a19958efeaff128a22da485", "size_bytes": 4720990, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSansThai-v2.002/NotoSansThai-v2.002.zip", "sha256": "af889cc673fc714060ce5e4e088fbad32aa4c0571a19958efeaff128a22da485", "size_bytes": 4720990, "format": "zip"}
+      }
+    },
+    {
+      "id": "noto-serif-thai",
+      "version": "2.002",
+      "desc": "Noto Serif Thai: Thai, serif, with Latin; 9 weights in 4 widths",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by the Noto Project Authors (OFL.txt in the archive). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSerifThai-v2.002/NotoSerifThai-v2.002.zip", "sha256": "89e3c04bfc54d9a5dd0aec660bf974ad46df38385df7d9397c083482d515049a", "size_bytes": 5733486, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSerifThai-v2.002/NotoSerifThai-v2.002.zip", "sha256": "89e3c04bfc54d9a5dd0aec660bf974ad46df38385df7d9397c083482d515049a", "size_bytes": 5733486, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSerifThai-v2.002/NotoSerifThai-v2.002.zip", "sha256": "89e3c04bfc54d9a5dd0aec660bf974ad46df38385df7d9397c083482d515049a", "size_bytes": 5733486, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSerifThai-v2.002/NotoSerifThai-v2.002.zip", "sha256": "89e3c04bfc54d9a5dd0aec660bf974ad46df38385df7d9397c083482d515049a", "size_bytes": 5733486, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/notofonts/thai/releases/download/NotoSerifThai-v2.002/NotoSerifThai-v2.002.zip", "sha256": "89e3c04bfc54d9a5dd0aec660bf974ad46df38385df7d9397c083482d515049a", "size_bytes": 5733486, "format": "zip"}
+      }
+    },
+    {
+      "id": "noto-sans-devanagari",
+      "version": "2.007",
+      "desc": "Noto Sans Devanagari: Hindi, Marathi, Nepali and the other Devanagari languages, sans-serif, with Latin; 9 weights in 4 widths",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by the Noto Project Authors (OFL.txt in the archive). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSansDevanagari-v2.007/NotoSansDevanagari-v2.007.zip", "sha256": "820c7da45b1e63562cb41c0a8cac5d9a4202312043a3a040ed1325857ef469b1", "size_bytes": 18449254, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSansDevanagari-v2.007/NotoSansDevanagari-v2.007.zip", "sha256": "820c7da45b1e63562cb41c0a8cac5d9a4202312043a3a040ed1325857ef469b1", "size_bytes": 18449254, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSansDevanagari-v2.007/NotoSansDevanagari-v2.007.zip", "sha256": "820c7da45b1e63562cb41c0a8cac5d9a4202312043a3a040ed1325857ef469b1", "size_bytes": 18449254, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSansDevanagari-v2.007/NotoSansDevanagari-v2.007.zip", "sha256": "820c7da45b1e63562cb41c0a8cac5d9a4202312043a3a040ed1325857ef469b1", "size_bytes": 18449254, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSansDevanagari-v2.007/NotoSansDevanagari-v2.007.zip", "sha256": "820c7da45b1e63562cb41c0a8cac5d9a4202312043a3a040ed1325857ef469b1", "size_bytes": 18449254, "format": "zip"}
+      }
+    },
+    {
+      "id": "noto-serif-devanagari",
+      "version": "2.006",
+      "desc": "Noto Serif Devanagari: Hindi, Marathi, Nepali and the other Devanagari languages, serif, with Latin; 9 weights in 4 widths",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by the Noto Project Authors (OFL.txt in the archive). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSerifDevanagari-v2.006/NotoSerifDevanagari-v2.006.zip", "sha256": "b823456dfaf6ef8b438eeb906da42effe01927add1e3416ecc86c99c5f1cf098", "size_bytes": 22142117, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSerifDevanagari-v2.006/NotoSerifDevanagari-v2.006.zip", "sha256": "b823456dfaf6ef8b438eeb906da42effe01927add1e3416ecc86c99c5f1cf098", "size_bytes": 22142117, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSerifDevanagari-v2.006/NotoSerifDevanagari-v2.006.zip", "sha256": "b823456dfaf6ef8b438eeb906da42effe01927add1e3416ecc86c99c5f1cf098", "size_bytes": 22142117, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSerifDevanagari-v2.006/NotoSerifDevanagari-v2.006.zip", "sha256": "b823456dfaf6ef8b438eeb906da42effe01927add1e3416ecc86c99c5f1cf098", "size_bytes": 22142117, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/notofonts/devanagari/releases/download/NotoSerifDevanagari-v2.006/NotoSerifDevanagari-v2.006.zip", "sha256": "b823456dfaf6ef8b438eeb906da42effe01927add1e3416ecc86c99c5f1cf098", "size_bytes": 22142117, "format": "zip"}
+      }
+    },
+    {
+      "id": "inter",
+      "version": "4.1",
+      "desc": "Inter: Latin, Greek and Cyrillic, sans-serif for screens and documents; 9 weights with italics, and Inter Display",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by the Inter Project Authors (LICENSE.txt in the archive). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip", "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e", "size_bytes": 33707794, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip", "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e", "size_bytes": 33707794, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip", "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e", "size_bytes": 33707794, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip", "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e", "size_bytes": 33707794, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip", "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e", "size_bytes": 33707794, "format": "zip"}
+      }
+    },
+    {
+      "id": "source-sans-3",
+      "version": "3.052",
+      "desc": "Source Sans 3: Latin, Greek and Cyrillic, sans-serif; 7 weights with italics",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by Adobe (Reserved Font Name 'Source'; the archive has no license file, the text is LICENSE.md of github.com/adobe-fonts/source-sans at 3.052R and the fonts name it). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/adobe-fonts/source-sans/releases/download/3.052R/TTF-source-sans-3.052R.zip", "sha256": "1b0dd1ec44b39f1dd98bbd153a1a3815f083639874ddee02c842bd601bad3d21", "size_bytes": 2478353, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/adobe-fonts/source-sans/releases/download/3.052R/TTF-source-sans-3.052R.zip", "sha256": "1b0dd1ec44b39f1dd98bbd153a1a3815f083639874ddee02c842bd601bad3d21", "size_bytes": 2478353, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/adobe-fonts/source-sans/releases/download/3.052R/TTF-source-sans-3.052R.zip", "sha256": "1b0dd1ec44b39f1dd98bbd153a1a3815f083639874ddee02c842bd601bad3d21", "size_bytes": 2478353, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/adobe-fonts/source-sans/releases/download/3.052R/TTF-source-sans-3.052R.zip", "sha256": "1b0dd1ec44b39f1dd98bbd153a1a3815f083639874ddee02c842bd601bad3d21", "size_bytes": 2478353, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/adobe-fonts/source-sans/releases/download/3.052R/TTF-source-sans-3.052R.zip", "sha256": "1b0dd1ec44b39f1dd98bbd153a1a3815f083639874ddee02c842bd601bad3d21", "size_bytes": 2478353, "format": "zip"}
+      }
+    },
+    {
+      "id": "source-serif-4",
+      "version": "4.005",
+      "desc": "Source Serif 4: Latin, Greek and Cyrillic, serif; 6 weights with italics in 5 optical sizes (Caption, SmText, Subhead, Display)",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by Adobe (Reserved Font Name 'Source'; source-serif-4.005_Desktop/LICENSE.md in the archive). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip", "sha256": "549fdb8f9a682bd06944298621404969f6de77c2e422ff3b8244a1dcd6a0c425", "size_bytes": 17634695, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip", "sha256": "549fdb8f9a682bd06944298621404969f6de77c2e422ff3b8244a1dcd6a0c425", "size_bytes": 17634695, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip", "sha256": "549fdb8f9a682bd06944298621404969f6de77c2e422ff3b8244a1dcd6a0c425", "size_bytes": 17634695, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip", "sha256": "549fdb8f9a682bd06944298621404969f6de77c2e422ff3b8244a1dcd6a0c425", "size_bytes": 17634695, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip", "sha256": "549fdb8f9a682bd06944298621404969f6de77c2e422ff3b8244a1dcd6a0c425", "size_bytes": 17634695, "format": "zip"}
+      }
+    },
+    {
+      "id": "jetbrains-mono",
+      "version": "2.304",
+      "desc": "JetBrains Mono: Latin, Greek and Cyrillic, monospace for code; 8 weights with italics, and JetBrains Mono NL without ligatures",
+      "license": "SIL Open Font License 1.1, which allows embedding the font in a PDF; released on GitHub by the JetBrains Mono Project Authors (OFL.txt in the archive). This package neither carries nor redistributes the font: the node downloads it from that release.",
+      "auto": false,
+      "platforms": {
+        "linux-x86_64": {"url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip", "sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf", "size_bytes": 5622857, "format": "zip"},
+        "linux-aarch64": {"url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip", "sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf", "size_bytes": 5622857, "format": "zip"},
+        "darwin-arm64": {"url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip", "sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf", "size_bytes": 5622857, "format": "zip"},
+        "darwin-x86_64": {"url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip", "sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf", "size_bytes": 5622857, "format": "zip"},
+        "windows-x86_64": {"url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip", "sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf", "size_bytes": 5622857, "format": "zip"}
+      }
+    }
+  ],
+  "provides": [],
+  "platforms": ["linux-x86_64", "linux-aarch64", "darwin-arm64", "darwin-x86_64", "windows-x86_64"],
+  "license": "The package's own files (store/ext-fonts: fonts.conf, NOTICE.md) are AGPL-3.0-only. It carries no font: each is an online item the node downloads from its upstream, under the font's own license (see each item)",
+  "desc": "Fonts for printing (export to PDF) beyond the default fonts of ext-core: Thai and Devanagari in sans-serif and serif, and Latin text and code faces. Each font family is an online item: nothing is downloaded until an administrator asks for it, in Settings > Extension tools or from the print dialog"
+}

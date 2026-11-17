@@ -10,6 +10,7 @@
 import { isControlKind, isTextView } from '@controls/contract'
 import { num, type StoredPlacement } from '@controls/placement'
 import { branchColors } from '@controls/edges'
+import { bandOf, PDF_FRAME, type FrameBand } from '@controls/pdfframe'
 import { placeControl, type PlacedControl, type PlacedNode } from '@controls/solve'
 import type { Grow } from '@controls/tree'
 import type { EntityEnvelope, Placement } from '../../api/types'
@@ -63,6 +64,9 @@ export interface Laid { entity: EntityEnvelope; rect: Rect; rotation: number; bo
   node?: ControlNode
   /** A container kind this client does not know: drawn as a group (R12). */
   unknownKind?: string
+  /** A band of a PDF Frame (打印 TODO §3.3): a group the frame places, its header's or footer's Blocks inside. It is not
+   * pressed or picked itself (the frame is), but Blocks dropped on it join it like a group's. */
+  band?: FrameBand
   /** Where this Block's children are placed from, when not `rect`'s top-left (a control's origin). */
   origin?: { x: number; y: number } }
 
@@ -113,7 +117,8 @@ export function layoutSurface(outline: OutlineModel, surfaceId: string, forms: (
           color: colorOf(placed.controls.get(p.control)!, child.entity_id) }
         if (placed.controls.has(child.entity_id)) { control(child, placed, nodeDepth, parent, locked, { node }); continue }
         const rect = { x: p.x, y: p.y, w: p.w, h: p.h }
-        const laid = add(child, rect, 0, nodeDepth, parent, locked, { node })
+        const band = entity.kind === PDF_FRAME && parent === entity.entity_id ? bandOf(child) : null
+        const laid = add(child, rect, 0, nodeDepth, parent, locked, band ? { node, band } : { node })
         if (child.type_id === 'buckyos.container') walk(child.entity_id, { x: rect.x, y: rect.y }, nodeDepth + 1, laid.locked)
         else if (!p.collapsed) nodes(child.entity_id, nodeDepth + 1, laid.locked)
       }
@@ -199,11 +204,11 @@ export function movedPlacement(laid: Map<string, Laid>, l: Laid, dx: number, dy:
 
 /** The group an object centred on `p` belongs in (draw.io 导入 TODO §2.2): the top-most group under it that is not
  * locked and not `excluded` (the moving objects themselves), else the Surface. A control and what it lays out are
- * never dropped into (R9: its Blocks come by copy and paste). */
+ * never dropped into (R9: its Blocks come by copy and paste), except a PDF Frame's bands (its header and footer). */
 export function groupAt(laid: Map<string, Laid>, p: { x: number; y: number }, surfaceId: string, excluded: ReadonlySet<string> = new Set()): string {
   let best: Laid | null = null
   for (const g of laid.values()) {
-    if (!g.isGroup || g.control || g.node || excluded.has(g.entity.entity_id) || g.locked) continue
+    if (!g.isGroup || g.control || (g.node && !g.band) || excluded.has(g.entity.entity_id) || g.locked) continue
     if (p.x < g.rect.x || p.x > g.rect.x + g.rect.w || p.y < g.rect.y || p.y > g.rect.y + g.rect.h) continue
     if (!best || g.paint > best.paint) best = g
   }

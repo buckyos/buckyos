@@ -75,6 +75,10 @@ pub struct ToolEnvironment {
     /// Digest of the installed font set, when this host can list its fonts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fonts: Option<String>,
+    /// The extension packages' tools root (`$BUCKYOS_ROOT/tools`). What its packages give fontconfig is read from here
+    /// whenever a fingerprint is taken, not by the probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext_tools: Option<PathBuf>,
     /// Language data tesseract has (`tesseract --list-langs`), sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ocr_langs: Vec<String>,
@@ -141,6 +145,7 @@ impl ToolEnvironment {
             "tools": self.tools,
             "missing": self.missing,
             "searched": self.searched,
+            "ext_tools": self.ext_tools,
             "ocr_langs": self.ocr_langs,
         })
     }

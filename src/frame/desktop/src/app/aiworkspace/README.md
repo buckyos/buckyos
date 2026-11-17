@@ -26,6 +26,9 @@ links.ts                  the only definition of the addresses: `https://aiws-<i
 launch.ts                 going to a workspace's origin signed in (Control Panel `auth.prepare_app_launch { service_id: 'aiworkspace' }`)
 ui/controls/              Block-controls (the mind map): registry, folds, node measuring — see "Block-controls" below
 ui/extensions/            HTML / declarative hosts, and extension controls (dialog, instance form, home sources, define as control) — see "Extension controls"
+ui/print/                 导出可打印 PDF: the entry conditions, the dialog, generating (print.package → Workflow media.page) and saving, the
+                          workspace's print fonts — see "Printing" below
+print/renderer/           the print renderer the print package carries (aiws-print/ of the build) — see "Printing" below
 i18n.ts, useAiwsText.ts   the app's text in the Desktop's language — see "Language" below
 api/
   transport.ts            the only module that knows how to reach the service (zone path / dev override)
@@ -789,3 +792,43 @@ presentation/
   a show), `mobile.spec.ts` UI-M03 (the guide on a phone), `probe.spec.ts` P3-19 (`test-results/aiworkspace-probe-show.json`).
   The stage exposes `__aiwsTestHooks.stage` (camera, transitions with timings) under the dev override;
   `AIWS_SHOW_LEASE_MS` shortens the show lease of the e2e backend.
+
+## Printing (导出可打印 PDF, notepads/aiws-print-pdf-export-todo.md)
+
+A canvas is printed by exporting it as a PDF file, saved into the Zone (or downloaded); there is no printer dialog and no
+`window.print()`. The entry is the canvas menu's “导出可打印 PDF…” (`surface.export-pdf`, `ui/framework/builtin.ts`, also in
+the phone's menu; `export` on the canvas, online). A flow canvas goes straight to the dialog; a free canvas needs a
+presentation path through it (`ui/print/request.ts` `pathsThrough`; guide paths do not count), else a notice offers the
+path editor.
+
+- **Dialog** (`ui/print/PrintDialog.tsx`, mounted by `FrameworkHost` as `PrintHost`; full screen on a phone): the path
+  (several), the page size (`@print/page.ts`: A4, A5, A3, Letter, 16:9, 4:3, portrait / landscape; `defaultPaper`), a PDF
+  Frame (`ui/controls/pdfframe/api.tsx` `listPdfFrames`, those of another shape listed but not selectable, `frameFits`),
+  missing fonts, the page count (a free canvas: its playable steps, those on other canvases noted) and the steps that are
+  skipped. After printing it shows the PDF's page count and the service's issues (counted, unnamed).
+- **Generating** (`ui/print/generate.ts` `makePrintPdf`): `print.package` (the service builds the print package and hands
+  it to the caller), then the system definition `media.page` run as the caller (`buckyos.getWorkflowClient()`; with the
+  dev override, kRPC to this origin's `/kapi/workflow`): `paper` `<w>x<h>mm`, `margin_mm` 0, `wait_ready`
+  `window.__AIWS_PRINT_READY__ === true`. The place is chosen first (`useSaveToZone`), the PDF made in its `grant()` and
+  committed there by object id; “下载到本机” reads the PDF from NDM. Cancelling cancels the run; nothing is written on
+  failure. A node without Chromium fails the run with `tools_missing`: an administrator downloads it from the dialog.
+- **Fonts** (`ui/print/PrintFontsDialog.tsx`, “工作区 ▸ 打印字体…”, `manage`): root `config.fonts` maps `sans`, `serif`,
+  `mono` to a family of `@print/fonts.ts` (ext-core's defaults, or the font package `ext-fonts`). The dialog checks the
+  mapped families against the `ext-fonts` online items ready on the nodes (`ext_tools.status`, administrators only; others
+  read “cannot check”) and points to Settings › Extension tools; printing goes on with fallback fonts.
+- **Renderer** (`print/renderer/`, built by the `aiwsPrintRenderer()` plugin of `vite.config.ts` into `dist/aiws-print/`:
+  `index.html`, `print.css` and one classic script `print.js` with both WASM modules inlined, since the package is opened
+  over `file://`, where module scripts and fetches of files are refused). It reads `window.__AIWS_PRINT__` (`data.js` of the
+  package, `@print/package.ts`), builds a read-only Workspace from its rows in the WASM `Replica` (`PrintSession`: no SQL,
+  no writes, no runs) and renders the existing Blocks in the canvas mode `print` (`modePolicy`: nothing selects, edits,
+  writes or runs; `RenderHost` mounts everything at full detail). A free canvas prints one page per playable step of the
+  path (`resolveSteps`, `playable`, `fitStep`), as on stage. A flow canvas is rendered once at the content width, measured
+  (breaks between Blocks, paragraphs, lines and table rows; headings kept with what follows) and paginated by
+  `@print/paginate.ts`; a table prints all its rows (`PrintTable`), its header repeated on every page. A PDF Frame draws
+  the header and footer of every page (`PdfFrameDecoration`, `PageContextValue`), its instance is never printed. HTML
+  extension Blocks run with a read-only bridge and fall back to their snapshot. Pages are `contain: strict` (without it
+  Chromium shrinks the document when a Block reaches past a page). `window.__AIWS_PRINT_READY__` is set when the pages
+  are laid out (45 s at most); a package or canvas that cannot be read leaves it unset, so the run fails.
+- **Tests**: `tests/aiworkspace/print.spec.ts` (PR-01…07: the dialog and the flow, `print.package` and Workflow mocked),
+  `pdf-frame.spec.ts` (PF01, PF02); the pagination and page model in `../aiworkspace/print` (`deno test -A`); the renderer
+  was checked with `page-render` on packages of `cargo test -p aiworkspace-store --test print sample_packages -- --ignored`.
