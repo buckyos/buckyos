@@ -182,6 +182,7 @@ export type PreviewRendererType =
   | 'video'
   | 'pdf'
   | 'sheet'
+  | 'diagram'
 
 /** §9.4 success payload of a Pipeline (or the Direct path's synthesized one). */
 export interface PreviewResult {

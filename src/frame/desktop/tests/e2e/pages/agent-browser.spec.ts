@@ -436,11 +436,9 @@ test('a file for the page comes from the Zone or this device; a download is save
   await note.getByTestId('ab-download-dismiss').click()
   await expect(note).toHaveCount(0)
 
-  // A permission the service refused is only announced.
+  // A permission is the browser's to ask for: the App is not asked.
   await press(page, 'location')
-  await expect(page.getByTestId('ab-permission')).toHaveText(/example\.com asked for your location\. The request was refused\./)
-  await page.getByTestId('ab-permission-dismiss').click()
-  await expect(page.getByTestId('ab-permission')).toHaveCount(0)
+  await expect(page.getByTestId('ab-notes')).toHaveCount(0)
 })
 
 test('settings: clearing the sign-ins asks first; the desktop layout is scaled to the window', async ({ page }) => {

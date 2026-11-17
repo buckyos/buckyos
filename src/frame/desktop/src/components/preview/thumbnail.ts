@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { readProbe } from './io'
+import { readAll, readProbe } from './io'
 import { classifyMedia, decideDirect, ensureRuntimeProfile, type MediaClassification } from './mediaTypes'
 import { ensurePreviewProvider } from './provider'
 import { refIdentity } from './session'
@@ -41,6 +41,7 @@ const CAPTURE_TIMEOUT_MS = 20_000
 const CAPTURE_CONCURRENCY = 2
 const CACHE_MAX = 96
 const CAPTURE_MAX_EDGE = 640
+const DIAGRAM_THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024
 
 interface CacheEntry {
   promise: Promise<PreviewThumbnail>
@@ -194,6 +195,14 @@ async function buildThumbnail(
       contentMediaType: classification.mediaType,
       via: 'direct',
     }
+  }
+
+  if (renderer === 'diagram' && direct.ok) {
+    if (resolved.size !== undefined && resolved.size > DIAGRAM_THUMBNAIL_MAX_BYTES) {
+      throw new PreviewError('UNSUPPORTED', 'The diagram is too large for a thumbnail', { detail: contentLabel(classification) })
+    }
+    const drawn = await runCapture(() => drawDiagramPage(resolved.readRef, request, signal, own), signal)
+    return { ...drawn, contentRenderer: renderer, contentMediaType: classification.mediaType, via: 'runtime-capture' }
   }
 
   let pipelineError: unknown = null
@@ -395,6 +404,28 @@ async function captureVideoFrame(
     video.load()
     if (temporaryUrl) URL.revokeObjectURL(temporaryUrl)
   }
+}
+
+async function drawDiagramPage(
+  readRef: PreviewReadRef,
+  request: PreviewThumbnailRequest,
+  signal: AbortSignal,
+  own: (url: string) => void,
+): Promise<Omit<PreviewThumbnail, 'contentRenderer' | 'contentMediaType' | 'via'>> {
+  const blob = await readAll(readRef, DIAGRAM_THUMBNAIL_MAX_BYTES, signal)
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  throwIfAborted(signal)
+  const { openDiagram, renderDiagramPage } = await import('./drawioSvg')
+  const page = await openDiagram(bytes).then(
+    (file) => file.pages[0],
+    () => undefined,
+  )
+  if (!page) throw new PreviewError('UNSUPPORTED', 'The file has no draw.io page')
+  const rendered = await renderDiagramPage(page, { aspect: request.width > 0 && request.height > 0 ? request.width / request.height : undefined })
+  throwIfAborted(signal)
+  const url = URL.createObjectURL(new Blob([rendered.svg], { type: 'image/svg+xml' }))
+  own(url)
+  return { url, mediaType: 'image/svg+xml' }
 }
 
 export type PreviewThumbnailState =

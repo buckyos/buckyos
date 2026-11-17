@@ -1,5 +1,6 @@
+import { deflateRawSync } from 'node:zlib'
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { pickLocal } from '../fixtures/selectDialog'
+import { pickLocal, putZoneFile } from '../fixtures/selectDialog'
 
 /**
  * Preview formats (preview-more-formats TODO, Phase A) on the mock runtime: spreadsheets in the sheet renderer
@@ -225,6 +226,61 @@ test.describe('sheet renderer', () => {
     await expect(preview).toHaveAttribute('data-status', 'ready', { timeout: 20_000 })
     await expect(preview).toHaveAttribute('data-renderer', 'html')
     await expect(preview).toHaveAttribute('data-via', 'pipeline')
+  })
+})
+
+test.describe('diagram renderer', () => {
+  const drawn = (win: Locator) => win.getByTestId('content-preview-image').evaluate((img: HTMLImageElement) => (img.complete ? img.naturalWidth : 0))
+
+  test('a draw.io file is drawn page by page and its XML can be read', async ({ page }) => {
+    const win = await openSample(page, 'order-flow.drawio')
+    const preview = win.getByTestId('content-preview')
+    await expect(preview).toHaveAttribute('data-renderer', 'diagram', { timeout: 15_000 })
+    await expect(preview).toHaveAttribute('data-status', 'ready')
+    const diagram = win.getByTestId('content-preview-diagram')
+    await expect(diagram).toHaveAttribute('data-page-count', '2')
+    await expect.poll(() => drawn(win)).toBeGreaterThan(600)
+    const tabs = win.getByTestId('content-preview-diagram-tab')
+    await expect(tabs).toHaveText(['Order flow', 'Notes'])
+    await tabs.nth(1).click()
+    await expect(diagram).toHaveAttribute('data-page', '1')
+    await expect.poll(() => drawn(win)).toBeGreaterThan(400)
+    await expect(preview).toHaveAttribute('data-status', 'ready')
+    await win.getByTestId('content-preview-diagram-text-toggle').click()
+    await expect(win.getByTestId('content-preview-text')).toContainText('<mxfile host="mock">')
+    await win.getByTestId('content-preview-diagram-text-toggle').click()
+    await expect.poll(() => drawn(win)).toBeGreaterThan(400)
+  })
+
+  test('an XML file holding a compressed draw.io page is drawn', async ({ page }) => {
+    const model = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" value="Hello" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="160" height="60" as="geometry"/></mxCell></root></mxGraphModel>'
+    const packed = deflateRawSync(Buffer.from(encodeURIComponent(model), 'latin1')).toString('base64')
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="Electron"><diagram id="p" name="Only">${packed}</diagram></mxfile>`
+    const win = await openLocal(page, { name: 'export.xml', mimeType: 'text/xml', buffer: Buffer.from(xml) })
+    await expect(win.getByTestId('content-preview')).toHaveAttribute('data-renderer', 'diagram', { timeout: 15_000 })
+    await expect.poll(() => drawn(win)).toBeGreaterThan(160)
+    await expect(win.getByTestId('content-preview-diagram-tab')).toHaveCount(1)
+  })
+
+  test('Files shows the first page of a draw.io file as its thumbnail', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-files').click()
+    const win = page.getByTestId('window-files')
+    await expect(win.getByTestId('filebrowser')).toBeVisible()
+    await putZoneFile(page, '/home/Documents/flow.drawio', Buffer.from('<mxfile/>'), '')
+    await win.locator('[data-item-key]').filter({ hasText: 'Documents' }).first().dblclick()
+    await win.getByRole('button', { name: 'View mode' }).click()
+    await page.getByRole('menuitem', { name: 'Icon view' }).click()
+    const thumb = win.getByTestId('icon-grid').locator('[data-item-key]').filter({ hasText: 'flow.drawio' })
+    await expect(thumb.locator('[data-thumb="image"]')).toBeVisible({ timeout: 15_000 })
+    await expect.poll(() => thumb.locator('img').first().evaluate((img: HTMLImageElement) => (img.complete ? img.naturalWidth : 0))).toBeGreaterThan(0)
+    await expect(thumb.getByTestId('thumb-type')).toBeVisible()
+  })
+
+  test('a .drawio file that is not a diagram is reported as damaged', async ({ page }) => {
+    const win = await openLocal(page, { name: 'broken.drawio', mimeType: '', buffer: Buffer.from('<mxfile><diagram name="x">not base64 at all</diagram>') })
+    await expect(win.getByTestId('content-preview-error')).toHaveAttribute('data-error-kind', 'corrupted', { timeout: 15_000 })
   })
 })
 

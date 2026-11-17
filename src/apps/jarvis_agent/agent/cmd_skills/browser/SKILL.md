@@ -56,7 +56,8 @@ agent-browser run fill.mjs --arg url=https://www.example.com/form --arg name="Li
 - Return what the next step needs: where you ended up, what the site answered, what is still missing. Keep scripts in the session's working directory.
 - The viewport and the window are the user's (sized to their phone or the desktop view they chose): never change them, and never change what the browser says it is (user agent, device emulation, `navigator` values): sites refuse sign-ins from a browser that pretends.
 - A dialog (alert, confirm) the script does not handle is dismissed: `page.on('dialog', …)` when its answer matters.
-- A permission the page asks for (location, camera, notifications, …) shows as the browser's own prompt, which a script cannot answer and must not get around: hand over (`--reason other`) when the errand needs it.
+- A permission the page asks for (location, camera, notifications, …) is the browser's own to ask: with a display it shows its prompt, which a script cannot answer and must not get around — hand over (`--reason other`) when the errand needs it; a headless one (on macOS and Windows) refuses it, so the errand cannot have it there.
+- A passkey (a site's "use your passkey" step) is not the browser's to give: a headless browser fails the request at once, one with a display shows its own passkey dialog, which only the user answers. Choose the site's other way to sign in ("Try another way"), or hand over.
 - Exit code 1: what the script did before it failed has happened. `snapshot` again before you retry.
 
 #### Looking at a page

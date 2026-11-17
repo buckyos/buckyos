@@ -328,7 +328,7 @@ export class AgentBrowserStore {
       onStatus: (status, failure, attempts) => {
         if (this.channel !== channel) return
         // A new connection is told again what the pages are waiting for; the notices it is not told again stay.
-        const requests = status === 'open' ? this.snapshot.requests.filter((item) => item.kind === 'download' || item.kind === 'permission') : this.snapshot.requests
+        const requests = status === 'open' ? this.snapshot.requests.filter((item) => item.kind === 'download') : this.snapshot.requests
         this.update({ screenStatus: status, screenFailure: failure, screenAttempts: attempts, requests })
         if (status === 'failed' && failure?.code === 'browser_unavailable') void this.refreshStatus()
       },
@@ -466,7 +466,7 @@ export class AgentBrowserStore {
     this.removeRequest(requestId)
   }
 
-  /** A notice-only request (download, permission) the user has seen. */
+  /** A notice-only request (a download) the user has seen. */
   dismissRequest(requestId: string) {
     this.removeRequest(requestId)
   }

@@ -128,4 +128,21 @@ equal([pdf.rendererType, pdf.direct, decideDirect(pdf, 9, chromium).ok], ['pdf',
 equal(decideDirect(pdf, 9, { ...chromium, pdfInline: false }), { ok: true }, 'a PDF is Direct without a built-in viewer too: pdf.js draws it')
 equal(classifyMedia({ name: 'bundle.zip', magic: bytes('office.docx') }).direct, false, 'a ZIP has no renderer')
 
+const mxfile = new TextEncoder().encode('<mxfile host="app.diagrams.net"><diagram id="a" name="Page-1">')
+const declared = new TextEncoder().encode('<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="Electron">')
+const model = new TextEncoder().encode('<mxGraphModel dx="800"><root>')
+for (const [input, what] of [
+  [{ name: 'flow.drawio', contentType: 'application/octet-stream', magic: mxfile }, 'a .drawio file'],
+  [{ name: 'flow.drawio', contentType: 'application/xml', magic: declared }, 'a .drawio file with an XML declaration served as XML'],
+  [{ name: 'flow.dio', hints: ['application/xml'] }, 'a .dio file by name'],
+  [{ name: 'export.xml', contentType: 'text/xml', magic: declared }, 'an XML file that is a draw.io file'],
+  [{ name: 'clip.txt', contentType: 'text/plain', magic: model }, 'a bare model'],
+] as const) {
+  const c = classifyMedia(input)
+  equal([c.mediaType, c.rendererType, c.direct, decideDirect(c, 1024, chromium).ok], ['application/vnd.jgraph.mxfile', 'diagram', true, true], what)
+}
+equal(classifyMedia({ name: 'data.xml', contentType: 'application/xml', magic: new TextEncoder().encode('<?xml version="1.0"?><root/>') }).rendererType, 'text', 'other XML stays text')
+equal(classifyMedia({ name: 'flow.drawio.svg', magic: new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" content="&lt;mxfile">') }).rendererType, 'svg', 'a .drawio.svg is an SVG')
+equal(decideDirect(classifyMedia({ name: 'huge.drawio' }), 33 * 1024 * 1024, chromium), { ok: false, reason: 'too-large' }, 'a diagram over 32 MiB is not read')
+
 console.log('preview media types: ok')

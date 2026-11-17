@@ -124,9 +124,4 @@
   };
   for (const type of ['focusin', 'focusout']) document.addEventListener(type, () => setTimeout(report, 0), true);
   report();
-
-  // ---- permissions: the page asked for one (told by the page-world script; all are refused). Headless only.
-  if (!headed) for (const name of ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read', 'midi']) {
-    document.addEventListener('opendan-permission-' + name, () => say({ kind: 'permission', permission: name, origin: location.origin }), true);
-  }
 })();

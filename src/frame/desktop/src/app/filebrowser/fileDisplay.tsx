@@ -135,7 +135,7 @@ export function fileIcon(entry: { kind: FileEntry['kind']; name: string; mime?: 
 }
 
 /** Types whose thumbnail the Preview Pipeline may give (documents only from an embedded picture or a cached PDF). */
-const THUMB_DOCUMENTS = new Set(['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'pages', 'numbers', 'key', 'epub'])
+const THUMB_DOCUMENTS = new Set(['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'pages', 'numbers', 'key', 'epub', 'drawio', 'dio'])
 
 export function wantsThumbnail(entry: { kind: FileEntry['kind']; name: string; mime?: string }): boolean {
   const visual = fileVisual(entry)

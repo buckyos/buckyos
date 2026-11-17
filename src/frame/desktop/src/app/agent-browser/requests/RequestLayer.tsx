@@ -1,8 +1,7 @@
 /* What a page asks for outside itself (protocol §3.4), shown by the App: the options of a <select>, a JS dialog,
- * a file to upload (from the Zone first, this device second), a finished download to keep in the Zone, and the
- * notice of a permission the service refused. */
+ * a file to upload (from the Zone first, this device second), and a finished download to keep in the Zone. */
 
-import { Check, Download, FileUp, ShieldOff } from 'lucide-react'
+import { Check, Download, FileUp } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSaveToZone } from '../../../components/saveToZone'
 import { useI18n } from '../../../i18n/provider'
@@ -183,31 +182,17 @@ function DownloadNote({ request }: { request: RequestOf<'download'> }) {
   )
 }
 
-function PermissionNote({ request }: { request: RequestOf<'permission'> }) {
-  const store = useAgentBrowserStore()
-  const { t } = useI18n()
-  const what = t(`agentBrowser.permission.${request.permission}`, request.permission)
-  return (
-    <div className="ab-note" role="status" data-testid="ab-permission">
-      <ShieldOff size={18} aria-hidden />
-      <p className="ab-note-text">{t('agentBrowser.permission.denied', '{{origin}} asked for {{what}}. The request was refused.', { origin: hostOf(request.origin), what })}</p>
-      <button type="button" className="ab-button" data-testid="ab-permission-dismiss" onClick={() => store.dismissRequest(request.request_id)}>{t('agentBrowser.ok', 'OK')}</button>
-    </div>
-  )
-}
-
 export function RequestLayer() {
   const requests = useAgentBrowser((snapshot) => snapshot.requests)
   const dialog = requests.find((request) => request.kind === 'dialog')
   const select = requests.find((request) => request.kind === 'select')
-  const notes = requests.filter((request) => request.kind === 'file_chooser' || request.kind === 'download' || request.kind === 'permission')
+  const notes = requests.filter((request) => request.kind === 'file_chooser' || request.kind === 'download')
   return (
     <>
       {notes.length > 0 ? (
         <div className="ab-notes" data-testid="ab-notes">
           {notes.map((request) => request.kind === 'file_chooser' ? <FileChooser key={request.request_id} request={request} />
-            : request.kind === 'download' ? <DownloadNote key={request.request_id} request={request} />
-            : request.kind === 'permission' ? <PermissionNote key={request.request_id} request={request} /> : null)}
+            : request.kind === 'download' ? <DownloadNote key={request.request_id} request={request} /> : null)}
         </div>
       ) : null}
       {dialog ? <PageDialog key={dialog.request_id} request={dialog} /> : select ? <SelectPanel key={select.request_id} request={select} /> : null}

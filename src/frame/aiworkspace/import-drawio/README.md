@@ -1,7 +1,7 @@
 # import-drawio — draw.io import/export and shared canvas geometry
 
 Implements [notepads/done/aiworkspace-drawio-import-todo.md](../../../../notepads/done/aiworkspace-drawio-import-todo.md). It is a
-dependency-free TypeScript module: it uses no DOM and no packages, so the Desktop canvas (Vite alias `@drawio/*`)
+dependency-free TypeScript module: it uses no DOM and no packages, so the Desktop canvas and Preview's diagram renderer (Vite alias `@drawio/*`)
 and Deno (the aiws program host, tests and the build script) run the same code. Files import each other with
 explicit `.ts` extensions.
 

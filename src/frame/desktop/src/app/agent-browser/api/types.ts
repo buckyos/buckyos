@@ -102,7 +102,6 @@ export type ScreenRequest =
   | (RequestBase & { kind: 'dialog'; dialog_type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string; default_prompt?: string })
   | (RequestBase & { kind: 'file_chooser'; multiple: boolean; accept: string[] })
   | (RequestBase & { kind: 'download'; download_id: string; name: string; size: number; state: 'completed' | 'failed' })
-  | (RequestBase & { kind: 'permission'; permission: string; origin: string })
 
 export interface FrameMeta { seq: number; tab_id: string; width: number; height: number }
 export interface ScreenFrame extends FrameMeta { data: ArrayBuffer }

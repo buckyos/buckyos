@@ -215,7 +215,7 @@ async function openBrowser(page: Page) {
   await page.waitForTimeout(800)
   const picker = page.getByTestId('window-dialog').filter({ has: page.getByTestId('select-dialog') })
   if (await picker.count()) await picker.getByRole('button', { name: 'Close dialog' }).click()
-  for (const id of ['ab-file-cancel', 'ab-download-dismiss', 'ab-permission-dismiss']) {
+  for (const id of ['ab-file-cancel', 'ab-download-dismiss']) {
     while (await page.getByTestId(id).count()) { await page.getByTestId(id).first().click(); await page.waitForTimeout(200) }
   }
   if (await page.getByTestId('ab-dialog').count()) await page.getByTestId('ab-dialog-accept').click()
@@ -368,10 +368,10 @@ test('typing reaches the page: keys, whole text, an input method composing; sele
   await page.getByTestId('ab-dialog-accept').click()
   await expect.poll(() => state().prompt).toBe('张三')
 
+  // A permission: the headless browser refuses it itself, the App is not asked.
   await press(page, 'geo')
-  await expect(page.getByTestId('ab-permission')).toBeVisible()
   await expect.poll(() => state().geo).toBe('refused')
-  await page.getByTestId('ab-permission-dismiss').click()
+  await expect(page.getByTestId('ab-notes')).toHaveCount(0)
 
   const middle = (await page.getByTestId('ab-screen-canvas').boundingBox())!
   await page.mouse.move(middle.x + middle.width / 2, middle.y + middle.height / 2)

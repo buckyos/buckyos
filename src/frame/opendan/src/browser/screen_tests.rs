@@ -141,12 +141,14 @@ fn phone() -> Value {
     json!({ "width": 412, "height": 915, "mobile": true })
 }
 
-/// A viewport as `state` tells it: with its pixel ratio, 1 unless it names one.
+/// A viewport as `state` tells it: with its pixel ratio, 1 unless it names
+/// one, and never a phone's (the browser is not made one).
 fn told(viewport: &Value) -> Value {
     let mut told = viewport.clone();
     if told.get("pixel_ratio").is_none() {
         told["pixel_ratio"] = json!(1.0);
     }
+    told["mobile"] = json!(false);
     told
 }
 
@@ -360,7 +362,7 @@ async fn a_screen_is_admitted_as_the_owner_after_its_hello() {
     assert_eq!((state["group"]["controller"].clone(), state["group"]["tabs"].clone()), (json!("user"), json!([])));
     assert_eq!((state["active_tab_id"].clone(), state["url"].clone(), state["title"].clone(), state["loading"].clone()), (Value::Null, json!(""), json!(""), json!(false)));
     assert_eq!((state["can_go_back"].clone(), state["can_go_forward"].clone(), state["running"].clone()), (json!(false), json!(false), json!(true)));
-    assert_eq!(state["viewport"], json!({ "width": 320, "height": 915, "mobile": true, "pixel_ratio": 1.0 }), "sizes are kept within 320–2560");
+    assert_eq!(state["viewport"], json!({ "width": 320, "height": 915, "mobile": false, "pixel_ratio": 1.0 }), "sizes are kept within 320–2560; a phone's is a narrow window's");
 
     // It answers pings, and says what it does not understand without ending.
     client.say(json!({ "type": "ping" })).await;
@@ -411,7 +413,7 @@ async fn the_state_follows_the_group_and_its_current_tab() {
     let m = &b.module;
     let (mut c, _) = admitted(m, DEFAULT_GROUP, phone()).await;
 
-    // An address in a group without tabs opens one: blank first, made a phone, then sent there.
+    // An address in a group without tabs opens one: blank first, given the phone's size, then sent there.
     c.say(json!({ "type": "nav", "action": "url", "url": "a.example/" })).await;
     let state = c.state("the page is loaded", |s| s["url"] == "https://a.example/" && s["loading"] == false && s["title"] == "Title of https://a.example/" && s["can_go_back"] == true).await;
     let first = state["active_tab_id"].as_str().unwrap().to_string();
@@ -419,14 +421,14 @@ async fn the_state_follows_the_group_and_its_current_tab() {
     assert_eq!(b.sent("Target.createTarget"), vec![json!({ "url": "about:blank", "newWindow": true })]);
     let (_, session) = m.tab_session(&first).await.unwrap();
     let of_tab = |method: &str| b.fake.received(method).into_iter().filter(|(s, _)| s.as_deref() == Some(session.as_str())).map(|(_, p)| p).collect::<Vec<_>>();
-    assert!(of_tab("Emulation.setDeviceMetricsOverride").contains(&json!({ "width": 412, "height": 915, "deviceScaleFactor": 2, "mobile": true, "screenWidth": 412, "screenHeight": 915 })));
-    assert_eq!(of_tab("Emulation.setTouchEmulationEnabled")[0], json!({ "enabled": true, "maxTouchPoints": 5 }));
-    let agent = of_tab("Emulation.setUserAgentOverride")[0].clone();
-    assert_eq!(agent["userAgent"], "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/1.0.0.0 Mobile Safari/537.36");
-    assert_eq!(agent["userAgentMetadata"]["mobile"], true);
+    // A narrow window, not a phone: what the browser is stays its own.
+    assert!(of_tab("Emulation.setDeviceMetricsOverride").contains(&json!({ "width": 412, "height": 915, "deviceScaleFactor": 1, "mobile": false })));
+    assert!(of_tab("Emulation.setTouchEmulationEnabled").is_empty() && of_tab("Emulation.setUserAgentOverride").is_empty());
+    let windows = b.sent("Browser.setWindowBounds");
+    assert_eq!(windows.last().unwrap()["bounds"], json!({ "left": 0, "top": 0, "width": 1280, "height": 915 + process::TOOLBAR_HEIGHT }), "its window is a browser's as high as a page of that size; no window is that narrow");
     let commands: Vec<String> = b.fake.received_all().into_iter().filter(|(s, ..)| s.as_deref() == Some(session.as_str())).map(|(_, method, _)| method).collect();
     let at = |method: &str| commands.iter().position(|m| m == method).unwrap_or_else(|| panic!("{method} in {commands:?}"));
-    assert!(at("Emulation.setUserAgentOverride") < at("Page.navigate"), "a phone before the first request: {commands:?}");
+    assert!(at("Emulation.setDeviceMetricsOverride") < at("Page.navigate"), "its size before the first request: {commands:?}");
     assert!(of_tab("Page.startScreencast").len() == 1 && m.casts.running() == 1);
 
     // The same tab goes elsewhere, back and forward.
@@ -465,18 +467,14 @@ async fn the_state_follows_the_group_and_its_current_tab() {
     }
     assert!(m.tab(&foreign.tab_id).is_some());
 
-    // The desktop version: the tab is a desktop window of that size and is asked for again.
+    // The desktop version: the tab is a window of that size; it is the same browser, nothing is asked for again.
     c.say(json!({ "type": "viewport", "width": 1280, "height": 800, "mobile": false })).await;
-    let state = c.state("the viewport is the desktop's", |s| s["viewport"]["mobile"] == false).await;
+    let state = c.state("the viewport is the desktop's", |s| s["viewport"]["width"] == 1280).await;
     assert_eq!(state["viewport"], json!({ "width": 1280, "height": 800, "mobile": false, "pixel_ratio": 1.0 }));
-    until("the tab is a desktop window", || of_tab("Page.reload").len() == 2).await;
-    assert_eq!(of_tab("Emulation.setDeviceMetricsOverride").last().unwrap(), &json!({ "width": 1280, "height": 800, "deviceScaleFactor": 1, "mobile": false }));
-    assert_eq!(of_tab("Emulation.setTouchEmulationEnabled").last().unwrap()["enabled"], false);
-    assert_eq!(of_tab("Emulation.setUserAgentOverride").last().unwrap(), &json!({ "userAgent": "" }));
-    // Only the size: nothing is asked for again.
+    until("the tab is a window of that size", || of_tab("Emulation.setDeviceMetricsOverride").last() == Some(&json!({ "width": 1280, "height": 800, "deviceScaleFactor": 1, "mobile": false }))).await;
     c.say(json!({ "type": "viewport", "width": 1024, "height": 700, "mobile": false })).await;
     c.state("the viewport is smaller", |s| s["viewport"]["width"] == 1024).await;
-    assert_eq!(of_tab("Page.reload").len(), 2);
+    assert_eq!(of_tab("Page.reload").len(), 1, "only the reload the user asked for");
 
     // What cannot be done is said: the browser is full (the module's own tabs do not count).
     let mut last = first.clone();
@@ -626,6 +624,7 @@ async fn a_tab_has_the_viewport_of_the_screen_that_set_its_own_last() {
     let (_, session) = m.tab_session(&tab.tab_id).await.unwrap();
     let of_tab = |method: &str| b.fake.received(method).into_iter().filter(|(s, _)| s.as_deref() == Some(session.as_str())).map(|(_, p)| p).collect::<Vec<_>>();
     let devices = || of_tab("Emulation.setDeviceMetricsOverride").iter().map(|p| (p["width"].as_u64().unwrap(), p["height"].as_u64().unwrap(), p["mobile"] == true)).collect::<Vec<_>>();
+    let windows = || b.sent("Browser.setWindowBounds").iter().map(|p| (p["bounds"]["width"].as_u64().unwrap(), p["bounds"]["height"].as_u64().unwrap())).collect::<Vec<_>>();
     let desktop = json!({ "width": 1078, "height": 576, "mobile": false });
     let resized = json!({ "width": 1000, "height": 600, "mobile": false });
 
@@ -634,12 +633,12 @@ async fn a_tab_has_the_viewport_of_the_screen_that_set_its_own_last() {
     assert_eq!(state["viewport"], told(&desktop));
     until("the tab is the desktop's", || devices().last() == Some(&(1078, 576, false))).await;
 
-    // A phone looks at the same tab: the tab is a phone now, and the desktop is told so.
+    // A phone looks at the same tab: the tab is a window of the phone's size now (not a phone), and the desktop is told so.
     let (mut small, state) = admitted(m, DEFAULT_GROUP, phone()).await;
     assert_eq!(state["viewport"], told(&phone()));
     wide.state("the desktop sees the phone's viewport", |s| s["viewport"] == told(&phone())).await;
-    until("the tab is the phone's", || devices().last() == Some(&(412, 915, true))).await;
-    until("with a touch screen", || of_tab("Emulation.setTouchEmulationEnabled").last().is_some_and(|p| p["enabled"] == true)).await;
+    until("the tab is the phone's size", || devices().last() == Some(&(412, 915, false))).await;
+    until("in a window of that height", || windows().last() == Some(&(1280, 915 + process::TOOLBAR_HEIGHT as u64))).await;
 
     // The desktop's window was resized: the tab is the desktop's again, and the phone is told so.
     let mut message = resized.clone();
@@ -653,13 +652,13 @@ async fn a_tab_has_the_viewport_of_the_screen_that_set_its_own_last() {
     message["type"] = json!("viewport");
     small.say(message).await;
     wide.state("the desktop sees the phone's viewport again", |s| s["viewport"] == told(&phone())).await;
-    until("the tab is the phone's again", || devices().last() == Some(&(412, 915, true))).await;
+    until("the tab is the phone's size again", || devices().last() == Some(&(412, 915, false))).await;
 
     // The phone is gone: the tab is the desktop's, which is told so. Nothing was loaded again on the way.
     drop(small);
     wide.state("the desktop has its own again", |s| s["viewport"] == told(&resized)).await;
     until("the tab is the desktop's once more", || devices().last() == Some(&(1000, 600, false))).await;
-    until("and no phone", || of_tab("Emulation.setTouchEmulationEnabled").last().unwrap()["enabled"] == false && of_tab("Emulation.setUserAgentOverride").last().unwrap() == &json!({ "userAgent": "" })).await;
+    assert!(of_tab("Emulation.setTouchEmulationEnabled").is_empty() && of_tab("Emulation.setUserAgentOverride").is_empty(), "what the browser is stays its own");
     assert!(of_tab("Page.reload").is_empty(), "a screen that comes or goes loads nothing again");
     assert_eq!((m.casts.running(), of_tab("Page.startScreencast").len()), (1, 1), "one screencast all along");
 
@@ -691,16 +690,17 @@ async fn a_tab_is_painted_at_the_pixel_ratio_of_the_screen_whose_viewport_it_has
     };
 
     // A phone of a dense screen: the tab's window goes to the browser's dense screen, then the tab is
-    // made the phone, then its frames are taken (of the dense screen as they are), in CSS pixels.
+    // given the phone's size, then its frames are taken (of the dense screen as they are), in CSS pixels.
     let (mut small, state) = admitted(m, DEFAULT_GROUP, json!({ "width": 412, "height": 780, "mobile": true, "pixel_ratio": 2.625 })).await;
-    assert_eq!(state["viewport"], json!({ "width": 412, "height": 780, "mobile": true, "pixel_ratio": 2.0 }));
+    assert_eq!(state["viewport"], json!({ "width": 412, "height": 780, "mobile": false, "pixel_ratio": 2.0 }));
     let (meta, _) = small.frame().await;
-    assert_eq!((meta["width"].as_u64(), meta["height"].as_u64(), window()), (Some(412), Some(780), 1600));
+    let dense = process::DENSE_SCREEN_LEFT as i64;
+    assert_eq!((meta["width"].as_u64(), meta["height"].as_u64(), window()), (Some(412), Some(780), dense));
     assert_eq!(casts(), vec![cast(60, None)]);
     let commands: Vec<String> = b.fake.received_all().into_iter().filter(|(s, ..)| s.as_deref() == Some(session.as_str())).map(|(_, method, _)| method).collect();
     let at = |method: &str| commands.iter().position(|m| m == method).unwrap_or_else(|| panic!("{method} in {commands:?}"));
     assert!(at("Browser.getWindowForTarget") < at("Browser.setWindowBounds") && at("Browser.setWindowBounds") < at("Emulation.setDeviceMetricsOverride"), "{commands:?}");
-    assert!(at("Emulation.setUserAgentOverride") < at("Page.startScreencast"), "{commands:?}");
+    assert!(at("Emulation.setDeviceMetricsOverride") < at("Page.startScreencast"), "{commands:?}");
 
     // A ratio between the screens': the dense screen's frames are made smaller. A `quality` changes it
     // without the viewport, and so does a `viewport` that names one; each is one screencast more.
@@ -711,7 +711,7 @@ async fn a_tab_is_painted_at_the_pixel_ratio_of_the_screen_whose_viewport_it_has
     until("and of another quality", || casts().len() == 3 && casts()[2] == cast(70, Some((618, 1170)))).await;
     small.say(json!({ "type": "viewport", "width": 400, "height": 800, "mobile": true })).await;
     until("a viewport keeps the ratio", || casts().len() == 4 && casts()[3] == cast(70, Some((600, 1200)))).await;
-    assert_eq!(window(), 1600);
+    assert_eq!(window(), dense);
     small.say(json!({ "type": "viewport", "width": 412, "height": 780, "mobile": true, "pixel_ratio": 1 })).await;
     until("back on the first screen", || window() == 0 && casts().len() == 5 && casts()[4] == cast(70, None)).await;
     // Saying the same again changes nothing.
@@ -724,7 +724,7 @@ async fn a_tab_is_painted_at_the_pixel_ratio_of_the_screen_whose_viewport_it_has
     let (wide, _) = admitted(m, DEFAULT_GROUP, json!({ "width": 1078, "height": 576, "mobile": false, "pixel_ratio": 2 })).await;
     let desktop = json!({ "width": 1078, "height": 576, "mobile": false, "pixel_ratio": 2.0 });
     small.state("the phone sees the desktop's look", |s| s["viewport"] == desktop).await;
-    until("the tab is the desktop's", || window() == 1600 && casts().last() == Some(&cast(60, None))).await;
+    until("the tab is the desktop's", || window() == dense && casts().last() == Some(&cast(60, None))).await;
     assert_eq!(of_tab("Emulation.setDeviceMetricsOverride").last().unwrap(), &json!({ "width": 1078, "height": 576, "deviceScaleFactor": 1, "mobile": false }));
     // What the phone says of its frames is its own: the tab keeps the desktop's look.
     let before = casts().len();
@@ -732,16 +732,16 @@ async fn a_tab_is_painted_at_the_pixel_ratio_of_the_screen_whose_viewport_it_has
     small.say(json!({ "type": "ping" })).await;
     small.until("pong").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!((casts().len(), window()), (before, 1600));
+    assert_eq!((casts().len(), window()), (before, dense));
     // The desktop is gone: the tab is the phone's again, at what the phone said last.
     drop(wide);
-    small.state("the phone has its own look again", |s| s["viewport"] == json!({ "width": 412, "height": 780, "mobile": true, "pixel_ratio": 1.0 })).await;
+    small.state("the phone has its own look again", |s| s["viewport"] == json!({ "width": 412, "height": 780, "mobile": false, "pixel_ratio": 1.0 })).await;
     until("on the first screen, at its quality", || window() == 0 && casts().last() == Some(&cast(40, None))).await;
 
     // The agent's Playwright may move the window (and ends the device a tab was made with a screenshot):
     // once the agent is done the tab is the screen's device again, on the screen of its ratio.
     small.say(json!({ "type": "quality", "pixel_ratio": 2 })).await;
-    until("on the dense screen", || window() == 1600).await;
+    until("on the dense screen", || window() == dense).await;
     let lease = m.acquire("s1").await.unwrap();
     small.state("the agent operates", |s| s["group"]["controller"] == "agent").await;
     let window_id = b.fake.received("Browser.setWindowBounds").last().unwrap().1["windowId"].clone();
@@ -749,7 +749,7 @@ async fn a_tab_is_painted_at_the_pixel_ratio_of_the_screen_whose_viewport_it_has
     let dressed = of_tab("Emulation.setDeviceMetricsOverride").len();
     m.release(&lease.lease_id, Some(AgentState::Done), None).unwrap();
     small.state("the user operates", |s| s["group"]["controller"] == "user").await;
-    until("the tab is the phone again, on the dense screen", || window() == 1600 && of_tab("Emulation.setDeviceMetricsOverride").len() > dressed).await;
+    until("the tab has the phone's size again, on the dense screen", || window() == dense && of_tab("Emulation.setDeviceMetricsOverride").len() > dressed).await;
     m.shutdown().await;
 }
 
@@ -822,13 +822,14 @@ async fn what_the_user_does_reaches_the_page_unless_the_agent_operates() {
     c.state("the user operates", |s| s["group"]["controller"] == "user" && s["group"]["user_hold"] == true).await;
     c.say(json!({ "type": "input", "kind": "text", "text": "mine" })).await;
     until("the input reached the tab", || of_tab("Input.insertText").last() == Some(&json!({ "text": "mine" }))).await;
-    // What the agent's Playwright did may have ended the device the tab was made (a screenshot does): the
-    // tab is made that device once more — with another screen first, or the browser takes it for done —
+    // What the agent's Playwright did may have ended the size the tab was given (a screenshot does): the
+    // tab is given it once more — with another screen first, or the browser takes it for done —
     // and its page is not loaded again.
-    let phone = json!({ "width": 400, "height": 900, "deviceScaleFactor": 2, "mobile": true, "screenWidth": 400, "screenHeight": 900 });
-    let mut other = phone.clone();
+    let size = json!({ "width": 400, "height": 900, "deviceScaleFactor": 1, "mobile": false });
+    let mut other = size.clone();
     other["screenWidth"] = json!(401);
-    until("the tab is made the phone once more", || of_tab("Emulation.setDeviceMetricsOverride").ends_with(&[other.clone(), phone.clone()])).await;
+    other["screenHeight"] = json!(900);
+    until("the tab is given its size once more", || of_tab("Emulation.setDeviceMetricsOverride").ends_with(&[other.clone(), size.clone()])).await;
     assert_eq!(of_tab("Page.reload").len(), 0);
     m.shutdown().await;
 }
@@ -842,16 +843,14 @@ async fn what_pages_show_outside_themselves_is_asked_of_the_screen() {
     let tab = m.open_tab(DEFAULT_GROUP, Some("https://a.example/")).await.unwrap();
     let (_, session) = m.tab_session(&tab.tab_id).await.unwrap();
     let of_tab = |method: &str| b.fake.received(method).into_iter().filter(|(s, _)| s.as_deref() == Some(session.as_str())).map(|(_, p)| p).collect::<Vec<_>>();
-    // Every document gets the page script, in a world of its own; file choosers are intercepted.
+    // Every document gets the page script, in a world of its own (the page's own world is not touched);
+    // file choosers are intercepted. Permissions are the browser's own.
     until("the tab is prepared", || !of_tab("Page.setInterceptFileChooserDialog").is_empty()).await;
     assert_eq!(of_tab("Runtime.addBinding"), vec![json!({ "name": "__opendanScreen", "executionContextName": "opendan_screen" })]);
     let scripts = of_tab("Page.addScriptToEvaluateOnNewDocument");
-    assert_eq!(scripts.iter().map(|p| p["worldName"].clone()).collect::<Vec<_>>(), vec![json!("opendan_screen"), Value::Null]);
+    assert_eq!(scripts.iter().map(|p| p["worldName"].clone()).collect::<Vec<_>>(), vec![json!("opendan_screen")]);
     assert!(scripts[0]["source"].as_str().unwrap().contains("__opendanSelect"));
-    let refused: Vec<String> = b.sent("Browser.setPermission").iter().map(|p| format!("{}:{}", p["permission"]["name"].as_str().unwrap(), p["setting"].as_str().unwrap())).collect();
-    for permission in ["geolocation:denied", "camera:denied", "microphone:denied", "notifications:denied", "clipboard-read:denied"] {
-        assert!(refused.contains(&permission.to_string()), "{permission} in {refused:?}");
-    }
+    assert!(b.sent("Browser.setPermission").is_empty());
 
     // Nobody looks: a select's list is nobody's to pick from.
     b.page_says(&tab.tab_id, 7, json!({ "kind": "select", "token": 1, "multiple": false, "options": [], "rect": { "x": 0, "y": 0, "width": 1, "height": 1 } }));
@@ -888,15 +887,6 @@ async fn what_pages_show_outside_themselves_is_asked_of_the_screen() {
     // Another document: its focus is told anew.
     b.goes_to(&tab.tab_id, "https://a.example/next").await;
     assert_eq!(c.until("focus").await, json!({ "type": "focus", "tab_id": tab.tab_id, "editable": false }));
-
-    // ---- permission: told once, the browser has refused it.
-    for _ in 0..3 {
-        b.page_says(&tab.tab_id, 7, json!({ "kind": "permission", "permission": "geolocation", "origin": "https://a.example" }));
-    }
-    let request = c.until("request").await;
-    assert_eq!((request["kind"].clone(), request["permission"].clone(), request["origin"].clone(), request["tab_id"].clone()), (json!("permission"), json!("geolocation"), json!("https://a.example"), json!(tab.tab_id)));
-    let (messages, _) = c.within(Duration::from_millis(300)).await;
-    assert!(of_kind(&messages, "request").is_empty(), "{messages:?}");
 
     // ---- JS dialogs
     let handled = || b.sent("Page.handleJavaScriptDialog");
@@ -1132,9 +1122,9 @@ async fn a_screen_goes_on_when_the_browser_was_started_again() {
     // What the old page asked for is over.
     assert!(c.passed.contains(&json!({ "type": "request_closed", "request_id": request })), "{:?}", c.passed);
     assert!(m.outside.pending(m, DEFAULT_GROUP).is_empty());
-    // The new tab is the device that looks.
+    // The new tab has the size of the screen that looks.
     let (_, session) = m.tab_session(&again).await.unwrap();
-    assert!(b.fake.received("Emulation.setDeviceMetricsOverride").iter().any(|(s, p)| s.as_deref() == Some(session.as_str()) && p["mobile"] == true));
+    assert!(b.fake.received("Emulation.setDeviceMetricsOverride").iter().any(|(s, p)| s.as_deref() == Some(session.as_str()) && p["width"] == 412 && p["height"] == 915));
     c.say(json!({ "type": "input", "kind": "text", "text": "still here" })).await;
     until("input reaches the new tab", || b.fake.received("Input.insertText").iter().any(|(s, _)| s.as_deref() == Some(session.as_str()))).await;
     m.shutdown().await;
@@ -1269,9 +1259,12 @@ pub(super) mod real {
         }
     }
 
+    /// A tap, as the App sends it: the browser is no phone (`state.viewport.mobile` is `false`), so a click.
     pub(super) async fn tap<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(c: &mut Client<S>, x: f64, y: f64) {
-        c.say(json!({ "type": "input", "kind": "touch", "phase": "start", "points": [{ "id": 0, "x": x, "y": y }] })).await;
-        c.say(json!({ "type": "input", "kind": "touch", "phase": "end", "points": [] })).await;
+        c.say(json!({ "type": "input", "kind": "mouse", "action": "move", "x": x, "y": y, "button": "none", "click_count": 0, "modifiers": 0 })).await;
+        for action in ["down", "up"] {
+            c.say(json!({ "type": "input", "kind": "mouse", "action": action, "x": x, "y": y, "button": "left", "click_count": 1, "modifiers": 0 })).await;
+        }
     }
 
     pub(super) async fn press<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(c: &mut Client<S>, key: &str, code: &str, modifiers: i64, text: &str) {
@@ -1292,12 +1285,16 @@ pub(super) mod real {
         let m = &r.module;
         let (mut c, tab_id) = showing(&r, DEFAULT_GROUP, phone()).await;
 
-        // A phone: its size, touch, a phone's user agent — from the first request on.
+        // A phone: a window of its size, the page laid out for it; the browser stays what it is (no phone,
+        // no `HeadlessChrome`), in a window a browser's toolbar higher than its page, on a larger screen.
         page_has(m, &tab_id, "innerWidth + 'x' + innerHeight", json!("412x915")).await;
-        assert_eq!(eval(m, &tab_id, "matchMedia('(max-width: 600px)').matches && 'ontouchstart' in window && navigator.maxTouchPoints > 0").await, true);
+        assert_eq!(eval(m, &tab_id, "matchMedia('(max-width: 600px)').matches && !('ontouchstart' in window) && navigator.maxTouchPoints == 0").await, true);
         let agent = eval(m, &tab_id, "navigator.userAgent").await;
-        assert!(agent.as_str().unwrap().contains("Android") && agent.as_str().unwrap().contains("Mobile"), "{agent}");
-        assert_eq!(eval(m, &tab_id, "devicePixelRatio").await, 2);
+        let agent = agent.as_str().unwrap();
+        assert!(agent.contains(" Chrome/") && !agent.contains("Headless") && !agent.contains("Android") && !agent.contains("Mobile"), "{agent}");
+        // (A page narrower than any window keeps the window's width.)
+        let window = "devicePixelRatio + ' ' + (outerHeight - innerHeight) + ' ' + (screen.width > outerWidth && screen.height > outerHeight)";
+        assert_eq!(eval(m, &tab_id, window).await, json!(format!("1 {} true", process::TOOLBAR_HEIGHT)));
         // Frames are JPEGs of the viewport, in CSS pixels.
         c.within(Duration::from_millis(1500)).await;
         let (meta, jpeg) = c.frames.last().cloned().expect("frames arrive");
@@ -1315,7 +1312,7 @@ pub(super) mod real {
         assert!(c.frames.len() > before, "the change is shown");
         keep("phone-changed.jpg", &c.frames.last().unwrap().1);
 
-        // The desktop version: the page is asked for again as a desktop browser.
+        // The desktop version: the same page in a wider window.
         c.frames.clear();
         c.say(json!({ "type": "viewport", "width": 1280, "height": 800, "mobile": false })).await;
         c.state("the viewport is the desktop's", |s| s["viewport"]["width"] == 1280).await;
@@ -1352,7 +1349,7 @@ pub(super) mod real {
         assert_eq!(focus["rect"], json!({ "x": 10, "y": 80, "width": 300, "height": 40 }));
         page_has(m, &tab_id, "document.activeElement.id", json!("text")).await;
         let events = eval(m, &tab_id, "window.events.join(' ')").await;
-        assert!(events.as_str().unwrap().contains("touchstart@text touchend@text") && events.as_str().unwrap().contains("click@text"), "{events}");
+        assert!(events.as_str().unwrap().contains("mousedown@text") && events.as_str().unwrap().contains("click@text"), "{events}");
 
         // Text as a whole, composition, the committed text.
         c.say(json!({ "type": "input", "kind": "text", "text": "你好" })).await;
@@ -1396,7 +1393,7 @@ pub(super) mod real {
         let left = c.until("focus").await;
         assert_eq!(left, json!({ "type": "focus", "tab_id": tab_id, "editable": false }));
 
-        // The mouse and the wheel (the desktop version sends these for a touch).
+        // The mouse and the wheel (what the App sends for a touch and a drag of the finger).
         c.say(json!({ "type": "input", "kind": "mouse", "action": "move", "x": 100, "y": 100, "button": "none", "click_count": 0, "modifiers": 0 })).await;
         for action in ["down", "up"] {
             c.say(json!({ "type": "input", "kind": "mouse", "action": action, "x": 100, "y": 100, "button": "left", "click_count": 1, "modifiers": 0 })).await;
@@ -1404,15 +1401,6 @@ pub(super) mod real {
         page_has(m, &tab_id, "document.activeElement.id + ' ' + window.events.includes('mousedown@text')", json!("text true")).await;
         c.say(json!({ "type": "input", "kind": "wheel", "x": 200, "y": 600, "delta_x": 0, "delta_y": 400, "modifiers": 0 })).await;
         page_has(m, &tab_id, "scrollY > 0", json!(true)).await;
-        // A drag of the finger scrolls too.
-        eval(m, &tab_id, "scrollTo(0, 0)").await;
-        c.say(json!({ "type": "input", "kind": "touch", "phase": "start", "points": [{ "id": 0, "x": 200, "y": 700 }] })).await;
-        for y in [650, 600, 550, 500, 450, 400] {
-            c.say(json!({ "type": "input", "kind": "touch", "phase": "move", "points": [{ "id": 0, "x": 200, "y": y }] })).await;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        c.say(json!({ "type": "input", "kind": "touch", "phase": "end", "points": [] })).await;
-        page_has(m, &tab_id, "scrollY > 100", json!(true)).await;
         stop(&r).await;
     }
 
@@ -1476,13 +1464,16 @@ pub(super) mod real {
         assert!(asked.elapsed() >= Duration::from_millis(2900), "{:?}", asked.elapsed());
         page_has(m, &tab_id, "window.confirmed", json!(false)).await;
 
-        // ---- a permission: refused, and the user is told it was asked for.
+        // ---- a permission: the browser's own to ask for; a headless one refuses it (nobody sees its prompt). The screen
+        // is not asked, and the page's own world is as the browser made it.
+        assert_eq!(eval(m, &tab_id, "navigator.permissions.query({ name: 'geolocation' }).then((s) => s.state)").await, "prompt");
+        c.passed.clear();
         tap(&mut c, 100.0, 520.0).await;
-        let request = c.until("request").await;
-        assert_eq!((request["kind"].as_str(), request["permission"].as_str()), (Some("permission"), Some("geolocation")));
-        assert_eq!(request["origin"].as_str(), Some(r.site.trim_end_matches('/')));
         page_has(m, &tab_id, "window.geo", json!("denied 1")).await;
-        assert_eq!(eval(m, &tab_id, "navigator.permissions.query({ name: 'geolocation' }).then((s) => s.state)").await, "denied");
+        let (messages, _) = c.within(Duration::from_millis(300)).await;
+        assert!(of_kind(&messages, "request").is_empty() && of_kind(&c.passed, "request").is_empty(), "{messages:?} {:?}", c.passed);
+        let native = "[navigator.geolocation.getCurrentPosition, Notification.requestPermission, navigator.mediaDevices.getUserMedia].every((f) => Function.prototype.toString.call(f).includes('[native code]')) && Object.getOwnPropertySymbols(window).length";
+        assert_eq!(eval(m, &tab_id, native).await, json!(0));
         assert_eq!(eval(m, &tab_id, "typeof window.__opendanScreen + ' ' + typeof window.__opendanSelect").await, "undefined undefined", "the page does not see the screen's script");
         stop(&r).await;
     }
@@ -1594,16 +1585,16 @@ pub(super) mod real {
         let m = &r.module;
         let desktop = json!({ "width": 1078, "height": 576, "mobile": false });
         let small = json!({ "width": 412, "height": 780, "mobile": true });
-        let layout = "innerWidth + 'x' + innerHeight + ' ' + matchMedia('(max-width: 600px)').matches + ' ' + navigator.maxTouchPoints";
+        let layout = "innerWidth + 'x' + innerHeight + ' ' + matchMedia('(max-width: 600px)').matches + ' ' + navigator.maxTouchPoints + ' ' + navigator.userAgent.includes('Mobile')";
         let (mut wide, tab_id) = showing(&r, DEFAULT_GROUP, desktop.clone()).await;
-        page_has(m, &tab_id, layout, json!("1078x576 false 0")).await;
+        page_has(m, &tab_id, layout, json!("1078x576 false 0 false")).await;
         eval(m, &tab_id, "window.kept = 'since the first load'").await;
 
-        // A phone looks at the same tab: the page is laid out for it, and the desktop is told whose viewport it sees.
+        // A phone looks at the same tab: the page is laid out for its narrow window, and the desktop is told whose viewport it sees.
         let (mut phone, state) = admitted(m, DEFAULT_GROUP, small.clone()).await;
         assert_eq!((state["viewport"].clone(), state["active_tab_id"].as_str()), (told(&small), Some(tab_id.as_str())));
         wide.state("the desktop sees the phone's viewport", |s| s["viewport"] == told(&small)).await;
-        page_has(m, &tab_id, layout, json!("412x780 true 5")).await;
+        page_has(m, &tab_id, layout, json!("412x780 true 0 false")).await;
         wide.frames.clear();
         wide.within(Duration::from_millis(1500)).await;
         phone.within(Duration::from_millis(500)).await;
@@ -1616,7 +1607,7 @@ pub(super) mod real {
         wide.frames.clear();
         drop(phone);
         wide.state("the desktop has its own viewport again", |s| s["viewport"] == told(&desktop)).await;
-        page_has(m, &tab_id, layout, json!("1078x576 false 0")).await;
+        page_has(m, &tab_id, layout, json!("1078x576 false 0 false")).await;
         wide.within(Duration::from_millis(1500)).await;
         let (meta, jpeg) = wide.frames.last().cloned().expect("frames arrive");
         assert_eq!((meta["width"].as_u64(), meta["height"].as_u64(), jpeg_size(&jpeg)), (Some(1078), Some(576), Some((1078, 576))));
@@ -1647,34 +1638,35 @@ pub(super) mod real {
         let r = real(|_| {}).await;
         let m = &r.module;
         let (mut c, tab_id) = showing(&r, DEFAULT_GROUP, json!({ "width": 412, "height": 780, "mobile": true })).await;
-        let device = "devicePixelRatio + ' ' + screen.width + 'x' + screen.height + ' ' + innerWidth";
-        page_has(m, &tab_id, device, json!("2 412x780 412")).await;
+        let device = "devicePixelRatio + ' ' + screen.width + 'x' + screen.height + ' ' + innerWidth + 'x' + innerHeight";
+        let narrow = json!("1 2560x1440 412x780");
+        page_has(m, &tab_id, device, narrow.clone()).await;
         eval(m, &tab_id, "window.kept = 'since the first load'").await;
 
-        // The agent takes a screenshot: to the page, the tab is no phone any more.
+        // The agent takes a screenshot, which ends the size the tab was given: its window has that size, so its page
+        // is as it was.
         let lease = m.acquire("s1").await.unwrap();
         c.state("the agent operates", |s| s["group"]["controller"] == "agent").await;
         screenshot_by_the_agent(m, &tab_id).await;
-        page_has(m, &tab_id, device, json!("1 800x600 412")).await;
-        // The agent is done: the tab is the phone again, its page not loaded again.
+        page_has(m, &tab_id, device, narrow.clone()).await;
+        // The agent is done: the tab is given its size again, its page not loaded again.
         m.release(&lease.lease_id, Some(AgentState::Done), None).unwrap();
         c.state("the user operates", |s| s["group"]["controller"] == "user").await;
-        page_has(m, &tab_id, device, json!("2 412x780 412")).await;
+        page_has(m, &tab_id, device, narrow.clone()).await;
         assert_eq!(eval(m, &tab_id, "window.kept").await, "since the first load");
 
-        // A page without a viewport of its own, which a phone lays out wider than its screen; this time
+        // A page without a viewport of its own is laid out for the window too (no phone's wider layout); this time
         // the user takes the browser from the agent.
         c.say(json!({ "type": "nav", "action": "url", "url": format!("{}plain", r.site) })).await;
         c.state("the plain page is loaded", |s| s["title"] == "Plain" && s["loading"] == false).await;
-        page_has(m, &tab_id, device, json!("2 412x780 981")).await;
+        page_has(m, &tab_id, device, narrow.clone()).await;
         m.acquire("s1").await.unwrap();
         c.state("the agent operates", |s| s["group"]["controller"] == "agent").await;
         screenshot_by_the_agent(m, &tab_id).await;
-        page_has(m, &tab_id, device, json!("1 800x600 412")).await;
         c.frames.clear();
         m.hand(OWNER, Handed::TakeOver).await.unwrap();
         c.state("the user operates", |s| s["group"]["controller"] == "user" && s["group"]["user_hold"] == true).await;
-        page_has(m, &tab_id, device, json!("2 412x780 981")).await;
+        page_has(m, &tab_id, device, narrow.clone()).await;
         c.within(Duration::from_millis(1500)).await;
         let (meta, jpeg) = c.frames.last().cloned().expect("frames arrive");
         assert_eq!((meta["width"].as_u64(), meta["height"].as_u64(), jpeg_size(&jpeg)), (Some(412), Some(780), Some((412, 780))));
@@ -1701,11 +1693,11 @@ pub(super) mod real {
         let m = &r.module;
         let (mut c, tab_id) = showing(&r, DEFAULT_GROUP, json!({ "width": 412, "height": 780, "mobile": true, "pixel_ratio": 2 })).await;
         let device = "devicePixelRatio + ' ' + innerWidth + 'x' + innerHeight + ' ' + screen.width + 'x' + screen.height";
-        let phone = json!("2 412x780 412x780");
-        let touched = |target: &'static str| format!("window.events.includes('touchstart@{target}') && window.events.includes('click@{target}')");
+        let phone = json!("1 412x780 2560x1440");
+        let touched = |target: &'static str| format!("window.events.includes('mousedown@{target}') && window.events.includes('click@{target}')");
 
         // A phone of a dense screen: frames of twice the viewport's pixels, described in CSS pixels; the
-        // page is the phone it would be anyway, and a tap lands where it is meant to.
+        // page is what it is at any pixel ratio, and a tap lands where it is meant to.
         page_has(m, &tab_id, device, phone.clone()).await;
         let (meta, jpeg) = sized(&mut c, (824, 1560)).await;
         assert_eq!((meta["width"].as_u64(), meta["height"].as_u64()), (Some(412), Some(780)));
@@ -1916,7 +1908,7 @@ mod headed {
 
         let (messages, frames) = c.within(Duration::from_millis(800)).await;
         let requests: Vec<&Value> = of_kind(&messages, "request").into_iter().chain(c.passed.iter().filter(|m| m["type"] == "request")).collect();
-        assert!(requests.iter().all(|r| !matches!(r["kind"].as_str(), Some("select" | "dialog" | "permission"))), "{requests:?}");
+        assert!(requests.iter().all(|r| !matches!(r["kind"].as_str(), Some("select" | "dialog"))), "{requests:?}");
         assert!(frames > 0 || !c.frames.is_empty(), "the display was shown");
         keep("headed-desktop.jpg", &c.frames.last().unwrap().1);
         stop(&r).await;

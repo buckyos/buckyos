@@ -1,6 +1,6 @@
 //! What a page shows outside itself (Agent Browser Protocol §3.4): the list
-//! of a `<select>`, JS dialogs, file choosers, downloads, permission
-//! requests, and which element has the focus. The module hears of them from
+//! of a `<select>`, JS dialogs, file choosers, downloads, and which element
+//! has the focus. The module hears of them from
 //! the browser and from a script it puts into every document; the screens
 //! show them and answer. Requests that wait for an answer are kept here, not
 //! in a connection, so a screen that reconnects gets them again.
@@ -24,7 +24,6 @@ const BINDING: &str = "__opendanScreen";
 /// The world the page script runs in: page scripts do not see it.
 const WORLD: &str = "opendan_screen";
 const PAGE_SCRIPT: &str = include_str!("screen_page.js");
-const PERMISSION_SCRIPT: &str = include_str!("screen_permissions.js");
 /// A command that sets a tab up or answers a request is not waited for
 /// longer: a page with an open JS dialog answers nothing until it is closed.
 const COMMAND_WAIT: Duration = Duration::from_secs(5);
@@ -39,27 +38,6 @@ const MAX_UPLOAD_FILES: usize = 32;
 /// How long the files handed to a page are kept: the page reads them when
 /// it sends them, which may be long after they were chosen.
 const UPLOAD_KEPT: Duration = Duration::from_secs(3600);
-const PERMISSION_QUIET: Duration = Duration::from_secs(60);
-/// What a page would have to ask the user for. The browser refuses them all:
-/// nobody sits in front of it to answer.
-const REFUSED_PERMISSIONS: &[&str] = &[
-    "geolocation",
-    "notifications",
-    "camera",
-    "microphone",
-    "midi",
-    "clipboard-read",
-    "idle-detection",
-    "window-management",
-    "local-fonts",
-    "nfc",
-    "storage-access",
-    "top-level-storage-access",
-    "display-capture",
-    "payment-handler",
-    "captured-surface-control",
-    "speaker-selection",
-];
 
 /// What the screens are told.
 #[derive(Debug, Clone)]
@@ -123,10 +101,6 @@ struct State {
     focus: HashMap<String, Value>,
     /// Upload directories handed to a page: `(tab_id, directory, when)`.
     handed: Vec<(String, PathBuf, Instant)>,
-    /// Permission notices already shown: `(tab_id, permission, origin)`.
-    noticed: HashMap<(String, String, String), Instant>,
-    /// The browser connection whose permissions were refused.
-    refused_for: usize,
     /// Tabs that are prepared (`Outside::instrument` is through with them).
     prepared: HashSet<String>,
 }
@@ -377,12 +351,10 @@ impl Outside {
     // ------------------------------------------------------------------
 
     /// Prepare a tab the module attached to: the page script in every
-    /// document (the open one too), file choosers intercepted.
+    /// document (the open one too), file choosers intercepted. Nothing of
+    /// the page's own world is touched: permissions are the browser's to
+    /// ask for (a headless one refuses them, nobody sees its prompt).
     pub(super) async fn instrument(&self, cdp: &Arc<CdpClient>, tab_id: &str, session: &str, headed: bool) {
-        // A headed browser asks the user for permissions itself, on the display.
-        if !headed {
-            self.refuse_permissions(cdp);
-        }
         let page_script = if headed { format!("globalThis.__opendanHeaded = true;\n{PAGE_SCRIPT}") } else { PAGE_SCRIPT.to_string() };
         let run = |method: &'static str, params: Value| async move {
             let answer = send_settled(cdp, session, method, params).await;
@@ -395,14 +367,8 @@ impl Outside {
         run("Runtime.enable", json!({})).await;
         run("Runtime.addBinding", json!({ "name": BINDING, "executionContextName": WORLD })).await;
         run("Page.addScriptToEvaluateOnNewDocument", json!({ "source": page_script, "worldName": WORLD })).await;
-        if !headed {
-            run("Page.addScriptToEvaluateOnNewDocument", json!({ "source": PERMISSION_SCRIPT })).await;
-        }
         run("Page.setInterceptFileChooserDialog", json!({ "enabled": true })).await;
-        // The document that is already there.
-        if !headed {
-            run("Runtime.evaluate", json!({ "expression": PERMISSION_SCRIPT })).await;
-        }
+        // The documents that are already there.
         let tree = run("Page.getFrameTree", json!({})).await.unwrap_or(Value::Null);
         let mut frames = vec![tree["frameTree"].clone()];
         while let Some(frame) = frames.pop() {
@@ -426,25 +392,6 @@ impl Outside {
             while !self.state().prepared.contains(tab_id) && changes.changed().await.is_ok() {}
         })
         .await;
-    }
-
-    /// Once per browser: every permission a page could ask the user for is refused.
-    fn refuse_permissions(&self, cdp: &Arc<CdpClient>) {
-        let browser = Arc::as_ptr(cdp) as usize;
-        if std::mem::replace(&mut self.state().refused_for, browser) == browser {
-            return;
-        }
-        let cdp = cdp.clone();
-        tokio::spawn(async move {
-            let mut permissions: Vec<Value> = REFUSED_PERMISSIONS.iter().map(|name| json!({ "name": name })).collect();
-            permissions.push(json!({ "name": "midi", "sysex": true }));
-            permissions.push(json!({ "name": "push", "userVisibleOnly": true }));
-            for permission in permissions {
-                if let Err(e) = cdp.send(None, "Browser.setPermission", json!({ "permission": permission, "setting": "denied" })).await {
-                    log::debug!("browser: permission {permission} not refused: {e}");
-                }
-            }
-        });
     }
 
     pub(super) fn on_event(&self, module: &BrowserModule, cdp: &Arc<CdpClient>, event: &CdpEvent) {
@@ -572,19 +519,6 @@ impl Outside {
                 self.state().focus.insert(tab_id.to_string(), body.clone());
                 self.tell(Notice::Focus { tab_id: tab_id.to_string(), body });
             }
-            Some("permission") => {
-                let (Some(permission), Some(origin)) = (told["permission"].as_str(), told["origin"].as_str()) else { return };
-                {
-                    let mut s = self.state();
-                    s.noticed.retain(|_, at| at.elapsed() < PERMISSION_QUIET);
-                    let key = (tab_id.to_string(), permission.to_string(), origin.to_string());
-                    if s.noticed.len() >= MAX_PENDING || s.noticed.insert(key, Instant::now()).is_some() {
-                        return;
-                    }
-                }
-                let body = json!({ "request_id": self.next_id(), "kind": "permission", "tab_id": tab_id, "permission": permission, "origin": origin });
-                self.tell(Notice::Request { group_id: Some(group_id.to_string()), body });
-            }
             _ => {}
         }
     }
@@ -610,7 +544,6 @@ impl Outside {
             let mut s = self.state();
             s.focus.clear();
             s.handed.clear();
-            s.noticed.clear();
             s.prepared.clear();
         }
         let _ = std::fs::remove_dir_all(&self.uploads_dir);

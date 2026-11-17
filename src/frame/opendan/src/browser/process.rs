@@ -18,12 +18,16 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_SANDBOX_ERROR: &str = "No usable sandbox";
 /// What the browser logs when another process took its debugging port.
 const PORT_TAKEN: &str = "Cannot start http server for devtools";
-/// The browser's screens: the one its windows open on, and beside it one of
-/// twice its pixel density (the same size in CSS pixels). A tab whose window
-/// is moved there paints frames of twice as many pixels, its page unchanged.
-pub const SCREENS: &str = "{0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2}";
+/// The headless browser's screens (sizes in device pixels): the one its
+/// windows open on, and beside it one of twice its pixel density, the same
+/// size in CSS pixels (2560×1440, larger than any window it is given). A tab
+/// whose window is moved there paints frames of twice as many pixels, its page unchanged.
+pub const SCREENS: &str = "{0,0 2560x1440}{2560,0 5120x2880 devicePixelRatio=2}";
 /// Where a window is sent to be on the dense screen.
-pub const DENSE_SCREEN_LEFT: u32 = 1600;
+pub const DENSE_SCREEN_LEFT: u32 = 2560;
+/// How much higher a headless window is than its page: what the browser
+/// keeps of it for a toolbar it does not draw.
+pub const TOOLBAR_HEIGHT: u32 = 87;
 /// Chromium keeps a socket in `<TMPDIR>/.org.chromium.Chromium.<6>/SingletonSocket`
 /// and does not start when that path is too long for a socket address
 /// (about 104 bytes): this much is left for `TMPDIR`.
@@ -275,22 +279,10 @@ pub enum Shown {
     Display { display: String, scale: f64, size: (u32, u32) },
 }
 
-/// The user agent a windowed Chrome of this version sends: a headless one
-/// names itself `HeadlessChrome`, which sites take for a robot. Only for a
-/// headless browser: a headed one says what it is itself.
-fn user_agent(chromium_version: &str) -> Option<String> {
-    let major = chromium_version.split('.').next().filter(|m| !m.is_empty() && m.bytes().all(|b| b.is_ascii_digit()))?;
-    let platform = if cfg!(target_os = "macos") {
-        "Macintosh; Intel Mac OS X 10_15_7"
-    } else if cfg!(windows) {
-        "Windows NT 10.0; Win64; x64"
-    } else {
-        "X11; Linux x86_64"
-    };
-    Some(format!("Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"))
-}
-
-fn arguments(dirs: &BrowserDirs, no_sandbox: bool, shown: &Shown, user_agent: Option<&str>, port: u16) -> Vec<String> {
+/// How the browser is started. A headless one says `HeadlessChrome` in its
+/// user agent: its pages are told otherwise over DevTools ([`super::identity`]),
+/// since a user agent given here would leave their client hints empty.
+fn arguments(dirs: &BrowserDirs, no_sandbox: bool, shown: &Shown, port: u16) -> Vec<String> {
     let mut args = vec![
         format!("--user-data-dir={}", dirs.profile.display()),
         format!("--disk-cache-dir={}", dirs.cache.display()),
@@ -308,9 +300,6 @@ fn arguments(dirs: &BrowserDirs, no_sandbox: bool, shown: &Shown, user_agent: Op
             args.insert(0, "--headless=new".to_string());
             args.push("--window-size=1280,800".to_string());
             args.push(format!("--screen-info={SCREENS}"));
-            if let Some(agent) = user_agent {
-                args.push(format!("--user-agent={agent}"));
-            }
         }
         Shown::Display { scale, size: (width, height), .. } => {
             args.push("--window-position=0,0".to_string());
@@ -378,11 +367,7 @@ async fn spawn(exe: &Path, dirs: &BrowserDirs, no_sandbox: bool, shown: &Shown, 
     release_profile(dirs);
     let log = std::fs::File::create(dirs.log()).map_err(|e| format!("create {}: {e}", dirs.log().display()))?;
     let mut cmd = tokio::process::Command::new(exe);
-    let agent = match shown {
-        Shown::Headless => package_versions(exe).and_then(|v| v["chromium"].as_str().and_then(user_agent)),
-        Shown::Display { .. } => None,
-    };
-    cmd.args(arguments(dirs, no_sandbox, shown, agent.as_deref(), port))
+    cmd.args(arguments(dirs, no_sandbox, shown, port))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)
@@ -654,22 +639,19 @@ mod tests {
         let dirs = BrowserDirs::at(PathBuf::from("/x/browser"));
         assert_eq!(dirs.profile, PathBuf::from("/x/browser/profile"));
         assert_eq!(dirs.downloads, PathBuf::from("/x/browser/downloads"));
-        let args = arguments(&dirs, true, &Shown::Headless, None, 9222);
+        let args = arguments(&dirs, true, &Shown::Headless, 9222);
         assert!(args.contains(&"--headless=new".to_string()));
         assert!(args.contains(&"--user-data-dir=/x/browser/profile".to_string()));
         assert!(args.contains(&"--remote-debugging-port=9222".to_string()));
         assert!(args.contains(&"--no-sandbox".to_string()));
         assert!(args.contains(&"--disable-blink-features=CaretBlinking".to_string()));
-        assert!(args.contains(&"--screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2}".to_string()));
+        assert!(args.contains(&"--screen-info={0,0 2560x1440}{2560,0 5120x2880 devicePixelRatio=2}".to_string()));
+        // Its pages are told its user agent over DevTools, with their client hints.
         assert!(!args.iter().any(|a| a.starts_with("--user-agent=")));
-        assert!(!arguments(&dirs, false, &Shown::Headless, None, 1).contains(&"--no-sandbox".to_string()));
-        let agent = user_agent("159.0.8154.6").unwrap();
-        assert!(agent.ends_with("Chrome/159.0.0.0 Safari/537.36") && !agent.contains("Headless"), "{agent}");
-        assert!(arguments(&dirs, false, &Shown::Headless, Some(&agent), 1).contains(&format!("--user-agent={agent}")));
-        assert_eq!(user_agent(""), None);
-        // Headed: what the browser is, it says itself; its windows have the display's size and scale.
+        assert!(!arguments(&dirs, false, &Shown::Headless, 1).contains(&"--no-sandbox".to_string()));
+        // Headed: its windows have the display's size and scale.
         let headed = Shown::Display { display: ":20".into(), scale: 2.0, size: (412, 915) };
-        let args = arguments(&dirs, false, &headed, Some(&agent), 9222);
+        let args = arguments(&dirs, false, &headed, 9222);
         assert!(!args.iter().any(|a| a.starts_with("--headless") || a.starts_with("--user-agent=") || a.starts_with("--screen-info=")), "{args:?}");
         for wanted in ["--window-size=412,915", "--window-position=0,0", "--force-device-scale-factor=2", "--no-startup-window"] {
             assert!(args.contains(&wanted.to_string()), "{wanted} {args:?}");

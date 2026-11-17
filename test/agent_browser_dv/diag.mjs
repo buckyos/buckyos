@@ -64,8 +64,14 @@ function chromiumVersion() {
   try { return execFileSync(CHROMIUM, ['--version'], { encoding: 'utf8', env: { ...process.env } }).trim() } catch (e) { return `unknown (${e.message})` }
 }
 const majorOf = (version) => (/(\d+)\.\d+\.\d+\.\d+/.exec(version) || [])[1]
+const MAC = os.platform() === 'darwin'
+// What the Agent's browser puts in its UA on this platform (process.rs `user_agent`) and the UA-CH metadata E-fix declares.
+const UA_PLATFORM = MAC ? 'Macintosh; Intel Mac OS X 10_15_7' : os.platform() === 'win32' ? 'Windows NT 10.0; Win64; x64' : 'X11; Linux x86_64'
+const CH_PLATFORM = MAC
+  ? { platform: 'macOS', platformVersion: execFileSync('sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim().split('.').concat(['0', '0']).slice(0, 3).join('.'), architecture: os.arch() === 'arm64' ? 'arm' : 'x86' }
+  : { platform: 'Linux', platformVersion: '', architecture: 'x86' }
 function desktopUA(version) {
-  return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorOf(version)}.0.0.0 Safari/537.36`
+  return `Mozilla/5.0 (${UA_PLATFORM}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorOf(version)}.0.0.0 Safari/537.36`
 }
 
 function launch(args, display) {
@@ -78,6 +84,7 @@ function launch(args, display) {
 }
 
 function groupStats(pgid) {
+  if (!existsSync('/proc')) return null
   let rssKiB = 0, cpuTicks = 0, processes = 0
   for (const pid of readdirSync('/proc').filter((p) => /^\d+$/.test(p))) {
     try {
@@ -201,7 +208,7 @@ async function runCondition(name, site, version) {
   // before its first request, one screen of the window's size, a pointer with hover declared): how far adjusting goes.
   const headless = name === 'E' || name === 'H' || name === 'E-fix'
   const display = headless ? null : DISPLAY
-  if (!headless && !display) return { name, skipped: 'no X display (--display or --xvfb)' }
+  if (!headless && !display && !MAC) return { name, skipped: 'no X display (--display or --xvfb)' }
   const port = ['A', 'A2', 'H'].includes(name) ? null : await freePort()
   const base = [`--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--window-position=0,0', `--window-size=${WINDOW.width},${WINDOW.height}`]
   if (ROOT) base.push('--no-sandbox')
@@ -225,7 +232,7 @@ async function runCondition(name, site, version) {
         userAgentMetadata: {
           brands: [{ brand: 'Chromium', version: major }, { brand: 'Not/A)Brand', version: '8' }],
           fullVersionList: [{ brand: 'Chromium', version: full }, { brand: 'Not/A)Brand', version: '8.0.0.0' }],
-          platform: 'Linux', platformVersion: '', architecture: 'x86', bitness: '64', model: '', mobile: false, wow64: false, formFactors: ['Desktop'],
+          ...CH_PLATFORM, bitness: '64', model: '', mobile: false, wow64: false, formFactors: ['Desktop'],
         },
       }
       // Every page (popups too) is held at its start until it has the override.

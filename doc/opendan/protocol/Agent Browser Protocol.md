@@ -32,7 +32,7 @@ Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`�
 浏览器有两种跑法（§6 `[loader.browser] display`）：
 
 - `virtual`（Linux 的默认）：有窗口地跑在这个 Agent 自己的虚拟显示器上（TigerVNC 的 `Xvnc`），和桌面上的浏览器一样：身份（UA、UA-CH）、权限提示、下拉框、JS 弹框、账号选择这些都是浏览器自己的，画在显示器上。屏幕看到的是整块显示器，用户的操作是显示器上的鼠标和键盘（§3.6）。服务端不改浏览器的身份，不往页面里注入改变页面行为的脚本，不替用户拒绝权限。
-- `headless`（其他平台的默认，或明确配置）：无头，屏幕是当前标签页的截屏流，输入走 DevTools；服务端把标签页模拟成看它的设备（手机的 UA 和触屏）、给它换掉 `HeadlessChrome` 的 UA、拦下拉框、拒绝全部权限（§3）。
+- `headless`（其他平台的默认，或明确配置）：无头，屏幕是当前标签页的截屏流，输入走 DevTools；标签页的尺寸是看它的连接的视口，下拉框和 JS 弹框由服务端拦下交给 App（§3）。网站看到的身份是这个浏览器自己的：UA 里的 `HeadlessChrome` 换成 `Chrome`，UA-CH 是浏览器自己报的那份，不模拟手机；权限请求由浏览器自己处理（无头时没人看得到提示，一律被拒）；页面要通行密钥（passkey）时立刻失败（§6）。
 
 ## 2. kRPC
 
@@ -238,17 +238,17 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - `hello` 的 `token` 在 Zone 之外（`--dev`）可以不带；`group_id` 可以省略，带的话只能是 `default`，别的值回 `bad_hello`；`viewport` 必填。
 - 坐标是 CSS 像素，相对当前视口的左上角（页面被缩放时也是屏幕上的位置，和 `frame_meta` 的宽高同一个坐标系）。
 - `touch` 的 `points` 是这个事件之后仍然按着的全部触点：`start`、`move` 带全部触点；`end` 带剩下的，最后一指抬起时为空；`cancel` 为空。
-- 桌面版视口（`mobile: false`）下 App 把触摸换成鼠标：点一下是 `mouse` 的 move、down、up，拖动是 `wheel`。`wheel` 的 `delta_x`、`delta_y` 和 DOM 的 `WheelEvent` 同号（正数向下、向右滚）。`mouse` 的 `move` 带着按住的键（没有按键时 `button: "none"`）。
+- `state.viewport.mobile` 总是 `false`（浏览器不模拟手机），App 因而把触摸换成鼠标：点一下是 `mouse` 的 move、down、up，拖动是 `wheel`。`wheel` 的 `delta_x`、`delta_y` 和 DOM 的 `WheelEvent` 同号（正数向下、向右滚）。`mouse` 的 `move` 带着按住的键（没有按键时 `button: "none"`）。
 - `nav url` 的网址不带 scheme 时服务端补 `https://`。组里没有标签页时，`nav url` 等于 `tab open` 带这个网址。
-- `tab open` 新开的标签页先是空白页，套上这条连接的视口之后才去网址，所以第一个请求就带着手机的 UA。它成为这个组的当前标签页。`close`、`activate` 只能指本组的标签页。
+- `tab open` 新开的标签页先是空白页，套上这条连接的视口之后才去网址，所以第一个请求时页面就是这个尺寸。它成为这个组的当前标签页。`close`、`activate` 只能指本组的标签页。
 - `modifiers` 是位掩码：Alt 1、Ctrl 2、Meta 4、Shift 8。
 - `key` 的 `key`、`code` 用 DOM 的 `KeyboardEvent` 的值（软键盘没有 `code` 时留空）。可打印字符在 `down` 的 `text` 里带上；带 `text` 的按键会打出这个字，不带的只是按键（快捷键、方向键、Backspace）。`Enter` 不带 `text` 时服务端补上回车。
 - `text` 是整段上屏的文字（输入法提交的、粘贴的）。`composition` 是输入法组字的中间状态；`text` 为空表示取消组字。组字结束时上屏的文字发 `kind: "text"`，它替换掉正在组的字。
-- `viewport.mobile` 为真时服务端按手机模拟：触屏（5 个触点）、设备像素比 2、UA 是 `Mozilla/5.0 (Linux; Android 10; K) … Chrome/<主版本>.0.0.0 Mobile Safari/537.36`；为假是这个尺寸的桌面窗口，UA 是浏览器自己的。尺寸取值会被夹到 320–2560 × 320–2560。
+- 视口是这个尺寸的桌面窗口：`viewport.mobile` 不起作用，不模拟手机（不改 UA、不开触屏、设备像素比是 1），手机看时只是窗口窄，页面按宽度排版。标签页的窗口高出页面一条浏览器工具栏（87 个 CSS 像素，`outerHeight - innerHeight`），宽度和页面相同；比浏览器窗口的最小宽度（500）还窄的视口不改窗口的宽度。尺寸取值会被夹到 320–2560 × 320–2560。
 - 一个标签页同时只有一个生效的视口：正在看它的连接里，最近设置视口的那一条的。`hello` 和每一条 `viewport` 消息都算设置一次，内容和上次一样也算。别的连接看到的是这个视口下的画面，各条连接的 `state.viewport` 报的都是它；和自己发的不一样，说明画面不是按自己的尺寸排的，想换回来就再发一次 `viewport`。那条连接断开、或者不再看这个标签页之后，标签页换成剩下的连接里最近设置的那个视口，页面按它重新排版；没有连接在看了，标签页保持最后的设置。因为别的连接来了或走了而换视口时，页面不重新加载。帧的 `pixel_ratio` 和画质（`jpeg_quality`）算视口的一部分：标签页按生效视口那条连接的值出帧，`state.viewport` 带着生效的 `pixel_ratio`。`quality` 消息改的是这条连接自己的值，不算设置视口：这条连接的视口正在生效时马上用上，否则等它的视口生效时（别的连接走了，或者它再发 `viewport`）才用上。
-- `pixel_ratio`（`hello.viewport`、`viewport`、`quality` 里都可以带）是客户端要的帧的像素密度：一个 CSS 像素对应帧里几个像素，取 1–2（超出的夹进来，保留两位小数）。`hello` 不带是 1；`viewport`、`quality` 不带时沿用这条连接上一次的值。它只改帧，不改页面：布局、`innerWidth`、`devicePixelRatio`（手机版仍是模拟的 2，桌面版仍是 1）、输入坐标都不变。做法：浏览器有两块屏（§6 的 `--screen-info`），第二块的像素密度是 2。生效值大于 1 时服务端把标签页的窗口挪到第二块屏，再重套一次视口（挪窗口会冲掉设备模拟），截屏流就按 2 倍出帧；在 1 和 2 之间时截屏流再用 `maxWidth`、`maxHeight` 缩到这个倍数；回到 1 时挪回第一块屏。密度变了，截屏流重开一次（会出一帧）。代价见 §3.5。副作用：密度大于 1 的期间（没有连接在看之后也保持），Agent 的 Playwright 截图也是这个密度的像素（`page.screenshot()` 的宽高翻倍，手机版和桌面版都是）；Agent 操作时设备模拟会失效（见下面 Playwright 那条），这期间页面的 `devicePixelRatio` 是这块屏的 2；页面在挪窗口时收到一次尺寸不变的 `resize`；`screen.isExtended` 恒为真。
-- `viewport` 消息里的 `mobile` 和这条连接上一次的不一样（切到桌面版或切回来），当前标签页会重新加载一次，因为网站按 UA 决定下发什么。只改尺寸不重新加载。
-- Agent 的 Playwright 截一张图，页面上的设备模拟就失效了（Chromium 按截图那条调试会话的状态恢复）：设备像素比、`screen` 的尺寸回到没模拟的样子，没有 viewport meta 的页面连布局宽度和帧的尺寸都变。所以这个组的操作方从 `agent` 回到 `user` 时（租约被释放、过期、被接手作废），服务端给正在看的标签页把生效的视口重套一次（连同窗口所在的屏），不重新加载页面；连接开始显示一个标签页时也重套。Agent 操作期间不重套（会和它正在截的图打架），这段时间画面可能不是手机的样子。
+- `pixel_ratio`（`hello.viewport`、`viewport`、`quality` 里都可以带）是客户端要的帧的像素密度：一个 CSS 像素对应帧里几个像素，取 1–2（超出的夹进来，保留两位小数）。`hello` 不带是 1；`viewport`、`quality` 不带时沿用这条连接上一次的值。它只改帧，不改页面：布局、`innerWidth`、`devicePixelRatio`（仍是 1）、输入坐标都不变。做法：浏览器有两块屏（§6 的 `--screen-info`），第二块的像素密度是 2。生效值大于 1 时服务端把标签页的窗口挪到第二块屏，再重套一次视口（挪窗口会冲掉设备模拟），截屏流就按 2 倍出帧；在 1 和 2 之间时截屏流再用 `maxWidth`、`maxHeight` 缩到这个倍数；回到 1 时挪回第一块屏。密度变了，截屏流重开一次（会出一帧）。代价见 §3.5。副作用：密度大于 1 的期间（没有连接在看之后也保持），Agent 的 Playwright 截图也是这个密度的像素（`page.screenshot()` 的宽高翻倍）；Agent 操作时设备模拟会失效（见下面 Playwright 那条），这期间页面的 `devicePixelRatio` 是这块屏的 2；页面在挪窗口时收到一次尺寸不变的 `resize`；`screen.isExtended` 恒为真。
+- 改视口不重新加载页面（浏览器的身份不随看它的设备变）。
+- Agent 的 Playwright 截一张图，页面上的设备模拟就失效了（Chromium 按截图那条调试会话的状态恢复）：设备像素比、`screen` 的尺寸回到没模拟的样子，没有 viewport meta 的页面连布局宽度和帧的尺寸都变。所以这个组的操作方从 `agent` 回到 `user` 时（租约被释放、过期、被接手作废），服务端给正在看的标签页把生效的视口重套一次（连同窗口所在的屏），不重新加载页面；连接开始显示一个标签页时也重套。Agent 操作期间不重套（会和它正在截的图打架），这段时间画面可能是窗口的尺寸而不是视口的。
 - `quality`：`max_fps` 取 1–30，默认 15；`jpeg_quality` 取 10–95，默认 60；`pixel_ratio` 见上。三个字段都可以省略，和这条连接上一次的值一样时什么都不做。`max_fps` 只管发给这条连接的帧；`jpeg_quality`、`pixel_ratio` 是标签页的，按上面的规则取生效视口那条连接的。客户端怎么按网速调它们见 §3.5。
 - 操作方是 `agent` 时，`input`、`nav`、`tab` 被丢弃，服务端回一条 `error`（`code: "agent_in_control"`），每秒最多一条。`ack`、`viewport`、`quality`、`respond`、`ping` 照常处理。
 
@@ -265,10 +265,10 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
   "active_tab_id": "E3F1…",
   "url": "https://example.com/", "title": "Example", "loading": false,
   "can_go_back": true, "can_go_forward": false,
-  "viewport": { "width": 412, "height": 915, "mobile": true, "pixel_ratio": 2 },   // 当前标签页生效的视口，不一定是这条连接发的
+  "viewport": { "width": 412, "height": 915, "mobile": false, "pixel_ratio": 2 },   // 当前标签页生效的视口，不一定是这条连接发的；mobile 总是 false
   "running": true }
 
-{ "type": "request", "request_id": "r12", "kind": "select|dialog|file_chooser|download|permission",
+{ "type": "request", "request_id": "r12", "kind": "select|dialog|file_chooser|download",
   "tab_id": "E3F1…", /* 各 kind 的字段见 §3.4 */ }
 { "type": "request_closed", "request_id": "r12" }    // 请求已经失效（页面走了、别处处理了）
 
@@ -283,7 +283,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - 状态一变就发 `state`，内容是全量；没变不发。会让它变的有：组的状态（操作方、接手、Agent 状态、租约、标签页列表）、当前标签页、它的网址、标题、是否在加载、能不能前进后退、当前标签页生效的视口（§3.2；组里没有标签页时是这条连接自己的）、浏览器是否在运行。组里没有标签页（或浏览器没在运行）时 `active_tab_id` 是 `null`，`url`、`title` 是空串。
 - `frame_meta` 的 `width`、`height` 是 CSS 像素，和输入坐标同一个坐标系；JPEG 自己的像素尺寸是它们乘以生效的 `pixel_ratio`（§3.2；1 倍时两者相等，1 和 2 之间时可能差 1 个像素）。客户端按 `width`、`height` 显示，坐标也按它们换算，不看 JPEG 的像素。`seq` 每条连接从 1 递增。
 - `focus`：当前标签页里获得焦点的元素变了。`editable` 为真表示它能输入文字（`input`、`textarea`、`contenteditable`），这时带 `input_type`（`input` 的 `type`，另有 `textarea`、`contenteditable`）和它在视口里的位置 `rect`（整数）；焦点离开可编辑元素时发 `editable: false`。App 据此弹出和收起软键盘。切换标签页、页面跳转后服务端重发一次。算作能输入文字的 `input` 类型：`text`、`search`、`url`、`tel`、`email`、`password`、`number`、`date`、`time`、`datetime-local`、`month`、`week`（日期时间这几种第一期当文本框用）；只读、禁用的不算。
-- 重连之后，还没处理完的 `select`、`dialog`、`file_chooser` 请求由服务端在 `ready` 之后重发；`download`、`permission` 不重发。
+- 重连之后，还没处理完的 `select`、`dialog`、`file_chooser` 请求由服务端在 `ready` 之后重发；`download` 不重发。
 - 握手阶段的 `error.code`：`hello_timeout`、`bad_hello`、`unauthorized`、`browser_unavailable`，发完就关闭连接。
 - `code` 是 `browser_unavailable` 的 `error`，握手阶段的和握手之后的一样，原因是模块关着、节点没装 ext-core、浏览器还没下载好时另带 `unavailable_code`（§2.1、§2.3）：`{ "type": "error", "code": "browser_unavailable", "unavailable_code": "not_downloaded", "message": "…" }`。别的原因没有这个字段。
 - 握手之后的 `error.code`，连接不关闭：`agent_in_control`；`bad_message`（不是 JSON、不认识的 `type`、字段不对）；以及做不成的 `nav`、`tab`、`respond` 带的 §2.3 的错误码（`no_such_tab`、`too_many_tabs`、`invalid_argument`、`browser_unavailable`、`no_such_request`）。
@@ -297,7 +297,6 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 | `dialog` | `dialog_type: alert\|confirm\|prompt\|beforeunload`、`message`、`default_prompt?` | `{accept: bool, prompt_text?}`。60 秒没有回应时服务端按 §2.2 的规则关掉它并发 `request_closed` |
 | `file_chooser` | `multiple`、`accept: [".png", "image/*"…]` | 选好后调 `browser.upload` 或 PUT 上传（§4），不用 `respond`；取消时 `respond {cancel: true}` |
 | `download` | `download_id`、`name`、`size`、`state: completed\|failed` | 不用回应。要存到 Zone 时调 `browser.download_export` |
-| `permission` | `permission`（如 `geolocation`）、`origin` | 不用回应：服务端已经拒绝，这条只是告知 |
 
 请求发给正在看这个标签页所在组的每一条连接。`select`、`dialog`、`file_chooser` 是等回应的：有一条连接回应了（或请求失效了），所有收到过它的连接都会收到 `request_closed`，回应的那一条也收到。对已经结束的请求再 `respond` 得到 `error`（`no_such_request`）。一个标签页同一种请求同时只有一个，新的来了旧的就结束。标签页关了、浏览器停了，它的请求全部结束；页面跳到别的文档，它的 `select` 和 `file_chooser` 结束。`request_id` 在 Agent Service 重启之后不延续。
 
@@ -332,11 +331,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - 服务端记着最近 64 个下载，每个留 24 小时，过了就连文件一起删。记录在内存里，Agent Service 重启后以前的 `download_id` 都不认（`no_such_download`）。
 - `browser.download_export` 把文件登记成命名对象，绑进这个 Agent 的 `artifacts` 桶，再把它交给调用者（nfs-server 的 `grant_holdings`），返回 `{obj_id, name, size}`。App 拿 `obj_id` 走 `useSaveToZone`，由用户自己的会话 `commit_object` 存进 Zone。交给调用者这一步要 nfs-server 的 `obj://ndm/grant`，按现在的 RBAC 它不总是成立（Agent 是只读权限、或 owner 不是管理员时没有这一项）：被拒绝时只记日志，`obj_id` 照常返回。owner 是管理员时不受影响（管理员的会话读得到任何对象）；owner 是普通用户时 `commit_object` 会被拒绝，要等 RBAC 补上。
 
-`permission`：
-
-- 页面会弹权限提示的那些权限，浏览器启动后一律设成拒绝：`geolocation`、`notifications`、`push`、`camera`、`microphone`、`midi`、`clipboard-read`、`idle-detection`、`window-management`、`local-fonts`、`nfc`、`storage-access`、`top-level-storage-access`、`display-capture`、`payment-handler`、`captured-surface-control`、`speaker-selection`。
-- 告知靠注入的脚本，所以只覆盖脚本看得到的这几种调用：`geolocation`（`getCurrentPosition`、`watchPosition`）、`camera` 和 `microphone`（`getUserMedia`）、`notifications`（`Notification.requestPermission`）、`clipboard-read`（`clipboard.read`、`readText`）、`midi`（`requestMIDIAccess`），并且只在顶层文档里。其他权限只是被拒绝，不告知。
-- 同一个标签页、同一个权限、同一个来源一分钟内只告知一次。`origin` 是发起请求的页面的来源。
+权限不是这里的请求：页面要的权限由浏览器自己处理，服务端不在页面里注入脚本、不替用户拒绝。无头浏览器没人看得到它的权限提示，请求一律被拒（`permissions.query` 先是 `prompt`，请求过后是 `denied`），App 不会收到通知；有显示器的浏览器把提示画在显示器上（§3.6）。
 
 ### 3.5 帧的节奏
 
@@ -374,7 +369,7 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 - 视口：最近设置视口的那条连接的 `width`、`height` 就是显示器的 CSS 尺寸，浏览器的窗口铺满它（页面打开的弹出窗口保持自己的大小，挪进显示器里）。宽度至少 500（浏览器的窗口不比这更窄），更窄的视口得到 500 宽的显示器，由 App 缩小显示。`mobile` 不起作用：不模拟手机，不改 UA，不开触屏，不重新加载；`state.viewport.mobile` 总是 `false`，App 因而把触摸换成鼠标和滚轮（§3.2）。改视口时浏览器的窗口跟着变，页面像在桌面上拖窗口一样重排。
 - 像素：浏览器按固定的设备像素比画（`Status.device_scale_factor`，§6），页面的 `devicePixelRatio` 就是它，不随连接和网速变。连接要的 `pixel_ratio`（取 1 到设备像素比）只决定帧缩到多大：显示器本来的像素按比例缩小后编码。
 - 输入：`mouse` 是显示器上的指针（按下的键随消息）；`wheel` 换成滚轮的格数（每格 53 个 CSS 像素，不足一格的留到下一次）；`key` 换成 X 的 keysym 按下、抬起，消息的 `modifiers` 先同步成按住的修饰键；`text` 一个字符一个字符地打（非拉丁字符由 Xvnc 临时映射到空闲的键上）；`composition` 不处理：输入法自己显示组字，上屏的文字作为 `text` 到页面。`touch` 也收：没移动就是在按下处点一下，移动超过 8 个 CSS 像素就是反方向的滚轮。
-- 页面之外的请求（§3.4）：没有 `select`、`dialog`、`permission`。下拉列表、JS 弹框、权限提示都是浏览器自己的，画在显示器上，用户直接点；权限的选择由浏览器记在用户数据里，不再一律拒绝。`file_chooser` 照旧由服务端拦下、交给 App 上传本机或 Zone 的文件（页面拿到的仍是那几个文件）；`download` 照旧。没人在看、也不是 Agent 在操作时开着的 JS 弹框照 §2.2 关掉，只因为它会卡住 Agent 的 `connectOverCDP`。
+- 页面之外的请求（§3.4）：没有 `select`、`dialog`。下拉列表、JS 弹框、权限提示都是浏览器自己的，画在显示器上，用户直接点；权限的选择由浏览器记在用户数据里，不再一律拒绝。`file_chooser` 照旧由服务端拦下、交给 App 上传本机或 Zone 的文件（页面拿到的仍是那几个文件）；`download` 照旧。没人在看、也不是 Agent 在操作时开着的 JS 弹框照 §2.2 关掉，只因为它会卡住 Agent 的 `connectOverCDP`。
 - `focus`：仍由服务端在单独隔离环境里的脚本报告（只监听焦点，不拦任何事件、不改页面的 API），`rect` 是显示器上的坐标。
 - 浏览器之外的显示器：服务端用它自己到显示器的 VNC 连接（只有服务端能打开的本地套接字），浏览器的调试连接只用来列标签页、读网址标题、导航、上传文件、管窗口的大小和前后（组的当前标签页的窗口在最前），不用来出帧和输入。
 
@@ -588,7 +583,7 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 
 - 虚拟显示器（`display: virtual`）：浏览器启动前服务端起一个 `Xvnc :<n>`（`n` 从 20 起找空闲的，`-geometry` 是默认 1280×800 乘设备像素比，`-dpi` 96 乘设备像素比，`-depth 24`），不开 TCP（`-rfbport -1 -nolisten tcp`），只开一个本地套接字 `/tmp/opendan-display-<n>.rfb`（`-rfbunixmode 0600`，不要密码，`-AcceptSetDesktopSize`）；日志在 `display.log`。浏览器停掉后它也停掉，浏览器崩溃重启时一起重来。`Xvnc` 来自 Agent 的容器镜像（`build_aios`，一个占位包替掉它用不到的 Mesa 和 Perl，见 `doc/app_service/paios容器需求.md`）；`OPENDAN_XVNC` 可以指定别的。有显示器时浏览器的参数：`--user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --disable-blink-features=CaretBlinking --window-position=0,0 --window-size=<显示器的 CSS 尺寸> --force-device-scale-factor=<设备像素比>`，环境变量 `DISPLAY=:<n>`；不带 `--headless`、`--user-agent`、`--screen-info`。
 - 调试端口：服务端先在回环地址上找一个空闲端口给浏览器（`--remote-debugging-port=<端口>`），从浏览器标准错误里的 `DevTools listening on ws://127.0.0.1:<端口>/devtools/browser/<id>` 读到地址（有窗口的浏览器给了端口就不写 `DevToolsActivePort`）；端口被别的进程抢了（`Cannot start http server for devtools`）就换一个再起，最多 4 次。
-- 无头时的启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --screen-info={0,0 800x600}{1600,0 1600x1200 devicePixelRatio=2} --disable-blink-features=CaretBlinking`。`--screen-info` 给无头浏览器两块屏：第一块和不带这个参数时一样（800×600，像素密度 1），标签页的窗口都开在这里；第二块 CSS 尺寸相同、像素密度 2，有连接要更密的帧时把标签页的窗口挪过去（`Browser.setWindowBounds` 的 `left` 设 1600，回来设 0；只设位置，不设宽高），帧就按 2 倍出（§3.2 `pixel_ratio`）。这个参数本身不改变什么：没有窗口在第二块屏时 CPU 和不带它一样，只有 `screen.isExtended` 变成真。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。浏览器来自 ext-core（读得到 `browser/versions.json`）时再加 `--user-agent=<同版本有窗口的 Chrome 的 UA>`：无头模式默认的 UA 带 `HeadlessChrome`，很多网站会把它当机器人。`versions.json` 随包，按启动器的位置找（`<启动器所在目录>/../store/ext-core/browser/versions.json`），和浏览器本体下载到哪里无关。Unix 上有效用户是 root 时加 `--no-sandbox`（两种跑法都是）；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
+- 无头时的启动参数：`--headless=new --user-data-dir=<profile> --disk-cache-dir=<cache> --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-startup-window --window-size=1280,800 --screen-info={0,0 2560x1440}{2560,0 5120x2880 devicePixelRatio=2} --disable-blink-features=CaretBlinking`。`--screen-info` 给无头浏览器两块屏（尺寸是设备像素）：第一块 2560×1440、像素密度 1，标签页的窗口都开在这里；第二块 CSS 尺寸相同（2560×1440）、像素密度 2，有连接要更密的帧时把标签页的窗口挪过去（`Browser.setWindowBounds` 的 `left` 设 2560，回来设 0），帧就按 2 倍出（§3.2 `pixel_ratio`）。两块屏都比任何窗口大，页面看到的 `screen` 两边一样。有连接看一个标签页时窗口的大小跟着视口（§3.2）。这个参数本身不改变什么：没有窗口在第二块屏时 CPU 和不带它一样，只有 `screen.isExtended` 变成真。最后一个让输入框的光标常亮不闪（闪烁的光标每秒让截屏流出两帧整帧）；它是 Blink 的特性开关，Chromium 159 认、156 不认，换 Chromium 版本时要重跑光标那条真浏览器用例（`browser::screen_tests::real::the_caret_of_a_focused_field_paints_no_frames`）。不带 `--user-agent`：它让 UA-CH（`navigator.userAgentData` 和 `Sec-CH-UA-*` 请求头）的高熵值变空，真浏览器不会这样。无头浏览器的身份改由服务端经 DevTools 给：启动后先在一个单独的浏览上下文里开 `chrome://version`（客户端提示要安全上下文），读出浏览器自己的 UA（`Browser.getVersion`）和 UA-CH（`getHighEntropyValues`），关掉；UA 里的 `HeadlessChrome/` 换成 `Chrome/`，UA-CH 原样。服务端另开一条到浏览器的调试连接，`Target.setAutoAttach {autoAttach: true, waitForDebuggerOnStart: true, flatten: true}`：每个新的页面、跨源 iframe、worker 一出现就停在启动处，服务端给它设上这份身份（页面和 iframe 用 `Emulation.setUserAgentOverride`，worker 用 `Network.setUserAgentOverride`，都带 `userAgentMetadata`），页面和 iframe 再对自己的子目标做同样的自动附着，然后放行（`Runtime.runIfWaitingForDebugger`）。浏览器在 `Target.createTarget` 时就发出页面的第一个请求，来不及设，所以服务端开带网址的标签页时（`browser.open`、重启后恢复的标签页）先开空白页，等它设好身份再去网址。这条连接断开（浏览器停了）身份就随之没了，下次启动重新读。读不出 UA-CH 时只换 UA，UA-CH 为空。同一条连接给每个页面开 WebAuthn 的虚拟环境（`WebAuthn.enable {enableUI: false}`），只放一个什么都答不对的平台验证器（`ctap2`、`internal`、`isUserVerified: false`、`setResponseOverrideBits {isBadUP, isBadUV}`）：页面要通行密钥或建通行密钥时立刻得到 `NotAllowedError`，和用户点了取消一样，网站会换别的验证方式。不这样的话无头浏览器显示不了通行密钥的对话框，请求会一直挂着（Google 登录停在 “Verifying it's you… Complete sign-in using your passkey”）。副作用：`PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()` 是真（有 Touch ID 或 Windows Hello 的电脑上真浏览器也是真）。Unix 上有效用户是 root 时加 `--no-sandbox`（两种跑法都是）；不是 root 时先不加，因为 `No usable sandbox` 起不来时加上再试一次。调试端口只监听回环地址。下载用 `Browser.setDownloadBehavior {behavior: "allowAndName", downloadPath: <downloads>, eventsEnabled: true}` 指到下载目录。
 - 浏览器没有自己的标签页（`--no-startup-window`）：每个标签页都属于某个组。
 - 用户数据目录上一次留下的锁（`SingletonLock` 等，记着主机名和进程号，容器每次重建主机名都会变）在启动前删掉；锁指着的进程还在、并且确实是用这个目录起的浏览器时，先把它结束。
 - Chromium 在 `TMPDIR` 下建一个套接字，路径太长（`TMPDIR` 超过约 60 字节）就起不来。Agent Service 自己的 `TMPDIR` 超过 50 字节时，浏览器进程改用 `/tmp`。

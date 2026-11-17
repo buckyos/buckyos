@@ -286,6 +286,35 @@ function makeCsv(): Blob {
   return new Blob([['Name,Email,City,Joined', ...rows].join('\n')], { type: 'text/csv' })
 }
 
+function makeDrawio(): Blob {
+  const cell = (id: string, value: string, style: string, x: number, y: number, w: number, h: number, parent = '1') =>
+    `<mxCell id="${id}" value="${value}" style="${style}" vertex="1" parent="${parent}"><mxGeometry x="${x}" y="${y}" width="${w}" height="${h}" as="geometry"/></mxCell>`
+  const edge = (id: string, value: string, source: string, target: string, style = 'edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;') =>
+    `<mxCell id="${id}" value="${value}" style="${style}" edge="1" parent="1" source="${source}" target="${target}"><mxGeometry relative="1" as="geometry"/></mxCell>`
+  const page = (id: string, name: string, cells: string[]) =>
+    `<diagram id="${id}" name="${name}"><mxGraphModel grid="1" gridSize="10" page="1" pageWidth="850" pageHeight="1100"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${cells.join('')}</root></mxGraphModel></diagram>`
+  const flow = page('flow', 'Order flow', [
+    `<mxCell id="lane" value="Checkout" style="swimlane;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="20" y="20" width="560" height="380" as="geometry"/></mxCell>`,
+    cell('start', 'Start', 'ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;', 40, 50, 100, 50, 'lane'),
+    cell('pay', 'Take payment', 'rounded=1;whiteSpace=wrap;html=1;', 210, 45, 140, 60, 'lane'),
+    cell('ok', 'Paid?', 'rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;', 220, 160, 120, 80, 'lane'),
+    cell('ship', 'Ship order', 'rounded=1;whiteSpace=wrap;html=1;', 410, 170, 120, 60, 'lane'),
+    cell('retry', 'Notify customer', 'shape=document;whiteSpace=wrap;html=1;boundedLbl=1;', 220, 290, 120, 70, 'lane'),
+    cell('db', 'Orders', 'shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;size=12;fillColor=#f5f5f5;strokeColor=#666666;', 640, 180, 80, 90),
+    edge('e1', '', 'start', 'pay'),
+    edge('e2', '', 'pay', 'ok'),
+    edge('e3', 'yes', 'ok', 'ship'),
+    edge('e4', 'no', 'ok', 'retry'),
+    edge('e5', 'save', 'ship', 'db', 'edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;endFill=0;'),
+  ])
+  const notes = page('notes', 'Notes', [
+    cell('n1', 'Payments are retried three times before the customer is told.', 'shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=6;', 40, 40, 220, 100),
+    cell('n2', 'Cloud', 'ellipse;shape=cloud;whiteSpace=wrap;html=1;', 320, 40, 140, 90),
+    cell('n3', '订单状态以数据库为准', 'text;html=1;align=left;verticalAlign=middle;', 40, 170, 240, 30),
+  ])
+  return new Blob([`<mxfile host="mock">${flow}${notes}</mxfile>`], { type: 'application/octet-stream' })
+}
+
 function makeWav(seconds = 4, seed = 'tone'): Blob {
   const sampleRate = 22050
   const frames = seconds * sampleRate
@@ -426,6 +455,7 @@ const SAMPLES: SampleSpec[] = [
   { name: 'ledger.xls', make: () => new Blob(['\u00d0\u00cf\u0011\u00e0mock-xls'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 88_000 },
   { name: 'budget.xlsx', make: () => makeBudgetXlsx('Budget 2026') },
   { name: 'contacts.csv', make: makeCsv },
+  { name: 'order-flow.drawio', make: makeDrawio },
   { name: 'annual-report.pdf', make: () => makePdf('Annual report', ['A longer document: pages are drawn as they scroll into view.'], 12) },
   { name: 'handbook.epub', make: () => new Blob(['PK\u0003\u0004mimetypeapplication/epub+zip'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 640_000 },
   { name: 'demo-clip.mp4', make: () => new Blob(['\u0000\u0000\u0000\u0018ftypisom'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 12_400_000 },
@@ -491,6 +521,9 @@ function libraryBlob(entry: FileEntry): Promise<Blob> {
         return makeBudgetXlsx(label)
       case 'csv':
         return makeCsv()
+      case 'drawio':
+      case 'dio':
+        return makeDrawio()
       case 'wav':
       case 'mp3':
       case 'm4a':

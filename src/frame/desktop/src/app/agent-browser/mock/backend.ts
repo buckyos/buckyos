@@ -353,12 +353,9 @@ function click(socket: MockSocket, group: MockGroup, tab: MockTab, x: number, y:
       emitRequest(agentId, group.id, { ...base, kind: 'download', download_id: downloadId, name: 'report.txt', size: 2048, state: 'completed' }, false)
       break
     }
-    case 'location': {
-      let origin = page.url
-      try { origin = new URL(page.url).origin } catch { /* shown as it is */ }
-      emitRequest(agentId, group.id, { ...base, kind: 'permission', permission: 'geolocation', origin }, false)
+    case 'location':
+      // A permission is the browser's to ask for: the service tells the App nothing.
       break
-    }
     case 'newTab':
       try { openTab(agentId, group.id, `${page.url.split('#')[0]}#popup`); emitFocus(agentId, group.id) } catch { /* the tab limit */ }
       break

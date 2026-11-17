@@ -10,6 +10,7 @@
 //! - [`process`]: the Chromium process (start, stop, what it leaves behind).
 //! - [`display`]: the virtual display a headed browser draws on; [`rfb`]: how it is read and operated.
 //! - [`cdp`]: the DevTools Protocol client.
+//! - [`identity`]: what a headless browser's pages are told it is; passkeys refused.
 //! - [`groups`]: groups, tabs, leases, who operates.
 //! - [`sessions`]: the browser conversation and its records.
 //! - [`rpc`]: `browser.*`; [`http`]: the screen and upload entries.
@@ -24,6 +25,7 @@ pub mod cdp;
 pub mod display;
 pub mod groups;
 pub mod http;
+pub mod identity;
 pub mod input;
 pub mod process;
 pub mod proxy;
@@ -159,6 +161,8 @@ struct Proc {
     cdp: Arc<CdpClient>,
     exited: watch::Receiver<bool>,
     tracker: tokio::task::JoinHandle<()>,
+    /// A headless browser's connection that dresses its targets as they start ([`identity`]).
+    dresser: Option<tokio::task::JoinHandle<()>>,
     started: Instant,
 }
 
@@ -189,6 +193,8 @@ struct Shared {
     attaching: HashSet<String>,
     /// JS dialogs that are open, by tab: the `Page.javascriptDialogOpening` they came with.
     dialogs: HashMap<String, Value>,
+    /// A headless browser whose pages are told what it is as they start: the pages that were.
+    dressed: Option<Arc<identity::Dressed>>,
     last_active: Instant,
     stopping: bool,
     restoring: bool,
@@ -287,6 +293,7 @@ impl BrowserModule {
                 guard_seq: 0,
                 attaching: HashSet::new(),
                 dialogs: HashMap::new(),
+                dressed: None,
                 last_active: Instant::now(),
                 stopping: false,
                 restoring: false,
@@ -479,10 +486,14 @@ impl BrowserModule {
     }
 
     async fn open_in(&self, cdp: &CdpClient, group_id: &str, url: &str) -> Result<String, BrowserError> {
+        // A page that is told what the browser is as it starts opens blank and goes to `url` once it was
+        // told: a tab opened at an address sends its first request before anything is set for it.
+        let dressed = self.shared().dressed.clone().filter(|_| url != "about:blank");
+        let first = if dressed.is_some() { "about:blank" } else { url };
         // A window of its own: tabs of one window hide each other.
         let expected = self.expect_tabs(group_id);
         log::debug!("browser: opening a tab of group {group_id} at {url}");
-        let answer = cdp.send(None, "Target.createTarget", json!({ "url": url, "newWindow": true })).await;
+        let answer = cdp.send(None, "Target.createTarget", json!({ "url": first, "newWindow": true })).await;
         log::debug!("browser: the tab is opened: {answer:?}");
         drop(expected);
         let tab_id = answer?["targetId"]
@@ -491,6 +502,20 @@ impl BrowserModule {
             .to_string();
         self.shared().groups.tab_seen(&tab_id, group_id, url, "");
         self.bump();
+        if let Some(dressed) = dressed {
+            if !dressed.wait(&tab_id, ATTACH_WAIT).await {
+                log::warn!("browser: tab {tab_id} was not told what the browser is in time; it goes to {url} anyway");
+            }
+            let went = match self.tab_session(&tab_id).await {
+                Ok((cdp, session)) => cdp.send(Some(&session), "Page.navigate", json!({ "url": url })).await.map_err(BrowserError::from),
+                Err(e) => Err(e),
+            };
+            // An address the browser does not take opens no tab, as it does not when a tab is opened at it.
+            if let Err(e) = went {
+                let _ = cdp.send(None, "Target.closeTarget", json!({ "targetId": tab_id })).await;
+                return Err(e);
+            }
+        }
         Ok(tab_id)
     }
 
@@ -650,8 +675,26 @@ impl BrowserModule {
             let keeper = tokio::spawn(self.me().keep_windows(cdp.clone(), display.clone()));
             (display, keeper)
         });
-        life.proc = Some(Proc { generation, tree, display, cdp: cdp.clone(), exited, tracker, started: Instant::now() });
+        life.proc = Some(Proc { generation, tree, display, cdp: cdp.clone(), exited, tracker, dresser: None, started: Instant::now() });
 
+        // Before its tabs are discovered: the page that reads its identity is not one of them.
+        if !self.headed() {
+            let identity = match identity::Identity::read(&cdp).await {
+                Ok(identity) => Some(identity),
+                Err(e) => {
+                    log::warn!("browser: what it is was not read ({e}); its pages say `HeadlessChrome`");
+                    None
+                }
+            };
+            let told = identity.is_some();
+            match identity::dress_all(&endpoint, identity).await {
+                Ok((dresser, dressed)) => {
+                    life.proc.as_mut().expect("just set").dresser = Some(dresser);
+                    self.shared().dressed = told.then_some(dressed);
+                }
+                Err(e) => log::warn!("browser: its pages are not dressed as they start: {e}"),
+            }
+        }
         let prepared = async {
             cdp.send(None, "Target.setDiscoverTargets", json!({ "discover": true })).await?;
             let version = cdp.send(None, "Browser.getVersion", json!({})).await?;
@@ -741,6 +784,9 @@ impl BrowserModule {
     /// The browser of `proc` is gone: its tabs are kept to be opened again.
     fn gone(&self, proc: &Proc) {
         proc.tracker.abort();
+        if let Some(dresser) = &proc.dresser {
+            dresser.abort();
+        }
         {
             let mut s = self.shared();
             s.groups.suspend();
@@ -750,6 +796,7 @@ impl BrowserModule {
             s.port = None;
             s.attaching.clear();
             s.dialogs.clear();
+            s.dressed = None;
             s.stopping = false;
             s.restoring = false;
         }
@@ -925,6 +972,9 @@ impl BrowserModule {
         s.attaching.remove(tab_id);
         s.dialogs.remove(tab_id);
         s.popups.remove(tab_id);
+        if let Some(dressed) = &s.dressed {
+            dressed.forget(tab_id);
+        }
         s.groups.tab_removed(tab_id)
     }
 

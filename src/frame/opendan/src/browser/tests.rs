@@ -644,7 +644,7 @@ async fn the_browser_is_usable_as_soon_as_the_node_downloaded_it() {
     assert!(b.fake.pid().is_some() && m.running(), "acquiring started it");
     let status = m.status().await;
     assert_eq!((status["running"].clone(), status["version"].clone()), (json!(true), json!({ "browser": "1.2.3.4", "playwright": "1.65.1" })));
-    assert!(b.fake.args().contains("--user-agent=") && b.fake.args().contains("Chrome/159.0.0.0"), "the package's browser gets a windowed browser's user agent");
+    assert!(!b.fake.args().contains("--user-agent="), "its pages are told what it is over DevTools");
     m.release(&lease.lease_id, None, None).unwrap();
     m.shutdown().await;
 }
@@ -858,6 +858,90 @@ mod real {
         let tab = m.group(DEFAULT_GROUP).tabs[0].clone();
         assert_eq!(eval(m, &tab.tab_id, "document.cookie").await, "");
         housekeeping.abort();
+        m.shutdown().await;
+    }
+
+    /// A site of two origins (`localhost` and `127.0.0.1` on one port): `/top` embeds `/frame` of the
+    /// other origin and starts a worker; what each says it is, it posts to the top page. The user
+    /// agents its requests came with are kept.
+    async fn two_origin_site() -> (u16, Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let agents = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = agents.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let kept = kept.clone();
+                tokio::spawn(async move {
+                    let mut request = [0u8; 8192];
+                    let read = stream.read(&mut request).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let agent = request.lines().find_map(|l| l.strip_prefix("User-Agent: ").or_else(|| l.strip_prefix("user-agent: "))).unwrap_or_default().to_string();
+                    kept.lock().unwrap().push((path.clone(), agent));
+                    const SAYS: &str = "navigator.userAgentData.getHighEntropyValues(['fullVersionList', 'architecture']).then((h) => ({ ua: navigator.userAgent, versions: h.fullVersionList.length, architecture: h.architecture }))";
+                    let body = if path.starts_with("/frame") {
+                        format!("<title>Frame</title><script>{SAYS}.then((said) => parent.postMessage({{ frame: said }}, '*'))</script>")
+                    } else {
+                        let worker = format!("{SAYS}.then((said) => postMessage(said))");
+                        format!(
+                            "<title>Top</title><script>window.said = {{}};\
+                             addEventListener('message', (e) => Object.assign(window.said, e.data));\
+                             {SAYS}.then((said) => window.said.top = said);\
+                             new Worker(URL.createObjectURL(new Blob([{worker:?}]))).onmessage = (e) => window.said.worker = e.data;\
+                             </script><iframe src='http://127.0.0.1:{port}/frame'></iframe>"
+                        )
+                    };
+                    let _ = stream
+                        .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                        .await;
+                });
+            }
+        });
+        (port, agents)
+    }
+
+    /// A headless browser is to its sites what the same browser with a window is: its user agent
+    /// without `HeadlessChrome`, its client hints its own — in its pages, popups, frames of other
+    /// sites and workers, from their first request on. A passkey request is refused at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs OPENDAN_CHROMIUM"]
+    async fn a_headless_browser_is_what_it_is_and_refuses_passkeys() {
+        let r = real(section(12, 600), |_| {});
+        let m = &r.module;
+        let (port, agents) = two_origin_site().await;
+        let tab = m.open_tab(DEFAULT_GROUP, Some(&format!("http://localhost:{port}/top"))).await.unwrap();
+        let started = Instant::now();
+        while eval(m, &tab.tab_id, "Object.keys(window.said || {}).length").await != 3 {
+            assert!(started.elapsed() < Duration::from_secs(10), "{}", eval(m, &tab.tab_id, "JSON.stringify(window.said)").await);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let said = eval(m, &tab.tab_id, "window.said").await;
+        for place in ["top", "frame", "worker"] {
+            let ua = said[place]["ua"].as_str().unwrap();
+            assert!(ua.contains(" Chrome/") && !ua.contains("Headless"), "{place}: {ua}");
+            assert!(said[place]["versions"].as_u64().unwrap() > 0 && !said[place]["architecture"].as_str().unwrap().is_empty(), "{place}: {said}");
+        }
+        // A popup the page opens is dressed before its first request too.
+        eval(m, &tab.tab_id, &format!("window.open('http://127.0.0.1:{port}/frame?popup') && 1")).await;
+        until("the popup asked", || agents.lock().unwrap().iter().any(|(path, _)| path.contains("popup"))).await;
+        let agents = agents.lock().unwrap().clone();
+        assert!(agents.len() >= 3 && agents.iter().all(|(_, agent)| agent.contains(" Chrome/") && !agent.contains("Headless")), "{agents:?}");
+
+        // Passkeys: refused at once, asked for or offered.
+        let passkey = "(async () => { const t = performance.now(); const challenge = new Uint8Array(32); \
+            const get = await navigator.credentials.get({ publicKey: { challenge, rpId: 'localhost', timeout: 60000 } }).then(() => 'given', (e) => e.name); \
+            const create = await navigator.credentials.create({ publicKey: { challenge, rp: { id: 'localhost', name: 'x' }, user: { id: new Uint8Array(8), name: 'u', displayName: 'u' }, \
+              pubKeyCredParams: [{ type: 'public-key', alg: -7 }], authenticatorSelection: { userVerification: 'discouraged' }, timeout: 60000 } }).then(() => 'made', (e) => e.name); \
+            return get + ' ' + create + ' ' + (performance.now() - t < 5000); })()";
+        let answer = m.tab_send(&tab.tab_id, "Runtime.evaluate", json!({ "expression": passkey, "awaitPromise": true, "returnByValue": true, "userGesture": true })).await.unwrap();
+        assert_eq!(answer["result"]["value"], "NotAllowedError NotAllowedError true");
+        // In the next document of the tab too.
+        m.tab_send(&tab.tab_id, "Page.navigate", json!({ "url": format!("http://localhost:{port}/top?again") })).await.unwrap();
+        until("the next document is there", || m.group(DEFAULT_GROUP).tabs.iter().any(|t| t.url.ends_with("again") && !t.loading)).await;
+        let answer = m.tab_send(&tab.tab_id, "Runtime.evaluate", json!({ "expression": passkey, "awaitPromise": true, "returnByValue": true, "userGesture": true })).await.unwrap();
+        assert_eq!(answer["result"]["value"], "NotAllowedError NotAllowedError true");
         m.shutdown().await;
     }
 

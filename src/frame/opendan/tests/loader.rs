@@ -3083,7 +3083,8 @@ async fn the_browsers_screen_and_uploads_are_served_over_http() {
         let mut ws = screen_hello(port, path, None).await;
         let ready = screen_message(&mut ws, "ready").await.unwrap();
         assert_eq!(ready["state"]["group"]["group_id"], "default", "{path}");
-        assert_eq!((ready["state"]["running"].clone(), ready["state"]["viewport"]["mobile"].clone()), (json!(true), json!(true)));
+        // A phone's viewport: the browser is not made a phone.
+        assert_eq!((ready["state"]["running"].clone(), ready["state"]["viewport"]["mobile"].clone()), (json!(true), json!(false)));
         assert_eq!(loader.browser.viewers(), 1);
         drop(ws);
         until("the viewer is gone", || loader.browser.viewers() == 0).await;

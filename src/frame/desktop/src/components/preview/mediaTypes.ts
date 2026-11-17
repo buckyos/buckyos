@@ -60,6 +60,15 @@ const SHEET_TYPES: Record<string, string> = {
 }
 const SHEET_MEDIA_TYPES = new Set(Object.values(SHEET_TYPES))
 
+export const DIAGRAM_MEDIA_TYPE = 'application/vnd.jgraph.mxfile'
+const DIAGRAM_EXTENSIONS = new Set(['drawio', 'dio'])
+
+export function looksLikeDiagram(bytes: Uint8Array | null | undefined): boolean {
+  if (!bytes || bytes.length === 0) return false
+  const head = new TextDecoder('utf-8').decode(bytes.subarray(0, Math.min(bytes.length, 512)))
+  return /^\uFEFF?\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<(?:mxfile|mxGraphModel)[\s/>]/.test(head)
+}
+
 export type PipelineDocumentProfile = 'preview-document' | 'preview-sheet' | 'preview-html'
 
 const OOXML = 'application/vnd.openxmlformats-officedocument'
@@ -134,6 +143,7 @@ const BINARY_ONLY_DOCUMENTS = new Set(['key', 'pub', 'pages', 'numbers'])
 function typeFromExtension(extension: string, textLike: boolean): string | undefined {
   if (!extension) return undefined
   if (textLike && BINARY_ONLY_DOCUMENTS.has(extension)) return mediaTypeFromExtension(extension)
+  if (DIAGRAM_EXTENSIONS.has(extension)) return DIAGRAM_MEDIA_TYPE
   return SHEET_TYPES[extension] ?? PIPELINE_DOCUMENTS[extension]?.[0] ?? mediaTypeFromExtension(extension)
 }
 
@@ -181,6 +191,7 @@ export function rendererForMediaType(mediaType: string): PreviewRendererType | n
   if (type === 'image/svg+xml') return 'svg'
   if (type.startsWith('image/')) return 'image'
   if (type === 'text/html' || type === 'application/xhtml+xml') return 'html'
+  if (type === DIAGRAM_MEDIA_TYPE) return 'diagram'
   if (SHEET_MEDIA_TYPES.has(type)) return 'sheet'
   const profile = pipelineDocumentProfile(type)
   if (profile) return profile === 'preview-sheet' ? 'sheet' : profile === 'preview-html' ? 'html' : 'pdf'
@@ -217,6 +228,9 @@ export function classifyMedia(input: {
     return { mediaType, rendererType: renderer, direct: renderer !== null && !pipelineOnly, textFallback: textLike && TEXT_FALLBACK_TYPES.has(mediaType), basis, extension, confirmed }
   }
 
+  if (textLike && looksLikeDiagram(input.magic)) {
+    return finish(DIAGRAM_MEDIA_TYPE, 'magic', true)
+  }
   if (magicType) {
     // ZIP containers are frequently office documents: keep the richer hint.
     if (magicType === 'application/zip' && extType && extType !== 'application/zip') {
@@ -227,13 +241,13 @@ export function classifyMedia(input: {
   if (headerType && !GENERIC_CONTENT_TYPES.has(headerType)) {
     // A generic text header loses to a more specific extension hint.
     const extRenderer = extType ? rendererForMediaType(extType) : null
-    if (extType && headerType !== extType && rendererForMediaType(headerType) === 'text' && (extRenderer === 'text' || extRenderer === 'sheet' || isPipelineDocument(extType))) {
+    if (extType && headerType !== extType && rendererForMediaType(headerType) === 'text' && (extRenderer === 'text' || extRenderer === 'sheet' || extRenderer === 'diagram' || isPipelineDocument(extType))) {
       return finish(extType, 'extension', !isPipelineDocument(extType))
     }
     return finish(headerType, 'content-type', true)
   }
   // A sheet or Pipeline document named by its extension: the resolver's hint table does not know them all.
-  if (extType && (SHEET_MEDIA_TYPES.has(extType) || isPipelineDocument(extType))) {
+  if (extType && (SHEET_MEDIA_TYPES.has(extType) || extType === DIAGRAM_MEDIA_TYPE || isPipelineDocument(extType))) {
     return finish(extType, 'extension', false)
   }
   if (hintType) {
@@ -323,7 +337,7 @@ export function detectRuntimeProfile(): PreviewRuntimeProfile {
   const videoCandidates = ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-matroska']
   const audioCandidates = ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/webm']
   runtimeProfile = {
-    acceptTypes: ['image', 'svg', 'text', 'html', 'audio', 'video', 'pdf', 'sheet'],
+    acceptTypes: ['image', 'svg', 'text', 'html', 'audio', 'video', 'pdf', 'sheet', 'diagram'],
     imageMediaTypes: [...BASELINE_IMAGE_TYPES, 'image/svg+xml'],
     videoMediaTypes: videoCandidates.filter((t) => canPlay(video, t)),
     audioMediaTypes: audioCandidates.filter((t) => canPlay(audio, t)),
@@ -375,6 +389,7 @@ export const DIRECT_SIZE_BUDGET: Record<PreviewRendererType, number> = {
   video: Number.POSITIVE_INFINITY,
   pdf: Number.POSITIVE_INFINITY,
   sheet: 30 * 1024 * 1024,
+  diagram: 32 * 1024 * 1024,
 }
 
 /** Rows of one sheet the sheet renderer shows before a truncation notice. */

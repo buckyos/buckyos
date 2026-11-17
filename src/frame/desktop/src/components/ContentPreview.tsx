@@ -76,6 +76,7 @@ import { archiveTargetOf, type ArchiveTarget } from './preview/archive'
 import { ArchivePreview } from './preview/ArchiveBrowser'
 import { archiveSplit, isArchiveName } from '../app/filebrowser/data/urls'
 import { SheetRenderer } from './preview/SheetRenderer'
+import { DiagramRenderer } from './preview/DiagramRenderer'
 import {
   locateIndex,
   neighborIndex,
@@ -942,7 +943,7 @@ function ContentViewer(props: ContentPreviewProps) {
 
   const capabilities: PreviewCapabilities = useMemo(() => {
     const ready = status === 'ready'
-    const isImage = ready && (rendererType === 'image' || rendererType === 'svg')
+    const isImage = ready && (rendererType === 'image' || rendererType === 'svg' || rendererType === 'diagram')
     const isText = ready && rendererType === 'text'
     // A PDF drawn by pdf.js and a sheet report their view; the built-in PDF viewer zooms by itself.
     const isZoomView = ready && (rendererType === 'pdf' || rendererType === 'sheet') && imageView !== null
@@ -1992,6 +1993,29 @@ function RendererSwitch({
       )
     case 'pdf':
       return <PdfRenderer ref={zoomRef} readRef={result.readRef} title={displayName} topInset={uiMode !== 'silent' && !compact ? TOOLBAR_BAND_PX : 0} onViewChange={onViewChange} onRendered={onRendered} onFailure={onFailure} onDownload={onDownload} onOpenWith={onOpenWith} t={t} />
+    case 'diagram':
+      return (
+        <DiagramRenderer
+          readRef={result.readRef}
+          stage={(page, key, onStageRendered) => (
+            <ImageRenderer
+              key={key}
+              ref={imageRef}
+              readRef={page}
+              alt={displayName}
+              fitMode={fitMode}
+              reducedMotion={reducedMotion}
+              onViewChange={onViewChange}
+              onRendered={onStageRendered}
+              onFailure={onFailure}
+            />
+          )}
+          textView={<TextRenderer readRef={result.readRef} fontScale={fontScale} find={find} onRendered={onRendered} onFailure={onFailure} t={t} />}
+          onRendered={onRendered}
+          onFailure={onFailure}
+          t={t}
+        />
+      )
     case 'sheet': {
       const type = result.mediaType.split(';')[0].trim().toLowerCase()
       const delimited = type === 'text/csv' || type === 'text/tab-separated-values'
