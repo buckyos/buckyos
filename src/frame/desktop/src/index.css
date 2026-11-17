@@ -125,17 +125,6 @@
     0 16px 40px color-mix(in srgb, var(--cp-shadow) 36%, transparent);
 }
 
-:root[data-theme='dark'] .homestation-root {
-  --cp-bg: oklch(0 0 0);
-  --cp-bg-strong: oklch(0.08 0.01 272);
-  --cp-surface: color-mix(in srgb, oklch(0.14 0.016 276) 88%, transparent);
-  --cp-surface-2: color-mix(in srgb, oklch(0.18 0.018 280) 84%, transparent);
-  --cp-surface-opaque: color-mix(in srgb, oklch(0.14 0.016 276) 88%, black);
-  --cp-surface-2-opaque: color-mix(in srgb, oklch(0.18 0.018 280) 84%, black);
-  --cp-border: color-mix(in srgb, oklch(0.45 0.02 282) 20%, transparent);
-  --cp-border-opaque: oklch(0.35 0.018 282);
-}
-
 /* Grid Slot density variants */
 [data-density='small'] {
   --slot-h: 92px;

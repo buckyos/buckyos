@@ -1,10 +1,7 @@
-export const SIDEBAR_WIDTH = 232
-export const SIDEBAR_COLLAPSED_WIDTH = 64
-export const SIDEBAR_COLLAPSE_BELOW = 1100
+export const COLUMN_MAX_WIDTH = 640
+export const COLUMN_GAP = 16
 
-export const INFO_PANEL_DEFAULT_WIDTH = 320
-export const INFO_PANEL_MIN_WIDTH = 260
+export const INFO_PANEL_DEFAULT_WIDTH = 340
+export const INFO_PANEL_MIN_WIDTH = 280
 export const INFO_PANEL_MAX_WIDTH = 440
 export const INFO_PANEL_HIDE_BELOW = 960
-
-export const PANEL_SPLITTER_WIDTH = 6

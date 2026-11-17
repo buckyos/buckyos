@@ -40,8 +40,8 @@
 | 收藏 / 稍后再看 | `saved/SavedList.tsx` | `listSaved` |
 | 来源 | `source/SourceManager.tsx` | `listSources`、`resolveSourceInput`、`follow`、`unfollow`、`pauseSource` |
 | 过滤与不看 | `prefs/FeedPreferences.tsx` | `setMuteRule`、`setFilterRule`、`setDefaultAudience` |
-| 发布（搜索旁“+”打开整页编辑器；桌面右栏保留快速发布；有写权限时可勾选“同时发布到 Zone 主页”） | `publish/PublishComposer.tsx` | `publish`、`retryPublish`、`uploadAttachment`、`fetchLinkPreview`、`peekHome` |
-| 桌面左栏 / 右栏（Context 默认关闭，可手动展开）、移动端“我”页 | `SidebarPanel.tsx`、`InfoPanel.tsx`、`MePage.tsx` | `peekSyncStatus`、`peekTopics`、`peekReadingSummary` |
+| 发布（桌面图标栏 / 手机底栏的“+”、Feed 顶部的发帖行打开整页编辑器；Context 列保留快速发布；有写权限时可勾选“同时发布到 Zone 主页”） | `publish/PublishComposer.tsx` | `publish`、`retryPublish`、`uploadAttachment`、`fetchLinkPreview`、`peekHome` |
+| 桌面图标栏（首页 / 搜索 / 发布 / 补看 / 我的主页，其余页面在“更多”菜单，Topic 在 Feed 的筛选行）、Context 第二列（默认关闭，可手动展开）、手机底部五栏（首页 / 搜索 / 发布 / 补看 / 我）与“我”页 | `NavRail.tsx`、`InfoPanel.tsx`、`MePage.tsx` | `peekSyncStatus`、`peekTopics`、`peekReadingSummary` |
 
 ---
 

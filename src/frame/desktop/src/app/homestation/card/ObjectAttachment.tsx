@@ -51,10 +51,9 @@ function SaveButton({ objId, name }: { objId: string; name: string }) {
     : state.phase === 'failed' ? t('homestation.attachment.saveFailed')
       : t('homestation.attachment.save', undefined, { name })
   return (
-    <button type="button" onClick={run} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" aria-label={label} title={label}
-      aria-busy={state.phase === 'saving'} data-testid="hs-attachment-save" data-state={state.phase}
-      style={{ color: state.phase === 'failed' ? 'var(--cp-danger)' : 'inherit' }}>
-      {state.phase === 'saving' ? <Loader2 size={15} className="animate-spin" /> : state.phase === 'saved' ? <FolderCheck size={15} /> : <FolderDown size={15} />}
+    <button type="button" onClick={run} className="hs-icon-btn" style={{ minWidth: 32, height: 32, padding: 0, color: state.phase === 'failed' ? 'var(--hs-danger-ink)' : undefined }} aria-label={label} title={label}
+      aria-busy={state.phase === 'saving'} data-testid="hs-attachment-save" data-state={state.phase}>
+      {state.phase === 'saving' ? <Loader2 size={16} className="animate-spin" /> : state.phase === 'saved' ? <FolderCheck size={16} /> : <FolderDown size={16} />}
     </button>
   )
 }
@@ -77,17 +76,17 @@ export function ObjectAttachment({ objId, name }: { objId: string; name: string 
       setError('')
     } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
   }
-  return <div className="my-1 rounded-lg border p-2" style={{ borderColor: 'var(--hs-divider)' }} data-testid="hs-object-attachment" data-name={name}>
+  return <div className="rounded-xl px-3 py-2 text-[14px]" style={{ border: '1px solid var(--hs-line-strong)' }} data-testid="hs-object-attachment" data-name={name}>
     <span className="flex items-center gap-1">
       {directory
         ? <button type="button" onClick={() => void open()} className="flex min-w-0 flex-1 items-center gap-2 text-left"><FolderOpen size={16} className="shrink-0" /><span className="truncate">{name}</span></button>
         : <span className="flex min-w-0 flex-1 items-center gap-2"><File size={16} className="shrink-0" /><span className="truncate">{name}</span></span>}
       <SaveButton objId={objId} name={name} />
       {!directory && canDownload
-        ? <a href={transport ? transport.contentUrl(objId) : mockAttachmentUrl(objId)} download={name} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" aria-label={t('homestation.attachment.download', undefined, { name })} title={t('homestation.attachment.download', undefined, { name })}><Download size={15} /></a>
+        ? <a href={transport ? transport.contentUrl(objId) : mockAttachmentUrl(objId)} download={name} className="hs-icon-btn" style={{ minWidth: 32, height: 32, padding: 0 }} aria-label={t('homestation.attachment.download', undefined, { name })} title={t('homestation.attachment.download', undefined, { name })}><Download size={16} /></a>
         : null}
     </span>
     {error ? <p role="alert">{error}</p> : null}
-    {entries ? <ul className="ml-3">{Object.entries(entries).map(([name, child]) => <li key={name}><ObjectAttachment objId={child} name={name} /></li>)}</ul> : null}
+    {entries ? <ul className="ml-4 mt-1 space-y-1">{Object.entries(entries).map(([name, child]) => <li key={name}><ObjectAttachment objId={child} name={name} /></li>)}</ul> : null}
   </div>
 }

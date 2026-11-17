@@ -1,8 +1,7 @@
 import { attachmentKindOfFile } from '../api/fileKind'
 import { releaseAttachmentImport } from '../api/transport'
 import { zodResolver } from '@hookform/resolvers/zod'
-import clsx from 'clsx'
-import { CircleAlert, Globe2, FileUp, FolderUp, Image, Link2, Loader2, Mic, RotateCw, Send, Video, X } from 'lucide-react'
+import { CircleAlert, FileUp, FolderUp, Image, Link2, Loader2, Mic, RotateCw, Video, X } from 'lucide-react'
 import { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
@@ -11,6 +10,7 @@ import type { HomeStationStore } from '../store/types'
 import { useHsNav } from '../navContext'
 import { useHomeStationStore, useStoreSelector } from '../store/context'
 import { useToast } from '../ui/toastContext'
+import { Avatar } from '../ui/primitives'
 import { AudiencePicker } from './AudiencePicker'
 import { reportShareDelivery } from '../../../api/shares'
 import type { PublishTask } from '../datamodel/types'
@@ -18,6 +18,7 @@ import { ComposePrefillContext } from '../launch'
 
 const selectSettings = (store: HomeStationStore) => store.peekSettings()
 const selectHome = (store: HomeStationStore) => store.peekHome()
+const selectOwner = (store: HomeStationStore) => store.peekIdentity(store.owner)
 
 function newPublishKey() {
   return `publish-${crypto.randomUUID()}`
@@ -30,6 +31,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
   const nav = useHsNav()
   const settings = useStoreSelector(selectSettings)
   const home = useStoreSelector(selectHome)
+  const owner = useStoreSelector(selectOwner)
   const [publishKey, setPublishKey] = useState(newPublishKey)
   const [failed, setFailed] = useState(false)
   const [linkOpen, setLinkOpen] = useState(false)
@@ -134,97 +136,100 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
   const errorKey = errors.text?.message ?? errors.attachments?.message ?? errors.attachments?.root?.message ?? errors.audience?.message ?? (errors.audience as { groupId?: { message?: string }; dids?: { message?: string } } | undefined)?.dids?.message
   const busy = form.formState.isSubmitting
 
-  return (
-    <form className={clsx(compact ? '' : 'p-4')} onSubmit={submit} data-testid={`${idPrefix}-form`}>
-      <div className="rounded-2xl p-3" style={{ background: 'var(--hs-subtle-bg)' }}>
-        <textarea
-          {...form.register('text')}
-          rows={compact ? 3 : 5}
-          className="w-full resize-none bg-transparent text-sm outline-none"
-          style={{ minHeight: compact ? 64 : 120 }}
-          placeholder={t('homestation.publish.placeholder', 'What’s on your mind?')}
-          aria-label={t('homestation.publish.placeholder', 'What’s on your mind?')}
-          data-testid={`${idPrefix}-text`}
-        />
-        {attachments.length > 0 ? (
-          <ul className="mb-2 flex flex-wrap gap-1.5" data-testid={`${idPrefix}-attachments`}>
-            {attachments.map(attachment => (
-              <li key={attachment.id} className="hs-badge" data-status={attachment.status}>
-                {attachment.status === 'uploading' ? <Loader2 size={11} className="animate-spin" /> : attachment.status === 'failed' ? <CircleAlert size={11} /> : null}
+  const fileInputs = (
+    <>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*,video/*,audio/*,.heic,.heif,.mov"
+        multiple
+        className="hidden"
+        data-testid={`${idPrefix}-file`}
+        onChange={event => {
+          for (const file of [...(event.target.files ?? [])]) void attachmentKindOfFile(file).then(kind => addAttachment(kind, file))
+          event.target.value = ''
+        }}
+      />
+      <input ref={genericRef} type="file" multiple className="hidden" data-testid={`${idPrefix}-generic-file`} onChange={event => { for (const file of Array.from(event.target.files ?? [])) void addAttachment('file', file); event.target.value = '' }} />
+      <input ref={element => { folderRef.current = element; element?.setAttribute('webkitdirectory', '') }} type="file" multiple className="hidden" data-testid={`${idPrefix}-folder`} onChange={event => { const files = Array.from(event.target.files ?? []); if (files.length) void addAttachment('dir', files); else toast({ text: t('homestation.publish.folderEmpty', 'The folder is empty or this browser can’t read it'), tone: 'warning' }); event.target.value = '' }} />
+    </>
+  )
+
+  const tools = (
+    <div className="-ml-2 flex items-center gap-1">
+      <button type="button" className="hs-icon-btn" title={t('homestation.publish.addMedia', 'Add photos or video')} aria-label={t('homestation.publish.addMedia', 'Add photos or video')} onClick={() => fileRef.current?.click()}>
+        <Image size={18} />
+      </button>
+      <button type="button" className="hs-icon-btn" title={t('homestation.publish.addVideo', 'Add video')} aria-label={t('homestation.publish.addVideo', 'Add video')} onClick={() => fileRef.current?.click()}>
+        <Video size={18} />
+      </button>
+      <button type="button" className="hs-icon-btn" title={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} aria-label={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} onClick={() => void addAttachment('audio', new File([new Uint8Array(380_000)], `voice-note-${attachments.length + 1}.m4a`, { type: 'audio/mp4' }))}>
+        <Mic size={18} />
+      </button>
+      <button type="button" className="hs-icon-btn" aria-pressed={linkOpen} title={t('homestation.publish.addLink', 'Import from a URL')} aria-label={t('homestation.publish.addLink', 'Import from a URL')} onClick={() => setLinkOpen(value => !value)}>
+        <Link2 size={18} />
+      </button>
+      <button type="button" className="hs-icon-btn" title={t('homestation.publish.addFiles', 'Upload files')} aria-label={t('homestation.publish.addFiles', 'Upload files')} onClick={() => genericRef.current?.click()}><FileUp size={18} /></button>
+      <button type="button" className="hs-icon-btn" title={t('homestation.publish.addFolder', 'Upload folder')} aria-label={t('homestation.publish.addFolder', 'Upload folder')} disabled={!('webkitdirectory' in document.createElement('input'))} onClick={() => folderRef.current?.click()}><FolderUp size={18} /></button>
+    </div>
+  )
+
+  const extras = (
+    <>
+      {attachments.length > 0 ? (
+        <ul className="mt-3 space-y-2" data-testid={`${idPrefix}-attachments`}>
+          {attachments.map(attachment => (
+            <li key={attachment.id} className="flex min-w-0 items-center gap-2 rounded-xl px-3 py-2 text-[13px] leading-5" style={{ border: '1px solid var(--hs-line-strong)' }} data-status={attachment.status}>
+              {attachment.status === 'uploading' ? <Loader2 size={14} className="flex-shrink-0 animate-spin" style={{ color: 'var(--cp-muted)' }} /> : attachment.status === 'failed' ? <CircleAlert size={14} className="flex-shrink-0" style={{ color: 'var(--hs-danger-ink)' }} /> : null}
+              <span className="min-w-0 flex-1 truncate">
                 {attachment.name}
-                {attachment.status === 'uploading' ? ` · ${attachment.progress ?? 0}%` : attachment.error ? ` · ${attachment.error}` : ''}
-                {attachment.status === 'uploading' ? <button type="button" onClick={() => uploads.current.get(attachment.id)?.controller.abort()}>{t('common.cancel', 'Cancel')}</button> : null}
-                {attachment.status === 'failed' || attachment.status === 'cancelled' ? <button type="button" onClick={() => { const job = uploads.current.get(attachment.id); if (job) void runUpload(attachment.id, job.kind, job.file) }}><RotateCw size={12} />{t('common.retry', 'Retry')}</button> : null}
-                <button type="button" aria-label={t('homestation.publish.removeAttachment', 'Remove')} onClick={() => { const job = uploads.current.get(attachment.id); if (job) { job.controller.abort(); releaseAttachmentImport(job.file) } uploads.current.delete(attachment.id); form.setValue('attachments', form.getValues('attachments').filter(entry => entry.id !== attachment.id)) }}><X size={11} /></button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {link ? (
-          <div className="mb-2 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'var(--hs-divider)' }} data-testid={`${idPrefix}-link`}>
-            <Link2 size={13} className="mt-0.5" />
-            <div className="min-w-0 flex-1">
-              <input className="w-full bg-transparent text-sm font-semibold outline-none" value={link.title} aria-label={t('homestation.publish.linkTitle', 'Card title')} onChange={event => form.setValue('link', { ...link, title: event.target.value })} />
-              <p className="truncate" style={{ color: 'var(--cp-muted)' }}>{link.url}</p>
-              <p style={{ color: 'var(--cp-muted)' }}>{t('homestation.publish.linkNote', 'The title and summary are fixed in your post; the URL is only a jump target.')}</p>
-            </div>
-            <button type="button" aria-label={t('homestation.publish.removeAttachment', 'Remove')} onClick={() => form.setValue('link', null)}><X size={13} /></button>
+                <span style={{ color: 'var(--cp-muted)' }}>{attachment.status === 'uploading' ? ` · ${attachment.progress ?? 0}%` : attachment.error ? ` · ${attachment.error}` : ''}</span>
+              </span>
+              {attachment.status === 'uploading' ? <button type="button" className="hs-link" onClick={() => uploads.current.get(attachment.id)?.controller.abort()}>{t('common.cancel', 'Cancel')}</button> : null}
+              {attachment.status === 'failed' || attachment.status === 'cancelled' ? <button type="button" className="hs-link" onClick={() => { const job = uploads.current.get(attachment.id); if (job) void runUpload(attachment.id, job.kind, job.file) }}><RotateCw size={14} />{t('common.retry', 'Retry')}</button> : null}
+              <button type="button" className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md hover:bg-[var(--hs-hover-bg)]" style={{ color: 'var(--cp-muted)' }} aria-label={t('homestation.publish.removeAttachment', 'Remove')} onClick={() => { const job = uploads.current.get(attachment.id); if (job) { job.controller.abort(); releaseAttachmentImport(job.file) } uploads.current.delete(attachment.id); form.setValue('attachments', form.getValues('attachments').filter(entry => entry.id !== attachment.id)) }}><X size={14} /></button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {link ? (
+        <div className="mt-3 flex items-start gap-3 rounded-xl px-4 py-3" style={{ border: '1px solid var(--hs-line-strong)' }} data-testid={`${idPrefix}-link`}>
+          <Link2 size={16} className="mt-[3px] flex-shrink-0" style={{ color: 'var(--cp-muted)' }} />
+          <div className="min-w-0 flex-1 text-[13px] leading-5">
+            <input className="w-full bg-transparent text-[15px] font-semibold leading-[22px] outline-none" value={link.title} aria-label={t('homestation.publish.linkTitle', 'Card title')} onChange={event => form.setValue('link', { ...link, title: event.target.value })} />
+            <p className="truncate" style={{ color: 'var(--cp-muted)' }}>{link.url}</p>
+            <p className="mt-1" style={{ color: 'var(--cp-muted)' }}>{t('homestation.publish.linkNote', 'The title and summary are fixed in your post; the URL is only a jump target.')}</p>
           </div>
-        ) : null}
-        {linkOpen ? (
-          <div className="mb-2 flex items-center gap-2">
-            <input className="hs-input py-1.5 text-sm" value={linkUrl} placeholder="https://" aria-label={t('homestation.publish.linkUrl', 'Link URL')} onChange={event => setLinkUrl(event.target.value)} data-testid={`${idPrefix}-link-url`} />
-            <button type="button" className="hs-btn" disabled={linkBusy} onClick={() => void fetchLink()}>{linkBusy ? <Loader2 size={13} className="animate-spin" /> : null}{t('homestation.publish.linkFetch', 'Make card')}</button>
-          </div>
-        ) : null}
-        {linkError ? <p className="mb-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{linkError}</p> : null}
-        <div className="flex flex-wrap items-center gap-1 pt-2" style={{ borderTop: '1px solid var(--hs-divider)' }}>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*,video/*,audio/*,.heic,.heif,.mov"
-            multiple
-            className="hidden"
-            data-testid={`${idPrefix}-file`}
-            onChange={event => {
-              for (const file of [...(event.target.files ?? [])]) void attachmentKindOfFile(file).then(kind => addAttachment(kind, file))
-              event.target.value = ''
-            }}
-          />
-          <input ref={genericRef} type="file" multiple className="hidden" data-testid={`${idPrefix}-generic-file`} onChange={event => { for (const file of Array.from(event.target.files ?? [])) void addAttachment('file', file); event.target.value = '' }} />
-          <input ref={element => { folderRef.current = element; element?.setAttribute('webkitdirectory', '') }} type="file" multiple className="hidden" data-testid={`${idPrefix}-folder`} onChange={event => { const files = Array.from(event.target.files ?? []); if (files.length) void addAttachment('dir', files); else toast({ text: 'The folder is empty or this browser cannot enumerate it.', tone: 'warning' }); event.target.value = '' }} />
-          <button type="button" className="hs-icon-btn" title="Upload files" aria-label="Upload files" onClick={() => genericRef.current?.click()}><FileUp size={17} /></button>
-          <button type="button" className="hs-icon-btn" title="Upload folder (FileList omits empty subfolders)" aria-label="Upload folder" disabled={!('webkitdirectory' in document.createElement('input'))} onClick={() => folderRef.current?.click()}><FolderUp size={17} /></button>
-          <button type="button" className="hs-icon-btn" title={t('homestation.publish.addMedia', 'Add photos or video')} aria-label={t('homestation.publish.addMedia', 'Add photos or video')} onClick={() => fileRef.current?.click()}>
-            <Image size={17} />
-          </button>
-          <button type="button" className="hs-icon-btn" title={t('homestation.publish.addVideo', 'Add video')} aria-label={t('homestation.publish.addVideo', 'Add video')} onClick={() => fileRef.current?.click()}>
-            <Video size={17} />
-          </button>
-          <button type="button" className="hs-icon-btn" title={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} aria-label={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} onClick={() => void addAttachment('audio', new File([new Uint8Array(380_000)], `voice-note-${attachments.length + 1}.m4a`, { type: 'audio/mp4' }))}>
-            <Mic size={17} />
-          </button>
-          <button type="button" className="hs-icon-btn" aria-pressed={linkOpen} title={t('homestation.publish.addLink', 'Import from a URL')} aria-label={t('homestation.publish.addLink', 'Import from a URL')} onClick={() => setLinkOpen(value => !value)}>
-            <Link2 size={17} />
-          </button>
-          <span className="ml-auto text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>{text.length}</span>
-          <button type="submit" className="hs-btn is-primary" disabled={busy || uploading || failed} data-testid={`${idPrefix}-submit`}>
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            {busy ? t('homestation.publish.publishing', 'Publishing…') : t('homestation.publish.submit', 'Publish')}
-          </button>
+          <button type="button" className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md hover:bg-[var(--hs-hover-bg)]" style={{ color: 'var(--cp-muted)' }} aria-label={t('homestation.publish.removeAttachment', 'Remove')} onClick={() => form.setValue('link', null)}><X size={14} /></button>
         </div>
-      </div>
-      <div className="mt-3">
-        <Controller control={form.control} name="audience" render={({ field }) => <AudiencePicker idPrefix={idPrefix} value={field.value} onChange={field.onChange} compact={compact} />} />
-      </div>
+      ) : null}
+      {linkOpen ? (
+        <div className="mt-3 flex items-center gap-2">
+          <input className="hs-input" value={linkUrl} placeholder="https://" aria-label={t('homestation.publish.linkUrl', 'Link URL')} onChange={event => setLinkUrl(event.target.value)} data-testid={`${idPrefix}-link-url`} />
+          <button type="button" className="hs-btn" disabled={linkBusy} onClick={() => void fetchLink()}>{linkBusy ? <Loader2 size={16} className="animate-spin" /> : null}{t('homestation.publish.linkFetch', 'Make card')}</button>
+        </div>
+      ) : null}
+      {linkError ? <p className="mt-2 text-[13px]" style={{ color: 'var(--hs-danger-ink)' }}>{linkError}</p> : null}
+    </>
+  )
+
+  const submitButton = (
+    <button type="submit" className="hs-btn is-primary" disabled={busy || uploading || failed} data-testid={`${idPrefix}-submit`}>
+      {busy ? <Loader2 size={16} className="animate-spin" /> : null}
+      {busy ? t('homestation.publish.publishing', 'Publishing…') : t('homestation.publish.submit', 'Publish')}
+    </button>
+  )
+
+  const audienceBlock = (
+    <>
+      <Controller control={form.control} name="audience" render={({ field }) => <AudiencePicker idPrefix={idPrefix} value={field.value} onChange={field.onChange} compact={compact} />} />
       {home?.zoneFeed.writer ? (
         <Controller
           control={form.control}
           name="zoneFeed"
           render={({ field }) => (
-            <label className="mt-2 flex items-center gap-2 text-xs" style={{ color: audience.kind === 'public' ? undefined : 'var(--cp-muted)' }} data-testid={`${idPrefix}-zone-feed`}>
+            <label className="mt-3 flex items-center gap-2 text-[13px] leading-5" style={{ color: audience.kind === 'public' ? undefined : 'var(--cp-muted)' }} data-testid={`${idPrefix}-zone-feed`}>
               <input type="checkbox" checked={audience.kind === 'public' && !!field.value} disabled={audience.kind !== 'public'} onChange={event => field.onChange(event.target.checked)} />
-              <Globe2 size={13} />
               <span>
                 {t('homestation.publish.zoneFeed', 'Also show on {{zone}}', { zone: home.zoneFeed.name })}
                 {audience.kind !== 'public' ? ` · ${t('homestation.publish.zoneFeedPublicOnly', 'public posts only')}` : ''}
@@ -233,19 +238,79 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
           )}
         />
       ) : null}
-      {errorKey ? <p className="mt-2 text-xs" role="alert" style={{ color: 'var(--cp-danger)' }}>{t(errorKey, 'Check the post before publishing.')}</p> : null}
+    </>
+  )
+
+  const feedback = (
+    <>
+      {errorKey ? <p className="mt-3 text-[13px]" role="alert" style={{ color: 'var(--hs-danger-ink)' }}>{t(errorKey, 'Check the post before publishing.')}</p> : null}
       {failed ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs" role="alert" style={{ background: 'color-mix(in srgb, var(--cp-danger) 12%, transparent)' }} data-testid={`${idPrefix}-failed`}>
-          <CircleAlert size={14} />
-          <span className="flex-1">{t('homestation.publish.failedBody', 'Not published: your HomeStation couldn’t store the post. Nothing was sent. Retrying reuses the same publish ID, so it won’t create a duplicate.')}</span>
-          <button type="button" className="hs-btn" onClick={() => void retry()} data-testid={`${idPrefix}-retry`}><RotateCw size={13} />{t('common.retry', 'Retry')}</button>
+        <div className="hs-note is-danger mt-3 flex-wrap items-center" role="alert" data-testid={`${idPrefix}-failed`}>
+          <CircleAlert size={16} />
+          <span className="min-w-0 flex-1">{t('homestation.publish.failedBody', 'Not published: your HomeStation couldn’t store the post. Nothing was sent. Retrying reuses the same publish ID, so it won’t create a duplicate.')}</span>
+          <button type="button" className="hs-btn is-small" onClick={() => void retry()} data-testid={`${idPrefix}-retry`}><RotateCw size={14} />{t('common.retry', 'Retry')}</button>
         </div>
       ) : null}
-      {!compact ? (
-        <p className="mt-3 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
-          {t('homestation.publish.hint', 'Your post is signed by you and added to your home feed for its audience. It isn’t delivered to your own reading list.')}
-        </p>
-      ) : null}
+    </>
+  )
+
+  if (compact) {
+    return (
+      <form onSubmit={submit} data-testid={`${idPrefix}-form`}>
+        <div className="rounded-xl px-3 pt-2" style={{ border: '1px solid var(--hs-line-strong)' }}>
+          <textarea
+            {...form.register('text')}
+            rows={3}
+            className="w-full resize-none bg-transparent py-1 text-[15px] leading-[22px] outline-none placeholder:text-[color:var(--cp-muted)]"
+            placeholder={t('homestation.publish.placeholder', 'What’s new?')}
+            aria-label={t('homestation.publish.placeholder', 'What’s new?')}
+            data-testid={`${idPrefix}-text`}
+          />
+          {extras}
+          {fileInputs}
+          <div className="flex items-center gap-2 py-2">
+            <div className="min-w-0 flex-1 overflow-hidden">{tools}</div>
+          </div>
+        </div>
+        <div className="mt-3">{audienceBlock}</div>
+        <div className="mt-3 flex items-center justify-end gap-3">
+          <span className="text-[13px] tabular-nums" style={{ color: 'var(--cp-muted)' }}>{text.length}</span>
+          {submitButton}
+        </div>
+        {feedback}
+      </form>
+    )
+  }
+
+  return (
+    <form className={nav.isDesktop ? 'px-6 py-5' : 'px-4 py-4'} onSubmit={submit} data-testid={`${idPrefix}-form`}>
+      <div className="flex gap-3">
+        <Avatar identity={owner} size={36} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] font-semibold leading-[22px]">{owner.name}</p>
+          <textarea
+            {...form.register('text')}
+            rows={5}
+            className="w-full resize-none bg-transparent text-[15px] leading-[22px] outline-none placeholder:text-[color:var(--cp-muted)]"
+            style={{ minHeight: 110 }}
+            placeholder={t('homestation.publish.placeholder', 'What’s new?')}
+            aria-label={t('homestation.publish.placeholder', 'What’s new?')}
+            data-testid={`${idPrefix}-text`}
+          />
+          {extras}
+          {fileInputs}
+          <div className="mt-2">{tools}</div>
+        </div>
+      </div>
+      <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--hs-line)' }}>
+        {audienceBlock}
+        <div className="mt-4 flex items-center gap-3">
+          <p className="min-w-0 flex-1 text-[13px] leading-5" style={{ color: 'var(--cp-muted)' }}>{t('homestation.publish.hint', 'Your post is signed by you and added to your home feed for its audience. It isn’t delivered to your own reading list.')}</p>
+          <span className="text-[13px] tabular-nums" style={{ color: 'var(--cp-muted)' }}>{text.length}</span>
+          {submitButton}
+        </div>
+        {feedback}
+      </div>
     </form>
   )
 }

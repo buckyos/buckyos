@@ -39,19 +39,19 @@ export function AudiencePicker({ value, onChange, compact = false, idPrefix }: {
   }
 
   const options: { kind: AudienceSpec['kind']; label: string; icon: React.ReactNode }[] = [
-    { kind: 'public', label: t('homestation.audience.public', 'Public'), icon: <Globe size={13} /> },
-    { kind: 'followers', label: t('homestation.audience.followers', 'Followers'), icon: <UserCheck size={13} /> },
-    { kind: 'friends', label: t('homestation.audience.friends', 'Friends'), icon: <Users size={13} /> },
-    { kind: 'group', label: t('homestation.audience.group', 'Contact group'), icon: <UsersRound size={13} /> },
-    { kind: 'dids', label: t('homestation.audience.dids', 'Specific DIDs'), icon: <Lock size={13} /> },
+    { kind: 'public', label: t('homestation.audience.public', 'Public'), icon: <Globe size={14} /> },
+    { kind: 'followers', label: t('homestation.audience.followers', 'Followers'), icon: <UserCheck size={14} /> },
+    { kind: 'friends', label: t('homestation.audience.friends', 'Friends'), icon: <Users size={14} /> },
+    { kind: 'group', label: t('homestation.audience.group', 'Contact group'), icon: <UsersRound size={14} /> },
+    { kind: 'dids', label: t('homestation.audience.dids', 'Specific DIDs'), icon: <Lock size={14} /> },
   ]
 
   return (
     <fieldset className="min-w-0" data-testid={`${idPrefix}-audience`}>
-      <legend className="mb-1.5 text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+      <legend className="mb-2 text-[13px] font-medium leading-5" style={{ color: 'var(--cp-muted)' }}>
         {t('homestation.audience.label', 'Audience')}
       </legend>
-      <div className={compact ? 'hs-scroll-x flex gap-1.5 overflow-x-auto' : 'flex flex-wrap gap-1.5'} role="radiogroup" aria-label={t('homestation.audience.label', 'Audience')}>
+      <div className={compact ? 'hs-scroll-x flex gap-2 overflow-x-auto' : 'flex flex-wrap gap-2'} role="radiogroup" aria-label={t('homestation.audience.label', 'Audience')}>
         {options.map(option => (
           <button
             key={option.kind}
@@ -67,10 +67,10 @@ export function AudiencePicker({ value, onChange, compact = false, idPrefix }: {
         ))}
       </div>
       {value.kind === 'group' ? (
-        <label className="mt-2 flex items-center gap-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
+        <label className="mt-3 flex items-center gap-3 text-[13px]" style={{ color: 'var(--cp-muted)' }}>
           {t('homestation.audience.chooseGroup', 'Group')}
           <select
-            className="hs-input max-w-[220px] py-1.5 text-sm"
+            className="hs-input max-w-[240px]"
             value={value.groupId}
             onChange={event => onChange({ kind: 'group', groupId: event.target.value })}
           >
@@ -81,16 +81,16 @@ export function AudiencePicker({ value, onChange, compact = false, idPrefix }: {
         </label>
       ) : null}
       {value.kind === 'dids' ? (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid={`${idPrefix}-audience-people`}>
-          {value.dids.map(did => <span key={did} className="hs-badge"><PersonName person={{ did, name: names[did] ?? store.peekIdentity(did).name }} /></span>)}
-          <button type="button" className="hs-chip" onClick={() => void pickPeople()} data-testid={`${idPrefix}-audience-choose`}>
-            <UserPlus size={13} />
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[14px]" data-testid={`${idPrefix}-audience-people`}>
+          {value.dids.map(did => <span key={did}><PersonName person={{ did, name: names[did] ?? store.peekIdentity(did).name }} /></span>)}
+          <button type="button" className="hs-btn is-small" onClick={() => void pickPeople()} data-testid={`${idPrefix}-audience-choose`}>
+            <UserPlus size={14} />
             {value.dids.length ? t('homestation.audience.changePeople', 'Change') : t('homestation.audience.choosePeople', 'Who can see it')}
           </button>
         </div>
       ) : null}
       {value.kind !== 'public' ? (
-        <p className="mt-1.5 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
+        <p className="mt-2 text-[13px] leading-5" style={{ color: 'var(--cp-muted)' }}>
           {t('homestation.audience.restrictedHint', 'Restricted posts can’t be reposted, and comments on them go only to you.')}
         </p>
       ) : null}

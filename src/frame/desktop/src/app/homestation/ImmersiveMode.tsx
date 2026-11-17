@@ -39,11 +39,11 @@ function ArticlePages({ view, page, onPages }: { view: CardView; page: number; o
   useEffect(() => onPages(pages.length), [onPages, pages.length])
   return (
     <div className="flex h-full w-full max-w-xl flex-col justify-center px-8 text-left" style={{ color: 'white' }} data-testid="hs-immersive-article">
-      <p className="mb-3 text-xs uppercase tracking-wider" style={{ color: 'rgba(255,255,255,0.55)' }}>
+      <p className="mb-3 text-[13px] tabular-nums" style={{ color: 'rgba(255,255,255,0.6)' }}>
         {body.data?.state === 'ready' ? t('homestation.immersive.page', 'Page {{n}} of {{total}}', { n: Math.min(page, pages.length - 1) + 1, total: pages.length }) : body.data?.state === 'preparing' ? t('homestation.article.preparing', 'Preparing the full text…') : body.isLoading ? t('homestation.state.loading', 'Loading…') : t('homestation.immersive.summary', 'Summary')}
       </p>
-      <h2 className="mb-4 text-xl font-bold leading-snug">{view.item.object.content?.title}</h2>
-      <p className="whitespace-pre-line text-[15px] leading-7" style={{ color: 'rgba(255,255,255,0.86)' }}>{pages[Math.min(page, pages.length - 1)]}</p>
+      <h2 className="mb-4 text-[20px] font-semibold leading-7">{view.item.object.content?.title}</h2>
+      <p className="whitespace-pre-line text-[16px] leading-7" style={{ color: 'rgba(255,255,255,0.86)' }}>{pages[Math.min(page, pages.length - 1)]}</p>
     </div>
   )
 }
@@ -86,7 +86,7 @@ function ImmersiveItem({ objId, subIndex, onSubCount, onClose }: { objId: string
         <div className="relative h-[78%] w-full">
           <ContentPreview key={part.object} source={fileSourceRef(part.object, part.file, part.alt)} variant="inline" uiMode="silent" fitMode="contain" />
         </div>
-        {item.media.length > 1 ? <span className="mt-3 text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}>{t('homestation.immersive.imageOf', 'Image {{n}} of {{total}}', { n: Math.min(subIndex, item.media.length - 1) + 1, total: item.media.length })}</span> : null}
+        {item.media.length > 1 ? <span className="mt-3 text-[13px] tabular-nums" style={{ color: 'rgba(255,255,255,0.6)' }}>{t('homestation.immersive.imageOf', 'Image {{n}} of {{total}}', { n: Math.min(subIndex, item.media.length - 1) + 1, total: item.media.length })}</span> : null}
       </div>
     )
   }
@@ -95,8 +95,8 @@ function ImmersiveItem({ objId, subIndex, onSubCount, onClose }: { objId: string
   const embedded = item.embedded?.item?.object.content
   return (
     <div className="flex h-full w-full max-w-xl flex-col justify-center px-8 text-center" style={{ color: 'white' }} data-testid="hs-immersive-text">
-      {content?.title ? <h2 className="mb-3 text-xl font-bold leading-snug">{content.title}</h2> : null}
-      <p className="text-lg font-semibold leading-relaxed">{content?.text ?? content?.summary ?? embedded?.text ?? embedded?.title}</p>
+      {content?.title ? <h2 className="mb-3 text-[20px] font-semibold leading-7">{content.title}</h2> : null}
+      <p className="text-[18px] font-medium leading-7">{content?.text ?? content?.summary ?? embedded?.text ?? embedded?.title}</p>
     </div>
   )
 }
@@ -151,7 +151,7 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
       role="dialog"
       aria-label={t('homestation.mode.immersive', 'Immersive')}
       className="absolute inset-0 z-50 flex flex-col outline-none"
-      style={{ background: '#05060a' }}
+      style={{ background: '#000' }}
       data-testid="hs-immersive"
       onKeyDown={onKeyDown}
       onTouchStart={event => {
@@ -173,10 +173,10 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
         <button type="button" onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-full" style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }} aria-label={t('common.close', 'Close')} data-testid="hs-immersive-close">
           <X size={20} />
         </button>
-        <span className="min-w-0 flex-1 truncate rounded-full px-3 py-1 text-xs" style={{ background: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.85)' }} data-testid="hs-immersive-scope">
+        <span className="min-w-0 flex-1 truncate rounded-full px-3 py-1 text-[13px]" style={{ background: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.85)' }} data-testid="hs-immersive-scope">
           {t('homestation.immersive.scope', 'Same view: {{scope}}', { scope: scopeLabel })}
         </span>
-        <span className="rounded-full px-3 py-1 text-xs font-medium tabular-nums" style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }} data-testid="hs-immersive-counter">
+        <span className="rounded-full px-3 py-1 text-[13px] font-medium tabular-nums" style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }} data-testid="hs-immersive-counter">
           {objIds.length ? `${safeIndex + 1} / ${list.meta?.total ?? objIds.length}` : '0 / 0'}
         </span>
       </div>
@@ -185,8 +185,8 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
         {list.isLoading ? <Loader2 size={28} className="animate-spin" color="white" /> : null}
         {!list.isLoading && objIds.length === 0 ? (
           <div className="px-8 text-center" style={{ color: 'rgba(255,255,255,0.75)' }} data-testid="hs-immersive-empty">
-            <p className="text-sm font-semibold">{t('homestation.immersive.empty', 'Nothing to show in this view')}</p>
-            <p className="mt-1 text-xs">{t('homestation.immersive.emptyBody', 'Immersive mode uses the same filter, topic and search as your feed.')}</p>
+            <p className="text-[15px] font-semibold">{t('homestation.immersive.empty', 'Nothing to show in this view')}</p>
+            <p className="mt-1 text-[13px]">{t('homestation.immersive.emptyBody', 'Immersive mode uses the same filter, topic and search as your feed.')}</p>
           </div>
         ) : null}
         {currentId ? <ImmersiveItem key={currentId} objId={currentId} subIndex={subIndex} onSubCount={setSubCount} onClose={onClose} /> : null}
@@ -203,20 +203,20 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
       </div>
 
       {view && view.personal ? (
-        <div className="absolute bottom-28 right-3 flex flex-col items-center gap-4 md:bottom-32 md:right-4" style={{ color: 'white' }}>
-          <button type="button" className="flex flex-col items-center gap-1" aria-pressed={view.personal.like.on} aria-label={t('homestation.like.like', 'Like')} style={{ color: view.personal.like.on ? '#f87171' : 'white' }} onClick={() => void actions.toggleLike(view)}>
+        <div className="hs-immersive-actions absolute bottom-28 right-3 flex flex-col items-center gap-4 md:bottom-32 md:right-4" style={{ color: 'white' }}>
+          <button type="button" className="flex flex-col items-center gap-1" aria-pressed={view.personal.like.on} aria-label={t('homestation.like.like', 'Like')} style={{ color: view.personal.like.on ? 'var(--hs-like)' : 'white' }} onClick={() => void actions.toggleLike(view)}>
             <Heart size={26} fill={view.personal.like.on ? 'currentColor' : 'none'} />
-            <span className="text-[11px]">{formatCount(view.stats?.likes ?? 0)}</span>
+            <span className="text-[12px] tabular-nums">{formatCount(view.stats?.likes ?? 0)}</span>
           </button>
           <button type="button" className="flex flex-col items-center gap-1" aria-label={t('homestation.comments.open', 'Comments')} onClick={() => { onClose(); nav.openDetail(view.item.objId) }}>
             <MessageCircle size={26} />
-            <span className="text-[11px]">{formatCount(view.stats?.textComments ?? 0)}</span>
+            <span className="text-[12px] tabular-nums">{formatCount(view.stats?.textComments ?? 0)}</span>
           </button>
-          <button type="button" className="flex flex-col items-center gap-1 disabled:opacity-40" disabled={!view.canRepost} aria-label={t('homestation.repost.label', 'Repost')} style={{ color: view.personal.repost.on ? '#4ade80' : 'white' }} onClick={() => void actions.repost(view)}>
+          <button type="button" className="flex flex-col items-center gap-1 disabled:opacity-40" disabled={!view.canRepost} aria-label={t('homestation.repost.label', 'Repost')} aria-pressed={view.personal.repost.on} onClick={() => void actions.repost(view)}>
             <Repeat2 size={26} />
-            <span className="text-[11px]">{formatCount((view.stats?.reposts ?? 0) + (view.stats?.quotes ?? 0))}</span>
+            <span className="text-[12px] tabular-nums">{formatCount((view.stats?.reposts ?? 0) + (view.stats?.quotes ?? 0))}</span>
           </button>
-          <button type="button" className="flex flex-col items-center gap-1" aria-pressed={view.personal.bookmark.on} aria-label={t('homestation.bookmark.add', 'Bookmark (private)')} style={{ color: view.personal.bookmark.on ? '#fbbf24' : 'white' }} onClick={() => void actions.toggleBookmark(view)}>
+          <button type="button" className="flex flex-col items-center gap-1" aria-pressed={view.personal.bookmark.on} aria-label={t('homestation.bookmark.add', 'Bookmark (private)')} onClick={() => void actions.toggleBookmark(view)}>
             <Bookmark size={26} fill={view.personal.bookmark.on ? 'currentColor' : 'none'} />
           </button>
         </div>
@@ -224,12 +224,12 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
 
       {view ? (
         <div className="px-4 pb-6 pt-2" style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.85))', paddingBottom: 'calc(1.5rem + var(--sab))' }}>
-          <div className="flex items-center gap-2 pr-16 text-sm font-semibold" style={{ color: 'white' }}>
+          <div className="flex items-center gap-2 pr-16 text-[15px] font-semibold" style={{ color: 'white' }}>
             <span className="truncate">{view.item.isPrivateCapture ? view.item.capturedFrom : view.item.publisher.name}</span>
             <VerificationBadge verification={view.item.verification} />
           </div>
-          {view.item.object.content?.text && view.item.contentType !== 'text' && view.item.contentType !== 'comment' ? <p className="mt-1 line-clamp-2 pr-16 text-sm" style={{ color: 'rgba(255,255,255,0.8)' }}>{view.item.object.content.text}</p> : null}
-          {view.reading ? <p className="mt-1 text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>{reasonLabel(t, view.reading)}</p> : null}
+          {view.item.object.content?.text && view.item.contentType !== 'text' && view.item.contentType !== 'comment' ? <p className="mt-1 line-clamp-2 pr-16 text-[14px] leading-5" style={{ color: 'rgba(255,255,255,0.8)' }}>{view.item.object.content.text}</p> : null}
+          {view.reading ? <p className="mt-2 flex items-center gap-2 text-[13px]" style={{ color: 'rgba(255,255,255,0.6)' }}><span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />{reasonLabel(t, view.reading)}</p> : null}
         </div>
       ) : null}
     </div>

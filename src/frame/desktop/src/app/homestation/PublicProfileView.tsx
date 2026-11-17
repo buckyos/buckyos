@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Eye, ShieldCheck, Star, UserPlus } from 'lucide-react'
+import { ArrowDown, ArrowUp, Eye, ShieldCheck, Star } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { useI18n } from '../../i18n/provider'
@@ -29,19 +29,19 @@ function PublishedList({ owner, kind, variant }: { owner: Did; kind: PublishedKi
   const list = usePagedList<PublishedPage>(scope, fetchPage, ['published', 'profile'])
   const rows = useMemo(() => list.pages.flatMap(page => page.entries), [list.pages])
   const approximated = list.pages[0]?.readerApproximated ? (
-    <p className="mx-4 mt-3 flex items-start gap-1.5 rounded-xl px-3 py-2 text-xs leading-5" style={{ background: 'var(--hs-subtle-bg)', color: 'var(--cp-muted)' }} data-testid="hs-reader-approximated">
-      <Eye size={13} className="mt-0.5 flex-shrink-0" />
+    <p className={nav.isDesktop ? 'hs-note mx-6 my-4' : 'hs-note mx-4 my-4'} data-testid="hs-reader-approximated">
+      <Eye size={14} />
       {t('homestation.profile.readerApproximated', 'Your HomeStation can’t read a third party’s home feed as another person, so this is approximated: it shows what an anonymous reader gets.')}
     </p>
   ) : null
   if (list.isLoading) return <ListSkeleton rows={3} />
   if (list.error) return <ErrorState onRetry={list.reload} />
-  if (rows.length === 0) return <>{approximated}<EmptyState icon={<Eye size={30} strokeWidth={1.4} />} title={t('homestation.profile.emptyTab', 'Nothing here for this reader')} /></>
+  if (rows.length === 0) return <>{approximated}<EmptyState icon={<Eye size={28} />} title={t('homestation.profile.emptyTab', 'Nothing here for this reader')} /></>
   return (
     <div data-testid="hs-profile-list">
       {approximated}
       {rows.map(row => (row.objId ? <FeedCard key={row.entry} objId={row.objId} variant={variant} /> : null))}
-      {list.hasMore ? <div className="flex justify-center py-3"><button type="button" className="hs-btn" onClick={list.loadMore}>{t('homestation.state.loadMore', 'Load more')}</button></div> : null}
+      {list.hasMore ? <div className="flex justify-center py-4"><button type="button" className="hs-btn" onClick={list.loadMore}>{t('homestation.state.loadMore', 'Load more')}</button></div> : null}
     </div>
   )
 }
@@ -49,7 +49,8 @@ function PublishedList({ owner, kind, variant }: { owner: Did; kind: PublishedKi
 function FeaturedList({ featured, editable, variant }: { featured: string[]; editable: boolean; variant: 'profile' | 'visitor' }) {
   const { t } = useI18n()
   const store = useHomeStationStore()
-  if (featured.length === 0) return <EmptyState icon={<Star size={30} strokeWidth={1.4} />} title={t('homestation.profile.noFeatured', 'No featured items')} />
+  const nav = useHsNav()
+  if (featured.length === 0) return <EmptyState icon={<Star size={28} />} title={t('homestation.profile.noFeatured', 'No featured items')} />
   const move = (index: number, delta: number) => {
     const next = [...featured]
     const [item] = next.splice(index, 1)
@@ -58,16 +59,16 @@ function FeaturedList({ featured, editable, variant }: { featured: string[]; edi
   }
   return (
     <div>
-      <p className="px-4 pt-3 text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.featuredNote', 'Featured is an ordered list of references you maintain. Reordering never changes the original posts.')}</p>
+      <p className={nav.isDesktop ? 'px-6 pt-4 text-[13px] leading-5' : 'px-4 pt-4 text-[13px] leading-5'} style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.featuredNote', 'Featured is an ordered list of references you maintain. Reordering never changes the original posts.')}</p>
       {featured.map((objId, index) => (
         <FeedCard
           key={objId}
           objId={objId}
           variant={variant}
           footer={editable ? (
-            <div className="mt-2 flex gap-1">
-              <button type="button" className="hs-badge" disabled={index === 0} onClick={() => move(index, -1)} aria-label={t('homestation.profile.moveUp', 'Move up')}><ArrowUp size={11} /></button>
-              <button type="button" className="hs-badge" disabled={index === featured.length - 1} onClick={() => move(index, 1)} aria-label={t('homestation.profile.moveDown', 'Move down')}><ArrowDown size={11} /></button>
+            <div className="-ml-2 mt-2 flex gap-1">
+              <button type="button" className="hs-icon-btn" disabled={index === 0} onClick={() => move(index, -1)} aria-label={t('homestation.profile.moveUp', 'Move up')} title={t('homestation.profile.moveUp', 'Move up')}><ArrowUp size={16} /></button>
+              <button type="button" className="hs-icon-btn" disabled={index === featured.length - 1} onClick={() => move(index, 1)} aria-label={t('homestation.profile.moveDown', 'Move down')} title={t('homestation.profile.moveDown', 'Move down')}><ArrowDown size={16} /></button>
             </div>
           ) : null}
         />
@@ -105,78 +106,72 @@ export function PublicProfileView({ owner, previewReader, onPreviewReaderChange,
   ]
   const nameOf = (did: string) => store.peekIdentity(did).name
   const readerOptions = (['owner', 'anonymous', 'follower', 'friend'] as PreviewReader[]).filter(option => option === 'owner' || previewReaders[option])
+  const edge = nav.isDesktop ? 'px-6' : 'px-4'
   const readerLabel = (option: PreviewReader) => (option === 'owner' ? t('homestation.profile.asOwner', 'You') : previewReaderLabel(t, option, previewReaders[option], nameOf))
 
   return (
     <HsNavContext.Provider value={scopedNav}>
       <div data-testid="hs-profile" data-reader={previewReader ?? reader.kind}>
         {ownerView && onPreviewReaderChange ? (
-          <div className="flex flex-wrap items-center gap-1.5 px-4 py-2 text-[11px]" style={{ borderBottom: '1px solid var(--hs-divider)', background: 'var(--hs-subtle-bg)' }}>
-            <Eye size={12} />
-            <span style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.previewAs', 'Preview as')}</span>
+          <div className={`hs-scroll-x flex items-center gap-2 overflow-x-auto ${edge} py-3`} style={{ borderBottom: '1px solid var(--hs-line)' }}>
+            <span className="flex-shrink-0 text-[13px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.previewAs', 'Preview as')}</span>
             {readerOptions.map(option => (
-              <button key={option} type="button" className="hs-chip" style={{ padding: '3px 10px' }} aria-pressed={(previewReader ?? 'owner') === option} data-testid={`hs-preview-${option}`} onClick={() => onPreviewReaderChange(option)}>
+              <button key={option} type="button" className="hs-chip" aria-pressed={(previewReader ?? 'owner') === option} data-testid={`hs-preview-${option}`} onClick={() => onPreviewReaderChange(option)}>
                 {readerLabel(option)}
               </button>
             ))}
-            <span className="hs-badge">{t('homestation.profile.devOnly', 'Dev tool')}</span>
+            <span className="ml-auto flex-shrink-0 pl-2 text-[13px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.devOnly', 'Dev tool')}</span>
           </div>
         ) : null}
-        <div className="h-28 w-full md:h-40" style={{ background: `linear-gradient(135deg, color-mix(in srgb, hsl(${data?.hue ?? 260} 60% 55%) 34%, var(--cp-surface)), color-mix(in srgb, var(--cp-accent-soft) 40%, var(--cp-surface-2)))` }} />
-        <div className="relative px-4 pb-3">
-          <div className="-mt-9 rounded-full border-4" style={{ borderColor: 'var(--cp-bg)', width: 'fit-content' }}>
-            <Avatar identity={{ name: data?.name ?? '?', hue: data?.hue ?? 260, avatar: data?.avatar }} size={72} />
-          </div>
-          <div className="mt-2 flex flex-wrap items-start gap-2">
+        <div className={`${edge} pb-4 pt-6`}>
+          <div className="flex items-start gap-4">
             <div className="min-w-0 flex-1">
-              <h2 className="flex items-center gap-1.5 text-xl font-bold">
-                {data?.name ?? '…'}
-                <ShieldCheck size={17} style={{ color: 'var(--cp-success)' }} aria-label={t('homestation.verify.verified', 'Signature verified')} />
+              <h2 className="flex min-w-0 items-center gap-2 text-[24px] font-semibold leading-8">
+                <span className="truncate">{data?.name ?? '…'}</span>
+                <ShieldCheck size={18} className="flex-shrink-0" style={{ color: 'var(--hs-text-2)' }} aria-label={t('homestation.verify.verified', 'Signature verified')} />
               </h2>
-              <p className="truncate font-mono text-[11px]" style={{ color: 'var(--cp-muted)' }}>{owner}</p>
+              <p className="mt-1 truncate font-mono text-[13px] leading-5" style={{ color: 'var(--cp-muted)' }}>{owner}</p>
             </div>
-            {!ownerView && onFollow ? (
-              <button
-                type="button"
-                className={followState === 'done' ? 'hs-btn' : 'hs-btn is-primary'}
-                data-testid="hs-visitor-follow"
-                disabled={followState !== 'idle'}
-                onClick={() => {
-                  setFollowState('pending')
-                  onFollow().then(() => setFollowState('done'), error => {
-                    setFollowState('idle')
-                    toast({ text: t('homestation.portal.followFailed', 'Couldn’t follow: {{reason}}', { reason: error instanceof Error ? error.message : String(error) }) })
-                  })
-                }}
-              >
-                <UserPlus size={14} />
-                {followState === 'done' ? t('homestation.profile.following', 'Following') : t('homestation.profile.follow', 'Follow')}
-              </button>
-            ) : null}
-            {!ownerView && !onFollow && signInHref ? (
-              <a className="hs-btn" href={signInHref} data-testid="hs-visitor-sign-in">
-                <UserPlus size={14} />
-                {t('homestation.portal.signInToFollow', 'Sign in to follow')}
-              </a>
-            ) : null}
+            <Avatar identity={{ name: data?.name ?? '?', hue: data?.hue ?? 260, avatar: data?.avatar }} size={nav.isDesktop ? 84 : 72} />
           </div>
-          {data?.bio ? <p className="mt-1.5 text-sm leading-relaxed" style={{ color: 'color-mix(in srgb, var(--cp-text) 78%, transparent)' }}>{data.bio}</p> : null}
+          {data?.bio ? <p className="mt-4 text-[15px] leading-[22px]">{data.bio}</p> : null}
           {data ? (
-            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm" style={{ color: 'var(--cp-muted)' }}>
-              <span><strong style={{ color: 'var(--cp-text)' }}>{data.posts}</strong> {t('homestation.profile.postsCount', 'posts visible to this reader')}</span>
+            <p className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[15px] leading-[22px] tabular-nums" style={{ color: 'var(--cp-muted)' }}>
               <span title={t('homestation.profile.followersHint', 'Counted from valid follow declarations received, de-duplicated by DID')} data-testid="hs-followers">
-                <strong style={{ color: 'var(--cp-text)' }}>{formatCount(data.followers)}</strong> {t('homestation.profile.followers', 'followers (valid follow declarations received)')}
+                <span style={{ color: 'var(--cp-text)' }}>{formatCount(data.followers)}</span> {t('homestation.profile.followers', 'followers')}
               </span>
-              <span><strong style={{ color: 'var(--cp-text)' }}>{data.following}</strong> {t('homestation.profile.followingCount', 'following')}</span>
-            </div>
+              <span><span style={{ color: 'var(--cp-text)' }}>{data.following}</span> {t('homestation.profile.followingCount', 'following')}</span>
+              <span><span style={{ color: 'var(--cp-text)' }}>{data.posts}</span> {t('homestation.profile.postsCount', 'posts')}</span>
+            </p>
           ) : null}
-          {!ownerView || previewing ? <p className="mt-2 text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.visitorNote', 'This is the home feed as this reader gets it: only entries their audience allows. Reading lists, bookmarks and recommendation reasons are never included.')}</p> : null}
+          {!ownerView && onFollow ? (
+            <button
+              type="button"
+              className={followState === 'done' ? 'hs-btn is-block mt-4' : 'hs-btn is-primary is-block mt-4'}
+              data-testid="hs-visitor-follow"
+              disabled={followState !== 'idle'}
+              onClick={() => {
+                setFollowState('pending')
+                onFollow().then(() => setFollowState('done'), error => {
+                  setFollowState('idle')
+                  toast({ text: t('homestation.portal.followFailed', 'Couldn’t follow: {{reason}}', { reason: error instanceof Error ? error.message : String(error) }) })
+                })
+              }}
+            >
+              {followState === 'done' ? t('homestation.profile.following', 'Following') : t('homestation.profile.follow', 'Follow')}
+            </button>
+          ) : null}
+          {!ownerView && !onFollow && signInHref ? (
+            <a className="hs-btn is-block mt-4" href={signInHref} data-testid="hs-visitor-sign-in">
+              {t('homestation.portal.signInToFollow', 'Sign in to follow')}
+            </a>
+          ) : null}
+          {!ownerView || previewing ? <p className="mt-3 text-[13px] leading-5" style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.visitorNote', 'This is the home feed as this reader gets it: only entries their audience allows. Reading lists, bookmarks and recommendation reasons are never included.')}</p> : null}
         </div>
-        <div className="flex gap-0.5 overflow-x-auto px-3" style={{ borderBottom: '1px solid var(--hs-divider)' }} role="tablist">
+        <div className="hs-tabs is-even" role="tablist">
           {tabs.map(entry => (
-            <button key={entry.id} type="button" role="tab" aria-selected={tab === entry.id} className="relative px-3 py-2.5 text-sm font-medium" style={{ color: tab === entry.id ? 'var(--cp-text)' : 'var(--cp-muted)' }} onClick={() => setTab(entry.id)} data-testid={`hs-profile-tab-${entry.id}`}>
+            <button key={entry.id} type="button" role="tab" aria-selected={tab === entry.id} className="hs-tab" onClick={() => setTab(entry.id)} data-testid={`hs-profile-tab-${entry.id}`}>
               {entry.label}
-              {tab === entry.id ? <span className="absolute bottom-0 left-2 right-2 h-0.5 rounded-full" style={{ background: 'var(--cp-accent)' }} /> : null}
             </button>
           ))}
         </div>

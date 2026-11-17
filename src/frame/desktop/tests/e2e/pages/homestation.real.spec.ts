@@ -2,6 +2,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 
+/** Desktop: these pages live under the rail's "More" menu. */
+async function openFromMore(page: Page, testId: string) {
+  await page.getByTestId('hs-nav-more').click()
+  await page.getByTestId(testId).click()
+}
+
 const DEV = 'hsDevToken=tok-me'
 
 function trackErrors(page: Page) {
@@ -99,7 +105,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await expect(page.getByTestId('hs-card').first()).toBeVisible()
     const reloaded = await scrollToCard(page, post(page, 'Before and after of the garden weekend'))
     await expect(reloaded.getByTestId('hs-like')).toHaveAttribute('aria-pressed', 'true')
-    await page.getByTestId('hs-nav-published').click()
+    await openFromMore(page, 'hs-nav-published')
     await page.getByTestId('hs-published-kind-reactions').click()
     await expect(card(page, 'Before and after of the garden weekend')).toHaveCount(1)
     expect(errors).toEqual([])
@@ -118,7 +124,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await expect(page.getByTestId('hs-toast').filter({ hasText: 'Comment published' })).toBeVisible()
     await expect(page.getByTestId('hs-comment-row').filter({ hasText: text })).toBeVisible()
     await page.getByRole('button', { name: 'Back' }).click()
-    await page.getByTestId('hs-nav-published').click()
+    await openFromMore(page, 'hs-nav-published')
     await page.getByTestId('hs-published-kind-comments').click()
     await expect(card(page, text)).toHaveCount(1)
     expect(errors).toEqual([])
@@ -133,7 +139,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await page.getByTestId('hs-quick-submit').click()
     await expect(page.getByTestId('hs-toast').filter({ hasText: 'Published to your feed' })).toBeVisible()
     await expect(card(page, text)).toHaveCount(0)
-    await page.getByTestId('hs-nav-published').click()
+    await openFromMore(page, 'hs-nav-published')
     const mine = card(page, text)
     await expect(mine).toHaveCount(1)
     const status = mine.getByTestId('hs-publish-status')
@@ -171,7 +177,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await page.getByTestId('hs-quick-text').fill(text)
     await page.getByTestId('hs-quick-submit').click()
     await expect(page.getByTestId('hs-toast').filter({ hasText: 'Published to your feed' })).toBeVisible()
-    await page.getByTestId('hs-nav-published').click()
+    await openFromMore(page, 'hs-nav-published')
     await expect(card(page, text).getByTestId('hs-publish-status')).toHaveAttribute('data-stage', 'published')
     const content = await page.request.get(`/home/me/objects/${encodeURIComponent(result.objId)}/content?access=tok-me`)
     expect(content.headers()['content-type']).toBe('image/jpeg')
@@ -214,7 +220,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     const errors = trackErrors(page)
     await openHomeStation(page)
     await expect(post(page, 'Color palettes for winter interfaces')).toBeVisible()
-    await page.getByTestId('hs-nav-prefs').click()
+    await openFromMore(page, 'hs-nav-prefs')
     const choice = page.getByTestId('hs-mute-choice')
     await expect(choice.locator('option[value="person|did:test:sarah"]')).toHaveText('Sarah Kim')
     await expect(choice.locator('option[value="person|did:test:alice"]')).toHaveText('Alice Chen')
@@ -225,7 +231,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await page.getByTestId('hs-nav-feed').click()
     await expect(page.getByTestId('hs-hidden-summary')).toContainText(/\d+ from people you chose not to see/)
     await expect(post(page, 'Color palettes for winter interfaces')).toHaveCount(0)
-    await page.getByTestId('hs-nav-prefs').click()
+    await openFromMore(page, 'hs-nav-prefs')
     await page.getByTestId('hs-mute-list').getByTestId('hs-unmute').click()
     await expect(page.getByTestId('hs-mute-list')).not.toContainText('Sarah Kim')
     expect(errors).toEqual([])
@@ -293,7 +299,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await page.getByTestId('hs-quick-zone-feed').locator('input').check()
     await page.getByTestId('hs-quick-submit').click()
     await expect(page.getByTestId('hs-toast').filter({ hasText: 'Published to your feed' })).toBeVisible()
-    await page.getByTestId('hs-nav-published').click()
+    await openFromMore(page, 'hs-nav-published')
     await expect(card(page, text).getByTestId('hs-published-zone')).toBeVisible()
     await page.goto('/homestation/~zone?hsDevToken=anonymous')
     await expect(page.getByTestId('hs-zone-list')).toContainText(text)

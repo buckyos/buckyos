@@ -97,10 +97,12 @@ export interface MenuItemSpec {
   hint?: string
   disabled?: boolean
   danger?: boolean
+  current?: boolean
+  testId?: string
   onSelect: () => void
 }
 
-export function Menu({ anchor, open, onClose, items, label, testId }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; items: MenuItemSpec[]; label: string; testId?: string }) {
+export function Menu({ anchor, open, onClose, items, label, testId, align }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; items: MenuItemSpec[]; label: string; testId?: string; align?: 'start' | 'end' }) {
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')]
@@ -110,8 +112,8 @@ export function Menu({ anchor, open, onClose, items, label, testId }: { anchor: 
     event.preventDefault()
   }
   return (
-    <Popover anchor={anchor} open={open} onClose={onClose} role="menu" label={label} width={260} testId={testId}>
-      <div className="py-1" onKeyDown={onKeyDown}>
+    <Popover anchor={anchor} open={open} onClose={onClose} role="menu" label={label} width={280} testId={testId} align={align}>
+      <div className="p-1" onKeyDown={onKeyDown}>
         {items.map(item => (
           <button
             key={item.id}
@@ -119,15 +121,18 @@ export function Menu({ anchor, open, onClose, items, label, testId }: { anchor: 
             role="menuitem"
             disabled={item.disabled}
             className={clsx('hs-menu-item', item.danger && 'is-danger')}
+            aria-current={item.current ? 'page' : undefined}
+            style={item.current ? { fontWeight: 600 } : undefined}
+            data-testid={item.testId}
             onClick={() => {
               onClose()
               item.onSelect()
             }}
           >
-            <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center" style={{ color: item.danger ? undefined : 'var(--cp-muted)' }}>{item.icon}</span>
+            {item.icon ? <span className="flex h-5 w-[18px] flex-shrink-0 items-center justify-center self-start" style={{ color: item.danger ? undefined : 'var(--cp-muted)' }}>{item.icon}</span> : null}
             <span className="min-w-0 flex-1">
               <span className="block">{item.label}</span>
-              {item.hint ? <span className="block text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>{item.hint}</span> : null}
+              {item.hint ? <span className="block truncate text-[12px] leading-4" style={{ color: 'var(--cp-muted)' }}>{item.hint}</span> : null}
             </span>
           </button>
         ))}
