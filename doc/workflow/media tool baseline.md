@@ -100,4 +100,4 @@ Chrome for Testing 不随 `ext-core` 分发。包装好以后，节点从官方�
 
 - `ext-core` 1.2.0 的 soffice 只在 linux-x86_64 上实测（干净的 Ubuntu 24.04 / 22.04 容器，无网络）；linux-aarch64、macOS、Windows 的 payload 未运行过。
 - macOS / Windows 上 soffice 的字体回退走系统字体（CoreText / GDI），没写字体的中日韩文字不一定落到随包的 Noto CJK；`to_pdf` 指纹里的字体摘要取自 `fc-list`，看不到 `ext-core` 自带的字体。两项都未处理。`page_to_pdf`、`page_snapshot` 的字体摘要是同一个值，同样看不到随包的字体。
-- `page-render` 的隔离运行只在 Linux x86_64 上验证过（§3.1）。macOS、Windows 的分支没有运行过；真实 Zone 上以 root 运行的 workflow 也还没有跑过 `media.page`（WF-DV-017 未执行）。
+- `page-render` 的隔离运行只在 Linux x86_64 上验证过（§3.1）。macOS、Windows 的分支没有运行过。真实 Zone 上以 root 运行的 workflow 跑过 `media.page`：2026-11-15 本机 Zone 上 WF-DV-017 通过（HTML 对象出 PDF、第二次命中缓存、没有读权限的调用者被拒），渲染期间的进程属主都是 `nobody`，PDF 里的外部请求全部失败；进程的环境没有读到，只验了属主（[Agent 浏览器实施 TODO](../../notepads/agent-runtime-browser-todo.md) §12）。
