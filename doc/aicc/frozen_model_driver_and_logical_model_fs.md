@@ -84,7 +84,7 @@ LLM 装配顺序为：
   -> 原子发布 ModelRegistry
 ```
 
-对外结构为 `功能 -> 规格 -> 模型家族:固定预设 -> 物理 instance`。LLM 功能和规格不启用通用 Auto/Hybrid，不接受 inventory/`auto_mounts` 直接挂载。`llm` 只作命名空间，`llm.fallback` 默认空；任务、规格、家族禁止隐式 Parent fallback，显式回退仍保留原任务约束。
+对外结构为 `功能 -> 规格 -> 模型家族:固定预设 -> 物理 instance`。LLM 功能和规格不启用通用 Auto/Hybrid，不接受 inventory/`auto_mounts` 直接挂载。`llm` 只作命名空间；任务、规格、家族禁止隐式 Parent fallback。内置用途默认显式回退到 `llm.fallback`（按成本分层引用非 `direct_only` 规格、自身 disabled），回退仍保留原任务约束和 scheduler。
 
 先过滤可执行候选，跳过空规格，再按功能权重选规格、在规格内按推导的版本值选最新合格稳定家族，最后调度物理实例。OpenAI 的 `5.6 -> 560`、`5.5 -> 550`、`6 -> 600`；同版本允许同值，并以归一化家族 ID 升序稳定排序，不依赖配置声明顺序。版本分段、扩展数字段和无版本模型的处理见 Metadata Schema，不把日期、参数量或产品后缀当版本号。实验版仅在无合格稳定版且策略允许时参与。两层顺序不相乘，Provider 数量不增加家族权重；规格耗尽再换下一个规格。
 

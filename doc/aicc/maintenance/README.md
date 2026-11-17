@@ -6,6 +6,8 @@
 
 其中 `acceptance/README.md` 是拆分后的验收入口，用于指导当前实现的验收组织和测试覆盖；各拆分文档已包含对应任务需要的细节，不需要回查原总方案，也不作为 AICC 设计目标来源。
 
+`llm_catalog_routine_maintenance.md` 是 LLM 模型目录的例行维护手册：核对厂商型号、能力、价格与下线信息，更新 Model Driver / Provider Rules，验证默认用途覆盖与 `llm.fallback`，回读生效并留记录。
+
 修改 AICC 行为时：
 
 - 需求、协议契约、路由设计和验收目标以 `doc/aicc` 根目录文档为准。

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 6,
+  "revision_seq": 7,
   "provider_profile_id": "openai",
   "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
   "models": [
@@ -403,6 +403,56 @@
         },
         "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
         "verified_at": "2026-10-26"
+      }
+    },
+    {
+      "id": "gpt-6-sol",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000002,
+        "output_token": 0.00001,
+        "cache_input_token": 0.0000002,
+        "cache_write_input_token": 0.0000025,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {"up_to": 272001},
+            {
+              "input_token": 0.000004,
+              "output_token": 0.000015,
+              "cache_input_token": 0.0000004,
+              "cache_write_input_token": 0.000005
+            }
+          ]
+        },
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-11-16"
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.0000001,
+        "output_token": 0.0000005,
+        "cache_input_token": 0.00000001,
+        "cache_write_input_token": 0.000000125,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {"up_to": 272001},
+            {
+              "input_token": 0.0000002,
+              "output_token": 0.00000075,
+              "cache_input_token": 0.00000002,
+              "cache_write_input_token": 0.00000025
+            }
+          ]
+        },
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-11-16"
       }
     },
     {

@@ -96,7 +96,7 @@ llm
 ├── swift      # 极速响应(短回复、低延迟)
 ├── summarize  # 总结/抽取，通过规格选择
 ├── translate  # 翻译
-└── fallback   # 默认空，只接收显式配置
+└── fallback   # 廉价快速优先的分层兜底；上面七个用途无候选时显式回退到这里
 ```
 
 支持的 api_type：`llm`。纯文本 completion 由调用方转换为单条 message，不定义独立 api_type。
@@ -207,7 +207,7 @@ llm
 
 选择分两阶段。阶段一逐层展开：功能目录、规格、家族预设各自只展开本层可用 item 中权重最大的一组，并列全部展开；某组没有任何可用候选（无库存、admission 不满足、运行状态或策略被硬过滤）时才尝试同层下一权重组，全部不可用则该目录为空。同权重规格不按规格 ID 提前淘汰，而是各自展开后共同进入阶段二。阶段二把展开得到的合格 instance 合并成候选池，按调度 profile（默认成本优先）选择，策略项全部相同时按默认顺序（配置书写顺序；家族按路径、instance 按 exact model 名）。`stability = experimental` 只是准入条件：请求未允许实验版时硬过滤，允许后不再被隐式排在稳定版之后。运行时 failover 只在本轮候选池内进行。
 
-任务、规格、家族没有隐式 Parent fallback；`llm` 不收集模型，`llm.fallback` 默认空。家族直选默认 strict，使用声明的默认预设，不自动升级其他家族。显式 fallback 保留原请求及原任务约束。每个规格须被功能引用或标记 `direct_only`，后者不能通过功能或 fallback 暗中接入。
+任务、规格、家族没有隐式 Parent fallback；`llm` 不收集模型。内置七个用途默认显式 `target_logical` 到 `llm.fallback`，`llm.fallback` 自身 disabled，是回退链终点。它只引用非 `direct_only` 规格，按“廉价快速 4.0 > 性价比 3.0 > 标准 2.0 > 高档/特化 1.0”分层，逐层展开规则不变；直接请求 `llm.fallback` 用 `cost_first`，从用途回退时沿用原用途的 scheduler、能力门槛和禁用项。用户替换用途 items 而未声明 fallback 时回退关闭，显式 `strict`/`disabled` 同样关闭。家族、规格直选为 disabled，使用声明的预设，不自动升级其他家族。目录回退只发生在路由阶段；运行期 failover 仍只在本轮候选池内换实例。每个规格须被功能引用或标记 `direct_only`，后者不能通过功能或 fallback 暗中接入。
 
 以下非 LLM 家族目录保留原有设计，不套用本节的规格规则。
 
@@ -380,30 +380,35 @@ routing_config:
       items:
         - { name: gpt_standard, target: llm.gpt-standard, weight: 2.2 }
         - { name: gpt_mini, target: llm.gpt-mini, weight: 1.4 }
-      fallback: { mode: disabled }
+      fallback: { mode: target_logical, target: llm.fallback }
 
     llm.plan:
       items:
         - { name: gpt_max, target: llm.gpt-max, weight: 3.2 }
         - { name: gpt_pro, target: llm.gpt-pro, weight: 3.1 }
-      fallback: { mode: disabled }
+      fallback: { mode: target_logical, target: llm.fallback }
       profile: quality_first
 
     llm.code:
       items:
         - { name: gpt_codex, target: llm.gpt-codex, weight: 3.2 }
         - { name: gpt_standard, target: llm.gpt-standard, weight: 3.0 }
-      fallback: { mode: disabled }
+      fallback: { mode: target_logical, target: llm.fallback }
 
     llm.swift:
       items:
         - { name: gpt_nano, target: llm.gpt-nano, weight: 1.1 }
-      fallback: { mode: disabled }
+      fallback: { mode: target_logical, target: llm.fallback }
       profile: latency_first
 
     llm.fallback:
-      items: []
+      items:
+        - { name: gpt_nano, target: llm.gpt-nano, weight: 4.0 }
+        - { name: claude_haiku, target: llm.claude-haiku, weight: 4.0 }
+        - { name: gemini_flash_lite, target: llm.gemini-flash-lite, weight: 4.0 }
+        - { name: gpt_standard, target: llm.gpt-standard, weight: 2.0 }
       fallback: { mode: disabled }
+      profile: cost_first
 
     # ===== Embedding =====
     embedding.text:

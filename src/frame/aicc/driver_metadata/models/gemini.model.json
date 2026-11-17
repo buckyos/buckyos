@@ -3,9 +3,31 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "gemini",
-  "revision_seq": 6,
+  "revision_seq": 7,
   "required_features": [],
   "models": [
+    {
+      "id": "gemini-4-carbon",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 1048576,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "gemini-pro",
+        "effort": "high",
+        "default_effort": "medium",
+        "supported_efforts": ["low", "medium", "high"],
+        "stability": "stable",
+        "weight": 41
+      }
+    },
     {
       "id": "gemini-4-argon",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
@@ -24,6 +46,28 @@
         "effort": "high",
         "default_effort": "medium",
         "supported_efforts": ["low", "medium", "high"],
+        "stability": "stable",
+        "weight": 40
+      }
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 1048576,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "gemini-flash",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "xhigh"],
         "stability": "stable",
         "weight": 40
       }

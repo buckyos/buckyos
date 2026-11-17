@@ -1,11 +1,39 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 2,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "minimax",
-  "revision_seq": 9,
+  "revision_seq": 10,
   "required_features": [],
   "models": [
+    {
+      "id": "MiniMax-M3.1-Flash",
+      "parameter_scale": "m3.1",
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption"
+      ],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 524288,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "minimax-standard",
+        "effort": "max",
+        "default_effort": "max",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "additional_specs": [
+          {"spec": "minimax-highspeed", "effort": "low", "weight": 32}
+        ],
+        "stability": "stable",
+        "weight": 32
+      }
+    },
     {
       "id": "MiniMax-M3.1-Flash-Preview",
       "parameter_scale": "m3.1",

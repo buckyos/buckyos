@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 9,
+  "revision_seq": 10,
   "required_features": [],
   "models": [
     {
@@ -135,6 +135,36 @@
             ]
           }
         }
+      }
+    },
+    {
+      "id": "qwen4-max",
+      "parameter_scale": "max",
+      "api_types": [
+        "llm",
+        "vision.caption"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "vision": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 262144
+      },
+      "llm": {
+        "spec": "qwen-max",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": [
+          "none",
+          "low",
+          "high",
+          "xhigh"
+        ],
+        "stability": "stable",
+        "weight": 40
       }
     },
     {

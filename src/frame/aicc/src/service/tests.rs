@@ -1470,11 +1470,28 @@ fn builtin_plan_and_code_prefer_openai_and_keep_other_vendors_available() {
                 *next,
                 "{path}"
             );
+            assert!(candidates.fallback_chain.is_empty(), "{path}: {next}");
             unavailable.push(*next);
         }
-        assert!(registry
+        let exhausted = registry
             .resolve_available_candidates(path, buckyos_api::ApiType::Llm, &mut |_, candidate| {
                 !unavailable.contains(&candidate.model.exact_model.as_str())
+            })
+            .unwrap();
+        assert_eq!(exhausted.resolved_logical_path, "llm.fallback", "{path}");
+        assert!(!exhausted.candidates.is_empty(), "{path}");
+        assert!(exhausted
+            .candidates
+            .iter()
+            .all(|candidate| !unavailable.contains(&candidate.model.exact_model.as_str())));
+        let all = registry
+            .model_views()
+            .into_iter()
+            .map(|model| model.exact_model)
+            .collect::<Vec<_>>();
+        assert!(registry
+            .resolve_available_candidates(path, buckyos_api::ApiType::Llm, &mut |_, candidate| {
+                !all.contains(&candidate.model.exact_model.to_string())
             })
             .unwrap()
             .candidates
@@ -1512,12 +1529,31 @@ fn builtin_logical_definitions_gate_specs_with_min_line_and_reject_old_mounts() 
     let candidates = registry
         .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
         .unwrap();
-    assert!(candidates.candidates.is_empty());
-    assert!(candidates.fallback_chain.is_empty());
     assert!(candidates.admissions.iter().any(|record| record.exact_model
         == "planner:reasoning-high@secondary"
         && !record.admitted
         && record.missing_requirements.contains(&"tool_call".into())));
+    assert_eq!(candidates.fallback_chain.len(), 1);
+    assert_eq!(candidates.candidates.len(), 1);
+    assert_eq!(
+        candidates.candidates[0].model.exact_model.as_str(),
+        "nano:reasoning-none@primary"
+    );
+    assert_eq!(
+        candidates.candidates[0].paths[0].logical_paths,
+        vec!["llm.fallback", "llm.gpt-nano", "llm.gpt-5-6-luna:none"]
+    );
+    let strict: buckyos_api::AiccRouteOverlay = serde_json::from_value(
+        json!({"logical_tree": {"llm.plan": {"fallback": {"mode": "strict"}}}}),
+    )
+    .unwrap();
+    let candidates = registry
+        .with_session_overlay(&strict)
+        .unwrap()
+        .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
+        .unwrap();
+    assert!(candidates.candidates.is_empty());
+    assert!(candidates.fallback_chain.is_empty());
     assert!(!candidates
         .admissions
         .iter()
@@ -1559,12 +1595,21 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
         "llm.qwen-plus"
     );
     assert_eq!(dir_item(&directory, "llm.plan", "gpt_pro")["weight"], 3.1);
-    for path in ["llm", "llm.plan", "llm.gpt-standard"] {
+    for path in ["llm", "llm.fallback", "llm.gpt-standard"] {
         let set = registry
             .resolve_candidates(path, buckyos_api::ApiType::Llm)
             .unwrap();
         assert!(set.candidates.is_empty());
         assert!(set.fallback_chain.is_empty());
+    }
+    for path in llm_usecases() {
+        let set = registry
+            .resolve_candidates(&path, buckyos_api::ApiType::Llm)
+            .unwrap();
+        assert!(set.candidates.is_empty(), "{path}");
+        assert_eq!(set.resolved_logical_path, "llm.fallback", "{path}");
+        assert_eq!(set.fallback_chain.len(), 1, "{path}");
+        assert_eq!(set.fallback_chain[0].from, path);
     }
     let catalog = crate::model::llm_tests::builtin_catalog();
     assert_eq!(
@@ -1572,7 +1617,7 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
             .model_drivers()
             .map(|driver| driver.specs.len())
             .sum::<usize>(),
-        54
+        55
     );
     let mut task = None;
     let mut count = 0;
@@ -1581,6 +1626,7 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
             .strip_prefix("// │   ├── ")
             .or_else(|| line.strip_prefix("// │   └── "))
         {
+            let label = label.split_whitespace().next().unwrap_or_default();
             task = [
                 "plan",
                 "code",
@@ -1589,10 +1635,12 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
                 "swift",
                 "translate",
                 "vision",
+                "fallback",
             ]
             .iter()
             .find(|name| label == **name)
             .map(|name| format!("llm.{name}"));
+            continue;
         }
         let Some(task) = task.as_deref() else {
             continue;
@@ -1624,7 +1672,15 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
         );
         count += 1;
     }
-    assert_eq!(count, 95);
+    assert_eq!(
+        count,
+        llm_usecases()
+            .into_iter()
+            .chain(["llm.fallback".to_owned()])
+            .map(|path| directory[&path].as_array().unwrap().len())
+            .sum::<usize>()
+    );
+    assert_eq!(count, 141);
     for driver in catalog.model_drivers() {
         for spec in &driver.specs {
             let path = format!("llm.{}", spec.id);
@@ -1663,6 +1719,312 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
         logical_definitions_json(&registry),
         logical_definitions_json(&second)
     );
+}
+
+fn llm_usecases() -> Vec<String> {
+    builtin_logical_model_definitions()
+        .into_iter()
+        .filter(|definition| {
+            definition.api_type == buckyos_api::ApiType::Llm
+                && definition.path.starts_with("llm.")
+                && definition.path != "llm.fallback"
+        })
+        .map(|definition| definition.path)
+        .collect()
+}
+
+fn executable_spec_efforts(
+    catalog: &crate::catalog::CatalogSnapshot,
+    driver: &str,
+    origin: &str,
+) -> Vec<&'static str> {
+    let specs = &catalog.model_driver(driver).unwrap().specs;
+    let mut efforts = catalog
+        .llm_model(driver, origin)
+        .unwrap()
+        .semantics
+        .spec_bindings()
+        .filter(|(spec, _, _)| {
+            !specs
+                .iter()
+                .any(|declared| declared.id == *spec && declared.direct_only)
+        })
+        .map(|(_, effort, _)| effort)
+        .collect::<Vec<_>>();
+    efforts.sort();
+    efforts.dedup();
+    efforts.into_iter().map(|effort| effort.as_str()).collect()
+}
+
+fn single_llm_inventory(driver: &str, origin: &str, efforts: &[&str]) -> ModelProviderInventory {
+    let variants = efforts
+        .iter()
+        .copied()
+        .filter(|effort| *effort != "native")
+        .collect::<Vec<_>>();
+    crate::model::llm_tests::inventory(driver, origin, "single", "single", &variants)
+}
+
+#[test]
+fn builtin_single_llm_serves_every_usecase_it_is_capable_of() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let usecases = llm_usecases();
+    assert_eq!(usecases.len(), 7);
+    let mut gaps = Vec::new();
+    let mut checked = 0;
+    for (driver, origin, _) in catalog.llm_models() {
+        let efforts = executable_spec_efforts(&catalog, driver, origin);
+        let isolated = catalog
+            .llm_model(driver, origin)
+            .unwrap()
+            .semantics
+            .spec_bindings()
+            .map(|(_, effort, _)| effort.as_str())
+            .collect::<Vec<_>>();
+        let registry = builtin_tree(&[single_llm_inventory(
+            driver,
+            origin,
+            if efforts.is_empty() {
+                &isolated
+            } else {
+                &efforts
+            },
+        )]);
+        for usecase in usecases.iter().chain([&"llm.fallback".to_owned()]) {
+            let set = registry
+                .resolve_candidates(usecase, buckyos_api::ApiType::Llm)
+                .unwrap();
+            if efforts.is_empty() {
+                if !set.candidates.is_empty() || !set.admissions.is_empty() {
+                    gaps.push(format!(
+                        "{driver}/{origin} direct_only leaked into {usecase}"
+                    ));
+                }
+                continue;
+            }
+            checked += 1;
+            let rejected = set
+                .admissions
+                .iter()
+                .any(|record| !record.admitted && !record.missing_requirements.is_empty());
+            if set.candidates.is_empty() && !rejected {
+                gaps.push(format!("{driver}/{origin} unreachable from {usecase}"));
+            }
+            if set
+                .candidates
+                .iter()
+                .any(|candidate| candidate.model.identity.origin_model_id != origin)
+            {
+                gaps.push(format!("{driver}/{origin} {usecase} picked another model"));
+            }
+        }
+    }
+    assert!(checked > 700, "{checked}");
+    assert!(gaps.is_empty(), "{gaps:#?}");
+}
+
+#[test]
+fn builtin_section_2_1_models_reach_every_usecase_alone() {
+    for (driver, origin, effort, direct, fallback) in [
+        (
+            "openai",
+            "gpt-5.5",
+            "medium",
+            &["llm.chat", "llm.plan", "llm.code", "llm.vision"][..],
+            &["llm.swift", "llm.summarize", "llm.translate"][..],
+        ),
+        (
+            "claude",
+            "claude-sonnet-5",
+            "high",
+            &["llm.chat", "llm.plan", "llm.code", "llm.vision"][..],
+            &["llm.swift", "llm.summarize", "llm.translate"][..],
+        ),
+        (
+            "gemini",
+            "gemini-3.8-flash",
+            "high",
+            &[
+                "llm.chat",
+                "llm.swift",
+                "llm.summarize",
+                "llm.translate",
+                "llm.vision",
+            ][..],
+            &["llm.plan", "llm.code"][..],
+        ),
+    ] {
+        let registry = builtin_tree(&[single_llm_inventory(driver, origin, &[effort])]);
+        let exact = format!("single:reasoning-{effort}@single");
+        for (paths, via_fallback) in [(direct, false), (fallback, true)] {
+            for path in paths {
+                let set = registry
+                    .resolve_candidates(path, buckyos_api::ApiType::Llm)
+                    .unwrap();
+                assert_eq!(set.candidates.len(), 1, "{origin} {path}");
+                assert_eq!(set.candidates[0].model.exact_model.as_str(), exact);
+                assert_eq!(
+                    set.fallback_chain.is_empty(),
+                    !via_fallback,
+                    "{origin} {path}"
+                );
+                if via_fallback {
+                    assert_eq!(set.resolved_logical_path, "llm.fallback");
+                    assert_eq!(set.scheduler_profile, registry_profile(&registry, path));
+                }
+            }
+        }
+    }
+}
+
+fn registry_profile(registry: &ModelRegistry, path: &str) -> buckyos_api::AiccSchedulerProfile {
+    registry
+        .logical_model_views()
+        .into_iter()
+        .find(|view| view.path == path)
+        .and_then(|view| view.scheduler_profile)
+        .unwrap()
+}
+
+#[test]
+fn builtin_fallback_prefers_the_cheap_tier_and_keeps_existing_tiers() {
+    let nano = single_llm_inventory("openai", "gpt-5.4-nano", &["none"]);
+    let mut standard = single_llm_inventory("openai", "gpt-5.5", &["medium"]);
+    standard.provider_instance_name = "standard".into();
+    let mut pro = single_llm_inventory("openai", "gpt-5.5-pro", &["high"]);
+    pro.provider_instance_name = "pro".into();
+    let select = |inventories: &[ModelProviderInventory], path: &str| {
+        builtin_tree(inventories)
+            .resolve_candidates(path, buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.model.exact_model.to_string())
+            .collect::<Vec<_>>()
+    };
+    let all = [nano.clone(), standard.clone(), pro.clone()];
+    assert_eq!(
+        select(&all, "llm.fallback"),
+        ["single:reasoning-none@single"]
+    );
+    assert_eq!(
+        select(&all, "llm.summarize"),
+        ["single:reasoning-none@single"]
+    );
+    assert_eq!(select(&all, "llm.plan"), ["single:reasoning-high@pro"]);
+    let without_cheap = [standard.clone(), pro.clone()];
+    assert_eq!(
+        select(&without_cheap, "llm.fallback"),
+        ["single:reasoning-medium@standard"]
+    );
+    assert_eq!(
+        select(&without_cheap, "llm.swift"),
+        ["single:reasoning-medium@standard"]
+    );
+    assert_eq!(
+        select(&[pro.clone()], "llm.translate"),
+        ["single:reasoning-high@pro"]
+    );
+    let registry = builtin_tree(&[]);
+    let set = registry
+        .resolve_candidates("llm.swift", buckyos_api::ApiType::Llm)
+        .unwrap();
+    assert!(set.candidates.is_empty());
+    assert_eq!(set.fallback_chain.len(), 1);
+    assert!(set
+        .expansions
+        .iter()
+        .any(|step| step.logical_path == "llm.fallback" && step.max_weight.is_none()));
+}
+
+#[test]
+fn builtin_fallback_keeps_usecase_requirements_and_explicit_isolation() {
+    let text_only = single_llm_inventory("deepseek", "deepseek-v4-pro", &["high"]);
+    let registry = builtin_tree(&[text_only]);
+    let vision = registry
+        .resolve_candidates("llm.vision", buckyos_api::ApiType::Llm)
+        .unwrap();
+    assert!(vision.candidates.is_empty());
+    assert_eq!(vision.fallback_chain.len(), 1);
+    assert!(vision.admissions.iter().all(
+        |record| !record.admitted && record.missing_requirements.contains(&"vision".to_owned())
+    ));
+    assert_eq!(
+        registry
+            .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates
+            .len(),
+        1
+    );
+
+    let mut no_schema = single_llm_inventory("openai", "gpt-5.4-nano", &["none"]);
+    no_schema.models[0].capabilities.remove("json_schema");
+    let registry = builtin_tree(&[no_schema]);
+    for path in ["llm.plan", "llm.code"] {
+        let set = registry
+            .resolve_candidates(path, buckyos_api::ApiType::Llm)
+            .unwrap();
+        assert!(set.candidates.is_empty(), "{path}");
+        assert!(set.admissions.iter().any(|record| record
+            .missing_requirements
+            .contains(&"json_schema".to_owned())));
+    }
+
+    let registry = builtin_tree(&[single_llm_inventory("openai", "gpt-5.4-nano", &["none"])]);
+    for overlay in [
+        json!({"logical_tree": {"llm.plan": {"fallback": {"mode": "disabled"}}}}),
+        json!({"logical_tree": {"llm.plan": {"items": [{"name": "gpt_pro", "target": "llm.gpt-pro", "weight": 1.0}]}}}),
+        json!({"logical_tree": {"llm.fallback": {"items": []}}}),
+    ] {
+        let overlay: buckyos_api::AiccRouteOverlay = serde_json::from_value(overlay).unwrap();
+        assert!(registry
+            .with_session_overlay(&overlay)
+            .unwrap()
+            .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates
+            .is_empty());
+    }
+    let weight_only: buckyos_api::AiccRouteOverlay = serde_json::from_value(json!({
+        "logical_tree": {"llm.plan": {"item_overrides": {"gpt_pro": {"weight": 5.0}}}}
+    }))
+    .unwrap();
+    assert_eq!(
+        registry
+            .with_session_overlay(&weight_only)
+            .unwrap()
+            .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .fallback_chain
+            .len(),
+        1
+    );
+    for path in ["llm.gpt-mini", "llm.gpt-5-6-luna", "llm.gpt-5-4-nano:low"] {
+        let set = registry
+            .resolve_candidates(path, buckyos_api::ApiType::Llm)
+            .unwrap();
+        assert!(set.candidates.is_empty(), "{path}");
+        assert!(set.fallback_chain.is_empty(), "{path}");
+    }
+    let direct_only: buckyos_api::AiccRouteOverlay = serde_json::from_value(json!({
+        "logical_tree": {"llm.fallback": {"items": [{"name": "grok", "target": "llm.grok-standard", "weight": 1.0}]}}
+    }))
+    .unwrap();
+    assert!(registry.with_session_overlay(&direct_only).is_err());
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let directory = model_directory_json(&registry);
+    for item in directory["llm.fallback"].as_array().unwrap() {
+        let spec = item["target"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("llm.")
+            .unwrap();
+        assert!(catalog
+            .model_drivers()
+            .flat_map(|driver| &driver.specs)
+            .any(|declared| declared.id == spec && !declared.direct_only));
+    }
 }
 
 #[tokio::test]

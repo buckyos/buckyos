@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 5,
+  "revision_seq": 6,
   "provider_profile_id": "deepseek",
   "model_driver_overrides": {
     "deepseek-flash": "deepseek/deepseek-v4.1-flash",
@@ -180,14 +180,14 @@
           }
         ],
         "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
-        "verified_at": "2026-09-25"
+        "verified_at": "2026-11-16"
       }
     },
     {
       "id": "deepseek-flash",
       "pricing": {
         "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "USD",
         "input_token": 1.5e-7,
         "output_token": 6e-7,
@@ -235,7 +235,7 @@
       },
       "pricing": {
         "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "USD",
         "input_token": 1.5e-7,
         "output_token": 6e-7,

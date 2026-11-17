@@ -3,9 +3,32 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "claude",
-  "revision_seq": 5,
+  "revision_seq": 6,
   "required_features": [],
   "models": [
+    {
+      "id": "claude-fable-5-2",
+      "parameter_scale": "fable",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 128000,
+        "streaming": true,
+        "tool_call": true,
+        "web_search": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-fable",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "stable",
+        "weight": 52
+      }
+    },
     {
       "id": "claude-fable-5-1",
       "parameter_scale": "fable",
@@ -315,6 +338,7 @@
         "streaming": true,
         "tool_call": true,
         "web_search": true,
+        "json_schema": true,
         "vision": true,
         "reasoning": true
       },

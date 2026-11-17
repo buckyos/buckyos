@@ -191,9 +191,15 @@ suffix uses `default_effort`; a specification fixes `effort`. Tree expansion and
 request routing retain that selected exact variant. Final wire parameter locking
 is separate Provider/Adapter work.
 
-LLM directories require Manual admission. The `llm` root is a namespace and
-`llm.fallback` starts empty. Tasks, specifications and families have no implicit
-Parent fallback. Explicit fallback retains original task/request requirements.
+LLM directories require Manual admission. The `llm` root is a namespace.
+Tasks, specifications and families have no implicit Parent fallback. The builtin
+usecases fall back explicitly (`target_logical`) to `llm.fallback`, which only
+references non-`direct_only` specifications in cost tiers (cheap/fast 4.0, value
+3.0, standard 2.0, premium/specialised 1.0) and is itself `disabled`. Explicit
+fallback retains original task/request requirements and the requested task's
+scheduler; direct `llm.fallback` requests use `cost_first`. A new non-direct_only
+specification must be placed in `llm.fallback`; the single-model coverage test
+fails otherwise.
 Legacy `llm.{driver}.{model}` names are not aliases.
 
 Overlays retain `factory -> system -> user -> session` precedence. Item and

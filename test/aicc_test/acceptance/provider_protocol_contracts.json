@@ -1116,6 +1116,7 @@
       "credential_type": "api_key",
       "official_first_party_model_ids": {
         "llm": [
+          "claude-fable-5-2",
           "claude-fable-5-1",
           "claude-fable-5",
           "claude-opus-5",
@@ -1125,6 +1126,7 @@
           "claude-haiku-4-5-20251001"
         ],
         "vision.ocr": [
+          "claude-fable-5-2",
           "claude-fable-5-1",
           "claude-fable-5",
           "claude-opus-5",
@@ -1134,6 +1136,7 @@
           "claude-haiku-4-5-20251001"
         ],
         "vision.caption": [
+          "claude-fable-5-2",
           "claude-fable-5-1",
           "claude-fable-5",
           "claude-opus-5",
@@ -1151,6 +1154,7 @@
       "official_variant_rules": [
         {
           "model_ids": [
+            "claude-fable-5-2",
             "claude-fable-5-1",
             "claude-fable-5",
             "claude-opus-5",
@@ -1335,7 +1339,9 @@
       "credential_type": "api_key",
       "official_first_party_model_ids": {
         "llm": [
+          "gemini-4-carbon",
           "gemini-4-argon",
+          "gemini-4-hydrogen",
           "gemini-3.8-flash",
           "gemini-3.7-flash",
           "gemini-3.6-flash",
@@ -1353,7 +1359,9 @@
           "gemma-4-31b-it"
         ],
         "vision.ocr": [
+          "gemini-4-carbon",
           "gemini-4-argon",
+          "gemini-4-hydrogen",
           "gemini-3.8-flash",
           "gemini-3.7-flash",
           "gemini-3.6-flash",
@@ -1364,7 +1372,9 @@
           "gemma-4-31b-it"
         ],
         "vision.caption": [
+          "gemini-4-carbon",
           "gemini-4-argon",
+          "gemini-4-hydrogen",
           "gemini-3.8-flash",
           "gemini-3.7-flash",
           "gemini-3.6-flash",
@@ -1375,7 +1385,9 @@
           "gemma-4-31b-it"
         ],
         "vision.detect": [
+          "gemini-4-carbon",
           "gemini-4-argon",
+          "gemini-4-hydrogen",
           "gemini-3.8-flash",
           "gemini-3.7-flash",
           "gemini-3.6-flash",
@@ -1384,7 +1396,9 @@
           "gemini-robotics-er-2-preview"
         ],
         "vision.segment": [
+          "gemini-4-carbon",
           "gemini-4-argon",
+          "gemini-4-hydrogen",
           "gemini-3.8-flash",
           "gemini-3.7-flash",
           "gemini-3.6-flash",
@@ -1393,7 +1407,9 @@
           "gemini-robotics-er-2-preview"
         ],
         "audio.asr": [
+          "gemini-4-carbon",
           "gemini-4-argon",
+          "gemini-4-hydrogen",
           "gemini-3.1-pro-preview-customtools",
           "gemini-3.5-transcribe"
         ],
@@ -1526,6 +1542,34 @@
         },
         {
           "model_ids": [
+            "gemini-4-hydrogen"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "generation_config": {
+                "thinking_level": "low"
+              }
+            },
+            "reasoning-medium": {
+              "generation_config": {
+                "thinking_level": "medium"
+              }
+            },
+            "reasoning-high": {
+              "generation_config": {
+                "thinking_level": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "generation_config": {
+                "thinking_level": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gemini-4-carbon",
             "gemini-4-argon",
             "gemini-3.7-flash",
             "gemini-3.1-pro-preview",
@@ -2681,22 +2725,15 @@
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
-          "MiniMax-M3.1-Flash-Preview",
-          "MiniMax-M3",
-          "MiniMax-M2.7",
-          "MiniMax-M2.7-highspeed",
-          "MiniMax-M2.5",
-          "MiniMax-M2.5-highspeed",
-          "MiniMax-M2.1",
-          "MiniMax-M2.1-highspeed",
-          "MiniMax-M2"
+          "MiniMax-M3.1-Flash",
+          "MiniMax-M3"
         ],
         "vision.ocr": [
-          "MiniMax-M3.1-Flash-Preview",
+          "MiniMax-M3.1-Flash",
           "MiniMax-M3"
         ],
         "vision.caption": [
-          "MiniMax-M3.1-Flash-Preview",
+          "MiniMax-M3.1-Flash",
           "MiniMax-M3"
         ],
         "audio.tts": [
@@ -2729,7 +2766,7 @@
       "official_variant_rules": [
         {
           "model_ids": [
-            "MiniMax-M3.1-Flash-Preview"
+            "MiniMax-M3.1-Flash"
           ],
           "variants": {
             "reasoning-low": {
@@ -2788,9 +2825,9 @@
         }
       ],
       "test_model_ids": {
-        "llm": "MiniMax-M3.1-Flash-Preview",
-        "vision.ocr": "MiniMax-M3.1-Flash-Preview",
-        "vision.caption": "MiniMax-M3.1-Flash-Preview",
+        "llm": "MiniMax-M3.1-Flash",
+        "vision.ocr": "MiniMax-M3.1-Flash",
+        "vision.caption": "MiniMax-M3.1-Flash",
         "audio.tts": "speech-2.8-hd",
         "audio.asr": "asr-1.0",
         "image.txt2img": "image-01",
@@ -5035,7 +5072,8 @@
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed",
           "kimi-k2.6",
-          "kimi-k3.1-pro"
+          "kimi-k3.1-pro",
+          "kimi-k3.1-pro-highspeed"
         ],
         "vision.ocr": [
           "kimi-k3",
@@ -5055,7 +5093,8 @@
       "official_variant_sources": [
         "https://platform.kimi.com/docs/models",
         "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart",
-        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart",
+        "https://platform.kimi.com/docs/api/models-overview"
       ],
       "official_variant_rules": [
         {
@@ -5107,7 +5146,8 @@
         },
         {
           "model_ids": [
-            "kimi-k3.1-pro"
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed"
           ],
           "variants": {
             "reasoning-low": {
@@ -6077,7 +6117,8 @@
       },
       "official_variant_sources": [
         "https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh",
-        "https://docs.volcengine.com/docs/ark/model-list?lang=zh"
+        "https://docs.volcengine.com/docs/ark/model-list?lang=zh",
+        "https://docs.volcengine.com/docs/ark/responses-api-deep-thinking?lang=zh"
       ],
       "official_variant_rules": [
         {
@@ -6093,6 +6134,21 @@
             "reasoning-none": {
               "reasoning": {
                 "effort": "minimal"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
               }
             }
           }
@@ -6944,7 +7000,8 @@
       },
       "official_variant_sources": [
         "https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh",
-        "https://www.volcengine.com/docs/82379/1554682"
+        "https://www.volcengine.com/docs/82379/1554682",
+        "https://docs.volcengine.com/docs/ark/responses-api-deep-thinking?lang=zh"
       ],
       "official_variant_rules": [
         {
@@ -6956,6 +7013,21 @@
             "reasoning-none": {
               "reasoning": {
                 "effort": "minimal"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
               }
             }
           }
@@ -7406,6 +7478,7 @@
       },
       "official_first_party_model_ids": {
         "llm": [
+          "qwen4-max",
           "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.8-2.4t-a95b",
@@ -7432,6 +7505,7 @@
           "qwen3.5-ocr"
         ],
         "vision.caption": [
+          "qwen4-max",
           "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.8-27b",
@@ -7529,6 +7603,7 @@
       },
       "official_variant_sources": [
         "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses",
+        "https://help.aliyun.com/zh/model-studio/qwen4-max",
         "https://help.aliyun.com/zh/model-studio/deepseek-api-by-vanchin",
         "https://help.aliyun.com/zh/model-studio/glm-zhipu",
         "https://help.aliyun.com/zh/model-studio/kimi-api-by-moonshot-ai",
@@ -7536,6 +7611,33 @@
         "https://help.aliyun.com/zh/model-studio/minimax-api-by-minimax"
       ],
       "official_variant_rules": [
+        {
+          "model_ids": [
+            "qwen4-max"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
         {
           "model_ids": [
             "qwen3.8-max",

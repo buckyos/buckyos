@@ -73,6 +73,10 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
   If `llm.chat` / `llm.code` / `llm.plan` has no candidates, check inventory `unmatched_models` and
   `unavailable_presets` before changing routing. `missing_channel_mapping` means the preset lacks a channel
   conversion; an empty LLM `logical_mounts` alone is normal because family/spec membership is generated.
+- When none of a usecase's own specs has a capable candidate, AICC falls back to `llm.fallback` (cheapest
+  capable tier first, same tool/JSON/vision/context requirements), so `response_model` may be a cheap model;
+  the route trace shows `fallback_applied`. A usecase override with its own `items`, or
+  `fallback: {mode: strict}`, turns this off.
 - Here `llm.chat`/`llm.plan` add provider web search: a trivial call bills ~4.7k input tokens (mostly cached)
   against ~0.3k on `llm.swift`. `--json` turns web search off for that run.
 - `--json` (or `json: true`) constrains the model result: at the provider, the schema when

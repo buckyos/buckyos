@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 10,
+  "revision_seq": 11,
   "provider_profile_id": "kimi",
   "models": [
     {
@@ -11,6 +11,24 @@
         "llm": "chat.completions.create",
         "vision.ocr": "chat.completions.create",
         "vision.caption": "chat.completions.create"
+      },
+      "request_rules": [
+        {
+          "remove": [
+            "/temperature",
+            "/top_p",
+            "/n",
+            "/presence_penalty",
+            "/frequency_penalty",
+            "/thinking"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "kimi-k3.1-pro-highspeed",
+      "operations": {
+        "llm": "chat.completions.create"
       },
       "request_rules": [
         {
@@ -39,15 +57,31 @@
     {"model_driver": "kimi", "variant": "reasoning-medium", "match": {"origin_model_id": ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"], "variant": "reasoning-medium"}, "provider_options": {"thinking": {"type": "enabled", "keep": "all"}}},
     {"model_driver": "kimi", "variant": "reasoning-medium", "match": {"origin_model_id": "kimi-k2.6", "variant": "reasoning-medium"}, "provider_options": {"thinking": {"type": "enabled"}}},
     {"model_driver": "kimi", "variant": "reasoning-none", "match": {"origin_model_id": "kimi-k2.6", "variant": "reasoning-none"}, "provider_options": {"thinking": {"type": "disabled"}}},
-    {"model_driver": "kimi", "variant": "reasoning-low", "match": {"origin_model_id": "kimi-k3.1-pro", "variant": "reasoning-low"}, "provider_options": {"reasoning_effort": "low"}},
-    {"model_driver": "kimi", "variant": "reasoning-high", "match": {"origin_model_id": "kimi-k3.1-pro", "variant": "reasoning-high"}, "provider_options": {"reasoning_effort": "high"}},
-    {"model_driver": "kimi", "variant": "reasoning-max", "match": {"origin_model_id": "kimi-k3.1-pro", "variant": "reasoning-max"}, "provider_options": {"reasoning_effort": "max"}}
+    {"model_driver": "kimi", "variant": "reasoning-low", "match": {"origin_model_id": ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"], "variant": "reasoning-low"}, "provider_options": {"reasoning_effort": "low"}},
+    {"model_driver": "kimi", "variant": "reasoning-high", "match": {"origin_model_id": ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"], "variant": "reasoning-high"}, "provider_options": {"reasoning_effort": "high"}},
+    {"model_driver": "kimi", "variant": "reasoning-max", "match": {"origin_model_id": ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"], "variant": "reasoning-max"}, "provider_options": {"reasoning_effort": "max"}}
   ],
   "model_pricing": [
     {
       "pricing": {
         "source_url": "https://platform.kimi.com/docs/pricing/chat",
-        "verified_at": "2026-11-12",
+        "verified_at": "2026-11-16",
+        "currency": "CNY",
+        "input_token": 2.6e-05,
+        "output_token": 0.000136,
+        "cache_input_token": 1.3e-06,
+        "cache_write_input_token": 2.6e-05,
+        "cache_write_1h_input_token": 5.2e-05
+      },
+      "match": {
+        "provider_model_id": "kimi-k3.1-pro-highspeed",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "source_url": "https://platform.kimi.com/docs/pricing/chat",
+        "verified_at": "2026-11-16",
         "currency": "CNY",
         "input_token": 1.3e-05,
         "output_token": 6.8e-05,
@@ -63,7 +97,7 @@
     {
       "pricing": {
         "source_url": "https://platform.kimi.com/docs/pricing/chat",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "CNY",
         "input_token": 2e-05,
         "output_token": 0.0001,
@@ -79,7 +113,7 @@
     {
       "pricing": {
         "source_url": "https://platform.kimi.com/docs/pricing/chat",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "CNY",
         "input_token": 6.5e-06,
         "output_token": 2.7e-05,
@@ -93,7 +127,7 @@
     {
       "pricing": {
         "source_url": "https://platform.kimi.com/docs/pricing/chat",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "CNY",
         "input_token": 1.3e-05,
         "output_token": 5.4e-05,
@@ -107,7 +141,7 @@
     {
       "pricing": {
         "source_url": "https://platform.kimi.com/docs/pricing/chat",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "CNY",
         "input_token": 6.5e-06,
         "output_token": 2.7e-05,

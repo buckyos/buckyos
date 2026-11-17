@@ -2844,6 +2844,114 @@ mod tests {
         ));
     }
     #[test]
+    fn builtin_fallback_routes_tier_first_then_by_the_requested_scheduler() {
+        let stock = |driver: &str, origin: &str, name: &str, effort: &str| {
+            crate::model::llm_tests::inventory(driver, origin, name, name, &[effort])
+        };
+        let cheap = [
+            stock("openai", "gpt-6-luna", "luna", "none"),
+            stock("claude", "claude-haiku-5-5", "haiku", "medium"),
+            stock("gemini", "gemini-3.5-flash-lite", "lite", "high"),
+        ];
+        let build = |stocks: &[ProviderInventory]| {
+            crate::service::builtin_registry_for_test(
+                &crate::model::llm_tests::builtin_catalog(),
+                stocks,
+            )
+        };
+        let runtime_for = |registry: &ModelRegistry, unavailable: &[&str]| {
+            registry
+                .model_views()
+                .into_iter()
+                .map(|model| {
+                    let mut runtime = state(false, 0.0, 100.0);
+                    runtime.estimated_cost = match model.provider_instance_name.as_str() {
+                        "luna" => Some(Money::new(0.2, "USD")),
+                        "haiku" => Some(Money::new(0.1, "USD")),
+                        "standard" => Some(Money::new(0.01, "USD")),
+                        _ => None,
+                    };
+                    runtime.model_available =
+                        !unavailable.contains(&model.provider_instance_name.as_str());
+                    (model.exact_model, runtime)
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let policy = engine(&RoutingPolicyPatch::default());
+        let route = |registry: &ModelRegistry,
+                     runtime: &BTreeMap<String, CandidateRuntimeState>,
+                     path: &str| {
+            let mut request = request(path);
+            request.api_type = ApiType::Llm;
+            request.method = ApiType::Llm.typed_method().into();
+            request.capability = ApiType::Llm.capability();
+            Router::new(registry, &policy, runtime).route(&request)
+        };
+        let names = |decision: &RouteDecision| {
+            std::iter::once(&decision.selected)
+                .chain(&decision.fallback_candidates)
+                .map(|route| route.provider_instance_name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let mut stocks = cheap.to_vec();
+        stocks.push(stock("openai", "gpt-5.5", "standard", "medium"));
+        let registry = build(&stocks);
+        let runtime = runtime_for(&registry, &[]);
+        let direct = route(&registry, &runtime, "llm.fallback").unwrap();
+        assert_eq!(names(&direct), ["haiku", "luna", "lite"]);
+        assert_eq!(direct.trace.scheduler_profile, "cost_first");
+        assert!(!direct.trace.fallback_applied);
+        let cheap_down = runtime_for(&registry, &["luna", "haiku", "lite"]);
+        assert_eq!(
+            names(&route(&registry, &cheap_down, "llm.fallback").unwrap()),
+            ["standard"]
+        );
+
+        let registry = build(&cheap);
+        let runtime = runtime_for(&registry, &[]);
+        let plan = route(&registry, &runtime, "llm.plan").unwrap();
+        assert_eq!(names(&plan), ["haiku", "luna", "lite"]);
+        assert_eq!(plan.trace.scheduler_profile, "quality_first");
+        assert!(plan.trace.fallback_applied);
+        assert_eq!(plan.trace.fallback_chain[0].from, "llm.plan");
+        assert_eq!(plan.trace.fallback_chain[0].to, "llm.fallback");
+        assert_eq!(
+            plan.trace.resolved_logical_path.as_deref(),
+            Some("llm.fallback")
+        );
+        let unknown_only = runtime_for(&registry, &["luna", "haiku"]);
+        let unknown = route(&registry, &unknown_only, "llm.fallback").unwrap();
+        assert_eq!(names(&unknown), ["lite"]);
+        assert!(unknown.selected.estimated_cost.is_none());
+        assert!(unknown
+            .trace
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("no verified cost estimate")));
+        let all_down = runtime_for(&registry, &["luna", "haiku", "lite"]);
+        assert!(matches!(
+            route(&registry, &all_down, "llm.plan"),
+            Err(RoutingError::NoCandidate { .. })
+        ));
+        let disabled = engine(&RoutingPolicyPatch {
+            route: AiccPolicyConfig {
+                allow_fallback: Some(LockedValue::new(false)),
+                ..AiccPolicyConfig::default()
+            },
+            ..RoutingPolicyPatch::default()
+        });
+        let mut request = request("llm.plan");
+        request.api_type = ApiType::Llm;
+        request.method = ApiType::Llm.typed_method().into();
+        request.capability = ApiType::Llm.capability();
+        assert!(matches!(
+            Router::new(&registry, &disabled, &runtime).route(&request),
+            Err(RoutingError::FallbackNotAllowed(_))
+        ));
+    }
+
+    #[test]
     fn same_family_fixed_effort_uses_converted_price_before_latency_and_unknowns() {
         let inventories = [
             crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "cn", "cn", &["high"]),

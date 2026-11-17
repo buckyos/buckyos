@@ -31,7 +31,14 @@
 //    llm 根只作命名空间，不使用 Auto 收集模型；通用请求须明确选 llm.chat 等任务。
 //    任务、规格、家族均禁止隐式 Parent fallback。任务无合格候选时，只执行显式配置的
 //    fallback，否则返回无候选；回退仍保留原请求及原任务的能力约束，不绕过任务编排。
-//    llm.fallback 默认为空，不自动吸入模型；家族直选默认 strict，不升级到其他家族。
+//    内置用途（chat/plan/code/swift/summarize/translate/vision）默认显式 target_logical
+//    到 llm.fallback；llm.fallback 自身 disabled，是回退链终点。llm.fallback 只引用
+//    非 direct_only 规格，按“廉价快速档 4.0 > 通用性价比档 3.0 > 标准档 2.0 > 高档/特化 1.0”
+//    分层；每层取第一个仍有合格候选的权重组，组内由调度策略排序。直接请求 llm.fallback
+//    用 cost_first；从用途回退时沿用原用途的 scheduler、能力门槛和禁用项，分层顺序不变。
+//    用户 overlay 替换用途 items 而未声明 fallback 时回退关闭；显式 strict/disabled 同样关闭。
+//    家族、规格直选为 disabled，不升级到其他家族；目录回退只发生在路由阶段，运行期 failover
+//    只在已选中的候选池内换实例，不会因上游错误重新解析到 llm.fallback。
 // 7. 契约校验（替代固定档位提供的结构保证）：
 //    - 功能目录引用的每个规格都必须由某个内置 metadata 声明，否则构建失败，
 //      防止厂商改名后留下悬空引用。
@@ -127,7 +134,7 @@
 // - gemini：flash-lite = 3.5/3.1/2.5-flash-lite；flash = 3.8/3.7/3.6/3.5-flash、
 //   3-flash-preview、2.5-flash；pro = 3.1-pro-preview、2.5-pro。
 // - qwen：flash = qwen3.8/3.7/3.6/3.5-flash；plus = qwen3.7/3.6/3.5-plus；
-//   max = qwen3.8/3.7-max、qwen3.6-max-preview、qwen3-max；
+//   max = qwen4-max、qwen3.8/3.7-max、qwen3.6-max-preview、qwen3-max；
 //   moe-2t = qwen3.8-2.4t-a95b（集群级，文本复杂推理/代码）；
 //   moe-400b = qwen3.5-397b-a17b（大型通用多模态）；
 //   moe-120b = qwen3.5-122b-a10b（中型通用多模态）；
@@ -144,12 +151,16 @@
 //   long = glm-4-long；code = codegeex-4（代码补全，不等同完整代码 Agent，direct_only）。[G6]
 //   character = charglm-4；emohaa = emohaa（分别 direct_only，无依据将二者排成版本链）；
 //   glm-ocr 已只保留 vision.ocr。
-// - kimi：flagship = kimi-k3；general = kimi-k2.8-preview/kimi-k2.6；code = kimi-k*-code；
+// - kimi：flagship = kimi-k3.1-pro/kimi-k3；flagship-highspeed = kimi-k3.1-pro-highspeed；
+//   general = kimi-k2.8-preview/kimi-k2.6；code = kimi-k*-code；
 //   code-highspeed = kimi-k*-code-highspeed。
 // - deepseek：flash = deepseek-v4.1-flash/deepseek-v4-flash；pro = deepseek-v4-pro；
 //   vision = deepseek-v4-flash-vision-exp（实验分支，受稳定性策略限制）。
-// - doubao：mini/lite/pro/code = Doubao Seed 2.0/2.1 对应规格及版本化模型。
-// - minimax：standard = minimax-m3/MiniMax-M2.7/M2.5/M2.1/M2；highspeed = 对应 -highspeed。
+// - doubao：mini/lite/pro/code = Doubao Seed 2.0/2.1 对应规格及版本化模型；pro 绑定 :high、
+//   code 绑定 :medium（官方默认思考档），mini/lite 绑定 :none（非思考，服务 swift/translate）；
+//   character/translation 为 native（版本间思考能力不一致或不支持思考）。
+// - minimax：standard = MiniMax-M3.1-Flash(-Preview)、minimax-m3/MiniMax-M2.7/M2.5/M2.1/M2；
+//   highspeed = MiniMax-M3.1-Flash:low（additional_specs）及 M2.x 对应 -highspeed。
 //
 // 官方已发布、当前 metadata 尚待补齐的接入清单（不伪装成下方树已覆盖的库存）：
 // - Qwen3.6-27B 可接 dense-27b；Qwen3.8-Flash-Next 是独立开放权重发布，不能被
@@ -188,7 +199,7 @@
 //
 // logical root（预定义结构；LLM 规格目录初始为空）
 // ├── llm
-// │   ├── chat
+// │   ├── chat [无候选时回退到 llm.fallback]
 // │   │   ├── gpt_standard -> llm.gpt-standard (2.2)
 // │   │   ├── claude_sonnet -> llm.claude-sonnet (2.1)
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.9)
@@ -197,6 +208,8 @@
 // │   │   ├── glm_standard -> llm.glm-standard (1.2)
 // │   │   ├── kimi_general -> llm.kimi-general (1.2)
 // │   │   ├── qwen_moe_400b -> llm.qwen-moe-400b (1.15)
+// │   │   ├── kimi_flagship -> llm.kimi-flagship (1.1)
+// │   │   ├── qwen_max -> llm.qwen-max (1.1)
 // │   │   ├── deepseek_flash -> llm.deepseek-flash (1.1)
 // │   │   ├── glm_flash -> llm.glm-flash (1.1)
 // │   │   ├── qwen_dense_27b -> llm.qwen-dense-27b (1.1)
@@ -204,12 +217,13 @@
 // │   │   ├── doubao_lite -> llm.doubao-lite (1.0)
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.0)
 // │   │   └── minimax_standard -> llm.minimax-standard (0.9)
-// │   ├── plan
+// │   ├── plan [无候选时回退到 llm.fallback]
 // │   │   ├── gpt_max -> llm.gpt-max (3.2) [初始值]
 // │   │   ├── gpt_pro -> llm.gpt-pro (3.1)
 // │   │   ├── gpt_standard -> llm.gpt-standard (3.0)
 // │   │   ├── claude_fable -> llm.claude-fable (2.6) [初始值]
 // │   │   ├── claude_opus -> llm.claude-opus (2.5)
+// │   │   ├── kimi_flagship -> llm.kimi-flagship (2.5)
 // │   │   ├── gemini_pro -> llm.gemini-pro (2.4)
 // │   │   ├── qwen_max -> llm.qwen-max (1.8)
 // │   │   ├── qwen_moe_2t -> llm.qwen-moe-2t (1.7)
@@ -220,8 +234,9 @@
 // │   │   ├── kimi_general -> llm.kimi-general (1.2)
 // │   │   ├── qwen_moe_400b -> llm.qwen-moe-400b (1.15)
 // │   │   ├── minimax_standard -> llm.minimax-standard (1.1)
-// │   │   └── qwen_moe_120b -> llm.qwen-moe-120b (1.05)
-// │   ├── code
+// │   │   ├── qwen_moe_120b -> llm.qwen-moe-120b (1.05)
+// │   │   └── claude_sonnet -> llm.claude-sonnet (1.0) [低优先级候补]
+// │   ├── code [无候选时回退到 llm.fallback]
 // │   │   ├── gpt_codex -> llm.gpt-codex (3.2) [初始值]
 // │   │   ├── gpt_standard -> llm.gpt-standard (3.0)
 // │   │   ├── claude_opus -> llm.claude-opus (2.4)
@@ -240,8 +255,9 @@
 // │   │   ├── qwen_dense_27b -> llm.qwen-dense-27b (1.3)
 // │   │   ├── qwen_moe_400b -> llm.qwen-moe-400b (1.3)
 // │   │   ├── qwen_moe_120b -> llm.qwen-moe-120b (1.2)
-// │   │   └── qwen_moe_35b -> llm.qwen-moe-35b (1.1)
-// │   ├── swift
+// │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.1)
+// │   │   └── claude_sonnet -> llm.claude-sonnet (1.05) [低优先级候补]
+// │   ├── swift [无候选时回退到 llm.fallback]
 // │   │   ├── gpt_mini -> llm.gpt-mini (2.0)
 // │   │   ├── claude_haiku -> llm.claude-haiku (1.9)
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.8)
@@ -252,7 +268,7 @@
 // │   │   ├── minimax_highspeed -> llm.minimax-highspeed (1.2)
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.2)
 // │   │   └── gpt_nano -> llm.gpt-nano (1.1) [初始值]
-// │   ├── summarize
+// │   ├── summarize [无候选时回退到 llm.fallback]
 // │   │   ├── gpt_mini -> llm.gpt-mini (2.0)
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.8)
 // │   │   ├── claude_haiku -> llm.claude-haiku (1.6)
@@ -262,7 +278,7 @@
 // │   │   ├── minimax_highspeed -> llm.minimax-highspeed (1.2)
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.2)
 // │   │   └── qwen_dense_27b -> llm.qwen-dense-27b (1.1)
-// │   ├── translate
+// │   ├── translate [无候选时回退到 llm.fallback]
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.9)
 // │   │   ├── gpt_mini -> llm.gpt-mini (1.8)
 // │   │   ├── claude_haiku -> llm.claude-haiku (1.6)
@@ -272,9 +288,11 @@
 // │   │   ├── minimax_highspeed -> llm.minimax-highspeed (1.2)
 // │   │   ├── qwen_dense_27b -> llm.qwen-dense-27b (1.1)
 // │   │   └── qwen_moe_35b -> llm.qwen-moe-35b (1.1)
-// │   ├── vision
+// │   ├── vision [无候选时回退到 llm.fallback]
 // │   │   ├── gpt_standard -> llm.gpt-standard (2.2)
+// │   │   ├── kimi_flagship -> llm.kimi-flagship (2.2)
 // │   │   ├── gemini_pro -> llm.gemini-pro (2.1)
+// │   │   ├── minimax_standard -> llm.minimax-standard (2.0)
 // │   │   ├── claude_opus -> llm.claude-opus (1.9)
 // │   │   ├── claude_sonnet -> llm.claude-sonnet (1.8)
 // │   │   ├── qwen_max -> llm.qwen-max (1.6)
@@ -289,8 +307,48 @@
 // │   │   ├── qwen_dense_27b -> llm.qwen-dense-27b (1.15)
 // │   │   ├── glm_vision_flash -> llm.glm-vision-flash (1.1)
 // │   │   ├── qwen_moe_120b -> llm.qwen-moe-120b (1.1)
-// │   │   └── qwen_moe_35b -> llm.qwen-moe-35b (1.0)
-// │   ├── fallback [空；只接收显式配置，无 Parent fallback]
+// │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.0)
+// │   │   └── gemini_flash -> llm.gemini-flash (0.95) [低优先级候补]
+// │   ├── fallback
+// │   │   [disabled，回退链终点；直接请求 cost_first，从用途回退沿用原用途 scheduler]
+// │   │   ├── gpt_nano -> llm.gpt-nano (4.0)
+// │   │   ├── claude_haiku -> llm.claude-haiku (4.0)
+// │   │   ├── gemini_flash_lite -> llm.gemini-flash-lite (4.0)
+// │   │   ├── qwen_flash -> llm.qwen-flash (4.0)
+// │   │   ├── glm_flash -> llm.glm-flash (4.0)
+// │   │   ├── deepseek_flash -> llm.deepseek-flash (4.0)
+// │   │   ├── doubao_mini -> llm.doubao-mini (4.0)
+// │   │   ├── minimax_highspeed -> llm.minimax-highspeed (4.0)
+// │   │   ├── gpt_mini -> llm.gpt-mini (3.0)
+// │   │   ├── gemini_flash -> llm.gemini-flash (3.0)
+// │   │   ├── qwen_plus -> llm.qwen-plus (3.0)
+// │   │   ├── doubao_lite -> llm.doubao-lite (3.0)
+// │   │   ├── kimi_general -> llm.kimi-general (3.0)
+// │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (3.0)
+// │   │   ├── qwen_dense_27b -> llm.qwen-dense-27b (3.0)
+// │   │   ├── gpt_standard -> llm.gpt-standard (2.0)
+// │   │   ├── claude_sonnet -> llm.claude-sonnet (2.0)
+// │   │   ├── glm_standard -> llm.glm-standard (2.0)
+// │   │   ├── deepseek_pro -> llm.deepseek-pro (2.0)
+// │   │   ├── kimi_flagship -> llm.kimi-flagship (2.0)
+// │   │   ├── minimax_standard -> llm.minimax-standard (2.0)
+// │   │   ├── qwen_max -> llm.qwen-max (2.0)
+// │   │   ├── doubao_pro -> llm.doubao-pro (2.0)
+// │   │   ├── qwen_moe_120b -> llm.qwen-moe-120b (2.0)
+// │   │   ├── qwen_moe_400b -> llm.qwen-moe-400b (2.0)
+// │   │   ├── gpt_pro -> llm.gpt-pro (1.0)
+// │   │   ├── gpt_max -> llm.gpt-max (1.0)
+// │   │   ├── gpt_codex -> llm.gpt-codex (1.0)
+// │   │   ├── claude_opus -> llm.claude-opus (1.0)
+// │   │   ├── claude_fable -> llm.claude-fable (1.0)
+// │   │   ├── gemini_pro -> llm.gemini-pro (1.0)
+// │   │   ├── qwen_moe_2t -> llm.qwen-moe-2t (1.0)
+// │   │   ├── kimi_code -> llm.kimi-code (1.0)
+// │   │   ├── doubao_code -> llm.doubao-code (1.0)
+// │   │   ├── glm_vision -> llm.glm-vision (1.0)
+// │   │   ├── glm_vision_code -> llm.glm-vision-code (1.0)
+// │   │   ├── glm_vision_flash -> llm.glm-vision-flash (1.0)
+// │   │   └── deepseek_vision -> llm.deepseek-vision (1.0)
 // │   │
 // │   │   以下规格目录由各厂商 metadata 声明（顺序无含义；均为空，由 metadata + inventory
 // │   │   动态填充；direct_only 表示未被功能引用、只能按规格名或家族名直选）
@@ -331,6 +389,8 @@
 // │   ├── glm-code [direct_only]
 // │   ├── glm-character [direct_only]
 // │   ├── glm-emohaa [direct_only]
+// │   ├── kimi-flagship
+// │   ├── kimi-flagship-highspeed [direct_only]
 // │   ├── kimi-general
 // │   ├── kimi-code
 // │   ├── kimi-code-highspeed [direct_only]
@@ -586,7 +646,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            strict_fallback(),
+            llm_usecase_fallback(),
             Some("general"),
         ),
         llm_logical_definition(
@@ -594,7 +654,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             tool_json_requirement(32_768),
             MountMode::Manual,
             AiccSchedulerProfile::QualityFirst,
-            strict_fallback(),
+            llm_usecase_fallback(),
             Some("pro"),
         ),
         llm_logical_definition(
@@ -602,7 +662,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             tool_json_requirement(32_768),
             MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            strict_fallback(),
+            llm_usecase_fallback(),
             Some("pro"),
         ),
         llm_logical_definition(
@@ -610,7 +670,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Manual,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
+            llm_usecase_fallback(),
             Some("fast"),
         ),
         llm_logical_definition(
@@ -618,7 +678,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             context_requirement(16_384),
             MountMode::Manual,
             AiccSchedulerProfile::CostFirst,
-            strict_fallback(),
+            llm_usecase_fallback(),
             Some("utility"),
         ),
         llm_logical_definition(
@@ -626,7 +686,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Manual,
             AiccSchedulerProfile::CostFirst,
-            strict_fallback(),
+            llm_usecase_fallback(),
             Some("utility"),
         ),
         llm_logical_definition(
@@ -634,14 +694,14 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             vision_requirement(32_768),
             MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            strict_fallback(),
+            llm_usecase_fallback(),
             Some("multimodal"),
         ),
         llm_logical_definition(
             "llm.fallback",
             ModelRequirement::default(),
             MountMode::Manual,
-            AiccSchedulerProfile::Balanced,
+            AiccSchedulerProfile::CostFirst,
             disabled_fallback(),
             Some("fallback"),
         ),
@@ -902,6 +962,13 @@ fn disabled_fallback() -> Option<AiccFallbackRule> {
     })
 }
 
+fn llm_usecase_fallback() -> Option<AiccFallbackRule> {
+    Some(AiccFallbackRule {
+        mode: AiccFallbackMode::TargetLogical,
+        target: Some("llm.fallback".into()),
+    })
+}
+
 fn tool_json_requirement(min_context_tokens: u64) -> ModelRequirement {
     ModelRequirement {
         tool_call: true,
@@ -975,6 +1042,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("qwen_moe_400b", "llm.qwen-moe-400b", 1.15),
                                 ("minimax_standard", "llm.minimax-standard", 1.1),
                                 ("qwen_moe_120b", "llm.qwen-moe-120b", 1.05),
+                                ("claude_sonnet", "llm.claude-sonnet", 1.0),
                             ]),
                         ),
                         (
@@ -999,6 +1067,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("qwen_moe_400b", "llm.qwen-moe-400b", 1.3),
                                 ("qwen_moe_120b", "llm.qwen-moe-120b", 1.2),
                                 ("qwen_moe_35b", "llm.qwen-moe-35b", 1.1),
+                                ("claude_sonnet", "llm.claude-sonnet", 1.05),
                             ]),
                         ),
                         (
@@ -1066,6 +1135,50 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("glm_vision_flash", "llm.glm-vision-flash", 1.1),
                                 ("qwen_moe_120b", "llm.qwen-moe-120b", 1.1),
                                 ("qwen_moe_35b", "llm.qwen-moe-35b", 1.0),
+                                ("gemini_flash", "llm.gemini-flash", 0.95),
+                            ]),
+                        ),
+                        (
+                            "fallback".into(),
+                            logical_node(&[
+                                ("gpt_nano", "llm.gpt-nano", 4.0),
+                                ("claude_haiku", "llm.claude-haiku", 4.0),
+                                ("gemini_flash_lite", "llm.gemini-flash-lite", 4.0),
+                                ("qwen_flash", "llm.qwen-flash", 4.0),
+                                ("glm_flash", "llm.glm-flash", 4.0),
+                                ("deepseek_flash", "llm.deepseek-flash", 4.0),
+                                ("doubao_mini", "llm.doubao-mini", 4.0),
+                                ("minimax_highspeed", "llm.minimax-highspeed", 4.0),
+                                ("gpt_mini", "llm.gpt-mini", 3.0),
+                                ("gemini_flash", "llm.gemini-flash", 3.0),
+                                ("qwen_plus", "llm.qwen-plus", 3.0),
+                                ("doubao_lite", "llm.doubao-lite", 3.0),
+                                ("kimi_general", "llm.kimi-general", 3.0),
+                                ("qwen_moe_35b", "llm.qwen-moe-35b", 3.0),
+                                ("qwen_dense_27b", "llm.qwen-dense-27b", 3.0),
+                                ("gpt_standard", "llm.gpt-standard", 2.0),
+                                ("claude_sonnet", "llm.claude-sonnet", 2.0),
+                                ("glm_standard", "llm.glm-standard", 2.0),
+                                ("deepseek_pro", "llm.deepseek-pro", 2.0),
+                                ("kimi_flagship", "llm.kimi-flagship", 2.0),
+                                ("minimax_standard", "llm.minimax-standard", 2.0),
+                                ("qwen_max", "llm.qwen-max", 2.0),
+                                ("doubao_pro", "llm.doubao-pro", 2.0),
+                                ("qwen_moe_120b", "llm.qwen-moe-120b", 2.0),
+                                ("qwen_moe_400b", "llm.qwen-moe-400b", 2.0),
+                                ("gpt_pro", "llm.gpt-pro", 1.0),
+                                ("gpt_max", "llm.gpt-max", 1.0),
+                                ("gpt_codex", "llm.gpt-codex", 1.0),
+                                ("claude_opus", "llm.claude-opus", 1.0),
+                                ("claude_fable", "llm.claude-fable", 1.0),
+                                ("gemini_pro", "llm.gemini-pro", 1.0),
+                                ("qwen_moe_2t", "llm.qwen-moe-2t", 1.0),
+                                ("kimi_code", "llm.kimi-code", 1.0),
+                                ("doubao_code", "llm.doubao-code", 1.0),
+                                ("glm_vision", "llm.glm-vision", 1.0),
+                                ("glm_vision_code", "llm.glm-vision-code", 1.0),
+                                ("glm_vision_flash", "llm.glm-vision-flash", 1.0),
+                                ("deepseek_vision", "llm.deepseek-vision", 1.0),
                             ]),
                         ),
                     ]),

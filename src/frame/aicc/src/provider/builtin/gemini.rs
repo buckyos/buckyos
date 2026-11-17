@@ -726,11 +726,25 @@ mod tests {
 
         for (model_id, context, output, default_effort, efforts) in [
             (
+                "gemini-4-carbon",
+                1_048_576,
+                1_048_576,
+                Effort::Medium,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
                 "gemini-4-argon",
                 1_048_576,
                 1_048_576,
                 Effort::Medium,
                 vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-4-hydrogen",
+                1_048_576,
+                1_048_576,
+                Effort::High,
+                vec![Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh],
             ),
             (
                 "gemini-3.8-flash",

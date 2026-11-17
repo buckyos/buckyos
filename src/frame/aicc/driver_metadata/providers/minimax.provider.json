@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 7,
+  "revision_seq": 8,
   "provider_profile_id": "minimax",
   "static_inventory_models": [
     "asr-1.0",
@@ -181,7 +181,10 @@
       "model_driver": "minimax",
       "variant": "reasoning-low",
       "match": {
-        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "origin_model_id": [
+          "MiniMax-M3.1-Flash",
+          "MiniMax-M3.1-Flash-Preview"
+        ],
         "variant": "reasoning-low"
       },
       "provider_options": {
@@ -197,7 +200,10 @@
       "model_driver": "minimax",
       "variant": "reasoning-medium",
       "match": {
-        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "origin_model_id": [
+          "MiniMax-M3.1-Flash",
+          "MiniMax-M3.1-Flash-Preview"
+        ],
         "variant": "reasoning-medium"
       },
       "provider_options": {
@@ -213,7 +219,10 @@
       "model_driver": "minimax",
       "variant": "reasoning-high",
       "match": {
-        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "origin_model_id": [
+          "MiniMax-M3.1-Flash",
+          "MiniMax-M3.1-Flash-Preview"
+        ],
         "variant": "reasoning-high"
       },
       "provider_options": {
@@ -229,7 +238,10 @@
       "model_driver": "minimax",
       "variant": "reasoning-xhigh",
       "match": {
-        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "origin_model_id": [
+          "MiniMax-M3.1-Flash",
+          "MiniMax-M3.1-Flash-Preview"
+        ],
         "variant": "reasoning-xhigh"
       },
       "provider_options": {
@@ -245,7 +257,10 @@
       "model_driver": "minimax",
       "variant": "reasoning-max",
       "match": {
-        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "origin_model_id": [
+          "MiniMax-M3.1-Flash",
+          "MiniMax-M3.1-Flash-Preview"
+        ],
         "variant": "reasoning-max"
       },
       "provider_options": {
@@ -260,108 +275,60 @@
   ],
   "model_pricing": [
     {
-      "pricing": {
-        "currency": "USD",
-        "input_token": 3e-07,
-        "output_token": 1.2e-06,
-        "cache_input_token": 6e-08,
-        "cache_write_input_token": 3.75e-07,
-        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-25"
-      },
       "match": {
-        "provider_model_id": "MiniMax-M2.7",
+        "provider_model_id": "MiniMax-M3.1-Flash",
         "region": "global"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-11-16",
+        "currency": "USD",
+        "input_token": 1.5e-07,
+        "output_token": 6e-07,
+        "cache_input_token": 1.5e-08
       }
     },
     {
-      "pricing": {
-        "currency": "USD",
-        "input_token": 6e-07,
-        "output_token": 2.4e-06,
-        "cache_input_token": 6e-08,
-        "cache_write_input_token": 3.75e-07,
-        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-25"
-      },
       "match": {
-        "provider_model_id": "MiniMax-M2.7-highspeed",
+        "provider_model_id": "MiniMax-M3",
         "region": "global"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-11-16",
+        "currency": "USD",
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 524288,
+              "input_token": 3e-07,
+              "output_token": 1.2e-06,
+              "cache_input_token": 6e-08
+            },
+            {
+              "up_to": null,
+              "input_token": 6e-07,
+              "output_token": 2.4e-06,
+              "cache_input_token": 1.2e-07
+            }
+          ]
+        }
       }
     },
     {
-      "pricing": {
-        "currency": "USD",
-        "input_token": 3e-07,
-        "output_token": 1.2e-06,
-        "cache_input_token": 3e-08,
-        "cache_write_input_token": 3.75e-07,
-        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-25"
-      },
       "match": {
-        "provider_model_id": "MiniMax-M2.5",
-        "region": "global"
-      }
-    },
-    {
-      "pricing": {
-        "currency": "USD",
-        "input_token": 6e-07,
-        "output_token": 2.4e-06,
-        "cache_input_token": 3e-08,
-        "cache_write_input_token": 3.75e-07,
-        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-25"
+        "provider_model_id": "MiniMax-M3.1-Flash",
+        "region": "china"
       },
-      "match": {
-        "provider_model_id": "MiniMax-M2.5-highspeed",
-        "region": "global"
-      }
-    },
-    {
       "pricing": {
-        "currency": "USD",
-        "input_token": 3e-07,
-        "output_token": 1.2e-06,
-        "cache_input_token": 3e-08,
-        "cache_write_input_token": 3.75e-07,
-        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-25"
-      },
-      "match": {
-        "provider_model_id": "MiniMax-M2.1",
-        "region": "global"
-      }
-    },
-    {
-      "pricing": {
-        "currency": "USD",
-        "input_token": 6e-07,
-        "output_token": 2.4e-06,
-        "cache_input_token": 3e-08,
-        "cache_write_input_token": 3.75e-07,
-        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-25"
-      },
-      "match": {
-        "provider_model_id": "MiniMax-M2.1-highspeed",
-        "region": "global"
-      }
-    },
-    {
-      "pricing": {
-        "currency": "USD",
-        "input_token": 3e-07,
-        "output_token": 1.2e-06,
-        "cache_input_token": 3e-08,
-        "cache_write_input_token": 3.75e-07,
-        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-25"
-      },
-      "match": {
-        "provider_model_id": "MiniMax-M2",
-        "region": "global"
+        "source_url": "https://platform.minimax.cn/docs/guides/pricing-paygo",
+        "verified_at": "2026-11-16",
+        "currency": "CNY",
+        "input_token": 1e-06,
+        "output_token": 4e-06,
+        "cache_input_token": 1e-07
       }
     },
     {
@@ -436,7 +403,7 @@
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "CNY",
         "tiers": {
           "dimension": "input_tokens",
@@ -444,46 +411,18 @@
           "steps": [
             {
               "up_to": 524288,
-              "input_token": 0.0000021,
-              "output_token": 0.0000084,
-              "cache_input_token": 4.2e-7
+              "input_token": 2.1e-06,
+              "output_token": 8.4e-06,
+              "cache_input_token": 4.2e-07
             },
             {
               "up_to": null,
-              "input_token": 0.0000042,
-              "output_token": 0.0000168,
-              "cache_input_token": 8.4e-7
+              "input_token": 4.2e-06,
+              "output_token": 1.68e-05,
+              "cache_input_token": 8.4e-07
             }
           ]
         }
-      }
-    },
-    {
-      "match": {
-        "provider_model_id": "MiniMax-M2.7",
-        "region": "china"
-      },
-      "pricing": {
-        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-26",
-        "currency": "CNY",
-        "input_token": 0.0000021,
-        "cache_input_token": 4.2e-7,
-        "output_token": 0.0000084
-      }
-    },
-    {
-      "match": {
-        "provider_model_id": "MiniMax-M2.7-highspeed",
-        "region": "china"
-      },
-      "pricing": {
-        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-26",
-        "currency": "CNY",
-        "input_token": 0.0000042,
-        "cache_input_token": 4.2e-7,
-        "output_token": 0.0000168
       }
     },
     {
@@ -564,7 +503,9 @@
         "unit": "video_second",
         "rules": [
           {
-            "when": { "/video/resolution": "2K" },
+            "when": {
+              "/video/resolution": "2K"
+            },
             "amount": 0.8,
             "unit": "video_second"
           }
@@ -584,7 +525,9 @@
         "unit": "video_second",
         "rules": [
           {
-            "when": { "/video/resolution": "480P" },
+            "when": {
+              "/video/resolution": "480P"
+            },
             "amount": 0.33,
             "unit": "video_second"
           }
@@ -598,7 +541,7 @@
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-16",
         "currency": "CNY",
         "tiers": {
           "dimension": "input_tokens",
@@ -606,14 +549,14 @@
           "steps": [
             {
               "up_to": 524288,
-              "input_token": 0.0000021,
-              "output_token": 0.0000084,
-              "cache_input_token": 4.2e-7
+              "input_token": 2.1e-06,
+              "output_token": 8.4e-06,
+              "cache_input_token": 4.2e-07
             },
             {
-              "input_token": 0.0000042,
-              "output_token": 0.0000168,
-              "cache_input_token": 8.4e-7
+              "input_token": 4.2e-06,
+              "output_token": 1.68e-05,
+              "cache_input_token": 8.4e-07
             }
           ]
         }

@@ -1112,6 +1112,7 @@ fn claude_account_models_are_matched_with_every_declared_preset() {
         .find(|p| p.provider_profile_id == "claude")
         .unwrap();
     let ids = [
+        "claude-fable-5-2",
         "claude-fable-5-1",
         "claude-fable-5",
         "claude-opus-5-5",
@@ -1148,6 +1149,465 @@ fn claude_account_models_are_matched_with_every_declared_preset() {
         .models
         .iter()
         .all(|m| m.pricing.is_some() && !m.variants.is_empty()));
+}
+
+#[test]
+fn models_added_on_2026_11_16_close_the_discovery_to_route_loop() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let codecs = providers.codecs();
+    let mut inventories = Vec::new();
+    for (profile_id, instance_name, ids, presets) in [
+        (
+            "gemini",
+            "g",
+            &["gemini-4-carbon", "gemini-4-hydrogen"][..],
+            &[
+                ("gemini-4-carbon", &["low", "medium", "high"][..]),
+                ("gemini-4-hydrogen", &["low", "medium", "high", "xhigh"][..]),
+            ][..],
+        ),
+        (
+            "claude",
+            "c",
+            &["claude-fable-5-2"][..],
+            &[(
+                "claude-fable-5-2",
+                &["low", "medium", "high", "xhigh", "max"][..],
+            )][..],
+        ),
+    ] {
+        let profile = providers
+            .profiles()
+            .find(|p| p.provider_profile_id == profile_id)
+            .unwrap();
+        let inv = InventoryBuilder::build(
+            profile,
+            &instance(profile, instance_name),
+            discovery(ids),
+            &catalog,
+            &codecs,
+        )
+        .unwrap();
+        assert!(
+            inv.unmatched_models.is_empty(),
+            "{:?}",
+            inv.unmatched_models
+        );
+        assert!(
+            inv.unavailable_presets.is_empty(),
+            "{:?}",
+            inv.unavailable_presets
+        );
+        for (id, efforts) in presets {
+            let model = inv
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == *id)
+                .unwrap();
+            assert!(model.pricing.is_some(), "{id}");
+            assert_eq!(
+                model
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.clone())
+                    .collect::<BTreeSet<_>>(),
+                efforts
+                    .iter()
+                    .map(|effort| format!("reasoning-{effort}"))
+                    .collect::<BTreeSet<_>>(),
+                "{id}"
+            );
+        }
+        inventories.push(inv.as_model_inventory());
+    }
+    let registry = crate::service::builtin_registry_for_test(&catalog, &inventories);
+    for (path, expected) in [
+        ("llm.plan", "claude-fable-5-2:reasoning-high@c"),
+        ("llm.gemini-pro", "gemini-4-carbon:reasoning-high@g"),
+        ("llm.gemini-flash", "gemini-4-hydrogen:reasoning-high@g"),
+        ("llm.swift", "gemini-4-hydrogen:reasoning-high@g"),
+        ("llm.fallback", "gemini-4-hydrogen:reasoning-high@g"),
+        (
+            "llm.gemini-4-hydrogen:xhigh",
+            "gemini-4-hydrogen:reasoning-xhigh@g",
+        ),
+    ] {
+        let candidates = registry
+            .resolve_candidates(path, ApiType::Llm)
+            .unwrap()
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.model.exact_model.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(candidates, [expected], "{path}");
+    }
+}
+
+#[test]
+fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let codecs = providers.codecs();
+    let mut inventories = Vec::new();
+    for (profile_id, instance_name, ids, presets) in [
+        (
+            "qwen",
+            "q",
+            &["qwen4-max"][..],
+            &[("qwen4-max", "qwen4-max", &["none", "low", "high", "xhigh"][..])][..],
+        ),
+        (
+            "kimi",
+            "k",
+            &["kimi-k3.1-pro-highspeed"][..],
+            &[(
+                "kimi-k3.1-pro-highspeed",
+                "kimi-k3.1-pro-highspeed",
+                &["low", "high", "max"][..],
+            )][..],
+        ),
+        (
+            "minimax",
+            "m",
+            &["MiniMax-M3.1-Flash"][..],
+            &[(
+                "MiniMax-M3.1-Flash",
+                "MiniMax-M3.1-Flash",
+                &["low", "medium", "high", "xhigh", "max"][..],
+            )][..],
+        ),
+        (
+            "doubao",
+            "d",
+            &[
+                "doubao-seed-2-1-pro-260915",
+                "doubao-seed-evolving",
+                "doubao-seed-2-0-mini-260428",
+                "deepseek-v4-1-flash-261017",
+                "deepseek-v4-1-flash-economy-261017",
+            ][..],
+            &[
+                ("doubao-seed-2-1-pro-260915", "doubao-seed-2.1-pro", &["none", "low", "medium", "high"][..]),
+                ("doubao-seed-evolving", "doubao-seed-evolving", &["none", "low", "medium", "high"][..]),
+                ("doubao-seed-2-0-mini-260428", "doubao-seed-2.0-mini", &["none", "low", "medium", "high"][..]),
+                (
+                    "deepseek-v4-1-flash-261017",
+                    "deepseek-v4.1-flash",
+                    &["none", "low", "high", "max"][..],
+                ),
+                (
+                    "deepseek-v4-1-flash-economy-261017",
+                    "deepseek-v4.1-flash",
+                    &["none", "low", "high", "max"][..],
+                ),
+            ][..],
+        ),
+    ] {
+        let profile = providers
+            .profiles()
+            .find(|p| p.provider_profile_id == profile_id)
+            .unwrap();
+        let mut config = instance(profile, instance_name);
+        config.region = matches!(profile_id, "kimi" | "minimax").then(|| "china".to_owned());
+        let inv = InventoryBuilder::build(
+            profile,
+            &config,
+            discovery(ids),
+            &catalog,
+            &codecs,
+        )
+        .unwrap();
+        assert!(
+            inv.unmatched_models.is_empty(),
+            "{:?}",
+            inv.unmatched_models
+        );
+        assert!(
+            inv.unavailable_presets
+                .iter()
+                .all(|preset| !ids.contains(&preset.provider_model_id.as_str())),
+            "{:?}",
+            inv.unavailable_presets
+        );
+        for (id, origin, efforts) in presets {
+            let model = inv
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == *id)
+                .unwrap();
+            assert_eq!(model.origin_model_id, *origin, "{id}");
+            assert!(model.pricing.is_some(), "{id}");
+            assert_eq!(
+                model
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.clone())
+                    .collect::<BTreeSet<_>>(),
+                efforts
+                    .iter()
+                    .map(|effort| format!("reasoning-{effort}"))
+                    .collect::<BTreeSet<_>>(),
+                "{id}"
+            );
+        }
+        inventories.push(inv.as_model_inventory());
+    }
+    let registry = crate::service::builtin_registry_for_test(&catalog, &inventories);
+    let resolve = |path: &str| {
+        registry
+            .resolve_candidates(path, ApiType::Llm)
+            .unwrap()
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.model.exact_model.to_string())
+            .collect::<BTreeSet<_>>()
+    };
+    for (path, expected) in [
+        ("llm.qwen-max", &["qwen4-max:reasoning-high@q"][..]),
+        ("llm.qwen4-max:xhigh", &["qwen4-max:reasoning-xhigh@q"][..]),
+        (
+            "llm.kimi-flagship-highspeed",
+            &["kimi-k3.1-pro-highspeed:reasoning-max@k"][..],
+        ),
+        ("llm.kimi-flagship", &[][..]),
+        (
+            "llm.minimax-standard",
+            &["MiniMax-M3.1-Flash:reasoning-max@m"][..],
+        ),
+        (
+            "llm.minimax-highspeed",
+            &["MiniMax-M3.1-Flash:reasoning-low@m"][..],
+        ),
+        ("llm.doubao-pro", &["doubao-seed-evolving:reasoning-high@d"][..]),
+        (
+            "llm.deepseek-flash",
+            &[
+                "deepseek-v4-1-flash-261017:reasoning-high@d",
+                "deepseek-v4-1-flash-economy-261017:reasoning-high@d",
+            ][..],
+        ),
+    ] {
+        assert_eq!(
+            resolve(path),
+            expected
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<BTreeSet<_>>(),
+            "{path}"
+        );
+    }
+    let context = BTreeMap::from([("region".into(), json!("china"))]);
+    for (provider, model, input, output, cache) in [
+        ("qwen", "qwen4-max", 1e-5, 3e-5, 5e-7),
+        ("kimi", "kimi-k3.1-pro-highspeed", 2.6e-5, 1.36e-4, 1.3e-6),
+        ("minimax", "MiniMax-M3.1-Flash", 1e-6, 4e-6, 1e-7),
+        ("doubao", "doubao-seed-2-1-pro-260915", 6e-6, 3e-5, 1.2e-6),
+        ("doubao", "deepseek-v4-1-flash-economy-261017", 8e-7, 3.2e-6, 1.6e-8),
+    ] {
+        let pricing = catalog
+            .resolve_provider_rule(provider, model, &context)
+            .unwrap()
+            .unwrap()
+            .action
+            .pricing
+            .unwrap();
+        assert_eq!(pricing.currency, "CNY", "{model}");
+        assert_eq!(pricing.input_token, Some(input), "{model}");
+        assert_eq!(pricing.output_token, Some(output), "{model}");
+        assert_eq!(pricing.cache_input_token, Some(cache), "{model}");
+        assert_eq!(pricing.verified_at.as_deref(), Some("2026-11-16"), "{model}");
+    }
+    let global = BTreeMap::from([("region".into(), json!("global"))]);
+    let flash = catalog
+        .resolve_provider_rule("minimax", "MiniMax-M3.1-Flash", &global)
+        .unwrap()
+        .unwrap()
+        .action
+        .pricing
+        .unwrap();
+    assert_eq!(
+        (flash.currency.as_str(), flash.input_token, flash.output_token),
+        ("USD", Some(1.5e-7), Some(6e-7))
+    );
+    let minimax = catalog.provider_rules("minimax").unwrap();
+    for retired in ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"] {
+        assert!(
+            minimax
+                .model_pricing
+                .iter()
+                .all(|rule| !serde_json::to_string(&rule.match_rule)
+                    .unwrap()
+                    .contains(&format!("\"{retired}\""))),
+            "{retired} is retired on the native channel but still carries pricing"
+        );
+    }
+}
+
+#[test]
+fn doubao_seed_thinking_presets_follow_official_efforts_on_both_ark_channels() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let codecs = providers.codecs();
+    let thinking = ["none", "low", "medium", "high"];
+    let mut inventories = Vec::new();
+    for (profile_id, instance_name, models) in [
+        (
+            "doubao",
+            "d",
+            &[
+                ("doubao-seed-2-1-pro-260915", &thinking[..]),
+                ("doubao-seed-2-1-lite-260915", &thinking[..]),
+                ("doubao-seed-2-1-turbo-260628", &thinking[..]),
+                ("doubao-seed-evolving", &thinking[..]),
+                ("doubao-seed-2-0-lite-260428", &thinking[..]),
+                ("doubao-seed-2-0-mini-260428", &thinking[..]),
+                ("doubao-seed-2-0-code-preview-260215", &thinking[..]),
+                ("doubao-seed-character-260628", &[][..]),
+                ("doubao-seed-translation-250915", &[][..]),
+            ][..],
+        ),
+        (
+            "doubao-agent-plan",
+            "p",
+            &[
+                ("doubao-seed-2.0-mini", &thinking[..]),
+                ("doubao-seed-2.0-lite", &thinking[..]),
+                ("doubao-seed-2.1-lite", &thinking[..]),
+                ("doubao-seed-2.1-turbo", &thinking[..]),
+                ("doubao-seed-2.1-pro", &thinking[..]),
+                ("doubao-seed-evolving", &thinking[..]),
+            ][..],
+        ),
+    ] {
+        let profile = providers
+            .profiles()
+            .find(|p| p.provider_profile_id == profile_id)
+            .unwrap();
+        let ids = models.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        let inv = InventoryBuilder::build(
+            profile,
+            &instance(profile, instance_name),
+            discovery(&ids),
+            &catalog,
+            &codecs,
+        )
+        .unwrap();
+        assert!(
+            inv.unmatched_models.is_empty(),
+            "{:?}",
+            inv.unmatched_models
+        );
+        assert!(
+            inv.unavailable_presets
+                .iter()
+                .all(|preset| !ids.contains(&preset.provider_model_id.as_str())),
+            "{profile_id}: {:?}",
+            inv.unavailable_presets
+        );
+        for (id, efforts) in models {
+            let model = inv
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == *id)
+                .unwrap();
+            assert_eq!(
+                model
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.clone())
+                    .collect::<BTreeSet<_>>(),
+                efforts
+                    .iter()
+                    .map(|effort| format!("reasoning-{effort}"))
+                    .collect::<BTreeSet<_>>(),
+                "{profile_id}/{id}"
+            );
+        }
+        inventories.push(inv.as_model_inventory());
+        let rules = catalog.provider_rules(profile_id).unwrap();
+        for (variant, wire) in [
+            ("reasoning-none", "minimal"),
+            ("reasoning-low", "low"),
+            ("reasoning-medium", "medium"),
+            ("reasoning-high", "high"),
+        ] {
+            let rule = rules
+                .variants
+                .iter()
+                .find(|rule| rule.model_driver == "doubao" && rule.variant == variant)
+                .unwrap();
+            assert_eq!(rule.provider_options["reasoning"]["effort"], wire, "{profile_id}");
+        }
+    }
+    for (driver, model, default) in [
+        ("doubao", "doubao-seed-2.1-pro", "high"),
+        ("doubao", "doubao-seed-evolving", "high"),
+        ("doubao", "doubao-seed-2.0-mini", "medium"),
+        ("doubao", "doubao-seed-2.0-code-preview", "medium"),
+        ("doubao", "doubao-seed-character", "native"),
+    ] {
+        assert_eq!(
+            catalog
+                .llm_model(driver, model)
+                .unwrap()
+                .semantics
+                .default_effort
+                .as_str(),
+            default,
+            "{model}"
+        );
+    }
+    let registry = crate::service::builtin_registry_for_test(&catalog, &inventories);
+    for (path, expected) in [
+        (
+            "llm.doubao-pro",
+            &[
+                "doubao-seed-evolving:reasoning-high@d",
+                "doubao-seed-evolving:reasoning-high@p",
+            ][..],
+        ),
+        (
+            "llm.doubao-mini",
+            &[
+                "doubao-seed-2-0-mini-260428:reasoning-none@d",
+                "doubao-seed-2.0-mini:reasoning-none@p",
+            ][..],
+        ),
+        (
+            "llm.doubao-code",
+            &["doubao-seed-2-0-code-preview-260215:reasoning-medium@d"][..],
+        ),
+        (
+            "llm.doubao-seed-2-1-pro",
+            &[
+                "doubao-seed-2-1-pro-260915:reasoning-high@d",
+                "doubao-seed-2.1-pro:reasoning-high@p",
+            ][..],
+        ),
+        (
+            "llm.doubao-seed-2-0-mini:low",
+            &[
+                "doubao-seed-2-0-mini-260428:reasoning-low@d",
+                "doubao-seed-2.0-mini:reasoning-low@p",
+            ][..],
+        ),
+    ] {
+        assert_eq!(
+            registry
+                .resolve_candidates(path, ApiType::Llm)
+                .unwrap()
+                .candidates
+                .into_iter()
+                .map(|candidate| candidate.model.exact_model.to_string())
+                .collect::<BTreeSet<_>>(),
+            expected
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<BTreeSet<_>>(),
+            "{path}"
+        );
+    }
 }
 
 #[test]
@@ -1595,17 +2055,17 @@ fn reviewed_channel_limits_and_glm_variants_are_effective() {
 fn provider_pricing_contains_all_rebased_model_defaults() {
     let catalog = catalog();
     for (provider, expected_count) in [
-        ("claude", 14),
+        ("claude", 15),
         ("deepseek", 3),
-        ("doubao", 12),
+        ("doubao", 18),
         ("doubao-agent-plan", 0),
         ("fal", 4),
-        ("gemini", 32),
+        ("gemini", 34),
         ("glm", 101),
-        ("kimi", 5),
-        ("minimax", 23),
-        ("openai", 32),
-        ("qwen", 99),
+        ("kimi", 6),
+        ("minimax", 17),
+        ("openai", 34),
+        ("qwen", 96),
     ] {
         assert_eq!(
             catalog
@@ -1671,7 +2131,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 331);
+    assert_eq!(pricing_count, 334);
 }
 
 #[test]
