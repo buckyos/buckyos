@@ -4,7 +4,7 @@
 
 .aiws-root button.aiws-table-btn { width: 32px; height: 32px; padding: 0; border: none; background: none; color: var(--cp-muted); border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .aiws-root button.aiws-table-btn:hover:not(:disabled) { background: var(--cp-surface-2); color: var(--cp-text); }
-.aiws-root button.aiws-table-btn.is-primary { background: var(--cp-accent); color: #fff; }
+.aiws-root button.aiws-table-btn.is-primary { background: var(--aiws-primary-bg); color: var(--aiws-on-primary); }
 
 /* the editor's own sizes: a data-mode tab and a phone's full screen fill their host */
 .aiws-table[data-size='tab'], .aiws-table[data-size='fullscreen'] { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -23,7 +23,7 @@
 .aiws-td.aiws-td-rowhead { justify-content: center; gap: 2px; padding: 0 2px; position: sticky; left: 0; z-index: 1; background: var(--cp-surface-opaque, var(--cp-surface)); }
 .aiws-row-check { width: 15px; height: 15px; margin: 0; cursor: pointer; flex: none; }
 .aiws-row-check-hit { display: inline-flex; align-items: center; justify-content: center; flex: none; cursor: pointer; }
-.aiws-root button.aiws-row-open { width: 26px; height: 26px; padding: 0; border: none; background: none; color: var(--cp-muted); border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; opacity: 0.55; }
+.aiws-root button.aiws-row-open { width: 28px; height: 28px; padding: 0; border: none; background: none; color: var(--cp-muted); border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; opacity: 0.55; }
 .aiws-tr:hover button.aiws-row-open, .aiws-root button.aiws-row-open:focus-visible { opacity: 1; }
 .aiws-root button.aiws-row-open:hover { background: var(--cp-surface-2); color: var(--cp-text); }
 .aiws-tr.is-selected, .aiws-tr.is-selected .aiws-td-rowhead, .aiws-tr.is-selected .aiws-td.is-sticky { background: var(--aiws-selected-bg); }
@@ -95,7 +95,7 @@
 .aiws-field-check { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; }
 .aiws-field-check input { width: 18px; height: 18px; margin: 0; }
 .aiws-field-options { display: flex; flex-wrap: wrap; gap: 6px; }
-.aiws-root button.aiws-field-option { border-radius: 999px; padding: 3px 12px; min-height: 30px; border: 1px solid var(--cp-border); background: none; }
+.aiws-root button.aiws-field-option { border-radius: 999px; padding: 4px 12px; min-height: 32px; border: 1px solid var(--cp-border); background: none; }
 .aiws-root button.aiws-field-option[aria-pressed='true'] { background: var(--aiws-selected-bg); border-color: var(--cp-accent); color: var(--cp-text); font-weight: 600; }
 
 /* the phone grid's edit bar, above the keyboard */

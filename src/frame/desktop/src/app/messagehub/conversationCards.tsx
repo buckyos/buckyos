@@ -59,7 +59,7 @@ export function FriendRequestMessage({ message, context }: { message: MessageObj
       await networkActions.blockContact(peer)
     })
   }
-  const primaryClass = 'min-h-11 rounded-lg px-3 text-sm font-semibold text-white disabled:opacity-50 md:min-h-9'
+  const primaryClass = 'min-h-11 rounded-lg px-3 text-sm font-medium text-[color:var(--cp-surface-opaque)] disabled:opacity-50 md:min-h-9'
   const secondaryClass = 'min-h-11 rounded-lg border px-3 text-sm disabled:opacity-50 md:min-h-9'
   return (
     <MessageRow message={message} isSelf={outgoing} context={context}>
@@ -68,7 +68,7 @@ export function FriendRequestMessage({ message, context }: { message: MessageObj
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-accent) 16%, transparent)', color: 'var(--cp-accent)' }} aria-hidden><UserPlus size={17} /></span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>{t(outgoing ? 'messagehub.friend.sent' : 'messagehub.friend.received')}</p>
-            <p className="truncate text-[15px] font-semibold" title={peer}>{name}</p>
+            <p className="truncate text-[15px] font-medium" title={peer}>{name}</p>
           </div>
         </div>
         {notice.message ? <p className="mt-2 whitespace-pre-wrap break-words text-sm">{notice.message}</p> : null}
@@ -113,7 +113,7 @@ export function GroupNoticeMessage({ message, context }: { message: MessageObjec
     : notice.action === 'session_invite' ? t('messagehub.group.notice.session_invite', undefined, { name: inviter, session: notice.sessionTitle || notice.sessionId || '' })
     : notice.action === 'rejected' || notice.action === 'removed' || notice.action === 'session_removed' ? t(`messagehub.group.notice.${notice.action}`, undefined, { name: inviter })
     : notice.action
-  const primaryClass = 'min-h-11 rounded-lg px-3 text-sm font-semibold text-white disabled:opacity-50 md:min-h-9'
+  const primaryClass = 'min-h-11 rounded-lg px-3 text-sm font-medium text-[color:var(--cp-surface-opaque)] disabled:opacity-50 md:min-h-9'
   const secondaryClass = 'min-h-11 rounded-lg border px-3 text-sm disabled:opacity-50 md:min-h-9'
   const pendingLabel = (key: string) => t(state === 'pending' ? 'messagehub.saving' : key)
   return (
@@ -123,7 +123,7 @@ export function GroupNoticeMessage({ message, context }: { message: MessageObjec
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-warning) 18%, transparent)', color: 'var(--cp-warning)' }} aria-hidden><Users size={17} /></span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>{line}</p>
-            <p className="truncate text-[15px] font-semibold" title={notice.groupDid}>{view.groupName}</p>
+            <p className="truncate text-[15px] font-medium" title={notice.groupDid}>{view.groupName}</p>
           </div>
         </div>
         {invitation && invitation.role !== 'member' ? <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.invitedAs', undefined, { role: t(`messagehub.group.role.${invitation.role}`) })}</p> : null}

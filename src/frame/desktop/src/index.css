@@ -35,13 +35,14 @@
   --cp-wallpaper-c: #efefed;
   --cp-chart-input: var(--cp-accent);
   --cp-chart-output: oklch(0.72 0.13 62);
-  --cp-message-canvas: oklch(0.972 0.004 260);
-  --cp-message-peer-bg: oklch(0.998 0.001 260);
+  /* The conversation stays on the graphite ramp; your own bubbles are the one brand-blue surface. */
+  --cp-message-canvas: #f6f6f5;
+  --cp-message-peer-bg: #ffffff;
   --cp-message-peer-border: color-mix(in srgb, var(--cp-text) 8%, transparent);
-  --cp-message-self-bg: oklch(0.56 0.105 257);
-  --cp-message-self-text: oklch(0.985 0.006 286);
-  --cp-message-self-meta: rgba(255, 255, 255, 0.72);
-  --cp-message-self-link: rgba(255, 255, 255, 0.92);
+  --cp-message-self-bg: oklch(0.553 0.171 265);
+  --cp-message-self-text: #ffffff;
+  --cp-message-self-meta: rgba(255, 255, 255, 0.8);
+  --cp-message-self-link: #ffffff;
   --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 46%, transparent);
   --cp-panel-shadow:
     0 1px 2px color-mix(in srgb, var(--cp-shadow) 6%, transparent),
@@ -110,13 +111,13 @@
   --cp-wallpaper-b: #111112;
   --cp-wallpaper-c: #161617;
   --cp-chart-output: oklch(0.78 0.12 65);
-  --cp-message-canvas: oklch(0.2 0.012 270);
-  --cp-message-peer-bg: oklch(0.285 0.016 272);
+  --cp-message-canvas: #18181a;
+  --cp-message-peer-bg: #262628;
   --cp-message-peer-border: color-mix(in srgb, var(--cp-text) 7%, transparent);
-  --cp-message-self-bg: color-mix(in srgb, var(--cp-success) 28%, var(--cp-bg-strong));
-  --cp-message-self-text: var(--cp-text);
-  --cp-message-self-meta: color-mix(in srgb, var(--cp-text) 62%, transparent);
-  --cp-message-self-link: color-mix(in srgb, var(--cp-text) 92%, transparent);
+  --cp-message-self-bg: oklch(0.45 0.125 265);
+  --cp-message-self-text: #f4f4f5;
+  --cp-message-self-meta: color-mix(in srgb, #f4f4f5 72%, transparent);
+  --cp-message-self-link: #f4f4f5;
   --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 56%, transparent);
   --cp-panel-shadow: 0 16px 40px color-mix(in srgb, var(--cp-shadow) 36%, transparent);
   --cp-window-shadow:

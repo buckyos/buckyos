@@ -6,6 +6,7 @@
  * into the Workspace (Q10). Full screen on a phone. Mounted once by the shell (PrintHost). */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { defaultPaper, frameFits, orientationOf, paperOf, pdfFileName, PAPER_NAMES, PAPERS, type Orientation, type Paper, type PaperName } from '@print/page'
 import { SYSTEM_DEFAULT } from '@print/fonts'
 import { downloadExtToolsOnline, fetchExtToolsStatus, type ExtToolsStatusResponse } from '../../../../api/settings'
@@ -173,7 +174,7 @@ function PrintDialog({ target, onClose, onFonts }: { target: PrintTarget; onClos
 
   return (
     <Modal label={label} testId="aiws-print-dialog" className="aiws-print-dialog" onClose={close}>
-      <div className="aiws-dialog-head"><b className="aiws-user-text">{label}</b><span className="aiws-grow" /><button type="button" className="aiws-link" disabled={busy} data-testid="aiws-print-close" onClick={close}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-dialog-head"><b className="aiws-user-text">{label}</b><span className="aiws-grow" /><button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} disabled={busy} data-testid="aiws-print-close" onClick={close}><X size={16} aria-hidden="true" /></button></div>
       <div className="aiws-muted aiws-print-hint">{free ? t('aiworkspace.print.hintFree') : t('aiworkspace.print.hintFlow')}</div>
 
       <div className="aiws-print-fields">

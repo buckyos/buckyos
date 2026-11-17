@@ -32,7 +32,7 @@
 .aiws-root .aiws-show-counter { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
 .aiws-root .aiws-tool[aria-pressed='true'] { background: var(--aiws-pressed-bg); color: var(--cp-accent); }
 .aiws-show-status { font-size: 12px; color: var(--cp-muted); padding: 0 6px; white-space: nowrap; }
-.aiws-show-note { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 19; font-size: 12px; padding: 3px 12px; border-radius: 999px; background: rgb(0 0 0 / 0.55); color: #fff; white-space: nowrap; pointer-events: none; transition: opacity 200ms ease; }
+.aiws-show-note { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 19; font-size: 12px; padding: 4px 12px; border-radius: 999px; background: rgb(0 0 0 / 0.55); color: #fff; white-space: nowrap; pointer-events: none; transition: opacity 200ms ease; }
 .aiws-show-ink-tools { display: inline-flex; align-items: center; gap: 2px; }
 .aiws-root button.aiws-show-swatch { width: 18px; height: 18px; min-width: 18px; padding: 0; border-radius: 50%; border: 2px solid var(--cp-surface); box-shadow: 0 0 0 1px var(--cp-border); }
 .aiws-root button.aiws-show-swatch.is-on { box-shadow: 0 0 0 2px var(--cp-accent); }
@@ -62,7 +62,7 @@
 .aiws-root button.aiws-path-step.is-off .aiws-path-step-title { text-decoration: line-through; color: var(--cp-muted); }
 .aiws-path-step-n { width: 18px; text-align: right; color: var(--cp-muted); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
 .aiws-path-step-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aiws-path-badge { font-size: 10px; border: 1px solid var(--cp-border); border-radius: 4px; padding: 0 4px; color: var(--cp-muted); flex: none; }
+.aiws-path-badge { font-size: 11px; border: 1px solid var(--cp-border); border-radius: 4px; padding: 0 4px; color: var(--cp-muted); flex: none; }
 .aiws-path-badge.is-problem { border-color: color-mix(in srgb, var(--cp-warning) 60%, var(--cp-border)); color: var(--cp-text); background: color-mix(in srgb, var(--cp-warning) 16%, transparent); }
 .aiws-path-props { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--cp-border); padding-top: 6px; }
 .aiws-path-props label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--cp-muted); }
@@ -86,8 +86,8 @@
 .aiws-guide { position: absolute; inset: 0; z-index: 40; touch-action: none; }
 .aiws-guide-shade { position: absolute; inset: 0; pointer-events: none; }
 .aiws-guide-shade path { fill: rgb(0 0 0 / 0.5); }
-.aiws-guide-ring { position: absolute; border: 2px solid var(--cp-accent); border-radius: 6px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--cp-accent) 25%, transparent); pointer-events: none; transition: all 200ms ease; }
-.aiws-guide-bubble { position: absolute; width: min(340px, calc(100% - 24px)); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; }
+.aiws-guide-ring { position: absolute; border: 2px solid var(--cp-accent); border-radius: 6px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--cp-accent) 25%, transparent); pointer-events: none; transition: left 200ms var(--cp-ease-smooth), top 200ms var(--cp-ease-smooth), width 200ms var(--cp-ease-smooth), height 200ms var(--cp-ease-smooth); }
+.aiws-guide-bubble { position: absolute; width: min(340px, calc(100% - 24px)); padding: 12px; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; }
 .aiws-guide-bubble-text { white-space: pre-wrap; line-height: 1.55; }
 .aiws-guide-bubble-head { display: flex; align-items: center; gap: 8px; }
 .aiws-guide-count { font-size: 12px; color: var(--cp-muted); font-variant-numeric: tabular-nums; }

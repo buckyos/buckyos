@@ -4,6 +4,7 @@
  * rows in every Workspace made from it. Nothing of this Workspace changes. */
 
 import { useState } from 'react'
+import { X } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { ExtPackResult, Json, TemplateParam, TemplateSpec } from '../../api/types'
 import { useOutlineVersion, useStore } from '../../state/hooks'
@@ -73,7 +74,7 @@ export function SaveTemplateDialog({ initialSurfaceId, onClose }: { initialSurfa
   const valid = chosen.size > 0 && ID.test(id) && params.every((p) => !p.key || /^[a-z][a-z0-9_]{0,31}$/.test(p.key))
   return (
     <Modal label={t('aiworkspace.ext.template.title')} testId="aiws-save-template" className="aiws-ext-dialog" onClose={onClose}>
-      <div className="aiws-dialog-head"><b>{t('aiworkspace.ext.template.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" data-testid="aiws-save-template-close" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.ext.template.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} data-testid="aiws-save-template-close" onClick={onClose}><X size={16} aria-hidden="true" /></button></div>
       <div className="aiws-ext-form">
         <p className="aiws-muted">{t('aiworkspace.ext.template.explain')}</p>
         <fieldset className="aiws-ext-package">

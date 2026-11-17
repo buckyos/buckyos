@@ -65,13 +65,8 @@ export function MessageHubRoute() {
   return (
     <main className="min-h-dvh bg-[color:var(--cp-bg)] p-0 md:p-5">
       <div
-        className="mx-auto flex h-dvh w-full flex-col overflow-hidden md:h-[calc(100dvh-2.5rem)] md:max-w-[1600px] md:rounded-[28px] md:border md:shadow-[var(--cp-window-shadow)]"
-        style={{
-          borderColor: 'var(--cp-border)',
-          background:
-            'linear-gradient(180deg, color-mix(in srgb, var(--cp-surface) 96%, transparent), color-mix(in srgb, var(--cp-surface-2) 94%, transparent))',
-          backdropFilter: 'blur(20px)',
-        }}
+        className="mx-auto flex h-dvh w-full flex-col overflow-hidden md:h-[calc(100dvh-2.5rem)] md:max-w-[1600px] md:rounded-xl md:border md:shadow-[var(--cp-window-shadow)]"
+        style={{ borderColor: 'var(--cp-border)', background: 'var(--cp-surface-opaque)' }}
       >
         {notifyLink.failed ? <p role="alert" className="shrink-0 border-b border-[color:var(--cp-border)] px-4 py-2 text-[13px] text-[color:var(--cp-danger)]" data-testid="notify-link-failed">{t('messagehub.notify.linkFailed')}</p> : null}
         <div className="min-h-0 flex-1">

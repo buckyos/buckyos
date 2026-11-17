@@ -143,7 +143,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
     </div>}
     {manageable && (editing ? <ProfileEditor key={group.revision} group={group} context={context} onDone={() => setEditing(false)} /> : <div className="mb-3 flex items-start gap-2" data-testid="group-profile">
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold">{group.name || entity.name}</p>
+        <p className="truncate text-sm font-medium">{group.name || entity.name}</p>
         {group.description ? <p className="whitespace-pre-wrap break-words text-[13px] text-[color:var(--cp-muted)]">{group.description}</p> : null}
       </div>
       {group.can.updateConfig && <button type="button" disabled={pending} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)] disabled:opacity-40 md:min-h-8 md:min-w-8" aria-label={t('messagehub.group.editProfile')} title={t('messagehub.group.editProfile')} onClick={() => setEditing(true)}><Pencil size={15} /></button>}
@@ -153,7 +153,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       <button type="button" disabled={pending} className="shrink-0 font-medium text-[color:var(--cp-accent)] disabled:opacity-40" onClick={() => void run(() => store.cancelGroupOwnerTransfer(context, group.did))}>{t('messagehub.group.cancelTransfer')}</button>
     </div>}
     <div className="flex items-center justify-between gap-2">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]">{t('messagehub.group.membersTitle')}{group.members ? ` · ${activeCount}` : ''}{group.members && waitingCount > 0 ? <span className="font-normal normal-case tracking-normal"> · {t('messagehub.group.waitingCount', undefined, { count: waitingCount })}</span> : null}</h4>
+      <h4 className="text-[13px] font-medium text-[color:var(--cp-muted)]">{t('messagehub.group.membersTitle')}{group.members ? ` · ${activeCount}` : ''}{group.members && waitingCount > 0 ? <span className="font-normal"> · {t('messagehub.group.waitingCount', undefined, { count: waitingCount })}</span> : null}</h4>
       {group.can.invite && <div className="flex items-center gap-1">
         <button type="button" className="flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" disabled={pending} onClick={() => void createLink()} title={t('messagehub.group.createInviteLink')} aria-label={t('messagehub.group.createInviteLink')}><Link2 size={15} aria-hidden /></button>
         <button type="button" className="flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" disabled={pending} onClick={() => void openInvite()}><UserPlus size={15} aria-hidden />{t('messagehub.group.invite')}</button>

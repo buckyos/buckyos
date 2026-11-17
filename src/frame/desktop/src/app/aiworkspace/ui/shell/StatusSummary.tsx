@@ -80,7 +80,7 @@ export function StatusSummary() {
         {counts.needs_attention > 0 && <span className="aiws-state aiws-state-needs_attention">{EDIT_STATE_LABEL.needs_attention} {counts.needs_attention}</span>}
         {counts.unsaved > 0 && <span className="aiws-state aiws-state-unsaved">{EDIT_STATE_LABEL.unsaved} {counts.unsaved}</span>}
         {counts.saved_locally > 0 && <span className="aiws-state aiws-state-saved_locally">{EDIT_STATE_LABEL.saved_locally} {counts.saved_locally}</span>}
-        {clean && <span className="aiws-state aiws-state-committed">{counts.committed > 0 ? `${EDIT_STATE_LABEL.committed} ✓` : t('aiworkspace.shell.status.clean')}</span>}
+        {clean && <span className="aiws-state aiws-state-committed">{counts.committed > 0 ? EDIT_STATE_LABEL.committed : t('aiworkspace.shell.status.clean')}</span>}
       </span>
       {userSync === 'offline' && <span className="aiws-muted" data-testid="aiws-userstate-sync" data-sync={userSync} title={t('aiworkspace.shell.status.userSyncTitle')}>{t('aiworkspace.shell.status.userSync')}</span>}
       {shell.offlineBusy && <span className="aiws-muted" data-testid="aiws-offline-busy">{shell.offlineBusy}</span>}

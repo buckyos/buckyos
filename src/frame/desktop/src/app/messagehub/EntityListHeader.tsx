@@ -20,6 +20,7 @@ export interface HeaderMenuItem {
 
 /** Whose messages the list shows: the viewer, or the observed owner. */
 export interface HubIdentity {
+  did?: string
   name: string
   avatar?: string
   type: EntityType
@@ -143,9 +144,9 @@ export function EntityListHeader({
         </button>
       </div>
       <div className="flex min-w-0 items-center justify-center gap-2" data-testid="hub-identity">
-        <HubAvatar type={identity.type} name={identity.name} avatar={identity.avatar} size={28} />
+        <HubAvatar type={identity.type} name={identity.name} did={identity.did} avatar={identity.avatar} size={28} />
         {editing ? (
-          <span className="min-w-0 truncate text-[15px] font-semibold" style={{ color: 'var(--cp-text)' }} aria-live="polite">
+          <span className="min-w-0 truncate text-[15px] font-medium" style={{ color: 'var(--cp-text)' }} aria-live="polite">
             {selectedCount > 0 ? t('messagehub.header.selected', undefined, { count: selectedCount }) : t('messagehub.header.selectChats')}
           </span>
         ) : status ? (
@@ -155,7 +156,7 @@ export function EntityListHeader({
           </span>
         ) : (
           <>
-            <span className="min-w-0 truncate text-[15px] font-semibold" style={{ color: 'var(--cp-text)' }} title={identity.name} data-testid="hub-identity-name">{identity.name}</span>
+            <span className="min-w-0 truncate text-[15px] font-medium" style={{ color: 'var(--cp-text)' }} title={identity.name} data-testid="hub-identity-name">{identity.name}</span>
             {unreadTotal > 0 ? (
               <span
                 className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold tabular-nums"

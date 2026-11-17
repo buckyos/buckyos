@@ -5,6 +5,7 @@
  * opens it, and so does a wish that found external data missing (`openDataSourceRequest` with what it wanted). */
 
 import { useEffect, useState, useSyncExternalStore } from 'react'
+import { X } from 'lucide-react'
 import { loadConversationBackend } from '../../../../components/conversation/backend'
 import { unwrap, type AiwsClient } from '../../api/client'
 import { describeError } from '../../api/session'
@@ -124,7 +125,7 @@ function RequestDialog({ request, onClose }: { request: DataSourceRequest; onClo
   const recipient = toAgent || Boolean(owner)
   return (
     <Modal label={t('aiworkspace.sourcereq.title')} testId="aiws-source-request" className="aiws-source-request" onClose={onClose}>
-      <div className="aiws-dialog-head"><b>{t('aiworkspace.sourcereq.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.sourcereq.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} onClick={onClose}><X size={16} aria-hidden="true" /></button></div>
       <div className="aiws-muted" data-testid="aiws-source-request-to" data-to={toAgent ? 'agent' : 'owner'}>
         {toAgent ? t('aiworkspace.sourcereq.toAgent') : owner === null ? t('aiworkspace.sourcereq.noOwner') : t('aiworkspace.sourcereq.toOwner', { owner: owner ?? '…' })}
       </div>

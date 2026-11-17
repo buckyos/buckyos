@@ -260,7 +260,7 @@ export function ConversationSurface({
             onAttachmentsChange={source.draft?.saveAttachments}
             onDraftChange={source.draft?.saveText}
             ref={composerRef}
-            placeholder={placeholder ?? t('messagehub.inputPlaceholder', 'Message...')}
+            placeholder={placeholder ?? t('messagehub.inputPlaceholder', 'Message')}
             maxHeight={composerMaxHeight}
             onSendMessage={handleSendMessage}
             onQueueChange={handleQueueChange}

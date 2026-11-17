@@ -47,8 +47,8 @@ export function MessageHubGuestRoute() {
   return (
     <main className="min-h-dvh bg-[color:var(--cp-bg)] p-0 md:p-5">
       <div
-        className="mx-auto flex h-dvh w-full max-w-[1100px] flex-col overflow-hidden text-[color:var(--cp-text)] md:h-[calc(100dvh-2.5rem)] md:rounded-[28px] md:border md:shadow-[var(--cp-window-shadow)]"
-        style={{ borderColor: 'var(--cp-border)', background: 'linear-gradient(180deg, color-mix(in srgb, var(--cp-surface) 96%, transparent), color-mix(in srgb, var(--cp-surface-2) 94%, transparent))', backdropFilter: 'blur(20px)' }}
+        className="mx-auto flex h-dvh w-full max-w-[1100px] flex-col overflow-hidden text-[color:var(--cp-text)] md:h-[calc(100dvh-2.5rem)] md:rounded-xl md:border md:shadow-[var(--cp-window-shadow)]"
+        style={{ borderColor: 'var(--cp-border)', background: 'var(--cp-surface-opaque)' }}
       >
         {isGroupDid(groupDid) ? <GuestPage key={`${groupDid}\n${sessionId ?? ''}`} groupDid={groupDid} sessionId={sessionId || null} onOpenSession={openSession} /> : <InvalidLink />}
       </div>
@@ -118,7 +118,7 @@ function GuestPage({ groupDid, sessionId, onOpenSession }: { groupDid: string; s
     case 'invited':
       body = <Centered testId="guest-invitation">
         <HubAvatar type="group" name={groupName} size={56} />
-        <h1 className="text-lg font-semibold">{text('invited.title', { group: groupName || text('conversation') })}</h1>
+        <h1 className="text-lg font-medium">{text('invited.title', { group: groupName || text('conversation') })}</h1>
         <p className="max-w-md text-sm text-[color:var(--cp-muted)]">{text('invited.body')}</p>
         <button type="button" className={hubPrimaryButtonClass} disabled={step.joining} onClick={() => void hub?.accept()} data-testid="guest-accept">{text(step.joining ? 'invited.joining' : 'invited.join')}</button>
         {step.failed && <p role="alert" className="max-w-md text-sm text-[color:var(--cp-danger)]" data-testid="guest-accept-failed">{step.denial ? denialText(t, step.denial) : text('invited.failed')}</p>}
@@ -127,7 +127,7 @@ function GuestPage({ groupDid, sessionId, onOpenSession }: { groupDid: string; s
     case 'lobby':
       body = <div className="flex-1 overflow-y-auto p-4 md:p-6" data-testid="guest-lobby">
         <div className="mx-auto max-w-lg space-y-4">
-          <h1 className="text-lg font-semibold">{text('lobby.title', { group: groupName || text('conversation') })}</h1>
+          <h1 className="text-lg font-medium">{text('lobby.title', { group: groupName || text('conversation') })}</h1>
           {step.sessions.length === 0 ? <p className="text-sm text-[color:var(--cp-muted)]">{text('lobby.empty')}</p> : <ul className="space-y-2">{step.sessions.map(item => <li key={item.sessionId}>
             <button type="button" className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-[color:var(--cp-border)] px-3 text-left hover:bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)]" onClick={() => onOpenSession(item.sessionId)} data-testid="guest-session-link">
               <span className="min-w-0 flex-1 truncate">{item.title || text('conversation')}</span><ChevronRight size={16} className="shrink-0 text-[color:var(--cp-muted)]" />
@@ -155,7 +155,7 @@ function DeniedView({ denial, text, showAdjust }: { denial: AccessDenial | null;
   const adjust = denial && showAdjust ? denialAdjustText(t, denial) : null
   return <Centered testId="guest-denied">
     <ShieldAlert size={36} className="text-[color:var(--cp-muted)]" aria-hidden />
-    <h1 className="text-lg font-semibold">{text('denied.title')}</h1>
+    <h1 className="text-lg font-medium">{text('denied.title')}</h1>
     <p role="alert" className="max-w-md text-sm text-[color:var(--cp-muted)]" data-reason={denial?.reason}>{denial ? denialText(t, denial) : text('denied.body')}</p>
     {adjust && <p className="max-w-md text-xs text-[color:var(--cp-muted)]" data-testid="guest-denied-adjust">{adjust}</p>}
   </Centered>
@@ -190,7 +190,7 @@ function GuestHeader({ groupName, session, identity, api, groupDid, offline, mem
   return <header className="flex shrink-0 items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-2 md:px-4" data-testid="guest-header">
     <HubAvatar type="group" name={groupName} size={32} />
     <div className="min-w-0 flex-1">
-      <p className="truncate text-[15px] font-semibold" data-testid="guest-group-name">{groupName || ' '}</p>
+      <p className="truncate text-[15px] font-medium" data-testid="guest-group-name">{groupName || ' '}</p>
       <p className="flex items-center gap-1.5 truncate text-xs text-[color:var(--cp-muted)]">
         {session ? <span className="truncate" data-testid="guest-session-title">{session.title || text('conversation')}</span> : null}
         {session && members > 0 ? <span className="inline-flex shrink-0 items-center gap-0.5"><Users size={12} aria-hidden />{members}</span> : null}
@@ -199,7 +199,7 @@ function GuestHeader({ groupName, session, identity, api, groupDid, offline, mem
     </div>
     {signedIn ? <div className="relative" ref={panelRef}>
       <button type="button" className="flex min-h-11 max-w-[14rem] items-center gap-2 rounded-xl px-2 hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(value => !value)} data-testid="guest-identity">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)] text-sm font-semibold text-[color:var(--cp-accent)]" aria-hidden>{identityDisplayName(signedIn).slice(0, 1).toUpperCase()}</span>
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)] text-sm font-medium text-[color:var(--cp-accent)]" aria-hidden>{identityDisplayName(signedIn).slice(0, 1).toUpperCase()}</span>
         <span className="hidden min-w-0 flex-col text-left sm:flex">
           <span className="truncate text-sm font-medium">{identityDisplayName(signedIn)}</span>
           <span className="truncate text-[11px] text-[color:var(--cp-muted)]">{signedIn.zone_host}</span>

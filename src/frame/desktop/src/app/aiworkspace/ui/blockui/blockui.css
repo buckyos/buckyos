@@ -14,10 +14,10 @@
 .aiws-props-section { border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 60%, transparent); }
 .aiws-props-section:last-child { border-bottom: none; }
 .aiws-root button.aiws-props-section-head {
-  display: flex; align-items: center; gap: 4px; width: 100%; border: none; background: none; padding: 8px 0 6px; font-weight: 600; font-size: 13px; text-align: left; color: var(--cp-text);
+  display: flex; align-items: center; gap: 4px; width: 100%; border: none; background: none; padding: 8px 0; font-weight: 600; font-size: 13px; text-align: left; color: var(--cp-text);
 }
-.aiws-root button.aiws-props-section-head:hover:not(:disabled) { background: none; color: var(--cp-accent); }
-.aiws-props-section-body { display: flex; flex-direction: column; gap: 6px; padding: 0 0 10px; }
+.aiws-root button.aiws-props-section-head:hover:not(:disabled) { background: none; color: var(--cp-text); }
+.aiws-props-section-body { display: flex; flex-direction: column; gap: 8px; padding: 0 0 12px; }
 .aiws-props-field { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 13px; }
 .aiws-props-field.is-boolean { grid-template-columns: 96px auto; justify-content: start; }
 .aiws-props-field.is-color, .aiws-props-field.is-textarea { align-items: start; }
@@ -26,7 +26,9 @@
 .aiws-props-field .aiws-palette-body { min-width: 0; }
 .aiws-props-field .aiws-palette-grid { grid-template-columns: repeat(auto-fill, 28px); gap: 6px; }
 .aiws-root .aiws-props-field button.aiws-palette-swatch { width: 28px; height: 28px; }
-.aiws-props-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.aiws-props-field .aiws-palette-custom { justify-content: flex-start; gap: 8px; white-space: nowrap; }
+.aiws-root .aiws-props-field .aiws-palette-custom input[type='color'] { flex: none; width: 40px; height: 24px; padding: 2px; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); }
+.aiws-props-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
 .aiws-props-grid .aiws-props-field { grid-template-columns: 28px minmax(0, 1fr); }
 .aiws-props-diag { display: flex; flex-direction: column; gap: 4px; font-size: 12px; word-break: break-all; }
 .aiws-props-raw { margin: 0; font-size: 11px; max-height: 160px; overflow: auto; }

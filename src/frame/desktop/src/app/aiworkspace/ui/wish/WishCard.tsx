@@ -384,7 +384,7 @@ export function WishCard({ wishId, cellId, mode, readOnly, compact = false }: Wi
       <div className="aiws-wc-foot">
         <div className="aiws-wc-tabs" role="tablist" aria-label={t('aiworkspace.wishcard.tabs')}>
           {TABS.map((item) => (
-            <button key={item} type="button" role="tab" className={`aiws-wc-tab${stale[item] ? ' is-stale' : ''}`} aria-selected={tab === item} disabled={!enabled[item]}
+            <button key={item} type="button" role="tab" className={`aiws-wc-tab${stale[item] ? ' is-stale' : ''}${item === 'results' && f.results > 0 ? ' has-results' : ''}`} aria-selected={tab === item} disabled={!enabled[item]}
               data-testid={`aiws-wish-tab-${item}`} data-stale={stale[item] ? 'true' : 'false'} title={stale[item] ? t('aiworkspace.wishcard.tab.stale') : undefined}
               onClick={() => setChosen(item)}>
               {item === 'results' ? t('aiworkspace.wishcard.tab.resultsCount', { count: f.results }) : t(TAB_LABEL[item])}

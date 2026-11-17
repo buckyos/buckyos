@@ -2,6 +2,7 @@
  * the confirmation before deleting one. */
 
 import type { WorkspaceListItem } from '../../api/types'
+import { X } from 'lucide-react'
 import type { PreparedHint } from '../../offline/holder'
 import { useAiwsText } from '../../useAiwsText'
 import { Modal } from '../shell/dialogs'
@@ -20,7 +21,7 @@ export function DetailsDialog({ workspace, me, prepared, onClose }: { workspace:
   ]
   return (
     <Modal label={t('aiworkspace.home.details.title', { name: workspace.title })} testId="aiws-home-details-dialog" onClose={onClose}>
-      <div className="aiws-dialog-head"><b>{t('aiworkspace.home.details.title', { name: workspace.title })}</b><span className="aiws-grow" /><button type="button" className="aiws-link" autoFocus onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.home.details.title', { name: workspace.title })}</b><span className="aiws-grow" /><button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} autoFocus onClick={onClose}><X size={16} aria-hidden="true" /></button></div>
       <dl className="aiws-home-details">
         {rows.map(([key, label, value]) => <div key={key} data-testid={`aiws-home-details-${key}`}><dt>{label}</dt><dd>{value}</dd></div>)}
       </dl>

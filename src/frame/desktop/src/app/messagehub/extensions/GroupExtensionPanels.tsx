@@ -43,7 +43,7 @@ export function GroupExtensionPanels({ panels, context, hostDid, allowOrigins, d
     <button type="button" className="flex min-h-11 w-full items-center gap-2 text-left" aria-expanded={open} onClick={() => setOpen(value => !value)} data-testid="group-panels-toggle">
       {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
       <LayoutPanelLeft size={14} aria-hidden className="text-[color:var(--cp-muted)]" />
-      <span className="text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]">{t('messagehub.panels.title')} · {panels.length}</span>
+      <span className="text-[13px] font-medium text-[color:var(--cp-muted)]">{t('messagehub.panels.title')} · {panels.length}</span>
     </button>
     {open && <>
       <div role="tablist" aria-label={t('messagehub.panels.title')} className="flex flex-wrap gap-1.5" data-testid="group-panel-tabs">
@@ -60,7 +60,7 @@ export function GroupExtensionPanels({ panels, context, hostDid, allowOrigins, d
     </>}
     {active && phone && <div className="fixed inset-0 z-[70] flex flex-col bg-[color:var(--cp-surface)]" role="dialog" aria-label={active.title} data-testid="group-panel-page">
       <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1">
-        <h2 className="truncate text-sm font-semibold">{active.title}</h2>
+        <h2 className="truncate text-sm font-medium">{active.title}</h2>
         <button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={() => setActiveId(null)}><X size={18} /></button>
       </header>
       <PanelFrameBoundary resetKey={`${active.id}\n${context.session}`} fallback={(_, reset) => <PanelUnavailable onRetry={reset} />}>

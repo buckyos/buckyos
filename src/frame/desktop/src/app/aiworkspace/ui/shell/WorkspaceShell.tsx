@@ -8,6 +8,7 @@ import { ExtensionsDialog } from '../extensions/ExtensionsDialog'
 import { SaveTemplateDialog } from '../extensions/SaveTemplateDialog'
 import { isCanvasContainer } from '../controls/registry'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUpRight } from 'lucide-react'
 import type { CapturedAnchor } from '../../anchors/registry'
 import type { AiwsClient } from '../../api/client'
 import type { EntityEnvelope } from '../../api/types'
@@ -261,7 +262,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
     if (embedded.type_id !== 'buckyos.cell') return <div className="aiws-warning">{t('aiworkspace.shell.workspace.embedNotBlock', { id: cellId })}</div>
     return (
       <div className="aiws-embedded" data-testid={`aiws-embed-${cellId}`}>
-        <div className="aiws-embedded-title" title={t('aiworkspace.shell.workspace.embedTitle')}>↗ {embedded.title ?? embedded.name ?? cellId}</div>
+        <div className="aiws-embedded-title" title={t('aiworkspace.shell.workspace.embedTitle')}><ArrowUpRight size={12} aria-hidden="true" />{embedded.title ?? embedded.name ?? cellId}</div>
         <BlockHost cellId={cellId} mode="view" view="source" depth={depth} />
       </div>
     )

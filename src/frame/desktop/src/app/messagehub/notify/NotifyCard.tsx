@@ -114,12 +114,13 @@ export function NotifyCard({ message, data, className, style, footer }: { messag
         <div className="min-w-0 flex-1">
           <p className="truncate text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }} data-testid="notify-source" title={source.agent_did ?? source.app_id}>{sourceName}{context ? ` · ${context}` : ''}</p>
           <div className="mt-0.5 flex flex-wrap items-center gap-1">
-            <span className="mh-notify-chip" data-level={level} data-testid="notify-level" title={t('messagehub.notify.levelHint')}>{t(`messagehub.notify.level.${level}`)}</span>
+            {/* Only a level above normal is worth a tag; every other card would carry the same "Normal". */}
+            {level !== 'normal' ? <span className="mh-notify-chip" data-level={level} data-testid="notify-level" title={t('messagehub.notify.levelHint')}>{t(`messagehub.notify.level.${level}`)}</span> : null}
             <span className="mh-notify-chip" style={{ '--mh-chip': status ? statusTone[status] : 'var(--cp-muted)' } as CSSProperties} data-testid="notify-status">{status ? t(`messagehub.notify.status.${kind === 'notice' && status === 'open' ? 'unread' : status}`) : t(entry?.status === 'loading' || !entry ? 'messagehub.notify.status.loading' : `messagehub.notify.state.${entry.status}`)}</span>
           </div>
         </div>
       </div>
-      {prompt.title ? <p className="mt-2 break-words text-[15px] font-semibold leading-snug" data-testid="notify-title">{prompt.title}</p> : null}
+      {prompt.title ? <p className="mt-2 break-words text-[15px] font-medium leading-snug" data-testid="notify-title">{prompt.title}</p> : null}
       {prompt.message ? <p className="mt-1 whitespace-pre-wrap break-words text-[14px] leading-[1.45]" data-testid="notify-message"><LinkifiedText text={prompt.message} /></p> : null}
       {link ? <a className="mt-1.5 inline-flex items-center gap-1 text-[13px] underline underline-offset-2" style={{ color: 'var(--cp-accent)' }} href={link} target={link.startsWith('/') ? undefined : '_blank'} rel="noreferrer" data-testid="notify-link"><ExternalLink size={13} aria-hidden />{t('messagehub.notify.openLink')}</a> : null}
 

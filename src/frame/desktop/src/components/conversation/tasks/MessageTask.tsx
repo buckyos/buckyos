@@ -141,7 +141,7 @@ export function CopyValue({ label, value, testId }: { label: string; value: stri
   )
 }
 
-const sectionTitleClass = 'text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]'
+const sectionTitleClass = 'text-[13px] font-medium text-[color:var(--cp-muted)]'
 
 /**
  * The live task section of the message details: summary, tree, the events

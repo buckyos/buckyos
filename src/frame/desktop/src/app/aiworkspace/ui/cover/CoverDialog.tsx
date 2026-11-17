@@ -4,7 +4,7 @@
  * "工作区 ▸ 设置封面…" inside the Workspace (`WorkspaceCoverHost`: an undoable settings Commit of the open store). */
 
 import { useEffect, useState } from 'react'
-import { ImageOff } from 'lucide-react'
+import { ImageOff, X } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { Transport } from '../../api/transport'
 import type { HomeCover } from '../../api/types'
@@ -68,7 +68,7 @@ export function CoverDialog({ target, onClose, onDone }: { target: CoverTarget; 
   const state = picked ? 'picked' : target.current ? 'current' : 'none'
   return (
     <Modal label={label} testId="aiws-cover-dialog" className="aiws-cover-dialog" onClose={() => { if (!busy) onClose() }}>
-      <div className="aiws-dialog-head"><b className="aiws-user-text">{label}</b><span className="aiws-grow" /><button type="button" className="aiws-link" disabled={busy !== null} data-testid="aiws-cover-close" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-dialog-head"><b className="aiws-user-text">{label}</b><span className="aiws-grow" /><button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} disabled={busy !== null} data-testid="aiws-cover-close" onClick={onClose}><X size={16} aria-hidden="true" /></button></div>
       <div className="aiws-cover-preview" data-testid="aiws-cover-preview" data-state={state}>
         {picked ? <img className="aiws-cover-preview-picture" src={picked.url} alt="" draggable={false} data-testid="aiws-cover-preview-picture" />
           : target.current ? (

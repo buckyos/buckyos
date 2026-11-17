@@ -15,7 +15,7 @@ import { getMessageDeliveryStatus, messageAgentTaskId, type MessageObject } from
 import { useMessageHubStore } from './store'
 import type { MessageHubContext } from './types'
 
-const sectionTitleClass = 'text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]'
+const sectionTitleClass = 'text-[13px] font-medium text-[color:var(--cp-muted)]'
 
 function ContentView({ content, testId }: { content: ndn.MsgContent; testId: string }) {
   const refs = content.refs ?? []
@@ -70,7 +70,7 @@ export function MessageDetails({ context, entityId, sessionId, messageId, initia
   const link = typeof window === 'undefined' ? '' : `${window.location.origin}${messageHubMessagePath({ entityId, sessionId, messageId }, context)}`
   return (
     <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="message-details-pane" data-message-id={messageId}>
-      <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-semibold">{t('messagehub.messageDetails.title')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
+      <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-medium">{t('messagehub.messageDetails.title')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
       {taskId ? <div className="flex shrink-0 gap-5 border-b border-[color:var(--cp-border)] px-4" role="tablist" aria-label={t('messagehub.messageDetails.title')}>
         {(['worklog', 'message'] as const).map(value => <button key={value} role="tab" aria-selected={tab === value} className={`border-b-2 py-3 text-xs font-medium ${tab === value ? 'border-[color:var(--cp-accent)] text-[color:var(--cp-accent)]' : 'border-transparent text-[color:var(--cp-muted)]'}`} onClick={() => setTab(value)} data-testid={`detail-tab-${value}`}>{t(`messagehub.worklog.tab.${value}`)}</button>)}
       </div> : null}
@@ -79,7 +79,7 @@ export function MessageDetails({ context, entityId, sessionId, messageId, initia
         {current && !message ? <p role="alert" className="text-[13px] text-[color:var(--cp-muted)]" data-testid="message-details-missing">{t('messagehub.messageDetails.notFound')}</p> : null}
         {message ? <>
           <section className="space-y-2">
-            <h3 className="break-words text-lg font-semibold leading-snug">{displayName(message.from)}</h3>
+            <h3 className="break-words text-lg font-medium leading-snug">{displayName(message.from)}</h3>
             <p className="text-[13px] text-[color:var(--cp-muted)]"><time>{new Date(message.created_at_ms).toLocaleString()}</time></p>
             <CopyValue label={t('messagehub.messageDetails.messageId')} value={messageObjId(message) ?? messageId} testId="detail-message-id" />
             <CopyValue label={t('messagehub.messageDetails.link')} value={link} testId="detail-message-link" />

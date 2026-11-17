@@ -57,7 +57,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
   const sharedEditors = <div className="space-y-5"><SharedEditor session={session} context={context} disabled={!access.canEditSharedState} groupSession={groupSession} /><MemberEditor session={session} context={context} disabled={!access.canEditOwnMemberState} /></div>
   const body = <>
       <div>
-        <h3 className="break-words text-lg font-semibold leading-snug">{store.title(context, session)}</h3>
+        <h3 className="break-words text-lg font-medium leading-snug">{store.title(context, session)}</h3>
         <p className="mt-1 break-words text-[13px] text-[color:var(--cp-muted)]">{entity.name} · {t(`messagehub.type.${session.type}`)}</p>
         {description && <p className="mt-2 whitespace-pre-wrap break-words text-[13px]" data-testid="session-description">{description}</p>}
         <div className="mt-2 flex flex-wrap gap-1.5 empty:hidden">
@@ -97,13 +97,13 @@ export function SessionDetails({ session, entity, context, access, showActions, 
   </>
   if (embedded) return <div className="space-y-6 text-sm" data-testid="session-details">{body}</div>
   return <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="session-details">
-    <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-semibold">{t('messagehub.sessionDetails')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
+    <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-medium">{t('messagehub.sessionDetails')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
     <div className="shell-scrollbar flex-1 space-y-6 overflow-y-auto p-4 text-sm">{body}</div>
   </section>
 }
 
 function DetailSection({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="space-y-3"><h4 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]">{title}</h4>{children}</section>
+  return <section className="space-y-3"><h4 className="text-[13px] font-medium text-[color:var(--cp-muted)]">{title}</h4>{children}</section>
 }
 
 function DetailBadge({ children }: { children: ReactNode }) {

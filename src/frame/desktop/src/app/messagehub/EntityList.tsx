@@ -217,7 +217,7 @@ function EntityAvatar({
   entity: Entity
   size?: number
 }) {
-  return <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={size} isOnline={entity.isOnline} systemNotify={entity.systemNotify} />
+  return <HubAvatar type={entity.type} name={entity.name} did={entity.id} avatar={entity.avatar} size={size} isOnline={entity.isOnline} systemNotify={entity.systemNotify} />
 }
 
 /** Name, flags and time over the last message and unread count. */
@@ -227,7 +227,7 @@ function EntityRowBody({ entity }: { entity: Entity }) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <span
-            className="truncate text-[15px] font-semibold"
+            className="truncate text-[15px] font-medium"
             style={{ color: 'var(--cp-text)' }}
           >
             {entity.name}
@@ -263,12 +263,12 @@ function EntityRowBody({ entity }: { entity: Entity }) {
           </p>
           {entity.unreadCount > 0 ? (
             <span
-              className="flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
+              className="flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold tabular-nums"
               style={{
                 background: entity.isMuted
-                  ? 'color-mix(in srgb, var(--cp-muted) 30%, transparent)'
+                  ? 'color-mix(in srgb, var(--cp-muted) 22%, transparent)'
                   : 'var(--cp-accent)',
-                color: entity.isMuted ? 'var(--cp-muted)' : '#fff',
+                color: entity.isMuted ? 'var(--cp-muted)' : 'var(--cp-surface-opaque)',
               }}
             >
               {entity.unreadCount}
@@ -427,7 +427,7 @@ function InlineChildItem({
       </span>
       {entity.unreadCount > 0 ? (
         <span
-          className="flex h-4.5 min-w-4.5 flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold"
+          className="flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-medium tabular-nums"
           style={{
             background: 'color-mix(in srgb, var(--cp-accent) 16%, transparent)',
             color: 'var(--cp-accent)',
@@ -440,34 +440,19 @@ function InlineChildItem({
   )
 }
 
-function StatPill({
+/** A count in the drill-down summary line: the label muted, the figure in text colour. */
+function SummaryCount({
   label,
   value,
 }: {
   label: string
-  value: string
+  value: number
 }) {
   return (
-    <div
-      className="rounded-full px-3 py-1.5"
-      style={{
-        background: 'color-mix(in srgb, var(--cp-surface) 76%, var(--cp-accent) 8%)',
-        border: '1px solid color-mix(in srgb, var(--cp-border) 88%, var(--cp-accent) 12%)',
-      }}
-    >
-      <span
-        className="text-[10px] font-semibold uppercase tracking-[0.14em]"
-        style={{ color: 'var(--cp-muted)' }}
-      >
-        {label}
-      </span>
-      <span
-        className="ml-2 text-sm font-semibold"
-        style={{ color: 'var(--cp-text)' }}
-      >
-        {value}
-      </span>
-    </div>
+    <span className="whitespace-nowrap">
+      {label}{' '}
+      <span className="tabular-nums" style={{ color: 'var(--cp-text)' }}>{value}</span>
+    </span>
   )
 }
 
@@ -487,29 +472,26 @@ function DrilldownEntityRow({
   return (
     <button
       onClick={onSelect}
-      className="flex w-full items-center gap-3 px-4 py-2 text-left transition-colors"
+      className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-1 text-left transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)]"
       style={{
         background: isSelected
           ? 'color-mix(in srgb, var(--cp-accent) 12%, transparent)'
-          : 'transparent',
+          : undefined,
       }}
       type="button"
     >
-      <EntityAvatar entity={entity} size={34} />
+      <EntityAvatar entity={entity} size={32} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span
-            className="truncate text-sm font-semibold"
+            className="truncate text-sm font-medium"
             style={{ color: 'var(--cp-text)' }}
           >
             {entity.name}
           </span>
           <span
-            className="rounded-full px-2 py-0.5 text-[10px] font-medium"
-            style={{
-              background: 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
-              color: 'var(--cp-muted)',
-            }}
+            className="shrink-0 text-xs"
+            style={{ color: 'var(--cp-muted)' }}
           >
             {typeLabel}
           </span>
@@ -518,7 +500,7 @@ function DrilldownEntityRow({
       <div className="flex flex-shrink-0 items-center gap-2">
         {metaText ? (
           <span
-            className="text-[11px]"
+            className="text-xs tabular-nums"
             style={{ color: 'var(--cp-muted)' }}
           >
             {metaText}
@@ -526,7 +508,7 @@ function DrilldownEntityRow({
         ) : null}
         {entity.unreadCount > 0 ? (
           <span
-            className="flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold"
+            className="flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-medium tabular-nums"
             style={{
               background: 'color-mix(in srgb, var(--cp-accent) 16%, transparent)',
               color: 'var(--cp-accent)',
@@ -535,7 +517,7 @@ function DrilldownEntityRow({
             {entity.unreadCount}
           </span>
         ) : null}
-        <ChevronRight size={15} style={{ color: 'var(--cp-muted)' }} />
+        <ChevronRight size={16} style={{ color: 'var(--cp-muted)' }} />
       </div>
     </button>
   )
@@ -585,14 +567,14 @@ function FilterStrip({
       onScroll={updateFade}
       data-fade={fade}
       data-testid="entity-filters"
-      className="mh-filter-strip flex items-center overflow-x-auto px-[13px]"
+      className="mh-filter-strip flex items-center overflow-x-auto px-3"
     >
       {filters.map((item) => (
         <button
           key={item.key}
           onClick={() => onFilterChange(item.key)}
           aria-pressed={filter === item.key}
-          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-[3px] md:min-h-9"
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-1 md:min-h-9"
           type="button"
         >
           <span
@@ -600,9 +582,9 @@ function FilterStrip({
             style={{
               background:
                 filter === item.key
-                  ? 'var(--cp-accent)'
-                  : 'color-mix(in srgb, var(--cp-text) 7%, transparent)',
-              color: filter === item.key ? '#fff' : 'var(--cp-muted)',
+                  ? 'var(--cp-text)'
+                  : 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
+              color: filter === item.key ? 'var(--cp-surface-opaque)' : 'var(--cp-muted)',
             }}
           >
             {t(item.labelKey, item.key)}
@@ -628,79 +610,62 @@ function DrilldownPanel({
   const unreadTotal = countUnread(children)
 
   return (
-    <div className="flex-1 overflow-y-auto px-3 pb-3 shell-scrollbar">
-      <section
-        className="mx-1 rounded-[24px] px-4 py-4"
-        style={{
-          background:
-            'linear-gradient(180deg, color-mix(in srgb, var(--cp-accent) 8%, var(--cp-surface) 92%), color-mix(in srgb, var(--cp-surface-2) 92%, transparent))',
-          border: '1px solid color-mix(in srgb, var(--cp-border) 86%, var(--cp-accent) 14%)',
-        }}
-      >
+    <div className="flex-1 overflow-y-auto px-4 pb-4 shell-scrollbar">
+      <section className="pt-2">
         <div className="flex items-start gap-3">
-          <EntityAvatar entity={entity} size={42} />
+          <EntityAvatar entity={entity} size={40} />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-baseline gap-2">
               <h2
-                className="truncate text-base font-semibold"
+                className="truncate text-base font-medium"
                 style={{ color: 'var(--cp-text)' }}
               >
                 {entity.name}
               </h2>
               {entity.statusText ? (
                 <span
-                  className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]"
-                  style={{
-                    background: 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
-                    color: 'var(--cp-muted)',
-                  }}
+                  className="shrink-0 text-xs"
+                  style={{ color: 'var(--cp-muted)' }}
                 >
                   {entity.statusText}
                 </span>
               ) : null}
             </div>
             <p
-              className="mt-1 text-sm leading-6"
+              className="mt-1 text-[13px] leading-5"
               style={{ color: 'var(--cp-muted)' }}
             >
               {entity.drilldownDescription
                 ?? entity.lastMessage?.text
                 ?? entity.statusText}
             </p>
+            <p
+              className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs"
+              style={{ color: 'var(--cp-muted)' }}
+            >
+              <SummaryCount label={t('messagehub.drilldownItems', 'Items')} value={children.length} />
+              <SummaryCount label={t('messagehub.drilldownSections', 'Sections')} value={sections.length} />
+              {unreadTotal > 0 ? (
+                <SummaryCount label={t('messagehub.filter.unread', 'Unread')} value={unreadTotal} />
+              ) : null}
+            </p>
           </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          <StatPill
-            label={t('messagehub.drilldownItems', 'Items')}
-            value={`${children.length}`}
-          />
-          <StatPill
-            label={t('messagehub.drilldownSections', 'Sections')}
-            value={`${sections.length}`}
-          />
-          {unreadTotal > 0 ? (
-            <StatPill
-              label={t('messagehub.filter.unread', 'Unread')}
-              value={`${unreadTotal}`}
-            />
-          ) : null}
         </div>
       </section>
 
-      <div className="mt-4 space-y-4">
+      <div className="mt-6 space-y-6">
         {sections.map((section) => (
-          <section key={section.id} className="mx-1">
+          <section key={section.id}>
             <div className="mb-2 px-1">
-              <div className="flex items-end justify-between gap-3">
+              <div className="flex items-baseline justify-between gap-3">
                 <h3
-                  className="text-xs font-semibold uppercase tracking-[0.14em]"
+                  className="text-[13px] font-medium"
                   style={{ color: 'var(--cp-muted)' }}
                 >
                   {section.title}
                 </h3>
                 <span
-                  className="text-[11px]"
+                  className="text-xs tabular-nums"
                   style={{ color: 'var(--cp-muted)' }}
                 >
                   {section.items.length}
@@ -716,10 +681,10 @@ function DrilldownPanel({
               ) : null}
             </div>
             <div
-              className="rounded-[20px] p-1.5"
+              className="rounded-xl p-1"
               style={{
-                background: 'color-mix(in srgb, var(--cp-text) 4%, transparent)',
-                border: '1px solid color-mix(in srgb, var(--cp-border) 92%, transparent)',
+                background: 'var(--cp-surface-opaque)',
+                border: '1px solid var(--cp-border)',
               }}
             >
               {section.items.map((child) => (
@@ -891,13 +856,10 @@ export function EntityList({
             <button
               type="button"
               onClick={() => setDrilldownPath((prev) => prev.slice(0, -1))}
-              className="flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium"
-              style={{
-                color: 'var(--cp-accent)',
-                background: 'color-mix(in srgb, var(--cp-accent) 12%, transparent)',
-              }}
+              className="-ml-2 flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm font-medium transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]"
+              style={{ color: 'var(--cp-text)' }}
             >
-              <ArrowLeft size={14} />
+              <ArrowLeft size={16} style={{ color: 'var(--cp-muted)' }} />
               {t('messagehub.backToEntities', 'Back to entities')}
             </button>
             <span
@@ -919,7 +881,7 @@ export function EntityList({
               type="text"
               value={searchQuery}
               onChange={(event) => onSearchChange(event.target.value)}
-              placeholder={t('messagehub.search', 'Search...')}
+              placeholder={t('messagehub.search', 'Search')}
               className="flex-1 border-none bg-transparent text-sm outline-none"
               style={{ color: 'var(--cp-text)' }}
             />
@@ -953,7 +915,7 @@ export function EntityList({
                   <Plus size={20} />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[15px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{t('messagehub.group.create', 'New group')}</span>
+                  <span className="block truncate text-[15px] font-medium" style={{ color: 'var(--cp-accent)' }}>{t('messagehub.group.create', 'New group')}</span>
                   <span className="block truncate text-[13px]" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.createHint', 'Pick contacts and start a group chat')}</span>
                 </span>
               </button>

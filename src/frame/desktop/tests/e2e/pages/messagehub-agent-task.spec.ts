@@ -381,7 +381,7 @@ test('a text question locks the input to answering it, without a way to cancel; 
   await expect(bubble(page, ANCHOR).getByTestId('agent-qa-item')).toHaveCount(5)
   await expect(bubble(page, ANCHOR).getByTestId('agent-qa-item').last()).toHaveText(/Yes, keep it\./)
   expect(await anchors(page)).toEqual(['msg-qa-1', ANCHOR])
-  await expect(composer.getByRole('textbox', { name: 'Message...' })).toBeVisible()
+  await expect(composer.getByRole('textbox', { name: 'Message', exact: true })).toBeVisible()
 
   // Without an anchor (a channel that cannot edit) the question is a row and the answer replies to it.
   await ask(page, 'msg-qa-bare', 'Which branch?', { kind: 'text' }, null)

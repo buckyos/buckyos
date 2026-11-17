@@ -5,7 +5,7 @@
  * (标准对象的交互改进 §4.4). */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { Lock, LockKeyhole, LockOpen } from 'lucide-react'
+import { Lock, LockKeyhole, LockOpen, Paperclip } from 'lucide-react'
 import { ServiceFailure } from '../../api/client'
 import { describeError, type ReadOk } from '../../api/session'
 import { useAiwsText } from '../../useAiwsText'
@@ -310,7 +310,7 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
         </>
       ) : (
         <div className="aiws-note-meta">
-          {payload.target && <span title={t('aiworkspace.blocks.note.attached')}>📎 {payload.target.entity_id}</span>}
+          {payload.target && <span className="aiws-note-attached" title={t('aiworkspace.blocks.note.attached')}><Paperclip size={12} aria-hidden="true" />{payload.target.entity_id}</span>}
           {authorLabel(payload) && <span>{authorLabel(payload)}</span>}
           {entry && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state">{EDIT_STATE_LABEL[entry.state]}</span>}
           {editable && text === null && <button type="button" className="aiws-link" onClick={() => setText(payload.body)}>{t('aiworkspace.common.edit')}</button>}

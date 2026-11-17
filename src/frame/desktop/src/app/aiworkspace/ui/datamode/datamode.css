@@ -64,7 +64,7 @@
 .aiws-dm-mainbar > .aiws-tool { align-self: center; }
 .aiws-dm-tabbar { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; }
 .aiws-dm-tabs { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: thin; }
-.aiws-dm-tab { flex: none; display: inline-flex; align-items: center; gap: 5px; max-width: 220px; padding: 0 4px 0 10px; border-right: 1px solid var(--cp-border); cursor: pointer; color: var(--cp-muted); user-select: none; }
+.aiws-dm-tab { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 0 4px 0 10px; border-right: 1px solid var(--cp-border); cursor: pointer; color: var(--cp-muted); user-select: none; }
 .aiws-dm-tab:hover { background: var(--cp-surface-2); }
 .aiws-dm-tab.is-active { color: var(--cp-text); background: var(--cp-surface); box-shadow: inset 0 -2px 0 var(--cp-accent); }
 .aiws-dm-tab.is-preview .aiws-dm-tab-name { font-style: italic; }
@@ -74,7 +74,7 @@
 .aiws-dm-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-dm-tab-ro { display: inline-flex; color: var(--cp-muted); }
 .aiws-dm-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cp-accent); flex: none; }
-.aiws-root button.aiws-dm-tab-close { border: none; background: none; width: 22px; height: 22px; padding: 0; justify-content: center; border-radius: 5px; color: var(--cp-muted); opacity: 0; }
+.aiws-root button.aiws-dm-tab-close { border: none; background: none; width: 22px; height: 22px; padding: 0; justify-content: center; border-radius: 6px; color: var(--cp-muted); opacity: 0; }
 .aiws-dm-tab:hover .aiws-dm-tab-close, .aiws-dm-tab.is-active .aiws-dm-tab-close, .aiws-dm-tab:focus-within .aiws-dm-tab-close { opacity: 1; }
 .aiws-root button.aiws-dm-tab-close:hover { background: var(--cp-surface-2); color: var(--cp-text); }
 .aiws-root .aiws-dm-tab-list { align-self: center; }
@@ -107,7 +107,9 @@
 .aiws-dm-section-body { padding: 0 2px 6px; display: flex; flex-direction: column; gap: 6px; }
 .aiws-dm-field { display: flex; flex-direction: column; align-items: stretch; gap: 2px; font-size: 12px; color: var(--cp-muted); flex: 1 1 auto; text-align: start; }
 .aiws-dm-props .aiws-inline-form { align-items: flex-end; }
-.aiws-dm-props .aiws-props td { vertical-align: middle; }
+.aiws-dm-props .aiws-props th, .aiws-dm-props .aiws-props td { vertical-align: middle; height: 28px; }
+.aiws-dm-props .aiws-props code { font-family: var(--aiws-mono); font-size: 12px; overflow-wrap: anywhere; }
+.aiws-root .aiws-dm-props .aiws-inline-form label.aiws-dm-field { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
 .aiws-dm-field input { color: var(--cp-text); }
 .aiws-dm-history { display: flex; flex-direction: column; gap: 4px; }
 .aiws-dm-version { flex-direction: column; align-items: stretch; padding: 6px 0; }
@@ -118,7 +120,7 @@
 .aiws-status-dock.is-bar { position: relative; right: auto; bottom: auto; flex: none; width: 100%; max-height: none; z-index: 50; align-items: stretch; border-top: 1px solid var(--cp-border); background: var(--cp-bg); pointer-events: auto; }
 .aiws-status-dock.is-bar > .aiws-status-stack { position: absolute; right: 12px; bottom: calc(100% + 8px); width: min(440px, calc(100% - 24px)); max-height: 60vh; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
 .aiws-status-dock.is-bar > .aiws-status-stack > * { pointer-events: auto; }
-.aiws-status-row.is-bar { display: flex; align-items: center; justify-content: flex-start; gap: 8px; padding: 3px 8px; min-height: 32px; box-sizing: border-box; }
+.aiws-status-row.is-bar { display: flex; align-items: center; justify-content: flex-start; gap: 8px; padding: 4px 8px; min-height: 32px; box-sizing: border-box; }
 .aiws-status-info { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; }
 /* the Workspace, first on the left: its icon and name, the caller's role, how many data objects */
 .aiws-dm-ws-info { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; padding: 0 6px; font-size: 12px; color: var(--cp-muted); white-space: nowrap; }
@@ -185,3 +187,5 @@
   .aiws-root .aiws-dm-side > .aiws-dm-side-tabs button[role='tab'] { border: 4px solid transparent; background-clip: padding-box; border-radius: 10px; padding: 0 6px; }
   .aiws-root button.aiws-dm-section-head { min-height: 44px; }
 }
+.aiws-dm-main > .aiws-empty { margin: auto; padding: 32px 24px 64px; }
+.aiws-dm-main > .aiws-empty p { margin: 0 0 4px; }

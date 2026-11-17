@@ -157,9 +157,9 @@ function useHubIdentity(context: MessageHubContext): HubIdentity {
   const me = useCurrentUser()
   if (context.mode === 'observe') {
     const entity = store.findEntity(store.defaultContext(), context.ownerDid)
-    return { type: entity?.type ?? 'agent', name: entity?.name ?? didDisplayName(context.ownerDid), avatar: entity?.avatar }
+    return { type: entity?.type ?? 'agent', did: context.ownerDid, name: entity?.name ?? didDisplayName(context.ownerDid), avatar: entity?.avatar }
   }
-  return { type: 'person', name: me?.displayName || didDisplayName(context.ownerDid), avatar: me?.avatarUrl ?? store.avatarOf(context, context.ownerDid) }
+  return { type: 'person', did: context.ownerDid, name: me?.displayName || didDisplayName(context.ownerDid), avatar: me?.avatarUrl ?? store.avatarOf(context, context.ownerDid) }
 }
 
 function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId, linkedMessageDetails, context, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; linkedMessageDetails: boolean; context: MessageHubContext; onHome?: () => void }) {
@@ -538,7 +538,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     entityDetails={<EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} embedded />}
   /> : null
   const worklogPane = detailsTarget === 'worklog' && panelWorklog ? <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="agent-panel-worklog">
-    <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="min-w-0 truncate text-sm font-semibold">{panelWorklog.title}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={handleCloseDetails}><X size={18} /></button></header>
+    <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="min-w-0 truncate text-sm font-medium">{panelWorklog.title}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={handleCloseDetails}><X size={18} /></button></header>
     <AgentWorklog key={panelWorklog.request} initial={panelWorklog} onExit={handleCloseDetails} />
   </section> : null
   // The panel stays mounted under a work log opened from it, so going back finds it as it was left.
@@ -619,7 +619,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
 
   const desktopSessionSidebarPane = showSessionSidebar && !sessionSidebarInline ? (
     <>
-      <div className="absolute inset-0 z-30" style={{ background: 'rgba(15, 23, 42, 0.18)' }} onClick={() => setShowSessionSidebar(false)} />
+      <div className="absolute inset-0 z-30" style={{ background: 'color-mix(in srgb, var(--cp-shadow) 22%, transparent)' }} onClick={() => setShowSessionSidebar(false)} />
       <div
         className="absolute inset-y-0 left-0 z-40"
         style={{
@@ -714,7 +714,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
               <>
                 <div
                   className="absolute inset-0 z-40"
-                  style={{ background: 'rgba(0,0,0,0.3)' }}
+                  style={{ background: 'color-mix(in srgb, var(--cp-shadow) 30%, transparent)' }}
                   onClick={() => setShowSessionSidebar(false)}
                 />
                 <div
@@ -763,25 +763,15 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
           maxWidth: isEntityListCollapsed ? ENTITY_LIST_COLLAPSED_WIDTH : ENTITY_LIST_MAX_WIDTH,
           borderRight: '1px solid var(--cp-border)',
           background: 'var(--cp-surface)',
-          transition: isResizingEntityList ? 'none' : 'width 220ms var(--cp-ease-emphasis)',
         }}
       >
         {isEntityListCollapsed ? (
-          <div
-            className="flex h-full flex-col items-center gap-3 px-2 py-4"
-            style={{
-              background:
-                'linear-gradient(180deg, color-mix(in srgb, var(--cp-surface) 96%, transparent), color-mix(in srgb, var(--cp-surface-2) 94%, transparent))',
-            }}
-          >
+          <div className="flex h-full flex-col items-center gap-3 px-2 py-4">
             <button
               type="button"
               onClick={handleExpandEntityList}
-              className="flex h-10 w-10 items-center justify-center rounded-2xl"
-              style={{
-                color: 'var(--cp-accent)',
-                background: 'color-mix(in srgb, var(--cp-accent) 12%, transparent)',
-              }}
+              className="flex h-10 w-10 items-center justify-center rounded-lg transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)] hover:text-[color:var(--cp-text)]"
+              style={{ color: 'var(--cp-muted)' }}
               aria-label={t('messagehub.expandEntityList', 'Expand entity list')}
               title={t('messagehub.expandEntityList', 'Expand entity list')}
             >
@@ -792,7 +782,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
               style={{ color: 'var(--cp-muted)' }}
             >
               <span
-                className="text-[11px] font-semibold uppercase tracking-[0.24em]"
+                className="text-[13px] font-medium"
                 style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
               >
                 {t('messagehub.entitiesShort', 'Entities')}
@@ -849,7 +839,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
       {/* One element for both placements, so a pane that changes width (a work log opened from the Agent panel) is not mounted again. */}
       {showDetails && entityDetail ? (
         <>
-          {detailsInline ? null : <div className="absolute inset-0 z-40" style={{ background: 'rgba(15, 23, 42, 0.18)' }} onClick={handleCloseDetails} />}
+          {detailsInline ? null : <div className="absolute inset-0 z-40" style={{ background: 'color-mix(in srgb, var(--cp-shadow) 22%, transparent)' }} onClick={handleCloseDetails} />}
           <div
             className={detailsInline ? 'h-full flex-shrink-0' : 'absolute inset-y-0 right-0 z-50'}
             style={detailsInline ? { width: detailsWidth, borderLeft: '1px solid var(--cp-border)' } : {
@@ -920,19 +910,18 @@ function PaneSplitter({ label, active, disabled = false, value, min, max, onPoin
         marginRight: -(PANEL_SPLITTER_WIDTH / 2),
         cursor: disabled ? 'default' : 'col-resize',
         pointerEvents: disabled ? 'none' : undefined,
-        background: active ? 'color-mix(in srgb, var(--cp-accent) 8%, transparent)' : 'transparent',
+        background: 'transparent',
         zIndex: 10,
         touchAction: 'none',
       }}
     >
       <span
-        className="pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
+        className="pointer-events-none absolute left-1/2 w-px rounded-full transition-[transform,background-color] duration-150"
         style={{
-          width: active ? 3 : 1,
-          top: 18,
-          bottom: 18,
-          background: active ? 'var(--cp-accent)' : 'color-mix(in srgb, var(--cp-border) 92%, transparent)',
-          boxShadow: active ? '0 0 0 4px color-mix(in srgb, var(--cp-accent) 12%, transparent)' : 'none',
+          top: 16,
+          bottom: 16,
+          transform: `translateX(-50%) scaleX(${active ? 3 : 1})`,
+          background: active ? 'var(--cp-accent)' : 'var(--cp-border)',
         }}
       />
     </div>

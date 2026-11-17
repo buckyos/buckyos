@@ -993,7 +993,7 @@ const MemoAttachmentCard = memo(function AttachmentCard({
           <div
             className="absolute inset-x-0 bottom-0 px-2.5 py-2"
             style={{
-              background: 'linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.82))',
+              background: 'linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.72))',
             }}
           >
             <p
@@ -1055,8 +1055,8 @@ function FileGlyph({ filename }: { filename: string }) {
       <div className="flex h-full flex-col justify-between px-2 py-2">
         <File size={18} style={{ color: 'var(--cp-muted)' }} />
         <span
-          className="truncate text-[9px] font-semibold uppercase tracking-[0.08em]"
-          style={{ color: 'var(--cp-accent)' }}
+          className="truncate text-[10px] font-medium uppercase"
+          style={{ color: 'var(--cp-muted)' }}
         >
           {extension}
         </span>

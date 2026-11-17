@@ -4,6 +4,7 @@
  * screen does not change: a print uses these fonts, the Desktop keeps the device's. */
 
 import { useState } from 'react'
+import { X } from 'lucide-react'
 import { DEFAULT_FONTS, GENERICS, PACK_FONTS, readFontSettings, SYSTEM_DEFAULT, fontChoice, type Generic } from '@print/fonts'
 import { describeError } from '../../api/session'
 import { useStore } from '../../state/hooks'
@@ -46,7 +47,7 @@ export function PrintFontsDialog({ onClose }: { onClose: () => void }) {
   const label = t('aiworkspace.print.fonts.title')
   return (
     <Modal label={label} testId="aiws-print-fonts-dialog" className="aiws-print-dialog" onClose={() => { if (!busy) onClose() }}>
-      <div className="aiws-dialog-head"><b>{label}</b><span className="aiws-grow" /><button type="button" className="aiws-link" disabled={busy} onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-dialog-head"><b>{label}</b><span className="aiws-grow" /><button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} disabled={busy} onClick={onClose}><X size={16} aria-hidden="true" /></button></div>
       <div className="aiws-muted aiws-print-hint">{t('aiworkspace.print.fonts.explain')}</div>
       <div className="aiws-print-fields">
         {GENERICS.map((g) => {

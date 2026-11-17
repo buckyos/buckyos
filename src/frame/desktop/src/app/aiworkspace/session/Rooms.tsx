@@ -2,7 +2,7 @@
  * prompter see and do. Every control is a `session.*` call the service confirms; the stage follows the confirmation. */
 
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Hand, Link2, ListOrdered, LogOut, MessageSquare, Mic, MicOff, MousePointer2, NotebookText, Pencil, Play, RotateCcw, Square, Users } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Hand, Link2, ListOrdered, LogOut, MessageSquare, Mic, MicOff, MousePointer2, NotebookText, Pencil, Play, RotateCcw, Square, Users, X } from 'lucide-react'
 import { describeError } from '../api/session'
 import { randomId } from '../api/ids'
 import type { ShowPathPayload } from '../api/types'
@@ -197,7 +197,7 @@ function LinksPanel({ channel, welcome, onClose }: { channel: SessionChannel; we
   const label = (i: Invite) => t(LINK_KEY[i.kind]) + (i.kind === 'dt' && i.config.voice === true ? ` · ${t('aiworkspace.session.links.withVoice')}` : '') + (i.kind === 'at' && i.config.speak === true ? ` · ${t('aiworkspace.session.links.withSpeak')}` : '')
   return (
     <div className="aiws-show-panel aiws-panel aiws-stage-ui aiws-session-links" data-testid="aiws-session-links-panel">
-      <div className="aiws-dialog-head"><b>{t('aiworkspace.session.links.title')}</b><span className="aiws-grow" /><button type="button" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.session.links.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} onClick={onClose}><X size={16} aria-hidden="true" /></button></div>
       <div className="aiws-muted">{t('aiworkspace.session.links.help')}</div>
       <SessionReadersOf channel={channel} initial={welcome.session.readers_of} editable={welcome.role === 'presenter' || welcome.role === 'owner'} />
       <div className="aiws-dialog-actions">

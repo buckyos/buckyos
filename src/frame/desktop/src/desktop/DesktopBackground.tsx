@@ -82,7 +82,7 @@ export const DesktopBackground = memo(function DesktopBackground({
       aria-hidden="true"
       data-testid="desktop-background"
       data-wallpaper-mode={hasImage ? resolvedWallpaper.mode : undefined}
-      className="pointer-events-none fixed inset-0 z-0 select-none overflow-hidden"
+      className="pointer-events-none fixed inset-0 -z-10 select-none overflow-hidden"
     >
       <div className="absolute inset-0 bg-[color:var(--cp-bg)]" />
 

@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Maximize2, MessageSquare, Plus, Type } from 'lucide-react'
+import { Maximize2, MessageSquare, MessageSquarePlus, Plus, Type } from 'lucide-react'
 import type { FieldDef, Json, QueryRow } from '../../api/types'
 import type { CapturedAnchor } from '../../anchors/registry'
 import { EDIT_STATE_LABEL } from '../../state/edits'
@@ -172,7 +172,7 @@ export function TableGrid(props: TableGridProps) {
           const { field } = column
           const Icon = FIELD_ICONS[field.type] ?? Type
           return (
-            <div key={field.field_id} className={`aiws-th${phone && index === 0 && rowHead ? ' is-sticky' : ''}${dragging?.fieldId === field.field_id ? ' is-dragged' : ''}${props.columnsEditable && !phone ? ' is-movable' : ''}`} role="columnheader" style={{ width: widthOf(column, index), ...(phone && index === 0 && rowHead ? { left: headWidth } : {}) }}
+            <div key={field.field_id} className={`aiws-th${phone && index === 0 && rowHead ? ' is-sticky' : ''}${dragging?.fieldId === field.field_id ? ' is-dragged' : ''}${props.columnsEditable && !phone ? ' is-movable' : ''}`} role="columnheader" data-type={field.type} style={{ width: widthOf(column, index), ...(phone && index === 0 && rowHead ? { left: headWidth } : {}) }}
               data-testid={`aiws-th-${field.field_id}`} title={t('aiworkspace.data.table.columnTitle', { name: field.name, type: FIELD_TYPE_LABEL[field.type] })}
               onPointerDown={(event) => startMove(event, index)}>
               <Icon size={13} className="aiws-th-icon" aria-hidden="true" />
@@ -381,7 +381,7 @@ function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate
       )}
       {!editing && onAnnotate && !annotation && !phone && (
         <button type="button" className="aiws-cell-annotate" title={t('aiworkspace.table.cell.comment')} aria-label={t('aiworkspace.table.cell.commentAria', { field: field.name, record: row.record_id })}
-          onClick={() => onAnnotate(cellAnchor(sourceId, field, row))}>✎</button>
+          onClick={() => onAnnotate(cellAnchor(sourceId, field, row))}><MessageSquarePlus size={14} aria-hidden="true" /></button>
       )}
       {entry && !editing && (
         <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state" title={entry.detail}>{EDIT_STATE_LABEL[entry.state]}</span>

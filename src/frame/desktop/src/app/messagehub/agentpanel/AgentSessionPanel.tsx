@@ -33,7 +33,7 @@ import { usePanelAction, usePanelResource, type PanelResource } from './hooks'
 import { agentConversationState, formatSize, generationBreaks, generationNumber, type AgentSummary, type Delivery, type UiConversation } from './model'
 import { getAgentPanelSource } from './source'
 
-const sectionTitleClass = 'text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]'
+const sectionTitleClass = 'text-[13px] font-medium text-[color:var(--cp-muted)]'
 const DELIVERY_PAGE = 20
 
 interface AgentSessionPanelProps {
@@ -85,7 +85,7 @@ export function AgentSessionPanel({ entity, session, context, answering, timelin
   useEffect(() => { if (breaks && sessionId) rememberGenerationBreaks(context.viewerDid, sessionId, breaks) }, [breaks, sessionId, context.viewerDid])
   return (
     <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="agent-panel" data-agent={agentDid}>
-      <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-semibold">{t('messagehub.agentPanel.title')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
+      <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-medium">{t('messagehub.agentPanel.title')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
       <div className="shell-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden p-4 text-sm" data-testid="agent-panel-body">
         <AgentOverview entity={entity} context={context} onEntityPreferences={onEntityPreferences} />
         <hr className="border-[color:var(--cp-border)]" />
@@ -120,7 +120,7 @@ function Unavailable({ testId }: { testId: string }) {
 
 function Stat({ label, value, tone, testId }: { label: string; value: string | number; tone?: 'warning' | 'danger'; testId: string }) {
   return <div className="min-w-0 rounded-lg bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] px-2 py-1.5" data-testid={testId}>
-    <p className="truncate text-[15px] font-semibold tabular-nums" style={tone ? { color: `var(--cp-${tone})` } : undefined}>{value}</p>
+    <p className="truncate text-[15px] font-medium tabular-nums" style={tone ? { color: `var(--cp-${tone})` } : undefined}>{value}</p>
     <p className="break-words text-[11px] leading-tight text-[color:var(--cp-muted)]">{label}</p>
   </div>
 }
@@ -144,9 +144,9 @@ function AgentOverview({ entity, context, onEntityPreferences }: { entity: Entit
   return (
     <section className="space-y-3" data-testid="agent-overview">
       <div className="flex items-center gap-3">
-        <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={40} />
+        <HubAvatar type={entity.type} name={entity.name} did={entity.id} avatar={entity.avatar} size={40} />
         <div className="min-w-0 flex-1">
-          <p className="flex items-center gap-1.5"><span className="truncate text-[15px] font-semibold">{entity.name}</span>{entity.isOnline ? <span className="shrink-0 rounded-full bg-[color:color-mix(in_srgb,var(--cp-success)_14%,transparent)] px-1.5 text-[11px] text-[color:var(--cp-success)]" data-testid="agent-online">{t('messagehub.agentPanel.online')}</span> : null}</p>
+          <p className="flex items-center gap-1.5"><span className="truncate text-[15px] font-medium">{entity.name}</span>{entity.isOnline ? <span className="shrink-0 rounded-full bg-[color:color-mix(in_srgb,var(--cp-success)_14%,transparent)] px-1.5 text-[11px] text-[color:var(--cp-success)]" data-testid="agent-online">{t('messagehub.agentPanel.online')}</span> : null}</p>
           <CopyValue label="DID" value={entity.id} testId="agent-did" />
         </div>
       </div>
@@ -188,7 +188,7 @@ function ConversationState({ session, context, conversation, answering }: { sess
     <section className="space-y-2" data-testid="agent-conversation">
       <h3 className={sectionTitleClass}>{t('messagehub.agentPanel.conversation')}</h3>
       <div>
-        <p className="break-words text-[15px] font-semibold leading-snug">{store.title(context, session)}</p>
+        <p className="break-words text-[15px] font-medium leading-snug">{store.title(context, session)}</p>
         {description ? <p className="mt-1 whitespace-pre-wrap break-words text-[13px] text-[color:var(--cp-muted)]">{description}</p> : null}
       </div>
       {conversation.status === 'loading' ? <p className="text-[13px] text-[color:var(--cp-muted)]" role="status">{t('messagehub.agentPanel.loading')}</p>

@@ -16,7 +16,7 @@
 .aiws-root button.aiws-link.aiws-perm-resource span { text-decoration: underline; }
 
 /* capability tags */
-.aiws-root .aiws-perm-tags { display: inline-flex; flex-wrap: wrap; gap: 3px; vertical-align: middle; }
+.aiws-root .aiws-perm-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; }
 .aiws-root .aiws-perm-tag { display: inline-flex; align-items: center; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--cp-border); white-space: nowrap; }
 .aiws-root .aiws-perm-tag.is-allow { border-color: color-mix(in srgb, var(--cp-accent) 45%, var(--cp-border)); color: var(--cp-accent); background: color-mix(in srgb, var(--cp-accent) 8%, transparent); }
 .aiws-root .aiws-perm-tag.is-deny { border-color: color-mix(in srgb, var(--cp-danger) 55%, var(--cp-border)); color: var(--cp-danger); background: color-mix(in srgb, var(--cp-danger) 8%, transparent); text-decoration: line-through; text-decoration-thickness: 1px; }
@@ -30,13 +30,13 @@
 .aiws-root .aiws-perm-seg { display: inline-flex; flex: none; border: 1px solid var(--cp-border); border-radius: 8px; overflow: hidden; }
 .aiws-root .aiws-perm-seg > button { border: none; border-radius: 0; border-inline-start: 1px solid var(--cp-border); padding: 2px 10px; min-height: 28px; }
 .aiws-root .aiws-perm-seg > button:first-child { border-inline-start: none; }
-.aiws-root .aiws-perm-seg > button.is-allow[aria-checked='true'] { background: var(--cp-accent); color: #fff; }
-.aiws-root .aiws-perm-seg > button.is-deny[aria-checked='true'] { background: var(--cp-danger); color: #fff; }
+.aiws-root .aiws-perm-seg > button.is-allow[aria-checked='true'] { background: var(--cp-accent); color: var(--aiws-on-accent); }
+.aiws-root .aiws-perm-seg > button.is-deny[aria-checked='true'] { background: var(--cp-danger); color: var(--aiws-on-accent); }
 .aiws-root .aiws-perm-seg > button.is-unset[aria-checked='true'] { background: var(--cp-surface-2); font-weight: 600; }
 
 /* forms and the path help */
 .aiws-root .aiws-perm-form { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.aiws-root .aiws-perm-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.aiws-root .aiws-perm-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .aiws-root .aiws-perm-field > span:first-child { font-weight: 600; }
 .aiws-root .aiws-perm-subject-picker { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .aiws-root .aiws-perm-subject-picker select, .aiws-root .aiws-perm-subject-picker input { min-height: 30px; }
@@ -98,7 +98,7 @@
 /* check permissions, my permissions */
 .aiws-root .aiws-perm-order { border-inline-start: 3px solid var(--cp-border); padding-inline-start: 8px; margin: 4px 0; }
 .aiws-root .aiws-perm-explain { display: flex; flex-direction: column; }
-.aiws-root .aiws-perm-explain-row { display: grid; grid-template-columns: minmax(80px, 140px) 64px minmax(0, 1fr); gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 50%, transparent); }
+.aiws-root .aiws-perm-explain-row { display: grid; grid-template-columns: minmax(80px, 140px) 64px minmax(0, 1fr); gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 50%, transparent); }
 .aiws-root .aiws-perm-judgment { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
 .aiws-root .aiws-perm-check-result { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--cp-border); border-radius: 8px; padding: 8px; }
 .aiws-root .aiws-perm-mine { display: flex; flex-direction: column; gap: 6px; }

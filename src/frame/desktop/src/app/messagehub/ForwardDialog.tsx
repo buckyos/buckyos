@@ -40,7 +40,7 @@ export function ForwardMessageForm({ context, message, confirmationFor, onDone, 
     <ul className="max-h-[320px] space-y-0.5 overflow-y-auto" data-testid="forward-targets">
       {targets.map(entity => <li key={entity.id}>
         <button type="button" disabled={pending !== null} onClick={() => void send(entity)} className="flex min-h-11 w-full items-center gap-3 rounded-lg px-2 text-left text-sm hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)] disabled:opacity-50">
-          <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={32} />
+          <HubAvatar type={entity.type} name={entity.name} did={entity.id} avatar={entity.avatar} size={32} />
           <span className="min-w-0 flex-1 truncate">{entity.name}</span>
           {pending === entity.id ? <span className="shrink-0 text-xs text-[color:var(--cp-muted)]">{t('messagehub.forward.sending')}</span> : null}
         </button>

@@ -1,7 +1,7 @@
 /* Wish lines and ghosts (许愿格交互升级 TODO §3.9): in the world layer under every Block frame (they start at z-index 1);
  * world units, so they scale with the camera. Lines take no pointer; ghosts are buttons (the selectors outweigh the app's
  * `.aiws-root button`). */
-.aiws-wishlinks { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; z-index: 0; pointer-events: none; --aiws-wishlink-input: #60a5fa; }
+.aiws-wishlinks { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; z-index: 0; pointer-events: none; --aiws-wishlink-input: var(--aiws-in); }
 .aiws-wishlinks-wish { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; }
 .aiws-wishlink { position: absolute; overflow: visible; pointer-events: none; }
 .aiws-wishlinks button.aiws-wishlink-ghost { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px; margin: 0;

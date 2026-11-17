@@ -51,7 +51,7 @@ export function MediaSettingsDialog({ canUseWindow, onClose }: { canUseWindow: b
             </Row>
           </div>
           <div className="flex justify-end border-t border-[color:var(--cp-border)] px-4 py-3">
-            <button type="button" onClick={onClose} data-autofocus className="rounded-full bg-[color:var(--cp-accent)] px-4 py-1.5 text-[12px] font-semibold text-white">
+            <button type="button" onClick={onClose} data-autofocus className="rounded-lg bg-[color:var(--cp-accent)] px-4 py-1.5 text-[13px] font-medium text-[color:var(--cp-surface-opaque)]">
               {t('common.close', 'Close')}
             </button>
           </div>

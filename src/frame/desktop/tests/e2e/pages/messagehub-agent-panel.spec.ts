@@ -267,7 +267,7 @@ test('a message being handled blocks sending; stopping it keeps the input, lists
   await page.setViewportSize({ width: 1280, height: 900 })
   await openHub(page, CODER, WORK)
   const send = page.getByRole('button', { name: 'Send', exact: true })
-  const input = page.getByPlaceholder('Message...')
+  const input = page.getByPlaceholder('Message', { exact: true })
   await input.fill('One more thing')
   await expect(send).toBeDisabled()
   await input.press('Enter')
@@ -337,7 +337,7 @@ test('a Turn that only waits for its work leaves the composer free', async ({ pa
   await openHub(page, CODER, 'session-coder-task')
   await expect(bubble(page, 'msg-ct-10').getByTestId('message-task')).toHaveAttribute('data-state', 'waitingChild')
   await expect(page.getByTestId('composer-blocked')).toHaveCount(0)
-  await page.getByPlaceholder('Message...').fill('Still here?')
+  await page.getByPlaceholder('Message', { exact: true }).fill('Still here?')
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
 })
 

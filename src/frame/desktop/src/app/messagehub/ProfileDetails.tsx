@@ -8,7 +8,7 @@ export function ProfileDetails({ params, onMessage, onClose }: { params: EntityI
   const { t } = useI18n()
   return <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="profile-details">
     <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1">
-      <h2 className="text-sm font-semibold">{t('network.entityInfo.title')}</h2>
+      <h2 className="text-sm font-medium">{t('network.entityInfo.title')}</h2>
       <button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button>
     </header>
     <div className="shell-scrollbar flex-1 overflow-y-auto p-4"><EntityInfo params={params} onMessage={onMessage} /></div>

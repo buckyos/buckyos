@@ -6,6 +6,7 @@
  * result into operations (buckyos-websdk aiws_schedule). */
 
 import { useMemo, useState } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { describeRRule, formatRRule, parseRRule, recurrencePresets, type RRule } from 'buckyos'
 import { aiwsText } from '../../../i18n'
 import { useAiwsText } from '../../../useAiwsText'
@@ -289,9 +290,9 @@ export function MiniMonth({ value, today, weekStart, onPick }: { value: string; 
   return (
     <div className="aiws-cal-mini" data-testid="aiws-cal-mini">
       <div className="aiws-cal-mini-head">
-        <button type="button" aria-label={t('aiworkspace.calendar.prev')} onClick={() => shift(-1)}>‹</button>
+        <button type="button" aria-label={t('aiworkspace.calendar.prev')} onClick={() => shift(-1)}><ChevronLeft size={16} aria-hidden="true" /></button>
         <span>{title}</span>
-        <button type="button" aria-label={t('aiworkspace.calendar.next')} onClick={() => shift(1)}>›</button>
+        <button type="button" aria-label={t('aiworkspace.calendar.next')} onClick={() => shift(1)}><ChevronRight size={16} aria-hidden="true" /></button>
       </div>
       <div className="aiws-cal-mini-grid">
         {Array.from({ length: 7 }, (_, i) => <span key={`h${i}`} className="aiws-cal-mini-wd">{t(WD_LABEL[(weekStart + i) % 7])}</span>)}

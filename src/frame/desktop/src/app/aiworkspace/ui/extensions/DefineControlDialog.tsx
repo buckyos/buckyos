@@ -5,7 +5,7 @@
  * the container, each Block copied into its slot with `tree.clone` (its own data with it), the originals deleted. */
 
 import { useMemo, useState } from 'react'
-import { LayoutPanelTop } from 'lucide-react'
+import { LayoutPanelTop, X } from 'lucide-react'
 import { DEFAULT_PADDING } from '@controls/composite'
 import { randomId } from '../../api/ids'
 import { describeError } from '../../api/session'
@@ -109,7 +109,7 @@ export function DefineControlDialog({ ids, laid, surfaceId, onDone, onClose }: {
   return (
     <Modal label={t('aiworkspace.ext.define.title')} testId="aiws-define-dialog" className="aiws-ext-dialog" onClose={onClose}>
       <div className="aiws-dialog-head"><LayoutPanelTop size={18} aria-hidden="true" /><b>{t('aiworkspace.ext.define.title')}</b><span className="aiws-grow" />
-        <button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+        <button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} onClick={onClose}><X size={16} aria-hidden="true" /></button></div>
       <div className="aiws-ext-form">
         <p className="aiws-muted">{t('aiworkspace.ext.define.explain', { count: blocks.length })}</p>
         <label className="aiws-field">{t('aiworkspace.ext.name')}<input value={name} data-testid="aiws-define-name" placeholder="task-board" onChange={(e) => setName(e.target.value.trim())} /></label>

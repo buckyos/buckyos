@@ -381,7 +381,7 @@ button.mh-sender-avatar:focus-visible {
   gap: 8px;
   padding: 8px 12px;
   border: 1px solid var(--cp-border);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--cp-message-canvas);
   color: var(--cp-text);
   text-align: left;

@@ -37,7 +37,7 @@ interface EntityDetailsProps {
 function DetailAvatar({ entity }: { entity: EntityDetail }) {
   return (
     <div className="mx-auto flex w-fit">
-      <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={80} systemNotify={entity.systemNotify} />
+      <HubAvatar type={entity.type} name={entity.name} did={entity.id} avatar={entity.avatar} size={80} systemNotify={entity.systemNotify} />
     </div>
   )
 }
@@ -100,7 +100,7 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup, onEntit
         style={{ borderBottom: '1px solid var(--cp-border)' }}
       >
         <h2
-          className="text-sm font-semibold"
+          className="text-sm font-medium"
           style={{ color: 'var(--cp-text)' }}
         >
           {t('messagehub.entityDetails')}
@@ -124,7 +124,7 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup, onEntit
         <div className={embedded ? 'hidden' : 'text-center mb-4'}>
           <DetailAvatar entity={entity} />
           <h3
-            className="text-lg font-bold mt-3"
+            className="mt-3 text-lg font-medium"
             style={{ color: 'var(--cp-text)' }}
           >
             {entity.name}

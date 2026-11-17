@@ -14,7 +14,7 @@
 .aiws-surface-list .aiws-surface-items.aiws-sp-list { display: block; position: relative; max-height: min(56vh, 460px); overflow: auto; overscroll-behavior: contain; }
 .aiws-sp-rows { position: relative; width: 100%; }
 .aiws-sp-rows > * { position: absolute; left: 0; right: 0; box-sizing: border-box; }
-.aiws-sp-heading { display: flex; align-items: flex-end; padding: 0 6px 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+.aiws-sp-heading { display: flex; align-items: flex-end; padding: 0 8px 4px; font-size: 12px; font-weight: 500; color: var(--cp-muted); }
 .aiws-sp-empty { display: flex; align-items: center; padding: 0 8px; }
 .aiws-surface-item.aiws-sp-row { display: flex; align-items: center; gap: 0; padding-right: 2px; }
 .aiws-sp-indent { flex: none; }

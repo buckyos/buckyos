@@ -108,10 +108,10 @@ export function NewChatForm({ context, onEnter, onCancel }: { context: MessageHu
           data-listed={row.target.listed}
         >
           {'entity' in row
-            ? <HubAvatar type={row.entity.type} name={row.entity.name} avatar={row.entity.avatar} size={40} isOnline={row.entity.isOnline} systemNotify={row.entity.systemNotify} />
+            ? <HubAvatar type={row.entity.type} name={row.entity.name} did={row.entity.id} avatar={row.entity.avatar} size={40} isOnline={row.entity.isOnline} systemNotify={row.entity.systemNotify} />
             : <PersonAvatar person={row.candidate} size={40} />}
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[15px] font-semibold text-[color:var(--cp-text)]">{row.target.name}</span>
+            <span className="block truncate text-[15px] font-medium text-[color:var(--cp-text)]">{row.target.name}</span>
             <span className="block truncate text-xs text-[color:var(--cp-muted)]" title={row.target.id}>
               {'entity' in row
                 ? [row.entity.systemNotify ? '' : typeLabel(row.entity.type), row.entity.statusText, row.entity.id.startsWith('did:') ? shortDid(row.entity.id) : ''].filter(Boolean).join(' · ')

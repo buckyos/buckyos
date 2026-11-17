@@ -25,6 +25,7 @@ import { knownAttachmentKind } from '../media/objectCache'
 import { outgoingUpload } from '../model/outgoing'
 import type { OutgoingUpload } from '../model/outgoing'
 import { formatAttachmentSize } from '../input/attachmentDraft'
+import { senderInk } from '../../../presentation/senderTone'
 import { attachmentKindOf, attachmentMediaType, attachmentOfRef, isHttpUri, objectContextOf, type AttachmentKind, type MessageAttachment } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
 import { bodyTextClass, bubbleStyle, bubbleWidthClass, framelessStyle, rowClass, type MessageRenderContext } from './bubble'
@@ -50,6 +51,11 @@ interface RecordContext {
 function getRecordContext(message: MessageObject): RecordContext | undefined {
   const value = message.ui_record
   return value && typeof value === 'object' ? value as RecordContext : undefined
+}
+
+/** A sender's name over their first bubble in a group, in the colour their picture has. */
+function SenderName({ did, name }: { did: string; name: string }) {
+  return <p className="mb-1 text-[13px] font-medium" style={{ color: senderInk(did) }}>{name}</p>
 }
 
 /**
@@ -101,21 +107,7 @@ export const ConversationListRow = memo(function ConversationListRow({
   continued?: boolean
   peerMarkdown?: boolean
 }) {
-  if (item.kind === 'timestamp') {
-    return (
-      <div className="flex justify-center py-3">
-        <span
-          className="px-3 py-1 rounded-full text-xs font-medium"
-          style={{
-            background: 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-            color: 'var(--cp-muted)',
-          }}
-        >
-          {formatDateSeparator(item.date)}
-        </span>
-      </div>
-    )
-  }
+  if (item.kind === 'timestamp') return <DateSeparator date={item.date} />
 
   if (item.kind === 'status') {
     return (
@@ -193,14 +185,7 @@ function TextMessage({ message, context }: { message: MessageObject; context: Me
         data-message-id={messageObjId(message)}
         {...actions}
       >
-        {!isSelf && isGroup && !continued ? (
-          <p
-            className="text-[13px] font-semibold mb-1"
-            style={{ color: 'var(--cp-accent)' }}
-          >
-            {senderName}
-          </p>
-        ) : null}
+        {!isSelf && isGroup && !continued ? <SenderName did={message.from} name={senderName} /> : null}
         <ReplyQuote message={message} />
         {asMarkdown ? (
           <div className={bodyTextClass}><MessageMarkdown text={displayedContent(message)} /></div>
@@ -632,7 +617,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const reportKind = useCallback((index: number, kind: AttachmentKind) => setResolved(previous => previous[index] === kind ? previous : { ...previous, [index]: kind }), [])
   // Pictures and videos stand on the canvas: a coloured bubble around them only frames them.
   const frameless = refs.length > 0 && refs.every((ref, index) => isMediaKind(resolved[index] ?? expectedKind(ref, `${messageId}#${index}`, objectContext)))
-  const sender = !isSelf && context.isGroup && !context.continued ? <p className="text-[13px] font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null
+  const sender = !isSelf && context.isGroup && !context.continued ? <SenderName did={message.from} name={senderName} /> : null
   const items = refs.map((ref, index) => <MessageRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} id={`${messageId}#${index}`} objectContext={objectContext} isSelf={isSelf && !frameless} index={index} onKind={reportKind} />)
   const upload = outgoingUpload(message)
   const progress = upload ? <UploadProgress upload={upload} alignEnd={isSelf} /> : null
@@ -776,24 +761,31 @@ function formatMessageTime(ts: number): string {
   })
 }
 
-function formatDateSeparator(date: Date): string {
+/**
+ * A break in the timeline: a new day, or a pause of half an hour or more on the same day.
+ * It carries the time too, so two breaks on one day do not both read "Today".
+ */
+function DateSeparator({ date }: { date: Date }) {
+  const { t } = useI18n()
   const today = new Date()
   const yesterday = new Date()
   yesterday.setDate(yesterday.getDate() - 1)
-
-  if (date.toDateString() === today.toDateString()) {
-    return 'Today'
-  }
-
-  if (date.toDateString() === yesterday.toDateString()) {
-    return 'Yesterday'
-  }
-
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined,
-  })
+  const day = date.toDateString() === today.toDateString()
+    ? t('messagehub.date.today', 'Today')
+    : date.toDateString() === yesterday.toDateString()
+      ? t('messagehub.date.yesterday', 'Yesterday')
+      : date.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined,
+      })
+  return (
+    <div className="flex justify-center py-4">
+      <span className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>
+        {day} {formatMessageTime(date.getTime())}
+      </span>
+    </div>
+  )
 }
 
 const knownActions = new Set([
