@@ -382,7 +382,10 @@ export function MusicPlayerWidget({ item, onUpdateConfig }: DesktopWidgetProps) 
           {playButton}
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium" data-testid="music-title">{title}</p>
-            <p className="truncate text-[11px] text-[color:var(--cp-muted)]" data-testid="music-folder">{album} · {count}</p>
+            <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-[color:var(--cp-muted)]">
+              {playing ? <PlayingBars /> : null}
+              <span className="truncate" data-testid="music-folder">{album} · {count}</span>
+            </p>
           </div>
           {nextButton}
         </div>
@@ -395,13 +398,24 @@ export function MusicPlayerWidget({ item, onUpdateConfig }: DesktopWidgetProps) 
     content = (
       <>
         <header className="-mr-1.5 -mt-1 flex shrink-0 items-center gap-1.5 text-[11px] text-[color:var(--cp-muted)]">
-          <Music className="size-3.5 shrink-0" />
+          {playing ? <PlayingBars /> : <Music className="size-3.5 shrink-0" />}
           <span className="min-w-0 truncate" data-testid="music-folder">{album}</span>
           <span aria-hidden="true">·</span>
           <span className="shrink-0 tabular-nums" data-testid="music-count">{count}</span>
           <IconButton
             size="small"
             className="!ml-auto"
+            aria-label={t('music.shuffle', 'Shuffle')}
+            aria-pressed={order === 'shuffle'}
+            title={order === 'shuffle' ? t('music.shuffleOn', 'Shuffle: on') : t('music.shuffleOff', 'Shuffle: off, playing in order')}
+            onClick={toggleOrder}
+            data-testid="music-shuffle"
+            sx={{ color: order === 'shuffle' ? 'var(--cp-accent)' : 'var(--cp-muted)' }}
+          >
+            <Shuffle className="size-3.5" />
+          </IconButton>
+          <IconButton
+            size="small"
             aria-label={t('music.chooseFolder', 'Choose a music folder')}
             title={t('music.chooseFolder', 'Choose a music folder')}
             onClick={() => void chooseFolder()}
@@ -410,7 +424,7 @@ export function MusicPlayerWidget({ item, onUpdateConfig }: DesktopWidgetProps) 
             <FolderOpen className="size-3.5" />
           </IconButton>
         </header>
-        <p className="mt-1 line-clamp-2 min-h-0 break-words text-sm font-medium leading-5" data-testid="music-title" title={title}>
+        <p className="mt-1 truncate text-sm font-medium leading-5" data-testid="music-title" title={title}>
           {title}
         </p>
         <div className="mt-auto">
@@ -435,18 +449,7 @@ export function MusicPlayerWidget({ item, onUpdateConfig }: DesktopWidgetProps) 
             <span>{formatTime(shown)}</span>
             <span>{formatTime(duration)}</span>
           </div>
-          <div className="mx-auto mt-1 flex w-full max-w-[200px] items-center justify-between">
-            <IconButton
-              size="small"
-              aria-label={t('music.shuffle', 'Shuffle')}
-              aria-pressed={order === 'shuffle'}
-              title={order === 'shuffle' ? t('music.shuffleOn', 'Shuffle: on') : t('music.shuffleOff', 'Shuffle: off, playing in order')}
-              onClick={toggleOrder}
-              data-testid="music-shuffle"
-              sx={{ color: order === 'shuffle' ? 'var(--cp-accent)' : 'var(--cp-muted)' }}
-            >
-              <Shuffle className="size-4" />
-            </IconButton>
+          <div className="mt-1 flex items-center justify-center gap-5">
             <IconButton size="small" aria-label={t('music.previous', 'Previous')} onClick={previous} data-testid="music-previous">
               <SkipBack className="size-4" />
             </IconButton>
@@ -464,6 +467,17 @@ export function MusicPlayerWidget({ item, onUpdateConfig }: DesktopWidgetProps) 
       {audio}
       {content}
     </Shell>
+  )
+}
+
+/** Three bars that rise and fall while a track plays. */
+function PlayingBars() {
+  return (
+    <span aria-hidden="true" data-testid="music-bars" className="cp-music-bars shrink-0 text-[color:var(--cp-accent)]">
+      <i />
+      <i />
+      <i />
+    </span>
   )
 }
 

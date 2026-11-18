@@ -761,6 +761,43 @@ main[data-wallpaper='image'] .swiper-pagination-bullet-active {
   }
 }
 
+/* Music player widget: three bars that rise and fall while a track plays. */
+.cp-music-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 13px;
+  height: 12px;
+}
+
+.cp-music-bars > i {
+  flex: 1;
+  height: 100%;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: bottom;
+  animation: cp-music-bar 0.9s ease-in-out infinite alternate;
+}
+
+.cp-music-bars > i:nth-child(2) {
+  animation-duration: 0.7s;
+  animation-delay: -0.35s;
+}
+
+.cp-music-bars > i:nth-child(3) {
+  animation-duration: 1.1s;
+  animation-delay: -0.6s;
+}
+
+@keyframes cp-music-bar {
+  from {
+    transform: scaleY(0.3);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
 /* Desktop taskbar cards and panels opening out of the taskbar. */
 @keyframes cp-taskbar-pop {
   from {
