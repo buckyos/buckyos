@@ -300,3 +300,52 @@ test('a fresh desktop with limited height keeps the default card on a later page
   await expect.poll(async () => Math.abs((await card.boundingBox())!.x - left)).toBeLessThan(2)
   await expect(page.getByTestId('system-info-copy')).toBeInViewport()
 })
+
+test('moving the default card to the previous page uses the free space there', async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 553 })
+  await page.goto('/?scenario=normal')
+  const card = page.getByTestId('system-info-widget')
+  await expect(card).toContainText('0.7.0')
+  const cardPage = () => card.evaluate((el) => [...document.querySelectorAll('.swiper-slide')].indexOf(el.closest('.swiper-slide')!))
+  await expect.poll(cardPage).toBeGreaterThan(0)
+  const from = await cardPage()
+  await page.locator('.swiper-pagination-bullet').nth(from).click()
+  await card.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Move to previous page' }).click()
+  await expect.poll(cardPage).toBe(from - 1)
+  await page.reload()
+  await expect(card).toContainText('0.7.0')
+  await expect.poll(cardPage).toBe(from - 1)
+})
+
+test('restoring the card while its removal is still saving keeps one saved card', async ({ page }) => {
+  await page.route(/\/src\/api\/desktop_state\.ts$/, (route) => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export * from '/src/api/desktop_state.ts?system-info-original';
+      import { writeDesktopState as original } from '/src/api/desktop_state.ts?system-info-original';
+      export async function writeDesktopState(key, value, jsonPath) {
+        if (key === 'system-info-widget' && window.holdSystemInfoState) await window.holdSystemInfoState;
+        return original(key, value, jsonPath);
+      }`,
+  }))
+  await page.goto('/?scenario=normal')
+  await expect(page.getByTestId('system-info-fields')).toContainText('0.7.0')
+  await page.evaluate(() => {
+    const w = window as unknown as { holdSystemInfoState: Promise<void>; releaseSystemInfoState: () => void }
+    w.holdSystemInfoState = new Promise((resolve) => { w.releaseSystemInfoState = resolve })
+  })
+  await page.getByTestId('system-info-widget').click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Remove from desktop' }).click()
+  await expect(page.getByTestId('system-info-widget')).toHaveCount(0)
+  await page.getByTestId('desktop-app-settings').click()
+  await page.getByTestId('window-settings').getByRole('button', { name: 'Appearance', exact: true }).click()
+  await page.getByTestId('settings-add-system-info').click()
+  await page.evaluate(() => (window as unknown as { releaseSystemInfoState: () => void }).releaseSystemInfoState())
+  const saved = () => page.evaluate((key) => Object.values(JSON.parse(localStorage.getItem(key)!).entries as Record<string, { text?: string }>)
+    .filter((entry) => entry.text && JSON.parse(entry.text).widget === 'system-info').length, MOCK_DESKTOP_FOLDER_KEY)
+  await expect.poll(saved).toBe(1)
+  await expect(page.getByTestId('system-info-widget')).toHaveCount(1)
+  await expect(page.getByTestId('settings-add-system-info')).toBeDisabled()
+  await page.reload()
+  await expect(page.getByTestId('system-info-widget')).toHaveCount(1)
+})

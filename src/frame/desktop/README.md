@@ -40,15 +40,15 @@ git diff -- public/open-source/
 
 拖动标题可调整位置，右键菜单可移除。主动移除后刷新或换设备不会重新添加；可在 **Settings → Appearance → Desktop → Add system info to desktop**（中文：添加系统信息到桌面）恢复显示，“恢复默认”也会恢复卡片。
 
-电脑端首次添加时，系统信息接在左侧已有小组件下方；默认排列为时钟 → Getting started → 系统信息，保留原便笺的内容、尺寸和位置。若下方空间已被占用或屏幕高度不足，则在后续页面的左侧空位放置；已有卡片继续使用保存的位置。手机端沿用原有网格分页。
+电脑端首次添加时，系统信息接在左侧已有小组件下方；默认排列为时钟 → Getting started → 系统信息，保留原便笺的内容、尺寸和位置。若下方空间已被占用或屏幕高度不足，则在后续页面的左侧空位放置；已有卡片继续使用保存的位置。靠左规则只用于首次自动放置：用右键菜单移到上一页 / 下一页时，与其它项目一样使用目标页的任意空位。手机端沿用原有网格分页。
 
 卡片显示系统版本、构建号、当前登录用户 ID、账号类型、Zone 名称和域名；详情包含 Zone DID、发布渠道和平台。身份来自当前 SDK 登录会话，版本来自 `system.buckyos_info.get`，Zone 来自 `zone.presentation.get`，不把 Zone 所有者当作当前用户，也不使用前端编译版本冒充运行系统版本。每分钟、页面重新可见及身份资料变更时刷新，也可手动刷新。读取失败的部分显示暂不可用，复制结果中对应部分为 `null`；复制只包含选定的诊断字段和采集时间，不包含会话令牌。
 
-添加操作通过现有 Desktop 文件接口保存 `{ "widget": "system-info" }` 描述文件到当前用户的 `/home/<user_id>/Desktop/`，位置沿用本设备的桌面布局保存机制。描述文件不保存用户或 Zone 身份。实现入口为 [SystemInfoWidget.tsx](src/desktop/widgets/SystemInfoWidget.tsx)。这是 Desktop 内置小组件，需要更新 Desktop Web 产物，不是独立 App 安装包。
+添加操作通过现有 Desktop 文件接口保存 `{ "widget": "system-info" }` 描述文件到当前用户的 `/home/<user_id>/Desktop/`，位置沿用本设备的桌面布局保存机制。描述文件不保存用户或 Zone 身份。Desktop 文件夹的写入（添加、移除、便笺保存等）按发起顺序逐个执行，所以移除尚在保存时点“添加系统信息到桌面”，会等删除完成后再创建；任一写入失败时，等全部写入结束后再重新读取文件夹。实现入口为 [SystemInfoWidget.tsx](src/desktop/widgets/SystemInfoWidget.tsx)。这是 Desktop 内置小组件，需要更新 Desktop Web 产物，不是独立 App 安装包。
 
 自动初始化通过现有 Desktop 状态接口在 `users/<user_id>/desktop/default/system-info-widget` 保存 `{ "initialized": true }`。确认描述文件存在后才写入该标记；读取或创建失败时保留已有桌面，下次加载重试。自动补齐使用固定文件名 `System Info.widget`（同名其它文件存在则编号），以避免不同语言的浏览器同时升级产生不同文件名；卡片标题仍按界面语言显示。移除卡片前也确认初始化标记已保存，防止之后再次补齐。该标记跟随账号，不以浏览器本地缓存作为依据。
 
-浏览器回归用例位于 [system-info-widget.spec.ts](tests/e2e/pages/system-info-widget.spec.ts)，覆盖添加、重载、移除、同名文件、写入失败、多用户、部分服务失败、复制字段、中英文及窄屏/深色布局。它使用 Mock 数据；真实 Zone 试用时仍需核对管理员和普通用户的读取权限、版本与 Settings → General 一致、刷新后描述文件保留及另一台 Zone 显示自身信息。
+浏览器回归用例位于 [system-info-widget.spec.ts](tests/e2e/pages/system-info-widget.spec.ts)，覆盖添加、重载、移除、移除尚在保存时恢复、跨页移动、同名文件、写入失败、多用户、部分服务失败、复制字段、中英文及窄屏/深色布局。它使用 Mock 数据；真实 Zone 试用时仍需核对管理员和普通用户的读取权限、版本与 Settings → General 一致、刷新后描述文件保留及另一台 Zone 显示自身信息。
 
 ## E2E 入口
 

@@ -349,6 +349,10 @@ export class DesktopUIStore {
   private lastDesktopFolderRefresh = 0
   /** Folder writes in flight: a listing taken meanwhile could miss them, so refreshes wait. */
   private desktopFolderWrites = 0
+  /** The last queued folder write; writes run one at a time, in the order they were made. */
+  private desktopFolderWriteQueue: Promise<void> = Promise.resolve()
+  /** A queued write failed: the folder is read again once every queued write has ended. */
+  private desktopFolderWriteFailed = false
   private static readonly DESKTOP_FOLDER_REFRESH_INTERVAL = 4000
 
   /**
@@ -846,20 +850,31 @@ export class DesktopUIStore {
     return this.snapshot.status === 'success' && this.snapshot.scenario === 'normal' && this.desktopFolderAvailable
   }
 
-  /** Runs a folder write; a failure is shown and the folder read again, so the desktop matches it. */
+  /**
+   * Runs a folder write after the ones already queued, so a write never races an earlier one on the same
+   * file (adding a card back while its removal is still saving). A failure is shown, and once no write is
+   * left the folder is read again, so the desktop matches it.
+   */
   private async writeFolder(write: () => Promise<void>): Promise<void> {
     this.desktopFolderWrites += 1
-    let failed = false
+    const run = this.desktopFolderWriteQueue.then(async () => {
+      try {
+        await write()
+      } catch (error) {
+        this.desktopFolderWriteFailed = true
+        console.warn('desktop: Desktop folder write failed', error)
+        this.update({ runtime: { snackbar: translateNow('desktop.folder.saveFailed', 'The Desktop folder could not be changed.') } })
+      }
+    })
+    this.desktopFolderWriteQueue = run
     try {
-      await write()
-    } catch (error) {
-      failed = true
-      console.warn('desktop: Desktop folder write failed', error)
-      this.update({ runtime: { snackbar: translateNow('desktop.folder.saveFailed', 'The Desktop folder could not be changed.') } })
+      await run
     } finally {
       this.desktopFolderWrites -= 1
     }
-    if (failed) await this.refreshDesktopFolder({ force: true })
+    if (this.desktopFolderWrites > 0 || !this.desktopFolderWriteFailed) return
+    this.desktopFolderWriteFailed = false
+    await this.refreshDesktopFolder({ force: true })
   }
 
   /** Whether a shortcut on the desktop opens this app. */

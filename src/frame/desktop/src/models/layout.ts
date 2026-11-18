@@ -525,7 +525,16 @@ export function resolveLayout(
     const preferredPage = item.preferredPage ?? 0
     let placed = false
 
-    if (layout.formFactor === 'desktop' && item.type === 'widget' && item.widgetType === 'system-info' && item.h <= rows && item.w <= cols) {
+    // The system info card's first automatic placement goes to the left column, below the widgets there.
+    // An item moved to a page by hand (`manual`) takes any free room on that page, like every other item.
+    if (
+      layout.formFactor === 'desktop' &&
+      item.type === 'widget' &&
+      item.widgetType === 'system-info' &&
+      (item.placementType ?? 'auto') === 'auto' &&
+      item.h <= rows &&
+      item.w <= cols
+    ) {
       for (let pi = preferredPage; pi <= resolvedPages.length; pi++) {
         const page = resolvedPages[pi] ?? { id: `${layout.formFactor}-page-${pi + 1}`, items: [] }
         const bottom = Math.max(0, ...page.items.filter((other) => other.type === 'widget' && other.x === 0 && other.y !== undefined).map((other) => other.y! + other.h))
