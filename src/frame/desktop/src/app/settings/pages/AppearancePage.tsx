@@ -1,4 +1,4 @@
-import { FormControlLabel, Switch, Slider, TextField } from '@mui/material'
+import { Button, FormControlLabel, Switch, Slider, TextField } from '@mui/material'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import { useSettingsSnapshot, useSettingsStore } from '../hooks/use-settings-store'
@@ -8,6 +8,7 @@ import { localeLabels } from '../../../mock/data'
 import type { AppContentLoaderProps } from '../../types'
 import type { GridDensity } from '../../../models/layout'
 import type { SupportedLocale, SystemPreferencesInput, ThemeMode } from '../../../models/ui'
+import { useDesktopUIStore, useDesktopUISnapshot } from '../../../models/DesktopUIDataModel'
 
 const iconSizeOptions: { value: GridDensity; label: string }[] = [
   { value: 'small', label: 'Small' },
@@ -73,6 +74,9 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
   const { t } = useI18n()
   const { desktopIconSize, messagePreview } = useSettingsSnapshot()
   const store = useSettingsStore()
+  const desktop = useDesktopUIStore()
+  const { layoutState } = useDesktopUISnapshot()
+  const hasSystemInfo = layoutState?.pages.some((page) => page.items.some((item) => item.type === 'widget' && item.widgetType === 'system-info'))
   const save = (patch: Partial<SystemPreferencesInput>) => appProps.onSaveSettings({ ...currentPreferences(appProps), ...patch })
 
   return (
@@ -113,6 +117,20 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
       <WallpaperSection pageCount={appProps.layoutState.pages.length} />
 
       <Section title={t('settings.appearance.desktop', 'Desktop')}>
+        <div className="mb-4 space-y-2">
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={!desktop.canEditDesktop() || hasSystemInfo}
+            onClick={() => void desktop.addSystemInfoToDesktop()}
+            data-testid="settings-add-system-info"
+          >
+            {hasSystemInfo ? t('systemInfo.added', 'System info is on your desktop') : t('systemInfo.add', 'Add system info to desktop')}
+          </Button>
+          <p className="text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+            {t('systemInfo.addHint', 'Shows the system version, signed-in account and Zone. Drag to move; use its context menu to remove.')}
+          </p>
+        </div>
         <TextField
           select
           size="small"
