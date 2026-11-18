@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-16.1",
+  "revision": "2026-11-18.1",
   "checked_at": "2026-11-16",
   "providers": [
     {
@@ -1749,7 +1749,10 @@
               "low",
               "medium",
               "high"
-            ]
+            ],
+            "thinking_level_values_by_model": {
+              "gemini-4-hydrogen": ["low", "medium", "high", "xhigh"]
+            }
           },
           "stream_protocol": "gemini_interactions",
           "success_fixture": {
