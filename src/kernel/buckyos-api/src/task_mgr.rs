@@ -98,6 +98,8 @@ CREATE INDEX IF NOT EXISTS idx_task_phase_updated ON task(phase, updated_at, tas
 CREATE INDEX IF NOT EXISTS idx_task_creator_created ON task(creator_user_id, creator_app_id, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_schema_created ON task(schema_id, schema_version, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_runner_phase ON task(runner_target_id, runner_instance_id, phase);
+CREATE INDEX IF NOT EXISTS idx_task_schema_order ON task(schema_id, created_at, task_id);
+CREATE INDEX IF NOT EXISTS idx_task_runner_app_created ON task(runner_app_id, created_at, task_id);
 
 CREATE TABLE IF NOT EXISTS task_assignee (
     task_id            TEXT NOT NULL REFERENCES task(task_id),
@@ -234,6 +236,8 @@ CREATE INDEX IF NOT EXISTS idx_task_phase_updated ON task(phase, updated_at, tas
 CREATE INDEX IF NOT EXISTS idx_task_creator_created ON task(creator_user_id, creator_app_id, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_schema_created ON task(schema_id, schema_version, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_runner_phase ON task(runner_target_id, runner_instance_id, phase);
+CREATE INDEX IF NOT EXISTS idx_task_schema_order ON task(schema_id, created_at, task_id);
+CREATE INDEX IF NOT EXISTS idx_task_runner_app_created ON task(runner_app_id, created_at, task_id);
 
 CREATE TABLE IF NOT EXISTS task_assignee (
     task_id            TEXT NOT NULL REFERENCES task(task_id),

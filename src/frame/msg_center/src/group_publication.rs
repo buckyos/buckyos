@@ -19,7 +19,7 @@ impl MessageCenter {
         &self,
         client: &SystemConfigClient,
     ) -> Result<()> {
-        let _guard = self.groups.sync_lock.lock().await;
+        let _guard = self.groups.publication_lock.lock().await;
         for row in sqlx::query("SELECT group_did,generation,document_status,document_json FROM group_doc_publications WHERE published_generation<generation ORDER BY group_did LIMIT 100").fetch_all(self.msg_box_db.pool()).await.map_err(db_error)? {
             let did: String = row.try_get("group_did").map_err(db_error)?;
             let generation: i64 = row.try_get("generation").map_err(db_error)?;

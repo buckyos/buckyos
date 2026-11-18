@@ -578,6 +578,7 @@ impl MessageCenter {
             }
             return Ok(saved.result.clone());
         }
+        let previous_seq = tx.state.group_seq;
         let shown = crate::buckets::display_files(&tx.state).ok();
         let result = self
             .mutate_group(&mut tx, &actor, method, &p, attestation)
@@ -596,7 +597,11 @@ impl MessageCenter {
         if display_changed {
             self.bind_display_files(&group, &display).await?;
         }
+        let changed = tx.state.group_seq != previous_seq;
         tx.commit().await?;
+        if changed {
+            self.schedule_group_push(&group, previous_seq);
+        }
         if display_changed {
             self.unbind_display_files(&group, &display).await;
         }
@@ -624,6 +629,7 @@ impl MessageCenter {
             return Ok(());
         }
         let mut tx = self.groups.begin(group).await?;
+        let previous_seq = tx.state.group_seq;
         let members: Vec<_> = tx
             .state
             .members
@@ -648,7 +654,9 @@ impl MessageCenter {
             )
             .await?;
         }
-        tx.commit().await
+        tx.commit().await?;
+        self.schedule_group_push(group, previous_seq);
+        Ok(())
     }
 
     /// External platform users (`did:msgtunnel:*`) cannot act for themselves;
@@ -937,6 +945,7 @@ impl MessageCenter {
             buckyos_api::group_changed_event_id(&did),
             json!({"group_did":did}),
         );
+        self.schedule_group_push(&did, 0);
         self.register_local_recipients([did]);
         Ok(result)
     }
@@ -1111,7 +1120,15 @@ impl MessageCenter {
         tx.state.messages.insert(id.to_string(), meta.clone());
         let mut audience = tx.state.audience(s);
         audience.extend(additional);
-        tx.state.changes.push(Change {group_seq,kind:change_kind.into(),session_id:msg.to_session.clone(),subject,data:json!({"message":{"seq":session_seq,"obj_id":id,"redacted":false,"accepted_at_ms":accepted_at_ms},"change":data,"action":msg.content.content}),audience});
+        let action = (change_kind != "message").then_some(&msg.content.content);
+        tx.state.changes.push(Change {
+            group_seq,
+            kind: change_kind.into(),
+            session_id: msg.to_session.clone(),
+            subject,
+            data: json!({"message":{"seq":session_seq,"obj_id":id,"redacted":false,"accepted_at_ms":accepted_at_ms},"change":data,"action":action}),
+            audience,
+        });
         let group = tx.state.group_did.clone();
         let mut record = Self::build_mailbox_record(
             group.clone(),
@@ -2030,7 +2047,7 @@ impl MessageCenter {
                     tx.state.tombstone_readers.extend(readers);
                     tx.state
                         .changes
-                        .retain(|c| c.data["action"] == "entity.group_deleted");
+                        .retain(|c| c.action() == Some("entity.group_deleted"));
                     tx.state.members.clear();
                     tx.state.participants.clear();
                     tx.state.pending_owner_transfer = None;
@@ -3126,11 +3143,14 @@ impl MessageCenter {
         limit: usize,
     ) -> Result<Value> {
         let g = self.groups.load(group).await?.ok_or_else(missing)?;
-        g.check_client(a)?;
+        // Deleted groups retain only the audience-scoped tombstone.
+        if g.lifecycle != "deleted" {
+            g.check_client(a)?;
+        }
         let known = g.changes.iter().any(|c| {
-            c.data["action"] == "entity.group_deleted" && c.audience.contains(&a.did.to_string())
+            c.action() == Some("entity.group_deleted") && c.audience.contains(&a.did.to_string())
         }) || g.changes.iter().any(|c| {
-            c.data["action"] == "session.deleted" && c.audience.contains(&a.did.to_string())
+            c.action() == Some("session.deleted") && c.audience.contains(&a.did.to_string())
         }) || g.members.contains_key(&a.did.to_string())
             || g.tombstone_readers.contains(&a.did.to_string())
             || g.participants
@@ -3146,6 +3166,31 @@ impl MessageCenter {
         };
         let limited = cursor.is_none();
         let after = cursor.unwrap_or(0);
+        let (items, position) = self.visible_group_changes(&g, a, after, limit, false).await?;
+        let token = self
+            .groups
+            .save_cursor(group, &a.did, position, Self::now_ms())
+            .await?;
+        let member = g.members.get(&a.did.to_string());
+        if a.remote {
+            if let Some(member) = member.filter(|m| m.state == MemberStatus::Active) {
+                self.groups.push.observe_pull(group, &a.did, member.epoch, position, &token);
+            }
+        }
+        let member = member.map(|m| json!({"state":m.state,"epoch":m.epoch}));
+        Ok(json!({"items":items,"next_token":token,"limited":limited,"member":member}))
+    }
+
+    /// Resolve exactly the same reader-visible stream for HTTP pages and inline push.
+    pub(crate) async fn visible_group_changes(
+        &self,
+        g: &GroupState,
+        a: &GroupActor,
+        after: u64,
+        limit: usize,
+        require_hook_decision: bool,
+    ) -> Result<(Vec<Value>, u64)> {
+        let group = &g.group_did;
         let mut hooks = BTreeMap::<String, bool>::new();
         let mut items = vec![];
         let mut position = after;
@@ -3157,12 +3202,9 @@ impl MessageCenter {
             let hook = if readable {
                 let key = session.unwrap_or("").to_owned();
                 if !hooks.contains_key(&key) {
-                    hooks.insert(
-                        key.clone(),
-                        self.run_group_hooks(&g, a, session, "read", true, None)
-                            .await
-                            .unwrap_or(false),
-                    );
+                    let decision = self.run_group_hooks(g, a, session, "read", true, None).await;
+                    let allowed = if require_hook_decision { decision? } else { decision.unwrap_or(false) };
+                    hooks.insert(key.clone(), allowed);
                 }
                 hooks[&key]
             } else {
@@ -3179,28 +3221,24 @@ impl MessageCenter {
                 && (g.capability(&a.did, "group.read_all")
                     || meta.is_some_and(|m| g.visible_at(&a.did, m)));
             if visible {
-                items.push(json!({"kind":c.kind,"session":session_key(group,session)?,"session_id":session,"message":{"seq":c.data["message"]["seq"],"obj_id":c.data["message"]["obj_id"],"redacted":meta.is_some_and(|m|m.redacted),"accepted_at_ms":meta.map(|m|m.accepted_at_ms)},"change":c.data["change"],"action":c.data["action"],"subject_did":c.subject}));
+                items.push(json!({"kind":c.kind,"session":session_key(group,session)?,"session_id":session,"message":{"seq":c.data["message"]["seq"],"obj_id":c.data["message"]["obj_id"],"redacted":meta.is_some_and(|m|m.redacted),"accepted_at_ms":meta.map(|m|m.accepted_at_ms)},"change":c.data["change"],"action":c.action(),"subject_did":c.subject}));
             } else if own
-                || (c.data["action"] == "entity.group_deleted"
+                || (c.action() == Some("entity.group_deleted")
                     && (c.audience.contains(&a.did.to_string())
                         || g.tombstone_readers.contains(&a.did.to_string())))
                 || (c.kind == "session"
                     && c.audience.contains(&a.did.to_string())
-                    && c.data["action"] == "session.deleted")
+                    && c.action() == Some("session.deleted"))
             {
-                items.push(json!({"kind":if session.is_some(){"session"}else{"member"},"session":session_key(group,session)?,"session_id":session,"change":c.data["change"],"action":c.data["action"],"subject_did":c.subject}));
+                items.push(json!({"kind":if session.is_some(){"session"}else{"member"},"session":session_key(group,session)?,"session_id":session,"change":c.data["change"],"action":c.action(),"subject_did":c.subject}));
             }
             if items.len() >= limit.clamp(1, 4096) {
                 break;
             }
         }
-        let token = self
-            .groups
-            .save_cursor(group, &a.did, position, Self::now_ms())
-            .await?;
-        let member = g.members.get(&a.did.to_string()).map(|member| json!({"state":member.state,"epoch":member.epoch}));
-        Ok(json!({"items":items,"next_token":token,"limited":limited,"member":member}))
+        Ok((items, position))
     }
+
     async fn audit_group_read(
         &self,
         g: &GroupState,
@@ -3316,6 +3354,7 @@ impl MessageCenter {
             }
             return Ok(saved);
         }
+        let previous_seq = tx.state.group_seq;
         let result = self
             .accept_group_message_tx(&mut tx, a, &msg, jwt.as_deref())
             .await;
@@ -3355,6 +3394,7 @@ impl MessageCenter {
             self.fetch_accepted_attachments(&id, &msg);
         }
         if let Some(group) = &result.delivered_group {
+            self.schedule_group_push(group, previous_seq);
             Self::publish_event(
                 buckyos_api::group_changed_event_id(&group),
                 json!({"group_did":group}),

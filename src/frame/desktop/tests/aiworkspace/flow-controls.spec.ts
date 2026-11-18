@@ -133,6 +133,16 @@ test('FC-01 §6.2 §10.4 (computer) a flow page\'s controls carry their tools in
   await menu.getByTestId('aiws-menu-control-hide-done').click()
   await expect(page.locator('[data-proj="tl~title~d"]')).toHaveCount(0)
   await expect(page.locator('[data-proj="tl~title~a"]')).toBeVisible()
+  // a right click on an item is the item's menu alone, not the Block's on top of it; beside the items it is the Block's
+  await page.locator('[data-proj="tl~title~a"]').click({ button: 'right' })
+  await expect(page.getByTestId('aiws-todo-itemmenu-tl')).toBeVisible()
+  await expect(menu).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('aiws-todo-itemmenu-tl')).toHaveCount(0)
+  await page.getByTestId('aiws-todo-count-tl').click({ button: 'right' })
+  await expect(menu).toBeVisible()
+  await expect(page.getByTestId('aiws-todo-itemmenu-tl')).toHaveCount(0)
+  await page.keyboard.press('Escape')
 
   // the HTML control: its manifest's actions, two of them on the row, the rest in ⋯; one runs without running the control
   const listen = page.getByTestId('aiws-cell-frame-listen')

@@ -614,7 +614,7 @@ Hook 只能在第 5–6 步的原生拒绝之上给出动态许可，并且只�
 - 群成员（包括外部 DID）的读写，由 Group Service 按 §4.1 判定。
 - 本 Zone 的应用或 Agent 直接访问某个 Session 的 GROUP_INBOX 时（例如应用驱动工单 Session），既需要 RBAC 对精确资源 `obj://msg-center/group_inbox/<group_did>/<sid>` 的授权，也必须经过 §4.1 的判定。RBAC 授权不能替代群授权。`users` / `admin` 对 `obj://msg-center/group_inbox/*` 的默认授权已收窄为只读（§12.2）。
 
-**跨 Zone 认证的方向。** 跨 Zone 认证复用 BuckyOS 基于 DID Document 的身份与认证授权语义，不另起群专用认证协议：DID Document 确认成员身份、代为请求的授权关系和客户端身份；msg-center 的 Contact Mgr 管理好友、陌生人、屏蔽等准入策略；群成员表与 Session 规则决定具体群权限。当前群 HTTP 入口校验的是本 Zone 信任的 verify-hub 签发的 session token，joined 绑定仍携带 host 可验证的 `authorization`。自动发现 host、自动建立 joined 绑定、获取与续期凭据，以及跨 Zone 成员的自动接受，保留为 TODO，不阻塞同 Zone 的建群与入群。
+**跨 Zone 认证的方向。** 跨 Zone 认证复用 BuckyOS 基于 DID Document 的身份与认证授权语义，不另起群专用认证协议：DID Document 确认成员身份、代为请求的授权关系和客户端身份；msg-center 的 Contact Mgr 管理好友、陌生人、屏蔽等准入策略；群成员表与 Session 规则决定具体群权限。群 HTTP 入口校验目标 Zone 的 verify-hub 签发的 session token。接受跨 Zone 邀请时成员 OOD 按群文档的宿主建立 Joined Group 绑定，后台通过跨 Zone 断言登录、复用和续期目标会话。显式配置的绑定也可以携带宿主可验证的 `authorization`。
 
 ### 4.3 访问路径限制（L4A）
 
@@ -684,15 +684,14 @@ pub enum AllowedClients {
 | 成员位置 | 方式 | 说明 |
 |---|---|---|
 | 与 host 同 Zone | 写投影记录 | 为有效成员写 `INBOX` 记录：`owner = member_did`，带 `group:<group_did>` tag，`session_id` 为成员的本地 Session 键（§5.5），`sort_key = accepted_at_ms`，并记录 `session_seq`。不复制 MsgObject |
-| 其它 Zone 的原生成员 | 成员 Zone 拉取变更流 | 成员 Zone 的 Message Center 作为 Joined Group 同步器，每个群维护一个变更流 token（§5.4.1），并在本地生成投影记录。host 发送不含内容的变更提示来加速拉取 |
+| 其它 Zone 的原生成员 | 宿主推送，成员独立补拉 | 成员 OOD 的 Joined Group 同步器为每个读者和群保存变更流游标（§5.4.1），即使聊天窗口关闭也写入本地投影 |
 | tunnel 成员（shadow DID） | 逐成员 DeliveryRecord | 外部平台无法拉取，所以由 host 推送；在创建 DeliveryRecord 时完成读取判定。关系消息（编辑、撤回、回应）也走 DeliveryRecord，由 tunnel 映射为平台操作，平台不支持时用文字说明 |
 
 - **群消息的来源是群。** 是否投影、能否读取，只看群成员资格和群规则（§4.1、§5.3），不看成员和作者之间的联系人关系：成员拉黑了 A，或者不认识 A，仍然收到 A 在群里发的消息，记录进 `INBOX`，不进 REQUEST_BOX。Contact Mgr 的屏蔽和陌生人规则只管私聊和邀请。要在群里屏蔽某人只能专门在群里设置；目前只有群管理的封禁（§2.4），成员个人的群内屏蔽还没有实现（[#724](https://github.com/buckyos/buckyos/issues/724)）。
 - **群管理通知的来源也是群。** 入群审批、拒绝、移出、转让群主的通知 `from` 是群 DID，host 以群的身份投递，操作者放在 `machine.data.by`，记录带 `group:<group_did>` tag，进成员在这个群的默认 Session，所以成员拉黑了操作者也会收到，也不会出现和操作者的私聊。只有成员屏蔽了这个群本身才丢弃。其他 Zone 收到时，要本 Zone 记录过这个成员加入或申请过这个群，否则按陌生人处理。邀请（`invite`、`session_invite`）不在此列：对方还不在群里，来源是邀请人，按 §2.4 的联系人策略处理。
 - 上表同样适用于 Session Guest：同 Zone 的 Guest 得到投影记录，其它 Zone 的原生 Guest 拉取，外部平台的 Guest 走 DeliveryRecord。客服场景中，经 Telegram 等平台咨询的客户就属于最后一种。
 - 投影记录和 DeliveryRecord 只为写入时刻的有效成员生成。成员资格后来发生变化，不回改历史投递。撤回是例外，按 §2.6 尽力传播。
-- 第一版不采用「写入时把 MsgObject 推送到原生成员 Zone」。由于读取权在获取时判定（§5.3），推送与拉取的权限语义相同，将来可以作为优化引入，推送前执行同样的判定（包括 `read` Hook）。
-- 同一成员 Zone 内有多个本地用户加入同一群时，各自独立拉取，因为读取结果按读者过滤。
+- 普通消息和群状态提交后，host 按群和目标 Zone 短时合并更新。成员 DID 的公开托管关系决定目标 Zone，即使该成员曾在群宿主联邦登录，也要向其托管 Zone 推送。在发送时逐个读者检查当前成员周期、Session、历史区间、客户端、`read` Hook 和撤回状态。同 Zone 的读者共用 HTTP 请求，每个正文条目只授予指定读者。队列和网络并发有上限，远端超时不阻塞群提交或发送方的 `accepted`。
 
 #### 5.4.1 变更流
 
@@ -706,7 +705,9 @@ pub enum AllowedClients {
 
 - token 对读者不透明。host 不能让读者从 token 推算出不可见 Session 的活动量，例如不能直接返回原始 `group_seq`。
 - token 过旧、对应数据已经删除时，host 返回 `limited`。成员 Zone 随后按 Session 用 `session_seq` 重新拉取。
-- 变更提示只包含 `group_did`，不包含 Session 和内容。host 对同一成员 Zone 的提示做合并，短时间内的多次变化只发一次。成员 Zone 也可以定时拉取作为兜底。
+- 前驱和后继都是绑定群及读者的 `/changes` 游标。host 记住上次向此读者返回的游标，或成员确认已入库的后继游标。相同位置可能签发不同 token，接收端只用完整字符串比较。首次同步、基线丢失、积压多项或无法安全携带正文时只发送读者提示。
+- 恰有一个可直接投影的普通消息变更时，host 随读者条目发送成员周期、前驱与后继、该变更和原编码对象。成员验证宿主、绑定、周期、前驱、ObjId 和 Session 后，一次事务写入副本、INBOX 和后继游标，再发 `box_changed` 并确认后继。重复更新只确认；本人发言保留 SENT 语义。
+- 合法提示或前驱缺口唤醒成员以本地游标拉取，满页继续翻页。`limited` 表示游标失效，此时还需按各 Session 的 `session_seq` 补历史。后台独立为已登记和显式配置的绑定安排约 15 分钟一次的错峰补偿，覆盖推送丢失、队列满及重启。无效宿主、读者、周期或正文不推进游标。
 
 ### 5.5 成员本地 Session 键
 
@@ -1039,6 +1040,7 @@ PUT  https://$host/<group_did>/join[?invite=<token>]          接受邀请或申
 PUT  https://$host/<group_did>/sessions/<sid>/join            Session Guest 接受邀请
 PUT  https://$host/<group_did>/guest_requests                 Guest 发起请求，host 为其新建 Session
 PUT  https://$host/<group_did>/read_markers                   上报已读水位
+POST https://$member_zone/kapi/msg-center/groups/<group_did>/updates  通知成员 OOD（§5.4.1）
 
 读取
 GET  https://$host/<group_did>/changes?since=&limit=          读者可见的变更流（§5.4.1）
@@ -1054,7 +1056,8 @@ GET  https://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束
 ```
 
 - 消息的 `PUT` body 是 canonical JSON NamedObject；签名的消息用 JWT 形式（`application/cyfs-named-object+jwt`，见 CYFS dispatch）。路径不带 `/@/`，body 不带附件内容。`objects/<obj_id>` 对有 JWT 原文的消息返回 JWT 形式。`join` 的 body 是 `{ "invitation_id"?: "..." }` 或空：带 `invitation_id`，或省略但调用者有待接受的邀请时，按接受邀请处理；否则按主动申请处理。`sessions/<sid>/join` 的 body 为空或 `{}`。`guest_requests` 的 body 是 `{ "request_id": "..." }`。`read_markers` 的 body 是小型 JSON 对象 `{ session, last_read_seq }`，读者取自认证上下文。
-- 所有请求都携带 host 能验证的 Bearer token 和与之一致的 `cyfs-original-user`，没有 `cyfs-proofs` 头；读取只看认证主体与成员表 / Guest 记录。`GET` 返回针对该读者过滤后的结果；对非有效成员按 §4.1 返回 `not-found`。
+- 受保护请求携带目标 Zone 签发并验证的 Bearer token，读取依据认证主体和成员表 / Guest 记录。`GET` 返回针对该读者过滤后的结果；对非有效成员按 §4.1 返回 `not-found`。
+- `updates` 由 host 以宿主 Zone DID 通过跨 Zone 断言登录投递。请求为 JSON 对象 `{entries:[{reader_did,member_epoch,delta?}]}`。`delta` 含 `previous_token`、`next_token`、`change`、`content_type` 和字符串 `object`。JSON 对象及 JWT 均按原始编码传输，附件仅包含引用。响应 `{committed:[{reader_did,next_token}]}` 逐项确认已提交的版本。
 - `members` 与 `participants` 的结果与对应 RPC 相同；成员 Zone 对 joined 群的 `group.list_members` / `group.list_session_members` 经 joined 绑定以成员身份转发到这两个入口。
 - `inbox` 列表按 `session_seq` 返回 `{ items: [{ seq, obj_id, redacted }], next_after_seq, limited }`，每页最多 4096 项。
 - `<sid>` 按 MailboxAddress 规则编码为单个路径段。
@@ -1168,13 +1171,13 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 |---|---|---|
 | 3 | 跨 Zone 访问时，如何携带并验证客户端（应用）身份 | 与 verify-hub 和 §4.2 的跨 Zone DID Document 认证一起设计 |
 | 4 | Session 列表、变更流和受控对象读取的 CYFS 路径形态 | 见 §11.1 草案 |
-| 6 | host 向成员 Zone 发送「变更提示」的对象格式与路径 | 小型 event NamedObject，只含 `group_did`，不含 Session 与消息内容，host 合并后发送 |
 | 8 | Guest 能看到的 Session 参与者范围 | 显式参与者，加上在该 Session 发过言的参与者；不展开 `Roles` 带来的全部群成员（§3.3） |
 | 9 | context_path 的语法，以及创作者、转发者等非 host 源如何校验 | 由 CYFS 协议定义；host 作为源时按 §5.3 判定（§5.7） |
 | 10 | 规模与频率上限的默认值 | 见 §6.7 表 |
-| 11 | 变更流 token 的编码 | 不透明；不能暴露原始 `group_seq` |
 
 已确认：
+
+- 跨 Zone 推送的线格式、读者绑定的不透明游标和逐条确认已确定（原 #6、#11，§5.4.1、§11.1）。
 
 - 面板上下文不包含 viewer 身份和短期凭据，面板自行以用户（App 子域会话）身份认证（原 #5，2026-10-24 随 L2 实施确认，§7.2）。
 - 默认 Session 使用裸 `group_did`（session_id 为 NULL）；成员侧本地 Session 键与 `SessionStateRef.session_key` 都用 Group Session 的规范 MailboxAddress 字符串 `<group_did>` / `<group_did>/<sid>`（原 #1、#2，已按建议实现，§2.2.4、§5.5）。
@@ -1182,7 +1185,7 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 - 取消成员 proof：成为群成员或 Session Guest 只看群一方和成员一方的同意（2026-10-01，§2.4）。
 - 外部平台用户的同意方式：由 tunnel 的 transport 身份提交 `attestation` 参数（`member_did` + 平台来源事件），不再伪装成 proof 对象（原 #7，§2.4）。
 - Agent 入群：只自动接受其 owner 发出的邀请，其他邀请由 owner 确认；owner 的好友也不能直接触发自动入群（2026-10-01，§2.4）。
-- 跨 Zone 认证复用 BuckyOS DID Document 的身份与认证授权语义，关系信任由 Contact Mgr 管理（2026-10-01，§4.2）；自动建立 joined 绑定与凭据续期仍为 TODO。
+- 跨 Zone 认证复用 BuckyOS DID Document 的身份与认证授权语义，关系信任由 Contact Mgr 管理（2026-10-01，§4.2）。自动绑定与跨 Zone 会话支持后台推送、补拉和续期（§5.4）。
 - Guest 不入群，以 Session Guest 身份加入具体 Session，Session 成员列表可以是群成员的超集（§2.3.2）。
 - 信任模型：self-host 即全听群主的，消息默认由群主背书；需要强证明时用 MsgObject 的 JWT 签名形式，这是协议级能力（§1.5）。
 - 附件通过 context_path 授权，按创作者、收录者、转发者多源获取（§5.7）。

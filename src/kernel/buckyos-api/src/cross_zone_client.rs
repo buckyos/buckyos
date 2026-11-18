@@ -14,6 +14,7 @@ use name_lib::{decode_jwt_claim_without_verify, DID};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::{ready, Future};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -311,8 +312,23 @@ impl CrossZoneClient {
         principal: &Principal,
         request: CrossZoneRequest,
     ) -> Result<reqwest::Response, CrossZoneError> {
+        self.request_host_with(host, service, principal, || ready(Ok(request.clone()))).await
+    }
+
+    /// Build immediately before each transport attempt, after login. Use for content whose
+    /// read authorization can change while logging in or retrying on another transport.
+    pub async fn request_host_with<F>(
+        &self,
+        host: &str,
+        service: &str,
+        principal: &Principal,
+        build: impl Fn() -> F,
+    ) -> Result<reqwest::Response, CrossZoneError>
+    where
+        F: Future<Output = Result<CrossZoneRequest, CrossZoneError>>,
+    {
         let host = host.trim_end_matches('.').to_ascii_lowercase();
-        self.request_to(&DID::new("web", &host), &host, service, principal, request).await
+        self.request_to_with(&DID::new("web", &host), &host, service, principal, build).await
     }
 
     /// [`Self::request`] when the Target Zone's hostname is already known.
@@ -324,12 +340,25 @@ impl CrossZoneClient {
         principal: &Principal,
         request: CrossZoneRequest,
     ) -> Result<reqwest::Response, CrossZoneError> {
+        self.request_to_with(zone, host, service, principal, || ready(Ok(request.clone()))).await
+    }
+
+    async fn request_to_with<F>(
+        &self,
+        zone: &DID,
+        host: &str,
+        service: &str,
+        principal: &Principal,
+        build: impl Fn() -> F,
+    ) -> Result<reqwest::Response, CrossZoneError>
+    where
+        F: Future<Output = Result<CrossZoneRequest, CrossZoneError>>,
+    {
         let host = host.to_string();
         let key = token_key(&host, service, principal);
         let mut token = self.bearer(zone, &host, service, principal, &key).await?;
         for attempt in 0..2 {
-            let authorized = request.clone().header("authorization", format!("Bearer {token}"));
-            let response = self.send(&host, || Ok(authorized.clone())).await?;
+            let response = self.send_with(&host, Some(&token), &build).await?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED {
                 return Ok(response);
             }
@@ -487,10 +516,25 @@ impl CrossZoneClient {
         host: &str,
         build: impl Fn() -> Result<CrossZoneRequest, CrossZoneError>,
     ) -> Result<reqwest::Response, CrossZoneError> {
+        self.send_with(host, None, || ready(build())).await
+    }
+
+    async fn send_with<F>(
+        &self,
+        host: &str,
+        bearer: Option<&str>,
+        build: impl Fn() -> F,
+    ) -> Result<reqwest::Response, CrossZoneError>
+    where
+        F: Future<Output = Result<CrossZoneRequest, CrossZoneError>>,
+    {
         let order = self.transport_order(host);
         let mut last_error = String::new();
         for (index, transport) in order.iter().enumerate() {
-            let request = build()?;
+            let mut request = build().await?;
+            if let Some(token) = bearer {
+                request = request.header("authorization", format!("Bearer {token}"));
+            }
             let replayable = request.replayable();
             let (client, base) = match transport {
                 Transport::Rtcp => (self.rtcp.as_ref().expect("rtcp transport configured"), format!("http://{host}")),
@@ -507,15 +551,18 @@ impl CrossZoneClient {
             if let Some(body) = request.body {
                 builder = builder.body(body);
             }
+            let path = request.path_and_query.split('?').next().unwrap_or_default();
             match builder.send().await {
                 Ok(response) => {
+                    log::debug!("cross-zone {transport:?} {host} {} {path}: {}", request.method, response.status());
                     self.record(host, *transport, true);
                     return Ok(response);
                 }
                 Err(error) => {
-                    log::info!("cross-zone {transport:?} to {host} failed: {error}");
+                    let error = error.without_url();
+                    log::info!("cross-zone {transport:?} to {host} {path} failed: {error}");
                     self.record(host, *transport, false);
-                    last_error = format!("{transport:?} {url}: {error}");
+                    last_error = format!("{transport:?} {host} {path}: {error}");
                     // A request that may have arrived is not sent again (the caller retries
                     // by its own idempotency key).
                     if !(error.is_connect() || replayable) || index + 1 == order.len() {
@@ -786,7 +833,12 @@ mod tests {
         client.request(&zone, "msg-center", &bob, get()).await.unwrap();
         assert_eq!(fake.logins.load(Ordering::SeqCst), 1);
         *fake.current.lock().unwrap() = "rotated".into();
-        let response = client.request(&zone, "msg-center", &bob, get()).await.unwrap();
+        let built_after_login = Mutex::new(Vec::new());
+        let response = client.request_host_with("target.example", "msg-center", &bob, || async {
+            built_after_login.lock().unwrap().push(fake.logins.load(Ordering::SeqCst));
+            Ok(get())
+        }).await.unwrap();
+        assert_eq!(built_after_login.into_inner().unwrap(), vec![1, 2]);
         assert_eq!(response.status(), 200);
         assert_eq!(fake.logins.load(Ordering::SeqCst), 2);
         // Another service or principal never reuses the token.

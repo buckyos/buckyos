@@ -336,8 +336,11 @@ impl AiccStorage {
                 }
             }
         }
-        let pool = AnyPoolOptions::new()
-            .max_connections(connections)
+        let mut options = AnyPoolOptions::new().max_connections(connections);
+        if sqlite {
+            options = options.max_lifetime(None).idle_timeout(None);
+        }
+        let pool = options
             .after_connect(move |connection, _| {
                 Box::pin(async move {
                     if sqlite && connections > 1 {

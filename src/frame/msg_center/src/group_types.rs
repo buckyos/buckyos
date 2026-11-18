@@ -714,6 +714,16 @@ pub struct Change {
     pub data: Value,
     pub audience: BTreeSet<String>,
 }
+impl Change {
+    pub(crate) fn action(&self) -> Option<&str> {
+        // Older hosted groups also stored the ordinary message text in this
+        // field. Only management changes carry actions on the visible stream.
+        match self.kind.as_str() {
+            "session" | "member" => self.data["action"].as_str(),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedOperation {
     pub request: Value,

@@ -934,6 +934,10 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
     create(&host, json!({})).await;
     join(&host, &member()).await;
     let original = send(&host, &owner(), None, "secret", 1).await;
+    // A pre-push host also kept the plaintext in a message change's action.
+    let mut legacy = host.groups.begin(&group()).await.unwrap();
+    legacy.state.changes.last_mut().unwrap().data["action"] = json!("secret");
+    legacy.commit().await.unwrap();
     let (url, server) = host_fixture(host.clone()).await;
     let member_route = joined_route(url.clone(), &member());
     let owner_route = joined_route(url, &owner());
@@ -952,6 +956,10 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
             .unwrap()
             .ok
     );
+    let page = host.group_changes(&actor(member()), &group(), None, 100).await.unwrap();
+    let original_change = page["items"].as_array().unwrap().iter()
+        .find(|c| c["message"]["obj_id"] == json!(original.gen_obj_id().0)).unwrap();
+    assert!(original_change["message"]["redacted"] == true && original_change["action"].is_null());
     local.sync_joined_group(&member_route).await.unwrap();
     assert!(local
         .groups

@@ -11,7 +11,7 @@
  * canvas), as do ⋮⋮, a right click and Shift+F10. Whether a type has a heading line and whether ＋ offers it is the
  * type's own declaration (`traits`). */
 
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { GripVertical, Plus } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { EntityEnvelope } from '../../api/types'
@@ -298,6 +298,9 @@ function Gutter({ entity, kind, ...props }: ItemProps & { entity: EntityEnvelope
 
 /** Inside an editor or a field a right click is the browser's (spelling, paste); elsewhere on a Block it is the Block's menu. */
 const OWN_CONTEXT_MENU = 'input, textarea, select, iframe, [contenteditable="true"], [contenteditable="plaintext-only"], .aiws-popover, .aiws-menu'
+/** A right click the Block does not take: one inside an editor or a field, or one a control in the Block already
+ * answered with its own menu (a to-do row, a directory row: they prevent the default and keep the event). */
+const ownContextMenu = (event: ReactMouseEvent) => event.defaultPrevented || Boolean((event.target as HTMLElement).closest(OWN_CONTEXT_MENU))
 
 function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: EntityEnvelope; siblings: EntityEnvelope[]; index: number }) {
   const store = useStore()
@@ -314,7 +317,7 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
   return (
     <section className={`aiws-group aiws-fgroup${isSelected ? ' is-selected' : ''}${props.dragging === group.entity_id ? ' is-dragged' : ''}`} data-testid={`aiws-group-${group.entity_id}`}
       data-cell-id={group.entity_id} data-parent-id={group.parent_id ?? undefined} data-flow-item="group" data-kind={group.kind ?? undefined} tabIndex={-1}
-      onContextMenu={composite ? (event) => { if (!policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU) || (event.target as HTMLElement).closest('[data-flow-item]') !== event.currentTarget) return; event.preventDefault(); props.onBlockMenu(group.entity_id, contextPoint(event)) } : undefined}>
+      onContextMenu={composite ? (event) => { if (!policy.select || ownContextMenu(event) || (event.target as HTMLElement).closest('[data-flow-item]') !== event.currentTarget) return; event.preventDefault(); props.onBlockMenu(group.entity_id, contextPoint(event)) } : undefined}>
       <Gutter entity={group} siblings={siblings} index={index} kind="group" {...props} />
       {composite && policy.select
         ? <FlowRowTools cellId={group.entity_id} mode={props.mode} editorActive={policy.editContent} selected={isSelected} untitled={false} title={title}
@@ -344,7 +347,7 @@ function FlowControl({ control, siblings, index, ...props }: ItemProps & { contr
   return (
     <section className={`aiws-cell aiws-fblock aiws-fcontrol${isSelected ? ' is-selected' : ''}${props.dragging === control.entity_id ? ' is-dragged' : ''}`} tabIndex={-1}
       data-testid={`aiws-flow-control-${control.entity_id}`} data-cell-id={control.entity_id} data-parent-id={control.parent_id ?? undefined} data-flow-item="block" data-kind={control.kind}
-      onContextMenu={(event) => { if (!props.policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU)) return; event.preventDefault(); props.onBlockMenu(control.entity_id, contextPoint(event)) }}>
+      onContextMenu={(event) => { if (!props.policy.select || ownContextMenu(event)) return; event.preventDefault(); props.onBlockMenu(control.entity_id, contextPoint(event)) }}>
       <Gutter entity={control} siblings={siblings} index={index} kind="block" {...props} />
       {props.policy.select
         ? <FlowRowTools cellId={control.entity_id} mode={props.mode} editorActive={props.policy.editContent} selected={isSelected} untitled={false} title={title}
@@ -399,7 +402,7 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
         data-testid={`aiws-cell-frame-${cell.entity_id}`} data-cell-id={cell.entity_id} data-cell-source={cell.source_id ?? undefined} data-view={cell.view_type ?? undefined}
         data-mode={mode} data-parent-id={cell.parent_id ?? undefined} data-flow-item="block"
         onKeyDown={onKeyDown} onPointerDown={() => { if (props.selected.size > 0) props.onSelect(new Set()) }}
-        onContextMenu={(event) => { if (!policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU)) return; event.preventDefault(); props.onBlockMenu(cell.entity_id, contextPoint(event)) }}>
+        onContextMenu={(event) => { if (!policy.select || ownContextMenu(event)) return; event.preventDefault(); props.onBlockMenu(cell.entity_id, contextPoint(event)) }}>
         <Gutter entity={cell} siblings={siblings} index={index} kind="block" {...props} />
         {policy.select && (
           <FlowRowTools cellId={cell.entity_id} mode={mode} editorActive={html ? running : policy.editContent} selected={isSelected} untitled={!showTitle} onMore={openMenu}

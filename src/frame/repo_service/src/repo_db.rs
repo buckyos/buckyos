@@ -90,7 +90,10 @@ impl RepoDb {
         schema: Option<&str>,
     ) -> Result<Self, String> {
         ensure_any_drivers_installed();
-        let opts = AnyPoolOptions::new().max_connections(8);
+        let mut opts = AnyPoolOptions::new().max_connections(8);
+        if backend == RdbBackend::Sqlite {
+            opts = opts.max_lifetime(None).idle_timeout(None);
+        }
         let pool = opts
             .connect(connection)
             .await

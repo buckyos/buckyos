@@ -6,6 +6,7 @@ mod cyfs_dispatch;
 mod friend_service;
 mod group_http;
 mod group_publication;
+mod group_push;
 mod group_remote;
 mod group_service;
 mod group_store;

@@ -63,7 +63,7 @@ impl DispatchDb {
             8
         });
         if backend == RdbBackend::Sqlite {
-            opts = opts.after_connect(|conn, _meta| {
+            opts = opts.max_lifetime(None).idle_timeout(None).after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
                     conn.execute("PRAGMA busy_timeout = 5000;").await?;

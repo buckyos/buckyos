@@ -1,3 +1,4 @@
+use crate::group_push::{GroupUpdate, MAX_UPDATE_BYTES, MAX_UPDATE_ENTRIES};
 use crate::group_types::*;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{AccessDenial, AuthMethod, MailboxAddress, SessionScope, ACCESS_DENIED_ERROR_CODE};
@@ -100,25 +101,76 @@ async fn body(req: &mut Request<Body>, max: usize) -> Result<Vec<u8>> {
     }
     Ok(data)
 }
-async fn principal(
-    center: &MessageCenter,
-    req: &mut Request<Body>,
-    _group: &DID,
-) -> Result<(GroupActor, RPCContext)> {
+fn bearer_context(req: &Request<Body>) -> Result<RPCContext> {
     let raw = req
         .headers()
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .ok_or_else(|| denied("unauthenticated"))?;
-    let ctx = RPCContext {
+    Ok(RPCContext {
         token: Some(raw.to_owned()),
         from_ip: Some("127.0.0.1".parse().unwrap()),
         ..Default::default()
-    };
-    let actor = center.federated_group_actor(&ctx).await?;
-    Ok((actor, ctx))
+    })
 }
+fn local_group_target(center: &MessageCenter, req: &Request<Body>) -> Result<String> {
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .or_else(|| req.uri().host())
+        .unwrap_or("");
+    let expected = center
+        .cyfs_dispatch
+        .read()
+        .unwrap()
+        .target_zone
+        .clone()
+        .or_else(crate::cyfs_dispatch::local_zone_host);
+    let path = req.uri().path();
+    let target = group_target(host, path)?;
+    if group_target(expected.as_deref().unwrap_or("localhost"), path)? != target {
+        return Err(missing());
+    }
+    Ok(target)
+}
+
+async fn joined_update(
+    center: &MessageCenter,
+    req: &mut Request<Body>,
+    group: &DID,
+) -> Result<Value> {
+    local_group_target(center, req)?;
+    let caller = center
+        .caller_identity(&bearer_context(req)?)
+        .await?
+        .filter(|caller| caller.auth_method == Some(AuthMethod::CrossZoneAssertion))
+        .ok_or_else(|| denied("host-zone-assertion-required"))?;
+    let source = caller
+        .user_did
+        .filter(|did| matches!(did.method.as_str(), "web" | "bns") && !did.id.contains(':'))
+        .ok_or_else(|| denied("host-zone-assertion-required"))?;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Envelope {
+        entries: Vec<Value>,
+    }
+    let Envelope { entries } = serde_json::from_slice(&body(req, MAX_UPDATE_BYTES).await?)
+        .map_err(|_| invalid("invalid-group-update"))?;
+    if entries.is_empty() || entries.len() > MAX_UPDATE_ENTRIES {
+        return Err(invalid("invalid-group-update-size"));
+    }
+    let entries = entries
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value(entry).ok())
+        .collect();
+    let ack = center
+        .receive_group_update(group, &zone_host_name(&source), GroupUpdate { entries })
+        .await?;
+    serde_json::to_value(ack).map_err(crate::group_store::db_error)
+}
+
 /// Group HTTP routes; opened to restricted sessions, whom the group and
 /// Session ACLs then decide on.
 pub(crate) async fn serve(
@@ -134,6 +186,18 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
     let resource_path = prefixed.unwrap_or_else(|| path.trim_start_matches('/'));
     let parts: Vec<_> = resource_path.split('/').collect();
     let group = DID::from_str(parts.first().copied().unwrap_or("")).ok()?;
+    if prefixed.is_some() && matches!(parts.as_slice(), [_, "updates"]) {
+        if req.method() != Method::POST {
+            return Some(reply(
+                StatusCode::METHOD_NOT_ALLOWED,
+                json!({"error":"method-not-allowed"}),
+            ));
+        }
+        return Some(match joined_update(center, req, &group).await {
+            Ok(ack) => reply(StatusCode::OK, ack),
+            Err(e) => error(e),
+        });
+    }
     let state = match center.groups.load(&group).await {
         Ok(Some(g)) => g,
         Ok(None) if prefixed.is_some() => return Some(reply(
@@ -144,25 +208,10 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
         Err(e) => return Some(error(e)),
     };
     let config = center.cyfs_dispatch.read().unwrap().clone();
-    let host = req
-        .headers()
-        .get("host")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| req.uri().host())
-        .unwrap_or("");
-    // The Zone this msg-center serves, as the inbox path reads it: configured, else the runtime's.
-    let local_zone = config
-        .target_zone
-        .clone()
-        .or_else(crate::cyfs_dispatch::local_zone_host);
-    let expected = local_zone.as_deref().unwrap_or("localhost");
-    let target = match group_target(host, &path) {
+    let target = match local_group_target(center, req) {
         Ok(target) => target,
         Err(e) => return Some(error(e)),
     };
-    if group_target(expected, &path).ok().as_ref() != Some(&target) {
-        return Some(reply(StatusCode::NOT_FOUND, json!({"error":"not-found"})));
-    }
     if parts.len() == 2 && matches!(parts[1], "doc" | "did.json") && req.method() == Method::GET {
         return Some(if state.lifecycle == "deleted" {
             reply(StatusCode::NOT_FOUND, json!({"error":"not-found"}))
@@ -180,7 +229,11 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
             }
         });
     }
-    let (actor, ctx) = match principal(center, req, &group).await {
+    let ctx = match bearer_context(req) {
+        Ok(ctx) => ctx,
+        Err(e) => return Some(request_error(e, req, &target)),
+    };
+    let actor = match center.federated_group_actor(&ctx).await {
         Ok(a) => a,
         Err(e) => return Some(request_error(e, req, &target)),
     };
@@ -268,7 +321,7 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                         .ok_or_else(missing)?;
                     let dispatch: buckyos_api::DispatchResult =
                         serde_json::from_value(saved.result.clone()).map_err(invalid)?;
-                    let target = group_target(expected, &path)?;
+                    let target = target.clone();
                     let result = if dispatch.ok {
                         CyfsDispatchResult::new(Some(id), target, CyfsDispatchStatus::Accepted)
                     } else {
@@ -349,7 +402,7 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                     MessageCenter::refuse_guest_attachments(caller.as_ref(), &msg)?;
                 }
                 let dispatch = center.accept_group_message(&actor, msg, jwt).await?;
-                let target = group_target(expected, &path)?;
+                let target = target.clone();
                 let mut result = if dispatch.ok {
                     CyfsDispatchResult::new(Some(id.clone()), target, CyfsDispatchStatus::Accepted)
                 } else {
