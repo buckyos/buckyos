@@ -148,7 +148,9 @@ impl Principal {
 }
 
 pub fn ndm_error(status: StatusCode, code: &str, message: impl std::fmt::Display) -> Response {
-    let body = serde_json::json!({"error": code, "message": message.to_string()});
+    let message = message.to_string();
+    log::warn!("ndm request failed: {} {}: {}", status.as_u16(), code, message);
+    let body = serde_json::json!({"error": code, "message": message});
     (status, [(header::CONTENT_TYPE, "application/json; charset=utf-8")], body.to_string()).into_response()
 }
 

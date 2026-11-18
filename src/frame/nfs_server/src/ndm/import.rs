@@ -11,6 +11,10 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashSet;
 
+/// One finalize registers a whole imported tree: a folder of N files sends at least N + 1 objects.
+const MAX_FINALIZE_OBJECTS: usize = 100_000;
+const MAX_FINALIZE_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Deserialize)]
 struct Object {
     obj_id: String,
@@ -51,16 +55,29 @@ pub async fn finalize(State(state): State<SharedState>, req: Request) -> Respons
         return denied("import objects");
     }
     let headers = req.headers().clone();
-    let bytes = match axum::body::to_bytes(req.into_body(), 8 * 1024 * 1024).await {
+    let bytes = match axum::body::to_bytes(req.into_body(), MAX_FINALIZE_BYTES).await {
         Ok(b) => b,
-        Err(e) => return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", e),
+        Err(e) => {
+            let e = e.into_inner();
+            if e.is::<http_body_util::LengthLimitError>() {
+                return ndm_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", format!("the import manifest exceeds {} MiB", MAX_FINALIZE_BYTES / 1024 / 1024));
+            }
+            return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", e);
+        }
     };
     let manifest: Manifest = match serde_json::from_slice(&bytes) {
         Ok(m) => m,
         Err(e) => return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", e),
     };
-    if manifest.roots.is_empty() || manifest.objects.len() > 10000 || manifest.roots.len() > 10000 {
-        return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", "a bounded, nonempty list of roots is required");
+    if manifest.roots.is_empty() {
+        return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", "at least one import root is required");
+    }
+    if manifest.objects.len() > MAX_FINALIZE_OBJECTS || manifest.roots.len() > MAX_FINALIZE_OBJECTS {
+        return ndm_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "too_many_objects",
+            format!("an import registers at most {MAX_FINALIZE_OBJECTS} objects and roots, got {} objects and {} roots", manifest.objects.len(), manifest.roots.len()),
+        );
     }
     if manifest.auto_bind.is_some() && manifest.roots.len() != 1 {
         return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", "auto_bind binds exactly one root");

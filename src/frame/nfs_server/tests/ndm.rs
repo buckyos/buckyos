@@ -304,6 +304,39 @@ async fn import_finalize_survives_concurrent_gc() {
     assert_eq!(gc.await.unwrap(), 0);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn import_finalize_and_commit_a_folder_beyond_ten_thousand_files() {
+    let srv = start(3600).await;
+    let alice = user("alice");
+    let data = b"same bytes in every file";
+    assert!(srv.write_chunk(&alice, data).await.is_success());
+    let files = 10_050;
+    let mut dir = ndn_lib::DirObject::new(Some("big".into()));
+    let mut objects = Vec::new();
+    for i in 0..files {
+        let name = format!("f{i:05}.txt");
+        let (id, body) = file_of(&name, data);
+        dir.object_map.body.insert(name, ndn_lib::SimpleMapItem::ObjId(id.clone()));
+        objects.push(json!({"obj_id": id.to_string(), "obj_data": body}));
+    }
+    let (dir_id, dir_body) = dir.gen_obj_id().unwrap();
+    objects.insert(0, json!({"obj_id": dir_id.to_string(), "obj_data": dir_body}));
+    let started = std::time::Instant::now();
+    let (status, result) = srv.rpc(&alice, "/ndm/v1/import/finalize", json!({"objects": objects, "roots": [dir_id.to_string()]})).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["roots"][0]["ready"], true);
+    eprintln!("finalize of {} objects took {:?}", files + 1, started.elapsed());
+    let (_, hello) = srv.rpc(&alice, "/nfs/v1/hello", json!({"args":{}})).await;
+    let session = hello["result"]["session"].as_str().unwrap();
+    let started = std::time::Instant::now();
+    let (status, committed) = srv.rpc(&alice, "/nfs/v1/commit_object", json!({"session":session,"seq":1,"at":{"path":"/home/alice"},"args":{"name":"big","obj_id":dir_id.to_string()}})).await;
+    assert_eq!(status, StatusCode::OK, "{committed}");
+    eprintln!("commit of {files} files took {:?}", started.elapsed());
+    let home = &srv.state.config.root("home").unwrap().path;
+    assert_eq!(std::fs::read_dir(home.join("alice/big")).unwrap().count(), files);
+    assert_eq!(std::fs::read(home.join("alice/big/f10049.txt")).unwrap(), data);
+}
+
 #[tokio::test]
 async fn import_finalize_handles_chunk_lists_in_dependency_order() {
     let srv = start(3600).await;
