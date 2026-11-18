@@ -59,7 +59,7 @@ export function whenText(at: string, text: AiwsText): string {
   const date = new Date(at)
   if (Number.isNaN(date.getTime())) return at
   try {
-    return new Intl.DateTimeFormat(text.locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
+    return new Intl.DateTimeFormat(text.intl, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
   } catch {
     return text.dateTime(date)
   }

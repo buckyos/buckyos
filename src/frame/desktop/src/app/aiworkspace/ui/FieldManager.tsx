@@ -10,6 +10,7 @@ import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type { CellPayload, FieldDef, FieldType, Json, KeyedContent, Operation, PrepareResult, TableSourceContent } from '../api/types'
 import { useStore } from '../state/hooks'
+import { languageCurrency } from '@table/currency'
 import { useAiwsText } from '../useAiwsText'
 import { addFieldOps, CREATABLE_FIELD_TYPES } from './fieldOps'
 import { DEFAULT_WIDTH, WIDTHS, inputOf, moveEntry, rawOf, sameRaw, widthPreset, type ColumnEntry, type Raw, type WidthPreset } from './table/model'
@@ -87,7 +88,7 @@ function FieldList({ source, cell, entries, columnsReason, onColumns, structureR
   const [newName, setNewName] = useState('')
   const [newType, setNewType] = useState<FieldType>('text')
   const [newScale, setNewScale] = useState('2')
-  const [newCurrency, setNewCurrency] = useState(() => (locale.startsWith('zh') ? 'CNY' : 'USD'))
+  const [newCurrency, setNewCurrency] = useState(() => languageCurrency(locale))
   const [drag, setDrag] = useState<{ id: string; to: number } | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
 

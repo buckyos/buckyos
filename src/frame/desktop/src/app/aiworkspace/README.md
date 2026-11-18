@@ -175,13 +175,22 @@ when this device has a prepared replica of the workspace and this window gets it
 
 ## Language (i18n)
 
-The app follows the Desktop's language (its I18nProvider); English and Chinese have full tables, the other
-Desktop languages read English, like the rest of the Desktop.
+The app follows the Desktop's language (its I18nProvider) and has full tables for the product's languages
+(`src/kernel/node_active/i18n.ts`): English, Simplified and Traditional Chinese, Japanese, Korean, French, German,
+Spanish and Russian. A Desktop language without a table (Arabic) reads English.
 
 - **Tables.** Every string a user can see is a key `aiworkspace.<area>.<name>` with an English and a Chinese
   entry in `src/i18n/aiworkspace/<area>.ts` (common, shell, canvas + drawio, blocks + connector, wish + extension,
-  data, presentation, richtext, core, demo). Placeholders are `{{name}}`; an English singular is the `<key>_one`
-  entry, picked for `count: 1`. The tables are not part of the Desktop dictionaries (nothing else shows them).
+  data, presentation, richtext, core, demo), and an entry in each other language's table
+  `src/i18n/aiworkspace/locales/<language>.ts` (one file per language, grouped by area). A new key needs all of
+  them; the guard below fails otherwise. Placeholders are `{{name}}`. A text with `{{count}}` may have plural
+  forms after its plain key, picked by the language's CLDR rules: `<key>_one` (English, French, German, Spanish;
+  Russian also `<key>_few`, the plain key being the 5–20 form); Chinese, Japanese and Korean have none. The tables
+  are not part of the Desktop dictionaries (nothing else shows them).
+- **Loading.** English and Simplified Chinese are in the bundle; each other table is a chunk of its own, loaded
+  when its language is first asked for. The app's entries (the Desktop window, its routes, the Workspace page,
+  the print renderer, the Replica Worker) wait for `loadAiwsLocale()` before they render; a live switch keeps the
+  text in the language shown before until the new table has arrived, then `useAiwsText` re-renders.
 - **Use.** React code: `const { t, tNode, num, dateTime, list, clauses, compare } = useAiwsText()` — re-renders
   when the language changes. Code outside React: `aiwsT(key, vars)` / `aiwsText()` from `i18n.ts`, called when
   the text is produced, never at module load; an exported label map is `localizedLabels({...keys})` or has
@@ -203,12 +212,15 @@ Desktop languages read English, like the rest of the Desktop.
   Desktop's language. `fixtures/project-workspace.commits.json` (byte-identical with the backend's fixture) is
   sample content and stays Chinese.
 - **Checks.** `deno test --allow-read --allow-env tests/datamodel/aiworkspace-i18n.test.ts [-- <path prefix>…]`
-  (from `src/frame/desktop`): the two tables have the same keys and placeholders, no Chinese is left in string
+  (from `src/frame/desktop`): the English and Chinese tables have the same keys and placeholders, every other
+  language's table has every key with the same placeholders and only its language's plural forms
+  (`aiworkspace-i18n-runtime.test.ts`, with `--no-check --unstable-sloppy-imports`, checks loading and plurals), no Chinese is left in string
   literals or JSX text of this app or the draw.io module (a literal that must stay is marked `i18n-exempt: <reason>`), every key named in the source exists and every key is
   used. The e2e suite runs in zh-CN (`tests/aiworkspace/fixtures.ts` sets the stored language for every browser
   context) because its assertions match the Chinese UI; `i18n.spec.ts` runs the English UI — no Chinese on screen
   through the list, a demo created in English, menus, panels, catalog, a wish card, presentation and data
-  sources — and switches the language live and back.
+  sources — and switches the language live and back; it also makes a workspace in Japanese and switches live to
+  Russian (a table loaded on demand).
 
 ## Offline (design §6, first-phase document §7)
 

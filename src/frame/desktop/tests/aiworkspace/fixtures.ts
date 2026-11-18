@@ -5,6 +5,7 @@ import { pickLocal, putZoneFile, selectDialog, selectEmbedFrame, selectRow } fro
 import { queryBySql } from '../../src/app/aiworkspace/api/tableQuery'
 import type { QueryPage, QueryParams } from '../../src/app/aiworkspace/api/types'
 import * as wasmCore from '../../src/app/aiworkspace/wasm/aiworkspace_wasm.js'
+import { dictionaries } from '../../src/i18n/dictionaries'
 
 let wasmReady = false
 /** The core compiled to WASM, as the Desktop loads it (the view compiler of `queryBySql`). */
@@ -239,6 +240,12 @@ export async function openWorkspacePage(page: Page, who: string | { guest: true 
 
 /** Open the Desktop shell and the AI Workspace app in it, talking to the standalone backend as `token`, and
  * end on the workspace list (a normal start restores the last workspace: it is closed again here). */
+/** A Desktop label in any of its languages (a spec may run the Desktop in any of them). */
+export function desktopLabel(key: string): RegExp {
+  const names = new Set(Object.values(dictionaries).map((table) => table[key]).filter(Boolean))
+  return new RegExp(`^(${[...names].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`)
+}
+
 export async function openApp(page: Page, token: string) {
   // keeps what an earlier init script put there; wish runs in this browser talk to the scripted model (mock-llm.mjs)
   await page.addInitScript(({ value, llm }) => { let prev: Record<string, unknown> = {}; try { prev = JSON.parse(window.localStorage.getItem('aiworkspace.dev') ?? '{}') as Record<string, unknown> } catch { prev = {} }; window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm, ...prev, token: value })) }, { value: token, llm: scriptedModel() })
@@ -247,7 +254,7 @@ export async function openApp(page: Page, token: string) {
   await page.goto('/?scenario=normal', { waitUntil: 'networkidle' })
   await page.getByTestId('desktop-app-aiworkspace').click()
   // the window opens maximised: the canvas has the room the specs' coordinates assume
-  await page.getByTestId('window-aiworkspace').getByRole('button', { name: /^(Maximize|最大化)$/ }).click()
+  await page.getByTestId('window-aiworkspace').getByRole('button', { name: desktopLabel('common.maximize') }).click()
   await backToList(page)
 }
 

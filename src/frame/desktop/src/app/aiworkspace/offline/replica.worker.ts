@@ -25,7 +25,7 @@ import {
   type AssetRow, type InitResult, type LocalExport, type LocalRefused, type LocalSaved, type PendingMeta, type PendingRow, type PendingState,
   type ReadEntry, type ReplicaApi, type ReplicaMeta, type RichTextDraftRow, type WorkerFailure, type WorkerRequest, type WorkerResponse,
 } from './protocol'
-import { aiwsT, setAiwsLocale } from '../i18n'
+import { aiwsT, loadAiwsLocale, setAiwsLocale } from '../i18n'
 
 const DB_NAME = '/replica.sqlite'
 const CONFIRMED_TABLES = ['entities', 'tree_edges', 'table_fields', 'table_records', 'richtext_states', 'refs', 'assets'] as const
@@ -627,6 +627,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const { id, op, args, locale } = event.data
   chain = chain.then(async () => {
     setAiwsLocale(locale)
+    await loadAiwsLocale(locale)
     let response: WorkerResponse
     try {
       const handler = handlers[op] as (...values: unknown[]) => unknown

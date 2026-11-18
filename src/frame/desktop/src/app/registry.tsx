@@ -34,7 +34,11 @@ registerAgentSessionEntry('agent-browser', lazy(() => import('./agent-browser/co
 
 const appLoaders: Record<string, AppContentLoader> = {
   'agent-setup': lazyPanel(() => import('./agent-setup/AgentSetupAppPanel'), (m) => m.AgentSetupAppPanel),
-  aiworkspace: lazyPanel(() => import('./aiworkspace/AIWorkspaceAppPanel'), (m) => m.AIWorkspaceAppPanel),
+  // with the current language's text (its table is a chunk of its own; i18n.ts)
+  aiworkspace: lazyPanel(
+    () => Promise.all([import('./aiworkspace/AIWorkspaceAppPanel'), import('./aiworkspace/i18n').then((m) => m.loadAiwsLocale())]).then(([m]) => m),
+    (m) => m.AIWorkspaceAppPanel,
+  ),
   'ai-center': lazyPanel(() => import('./ai-center/AICenterAppPanel'), (m) => m.AICenterAppPanel),
   'app-service': lazyPanel(() => import('./app-service/AppServiceAppPanel'), (m) => m.AppServiceAppPanel),
   settings: lazyPanel(() => import('./settings/SettingsAppPanel'), (m) => m.SettingsAppPanel),

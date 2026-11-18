@@ -14,8 +14,7 @@ export type PageValue = (typeof PAGE_VALUES)[number]
 
 /** A day as a page's `{date}` shows it, in the app's language (a long date: 2026年11月16日, November 16, 2026). */
 export function formatPageDate(date: Date = new Date()): string {
-  const locale = aiwsText().locale === 'zh-CN' ? 'zh-CN' : 'en'
-  return new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'long', day: 'numeric' }).format(date)
+  return new Intl.DateTimeFormat(aiwsText().intl, { year: 'numeric', month: 'long', day: 'numeric' }).format(date)
 }
 
 /** The values a frame's labels show while the frame is edited: `title` is the canvas's (a default when it has none). */

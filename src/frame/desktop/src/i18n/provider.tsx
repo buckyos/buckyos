@@ -8,7 +8,7 @@ import {
   type PropsWithChildren,
 } from 'react'
 import { dictionaries } from './dictionaries'
-import { supportedLocales, type SupportedLocale } from '../models/ui'
+import { matchSupportedLocale, supportedLocales, type SupportedLocale } from '../models/ui'
 
 interface I18nContextValue {
   locale: SupportedLocale
@@ -23,8 +23,8 @@ const storageKey = 'buckyos.prototype.locale.v1'
 export function defaultLocaleFromBrowser() {
   try {
     if (window.localStorage.getItem(storageKey)) return
-    const wanted = (navigator.languages ?? [navigator.language]).map((l) => l.toLowerCase())
-    const pick = supportedLocales.find((locale) => wanted.some((l) => l === locale.toLowerCase() || l.split('-')[0] === locale.toLowerCase().split('-')[0]))
+    // the first of the browser's languages the Desktop has, in the browser's order (zh-HK → zh-TW, not zh-CN)
+    const pick = (navigator.languages ?? [navigator.language]).map(matchSupportedLocale).find((locale) => locale !== null)
     if (pick) window.localStorage.setItem(storageKey, pick)
   } catch { /* no storage */ }
 }

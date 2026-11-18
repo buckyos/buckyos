@@ -4,6 +4,8 @@
  *
  * - each area table (src/i18n/aiworkspace/<area>.ts) has the same keys and placeholders in English and Chinese,
  *   its keys use the area's own prefixes, English text has no Chinese, and no key is in two areas;
+ * - every area file is listed here, and each other language's table (src/i18n/aiworkspace/locales/<language>.ts) has
+ *   every English key with the same placeholders, plus only the plural forms its language has (CLDR) of `{{count}}` texts;
  * - the app's source (and the shared draw.io importer) has no Chinese in string literals, template text or JSX
  *   text — comments are fine; a literal that must stay (data, a CJK regex) carries `i18n-exempt: <reason>` on
  *   its line or the line above;
@@ -52,6 +54,18 @@ import * as datasource from '../../src/i18n/aiworkspace/datasource.ts'
 import * as print from '../../src/i18n/aiworkspace/print.ts'
 import * as printrender from '../../src/i18n/aiworkspace/printrender.ts'
 import * as pdfframe from '../../src/i18n/aiworkspace/pdfframe.ts'
+import * as activity from '../../src/i18n/aiworkspace/activity.ts'
+import * as customize from '../../src/i18n/aiworkspace/customize.ts'
+import * as datamode from '../../src/i18n/aiworkspace/datamode.ts'
+import * as fielddefault from '../../src/i18n/aiworkspace/fielddefault.ts'
+import * as members from '../../src/i18n/aiworkspace/members.ts'
+import * as mindmap from '../../src/i18n/aiworkspace/mindmap.ts'
+import * as objecttree from '../../src/i18n/aiworkspace/objecttree.ts'
+import * as permissions from '../../src/i18n/aiworkspace/permissions.ts'
+import * as settings from '../../src/i18n/aiworkspace/settings.ts'
+import * as surfaces from '../../src/i18n/aiworkspace/surfaces.ts'
+import * as tablecurrent from '../../src/i18n/aiworkspace/tablecurrent.ts'
+import * as worklog from '../../src/i18n/aiworkspace/worklog.ts'
 
 type Table = Record<string, string>
 interface Part { name: string; prefixes: string[]; en: Table; zh: Table }
@@ -93,7 +107,22 @@ const PARTS: Part[] = [
   { name: 'print', prefixes: ['print'], ...print },
   { name: 'printrender', prefixes: ['printrender'], ...printrender },
   { name: 'pdfframe', prefixes: ['pdfframe'], ...pdfframe },
+  { name: 'activity', prefixes: ['activity'], ...activity },
+  { name: 'customize', prefixes: ['customize'], ...customize },
+  { name: 'datamode', prefixes: ['datamode'], ...datamode },
+  { name: 'fielddefault', prefixes: ['fielddefault'], ...fielddefault },
+  { name: 'members', prefixes: ['members'], ...members },
+  { name: 'mindmap', prefixes: ['mindmap'], ...mindmap },
+  { name: 'objecttree', prefixes: ['objecttree'], ...objecttree },
+  { name: 'permissions', prefixes: ['perm'], ...permissions },
+  { name: 'settings', prefixes: ['settings'], ...settings },
+  { name: 'surfaces', prefixes: ['surfaces'], ...surfaces },
+  { name: 'tablecurrent', prefixes: ['tablecurrent'], ...tablecurrent },
+  { name: 'worklog', prefixes: ['worklog'], ...worklog },
 ]
+
+/** The languages with a table of their own besides English and Simplified Chinese (src/app/aiworkspace/i18n.ts). */
+const LOCALES = ['zh-TW', 'ja', 'ko', 'fr', 'de', 'es', 'ru']
 
 const ROOT = new URL('../../', import.meta.url).pathname
 const SOURCE_DIRS = ['src/app/aiworkspace', '../aiworkspace/import-drawio', '../aiworkspace/import-pdf', '../aiworkspace/import-table', '../aiworkspace/import-office']
@@ -116,7 +145,8 @@ for (const part of PARTS) {
     for (const [key, text] of Object.entries(part.en)) {
       if (!owned.some((p) => key.startsWith(p))) problems.push(`${key}: not under ${owned.join(' / ')}`)
       if (!text.trim()) problems.push(`${key}: empty English text`)
-      if (CJK.test(text)) problems.push(`${key}: Chinese in the English text: ${text}`)
+      // ＋ names the add button by its glyph
+      if (CJK.test(text.replaceAll('＋', ''))) problems.push(`${key}: Chinese in the English text: ${text}`)
       if (key.endsWith('_one')) {
         if (!(baseKey(key) in part.en)) problems.push(`${key}: singular without its base key`)
         const extra = placeholders(text).filter((p) => !placeholders(part.en[baseKey(key)] ?? '').includes(p))
@@ -132,6 +162,41 @@ for (const part of PARTS) {
       if (!(key in part.en)) problems.push(`${key}: only in Chinese`)
     }
     fail(problems, `problems in src/i18n/aiworkspace/${part.name}.ts`)
+  })
+}
+
+Deno.test('aiworkspace i18n: every area file is checked here', () => {
+  const listed = new Set(PARTS.map((p) => p.name))
+  const files = [...Deno.readDirSync(new URL('../../src/i18n/aiworkspace/', import.meta.url))]
+    .filter((e) => e.isFile && e.name.endsWith('.ts') && e.name !== 'index.ts').map((e) => e.name.replace(/\.ts$/, ''))
+  const missing = files.filter((name) => !listed.has(name))
+  fail(missing, 'area files not in PARTS (import them here with their key prefixes)')
+})
+
+for (const locale of LOCALES) {
+  Deno.test(`aiworkspace i18n table: ${locale}`, async () => {
+    const table = (await import(`../../src/i18n/aiworkspace/locales/${locale}.ts`)).default as Table
+    const english: Table = Object.assign({}, ...PARTS.map((p) => p.en))
+    const forms: string[] = new Intl.PluralRules(locale).resolvedOptions().pluralCategories.filter((c) => c !== 'other')
+    const problems: string[] = []
+    for (const [key, text] of Object.entries(english)) {
+      if (key.endsWith('_one')) continue
+      if (!(key in table)) { problems.push(`${key}: missing`); continue }
+      if (!table[key].trim()) problems.push(`${key}: empty`)
+      const a = [...new Set(placeholders(text))].join(','), b = [...new Set(placeholders(table[key]))].join(',')
+      if (a !== b) problems.push(`${key}: placeholders differ (en: ${a || '-'}; ${locale}: ${b || '-'})`)
+    }
+    for (const [key, text] of Object.entries(table)) {
+      if (key in english && !key.endsWith('_one')) continue
+      const m = /^(.*)_(zero|one|two|few|many)$/.exec(key)
+      if (!m || !(m[1] in english)) { problems.push(`${key}: not an English key`); continue }
+      if (!forms.includes(m[2]) || m[2] === 'many') problems.push(`${key}: ${locale} has no “_${m[2]}” form here (the plain key is the general form)`)
+      if (!placeholders(english[m[1]]).includes('count')) problems.push(`${key}: a plural form of a text without {{count}}`)
+      if (!text.trim()) problems.push(`${key}: empty`)
+      const extra = placeholders(text).filter((p) => !placeholders(english[m[1]]).includes(p))
+      if (extra.length) problems.push(`${key}: placeholders ${extra} not in the plain key`)
+    }
+    fail(problems, `problems in src/i18n/aiworkspace/locales/${locale}.ts`)
   })
 }
 

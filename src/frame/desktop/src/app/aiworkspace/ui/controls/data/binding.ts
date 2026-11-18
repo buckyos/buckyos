@@ -10,7 +10,7 @@ import { CONTRACTS } from '@controls/contracts'
 import { isDataControl } from '@controls/contract'
 import { randomId } from '../../../api/ids'
 import type { EntityEnvelope, Json, Operation } from '../../../api/types'
-import { aiwsT, currentAiwsLocale } from '../../../i18n'
+import { aiwsT, sdkLocale } from '../../../i18n'
 import type { WorkspaceStore } from '../../../state/store'
 import { configDefaults } from '../../extensions/actions'
 import { BindScript } from '../../extensions/bindScript'
@@ -145,7 +145,7 @@ function createData(store: WorkspaceStore, results: Parameters<typeof createOps>
     folderId, newId: () => randomId('d'),
     orderKey: () => { last = store.core.order_key_between(last, undefined); return last },
     freeName: (name) => { const n = uniqueName(name, taken); taken.add(n); return n },
-    locale: currentAiwsLocale().startsWith('zh') ? 'zh' : 'en',
+    locale: sdkLocale(),
   }) as { ops: Operation[]; ids: Record<string, string> }
 }
 

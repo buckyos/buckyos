@@ -14,7 +14,7 @@ import type { AnnotationContent, Json, KeyedContent, Operation, Reference, RichT
 import { StaticRichText } from '../../richtext/RichTextEditor'
 import { isGuestPrincipal } from '../../api/transport'
 import { standardTableOp } from 'buckyos'
-import { aiwsT, currentAiwsLocale } from '../../i18n'
+import { aiwsT, sdkLocale } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
 import { authorLabel, readGuestName } from '../../state/guest'
 import { useEdit, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
@@ -117,7 +117,7 @@ const table: BlockDefinition = {
     const standard = standardTableOf(rawArgs.config)
     if (standard) {
       const name = freeTableName(args.store, args.contentFolderId, args.title || aiwsT(standard.table === 'todo' ? 'aiworkspace.blocks.table.standardTodo' : 'aiworkspace.blocks.table.standardCalendar'))
-      const locale = currentAiwsLocale().startsWith('zh') ? 'zh' : 'en'
+      const locale = sdkLocale()
       return [standardTableOp(standard.table, { entity_id: args.dataId, parent_id: args.contentFolderId, order_key: args.dataOrderKey, name, locale }) as unknown as Operation, cellOp(args, 'table', args.dataId)]
     }
     return newTableOps(args)

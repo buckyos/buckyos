@@ -4,7 +4,7 @@ import { buckyos } from 'buckyos'
 import { SelectEmbedHost, originInZone, type SelectEmbedInit } from 'buckyos/app-frame'
 import { I18nProvider, useI18n } from '../../i18n/provider'
 import { PrototypeThemeProvider } from '../../theme/provider'
-import { supportedLocales, type SupportedLocale } from '../../models/ui'
+import { matchSupportedLocale, type SupportedLocale } from '../../models/ui'
 import { isMockRuntime } from '../../runtime'
 import { SelectDialog } from './SelectDialog'
 import { parseSelectDialogParams, type SelectDialogInput } from './schemas'
@@ -16,8 +16,7 @@ function acceptEmbedder(origin: string): boolean {
 }
 
 function toLocale(locale: string): SupportedLocale {
-  const exact = supportedLocales.find(l => l.toLowerCase() === locale.toLowerCase())
-  return exact ?? supportedLocales.find(l => l.split('-')[0] === locale.split('-')[0].toLowerCase()) ?? 'en'
+  return matchSupportedLocale(locale) ?? 'en'
 }
 
 // One request per document: the App creates the page for a single pick and removes it afterwards.

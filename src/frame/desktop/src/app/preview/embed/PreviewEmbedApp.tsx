@@ -7,7 +7,7 @@ import type { ContentRef } from '../../../components/preview/types'
 import { I18nProvider, useI18n } from '../../../i18n/provider'
 import type { ShareDialogParams } from '../../../sysdlg/ShareDialog'
 import { PrototypeThemeProvider } from '../../../theme/provider'
-import { supportedLocales, type SupportedLocale } from '../../../models/ui'
+import { matchSupportedLocale, type SupportedLocale } from '../../../models/ui'
 import { isMockRuntime } from '../../../runtime'
 import { shareParamsOf } from '../../content/share'
 
@@ -20,8 +20,7 @@ function acceptEmbedder(origin: string): boolean {
 }
 
 function toLocale(locale: string): SupportedLocale {
-  const exact = supportedLocales.find(l => l.toLowerCase() === locale.toLowerCase())
-  return exact ?? supportedLocales.find(l => l.split('-')[0] === locale.split('-')[0].toLowerCase()) ?? 'en'
+  return matchSupportedLocale(locale) ?? 'en'
 }
 
 // One embed per document: the page is created by the App for a single content reference.

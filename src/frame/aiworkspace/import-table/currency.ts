@@ -36,8 +36,15 @@ export function resolveMark(mark: string): { code: string } | { ambiguous: Ambig
   return null
 }
 
-/** The interface language's currency when nothing else says (zh → CNY, any other → USD). */
-export const languageCurrency = (locale: string) => (locale.toLowerCase().startsWith('zh') ? 'CNY' : 'USD')
+/** The interface language's currency when nothing else says: the currency most people writing that language use
+ * (Simplified Chinese → CNY, Traditional → TWD, Japanese → JPY, Korean → KRW, French / German / Spanish → EUR,
+ * Russian → RUB, any other → USD). */
+export function languageCurrency(locale: string): string {
+  const tag = locale.toLowerCase()
+  if (tag.startsWith('zh')) return /^zh-(tw|hk|mo|hant)/.test(tag) ? 'TWD' : 'CNY'
+  return LANGUAGE_CURRENCY[tag.split('-')[0]] ?? 'USD'
+}
+const LANGUAGE_CURRENCY: Record<string, string> = { ja: 'JPY', ko: 'KRW', fr: 'EUR', de: 'EUR', es: 'EUR', ru: 'RUB' }
 
 /** Q12: `$` is the column's currency when that one is written `$`, else USD; `¥` is the column's currency when it
  * is CNY or JPY, else CNY in a Chinese interface and JPY in any other. */

@@ -36,11 +36,13 @@ const MessageHubRoute = lazy(() =>
 const MessageHubGuestRoute = lazy(() =>
   import('./app/messagehub/guest/GuestRoute').then((m) => ({ default: m.MessageHubGuestRoute })),
 )
+// AI Workspace pages load with the current language's text (its table is a chunk of its own; app/aiworkspace/i18n.ts)
+const aiwsText = () => import('./app/aiworkspace/i18n').then((m) => m.loadAiwsLocale())
 const AIWorkspaceRoute = lazy(() =>
-  import('./app/aiworkspace/AIWorkspaceRoute').then((m) => ({ default: m.AIWorkspaceRoute })),
+  Promise.all([import('./app/aiworkspace/AIWorkspaceRoute'), aiwsText()]).then(([m]) => ({ default: m.AIWorkspaceRoute })),
 )
 const PrompterRoute = lazy(() =>
-  import('./app/aiworkspace/presentation/PrompterRoute').then((m) => ({ default: m.PrompterRoute })),
+  Promise.all([import('./app/aiworkspace/presentation/PrompterRoute'), aiwsText()]).then(([m]) => ({ default: m.PrompterRoute })),
 )
 const TaskCenterRoute = lazy(() =>
   import('./app/task-center/TaskCenterRoute').then((m) => ({ default: m.TaskCenterRoute })),

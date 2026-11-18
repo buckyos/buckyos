@@ -7,6 +7,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ANONYMOUS_IDENTITY, buckyos, RuntimeType, type CurrentIdentity } from 'buckyos'
 import './index.css'
+import { loadAiwsLocale } from './app/aiworkspace/i18n'
 import { StandalonePage } from './app/aiworkspace/standalone/StandalonePage'
 import { defaultLocaleFromBrowser, I18nProvider } from './i18n/provider'
 import { setPresentationViewer } from './presentation/zone'
@@ -17,6 +18,8 @@ import { PrototypeThemeProvider } from './theme/provider'
 
 async function bootstrap() {
   defaultLocaleFromBrowser()
+  // the language's text table is a chunk of its own: fetched while the session starts, there before the first render
+  const text = loadAiwsLocale()
   let identity: CurrentIdentity = ANONYMOUS_IDENTITY
   if (!isMockRuntime()) {
     if (import.meta.env.VITE_ZONE_PROXY) {
@@ -33,6 +36,7 @@ async function bootstrap() {
     exposeMockZoneFiles()
   }
   setBootIdentity(identity)
+  await text
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <PrototypeThemeProvider>

@@ -450,7 +450,7 @@ function QuickAddField({ source, cell, anchor, onClose, locale }: { source: Sour
   const submit = () => {
     const text = name.trim()
     if (!text) return
-    // a currency column takes the interface language's currency (zh → CNY, else USD); the field manager can change it
+    // a currency column takes the interface language's currency (@table/currency); the field manager can change it
     void store.submit({ editId: `schema:${source.entity_id}:${randomId()}`, label: t('aiworkspace.data.field.addEdit', { name: text }), operations: addFieldOps(source.entity_id, cell, text, type, 2, languageCurrency(locale)) })
       .then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') onClose() })
   }

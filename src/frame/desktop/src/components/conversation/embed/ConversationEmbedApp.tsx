@@ -4,7 +4,7 @@ import { buckyos, type DID } from 'buckyos'
 import { ConversationEmbedHost, originInZone, type ConversationEmbedErrorCode, type ConversationEmbedHostInit, type ConversationEmbedSend, type ConversationEmbedTurnMode } from 'buckyos/app-frame'
 import { fetchAppList } from '../../../api/app_mgr'
 import { I18nProvider, useI18n } from '../../../i18n/provider'
-import { supportedLocales, type SupportedLocale } from '../../../models/ui'
+import { matchSupportedLocale, type SupportedLocale } from '../../../models/ui'
 import { isMockRuntime } from '../../../runtime'
 import { PrototypeThemeProvider } from '../../../theme/provider'
 import { LoadingOrb } from '../../LoadingOrb'
@@ -25,8 +25,7 @@ function acceptEmbedder(origin: string): boolean {
 }
 
 function toLocale(locale: string): SupportedLocale {
-  const exact = supportedLocales.find(l => l.toLowerCase() === locale.toLowerCase())
-  return exact ?? supportedLocales.find(l => l.split('-')[0] === locale.split('-')[0].toLowerCase()) ?? 'en'
+  return matchSupportedLocale(locale) ?? 'en'
 }
 
 const didPattern = /^did:[a-z0-9]+:\S+$/i

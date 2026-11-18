@@ -70,7 +70,7 @@ const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDat
 export function formatLabelValue(value: Json | undefined, format: LabelFormat | string | undefined, now: number = Date.now()): string {
   if (value === undefined || value === null) return ''
   const text = aiwsText()
-  const locale = text.locale === 'zh-CN' ? 'zh-CN' : 'en'
+  const locale = text.intl
   const f = (format ?? 'text') as LabelFormat
   if (f === 'number' || f === 'percent') {
     const n = typeof value === 'number' ? value : Number(value)

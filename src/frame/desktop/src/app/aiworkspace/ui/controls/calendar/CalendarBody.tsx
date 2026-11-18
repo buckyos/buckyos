@@ -252,7 +252,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   }, [view.view, view.day_start, hourH])
 
   // ---- labels for events
-  const timeFmt = useMemo(() => new Intl.DateTimeFormat(loc === 'zh' ? 'zh-CN' : 'en', { hour: '2-digit', minute: '2-digit' }), [loc])
+  const timeFmt = useMemo(() => new Intl.DateTimeFormat(loc, { hour: '2-digit', minute: '2-digit' }), [loc])
   const timeText = (p: Placed) => (p.allDay ? t('aiworkspace.calendar.allDay') : `${timeFmt.format(new Date(p.occ.startMs!))} – ${timeFmt.format(new Date(p.occ.endMs!))}`)
   const barText = (p: Placed) => (p.allDay || isLong(p) ? p.occ.title || t('aiworkspace.calendar.untitled') : `${timeFmt.format(new Date(p.occ.startMs!))} ${p.occ.title || t('aiworkspace.calendar.untitled')}`)
 
@@ -572,13 +572,13 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   }
 
   const rangeLabel = (() => {
-    const f = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(loc === 'zh' ? 'zh-CN' : 'en', { ...o, timeZone: 'UTC' })
+    const f = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(loc, { ...o, timeZone: 'UTC' })
     const d = (day: number) => new Date(day * DAY_MS)
     if (view.view === 'month' && range.month) return f({ year: 'numeric', month: 'long' }).format(new Date(Date.UTC(range.month.y, range.month.m - 1, 1)))
     if (view.view === 'day') return f({ year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(d(anchor))
     return `${f({ month: 'short', day: 'numeric' }).format(d(range.first))} – ${f({ month: 'short', day: 'numeric', year: 'numeric' }).format(d(range.last))}`
   })()
-  const wdFmt = new Intl.DateTimeFormat(loc === 'zh' ? 'zh-CN' : 'en', { weekday: 'short', timeZone: 'UTC' })
+  const wdFmt = new Intl.DateTimeFormat(loc, { weekday: 'short', timeZone: 'UTC' })
 
   const header = (
     <div className="aiws-dc-head aiws-cal-head" data-testid={`aiws-cal-head-${containerId}`}>
@@ -678,7 +678,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
           <div className="aiws-dc-canvas" style={{ height: agenda.laid.height + 16, width: contentW - 2 }}>
             {agenda.laid.headers.map((h) => {
               const day = h.day
-              const f = new Intl.DateTimeFormat(loc === 'zh' ? 'zh-CN' : 'en', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'UTC' })
+              const f = new Intl.DateTimeFormat(loc, { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'UTC' })
               return <span key={day} className={`aiws-cal-agenda-day${day === today ? ' is-today' : ''}`} style={{ left: h.rect.x, top: h.rect.y, width: h.rect.w, height: h.rect.h }}><LabelArt text={day === today ? `${t('aiworkspace.calendar.today')} · ${f.format(new Date(day * DAY_MS))}` : f.format(new Date(day * DAY_MS))} look={{ font_size: 13, weight: 'bold' }} /></span>
             })}
             {agenda.nodes.map((n) => <ProjectedView key={n.id} node={n} />)}
@@ -729,7 +729,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
       {popover?.kind === 'more' && (
         <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.dayEvents')} width={280} testId={`aiws-cal-popover-${containerId}`}>
           <div className="aiws-cal-daylist">
-            <div className="aiws-cal-daylist-title">{new Intl.DateTimeFormat(loc === 'zh' ? 'zh-CN' : 'en', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'UTC' }).format(new Date(popover.day * DAY_MS))}</div>
+            <div className="aiws-cal-daylist-title">{new Intl.DateTimeFormat(loc, { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'UTC' }).format(new Date(popover.day * DAY_MS))}</div>
             {placed.filter((p) => p.startDay <= popover.day && p.endDay >= popover.day).sort((a, b) => Number(!a.allDay) - Number(!b.allDay) || a.startMin - b.startMin).map((p) => (
               <button key={p.occ.id} type="button" className="aiws-cal-daylist-item" onClick={(e) => openDetail(p, e.currentTarget)}>
                 <span className="aiws-cal-dot" style={{ background: p.color }} /><span className="aiws-cal-daylist-time">{p.allDay || isLong(p) ? t('aiworkspace.calendar.allDay') : timeFmt.format(new Date(p.occ.startMs!))}</span>
@@ -760,8 +760,8 @@ function timesValues(times: EventTimes): Record<string, Json | undefined> {
     : { all_day: undefined, start: times.start, end: times.end, start_date: undefined, end_date: undefined }
 }
 
-function summaryOf(d: EventDraft, loc: 'zh' | 'en'): string {
-  const f = new Intl.DateTimeFormat(loc === 'zh' ? 'zh-CN' : 'en', { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' })
+function summaryOf(d: EventDraft, loc: string): string {
+  const f = new Intl.DateTimeFormat(loc, { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' })
   const day = (s: string) => f.format(new Date(`${s}T00:00:00Z`))
   if (d.allDay) return d.startDate === d.endDate ? day(d.startDate) : `${day(d.startDate)} – ${day(d.endDate)}`
   return `${day(d.startDate)} ${hhmm(d.startMin)} – ${hhmm(d.endMin)}`

@@ -156,7 +156,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       ops.push(...todoCompleteOps(sourceId, item, to, { now, reopenStatus: options[0]?.option_id }) as Operation[])
       overlay[item.record_id] = to ? { status: doneId, done_at: now } : { status: options[0]?.option_id ?? 'todo', done_at: undefined }
     }
-    void write(t(to ? 'aiworkspace.todo.completeN' : 'aiworkspace.todo.reopenN', { n: Object.keys(overlay).length }), ops, { overlay })
+    void write(t(to ? 'aiworkspace.todo.completeN' : 'aiworkspace.todo.reopenN', { count: Object.keys(overlay).length }), ops, { overlay })
   }
 
   const addItem = async (title: string, status?: string) => {
@@ -174,7 +174,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
     if (!sourceId || !canWrite) { if (!canWrite) store.notify('info', noWrite); return }
     const rows = ids.map((id) => byId.get(id)).filter((i): i is TodoItem => Boolean(i))
     if (!rows.length) return
-    void write(t('aiworkspace.todo.deleteN', { n: rows.length }), [deleteRecordsOp(sourceId, rows) as Operation], { removed: rows.map((r) => r.record_id) })
+    void write(t('aiworkspace.todo.deleteN', { count: rows.length }), [deleteRecordsOp(sourceId, rows) as Operation], { removed: rows.map((r) => r.record_id) })
     setSelection([])
   }
 
@@ -205,7 +205,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       overlay[item.record_id] = { order: keys[i], status, ...(status !== item.status ? { done_at: status === doneId ? now : undefined } : {}) }
     })
     const statusLabel = to.status ? options.find((o) => o.option_id === to.status)?.label ?? to.status : null
-    void write(statusLabel ? t('aiworkspace.todo.moveToStatus', { n: moving.length, status: statusLabel }) : t('aiworkspace.todo.reorderN', { n: moving.length }), ops, { overlay })
+    void write(statusLabel ? t('aiworkspace.todo.moveToStatus', { n: moving.length, status: statusLabel }) : t('aiworkspace.todo.reorderN', { count: moving.length }), ops, { overlay })
   }
 
   const rename = (id: string, text: string) => {

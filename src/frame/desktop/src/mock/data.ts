@@ -637,10 +637,12 @@ export function buildDesktopPayload(formFactor: FormFactor): DesktopPayload {
 export const localeLabels = {
   en: 'English',
   'zh-CN': '简体中文',
+  'zh-TW': '繁體中文',
   ja: '日本語',
   ko: '한국어',
   fr: 'Français',
   de: 'Deutsch',
   es: 'Español',
+  ru: 'Русский',
   ar: 'العربية',
 } as const

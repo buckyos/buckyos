@@ -17,7 +17,7 @@ export function moneyParts(value: Json | undefined): { amount: string; currency:
 export function formatMoney(amount: string, currency: string, scale?: number): string {
   const digits = scale ?? amount.split('.')[1]?.length ?? 2
   try {
-    const format = new Intl.NumberFormat(aiwsText().locale, { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits })
+    const format = new Intl.NumberFormat(aiwsText().intl, { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits })
     // a decimal string is formatted exactly (Intl.NumberFormat v3)
     return format.format(amount as unknown as number)
   } catch {
@@ -102,7 +102,7 @@ export function parseInput(def: ValueDef, text: string): { ok: true; value: Inpu
       if (!number || number.percent || marks.some((m) => m === null)) return { ok: false, error: aiwsT('aiworkspace.data.value.invalidMoney') }
       const mark = marks[0]
       if (!mark) return { ok: true, value: number.digits }
-      const locale = aiwsText().locale
+      const locale = aiwsText().intl
       const currency = 'code' in mark ? mark.code : resolveAmbiguous(mark.ambiguous, def.currency ?? null, locale)
       return { ok: true, value: { amount: number.digits, currency } }
     }

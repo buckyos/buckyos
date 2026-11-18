@@ -32,8 +32,11 @@ export interface CalendarView extends Record<string, Json | undefined> {
 
 export const CAL_VIEW_KEYS = ['view', 'date', 'week_start', 'day_start', 'show_todo', 'hidden'] as const
 
+/** Languages whose calendars usually start the week on Sunday (the others: Monday). */
+const SUNDAY_FIRST = new Set(['en', 'ja', 'ko', 'zh-TW'])
+
 export function calendarDefaults(locale: string, phone: boolean): CalendarView {
-  return { view: phone ? 'agenda' : 'week', week_start: locale.startsWith('en') ? 6 : 0, day_start: 8, show_todo: true }
+  return { view: phone ? 'agenda' : 'week', week_start: SUNDAY_FIRST.has(locale) ? 6 : 0, day_start: 8, show_todo: true }
 }
 
 // ---- the reader's calendar (the device's time zone)
