@@ -7133,3 +7133,60 @@ test("Doubao vision Mock accepts official reasoning levels and rejects unknown v
     }
   }
 });
+
+
+test("Gemini Hydrogen thinking levels remain model specific in the protocol Mock", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "google-gemini", "gemini.interactions.v1beta");
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  for (const apiType of ["llm", "audio.asr", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"]) {
+    await fetch(`${baseUrl}/__mock/select`, {method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({provider_driver: "google-gemini", contract_id: contract.id, api_type: apiType, scenario: "success"})});
+    for (const [model, level, status] of [
+      ["gemini-4-hydrogen", "low", 200],
+      ["gemini-4-hydrogen", "medium", 200],
+      ["gemini-4-hydrogen", "high", 200],
+      ["gemini-4-hydrogen", "xhigh", 200],
+      ["gemini-4-hydrogen", "minimal", 400],
+      ["gemini-4-hydrogen", "ultra", 400],
+      ["gemini-4-carbon", "xhigh", 400],
+      ["gemini-4-argon", "xhigh", 400],
+      ["gemini-3.8-flash", "xhigh", 400],
+      ["gemini-3.1-pro-preview", "xhigh", 400],
+      ["gemini-3.6-flash", "minimal", 200],
+      ["unknown-model", "xhigh", 400],
+      ["constructor", "xhigh", 400],
+    ] as const) {
+      const extra: Record<string, unknown> = {generation_config: {thinking_level: level}};
+      if (["vision.detect", "vision.segment"].includes(apiType)) {
+        const fields = apiType === "vision.segment" ? ["box_2d", "mask", "label"] : ["box_2d", "label"];
+        extra.response_format = {type: "text", mime_type: "application/json", schema: {
+          type: "object", properties: {boxes: {type: "array", items: {type: "object",
+            properties: Object.fromEntries(fields.map((field) => [field,
+              field === "label" ? {type: "string"} : {type: "array", items:
+                field === "mask" ? {type: "array", items: {type: "integer"}} : {type: "integer"}}])),
+            required: fields}}}, required: ["boxes"],
+        }};
+      }
+      const request = t15ProviderRequest(baseUrl, contract, model, extra, apiType);
+      const response = await fetch(request.url, request.init);
+      assert.equal(response.status, status, `${apiType}/${model}/${level}: ${await response.text()}`);
+    }
+  }
+});
+
+test("Gemini model thinking-level overrides must be arrays of strings", async () => {
+  for (const invalid of [[], {"gemini-4-hydrogen": "xhigh"}, {"gemini-4-hydrogen": [1]}, {"": ["xhigh"]}]) {
+    const catalog = await loadProviderProtocolCatalog();
+    const contract = protocolContract(catalog, "google-gemini", "gemini.interactions.v1beta");
+    (contract.generation_config as unknown as Record<string, unknown>).thinking_level_values_by_model = invalid;
+    assert.throws(() => validateProviderProtocolCatalog(catalog), /thinking_level_values_by_model/);
+  }
+});
