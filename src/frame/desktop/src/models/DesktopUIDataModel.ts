@@ -67,6 +67,7 @@ import {
   widgetText,
   type DesktopEntry,
 } from './desktopFolder'
+import { clampWidgetSize, defaultWidgetSize, widgetDefinition } from '../desktop/widgets/catalog'
 import { fetchDesktopPayload } from '../mock/provider'
 import { isMockRuntime } from '../runtime'
 import { isLauncherApp } from './ui'
@@ -76,6 +77,7 @@ import type {
   AppIconItem,
   AppItemLayoutSettings,
   DeadZone,
+  LayoutItem,
   DesktopPayload,
   DesktopSyncData,
   FormFactor,
@@ -97,6 +99,8 @@ import type {
 import {
   applyDragCollision,
   clamp,
+  coordToSlot,
+  findNearestFittingRect,
   invalidatePositions,
   layoutStorageKey,
   readJson,
@@ -111,6 +115,7 @@ import {
   desktopTaskbarPinnedStorageKey,
   windowGeometryStorageKey,
   writeJson,
+  type GridRect,
   type ScanOrder,
   type WindowGeometryMap,
 } from './layout'
@@ -143,6 +148,8 @@ export interface DesktopRuntimeState {
   viewportProgress: number
   /** 右键菜单状态 */
   contextMenu: ContextMenuState | null
+  /** 正在调整大小的小部件（显示锚点），失去焦点后清空 */
+  resizingItemId: string | null
   /** 当前网格列数（由容器宽度计算） */
   gridCols: number
   /** 当前网格行数（由容器高度计算） */
@@ -194,6 +201,12 @@ export interface ContextMenuState {
   itemId: string
   mouseX: number
   mouseY: number
+}
+
+/** Where an item added from the desktop's menu goes: the page the menu was opened on, and the cell under the pointer. */
+export interface DesktopPlacement {
+  pageIndex: number
+  cell?: { x: number; y: number }
 }
 
 /**
@@ -445,6 +458,7 @@ export class DesktopUIStore {
         selectedItemId: null,
         viewportProgress: 0,
         contextMenu: null,
+        resizingItemId: null,
         gridCols: 10,
         gridRows: 8,
         gridRowHeight: 78,
@@ -889,27 +903,79 @@ export class DesktopUIStore {
     return this.desktopEntries.find((entry) => entry.name === itemId)
   }
 
-  /** Puts a shortcut to the app on the desktop: `{label}.lnk` in the Desktop folder, where there is room. */
-  async addAppToDesktop(appId: string, label: string): Promise<void> {
+  /** Whether the Desktop folder holds a widget of this type. */
+  isWidgetOnDesktop(widgetType: string): boolean {
+    return this.desktopEntries.some((entry) => entry.kind === 'widget' && entry.widget === widgetType)
+  }
+
+  /** A known widget, and one more of it is allowed: a type that can be added any number of times, or one not there yet. */
+  canAddWidget(widgetType: string): boolean {
+    const definition = widgetDefinition(widgetType)
+    return Boolean(definition && this.canEditDesktop() && (definition.multiple || !this.isWidgetOnDesktop(widgetType)))
+  }
+
+  /**
+   * The layout as shown, with `item` on the page it is added on: in the free spot nearest the cell asked for, else
+   * after the page's items (on a later page when this one is full).
+   */
+  private positionsWithNewItem(item: LayoutItem, placement: DesktopPlacement | undefined): LayoutState | undefined {
+    const shown = this.snapshot.resolvedLayout ?? this.snapshot.layoutState
+    if (!placement || !shown || shown.pages.length === 0) return undefined
+    const pageIndex = clamp(placement.pageIndex, 0, shown.pages.length - 1)
+    const { gridCols: cols, gridRows: rows } = this.snapshot.runtime
+    const order: ScanOrder = this.snapshot.formFactor === 'mobile' ? 'row-major' : 'col-major'
+    const blocked = shown.pages[pageIndex].items.flatMap((other) =>
+      other.x === undefined || other.y === undefined ? [] : [{ x: other.x, y: other.y, w: other.w, h: other.h }],
+    )
+    const spot = placement.cell && item.w <= cols && item.h <= rows
+      ? findNearestFittingRect(
+        { x: clamp(placement.cell.x, 0, cols - item.w), y: clamp(placement.cell.y, 0, rows - item.h) },
+        item,
+        blocked,
+        cols,
+        rows,
+        order,
+      )
+      : null
+    const placed: LayoutItem = spot
+      ? { ...item, x: spot.x, y: spot.y, slotIndex: coordToSlot(spot.x, spot.y, cols, rows, order), preferredPage: pageIndex, placementType: 'manual' }
+      : { ...item, x: undefined, y: undefined, slotIndex: undefined, preferredPage: pageIndex, placementType: 'auto' }
+    return {
+      ...shown,
+      pages: shown.pages.map((page, index) => (index === pageIndex ? { ...page, items: [...page.items, placed] } : page)),
+    }
+  }
+
+  /**
+   * Puts a shortcut to the app on the desktop: `{label}.lnk` in the Desktop folder, at `placement` or where there is
+   * room. Returns the new item's id (its file name), or null when nothing was added.
+   */
+  addAppToDesktop(appId: string, label: string, placement?: DesktopPlacement): string | null {
     const app = this.snapshot.apps.find((entry) => entry.id === appId)
-    if (!app || !this.canEditDesktop() || this.isAppOnDesktop(appId)) return
+    if (!app || !this.canEditDesktop() || this.isAppOnDesktop(appId)) return null
     const taken = new Set(this.desktopEntries.map((entry) => entry.name))
     const name = uniqueFileName(fileNameStem(label, appId), SHORTCUT_EXTENSION, taken)
     const ref = shortcutRefForApp(app)
     this.desktopEntries = [...this.desktopEntries, { name, kind: 'app', app: ref, raw: { app: ref } }]
-    this.relayoutFromFolder()
-    await this.writeFolder(() => writeDesktopItem(name, shortcutText(ref), { create: true }))
+    this.relayoutFromFolder(this.positionsWithNewItem({ id: name, type: 'app', appId, w: 1, h: 1 }, placement))
+    void this.writeFolder(() => writeDesktopItem(name, shortcutText(ref), { create: true }))
+    return name
   }
 
-  async addSystemInfoToDesktop(): Promise<void> {
-    if (!this.canEditDesktop() || this.desktopEntries.some((entry) => entry.kind === 'widget' && entry.widget === 'system-info')) return
-    const label = translateNow('widgets.systemInfo', 'System Info')
+  /** Puts a widget on the desktop: `{name}.widget` in the Desktop folder. Returns its item id, or null when it was not added. */
+  addWidgetToDesktop(widgetType: string, placement?: DesktopPlacement): string | null {
+    const definition = widgetDefinition(widgetType)
+    if (!definition || !this.canAddWidget(widgetType)) return null
+    const label = translateNow(definition.labelKey, definition.label)
     const taken = new Set(this.desktopEntries.map((entry) => entry.name))
-    const name = uniqueFileName(fileNameStem(label, 'System Info'), WIDGET_EXTENSION, taken)
-    const raw = { widget: 'system-info' }
-    this.desktopEntries = [...this.desktopEntries, { name, kind: 'widget', widget: raw.widget, raw }]
-    this.relayoutFromFolder()
-    await this.writeFolder(() => writeDesktopItem(name, widgetText(raw), { create: true }))
+    const name = uniqueFileName(fileNameStem(label, definition.label), WIDGET_EXTENSION, taken)
+    const raw = { widget: widgetType }
+    this.desktopEntries = [...this.desktopEntries, { name, kind: 'widget', widget: widgetType, raw }]
+    this.relayoutFromFolder(
+      this.positionsWithNewItem({ id: name, type: 'widget', widgetType, config: {}, ...defaultWidgetSize(widgetType) }, placement),
+    )
+    void this.writeFolder(() => writeDesktopItem(name, widgetText(raw), { create: true }))
+    return name
   }
 
   /** Removes a shortcut or widget from the desktop (deletes its file). Documents and folders stay. */
@@ -917,7 +983,7 @@ export class DesktopUIStore {
     const entry = this.getDesktopEntry(itemId)
     if (!entry || !isDesktopObject(entry) || !this.canEditDesktop()) return
     this.desktopEntries = this.desktopEntries.filter((other) => other !== entry)
-    this.update({ runtime: { contextMenu: null, selectedItemId: null } })
+    this.update({ runtime: { contextMenu: null, selectedItemId: null, resizingItemId: null } })
     this.relayoutFromFolder()
     await this.writeFolder(async () => {
       if (entry.kind === 'widget' && entry.widget === 'system-info') {
@@ -1519,9 +1585,30 @@ export class DesktopUIStore {
 
     this.update({
       layoutState: { ...layoutState, pages: nextPages },
-      runtime: { contextMenu: null },
+      runtime: { contextMenu: null, resizingItemId: null },
     })
     this.persistLayout()
+  }
+
+  /**
+   * Gives a widget the cells its resize handles were let go on, kept within its size limits and the grid. Items in
+   * the way make room as they do for a drop; when they cannot, the widget keeps its size. Returns its cells after.
+   */
+  resizeWidget(itemId: string, next: GridRect): GridRect | null {
+    const page = this.snapshot.resolvedLayout?.pages.find((entry) => entry.items.some((item) => item.id === itemId))
+    const item = page?.items.find((entry) => entry.id === itemId)
+    if (!page || item?.type !== 'widget' || item.x === undefined || item.y === undefined) return null
+    const { gridCols: cols, gridRows: rows } = this.snapshot.runtime
+    const size = clampWidgetSize(item.widgetType, next, { cols, rows })
+    const target = { i: itemId, x: clamp(next.x, 0, cols - size.w), y: clamp(next.y, 0, rows - size.h), ...size }
+    this.handleGridDragStop(page.id, { i: itemId, x: item.x, y: item.y, w: item.w, h: item.h }, target)
+    const placed = this.snapshot.resolvedLayout?.pages.find((entry) => entry.id === page.id)?.items.find((entry) => entry.id === itemId)
+    if (!placed || placed.x === undefined || placed.y === undefined) return null
+    const after = { x: placed.x, y: placed.y, w: placed.w, h: placed.h }
+    if (after.w !== target.w || after.h !== target.h) {
+      this.update({ runtime: { snackbar: translateNow('desktop.resize.noRoom', 'There is no room on this page for that size.') } })
+    }
+    return after
   }
 
   /** Saves a note widget's text into its `.widget` file. */
@@ -1659,6 +1746,11 @@ export class DesktopUIStore {
 
   setContextMenu(menu: ContextMenuState | null) {
     this.update({ runtime: { contextMenu: menu } })
+  }
+
+  setResizingItemId(id: string | null) {
+    if (id === this.snapshot.runtime.resizingItemId) return
+    this.update({ runtime: { resizingItemId: id } })
   }
 
   setViewportProgress(progress: number) {

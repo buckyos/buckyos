@@ -174,10 +174,24 @@ test('FB-08: dropped files upload to the target and conflicts keep both', async 
   await page.getByTestId('conflict-dialog').getByRole('button', { name: 'Keep both' }).click()
   await expect(win.getByTestId('transfer-success')).toHaveCount(3, { timeout: 15000 })
   await expect(win.getByRole('cell', { name: 'drop (2).txt', exact: true })).toBeVisible()
-  await win.getByRole('button', { name: 'Collapse tasks' }).click()
-  await expect(win.getByTestId('transfer-success')).toHaveCount(0)
-  await win.getByRole('button', { name: 'Show 3 tasks' }).click()
-  await expect(win.getByTestId('transfer-success')).toHaveCount(3)
+  // × only hides the panel: tasks keep running, the status bar carries
+  // progress, and clicking it (or new work) brings the panel back.
+  await win.getByTestId('transfers-hide').click()
+  await expect(win.getByTestId('transfers-panel')).toHaveCount(0)
+  const status = win.getByTestId('copy-tasks')
+  await expect(status).toHaveAttribute('data-transfer-state', 'idle')
+  const more = await page.evaluateHandle(() => { const data = new DataTransfer(); for (let i = 1; i <= 6; i += 1) data.items.add(new File(['x'.repeat(4096)], `batch-${i}.txt`, { type: 'text/plain' })); data.items.add(new File(['content'], 'fail-late.txt', { type: 'text/plain' })); return data })
+  await win.locator('[data-pane="left"]').dispatchEvent('drop', { dataTransfer: more })
+  await expect(win.getByTestId('transfers-panel')).toBeVisible()
+  await win.getByTestId('transfers-hide').click()
+  await expect(status).toHaveAttribute('data-transfer-state', 'active')
+  await expect(status).toContainText(/Transferring \d+ · \d+%/)
+  await expect(win.getByTestId('transfers-panel')).toHaveCount(0)
+  await expect(status).toHaveAttribute('data-transfer-state', 'failed', { timeout: 15000 })
+  await expect(status).toHaveText('Transfers failed: 1')
+  await status.click()
+  await expect(win.getByTestId('transfer-success')).toHaveCount(9)
+  await expect(win.getByTestId('transfer-error')).toHaveCount(1)
 })
 
 test('FB-10/11: zero and unknown metadata, copy capability and sorting', async ({ page }) => {

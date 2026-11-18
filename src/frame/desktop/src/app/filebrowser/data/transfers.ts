@@ -83,6 +83,50 @@ const retryHandlers = new Map<string, () => void>()
 let snapshotVersion = 0
 let taskCounter = 0
 
+const RUNNING_STATUSES: ReadonlySet<TransferStatus> = new Set(['queued', 'hashing', 'probing', 'uploading', 'committing'])
+
+export function isTransferRunning(status: TransferStatus): boolean {
+  return RUNNING_STATUSES.has(status)
+}
+
+// Throughput for the status-bar readout: cumulative bytes moved, sampled on
+// every progress report. Samples reset whenever the queue drains, so idle
+// time never dilutes the next transfer's speed.
+const SPEED_WINDOW_MS = 3000
+let bytesMoved = 0
+let samples: { at: number; bytes: number }[] = []
+
+function sample() {
+  const now = Date.now()
+  samples.push({ at: now, bytes: bytesMoved })
+  // Keep exactly one sample at or before the window start as the baseline.
+  while (samples.length > 2 && samples[1].at <= now - SPEED_WINDOW_MS) samples.shift()
+}
+
+function speedAt(now: number): number | null {
+  if (!samples.length) return null
+  const windowStart = now - SPEED_WINDOW_MS
+  let base = samples[0]
+  for (const point of samples) {
+    if (point.at > windowStart) break
+    base = point
+  }
+  const elapsed = now - Math.max(base.at, windowStart)
+  if (elapsed < 1000) return null
+  return ((bytesMoved - base.bytes) * 1000) / elapsed
+}
+
+export interface TransferSummary {
+  /** Queued or in flight. */
+  active: number
+  failed: number
+  /** Bytes over the active tasks only. */
+  bytesSent: number
+  totalBytes: number
+  /** Average over the last few seconds; null until there is enough to measure. */
+  bytesPerSecond: number | null
+}
+
 /**
  * Limit simultaneous imports; additional tasks wait in `queued` state.
  */
@@ -127,10 +171,15 @@ function runTask(task: TransferTask) {
   cancelRequested.delete(task.id)
   const controller = new AbortController()
   abortControllers.set(task.id, controller)
+  if (running === 0) {
+    samples = []
+    sample()
+  }
   running += 1
   const settle = () => {
     abortControllers.delete(task.id)
     running -= 1
+    if (running === 0) samples = []
     emit()
     pump()
   }
@@ -142,7 +191,12 @@ function runTask(task: TransferTask) {
       emit()
     },
     setProgress: (bytesSent) => {
-      task.bytesSent = Math.min(bytesSent, task.totalBytes)
+      const next = Math.min(bytesSent, task.totalBytes)
+      if (next > task.bytesSent) {
+        bytesMoved += next - task.bytesSent
+        sample()
+      }
+      task.bytesSent = next
       emit()
     },
   }
@@ -184,6 +238,27 @@ export const transferStore = {
 
   tasks(): readonly TransferTask[] {
     return tasks
+  },
+
+  /** Grows with every new task — lets a hidden panel reappear for new work. */
+  lastTaskSeq(): number {
+    return taskCounter
+  },
+
+  summary(now = Date.now()): TransferSummary {
+    let active = 0
+    let failed = 0
+    let bytesSent = 0
+    let totalBytes = 0
+    for (const task of tasks) {
+      if (task.status === 'error') failed += 1
+      else if (RUNNING_STATUSES.has(task.status)) {
+        active += 1
+        bytesSent += task.bytesSent
+        totalBytes += task.totalBytes
+      }
+    }
+    return { active, failed, bytesSent, totalBytes, bytesPerSecond: active ? speedAt(now) : null }
   },
 
   recordOutcome(targetUrl: LocationUrl, candidate: UploadCandidateInput, status: 'error' | 'cancelled' | 'skipped', error: UiError | null = null, retry?: () => void) {

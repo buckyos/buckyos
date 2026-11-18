@@ -12,6 +12,7 @@ import { usersAgentsEn, usersAgentsZh } from './users-agents'
 import { presentationEn, presentationZh } from './presentation'
 import { settingsEn, settingsZh } from './settings'
 import { trayEn, trayZh } from './tray'
+import { desktopEditEn, desktopEditZh } from './desktop-edit'
 import { filePermissionsEn, filePermissionsZh } from './file-permissions'
 import { networkEn, networkZh } from './network'
 import { myNetworkEn, myNetworkZh } from './my-network'
@@ -1836,8 +1837,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...fileBrowserFilesEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn, ...archiveEn },
-  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...fileBrowserFilesZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh, ...archiveZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...fileBrowserFilesEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn, ...archiveEn, ...desktopEditEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...fileBrowserFilesZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh, ...archiveZh, ...desktopEditZh },
   ja,
   ko,
   fr,

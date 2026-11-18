@@ -274,6 +274,70 @@ a {
   scale: 1.06;
 }
 
+/* A widget whose resize handles are shown (src/desktop/WidgetResizeFrame.tsx): above its neighbours, so the handles
+   on its edges stay on top. A handle drag writes the item's size and position directly, a cell at a time, so
+   neither is transitioned then. */
+.react-grid-layout > .react-grid-item[data-resize-mode] {
+  z-index: 4;
+}
+
+.react-grid-layout > .react-grid-item[data-resizing] {
+  transition: none;
+}
+
+.desktop-resize-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: 16px;
+  box-shadow: 0 0 0 2px var(--cp-accent);
+}
+
+.desktop-resize-handle {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.desktop-resize-handle::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--cp-surface);
+  border: 2px solid var(--cp-accent);
+}
+
+.desktop-resize-handle[data-edge='nw'] { left: 0; top: 0; cursor: nwse-resize; }
+.desktop-resize-handle[data-edge='n'] { left: 50%; top: 0; cursor: ns-resize; }
+.desktop-resize-handle[data-edge='ne'] { left: 100%; top: 0; cursor: nesw-resize; }
+.desktop-resize-handle[data-edge='e'] { left: 100%; top: 50%; cursor: ew-resize; }
+.desktop-resize-handle[data-edge='se'] { left: 100%; top: 100%; cursor: nwse-resize; }
+.desktop-resize-handle[data-edge='s'] { left: 50%; top: 100%; cursor: ns-resize; }
+.desktop-resize-handle[data-edge='sw'] { left: 0; top: 100%; cursor: nesw-resize; }
+.desktop-resize-handle[data-edge='w'] { left: 0; top: 50%; cursor: ew-resize; }
+
+/* A finger needs a larger target than the dot it sees. */
+@media (pointer: coarse) {
+  .desktop-resize-handle {
+    width: 36px;
+    height: 36px;
+    margin: -18px 0 0 -18px;
+  }
+
+  .desktop-resize-handle::before {
+    width: 14px;
+    height: 14px;
+  }
+}
+
 .swiper-pagination-bullet {
   background: color-mix(in srgb, var(--cp-text) 20%, transparent);
   opacity: 1;

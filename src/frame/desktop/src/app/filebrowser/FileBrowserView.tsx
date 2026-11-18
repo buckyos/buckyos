@@ -39,6 +39,7 @@ import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
 import { TopBar } from './TopBar'
 import { TransfersPanel } from './TransfersPanel'
+import { useTransfersPanelState } from './useTransfers'
 import { NamePromptDialog } from './dialogs/NamePromptDialog'
 import type { NamePromptRequest } from './dialogs/NamePromptDialog'
 import { asCollectionReader } from './data/CollectionModel'
@@ -168,6 +169,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   const [, refreshCopyCapability] = useState(0)
   useEffect(() => { const refresh = () => refreshCopyCapability((n) => n + 1); window.addEventListener('files-copy-capability', refresh); return () => window.removeEventListener('files-copy-capability', refresh) }, [])
   const [closedTabs, setClosedTabs] = useState<BrowserTab[]>([])
+  const transfersPanel = useTransfersPanelState()
   const [focusedSide, setFocusedSide] = useState<'left' | 'right'>('left')
   // A launch that names a folder (the Desktop folder, a folder on the desktop) shows it in the left pane.
   const handledOpenRequest = useRef<string | null>(openRequest?.requestId ?? null)
@@ -1431,7 +1433,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
               </div>
             ))}
           </div>
-          <CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} compact />
+          <CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} compact onShowTransfers={transfersPanel.show} />
           <button
             type="button"
             onClick={() => left.list.reload()}
@@ -1607,7 +1609,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         />
 
         {dialogs}
-        <TransfersPanel onOpenTarget={(path) => left.revealOriginal(path)} mobile={isMobile} />
+        <TransfersPanel onOpenTarget={(path) => left.revealOriginal(path)} panel={transfersPanel} />
         <NamePromptDialog request={namePrompt} onClose={() => setNamePrompt(null)} />
 
         {toast ? (
@@ -1719,7 +1721,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
               ? () => setPreviewCollapsed(false)
               : undefined
           }
-          trailing={<CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} />}
+          trailing={<CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} onShowTransfers={transfersPanel.show} />}
         />
       </main>
 
@@ -1836,7 +1838,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       />
 
       {dialogs}
-      <TransfersPanel onOpenTarget={(path) => focusedPane.revealOriginal(path)} />
+      <TransfersPanel onOpenTarget={(path) => focusedPane.revealOriginal(path)} panel={transfersPanel} />
       <NamePromptDialog request={namePrompt} onClose={() => setNamePrompt(null)} />
 
       {archivePassword ? (

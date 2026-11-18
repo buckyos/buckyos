@@ -122,7 +122,7 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
             size="small"
             variant="outlined"
             disabled={!desktop.canEditDesktop() || hasSystemInfo}
-            onClick={() => void desktop.addSystemInfoToDesktop()}
+            onClick={() => void desktop.addWidgetToDesktop('system-info')}
             data-testid="settings-add-system-info"
           >
             {hasSystemInfo ? t('systemInfo.added', 'System info is on your desktop') : t('systemInfo.add', 'Add system info to desktop')}

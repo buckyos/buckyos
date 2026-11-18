@@ -17,6 +17,7 @@
  */
 import type { DesktopFolderEntry, DesktopSeedItem } from '../api/desktop_items'
 import { desktopCatalogIdForLogicalApp } from '../app/backend-apps'
+import { clampWidgetSize, defaultWidgetSize } from '../desktop/widgets/catalog'
 import { coordToSlot } from './layout'
 import type {
   AppDefinition,
@@ -249,12 +250,6 @@ export function defaultSlots(formFactor: FormFactor, present: readonly string[])
   return slots
 }
 
-const defaultWidgetSize: Record<string, { w: number; h: number }> = {
-  clock: { w: 2, h: 1 },
-  notepad: { w: 2, h: 2 },
-  'system-info': { w: 2, h: 3 },
-}
-
 // ---------------------------------------------------------------------------
 // Layout = folder entries + this device's positions
 // ---------------------------------------------------------------------------
@@ -279,7 +274,7 @@ function itemForEntry(entry: DesktopEntry, input: BuildDesktopLayoutInput): Layo
     return appId ? { id: entry.name, type: 'app', appId, w: 1, h: 1 } : null
   }
   if (entry.kind === 'widget') {
-    const size = defaultWidgetSize[entry.widget] ?? { w: 2, h: 2 }
+    const size = defaultWidgetSize(entry.widget)
     const config = Object.fromEntries(Object.entries(entry.raw).filter(([key]) => key !== 'widget'))
     return { id: entry.name, type: 'widget', widgetType: entry.widget, ...size, config }
   }
@@ -325,7 +320,7 @@ export function buildDesktopLayout(input: BuildDesktopLayoutInput): LayoutState 
       const { x, y, w, h, slotIndex, preferredPage, placementType, seq } = previous.item
       ensurePage(previous.page).items.push({
         ...item,
-        ...(item.type === 'widget' ? { w, h } : {}),
+        ...(item.type === 'widget' ? clampWidgetSize(item.widgetType, { w, h }) : {}),
         x, y, slotIndex, placementType, seq,
         preferredPage: preferredPage ?? previous.page,
       })

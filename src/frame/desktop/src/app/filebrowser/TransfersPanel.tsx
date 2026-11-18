@@ -2,13 +2,17 @@
  * Floating transfer list — renders the §4.7 TransferTask contract: stage +
  * determinate progress while running, retry/cancel context on failure, and
  * settled tasks stay dismissable until cleared.
+ *
+ * The header × only hides the panel; tasks keep running and the status bar
+ * carries their progress. New tasks bring the panel back.
  */
 
-import { useState, useSyncExternalStore } from 'react'
+import { useSyncExternalStore } from 'react'
 import { CheckCircle2, RotateCcw, Upload, X, XCircle } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { TransferStatus, TransferTask } from './data/state'
-import { transferStore } from './data/transfers'
+import { isTransferRunning, transferStore } from './data/transfers'
+import type { TransfersPanelState } from './useTransfers'
 import { formatBytes } from './fileDisplay'
 
 const STAGE_LABEL: Record<TransferStatus, { key: string; fallback: string }> = {
@@ -23,12 +27,10 @@ const STAGE_LABEL: Record<TransferStatus, { key: string; fallback: string }> = {
   skipped: { key: 'filebrowser.operation.skipped', fallback: 'Skipped' },
 }
 
-const RUNNING: TransferStatus[] = ['queued', 'hashing', 'probing', 'uploading', 'committing']
-
 function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (path: string) => void }) {
   const { t } = useI18n()
   const stage = STAGE_LABEL[task.status] ?? STAGE_LABEL.queued
-  const running = RUNNING.includes(task.status)
+  const running = isTransferRunning(task.status)
   const percent =
     task.totalBytes > 0 ? Math.round((task.bytesSent / task.totalBytes) * 100) : 0
 
@@ -103,37 +105,56 @@ function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (p
   )
 }
 
-export function TransfersPanel({ onOpenTarget, mobile = false }: { onOpenTarget?: (path: string) => void; mobile?: boolean }) {
+export function TransfersPanel({ onOpenTarget, panel }: { onOpenTarget?: (path: string) => void; panel: TransfersPanelState }) {
   const { t } = useI18n()
   useSyncExternalStore(transferStore.subscribe, transferStore.snapshot)
-  const [collapsed, setCollapsed] = useState(mobile)
   const tasks = transferStore.tasks()
   if (!tasks.length) return null
+  if (panel.hiddenAt !== null && transferStore.lastTaskSeq() <= panel.hiddenAt) return null
 
-  const active = tasks.filter((task) => RUNNING.includes(task.status)).length
+  const active = tasks.filter((task) => isTransferRunning(task.status)).length
+  const retryable = tasks.filter((task) => task.status === 'error' && task.error?.retryable !== false)
+  const completed = tasks.filter((task) => task.status === 'success')
+  const hasActions = active > 0 || retryable.length > 0 || completed.length > 0
+  const actionClass = 'files-btn files-btn-ghost !min-h-7 !px-2 !text-[12px]'
 
   return (
     <div
       className="absolute bottom-20 right-3 z-30 w-[min(320px,calc(100%-24px))] overflow-hidden rounded-[12px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] shadow-[var(--cp-panel-shadow)]"
       data-testid="transfers-panel"
     >
-      <div className="flex h-10 items-center gap-2 border-b border-[color:var(--files-hairline)] px-3">
+      <div className="flex h-10 items-center gap-2 border-b border-[color:var(--files-hairline)] pl-3 pr-2.5">
         <span className="text-[13px] font-medium text-[color:var(--cp-text)]">
           {t('filebrowser.transfer.title', 'Transfers')}
         </span>
-        <span className="ml-auto text-[12px] tabular-nums text-[color:var(--cp-muted)]">
-          {active
-            ? t('filebrowser.transfer.active', '{{count}} active', { count: active })
-            : t('filebrowser.transfer.idle', 'idle')}
-        </span>
+        {active ? (
+          <span className="text-[12px] tabular-nums text-[color:var(--cp-muted)]">
+            {t('filebrowser.transfer.active', '{{count}} active', { count: active })}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={panel.hide}
+          aria-label={t('filebrowser.transfer.hide', 'Close panel')}
+          title={t('filebrowser.transfer.hide', 'Close panel')}
+          className="files-icon-btn ml-auto !h-7 !min-w-7 !p-0"
+          data-testid="transfers-hide"
+        >
+          <X size={16} />
+        </button>
       </div>
-      <button type="button" className="fb-row h-9 w-full px-3 text-left text-[13px] text-[color:var(--cp-muted)]" onClick={() => setCollapsed(!collapsed)}>{collapsed ? t('filebrowser.transfer.showTasks', 'Show {{count}} tasks', { count: tasks.length }) : t('filebrowser.transfer.collapse', 'Collapse tasks')}</button>
-      {!collapsed && <div className="flex flex-wrap gap-1 px-2 pb-2">{active > 0 && <button type="button" className="files-btn files-btn-ghost !min-h-7 !px-2 !text-[12px]" onClick={() => tasks.forEach(task => transferStore.cancel(task.id))}>{t('filebrowser.transfer.cancelAll', 'Cancel all')}</button>}<button type="button" className="files-btn files-btn-ghost !min-h-7 !px-2 !text-[12px]" onClick={() => tasks.filter((task) => task.status === 'error' && task.error?.retryable !== false).forEach((task) => transferStore.retry(task.id))}>{t('filebrowser.operation.retryFailed', 'Retry failed items')}</button><button type="button" className="files-btn files-btn-ghost !min-h-7 !px-2 !text-[12px]" onClick={() => tasks.filter((task) => task.status === 'success').forEach((task) => transferStore.dismiss(task.id))}>{t('filebrowser.transfer.clearCompleted', 'Clear completed')}</button></div>}
-      {!collapsed && <div className="max-h-[40vh] divide-y divide-[color:var(--files-hairline)] overflow-y-auto border-t border-[color:var(--files-hairline)]">
+      {hasActions ? (
+        <div className="flex flex-wrap gap-1 border-b border-[color:var(--files-hairline)] px-2 py-1.5">
+          {active ? <button type="button" className={actionClass} onClick={() => tasks.forEach((task) => transferStore.cancel(task.id))}>{t('filebrowser.transfer.cancelAll', 'Cancel all')}</button> : null}
+          {retryable.length ? <button type="button" className={actionClass} onClick={() => retryable.forEach((task) => transferStore.retry(task.id))}>{t('filebrowser.operation.retryFailed', 'Retry failed items')}</button> : null}
+          {completed.length ? <button type="button" className={actionClass} onClick={() => completed.forEach((task) => transferStore.dismiss(task.id))}>{t('filebrowser.transfer.clearCompleted', 'Clear completed')}</button> : null}
+        </div>
+      ) : null}
+      <div className="max-h-[40vh] divide-y divide-[color:var(--files-hairline)] overflow-y-auto">
         {tasks.map((task) => (
           <TaskRow key={task.id} task={task} onOpenTarget={onOpenTarget} />
         ))}
-      </div>}
+      </div>
     </div>
   )
 }

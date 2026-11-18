@@ -83,6 +83,27 @@ function translate(left: number, top: number) {
   return `translate(${left}px,${top}px)`
 }
 
+/**
+ * Drops the click a held touch ends with. The menu the hold opens is already up by then, so the click lands on
+ * whatever is under the finger, the menu's backdrop too, which would close the menu at once. A new press, or a
+ * moment without the click, ends the wait.
+ */
+function swallowClickAfterHold() {
+  const stop = () => {
+    window.removeEventListener('click', onClick, true)
+    window.removeEventListener('pointerdown', stop, true)
+    window.clearTimeout(timer)
+  }
+  const onClick = (event: MouseEvent) => {
+    stop()
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  window.addEventListener('click', onClick, true)
+  window.addEventListener('pointerdown', stop, true)
+  const timer = window.setTimeout(stop, 400)
+}
+
 export function useLauncherGesture(options: LauncherGestureOptions) {
   const latest = useRef(options)
   useLayoutEffect(() => {
@@ -145,6 +166,7 @@ export function useLauncherGesture(options: LauncherGestureOptions) {
       return
     }
     if (current.phase === 'held') {
+      swallowClickAfterHold()
       onMenu({ x: current.x, y: current.y })
       return
     }
@@ -292,4 +314,87 @@ export function useLauncherGesture(options: LauncherGestureOptions) {
   }, [])
 
   return { onPointerDown, onClickCapture, onKeyDownCapture, onContextMenu }
+}
+
+/** What a press on the desktop's empty space leaves alone: the tiles, the page dots and any control. */
+const notBackdrop = '.react-grid-item, .swiper-pagination, button, a, input, textarea, select, [contenteditable="true"]'
+
+function onBackdrop(target: EventTarget | null) {
+  return target instanceof Element && !target.closest(notBackdrop)
+}
+
+/**
+ * The menu of the desktop's empty space, by the same rules as a tile's: the right button, or a touch held still for
+ * `longPressMs` and let go there. Moving first is a page swipe.
+ */
+export function useBackdropMenuGesture(onMenu: (point: { x: number; y: number }) => void) {
+  const latest = useRef(onMenu)
+  useLayoutEffect(() => {
+    latest.current = onMenu
+  })
+  const press = useRef<{ end: (how: PressEnd) => void } | null>(null)
+  const swallowClick = useRef(false)
+  const lastPressWasTouch = useRef(false)
+
+  useEffect(() => () => press.current?.end('cancel'), [])
+
+  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    swallowClick.current = false
+    const touch = event.pointerType !== 'mouse'
+    lastPressWasTouch.current = touch
+    if (!touch || press.current || !onBackdrop(event.target)) return
+    const pointerId = event.pointerId
+    const start = { x: event.clientX, y: event.clientY }
+    const point = { ...start }
+    let held = false
+    const timer = window.setTimeout(() => {
+      held = true
+    }, longPressMs)
+    const onWindowMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return
+      point.x = moveEvent.clientX
+      point.y = moveEvent.clientY
+      if (Math.hypot(point.x - start.x, point.y - start.y) > touchSlop) end('swipe')
+    }
+    const onWindowUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId === pointerId) end('up')
+    }
+    const onWindowCancel = (cancelEvent: PointerEvent) => {
+      if (cancelEvent.pointerId === pointerId) end('cancel')
+    }
+    const end = (how: PressEnd) => {
+      if (press.current !== current) return
+      press.current = null
+      window.clearTimeout(timer)
+      window.removeEventListener('pointermove', onWindowMove)
+      window.removeEventListener('pointerup', onWindowUp)
+      window.removeEventListener('pointercancel', onWindowCancel)
+      if (how !== 'up' || !held) return
+      swallowClick.current = true
+      swallowClickAfterHold()
+      latest.current({ ...point })
+    }
+    const current = { end }
+    window.addEventListener('pointermove', onWindowMove)
+    window.addEventListener('pointerup', onWindowUp)
+    window.addEventListener('pointercancel', onWindowCancel)
+    press.current = current
+  }, [])
+
+  const onClickCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (!swallowClick.current) return
+    swallowClick.current = false
+    event.preventDefault()
+    event.stopPropagation()
+  }, [])
+
+  // A tile's own menu has handled its right click already; the browser's long-press menu (Android) is dropped.
+  const onContextMenu = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (!onBackdrop(event.target)) return
+    event.preventDefault()
+    if (lastPressWasTouch.current) return
+    latest.current({ x: event.clientX, y: event.clientY })
+  }, [])
+
+  return { onPointerDown, onClickCapture, onContextMenu }
 }

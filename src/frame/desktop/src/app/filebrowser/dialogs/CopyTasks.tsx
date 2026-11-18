@@ -1,14 +1,32 @@
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle } from '@mui/material'
-import { ListTodo } from 'lucide-react'
+import { ListTodo, Upload, XCircle } from 'lucide-react'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
+import { formatBytes } from '../fileDisplay'
+import { useTransferSummary } from '../useTransfers'
 import { folderOps, type BatchOptions, type OperationResult } from '../data/folderOps'
 import { operationFeedback } from '../data/operationFeedback'
 import { toUiError } from '../data/state'
 
-export function CopyTasks({ ownerId, reveal, compact = false }: { ownerId?: string; reveal: (path: string) => void; compact?: boolean }) {
+/**
+ * Status-bar slot for copy tasks. While uploads run (or some failed) it shows
+ * their progress and speed as text instead, and opens the transfers panel.
+ */
+export function CopyTasks({ ownerId, reveal, compact = false, onShowTransfers }: { ownerId?: string; reveal: (path: string) => void; compact?: boolean; onShowTransfers?: () => void }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
+  const transfer = useTransferSummary()
+  const percent = transfer.totalBytes > 0 ? Math.floor((transfer.bytesSent / transfer.totalBytes) * 100) : null
+  const transferState = transfer.active ? 'active' : transfer.failed ? 'failed' : 'idle'
+  const transferText = transferState === 'active'
+    ? [
+        t('filebrowser.transfer.statusActive', 'Transferring {{count}}', { count: transfer.active }),
+        percent !== null ? `${percent}%` : null,
+        transfer.bytesPerSecond !== null ? `${formatBytes(Math.round(transfer.bytesPerSecond))}/s` : null,
+      ].filter(Boolean).join(' · ')
+    : transferState === 'failed'
+      ? t('filebrowser.transfer.statusFailed', 'Transfers failed: {{count}}', { count: transfer.failed })
+      : null
   const [tasks, setTasks] = useState<{ task_id: string; name: string; phase: string }[]>([])
   const [error, setError] = useState('')
   const refresh = async () => {
@@ -37,11 +55,23 @@ export function CopyTasks({ ownerId, reveal, compact = false }: { ownerId?: stri
       setOpen(true)
     }
   }
-  if (!folderOps().listCopies) return null
+  const showTransfers = transferText !== null && onShowTransfers !== undefined
+  const label = showTransfers ? transferText : t('filebrowser.operation.copyTasks', 'Copy tasks')
+  const onClick = () => {
+    if (showTransfers) onShowTransfers()
+    else { setOpen(true); void refresh() }
+  }
+  const tone = showTransfers && transferState === 'failed' ? 'text-[color:var(--files-warning-ink)]' : 'text-[color:var(--cp-muted)]'
+  if (!showTransfers && !folderOps().listCopies) return null
   return <>
     {compact
-      ? <button type="button" data-testid="copy-tasks" aria-label={t('filebrowser.operation.copyTasks', 'Copy tasks')} title={t('filebrowser.operation.copyTasks', 'Copy tasks')} className="flex shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:var(--files-pressed)]" onClick={() => { setOpen(true); void refresh() }}><ListTodo size={20} /></button>
-      : <button type="button" data-testid="copy-tasks" className="inline-flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[12px] text-[color:var(--cp-muted)] hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)]" onClick={() => { setOpen(true); void refresh() }}><ListTodo size={14} />{t('filebrowser.operation.copyTasks', 'Copy tasks')}</button>}
+      ? <button type="button" data-testid="copy-tasks" data-transfer-state={showTransfers ? transferState : 'idle'} aria-label={label} title={label} className={`flex shrink-0 items-center justify-center rounded-full tabular-nums ${tone} active:bg-[color:var(--files-pressed)]`} onClick={onClick}>
+          {!showTransfers ? <ListTodo size={20} /> : transferState === 'failed' ? <XCircle size={20} /> : percent !== null ? <span className="inline-flex items-center gap-0.5 text-[12px] font-medium"><Upload size={14} />{percent}%</span> : <Upload size={20} />}
+        </button>
+      : <button type="button" data-testid="copy-tasks" data-transfer-state={showTransfers ? transferState : 'idle'} className={`inline-flex h-6 min-w-0 items-center gap-1 rounded-[6px] px-1.5 text-[12px] tabular-nums ${tone} hover:bg-[color:var(--files-hover)] hover:text-[color:var(--cp-text)]`} onClick={onClick}>
+          {!showTransfers ? <ListTodo size={14} className="shrink-0" /> : transferState === 'failed' ? <XCircle size={14} className="shrink-0" /> : <Upload size={14} className="shrink-0" />}
+          <span className="min-w-0 truncate">{label}</span>
+        </button>}
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm" data-testid="copy-tasks-dialog">
       <DialogTitle>{t('filebrowser.operation.copyTasks', 'Copy tasks')}</DialogTitle>
       <DialogContent>

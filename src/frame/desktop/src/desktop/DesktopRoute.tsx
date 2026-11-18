@@ -21,13 +21,15 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
+  type MutableRefObject,
 } from 'react'
 import GridLayoutBase, { getCompactor } from 'react-grid-layout'
-import type { PositionParams } from 'react-grid-layout/core'
+import { calcGridColWidth, type PositionParams } from 'react-grid-layout/core'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { Swiper as SwiperInstance } from 'swiper'
 import { Pagination } from 'swiper/modules'
@@ -51,8 +53,11 @@ import { DesktopTaskbar } from './DesktopTaskbar'
 import { MobileTaskbar } from './MobileTaskbar'
 import { StatusBar } from './StatusBar'
 import { useCurrentUser } from './taskbarHooks'
-import { touchSlop, useLauncherGesture, type LauncherCell } from './launcherGesture'
+import { touchSlop, useBackdropMenuGesture, useLauncherGesture, type LauncherCell } from './launcherGesture'
 import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
+import { isResizableWidget, widgetSizeLimits } from './widgets/catalog'
+import { WidgetResizeFrame } from './WidgetResizeFrame'
+import { AddToDesktopDialog } from './AddToDesktopDialog'
 import { openDesktopFile, showFolderInFiles } from './desktopFolderActions'
 import { watchDfsPath } from '../app/filebrowser/data/nfsp/invalidation'
 import { classifyFileKind } from '../app/filebrowser/data/fileKinds'
@@ -97,8 +102,10 @@ import { useThemeMode } from '../theme/provider'
 import {
   useDesktopUIStore,
   useDesktopUISnapshot,
+  type DesktopPlacement,
 } from '../models/DesktopUIDataModel'
 import {
+  clamp,
   columnsForWidth,
   GRID_GAP,
   rowsForHeight,
@@ -107,6 +114,7 @@ import {
   normalizeViewportProgress,
   getPageIndex,
   type GridDensity,
+  type GridRect,
 } from '../models/layout'
 
 // ---------------------------------------------------------------------------
@@ -245,6 +253,21 @@ const launcherDragConfig = { enabled: false }
 
 type WindowGeometryPatch = Partial<Pick<WindowRecord, 'x' | 'y' | 'width' | 'height'>>
 
+/** What the desktop asks of the launcher pages: the page shown, the cell under a point on it, and turning pages. */
+interface DesktopPagesController {
+  pageIndex: () => number
+  /** The cell of the shown page under a screen point (the nearest one when it is beside the grid). */
+  cellAt: (point: { x: number; y: number }) => { x: number; y: number } | undefined
+  slideTo: (pageIndex: number) => void
+}
+
+/** The menu of the desktop's empty space, and the page and cell it was opened on. */
+interface DesktopMenuState extends DesktopPlacement {
+  x: number
+  y: number
+  pageCount: number
+}
+
 // ---------------------------------------------------------------------------
 // DesktopRoute — now a thin view that delegates to the unified store
 // ---------------------------------------------------------------------------
@@ -323,6 +346,11 @@ export function DesktopRoute() {
 
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const [gridContainer, setGridContainer] = useState<HTMLDivElement | null>(null)
+  const pagesRef = useRef<DesktopPagesController | null>(null)
+  // Kept while the menu fades out, so its items do not change on the way.
+  const [desktopMenu, setDesktopMenu] = useState<(DesktopMenuState & { open: boolean }) | null>(null)
+  /** Where "Add…" puts what is chosen; the dialog is open while it is set. */
+  const [addPlacement, setAddPlacement] = useState<DesktopPlacement | null>(null)
 
   const [viewportSize, setViewportSize] = useState(() => ({
     width: window.innerWidth,
@@ -426,6 +454,7 @@ export function DesktopRoute() {
     isTaskbarPinned,
     selectedItemId,
     contextMenu,
+    resizingItemId,
   } = snap.runtime
 
   const isLoading = status === 'loading'
@@ -694,10 +723,85 @@ export function DesktopRoute() {
   )
 
   const handleViewportProgress = useCallback(
-    (progress: number, pageCount: number) =>
-      store.setViewportProgress(normalizeViewportProgress(progress, pageCount)),
+    (progress: number, pageCount: number) => {
+      store.setViewportProgress(normalizeViewportProgress(progress, pageCount))
+      // Turning the page takes the focus off a widget being resized.
+      store.setResizingItemId(null)
+    },
     [store],
   )
+
+  const handleOpenDesktopMenu = useCallback(
+    (point: { x: number; y: number }) => {
+      const pages = pagesRef.current
+      store.setContextMenu(null)
+      setDesktopMenu({
+        open: true,
+        x: point.x,
+        y: point.y,
+        pageIndex: pages?.pageIndex() ?? 0,
+        pageCount: store.getSnapshot().resolvedLayout?.pages.length ?? 1,
+        cell: pages?.cellAt(point),
+      })
+    },
+    [store],
+  )
+  const backdropGesture = useBackdropMenuGesture(handleOpenDesktopMenu)
+  const closeDesktopMenu = useCallback(() => setDesktopMenu((menu) => (menu ? { ...menu, open: false } : menu)), [])
+
+  /** Shows an item just added: selected, on its page (it may have gone to a later one when this page was full). */
+  const revealItem = useCallback(
+    (itemId: string) => {
+      store.setSelectedItemId(itemId)
+      const pageIndex = store.getSnapshot().resolvedLayout?.pages.findIndex((page) => page.items.some((item) => item.id === itemId)) ?? -1
+      // After the launcher has drawn the page the item is on.
+      if (pageIndex >= 0) requestAnimationFrame(() => pagesRef.current?.slideTo(pageIndex))
+    },
+    [store],
+  )
+  const handleAddWidget = useCallback(
+    (widgetType: string) => {
+      const itemId = store.addWidgetToDesktop(widgetType, addPlacement ?? undefined)
+      setAddPlacement(null)
+      if (itemId) revealItem(itemId)
+    },
+    [store, addPlacement, revealItem],
+  )
+  const handleAddApp = useCallback(
+    (appId: string, label: string) => {
+      const itemId = store.addAppToDesktop(appId, label, addPlacement ?? undefined)
+      setAddPlacement(null)
+      if (itemId) revealItem(itemId)
+    },
+    [store, addPlacement, revealItem],
+  )
+  const closeAddDialog = useCallback(() => setAddPlacement(null), [])
+
+  const handleResizeItem = useCallback(
+    (itemId: string, next: GridRect) => store.resizeWidget(itemId, next),
+    [store],
+  )
+
+  // A widget's resize handles go away once the focus leaves it: a press anywhere else, Escape, or another window.
+  useEffect(() => {
+    if (!resizingItemId) return
+    const stop = () => store.setResizingItemId(null)
+    const onPointerDown = (event: PointerEvent) => {
+      const owner = event.target instanceof Element ? event.target.closest('[data-item-id]') : null
+      if (owner?.getAttribute('data-item-id') !== resizingItemId) stop()
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') stop()
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('keydown', onKeyDown)
+    window.addEventListener('blur', stop)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('blur', stop)
+    }
+  }, [store, resizingItemId])
 
   // ---------------------------------------------------------------------------
   // Derived data
@@ -741,6 +845,7 @@ export function DesktopRoute() {
     ? resolvedLayout?.pages.flatMap((page) => page.items).find((entry) => entry.id === contextMenu.itemId)
     : undefined
   const desktopFolderPath = status === 'success' ? store.getDesktopFolderPath() : ''
+  const canEditDesktop = status === 'success' && store.canEditDesktop()
 
   // The status bar's message and notification trays read MessageHub,
   // msg-center and TaskMgr only while the mobile shell is up.
@@ -841,9 +946,12 @@ export function DesktopRoute() {
               )}
               <div
                 ref={setGridContainer}
-                className="relative overflow-hidden"
+                // Its empty space has the desktop's own menu (right click, or a touch held still).
+                className="relative overflow-hidden select-none [-webkit-touch-callout:none]"
+                data-testid="desktop-workspace"
                 data-density={density}
                 data-form-factor={formFactor}
+                {...backdropGesture}
                 style={{
                   paddingTop: workspaceTopPadding,
                   paddingBottom: workspaceBottomPadding,
@@ -853,6 +961,7 @@ export function DesktopRoute() {
               >
                 <DesktopPages
                   apps={apps}
+                  controllerRef={pagesRef}
                   gridCols={gridSpec.cols}
                   gridRowHeight={gridSpec.rowHeight}
                   gridRows={gridSpec.rows}
@@ -862,9 +971,11 @@ export function DesktopRoute() {
                   onMoveItem={handleMoveItem}
                   onOpenItem={handleOpenItem}
                   onOpenItemContextMenu={handleOpenItemContextMenu}
+                  onResizeItem={handleResizeItem}
                   onRestore={restoreDefaults}
                   onSaveNote={handleSaveNote}
                   onViewportProgress={handleViewportProgress}
+                  resizingItemId={resizingItemId}
                   selectedItemId={selectedItemId}
                   width={workspaceInnerWidth - (isMobile ? mobileSlidePaddingX * 2 : 48)}
                 />
@@ -951,6 +1062,17 @@ export function DesktopRoute() {
         >
           {t('common.open')}
         </MenuItem>
+        {contextMenuItem?.type === 'widget' && isResizableWidget(contextMenuItem.widgetType) ? (
+          <MenuItem
+            data-testid="desktop-menu-resize"
+            onClick={() => {
+              store.setContextMenu(null)
+              store.setResizingItemId(contextMenuItem.id)
+            }}
+          >
+            {t('desktop.menu.resize', 'Resize')}
+          </MenuItem>
+        ) : null}
         <MenuItem
           disabled={!desktopFolderPath}
           data-testid="desktop-menu-show-in-files"
@@ -995,6 +1117,70 @@ export function DesktopRoute() {
         </MenuItem>
       </Menu>
 
+      <Menu
+        open={Boolean(desktopMenu?.open)}
+        onClose={closeDesktopMenu}
+        anchorReference="anchorPosition"
+        anchorPosition={desktopMenu ? { top: desktopMenu.y, left: desktopMenu.x } : undefined}
+        // A right click beside the open menu closes it instead of showing the browser's.
+        onContextMenu={(event) => {
+          event.preventDefault()
+          closeDesktopMenu()
+        }}
+      >
+        <MenuItem
+          data-testid="desktop-menu-appearance"
+          onClick={() => {
+            closeDesktopMenu()
+            openSettings('appearance')
+          }}
+        >
+          {t('desktop.menu.appearance', 'Appearance settings')}
+        </MenuItem>
+        <Divider />
+        <MenuItem
+          data-testid="desktop-menu-next-page"
+          disabled={!desktopMenu || desktopMenu.pageIndex >= desktopMenu.pageCount - 1}
+          onClick={() => {
+            closeDesktopMenu()
+            if (desktopMenu) pagesRef.current?.slideTo(desktopMenu.pageIndex + 1)
+          }}
+        >
+          {t('desktop.menu.nextPage', 'Go to next screen')}
+        </MenuItem>
+        <MenuItem
+          data-testid="desktop-menu-previous-page"
+          disabled={!desktopMenu || desktopMenu.pageIndex <= 0}
+          onClick={() => {
+            closeDesktopMenu()
+            if (desktopMenu) pagesRef.current?.slideTo(desktopMenu.pageIndex - 1)
+          }}
+        >
+          {t('desktop.menu.previousPage', 'Go to previous screen')}
+        </MenuItem>
+        <Divider />
+        <MenuItem
+          data-testid="desktop-menu-add"
+          disabled={!canEditDesktop}
+          onClick={() => {
+            closeDesktopMenu()
+            if (desktopMenu) setAddPlacement({ pageIndex: desktopMenu.pageIndex, cell: desktopMenu.cell })
+          }}
+        >
+          {t('desktop.menu.add', 'Add…')}
+        </MenuItem>
+      </Menu>
+
+      <AddToDesktopDialog
+        apps={apps}
+        isMobile={isMobile}
+        layout={resolvedLayout}
+        onAddApp={handleAddApp}
+        onAddWidget={handleAddWidget}
+        onClose={closeAddDialog}
+        open={addPlacement !== null}
+      />
+
       <OpenWithHost />
       <Alert
         severity="success"
@@ -1021,6 +1207,7 @@ export function DesktopRoute() {
 
 interface DesktopPagesProps {
   apps: DesktopAppItem[]
+  controllerRef: MutableRefObject<DesktopPagesController | null>
   gridCols: number
   gridRowHeight: number
   gridRows: number
@@ -1030,9 +1217,11 @@ interface DesktopPagesProps {
   onMoveItem: (pageId: string, from: LauncherCell, to: LauncherCell) => LauncherCell | null
   onOpenItem: (item: LayoutItem) => void
   onOpenItemContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
+  onResizeItem: (itemId: string, next: GridRect) => GridRect | null
   onRestore: () => void
   onSaveNote: (itemId: string, content: string) => void
   onViewportProgress: (progress: number, pageCount: number) => void
+  resizingItemId: string | null
   selectedItemId: string | null
   width: number
 }
@@ -1047,6 +1236,7 @@ const noopLayoutChange = () => {}
  */
 const DesktopPages = memo(function DesktopPages({
   apps,
+  controllerRef,
   gridCols,
   gridRowHeight,
   gridRows,
@@ -1056,9 +1246,11 @@ const DesktopPages = memo(function DesktopPages({
   onMoveItem,
   onOpenItem,
   onOpenItemContextMenu,
+  onResizeItem,
   onRestore,
   onSaveNote,
   onViewportProgress,
+  resizingItemId,
   selectedItemId,
   width,
 }: DesktopPagesProps) {
@@ -1107,6 +1299,32 @@ const DesktopPages = memo(function DesktopPages({
   )
   useEffect(() => resetDesktopViewportProgress, [])
 
+  useLayoutEffect(() => {
+    const shown = () => {
+      const swiper = swiperRef.current
+      return swiper && !swiper.destroyed ? swiper : null
+    }
+    controllerRef.current = {
+      pageIndex: () => shown()?.activeIndex ?? 0,
+      cellAt: (point) => {
+        const swiper = shown()
+        const grid = swiper?.slides[swiper.activeIndex]?.querySelector('.react-grid-layout')
+        if (!grid) return undefined
+        const rect = grid.getBoundingClientRect()
+        const colStep = calcGridColWidth(tileGrid) + tileGrid.margin[0]
+        const rowStep = tileGrid.rowHeight + tileGrid.margin[1]
+        return {
+          x: clamp(Math.floor((point.x - rect.left) / colStep), 0, tileGrid.cols - 1),
+          y: clamp(Math.floor((point.y - rect.top) / rowStep), 0, tileGrid.maxRows - 1),
+        }
+      },
+      slideTo: (pageIndex) => shown()?.slideTo(pageIndex),
+    }
+    return () => {
+      controllerRef.current = null
+    }
+  }, [controllerRef, tileGrid])
+
   if (pageCount === 0 || layout.pages.every((page) => page.items.length === 0)) {
     // As tall as the pages: the grid's row count is measured from this container.
     return <EmptyState height={height} onRestore={onRestore} />
@@ -1141,7 +1359,8 @@ const DesktopPages = memo(function DesktopPages({
               onLayoutChange={noopLayoutChange}
             >
               {page.items.map((item) => (
-                <div key={item.id}>
+                // Raised above its neighbours while its resize handles are shown.
+                <div key={item.id} data-resize-mode={resizingItemId === item.id ? '' : undefined}>
                   <DesktopTile
                     app={
                       item.type === 'app'
@@ -1151,11 +1370,13 @@ const DesktopPages = memo(function DesktopPages({
                     grid={tileGrid}
                     isDesktop={!isMobile}
                     item={item}
+                    isResizing={resizingItemId === item.id}
                     isSelected={selectedItemId === item.id}
                     lockPaging={lockPaging}
                     onMove={(from, to) => onMoveItem(page.id, from, to)}
                     onOpen={onOpenItem}
                     onOpenContextMenu={onOpenItemContextMenu}
+                    onResize={onResizeItem}
                     onSaveNote={onSaveNote}
                   />
                 </div>
@@ -1251,23 +1472,27 @@ function DesktopTile({
   app,
   grid,
   isDesktop,
+  isResizing,
   item,
   isSelected,
   lockPaging,
   onMove,
   onOpen,
   onOpenContextMenu,
+  onResize,
   onSaveNote,
 }: {
   app?: AppDefinition
   grid: PositionParams
   isDesktop: boolean
+  isResizing: boolean
   item: LayoutItem
   isSelected: boolean
   lockPaging: (locked: boolean) => void
   onMove: (from: LauncherCell, to: LauncherCell) => LauncherCell | null
   onOpen: (item: LayoutItem) => void
   onOpenContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
+  onResize: (itemId: string, next: GridRect) => GridRect | null
   onSaveNote: (itemId: string, content: string) => void
 }) {
   const appText = useAppText()
@@ -1307,79 +1532,96 @@ function DesktopTile({
       ? { title: item.id, testId: `desktop-file-${item.id}`, icon: <DesktopFileIcon item={item} /> }
       : null
 
-  return (
-    <div
-      data-testid={`desktop-item-${item.id}`}
-      data-item-type={item.type}
-      data-widget-type={item.type === 'widget' ? item.widgetType : undefined}
-      className={clsx(
-        'desktop-tile-shell group relative h-full border border-transparent transition-[border-color,background-color] duration-150 ease-[var(--cp-ease-smooth)]',
-        // The gesture owns touches on a tile: no browser pan or zoom, text selection or iOS callout.
-        'touch-none select-none [-webkit-touch-callout:none]',
-        'rounded-[16px]',
-        item.type === 'widget' ? 'overflow-hidden' : 'overflow-visible',
-        isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
-        isSelected
-          ? 'border-[color:color-mix(in_srgb,var(--cp-accent)_50%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-accent)_8%,transparent)]'
-          : item.type === 'widget'
-            ? 'border-[color:var(--cp-border)]'
-            : '',
-      )}
-      {...gesture}
-    >
-      {tile ? (
-        <button
-          type="button"
-          onClick={() => onOpen(item)}
-          data-testid={tile.testId}
-          title={tile.title}
-          className={clsx(
-            'flex h-full w-full flex-col items-center rounded-[16px] bg-transparent text-center transition-colors duration-150 focus-visible:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]',
-            isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
-          )}
-          // Size-query container for the label: desktop cells are capped at
-          // ~110px wide and the fixed row height only leaves room for one
-          // label line, so the label scales with the cell instead of the
-          // viewport (see the label's fontSize below).
-          style={{ paddingTop: 'var(--icon-padding-top)', containerType: 'inline-size' }}
-        >
-          {tile.icon}
-          {item.type === 'app' && app?.iconBadge ? (
-            <span
-              aria-hidden="true"
-              data-testid={`desktop-app-badge-${app.id}`}
-              className="pointer-events-none absolute z-20 size-3 rounded-full border-2 border-[color:var(--cp-surface)]"
-              style={{
-                top: 'calc(var(--icon-padding-top) - 3px)',
-                left: 'calc(50% + var(--icon-size) / 2 - 9px)',
-                background: app.iconBadge === 'error' ? 'var(--cp-danger)' : 'var(--cp-warning)',
-              }}
-            />
-          ) : null}
-          <span
-            className="desktop-icon-label max-w-full break-words overflow-hidden px-0.5 font-medium text-[color:var(--cp-text)]"
-            style={{
-              paddingTop: 'var(--label-padding-top)',
-              fontSize: isDesktop
-                ? 'clamp(11px, 12cqw, var(--font-size-label))'
-                : 'var(--font-size-label)',
-              lineHeight: 'var(--line-height-label)',
-              display: '-webkit-box',
-              // Desktop rows are sized for a single label line; a second
-              // line would be clipped, so truncate with an ellipsis instead.
-              WebkitLineClamp: isDesktop ? 1 : 2,
-              WebkitBoxOrient: 'vertical',
-            }}
-          >
-            {tile.title}
-          </span>
-        </button>
-      ) : null}
+  const resizeCell = isResizing && item.type === 'widget' && item.x !== undefined && item.y !== undefined
+    ? { x: item.x, y: item.y, w: item.w, h: item.h }
+    : null
 
-      {item.type === 'widget' ? (
-        <DesktopWidgetRenderer item={item} onSaveNote={onSaveNote} />
+  return (
+    <>
+      <div
+        data-testid={`desktop-item-${item.id}`}
+        data-item-id={item.id}
+        data-item-type={item.type}
+        data-widget-type={item.type === 'widget' ? item.widgetType : undefined}
+        className={clsx(
+          'desktop-tile-shell group relative h-full border border-transparent transition-[border-color,background-color] duration-150 ease-[var(--cp-ease-smooth)]',
+          // The gesture owns touches on a tile: no browser pan or zoom, text selection or iOS callout.
+          'touch-none select-none [-webkit-touch-callout:none]',
+          'rounded-[16px]',
+          item.type === 'widget' ? 'overflow-hidden' : 'overflow-visible',
+          isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
+          isSelected
+            ? 'border-[color:color-mix(in_srgb,var(--cp-accent)_50%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-accent)_8%,transparent)]'
+            : item.type === 'widget'
+              ? 'border-[color:var(--cp-border)]'
+              : '',
+        )}
+        {...gesture}
+      >
+        {tile ? (
+          <button
+            type="button"
+            onClick={() => onOpen(item)}
+            data-testid={tile.testId}
+            title={tile.title}
+            className={clsx(
+              'flex h-full w-full flex-col items-center rounded-[16px] bg-transparent text-center transition-colors duration-150 focus-visible:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]',
+              isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
+            )}
+            // Size-query container for the label: desktop cells are capped at
+            // ~110px wide and the fixed row height only leaves room for one
+            // label line, so the label scales with the cell instead of the
+            // viewport (see the label's fontSize below).
+            style={{ paddingTop: 'var(--icon-padding-top)', containerType: 'inline-size' }}
+          >
+            {tile.icon}
+            {item.type === 'app' && app?.iconBadge ? (
+              <span
+                aria-hidden="true"
+                data-testid={`desktop-app-badge-${app.id}`}
+                className="pointer-events-none absolute z-20 size-3 rounded-full border-2 border-[color:var(--cp-surface)]"
+                style={{
+                  top: 'calc(var(--icon-padding-top) - 3px)',
+                  left: 'calc(50% + var(--icon-size) / 2 - 9px)',
+                  background: app.iconBadge === 'error' ? 'var(--cp-danger)' : 'var(--cp-warning)',
+                }}
+              />
+            ) : null}
+            <span
+              className="desktop-icon-label max-w-full break-words overflow-hidden px-0.5 font-medium text-[color:var(--cp-text)]"
+              style={{
+                paddingTop: 'var(--label-padding-top)',
+                fontSize: isDesktop
+                  ? 'clamp(11px, 12cqw, var(--font-size-label))'
+                  : 'var(--font-size-label)',
+                lineHeight: 'var(--line-height-label)',
+                display: '-webkit-box',
+                // Desktop rows are sized for a single label line; a second
+                // line would be clipped, so truncate with an ellipsis instead.
+                WebkitLineClamp: isDesktop ? 1 : 2,
+                WebkitBoxOrient: 'vertical',
+              }}
+            >
+              {tile.title}
+            </span>
+          </button>
+        ) : null}
+
+        {item.type === 'widget' ? (
+          <DesktopWidgetRenderer item={item} onSaveNote={onSaveNote} />
+        ) : null}
+      </div>
+      {resizeCell && item.type === 'widget' ? (
+        <WidgetResizeFrame
+          cell={resizeCell}
+          grid={grid}
+          itemId={item.id}
+          limits={widgetSizeLimits(item.widgetType, { cols: grid.cols, rows: grid.maxRows })}
+          lockPaging={lockPaging}
+          onResize={(next) => onResize(item.id, next)}
+        />
       ) : null}
-    </div>
+    </>
   )
 }
 

@@ -343,6 +343,35 @@ export function rectsOverlap(a: GridRect, b: GridRect): boolean {
   )
 }
 
+/** A resize handle: the edges it moves, -1 the left/top one, 1 the right/bottom one, 0 neither. */
+export interface ResizeEdges {
+  dx: -1 | 0 | 1
+  dy: -1 | 0 | 1
+}
+
+/**
+ * `start` with the edges of `edges` moved by `cols` × `rows` cells, kept within `min`/`max` and the grid. A moved
+ * left or top edge keeps the opposite edge where it was.
+ */
+export function resizeGridRect(
+  start: GridRect,
+  edges: ResizeEdges,
+  delta: { cols: number; rows: number },
+  limits: { min: { w: number; h: number }; max: { w: number; h: number } },
+  grid: { cols: number; rows: number },
+): GridRect {
+  const axis = (pos: number, size: number, edge: -1 | 0 | 1, by: number, min: number, max: number, extent: number) => {
+    if (edge === 0) return { pos, size }
+    // The room on the side that moves: up to the grid's far edge, or back to its start.
+    const room = edge === 1 ? extent - pos : pos + size
+    const next = clamp(size + edge * by, Math.min(min, room), Math.min(max, room))
+    return { pos: edge === 1 ? pos : pos + size - next, size: next }
+  }
+  const x = axis(start.x, start.w, edges.dx, delta.cols, limits.min.w, limits.max.w, grid.cols)
+  const y = axis(start.y, start.h, edges.dy, delta.rows, limits.min.h, limits.max.h, grid.rows)
+  return { x: x.pos, y: y.pos, w: x.size, h: y.size }
+}
+
 // ---------------------------------------------------------------------------
 // Grid slot scanning (tail-append — no hole filling)
 // ---------------------------------------------------------------------------
@@ -732,10 +761,13 @@ export function applyDragCollision(
     h: newItem.h,
   }
 
+  // A resize drops the item with a new size; a move with the one it has.
   const placeDragged = (item: LayoutItem): LayoutItem => ({
     ...item,
     x: newItem.x,
     y: newItem.y,
+    w: newItem.w,
+    h: newItem.h,
     slotIndex: targetSlot,
     placementType: 'manual' as PlacementType,
   })
