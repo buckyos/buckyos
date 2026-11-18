@@ -2586,6 +2586,26 @@ export function buildT15Manifest(
           ),
           mock_scenario: "success",
         } as AcceptanceCase);
+        if (apiType === "image.txt2img") {
+          const scopedModels = new Set([
+            ...(provider.official_first_party_model_ids?.[apiType] ?? []),
+            ...(provider.official_aggregated_model_ids?.[apiType] ?? []),
+          ]);
+          for (const [modelId, forbidden] of Object.entries(contract.forbidden_body_paths_by_model ?? {})) {
+            if (!scopedModels.has(modelId) || !forbidden.includes("/sequential_image_generation")) continue;
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.model.${modelId}.reject-multiple-images`),
+              tags: [...common.tags!, "canonical_rejection", "image_count_rejected"],
+              model_selector: {kind:"exact",value:modelId},
+              mock_scenario: "success",
+              expected_error_class: "provider_protocol_failed",
+              expected_aicc_error_code: "invalid_request",
+              expected_task_status: "failed",
+              expected_wire_fixture: `${contract.id}.request.local-rejection`,
+            } as AcceptanceCase);
+          }
+        }
         for (
           const modelId of contract.conformance_test_model_ids?.[apiType] ?? []
         ) {

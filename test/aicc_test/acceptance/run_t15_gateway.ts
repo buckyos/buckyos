@@ -1,4 +1,5 @@
 import { decisionInput, assertDecisionResult } from "./decision.ts";
+import { T15_PROVIDER_DISCOVERY_CONTRACTS } from "./t15_mock_provider.ts";
 import {firstReusableResource} from "./payloads.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -358,6 +359,15 @@ export function scopeProtocolModels(catalog: ProviderProtocolCatalog, drivers: r
     const models = provider[field];
     if (models) provider[field] = Object.fromEntries(Object.entries(models).map(([api, models]) => [api, models.filter((id) => ids.includes(id))]));
   }
+  for (const contract of provider.contracts) {
+    if (contract.conformance_test_model_ids) {
+      contract.conformance_test_model_ids = Object.fromEntries(
+        Object.entries(contract.conformance_test_model_ids).map(([api, models]) =>
+          [api, models.filter((id) => ids.includes(id))]
+        ),
+      );
+    }
+  }
   return copy;
 }
 
@@ -373,13 +383,6 @@ async function addProvider(
     candidate.provider_driver === driver
   );
   if (!provider) throw new Error(`unknown T1.5 Provider ${driver}`);
-  const catalogOnly = new Set([
-    "fal",
-    "glm",
-    "doubao",
-    "doubao-speech",
-    "qwen",
-  ]);
   const catalogModels = provider.official_first_party_model_ids ??
     Object.fromEntries(
       Object.entries(provider.test_model_ids).map((
@@ -430,7 +433,7 @@ async function addProvider(
       configuredModels.set(providerModelId, model);
     }
   }
-  const catalogDiscovery = catalogOnly.has(driver)
+  const catalogDiscovery = T15_PROVIDER_DISCOVERY_CONTRACTS[driver]?.mode === "catalog_only"
     ? {
       revision: `t15-${driver}-${instance}`,
       discovered_at_ms: Date.now(),
@@ -1005,7 +1008,7 @@ export function buildT15TypedParams(
         items: [{ id: "item-1", text: "marker", image: resource("image/png") }],
       };
     case "image.txt2img":
-      return { ...common, prompt: "A blue square marked 4827" };
+      return { ...common, prompt: "A blue square marked 4827", n: 1 };
     case "image.img2img":
       return {
         ...common,
@@ -1455,6 +1458,21 @@ export function variantWireDiagnostics(
   return diagnostics;
 }
 
+export function buildHealthRecoveryCase(testCase: AcceptanceCase): AcceptanceCase {
+  return {
+    ...testCase,
+    case_id: `${testCase.case_id}.health-recovery`,
+    mock_scenario: testCase.execution_mode === "stream" ? "stream_success" : "success",
+    expected_task_status: "succeeded",
+    expected_error_class: null,
+    expected_aicc_error_code: undefined,
+    expected_provider_error_code: undefined,
+    expected_retriable: undefined,
+    timeout_ms: 30_000,
+    tags: testCase.tags.filter(tag => !["official_error", "canonical_rejection", "image_count_rejected"].includes(tag)),
+  };
+}
+
 async function executeCase(
   session: GatewaySession,
   catalog: ProviderProtocolCatalog,
@@ -1519,6 +1537,7 @@ async function executeCase(
           { historyMessage },
         ),
         ...(contract.canonical_request_overrides ?? {}),
+        ...(testCase.tags.includes("image_count_rejected") ? {n:4} : {}),
       },
     ) as Record<string, unknown>;
     if (typeof result.task_id === "string") taskId = result.task_id;
@@ -1600,7 +1619,12 @@ async function executeCase(
   if (testCase.mock_scenario === "async_poll_timeout" && !(failed instanceof TaskWaitTimeout)) {
     diagnostics.push("expected the runner wait deadline with the native task still running");
   }
-  if (requests.length === 0) {
+  if (testCase.tags.includes("canonical_rejection")) {
+    if (requests.length !== 0) diagnostics.push("rejected canonical request reached the Provider");
+    if (!String(failed).includes(testCase.expected_aicc_error_code ?? "invalid_request")) {
+      diagnostics.push("missing canonical rejection error code");
+    }
+  } else if (requests.length === 0) {
     diagnostics.push("Provider mock received no request");
   }
   if (validationErrors.length > 0) {
@@ -2712,20 +2736,7 @@ async function main(): Promise<void> {
                 providerInstances.set(driver, instance);
                 providerInventories.set(driver, inventory);
               } else {
-                const recoveryCase: AcceptanceCase = {
-                  ...testCase,
-                  case_id: `${testCase.case_id}.health-recovery`,
-                  mock_scenario: testCase.execution_mode === "stream"
-                    ? "stream_success"
-                    : "success",
-                  expected_task_status: "succeeded",
-                  expected_error_class: null,
-                  expected_aicc_error_code: undefined,
-                  expected_provider_error_code: undefined,
-                  expected_retriable: undefined,
-                  timeout_ms: 30_000,
-                  tags: testCase.tags.filter((tag) => tag !== "official_error"),
-                };
+                const recoveryCase = buildHealthRecoveryCase(testCase);
                 const recovery = await executeCase(
                   session!,
                   catalog,

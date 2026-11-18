@@ -509,35 +509,42 @@ pub(super) async fn discover_volcengine_ark_models(
             };
             for task_type in task_types.iter().filter_map(serde_json::Value::as_str) {
                 match task_type {
-                    "TextGeneration" => {
+                    "text_generation" | "TextGeneration" => {
                         add_api_type(ApiType::Llm);
                     }
-                    "VisualQuestionAnswering" => {
+                    "visual_question_answering" | "VisualQuestionAnswering" => {
                         add_api_type(ApiType::VisionOcr);
                         add_api_type(ApiType::VisionCaption);
                     }
-                    "TextEmbedding" => {
+                    "text_embedding" | "TextEmbedding" => {
                         add_api_type(ApiType::EmbeddingText);
                     }
-                    "ImageEmbedding" => {
+                    "image_embedding" | "ImageEmbedding" => {
                         add_api_type(ApiType::EmbeddingMultimodal);
                     }
-                    "TextToImage" => {
+                    "text_to_image" | "TextToImage" => {
                         add_api_type(ApiType::ImageTextToImage);
                     }
-                    "ImageToImage" => {
+                    "image_to_image" | "ImageToImage" => {
                         add_api_type(ApiType::ImageImageToImage);
                     }
-                    "TextToVideo" | "ImageToVideo" | "MultimodalToVideo" => {
+                    "text_to_video"
+                    | "TextToVideo"
+                    | "image_to_video"
+                    | "ImageToVideo"
+                    | "multimodal_to_video"
+                    | "MultimodalToVideo" => {
                         add_api_type(ApiType::VideoGenerate);
                     }
-                    "VideoEditing" => {
+                    "video_editing" | "VideoEditing" => {
                         add_api_type(ApiType::VideoEdit);
                     }
-                    "VideoExtension" => {
+                    "video_extension" | "VideoExtension" => {
                         add_api_type(ApiType::VideoExtend);
                     }
-                    _ => {}
+                    unknown => {
+                        log::warn!("{provider} model {id} has unsupported task_type {unknown}")
+                    }
                 }
             }
             if !task_types.is_empty() {
@@ -968,8 +975,8 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 16,
-                    DOUBAO_AGENT_PLAN_PROFILE_ID => 13,
+                    DOUBAO_PROFILE_ID => 17,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 14,
                     DEEPSEEK_PROFILE_ID => 6,
                     QWEN_PROFILE_ID => 15,
                     "openai" => 4,
@@ -997,8 +1004,8 @@ mod tests {
                 );
             }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
-                DOUBAO_PROFILE_ID => 7,
-                DOUBAO_AGENT_PLAN_PROFILE_ID => 12,
+                DOUBAO_PROFILE_ID => 8,
+                DOUBAO_AGENT_PLAN_PROFILE_ID => 13,
                 QWEN_PROFILE_ID => 10,
                 _ => 1,
             };
@@ -1010,7 +1017,9 @@ mod tests {
                 let vision_rule = rules
                     .patterns
                     .iter()
-                    .find(|rule| !rule.request_rules.is_empty())
+                    .find(|rule| {
+                        rule.operations.contains_key("vision.ocr") && !rule.request_rules.is_empty()
+                    })
                     .unwrap();
                 assert_eq!(
                     vision_rule.request_rules[0].defaults["max_output_tokens"],
@@ -1276,7 +1285,8 @@ mod tests {
                 "doubao-seed-tts-2.0",
                 "doubao-seed-icl-2.0",
                 "doubao-seed-asr-2.0",
-                "doubao-seed-asr-2.0-fast"
+                "doubao-seed-asr-2.0-fast",
+                "doubao-seed-asr-2.0-idle"
             ]
         );
         assert_eq!(
@@ -1365,6 +1375,7 @@ mod tests {
             vec![
                 "doubao-seed-asr-2.0",
                 "doubao-seed-asr-2.0-fast",
+                "doubao-seed-asr-2.0-idle",
                 "doubao-seed-tts-2.0"
             ]
         );
@@ -1393,6 +1404,10 @@ mod tests {
                         .logical_mounts
                         .iter()
                         .any(|mount| mount == "audio.asr.doubao"));
+                }
+                "doubao-seed-asr-2.0-idle" => {
+                    assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
+                    assert_eq!(model.operations["audio.asr"], "asr.recognize.idle.submit");
                 }
                 other => panic!("unexpected doubao-speech static model `{other}`"),
             }

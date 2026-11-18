@@ -882,3 +882,48 @@ fn instance_catalogs_are_isolated_and_override_per_model_variants() {
     value["model_pricing"][0]["pricing"]["amount"] = json!(-1);
     assert!(changed.with_instance_catalog("one", &value).is_err());
 }
+
+#[test]
+fn image_count_capacity_is_positive_and_channel_limits_only_narrow() {
+    for limit in [json!(0), json!(-1), json!(1.5), json!("1"), json!(true)] {
+        let model = model_driver(
+            "openai",
+            json!([{"id":"image","capabilities":{"max_images":limit}}]),
+            json!([]),
+        );
+        assert!(build(vec![file(CatalogKind::ModelDriver, model)]).is_err());
+    }
+    let model = model_driver(
+        "openai",
+        json!([{"id":"image","capabilities":{"max_images":1}}]),
+        json!([]),
+    );
+    build(vec![file(CatalogKind::ModelDriver, model)]).unwrap();
+    let provider = json!({
+        "format": PROVIDER_RULES_FORMAT, "schema_version": 1, "schema_revision": 0,
+        "revision_seq": 1, "provider_profile_id": "openai",
+        "models": [{"id":"image","capability_limits":{"max_images":4}}]
+    });
+    build(vec![file(CatalogKind::ProviderRules, provider)]).unwrap();
+    let rule: ProviderExactRule =
+        serde_json::from_value(json!({"id":"image","capability_limits":{"max_images":4}})).unwrap();
+    let action = provider_rule_action!(rule);
+    assert_eq!(
+        action
+            .narrow(
+                &BTreeSet::new(),
+                &BTreeMap::from([("max_images".into(), json!(1))])
+            )
+            .capabilities["max_images"],
+        1
+    );
+    assert_eq!(
+        action
+            .narrow(
+                &BTreeSet::new(),
+                &BTreeMap::from([("max_images".into(), json!(8))])
+            )
+            .capabilities["max_images"],
+        4
+    );
+}

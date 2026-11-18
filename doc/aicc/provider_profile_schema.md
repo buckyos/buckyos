@@ -539,7 +539,7 @@ unknown 而不是 0——先让价格口径可表达，等计数器落地即自�
 ### 5.6 能力收窄
 
 `remove_api_types` / `remove_features` 只能从 Model Driver 结果中删除能力。
-`capability_limits` 接受正整数上限：`max_context_tokens` 与 `decision.max_questions`、
+`capability_limits` 接受正整数上限：`max_context_tokens`、`max_images` 与 `decision.max_questions`、
 `decision.max_options`、`decision.max_levels`、`decision.max_input_bytes`、
 `decision.max_state_question_bytes`。仅对 Model Driver 已存在的整数容量取 min；
 不添加缺失的模型事实，不提升原厂上限。byte 防护不代表 token 数量。

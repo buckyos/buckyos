@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-11-09.1",
-  "checked_at": "2026-11-09",
+  "baseline_revision": "2026-11-16.1",
+  "checked_at": "2026-11-16",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -3365,44 +3365,43 @@
       ],
       "discovery": "official_catalog",
       "official_catalog": {
-        "endpoint": "https://www.volcengine.com/docs/82379/1824718?lang=zh",
+        "endpoint": "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md",
         "format": "frozen",
         "authentication": "none",
         "model_ids": [
           "doubao-seed-2.0-mini",
-          "doubao-seed-2.0-lite",
           "doubao-seed-2.1-lite",
           "deepseek-v4-flash",
           "glm-5.3-flash",
-          "doubao-seed-2.1-turbo",
           "doubao-seed-2.1-pro",
           "doubao-seed-evolving",
-          "minimax-m3",
           "glm-5.3",
-          "kimi-k2.7-code",
           "kimi-k2.8-preview",
           "deepseek-v4-pro",
           "kimi-k3",
           "deepseek-v4.1-flash",
           "doubao-embedding-vision",
-          "doubao-seedream-5.0-lite",
           "doubao-seedream-5-0-pro",
           "doubao-seedance-2.0",
           "doubao-seedance-2.0-fast",
           "doubao-seedance-2.0-mini",
           "doubao-seedance-2.5",
-          "doubao-seed-tts-2.0"
+          "doubao-seed-tts-2.0",
+          "kimi-k3.1-pro",
+          "deepseek-v4.1-flash-economy",
+          "doubao-seedream-5.0-flash"
         ],
-        "checked_at": "2026-09-24",
+        "checked_at": "2026-11-16",
         "risk": "Volcano Ark publishes the active model list as documentation and exposes foundation-model inventory only through an AK/SK-authenticated control-plane API; this frozen list is not revalidated at run time."
       },
       "source_urls": [
         "https://www.volcengine.com/docs/82379/1824718?lang=zh",
         "https://www.volcengine.com/docs/82379/1958524?lang=zh",
-        "https://www.volcengine.com/docs/82379/1298459?lang=zh"
+        "https://www.volcengine.com/docs/82379/1298459?lang=zh",
+        "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md"
       ],
       "protocol_evidence": {
-        "documentation_version": "official documentation checked 2026-09-24; frozen model inventory risk recorded in official_catalog",
+        "documentation_version": "Official Agent Plan overview and protocol documentation checked 2026-11-16; frozen inventory risk retained.",
         "streaming_semantics": "Responses supports streamed semantic events for compatible language models.",
         "async_operation_semantics": "Seedream image generation is synchronous; Seedance video generation uses Ark content-generation tasks with submit, status/result and cancellation operations.",
         "usage_semantics": "Response usage is retained when returned; TTS text_words is retained as canonical character usage.",
@@ -3426,6 +3425,35 @@
         }
       ],
       "rules": [
+        {
+          "model_pattern": "kimi-k3.1-pro",
+          "status": "active",
+          "source_status": "doubao_agent_plan_documentation",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+            "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md"
+          ],
+          "evidence_summary": "Kimi K3.1 Pro documents text/image input, always-on reasoning with low/high/max (default max), 1M context and max_completion_tokens up to 1048576; Agent Plan exposes it through Responses."
+        },
         {
           "model_pattern": "doubao-seedream-*",
           "status": "active",
@@ -3848,19 +3876,20 @@
           "doubao-seed-tts-2.0",
           "doubao-seed-icl-2.0",
           "doubao-seed-asr-2.0",
-          "doubao-seed-asr-2.0-fast"
+          "doubao-seed-asr-2.0-fast",
+          "doubao-seed-asr-2.0-idle"
         ],
-        "checked_at": "2026-10-04",
-        "risk": "Doubao Voice exposes no public /models catalog endpoint; the four official speech model ids are frozen from product documentation rather than a live discovery response. Voice Clone 2.0 is explicitly excluded until AICC has a complete cloned-voice resource design."
+        "checked_at": "2026-11-16",
+        "risk": "Doubao Voice has no public /models endpoint. The documented HTTP TTS/ASR catalog is frozen; cloned speakers, WebSocket ASR, realtime dialogue and Seed Audio creation require separate unsupported protocols or resources."
       },
       "source_urls": [
         "https://www.volcengine.com/docs/6561/1257584?lang=zh",
         "https://www.volcengine.com/docs/6561/1354868?lang=zh"
       ],
       "protocol_evidence": {
-        "documentation_version": "Official Doubao Voice (openspeech.bytedance.com) documentation checked 2026-10-04; v3 TTS and v3 AUC bigmodel speech endpoints.",
+        "documentation_version": "Official Doubao Voice documentation checked 2026-11-16; v3 HTTP TTS and standard/flash/idle AUC ASR endpoints.",
         "streaming_semantics": "Unidirectional TTS answers with newline-delimited JSON frames carrying base64 audio chunks and a terminal 20000000 completion frame.",
-        "async_operation_semantics": "asr.recognize.submit uses the AUC submit/query native task lifecycle; asr.recognize.flash is a single synchronous request.",
+        "async_operation_semantics": "Standard and idle ASR use separate submit/query paths and resource IDs with the same native task lifecycle; flash ASR uses one synchronous request. Idle completion is usually within 24 hours.",
         "usage_semantics": "TTS reports billed text_words in the usage frames; ASR reports audio duration from audio_info.duration.",
         "input_output_formats": "TTS accepts text and returns mp3/wav/pcm/ogg_opus audio; ASR accepts wav, mp3, ogg or raw audio and returns transcript text with optional utterance segments.",
         "item_request_batch_limits": "One utterance or one audio asset per request; AUC task submission carries exactly one audio reference.",
@@ -3957,6 +3986,29 @@
             "https://www.volcengine.com/docs/6561/1354869?lang=zh"
           ],
           "evidence_summary": "Doubao Speech Recognition 2.0 flash uses a single synchronous AUC request with resource id volc.bigasr.auc_turbo."
+        },
+        {
+          "model_pattern": "doubao-seed-asr-2.0-idle",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.asr"
+          ],
+          "methods": [
+            "audio.asr"
+          ],
+          "input_kinds": [
+            "audio"
+          ],
+          "output_kinds": [
+            "text"
+          ],
+          "resource_representation": "url",
+          "source_urls": [
+            "https://docs.volcengine.com/docs/6561/2608618?lang=zh",
+            "https://docs.volcengine.com/docs/6561/2608619?lang=zh"
+          ],
+          "evidence_summary": "ASR 2.0 idle uses /api/v3/auc/bigmodel/idle/submit and /idle/query with resource volc.bigasr.auc_idle; completion is usually within 24 hours."
         }
       ]
     },
@@ -3979,38 +4031,38 @@
         "format": "openai",
         "authentication": "bearer",
         "task_type_api_types": {
-          "TextGeneration": [
+          "text_generation": [
             "llm"
           ],
-          "VisualQuestionAnswering": [
+          "visual_question_answering": [
             "vision.ocr",
             "vision.caption"
           ],
-          "TextEmbedding": [
+          "text_embedding": [
             "embedding.text"
           ],
-          "ImageEmbedding": [
+          "image_embedding": [
             "embedding.multimodal"
           ],
-          "TextToImage": [
+          "text_to_image": [
             "image.txt2img"
           ],
-          "ImageToImage": [
+          "image_to_image": [
             "image.img2img"
           ],
-          "TextToVideo": [
+          "text_to_video": [
             "video.generate"
           ],
-          "ImageToVideo": [
+          "image_to_video": [
             "video.generate"
           ],
-          "MultimodalToVideo": [
+          "multimodal_to_video": [
             "video.generate"
           ],
-          "VideoEditing": [
+          "video_editing": [
             "video.edit"
           ],
-          "VideoExtension": [
+          "video_extension": [
             "video.extend"
           ]
         }
@@ -4026,7 +4078,7 @@
         "https://www.volcengine.com/docs/82379/1820188"
       ],
       "protocol_evidence": {
-        "documentation_version": "official documentation and authenticated /api/v3/models checked 2026-09-28",
+        "documentation_version": "official documentation and authenticated /api/v3/models checked 2026-09-28 Authenticated inference /api/v3/models task_type snake_case values verified 2026-11-16; distinct from control-plane FoundationModelTag.TaskTypes.",
         "streaming_semantics": "Responses supports documented semantic SSE events for compatible language models.",
         "async_operation_semantics": "Seedance uses /api/v3/contents/generations/tasks with create, poll/result and cancellation lifecycle.",
         "usage_semantics": "Responses and content-generation task results expose model-specific token usage when returned by Ark.",
@@ -4059,6 +4111,122 @@
         }
       ],
       "rules": [
+        {
+          "model_pattern": "doubao-seedance-2-5-flash-261115",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": [
+            "video.generate",
+            "video.edit",
+            "video.extend"
+          ],
+          "methods": [
+            "video.generate",
+            "video.edit",
+            "video.extend"
+          ],
+          "input_kinds": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "output_kinds": [
+            "video"
+          ],
+          "request_defaults": {
+            "video.generate": {
+              "output": {
+                "duration_seconds": 4,
+                "size": {
+                  "short_edge": 480
+                },
+                "audio": "none"
+              }
+            },
+            "video.extend": {
+              "resolution": "480p"
+            }
+          },
+          "source_urls": [
+            "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5.md"
+          ],
+          "evidence_summary": "Seedance 2.5 Flash supports generate/edit/extend, 4–30 seconds, 480p/720p, at most 10 reference images and 5 videos/5 audio clips."
+        },
+        {
+          "model_pattern": "deepseek-v4-1-flash-economy-261017",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://ark.volcengine.com/region:cn-beijing/docs/model-list.md"
+          ],
+          "evidence_summary": "Published physical model in the authenticated 2026-11-16 Ark /api/v3/models snapshot; task_type bounds the channel API types."
+        },
+        {
+          "model_pattern": "deepseek-v4-1-flash-261017",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://ark.volcengine.com/region:cn-beijing/docs/model-list.md"
+          ],
+          "evidence_summary": "Published physical model in the authenticated 2026-11-16 Ark /api/v3/models snapshot; task_type bounds the channel API types."
+        },
+        {
+          "model_pattern": "kimi-k3-1-pro-261024",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://ark.volcengine.com/region:cn-beijing/docs/model-list.md"
+          ],
+          "evidence_summary": "Published physical model in the authenticated 2026-11-16 Ark /api/v3/models snapshot; task_type bounds the channel API types."
+        },
         {
           "model_pattern": "doubao-embedding-vision-*",
           "status": "active",

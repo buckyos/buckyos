@@ -1,0 +1,345 @@
+{
+  "source_url": "https://ark.cn-beijing.volces.com/api/v3/models",
+  "checked_at": "2026-11-16",
+  "data": [
+    {
+      "api_supported": {
+        "images/generations": true
+      },
+      "created": 1789531767,
+      "domain": "ImageGeneration",
+      "features": {
+        "batch": {
+          "batch_chat": false,
+          "batch_job": false
+        },
+        "cache": {
+          "prefix_cache": false,
+          "session_cache": false
+        },
+        "structured_outputs": {
+          "json_object": false,
+          "json_schema": false
+        },
+        "tools": {
+          "function_calling": false,
+          "web_search": false
+        }
+      },
+      "id": "doubao-seedream-5-0-flash-260915",
+      "modalities": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ]
+      },
+      "name": "doubao-seedream-5-0-flash",
+      "object": "model",
+      "status": "Published",
+      "task_type": [
+        "text_to_image",
+        "image_to_image"
+      ],
+      "version": "260915"
+    },
+    {
+      "api_supported": {
+        "chat/completions": true,
+        "responses": true
+      },
+      "context_window": 1048576,
+      "created": 1792808954,
+      "domain": "LLM",
+      "effort": {
+        "default_level": "max",
+        "supported_levels": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "features": {
+        "batch": {
+          "batch_chat": false,
+          "batch_job": false
+        },
+        "cache": {
+          "prefix_cache": true,
+          "session_cache": true
+        },
+        "structured_outputs": {
+          "json_object": true,
+          "json_schema": true
+        },
+        "thinking": {
+          "types": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "tools": {
+          "function_calling": true,
+          "web_search": false
+        }
+      },
+      "id": "kimi-k3-1-pro-261024",
+      "max_output_tokens": 1048576,
+      "modalities": {
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "name": "kimi-k3-1-pro",
+      "object": "model",
+      "status": "Published",
+      "task_type": [
+        "text_generation",
+        "visual_question_answering"
+      ],
+      "token_limits": {
+        "context_window": 1048576,
+        "max_input_token_length": 1048576,
+        "max_output_token_length": 1048576,
+        "max_reasoning_token_length": 131072
+      },
+      "version": "261024"
+    },
+    {
+      "api_supported": {
+        "chat/completions": true,
+        "messages": true,
+        "responses": true,
+        "tokenization": true
+      },
+      "context_window": 1048576,
+      "created": 1792226977,
+      "domain": "VLM",
+      "effort": {
+        "default_level": "high",
+        "supported_levels": [
+          "low",
+          "high",
+          "max",
+          "none"
+        ]
+      },
+      "features": {
+        "batch": {
+          "batch_chat": false,
+          "batch_job": true
+        },
+        "cache": {
+          "prefix_cache": true,
+          "session_cache": true
+        },
+        "structured_outputs": {
+          "json_object": true,
+          "json_schema": true
+        },
+        "thinking": {
+          "types": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "tools": {
+          "function_calling": true,
+          "web_search": true
+        }
+      },
+      "id": "deepseek-v4-1-flash-261017",
+      "max_output_tokens": 393216,
+      "modalities": {
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "name": "deepseek-v4-1-flash",
+      "object": "model",
+      "status": "Published",
+      "task_type": [
+        "text_generation"
+      ],
+      "token_limits": {
+        "context_window": 1048576,
+        "max_input_token_length": 1048576,
+        "max_output_token_length": 393216,
+        "max_reasoning_token_length": 131072
+      },
+      "version": "261017"
+    },
+    {
+      "api_supported": {
+        "chat/completions": true,
+        "messages": true,
+        "responses": true,
+        "tokenization": true
+      },
+      "context_window": 1048576,
+      "created": 1792233559,
+      "domain": "VLM",
+      "effort": {
+        "default_level": "high",
+        "supported_levels": [
+          "low",
+          "high",
+          "max",
+          "none"
+        ]
+      },
+      "features": {
+        "batch": {
+          "batch_chat": false,
+          "batch_job": false
+        },
+        "cache": {
+          "prefix_cache": true,
+          "session_cache": true
+        },
+        "structured_outputs": {
+          "json_object": true,
+          "json_schema": true
+        },
+        "thinking": {
+          "types": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "tools": {
+          "function_calling": true,
+          "web_search": true
+        }
+      },
+      "id": "deepseek-v4-1-flash-economy-261017",
+      "max_output_tokens": 393216,
+      "modalities": {
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "name": "deepseek-v4-1-flash-economy",
+      "object": "model",
+      "status": "Published",
+      "task_type": [
+        "text_generation"
+      ],
+      "token_limits": {
+        "context_window": 1048576,
+        "max_input_token_length": 1048576,
+        "max_output_token_length": 393216,
+        "max_reasoning_token_length": 131072
+      },
+      "version": "261017"
+    },
+    {
+      "api_supported": {
+        "images/generations": true
+      },
+      "created": 1792549882,
+      "domain": "ImageGeneration",
+      "features": {
+        "batch": {
+          "batch_chat": false,
+          "batch_job": false
+        },
+        "cache": {
+          "prefix_cache": false,
+          "session_cache": false
+        },
+        "structured_outputs": {
+          "json_object": false,
+          "json_schema": false
+        },
+        "tools": {
+          "function_calling": false,
+          "web_search": false
+        }
+      },
+      "id": "doubao-seedream-5-5-261028",
+      "modalities": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ]
+      },
+      "name": "doubao-seedream-5-5",
+      "object": "model",
+      "status": "Published",
+      "task_type": [
+        "text_to_image",
+        "image_to_image"
+      ],
+      "version": "261028"
+    },
+    {
+      "api_supported": {
+        "contents/generations": true,
+        "files": true
+      },
+      "created": 1794371950,
+      "domain": "VideoGeneration",
+      "features": {
+        "batch": {
+          "batch_chat": false,
+          "batch_job": false
+        },
+        "cache": {
+          "prefix_cache": false,
+          "session_cache": false
+        },
+        "structured_outputs": {
+          "json_object": false,
+          "json_schema": false
+        },
+        "tools": {
+          "function_calling": false,
+          "web_search": false
+        }
+      },
+      "id": "doubao-seedance-2-5-flash-261115",
+      "modalities": {
+        "input_modalities": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output_modalities": [
+          "video"
+        ]
+      },
+      "name": "doubao-seedance-2-5-flash",
+      "object": "model",
+      "status": "Published",
+      "task_type": [
+        "multimodal_to_video",
+        "video_editing",
+        "video_extension"
+      ],
+      "version": "261115"
+    }
+  ],
+  "object": "list"
+}

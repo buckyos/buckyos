@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-12.1",
-  "checked_at": "2026-11-12",
+  "revision": "2026-11-16.1",
+  "checked_at": "2026-11-16",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -6042,48 +6042,42 @@
       "official_first_party_model_ids": {
         "llm": [
           "doubao-seed-2.0-mini",
-          "doubao-seed-2.0-lite",
           "doubao-seed-2.1-lite",
-          "doubao-seed-2.1-turbo",
           "doubao-seed-2.1-pro",
           "doubao-seed-evolving",
           "deepseek-v4-flash",
           "glm-5.3-flash",
-          "minimax-m3",
           "glm-5.3",
-          "kimi-k2.7-code",
           "kimi-k2.8-preview",
           "deepseek-v4-pro",
           "kimi-k3",
-          "deepseek-v4.1-flash"
+          "deepseek-v4.1-flash",
+          "kimi-k3.1-pro",
+          "deepseek-v4.1-flash-economy"
         ],
         "vision.ocr": [
           "doubao-seed-2.0-mini",
-          "doubao-seed-2.0-lite",
           "doubao-seed-2.1-lite",
-          "doubao-seed-2.1-turbo",
           "doubao-seed-2.1-pro",
           "doubao-seed-evolving",
           "deepseek-v4.1-flash",
           "glm-5.3-flash",
-          "minimax-m3",
-          "kimi-k2.7-code",
           "kimi-k2.8-preview",
-          "kimi-k3"
+          "kimi-k3",
+          "kimi-k3.1-pro",
+          "deepseek-v4.1-flash-economy"
         ],
         "vision.caption": [
           "doubao-seed-2.0-mini",
-          "doubao-seed-2.0-lite",
           "doubao-seed-2.1-lite",
-          "doubao-seed-2.1-turbo",
           "doubao-seed-2.1-pro",
           "doubao-seed-evolving",
           "deepseek-v4.1-flash",
           "glm-5.3-flash",
-          "minimax-m3",
-          "kimi-k2.7-code",
           "kimi-k2.8-preview",
-          "kimi-k3"
+          "kimi-k3",
+          "kimi-k3.1-pro",
+          "deepseek-v4.1-flash-economy"
         ],
         "embedding.multimodal": [
           "doubao-embedding-vision"
@@ -6092,12 +6086,12 @@
           "doubao-seed-tts-2.0"
         ],
         "image.txt2img": [
-          "doubao-seedream-5.0-lite",
-          "doubao-seedream-5-0-pro"
+          "doubao-seedream-5-0-pro",
+          "doubao-seedream-5.0-flash"
         ],
         "image.img2img": [
-          "doubao-seedream-5.0-lite",
-          "doubao-seedream-5-0-pro"
+          "doubao-seedream-5-0-pro",
+          "doubao-seedream-5.0-flash"
         ],
         "video.generate": [
           "doubao-seedance-2.0",
@@ -6118,15 +6112,14 @@
       "official_variant_sources": [
         "https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh",
         "https://docs.volcengine.com/docs/ark/model-list?lang=zh",
-        "https://docs.volcengine.com/docs/ark/responses-api-deep-thinking?lang=zh"
+        "https://docs.volcengine.com/docs/ark/responses-api-deep-thinking?lang=zh",
+        "https://docs.volcengine.com/docs/ark/deepseek-v4-1-flash?lang=zh"
       ],
       "official_variant_rules": [
         {
           "model_ids": [
             "doubao-seed-2.0-mini",
-            "doubao-seed-2.0-lite",
             "doubao-seed-2.1-lite",
-            "doubao-seed-2.1-turbo",
             "doubao-seed-2.1-pro",
             "doubao-seed-evolving"
           ],
@@ -6157,7 +6150,8 @@
           "model_ids": [
             "deepseek-v4-flash",
             "deepseek-v4-pro",
-            "deepseek-v4.1-flash"
+            "deepseek-v4.1-flash",
+            "deepseek-v4.1-flash-economy"
           ],
           "variants": {
             "reasoning-none": {
@@ -6207,18 +6201,6 @@
         },
         {
           "model_ids": [
-            "kimi-k2.7-code"
-          ],
-          "variants": {
-            "reasoning-medium": {
-              "thinking": {
-                "type": "enabled"
-              }
-            }
-          }
-        },
-        {
-          "model_ids": [
             "kimi-k2.8-preview"
           ],
           "variants": {
@@ -6241,7 +6223,8 @@
         },
         {
           "model_ids": [
-            "kimi-k3"
+            "kimi-k3",
+            "kimi-k3.1-pro"
           ],
           "variants": {
             "reasoning-low": {
@@ -6263,13 +6246,13 @@
         }
       ],
       "test_model_ids": {
-        "llm": "doubao-seed-2.0-mini",
-        "vision.ocr": "doubao-seed-2.0-mini",
-        "vision.caption": "doubao-seed-2.0-mini",
+        "llm": "kimi-k3.1-pro",
+        "vision.ocr": "kimi-k3.1-pro",
+        "vision.caption": "kimi-k3.1-pro",
         "embedding.multimodal": "doubao-embedding-vision",
         "audio.tts": "doubao-seed-tts-2.0",
-        "image.txt2img": "doubao-seedream-5.0-lite",
-        "image.img2img": "doubao-seedream-5.0-lite",
+        "image.txt2img": "doubao-seedream-5.0-flash",
+        "image.img2img": "doubao-seedream-5.0-flash",
         "video.generate": "doubao-seedance-2.0",
         "video.extend": "doubao-seedance-2.0",
         "video.edit": "doubao-seedance-2.5"
@@ -6362,9 +6345,24 @@
           },
           "official_sources": [
             "https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh",
-            "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+            "https://www.volcengine.com/docs/82379/1958524?lang=zh",
+            "https://docs.volcengine.com/docs/ark/deepseek-v4-1-flash?lang=zh"
           ],
-          "evidence_summary": "Agent Plan OpenAI-compatible inference uses the dedicated /api/plan/v3 base URL and Responses JSON/SSE wire."
+          "evidence_summary": "Agent Plan OpenAI-compatible inference uses the dedicated /api/plan/v3 base URL and Responses JSON/SSE wire.",
+          "conformance_test_model_ids": {
+            "llm": [
+              "kimi-k3.1-pro",
+              "deepseek-v4.1-flash-economy"
+            ],
+            "vision.ocr": [
+              "kimi-k3.1-pro",
+              "deepseek-v4.1-flash-economy"
+            ],
+            "vision.caption": [
+              "kimi-k3.1-pro",
+              "deepseek-v4.1-flash-economy"
+            ]
+          }
         },
         {
           "id": "doubao-agent-plan.embedding-multimodal.plan-v3",
@@ -6494,9 +6492,28 @@
             }
           },
           "official_sources": [
-            "https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"
+            "https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh",
+            "https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh"
           ],
-          "evidence_summary": "Agent Plan Seedream image generation uses POST /api/plan/v3/images/generations for text-to-image and image-to-image."
+          "evidence_summary": "Agent Plan Seedream image generation uses POST /api/plan/v3/images/generations for text-to-image and image-to-image. Seedream 5.0 Flash generates one image and explicitly rejects sequential_image_generation, including disabled; the field must be absent.",
+          "forbidden_body_paths_by_model": {
+            "doubao-seedream-5.0-flash": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
+            ],
+            "doubao-seedream-5-0-pro": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
+            ]
+          },
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "doubao-seedream-5.0-flash"
+            ],
+            "image.img2img": [
+              "doubao-seedream-5.0-flash"
+            ]
+          }
         },
         {
           "id": "doubao-agent-plan.video-tasks.plan-v3",
@@ -6671,7 +6688,8 @@
       "operation_endpoint_paths": {
         "tts.unidirectional": "/api/v3/tts",
         "asr.recognize.submit": "/api/v3/auc/bigmodel",
-        "asr.recognize.flash": "/api/v3/auc/bigmodel"
+        "asr.recognize.flash": "/api/v3/auc/bigmodel",
+        "asr.recognize.idle.submit": "/api/v3/auc/bigmodel/idle"
       },
       "credential_type": "bearer",
       "official_first_party_model_ids": {
@@ -6680,7 +6698,8 @@
         ],
         "audio.asr": [
           "doubao-seed-asr-2.0",
-          "doubao-seed-asr-2.0-fast"
+          "doubao-seed-asr-2.0-fast",
+          "doubao-seed-asr-2.0-idle"
         ]
       },
       "wire_distinct_model_ids": {
@@ -6943,6 +6962,104 @@
           "aicc_error_code_by_scenario": {
             "invalid_request": "invalid_request"
           }
+        },
+        {
+          "id": "doubao-speech.asr.idle.v3",
+          "protocol_adapter_id": "doubao-responses",
+          "error_fixture_key": "doubao-asr",
+          "api_version": "v3",
+          "api_types": [
+            "audio.asr"
+          ],
+          "test_model_ids": {
+            "audio.asr": "doubao-seed-asr-2.0-idle"
+          },
+          "operation": "asr.recognize.idle.submit",
+          "http_method": "POST",
+          "path": "/api/v3/auc/bigmodel/idle/submit",
+          "auth": {
+            "kind": "header",
+            "name": "x-api-key",
+            "prefix": ""
+          },
+          "required_headers": {
+            "x-api-resource-id": "volc.bigasr.auc_idle"
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "allowed_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "body_field_types": {
+            "user": [
+              "object"
+            ],
+            "audio": [
+              "object"
+            ],
+            "request": [
+              "object"
+            ]
+          },
+          "required_body_values": {
+            "/request/enable_speaker_info": true,
+            "/request/show_utterances": true
+          },
+          "required_body_paths": [
+            "/audio/url"
+          ],
+          "forbidden_body_paths": [
+            "/audio/data"
+          ],
+          "canonical_request_overrides": {
+            "audio": {
+              "kind": "url",
+              "url": "https://storage.googleapis.com/cloud-samples-data/speech/brooklyn_bridge.wav",
+              "mime_hint": "audio/wav"
+            }
+          },
+          "async_protocol": "doubao_asr",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "POST",
+              "path": "/api/v3/auc/bigmodel/idle/query"
+            },
+            {
+              "name": "result",
+              "http_method": "POST",
+              "path": "/api/v3/auc/bigmodel/idle/query"
+            }
+          ],
+          "success_fixture": {
+            "result": {
+              "text": "The quick brown fox jumps over the lazy dog.",
+              "utterances": [
+                {
+                  "text": "The quick brown fox jumps over the lazy dog.",
+                  "start_time": 0,
+                  "end_time": 2140
+                }
+              ]
+            },
+            "audio_info": {
+              "duration": 2140
+            }
+          },
+          "official_sources": [
+            "https://docs.volcengine.com/docs/6561/2608618?lang=zh",
+            "https://docs.volcengine.com/docs/6561/2608619?lang=zh"
+          ],
+          "evidence_summary": "Idle ASR submits and queries using dedicated /idle paths with volc.bigasr.auc_idle and the same X-Api-Request-Id, empty query JSON, and status headers as documented. Queued tasks may take 24 hours.",
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         }
       ]
     },
@@ -6963,39 +7080,51 @@
         "llm": [
           "doubao-seed-2-0-lite-260428",
           "doubao-seed-2-1-turbo-260628",
-          "doubao-seed-translation-250915"
+          "doubao-seed-translation-250915",
+          "kimi-k3-1-pro-261024",
+          "deepseek-v4-1-flash-261017",
+          "deepseek-v4-1-flash-economy-261017"
         ],
         "vision.ocr": [
           "doubao-seed-2-0-lite-260428",
-          "doubao-seed-2-1-turbo-260628"
+          "doubao-seed-2-1-turbo-260628",
+          "kimi-k3-1-pro-261024"
         ],
         "vision.caption": [
           "doubao-seed-2-0-lite-260428",
-          "doubao-seed-2-1-turbo-260628"
+          "doubao-seed-2-1-turbo-260628",
+          "kimi-k3-1-pro-261024"
         ],
         "embedding.multimodal": [
           "doubao-embedding-vision-251215"
         ],
         "image.txt2img": [
-          "doubao-seedream-5-0-pro-260628"
+          "doubao-seedream-5-0-pro-260628",
+          "doubao-seedream-5-0-flash-260915",
+          "doubao-seedream-5-5-261028"
         ],
         "image.img2img": [
-          "doubao-seedream-5-0-pro-260628"
+          "doubao-seedream-5-0-pro-260628",
+          "doubao-seedream-5-0-flash-260915",
+          "doubao-seedream-5-5-261028"
         ],
         "video.generate": [
           "doubao-seedance-2-0-260128",
           "doubao-seedance-2-0-fast-260128",
           "doubao-seedance-2-0-mini-260615",
-          "doubao-seedance-2-5-260628"
+          "doubao-seedance-2-5-260628",
+          "doubao-seedance-2-5-flash-261115"
         ],
         "video.edit": [
-          "doubao-seedance-2-5-260628"
+          "doubao-seedance-2-5-260628",
+          "doubao-seedance-2-5-flash-261115"
         ],
         "video.extend": [
           "doubao-seedance-2-0-260128",
           "doubao-seedance-2-0-fast-260128",
           "doubao-seedance-2-0-mini-260615",
-          "doubao-seedance-2-5-260628"
+          "doubao-seedance-2-5-260628",
+          "doubao-seedance-2-5-flash-261115"
         ]
       },
       "official_variant_sources": [
@@ -7028,6 +7157,56 @@
             "reasoning-high": {
               "reasoning": {
                 "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "kimi-k3-1-pro-261024"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek-v4-1-flash-261017",
+            "deepseek-v4-1-flash-economy-261017"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
               }
             }
           }
@@ -7135,7 +7314,20 @@
             "https://www.volcengine.com/docs/82379/1585128",
             "https://docs.volcengine.com/docs/82379/1362931?lang=zh"
           ],
-          "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics."
+          "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics.",
+          "conformance_test_model_ids": {
+            "llm": [
+              "kimi-k3-1-pro-261024",
+              "deepseek-v4-1-flash-261017",
+              "deepseek-v4-1-flash-economy-261017"
+            ],
+            "vision.ocr": [
+              "kimi-k3-1-pro-261024"
+            ],
+            "vision.caption": [
+              "kimi-k3-1-pro-261024"
+            ]
+          }
         },
         {
           "id": "doubao.translation.responses.v3",
@@ -7329,6 +7521,17 @@
           ],
           "aicc_error_code_by_scenario": {
             "invalid_request": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.generate": [
+              "doubao-seedance-2-5-flash-261115"
+            ],
+            "video.edit": [
+              "doubao-seedance-2-5-flash-261115"
+            ],
+            "video.extend": [
+              "doubao-seedance-2-5-flash-261115"
+            ]
           }
         },
         {
@@ -7461,9 +7664,34 @@
             }
           },
           "official_sources": [
-            "https://docs.volcengine.com/docs/82379/1541523?lang=zh"
+            "https://docs.volcengine.com/docs/82379/1541523?lang=zh",
+            "https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh"
           ],
-          "evidence_summary": "Standard Seedream image generation uses POST /api/v3/images/generations for text-to-image and image-to-image."
+          "evidence_summary": "Standard Seedream image generation uses POST /api/v3/images/generations for text-to-image and image-to-image. Seedream 5.0 Flash generates one image and explicitly rejects sequential_image_generation, including disabled; the field must be absent.",
+          "forbidden_body_paths_by_model": {
+            "doubao-seedream-5-0-flash-260915": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
+            ],
+            "doubao-seedream-5-5-261028": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
+            ],
+            "doubao-seedream-5-0-pro-260628": [
+              "/sequential_image_generation",
+              "/sequential_image_generation_options"
+            ]
+          },
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "doubao-seedream-5-0-flash-260915",
+              "doubao-seedream-5-5-261028"
+            ],
+            "image.img2img": [
+              "doubao-seedream-5-0-flash-260915",
+              "doubao-seedream-5-5-261028"
+            ]
+          }
         }
       ]
     },
