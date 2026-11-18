@@ -20,6 +20,7 @@ import { latestRecord } from './records'
 const ACTIVE = new Set(['queued', 'snapshotting', 'running', 'validating', 'applying'])
 /** The execution mode this browser prefers (内核架构改进 D14); a per-viewer convenience. */
 const EXECUTION_KEY = 'aiworkspace.execution'
+export const EXECUTION_LABEL: Record<WishExecutionMode, string> = { local: 'aiworkspace.wish.execution.local', hosted: 'aiworkspace.wish.execution.hosted' }
 
 export function isActive(run: WishRunView | undefined | null): boolean { return Boolean(run && ACTIVE.has(run.state)) }
 const CODING_CODES = new Set(['PROGRAM_FAILED', 'MACRO_CODE_CHANGED', 'NEEDS_CODING'])

@@ -19,6 +19,10 @@ export const en: Record<string, string> = {
   'aiworkspace.wishcard.next.repair': 'Repair macro',
   'aiworkspace.wishcard.next.run': 'Run macro',
   'aiworkspace.wishcard.next.resume': 'Continue',
+  'aiworkspace.wishcard.executor': 'Where it runs: {{where}}',
+  'aiworkspace.wishcard.step.done': '{{stage}}: done',
+  'aiworkspace.wishcard.step.next': '{{stage}}: the next step',
+  'aiworkspace.wishcard.step.later': '{{stage}}: after that',
 
   'aiworkspace.wishcard.reason.readOnly': 'Cannot be changed here',
   'aiworkspace.wishcard.reason.starting': 'Starting…',
@@ -187,6 +191,10 @@ export const zh: Record<string, string> = {
   'aiworkspace.wishcard.next.repair': '修复宏',
   'aiworkspace.wishcard.next.run': '执行宏',
   'aiworkspace.wishcard.next.resume': '继续',
+  'aiworkspace.wishcard.executor': '执行位置：{{where}}',
+  'aiworkspace.wishcard.step.done': '{{stage}}：已完成',
+  'aiworkspace.wishcard.step.next': '{{stage}}：下一步',
+  'aiworkspace.wishcard.step.later': '{{stage}}：之后进行',
 
   'aiworkspace.wishcard.reason.readOnly': '这里不能修改',
   'aiworkspace.wishcard.reason.starting': '正在开始…',
