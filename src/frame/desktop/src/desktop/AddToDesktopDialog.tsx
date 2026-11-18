@@ -1,6 +1,6 @@
 import { Dialog, DialogContent, DialogTitle, IconButton, Tab, Tabs } from '@mui/material'
 import clsx from 'clsx'
-import { Clock, Info, LayoutGrid, StickyNote, X, type LucideIcon } from 'lucide-react'
+import { Clock, Info, LayoutGrid, Music, StickyNote, X, type LucideIcon } from 'lucide-react'
 import { useId, useMemo, useState, type CSSProperties } from 'react'
 import type { DesktopAppItem } from '../app/types'
 import { AppIcon } from '../components/DesktopVisuals'
@@ -14,6 +14,7 @@ const widgetIcons: Record<string, LucideIcon> = {
   clock: Clock,
   notepad: StickyNote,
   'system-info': Info,
+  'music-player': Music,
 }
 
 type AddTab = 'widgets' | 'apps'

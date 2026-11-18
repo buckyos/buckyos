@@ -717,8 +717,8 @@ export function DesktopRoute() {
     [store],
   )
 
-  const handleSaveNote = useCallback(
-    (itemId: string, content: string) => store.updateWidgetNote(itemId, content),
+  const handleUpdateWidgetConfig = useCallback(
+    (itemId: string, patch: Record<string, unknown>) => store.updateWidgetConfig(itemId, patch),
     [store],
   )
 
@@ -973,7 +973,7 @@ export function DesktopRoute() {
                   onOpenItemContextMenu={handleOpenItemContextMenu}
                   onResizeItem={handleResizeItem}
                   onRestore={restoreDefaults}
-                  onSaveNote={handleSaveNote}
+                  onUpdateConfig={handleUpdateWidgetConfig}
                   onViewportProgress={handleViewportProgress}
                   resizingItemId={resizingItemId}
                   selectedItemId={selectedItemId}
@@ -1219,7 +1219,7 @@ interface DesktopPagesProps {
   onOpenItemContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
   onResizeItem: (itemId: string, next: GridRect) => GridRect | null
   onRestore: () => void
-  onSaveNote: (itemId: string, content: string) => void
+  onUpdateConfig: (itemId: string, patch: Record<string, unknown>) => void
   onViewportProgress: (progress: number, pageCount: number) => void
   resizingItemId: string | null
   selectedItemId: string | null
@@ -1248,7 +1248,7 @@ const DesktopPages = memo(function DesktopPages({
   onOpenItemContextMenu,
   onResizeItem,
   onRestore,
-  onSaveNote,
+  onUpdateConfig,
   onViewportProgress,
   resizingItemId,
   selectedItemId,
@@ -1377,7 +1377,7 @@ const DesktopPages = memo(function DesktopPages({
                     onOpen={onOpenItem}
                     onOpenContextMenu={onOpenItemContextMenu}
                     onResize={onResizeItem}
-                    onSaveNote={onSaveNote}
+                    onUpdateConfig={onUpdateConfig}
                   />
                 </div>
               ))}
@@ -1480,7 +1480,7 @@ function DesktopTile({
   onOpen,
   onOpenContextMenu,
   onResize,
-  onSaveNote,
+  onUpdateConfig,
 }: {
   app?: AppDefinition
   grid: PositionParams
@@ -1493,7 +1493,7 @@ function DesktopTile({
   onOpen: (item: LayoutItem) => void
   onOpenContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
   onResize: (itemId: string, next: GridRect) => GridRect | null
-  onSaveNote: (itemId: string, content: string) => void
+  onUpdateConfig: (itemId: string, patch: Record<string, unknown>) => void
 }) {
   const appText = useAppText()
   const opens = item.type === 'app' || item.type === 'file'
@@ -1608,7 +1608,7 @@ function DesktopTile({
         ) : null}
 
         {item.type === 'widget' ? (
-          <DesktopWidgetRenderer item={item} onSaveNote={onSaveNote} />
+          <DesktopWidgetRenderer item={item} onUpdateConfig={onUpdateConfig} />
         ) : null}
       </div>
       {resizeCell && item.type === 'widget' ? (

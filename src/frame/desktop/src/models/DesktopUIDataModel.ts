@@ -1611,13 +1611,13 @@ export class DesktopUIStore {
     return after
   }
 
-  /** Saves a note widget's text into its `.widget` file. */
-  updateWidgetNote(itemId: string, content: string) {
+  /** Saves part of a widget's own settings (a note's text, a player's folder) into its `.widget` file. */
+  updateWidgetConfig(itemId: string, patch: Record<string, unknown>) {
     const { layoutState } = this.snapshot
     const entry = this.getDesktopEntry(itemId)
     if (!layoutState || entry?.kind !== 'widget') return
 
-    const raw = { ...entry.raw, text: content }
+    const raw = { ...entry.raw, ...patch, widget: entry.widget }
     this.desktopEntries = this.desktopEntries.map((other) => (other === entry ? { ...entry, raw } : other))
     this.update({
       layoutState: {
@@ -1626,7 +1626,7 @@ export class DesktopUIStore {
           ...page,
           items: page.items.map((item) =>
             item.id === itemId && item.type === 'widget'
-              ? { ...item, config: { ...item.config, text: content } }
+              ? { ...item, config: { ...item.config, ...patch } }
               : item,
           ),
         })),

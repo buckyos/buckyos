@@ -54,6 +54,16 @@ export const widgetCatalog: readonly WidgetDefinition[] = [
     minSize: { w: 2, h: 2 },
     maxSize: { w: 4, h: 4 },
   },
+  {
+    type: 'music-player',
+    labelKey: 'widgets.musicPlayer',
+    label: 'Music Player',
+    descriptionKey: 'desktop.add.widget.musicPlayer',
+    description: 'Plays a folder of music, in order or shuffled.',
+    defaultSize: { w: 2, h: 2 },
+    minSize: { w: 2, h: 1 },
+    maxSize: { w: 4, h: 2 },
+  },
 ]
 
 /** The size of a widget type the desktop does not know. */

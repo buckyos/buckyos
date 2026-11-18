@@ -3,7 +3,8 @@ import type { WidgetItem } from '../../models/ui'
 
 export interface DesktopWidgetProps {
   item: WidgetItem
-  onSaveNote: (itemId: string, content: string) => void
+  /** Saves part of the widget's own settings into its `.widget` file. */
+  onUpdateConfig: (itemId: string, patch: Record<string, unknown>) => void
 }
 
 export type DesktopWidgetComponent = ComponentType<DesktopWidgetProps>
