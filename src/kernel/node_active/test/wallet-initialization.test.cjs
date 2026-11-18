@@ -25,7 +25,7 @@ async function mount({ runtime = "AppRuntime", readUser = async () => identity }
   const t = (key) => JSON.parse(fs.readFileSync(path.join(__dirname, `../res/${language}.json`), "utf8"))[key] || key;
   const context = vm.createContext({
     console: { warn() {} },
-    document: { body: { dataset: {} }, title: "" },
+    document: { body: { dataset: {} }, documentElement: { dataset: {} }, title: "" },
     setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; },
     clearTimeout(id) { timers.delete(id); },
   });
@@ -33,7 +33,7 @@ async function mount({ runtime = "AppRuntime", readUser = async () => identity }
     for (const [name, value] of Object.entries(exports)) this.setExport(name, value);
   }, { context });
   const node = (type, props) => ({ type, props });
-  const muiNames = ["Alert", "Box", "Button", "Container", "CssBaseline", "Paper", "Stack", "Chip", "ThemeProvider", "Typography"];
+  const muiNames = ["Alert", "Box", "Button", "CircularProgress", "CssBaseline", "Stack", "ThemeProvider", "Typography"];
   const modules = {
     react: module({
       useState(initial) {
@@ -74,6 +74,8 @@ async function mount({ runtime = "AppRuntime", readUser = async () => identity }
     "./components/ActiveWizard": module({ default: "ActiveWizard" }),
     "./components/LanguageSwitch": module({ default: "LanguageSwitch" }),
     "./components/ThemeToggle": module({ default: "ThemeToggle" }),
+    "./components/ui": module({ BrandMark: "BrandMark", StatusDot: "StatusDot" }),
+    "./theme": module({ createActiveTheme: (mode) => ({ mode }) }),
   };
   const source = fs.readFileSync(path.join(__dirname, "../src/App.tsx"), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: {

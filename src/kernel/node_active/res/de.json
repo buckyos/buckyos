@@ -142,7 +142,7 @@
     "activation_success_desc": "Dein Personal Intelligence wurde erfolgreich aktiviert",
     "click_to_access": "Klicken",
     "access_link": "zum Zugriff",
-    "default_credentials": "Anmeldename: {{username}}.",
+    "default_credentials": "Anmeldename: {{username}}",
     "refresh_note": "Die Aktivierung wird noch abgeschlossen. Sie sollte in etwa {{time}} bereit sein. Wenn die Seite Fehler anzeigt, aktualisiere sie noch ein paar Mal.",
     "close_and_redirect": "Schliessen und weiterleiten",
     "error_password_mismatch": "Die beiden eingegebenen Passwoerter stimmen nicht ueberein",
@@ -164,5 +164,14 @@
     "error_open_failed": "Der Browser konnte nicht geöffnet werden. Bitte kopieren Sie den Link und öffnen Sie ihn manuell.",
     "wallet_device_owner": "Das Geraet wird gehoeren zu: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "Bitte fuege vor der Aktivierung die folgenden 3 TXT-Eintraege zu deiner Domain hinzu",
-    "language_label": "Sprache"
+    "language_label": "Sprache",
+    "gateway_sn_relay_title": "SN-Relay",
+    "gateway_direct_title": "Direktverbindung",
+    "gateway_public_ip_title": "Feste öffentliche IP",
+    "review_owner_did": "Eigentümer-DID",
+    "review_zone_did": "Zone-DID",
+    "review_gateway": "Zugriffsroute",
+    "review_bns_name": "BNS-Name",
+    "theme_light": "Heller Modus",
+    "theme_dark": "Dunkler Modus"
 }

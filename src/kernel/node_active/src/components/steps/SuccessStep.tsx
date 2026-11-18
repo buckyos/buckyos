@@ -1,10 +1,11 @@
-import { CheckCircleOutlineRounded, ContentCopyRounded, DnsRounded, LaunchRounded } from "@mui/icons-material";
-import { Alert, Box, Button, LinearProgress, Paper, Snackbar, Stack, Typography } from "@mui/material";
+import { Check, Copy, ExternalLink } from "lucide-react";
+import { Alert, Box, Button, Snackbar, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WizardData } from "../../types";
 import { SN_BASE_HOST, WEB3_BASE_HOST } from "../../../active_lib";
 import { copyTextToClipboard } from "../../utils/clipboard";
+import { Note, StatusDot, mono } from "../ui";
 
 type Props = {
   wizardData: WizardData;
@@ -108,67 +109,117 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
     });
   };
 
+  const stillCompleting = remainingSeconds > 0;
+
   return (
-    <Paper
-      variant="outlined"
-      sx={{
-        p: { xs: 3, md: 4 },
-        borderRadius: 4,
-        textAlign: "center",
-      }}
-    >
-      <Stack spacing={2} alignItems="center">
-        <CheckCircleOutlineRounded color="success" sx={{ fontSize: 56 }} />
-        <Typography variant="h5">{t("activation_success")}</Typography>
-        <Typography color="text.secondary">{t("activation_success_desc")}</Typography>
-        {wizardData.use_self_domain && (
-          <Alert severity="info" icon={<DnsRounded />} sx={{ width: "100%", textAlign: "left" }}>
-            {t("dns_ns_record", { sn_host_base: SN_BASE_HOST })}
-            <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
-              {t(
-                "ns_after_activation_hint",
-                "Activation is complete. Delegate NS now to make the custom domain resolve publicly.",
-              )}
-            </Typography>
-          </Alert>
-        )}
-        <Stack spacing={1} sx={{ width: "100%", maxWidth: 420 }}>
-          <Box>
-            <Typography variant="h4" fontWeight={700}>
-              {countdownLabel}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {t("refresh_note", {
-                time: countdownLabel,
-                defaultValue:
-                  "Activation is still completing. It should be ready in about {{time}}. If the page shows errors, refresh a few more times.",
-              })}
-            </Typography>
-          </Box>
-          <LinearProgress
-            variant="determinate"
-            value={countdownProgress}
-            sx={{ height: 8, borderRadius: 999 }}
-          />
+    <Stack spacing={4} alignItems="center" sx={{ textAlign: "center", py: { xs: 1, sm: 2 } }}>
+      <Stack spacing={1.5} alignItems="center">
+        <Box
+          sx={{
+            width: 40,
+            height: 40,
+            borderRadius: "50%",
+            display: "grid",
+            placeItems: "center",
+            color: "var(--cp-success)",
+            bgcolor: "color-mix(in srgb, var(--cp-success) 14%, var(--cp-surface))",
+          }}
+        >
+          <Check size={20} strokeWidth={2} />
+        </Box>
+        <Typography variant="h5" component="h2">
+          {t("activation_success")}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 480 }}>
+          {t("activation_success_desc")}
+        </Typography>
+      </Stack>
+
+      {wizardData.use_self_domain && (
+        <Box sx={{ width: "100%", textAlign: "left" }}>
+          <Note title={t("dns_ns_record", { sn_host_base: SN_BASE_HOST })}>
+            {t(
+              "ns_after_activation_hint",
+              "Activation is complete. Delegate NS now to make the custom domain resolve publicly.",
+            )}
+          </Note>
+        </Box>
+      )}
+
+      <Stack spacing={1} alignItems="center" sx={{ width: "100%", maxWidth: 480 }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <StatusDot tone={stillCompleting ? "accent" : "success"} live={stillCompleting} />
+          <Typography sx={{ ...mono, fontSize: 20, fontWeight: 500, lineHeight: 1.4 }}>{countdownLabel}</Typography>
         </Stack>
-        {url && (
-          <Typography variant="h6" sx={{ wordBreak: "break-all" }}>
+        <Typography variant="body2" color="text.secondary">
+          {t("refresh_note", {
+            time: countdownLabel,
+            defaultValue:
+              "Activation is still completing. It should be ready in about {{time}}. If the page shows errors, refresh a few more times.",
+          })}
+        </Typography>
+        <Box
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(countdownProgress)}
+          sx={{ width: "100%", height: 4, mt: 1, borderRadius: 2, bgcolor: "var(--cp-border)", overflow: "hidden" }}
+        >
+          <Box
+            sx={{
+              height: "100%",
+              width: "100%",
+              bgcolor: "var(--cp-accent)",
+              transformOrigin: "left center",
+              transform: `scaleX(${countdownProgress / 100})`,
+              transition: "transform 1000ms linear",
+            }}
+          />
+        </Box>
+      </Stack>
+
+      {url && (
+        <Box
+          sx={{
+            width: "100%",
+            maxWidth: 480,
+            px: 2,
+            py: 2,
+            borderRadius: "12px",
+            border: "1px solid var(--cp-border)",
+            bgcolor: "var(--cp-surface-2)",
+          }}
+        >
+          <Typography sx={{ ...mono, fontSize: 17, fontWeight: 500, overflowWrap: "anywhere", userSelect: "all" }}>
             {url}
           </Typography>
-        )}
-        {loginUsername && (
-          <Typography variant="body2" color="text.secondary">
-            {t("default_credentials", { username: loginUsername })}
-          </Typography>
-        )}
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-          <Button variant="contained" endIcon={<LaunchRounded />} onClick={openUrl} disabled={opening || !url}>
-            {t("close_and_redirect")}
-          </Button>
-          <Button variant="outlined" startIcon={<ContentCopyRounded />} onClick={copyUrl}>
-            {t("copy_link")}
-          </Button>
-        </Stack>
+          {loginUsername && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              {t("default_credentials", { username: loginUsername })}
+            </Typography>
+          )}
+        </Box>
+      )}
+
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ width: { xs: "100%", sm: "auto" } }}>
+        <Button
+          variant="contained"
+          size="large"
+          endIcon={<ExternalLink size={16} strokeWidth={1.75} />}
+          onClick={openUrl}
+          disabled={opening || !url}
+        >
+          {t("close_and_redirect")}
+        </Button>
+        <Button
+          variant="outlined"
+          size="large"
+          startIcon={<Copy size={16} strokeWidth={1.75} />}
+          onClick={copyUrl}
+          disabled={!url}
+        >
+          {t("copy_link")}
+        </Button>
       </Stack>
       <Snackbar
         open={feedback.open}
@@ -179,13 +230,12 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
         <Alert
           onClose={() => setFeedback((prev) => ({ ...prev, open: false }))}
           severity={feedback.severity}
-          variant="filled"
-          sx={{ width: "100%" }}
+          sx={{ width: "100%", boxShadow: "var(--cp-panel-shadow)" }}
         >
           {feedback.message}
         </Alert>
       </Snackbar>
-    </Paper>
+    </Stack>
   );
 };
 

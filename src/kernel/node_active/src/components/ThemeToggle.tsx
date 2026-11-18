@@ -1,33 +1,37 @@
-import { DarkModeRounded, LightModeRounded } from "@mui/icons-material";
+import { Moon, Sun } from "lucide-react";
 import { IconButton, PaletteMode, Tooltip } from "@mui/material";
+import { useTranslation } from "react-i18next";
 
 type Props = {
   mode: PaletteMode;
   onToggle: () => void;
 };
 
-const ThemeToggle = ({ mode, onToggle }: Props) => (
-  <Tooltip title={mode === "dark" ? "Light mode" : "Dark mode"}>
-    <IconButton
-      onClick={onToggle}
-      size="small"
-      sx={{
-        width: 42,
-        height: 42,
-        flexShrink: 0,
-        borderRadius: "50%",
-        border: "1px solid",
-        borderColor: "divider",
-        bgcolor: "background.paper",
-        boxShadow: "0 6px 16px rgba(15, 23, 42, 0.08)",
-        "&:hover": {
-          bgcolor: "action.hover",
-        },
-      }}
-    >
-      {mode === "dark" ? <LightModeRounded /> : <DarkModeRounded />}
-    </IconButton>
-  </Tooltip>
-);
+const ThemeToggle = ({ mode, onToggle }: Props) => {
+  const { t } = useTranslation();
+  const label =
+    mode === "dark"
+      ? t("theme_light", { defaultValue: "Light mode" })
+      : t("theme_dark", { defaultValue: "Dark mode" });
+  return (
+    <Tooltip title={label}>
+      <IconButton
+        onClick={onToggle}
+        aria-label={label}
+        sx={{
+          width: 40,
+          height: 40,
+          flexShrink: 0,
+          borderRadius: "10px",
+          border: "1px solid var(--cp-border)",
+          bgcolor: "var(--cp-surface)",
+          "&:hover": { bgcolor: "color-mix(in srgb, var(--cp-text) 4%, var(--cp-surface))" },
+        }}
+      >
+        {mode === "dark" ? <Sun size={18} strokeWidth={1.75} /> : <Moon size={18} strokeWidth={1.75} />}
+      </IconButton>
+    </Tooltip>
+  );
+};
 
 export default ThemeToggle;

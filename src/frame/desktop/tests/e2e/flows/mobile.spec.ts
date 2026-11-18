@@ -1,5 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
-import { openFromAllApps } from '../fixtures/desktop'
+import { expect, test } from '@playwright/test'
+import { openFromAllApps, TILE_HOLD_MS, touchTile } from '../fixtures/desktop'
 
 test.use({
   viewport: { width: 375, height: 812 },
@@ -76,69 +76,41 @@ test('mobile launcher shows AI Center and opens panel content', async ({
   expect(consoleErrors).toEqual([])
 })
 
-async function touchGesture(
-  page: Page,
-  tile: Locator,
-  offsets: Array<{ x: number; y: number }>,
-) {
-  await tile.tap({ trial: true })
-  const box = await tile.boundingBox()
-  expect(box).not.toBeNull()
-  const x = box!.x + box!.width / 2
-  const y = box!.y + box!.height / 2
-  const cdp = await page.context().newCDPSession(page)
-  try {
-    await cdp.send('Input.dispatchTouchEvent', {
-      type: 'touchStart',
-      touchPoints: [{ x, y, id: 1 }],
-    })
-    for (const offset of offsets) {
-      await cdp.send('Input.dispatchTouchEvent', {
-        type: 'touchMove',
-        touchPoints: [{ x: x + offset.x, y: y + offset.y, id: 1 }],
-      })
-    }
-    await cdp.send('Input.dispatchTouchEvent', {
-      type: 'touchEnd',
-      touchPoints: [],
-    })
-  } finally {
-    await cdp.detach()
-  }
-}
-
 for (const offset of [{ x: 5, y: 0 }, { x: 7, y: 6 }]) {
   test(`mobile launcher opens after a short touch with ${offset.x},${offset.y}px drift`, async ({ page }) => {
     await page.goto('/?scenario=normal')
-    await touchGesture(page, page.getByRole('button', { name: 'Settings', exact: true }), [offset])
+    await touchTile(page, page.getByRole('button', { name: 'Settings', exact: true }), [offset])
     await expect(page.getByPlaceholder('Search settings')).toBeVisible()
   })
 }
 
-test('mobile launcher touch drag moves an icon without opening the app', async ({ page }) => {
+test('mobile launcher touch drag after a hold moves an icon without opening the app', async ({ page }) => {
   await page.goto('/?scenario=normal')
   const settings = page.getByRole('button', { name: 'Settings', exact: true })
   await settings.tap({ trial: true })
   const before = await settings.boundingBox()
   expect(before).not.toBeNull()
-  await touchGesture(page, settings, [
+  await touchTile(page, settings, [
     { x: 0, y: -30 },
     { x: 0, y: -80 },
     { x: 0, y: -140 },
-  ])
+  ], { holdMs: TILE_HOLD_MS })
   await expect.poll(async () => {
     const after = await settings.boundingBox()
     return Math.abs((after?.y ?? before!.y) - before!.y)
   }).toBeGreaterThan(60)
   await expect(page.getByRole('button', { name: 'Minimize' })).toHaveCount(0)
+  await expect(page.getByTestId('desktop-menu-show-in-files')).toHaveCount(0)
   await settings.tap()
   await expect(page.getByPlaceholder('Search settings')).toBeVisible()
 })
 
-test('mobile launcher does not open an app after dragging away and back', async ({ page }) => {
+test('mobile launcher touch move without a hold is a swipe: the icon stays and the app does not open', async ({ page }) => {
   await page.goto('/?scenario=normal')
   const settings = page.getByRole('button', { name: 'Settings', exact: true })
-  await touchGesture(page, settings, [
+  await settings.tap({ trial: true })
+  const before = await settings.boundingBox()
+  await touchTile(page, settings, [
     { x: 0, y: -30 },
     { x: 0, y: -80 },
     { x: 0, y: -30 },
@@ -146,8 +118,16 @@ test('mobile launcher does not open an app after dragging away and back', async 
   ])
   await expect(page.getByRole('button', { name: 'Minimize' })).toHaveCount(0)
   await expect(settings).toBeVisible()
+  expect(await settings.boundingBox()).toEqual(before)
   await settings.tap()
   await expect(page.getByPlaceholder('Search settings')).toBeVisible()
+})
+
+test('mobile launcher touch hold without moving opens the item menu', async ({ page }) => {
+  await page.goto('/?scenario=normal')
+  await touchTile(page, page.getByRole('button', { name: 'Settings', exact: true }), [], { holdMs: TILE_HOLD_MS })
+  await expect(page.getByTestId('desktop-menu-show-in-files')).toBeVisible()
+  await expect(page.getByPlaceholder('Search settings')).toHaveCount(0)
 })
 
 for (const input of ['mouse', 'Enter', 'Space']) {

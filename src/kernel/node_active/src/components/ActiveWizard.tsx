@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Box, LinearProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { StepKey, WalletUser, WizardData, ActiveWizzardData } from "../types";
 import { createInitialWizardData, WEB3_BASE_HOST } from "../../active_lib";
@@ -10,11 +10,21 @@ import AIProviderStep from "./steps/AIProviderStep";
 import OwnerTelegramStep from "./steps/OwnerTelegramStep";
 import ReviewStep from "./steps/ReviewStep";
 import SuccessStep from "./steps/SuccessStep";
+import { mono } from "./ui";
 
 type Props = {
   isWalletRuntime: boolean;
   walletUser?: WalletUser;
 };
+
+const LoadingLine = ({ label }: { label: string }) => (
+  <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 2 }}>
+    <CircularProgress size={16} thickness={5} />
+    <Typography variant="body2" color="text.secondary">
+      {label}
+    </Typography>
+  </Stack>
+);
 
 const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const { t } = useTranslation();
@@ -132,13 +142,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
 
   const renderStep = () => {
     if (isWalletRuntime && !walletUser) {
-      return (
-        <Box>
-          <Typography variant="body2" color="text.secondary">
-            {t("loading") || "Loading..."}
-          </Typography>
-        </Box>
-      );
+      return <LoadingLine label={t("loading")} />;
     }
     if (isWalletRuntime && !walletInfoReady) {
       return (
@@ -150,7 +154,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
       );
     }
     if (!wizardData) {
-      return <Box>{t("loading")}</Box>;
+      return <LoadingLine label={t("loading")} />;
     }
     
     switch (currentStepKey) {
@@ -216,53 +220,45 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   };
 
   const totalSteps = visibleSteps.length;
-  const stepNumber = currentStepKey === "success" ? totalSteps : activeStep + 1;
-  const progress =
-    currentStepKey === "success"
-      ? 100
-      : Math.min((stepNumber / totalSteps) * 100, 100);
-  const rawStepTitle = stepTitles[currentStepKey];
-  const displayStepTitle =
-    currentStepKey === "success"
-      ? rawStepTitle
-      : rawStepTitle.replace(/^\d+\.\s*/, `${stepNumber}. `);
+  const isSuccess = currentStepKey === "success";
+  const stepNumber = isSuccess ? totalSteps : activeStep + 1;
+  // Titles in the language files carry a number ("2. …"); the counter beside them already says where we are,
+  // and in the wallet runtime (no security step) the built-in numbers would be off by one.
+  const displayStepTitle = stepTitles[currentStepKey].replace(/^\d+\.\s*/, "");
 
   return (
     <Box>
-      <Stack spacing={1} mb={2}>
-        <Stack direction="row" alignItems="center" justifyContent="space-between">
-          <Typography variant="h6" fontWeight={700}>
-            {displayStepTitle}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {stepNumber}/{totalSteps}
-          </Typography>
-        </Stack>
-        <Box sx={{ position: "relative" }}>
-          <LinearProgress
-            variant="determinate"
-            value={progress}
-            sx={{
-              height: 8,
-              borderRadius: 999,
-              backgroundColor: "action.hover",
-            }}
-          />
-          <Box
-            sx={{
-              position: "absolute",
-              top: "50%",
-              left: `${progress}%`,
-              transform: "translate(-50%, -50%)",
-              width: 14,
-              height: 14,
-              borderRadius: "50%",
-              bgcolor: "primary.main",
-              boxShadow: "0 0 0 3px rgba(79,70,229,0.18)",
-            }}
-          />
+      {!isSuccess && (
+        <Box sx={{ mb: 4 }}>
+          <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2} sx={{ mb: 1.5 }}>
+            <Typography variant="h5" component="h2">
+              {displayStepTitle}
+            </Typography>
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ flexShrink: 0, ...mono, fontSize: 13 }}
+              aria-label={`${stepNumber} / ${totalSteps}`}
+            >
+              {stepNumber}/{totalSteps}
+            </Typography>
+          </Stack>
+          <Box sx={{ display: "flex", gap: 0.5 }} aria-hidden="true">
+            {visibleSteps.map((step, index) => (
+              <Box
+                key={step}
+                sx={{
+                  flex: 1,
+                  height: 4,
+                  borderRadius: 2,
+                  bgcolor: index < stepNumber ? "var(--cp-accent)" : "var(--cp-border)",
+                  transition: "background-color 240ms var(--cp-ease-smooth)",
+                }}
+              />
+            ))}
+          </Box>
         </Box>
-      </Stack>
+      )}
       {renderStep()}
     </Box>
   );

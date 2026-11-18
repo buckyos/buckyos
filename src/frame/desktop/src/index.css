@@ -258,6 +258,22 @@ a {
     opacity 180ms var(--cp-ease-smooth);
 }
 
+/* A tile lifted by a touch hold or carried by a drag (launcherGesture.ts): above the others and slightly larger.
+   The drag writes the item's transform every frame, so that is not transitioned; the lift scales the tile inside,
+   since a scale on the item would scale its position too. */
+.react-grid-layout > .react-grid-item[data-gesture] {
+  z-index: 3;
+  transition: none;
+}
+
+.react-grid-layout > .react-grid-item > .desktop-tile-shell {
+  transition-property: border-color, background-color, scale;
+}
+
+.react-grid-layout > .react-grid-item[data-gesture] > .desktop-tile-shell {
+  scale: 1.06;
+}
+
 .swiper-pagination-bullet {
   background: color-mix(in srgb, var(--cp-text) 20%, transparent);
   opacity: 1;

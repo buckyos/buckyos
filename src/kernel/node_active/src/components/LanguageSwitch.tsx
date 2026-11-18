@@ -1,11 +1,11 @@
-import { Box, FormControl, MenuItem, Select, type SelectChangeEvent, Tooltip, Typography } from "@mui/material";
+import { FormControl, MenuItem, Select, type SelectChangeEvent } from "@mui/material";
+import { Languages } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   changeLanguage,
   getCurrentLanguage,
   getLanguageDisplayName,
-  getLanguageFlag,
   getLanguageOptions,
   getSupportedLanguages,
   type SupportedLanguage,
@@ -24,17 +24,6 @@ const LanguageSwitch = () => {
     };
   }, [i18n]);
 
-  const renderLanguage = (lang: string) => (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, minWidth: 0 }}>
-      <Box component="span" aria-hidden="true" sx={{ fontSize: 18, lineHeight: 1 }}>
-        {getLanguageFlag(lang)}
-      </Box>
-      <Typography variant="body2" sx={{ fontWeight: 500, whiteSpace: "nowrap" }}>
-        {getLanguageDisplayName(lang)}
-      </Typography>
-    </Box>
-  )
-
   const handleChange = (event: SelectChangeEvent<string>) => {
     const lang = event.target.value
     if (getSupportedLanguages().includes(lang as SupportedLanguage)) {
@@ -43,48 +32,30 @@ const LanguageSwitch = () => {
     }
   }
 
+  const label = t("language_label", { defaultValue: "Language" })
+
   return (
-    <Tooltip title={t("language_label", { defaultValue: "Language" })}>
-      <FormControl
-        size="small"
+    <FormControl size="small" sx={{ minWidth: 0 }}>
+      <Select
+        value={value}
+        onChange={handleChange}
+        inputProps={{ "aria-label": label }}
+        renderValue={(selected) => getLanguageDisplayName(selected)}
+        startAdornment={<Languages size={16} strokeWidth={1.75} style={{ flexShrink: 0, color: "var(--cp-muted)" }} />}
         sx={{
-          minWidth: { xs: 156, sm: 176 },
-          bgcolor: "background.paper",
-          borderRadius: 3,
+          height: 40,
+          fontSize: 14,
+          "& .MuiSelect-select": { pl: 1, py: 0, whiteSpace: "nowrap" },
         }}
+        MenuProps={{ PaperProps: { sx: { mt: 0.5 } } }}
       >
-        <Select
-          value={value}
-          onChange={handleChange}
-          displayEmpty
-          inputProps={{ "aria-label": t("language_label", { defaultValue: "Language" }) }}
-          renderValue={(selected) => renderLanguage(selected)}
-          sx={{
-            borderRadius: 3,
-            minHeight: 42,
-            "& .MuiSelect-select": {
-              display: "flex",
-              alignItems: "center",
-              py: 1,
-            },
-          }}
-          MenuProps={{
-            PaperProps: {
-              sx: {
-                mt: 1,
-                borderRadius: 3,
-              },
-            },
-          }}
-        >
-          {languageOptions.map((option) => (
-            <MenuItem key={option.code} value={option.code}>
-              {renderLanguage(option.code)}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
-    </Tooltip>
+        {languageOptions.map((option) => (
+          <MenuItem key={option.code} value={option.code}>
+            {getLanguageDisplayName(option.code)}
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
   )
 }
 

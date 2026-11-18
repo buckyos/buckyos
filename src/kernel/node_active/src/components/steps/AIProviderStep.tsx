@@ -1,30 +1,24 @@
 import {
-    Alert,
+    Box,
     Button,
     Dialog,
     DialogActions,
     DialogContent,
     DialogTitle,
-    Grid,
     IconButton,
     InputAdornment,
-    Paper,
+    Link,
     Stack,
     TextField,
     Typography,
 } from "@mui/material";
-import {
-    AutoAwesomeRounded,
-    CheckCircleRounded,
-    LaunchRounded,
-    VisibilityOffRounded,
-    VisibilityRounded,
-} from "@mui/icons-material";
+import { ExternalLink, Eye, EyeOff } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AIProviderConfig, WizardData } from "../../types";
 import { AI_PROVIDER_TUTORIAL_URL } from "../../../active_lib";
 import { buckyos, RuntimeType } from "buckyos";
+import { Lead, StatusLine, StepActions } from "../ui";
 
 type Props = {
     wizardData: WizardData;
@@ -120,114 +114,87 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
 
     return (
         <Stack spacing={3}>
-            <Stack
-                direction={{ xs: "column", sm: "row" }}
-                spacing={1.5}
-                justifyContent="space-between"
-                alignItems={{ xs: "flex-start", sm: "center" }}
-            >
-                <Alert icon={<AutoAwesomeRounded />} severity="info" sx={{ flex: 1 }}>
-                    {t("ai_provider_description")}
-                </Alert>
-                <Button
-                    variant="outlined"
+            <Stack spacing={1} alignItems="flex-start">
+                <Lead>{t("ai_provider_description")}</Lead>
+                <Link
+                    component="button"
+                    type="button"
+                    underline="hover"
                     onClick={openTutorial}
-                    endIcon={<LaunchRounded />}
-                    sx={{ minHeight: 44 }}
+                    sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, fontSize: 14, color: "var(--cp-accent)" }}
                 >
                     {t("ai_provider_tutorial_link")}
-                </Button>
+                    <ExternalLink size={14} strokeWidth={1.75} />
+                </Link>
             </Stack>
-
-            <Grid container spacing={2}>
-                {providers.map((provider) => (
-                    <Grid item xs={12} md={6} key={provider.key}>
-                        <Paper
-                            variant="outlined"
-                            sx={{
-                                p: 2,
-                                borderRadius: 3,
-                                height: "100%",
-                            }}
-                        >
-                            <Stack spacing={1.25}>
-                                <Typography fontWeight={700}>{provider.title}</Typography>
-                                <TextField
-                                    label={t("ai_provider_token_label")}
-                                    type={visibleTokens[provider.key] ? "text" : "password"}
-                                    value={aiProviderConfig[provider.key]}
-                                    onChange={(event) =>
-                                        updateProviderField(provider.key, event.target.value)
-                                    }
-                                    fullWidth
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position="end">
-                                                <IconButton
-                                                    onClick={() =>
-                                                        setVisibleTokens((prev) => ({
-                                                            ...prev,
-                                                            [provider.key]: !prev[provider.key],
-                                                        }))
-                                                    }
-                                                    edge="end"
-                                                    aria-label={t("toggle_secret_visibility")}
-                                                >
-                                                    {visibleTokens[provider.key] ? (
-                                                        <VisibilityOffRounded />
-                                                    ) : (
-                                                        <VisibilityRounded />
-                                                    )}
-                                                </IconButton>
-                                            </InputAdornment>
-                                        ),
-                                    }}
-                                />
-                            </Stack>
-                        </Paper>
-                    </Grid>
-                ))}
-            </Grid>
 
             {hasLlmRouterEnabled ? (
-                <Alert icon={<CheckCircleRounded />} severity="success">
-                    {t("ai_provider_sn_included")}
-                </Alert>
+                <StatusLine tone="success">{t("ai_provider_sn_included")}</StatusLine>
             ) : null}
 
-            <Stack
-                direction="row"
-                justifyContent="space-between"
-                spacing={1.5}
-                flexWrap="wrap"
-                alignItems="center"
+            <Box
+                sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                    gap: 2,
+                }}
             >
-                <Button variant="text" onClick={onBack}>
-                    {t("back_button")}
-                </Button>
-                <Button
-                    variant="contained"
-                    onClick={handlePrimaryAction}
-                    sx={{ py: 1.15, minWidth: 160 }}
-                >
+                {providers.map((provider) => (
+                    <TextField
+                        key={provider.key}
+                        label={`${provider.title} ${t("ai_provider_token_label")}`}
+                        type={visibleTokens[provider.key] ? "text" : "password"}
+                        value={aiProviderConfig[provider.key]}
+                        onChange={(event) => updateProviderField(provider.key, event.target.value)}
+                        autoComplete="off"
+                        inputProps={{ spellCheck: false, style: { fontFamily: "var(--cp-font-mono)", fontSize: 14 } }}
+                        InputProps={{
+                            endAdornment: (
+                                <InputAdornment position="end">
+                                    <IconButton
+                                        onClick={() =>
+                                            setVisibleTokens((prev) => ({
+                                                ...prev,
+                                                [provider.key]: !prev[provider.key],
+                                            }))
+                                        }
+                                        edge="end"
+                                        size="small"
+                                        aria-label={t("toggle_secret_visibility")}
+                                    >
+                                        {visibleTokens[provider.key] ? (
+                                            <EyeOff size={18} strokeWidth={1.75} />
+                                        ) : (
+                                            <Eye size={18} strokeWidth={1.75} />
+                                        )}
+                                    </IconButton>
+                                </InputAdornment>
+                            ),
+                        }}
+                    />
+                ))}
+            </Box>
+
+            <StepActions back={<Button variant="text" onClick={onBack}>{t("back_button")}</Button>}>
+                <Button variant="contained" size="large" onClick={handlePrimaryAction} sx={{ minWidth: 120 }}>
                     {primaryLabel}
                 </Button>
-            </Stack>
+            </StepActions>
 
             <Dialog
                 open={skipConfirmOpen}
                 onClose={() => setSkipConfirmOpen(false)}
                 fullWidth
-                maxWidth="sm"
+                maxWidth="xs"
             >
-                <DialogTitle>{t("ai_provider_skip_title")}</DialogTitle>
+                <DialogTitle sx={{ fontSize: 18, fontWeight: 500, pb: 1 }}>{t("ai_provider_skip_title")}</DialogTitle>
                 <DialogContent>
-                    <Typography color="text.secondary">
+                    <Typography variant="body2" color="text.secondary">
                         {t("ai_provider_skip_body")}
                     </Typography>
                 </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setSkipConfirmOpen(false)}>
+                <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
+                    <Button variant="outlined" onClick={() => setSkipConfirmOpen(false)}>
                         {t("ai_provider_skip_back")}
                     </Button>
                     <Button onClick={handleConfirmSkip} variant="contained">

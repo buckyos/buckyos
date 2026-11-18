@@ -3,18 +3,17 @@ import {
   Box,
   Button,
   FormControl,
-  Grid,
   InputLabel,
   MenuItem,
   Select,
   Stack,
   TextField,
-  Typography,
 } from "@mui/material";
-import { CloudOutlined, CloudSyncRounded, LanRounded, WifiRounded } from "@mui/icons-material";
-import { ReactNode, useState } from "react";
+import { Network, Router, Server } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GatewayType, WizardData } from "../../types";
+import { ChoiceCard, Lead, Note, StepActions, plainLabel } from "../ui";
 
 type Props = {
   wizardData: WizardData;
@@ -58,68 +57,10 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     onNext();
   };
 
-  const renderCard = (
-    title: "bucky" | "direct" | "vps",
-    description: string,
-    selected: boolean,
-    icon: ReactNode,
-  ) => (
-    <Box
-      onClick={() => {
-        if (title === "bucky") {
-          setMode(GatewayType.BuckyForward);
-        } else if (title === "direct") {
-          setMode(GatewayType.PortForward);
-          setPortMappingMode("full");
-        } else {
-          setMode(GatewayType.WAN);
-          setPortMappingMode("full");
-        }
-      }}
-      sx={{
-        p: 2,
-        borderRadius: 3,
-        height: "100%",
-        cursor: "pointer",
-        border: `1px solid ${selected ? "transparent" : "divider"}`,
-        boxShadow: selected ? "0 10px 40px rgba(79,70,229,0.18)" : "none",
-        background: selected ? "linear-gradient(135deg, rgba(79,70,229,0.12), rgba(0,172,255,0.12))" : undefined,
-        backgroundColor: selected ? undefined : "background.paper",
-        transition: "all 0.25s ease",
-        "&:hover": {
-          boxShadow: "0 10px 40px rgba(0,0,0,0.12)",
-          transform: "translateY(-2px)",
-        },
-      }}
-    >
-      <Stack direction="row" spacing={1.5} alignItems="flex-start">
-        <Box
-          sx={{
-            width: 28,
-            height: 28,
-            display: "grid",
-            placeItems: "center",
-            flexShrink: 0,
-            color: selected ? "primary.main" : "text.secondary",
-          }}
-        >
-          {icon}
-        </Box>
-        <Box>
-          <Typography fontWeight={700} gutterBottom>
-            {description}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {title === "bucky"
-              ? t("bucky_forward_benefit1")
-              : title === "vps"
-              ? t("public_ip_desc")
-              : t("direct_connect_desc") || "Direct routes leverage your own NAT/port mapping setup."}
-          </Typography>
-        </Box>
-      </Stack>
-    </Box>
-  );
+  const choose = (next: GatewayType) => {
+    setMode(next);
+    if (next !== GatewayType.BuckyForward) setPortMappingMode("full");
+  };
 
   const portHint = mode === GatewayType.WAN
     ? t("public_ip_hint")
@@ -127,90 +68,94 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     ? t("port_mapping_rtcp_only_hint")
     : t("port_mapping_full_hint");
 
+  const iconProps = { size: 20, strokeWidth: 1.75 };
+  const options = [
+    {
+      type: GatewayType.BuckyForward,
+      icon: <Network {...iconProps} />,
+      title: t("gateway_sn_relay_title", "SN relay"),
+      description: t("use_buckyos_sn"),
+    },
+    {
+      type: GatewayType.PortForward,
+      icon: <Router {...iconProps} />,
+      title: t("gateway_direct_title", "Direct connection"),
+      description: t("direct_connect_desc"),
+    },
+    {
+      type: GatewayType.WAN,
+      icon: <Server {...iconProps} />,
+      title: t("gateway_public_ip_title", "Fixed public IP"),
+      description: t("public_ip_desc"),
+    },
+  ];
+
   return (
     <Stack spacing={3}>
-      <Grid container spacing={2}>
-        <Grid item xs={12} md={4}>
-          {renderCard(
-            "bucky",
-            t("use_buckyos_sn"),
-            mode === GatewayType.BuckyForward,
-            <CloudSyncRounded />,
-          )}
-        </Grid>
-        <Grid item xs={12} md={4}>
-          {renderCard(
-            "direct",
-            t("direct_connect_label"),
-            mode === GatewayType.PortForward,
-            <LanRounded />,
-          )}
-        </Grid>
-        <Grid item xs={12} md={4}>
-          {renderCard(
-            "vps",
-            t("public_ip_option"),
-            mode === GatewayType.WAN,
-            <CloudOutlined />,
-          )}
-        </Grid>
-      </Grid>
+      <Box
+        role="radiogroup"
+        aria-label={t("title_step_2").replace(/^\d+\.\s*/, "")}
+        sx={{
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" },
+          gap: 1.5,
+        }}
+      >
+        {options.map((option) => (
+          <ChoiceCard
+            key={option.type}
+            selected={mode === option.type}
+            onSelect={() => choose(option.type)}
+            icon={option.icon}
+            title={option.title}
+            description={option.description}
+          />
+        ))}
+      </Box>
 
       {mode === GatewayType.BuckyForward ? (
-        <Stack spacing={2}>
-          <Typography variant="subtitle1" fontWeight={600}>
-            {t("use_buckyos_sn")}
-          </Typography>
-          <Alert severity="info">{t("bucky_forward_desc")}</Alert>
-        </Stack>
+        <Lead>
+          {t("bucky_forward_desc")} {t("bucky_forward_benefit1")}
+        </Lead>
       ) : (
         <Stack spacing={2}>
-          <Typography variant="subtitle1" fontWeight={600}>
-            {mode === GatewayType.WAN ? t("public_ip_desc") : t("direct_connect_desc")}
-          </Typography>
           {mode !== GatewayType.WAN ? (
             <>
               <FormControl fullWidth>
-                <InputLabel id="port-mode-label">{t("port_mapping_mode_label")}</InputLabel>
+                <InputLabel id="port-mode-label">{plainLabel(t("port_mapping_mode_label"))}</InputLabel>
                 <Select
                   labelId="port-mode-label"
                   value={portMappingMode}
-                  label={t("port_mapping_mode_label")}
+                  label={plainLabel(t("port_mapping_mode_label"))}
                   onChange={(e) => setPortMappingMode(e.target.value as WizardData["port_mapping_mode"])}
+                  sx={{ "& .MuiSelect-select": { whiteSpace: "normal" } }}
                 >
-                  <MenuItem value="full">{t("port_mapping_full")}</MenuItem>
-                  <MenuItem value="rtcp_only">{t("port_mapping_rtcp_only")}</MenuItem>
+                  <MenuItem value="full" sx={{ whiteSpace: "normal" }}>{t("port_mapping_full")}</MenuItem>
+                  <MenuItem value="rtcp_only" sx={{ whiteSpace: "normal" }}>{t("port_mapping_rtcp_only")}</MenuItem>
                 </Select>
               </FormControl>
               {portMappingMode === "rtcp_only" ? (
                 <TextField
                   type="number"
-                  label={t("rtcp_port_label")}
+                  label={plainLabel(t("rtcp_port_label"))}
                   value={rtcpPort}
                   onChange={(e) => setRtcpPort(e.target.value)}
                   helperText={t("rtcp_port_placeholder")}
-                  fullWidth
+                  inputProps={{ inputMode: "numeric", min: 1, max: 65535 }}
                 />
               ) : null}
             </>
           ) : null}
-          <Alert icon={<WifiRounded fontSize="small" />} severity="info">
-            {portHint}
-          </Alert>
+          <Note>{portHint}</Note>
         </Stack>
       )}
 
       {formError ? <Alert severity="error">{formError}</Alert> : null}
-      <Stack direction="row" justifyContent="flex-end" spacing={1.5} flexWrap="wrap" alignItems="center">
-        <Button
-          variant="contained"
-          size="large"
-          onClick={handleNext}
-          sx={{ py: 1.15, minWidth: 160 }}
-        >
+      <StepActions>
+        <Button variant="contained" size="large" onClick={handleNext} sx={{ minWidth: 120 }}>
           {t("next_button")}
         </Button>
-      </Stack>
+      </StepActions>
     </Stack>
   );
 };

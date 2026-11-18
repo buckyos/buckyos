@@ -1,12 +1,9 @@
-import { PublicRounded, RefreshRounded } from "@mui/icons-material";
+import { RotateCw } from "lucide-react";
 import {
   Box,
   Button,
-  CircularProgress,
   FormControl,
-  InputLabel,
   MenuItem,
-  Paper,
   Select,
   Stack,
   Typography,
@@ -14,6 +11,7 @@ import {
 } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import type { RegionProbeStatus } from "../types";
+import { StatusLine, type Tone } from "./ui";
 
 type Props = {
   preference: string;
@@ -67,65 +65,50 @@ const RegionProbePanel = ({
     onPreferenceChange(event.target.value);
   };
 
+  const tone: Tone = preference !== "auto" ? "accent" : isRunning ? "muted" : selectedRegion ? "success" : "warning";
+  const detail = [
+    preference === "auto" && status?.confidence === "low" ? t("region_probe_low_confidence", "Low confidence.") : "",
+    preference === "auto" && status?.source === "cache" ? t("region_probe_cached", "Cached result.") : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <Paper
-      variant="outlined"
+    <Box
       sx={{
         p: 2,
-        borderRadius: 3,
-        borderColor: selectedRegion ? "success.main" : "divider",
-        bgcolor: "background.default",
+        borderRadius: "12px",
+        border: "1px solid var(--cp-border)",
+        bgcolor: "var(--cp-surface-2)",
       }}
     >
       <Stack
         direction={{ xs: "column", sm: "row" }}
-        spacing={2}
+        spacing={{ xs: 1.5, sm: 2 }}
         alignItems={{ xs: "stretch", sm: "center" }}
       >
-        <Stack direction="row" spacing={1.5} alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
-          <Box
-            sx={{
-              display: "grid",
-              placeItems: "center",
-              width: 36,
-              height: 36,
-              flexShrink: 0,
-              color: selectedRegion ? "success.main" : "text.secondary",
-            }}
-          >
-            {isRunning ? <CircularProgress size={22} /> : <PublicRounded fontSize="small" />}
-          </Box>
-          <Box sx={{ minWidth: 0 }}>
-            <Typography variant="subtitle2">
-              {t("region_probe_title", "Network Region")}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {statusText}
-              {preference === "auto" && status?.confidence === "low"
-                ? ` ${t("region_probe_low_confidence", "Low confidence.")}`
-                : ""}
-              {preference === "auto" && status?.source === "cache"
-                ? ` ${t("region_probe_cached", "Cached result.")}`
-                : ""}
-            </Typography>
-          </Box>
-        </Stack>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+            {t("region_probe_title", "Network Region")}
+          </Typography>
+          <StatusLine tone={tone} live={preference === "auto" && isRunning}>
+            {statusText}
+            {detail ? ` ${detail}` : ""}
+          </StatusLine>
+        </Box>
 
         <Stack direction="row" spacing={1} alignItems="center">
-          <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 190 }, flex: { xs: 1, sm: "none" } }}>
-            <InputLabel id="region-preference-label">
-              {t("region_preference_label", "Region")}
-            </InputLabel>
+          <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 200 }, flex: { xs: 1, sm: "none" } }}>
             <Select
-              labelId="region-preference-label"
-              label={t("region_preference_label", "Region")}
               value={preference}
               onChange={handleChange}
               disabled={locked}
+              inputProps={{ "aria-label": t("region_preference_label", "Region") }}
+              sx={{ height: 40, fontSize: 14 }}
             >
               <MenuItem value="auto">{t("region_auto_option", "Auto (recommended)")}</MenuItem>
               {regions.map((region) => (
-                <MenuItem key={region.region_id} value={region.region_id}>
+                <MenuItem key={region.region_id} value={region.region_id} sx={{ fontFamily: "var(--cp-font-mono)", fontSize: 13 }}>
                   {region.region_id}
                 </MenuItem>
               ))}
@@ -133,9 +116,8 @@ const RegionProbePanel = ({
           </FormControl>
           {!isRunning && !selectedRegion && (
             <Button
-              variant="text"
-              size="small"
-              startIcon={<RefreshRounded />}
+              variant="outlined"
+              startIcon={<RotateCw size={16} strokeWidth={1.75} />}
               onClick={onRetry}
               disabled={locked}
             >
@@ -144,7 +126,7 @@ const RegionProbePanel = ({
           )}
         </Stack>
       </Stack>
-    </Paper>
+    </Box>
   );
 };
 

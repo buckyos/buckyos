@@ -37,6 +37,7 @@
     "i18next": "^24.1.2",
     "i18next-http-backend": "^3.0.1",
     "lit-element": "^4.1.0",
+    "lucide-react": "^1.73.0",
     "path": "^0.12.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -1,9 +1,9 @@
-import { Alert, Button, Link, Stack, TextField } from "@mui/material";
-import { SendRounded } from "@mui/icons-material";
+import { Button, Link, Stack, TextField } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { WizardData } from "../../types";
 import { TELEGRAM_ACCOUNT_ID_TUTORIAL_URL } from "../../../active_lib";
 import { buckyos, RuntimeType } from "buckyos";
+import { Lead, StepActions } from "../ui";
 
 type Props = {
     wizardData: WizardData;
@@ -40,9 +40,7 @@ const OwnerTelegramStep = ({
 
     return (
         <Stack spacing={3}>
-            <Alert icon={<SendRounded />} severity="info">
-                {t("owner_telegram_description")}
-            </Alert>
+            <Lead>{t("owner_telegram_description")}</Lead>
 
             <TextField
                 label={t("owner_telegram_account_id_label")}
@@ -60,34 +58,28 @@ const OwnerTelegramStep = ({
                             type="button"
                             underline="hover"
                             onClick={() => openExternal(TELEGRAM_ACCOUNT_ID_TUTORIAL_URL)}
+                            sx={{ color: "var(--cp-accent)", fontSize: "inherit", verticalAlign: "baseline" }}
                         >
                             {t("owner_telegram_account_id_tutorial_link")}
                         </Link>
                     )
                 }
-                inputProps={{ inputMode: "numeric" }}
-                fullWidth
+                autoComplete="off"
+                inputProps={{ inputMode: "numeric", style: { fontFamily: "var(--cp-font-mono)" } }}
+                sx={{ maxWidth: { sm: 360 } }}
             />
 
-            <Stack
-                direction="row"
-                justifyContent="space-between"
-                spacing={1.5}
-                flexWrap="wrap"
-                alignItems="center"
-            >
-                <Button variant="text" onClick={onBack}>
-                    {t("back_button")}
-                </Button>
+            <StepActions back={<Button variant="text" onClick={onBack}>{t("back_button")}</Button>}>
                 <Button
                     variant="contained"
+                    size="large"
                     onClick={handleNext}
                     disabled={isInvalid}
-                    sx={{ py: 1.15, minWidth: 160 }}
+                    sx={{ minWidth: 120 }}
                 >
                     {accountId ? t("next_button") : t("skip_button")}
                 </Button>
-            </Stack>
+            </StepActions>
         </Stack>
     );
 };

@@ -25,14 +25,11 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
 } from 'react'
-import GridLayoutBase, {
-  getCompactor,
-  type LayoutItem as GridLayoutItem,
-} from 'react-grid-layout'
+import GridLayoutBase, { getCompactor } from 'react-grid-layout'
+import type { PositionParams } from 'react-grid-layout/core'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import type { Swiper as SwiperInstance } from 'swiper'
 import { Pagination } from 'swiper/modules'
 import { Swiper, SwiperSlide } from 'swiper/react'
 import { globalSettingsStore } from '../app/settings/data/store'
@@ -54,6 +51,7 @@ import { DesktopTaskbar } from './DesktopTaskbar'
 import { MobileTaskbar } from './MobileTaskbar'
 import { StatusBar } from './StatusBar'
 import { useCurrentUser } from './taskbarHooks'
+import { touchSlop, useLauncherGesture, type LauncherCell } from './launcherGesture'
 import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
 import { openDesktopFile, showFolderInFiles } from './desktopFolderActions'
 import { watchDfsPath } from '../app/filebrowser/data/nfsp/invalidation'
@@ -239,11 +237,11 @@ const mobileSlidePaddingY = 16
 // Selector of the pager row below the launcher; Swiper draws the mobile page dots into it.
 const mobilePagerSelector = '.desktop-mobile-pager'
 
-// Overlap-tolerant compactor: react-grid-layout must NOT displace other
-// items while dragging (its null-compactType collision pass shoves items
-// downward, even past maxRows). The store resolves all displacement on
-// drop via applyDragCollision; during the drag only the placeholder moves.
-const dragOverlayCompactor = getCompactor(null, true)
+// react-grid-layout only places the tiles: no compaction or collision pass of its own (that one shoves items
+// downward, even past maxRows). Dragging is launcherGesture.ts, and the store resolves displacement on drop via
+// applyDragCollision.
+const launcherCompactor = getCompactor(null, true)
+const launcherDragConfig = { enabled: false }
 
 type WindowGeometryPatch = Partial<Pick<WindowRecord, 'x' | 'y' | 'width' | 'height'>>
 
@@ -323,10 +321,6 @@ export function DesktopRoute() {
   }, [snap.status])
 
 
-  // Refs for drag suppression (view-only concern)
-  const suppressOpenItemId = useRef<string | null>(null)
-  const draggedOpenBlockItemId = useRef<string | null>(null)
-  const draggedOpenBlockTimeoutId = useRef<number | null>(null)
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const [gridContainer, setGridContainer] = useState<HTMLDivElement | null>(null)
 
@@ -385,15 +379,6 @@ export function DesktopRoute() {
     setSearchParams(params, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenario])
-
-  // Cleanup drag timeout
-  useEffect(() => {
-    return () => {
-      if (draggedOpenBlockTimeoutId.current) {
-        window.clearTimeout(draggedOpenBlockTimeoutId.current)
-      }
-    }
-  }, [])
 
   // Observe workspace size
   useEffect(() => {
@@ -670,104 +655,34 @@ export function DesktopRoute() {
     [setThemeMode, themeMode],
   )
 
-  // ---------------------------------------------------------------------------
-  // Drag suppression helpers (view-layer only)
-  // ---------------------------------------------------------------------------
-
-  const suppressNextOpen = (itemId: string) => {
-    suppressOpenItemId.current = itemId
-    window.setTimeout(() => {
-      if (suppressOpenItemId.current === itemId) suppressOpenItemId.current = null
-    }, 180)
-  }
-
-  const blockOpenAfterDrag = (itemId: string) => {
-    draggedOpenBlockItemId.current = itemId
-    if (draggedOpenBlockTimeoutId.current) {
-      window.clearTimeout(draggedOpenBlockTimeoutId.current)
-    }
-    draggedOpenBlockTimeoutId.current = window.setTimeout(() => {
-      if (draggedOpenBlockItemId.current === itemId) draggedOpenBlockItemId.current = null
-      draggedOpenBlockTimeoutId.current = null
-    }, 240)
-  }
-
-  const consumeOpenBlock = (itemId: string) => {
-    if (draggedOpenBlockItemId.current === itemId) {
-      draggedOpenBlockItemId.current = null
-      if (draggedOpenBlockTimeoutId.current) {
-        window.clearTimeout(draggedOpenBlockTimeoutId.current)
-        draggedOpenBlockTimeoutId.current = null
-      }
-      return true
-    }
-    if (suppressOpenItemId.current === itemId) {
-      suppressOpenItemId.current = null
-      return true
-    }
-    return false
-  }
-
-  const handleGridDragStart = useCallback(
-    (
-      _pageId: string,
-      oldItem: GridLayoutItem | null,
-      newItem: GridLayoutItem | null,
-      event: Event,
-    ) => {
-      if (isMobile && event.type.startsWith('touch')) return
-      const itemId = newItem?.i ?? oldItem?.i
-      if (!itemId) return
-      blockOpenAfterDrag(itemId)
-      suppressNextOpen(itemId)
+  // Tap, drag and hold on a tile are told apart in launcherGesture.ts; these only act on the outcome.
+  const handleMoveItem = useCallback(
+    (pageId: string, from: LauncherCell, to: LauncherCell): LauncherCell | null => {
+      store.handleGridDragStop(pageId, from, to)
+      const placed = store
+        .getSnapshot()
+        .resolvedLayout?.pages.find((page) => page.id === pageId)
+        ?.items.find((entry) => entry.id === from.i)
+      return placed?.x !== undefined && placed.y !== undefined ? { ...from, x: placed.x, y: placed.y } : null
     },
-    // The helpers only touch refs.
-    [isMobile],
-  )
-
-  const handleGridDragStop = useCallback(
-    (
-      pageId: string,
-      oldItem: GridLayoutItem | null,
-      newItem: GridLayoutItem | null,
-      event: Event,
-    ) => {
-      const itemId = newItem?.i ?? oldItem?.i
-      if (itemId && !(isMobile && event.type.startsWith('touch'))) {
-        blockOpenAfterDrag(itemId)
-        suppressNextOpen(itemId)
-      }
-      if (!newItem) return
-      store.handleGridDragStop(pageId, oldItem, newItem)
-    },
-    // The helpers only touch refs.
-    [isMobile, store],
+    [store],
   )
 
   const handleOpenItem = useCallback(
     (item: LayoutItem) => {
-      if (item.type === 'app') {
-        if (!consumeOpenBlock(item.id)) handleOpenApp(item.appId)
-        return
-      }
-      if (item.type === 'file') {
-        if (!consumeOpenBlock(item.id)) openDesktopFile(item)
-        return
-      }
-      store.setSelectedItemId(item.id)
+      if (item.type === 'app') handleOpenApp(item.appId)
+      else if (item.type === 'file') openDesktopFile(item)
     },
-    // consumeOpenBlock only touches refs.
-    [store, handleOpenApp],
+    [handleOpenApp],
   )
 
   const handleOpenItemContextMenu = useCallback(
-    (item: LayoutItem, event: ReactMouseEvent<HTMLDivElement>) => {
-      event.preventDefault()
+    (item: LayoutItem, point: { x: number; y: number }) => {
       store.setSelectedItemId(item.id)
       store.setContextMenu({
         itemId: item.id,
-        mouseX: event.clientX + 2,
-        mouseY: event.clientY - 6,
+        mouseX: point.x + 2,
+        mouseY: point.y - 6,
       })
     },
     [store],
@@ -944,8 +859,7 @@ export function DesktopRoute() {
                   height={workspaceInnerHeight}
                   isMobile={isMobile}
                   layout={resolvedLayout}
-                  onGridDragStart={handleGridDragStart}
-                  onGridDragStop={handleGridDragStop}
+                  onMoveItem={handleMoveItem}
                   onOpenItem={handleOpenItem}
                   onOpenItemContextMenu={handleOpenItemContextMenu}
                   onRestore={restoreDefaults}
@@ -1113,20 +1027,9 @@ interface DesktopPagesProps {
   height: number
   isMobile: boolean
   layout: LayoutState
-  onGridDragStart: (
-    pageId: string,
-    oldItem: GridLayoutItem | null,
-    newItem: GridLayoutItem | null,
-    event: Event,
-  ) => void
-  onGridDragStop: (
-    pageId: string,
-    oldItem: GridLayoutItem | null,
-    newItem: GridLayoutItem | null,
-    event: Event,
-  ) => void
+  onMoveItem: (pageId: string, from: LauncherCell, to: LauncherCell) => LauncherCell | null
   onOpenItem: (item: LayoutItem) => void
-  onOpenItemContextMenu: (item: LayoutItem, event: ReactMouseEvent<HTMLDivElement>) => void
+  onOpenItemContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
   onRestore: () => void
   onSaveNote: (itemId: string, content: string) => void
   onViewportProgress: (progress: number, pageCount: number) => void
@@ -1150,8 +1053,7 @@ const DesktopPages = memo(function DesktopPages({
   height,
   isMobile,
   layout,
-  onGridDragStart,
-  onGridDragStop,
+  onMoveItem,
   onOpenItem,
   onOpenItemContextMenu,
   onRestore,
@@ -1175,15 +1077,14 @@ const DesktopPages = memo(function DesktopPages({
     }),
     [gridCols, gridRowHeight, gridRows],
   )
-  const dragConfig = useMemo(
-    () => ({
-      enabled: true,
-      handle: '.desktop-tile-shell',
-      cancel: '.widget-interactive',
-      threshold: isMobile ? 5 : 4,
-    }),
-    [isMobile],
+  const tileGrid = useMemo<PositionParams>(
+    () => ({ ...gridConfig, containerWidth: width }),
+    [gridConfig, width],
   )
+  const swiperRef = useRef<SwiperInstance | null>(null)
+  const lockPaging = useCallback((locked: boolean) => {
+    if (swiperRef.current) swiperRef.current.allowTouchMove = !locked
+  }, [])
   // Per-frame progress (while swiping) only touches a CSS variable; the store
   // learns about page changes once, when the slide settles.
   const handleProgress = useCallback(
@@ -1197,6 +1098,13 @@ const DesktopPages = memo(function DesktopPages({
     },
     [onViewportProgress, pageCount],
   )
+  const handleSwiper = useCallback(
+    (swiper: SwiperInstance) => {
+      swiperRef.current = swiper
+      handleSlideSettled(swiper)
+    },
+    [handleSlideSettled],
+  )
   useEffect(() => resetDesktopViewportProgress, [])
 
   if (pageCount === 0 || layout.pages.every((page) => page.items.length === 0)) {
@@ -1207,12 +1115,15 @@ const DesktopPages = memo(function DesktopPages({
   return (
     <Swiper
       modules={[Pagination]}
-      allowTouchMove={isMobile}
+      // A touch swipes pages on any screen (an iPad shows the desktop layout); the mouse drags tiles and uses the dots.
+      simulateTouch={false}
+      // As far as a tile tap may drift (launcherGesture.ts): a tap does not nudge the page or lose its click.
+      threshold={touchSlop}
       // Mobile dots go into the dock strip (DesktopRoute); desktop keeps them inside the pages.
       pagination={isMobile ? { clickable: true, el: mobilePagerSelector } : { clickable: true }}
       className="h-full"
       style={{ height }}
-      onSwiper={handleSlideSettled}
+      onSwiper={handleSwiper}
       onProgress={handleProgress}
       onSlideChange={handleSlideSettled}
     >
@@ -1225,15 +1136,9 @@ const DesktopPages = memo(function DesktopPages({
               layout={gridLayouts[pageIndex]}
               width={width}
               resizeConfig={{ enabled: false }}
-              dragConfig={dragConfig}
-              compactor={dragOverlayCompactor}
-              onDragStart={(_, oldItem, newItem, _placeholder, event) =>
-                onGridDragStart(page.id, oldItem, newItem, event)
-              }
+              dragConfig={launcherDragConfig}
+              compactor={launcherCompactor}
               onLayoutChange={noopLayoutChange}
-              onDragStop={(_, oldItem, newItem, _placeholder, event) =>
-                onGridDragStop(page.id, oldItem, newItem, event)
-              }
             >
               {page.items.map((item) => (
                 <div key={item.id}>
@@ -1243,9 +1148,12 @@ const DesktopPages = memo(function DesktopPages({
                         ? findDesktopAppById(apps, item.appId)
                         : undefined
                     }
+                    grid={tileGrid}
                     isDesktop={!isMobile}
                     item={item}
                     isSelected={selectedItemId === item.id}
+                    lockPaging={lockPaging}
+                    onMove={(from, to) => onMoveItem(page.id, from, to)}
                     onOpen={onOpenItem}
                     onOpenContextMenu={onOpenItemContextMenu}
                     onSaveNote={onSaveNote}
@@ -1341,112 +1249,41 @@ function EmptyState({ height, onRestore }: { height: number; onRestore: () => vo
 
 function DesktopTile({
   app,
+  grid,
   isDesktop,
   item,
   isSelected,
+  lockPaging,
+  onMove,
   onOpen,
   onOpenContextMenu,
   onSaveNote,
 }: {
   app?: AppDefinition
+  grid: PositionParams
   isDesktop: boolean
   item: LayoutItem
   isSelected: boolean
+  lockPaging: (locked: boolean) => void
+  onMove: (from: LauncherCell, to: LauncherCell) => LauncherCell | null
   onOpen: (item: LayoutItem) => void
-  onOpenContextMenu: (item: LayoutItem, event: ReactMouseEvent<HTMLDivElement>) => void
+  onOpenContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
   onSaveNote: (itemId: string, content: string) => void
 }) {
   const appText = useAppText()
-  const touchStartRef = useRef<{
-    x: number
-    y: number
-    pointerId: number
-  } | null>(null)
-  const releaseAppPointerRef = useRef<(() => void) | null>(null)
-  const appPointerTypeRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    return () => {
-      releaseAppPointerRef.current?.()
-      releaseAppPointerRef.current = null
-    }
-  }, [])
-
-  const clearAppPointer = () => {
-    touchStartRef.current = null
-    releaseAppPointerRef.current?.()
-    releaseAppPointerRef.current = null
-  }
-
-  const completeAppPointer = (
-    pointerId: number,
-    clientX: number,
-    clientY: number,
-    pointerType: string,
-  ) => {
-    if (isDesktop || pointerType === 'mouse') return
-    const start = touchStartRef.current
-    if (!start || start.pointerId !== pointerId) return
-    clearAppPointer()
-    const distance = Math.hypot(clientX - start.x, clientY - start.y)
-    if (distance <= 12) onOpen(item)
-  }
-
-  const handleAppPointerDown = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    appPointerTypeRef.current = event.pointerType
-    if (isDesktop || event.pointerType === 'mouse') return
-    clearAppPointer()
-    touchStartRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      pointerId: event.pointerId,
-    }
-
-    const handleWindowPointerMove = (pointerEvent: PointerEvent) => {
-      const start = touchStartRef.current
-      if (!start || start.pointerId !== pointerEvent.pointerId) return
-      if (Math.hypot(pointerEvent.clientX - start.x, pointerEvent.clientY - start.y) > 12) {
-        clearAppPointer()
-      }
-    }
-
-    const handleWindowPointerUp = (pointerEvent: PointerEvent) => {
-      completeAppPointer(
-        pointerEvent.pointerId,
-        pointerEvent.clientX,
-        pointerEvent.clientY,
-        pointerEvent.pointerType,
-      )
-    }
-
-    const handleWindowPointerCancel = (pointerEvent: PointerEvent) => {
-      if (touchStartRef.current?.pointerId === pointerEvent.pointerId) {
-        clearAppPointer()
-      }
-    }
-
-    window.addEventListener('pointermove', handleWindowPointerMove, true)
-    window.addEventListener('pointerup', handleWindowPointerUp)
-    window.addEventListener('pointercancel', handleWindowPointerCancel)
-    releaseAppPointerRef.current = () => {
-      window.removeEventListener('pointermove', handleWindowPointerMove, true)
-      window.removeEventListener('pointerup', handleWindowPointerUp)
-      window.removeEventListener('pointercancel', handleWindowPointerCancel)
-    }
-  }
-
-  const handleAppPointerUp = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    completeAppPointer(
-      event.pointerId,
-      event.clientX,
-      event.clientY,
-      event.pointerType,
-    )
-  }
+  const opens = item.type === 'app' || item.type === 'file'
+  const gesture = useLauncherGesture({
+    cell:
+      item.x !== undefined && item.y !== undefined
+        ? { i: item.id, x: item.x, y: item.y, w: item.w, h: item.h }
+        : null,
+    grid,
+    // A widget's own controls take a touch tap as a click.
+    onTap: opens ? () => onOpen(item) : undefined,
+    onMenu: (point) => onOpenContextMenu(item, point),
+    onMove,
+    lockPaging,
+  })
 
   const tile = item.type === 'app' && app
     ? {
@@ -1477,6 +1314,8 @@ function DesktopTile({
       data-widget-type={item.type === 'widget' ? item.widgetType : undefined}
       className={clsx(
         'desktop-tile-shell group relative h-full border border-transparent transition-[border-color,background-color] duration-150 ease-[var(--cp-ease-smooth)]',
+        // The gesture owns touches on a tile: no browser pan or zoom, text selection or iOS callout.
+        'touch-none select-none [-webkit-touch-callout:none]',
         'rounded-[16px]',
         item.type === 'widget' ? 'overflow-hidden' : 'overflow-visible',
         isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
@@ -1486,19 +1325,12 @@ function DesktopTile({
             ? 'border-[color:var(--cp-border)]'
             : '',
       )}
-      onContextMenu={(event) => onOpenContextMenu(item, event)}
+      {...gesture}
     >
       {tile ? (
         <button
           type="button"
-          onClick={(event) => {
-            if (!event.defaultPrevented && (isDesktop || event.detail === 0 || appPointerTypeRef.current === 'mouse')) {
-              onOpen(item)
-            }
-          }}
-          onPointerDown={handleAppPointerDown}
-          onPointerUp={handleAppPointerUp}
-          onPointerCancel={clearAppPointer}
+          onClick={() => onOpen(item)}
           data-testid={tile.testId}
           title={tile.title}
           className={clsx(

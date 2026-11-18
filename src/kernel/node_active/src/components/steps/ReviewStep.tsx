@@ -1,9 +1,10 @@
-import { CheckCircleRounded, DownloadRounded } from "@mui/icons-material";
-import { Alert, Button, CircularProgress, Divider, MenuItem, Stack, TextField, Typography } from "@mui/material";
-import { useState } from "react";
+import { Download } from "lucide-react";
+import { Alert, Box, Button, CircularProgress, MenuItem, Stack, TextField, Typography } from "@mui/material";
+import { ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { activateNode, customDomainPublication, deriveActiveNames, deriveGatewayTopology, prepareSignedActivation } from "../../../active_lib";
-import { WizardData } from "../../types";
+import { GatewayType, WizardData } from "../../types";
+import { Lead, Note, StepActions, mono, plainLabel } from "../ui";
 
 type Props = {
   wizardData: WizardData;
@@ -77,9 +78,36 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
     return <Alert severity="error">{t("wallet_info_incomplete", "OwnerDocument is missing")}</Alert>;
   }
 
+  const gatewayTitle =
+    wizardData.gatewy_type === GatewayType.WAN
+      ? t("gateway_public_ip_title", "Fixed public IP")
+      : wizardData.gatewy_type === GatewayType.PortForward
+        ? t("gateway_direct_title", "Direct connection")
+        : t("gateway_sn_relay_title", "SN relay");
+  const gatewayDetail =
+    topology.net_id === "portmap" ? `${topology.net_id} · RTCP ${topology.rtcp_port}` : topology.net_id;
+
+  // Identifiers (DIDs, host names, region ids) are set in mono; words stay in the interface font.
+  const rows: Array<{ label: ReactNode; value: ReactNode; detail?: ReactNode; mono?: boolean }> = [
+    { label: t("review_owner_did", "Owner DID"), value: names.owner_did, mono: true },
+    { label: t("review_zone_did", "Zone DID"), value: names.zone_did, mono: true },
+    { label: plainLabel(t("access_domain", "Access domain")), value: names.access_hostname, mono: true },
+    { label: t("review_gateway", "Access route"), value: gatewayTitle, detail: gatewayDetail },
+    ...(!isWalletRuntime
+      ? [
+          {
+            label: t("region_probe_title", "Network Region"),
+            value: wizardData.selected_region || t("region_server_fallback", "Automatic server fallback"),
+            mono: Boolean(wizardData.selected_region),
+          },
+        ]
+      : []),
+    { label: t("review_bns_name", "BNS name"), value: names.bns_publish_name, mono: true },
+  ];
+
   return (
     <Stack spacing={3}>
-      <Alert severity="info">
+      <Lead>
         {isWalletRuntime
           ? t(
               "wallet_signing_review",
@@ -89,43 +117,45 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
               "web_signing_review",
               "The recovery phrase will be used once in local memory to sign four activation documents.",
             )}
-      </Alert>
-      <Stack spacing={1.25} divider={<Divider flexItem />}>
-        <Stack direction="row" justifyContent="space-between" gap={2}>
-          <Typography color="text.secondary">Owner DID</Typography>
-          <Typography sx={{ wordBreak: "break-all" }}>{names.owner_did}</Typography>
-        </Stack>
-        <Stack direction="row" justifyContent="space-between" gap={2}>
-          <Typography color="text.secondary">Zone DID</Typography>
-          <Typography sx={{ wordBreak: "break-all" }}>{names.zone_did}</Typography>
-        </Stack>
-        <Stack direction="row" justifyContent="space-between" gap={2}>
-          <Typography color="text.secondary">{t("domain_placeholder")}</Typography>
-          <Typography sx={{ wordBreak: "break-all" }}>{names.access_hostname}</Typography>
-        </Stack>
-        <Stack direction="row" justifyContent="space-between" gap={2}>
-          <Typography color="text.secondary">Gateway</Typography>
-          <Typography>{topology.net_id}</Typography>
-        </Stack>
-        {!isWalletRuntime && (
-          <Stack direction="row" justifyContent="space-between" gap={2}>
-            <Typography color="text.secondary">{t("region_probe_title", "Network Region")}</Typography>
-            <Typography>
-              {wizardData.selected_region ||
-                t("region_server_fallback", "Automatic server fallback")}
+      </Lead>
+      <Box component="dl" sx={{ m: 0, borderRadius: "12px", border: "1px solid var(--cp-border)", overflow: "hidden" }}>
+        {rows.map((row, index) => (
+          <Box
+            key={index}
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", sm: "180px minmax(0, 1fr)" },
+              alignItems: "baseline",
+              columnGap: 2,
+              rowGap: 0.5,
+              px: 2,
+              py: 1.5,
+              borderTop: index === 0 ? "none" : "1px solid var(--cp-border)",
+            }}
+          >
+            <Typography component="dt" variant="body2" color="text.secondary">
+              {row.label}
             </Typography>
-          </Stack>
-        )}
-        <Stack direction="row" justifyContent="space-between" gap={2}>
-          <Typography color="text.secondary">BNS publish name</Typography>
-          <Typography>{names.bns_publish_name}</Typography>
-        </Stack>
-      </Stack>
+            <Box component="dd" sx={{ m: 0, minWidth: 0 }}>
+              <Typography
+                variant="body2"
+                sx={{ ...(row.mono ? { ...mono, fontSize: 13 } : {}), overflowWrap: "anywhere" }}
+              >
+                {row.value}
+              </Typography>
+              {row.detail ? (
+                <Typography variant="caption" color="text.secondary" sx={{ ...mono, display: "block" }}>
+                  {row.detail}
+                </Typography>
+              ) : null}
+            </Box>
+          </Box>
+        ))}
+      </Box>
       {wizardData.host_accounts.length > 0 && (
         <Stack spacing={1.5}>
           <TextField
             select
-            fullWidth
             label={t("host_account_label", "Host account for your Agents")}
             helperText={t(
               "host_account_hint",
@@ -134,10 +164,12 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
             value={wizardData.host_account}
             disabled={loading}
             onChange={(event) => onUpdate({ host_account: event.target.value })}
+            SelectProps={{ displayEmpty: true }}
+            InputLabelProps={{ shrink: true }}
           >
             <MenuItem value="">{t("host_account_none", "None (Agents cannot run commands on this machine)")}</MenuItem>
             {wizardData.host_accounts.map((account) => (
-              <MenuItem key={account} value={account}>
+              <MenuItem key={account} value={account} sx={{ fontFamily: "var(--cp-font-mono)", fontSize: 13 }}>
                 {account}
               </MenuItem>
             ))}
@@ -153,39 +185,51 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
         </Stack>
       )}
       {wizardData.use_self_domain && (
-        <Alert severity="info">
+        <Note>
           <Stack spacing={1.5}>
-            <Typography>
+            <Box component="span" sx={{ color: "text.primary" }}>
               {t("device_publication_intro", "Before activation, host the signed device identity document at the HTTPS address below. This address must remain available while this node is offline; it cannot depend on this node's relay tunnel.")}
-            </Typography>
-            <Typography sx={{ wordBreak: "break-all" }}>
+            </Box>
+            <Box
+              component="span"
+              sx={{ ...mono, fontSize: 13, color: "text.primary", overflowWrap: "anywhere", userSelect: "all" }}
+            >
               {`https://ood1.${names.access_hostname}/.well-known/did.json`}
-            </Typography>
-            <Typography variant="body2">
+            </Box>
+            <Box component="span">
               {t("device_publication_content", "Publish this HTTPS document path through an independent host or proxy, and serve the file unchanged as application/jwt. Preserve RTCP routing for the device hostname and port. Activation will verify the exact signed document.")}
-            </Typography>
-            <Stack direction="row" spacing={2}>
-              <Button onClick={preparePublication} disabled={loading || Boolean(wizardData.signed_documents)}>
+            </Box>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+              <Button variant="outlined" onClick={preparePublication} disabled={loading || Boolean(wizardData.signed_documents)}>
                 {t("prepare_device_publication", "Prepare signed document")}
               </Button>
-              <Button onClick={downloadPublication} disabled={loading || !wizardData.signed_documents} startIcon={<DownloadRounded />}>
+              <Button
+                variant="outlined"
+                onClick={downloadPublication}
+                disabled={loading || !wizardData.signed_documents}
+                startIcon={<Download size={16} strokeWidth={1.75} />}
+              >
                 {t("download_device_publication", "Download did.json")}
               </Button>
             </Stack>
           </Stack>
-        </Alert>
+        </Note>
       )}
       {error && <Alert severity="error">{error}</Alert>}
-      <Stack direction="row" justifyContent="space-between" spacing={2}>
-        <Button onClick={onBack} disabled={loading}>
-          {t("back_button")}
-        </Button>
+      <StepActions
+        back={
+          <Button variant="text" onClick={onBack} disabled={loading}>
+            {t("back_button")}
+          </Button>
+        }
+      >
         <Button
           variant="contained"
           size="large"
           onClick={activate}
           disabled={loading || (wizardData.use_self_domain && !wizardData.signed_documents)}
-          startIcon={loading ? <CircularProgress size={18} /> : <CheckCircleRounded />}
+          startIcon={loading ? <CircularProgress size={16} thickness={5} color="inherit" /> : undefined}
+          sx={{ minWidth: 120 }}
         >
           {loading
             ? t("activating", "Activating…")
@@ -193,7 +237,7 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
               ? t("verify_publication_and_activate", "Verify publication and activate")
               : t("activate_button", "Activate")}
         </Button>
-      </Stack>
+      </StepActions>
     </Stack>
   );
 };

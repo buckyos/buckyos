@@ -142,7 +142,7 @@
     "activation_success_desc": "Personal Intelligence が正常に有効化されました",
     "click_to_access": "クリック",
     "access_link": "してアクセス",
-    "default_credentials": "ログインユーザー名: {{username}}.",
+    "default_credentials": "ログインユーザー名: {{username}}",
     "refresh_note": "システムはまだ初期化中です。あと {{time}} ほどで利用可能になる見込みです。ページにエラーが表示された場合は、数回リロードしてください。",
     "close_and_redirect": "閉じて移動",
     "error_password_mismatch": "入力した 2 つのパスワードが一致しません",
@@ -164,5 +164,14 @@
     "error_open_failed": "ブラウザーを開けませんでした。リンクをコピーして手動で開いてください。",
     "wallet_device_owner": "このデバイスの所有者: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "有効化の前に、次の 3 つの TXT レコードをドメインに追加してください",
-    "language_label": "言語"
+    "language_label": "言語",
+    "gateway_sn_relay_title": "SN リレー",
+    "gateway_direct_title": "直接接続",
+    "gateway_public_ip_title": "固定グローバル IP",
+    "review_owner_did": "オーナー DID",
+    "review_zone_did": "Zone DID",
+    "review_gateway": "アクセス経路",
+    "review_bns_name": "BNS 名",
+    "theme_light": "ライトモード",
+    "theme_dark": "ダークモード"
 }

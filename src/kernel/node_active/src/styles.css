@@ -1,6 +1,54 @@
+/* Theme tokens: the same graphite ramp and brand blue as the Desktop shell (src/frame/desktop/src/index.css),
+   so activation looks like the system the device turns into. Keep the two in step. */
 :root {
-  font-family: "Manrope", "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+  --cp-bg: #f3f3f2;
+  --cp-surface: #fdfdfc;
+  --cp-surface-2: #f5f5f4;
+  --cp-text: #1b1b1a;
+  --cp-muted: #6b6b69;
+  --cp-border: color-mix(in srgb, var(--cp-text) 12%, transparent);
+  --cp-border-strong: color-mix(in srgb, var(--cp-text) 24%, transparent);
+  --cp-accent: oklch(0.553 0.171 265);
+  --cp-accent-surface: color-mix(in srgb, var(--cp-accent) 6%, var(--cp-surface));
+  --cp-success: oklch(0.6 0.13 160);
+  --cp-warning: oklch(0.7 0.13 65);
+  --cp-danger: oklch(0.6 0.15 25);
+  --cp-shadow: #333333;
+  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 46%, transparent);
+  --cp-panel-shadow:
+    0 1px 2px color-mix(in srgb, var(--cp-shadow) 6%, transparent),
+    0 8px 24px color-mix(in srgb, var(--cp-shadow) 12%, transparent);
+  --cp-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --cp-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  --cp-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  font-family: var(--cp-font-sans);
   line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --cp-bg: #141415;
+  --cp-surface: #1c1c1e;
+  --cp-surface-2: #242426;
+  --cp-text: #ededed;
+  --cp-muted: #a1a1a6;
+  --cp-border: color-mix(in srgb, var(--cp-text) 10%, transparent);
+  --cp-border-strong: color-mix(in srgb, var(--cp-text) 22%, transparent);
+  --cp-accent: oklch(0.74 0.11 264);
+  --cp-accent-surface: color-mix(in srgb, var(--cp-accent) 8%, var(--cp-surface));
+  --cp-success: oklch(0.8 0.12 160);
+  --cp-warning: oklch(0.82 0.11 72);
+  --cp-danger: oklch(0.72 0.14 28);
+  --cp-shadow: #000;
+  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 56%, transparent);
+  --cp-panel-shadow: 0 16px 40px color-mix(in srgb, var(--cp-shadow) 36%, transparent);
 }
 
 *,
@@ -9,23 +57,40 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  min-height: 100dvh;
+}
+
 body {
   margin: 0;
-  min-height: 100vh;
-  background: radial-gradient(circle at 20% 20%, rgba(93, 80, 255, 0.18), transparent 30%),
-    radial-gradient(circle at 80% 0%, rgba(0, 202, 255, 0.12), transparent 25%),
-    linear-gradient(145deg, #f7f8ff 0%, #e8ecff 50%, #f7faff 100%);
-  color: #0b1224;
-  transition: background 0.35s ease;
+  background: var(--cp-bg);
+  color: var(--cp-text);
+  -webkit-tap-highlight-color: transparent;
 }
 
-body[data-theme="dark"] {
-  background: radial-gradient(circle at 10% 20%, rgba(77, 117, 255, 0.18), transparent 30%),
-    radial-gradient(circle at 80% 0%, rgba(255, 115, 179, 0.12), transparent 25%),
-    linear-gradient(145deg, #050914 0%, #0b1020 45%, #070c1a 100%);
-  color: #e8ecff;
+::selection {
+  background: color-mix(in srgb, var(--cp-accent) 18%, transparent);
+  color: var(--cp-text);
 }
 
-#root {
-  min-height: 100vh;
+:where(button, [role="button"], [role="radio"], a):focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--cp-surface),
+    0 0 0 4px var(--cp-focus-ring);
+}
+
+/* A live state (Region detection, activation still completing) breathes; nothing else on the page moves. */
+@keyframes na-live {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+  }
 }

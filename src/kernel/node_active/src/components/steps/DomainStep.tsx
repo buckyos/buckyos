@@ -1,18 +1,13 @@
-import {
-  AutoAwesomeRounded,
-  ContentCopyRounded,
-  PublicRounded,
-  VerifiedRounded,
-} from "@mui/icons-material";
+import { AtSign, Copy, Globe } from "lucide-react";
 import {
   Alert,
   Box,
   Button,
   CircularProgress,
-  Grid,
-  Paper,
+  IconButton,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { useMemo, useState } from "react";
@@ -20,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { WEB3_BASE_HOST, bindUserDomain, isValidDomain } from "../../../active_lib";
 import { WizardData } from "../../types";
 import { copyTextToClipboard } from "../../utils/clipboard";
+import { ChoiceCard, StatusLine, StepActions, mono, plainLabel } from "../ui";
 
 type Props = {
   wizardData: WizardData;
@@ -101,62 +97,39 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
     }
   };
 
+  const iconProps = { size: 20, strokeWidth: 1.75 };
+  const challengeShown = binding.state === "challenge" && binding.domain === domain.trim().toLowerCase();
+
   return (
     <Stack spacing={3}>
-      <Grid container spacing={2}>
-        <Grid item xs={12} md={6}>
-          <Paper
-            onClick={() => chooseMode("bucky")}
-            sx={{
-              p: 2,
-              borderRadius: 3,
-              cursor: "pointer",
-              border: `1px solid ${mode === "bucky" ? "transparent" : "divider"}`,
-              bgcolor: mode === "bucky" ? "action.selected" : "background.paper",
-            }}
-          >
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <AutoAwesomeRounded color={mode === "bucky" ? "primary" : "disabled"} />
-              <Box>
-                <Typography fontWeight={700}>{t("use_buckyos_domain")}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {previewDomain}
-                </Typography>
-              </Box>
-            </Stack>
-          </Paper>
-        </Grid>
-        <Grid item xs={12} md={6}>
-          <Paper
-            onClick={() => chooseMode("self")}
-            sx={{
-              p: 2,
-              borderRadius: 3,
-              cursor: "pointer",
-              border: `1px solid ${mode === "self" ? "transparent" : "divider"}`,
-              bgcolor: mode === "self" ? "action.selected" : "background.paper",
-            }}
-          >
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <PublicRounded color={mode === "self" ? "success" : "disabled"} />
-              <Box>
-                <Typography fontWeight={700}>{t("use_own_domain")}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {t("domain_provider_setup")}
-                </Typography>
-              </Box>
-            </Stack>
-          </Paper>
-        </Grid>
-      </Grid>
+      <Box
+        role="radiogroup"
+        aria-label={t("title_step_3").replace(/^\d+\.\s*/, "")}
+        sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" }, gap: 1.5 }}
+      >
+        <ChoiceCard
+          selected={mode === "bucky"}
+          onSelect={() => chooseMode("bucky")}
+          icon={<AtSign {...iconProps} />}
+          title={t("use_buckyos_domain")}
+          description={<Box component="span" sx={{ ...mono, fontSize: 13, overflowWrap: "anywhere" }}>{previewDomain}</Box>}
+        />
+        <ChoiceCard
+          selected={mode === "self"}
+          onSelect={() => chooseMode("self")}
+          icon={<Globe {...iconProps} />}
+          title={t("use_own_domain")}
+          description={plainLabel(t("domain_provider_setup"))}
+        />
+      </Box>
 
-      {mode === "bucky" ? (
-        <Alert severity="info">{previewDomain}</Alert>
-      ) : (
+      {mode === "bucky" ? null : (
         <Stack spacing={2}>
           <TextField
             label={t("domain_placeholder")}
             value={domain}
+            autoComplete="off"
+            inputProps={{ autoCapitalize: "none", spellCheck: false }}
             onChange={(event) => {
               const value = event.target.value;
               setDomain(value);
@@ -169,49 +142,65 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
             }}
             placeholder="home.example.com"
           />
-          {binding.state === "challenge" && binding.domain === domain.trim().toLowerCase() && (
-            <Alert severity="warning">
-              <Stack spacing={1.5}>
-                <Typography fontWeight={700}>
-                  {t("domain_txt_challenge", "Add this TXT record, then verify again")}
-                </Typography>
-                <TextField
-                  label={t("dns_record_name", "Record name")}
-                  value={binding.record_name}
-                  InputProps={{ readOnly: true }}
-                />
-                <TextField
-                  multiline
-                  label={t("dns_record_value", "TXT value")}
-                  value={binding.value}
-                  InputProps={{ readOnly: true }}
-                />
-                <Button
-                  startIcon={<ContentCopyRounded />}
-                  onClick={() => copyTextToClipboard(binding.value)}
-                >
-                  {t("copy_button", "Copy value")}
-                </Button>
-                <Typography variant="body2">{binding.reason}</Typography>
-                <Typography variant="caption">
+          {challengeShown && binding.state === "challenge" && (
+            <Box sx={{ p: 2, borderRadius: "12px", border: "1px solid var(--cp-border)", bgcolor: "var(--cp-surface-2)" }}>
+              <Stack spacing={2}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Box component="span" sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: "var(--cp-warning)", flexShrink: 0 }} />
+                  <Typography variant="subtitle2">
+                    {t("domain_txt_challenge", "Add this TXT record, then verify again")}
+                  </Typography>
+                </Stack>
+                {[
+                  { label: t("dns_record_name", "Record name"), value: binding.record_name },
+                  { label: t("dns_record_value", "TXT value"), value: binding.value },
+                ].map((row) => (
+                  <Box key={row.label}>
+                    <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 0.5 }}>
+                      {row.label}
+                    </Typography>
+                    <Stack
+                      direction="row"
+                      alignItems="center"
+                      spacing={1}
+                      sx={{ pl: 1.5, pr: 0.5, minHeight: 40, borderRadius: "10px", border: "1px solid var(--cp-border)", bgcolor: "var(--cp-surface)" }}
+                    >
+                      <Typography sx={{ ...mono, fontSize: 13, flex: 1, minWidth: 0, py: 1, overflowWrap: "anywhere", userSelect: "all" }}>
+                        {row.value}
+                      </Typography>
+                      <Tooltip title={t("copy_button", "Copy value").replace(/^\((.*)\)$/, "$1")}>
+                        <IconButton
+                          size="small"
+                          aria-label={t("copy_button", "Copy value").replace(/^\((.*)\)$/, "$1")}
+                          onClick={() => copyTextToClipboard(row.value)}
+                        >
+                          <Copy size={16} strokeWidth={1.75} />
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                  </Box>
+                ))}
+                {binding.reason ? (
+                  <Typography variant="body2" color="text.secondary">
+                    {binding.reason}
+                  </Typography>
+                ) : null}
+                <Typography variant="caption" color="text.secondary">
                   {t("dns_propagation_hint", "DNS propagation may take several minutes.")}
                 </Typography>
               </Stack>
-            </Alert>
+            </Box>
           )}
           {binding.state === "verified" && (
-            <Alert severity="success" icon={<VerifiedRounded />}>
-              {t("domain_verified", "Domain ownership verified")}
-            </Alert>
+            <StatusLine tone="success">{t("domain_verified", "Domain ownership verified")}</StatusLine>
           )}
         </Stack>
       )}
 
       {error && <Alert severity="error">{error}</Alert>}
-      <Stack direction="row" justifyContent="space-between" spacing={2}>
-        <Button onClick={onBack}>{t("back_button")}</Button>
+      <StepActions back={<Button variant="text" onClick={onBack}>{t("back_button")}</Button>}>
         {mode === "bucky" ? (
-          <Button variant="contained" size="large" onClick={continueDefault}>
+          <Button variant="contained" size="large" onClick={continueDefault} sx={{ minWidth: 120 }}>
             {t("next_button")}
           </Button>
         ) : (
@@ -220,14 +209,15 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
             size="large"
             onClick={verifyDomain}
             disabled={loading}
-            startIcon={loading ? <CircularProgress size={18} /> : <VerifiedRounded />}
+            startIcon={loading ? <CircularProgress size={16} thickness={5} color="inherit" /> : undefined}
+            sx={{ minWidth: 120 }}
           >
             {binding.state === "challenge"
               ? t("verify_again", "Verify again")
               : t("verify_domain", "Verify domain")}
           </Button>
         )}
-      </Stack>
+      </StepActions>
     </Stack>
   );
 };

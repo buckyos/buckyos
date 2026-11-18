@@ -15,8 +15,8 @@ import { fetchSystemTokenUsage, type SystemTokenUsage } from '../api/system_toke
 import { isPrivilegedUserType } from '../api/user_type'
 import type { CurrentUser } from '../presentation/currentUser'
 
-const longPressMs = 450
-const longPressTolerance = 12
+export const longPressMs = 450
+export const longPressTolerance = 12
 
 /**
  * Touch long-press for elements that otherwise only have a right-click

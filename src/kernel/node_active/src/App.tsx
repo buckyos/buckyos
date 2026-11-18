@@ -3,15 +3,12 @@ import {
   Alert,
   Box,
   Button,
-  Container,
+  CircularProgress,
   CssBaseline,
   PaletteMode,
-  Paper,
   Stack,
-  Chip,
   ThemeProvider,
   Typography,
-  createTheme,
   useMediaQuery,
 } from "@mui/material";
 import { useTranslation } from "react-i18next";
@@ -20,6 +17,8 @@ import { validateOwnerDocument } from "../active_lib";
 import ActiveWizard from "./components/ActiveWizard";
 import LanguageSwitch from "./components/LanguageSwitch";
 import ThemeToggle from "./components/ThemeToggle";
+import { BrandMark, StatusDot } from "./components/ui";
+import { createActiveTheme } from "./theme";
 import { WalletUser } from "./types";
 
 function normalizeWalletPublicKey(value: unknown) {
@@ -42,7 +41,6 @@ function normalizeWalletPublicKey(value: unknown) {
 const App = () => {
   const { t, i18n } = useTranslation();
   const prefersDark = useMediaQuery("(prefers-color-scheme: dark)");
-  const isMobile = useMediaQuery("(max-width:600px)");
   const [mode, setMode] = useState<PaletteMode>(prefersDark ? "dark" : "light");
   const [isWalletRuntime, setIsWalletRuntime] = useState(false);
   const [walletUser, setWalletUser] = useState<WalletUser | null>(null);
@@ -55,7 +53,7 @@ const App = () => {
   }, [prefersDark]);
 
   useEffect(() => {
-    document.body.dataset.theme = mode;
+    document.documentElement.dataset.theme = mode;
   }, [mode]);
 
   useEffect(() => {
@@ -137,133 +135,72 @@ const App = () => {
     return text;
   })();
 
-  const theme = useMemo(
-    () =>
-      createTheme({
-        palette: {
-          mode,
-          primary: {
-            main: mode === "dark" ? "#9ad5ff" : "#4f46e5",
-          },
-          secondary: {
-            main: mode === "dark" ? "#f3b0ff" : "#7c3aed",
-          },
-          background: {
-            default: mode === "dark" ? "#0b1224" : "#eef1ff",
-            paper: mode === "dark" ? "rgba(17, 26, 46, 0.9)" : "rgba(255,255,255,0.9)",
-          },
-        },
-        shape: {
-          borderRadius: 16,
-        },
-        typography: {
-          fontFamily: "'Manrope','Space Grotesk','Inter',system-ui,-apple-system,sans-serif",
-          h4: { fontWeight: 700, letterSpacing: "-0.02em" },
-          subtitle1: { fontWeight: 600 },
-        },
-      }),
-    [mode]
-  );
+  const theme = useMemo(() => createActiveTheme(mode), [mode]);
 
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box
         sx={{
-          minHeight: "100vh",
+          minHeight: "100dvh",
           display: "flex",
+          justifyContent: "center",
           alignItems: { xs: "flex-start", md: "center" },
-          py: { xs: 2, md: 6 },
-          position: "relative",
+          px: { xs: 2, sm: 3 },
+          py: { xs: 2, sm: 5 },
+          bgcolor: "var(--cp-bg)",
         }}
       >
-        <Container
-          maxWidth="lg"
-          disableGutters={isMobile}
-          sx={{
-            px: { xs: 2, sm: 3 },
-          }}
-        >
-          <Paper
-            elevation={0}
+        <Box sx={{ width: "100%", maxWidth: 760 }}>
+          <Stack
+            component="header"
+            direction="row"
+            alignItems="center"
+            spacing={1.5}
+            sx={{ mb: { xs: 3, sm: 3 }, minHeight: 40 }}
+          >
+            <BrandMark size={28} />
+            <Typography component="h1" sx={{ flex: 1, minWidth: 0, fontSize: 16, fontWeight: 500, lineHeight: 1.4 }}>
+              {t("active_title")}
+            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+              <LanguageSwitch />
+              <ThemeToggle mode={mode} onToggle={() => setMode((prev) => (prev === "light" ? "dark" : "light"))} />
+            </Stack>
+          </Stack>
+          <Box
+            component="main"
             sx={{
-              p: { xs: 0, sm: 2.5, md: 4 },
-              borderRadius: { xs: 0, sm: 4 },
-              border: { xs: "none", sm: `1px solid ${theme.palette.divider}` },
-              boxShadow: { xs: "none", sm: "0 30px 90px rgba(0,0,0,0.15)" },
-              backdropFilter: { xs: "none", sm: "blur(10px)" },
-              backgroundColor: { xs: "transparent", sm: theme.palette.background.paper },
+              p: { xs: 0, sm: 4 },
+              borderRadius: { xs: 0, sm: "16px" },
+              border: { xs: "none", sm: "1px solid var(--cp-border)" },
+              bgcolor: { xs: "transparent", sm: "var(--cp-surface)" },
+              boxShadow: { xs: "none", sm: "var(--cp-panel-shadow)" },
             }}
           >
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              justifyContent="space-between"
-              alignItems={{ xs: "flex-start", sm: "center" }}
-              spacing={2}
-              sx={{ mb: 3 }}
-            >
-              <Box sx={{ minWidth: 0, width: { xs: "100%", sm: "auto" } }}>
-                <Typography variant="h4">{t("active_title")}</Typography>
-                {isWalletRuntime && walletUser?.owner_document.name && (
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    alignItems="center"
-                    mt={0.5}
-                    flexWrap="wrap"
-                    sx={{ minWidth: 0, width: { xs: "100%", sm: "auto" } }}
-                  >
-                    <Chip
-                      size="small"
-                      label={t("wallet_device_owner", {
-                        user_name: walletUser.owner_document.name,
-                        public_key: walletPubKeyDisplay,
-                      })}
-                      sx={{
-                        maxWidth: { xs: "100%", sm: "fit-content" },
-                        height: { xs: "auto", sm: 32 },
-                        alignItems: { xs: "flex-start", sm: "center" },
-                        "& .MuiChip-label": {
-                          display: "block",
-                          whiteSpace: { xs: "normal", sm: "nowrap" },
-                          overflowWrap: { xs: "anywhere", sm: "normal" },
-                          wordBreak: { xs: "break-word", sm: "normal" },
-                          lineHeight: { xs: 1.4, sm: "32px" },
-                          py: { xs: 0.75, sm: 0 },
-                        },
-                      }}
-                    />
-                  </Stack>
-                )}
-              </Box>
-              <Stack direction="row" spacing={1.25}>
-                <LanguageSwitch />
-                <ThemeToggle mode={mode} onToggle={() => setMode((prev) => (prev === "light" ? "dark" : "light"))} />
+            {isWalletRuntime && walletUser?.owner_document.name && (
+              <Stack
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                sx={{ mb: 3, pb: 2, borderBottom: "1px solid var(--cp-border)", minWidth: 0 }}
+              >
+                <StatusDot tone="success" />
+                <Typography variant="body2" color="text.secondary" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                  {t("wallet_device_owner", {
+                    user_name: walletUser.owner_document.name,
+                    public_key: walletPubKeyDisplay,
+                  })}
+                </Typography>
               </Stack>
-            </Stack>
+            )}
             {!isInitialized ? (
-              <Box sx={{ py: 2 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 2 }}>
+                <CircularProgress size={16} thickness={5} />
+                <Typography variant="body2" color="text.secondary">
                   {t(isWalletRuntime ? "wallet_identity_loading" : "loading")}
                 </Typography>
-                <Box
-                  sx={{
-                    height: 8,
-                    borderRadius: 999,
-                    backgroundColor: "action.hover",
-                    overflow: "hidden",
-                  }}
-                >
-                  <Box
-                    sx={{
-                      height: "100%",
-                      width: "35%",
-                      bgcolor: "primary.main",
-                      opacity: 0.75,
-                    }}
-                  />
-                </Box>
-              </Box>
+              </Stack>
             ) : initError ? (
               <Stack spacing={2}>
                 <Alert severity="error">{t(initError)}</Alert>
@@ -285,8 +222,8 @@ const App = () => {
             ) : (
               <ActiveWizard isWalletRuntime={isWalletRuntime} walletUser={walletUser || undefined} />
             )}
-          </Paper>
-        </Container>
+          </Box>
+        </Box>
       </Box>
     </ThemeProvider>
   );

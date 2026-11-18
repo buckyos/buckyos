@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
 
 /**
  * Opens an app the way a user reaches one that has no desktop shortcut: the taskbar's All apps panel.
@@ -20,6 +20,40 @@ export async function openFromAllApps(page: Page, appId: string) {
   const item = page.getByTestId(`all-apps-item-${appId}`)
   await expect(item).toBeVisible()
   await item.click()
+}
+
+/** Longer than a launcher tile's touch hold (launcherGesture.ts). */
+export const TILE_HOLD_MS = 600
+
+/**
+ * A one-finger touch on a launcher tile, through CDP (Chromium): down at its centre, an optional hold, then each
+ * offset from the centre in turn, then up.
+ */
+export async function touchTile(
+  page: Page,
+  tile: Locator,
+  offsets: Array<{ x: number; y: number }>,
+  { holdMs = 0 }: { holdMs?: number } = {},
+) {
+  await tile.tap({ trial: true })
+  const box = await tile.boundingBox()
+  expect(box).not.toBeNull()
+  const x = box!.x + box!.width / 2
+  const y = box!.y + box!.height / 2
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] })
+    if (holdMs) await page.waitForTimeout(holdMs)
+    for (const offset of offsets) {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [{ x: x + offset.x, y: y + offset.y, id: 1 }],
+      })
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  } finally {
+    await cdp.detach()
+  }
 }
 
 export const MOCK_DESKTOP_FOLDER_KEY = 'buckyos.mock.desktop-folder.v1'
