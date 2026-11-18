@@ -132,7 +132,7 @@ export function TableEditor({ cellId, sourceId, source, readOnly, compact }: { c
   return (
     <LockScope entity={readOnly ? undefined : source}>
       <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} readOnly={readOnly || lockBlocks} compact={compact} annotations={ui.annotations}
-        onAnnotate={readOnly ? undefined : ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
+        onAnnotate={ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
     </LockScope>
   )
 }

@@ -79,7 +79,7 @@ test('private workspace, UI reader grant, refused write and revocation use real 
 
 test('two real users converge, preserve independent edits and resolve a same-cell conflict', async ({ owner, peer }, info) => {
   const ws = await createSample(owner)
-  await owner.client.ok('ws.grant', { workspace_id: ws.workspace_id, subject: peer.userId, capabilities: ['read', 'update', 'append', 'comment'] })
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read', 'update', 'append', 'comment'] }] })
   await openWorkspace(peer, ws)
   const a = owner.page
   const b = peer.page

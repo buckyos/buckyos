@@ -105,7 +105,7 @@ function hashPassword(user: string, value: string, nonce?: number) {
   return nonce === undefined ? stored : createHash('sha256').update(`${stored}${nonce}`).digest('base64')
 }
 
-async function login(page: Page, userId: string, value: string): Promise<Actor> {
+export async function login(page: Page, userId: string, value: string): Promise<Actor> {
   await page.goto('/')
   await page.getByLabel('Username', { exact: true }).fill(userId)
   await page.getByLabel('Password', { exact: true }).fill(value)
