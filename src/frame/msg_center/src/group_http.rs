@@ -205,7 +205,13 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
         let base = json!({"group_did":group,"session_id":sid});
         if matches!(
             operation.as_str(),
-            "inbox" | "sessions" | "changes" | "objects" | "read_markers"
+            "inbox"
+                | "sessions"
+                | "changes"
+                | "objects"
+                | "read_markers"
+                | "members"
+                | "participants"
         ) || operation.starts_with("objects/")
         {
             // Readers are identified by the authenticated principal alone;
@@ -225,6 +231,16 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
             (&Method::GET, "sessions") => Ok(reply(
                 StatusCode::OK,
                 center.group_sessions(&actor, &group).await?,
+            )),
+            (&Method::GET, "members") if sid.is_none() => Ok(reply(
+                StatusCode::OK,
+                center.group_members(&actor, &group).await?,
+            )),
+            (&Method::GET, "participants") => Ok(reply(
+                StatusCode::OK,
+                center
+                    .group_session_members(&actor, &group, sid.as_deref())
+                    .await?,
             )),
             (&Method::GET, "changes") => Ok(reply(
                 StatusCode::OK,

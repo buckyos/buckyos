@@ -362,13 +362,28 @@ impl MessageCenter {
             );
         }
         let group: DID = field(&p, "group_did")?;
-        if !actor.remote && matches!(method, "group.accept_invitation" | "group.get_doc")
+        if !actor.remote
+            && matches!(
+                method,
+                "group.accept_invitation"
+                    | "group.get_doc"
+                    | "group.list_members"
+                    | "group.list_session_members"
+            )
             && self.groups.load(&group).await?.is_none()
         {
-            return if method == "group.accept_invitation" {
-                self.accept_remote_group_invitation(&group, &actor, &p, &ctx).await
-            } else {
-                self.remote_group_doc(&actor.did, &group).await
+            return match method {
+                "group.accept_invitation" => {
+                    self.accept_remote_group_invitation(&group, &actor, &p, &ctx)
+                        .await
+                }
+                "group.get_doc" => self.remote_group_doc(&actor.did, &group).await,
+                "group.list_members" => self.remote_group_members(&actor.did, &group, None).await,
+                _ => {
+                    let session = optional::<String>(&p, "session_id")?;
+                    self.remote_group_members(&actor.did, &group, Some(session.as_deref()))
+                        .await
+                }
             };
         }
         if method == "group.submit_guest_request" {
@@ -488,23 +503,7 @@ impl MessageCenter {
                     json!({"allowed":result.is_ok(),"reason":result.err().map(|e|e.to_string())}),
                 );
             }
-            "group.list_members" => {
-                self.expire_group_invitations(&group).await?;
-                let g = self.groups.load(&group).await?.ok_or_else(missing)?;
-                if g.role(&actor.did).is_none() || g.blocked(&actor.did) || g.lifecycle == "deleted"
-                {
-                    return Err(missing());
-                }
-                g.check_client(&actor)?;
-                if g.config()?.membership.member_list_visibility == "admins_only"
-                    && !g.capability(&actor.did, "group.approve_member")
-                {
-                    return Err(denied("member-list-hidden"));
-                }
-                return Ok(
-                    json!({"items":g.members.values().collect::<Vec<_>>(),"pending_owner_transfer":g.pending_owner_transfer.as_ref().filter(|t|t.expires_at_ms>Self::now_ms())}),
-                );
-            }
+            "group.list_members" => return self.group_members(&actor, &group).await,
             "group.list_events" => {
                 let g = self.groups.load(&group).await?.ok_or_else(missing)?;
                 g.require_cap(&actor, "group.read_all", None)?;
@@ -2982,6 +2981,22 @@ impl MessageCenter {
             None
         };
         Ok(json!({"items":items,"group_doc":doc}))
+    }
+    pub(crate) async fn group_members(&self, a: &GroupActor, group: &DID) -> Result<Value> {
+        self.expire_group_invitations(group).await?;
+        let g = self.groups.load(group).await?.ok_or_else(missing)?;
+        if g.role(&a.did).is_none() || g.blocked(&a.did) || g.lifecycle == "deleted" {
+            return Err(missing());
+        }
+        g.check_client(a)?;
+        if g.config()?.membership.member_list_visibility == "admins_only"
+            && !g.capability(&a.did, "group.approve_member")
+        {
+            return Err(denied("member-list-hidden"));
+        }
+        Ok(
+            json!({"items":g.members.values().collect::<Vec<_>>(),"pending_owner_transfer":g.pending_owner_transfer.as_ref().filter(|t|t.expires_at_ms>Self::now_ms())}),
+        )
     }
     /// Participants of one Session as the reader may see them (v2 §3.3): a
     /// reader who may see the group's member list gets every effective

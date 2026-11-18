@@ -168,10 +168,9 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       </div>
     </div>}
     {group.lifecycle === 'deleted' ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.deleted')}</p>
-      : !group.hosted ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.remoteHost')}</p>
-      : !group.myRole ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.reason.group_not_member')}</p>
-      : !group.members ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.membersHidden')}</p>
-      : <ul className="mt-1 divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="group-members">
+      : group.hosted && !group.myRole ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.reason.group_not_member')}</p>
+      : !group.members ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t(group.hosted ? 'messagehub.group.membersHidden' : 'messagehub.group.remoteHost')}</p>
+      : <>{!group.hosted && <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.remoteHost')}</p>}<ul className="mt-1 divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="group-members">
         {members.map(member => {
           const removable = member.did !== context.ownerDid && member.role !== 'owner' && (member.state === 'active' ? group.can.remove : member.state === 'invited' && group.can.invite)
           return <li key={member.did} className="flex min-h-11 items-center gap-2.5 py-1" data-member-did={member.did} data-role={member.role} title={member.did}>
@@ -185,7 +184,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
             {removable && <button type="button" disabled={pending} onClick={() => void remove(member)} aria-label={`${t(member.state === 'active' ? 'messagehub.group.remove' : 'messagehub.group.cancelInvite')}: ${nameOf(member.did)}`} title={t(member.state === 'active' ? 'messagehub.group.remove' : 'messagehub.group.cancelInvite')} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-[color:var(--cp-muted)] hover:text-[color:var(--cp-danger)] disabled:opacity-40 md:min-h-8 md:min-w-8"><UserMinus size={15} /></button>}
           </li>
         })}
-      </ul>}
+      </ul></>}
     {group.myRole && group.lifecycle !== 'deleted' && <div className="mt-3 flex flex-wrap gap-2">
       {group.myRole === 'owner'
         ? <button type="button" disabled={pending} className={`${hubButtonClass} flex items-center gap-1.5 text-[color:var(--cp-danger)]`} onClick={() => void disband()}><Trash2 size={15} aria-hidden />{t('messagehub.group.delete')}</button>

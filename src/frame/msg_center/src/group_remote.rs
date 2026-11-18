@@ -254,6 +254,32 @@ impl MessageCenter {
         Ok(value)
     }
 
+    /// The member list (`session: None`) or one Session's participants of a joined group, as
+    /// its host shows them to `owner`.
+    pub(crate) async fn remote_group_members(
+        &self,
+        owner: &DID,
+        group: &DID,
+        session: Option<Option<&str>>,
+    ) -> Result<Value> {
+        let route = self
+            .joined_group_route(owner, group)
+            .await?
+            .ok_or_else(missing)?;
+        let path = match session {
+            None => format!("{}/members", route.base_path()),
+            Some(None) => format!("{}/participants", route.base_path()),
+            Some(Some(sid)) => {
+                let key = session_key(group, Some(sid))?;
+                let (_, encoded) = key
+                    .split_once('/')
+                    .ok_or_else(|| invalid("invalid-session-id"))?;
+                format!("{}/sessions/{}/participants", route.base_path(), encoded)
+            }
+        };
+        route.fetch(self, &path, &[]).await
+    }
+
     pub(crate) async fn accept_remote_group_invitation(
         &self,
         group: &DID,

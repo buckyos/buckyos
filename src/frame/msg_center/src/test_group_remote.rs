@@ -858,3 +858,68 @@ async fn stale_invitation_cannot_erase_recovery_of_a_confirmed_invitation() {
         seq
     );
 }
+
+#[tokio::test]
+async fn cross_zone_member_reads_members_and_participants_through_its_zone() {
+    let zones = two_zones().await;
+    create(&zones).await;
+    let invitation = invite(&zones, &alice(), &bob()).await;
+    accept(&zones.local, &bob(), &invitation).await.unwrap();
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.create_session",
+        json!({"session_id":"team / 客服"}),
+    )
+    .await
+    .unwrap();
+    let dids = |value: &Value, field: &str| {
+        let mut out: Vec<String> = value["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item[field].as_str().unwrap().to_owned())
+            .collect();
+        out.sort();
+        out
+    };
+    let mut everyone = vec![alice().to_string(), bob().to_string()];
+    everyone.sort();
+    let members = rpc(&zones.local, &bob(), "group.list_members", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(dids(&members, "member_did"), everyone);
+    let default = rpc(
+        &zones.local,
+        &bob(),
+        "group.list_session_members",
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(default["complete"], true);
+    assert_eq!(dids(&default, "member_did"), everyone);
+    let named = rpc(
+        &zones.local,
+        &bob(),
+        "group.list_session_members",
+        json!({"session_id":"team / 客服"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(dids(&named, "member_did"), everyone);
+    assert!(rpc(&zones.local, &carol(), "group.list_members", json!({}))
+        .await
+        .is_err());
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.remove_member",
+        json!({"member_did":bob()}),
+    )
+    .await
+    .unwrap();
+    assert!(rpc(&zones.local, &bob(), "group.list_members", json!({}))
+        .await
+        .is_err());
+}

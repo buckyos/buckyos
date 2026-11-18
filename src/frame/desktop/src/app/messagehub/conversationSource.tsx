@@ -60,8 +60,8 @@ export function useMessageHubConversationSource({ context, entityId, session, co
   const isOwner = context.mode === 'self' && context.ownerDid === context.viewerDid
   const group = isGroup ? store.group(context, entityId) : null
   const groupMembers = group?.members
-  const groupHosted = group?.hosted === true
-  useEffect(() => { if (groupHosted && sessionId) void store.ensureGroupSessionMembers(context, entityId, sessionId) }, [store, groupHosted, entityId, sessionId, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  const groupKnown = group !== null
+  useEffect(() => { if (groupKnown && sessionId) void store.ensureGroupSessionMembers(context, entityId, sessionId) }, [store, groupKnown, entityId, sessionId, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
   // Mentions go to the session's participants (guests included); the group's members stand in until those are known.
   const sessionMembers = isGroup && sessionId ? store.groupSessionMembers(context, entityId, sessionId) : null
   const mentionDids = sessionMembers ? sessionMembers.items.filter(item => item.state === 'included').map(item => item.did) : (groupMembers ?? []).filter(member => member.state === 'active').map(member => member.did)

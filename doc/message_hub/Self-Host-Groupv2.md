@@ -1043,6 +1043,9 @@ PUT  https://$host/<group_did>/read_markers                   上报已读水位
 读取
 GET  https://$host/<group_did>/changes?since=&limit=          读者可见的变更流（§5.4.1）
 GET  https://$host/<group_did>/sessions                       读者可见的 Session 列表
+GET  https://$host/<group_did>/members                        群成员列表（同 group.list_members 的可见性）
+GET  https://$host/<group_did>/participants                   默认 Session 的参与者（同 group.list_session_members）
+GET  https://$host/<group_did>/sessions/<sid>/participants     具名 Session 的参与者
 GET  https://$host/<group_did>/inbox?after_seq=&limit=
 GET  https://$host/<group_did>/sessions/<sid>/inbox?after_seq=&limit=
 GET  https://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束的对象读取（§5.7）
@@ -1052,6 +1055,7 @@ GET  https://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束
 
 - 消息的 `PUT` body 是 canonical JSON NamedObject；签名的消息用 JWT 形式（`application/cyfs-named-object+jwt`，见 CYFS dispatch）。路径不带 `/@/`，body 不带附件内容。`objects/<obj_id>` 对有 JWT 原文的消息返回 JWT 形式。`join` 的 body 是 `{ "invitation_id"?: "..." }` 或空：带 `invitation_id`，或省略但调用者有待接受的邀请时，按接受邀请处理；否则按主动申请处理。`sessions/<sid>/join` 的 body 为空或 `{}`。`guest_requests` 的 body 是 `{ "request_id": "..." }`。`read_markers` 的 body 是小型 JSON 对象 `{ session, last_read_seq }`，读者取自认证上下文。
 - 所有请求都携带 host 能验证的 Bearer token 和与之一致的 `cyfs-original-user`，没有 `cyfs-proofs` 头；读取只看认证主体与成员表 / Guest 记录。`GET` 返回针对该读者过滤后的结果；对非有效成员按 §4.1 返回 `not-found`。
+- `members` 与 `participants` 的结果与对应 RPC 相同；成员 Zone 对 joined 群的 `group.list_members` / `group.list_session_members` 经 joined 绑定以成员身份转发到这两个入口。
 - `inbox` 列表按 `session_seq` 返回 `{ items: [{ seq, obj_id, redacted }], next_after_seq, limited }`，每页最多 4096 项。
 - `<sid>` 按 MailboxAddress 规则编码为单个路径段。
 
