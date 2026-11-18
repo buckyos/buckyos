@@ -204,8 +204,7 @@ impl FileBackend for ObjectBackend {
     async fn read(&self, path: &Path) -> Result<Vec<u8>, AgentToolError> {
         let id = path.to_string_lossy();
         let bytes = self.reader.read_object(&id).await?;
-        let head = &bytes[..bytes.len().min(8192)];
-        if head.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        if crate::file_tools::looks_binary(&bytes) || std::str::from_utf8(&bytes).is_err() {
             return Err(AgentToolError::InvalidArgs(format!(
                 "{id} is not text; use llm_understand_media to look at media objects"
             )));

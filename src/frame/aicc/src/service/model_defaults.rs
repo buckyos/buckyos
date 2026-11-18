@@ -133,7 +133,8 @@
 //   opus = claude-opus-5.5/5/4.8/4.7/4.6/4.5；fable = claude-fable-5-1、claude-fable-5。
 // - gemini：flash-lite = 3.5/3.1/2.5-flash-lite；flash = 3.8/3.7/3.6/3.5-flash、
 //   3-flash-preview、2.5-flash；pro = 3.1-pro-preview、2.5-pro。
-// - qwen：flash = qwen3.8/3.7/3.6/3.5-flash；plus = qwen3.7/3.6/3.5-plus；
+// - qwen：flash = qwen3.8/3.7/3.6/3.5-flash（3.8 绑定 :low：flash 只服务 swift/summarize/
+//   translate 与回退 4.0 层，这些调用的输出上限放不下 :xhigh 的思考）；plus = qwen3.7/3.6/3.5-plus；
 //   max = qwen4-max、qwen3.8/3.7-max、qwen3.6-max-preview、qwen3-max；
 //   moe-2t = qwen3.8-2.4t-a95b（集群级，文本复杂推理/代码）；
 //   moe-400b = qwen3.5-397b-a17b（大型通用多模态）；

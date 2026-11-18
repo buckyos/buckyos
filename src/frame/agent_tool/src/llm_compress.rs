@@ -10,7 +10,8 @@
 //!
 //! ## 压缩形态
 //!
-//! 只有 LLM 压缩，没有机械截断。压缩后的历史：
+//! 压缩只走 LLM。摘要器失败时，调用方可以用 [`trim_tool_results`] 做一次性降级：
+//! 只截短最新一轮之前的工具结果，不产出 summary，也不应被持久化。LLM 压缩后的历史：
 //!
 //! ```text
 //! system 前缀 + head（开场输入 + 第 1 轮）+ [一块 summary] + keep_exact + note + 原始尾巴
@@ -151,7 +152,7 @@ pub struct CompressedSummary {
 pub struct CompressReport {
     /// `unchanged` (within the target) | `llm` | `no_range` (nothing
     /// outside head and tail to summarize, or the system prefix alone is
-    /// over the target).
+    /// over the target) | `trim` ([`trim_tool_results`]).
     pub strategy: &'static str,
     pub prompt_version: &'static str,
     pub model_alias: String,
@@ -172,6 +173,9 @@ pub struct CompressReport {
     pub summary_tokens: u64,
     pub keep_exact: usize,
     pub memory_candidates: usize,
+    /// Tool results clipped by [`trim_tool_results`].
+    #[serde(skip_serializing_if = "is_zero")]
+    pub trimmed_results: usize,
     pub reached_target: bool,
     pub elapsed_ms: u64,
 }
@@ -367,6 +371,95 @@ pub async fn compress_history(
         memory_candidates: candidates,
         report,
     })
+}
+
+/// The fallback when the summarizer fails: tool results (and behavior step
+/// results) of the rounds before the latest one are clipped to
+/// [`REPORT_CHARS`], oldest round first, until the history fits
+/// `target_token_budget`. Nothing is summarized; `report.reached_target`
+/// says whether it fits.
+pub fn trim_tool_results(
+    history: &[AiMessage],
+    deps: &LLMContextDeps,
+    target_token_budget: u32,
+) -> CompressOutcome {
+    let started = Instant::now();
+    let est = |msgs: &[AiMessage]| estimate_messages(deps.tokenizer.as_ref(), msgs);
+    let target = u64::from(target_token_budget);
+    let prefix_end = history
+        .iter()
+        .position(|m| !matches!(m.role, AiRole::System | AiRole::Developer))
+        .unwrap_or(history.len());
+    let mut messages = history.to_vec();
+    let mut tokens = est(&messages);
+    let mut report = CompressReport {
+        strategy: "trim",
+        prompt_version: PROMPT_VERSION,
+        target_tokens: target_token_budget,
+        tokens_before: tokens,
+        ..Default::default()
+    };
+    let units = segment(history, prefix_end);
+    let older = units.len().saturating_sub(1);
+    for unit in &units[..older] {
+        if tokens <= target {
+            break;
+        }
+        if unit.kind != UnitKind::Round {
+            continue;
+        }
+        let mut clipped = 0;
+        for m in &mut messages[unit.start..unit.end] {
+            let step_results = m.role == AiRole::User
+                && m.text_content().starts_with(STEP_RESULTS_PREFIX);
+            for c in &mut m.content {
+                match c {
+                    AiContent::ToolResult { content, .. } => {
+                        for part in content.iter_mut() {
+                            if let AiToolResultContent::Text { text } = part {
+                                clipped += usize::from(clip_in_place(text));
+                            }
+                        }
+                    }
+                    AiContent::Text { text } if step_results => {
+                        clipped += usize::from(clip_in_place(text));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if clipped > 0 {
+            report.trimmed_results += clipped;
+            tokens = est(&messages);
+        }
+    }
+    report.tokens_after = tokens;
+    report.reached_target = tokens <= target;
+    report.elapsed_ms = started.elapsed().as_millis() as u64;
+    log::warn!(
+        "llm_compress.completed {}",
+        serde_json::to_string(&report).unwrap_or_default()
+    );
+    CompressOutcome {
+        messages,
+        head_end: prefix_end,
+        tail_start: prefix_end,
+        summary: None,
+        memory_candidates: Vec::new(),
+        report,
+    }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+fn clip_in_place(text: &mut String) -> bool {
+    if text.chars().count() <= REPORT_CHARS {
+        return false;
+    }
+    *text = clip(text, REPORT_CHARS);
+    true
 }
 
 /// The summary block as one user message.
@@ -1249,5 +1342,45 @@ mod tests {
         assert!(is_summary_message(&out.messages[2]));
         assert_ne!(out.messages[3].role, AiRole::Tool);
         assert_paired(&out.messages);
+    }
+
+    fn result_text(m: &AiMessage) -> String {
+        m.content
+            .iter()
+            .filter_map(|c| match c {
+                AiContent::ToolResult { content, .. } => Some(
+                    content
+                        .iter()
+                        .filter_map(|x| match x {
+                            AiToolResultContent::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn trim_clips_older_tool_results_until_the_target_is_met() {
+        let (deps, _) = deps_with(&[]);
+        let mut history = fc_history(6, 400);
+        history[7] = result("call-2", "\u{fffd}".repeat(60_000));
+        history[13] = result("call-5", "t".repeat(8_000));
+
+        let out = trim_tool_results(&history, &deps, 6_000);
+        assert_eq!(out.report.strategy, "trim");
+        assert_eq!(out.report.trimmed_results, 1);
+        assert!(out.report.reached_target, "{:?}", out.report);
+        assert!(out.summary.is_none());
+        assert!(result_text(&out.messages[7]).contains("more characters omitted"));
+        assert_eq!(out.messages[13], history[13], "the latest round stays whole");
+        assert_eq!(out.messages[5], history[5]);
+        assert_paired(&out.messages);
+
+        let out = trim_tool_results(&history, &deps, 1_000);
+        assert!(!out.report.reached_target, "{:?}", out.report);
+        assert_eq!(out.messages[13], history[13]);
     }
 }

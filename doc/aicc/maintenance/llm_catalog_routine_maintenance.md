@@ -41,6 +41,7 @@
 - **渠道事实**写 Provider Rules：operation、effort lowering（variants 的 `origin_model_id` 列表）、`capability_limits`、请求改写、`model_pricing`（`source_url`、`verified_at`、币种、输入/输出/缓存读写、长上下文 `tiers`）。只有 endpoint/adapter/发现方式变化时才改 Known Provider。
 - 新型号先归入已有规格；只有厂商发布新产品线或新用途时才新增规格。新增非 `direct_only` 规格必须同时加入某个用途或 `llm.fallback` 的分层（否则单模型覆盖测试失败），否则标记 `direct_only`。
 - 低档预设只能通过合法的 `spec` / `additional_specs` 绑定表达；不要为降低 fallback 成本改写所有用途共用的规格 effort 或 `default_effort`，也不要伪造 `none`。
+- 只被 swift、summarize、translate 和 `llm.fallback` 引用的廉价规格（如 `qwen-flash`、`gpt-mini`、`minimax-highspeed`）绑定 `none`/`low` 档：这些调用方的输出上限只有几千 token（会话压缩 6144），`xhigh`/`max` 档会把额度全部用在思考上、返回空正文。
 - 下线：原厂停供只记录日期并调整对应原生渠道的价格/可用性；第三方或本地部署仍可提供时保留技术定义。停止默认推荐（调权重）与删除定义分开处理；退役规格前先清理用途、`llm.fallback` 和 overlay 的引用。
 - 未来日期生效的调价无法用 `time_windows`（按一天内时段/星期计价）表达：记录生效日期，到期后再更新价格并改 `verified_at`。
 - 修改过的每个 catalog 文件 `revision_seq` 加 1；`src/frame/aicc/src/settings/mod.rs` 的 `BUILTIN_CATALOG_REVISION_SEQ` 加 1。同步更新断言固定计数/版本的单测（`provider_pricing_contains_all_rebased_model_defaults`、`every_builtin_provider_price_has_provenance`、各 provider 的 `revision_seq` 断言）。

@@ -50,7 +50,9 @@ const DEFAULT_AUDIO_ANALYSIS_MODEL_ALIAS: &str = "llm.chat";
 const DEFAULT_AUDIO_ASR_MODEL_ALIAS: &str = "audio.asr";
 const DEFAULT_SUMMARY_MODEL_ALIAS: &str = llm_compress::SUMMARIZE_MODEL_ALIAS;
 const DEFAULT_TARGET_TOKENS: u32 = 24_000;
-const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
+/// Also the floor of a requested budget: `llm.vision` may route to a preset
+/// that thinks at max effort, and the thinking comes out of this budget.
+const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 16_384;
 const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
 const PROBE_HEAD_BYTES: usize = 4096;
 const DEFAULT_TEXT_CHAR_BUDGET: usize = 60_000;
@@ -3184,7 +3186,7 @@ Options:
   --history-file <path>   JSON Vec<AiMessage> parent history snapshot.
   --work-dir <path>       LocalLLMContext working directory.
   --model <alias>         AICC logical model alias; default image route is llm.vision.
-  --max-completion-tokens <n>  Positive output budget; default 2048, rounded up to 2048/4096/8192 tiers.
+  --max-completion-tokens <n>  Positive output budget, thinking included; default and minimum 16384.
   -h, --help              Show this help.
 
 Long documents (PDF, docx, pptx, ...):
@@ -3341,12 +3343,7 @@ fn parse_positive_u32(raw: &str, flag: &str) -> Result<u32, ParseError> {
 }
 
 fn normalize_completion_tokens(value: u32) -> u32 {
-    match value {
-        1..=2_048 => 2_048,
-        2_049..=4_096 => 4_096,
-        4_097..=8_192 => 8_192,
-        _ => value,
-    }
+    value.max(DEFAULT_MAX_COMPLETION_TOKENS)
 }
 
 #[cfg(test)]
@@ -3525,7 +3522,7 @@ mod tests {
             DEFAULT_MODEL_ALIAS.to_string(),
             PathBuf::from("/tmp/x"),
         );
-        assert_eq!(overrides.max_tokens, Some(2_048));
+        assert_eq!(overrides.max_tokens, Some(16_384));
         assert_eq!(overrides.tools, Some(false));
         assert!(overrides.json);
         assert!(overrides
@@ -3572,16 +3569,11 @@ mod tests {
     }
 
     #[test]
-    fn media_output_budget_rounds_up_to_staged_floor() {
-        assert_eq!(normalize_completion_tokens(1), 2_048);
-        assert_eq!(normalize_completion_tokens(2_047), 2_048);
-        assert_eq!(normalize_completion_tokens(2_048), 2_048);
-        assert_eq!(normalize_completion_tokens(2_049), 4_096);
-        assert_eq!(normalize_completion_tokens(4_096), 4_096);
-        assert_eq!(normalize_completion_tokens(4_097), 8_192);
-        assert_eq!(normalize_completion_tokens(8_192), 8_192);
-        assert_eq!(normalize_completion_tokens(8_193), 8_193);
+    fn media_output_budget_leaves_room_for_thinking() {
+        assert_eq!(normalize_completion_tokens(1), 16_384);
+        assert_eq!(normalize_completion_tokens(2_048), 16_384);
         assert_eq!(normalize_completion_tokens(16_384), 16_384);
+        assert_eq!(normalize_completion_tokens(32_768), 32_768);
     }
 
     #[test]

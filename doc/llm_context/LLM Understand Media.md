@@ -101,7 +101,7 @@ agent_tool llm_understand_media --media <json | locator> [--goal <text>] [option
 | `<locator>` | 本地文件（相对当前目录或绝对路径）、Zone 文件（`cyfs:///<path>`，或 Files 显示的 `/home/<owner>/…`）、对象 id（`cyfile:…`、chunk id、`cyfs://<objid>/`，例如消息附件）或 http(s) URL |
 | `--media <json>` | 同上的 JSON 形式：`{"kind":"named_object","obj_id":"cyfile:…","mime_hint":"image/png"}`、`{"kind":"local_file","path":"/abs/frame.png"}`、`{"url":"https://…"}` |
 | `--goal <text>` | 要了解什么；缺省时要求详细描述内容，让看不到原文件的人也能使用 |
-| `--max-completion-tokens <n>` | 输出预算，默认 2048，按 2048 / 4096 / 8192 分档向上取整 |
+| `--max-completion-tokens <n>` | 输出预算（含思考），默认且最低 16384：`llm.vision` 可能选中最高思考档的预设，思考也从这里扣 |
 | `--model <alias>` | AICC 逻辑模型名，覆盖 §4.4 的路由 |
 | `--work-dir <path>` | xllm run 目录 |
 | `--history-file <path>` | 父 history 快照（JSON `Vec<AiMessage>`），见 §4.2 |

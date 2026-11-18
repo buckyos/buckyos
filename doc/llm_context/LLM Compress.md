@@ -4,7 +4,7 @@
 - 实现：`src/frame/agent_tool/src/llm_compress.rs`
 - 调用方：libopendan Session（`runner/history.rs`、`runner/live.rs`）、xllm 自己的 run（`compact_context`）、`llm_understand_media`（父历史提纯）
 
-> **分工**：llm_context 冻结后（见 [llm-context-freeze-todo](../../notepads/done/llm-context-freeze-todo.md)），llm_context 只在估算达到触发线（`context_yield_ratio`，缺省 0.80）时让出 `ContextLimitReached`，自己不改写历史；改写由宿主执行，压缩逻辑**只有本模块一种**。宿主不再自带机械截断，本模块也没有机械压缩：压缩 = 一次（或分块的若干次）LLM 摘要。
+> **分工**：llm_context 冻结后（见 [llm-context-freeze-todo](../../notepads/done/llm-context-freeze-todo.md)），llm_context 只在估算达到触发线（`context_yield_ratio`，缺省 0.80）时让出 `ContextLimitReached`，自己不改写历史；改写由宿主执行，压缩逻辑**只有本模块一种**。宿主不再自带机械截断，本模块也没有机械压缩：压缩 = 一次（或分块的若干次）LLM 摘要。唯一的例外是摘要器失败后的一次性降级 `trim_tool_results`（§8），它不产出 summary、不落盘，下次照常先跑 LLM 摘要。
 
 ---
 
@@ -189,7 +189,7 @@ libopendan 另记：`opendan.context.compaction.{triggered,skipped,started,compl
 | --- | --- |
 | 历史在目标内 | 原样返回，不调用摘要器 |
 | 没有可摘要的原始轮 / system 前缀超过目标 | 原样返回（`no_range`），由调用方决定（libopendan 记 `budget_exceeded`，中途重写计一次尝试） |
-| 摘要器失败 | 返回错误，不伪装成成功（libopendan 记 `compaction.failed` / `rewrite.failed`） |
+| 摘要器失败 | 返回错误，不伪装成成功（libopendan 记 `compaction.failed`）。libopendan 随后调 `trim_tool_results`：最新一轮之前、超过 `REPORT_CHARS` 的工具结果（及 behavior 的结果消息）从最老的轮起截短，装进目标就只给这次上下文用（记 `compaction.fallback`，不写 summary.json）；仍装不下才把错误交给调用方（中途重写记 `rewrite.failed`） |
 | 摘要为空 | `OutputParse` |
 | 摘要比预留的大 | 尾巴最老的轮并入 summary 再折叠，至多 4 次 |
 
@@ -206,6 +206,6 @@ libopendan 另记：`opendan.context.compaction.{triggered,skipped,started,compl
 
 ## 10. 测试
 
-- `agent_tool` 单测（`llm_compress::tests`）：按轮分段（function call / 对话 / behavior 结果消息）、head + summary + 尾巴形态与配对、尾巴按预算填满、滚动合并只有一块 summary、分块折叠、keep_exact 跨两次滚动逐字不变与超上限转 memory candidates、report / intent 全文进摘要段落、循环到目标、head 过大时只留开场输入、纯文本回复、空摘要报错；
-- `lib_opendan/tests/context_limit.rs`：中途重写后的形态与 token 落在 `[0.6, 1.0] × history_budget`、provider 拒绝后的重写、behavior 重写、摘要失败、连续次数清零（C3）；`tests/l1.rs`：预算耗尽压缩无缝隙、按 summary.json 重建结果稳定；
+- `agent_tool` 单测（`llm_compress::tests`）：按轮分段（function call / 对话 / behavior 结果消息）、head + summary + 尾巴形态与配对、尾巴按预算填满、滚动合并只有一块 summary、分块折叠、keep_exact 跨两次滚动逐字不变与超上限转 memory candidates、report / intent 全文进摘要段落、循环到目标、head 过大时只留开场输入、纯文本回复、空摘要报错、`trim_tool_results` 截短旧轮工具结果且保留最新一轮；
+- `lib_opendan/tests/context_limit.rs`：中途重写后的形态与 token 落在 `[0.6, 1.0] × history_budget`、provider 拒绝后的重写、behavior 重写、摘要失败、连续次数清零（C3）；`tests/l1.rs`：预算耗尽压缩无缝隙、按 summary.json 重建结果稳定、摘要失败时截短旧工具结果且不写 summary.json；
 - 离线探针：`cargo run -p agent_tool --example compress_probe -- --worklog … --system … --target … --mode llm --base-url …`。
