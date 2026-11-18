@@ -963,7 +963,14 @@ fn canonical_option_keys(call: &AiccCall) -> Result<&'static [&'static str], Cal
         AiccCall::EmbeddingMultimodal(_) => &["dimensions", "normalize"],
         AiccCall::DecisionEvaluate(_) => &[],
         AiccCall::Rerank(_) => &["n", "return_documents"],
-        AiccCall::ImageToImage(_) => &["strength", "output"],
+        AiccCall::ImageToImage(_) => &[
+            "strength",
+            "aspect_ratio",
+            "negative_prompt",
+            "quality",
+            "seed",
+            "output",
+        ],
         AiccCall::ImageInpaint(_) => &["mask_semantics", "output"],
         AiccCall::ImageUpscale(_) => &[
             "scale",

@@ -271,6 +271,23 @@ fn binding<const N: usize>(
 ) -> OperationBinding {
     let mut binding = OperationBinding::new(api_type, modes);
     binding.supported_features = features.into_iter().map(str::to_string).collect();
+    binding.image_parameters = match api_type {
+        ApiType::ImageTextToImage => [
+            "aspect_ratio",
+            "size",
+            "output.size",
+            "seed",
+            "output.media_type",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        ApiType::ImageImageToImage => ["aspect_ratio", "output.size", "seed", "output.media_type"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        _ => BTreeSet::new(),
+    };
     binding
 }
 
@@ -1118,7 +1135,25 @@ fn encode_text_to_image(
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::String(request.prompt.clone()));
-    let mut response_format = image_response_format(request.output.as_ref())?;
+    context.reject_unsupported_options(
+        "Gemini Interactions image",
+        &[
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("quality", request.quality.is_some()),
+            ("style", request.style.is_some()),
+            ("n", request.n.is_some_and(|n| n != 1)),
+        ],
+    )?;
+    let mut output = request.output.clone().unwrap_or_default();
+    if let Some(size) = &request.size {
+        if output.size.as_ref().is_some_and(|value| value != size) {
+            return Err(ProtocolError::invalid_request(
+                "size conflicts with output.size",
+            ));
+        }
+        output.size = Some(size.clone());
+    }
+    let mut response_format = image_response_format(Some(&output))?;
     let mut config = Map::new();
     if let Some(ratio) = &request.aspect_ratio {
         response_format.insert("aspect_ratio".to_string(), ratio.clone().into());
@@ -1126,10 +1161,6 @@ fn encode_text_to_image(
     if let Some(seed) = request.seed {
         config.insert("seed".to_string(), seed.into());
     }
-    context.ignore_unsupported_options(
-        "Gemini Interactions image",
-        &[("n", request.n.is_some_and(|n| n != 1))],
-    );
     body.insert(
         "response_format".to_string(),
         Value::Object(response_format),
@@ -1150,15 +1181,27 @@ fn encode_image_to_image(
             "Gemini image edit requires at least one image",
         ));
     }
+    call.context.reject_unsupported_options(
+        "Gemini Interactions image edit",
+        &[
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("quality", request.quality.is_some()),
+            ("strength", request.strength.is_some()),
+        ],
+    )?;
     let mut input = vec![json!({"type":"text", "text":request.prompt})];
     for image in &request.images {
         input.push(encode_resource(image, "image", call.context)?);
     }
     body.insert("input".to_string(), Value::Array(input));
-    body.insert(
-        "response_format".to_string(),
-        Value::Object(image_response_format(request.output.as_ref())?),
-    );
+    let mut format = image_response_format(request.output.as_ref())?;
+    if let Some(ratio) = &request.aspect_ratio {
+        format.insert("aspect_ratio".into(), json!(ratio));
+    }
+    if let Some(seed) = request.seed {
+        body.insert("generation_config".into(), json!({"seed": seed}));
+    }
+    body.insert("response_format".into(), Value::Object(format));
     Ok(())
 }
 
@@ -1177,6 +1220,10 @@ fn image_response_format(
             format.insert("mime_type".to_string(), json!(mime));
         }
         if let Some(size) = &output.size {
+            if !matches!(size.as_str(), "1K" | "2K" | "4K") {
+                return Err(ProtocolError::new(ProtocolErrorKind::UnsupportedOperation,
+                    "Gemini Interactions output.size must be 1K, 2K or 4K; exact pixel dimensions are not supported"));
+            }
             format.insert("image_size".to_string(), json!(size));
         }
     }
@@ -3261,6 +3308,73 @@ mod tests {
             "outputs":[{"type":"text","text":"hello"}],
             "usage":{"total_input_tokens":4,"total_output_tokens":3,"total_tokens":7}
         })
+    }
+
+    #[test]
+    fn image_edit_passes_landscape_ratio_and_resolution_and_rejects_unmapped_options() {
+        let mut request = ImageToImageRequest::new(
+            "image@google",
+            vec![ResourceRef::base64(
+                "image/png".into(),
+                STANDARD.encode(b"image"),
+            )],
+            "landscape edit".into(),
+        );
+        request.aspect_ratio = Some("16:9".into());
+        request.output = Some(buckyos_api::AiOutputOptions {
+            size: Some("2K".into()),
+            ..Default::default()
+        });
+        let input = CodecInput {
+            canonical_request: AiccCall::ImageToImage(request.clone()),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".into(),
+                json!("gemini-3-pro-image"),
+            )]),
+        };
+        let ctx = context();
+        let call = CodecCall {
+            api_type: ApiType::ImageImageToImage,
+            input: &input,
+            context: &ctx,
+        };
+        let value = encode_interaction(&call, ApiType::ImageImageToImage).unwrap();
+        assert_eq!(value["response_format"]["aspect_ratio"], "16:9");
+        assert_eq!(value["response_format"]["image_size"], "2K");
+        assert_eq!(value["input"].as_array().unwrap().len(), 2);
+        for field in ["quality", "negative_prompt", "strength"] {
+            let mut req = request.clone();
+            match field {
+                "quality" => req.quality = Some("high".into()),
+                "negative_prompt" => req.negative_prompt = Some("text".into()),
+                _ => req.strength = Some(0.5),
+            }
+            let input = CodecInput {
+                canonical_request: AiccCall::ImageToImage(req),
+                ..input.clone()
+            };
+            let call = CodecCall {
+                input: &input,
+                ..call
+            };
+            let error = encode_interaction(&call, ApiType::ImageImageToImage).unwrap_err();
+            assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
+            assert!(error.message.contains(field));
+        }
+        request.output.as_mut().unwrap().size = Some("1344x768".into());
+        let input = CodecInput {
+            canonical_request: AiccCall::ImageToImage(request),
+            ..input.clone()
+        };
+        let error = encode_interaction(
+            &CodecCall {
+                input: &input,
+                ..call
+            },
+            ApiType::ImageImageToImage,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("output.size"));
     }
 
     #[test]

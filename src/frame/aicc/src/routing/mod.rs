@@ -553,6 +553,10 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             .requirements
             .min_context_tokens
             .max(task.min_context_tokens);
+        effective_request
+            .requirements
+            .image_parameters
+            .extend(task.image_parameters);
         for (field, requirement) in task.canonical_fields {
             effective_request
                 .requirements
@@ -961,6 +965,14 @@ fn hard_filter_model(
             reasons.push(filter_reason(
                 CONTEXT_LENGTH_INSUFFICIENT,
                 format!("model context length is below estimated request size {required}"),
+            ));
+        }
+    }
+    for parameter in &request.requirements.image_parameters {
+        if model.capabilities.get(parameter).and_then(Value::as_bool) != Some(true) {
+            reasons.push(filter_reason(
+                "image_parameter_unsupported",
+                format!("model does not support {parameter}"),
             ));
         }
     }
@@ -1593,6 +1605,7 @@ mod tests {
                 logical_mounts: Vec::new(),
                 variants: Vec::new(),
                 capabilities: BTreeMap::from([
+                    ("image.txt2img.aspect_ratio".into(), json!(id == "local")),
                     ("tool_call".into(), json!(tool_call)),
                     ("max_context_tokens".into(), json!(128_000)),
                 ]),
@@ -1942,6 +1955,31 @@ mod tests {
         .unwrap();
         assert_eq!(decision.selected.exact_model, "cheap@cloud-a");
         assert_eq!(decision.fallback_candidates[0].exact_model, "fast@cloud-b");
+    }
+
+    #[test]
+    fn requested_image_parameters_filter_routes_before_execution() {
+        let mut request = request("image.plan");
+        request
+            .requirements
+            .image_parameters
+            .insert("image.txt2img.aspect_ratio".into());
+        let decision = route(
+            AiccSchedulerProfile::Balanced,
+            &RoutingPolicyPatch::default(),
+            &request,
+            &runtime(),
+        )
+        .unwrap();
+        assert_eq!(decision.selected.exact_model, "local@local");
+        request.model = "cheap@cloud-a".into();
+        assert!(route(
+            AiccSchedulerProfile::Balanced,
+            &RoutingPolicyPatch::default(),
+            &request,
+            &runtime()
+        )
+        .is_err());
     }
 
     #[test]

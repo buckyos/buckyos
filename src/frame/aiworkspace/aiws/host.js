@@ -158,9 +158,13 @@ function mediaRequest(kind, req) {
   if (typeof req.negative === 'string' && req.negative) out.negative_prompt = req.negative
   if (Number.isInteger(req.seed)) out.seed = req.seed
   if (kind === 'image') {
-    if (req.aspect) out.aspect_ratio = String(req.aspect)
+    if (req.aspect) {
+      const ratio = String(req.aspect).match(/^([1-9]\d{0,2}):([1-9]\d{0,2})$/)
+      if (!ratio || Number(ratio[1]) > 100 || Number(ratio[2]) > 100) throw new Error('aiws.ai.image: aspect is W:H with integers in 1..=100')
+      out.aspect_ratio = String(req.aspect)
+    }
     if (req.size) {
-      if (!/^\d+x\d+$/.test(String(req.size))) throw new Error('aiws.ai.image: size is WxH, such as 1024x1536')
+      if (!/^(?:[1-9]\d*x[1-9]\d*|1K|2K|4K)$/.test(String(req.size))) throw new Error('aiws.ai.image: size is WxH or a model-supported 1K, 2K, 4K preset')
       out.size = String(req.size)
     }
     if (req.quality) out.quality = String(req.quality)
@@ -171,7 +175,10 @@ function mediaRequest(kind, req) {
     }
     const images = req.images === undefined || req.images === null ? [] : Array.isArray(req.images) ? req.images : [req.images]
     if (images.length > 8) throw new Error('aiws.ai.image: at most 8 reference images')
-    if (images.length) out.images = images.map((x) => mediaRef(x, 'aiws.ai.image images'))
+    if (images.length) {
+      out.images = images.map((x) => mediaRef(x, 'aiws.ai.image images'))
+      if (out.size) { out.output = { ...out.output, size: out.size }; delete out.size }
+    }
     return out
   }
   const output = {}
@@ -196,6 +203,16 @@ function mediaRequest(kind, req) {
   }
   if (conditions.length) out.conditions = conditions
   return out
+}
+
+function imageAspectProblem(media, request) {
+  if (!request.aspect_ratio) return null
+  const [w, h] = request.aspect_ratio.split(':').map(Number)
+  if (!(media.width > 0 && media.height > 0)) return { error: `cannot verify requested aspect ${request.aspect_ratio}: image dimensions are missing`, code: 'AI_INVALID_ANSWER' }
+  if (Math.abs(media.width / media.height / (w / h) - 1) > 0.05) return {
+    error: `image aspect does not match requested ${request.aspect_ratio}: received ${media.width}x${media.height}`, code: 'AI_INVALID_ANSWER',
+  }
+  return null
 }
 
 /** The width and height the Workspace found in a staged picture. */
@@ -383,16 +400,23 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
   /** One AICC call and, while its task runs, the task manager until it ends (at most the stage's media timeout). */
   async function generate(kind, model, request) {
     let response
+    const requirements = {}
+    if (kind === 'image') {
+      const api = request.images ? 'image.img2img' : 'image.txt2img'
+      const fields = Object.keys(request).filter((field) => !['images', 'prompt', 'output'].includes(field))
+      fields.push(...Object.keys(request.output ?? {}).map((field) => `output.${field}`))
+      if (fields.length) requirements.image_parameters = fields.map((field) => `${api}.${field}`)
+    }
     if (kind === 'video') {
       response = await aicc('helper.video_generate', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
     } else if (request.images) {
       const logical = model.replace(/^image\.txt2img/, 'image.img2img')
       const exact = logical.includes('@') ? logical
-        : (await aicc('route.resolve', { api_type: 'image.img2img', logical_model: logical, requirements: {}, disable: {}, policy: MEDIA_POLICY }))?.selected_exact_model
+        : (await aicc('route.resolve', { api_type: 'image.img2img', logical_model: logical, requirements, disable: {}, policy: MEDIA_POLICY }))?.selected_exact_model
       if (!exact) throw new Error(`no model serves image.img2img for ${logical}`)
       response = await aicc('image.img2img', { ...request, exact_model: exact })
     } else {
-      response = await aicc('helper.text_to_image', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
+      response = await aicc('helper.text_to_image', { ...request, logical_model: model, requirements, disable: {}, policy: MEDIA_POLICY })
     }
     if (response?.status === 'succeeded') return response
     if (response?.status === 'failed') throw new Error(`the AI service failed: ${JSON.stringify(response.error ?? response.message ?? response)}`)
@@ -432,7 +456,10 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
     if (hit && typeof hit === 'object' && typeof hit.object_id === 'string') {
       // the same request made this before: stage it again for this run (it may have been applied, or have expired)
       const staged = await importAsset(hit.object_id).catch(() => null)
-      if (staged) return { ...hit, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+      if (staged) {
+        const media = { ...hit, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+        return (kind === 'image' && imageAspectProblem(media, request)) || media
+      }
     }
     if (spent[kind] >= maxCalls) return { error: `the ${kind} budget of this run is spent: at most ${maxCalls} calls`, code: 'AI_BUDGET_EXCEEDED' }
     spent[kind] += 1
@@ -456,6 +483,10 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
           : ' — no image model of this Zone takes this request; try fewer reference images, another size or aspect'
       }
       return r
+    }
+    if (kind === 'image') {
+      const problem = imageAspectProblem(out, request)
+      if (problem) return problem
     }
     await cachePut([{ key, value: out }])
     return { ...out, cached: false }

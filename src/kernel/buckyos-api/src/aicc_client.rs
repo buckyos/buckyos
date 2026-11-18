@@ -1575,7 +1575,12 @@ impl AiccError {
     }
 
     pub fn to_krpc_error(&self) -> RPCErrors {
-        if self.code.is_policy_refusal() {
+        if self.code.is_policy_refusal()
+            || matches!(
+                self.code,
+                AiccErrorCode::NoCandidateModel | AiccErrorCode::UnsupportedOperation
+            )
+        {
             // The wire carries the code and the whole error as data, so every
             // client branches on `code` (PRD §7.4) instead of parsing text.
             return RPCErrors::Detailed(RPCErrorDetail {
@@ -1653,6 +1658,8 @@ pub struct ModelRequirement {
     pub vision: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub image_generation: bool,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub image_parameters: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -3234,6 +3241,8 @@ pub struct HelperModelRequirement {
     pub vision: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub image_generation: bool,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub image_parameters: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -3252,6 +3261,7 @@ impl From<HelperModelRequirement> for ModelRequirement {
             web_search: value.web_search,
             vision: value.vision,
             image_generation: value.image_generation,
+            image_parameters: value.image_parameters,
             min_context_tokens: value.min_context_tokens,
             canonical_fields: value.canonical_fields,
             video: value.video,
@@ -3767,9 +3777,55 @@ pub enum MaskSemantics {
     AlphaZeroIsEditArea,
 }
 
+impl ImageToImageRequest {
+    pub fn validate_image_edit(&self) -> std::result::Result<(), AiccError> {
+        if self
+            .aspect_ratio
+            .as_deref()
+            .is_some_and(|ratio| crate::parse_aspect_ratio(ratio).is_none())
+        {
+            return Err(AiccError::new(
+                AiccErrorCode::InvalidRequest,
+                "aspect_ratio must be W:H with integers in 1..=100",
+            ));
+        }
+        if let Some(size) = self
+            .output
+            .as_ref()
+            .and_then(|output| output.size.as_deref())
+        {
+            if let Some((w, h)) = size
+                .split_once('x')
+                .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            {
+                if w == 0 || h == 0 {
+                    return Err(AiccError::new(
+                        AiccErrorCode::InvalidRequest,
+                        "output.size dimensions must be positive",
+                    ));
+                }
+                if let Some((rw, rh)) = self
+                    .aspect_ratio
+                    .as_deref()
+                    .and_then(crate::parse_aspect_ratio)
+                {
+                    if u64::from(w) * u64::from(rh) != u64::from(h) * u64::from(rw) {
+                        return Err(AiccError::new(
+                            AiccErrorCode::InvalidRequest,
+                            "output.size conflicts with aspect_ratio",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 typed_request!(ImageToImageRequest,
     required { images: Vec<ResourceRef>, prompt: String },
-    optional { strength: f64, output: AiOutputOptions }
+    optional { strength: f64, aspect_ratio: String, negative_prompt: String, quality: String, seed: u64, output: AiOutputOptions }
+    validate validate_image_edit
 );
 typed_request!(
     ImageInpaintRequest,
@@ -7050,4 +7106,51 @@ pub fn generate_aicc_service_doc() -> AppDoc {
     .selector_type(SelectorType::Random)
     .build()
     .unwrap()
+}
+
+#[cfg(test)]
+mod image_edit_contract_tests {
+    use super::*;
+
+    #[test]
+    fn image_and_routing_errors_keep_their_structured_code() {
+        for code in [
+            AiccErrorCode::NoCandidateModel,
+            AiccErrorCode::ResourceNotPermitted,
+            AiccErrorCode::UnsupportedOperation,
+        ] {
+            let error = AiccError::new(code, "request cannot be served");
+            let wire = error.to_krpc_error();
+            let RPCErrors::Detailed(detail) = &wire else {
+                panic!("expected structured error")
+            };
+            assert_eq!(detail.code, code.as_str());
+            assert_eq!(AiccError::from_krpc_error(&wire).unwrap().code, code);
+        }
+    }
+
+    #[test]
+    fn image_edit_options_round_trip_and_reject_conflicting_dimensions() {
+        let value = json!({"exact_model":"image@provider", "images":[], "prompt":"edit",
+            "aspect_ratio":"16:9", "negative_prompt":"watermark", "quality":"high", "seed":7,
+            "output":{"size":"2K", "media_type":"image/jpeg"}});
+        let parsed = ImageToImageRequest::from_json(value).unwrap();
+        assert_eq!(parsed.aspect_ratio.as_deref(), Some("16:9"));
+        assert_eq!(parsed.quality.as_deref(), Some("high"));
+        assert_eq!(parsed.seed, Some(7));
+        for (ratio, size) in [
+            ("9:0", "2K"),
+            ("garbage", "2K"),
+            ("16:9", "768x1344"),
+            ("1:1", "0x0"),
+        ] {
+            let mut value = serde_json::to_value(&parsed).unwrap();
+            value["aspect_ratio"] = json!(ratio);
+            value["output"]["size"] = json!(size);
+            assert!(ImageToImageRequest::from_json(value).is_err());
+        }
+        let mut value = serde_json::to_value(parsed).unwrap();
+        value["size"] = json!("2K");
+        assert!(ImageToImageRequest::from_json(value).is_err());
+    }
 }

@@ -22,8 +22,23 @@ pub(crate) fn image_descriptor() -> OperationDescriptor {
     OperationDescriptor {
         operation_id: OPENROUTER_IMAGES_OPERATION_ID.to_owned(),
         bindings: vec![
-            super::OperationBinding::new(ApiType::ImageTextToImage, [ExecutionMode::Immediate]),
-            super::OperationBinding::new(ApiType::ImageImageToImage, [ExecutionMode::Immediate]),
+            super::OperationBinding::new(ApiType::ImageTextToImage, [ExecutionMode::Immediate])
+                .with_image_parameters(&[
+                    "size",
+                    "aspect_ratio",
+                    "quality",
+                    "seed",
+                    "n",
+                    "output.media_type",
+                ]),
+            super::OperationBinding::new(ApiType::ImageImageToImage, [ExecutionMode::Immediate])
+                .with_image_parameters(&[
+                    "output.size",
+                    "aspect_ratio",
+                    "quality",
+                    "seed",
+                    "output.media_type",
+                ]),
         ],
         supports_cancel: false,
         supports_webhook: false,
@@ -192,13 +207,13 @@ fn encode_text_to_image(
     body: &mut Map<String, Value>,
     context: &CodecContext,
 ) -> ProtocolResultValue<()> {
-    context.ignore_unsupported_options(
+    context.reject_unsupported_options(
         "OpenRouter Image API",
         &[
             ("negative_prompt", request.negative_prompt.is_some()),
             ("style", request.style.is_some()),
         ],
-    );
+    )?;
     body.insert("prompt".to_owned(), json!(request.prompt));
     insert_optional(body, "n", request.n.map(Value::from));
     insert_optional(
@@ -232,15 +247,19 @@ fn encode_image_to_image(
     body: &mut Map<String, Value>,
     context: &CodecContext,
 ) -> ProtocolResultValue<()> {
+    context.reject_unsupported_options(
+        "OpenRouter image edit",
+        &[("negative_prompt", request.negative_prompt.is_some())],
+    )?;
     if request.images.is_empty() {
         return Err(ProtocolError::invalid_request(
             "OpenRouter Image API requires at least one input reference",
         ));
     }
-    context.ignore_unsupported_options(
+    context.reject_unsupported_options(
         "OpenRouter Image API",
         &[("strength", request.strength.is_some())],
-    );
+    )?;
     body.insert("prompt".to_owned(), json!(request.prompt));
     body.insert(
         "input_references".to_owned(),
@@ -255,6 +274,13 @@ fn encode_image_to_image(
                 .collect::<ProtocolResultValue<Vec<_>>>()?,
         ),
     );
+    insert_optional(
+        body,
+        "aspect_ratio",
+        request.aspect_ratio.as_ref().map(|v| json!(v)),
+    );
+    insert_optional(body, "quality", request.quality.as_ref().map(|v| json!(v)));
+    insert_optional(body, "seed", request.seed.map(Value::from));
     if let Some(output) = &request.output {
         insert_optional(body, "size", output.size.as_ref().map(|value| json!(value)));
         if let Some(media_type) = output.media_type.as_deref() {

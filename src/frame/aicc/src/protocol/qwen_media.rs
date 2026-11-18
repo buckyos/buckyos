@@ -99,7 +99,15 @@ fn task_operation(id: &str, api_types: &[ApiType]) -> OperationDescriptor {
         bindings: api_types
             .iter()
             .copied()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::NativeTask]))
+            .map(|api_type| {
+                OperationBinding::new(api_type, [ExecutionMode::NativeTask]).with_image_parameters(
+                    match api_type {
+                        ApiType::ImageTextToImage => &["size", "seed", "n"],
+                        ApiType::ImageImageToImage => &["output.size"],
+                        _ => &[],
+                    },
+                )
+            })
             .collect(),
         supports_cancel: true,
         supports_webhook: false,
@@ -181,14 +189,15 @@ fn encode_qwen_image_request(
     let model = provider_model_id(resolved_parameters)?;
     let (content, size, n, seed) = match canonical_request {
         AiccCall::ImagesGenerate(request) if api_type == ApiType::ImageTextToImage => {
-            context.ignore_unsupported_options(
+            context.reject_unsupported_options(
                 "Qwen image generation",
                 &[
                     ("aspect_ratio", request.aspect_ratio.is_some()),
                     ("quality", request.quality.is_some()),
+                    ("negative_prompt", request.negative_prompt.is_some()),
                     ("style", request.style.is_some()),
                 ],
-            );
+            )?;
             (
                 vec![json!({"text":request.prompt})],
                 request.size.as_ref(),
@@ -202,10 +211,16 @@ fn encode_qwen_image_request(
                     "Qwen image edit requires one to three images",
                 ));
             }
-            context.ignore_unsupported_options(
+            context.reject_unsupported_options(
                 "Qwen image edit",
-                &[("strength", request.strength.is_some())],
-            );
+                &[
+                    ("strength", request.strength.is_some()),
+                    ("aspect_ratio", request.aspect_ratio.is_some()),
+                    ("negative_prompt", request.negative_prompt.is_some()),
+                    ("quality", request.quality.is_some()),
+                    ("seed", request.seed.is_some()),
+                ],
+            )?;
             let mut content = request
                 .images
                 .iter()

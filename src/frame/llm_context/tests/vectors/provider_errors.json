@@ -85,6 +85,26 @@
       "expect": {
         "failure": {
           "refused": {
+            "code": "no_candidate_model"
+          }
+        }
+      },
+      "input": {
+        "code": "no_candidate_model",
+        "data": {
+          "code": "no_candidate_model",
+          "message": "aicc no_candidate_model"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc no_candidate_model (no_candidate_model)"
+      },
+      "name": "rpc_no_candidate_model",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
             "code": "attribution_unavailable"
           }
         }

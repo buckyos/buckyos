@@ -37,6 +37,7 @@ pub(crate) struct OperationBinding {
     pub api_type: ApiType,
     pub capability: Capability,
     pub supported_features: BTreeSet<String>,
+    pub image_parameters: BTreeSet<String>,
     pub execution_modes: BTreeSet<ExecutionMode>,
     /// Set when the wire protocol requires an output cap that the canonical
     /// request treats as optional. Call lowering fills an omitted
@@ -51,6 +52,11 @@ pub(crate) struct OperationBinding {
 }
 
 impl OperationBinding {
+    pub(crate) fn with_image_parameters(mut self, parameters: &[&str]) -> Self {
+        self.image_parameters = parameters.iter().map(|value| (*value).to_owned()).collect();
+        self
+    }
+
     pub(crate) fn new(
         api_type: ApiType,
         execution_modes: impl IntoIterator<Item = ExecutionMode>,
@@ -59,6 +65,7 @@ impl OperationBinding {
             api_type,
             capability: api_type.capability(),
             supported_features: BTreeSet::new(),
+            image_parameters: BTreeSet::new(),
             execution_modes: execution_modes.into_iter().collect(),
             default_max_output_tokens: None,
             default_priority: 0,
@@ -576,6 +583,30 @@ impl std::fmt::Debug for CodecContext {
 }
 
 impl CodecContext {
+    pub(crate) fn reject_unsupported_options(
+        &self,
+        protocol: &str,
+        options: &[(&str, bool)],
+    ) -> ProtocolResultValue<()> {
+        let fields = options
+            .iter()
+            .filter(|(_, present)| *present)
+            .map(|(field, _)| *field)
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            return Ok(());
+        }
+        Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            format!(
+                "{protocol} does not support parameter(s) {} for {}/{}",
+                fields.join(", "),
+                self.state_coordinate.provider_profile_id,
+                self.state_coordinate.origin_model
+            ),
+        ))
+    }
+
     /// Tuning options the protocol cannot express are dropped instead of
     /// failing the call; this warning is their only trace. Output format,
     /// input and edit-scope requirements must still be rejected.

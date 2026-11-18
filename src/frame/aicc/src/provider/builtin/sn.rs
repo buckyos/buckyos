@@ -1188,8 +1188,30 @@ mod tests {
             "qwen3.8-max-0902"
         );
         assert_eq!(inventory.unavailable_presets[0].effort, "none");
-        assert!(inventory.models.iter().all(|model| !model.api_types.is_empty()));
-        for excluded in ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "sora-2", "sora-2-pro", "qwen-image-3-pro", "wan-3.0"] {
+        assert!(inventory
+            .models
+            .iter()
+            .all(|model| !model.api_types.is_empty()));
+        let image = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-image-2")
+            .unwrap();
+        assert_eq!(
+            image.capabilities.get("image.img2img.quality"),
+            Some(&json!(true))
+        );
+        assert!(!image
+            .capabilities
+            .contains_key("image.img2img.aspect_ratio"));
+        for excluded in [
+            "gpt-realtime-2.1",
+            "gpt-realtime-2.1-mini",
+            "sora-2",
+            "sora-2-pro",
+            "qwen-image-3-pro",
+            "wan-3.0",
+        ] {
             assert!(
                 !inventory
                     .models

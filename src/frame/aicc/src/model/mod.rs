@@ -2051,7 +2051,7 @@ fn deduplicate_api_types(api_types: &[ApiType]) -> Vec<ApiType> {
     result
 }
 
-fn api_type_name(api_type: ApiType) -> &'static str {
+pub(crate) fn api_type_name(api_type: ApiType) -> &'static str {
     match api_type {
         ApiType::Llm => "llm",
         ApiType::EmbeddingText => "embedding.text",
@@ -2369,6 +2369,11 @@ fn missing_requirements(requirement: &ModelRequirement, model: &RegisteredModel)
             .unwrap_or_default();
         if available < required {
             missing.push(format!("min_context_tokens:{required}"));
+        }
+    }
+    for parameter in &requirement.image_parameters {
+        if model.capabilities.get(parameter).and_then(Value::as_bool) != Some(true) {
+            missing.push(format!("image_parameter:{parameter}"));
         }
     }
     for (field, required) in &requirement.canonical_fields {

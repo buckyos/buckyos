@@ -535,6 +535,7 @@ fn codecs() -> Arc<CodecRegistry> {
                 buckyos_api::features::TOOL_CALL.into(),
                 buckyos_api::features::JSON_SCHEMA.into(),
             ]),
+            image_parameters: BTreeSet::new(),
             execution_modes: BTreeSet::from([ExecutionMode::Immediate]),
             default_max_output_tokens: None,
             default_priority: 0,
@@ -1110,6 +1111,12 @@ async fn discovery_failure_falls_back_to_valid_lkgs() {
         .unwrap();
     first_manager.shutdown().await;
 
+    {
+        let mut records = store.records.lock().await;
+        records.get_mut("primary").unwrap().snapshot["models"][0]["capabilities"]
+            ["image.img2img.quality"] = serde_json::json!(true);
+    }
+
     let failed = Arc::new(ScriptedDiscovery::new(
         [Err("offline".into())],
         discovery("gpt-test"),
@@ -1120,6 +1127,9 @@ async fn discovery_failure_falls_back_to_valid_lkgs() {
         .await
         .unwrap();
     assert_eq!(executable.current_inventory().await.models.len(), 1);
+    assert!(!executable.current_inventory().await.models[0]
+        .capabilities
+        .contains_key("image.img2img.quality"));
     assert_eq!(
         executable.health().await.state,
         ProviderHealthState::Degraded

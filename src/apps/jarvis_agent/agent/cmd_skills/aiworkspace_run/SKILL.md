@@ -100,3 +100,5 @@ A workspace entity's description lists the actions it declares, each with its `r
 - Protocol: `src/frame/aiworkspace/README.md` (Protocol, `proc.*`); execution model: `doc/workspace/BuckyOS AiWorkspace 内核架构改进.md` §9.
 - Service side: `src/frame/aiworkspace/server/src/wish/exec.rs` (claim, heartbeat, report, tool, program, files) and `stages.rs` (the stage host); the wish's `history` and its records: `README.md` (Protocol, `proc.*`, `proc.rollback`).
 - Macro guide: `src/frame/aiworkspace/aiws/README.md`; program host `aiws/aiws.js`, `aiws/run.js`; the executor side of its bridge `aiws/host.js`; the runner: `cli/modules/aiws.ts` (`run-exec`) in buckyos-websdk.
+
+For image macros, use the image section of the current guide in `stage.system`: `size` may be a pixel size or a channel-supported `1K` / `2K` / `4K` preset. With reference images the host sends `output.size` and explicit `aspect_ratio`. Unsupported negative-prompt or quality options fail; do not keep trying unknown fields or catch a ratio mismatch as success. `AI_NO_CANDIDATE_MODEL` means to check the Zone model inventory/capabilities; it differs from `AI_RESOURCE_NOT_PERMITTED`.
