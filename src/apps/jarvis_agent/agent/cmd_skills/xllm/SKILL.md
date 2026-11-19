@@ -183,5 +183,3 @@ extraction or JSON check failed (raw reply saved).
   `deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json`; not yet exercised for LLM calls.
 
 Checked against: BuckyOS 0.7.0, xllm 0.7.0 (aios image 2026-10-12 in the agent container; host build 2026-10-17 for json_schema, `--json` without web search and the resume hint; host build 2026-11-05 for `--json` as a provider JSON Schema on OpenAI Responses and Gemini), DV Zone routes via codex-proxy, 2026-10-17.
-
-`no_candidate_model` means the Zone has no reachable/suitable model for the request: inspect Provider inventory and requested capabilities. It differs from `resource_not_permitted`, which means reachable candidates exist but are not granted to the caller. Do not diagnose an empty inventory as a quota or user-permission problem.

@@ -461,5 +461,3 @@ Provider 接入诊断：在 AI Center 查看发现模型、身份匹配、不可
   Rules exports omit credentials and use the instance configuration and actual inventory values. Missing prices
   stay empty; choosing a protocol does not import a built-in price table. Instance catalogs are explicit snapshots; changing a shared preset later does
   not overwrite an edited instance catalog. AIGC commands and task/artifact contracts remain unchanged.
-
-AICC routing diagnostics: `no_candidate_model` means no reachable/suitable model; inspect Provider discovery, enabled inventory and excluded capabilities. `resource_not_permitted` means reachable models exist but are not granted to the caller. Do not recommend changing permissions for an empty inventory. Image parameters and channel mappings are in `doc/aicc/image_parameters.md`; an `unsupported_operation` naming a field is separate from a permission or quota refusal.
