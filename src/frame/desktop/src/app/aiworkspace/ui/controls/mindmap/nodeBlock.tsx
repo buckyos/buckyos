@@ -4,14 +4,14 @@
  * Typed in place like a shape (Enter or leaving saves, Shift+Enter breaks the line, Esc keeps the old text); Tab saves
  * and adds a child. Outside a control it draws like a root. Its look follows its depth and branch colour. */
 
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useContext, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from 'react'
 import { ChevronsDownUp, CornerDownRight, ListPlus, LocateFixed, Palette, SquarePlus } from 'lucide-react'
 import { MAX_TEXT_WIDTH, NODE_PAD, runFont, typography } from '@controls/measure'
 import { isAuto, num } from '@controls/placement'
 import { aiwsT } from '../../../i18n'
 import { useStore } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
-import { consumeIntent, useIntent } from '../../blocks/editorToolbar'
+import { BlockMetaContext, consumeIntent, useIntent } from '../../blocks/editorToolbar'
 import type { BlockDefinition, RenderContext } from '../../blocks/registry'
 import type { WorkspaceStore } from '../../../state/store'
 import { controlCommands } from '../commands'
@@ -29,13 +29,13 @@ function useNodeLook(context: RenderContext) {
   return { info, depth, maxText }
 }
 
-function NodeFrame({ context, children }: { context: RenderContext; children?: ReactNode }) {
+function NodeFrame({ context, children, ref }: { context: RenderContext; children?: ReactNode; ref?: Ref<HTMLDivElement> }) {
   const { info, depth, maxText } = useNodeLook(context)
   const t = typography(depth)
   // while editing the node grows with its text up to the width the layout wraps at, so typing does not wrap early
   const style = { '--aiws-branch': info?.color ?? undefined, '--aiws-node-max-w': `${maxText + NODE_PAD.x * 2}px`, padding: `${NODE_PAD.y}px ${NODE_PAD.x}px`, lineHeight: `${t.lineHeight}px`, fontSize: t.size, fontWeight: t.weight } as CSSProperties
   return (
-    <div className={`aiws-mindnode is-depth-${Math.min(depth, 2)}`} style={style} data-testid={`aiws-mindnode-${context.cell.entity_id}`} data-depth={depth}>
+    <div ref={ref} className={`aiws-mindnode is-depth-${Math.min(depth, 2)}`} style={style} data-testid={`aiws-mindnode-${context.cell.entity_id}`} data-depth={depth}>
       {children ?? <NodeLines title={context.payload.title ?? ''} depth={depth} maxText={maxText} />}
     </div>
   )
@@ -82,6 +82,11 @@ function NodeEditor(context: RenderContext) {
   const { t } = useAiwsText()
   const store = useStore()
   const ref = useRef<HTMLDivElement>(null)
+  const metaSink = useContext(BlockMetaContext)
+  const id = context.cell.entity_id
+  const observeFrame = useCallback((frame: HTMLDivElement | null) => {
+    if (frame) return metaSink?.observeEditorSize(id, frame)
+  }, [metaSink, id])
   const closed = useRef(false)
   const intent = useIntent(context.cell.entity_id)
   const [started] = useState(() => (intent?.value.startsWith('type:') ? intent.value.slice(5) : null))
@@ -108,7 +113,7 @@ function NodeEditor(context: RenderContext) {
     if (then) controlCommands.send({ kind: then, nodeId: context.cell.entity_id })
   }
   return (
-    <NodeFrame context={context}>
+    <NodeFrame context={context} ref={observeFrame}>
       <div ref={ref} className="aiws-mindnode-edit" contentEditable="plaintext-only" suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={t('aiworkspace.mindmap.text')}
         data-role="editor" data-testid={`aiws-mindnode-edit-${context.cell.entity_id}`} data-placeholder={t('aiworkspace.mindmap.emptyNode')}
         onBlur={() => done(true)}

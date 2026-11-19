@@ -82,6 +82,7 @@ export class BlockMetaSink {
   private readonly metas = new Map<string, BlockMeta>()
   private readonly emitter = new Emitter()
   private version = 0
+  editorSize: { id: string; w: number; h: number } | null = null
   readonly subscribe = this.emitter.subscribe
   snapshot = () => this.version
   get(id: string): BlockMeta | undefined { return this.metas.get(id) }
@@ -89,6 +90,24 @@ export class BlockMetaSink {
     if (!meta && !this.metas.has(id)) return
     if (meta) this.metas.set(id, meta)
     else this.metas.delete(id)
+    this.changed()
+  }
+  observeEditorSize(id: string, element: HTMLElement) {
+    const observer = new ResizeObserver(([entry]) => {
+      const { inlineSize, blockSize } = entry.borderBoxSize[0]
+      this.editorSize = { id, w: inlineSize, h: blockSize }
+      this.changed()
+    })
+    observer.observe(element, { box: 'border-box' })
+    return () => {
+      observer.disconnect()
+      if (this.editorSize?.id === id) {
+        this.editorSize = null
+        this.changed()
+      }
+    }
+  }
+  private changed() {
     this.version += 1
     this.emitter.emit()
   }

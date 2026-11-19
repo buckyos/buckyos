@@ -1611,7 +1611,9 @@ export function RenderHost(props: RenderHostProps) {
     if (!l) return null
     // a line is shown by its path; its box is the path's bounds
     if (l.connector) return { rect: camera.rectToScreen(linePreview?.id === id ? linePreview.geom.bounds : l.bounds), rotation: 0 }
-    const rect = camera.rectToScreen(resizePreview?.id === id ? resizePreview.rect : l.rect)
+    const size = metaSink.editorSize
+    const bounds = id === editing && size?.id === id ? { ...l.rect, w: size.w, h: size.h } : l.rect
+    const rect = camera.rectToScreen(resizePreview?.id === id ? resizePreview.rect : bounds)
     return { rect, rotation: rotatePreview?.id === id ? rotatePreview.rotation : l.rotation }
   }
   const turned = (rect: Rect, rotation: number) => (rotation ? `rotate(${rotation} ${rect.x + rect.w / 2} ${rect.y + rect.h / 2})` : undefined)
@@ -1720,7 +1722,7 @@ export function RenderHost(props: RenderHostProps) {
     const n = l.node
     const id = l.entity.entity_id
     if (!n?.hasChildren || !(n.collapsed || hover === id || selection.has(id))) return []
-    const r = camera.rectToScreen(l.rect)
+    const r = shapeFor(id)!.rect
     const gap = sizes.edge / 2 + 3
     const at = n.grow === 'down' ? { left: r.x + r.w / 2 - 9, top: r.y + r.h + gap } : n.grow === 'left' && n.parent !== null ? { left: r.x - gap - 18, top: r.y + r.h / 2 - 9 } : { left: r.x + r.w + gap, top: r.y + r.h / 2 - 9 }
     return [{ id, control: n.control, collapsed: n.collapsed, color: n.color, at }]
