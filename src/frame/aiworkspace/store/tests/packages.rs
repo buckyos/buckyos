@@ -32,6 +32,74 @@ fn unzip_all(path: &std::path::Path) -> Vec<u8> {
 }
 
 #[test]
+fn replica_bootstrap_includes_only_readable_entities_and_their_data() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "Example", None).unwrap()["workspace_id"].as_str().unwrap().to_owned();
+    let handle = env.svc.workspace(&id).unwrap();
+    let mut ws = handle.lock().unwrap();
+    let [public_asset, restricted_asset] = ["public", "restricted"].map(|label| {
+        let source = format!("{label}-table");
+        let body = format!("{label}-body");
+        let asset = ws.stage_asset(&alice(), label.as_bytes()).unwrap()["object_id"].as_str().unwrap().to_owned();
+        ok(&mut ws, &alice(), json!([
+            { "op": "entity.create", "entity_id": source, "type_id": "buckyos.table-source", "parent_id": "data", "order_key": label,
+              "payload": { "fields": [{ "field_id": "title", "name": format!("{label} field"), "type": "text" },
+                                     { "field_id": "extra", "name": "Extra", "type": "text" }] } },
+            { "op": "entity.create", "entity_id": body, "type_id": "buckyos.richtext", "parent_id": source, "order_key": "a",
+              "payload": { "content": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "p1" },
+                           "content": [{ "type": "text", "text": format!("{label} paragraph") }] }] } } },
+            { "op": "table.insert_records", "source_id": source, "records": [
+                { "record_id": "r1", "values": { "title": format!("{label} cell") }, "body_ref": { "entity_id": body } }] },
+            { "op": "entity.create", "entity_id": format!("{label}-attachment"), "type_id": "buckyos.asset-ref",
+              "parent_id": "data", "order_key": label, "payload": { "object_id": asset } }
+        ]));
+        asset
+    });
+    ws.acl_set(&alice(), &json!([
+        { "subject": "bob", "allow": ["read"] },
+        { "subject": "bob", "resource": "restricted-table", "deny": ["read"] },
+        { "subject": "bob", "resource": "restricted-attachment", "deny": ["read"] }
+    ])).unwrap();
+
+    for (caller, can_read_restricted) in [(bob(), false), (alice(), true)] {
+        let replica = ws.replica_bootstrap(&caller).unwrap();
+        let file = fetched(&ws.objects, &replica);
+        let bytes = std::fs::read(&file).unwrap();
+        for marker in ["restricted-table", "restricted-body", "restricted field", "restricted cell", "restricted paragraph",
+                       "restricted-attachment", &restricted_asset] {
+            assert_eq!(contains(&bytes, marker), can_read_restricted, "{marker}");
+        }
+        let db = rusqlite::Connection::open(&file).unwrap();
+        for (table, predicate) in [
+            ("entities", "entity_id = 'public-table'"),
+            ("tree_edges", "parent_id = 'public-table' AND child_id = 'public-body'"),
+            ("table_fields", "source_id = 'public-table' AND field_id = 'title'"),
+            ("table_records", "source_id = 'public-table' AND body_entity_id = 'public-body' AND json_extract(values_json, '$.title') = 'public cell'"),
+            ("richtext_states", "entity_id = 'public-body'"),
+            ("refs", "src_entity_id = 'public-attachment' AND kind = 'asset'"),
+        ] {
+            let query = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {predicate})");
+            assert!(db.query_row(&query, [], |r| r.get::<_, bool>(0)).unwrap(), "{table}");
+        }
+        assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE object_id = ?1)", [&public_asset], |r| r.get::<_, bool>(0)).unwrap());
+    }
+
+    let field = ws.read(&alice(), "restricted-table", Some(&json!({ "kind": "table_field", "field_id": "extra" }))).unwrap();
+    ok(&mut ws, &alice(), json!([{ "op": "table.delete_field", "source_id": "restricted-table", "field_id": "extra",
+                                  "expect": { "rev": field["content"]["def_rev"] } }]));
+    ws.acl_set(&alice(), &json!([{ "subject": "bob", "resource": "public-body", "deny": ["read"] }])).unwrap();
+    let replica = ws.replica_bootstrap(&bob()).unwrap();
+    let file = fetched(&ws.objects, &replica);
+    let bytes = std::fs::read(&file).unwrap();
+    for marker in ["restricted-table", "restricted cell", "public-body", "public paragraph"] {
+        assert!(!contains(&bytes, marker), "{marker}");
+    }
+    let db = rusqlite::Connection::open(&file).unwrap();
+    let body: Option<String> = db.query_row("SELECT body_entity_id FROM table_records WHERE source_id = 'public-table' AND record_id = 'r1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(body, None);
+}
+
+#[test]
 fn annotation_quotes_follow_target_access_in_packages() {
     let env = env();
     let id = env.svc.create_workspace(&alice(), "Example", None).unwrap()["workspace_id"].as_str().unwrap().to_owned();
