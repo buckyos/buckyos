@@ -618,6 +618,25 @@ impl ProtocolError {
     }
 }
 
+/// 判定公开错误是否等价于「该 exact model 不可用」。
+///
+/// 这类失败（模型不存在 / 无权限 / 不支持）没有产生任何生成计费，因此可以安全地
+/// 重新排一次路由换下一个候选，并把失败的模型留给 health 去做限时禁用。
+pub(crate) fn model_unavailable_error(error: &AiccError) -> bool {
+    if error.code != AiccErrorCode::ProviderError {
+        return false;
+    }
+    let mut probe = ProtocolError::new(ProtocolErrorKind::ProviderRejected, error.message.clone());
+    probe.provider_code = error.provider_code.clone();
+    probe.http_status = error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("http_status"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok());
+    probe.is_model_unavailable()
+}
+
 fn contains_any(value: &str, needles: &[&str]) -> bool {
     let value = value.to_ascii_lowercase();
     needles.iter().any(|needle| value.contains(needle))
@@ -770,6 +789,25 @@ mod tests {
         assert!(error.is_model_unavailable());
         assert!(!error.retry_same_model());
         assert!(error.allows_model_failover());
+    }
+
+    #[test]
+    fn public_model_not_found_error_is_rerouteable() {
+        let missing: AiccError = ProtocolError::new(
+            ProtocolErrorKind::ProviderRejected,
+            "OpenAI HTTP 404 Not Found 404: litellm.NotFoundError: The model `gpt-6.1-sol-pro` does not exist or you do not have access to it.",
+        )
+        .with_provider_code(Some("404".to_owned()))
+        .with_http_status(404)
+        .into();
+        assert!(model_unavailable_error(&missing));
+        assert!(AiccError::from_krpc_error(&missing.to_krpc_error())
+            .is_some_and(|error| model_unavailable_error(&error)));
+
+        let unrelated: AiccError = ProtocolError::invalid_request("tool schema is invalid").into();
+        assert!(!model_unavailable_error(&unrelated));
+        assert!(!AiccError::from_krpc_error(&unrelated.to_krpc_error())
+            .is_some_and(|error| model_unavailable_error(&error)));
     }
 
     #[test]
