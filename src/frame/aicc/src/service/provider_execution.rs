@@ -204,6 +204,15 @@ impl RuntimeProviderExecutionPort {
         mentions_media_ref && mentions_invalid_ref
     }
 
+    /// A 401/403 means the Provider refused the credential itself, and a
+    /// refused request cannot have produced usage or a billable task. That
+    /// makes it safe to repeat the call once with a freshly logged-in session,
+    /// which is the only way to recover from a session the Provider retired
+    /// before its advertised expiry.
+    fn is_credential_rejection(failure: &ProviderStartFailure) -> bool {
+        failure.error.kind == ProtocolErrorKind::Authentication && failure.error.usage.is_none()
+    }
+
     fn has_passthrough_url(call: &ResolvedProviderCall) -> bool {
         call.resource_requirements.iter().any(|requirement| {
             matches!(requirement.resource, buckyos_api::ResourceRef::Url { .. })
@@ -1710,6 +1719,41 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 Err(error) => result = Err(ProviderStartFailure::before_accept(error, false)),
             }
         }
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(Self::is_credential_rejection)
+        {
+            let refreshed = match self
+                .runtime
+                .capture()
+                .await
+                .providers
+                .get(&attempted_call.provider_instance_name)
+            {
+                Some(provider) => provider.refresh_dynamic_credential().await,
+                None => Ok(None),
+            };
+            match refreshed {
+                Ok(Some(credential)) => {
+                    log::warn!(
+                        "Provider rejected the credential; logging in again before one retry: provider={} model={} api_type={:?}",
+                        call.provider_instance_name,
+                        call.exact_model,
+                        call.api_type
+                    );
+                    attempted_call.credential = credential.audit().clone();
+                    attempted_call.context.credential = Some(credential);
+                    result = self.start_once(&attempted_call, &cancellation).await;
+                }
+                Ok(None) => {}
+                Err(error) => log::warn!(
+                    "Provider rejected the credential and logging in again failed: provider={} error={}",
+                    call.provider_instance_name,
+                    error
+                ),
+            }
+        }
         let result = match result {
             Ok(ProviderExecution::Stream(stream)) => {
                 // Providers may fetch URL-backed input after the response stream
@@ -2280,6 +2324,31 @@ mod tests {
 
         let auth = ProtocolError::new(ProtocolErrorKind::Authentication, "invalid API key");
         assert!(!RuntimeProviderExecutionPort::should_retry_without_provider_artifact_id(&auth));
+    }
+
+    #[test]
+    fn credential_rejection_retry_covers_unbilled_auth_failures_only() {
+        let rejected = ProviderStartFailure::after_accept(ProtocolError::new(
+            ProtocolErrorKind::Authentication,
+            "OpenAI HTTP 401 Unauthorized",
+        ));
+        assert!(RuntimeProviderExecutionPort::is_credential_rejection(&rejected));
+
+        let mut billed = ProtocolError::new(ProtocolErrorKind::Authentication, "unauthorized");
+        billed.usage = Some(buckyos_api::AiUsage::default());
+        assert!(!RuntimeProviderExecutionPort::is_credential_rejection(
+            &ProviderStartFailure::after_accept(billed)
+        ));
+
+        for kind in [
+            ProtocolErrorKind::ProviderRejected,
+            ProtocolErrorKind::Timeout,
+            ProtocolErrorKind::InvalidRequest,
+        ] {
+            assert!(!RuntimeProviderExecutionPort::is_credential_rejection(
+                &ProviderStartFailure::after_accept(ProtocolError::new(kind, "unauthorized"))
+            ));
+        }
     }
 
     #[test]

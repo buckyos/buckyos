@@ -309,6 +309,17 @@ pub(crate) trait CredentialResolver: Send + Sync {
         descriptor: &CredentialDescriptor,
         reference: &CredentialReference,
     ) -> ProviderResult<ResolvedCredential>;
+
+    /// Drop the cached login session behind `reference` and resolve a fresh
+    /// credential, for callers that saw the Provider reject the current one.
+    /// `Ok(None)` means the reference is not a dynamic-login instance, so
+    /// there is no session to renew and the caller must not retry.
+    async fn refresh_dynamic(
+        &self,
+        _reference: &CredentialReference,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]

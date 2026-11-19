@@ -510,6 +510,25 @@ impl CredentialResolver for SnCredentialBroker {
         }
         self.api_key_resolver.resolve(descriptor, reference).await
     }
+
+    async fn refresh_dynamic(
+        &self,
+        reference: &CredentialReference,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        let instance = self
+            .dynamic_instances
+            .read()
+            .await
+            .get(&reference.reference)
+            .cloned();
+        let Some(instance) = instance else {
+            return Ok(None);
+        };
+        self.dynamic_resolver
+            .invalidate(&instance.runtime.provider_instance_name)
+            .await;
+        self.resolve(&instance).await.map(Some)
+    }
 }
 
 fn bearer_credential_descriptor() -> CredentialDescriptor {
@@ -1075,6 +1094,79 @@ mod tests {
             "credential resolution failed: SN dynamic login failed (fatal)"
         );
         assert!(!error.to_string().contains("secret"));
+    }
+
+    fn dynamic_broker(client: Arc<FakeLoginClient>) -> SnCredentialBroker {
+        SnCredentialBroker::new(
+            Arc::new(StaticCredentialResolver::new(BTreeMap::from([(
+                "secret://sn/api-key".to_owned(),
+                "static-secret".to_owned(),
+            )]))),
+            Arc::new(SnDynamicLoginResolver::with_dependencies(
+                client,
+                Arc::new(FakeClock(AtomicU64::new(1_000))),
+                sn_dynamic_login_profile(),
+            )),
+        )
+    }
+
+    fn bearer_header(credential: &ResolvedCredential) -> String {
+        let mut headers = HeaderMap::new();
+        credential.apply(&mut headers).unwrap();
+        headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn refresh_dynamic_retires_the_session_and_logs_in_again() {
+        let client = Arc::new(FakeLoginClient {
+            calls: AtomicUsize::new(0),
+            fail: false,
+        });
+        let broker = dynamic_broker(client.clone());
+        let dynamic = dynamic_instance();
+        broker
+            .register_dynamic_instance(dynamic.clone())
+            .await
+            .unwrap();
+        let reference = dynamic.runtime.credential.clone();
+        let cached =
+            CredentialResolver::resolve(&broker, &bearer_credential_descriptor(), &reference)
+                .await
+                .unwrap();
+        assert_eq!(bearer_header(&cached), "Bearer dynamic-secret-1");
+        assert_eq!(client.calls.load(Ordering::Acquire), 1);
+
+        let refreshed = broker.refresh_dynamic(&reference).await.unwrap().unwrap();
+        assert_eq!(bearer_header(&refreshed), "Bearer dynamic-secret-2");
+        assert_eq!(client.calls.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn refresh_dynamic_declines_instances_that_do_not_log_in() {
+        let broker = dynamic_broker(Arc::new(FakeLoginClient {
+            calls: AtomicUsize::new(0),
+            fail: false,
+        }));
+        let api_key = resolve_sn_provider_instance(SnProviderInstanceInput {
+            provider_instance_name: "sn-key",
+            base_url: None,
+            account: None,
+            auth: ProviderAuthConfig::ApiKey {
+                credential_ref: "secret://sn/api-key".to_owned(),
+                credential_kind: None,
+            },
+        })
+        .unwrap();
+        assert!(broker
+            .refresh_dynamic(&api_key.runtime.credential)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[test]

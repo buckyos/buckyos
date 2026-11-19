@@ -31,6 +31,17 @@ impl ProviderRuntime {
             .await
     }
 
+    /// Retire the cached login session and authenticate again, for callers
+    /// that saw the Provider reject the credential. `Ok(None)` for instances
+    /// whose credential is a static API key: re-reading it cannot help.
+    pub(super) async fn refresh_dynamic_credential(
+        &self,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        self.credential_resolver
+            .refresh_dynamic(&self.config.credential)
+            .await
+    }
+
     pub(super) async fn quota_observation(&self) -> ProviderQuotaObservation {
         ProviderQuotaObservation {
             state: ProviderQuotaObservationState::Unsupported,
