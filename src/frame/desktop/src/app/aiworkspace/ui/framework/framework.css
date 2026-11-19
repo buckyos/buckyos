@@ -27,9 +27,6 @@
 .aiws-root button.aiws-member-surface { padding: 0; min-height: 0; font-size: 12px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 /* a panel opened from the status bar goes up */
 .aiws-popover.aiws-popover-up { top: auto; bottom: calc(100% + 6px); }
-/* the phone's members panel comes up from the bottom */
-.aiws-modal-backdrop:has(> .aiws-members-sheet) { align-items: flex-end; padding: 0; }
-.aiws-modal-backdrop > .aiws-dialog.aiws-members-sheet { width: 100%; max-height: 80%; border-radius: 16px 16px 0 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 @media (pointer: coarse) {
   .aiws-member-row { min-height: 44px; }
   .aiws-root button.aiws-member-surface { min-height: 32px; }
@@ -41,10 +38,24 @@
 .aiws-status-panel summary { font-weight: 600; font-size: 13px; }
 .aiws-status-panel .aiws-edits { margin: 0; }
 
-/* ---- the status bar's row (§4.5): the online count, then the commit state */
-.aiws-status-dock > .aiws-status-row { pointer-events: auto; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 6px; max-width: 100%; }
-.aiws-status-row > .aiws-status { min-width: 0; }
-.aiws-root button.aiws-status-online { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; min-height: 28px; font-variant-numeric: tabular-nums; border-radius: 999px; font-size: 12px; flex: none; }
+/* ---- the status bubble and Agent chat */
+.aiws-status-dock > .aiws-status-row { --aiws-status-height: 28px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 4px; max-width: 100%; }
+.aiws-status-bubble, .aiws-root button.aiws-status-chat { pointer-events: auto; box-sizing: border-box; border-radius: 999px; color: var(--cp-muted); box-shadow: 0 1px 4px rgb(0 0 0 / 0.08); }
+.aiws-status-bubble { display: flex; align-items: center; min-width: 0; }
+.aiws-status-bubble:has(.is-attention) { border-color: var(--cp-danger); }
+.aiws-status-bubble > .aiws-anchor { flex: none; }
+.aiws-root button.aiws-status, .aiws-root button.aiws-status-online {
+  display: inline-flex; align-items: center; justify-content: center; height: calc(var(--aiws-status-height) - 2px);
+  padding: 0 8px; border: 0; border-radius: 999px; background: none; font-size: 12px; white-space: nowrap;
+}
+.aiws-root button.aiws-status { gap: 4px; min-width: calc(var(--aiws-status-height) - 2px); overflow: hidden; justify-content: safe center; }
+.aiws-root button.aiws-status-online { padding-left: 2px; font-variant-numeric: tabular-nums; }
+.aiws-status .aiws-dot { width: 6px; height: 6px; }
+.aiws-status .aiws-conn { min-width: 6px; }
+.aiws-status .aiws-conn > span + span, .aiws-status > .aiws-muted, .aiws-status-progress { overflow: hidden; text-overflow: ellipsis; }
+.aiws-status > [hidden], .aiws-save-summary:empty { display: none; }
+.aiws-status .aiws-chip, .aiws-status .aiws-state { margin: 0; }
+.aiws-root button.aiws-status-chat { display: grid; place-items: center; flex: none; width: var(--aiws-status-height); height: var(--aiws-status-height); padding: 0; background: var(--cp-surface-opaque, var(--cp-surface)); }
 .aiws-status .aiws-status-progress { color: var(--cp-accent); }
 
 /* ---- the work log of the status panel (§4.5) */

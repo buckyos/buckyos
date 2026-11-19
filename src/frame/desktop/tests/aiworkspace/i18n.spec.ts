@@ -147,7 +147,7 @@ test('i18n: the film demo in English; a live language switch re-renders the open
   // a live switch in Settings → Appearance re-renders the open (minimised) workspace, both ways
   await switchLanguage(page, 'zh-CN')
   await expect(page.getByRole('toolbar', { name: '主工具栏' })).toBeVisible()
-  await expect(page.getByTestId('aiws-status')).toContainText(CJK)
+  await expect(page.getByTestId('aiws-status')).toHaveAccessibleName('工作区状态：提交、连接与离线')
   await switchLanguage(page, 'en')
   await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
   await expectEnglish(page, 'after switching back to English without a reload')
@@ -176,11 +176,11 @@ test('i18n: the other product languages — a workspace made in Japanese, a live
   await page.getByTestId('aiws-create-template').click()
   await expect(page.getByTestId('aiws-canvas-block-blk-wish-1')).toBeVisible({ timeout: 60_000 })
   await expect(page.getByRole('toolbar', { name: ja['aiworkspace.shell.toolbar.main'] })).toBeVisible()
-  await expect(page.getByTestId('aiws-status')).toContainText(/[\u3040-\u30ff\u4e00-\u9fff]/)
+  await expect(page.getByTestId('aiws-status')).toHaveAccessibleName(ja['aiworkspace.shell.status.label'])
 
   // Russian's table is not loaded yet: the open workspace re-renders in it once it arrives
   await switchLanguage(page, 'ru')
   await expect(page.getByRole('toolbar', { name: ru['aiworkspace.shell.toolbar.main'] })).toBeVisible()
-  await expect(page.getByTestId('aiws-status')).toContainText(/[\u0400-\u04ff]/)
+  await expect(page.getByTestId('aiws-status')).toHaveAccessibleName(ru['aiworkspace.shell.status.label'])
   expect(await page.evaluate(() => document.documentElement.lang)).toBe('ru')
 })

@@ -3,7 +3,7 @@
  * workspace, where the person is and what is selected (context.ts) with the next message they send; the chip above
  * the conversation says what goes along, and the same place is not sent twice. The conversation is the system
  * component on MessageHub's data (SessionConversation), as in the Agent Browser; its session is session.ts's.
- * "协作 ▸ 与 Agent 对话" and the collaboration zone open it; FrameworkHost mounts the host. */
+ * "协作 ▸ 与 Agent 对话" and the button beside the status bubble open it; FrameworkHost mounts the host. */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Bot, ChevronDown, Paperclip, X } from 'lucide-react'
@@ -16,7 +16,7 @@ import { useAiwsText } from '../../useAiwsText'
 import { dataTabsOf } from '../datamode/tabs'
 import { useShell } from '../shell/shellContext'
 import { panelContext, type PanelContext } from './context'
-import { jarvisPanel, openJarvis } from './open'
+import { canChatWithAgent, jarvisPanel, openJarvis } from './open'
 import { panelAgent, panelSession, type PanelAgent } from './session'
 import './jarvis.css'
 
@@ -127,6 +127,19 @@ function JarvisPanel({ onClose }: { onClose: () => void }) {
             : <Status testId="aiws-jarvis-loading" loading title={t('aiworkspace.jarvis.loading')} />}
       </div>
     </section>
+  )
+}
+
+export function JarvisButton() {
+  const { identity } = useShell()
+  const { t } = useAiwsText()
+  const open = useSyncExternalStore(jarvisPanel.emitter.subscribe, () => jarvisPanel.open)
+  if (!canChatWithAgent(identity)) return null
+  return (
+    <button type="button" className="aiws-panel aiws-status-chat" data-action="collab.jarvis" data-testid="aiws-collab-jarvis"
+      aria-label={t('aiworkspace.jarvis.action')} aria-expanded={open} title={t('aiworkspace.jarvis.actionHint')} onClick={() => openJarvis(!open)}>
+      <Bot size={16} aria-hidden="true" />
+    </button>
   )
 }
 

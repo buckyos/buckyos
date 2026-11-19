@@ -86,7 +86,7 @@ test('UI-P02 three floating toolbars and the bottom-right status area, no naviga
     if (width) await page.getByTestId('aiws-root').evaluate((root, w) => { root.style.width = `${w}px`; root.style.flex = 'none' }, width)
     await page.waitForTimeout(400)
     await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-size', width === 0 || width >= 1100 ? 'wide' : width >= 760 ? 'medium' : 'narrow')
-    const ids = ['aiws-main-toolbar', 'aiws-view-toolbar', 'aiws-object-toolbar', 'aiws-status']
+    const ids = ['aiws-main-toolbar', 'aiws-view-toolbar', 'aiws-object-toolbar', 'aiws-status-row']
     const boxes = await Promise.all(ids.map(async (id) => (await page.getByTestId(id).boundingBox())!))
     for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) expect(overlap(boxes[i], boxes[j]), `${ids[i]} × ${ids[j]} at ${width}`).toBe(false)
     // the status area is the bottom-right corner of the work area

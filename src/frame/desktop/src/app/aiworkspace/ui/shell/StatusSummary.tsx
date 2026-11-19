@@ -1,7 +1,6 @@
-/* The status bar, bottom right of the work area (UI 框架 PRD §4.5; UI improvement §10): collapsed, the online count
- * (K2, while the service answers; it opens the online members — the way in on a phone) and the commit state (and,
- * first, the connection when it is not normal; the offline copy, a running offline action, uploads and the wish runs
- * under way when there are — one run as a line of its progress, 许愿格交互升级 §3.8). Clicking it opens the status panel
+/* The status bubble at the bottom right of the work area (UI 框架 PRD §4.5; UI improvement §10): the connection dot,
+ * pending changes or activity, and the online count (K2, while the service answers). The count opens the online
+ * members. Clicking the dot or status text opens the status panel
  * in place, above it — at most half the work area, scrolling: "需要处理" (the edits that need a decision, are unsaved or
  * only saved on this device, with their actions; absent when there are none), "连接与离线" (folded by default), "运行中"
  * (the wish runs of this window with their latest lines, ui/framework/RunningRuns.tsx; absent when there are none) and
@@ -23,6 +22,7 @@ import { useStatusExpanded } from '../framework/personal'
 import { useActiveUploads } from '../framework/activity'
 import { RunningSection, RunningStatus } from '../framework/RunningRuns'
 import { WorkLogSection } from '../framework/WorkLog'
+import { JarvisButton } from '../jarvis/JarvisPanel'
 import { EditsPanel } from './panels'
 import { useShell } from './shellContext'
 
@@ -48,7 +48,7 @@ function useConnection() {
   return { status, sessionMode, readOnlyDirect, text }
 }
 
-export function StatusSummary() {
+function StatusSummary() {
   const store = useStore()
   const shell = useShell()
   const { t } = useAiwsText()
@@ -58,29 +58,23 @@ export function StatusSummary() {
   const pendingCount = replica?.pending().length ?? 0
   useSyncExternalStore(store.userState.subscribe, store.userState.snapshot)
   const userSync = store.userState.syncState
-  const clean = counts.unsaved === 0 && counts.saved_locally === 0 && counts.needs_attention === 0
+  const modeWarning = sessionMode.kind === 'direct' && sessionMode.reason !== 'not_prepared'
   const [open, setOpen] = useStatusExpanded()
   const uploads = useActiveUploads()
   return (
-    <button type="button" className={`aiws-panel aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-expanded={open} aria-controls="aiws-status-panel" aria-label={t('aiworkspace.shell.status.label')}
+    <button type="button" className={`aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-expanded={open} aria-controls="aiws-status-panel" aria-label={t('aiworkspace.shell.status.label')}
       title={t(open ? 'aiworkspace.framework.status.collapse' : 'aiworkspace.framework.status.expand')} data-testid="aiws-status" onClick={() => setOpen(!open)}>
       <span className={`aiws-conn aiws-conn-${status.kind}`} data-testid="aiws-conn" data-status={status.kind} data-browser-offline={status.kind === 'offline' ? String(status.browserOffline) : undefined} title={text}>
         <span className="aiws-dot" aria-hidden="true" />{status.kind !== 'live' && <span>{text}</span>}
       </span>
-      {sessionMode.kind === 'replica' ? (
-        <span className="aiws-chip" data-testid="aiws-mode" data-mode="replica" title={t('aiworkspace.shell.status.replicaTitle', { at: sessionMode.preparedAt })}>{t('aiworkspace.shell.status.replica')}</span>
-      ) : sessionMode.reason === 'not_prepared' ? (
-        <span className="aiws-sr-only" data-testid="aiws-mode" data-mode="direct" data-reason={sessionMode.reason}>{t('aiworkspace.shell.status.direct')}</span>
-      ) : (
-        <span className="aiws-chip aiws-chip-warn" data-testid="aiws-mode" data-mode="direct" data-reason={sessionMode.reason} title={sessionMode.detail}>
-          {sessionMode.reason === 'not_holder' ? t('aiworkspace.shell.status.notHolder') : t('aiworkspace.shell.status.offlineUnavailable')}
-        </span>
-      )}
+      <span className="aiws-chip aiws-chip-warn" hidden={!modeWarning} data-testid="aiws-mode" data-mode={sessionMode.kind}
+        data-reason={sessionMode.kind === 'direct' ? sessionMode.reason : undefined} title={modeWarning ? sessionMode.detail : undefined}>
+        {modeWarning && t(sessionMode.reason === 'not_holder' ? 'aiworkspace.shell.status.notHolder' : 'aiworkspace.shell.status.offlineUnavailable')}
+      </span>
       <span className="aiws-save-summary" data-testid="aiws-save-summary" data-unsaved={counts.unsaved} data-local={counts.saved_locally} data-attention={counts.needs_attention} data-pending={pendingCount}>
         {counts.needs_attention > 0 && <span className="aiws-state aiws-state-needs_attention">{EDIT_STATE_LABEL.needs_attention} {counts.needs_attention}</span>}
         {counts.unsaved > 0 && <span className="aiws-state aiws-state-unsaved">{EDIT_STATE_LABEL.unsaved} {counts.unsaved}</span>}
         {counts.saved_locally > 0 && <span className="aiws-state aiws-state-saved_locally">{EDIT_STATE_LABEL.saved_locally} {counts.saved_locally}</span>}
-        {clean && <span className="aiws-state aiws-state-committed">{counts.committed > 0 ? EDIT_STATE_LABEL.committed : t('aiworkspace.shell.status.clean')}</span>}
       </span>
       {userSync === 'offline' && <span className="aiws-muted" data-testid="aiws-userstate-sync" data-sync={userSync} title={t('aiworkspace.shell.status.userSyncTitle')}>{t('aiworkspace.shell.status.userSync')}</span>}
       {shell.offlineBusy && <span className="aiws-muted" data-testid="aiws-offline-busy">{shell.offlineBusy}</span>}
@@ -95,28 +89,18 @@ export function StatusSummary() {
  * panel and the alerts above it. */
 export function StatusDock({ info }: { info?: ReactNode } = {}) {
   const [open] = useStatusExpanded()
-  if (info !== undefined) {
-    return (
-      <div className="aiws-status-dock is-bar" data-testid="aiws-status-dock">
-        <div className="aiws-status-stack">
-          <ShellAlerts />
-          {open && <StatusPanel />}
-        </div>
-        <div className="aiws-status-row is-bar" data-testid="aiws-status-row">
-          <div className="aiws-status-info">{info}</div>
-          <OnlineCount />
-          <StatusSummary />
-        </div>
-      </div>
-    )
-  }
+  const isBar = info !== undefined
+  const details = <><ShellAlerts />{open && <StatusPanel />}</>
   return (
-    <div className="aiws-status-dock" data-testid="aiws-status-dock">
-      <ShellAlerts />
-      {open && <StatusPanel />}
-      <div className="aiws-status-row" data-testid="aiws-status-row">
-        <OnlineCount />
-        <StatusSummary />
+    <div className={`aiws-status-dock${isBar ? ' is-bar' : ''}`} data-testid="aiws-status-dock">
+      {isBar ? <div className="aiws-status-stack">{details}</div> : details}
+      <div className={`aiws-status-row${isBar ? ' is-bar' : ''}`} data-testid="aiws-status-row">
+        {isBar && <div className="aiws-status-info">{info}</div>}
+        <JarvisButton />
+        <div className="aiws-panel aiws-status-bubble">
+          <StatusSummary />
+          <OnlineCount />
+        </div>
       </div>
     </div>
   )

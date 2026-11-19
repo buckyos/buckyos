@@ -363,10 +363,10 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   (select, pen | text, rich text, media, table, mind map, shape, connector, frame, wish, note, insert… | undo, redo);
   select, table and shape carry a corner mark and open a second column beside the toolbar (select / pan; table,
   calendar, to-do and the standard tables; the basic shapes merged with the shape library). Pinned extensions follow
-  "insert…". There is no bottom-right navigation area:
-  the bottom-right corner of the work area is the status area (`StatusDock`: the online count (K2) and the save / sync
-  summary, alerts and notices stacked above it; expanded, what needs attention, the connection and the recent work
-  log (K3, `ui/framework/WorkLog.tsx`)). Who is online is the collaboration zone's avatar stack and its members panel
+  "insert…". On desktop and phone, a compact bubble floats at the bottom right beside the Agent chat icon.
+  It shows the connection dot, any pending changes or activity, and the online count (K2). The count opens the member
+  list. The dot opens status details, including the connection and recent work log (K3, `ui/framework/WorkLog.tsx`).
+  Alerts and notices stack above the bubble. The collaboration zone also has the avatar stack and members panel
   (`ui/framework/members.tsx`); `FrameworkHost` registers every open window (on a phone too).
   The right panel shows one tab at a time (属性 / 引用与依赖 / 批注 / 协作 / 修改状态): layout width when the
   application container is ≥ 1100 px, a drawer below. Size classes: wide ≥ 1100, medium ≥ 760, narrow.

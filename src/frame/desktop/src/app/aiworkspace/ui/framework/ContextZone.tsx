@@ -32,8 +32,8 @@ export function ContextZone({ children, testId = 'aiws-context-zone' }: { childr
     const el = ref.current
     const area = el?.parentElement
     if (!el || !area) return
+    const status = area.querySelector<HTMLElement>(':scope > .aiws-status-dock > .aiws-status-row')
     const place = () => {
-      const status = area.querySelector<HTMLElement>(':scope > .aiws-status-dock > .aiws-status-row, :scope > .aiws-status-dock > .aiws-status')
       if (!status) { setLift(0); return }
       const zone = el.getBoundingClientRect()
       const bar = status.getBoundingClientRect()
@@ -45,7 +45,6 @@ export function ContextZone({ children, testId = 'aiws-context-zone' }: { childr
     const observer = new ResizeObserver(place)
     observer.observe(el)
     observer.observe(area)
-    const status = area.querySelector(':scope > .aiws-status-dock')
     if (status) observer.observe(status)
     return () => observer.disconnect()
   }, [])

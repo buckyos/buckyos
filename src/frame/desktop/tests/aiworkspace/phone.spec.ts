@@ -98,11 +98,19 @@ test('UI-PH16 §15 #16 the phone keeps the title zone and the status bar; its ma
   for (const gone of ['aiws-view-toolbar', 'aiws-main-toolbar', 'aiws-object-toolbar', 'aiws-zoom-menu', 'aiws-share', 'aiws-collab-play']) await expect(page.getByTestId(gone), gone).toHaveCount(0)
   const title = page.getByTestId('aiws-phone-title')
   await expect(title.getByTestId('aiws-surface-switch')).toContainText('看板')
-  // the status bar runs along the bottom
-  const status = (await page.getByTestId('aiws-status-row').boundingBox())!
-  expect(status.x).toBeLessThanOrEqual(1)
-  expect(status.width).toBeGreaterThanOrEqual(viewport.width - 2)
-  expect(status.y + status.height).toBeGreaterThanOrEqual(viewport.height - 2)
+  // At rest, the status and Agent controls occupy one corner. The rest of the bottom row accepts canvas taps.
+  const row = page.getByTestId('aiws-status-row')
+  const bubble = row.locator('.aiws-status-bubble')
+  await expect(bubble.getByTestId('aiws-status-online')).toHaveText('在线 1')
+  await expect(bubble.getByText('没有未提交的修改')).toBeHidden()
+  await expect(row.getByTestId('aiws-collab-jarvis')).toBeVisible()
+  const status = (await row.boundingBox())!
+  expect(status.width).toBeLessThan(viewport.width / 2)
+  expect(status.y + status.height).toBeGreaterThanOrEqual(viewport.height - 24)
+  const canvas = page.getByTestId('aiws-canvas')
+  const canvasBox = (await canvas.boundingBox())!
+  const tapX = status.x > canvasBox.x + 12 ? 12 : canvasBox.width - 12
+  await canvas.tap({ position: { x: tapX, y: status.y + status.height / 2 - canvasBox.y } })
 
   // the main menu: a sheet from the bottom, its groups one level at a time
   await page.getByTestId('aiws-main-menu').tap()
@@ -535,7 +543,9 @@ test('UI-PH45 §4.5 the phone\'s status bar opens its panel from the bottom; the
   const panel = page.getByTestId('aiws-status-detail')
   await expect(panel).toBeVisible()
   const box = (await panel.boundingBox())!
-  expect(box.width).toBeGreaterThanOrEqual(viewport.width - 2)
+  expect(box.width).toBeGreaterThanOrEqual(viewport.width - 20)
+  expect(box.x).toBeGreaterThanOrEqual(0)
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1)
   const row = (await page.getByTestId('aiws-status-row').boundingBox())!
   expect(box.y + box.height).toBeLessThanOrEqual(row.y + 1)
   await page.getByTestId('aiws-status').tap()

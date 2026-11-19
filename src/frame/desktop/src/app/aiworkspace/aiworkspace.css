@@ -704,9 +704,6 @@
 .aiws-surface-name-edit input { width: 220px; height: 32px; font-weight: 600; }
 .aiws-inline-error { white-space: normal; width: 280px; color: var(--cp-danger); padding: 8px 10px; }
 .aiws-mode-chip { border-color: var(--cp-warning); color: var(--cp-warning); }
-.aiws-root button.aiws-status { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; min-height: 28px; border-radius: 999px; font-size: 12px; max-width: 100%; }
-.aiws-status.is-attention { border-color: var(--cp-danger); }
-.aiws-status .aiws-state { margin-left: 0; }
 .aiws-conn { display: inline-flex; align-items: center; gap: 4px; border: none; padding: 0; }
 .aiws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cp-muted); flex: none; }
 .aiws-conn-live .aiws-dot { background: var(--cp-success); }
@@ -728,7 +725,6 @@
 .aiws-root .aiws-zoom-custom button { white-space: nowrap; flex: none; }
 .aiws-side .aiws-grants { font-size: 12px; width: 100%; }
 .aiws-side .aiws-grants td, .aiws-side .aiws-grants th { word-break: keep-all; }
-.aiws-status .aiws-state-committed { background: none; color: var(--cp-muted); }
 .aiws-share-dialog-layout { display: flex; flex-direction: column; min-height: 0; outline: none; }
 .aiws-share-dialog-head { display: flex; align-items: flex-start; gap: 16px; padding: 24px 24px 16px; }
 .aiws-share-heading { flex: 1; min-width: 0; }
@@ -865,8 +861,10 @@
 .aiws-root details[open] > summary::before { transform: rotate(45deg); }
 
 /* the status area, bottom right of the work area: alerts and notices above the status summary */
-.aiws-status-dock { position: absolute; right: 12px; bottom: 12px; z-index: 50; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: min(440px, calc(100% - 24px)); max-height: calc(100% - 84px); pointer-events: none; }
-.aiws-status-dock > .aiws-status { pointer-events: auto; flex: none; }
+.aiws-status-dock { --aiws-dock-width: min(440px, calc(100% - 24px)); position: absolute; right: 12px; bottom: 12px; z-index: 50; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: max-content; max-height: calc(100% - 84px); pointer-events: none; }
+.aiws-status-dock:not(.is-bar) { max-width: var(--aiws-dock-width); }
+.aiws-status-dock:not(.is-bar):has(> .aiws-status-panel, > .aiws-alerts:not(:empty)) { width: var(--aiws-dock-width); }
+.aiws-alerts:empty { display: none; }
 .aiws-alerts { display: flex; flex-direction: column; gap: 6px; width: 100%; min-height: 0; overflow-y: auto; pointer-events: none; }
 .aiws-alerts > .aiws-alert { pointer-events: auto; margin: 0; border-radius: 8px; box-shadow: var(--cp-shadow); }
 .aiws-sources-work { position: relative; display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
@@ -1028,7 +1026,6 @@
 .aiws-workspace[data-phone='true'] .aiws-view-toolbar { flex: 1 1 auto; min-width: 0; margin-left: 0; }
 .aiws-workspace[data-phone='true'] .aiws-flow-host { padding: 64px 8px 56px; }
 .aiws-workspace[data-phone='true'] .aiws-hint { top: calc(64px + env(safe-area-inset-top)); max-width: calc(100% - 24px); white-space: normal; text-align: center; }
-.aiws-workspace[data-phone='true'] .aiws-status-dock { right: calc(8px + env(safe-area-inset-right)); bottom: calc(8px + env(safe-area-inset-bottom)); }
 .aiws-workspace[data-phone='true'] .aiws-surface-list { width: min(320px, calc(100vw - 32px)); }
 .aiws-surface-anchor { flex: 1 1 auto; min-width: 0; }
 .aiws-root button.aiws-surface-trigger { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 8px; border: none; border-radius: 8px; background: none; font-weight: 600; font-size: 14px; }

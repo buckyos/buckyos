@@ -286,7 +286,7 @@ export function Sheet({ label, testId, className = '', onClose, title, children,
             if (backdrop.current && event.target === event.currentTarget) { event.preventDefault(); event.stopPropagation(); backdrop.current = false; close(); return }
             if (!pressed.current && event.detail > 0) { event.preventDefault(); event.stopPropagation() }
           }}>
-          <div className={`aiws-sheet ${className}`} role={role === 'none' ? undefined : role} aria-label={role === 'none' ? undefined : label} data-testid={testId}
+          <div className={`aiws-sheet ${className}`} role={role === 'none' ? undefined : role} aria-modal={role === 'dialog' || undefined} aria-label={role === 'none' ? undefined : label} data-testid={testId}
             onPointerDown={() => { pressed.current = true }}>
             <div className="aiws-sheet-grip" aria-hidden="true" />
             {typeof title === 'function' ? title(close) : title}

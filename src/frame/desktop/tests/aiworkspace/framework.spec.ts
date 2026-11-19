@@ -254,10 +254,16 @@ test('§15-6 宏: two macros on the canvas drop down — wishes holding a progra
 test('§15-8 the status bar: the online count and the commit state collapsed; in place it opens what needs attention, the connection and the work log, by itself on a new problem; alerts stay; a canvas configuration hides zones, never the alerts nor the status bar (Q28)', async ({ page, api }) => {
   const ws = await showWorkspace(api, `f08 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const status = page.getByTestId('aiws-status')
-  await expect(page.getByTestId('aiws-save-summary')).toBeVisible()
+  const bubble = page.getByTestId('aiws-status-row').locator('.aiws-status-bubble')
+  const status = bubble.getByTestId('aiws-status')
+  await expect(status.getByTestId('aiws-conn')).toBeVisible()
+  await expect(status.getByText('没有未提交的修改')).toBeHidden()
   // presence (K2): the window is registered from the start; alone, one online
-  await expect(page.getByTestId('aiws-status-online')).toHaveText('在线 1', { timeout: 20_000 })
+  const online = bubble.getByTestId('aiws-status-online')
+  await expect(online).toHaveText('在线 1', { timeout: 20_000 })
+  const statusBox = (await status.boundingBox())!
+  const onlineBox = (await online.boundingBox())!
+  expect(statusBox.x + statusBox.width).toBeLessThanOrEqual(onlineBox.x + 1)
   // the guide offer is a notice above the status bar: not part of the panel, not folded with it
   const offer = page.getByTestId('aiws-notice').filter({ hasText: '使用引导「首次使用」' })
   await expect(offer).toBeVisible()
@@ -290,6 +296,7 @@ test('§15-8 the status bar: the online count and the commit state collapsed; in
   ])).status).toBe('accepted')
   await page.keyboard.press('Enter')
   await expect(panel).toBeVisible()
+  await expect(status.getByText('需要处理 1')).toBeVisible()
   await expect(page.getByTestId('aiws-status-attention').getByTestId('aiws-edit-entry')).toHaveAttribute('data-state', 'needs_attention')
   await page.keyboard.press('Escape')
   // the canvas layer of the toolbar configuration (§4.6): it hides the collaboration zone and an object of the tool
@@ -303,6 +310,6 @@ test('§15-8 the status bar: the online count and the commit state collapsed; in
   await expect(page.getByTestId('aiws-tool-insert-note')).toBeVisible()
   await expect(status).toBeVisible()
   await expect(page.getByTestId('aiws-status-online')).toHaveText('在线 1')
-  await expect(page.getByTestId('aiws-save-summary')).toBeVisible()
+  await expect(status.getByTestId('aiws-conn')).toBeVisible()
   await expect(offer).toBeVisible()
 })

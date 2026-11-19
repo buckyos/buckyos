@@ -94,7 +94,7 @@ test('[jarvis] the Agent analyses the selected wish from the panel and hands it 
   await card.getByTestId('aiws-wish-title').click()
 
   // the panel: the owner's Agent, its AI Workspace conversation, the selected wish going along
-  await page.getByTestId('aiws-view-toolbar').getByTestId('aiws-collab-jarvis').click()
+  await page.getByTestId('aiws-status-row').getByTestId('aiws-collab-jarvis').click()
   const panel = page.getByTestId('aiws-jarvis')
   await expect(panel.getByTestId('aiws-jarvis-conversation').or(panel.getByTestId('aiws-jarvis-none')).or(panel.getByTestId('aiws-jarvis-failed'))).toBeVisible({ timeout: 60_000 })
   test.skip(await panel.getByTestId('aiws-jarvis-none').isVisible(), 'the admin user has no Agent')
