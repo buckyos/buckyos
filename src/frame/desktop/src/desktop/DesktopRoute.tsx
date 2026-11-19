@@ -1521,7 +1521,7 @@ function DesktopTile({
             width: 'var(--icon-size)',
             height: 'var(--icon-size)',
             borderRadius: 'calc(var(--icon-size) * 0.28)',
-            ...appIconSurfaceStyle(app.accent),
+            ...appIconSurfaceStyle(app.accent, app.iconKey),
           }}
         >
           <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />

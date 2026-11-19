@@ -61,7 +61,7 @@ export function TaskbarAppTile({
           ...appIconSurfaceStyle(item.accent),
         } as CSSProperties}
       >
-        <AppIcon iconKey={item.iconKey} iconUrl={item.iconUrl} fill className="text-white" />
+        <AppIcon iconKey={item.iconKey} iconUrl={item.iconUrl} fill monochrome className="text-white" />
       </span>
     </>
   )
@@ -118,7 +118,7 @@ export function TaskbarMenu({
               <ListItemIcon>
                 <span
                   className="flex size-5 items-center justify-center overflow-hidden rounded-[6px]"
-                  style={{ '--icon-size': '20px', ...appIconSurfaceStyle(app.accent) } as CSSProperties}
+                  style={{ '--icon-size': '20px', ...appIconSurfaceStyle(app.accent, app.iconKey) } as CSSProperties}
                 >
                   <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
                 </span>

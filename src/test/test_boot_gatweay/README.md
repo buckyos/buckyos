@@ -40,4 +40,4 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py --binary ~/cyfs-gateway/src
   - `/kapi/kevent/*` 早转发
   - node_gateway 删除客户端自带的 `X-Cyfs-Rtcp-Device` / `X-Cyfs-Rtcp-Trust` / `cyfs-original-user`，只按 RTCP 来源（`REQ.source_device_did`）写回
   - `node_rtcp`：外 Zone 来源只到 80（`server node_gateway`）与 443，其余（含 3184）reject；本 Zone 来源保持通用 forward
-  - `cross_zone_socks`：只放行 `<domain>:80`，本机不是 Zone 网关时经 `NODE_INFO.cross_zone_relay` 嵌套中转
+  - `cross_zone_socks`：只放行远端 `<domain>:80`，拒绝本 Zone 主机名及其子域。本机不是 Zone 网关时经 `NODE_INFO.cross_zone_relay` 嵌套中转

@@ -27,7 +27,7 @@
 
 - **统一代签判定**：`check_custody` 判断设备能否代表用户或 Agent；消息内容验签和登录断言共用这份规则。
 - **统一跨 Zone 会话**：业务入口使用 Target 本 Zone 的 Token。消息 JWT 保留内容签名职责，群请求不再依靠 `cyfs-group-request` 证明头，HomeStation 不再把 `Authorization: DID <proof>` 当作协议请求身份。
-- **统一出口与重试边界**：调用方复用 `CrossZoneClient`，默认经本机 SOCKS 入口走 RTCP，必要时改用 HTTPS；连接失败、认证拒绝和业务错误分开处理。
+- **统一出口与重试边界**：`CrossZoneClient` 直接经本机网关访问本 Zone。访问远端 Zone 时默认经 SOCKS 入口走 RTCP，必要时改用 HTTPS。
 - **收紧网关入口**：外 Zone 通用 RTCP 流量进入 HTTP/HTTPS 入口，由网关清理、重建来源身份头；Node Executor 仍由独立设备 ACL 控制。
 
 ## 2. 一次调用如何完成
@@ -78,14 +78,16 @@ RTCP 目标最终由网关解析为 Zone 的默认网关设备。ZoneDocument �
 | RTCP | 经 `socks5h://127.0.0.1:3186` 请求 `http://<target-host>/<path>`，显式设置 `Host` | 将目标域名的 80 端口请求转换为到 Target 网关的 RTCP 流；目标 80 入口送入 `node_gateway` |
 | HTTPS | 默认请求 `https://<target-host>/<path>` | 按正常 Zone 公网入口路由；可经现有 SN 公网转发到达 |
 
-RTCP 路径中的 `http://` 是隧道承载的 HTTP，并不意味着把这段业务流量以明文直接发往公网。
+本 Zone 主机名使用 runtime 的节点网关作为 origin，宿主机上默认为 `http://127.0.0.1:3180`。verify-hub 登录、续期和业务请求均直达该入口，HTTP `Host` 仍为 Zone 主机名。同 Zone 的 HomeStation 用户之间照常以各自身份登录、读取 feed 和投递。
+
+远端 RTCP 路径中的 `http://` 是隧道承载的 HTTP，并不意味着把这段业务流量以明文直接发往公网。
 
 本机为 Zone 网关时直接向 Target 建立 RTCP；其他节点使用 `NODE_INFO.cross_zone_relay`，经本 Zone 网关的 TCP 转发建立端到端 RTCP 握手。这个字段由 node-daemon 启动过程和 scheduler 路由生成过程维护。
 
 `3186` 是本机系统服务的专用 SOCKS 入口：
 
 - 监听 `127.0.0.1`，要求用户名和密码；凭据由 node-daemon 维护在 `$BUCKYOS_ROOT/etc/cross_zone_socks.json`，Unix 权限为 `0600`。
-- 当前配置只接受域名目标的 80 端口，不是任意 IP、任意端口的通用代理。
+- 当前配置只接受域名目标的 80 端口，并在转发前拒绝本 Zone 主机名及其子域。
 - `CrossZoneClient::from_runtime` 找不到有效凭据时仅启用 HTTPS，并记录日志。
 - 普通容器不能据此假设自己的 `127.0.0.1:3186` 就是宿主机入口。
 
@@ -99,7 +101,7 @@ RTCP 路径中的 `http://` 是隧道承载的 HTTP，并不意味着把这段�
 
 ### 3.4 降级和重探的准确语义
 
-客户端按目标主机名记录 `Probing`、`RtcpOk`、`HttpsFallback`、`Unreachable`。RTCP 失败后，在 `HttpsFallback` 状态的 5 分钟窗口内使用 HTTPS；窗口过后，**下次请求**重新尝试 RTCP，没有独立后台探测任务。
+客户端按远端主机名记录 `Probing`、`RtcpOk`、`HttpsFallback`、`Unreachable`。RTCP 失败后，在 `HttpsFallback` 状态的 5 分钟窗口内使用 HTTPS；窗口过后，**下次请求**重新尝试 RTCP，没有独立后台探测任务。本 Zone 没有 RTCP 状态记录，`transport_state` 对它返回缺省值 `Probing`。
 
 - **收到任意 HTTP 响应就结束本次传输选择**。HTTP 401、403、404、503 都不会直接触发换协议。
 - RTCP/SOCKS 建连阶段的拒绝目前也可能表现为连接失败，因而触发 HTTPS 降级；客户端尚未把所有隧道准入拒绝单独分类为终止性认证错误。
@@ -217,8 +219,9 @@ async fn read_bob_feed(
 | `request_to(zone, host, ...)` | 调用方已经解析并核实 Zone 与主机名的对应关系 |
 | `call(zone, service, principal, method, params)` | 调用 `/kapi/<service>` 的 kRPC 方法；Token 放在 `RPCRequest.token` |
 | `with_origins(...)` | 为已知 Zone 主机名声明部署入口；只影响 HTTPS/回退客户端，RTCP 仍使用目标主机名 |
+| `with_local_zone(host, origin)` | 使用 `new` 构造客户端时声明本 Zone 的主机名和直连入口 |
 
-`with_origins` 不改变断言身份和 HTTP `Host`。它用于明确的部署配置和测试；HomeStation 也用它把本 Zone 回退入口指向本机网关，使 `/kapi/verify-hub` 和 `/home/` 都可到达。
+`from_runtime` 优先采用 ZoneDocument 发布的主机名，缺省时由 Zone DID 推导。即使 `with_origins` 包含同名条目，本 Zone 也使用本地 origin。standalone 的本地 origin 需要同时提供 `/kapi/verify-hub` 和业务路径。
 
 当前 Token 缓存键为 **`(target_host, service, principal_did, app_id)`**，存储在 client 内存中。同一键的登录/续期串行执行；不同目标、服务、主体或应用分别维护 Token。access 进入过期前 60 秒窗口时优先 refresh；refresh 发生传输失败则返回可重试错误，其他刷新拒绝再尝试重新登录。
 

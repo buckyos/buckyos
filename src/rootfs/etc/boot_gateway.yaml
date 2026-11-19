@@ -170,6 +170,9 @@ servers:
             block: |
               eq ${REQ.target.type} "domain" || return "REJECT";
               eq ${REQ.target.port} "80" || return "REJECT";
+              local zone_suffix=".${NODE_INFO.this_zone_host}";
+              ends-with -i ".${REQ.target.host}" $zone_suffix && return "REJECT";
+              ends-with -i ".${REQ.target.host}" "${zone_suffix}." && return "REJECT";
               if eq $NODE_INFO.cross_zone_relay "" then
                 return "PROXY rtcp://${REQ.target.host}/";
               end

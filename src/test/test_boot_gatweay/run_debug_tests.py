@@ -314,7 +314,7 @@ def build_node_gateway_info_for_case(case_name: str) -> dict:
             },
         }
         return info
-    if case_name == "req_cross_zone_socks_via_gateway_ok":
+    if case_name in {"req_cross_zone_socks_via_gateway_ok", "req_cross_zone_socks_local_subdomain_reject"}:
         info = build_typical_node_gateway_info(remote_app=False)
         info["node_info"]["this_node_id"] = "node1"
         info["node_info"]["cross_zone_relay"] = "rtcp://ood1.test.buckyos.io/"
@@ -453,7 +453,7 @@ def assertions_for_case(case_name: str):
     if case_name == "req_node_rtcp_same_zone_forward_ok":
         return [control_matches({"return"}, exact_value="forward tcp:///127.0.0.1:3200")]
     if case_name == "req_cross_zone_socks_direct_ok":
-        return [control_matches({"return"}, exact_value="PROXY rtcp://bob.example/")]
+        return [control_matches({"return"}, exact_value="PROXY rtcp://othertest.buckyos.io/")]
     if case_name == "req_cross_zone_socks_via_gateway_ok":
         return [
             control_matches(
@@ -461,7 +461,10 @@ def assertions_for_case(case_name: str):
                 exact_value="PROXY rtcp://rtcp%3A%2F%2Food1.test.buckyos.io%2F@bob.example/",
             )
         ]
-    if case_name in {"req_cross_zone_socks_port_reject", "req_cross_zone_socks_ip_reject"}:
+    if case_name in {
+        "req_cross_zone_socks_port_reject", "req_cross_zone_socks_ip_reject",
+        "req_cross_zone_socks_local_zone_reject", "req_cross_zone_socks_local_subdomain_reject",
+    }:
         return [control_matches({"return"}, exact_value="REJECT")]
     return []
 

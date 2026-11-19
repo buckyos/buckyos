@@ -114,6 +114,7 @@ target 白名单与可请求 scope：
 `buckyos_api::CrossZoneClient`：
 
 - 解析：Target Zone DID → ZoneDocument → `hostname`。
+- 本 Zone 的登录、续期和业务请求直接使用节点网关 origin，保留目标 Zone 的 HTTP `Host`，照常校验签名断言。只有远端 Zone 参与 RTCP 探测与回退。
 - RTCP：经本机网关 SOCKS5 入口 `127.0.0.1:3186`（用户名密码由 node_daemon 生成在 `$BUCKYOS_ROOT/etc/cross_zone_socks.json`，`{"username","password"}`，Unix 权限 0600），请求 `http://<zone hostname>/...` 并显式带 `Host`；网关把 CONNECT `<zone hostname>:80` 转成到 Target Zone 默认网关设备的 RTCP 流（读其 `rtcp_port`）；非网关节点经本 Zone 网关 TCP 中转（`NODE_INFO.cross_zone_relay`，嵌套 bootstrap URL），握手端到端。Target 网关的外 Zone 通用转发仅开放 80（带受保护头进 node_gateway）与 443；3184 由优先执行的 Node Executor 设备 ACL 单独判定。
 - SOCKS 层的拒绝（RTCP 不通、准入拒绝）可表现为连接失败，触发 HTTPS 降级；入站 `known_owner` 验证不向普通 provider / method authority 发起网络查询，仍可使用 Zone locker 和本地缓存。从这些来源取不到 Source 的可信设备/owner 资料时，首次登录可能走 HTTPS，解析填充缓存后由后续重探尝试 RTCP。
 - HTTPS 降级：`https://<zone hostname>/...`。

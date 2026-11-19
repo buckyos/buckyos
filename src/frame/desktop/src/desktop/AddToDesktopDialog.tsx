@@ -200,7 +200,7 @@ function AppGrid({
                 height: 44,
                 borderRadius: 12,
                 '--icon-size': '44px',
-                ...appIconSurfaceStyle(app.accent),
+                ...appIconSurfaceStyle(app.accent, app.iconKey),
               } as CSSProperties}
             >
               <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />

@@ -1,6 +1,6 @@
 # 本 Zone 访问误走 RTCP（自连）TODO
 
-日期：2026-11-18。源码基线：`buckyos@317534347`、`cyfs-gateway@f0ef92f2`。状态：待 review，未改代码。
+日期：2026-11-18。问题分析基线：`buckyos@317534347`、`cyfs-gateway@f0ef92f2`。实现基于 `buckyos@ea263076c`、`cyfs-gateway@402d5361`。Linux 验证结果见 §4，原 Windows 环境待复验。
 
 ## 0. 现象
 
@@ -36,22 +36,23 @@ cyfs_gateway.35548.log
 
 ### 1.2 改法
 
-- [ ] **`CrossZoneClient` 认识本 Zone，本 Zone 只走 HTTPS，且走本地 origin。**
-  - `from_runtime` 从 `runtime.zone_id.to_host_name()` 取本 Zone host（msg_center 的 `local_zone_host()` 已这样取）。本地 origin 默认 `http://127.0.0.1:<node gateway 端口>`（`DEFAULT_NODE_GATEWAY_PORT` = 3180，runtime 里有 `node_gateway_port`）。
+- [x] **`CrossZoneClient` 认识本 Zone，本 Zone 只走 HTTPS，且走本地 origin。**
+  - `from_runtime` 优先取 ZoneDocument 公布的主机名（与 HomeStation 及自定义 bridge 一致），缺省时从 `runtime.zone_id.to_host_name()` 推导。本地 origin 默认 `http://127.0.0.1:<node gateway 端口>`（`DEFAULT_NODE_GATEWAY_PORT` = 3180，runtime 里有 `node_gateway_port`）。
   - 增加 `with_local_zone(host, origin)`，供 `new` 构造的调用方（standalone、测试）显式设置。
   - `transport_order` 对本 Zone host 直接返回 `[Https]`，`record` 不为本 Zone 维护 RTCP 回退状态。
   - 只针对本 Zone，不推广到"所有声明了 origin 的 host"：`settings.peers` 和 msg_center 的 `zone_origins` 里是真实的远端 Zone，它们仍应先试 RTCP。
-- [ ] **homestation `main.rs:149-150` 手工插入本 Zone origin 的代码**：上一条落地后变成默认行为，可以删掉，或保留作为显式覆盖。
-- [ ] **（可选，纵深防御）网关 `cross_zone_socks` hook 拒绝本 Zone**：目标为 `$NODE_INFO.this_zone_host` 或 `*.$NODE_INFO.this_zone_host` 时返回 `REJECT`。SOCKS 回 `HostUnreachable`，reqwest 视为连接错误，立即回退 HTTPS，不会再发起名字解析和拨号。`NODE_INFO.this_zone_host` 已在 `node_gateway` 块里使用（`boot_gateway.yaml:212`）。
-- [ ] **确认 msg_center 不受负面影响**：msg_center 也是 `from_runtime` 构造（`msg_center/src/main.rs:1452`）。本地收件人已在 `cyfs_dispatch.rs` 内部按 `is_local_recipient` 处理；需确认 `group_sync`、`remote_attachment` 在目标是本 Zone 时没有依赖 RTCP（预期没有）。
+- [x] **homestation `main.rs:149-150` 手工插入本 Zone origin 的代码**：已删除。服务模式只传入 peers，standalone 显式传入本 Zone 的监听入口或目录指定的 origin。
+- [x] **（可选，纵深防御）网关 `cross_zone_socks` hook 拒绝本 Zone**：目标为 `$NODE_INFO.this_zone_host` 或 `*.$NODE_INFO.this_zone_host` 时返回 `REJECT`。SOCKS 回 `HostUnreachable`，reqwest 视为连接错误，立即回退 HTTPS，不会再发起名字解析和拨号。`NODE_INFO.this_zone_host` 已在 `node_gateway` 块里使用（`boot_gateway.yaml:212`）。
+- [x] **确认 msg_center 不受负面影响**：msg_center 也是 `from_runtime` 构造（`msg_center/src/main.rs:1452`）。本地收件人已在 `cyfs_dispatch.rs` 内部按 `is_local_recipient` 处理；`group_sync` 的成员会话和 `remote_attachment` 的取票均使用客户端的认证请求，未要求 RTCP 来源头。
 
 ### 1.3 测试与验收
 
-- [ ] `cross_zone_client.rs` 单测（参照现有的 `client(origin, socks)` 和 `closed_port()`）：
+- [x] `cross_zone_client.rs` 单测（参照现有的 `client(origin, socks)` 和 `closed_port()`）：
   - SOCKS 地址指向一个会记录连接的监听端口；`request_host(<本 zone>)` 不产生 SOCKS 连接，直接到本地 origin；
   - 远端 Zone 仍然先 RTCP；
   - `transport_state(<本 zone>)` 不会进入 `HttpsFallback`。
-- [ ] DV 验收：重启后 homestation 日志不再出现 `cross-zone Rtcp to <本 zone> failed`，网关日志不再有发往本 Zone host 的 SOCKS 连接，同 Zone 用户的 feed 拉取和投递正常。
+- [x] Linux `test.buckyos.io` 服务模式重启验收。结果见 §4。
+- [ ] Windows `lzctest` DV 验收：重启后 homestation 日志不再出现 `cross-zone Rtcp to <本 zone> failed`，网关日志不再有发往本 Zone host 的 SOCKS 连接，同 Zone 用户的 feed 拉取和投递正常。
 
 ## 2. RTCP stack 直接拒绝自己连自己
 
@@ -64,19 +65,19 @@ cyfs_gateway.35548.log
 
 ### 2.2 改法
 
-- [ ] **出站拒绝**：`create_tunnel` 在 3694 得到 `remote_dev_did` 之后、查复用和拨号之前，`remote_dev_did == self.this_device_dev_did` 时立即返回错误，例如 `rtcp target <stack id> resolves to this device (<did:dev>); self tunnel is not supported`。
+- [x] **出站拒绝**。`create_tunnel` 在共享的 `resolve_remote_tunnel_identity` 中比较解析所得的 `canonical_dev_did` 与本机身份。相等时立即返回 `TunnelError::SelfTunnel`。
   - 比较的是规范化后的 did:dev，所以 `did:bns:<zone>`、`did:bns:ood1.<zone>`、`did:dev:<self>` 以及带 bootstrap 的 `<relay>@<self>` 形式都能覆盖。
   - 不发起任何连接，也不登记隧道。
-- [ ] **入站拒绝**：`on_new_tunnel` 在 I1 步骤③（`parse_source_candidate` 之后、possession proof 之前，3074 附近）从候选公钥得到发起方的 did:dev，等于 `this_device_dev_did` 时拒绝。这一步只做拒绝、不访问 resolver，符合 I1"证明前只能拒绝"的约束。主要用于兜住经中转或回环绕回自己的情况。
-- [ ] **错误类型与日志**：自连拒绝用可区分的错误（新增 `TunnelError` 变体，或在 `ConnectError` 里约定前缀），让 tunnel_mgr、socks 等上层识别后降到 info 或 debug，不再打成 ERROR。SOCKS 侧仍回 `GeneralFailure`，或者回 `HostUnreachable`；`CrossZoneClient` 都会把它当连接错误回退。
-- [ ] **其他入口**：确认 `probe_url`、keep_tunnel 维护等也经过 `create_tunnel`，或在各自入口做同样的检查。
+- [x] **入站拒绝**：`on_new_tunnel` 在 I1 步骤③（`parse_source_candidate` 之后、possession proof 之前，3074 附近）从候选公钥得到发起方的 did:dev，等于 `this_device_dev_did` 时拒绝。这一步只做拒绝、不访问 resolver，符合 I1"证明前只能拒绝"的约束。主要用于兜住经中转或回环绕回自己的情况。
+- [x] **错误类型与日志**。隧道管理器及 bootstrap 路径保留 `SelfTunnel`，SOCKS 将自连记录为 debug 并返回 `HostUnreachable`。
+- [x] **其他入口**。`probe_url` 计算隧道键时经过同一身份检查，对自连返回 `Unreachable`。keep_tunnel 调用该探测入口。
 
 ### 2.3 测试
 
-- [ ] `create_tunnel` 目标是本机 did:dev，以及目标 DID 解析到本机 did:dev（mock resolver）时，都返回自连错误，且没有发生任何 TCP connect。
-- [ ] 带 bootstrap 的 `<relay>@<self>` 同样被拒，且没有打开 bootstrap 流。
-- [ ] 入站：用本机 key 签发的 Hello 被 `on_new_tunnel` 拒绝。
-- [ ] 回归：到其他设备的隧道（同 Zone 的其他节点、SN，以及同一物理机上容器或 VM 里的其他 stack）不受影响。
+- [x] `create_tunnel` 目标是本机 did:dev，以及目标 DID 解析到本机 did:dev（mock resolver）时，都返回自连错误，且没有发生任何 TCP connect。
+- [x] 带 bootstrap 的 `<relay>@<self>` 同样被拒，且没有打开 bootstrap 流。
+- [x] 入站：用本机 key 签发的 Hello 被 `on_new_tunnel` 拒绝。
+- [x] 回归：到其他设备的隧道（同 Zone 的其他节点、SN，以及同一物理机上容器或 VM 里的其他 stack）不受影响。
 
 ### 2.4 自连的判定标准（已确认）
 
@@ -88,3 +89,13 @@ cyfs_gateway.35548.log
 ## 3. 不在本 TODO 范围
 
 - SN 收到目标不是自己的 Hello 时直接断开、不回错误码，客户端只能猜测原因（`likely because it rejected the Hello or uses an incompatible RTCP handshake`）。可以另立项让 SN 回一个明确的结果码。
+
+## 4. 本次验证
+
+- `buckyos-api` 库测试通过 413 项，3 项由原测试标记忽略。新增用例覆盖本 Zone 登录与业务请求的 SOCKS 连接数为零、远端配置 origin 后先试 RTCP，以及自定义 BNS 主机名和非默认节点网关端口。
+- HomeStation 的 `zone`、`network` 测试通过 7 项。msg_center 的远端附件测试通过 25 项。远端群组的旧邀请恢复用例首次失败，完整复跑通过 18 项。
+- 网关规则测试通过 48 项，含网关节点和经中转的普通节点。SOCKS 测试通过 7 项，覆盖自连返回 `HostUnreachable`。隧道管理器和保活测试通过 27 项。RTCP 模块通过 91 项，另外 1 项在独立启动 BNS fixture 后通过。`cargo check -p cyfs_gateway` 通过。
+- Linux 隔离环境中重启 HomeStation standalone 后，两个本 Zone 用户完成受限 feed 拉取和 inbox 投递。实际网关记录登录、GET 和 PUT 成功。进程连接跟踪显示访问了节点网关，访问 3186 和 2980 的连接数均为零。该环境使用 standalone 的 verify-hub。
+- Linux 运行中的开发 Zone 另用新编译的 `CrossZoneClient::from_runtime` 和临时读者身份，通过真实 verify-hub 登录并读取 `/home/devtest/feed`，返回 HTTP 200。连接跟踪只记录了 `127.0.0.1:3180`。
+- 在运行中的 Linux `test.buckyos.io` 临时替换并重启 HomeStation。切换前的 325 秒内有 1 次本 Zone SOCKS 请求和 1 次 RTCP 失败。新版就绪后的 325 秒内有 3 次 SameZone 登录、23 次经节点网关的 feed GET、1 次 inbox PUT，本 Zone SOCKS 请求和 RTCP 失败均为 0。第 307 秒再次主动同步已有订阅成功。原发送者幂等重投既有关注对象得到 HTTP 200 和 `accepted`，回执条数与时间戳均保持一致。验收后已恢复原二进制，HomeStation 经网关返回 HTTP 200。node-daemon 和网关一直运行。
+- 两个 Docker 容器使用独立设备钥，经同一宿主 IP 上的不同端口映射完成 RTCP 握手和 ping。两端分别连接自己的 DID 时均返回 `SelfTunnel`。

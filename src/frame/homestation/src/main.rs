@@ -145,11 +145,7 @@ async fn service_main() {
     // Reads and deliveries into other zones (and this one, through the node gateway, which
     // also serves verify-hub) sign in as the station owner (跨Zone登录断言契约).
     let cross_zone = match buckyos_api::CrossZoneClient::from_runtime(&runtime) {
-        Ok(client) => {
-            let mut origins = settings.peers.clone();
-            origins.insert(zone.clone(), format!("http://127.0.0.1:{}", buckyos_api::DEFAULT_NODE_GATEWAY_PORT));
-            Arc::new(client.with_origins(origins))
-        }
+        Ok(client) => Arc::new(client.with_origins(settings.peers.clone())),
         Err(e) => {
             log::error!("cross-zone client unavailable: {e}");
             std::process::exit(1);
