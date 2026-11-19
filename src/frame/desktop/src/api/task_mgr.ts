@@ -223,7 +223,6 @@ export interface TaskCenterModel {
   getRecentFinishedTasks(): Task[]
   getScheduledTasks(): Task[]
   getTaskById(taskId: string): Task | null
-  filterTasks(opts: TaskCenterFilter): Task[]
   getPendingNotifications(): SystemNotification[]
   handleNotification(id: string, action: string): void
   getEvents(): SystemEvent[]
@@ -598,21 +597,6 @@ function eventTypeFromTask(task: Task): SystemEventType {
   }
 }
 
-function eventTitle(eventType: SystemEventType, task: Task): string {
-  switch (eventType) {
-    case 'task_completed':
-      return `Task Completed: ${task.title}`
-    case 'task_failed':
-      return `Task Failed: ${task.title}`
-    case 'task_cancelled':
-      return `Task Cancelled: ${task.title}`
-    case 'task_milestone':
-      return `Task Updated: ${task.title}`
-    default:
-      return `Task Created: ${task.title}`
-  }
-}
-
 function deriveEvents(tasks: Task[]): SystemEvent[] {
   const flattened = flattenTasks(tasks)
   return flattened
@@ -624,7 +608,7 @@ function deriveEvents(tasks: Task[]): SystemEvent[] {
         source: task.source,
         relatedRootTaskId: task.rootTaskId,
         relatedTaskId: task.taskId,
-        title: eventTitle(eventType, task),
+        title: task.title,
         summary: task.summary,
         occurredAt: task.updatedAt,
         actionState: 'none' as const,
@@ -709,7 +693,7 @@ function humanCommitResult(
   return { decision, comment: '', acted_at: actedAt, source: 'desktop' }
 }
 
-function matchesTaskFilter(task: Task, opts: TaskCenterFilter): boolean {
+export function matchesTaskFilter(task: Task, opts: TaskCenterFilter): boolean {
   if (opts.status && task.status !== opts.status) return false
   if (opts.type && task.type !== opts.type) return false
   if (opts.source && task.source !== opts.source) return false
@@ -1100,10 +1084,6 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
 
   getTaskById(taskId: string): Task | null {
     return flattenTasks(this.tasks).find((task) => task.taskId === taskId) ?? null
-  }
-
-  filterTasks(opts: TaskCenterFilter): Task[] {
-    return this.tasks.filter((task) => matchesTaskFilter(task, opts))
   }
 
   getPendingNotifications(): SystemNotification[] {

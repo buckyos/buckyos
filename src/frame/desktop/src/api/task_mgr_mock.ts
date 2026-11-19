@@ -3,9 +3,6 @@
 import { HUMAN_INPUT_TASK_SCHEMA_ID, TaskExecutorKind, TaskPhase, WORKFLOW_SCHEDULE_TASK_SCHEMA_ID } from 'buckyos'
 import type {
   Task,
-  TaskStatus,
-  TaskType,
-  TaskSource,
   WorkflowScheduleTaskPayload,
   SystemNotification,
   SystemEvent,
@@ -40,7 +37,7 @@ const seedTasks: Task[] = [
     taskId: 'task-001',
     rootTaskId: 'task-001',
     title: 'Install BuckyOS System Update v2.4.1',
-    summary: 'Downloading and installing system update package...',
+    summary: 'Downloading and installing the system update package',
     type: 'install',
     status: 'running',
     source: 'system',
@@ -77,7 +74,7 @@ const seedTasks: Task[] = [
         type: 'one-time',
         status: 'running',
         progress: 45,
-        summary: 'Applying patch 3 of 7...',
+        summary: 'Applying patch 3 of 7',
       }),
     ],
   }),
@@ -85,7 +82,7 @@ const seedTasks: Task[] = [
     taskId: 'task-002',
     rootTaskId: 'task-002',
     title: 'Sync Photos to Cloud Backup',
-    summary: 'Syncing 2,847 photos to remote storage...',
+    summary: 'Syncing 2,847 photos to remote storage',
     type: 'sync',
     status: 'running',
     source: 'user',
@@ -500,7 +497,7 @@ const seedEvents: SystemEvent[] = [
     source: 'system',
     relatedRootTaskId: 'task-001',
     relatedTaskId: 'task-001',
-    title: 'Task Created: Install BuckyOS System Update v2.4.1',
+    title: 'Install BuckyOS System Update v2.4.1',
     summary: 'System update installation initiated',
     occurredAt: '2026-04-04T08:30:00Z',
     actionState: 'none',
@@ -513,8 +510,8 @@ const seedEvents: SystemEvent[] = [
     source: 'system',
     relatedRootTaskId: 'task-001',
     relatedTaskId: 'task-001-1',
-    title: 'Download Complete: System Update Package',
-    summary: 'Package download finished, proceeding to verification',
+    title: 'Download update package',
+    summary: 'Package downloaded, verifying next',
     occurredAt: '2026-04-04T09:00:00Z',
     actionState: 'none',
     actionAt: null,
@@ -526,7 +523,7 @@ const seedEvents: SystemEvent[] = [
     source: 'user',
     relatedRootTaskId: 'task-002',
     relatedTaskId: 'task-002',
-    title: 'Task Created: Sync Photos to Cloud Backup',
+    title: 'Sync Photos to Cloud Backup',
     summary: 'User initiated photo sync job',
     occurredAt: '2026-04-04T07:00:00Z',
     actionState: 'none',
@@ -539,7 +536,7 @@ const seedEvents: SystemEvent[] = [
     source: 'system',
     relatedRootTaskId: 'task-004',
     relatedTaskId: 'task-004',
-    title: 'Task Failed: Download Large Dataset',
+    title: 'Download Large Dataset',
     summary: 'Network timeout after 3 retries at 82% progress',
     occurredAt: '2026-04-03T18:30:00Z',
     actionState: 'none',
@@ -552,7 +549,7 @@ const seedEvents: SystemEvent[] = [
     source: 'user',
     relatedRootTaskId: 'task-005',
     relatedTaskId: 'task-005',
-    title: 'Task Completed: Install App: Notion Connector',
+    title: 'Install App: Notion Connector',
     summary: 'Notion Connector v1.3.0 installed successfully',
     occurredAt: '2026-04-03T10:05:00Z',
     actionState: 'none',
@@ -591,7 +588,7 @@ const seedEvents: SystemEvent[] = [
     source: 'system',
     relatedRootTaskId: 'task-006',
     relatedTaskId: 'task-006',
-    title: 'Task Completed: Scheduled Backup: Weekly Full',
+    title: 'weekly-full-backup',
     summary: 'Backup completed in 1h 45m',
     occurredAt: '2026-03-31T03:45:00Z',
     actionState: 'none',
@@ -604,7 +601,7 @@ const seedEvents: SystemEvent[] = [
     source: 'user',
     relatedRootTaskId: 'task-007',
     relatedTaskId: 'task-007',
-    title: 'Task Cancelled: Directory Sync: /media → NAS',
+    title: 'Directory Sync: /media → NAS',
     summary: 'Cancelled by user',
     occurredAt: '2026-04-02T16:10:00Z',
     actionState: 'none',
@@ -617,7 +614,7 @@ const seedEvents: SystemEvent[] = [
     source: 'agent',
     relatedRootTaskId: 'task-008',
     relatedTaskId: 'task-008',
-    title: 'Task Paused: Agent Workflow: Data Pipeline',
+    title: 'Agent Workflow: Data Pipeline',
     summary: 'Waiting for user authorization to proceed',
     occurredAt: '2026-04-04T08:00:00Z',
     actionState: 'none',
@@ -654,36 +651,15 @@ export class TaskCenterMockStore {
   }
 
   getTaskById(taskId: string): Task | null {
-    for (const task of this.tasks) {
-      if (task.taskId === taskId) return task
-      for (const child of task.children) {
-        if (child.taskId === taskId) return task // return root task
+    const find = (tasks: Task[]): Task | null => {
+      for (const task of tasks) {
+        if (task.taskId === taskId) return task
+        const child = find(task.children)
+        if (child) return child
       }
+      return null
     }
-    return null
-  }
-
-  filterTasks(opts: {
-    status?: TaskStatus
-    type?: TaskType
-    source?: TaskSource
-    search?: string
-  }): Task[] {
-    return this.tasks.filter((t) => {
-      if (opts.status && t.status !== opts.status) return false
-      if (opts.type && t.type !== opts.type) return false
-      if (opts.source && t.source !== opts.source) return false
-      if (opts.search) {
-        const q = opts.search.toLowerCase()
-        if (
-          !t.title.toLowerCase().includes(q) &&
-          !t.taskId.toLowerCase().includes(q) &&
-          !t.summary.toLowerCase().includes(q)
-        )
-          return false
-      }
-      return true
-    })
+    return find(this.tasks)
   }
 
   getPendingNotifications(): SystemNotification[] {

@@ -26,7 +26,7 @@ import { edgeScroll, localPoint, trackPress, type Point } from '../data/gestures
 import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecords } from '../data/records'
 import { useControlView } from '../data/viewState'
-import { submitData } from '../data/write'
+import { submitData, type DataWrite } from '../data/write'
 import { UnboundSource } from '../data/BindDialogs'
 import { registerControlKeys } from '../data/keys'
 import { annotatedRecords, copyRecordLink, openControlPage, recordAnchor, useRecordFocus } from '../data/focus'
@@ -72,9 +72,11 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   // the drop reads the drag as it was last drawn (the write happens outside any state update)
   const dragRef = useRef<Drag | null>(null)
   useEffect(() => { dragRef.current = drag }, [drag])
-  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const [editing, setEditing] = useState<{ base: TodoItem; text: string } | null>(null)
+  const cancelRename = useRef(false)
   const [popover, setPopover] = useState<Popover | null>(null)
   const [adding, setAdding] = useState<{ column: string | null; text: string } | null>(null)
+  const pendingAdds = useRef(new Map<string, { sourceId: string; status: string; order: string }>())
   const [newColumn, setNewColumn] = useState<string | null>(null)
   const [scroll, setScroll] = useState({ top: 0, left: 0, h: 600, w: 600 })
   const rootRef = useRef<HTMLDivElement>(null)
@@ -139,7 +141,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   }, [items, list, board, view.mode, scroll, selected, today, options, doneId, containerId, noted])
 
   // ---- writes
-  const write = (label: string, operations: Operation[], effects: { overlay?: Record<string, Record<string, Json | undefined>>; created?: Record<string, Record<string, Json | undefined>>; removed?: string[] } = {}) => {
+  const write = (label: string, operations: Operation[], effects: Pick<DataWrite, 'overlay' | 'created' | 'removed'> = {}) => {
     if (!sourceId) return Promise.resolve(false)
     return submitData(store, set, { editId: `todo:${sourceId}:${Date.now()}`, label, operations, ...effects })
   }
@@ -163,9 +165,16 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
     if (!sourceId || !title.trim()) return
     if (!canAdd) { store.notify('info', noWrite); return }
     const column = status ?? options[0]?.option_id ?? 'todo'
-    const inStatus = sortTodos(items.filter((i) => (status ? i.status === status : !i.done)))
-    const { record_id, ops, order } = todoAddOps(sourceId, { title: title.trim(), status: column }, { items: inStatus })
-    await write(t('aiworkspace.todo.addOne', { title: title.trim() }), ops as Operation[], { created: { [record_id]: { title: title.trim(), status: column, order } } })
+    const pending = [...pendingAdds.current.values()].filter((item) => item.sourceId === sourceId)
+    const inStatus = [...items, ...pending].filter((item) => status ? item.status === status : item.status !== TODO_DONE)
+    const values = { title: title.trim(), status: column, ...(column === TODO_DONE ? { done_at: new Date().toISOString() } : {}) }
+    const { record_id, ops, order } = todoAddOps(sourceId, values, { items: inStatus })
+    pendingAdds.current.set(record_id, { sourceId, status: column, order })
+    try {
+      await write(t('aiworkspace.todo.addOne', { title: values.title }), ops as Operation[], { created: { [record_id]: { ...values, order } } })
+    } finally {
+      pendingAdds.current.delete(record_id)
+    }
     // the new item scrolls into sight
     window.requestAnimationFrame(() => scrollRef.current?.querySelector(`[data-item="${record_id}"]`)?.scrollIntoView({ block: 'nearest' }))
   }
@@ -208,10 +217,19 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
     void write(statusLabel ? t('aiworkspace.todo.moveToStatus', { n: moving.length, status: statusLabel }) : t('aiworkspace.todo.reorderN', { count: moving.length }), ops, { overlay })
   }
 
-  const rename = (id: string, text: string) => {
-    const item = byId.get(id)
-    if (!item || !sourceId || text.trim() === item.title || !text.trim()) return
-    void write(t('aiworkspace.todo.renameOne'), todoUpdateOps(sourceId, item, { title: text.trim() }) as Operation[], { overlay: { [id]: { title: text.trim() } } })
+  const beginRename = (item: TodoItem | undefined) => {
+    if (!canWrite || !item) return
+    cancelRename.current = false
+    setEditing({ base: item, text: item.title })
+  }
+
+  const finishRename = () => {
+    setEditing(null)
+    if (cancelRename.current || !editing || !canWrite || !sourceId) return
+    const { base, text } = editing
+    const title = text.trim()
+    if (!title || title === base.title.trim()) return
+    void write(t('aiworkspace.todo.renameOne'), todoUpdateOps(sourceId, base, { title }) as Operation[], { overlay: { [base.record_id]: { title } } })
   }
 
   const addColumn = (label: string) => {
@@ -281,7 +299,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       return true
     }
     if (event.key === ' ' && selection.length) { toggleDone(selection); return true }
-    if (event.key === 'Enter' && current && !mod) { setEditing({ id: current, text: byId.get(current)?.title ?? '' }); return true }
+    if (event.key === 'Enter' && current && !mod) { beginRename(byId.get(current)); return true }
     if ((event.key === 'Delete' || event.key === 'Backspace') && selection.length) { removeItems(selection); return true }
     if (mod && event.key.toLowerCase() === 'a') { setSelection(order); return true }
     if (event.key === 'Escape' && selection.length) { setSelection([]); return true }
@@ -324,7 +342,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
         select(id, e)
       },
       onDoubleTap: () => {
-        if (hit.role === 'title' && canWrite) setEditing({ id, text: item.title })
+        if (hit.role === 'title' && canWrite) beginRename(item)
         else openDetail(id)
       },
       onLongPress: () => openMenu(selected.has(id) ? selection : [id], id),
@@ -407,7 +425,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
 
   const dragging = drag !== null
   const editingRect = editing ? (() => {
-    const rect = (view.mode === 'list' ? list.rects : board.rects).get(editing.id)
+    const rect = (view.mode === 'list' ? list.rects : board.rects).get(editing.base.record_id)
     if (!rect) return null
     return view.mode === 'list' ? { x: rect.x + 42, y: rect.y + 4, w: rect.w - 146, h: rect.h - 8 } : { x: rect.x + 34, y: rect.y + 6, w: rect.w - 42, h: Math.max(26, rect.h - 32) }
   })() : null
@@ -545,12 +563,15 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
             <input className="aiws-dc-inline-edit" style={{ left: editingRect.x, top: editingRect.y, width: editingRect.w, height: Math.min(editingRect.h, 30) }} autoFocus value={editing.text}
               aria-label={t('aiworkspace.todo.renameOne')} data-testid={`aiws-todo-edit-${containerId}`}
               onChange={(e) => setEditing({ ...editing, text: e.target.value })}
-              onBlur={() => { rename(editing.id, editing.text); setEditing(null) }}
+              onBlur={finishRename}
               onKeyDown={(e) => {
                 e.stopPropagation()
                 if (e.nativeEvent.isComposing) return
-                if (e.key === 'Enter') { rename(editing.id, editing.text); setEditing(null); rootRef.current?.focus() }
-                if (e.key === 'Escape') { setEditing(null); rootRef.current?.focus() }
+                if (e.key === 'Enter' || e.key === 'Escape') {
+                  e.preventDefault()
+                  cancelRename.current = e.key === 'Escape'
+                  rootRef.current?.focus()
+                }
               }} />
           )}
           {snapshot.loading && items.length === 0 && <div className="aiws-dc-empty">{t('aiworkspace.blocks.loading')}</div>}

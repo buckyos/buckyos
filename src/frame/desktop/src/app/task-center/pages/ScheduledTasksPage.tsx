@@ -1,20 +1,10 @@
-import { useMemo, useState } from 'react'
-import {
-  Archive,
-  CalendarClock,
-  CheckCircle2,
-  ChevronRight,
-  Clock,
-  Filter,
-  Pause,
-  Play,
-  Search,
-  Timer,
-  Workflow,
-  XCircle,
-} from 'lucide-react'
-import { useI18n } from '../../../i18n/provider'
+/* ── TaskCenter Scheduled tasks page ── */
+
+import { useState } from 'react'
+import { Search } from 'lucide-react'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
+import { StatusDot } from '../components/taskView'
+import { useTaskText, type Tone } from '../components/taskModel'
 import type {
   Task,
   WorkflowScheduleSpec,
@@ -25,6 +15,7 @@ import type { TaskCenterNav } from '../components/layout/navigation'
 
 interface ScheduledTasksPageProps {
   onNavigate: (nav: TaskCenterNav) => void
+  selectedId?: string
 }
 
 interface ScheduleView {
@@ -35,8 +26,8 @@ interface ScheduleView {
   scheduleText: string
   timezone: string
   targetText: string
-  nextFireAt: string | null
-  lastFireAt: string | null
+  nextFireAt: string | number | null
+  lastFireAt: string | number | null
   lastTaskId: string | null
   consecutiveFailures: number
   lastError: string | null
@@ -44,33 +35,16 @@ interface ScheduleView {
 
 const statusOptions: (WorkflowScheduleStatus | '')[] = ['', 'enabled', 'paused', 'error', 'archived']
 
-function statusIcon(status: WorkflowScheduleStatus) {
+function statusTone(status: WorkflowScheduleStatus): Tone {
   switch (status) {
     case 'enabled':
-      return <Play size={14} />
+      return 'running'
     case 'paused':
-      return <Pause size={14} />
-    case 'archived':
-      return <Archive size={14} />
+      return 'waiting'
     case 'error':
-      return <XCircle size={14} />
+      return 'failed'
     default:
-      return <Clock size={14} />
-  }
-}
-
-function statusColor(status: WorkflowScheduleStatus) {
-  switch (status) {
-    case 'enabled':
-      return 'var(--cp-accent)'
-    case 'paused':
-      return 'var(--cp-warning)'
-    case 'archived':
-      return 'var(--cp-muted)'
-    case 'error':
-      return 'var(--cp-danger)'
-    default:
-      return 'var(--cp-muted)'
+      return 'idle'
   }
 }
 
@@ -90,27 +64,13 @@ function statusFromTask(task: Task): WorkflowScheduleStatus {
   }
 }
 
-function formatTimestamp(value: string | number | null | undefined) {
-  if (value == null || value === '') return null
-  const date = typeof value === 'number'
-    ? new Date(value < 10_000_000_000 ? value * 1000 : value)
-    : new Date(value)
-  if (Number.isNaN(date.getTime())) return null
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function formatSchedule(spec: WorkflowScheduleSpec | undefined) {
+function formatSchedule(spec: WorkflowScheduleSpec | undefined, dateTime: (value: string | number) => string | null) {
   if (!spec) return ''
   switch (spec.kind) {
     case 'cron':
       return spec.expr
     case 'once':
-      return `once ${formatTimestamp(spec.run_at) ?? spec.run_at}`
+      return `once ${dateTime(spec.run_at) ?? spec.run_at}`
     case 'run_every':
       return `every ${formatDuration(spec.every_sec)}`
     default:
@@ -125,7 +85,7 @@ function formatDuration(seconds: number) {
   return `${seconds}s`
 }
 
-function toScheduleView(task: Task): ScheduleView {
+function toScheduleView(task: Task, dateTime: (value: string | number) => string | null): ScheduleView {
   const payload = task.payload as WorkflowScheduleTaskPayload
   const request = payload.request
   const result = payload.result
@@ -139,281 +99,172 @@ function toScheduleView(task: Task): ScheduleView {
     scheduleId: request?.schedule_id ?? task.rootTaskId,
     name: request?.name ?? task.title.replace(/^workflow\/schedule\//, ''),
     status,
-    scheduleText: formatSchedule(schedule) || task.summary,
+    scheduleText: formatSchedule(schedule, dateTime) || task.summary,
     timezone: schedule && 'timezone' in schedule && schedule.timezone ? schedule.timezone : 'UTC',
     targetText: target ? target.task_type : task.type,
-    nextFireAt: formatTimestamp(result?.next_fire_at),
-    lastFireAt: formatTimestamp(result?.last_fire_at),
+    nextFireAt: result?.next_fire_at ?? null,
+    lastFireAt: result?.last_fire_at ?? null,
     lastTaskId: result?.last_task_id == null ? null : String(result.last_task_id),
     consecutiveFailures: result?.consecutive_failures ?? 0,
     lastError,
   }
 }
 
-export function ScheduledTasksPage({ onNavigate }: ScheduledTasksPageProps) {
+export function ScheduledTasksPage({ onNavigate, selectedId }: ScheduledTasksPageProps) {
   const store = useTaskCenterStore()
-  const { t } = useI18n()
+  const text = useTaskText()
+  const { t } = text
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState<WorkflowScheduleStatus | ''>('')
-  const [showFilters, setShowFilters] = useState(false)
 
   // Not memoized: the store keeps its identity and notifies through
   // useSyncExternalStore, so a memo keyed on it would never recompute.
-  const schedules = store.getScheduledTasks().map(toScheduleView)
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    return schedules.filter((schedule) => {
-      if (filterStatus && schedule.status !== filterStatus) return false
-      if (!query) return true
-      return [
-        schedule.name,
-        schedule.scheduleId,
-        schedule.scheduleText,
-        schedule.targetText,
-        schedule.timezone,
-      ].some((value) => value.toLowerCase().includes(query))
-    })
-  }, [filterStatus, schedules, search])
+  const schedules = store.getScheduledTasks().map((task) => toScheduleView(task, text.dateTime))
+  const query = search.trim().toLowerCase()
+  const filtered = schedules.filter((schedule) => {
+    if (filterStatus && schedule.status !== filterStatus) return false
+    if (!query) return true
+    return [
+      schedule.name,
+      schedule.scheduleId,
+      schedule.scheduleText,
+      schedule.targetText,
+      schedule.timezone,
+    ].some((value) => value.toLowerCase().includes(query))
+  })
 
-  const stats = useMemo(() => {
-    return schedules.reduce(
-      (acc, schedule) => {
-        acc.total += 1
-        acc[schedule.status] += 1
-        return acc
-      },
-      { total: 0, enabled: 0, paused: 0, archived: 0, error: 0 },
-    )
-  }, [schedules])
+  const stats = schedules.reduce(
+    (acc, schedule) => {
+      acc.total += 1
+      acc[schedule.status] += 1
+      return acc
+    },
+    { total: 0, enabled: 0, paused: 0, archived: 0, error: 0 },
+  )
 
   const summaryStats = [
-    {
-      key: 'total',
-      label: t('taskCenter.schedules.total', 'Total'),
-      value: stats.total,
-      icon: <CalendarClock size={13} />,
-      color: 'var(--cp-text)',
-    },
-    {
-      key: 'enabled',
-      label: t('taskCenter.schedules.enabled', 'Enabled'),
-      value: stats.enabled,
-      icon: <Play size={13} />,
-      color: 'var(--cp-accent)',
-    },
-    {
-      key: 'paused',
-      label: t('taskCenter.schedules.paused', 'Paused'),
-      value: stats.paused,
-      icon: <Pause size={13} />,
-      color: 'var(--cp-warning)',
-    },
-    {
-      key: 'error',
-      label: t('taskCenter.schedules.errors', 'Errors'),
-      value: stats.error,
-      icon: <XCircle size={13} />,
-      color: 'var(--cp-danger)',
-    },
+    { key: 'total', label: t('taskCenter.schedules.total', 'Total'), value: stats.total },
+    { key: 'enabled', label: t('taskCenter.schedules.enabled', 'Enabled'), value: stats.enabled },
+    { key: 'paused', label: t('taskCenter.schedules.paused', 'Paused'), value: stats.paused },
+    { key: 'error', label: t('taskCenter.schedules.errors', 'Errors'), value: stats.error },
   ]
 
-  const labelStatus = (status: WorkflowScheduleStatus) => {
-    switch (status) {
-      case 'enabled':
-        return t('taskCenter.schedules.status.enabled', 'Enabled')
-      case 'paused':
-        return t('taskCenter.schedules.status.paused', 'Paused')
-      case 'archived':
-        return t('taskCenter.schedules.status.archived', 'Archived')
-      case 'error':
-        return t('taskCenter.schedules.status.error', 'Error')
-      default:
-        return status
-    }
-  }
+  const labelStatus = (status: WorkflowScheduleStatus) => t(`taskCenter.schedules.status.${status}`, status)
 
   return (
     <div className="space-y-4">
-      <div
-        className="grid grid-cols-4 overflow-hidden rounded-xl"
-        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-      >
+      <dl className="tc-surface grid grid-cols-4">
         {summaryStats.map((item, index) => (
           <div
             key={item.key}
-            className="flex min-w-0 items-center justify-center gap-1.5 px-1.5 py-2 sm:gap-2 sm:px-3"
-            style={{
-              borderLeft: index === 0 ? undefined : '1px solid var(--cp-border)',
-              color: 'var(--cp-muted)',
-            }}
+            className="min-w-0 px-4 py-3"
+            style={index > 0 ? { borderLeft: '1px solid var(--tc-line)' } : undefined}
           >
-            <span className="hidden shrink-0 sm:inline-flex" style={{ color: item.color }}>
-              {item.icon}
-            </span>
-            <span className="min-w-0 truncate text-[11px] sm:text-xs">
-              {item.label}
-            </span>
-            <span className="shrink-0 text-sm font-semibold sm:text-base" style={{ color: item.color }}>
+            <dt className="tc-muted truncate text-xs">{item.label}</dt>
+            <dd
+              className={`tc-num mt-1 text-xl font-medium leading-7${item.key === 'error' && item.value > 0 ? ' tc-danger' : ''}`}
+            >
               {item.value}
-            </span>
+            </dd>
           </div>
         ))}
-      </div>
+      </dl>
 
       <div className="flex items-center gap-2">
-        <label
-          className="flex flex-1 items-center gap-2.5 rounded-xl px-3 py-2.5"
-          style={{
-            background: 'var(--cp-surface)',
-            border: '1px solid var(--cp-border)',
-            color: 'var(--cp-muted)',
-          }}
-        >
-          <Search size={16} />
+        <label className="tc-search">
+          <Search size={16} strokeWidth={1.75} className="shrink-0" />
           <input
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder={t('taskCenter.schedules.search', 'Search schedules...')}
-            className="w-full bg-transparent text-sm outline-none placeholder:text-[color:var(--cp-muted)]"
-            style={{ color: 'var(--cp-text)' }}
+            placeholder={t('taskCenter.schedules.search', 'Search schedules')}
+            aria-label={t('taskCenter.schedules.search', 'Search schedules')}
           />
         </label>
-        <button
-          type="button"
-          onClick={() => setShowFilters(!showFilters)}
-          className="flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-sm transition-colors"
-          style={{
-            background: showFilters ? 'color-mix(in srgb, var(--cp-accent) 12%, var(--cp-surface))' : 'var(--cp-surface)',
-            color: showFilters ? 'var(--cp-accent)' : 'var(--cp-muted)',
-            border: '1px solid var(--cp-border)',
-          }}
+        <select
+          value={filterStatus}
+          onChange={(event) => setFilterStatus(event.target.value as WorkflowScheduleStatus | '')}
+          className="tc-select h-9"
+          aria-label={t('taskCenter.schedules.allStatuses', 'All statuses')}
         >
-          <Filter size={14} />
-        </button>
+          <option value="">{t('taskCenter.schedules.allStatuses', 'All statuses')}</option>
+          {statusOptions.filter(Boolean).map((status) => (
+            <option key={status} value={status}>{labelStatus(status as WorkflowScheduleStatus)}</option>
+          ))}
+        </select>
       </div>
 
-      {showFilters && (
-        <div
-          className="flex flex-wrap gap-2 rounded-xl p-3"
-          style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-        >
-          <select
-            value={filterStatus}
-            onChange={(event) => setFilterStatus(event.target.value as WorkflowScheduleStatus | '')}
-            className="rounded-lg px-2.5 py-1.5 text-xs"
-            style={{
-              background: 'var(--cp-surface-2)',
-              color: 'var(--cp-text)',
-              border: '1px solid var(--cp-border)',
-            }}
-          >
-            <option value="">{t('taskCenter.schedules.allStatuses', 'All Statuses')}</option>
-            {statusOptions.filter(Boolean).map((status) => (
-              <option key={status} value={status}>{labelStatus(status as WorkflowScheduleStatus)}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-        {t('taskCenter.schedules.count', '{{count}} schedules', { count: filtered.length })}
-      </div>
-
-      <div className="space-y-2">
-        {filtered.map((schedule) => (
-          <button
-            key={schedule.scheduleId}
-            type="button"
-            onClick={() => onNavigate({ page: 'schedules', taskId: schedule.task.taskId })}
-            className="w-full rounded-xl p-4 text-left transition-colors"
-            style={{
-              background: 'var(--cp-surface)',
-              border: '1px solid var(--cp-border)',
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <div
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-                style={{
-                  background: `color-mix(in srgb, ${statusColor(schedule.status)} 14%, transparent)`,
-                  color: statusColor(schedule.status),
-                }}
-              >
-                {statusIcon(schedule.status)}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-                    {schedule.name}
+      {filtered.length > 0 ? (
+        <>
+          <p className="tc-muted px-1 text-xs">
+            {t('taskCenter.schedules.count', '{{count}} schedules', { count: filtered.length })}
+          </p>
+          <div className="tc-list">
+            {filtered.map((schedule) => {
+              const facts = [
+                { label: t('taskCenter.schedules.rule', 'Schedule'), value: schedule.scheduleText, mono: true },
+                {
+                  label: t('taskCenter.schedules.nextRun', 'Next run'),
+                  value: text.dateTime(schedule.nextFireAt) ?? t('taskCenter.schedules.noNextFire', 'None'),
+                },
+                { label: t('taskCenter.schedules.target', 'Target'), value: schedule.targetText, mono: true },
+                {
+                  label: t('taskCenter.schedules.lastRun', 'Last run'),
+                  value: text.dateTime(schedule.lastFireAt) ?? t('taskCenter.schedules.neverFired', 'Never'),
+                },
+              ]
+              const meta = [
+                schedule.timezone,
+                schedule.lastTaskId ? `${t('taskCenter.schedules.lastTask', 'Last task')} ${schedule.lastTaskId}` : null,
+                schedule.consecutiveFailures > 0
+                  ? t('taskCenter.schedules.failures', '{{count}} failures', { count: schedule.consecutiveFailures })
+                  : null,
+              ].filter(Boolean)
+              const open = () => onNavigate({ page: 'schedules', taskId: schedule.task.taskId })
+              return (
+                <div
+                  key={schedule.scheduleId}
+                  role="button"
+                  tabIndex={0}
+                  className="tc-row"
+                  aria-current={schedule.task.taskId === selectedId ? 'true' : undefined}
+                  onClick={open}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      open()
+                    }
+                  }}
+                  style={{ padding: 12, gap: 12 }}
+                  data-testid="schedule-row"
+                >
+                  <span className="tc-row-dot">
+                    <StatusDot tone={statusTone(schedule.status)} />
                   </span>
-                  <span
-                    className="text-xs font-medium uppercase"
-                    style={{ color: statusColor(schedule.status) }}
-                  >
-                    {labelStatus(schedule.status)}
-                  </span>
-                </div>
-                <div className="mt-0.5 text-xs" style={{ color: 'var(--cp-muted)' }}>
-                  {schedule.scheduleId}
-                </div>
-                <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <Timer size={13} style={{ color: 'var(--cp-muted)' }} />
-                    <span className="truncate" style={{ color: 'var(--cp-text)' }}>
-                      {schedule.scheduleText}
-                    </span>
-                  </div>
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <Clock size={13} style={{ color: 'var(--cp-muted)' }} />
-                    <span className="truncate" style={{ color: 'var(--cp-text)' }}>
-                      {schedule.nextFireAt ?? t('taskCenter.schedules.noNextFire', 'No next fire')}
-                    </span>
-                  </div>
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <Workflow size={13} style={{ color: 'var(--cp-muted)' }} />
-                    <span className="truncate" style={{ color: 'var(--cp-text)' }}>
-                      {schedule.targetText}
-                    </span>
-                  </div>
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <CheckCircle2 size={13} style={{ color: 'var(--cp-muted)' }} />
-                    <span className="truncate" style={{ color: 'var(--cp-text)' }}>
-                      {schedule.lastFireAt ?? t('taskCenter.schedules.neverFired', 'Never fired')}
-                    </span>
+                  <div className="tc-row-body">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="text-sm font-medium leading-5">{schedule.name}</span>
+                      <span className="tc-muted text-xs">{labelStatus(schedule.status)}</span>
+                    </div>
+                    <div className="tc-mono tc-muted truncate text-xs leading-4">{schedule.scheduleId}</div>
+                    <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 lg:grid-cols-4">
+                      {facts.map((fact) => (
+                        <div key={fact.label} className="min-w-0">
+                          <dt className="tc-muted text-xs leading-4">{fact.label}</dt>
+                          <dd className={`truncate text-[13px] leading-5${fact.mono ? ' tc-mono' : ''}`}>{fact.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    {schedule.lastError && <p className="tc-danger mt-2 text-xs leading-4">{schedule.lastError}</p>}
+                    <p className="tc-muted mt-2 truncate text-xs leading-4">{meta.join(' · ')}</p>
                   </div>
                 </div>
-                {schedule.lastError && (
-                  <div className="mt-3 text-xs" style={{ color: 'var(--cp-danger)' }}>
-                    {schedule.lastError}
-                  </div>
-                )}
-                <div className="mt-3 flex flex-wrap gap-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
-                  <span>{schedule.timezone}</span>
-                  {schedule.lastTaskId && (
-                    <span>
-                      {t('taskCenter.schedules.lastTask', 'Last task')}: {schedule.lastTaskId}
-                    </span>
-                  )}
-                  {schedule.consecutiveFailures > 0 && (
-                    <span>
-                      {t('taskCenter.schedules.failures', '{{count}} failures', {
-                        count: schedule.consecutiveFailures,
-                      })}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <ChevronRight size={14} style={{ color: 'var(--cp-muted)', marginTop: 10 }} />
-            </div>
-          </button>
-        ))}
-      </div>
-
-      {filtered.length === 0 && (
-        <div className="text-center py-12 text-sm" style={{ color: 'var(--cp-muted)' }}>
-          {t('taskCenter.schedules.empty', 'No scheduled tasks match your filters.')}
-        </div>
+              )
+            })}
+          </div>
+        </>
+      ) : (
+        <p className="tc-empty">{t('taskCenter.schedules.empty', 'No scheduled tasks match your filters')}</p>
       )}
     </div>
   )

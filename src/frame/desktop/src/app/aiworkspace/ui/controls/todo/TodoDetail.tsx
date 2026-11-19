@@ -26,14 +26,14 @@ export function TodoDetail({ sourceId, item, options, canWrite, noWrite, onDelet
   const { t } = useAiwsText()
   const store = useStore()
   // what is being typed; the stored value otherwise (it follows changes made elsewhere)
-  const [titleDraft, setTitle] = useState<string | null>(null)
+  const [titleDraft, setTitle] = useState<{ base: TodoItem; text: string } | null>(null)
   const [tagsDraft, setTags] = useState<string | null>(null)
-  const title = titleDraft ?? item.title
+  const title = titleDraft?.text ?? item.title
   const tags = tagsDraft ?? (Array.isArray(item.ext.tags) ? (item.ext.tags as string[]).join(', ') : '')
   const set = recordSet(store, sourceId)
-  const save = (label: string, changes: Parameters<typeof todoUpdateOps>[2], overlay: Record<string, Json | undefined>) => {
-    const ops = todoUpdateOps(sourceId, item, changes) as Operation[]
-    if (ops.length) void submitData(store, set, { editId: `todo:${sourceId}:${item.record_id}:detail`, label, operations: ops, overlay: { [item.record_id]: overlay } })
+  const save = (label: string, changes: Parameters<typeof todoUpdateOps>[2], overlay: Record<string, Json | undefined>, base = item) => {
+    const ops = todoUpdateOps(sourceId, base, changes) as Operation[]
+    if (ops.length) void submitData(store, set, { editId: `todo:${sourceId}:${base.record_id}:detail`, label, operations: ops, overlay: { [base.record_id]: overlay } })
   }
   const bodyId = useBodyId(sourceId, item.record_id)
   const body = useEntity(bodyId ?? '')
@@ -49,9 +49,16 @@ export function TodoDetail({ sourceId, item, options, canWrite, noWrite, onDelet
   return (
     <div className="aiws-ctl-form" data-testid={`aiws-todo-form-${item.record_id}`}>
       <input className="aiws-ctl-form-title" value={title} disabled={disabled} title={disabled ? noWrite : undefined} aria-label={t('aiworkspace.todo.field.title')}
-        onChange={(e) => setTitle(e.target.value)}
-        onBlur={() => { if (title.trim() && title !== item.title) save(t('aiworkspace.todo.renameOne'), { title: title.trim() }, { title: title.trim() }); setTitle(null) }}
-        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
+        onFocus={() => setTitle({ base: item, text: item.title })}
+        onChange={(e) => setTitle({ base: titleDraft?.base ?? item, text: e.currentTarget.value })}
+        onBlur={() => {
+          const next = titleDraft?.text.trim()
+          if (canWrite && titleDraft && next && next !== titleDraft.base.title.trim()) {
+            save(t('aiworkspace.todo.renameOne'), { title: next }, { title: next }, titleDraft.base)
+          }
+          setTitle(null)
+        }}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) e.currentTarget.blur() }} />
       <label className="aiws-ctl-form-row">
         <span>{t('aiworkspace.todo.field.status')}</span>
         <select value={item.status} disabled={disabled} onChange={(e) => save(t('aiworkspace.todo.field.status'), { status: e.target.value }, { status: e.target.value })}>

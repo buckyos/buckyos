@@ -213,7 +213,7 @@ test('?notify= opens the card on the desktop and on a phone; an unknown notifica
 
 test('Task Center: no approve / reject card for a notification task; list and detail link to its MessageHub card', async ({ page }) => {
   await page.goto('/taskcenter')
-  const notifications = page.locator('section', { has: page.getByRole('heading', { name: /System Notifications/ }) })
+  const notifications = page.locator('section', { has: page.getByRole('heading', { name: /System notifications/ }) })
   await expect(notifications).toContainText('Remove 3.2 GB of temporary files?')
   await expect(notifications).not.toContainText('Which branch should I deploy the docs preview from?')
 
@@ -226,7 +226,7 @@ test('Task Center: no approve / reject card for a notification task; list and de
   await expect(page.getByRole('heading', { name: 'Confirm the temp file cleanup' })).toBeVisible()
   await expect(page.getByTestId('task-notify')).toHaveCount(0)
 
-  await page.getByRole('button', { name: /Back to Tasks/ }).click()
+  await page.getByRole('button', { name: 'Close details' }).click()
   const link = page.getByTestId('task-notify-link')
   await expect(link).toHaveCount(1)
   await expect(link).toHaveAttribute('href', '/messagehub?notify=nt-agent-work')

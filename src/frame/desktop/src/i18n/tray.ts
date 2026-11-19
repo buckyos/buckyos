@@ -35,7 +35,7 @@ export const trayEn: Record<string, string> = {
   'tray.task.running': 'In progress',
   'tray.task.waiting': 'Waiting',
 
-  'taskCenter.detail.cancel': 'Cancel Task',
+  'taskCenter.detail.cancel': 'Cancel task',
   'taskCenter.detail.canceling': 'Canceling…',
   'taskCenter.detail.results': 'Results',
   'taskCenter.detail.previewResult': 'Preview',
@@ -43,11 +43,11 @@ export const trayEn: Record<string, string> = {
   'taskCenter.download.filename': 'Save as (optional)',
   'taskCenter.download.filenamePlaceholder': 'Taken from the link',
   'taskCenter.download.hint': 'Saved to Downloads in your home folder. Progress shows in the system notifications.',
-  'taskCenter.download.new': 'New Download',
+  'taskCenter.download.new': 'New download',
   'taskCenter.download.savedTo': 'Saved to',
   'taskCenter.download.section': 'Download',
   'taskCenter.download.start': 'Download',
-  'taskCenter.download.title': 'New Download',
+  'taskCenter.download.title': 'New download',
   'taskCenter.download.url': 'Link',
   'taskCenter.download.urlInvalid': 'Enter an http:// or https:// link.',
 }
