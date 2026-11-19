@@ -150,6 +150,8 @@ libopendan 的 Session runner 可以为这个基础层增加宿主任务解析�
 | `next_behavior` / `WAIT_USER_MSG` | 在规定的提交点切换、等待或关闭 Turn，遵循当前 Session 策略 | 当前属于回复协议字段，没有等价 CLI |
 | MCP / 自定义 host tool | 后端调用、错误和结果语义；需要时关联当前 run | 默认 CLI 尚无通用动态接入桥 |
 
+顶层 Work 配置 `completion=explicit_report` 时，最终报告必须声明结局。原生工具用 `report({report: "测试通过", is_end: true, outcome: "succeeded"})`，XML 用 `<report end="true" outcome="succeeded">测试通过</report>`。执行或验收失败用 `failed`，缺必要前提用 `blocked`。这两种结局都会阻止依赖该 Todo 的工作启动。
+
 `report` 和 `next_behavior` 不只是普通业务动作：前者同时有原生 tool 和回复字段形式，后者是回复控制字段。可以设计 CLI 提交控制请求，但应由宿主确认和执行；普通 stdout 文本不能被当作已经完成提交或切换。
 
 控制请求还需定义幂等、checkpoint、恢复和同一批次中后续调用的处理。本文不新增控制命令名称，也不要求立即撤掉现有稳定控制协议。

@@ -485,7 +485,7 @@ async fn a_work_report_object_is_forwarded_without_accessing_the_workers_files()
     let objects = Arc::new(Objects::default());
     let mut deps = env.deps(ScriptedLlm::new(|_, n| {
         assert_eq!(n, 0);
-        final_report("video", "video ready", json!(["cat_halloween.mp4"]))
+        tool_call("video", "report", json!({ "report": "video ready", "artifacts": ["cat_halloween.mp4"], "outcome": "succeeded", "is_end": true }))
     }));
     deps.objects = Some(objects.clone());
     let result = drive(&work, &deps, StopWhen::TurnClosed).await;

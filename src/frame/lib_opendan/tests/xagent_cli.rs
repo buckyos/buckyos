@@ -104,7 +104,7 @@ fn say(text: &str) -> Result<Value, u16> {
 
 /// The final report that ends a work session.
 fn end_report(id: &str, report: &str) -> Result<Value, u16> {
-    call_report(id, json!({ "report": report, "is_end": true }))
+    call_report(id, json!({ "report": report, "outcome": "succeeded", "is_end": true }))
 }
 
 fn call_shell(id: &str, command: &str) -> Result<Value, u16> {

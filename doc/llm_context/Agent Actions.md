@@ -238,14 +238,14 @@ pub fn bar() -> u32 { 42 }
 |---|---|
 | `<actions>…</actions>` | 执行动作，观察结果后继续 |
 | `<report>` 或 `<report end="false">` | 提交阶段性报告，更新最近报告；不请求结束。同一决策没有 actions、也没有 next_behavior 时是让出：本次 run 以 Done 结束，context 等宿主给它新输入 |
-| `<report end="true">` | 提交最终报告并请求结束当前 context；不得同时输出 actions |
+| `<report end="true">` | 提交最终报告并请求结束当前 context。采用 `completion=explicit_report` 的顶层 Work 必须填写 `outcome` 属性，可取 `succeeded`、`failed`、`blocked`。结束时 actions 为空。 |
 | `<next_behavior>CHECK</next_behavior>` 等目标 | 按目标进入模式切换或调用 context；不表示 Session 完成 |
 | `<next_behavior>WAIT_USER_MSG</next_behavior>` | 保留等待输入语义；子 context 按宿主规则向调用方返回需要输入 |
 | 阶段性 report 与 next_behavior | 提交报告后切换或等待；report 本身不增加结束意图 |
 
 ```xml
 <response>
-  <report end="true"><![CDATA[任务完成，结果说明……]]></report>
+  <report end="true" outcome="succeeded"><![CDATA[任务完成，结果说明……]]></report>
 </response>
 ```
 
@@ -262,7 +262,7 @@ pub fn bar() -> u32 { 42 }
 
 ```xml
 <response>
-  <report end="true"><![CDATA[已完成验证，交付文件如下。]]></report>
+  <report end="true" outcome="succeeded"><![CDATA[已完成验证，交付文件如下。]]></report>
   <artifacts>["output/result.txt"]</artifacts>
   <result>{"verified": true}</result>
 </response>

@@ -166,14 +166,13 @@ impl CheckpointHook for SessionCheckpointHook {
         result: &llm_context::behavior_loop::LLMBehaviorResult,
         step_index: u32,
     ) -> std::result::Result<(), String> {
-        let (artifacts, report_result) =
-            agent_tool::xllm::split_report_result(result.report_result.as_ref());
-        let args = super::reports::ReportArgs {
-            report: result.self_report.clone().unwrap_or_default(),
-            artifacts,
-            result: report_result,
-            is_end: result.report_end,
-        };
+        let args = super::reports::ReportArgs::from_behavior(
+            result.self_report.clone().unwrap_or_default(),
+            result.report_end,
+            result.report_outcome.as_deref(),
+            result.report_result.as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
         if self
             .run
             .reports()

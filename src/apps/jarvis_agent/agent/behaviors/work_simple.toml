@@ -26,8 +26,8 @@ You are a work session for one bounded task. Do it directly with your tools; the
 ## Completion
 
 - Only `report` with `is_end: true` ends this session — a reply without it does not. It is refused while tasks you started are still running: wait for their `<<task_result>>` (reply to close the Turn meanwhile) or cancel them.
-- Done: call `report` with `is_end: true` — what you did, where the results are, how you verified them. List important files in `artifacts`.
-- Cannot be done: call `report` with `is_end: true` stating what blocked you and what is left. Never report success you did not verify.
+- In the final `report`, set the top-level `outcome` to `succeeded` only after verifying the task's acceptance criteria. Give the evidence, the location of each deliverable and the important files in `artifacts`.
+- If execution or an acceptance check failed, set `outcome` to `failed` and give the observed failure. If a missing input, permission or other prerequisite prevents completion, set it to `blocked` and name what is needed. Both outcomes end this attempt. Report any verified partial results and what remains.
 
 """
 # Inputs after the first one: an update of the Todo this session executes,
@@ -65,7 +65,7 @@ Your work is still running. Go on with something that does not depend on it, or 
 {{ item | render_format: "message.xml" }}
 {% endif %}
 {% endfor %}
-When every task you started has ended and the results are verified, finish with `report` (is_end: true).
+When every task you started has ended, report the verified result or the reason the work could not be completed. Set `is_end: true` and the corresponding `outcome`.
 </session_input>
 """
 

@@ -91,6 +91,9 @@ pub struct StepRecord {
     pub self_report: Option<String>,
     #[serde(default)]
     pub report_end: bool,
+    /// The final report's declared outcome, independent of its application payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_outcome: Option<String>,
     /// Structured payload of the report; its shape (including any
     /// attachments) is the host's convention.
     #[serde(
@@ -124,6 +127,7 @@ impl StepRecord {
             next_behavior,
             self_report,
             report_end,
+            report_outcome,
             report_result,
         } = result;
         Self {
@@ -137,6 +141,7 @@ impl StepRecord {
             next_behavior,
             self_report,
             report_end,
+            report_outcome,
             report_result,
             action_results: Vec::new(),
             next_user_message: None,
@@ -182,6 +187,7 @@ impl StepRecord {
             next_behavior: None,
             self_report: None,
             report_end: false,
+            report_outcome: None,
             report_result: None,
             action_results: vec![Observation::Error {
                 call_id: String::new(),
@@ -216,6 +222,8 @@ pub struct LLMBehaviorResult {
     pub self_report: Option<String>,
     #[serde(default)]
     pub report_end: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_outcome: Option<String>,
     /// Structured payload of the report (host convention).
     #[serde(
         default,
@@ -242,6 +250,14 @@ impl LLMBehaviorResult {
         }
         if self.self_report.is_none() && self.report_result.is_some() {
             return Err("a report result requires a report in the same response".into());
+        }
+        if let Some(outcome) = self.report_outcome.as_deref() {
+            if !self.report_end {
+                return Err("report outcome requires a final report".into());
+            }
+            if !matches!(outcome, "succeeded" | "failed" | "blocked") {
+                return Err("report outcome must be succeeded, failed or blocked".into());
+            }
         }
         if self.report_end {
             if self
@@ -297,6 +313,7 @@ impl LLMBehaviorResult {
             thought: step.thought.clone(),
             self_report: step.self_report.clone(),
             report_end: step.report_end,
+            report_outcome: step.report_outcome.clone(),
             report_result: step.report_result.clone(),
         }
     }

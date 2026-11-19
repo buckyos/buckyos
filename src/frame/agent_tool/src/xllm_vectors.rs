@@ -1118,6 +1118,30 @@ there]]></write_file>
             vec![],
         ),
         behavior_case(
+            "final_report_has_outcome_and_app_result",
+            &none,
+            r#"<response><report end="true" outcome="blocked">Manifest unavailable</report><result>{"outcome":"custom"}</result></response>"#,
+            vec![],
+        ),
+        behavior_case(
+            "progress_report_with_outcome",
+            &none,
+            r#"<response><report outcome="succeeded">progress</report></response>"#,
+            vec![],
+        ),
+        behavior_case(
+            "report_outcome_is_unknown",
+            &none,
+            r#"<response><report end="true" outcome="FAILED">final</report></response>"#,
+            vec![],
+        ),
+        behavior_case(
+            "report_outcome_twice",
+            &none,
+            r#"<response><report end="true" outcome="failed" outcome="succeeded">final</report></response>"#,
+            vec![],
+        ),
+        behavior_case(
             "two_reports",
             &none,
             r#"<response><report>first</report><report>second</report></response>"#,

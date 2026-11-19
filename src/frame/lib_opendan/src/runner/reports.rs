@@ -33,6 +33,23 @@ pub(super) struct ReportArgs {
     pub result: Option<Value>,
     #[serde(default)]
     pub is_end: bool,
+    pub outcome: Option<ReportOutcome>,
+}
+
+impl ReportArgs {
+    pub(super) fn from_behavior(
+        report: String,
+        is_end: bool,
+        outcome: Option<&str>,
+        payload: Option<&Value>,
+    ) -> Result<Self> {
+        let (artifacts, result) = agent_tool::xllm::split_report_result(payload);
+        let outcome = outcome
+            .map(|s| serde_json::from_value(Value::String(s.to_owned())))
+            .transpose()
+            .map_err(|e| invalid(e.to_string()))?;
+        Ok(Self { report, artifacts, result, is_end, outcome })
+    }
 }
 
 /// An object leaving a session as the host keeps it: its id and the
@@ -85,14 +102,15 @@ impl AgentTool for ReportTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_REPORT.into(),
-            description: "Submit a progress report, or finish this context with is_end=true. Final reports require all tasks and child work to be settled. Accepted completion skips remaining calls in the batch. Artifacts are explicit files relative to the work directory, bucket objects (`obj://bucket/…` a command returned) or object ids (e.g. `cyfile:…` from another report); the host keeps them in the agent's `artifacts` bucket and delivers them with the final report as attachments. Result is optional application JSON. Reports are delivered by the host, not sent as messages by this tool.".into(),
+            description: "Submit a progress report, or finish this context with is_end=true. On a top-level Work session’s final report, set outcome to succeeded when the objective was verified, blocked when a prerequisite is missing, failed when the work or its verification failed. Only succeeded releases dependent Todos. Finish or cancel running tasks before the final report. Other contexts and progress reports omit outcome. Accepted completion skips remaining calls in the batch. Artifacts are explicit files relative to the work directory, bucket objects (`obj://bucket/…` a command returned) or object ids (e.g. `cyfile:…` from another report); the host keeps them in the agent's `artifacts` bucket and delivers them with the final report as attachments. Result is optional application JSON. Reports are delivered by the host, not sent as messages by this tool.".into(),
             args_schema: json!({"type":"object", "additionalProperties":false, "properties": {
                 "report":{"type":"string","minLength":1},
                 "artifacts":{"type":"array","items":{"type":"string"}},
-                "result":{}, "is_end":{"type":"boolean","default":false}
+                "result":{}, "is_end":{"type":"boolean","default":false},
+                "outcome":{"type":"string","enum":["succeeded","failed","blocked"]}
             },"required":["report"]}),
             output_schema: json!({"type":"object"}),
-            usage: Some("report({report: \"...\", artifacts: [\"output.txt\"], is_end: true})".into()),
+            usage: Some("report({report: \"...\", artifacts: [\"output.txt\"], is_end: true, outcome: \"succeeded\"})".into()),
         }
     }
     fn calling(&self) -> CallingConventions {
@@ -207,6 +225,9 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         artifact_bytes(&workdir, path)?;
     }
     if !args.is_end {
+        if args.outcome.is_some() {
+            return Err(invalid("outcome is only valid on a final report (is_end=true)"));
+        }
         return Ok(());
     }
     let child = super::outcome::call_site_of(sh, run.run_id()).await.0;
@@ -236,6 +257,13 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         }
     }
     let s = sh.session.lock().await;
+    if !child && s.config.session.kind == SessionKind::Work {
+        if s.config.session.policy.completion == CompletionPolicy::ExplicitReport && args.outcome.is_none() {
+            return Err(invalid("a final Work report requires outcome: succeeded, failed or blocked"));
+        }
+    } else if args.outcome.is_some() {
+        return Err(invalid("outcome is only valid on a top-level Work session's final report"));
+    }
     if s.state.stop_requested || sh.deps.stop.requested() || s.state.run_state == RunState::Finished
     {
         return Err(invalid("session stop or completion already requested"));
@@ -273,6 +301,7 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
 fn same_args(old: &ReportSubmission, args: &ReportArgs) -> bool {
     old.report == args.report
         && old.is_end == args.is_end
+        && old.outcome == args.outcome
         && old.result == args.result
         && old
             .artifacts
@@ -334,6 +363,7 @@ pub(super) async fn submit(
         artifacts,
         result: args.result,
         is_end: args.is_end,
+        outcome: args.outcome,
         accepted_at_ms: crate::now_ms(),
     };
     run.save_report(&submission)?;
@@ -723,20 +753,18 @@ pub(super) async fn sync_xml(
             continue;
         }
         if let Some(report) = &step.self_report {
-            let (artifacts, result) =
-                agent_tool::xllm::split_report_result(step.report_result.as_ref());
             submit(
                 sh,
                 run,
                 ReportSource::Behavior {
                     step_index: step.meta.step_index,
                 },
-                ReportArgs {
-                    report: report.clone(),
-                    artifacts,
-                    result,
-                    is_end: step.report_end,
-                },
+                ReportArgs::from_behavior(
+                    report.clone(),
+                    step.report_end,
+                    step.report_outcome.as_deref(),
+                    step.report_result.as_ref(),
+                )?,
             )
             .await?;
         }

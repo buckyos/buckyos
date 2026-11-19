@@ -379,7 +379,7 @@ fn children_llm(busy_calls: Arc<AtomicUsize>) -> Arc<ScriptedLlm> {
             Ok(tool_call(
                 "done",
                 "report",
-                json!({ "report": "quick result", "is_end": true }),
+                json!({ "report": "quick result", "outcome": "succeeded", "is_end": true }),
             ))
         }
     })

@@ -126,14 +126,14 @@ async fn a_whole_list_at_once_runs_in_its_order() {
                     json!({ "command": format!("sleep 0.5; echo {todo} >> \"$OPENDAN_WORKSPACE_DIR/{todo}.txt\"") }),
                 );
             }
-            tool_call("w2", "report", json!({ "report": format!("{todo} written"), "is_end": true }))
+            tool_call("w2", "report", json!({ "report": format!("{todo} written"), "outcome": "succeeded", "is_end": true }))
         }
         Role::Explore => {
             let todo = todo_of(req);
             if has_tool_result(req, "e1").is_none() {
                 return tool_call("e1", "shell", json!({ "command": "sleep 0.3; pwd" }));
             }
-            tool_call("e2", "report", json!({ "report": format!("{todo}: verified"), "is_end": true }))
+            tool_call("e2", "report", json!({ "report": format!("{todo}: verified"), "outcome": "succeeded", "is_end": true }))
         }
         Role::Plan => {
             let list = list_of(&path_c);
@@ -179,7 +179,7 @@ async fn a_whole_list_at_once_runs_in_its_order() {
             }
             let all_ended = list.todos.len() == 5 && list.todos.iter().all(|t| t.latest().is_some_and(|a| a.ended()));
             if all_ended && has_tool_result(req, "p3").is_none() {
-                return tool_call("p3", "report", json!({ "intent": "All Todos completed and T01 verified.", "report": "a, b, c, d written; T05 verified a", "is_end": true }));
+                return tool_call("p3", "report", json!({ "intent": "All Todos completed and T01 verified.", "report": "a, b, c, d written; T05 verified a", "outcome": "succeeded", "is_end": true }));
             }
             text("Work runs.")
         }
@@ -220,6 +220,77 @@ async fn a_whole_list_at_once_runs_in_its_order() {
     assert_eq!(st.turns_completed, st.turn_seq);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_a_successful_final_report_releases_a_dependent_todo() {
+    for (outcome, evidence, expected) in [
+        ("failed", "The manifest checksum did not match.", Outcome::Failed),
+        ("blocked", "The required manifest was unavailable.", Outcome::Failed),
+        ("succeeded", "The manifest checksum matched.", Outcome::Succeeded),
+    ] {
+        let env = Env::new();
+        install_jarvis(&env);
+        tool_env(&env);
+        let plan = env.create_work(plan_spec(&env, "Publish a verified manifest.")).await;
+        let path = plan.path().to_path_buf();
+        let llm = ScriptedLlm::new(move |req, _| match role(req) {
+            Role::Work => match todo_of(req).as_str() {
+                "T01" => {
+                    if outcome == "blocked" {
+                        match has_tool_result(req, "unclassified") {
+                            None => return tool_call("unclassified", "report", json!({
+                                "report": evidence, "result": { "status": "blocked" }, "is_end": true
+                            })),
+                            Some(rejection) => assert!(rejection.contains("outcome"), "{rejection}"),
+                        }
+                    }
+                    tool_call("verify", "report", json!({ "report": evidence, "outcome": outcome, "is_end": true }))
+                }
+                "T02" => tool_call("publish", "report", json!({ "report": "Published.", "outcome": "succeeded", "is_end": true })),
+                id => panic!("unexpected Todo {id}"),
+            },
+            Role::Plan => {
+                let list = list_of(&path);
+                if list.todos.is_empty() {
+                    return shell(
+                        "plan", "Publish only after verifying the manifest.",
+                        "agent-session todo add verify --content 'Verify the checksum.' --accept 'Checksum matches.' && agent-session todo add publish --after T01 --content 'Publish the verified manifest.'",
+                    );
+                }
+                let dependent = list.get("T02").unwrap();
+                match dependent.status {
+                    TodoStatus::Blocked | TodoStatus::Completed => {
+                        let released = outcome == "succeeded";
+                        assert_eq!(dependent.status == TodoStatus::Completed, released, "{outcome}: {dependent:?}");
+                        if !released {
+                            assert_eq!(dependent.blocked_by, ["T01"]);
+                            assert!(dependent.attempts.is_empty(), "{outcome}: {dependent:?}");
+                        }
+                        tool_call("end", "report", json!({
+                            "intent": "Record the result of the plan.", "report": evidence,
+                            "outcome": outcome, "is_end": true
+                        }))
+                    }
+                    _ => text("Waiting for verification or publication."),
+                }
+            }
+            Role::Explore => panic!("no exploration was scheduled"),
+        });
+        let out = drive_to_end(&env, llm, &plan).await;
+        assert!(matches!(out.result, DriveResult::Finished { outcome: Some(o), .. } if o == expected), "{outcome}: {:?}", out.result);
+        let list = list_of(plan.path());
+        let prerequisite = list.get("T01").unwrap();
+        let released = expected == Outcome::Succeeded;
+        assert_eq!(prerequisite.status, if released { TodoStatus::Completed } else { TodoStatus::Failed });
+        assert_eq!(list.get("T02").unwrap().attempts.len(), usize::from(released));
+        let report = libopendan::todos::read_report(env.agent().as_ref(), prerequisite.latest().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.report, evidence);
+        assert_eq!(serde_json::to_value(&report).unwrap()["outcome"], outcome);
+    }
+}
+
 /// 3 / 8: T01 fails, T02 after it is blocked (the end of T01's work session
 /// says so) until the plan retries T01; its success starts T02. The
 /// plan ends while T03 still runs: the end is accepted, T03's attempt ends
@@ -246,7 +317,7 @@ async fn a_failed_prerequisite_blocks_until_retried_and_the_end_stops_what_runs(
                 "T03" if has_tool_result(req, "w1").is_none() => {
                     Ok(tool_call("w1", "shell", json!({ "command": "sleep 20" })))
                 }
-                _ => Ok(tool_call("w2", "report", json!({ "report": format!("{todo} done"), "is_end": true }))),
+                _ => Ok(tool_call("w2", "report", json!({ "report": format!("{todo} done"), "outcome": "succeeded", "is_end": true }))),
             }
         }
         Role::Explore => panic!("no explorations"),
@@ -278,7 +349,7 @@ async fn a_failed_prerequisite_blocks_until_retried_and_the_end_stops_what_runs(
                 text("T01 runs again.")
             } else if list.get("T02").is_some_and(|t| t.status == TodoStatus::Completed) && has_tool_result(req, "p3").is_none() {
                 assert_eq!(list.get("T03").unwrap().status, TodoStatus::Running);
-                tool_call("p3", "report", json!({ "intent": "a and b are done; c is not needed.", "report": "a and b done; c stopped", "is_end": true }))
+                tool_call("p3", "report", json!({ "intent": "a and b are done; c is not needed.", "report": "a and b done; c stopped", "outcome": "succeeded", "is_end": true }))
             } else {
                 text("Work runs.")
             }
@@ -335,7 +406,7 @@ async fn the_limit_holds_ready_todos_back_until_one_ends() {
             if has_tool_result(req, "w1").is_none() {
                 return tool_call("w1", "shell", json!({ "command": "sleep 0.5" }));
             }
-            tool_call("w2", "report", json!({ "report": format!("{todo} done"), "is_end": true }))
+            tool_call("w2", "report", json!({ "report": format!("{todo} done"), "outcome": "succeeded", "is_end": true }))
         }
         Role::Explore => panic!("no explorations"),
         Role::Plan => {
@@ -358,7 +429,7 @@ async fn the_limit_holds_ready_todos_back_until_one_ends() {
                 *s2.lock().unwrap() = Some(list.get("T02").unwrap().latest().is_some());
             }
             if list.todos.iter().all(|t| t.status == TodoStatus::Completed) {
-                return tool_call("p2", "report", json!({ "intent": "Both done.", "report": "a and b done", "is_end": true }));
+                return tool_call("p2", "report", json!({ "intent": "Both done.", "report": "a and b done", "outcome": "succeeded", "is_end": true }));
             }
             text("Work runs.")
         }
@@ -401,14 +472,14 @@ async fn an_update_reaches_the_running_work_session() {
             let input = last_input(req);
             if input.contains("was updated") {
                 *u2.lock().unwrap() = input;
-                return tool_call("w-new", "report", json!({ "report": "UPDATED: written in Rust", "is_end": true }));
+                return tool_call("w-new", "report", json!({ "report": "UPDATED: written in Rust", "outcome": "succeeded", "is_end": true }));
             }
             let done = req.messages.iter().filter(|m| m.role == AiRole::Tool).count();
             if !updated {
                 return tool_call(&format!("s{done}"), "shell", json!({ "command": "sleep 0.3" }));
             }
             match has_tool_result(req, "w-end") {
-                None => tool_call("w-end", "report", json!({ "report": "written in Python", "is_end": true })),
+                None => tool_call("w-end", "report", json!({ "report": "written in Python", "outcome": "succeeded", "is_end": true })),
                 Some(r) => {
                     assert!(r.contains("your Todo was updated"), "the end waits for the update: {r}");
                     text("The task changed; adjusting.")
@@ -440,7 +511,7 @@ async fn an_update_reaches_the_running_work_session() {
                 return text("T01 was told.");
             }
             if list.get("T01").unwrap().status == TodoStatus::Completed {
-                return tool_call("p3", "report", json!({ "intent": "Done in Rust.", "report": "greeting written in Rust", "is_end": true }));
+                return tool_call("p3", "report", json!({ "intent": "Done in Rust.", "report": "greeting written in Rust", "outcome": "succeeded", "is_end": true }));
             }
             text("T01 runs.")
         }
@@ -492,7 +563,7 @@ async fn pause_resume_and_stop_reach_the_work_session() {
                 if !attempt2 && has_tool_result(req, "b1").is_none() {
                     return tool_call("b1", "shell", json!({ "command": "sleep 20" }));
                 }
-                return tool_call("b2", "report", json!({ "report": "T02 done", "is_end": true }));
+                return tool_call("b2", "report", json!({ "report": "T02 done", "outcome": "succeeded", "is_end": true }));
             }
             match has_tool_result(req, "w1") {
                 None => {
@@ -503,7 +574,7 @@ async fn pause_resume_and_stop_reach_the_work_session() {
                 }
                 Some(r) => {
                     assert!(r.contains("slept"), "{r}");
-                    tool_call("w2", "report", json!({ "report": "T01 done after its pause", "is_end": true }))
+                    tool_call("w2", "report", json!({ "report": "T01 done after its pause", "outcome": "succeeded", "is_end": true }))
                 }
             }
         }
@@ -540,7 +611,7 @@ async fn pause_resume_and_stop_reach_the_work_session() {
                 return shell("p6", "Run b again.", "agent-session todo retry T02 --reason \"the right approach now\"");
             }
             if t02 == Some(TodoStatus::Completed) {
-                return tool_call("p7", "report", json!({ "intent": "a and b done.", "report": "a and b done", "is_end": true }));
+                return tool_call("p7", "report", json!({ "intent": "a and b done.", "report": "a and b done", "outcome": "succeeded", "is_end": true }));
             }
             text("Work runs.")
         }
@@ -625,7 +696,7 @@ async fn a_paused_plan_holds_its_inputs_and_pauses_its_work() {
     let llm = ScriptedLlm::new(move |req, _| match role(req) {
         Role::Work => match has_tool_result(req, "w1") {
             None => tool_call("w1", "shell", json!({ "command": "sleep 1.5; echo slept" })),
-            Some(_) => tool_call("w2", "report", json!({ "report": "T01 done", "is_end": true })),
+            Some(_) => tool_call("w2", "report", json!({ "report": "T01 done", "outcome": "succeeded", "is_end": true })),
         },
         Role::Explore => panic!("no explorations"),
         Role::Plan => {
@@ -635,7 +706,7 @@ async fn a_paused_plan_holds_its_inputs_and_pauses_its_work() {
             let list = list_of(&path_c);
             let heard = user_texts(req).iter().any(|u| u.contains("Note: no rush."));
             if heard && list.get("T01").unwrap().status == TodoStatus::Completed {
-                return tool_call("p2", "report", json!({ "intent": "Done.", "report": "done", "is_end": true }));
+                return tool_call("p2", "report", json!({ "intent": "Done.", "report": "done", "outcome": "succeeded", "is_end": true }));
             }
             text("Work runs.")
         }

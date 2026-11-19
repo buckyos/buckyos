@@ -31,6 +31,14 @@
       ],
       "type": "object"
     },
+    "ReportOutcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "blocked"
+      ],
+      "type": "string"
+    },
     "ReportSource": {
       "oneOf": [
         {
@@ -92,6 +100,16 @@
     },
     "is_end": {
       "type": "boolean"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReportOutcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "report": {
       "type": "string"

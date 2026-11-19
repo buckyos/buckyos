@@ -607,6 +607,46 @@
     {
       "actions": [],
       "expect": {
+        "result": {
+          "assistant_text": "<response><report end=\"true\" outcome=\"blocked\">Manifest unavailable</report><result>{\"outcome\":\"custom\"}</result></response>",
+          "report_end": true,
+          "report_outcome": "blocked",
+          "report_result": {
+            "outcome": "custom"
+          },
+          "self_report": "Manifest unavailable"
+        }
+      },
+      "name": "final_report_has_outcome_and_app_result",
+      "text": "<response><report end=\"true\" outcome=\"blocked\">Manifest unavailable</report><result>{\"outcome\":\"custom\"}</result></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "report outcome requires a final report"
+      },
+      "name": "progress_report_with_outcome",
+      "text": "<response><report outcome=\"succeeded\">progress</report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "report outcome must be succeeded, failed or blocked"
+      },
+      "name": "report_outcome_is_unknown",
+      "text": "<response><report end=\"true\" outcome=\"FAILED\">final</report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "report has duplicate outcome attributes"
+      },
+      "name": "report_outcome_twice",
+      "text": "<response><report end=\"true\" outcome=\"failed\" outcome=\"succeeded\">final</report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
         "error": "a decision must contain at most one report"
       },
       "name": "two_reports",
