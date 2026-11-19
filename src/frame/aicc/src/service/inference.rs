@@ -892,6 +892,11 @@ async fn authorize_ndm_input(token: &str, obj_id: &ndn_lib::ObjId) -> Result<(),
     Ok(())
 }
 
+fn rerouteable_model_unavailable(error: &RPCErrors) -> bool {
+    AiccError::from_krpc_error(error)
+        .is_some_and(|error| crate::error::model_unavailable_error(&error))
+}
+
 fn resource_rpc_error(error: ResourceError) -> RPCErrors {
     error.to_aicc_error().to_krpc_error()
 }
@@ -1069,6 +1074,31 @@ impl InferencePort for RuntimeInferencePort {
     }
 
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors> {
+        // 上游 model_not_found 只说明「这个 exact model 不能用」：这次尝试没有产生
+        // 生成计费，失败的模型已被 health 标记为限时不可用。这里重排一次路由，
+        // 目录里的下一个权重档（llm.code: gpt_codex 3.2 -> gpt_standard 3.0）就会接上。
+        match self.invoke_once(caller, call.clone(), true).await {
+            Err(error) if rerouteable_model_unavailable(&error) => {
+                log::warn!(
+                    "aicc.model_unavailable_reroute method={} caller_app_id={}",
+                    exact_method(&call),
+                    caller.app_id.as_deref().unwrap_or_default()
+                );
+                self.invoke_once(caller, call, false).await
+            }
+            result => result,
+        }
+    }
+}
+
+// 重排路由后的第二次尝试走这里（trait 方法不能带额外参数，所以单独放 inherent impl）。
+impl RuntimeInferencePort {
+    async fn invoke_once(
+        &self,
+        caller: &AuthorizedCaller,
+        call: AiccCall,
+        allow_replay: bool,
+    ) -> Result<Value, RPCErrors> {
         let route_input = route_input_for_call(&call)?;
         let request_model = route_input.model.clone();
         let has_explicit_trace_id = call.trace_id().is_some();
@@ -1086,23 +1116,27 @@ impl InferencePort for RuntimeInferencePort {
             Some(body) => body,
             None => call_params(&call)?,
         };
-        if let Some(key) = canonical_body
-            .get("idempotency_key")
-            .and_then(Value::as_str)
-        {
-            if let Some((receipt, exact_model)) = self
-                .execution
-                .replay(&caller.tenant_id, exact_method(&call), key, &canonical_body)
-                .await
-                .map_err(|error| error.to_krpc_error())?
+        // 重排后的第二次尝试必须真的再执行一次：第一次尝试已经把失败结果写进同一个
+        // 幂等作用域，replay 只会把那份失败原样返回。
+        if allow_replay {
+            if let Some(key) = canonical_body
+                .get("idempotency_key")
+                .and_then(Value::as_str)
             {
-                return inference_response(
-                    receipt,
-                    RouteTrace {
-                        attempts: Vec::new(),
-                        final_model: exact_model,
-                    },
-                );
+                if let Some((receipt, exact_model)) = self
+                    .execution
+                    .replay(&caller.tenant_id, exact_method(&call), key, &canonical_body)
+                    .await
+                    .map_err(|error| error.to_krpc_error())?
+                {
+                    return inference_response(
+                        receipt,
+                        RouteTrace {
+                            attempts: Vec::new(),
+                            final_model: exact_model,
+                        },
+                    );
+                }
             }
         }
         // The first route applies privacy, local-only and visibility policy
@@ -1237,6 +1271,13 @@ impl InferencePort for RuntimeInferencePort {
                 routed.decision.selected = promoted;
             }
         }
+        // 重排的第二次执行要落在新的幂等作用域里，否则 execute 会直接把第一次的
+        // 失败记录当成既有结果返回。
+        let execution_idempotency_key = if allow_replay {
+            idempotency_key.clone()
+        } else {
+            format!("{idempotency_key}@reroute")
+        };
         let receipt = self
             .execution
             .execute(crate::execution::ExecutionRequest {
@@ -1246,7 +1287,7 @@ impl InferencePort for RuntimeInferencePort {
                 attribution: Some(caller.attribution()),
                 trace_id: Some(routed.trace_id.clone()),
                 request_model: request_model.clone(),
-                idempotency_key,
+                idempotency_key: execution_idempotency_key,
                 canonical_body,
                 parent_task_id,
                 runtime_generation: routed.snapshot.generation,
