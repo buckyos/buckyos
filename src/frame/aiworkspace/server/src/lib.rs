@@ -125,13 +125,13 @@ impl AppState {
                 .lock()
                 .unwrap()
                 .entry(ws.workspace_id.clone())
-                .or_insert_with(|| watch::channel(ws.head_seq).0)
+                .or_insert_with(|| watch::Sender::new(ws.head_seq))
                 .clone();
-            let _ = tx.send(ws.head_seq);
+            tx.send_replace(ws.head_seq);
             let (id, epoch, wake_head) = (ws.workspace_id.clone(), ws.epoch.clone(), wake.clone());
             // called only after the commit is durable and published in memory
             ws.on_commit = Some(Box::new(move |seq| {
-                let _ = tx.send(seq);
+                tx.send_replace(seq);
                 if let Some(w) = &wake_head {
                     let _ = w.send(Wake::Head { workspace_id: id.clone(), epoch: epoch.clone(), head_seq: seq });
                 }
@@ -144,11 +144,11 @@ impl AppState {
                     let _ = w.send(Wake::Locks { workspace_id: id.clone(), counter: n });
                 }
             }));
-            let acl_tx = hook_acls.lock().unwrap().entry(ws.workspace_id.clone()).or_insert_with(|| watch::channel(ws.acl_rev()).0).clone();
-            let _ = acl_tx.send(ws.acl_rev());
+            let acl_tx = hook_acls.lock().unwrap().entry(ws.workspace_id.clone()).or_insert_with(|| watch::Sender::new(ws.acl_rev())).clone();
+            acl_tx.send_replace(ws.acl_rev());
             let (id, wake_acl) = (ws.workspace_id.clone(), wake.clone());
             ws.on_acl_change = Some(Box::new(move |rev| {
-                let _ = acl_tx.send(rev);
+                acl_tx.send_replace(rev);
                 if let Some(w) = &wake_acl {
                     let _ = w.send(Wake::Acl { workspace_id: id.clone(), acl_rev: rev });
                 }

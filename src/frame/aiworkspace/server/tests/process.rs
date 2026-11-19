@@ -254,6 +254,43 @@ async fn v23_service_api_end_to_end() {
 }
 
 #[tokio::test]
+async fn wait_changes_reports_current_head_and_acl_rev() {
+    let dir = tempfile::tempdir().unwrap();
+    let nfs = Nfs::start(dir.path()).await;
+    let s = Server::start(dir.path(), &nfs, None).await;
+    let (id, epoch) = s.project(&nfs, "tok-alice").await;
+    let workspace = json!({ "workspace_id": id });
+    let set_peer_access = |allow: Value| s.rpc("tok-alice", "acl.set", json!({
+        "workspace_id": id, "changes": [{ "subject": "bob", "allow": allow }]
+    }));
+
+    assert_eq!(set_peer_access(json!(["read", "update"])).await["ok"], true);
+    let info = s.rpc("tok-bob", "ws.get_info", workspace.clone()).await;
+    let head = info["head_seq"].as_u64().unwrap();
+    let acl_rev = info["acl_rev"].as_u64().unwrap();
+    assert!(head > 0 && acl_rev > 0);
+    let wait = |timeout_ms: u64| s.rpc("tok-bob", "doc.wait_changes", json!({
+        "workspace_id": id, "epoch": epoch, "after_seq": head, "after_acl_rev": acl_rev, "timeout_ms": timeout_ms
+    }));
+    let quiet = wait(20).await;
+    assert_eq!(quiet["timed_out"], true, "{quiet}");
+    assert_eq!(quiet["head_seq"], head);
+    assert_eq!(quiet["acl_rev"], acl_rev);
+
+    let pending = wait(5000);
+    tokio::pin!(pending);
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut pending).await.is_err());
+    assert_eq!(set_peer_access(json!(["read"])).await["ok"], true);
+    let woke = pending.await;
+    let info = s.rpc("tok-bob", "ws.get_info", workspace).await;
+    assert_eq!(woke["timed_out"], false, "{woke}");
+    assert_eq!(info["head_seq"], head);
+    assert_eq!(woke["head_seq"], head);
+    assert!(info["acl_rev"].as_u64().unwrap() > acl_rev);
+    assert_eq!(woke["acl_rev"], info["acl_rev"]);
+}
+
+#[tokio::test]
 async fn an_uploaded_asset_is_taken_over_by_the_workspace_owner() {
     let dir = tempfile::tempdir().unwrap();
     let nfs = Nfs::start(dir.path()).await;
