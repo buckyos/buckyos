@@ -2,7 +2,7 @@
  * selection box with rotation, the icon near toolbar, in-place editing, locking and the version check. */
 
 import { devices, type Page } from '@playwright/test'
-import { blockCenter, fitAll, openCanvas, setCanvasMode, test, expect, wishCard, wishStageEnded, wishStep, type Api } from './fixtures'
+import { blockCenter, fitAll, openCanvas, setCanvasMode, test, expect, wishCard, wishStageEnded, wishStep, zoomIn, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const SHOTS = 'test-results/aiworkspace-objects'
@@ -386,6 +386,53 @@ test('OX10 rich text: double-click, Enter or typing opens it in place; the forma
   await page.getByTestId('aiws-near-text-size').click()
   await page.getByTestId('aiws-near-text-size-l').click()
   await expect(intro.locator('[data-text-size="l"]')).toBeVisible()
+})
+
+test('OX10 double-click preserves the canvas viewport, text layout and caret', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `in-place rich text ${Date.now()}`)
+  const result = await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'text', type_id: 'buckyos.richtext', parent_id: 'sf-analysis-content', order_key: 'z', payload: {
+      content: { type: 'doc', content: [
+        { type: 'paragraph', attrs: { block_id: 'title' }, content: [{ type: 'text', text: '机制的思考' }] },
+        { type: 'paragraph', attrs: { block_id: 'blank' } },
+        { type: 'paragraph', attrs: { block_id: 'line' }, content: [{ type: 'text', text: '第一行' }, { type: 'hard_break' }] },
+        { type: 'paragraph', attrs: { block_id: 'session' }, content: [{ type: 'text', text: 'session要不要使用memory?' }] },
+        { type: 'paragraph', attrs: { block_id: 'work' }, content: [{ type: 'text', text: 'work是否只读?' }] },
+      ] },
+    } },
+    { op: 'entity.create', entity_id: 'blk-text', type_id: 'buckyos.cell', parent_id: 'sf-analysis', order_key: 'z',
+      placement: { x: 200, y: 220, w: 2100, h: 100 }, payload: { view: { type: 'richtext' }, source_ref: { entity_id: 'text' } } },
+  ])
+  expect(result.status, JSON.stringify(result)).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await zoomIn(page)
+  const block = page.getByTestId('aiws-canvas-block-blk-text')
+  const paragraphs = block.locator('.aiws-prose > p')
+  await expect(paragraphs).toHaveCount(5)
+  const body = page.getByTestId('aiws-block-blk-text')
+  await body.evaluate((el) => { el.scrollTop = 40 })
+  await expect(body).toHaveJSProperty('scrollTop', 40)
+  const layout = () => paragraphs.evaluateAll((ps) => ps.map((p) => {
+    const { x, y, height } = p.getBoundingClientRect()
+    return { x, y, height }
+  }))
+  const before = await layout()
+  const world = page.getByTestId('aiws-world')
+  const transform = await world.evaluate((el) => getComputedStyle(el).transform)
+  const point = await paragraphs.nth(3).evaluate((p) => {
+    const range = document.createRange()
+    range.setStart(p.firstChild!, 'session'.length)
+    range.collapse(true)
+    const { x, y, height } = range.getBoundingClientRect()
+    return { x, y: y + height / 2 }
+  })
+  await page.mouse.dblclick(point.x, point.y)
+  await expect(page.getByTestId('aiws-richtext-text')).toBeFocused()
+  await expect(world).toHaveCSS('transform', transform)
+  await expect(body).toHaveJSProperty('scrollTop', 40)
+  expect(await layout()).toEqual(before)
+  await page.keyboard.insertText('|')
+  await expect(paragraphs.nth(3)).toHaveText('session|要不要使用memory?')
 })
 
 test('OX14 the near toolbar avoids the floating toolbars and moves what does not fit into "more"; the context menu lists the same actions', async ({ page, api }) => {

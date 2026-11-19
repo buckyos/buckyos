@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom'
 import { Bold, Code, CodeXml, FileCode, Heading, Heading1, Heading2, Heading3, Image as ImageIcon, Italic, Link2, List, ListOrdered, ListTree, MessageSquarePlus, Minus, Pilcrow, Sparkles, Strikethrough, Table, TextQuote, Type } from 'lucide-react'
 import { UndoManager } from 'loro-crdt'
-import { createNodeFromLoroObj, LoroSyncPlugin, loroUndoPluginKey, type LoroDocType, type LoroNodeMapping } from 'loro-prosemirror'
+import { createNodeFromLoroObj, LoroSyncPlugin, loroSyncPluginKey, loroUndoPluginKey, type LoroDocType, type LoroNodeMapping } from 'loro-prosemirror'
 import { baseKeymap, chainCommands, exitCode, toggleMark, wrapIn } from 'prosemirror-commands'
 import { keymap } from 'prosemirror-keymap'
 import { DOMSerializer, Fragment, Node as PMNode, Slice, type MarkType, type NodeType, type Schema } from 'prosemirror-model'
@@ -21,7 +21,7 @@ import { aiwsT } from '../i18n'
 import type { CapturedAnchor } from '../anchors/registry'
 import { annotationsPlugin, captureAnchor, makeHost, richTextAnchors, selectionOf, setAnnotations, type Placement } from '../anchors/richtext'
 import { AnnotationGutter } from '../ui/annotations'
-import { consumeIntent, useEditorToolbar, useIntent } from '../ui/blocks/editorToolbar'
+import { consumeIntent, useEditorToolbar, useIntent, type Intent } from '../ui/blocks/editorToolbar'
 import { useFlowBlock } from '../ui/blocks/flowContext'
 import type { ToolbarItem } from '../ui/blocks/registry'
 import { registryEntries } from '../ui/canvas/catalog'
@@ -174,7 +174,7 @@ function buildView(
   host: HTMLElement, store: WorkspaceStore, collab: RichTextCollab, isEditable: () => boolean,
   setEmbeds: (update: (previous: Embeds) => Embeds) => void, onOpenEntity: (entityId: string) => void,
   annotations: { onPlaced: (placements: Placement[]) => void; onClick: (annotationId: string) => void },
-  onUpdate: () => void, extras: ViewExtras,
+  onUpdate: (view: EditorView, previous: EditorState) => void, extras: ViewExtras,
 ): { view: EditorView; dispose: () => void } {
   const schema = store.pmSchema
   const working = collab.working
@@ -424,16 +424,16 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   }, [editable])
 
   // the canvas opened this editor by typing or by double-clicking a spot: the text goes in, the caret goes there
-  const applyIntent = (view: EditorView, intent: string) => {
+  const applyIntent = (view: EditorView, { value, caretAt }: Intent) => {
     if (!editableRef.current) return
-    if (intent.startsWith('type:')) {
+    if (value.startsWith('type:')) {
       const end = Selection.atEnd(view.state.doc)
-      view.dispatch(view.state.tr.setSelection(end).insertText(intent.slice(5)))
-    } else if (intent.startsWith('caret:')) {
-      const [left, top] = intent.slice(6).split(',').map(Number)
-      const pos = view.posAtCoords({ left, top })
+      view.dispatch(view.state.tr.setSelection(end).insertText(value.slice(5)))
+    } else if (caretAt) {
+      view.dom.closest('.aiws-block-body')?.scrollTo(caretAt.scrollLeft, caretAt.scrollTop)
+      const pos = view.posAtCoords(caretAt)
       view.dispatch(view.state.tr.setSelection(pos ? TextSelection.near(view.state.doc.resolve(pos.pos)) : Selection.atEnd(view.state.doc)))
-    } else if (intent === 'newline') {
+    } else if (value === 'newline') {
       // "continue writing" below the text: an empty last line, or a new one
       const doc = view.state.doc
       const lastNode = doc.lastChild
@@ -462,10 +462,11 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     const result = buildView(host, store, collab, () => editableRef.current, setEmbeds, (id) => openEntityRef.current(id), {
       onPlaced: setPlacements,
       onClick: (id) => activateRef.current?.(id),
-    }, () => {
-      const view = viewRef.current
-      if (!view) return
+    }, (view, previous) => {
       const state = view.state
+      if (loroSyncPluginKey.getState(state)?.docSubscription && !loroSyncPluginKey.getState(previous)?.docSubscription) {
+        setBuilt({ view, host })
+      }
       const marks = store.pmSchema.marks
       const next = { strong: markActive(state, marks.strong), em: markActive(state, marks.em), strike: markActive(state, marks.strike), code: markActive(state, marks.code), block: blockKind(state), list: listKind(state) }
       setAt((previous) => (Object.entries(next).every(([key, value]) => previous[key as keyof typeof previous] === value) ? previous : next))
@@ -480,7 +481,6 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       onAnnotate: () => escapeHolder.get('a')?.() ?? false,
     })
     viewRef.current = result.view
-    setBuilt({ view: result.view, host })
     return () => {
       viewRef.current = null
       setBuilt(null)
@@ -500,7 +500,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       if (intent.value.startsWith('type:') && editableRef.current) document.execCommand('insertText', false, intent.value.slice(5))
       return
     }
-    applyIntent(built.view, intent.value)
+    applyIntent(built.view, intent)
   }, [built, intent, intentKey, source.on, root])
 
   useEffect(() => {

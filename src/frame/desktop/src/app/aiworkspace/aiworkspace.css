@@ -352,6 +352,9 @@
 .aiws-toolbar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--cp-border); margin-bottom: 6px; }
 .aiws-toolbar-sep { width: 1px; height: 16px; background: var(--cp-border); margin: 0 2px; }
 .aiws-prose { outline: none; min-height: 24px; white-space: pre-wrap; word-wrap: break-word; }
+.aiws-prose-static :is(p, h1, h2, h3)[data-block-id]::after,
+.aiws-prose-static pre[data-block-id] > code::after,
+.aiws-prose-static .aiws-rt-table > tbody > tr > :is(td, th)::after { content: '\a'; }
 .aiws-prose p { margin: 0 0 6px; }
 .aiws-prose h1 { font-size: 20px; font-weight: 600; margin: 8px 0 6px; }
 .aiws-prose h2 { font-size: 17px; font-weight: 600; margin: 8px 0 6px; }

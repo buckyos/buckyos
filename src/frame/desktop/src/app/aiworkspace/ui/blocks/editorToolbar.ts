@@ -51,17 +51,19 @@ export function useEditorToolbar(owner: string, items: ToolbarItem[] | null): bo
   return sink !== null
 }
 
+export interface CanvasCaret { left: number; top: number; scrollLeft: number; scrollTop: number }
+
 /** An intent waiting for an Editor; `seq` tells a new request from one already handled. */
-export interface Intent { value: string; seq: number }
+export interface Intent { value: string; seq: number; caretAt?: CanvasCaret }
 
 const intents = new Map<string, Intent>()
 const intentEmitter = new Emitter()
 let intentSeq = 0
 
 /** Ask the Editor of `key` (a Block id) to do `value` when it mounts, or now if it is mounted. */
-export function requestIntent(key: string, value: string) {
+export function requestIntent(key: string, value: string | CanvasCaret) {
   intentSeq += 1
-  intents.set(key, { value, seq: intentSeq })
+  intents.set(key, typeof value === 'string' ? { value, seq: intentSeq } : { value: 'caret', caretAt: value, seq: intentSeq })
   intentEmitter.emit()
 }
 

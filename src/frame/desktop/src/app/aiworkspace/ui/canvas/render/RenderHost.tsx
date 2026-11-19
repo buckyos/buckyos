@@ -64,7 +64,7 @@ import { testHooks } from '../../../api/testHooks'
 import { useStore } from '../../../state/hooks'
 import { BlockHost, type Lod } from '../../blocks/BlockHost'
 import { BudgetContext } from '../../blocks/budget'
-import { BlockMetaContext, BlockMetaSink, requestIntent, type BlockMeta } from '../../blocks/editorToolbar'
+import { BlockMetaContext, BlockMetaSink, requestIntent, type BlockMeta, type CanvasCaret } from '../../blocks/editorToolbar'
 import { blockRegistry, modePolicy, type CanvasMode, type HoverAffordance } from '../../blocks/registry'
 import { usePointerType } from '../../blocks/useBlockContext'
 import { FreshnessBadge } from '../../sources/FreshnessBadge'
@@ -137,7 +137,7 @@ export interface RenderHostProps {
   selection: ReadonlySet<string>
   onSelectionChange: (next: Set<string>) => void
   editing: string | null
-  onEditingChange: (id: string | null) => void
+  onEditingChange: (id: string | null, caretAt?: CanvasCaret) => void
   /** Can this user move, resize and rotate the Block (the canvas's editors: all; a commenter: its own notes)? */
   canLayout: (id: string) => boolean
   onCommitLayout: (changes: LayoutChange[]) => void
@@ -1342,11 +1342,23 @@ export function RenderHost(props: RenderHostProps) {
     if (hit) props.onSelectionChange(new Set([hit.id]))
     else if (selection.size > 0) props.onSelectionChange(new Set())
   }
+  const editBlockAt = (block: Laid, p: Point) => {
+    const id = block.entity.entity_id
+    const canvas = rootRef.current?.getBoundingClientRect()
+    let caretAt: CanvasCaret | undefined
+    if (block.entity.view_type === 'richtext' && canvas) {
+      const body = frames.current.get(id)?.querySelector<HTMLElement>(':scope > .aiws-block-body')
+      caretAt = { left: canvas.left + p.x, top: canvas.top + p.y, scrollLeft: body?.scrollLeft ?? 0, scrollTop: body?.scrollTop ?? 0 }
+    }
+    props.onEditingChange(id, caretAt)
+    // Editing a group's backing keeps the group selected.
+    props.onSelectionChange(new Set([block.backing ? block.parentId : id]))
+  }
   const doubleTapAt = (p: Point) => {
     const w = camera.toWorld(p.x, p.y)
     const hit = policy.select && props.tool !== 'hand' ? hitAt(w.x, w.y) : null
     const l = hit ? laid.get(hit.id) : undefined
-    if (hit && l && !l.isGroup && !l.connector && policy.editContent) { props.onEditingChange(hit.id); props.onSelectionChange(new Set([l.backing ? l.parentId : hit.id])); return }
+    if (l && !l.isGroup && !l.connector && policy.editContent) { editBlockAt(l, p); return }
     camera.animateTo(l ? camera.fitted(l.bounds, 24) : camera.zoomedAt(p.x, p.y, 2))
   }
   useLayoutEffect(() => {
@@ -1771,11 +1783,7 @@ export function RenderHost(props: RenderHostProps) {
         if (!policy.editContent) { if (l.entity.view_type === 'asset') requestIntent(hit.id, 'open'); return }
         // a line's label is typed in place (标准对象的交互改进 §4.4)
         if (l.connector && !lineEditable(hit.id)) return
-        // rich text opens with the caret where the double-click was (§4.4)
-        if (l.entity.view_type === 'richtext') requestIntent(hit.id, `caret:${event.clientX},${event.clientY}`)
-        props.onEditingChange(hit.id)
-        // a group's backing is edited (its title) with the group still selected
-        props.onSelectionChange(new Set([l.backing ? l.parentId : hit.id]))
+        editBlockAt(l, p)
       }}
     >
       <BlockMetaContext.Provider value={metaSink}>
