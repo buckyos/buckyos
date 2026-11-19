@@ -118,6 +118,70 @@ fn a_fixed_version_resolves_only_while_a_snapshot_retains_it() {
 }
 
 #[test]
+fn fixed_annotation_versions_check_their_original_target_with_current_permissions() {
+    let env = env();
+    let id = project(&env);
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    let annotation = "versioned-note";
+    let quote = json!({ "exact": "本周项目进展" });
+    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": annotation, "type_id": "buckyos.annotation",
+        "parent_id": "surface-main-content", "order_key": "z", "payload": { "kind": "note", "target": { "entity_id": "notes" }, "context": { "quote": quote } } }]));
+    let cp = ws.checkpoint(&alice()).unwrap();
+    let by_seq = json!({ "epoch": ws.epoch, "seq": cp.seq });
+    let by_object = json!({ "content_root": cp.objects[annotation] });
+
+    // Re-anchoring the head to a visible entity must not make the earlier quote visible.
+    ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": annotation, "keys": [
+        { "key": "target", "value": { "entity_id": "tasks" }, "expect": { "rev": cp.seq } },
+        { "key": "context", "value": null, "expect": { "rev": cp.seq } }] }]));
+    ws.acl_set(&alice(), &json!([{ "subject": "bob", "allow": ["read"] }, { "subject": "bob", "resource": "notes", "deny": ["read"] }])).unwrap();
+    for version in [by_seq, by_object] {
+        let params = json!({ "entity_id": annotation, "version": version });
+        assert_eq!(ws.read_as(&bob(), &params).unwrap_err().code.as_str(), "PERMISSION_DENIED");
+        let allowed = ws.read_as(&alice(), &params).unwrap();
+        assert_eq!(allowed["object_id"], cp.objects[annotation]);
+        assert_eq!(allowed["object"]["content"]["context"]["quote"], quote);
+    }
+    assert_eq!(ws.restore_version_plan(&bob(), annotation, cp.seq).unwrap_err().code.as_str(), "PERMISSION_DENIED");
+    assert!(ws.restore_version_plan(&alice(), annotation, cp.seq).is_ok());
+}
+
+#[test]
+fn change_stream_filters_annotation_context_at_each_recorded_target() {
+    let env = env();
+    let id = project(&env);
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    let after = ws.head_seq;
+    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "stream-note", "type_id": "buckyos.annotation",
+        "parent_id": "surface-main-content", "order_key": "z", "payload": { "kind": "note", "body": "comment", "target": { "entity_id": "notes" },
+        "context": { "label": "original excerpt" } } }]));
+    let rev = ws.head_seq;
+    let edit = |target: Option<&str>, label: &str| {
+        let mut keys = vec![json!({ "key": "context", "value": { "label": label }, "expect": { "rev": rev } })];
+        if let Some(id) = target {
+            keys.push(json!({ "key": "target", "value": { "entity_id": id }, "expect": { "rev": rev } }));
+        }
+        json!({ "op": "entity.set_keys", "entity_id": "stream-note", "keys": keys })
+    };
+    ok(&mut ws, &alice(), json!([edit(None, "first edit"), edit(Some("tasks"), "public label"),
+        edit(None, "another public label"), edit(Some("notes"), "final excerpt")]));
+    ws.acl_set(&alice(), &json!([{ "subject": "bob", "allow": ["read"] }, { "subject": "bob", "resource": "notes", "deny": ["read"] }])).unwrap();
+
+    let peer = ws.get_changes(&bob(), &ws.epoch, after, 100, true).unwrap();
+    let changes = peer["changes"].as_array().unwrap();
+    assert_eq!(changes[0]["ops"][0]["payload"]["body"], "comment");
+    assert_eq!(changes[1]["ops"][1]["keys"][0]["value"]["label"], "public label");
+    assert_eq!(changes[1]["ops"][2]["keys"][0]["value"]["label"], "another public label");
+    let owner = ws.get_changes(&alice(), &ws.epoch, after, 100, true).unwrap();
+    for private in ["original excerpt", "first edit", "final excerpt"] {
+        assert!(!peer.to_string().contains(private), "{private}");
+        assert!(owner.to_string().contains(private), "{private}");
+    }
+}
+
+#[test]
 fn history_floor_retention_roots_and_usage_ledger() {
     let env = env();
     let id = env.svc.create_workspace(&alice(), "格式", None).unwrap()["workspace_id"].as_str().unwrap().to_string();

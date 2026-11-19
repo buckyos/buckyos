@@ -10,7 +10,7 @@ use aiworkspace_core::canonical::{self, named_object, obj_id_from_filename, obj_
 use aiworkspace_core::materialize::{self, load_ops, materialize_with, snapshot_root, ObjectSink, ObjectSource};
 use aiworkspace_core::model::*;
 use aiworkspace_core::value::format_utc_ms;
-use aiworkspace_core::{richtext, Code, WsError, WsResult};
+use aiworkspace_core::{read, richtext, Code, WsError, WsResult};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -248,7 +248,13 @@ impl Workspace {
             let ids: Vec<String> = st.query_map([&scope], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
             for id in ids {
                 if let (Some(e), Some(edge)) = (ctx.entity(&id)?, ctx.edge(&id)?) {
-                    let mut payload = e.payload.clone();
+                    if !access.can_read(&ctx, &e)? {
+                        continue;
+                    }
+                    let mut payload = e.payload;
+                    if e.type_id == TYPE_ANNOTATION && !read::annotation_target_readable(&ctx, &access, &payload)? {
+                        payload.remove("context");
+                    }
                     payload.remove("author");
                     lines.push_str(&canonical::canonical_json(&json!({ "entity_id": id, "type_id": e.type_id, "parent_id": edge.parent_id,
                         "order_key": edge.order_key, "payload": payload }))?);
@@ -459,7 +465,29 @@ impl Workspace {
             let tx = self.doc.unchecked_transaction().map_err(db_err)?;
             debug_assert!(REPLICA_TABLES.contains(&"entities"));
             tx.execute("INSERT INTO replica.workspace_meta SELECT key, value FROM main.workspace_meta WHERE key <> 'peer_id'", []).map_err(db_err)?;
-            tx.execute("INSERT INTO replica.entities SELECT * FROM main.entities WHERE scope = 'shared' OR scope = ?1", [&scope]).map_err(db_err)?;
+            let mut redacted_annotations = Vec::new();
+            {
+                let ctx = self.ctx(&now);
+                let mut notes = tx.prepare(
+                    "SELECT entity_id, payload_json FROM main.entities WHERE type_id = ?1 AND (scope = 'shared' OR scope = ?2)
+                     AND json_type(payload_json, '$.context') IS NOT NULL",
+                ).map_err(db_err)?;
+                let mut rows = notes.query(params![TYPE_ANNOTATION, scope]).map_err(db_err)?;
+                while let Some(row) = rows.next().map_err(db_err)? {
+                    let raw: String = row.get(1).map_err(db_err)?;
+                    let payload: JsonMap = serde_json::from_str(&raw).map_err(|e| WsError::io(e.to_string()))?;
+                    if !read::annotation_target_readable(&ctx, &access, &payload)? {
+                        redacted_annotations.push(row.get::<_, String>(0).map_err(db_err)?);
+                    }
+                }
+            }
+            tx.execute(
+                "INSERT INTO replica.entities SELECT entity_id, type_id, schema_version, schema_id, scope, name, write_policy,
+                    CASE WHEN entity_id IN (SELECT value FROM json_each(?2)) THEN json_remove(payload_json, '$.context') ELSE payload_json END,
+                    key_revs_json, derived_json, created_seq, meta_rev, content_rev, life_rev, deleted_seq, created_by
+                 FROM main.entities WHERE scope = 'shared' OR scope = ?1",
+                params![scope, json!(redacted_annotations).to_string()],
+            ).map_err(db_err)?;
             tx.execute(
                 "INSERT INTO replica.tree_edges SELECT * FROM main.tree_edges WHERE child_id IN (SELECT entity_id FROM replica.entities) \
                  AND parent_id IN (SELECT entity_id FROM replica.entities)",
@@ -657,7 +685,11 @@ pub fn load_workspace(
     // a mismatch here is an implementation defect; the package must not become visible
     let check = ws.materialize_for(&Access::full(&caller.principal), "import", &caller.principal)?;
     if check.content_root != spec.content_root {
-        return Err(WsError::io(format!("import verification failed: content root {} != {}", check.content_root, spec.content_root)));
+        let now = ws.now();
+        let original = materialize::imported_content_root(&ws.ctx(&now), &mut StoreSink::new(&objects))?;
+        if original != spec.content_root {
+            return Err(WsError::io(format!("import verification failed: content root {original} != {}", spec.content_root)));
+        }
     }
     let personal: Vec<Value> = spec
         .personal

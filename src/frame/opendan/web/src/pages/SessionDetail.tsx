@@ -1,10 +1,12 @@
+import clsx from 'clsx'
 import { useState } from 'react'
 import { useSWRConfig } from 'swr'
 import { t, type TextKey } from '../i18n'
 import { goalHref, useQuery } from '../lib'
 import { dataModel, type OutboxEntry, type PauseSource, type RegistryEntry, type SessionDetail, type StopScope, type WorklogEntry } from '../model'
 import { pauseLabel } from '../runtimes'
-import { Badge, ConfirmDialog, Empty, ErrorBox, Fields, Mono, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
+import { toneOf } from '../tone'
+import { Badge, ConfirmDialog, Dot, Empty, ErrorBox, Fields, Mono, Note, PageHead, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
 
 const PAUSE_HINT: Record<PauseSource, TextKey> = {
   user: 'pausedByUserHint',
@@ -79,12 +81,16 @@ const WORKLOG_TONE: Record<string, string> = {
 function WorklogRow({ entry }: { entry: WorklogEntry }) {
   const [open, setOpen] = useState(false)
   const at = typeof entry.at_ms === 'number' ? entry.at_ms : null
+  const tone = toneOf(WORKLOG_TONE[entry.t] ?? (entry.t === 'turn_ended' ? str(entry.status) : undefined))
   return (
     <>
-      <tr className="cursor-pointer hover:bg-bg" onClick={() => setOpen(!open)} data-testid="worklog-row">
-        <td className="w-px text-xs text-mute">{entry.seq}</td>
-        <td className="w-px">
-          <Badge value={entry.t} tone={WORKLOG_TONE[entry.t] ?? (entry.t === 'turn_ended' ? str(entry.status) : undefined)} />
+      <tr className={clsx('cursor-pointer transition-colors hover:bg-hover', open && 'bg-hover')} onClick={() => setOpen(!open)} data-testid="worklog-row" aria-expanded={open}>
+        <td className="w-px text-right font-mono text-xs text-mute">{entry.seq}</td>
+        <td className="w-px whitespace-nowrap">
+          <span className={clsx('inline-flex items-baseline gap-2 font-mono text-xs', tone === 'bad' ? 'text-bad' : 'text-mute')}>
+            <Dot tone={tone === 'mute' ? undefined : tone} className="self-center" />
+            {entry.t}
+          </span>
         </td>
         <td className="text-xs">
           {summarize(entry)}
@@ -93,7 +99,7 @@ function WorklogRow({ entry }: { entry: WorklogEntry }) {
       </tr>
       {open && (
         <tr>
-          <td colSpan={3}>
+          <td colSpan={3} className="pt-0">
             <Pre value={entry} />
           </td>
         </tr>
@@ -188,15 +194,15 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
   return (
     <Panel title="Operations" testId="operations">
       {paused && (
-        <div className="mb-2 text-xs text-warn" data-testid="session-paused">
+        <Note tone="warn" testId="session-paused" className="mb-3">
           {t(pauseLabel[paused])} · {t(PAUSE_HINT[paused])}
-          {(paused === 'goal' || paused === 'budget') && entry.origin?.goal && <> <a className="text-accent" href={goalHref(entry.origin.goal.goal_id)}>{entry.origin.goal.goal_id}</a></>}
-        </div>
+          {(paused === 'goal' || paused === 'budget') && entry.origin?.goal && <> <a className="font-mono text-accent hover:underline" href={goalHref(entry.origin.goal.goal_id)}>{entry.origin.goal.goal_id}</a></>}
+        </Note>
       )}
       <div className="flex flex-wrap items-start gap-2">
         {!finished && paused && paused !== 'goal' && (
           <button
-            className="btn border-ok text-ok"
+            className="btn btn-primary"
             onClick={() =>
               ask(
                 { title: `${t('resume')} ${sid}?`, detail: t('resumeHint'), confirmLabel: t('resume') },
@@ -208,14 +214,14 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
           </button>
         )}
         {!finished && entry.kind === 'ui' && (
-          <button className="btn border-bad text-bad" disabled={!entry.status.turn_open} title={entry.status.turn_open ? undefined : t('stopTurnNone')}
+          <button className="btn text-bad" disabled={!entry.status.turn_open} title={entry.status.turn_open ? undefined : t('stopTurnNone')}
             onClick={() => stop('turn', t('stopTurn'), t('stopTurnHint'))}>
             {t('stopTurn')}
           </button>
         )}
         {!finished && entry.kind === 'goal' && (
           <button
-            className="btn border-bad text-bad"
+            className="btn text-bad"
             disabled={!goal || goal.status !== 'active'}
             onClick={() =>
               goal && ask(
@@ -228,23 +234,23 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
           </button>
         )}
         {!finished && entry.kind === 'work' && (
-          <button className="btn border-bad text-bad" onClick={() => stop('session', t('stop'), t('stopWorkHint'))}>
+          <button className="btn text-bad" onClick={() => stop('session', t('stop'), t('stopWorkHint'))}>
             {t('stop')}
           </button>
         )}
         {decidable && (
           <>
-            <button className="btn border-ok text-ok" onClick={() => decide('accept')}>
+            <button className="btn btn-primary" onClick={() => decide('accept')}>
               Accept
             </button>
-            <button className="btn border-bad text-bad" onClick={() => decide('discard')}>
+            <button className="btn text-bad" onClick={() => decide('discard')}>
               Discard
             </button>
           </>
         )}
         {deletable && (
           <button
-            className="btn border-bad text-bad"
+            className="btn text-bad"
             data-testid="session-delete"
             onClick={() =>
               setRequest({
@@ -265,7 +271,7 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
         {entry.input_queue && (
           <div className="flex min-w-[280px] flex-1 items-start gap-2">
             <textarea
-              className="input min-h-[28px] flex-1"
+              className="input flex-1 resize-y"
               rows={1}
               placeholder="Message to the session"
               aria-label="Message"
@@ -292,9 +298,9 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
         )}
       </div>
       {done && (
-        <div className="mt-2 text-xs text-ok" data-testid="operation-result">
+        <Note tone="ok" testId="operation-result" className="mt-3">
           {done}
-        </div>
+        </Note>
       )}
       {request && <ConfirmDialog request={request} onClose={() => setRequest(null)} />}
     </Panel>
@@ -308,7 +314,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
   if (!data) {
     return (
       <>
-        <a href="#/sessions" className="text-xs text-accent">← Sessions</a>
+        <PageHead back={{ href: '#/sessions', label: 'Sessions' }} title={<span className="font-mono">{sid}</span>} />
         {error ? <ErrorBox error={error} /> : <Empty>Loading…</Empty>}
       </>
     )
@@ -321,22 +327,20 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
 
   return (
     <>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <a href="#/sessions" className="text-xs text-accent">← Sessions</a>
-        <Mono className="text-sm font-semibold">{entry.session_id}</Mono>
-        <Badge value={entry.kind} />
+      <PageHead back={{ href: '#/sessions', label: 'Sessions' }} title={<span className="font-mono">{entry.session_id}</span>}>
+        <span className="text-xs text-mute">{entry.kind}</span>
         <Badge value={status.run_state} />
         {status.outcome && <Badge value={status.outcome} />}
         {status.acceptance !== 'n/a' && <Badge value={`acceptance: ${status.acceptance}`} tone={status.acceptance} />}
         {status.paused && <Badge value={t(pauseLabel[status.paused])} tone="waiting" />}
         {entry.unreachable && <Badge value="unreachable" tone="bad" />}
-        {entry.runtime_unavailable && <><Badge value="runtime unavailable" tone="waiting" /><span className="text-xs text-warn">{entry.runtime_unavailable}</span></>}
-      </div>
+        {entry.runtime_unavailable && <><Badge value="runtime unavailable" tone="waiting" /><span className="text-xs text-mute">{entry.runtime_unavailable}</span></>}
+      </PageHead>
       <ErrorBox error={error} />
-      {data.note && <div className="mb-3 rounded border border-warn px-3 py-2 text-xs text-warn">{data.note}</div>}
+      {data.note && <Note tone="warn" className="mb-4 rounded-lg border border-line bg-panel px-3 py-2">{data.note}</Note>}
       <Operations detail={data} onDone={() => mutate(() => true)} />
 
-      <div className="grid gap-x-3 lg:grid-cols-2">
+      <div className="grid gap-x-4 lg:grid-cols-2">
         <Panel title="Session" testId="session-summary">
           <Fields
             rows={[
@@ -400,8 +404,8 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
         </Panel>
       )}
 
-      <div className="grid gap-x-3 lg:grid-cols-2">
-        <Panel title={`Process stack (${state?.process_stack?.length ?? 0})`} testId="session-process-stack">
+      <div className="grid gap-x-4 lg:grid-cols-2">
+        <Panel title="Process stack" count={state?.process_stack?.length ?? 0} testId="session-process-stack">
           {state?.process_stack?.length ? (
             <table className="tbl">
               <thead>
@@ -429,7 +433,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
             <Empty>Empty.</Empty>
           )}
         </Panel>
-        <Panel title={`Pending events (${state?.pending_events?.length ?? 0})`} testId="session-pending-events">
+        <Panel title="Pending events" count={state?.pending_events?.length ?? 0} testId="session-pending-events">
           {state?.pending_events?.length ? (
             <table className="tbl">
               <thead>
@@ -459,17 +463,18 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
         </Panel>
       </div>
 
-      <Panel title={`Outbox (${state?.outbox?.length ?? 0})`} testId="session-outbox">
+      <Panel title="Outbox" count={state?.outbox?.length ?? 0} testId="session-outbox">
         {state?.outbox?.length ? <Outbox entries={state.outbox} /> : <Empty>No reply queued.</Empty>}
-        {state?.reply != null && <div className="mt-1 text-xs text-mute">reply route: <Mono>{str(state.reply)}</Mono></div>}
+        {state?.reply != null && <div className="mt-2 text-xs text-mute">reply route: <Mono>{str(state.reply)}</Mono></div>}
       </Panel>
 
       <Panel
-        title={`Worklog (last ${worklog.length}, newest first)`}
+        title="Worklog"
+        count={worklog.length}
         testId="session-worklog"
         extra={
-          <label className="flex items-center gap-1 text-xs text-mute">
-            tail
+          <label className="flex items-center gap-2 text-xs text-mute">
+            newest first · tail
             <select className="input" aria-label="Worklog tail" value={tail} onChange={(e) => setTail(Number(e.target.value))}>
               {[40, 100, 200, 500].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
@@ -489,11 +494,11 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
         {data.report ? <Pre value={data.report} /> : <Empty>{status.report_brief || 'No report.'}</Empty>}
       </Panel>
 
-      <div className="grid gap-x-3 lg:grid-cols-2">
+      <div className="grid gap-x-4 lg:grid-cols-2">
         <Panel title="Runtime & hosting" testId="session-runtime">
           <Fields
             rows={[
-              ['binding', binding ? <span><Badge value={binding.connector} /> <Mono>{binding.runtime_id}</Mono></span> : null],
+              ['binding', binding ? <span><Mono>{binding.runtime_id}</Mono> <span className="text-xs text-mute">· {binding.connector}</span></span> : null],
               ['workdir', binding ? <Mono>{binding.workdir}</Mono> : null],
               ['target', binding ? <Mono>{str(binding.target)}</Mono> : null],
               ['bound', binding ? <span><Time ms={binding.bound_at_ms} /> by <Mono>{binding.bound_by}</Mono></span> : null],
@@ -505,8 +510,8 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
               ) : null],
               ['hosted', hosted ? (
                 <span>
-                  <Badge value={hosted.loaded ? 'loaded' : 'unloaded'} tone={hosted.loaded ? 'ok' : undefined} /> drives {hosted.drives} · last{' '}
-                  <Badge value={hosted.last_result?.kind ?? '–'} /> <Time ms={hosted.last_result_at_ms} /> · {hosted.reason}
+                  <Badge value={hosted.loaded ? 'loaded' : 'unloaded'} tone={hosted.loaded ? 'ok' : undefined} /> · drives {hosted.drives} · last{' '}
+                  <Mono>{hosted.last_result?.kind ?? '–'}</Mono> <Time ms={hosted.last_result_at_ms} /> · {hosted.reason}
                 </span>
               ) : <span className="text-xs text-mute">not hosted by this loader</span>],
               ['runs', data.runs?.length ? <Mono>{data.runs.join(', ')}</Mono> : null],
@@ -524,8 +529,8 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
             ]}
           />
           {config && (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-xs text-mute">session config</summary>
+            <details className="mt-3">
+              <summary className="cursor-pointer text-xs text-mute transition-colors hover:text-fg">session config</summary>
               <Pre value={{ session: config.session, runtime: config.runtime, workspace: config.workspace, workspace_binding: config.workspace_binding, subscriptions: config.subscriptions, channels: config.channels }} />
             </details>
           )}

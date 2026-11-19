@@ -1327,7 +1327,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 
 **锚点适配器。** 每个内容类型提供一个 `AnchorAdapter`（`core/src/anchor.rs`）：它认识哪些选择器与内置范围种类、它们的结构校验、以及“现在在哪里”的解析。新增类型只需新增适配器，不修改公共的解析与降级逻辑。前端对应地有 `AnchorRegistry`（`anchors/registry.ts`）：适配器拥有一个范围种类，负责把视图的选区变成锚点（`capture`）和把范围在视图里找回来（`locate`）；内置种类与应用种类注册方式完全相同，应用的适配器优先认领选区。
 
-**解析与降级。** `read`（及 `doc.list_annotations`）对每个注释返回 `anchor`：
+**解析与降级。** `doc.read` 和 `doc.list_annotations` 按调用者对目标的读取权限决定是否返回引文和解析后的锚点。目标不可读时，批注正文可见，响应省略整个 `context` 和 `anchor`，因为标签也可能摘录目标文字。无目标的自由便签没有引文，锚点层级为 `none`。目标可读时，`anchor` 的结构如下。
 
 ```json
 { "state": "resolved | degraded | target_deleted | unsupported",
@@ -1363,7 +1363,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 - 引用种类 `anchor`：边只记录目标实体，不阻止目标删除。
 - 排序、过滤、改列名、插入其他行、移动块都不使锚点挂到别的对象上，因为锚点的身份部分只含稳定 ID（V08）。
 
-**查询。** `doc.list_annotations { target_ids?, parent_id? }`：锚定在任一 `target_ids` 上（经 `refs` 的 `anchor` 边）或结构上位于 `parent_id` 下的注释，按创建顺序，每条与 `read` 的结果相同（含 `anchor`），个人注释只对其所有者出现。界面按页面取：页面下的实体及其单元的数据源作为 `target_ids`，页面本身作为 `parent_id`（因此目标已删除的注释仍然列出）。
+**查询。** `doc.list_annotations { target_ids?, parent_id? }`：锚定在任一 `target_ids` 上（经 `refs` 的 `anchor` 边）或结构上位于 `parent_id` 下的注释，按创建顺序，每条与 `doc.read` 的结果相同，个人注释只对其所有者出现。界面按页面取：页面下的实体及其单元的数据源作为 `target_ids`，页面本身作为 `parent_id`（因此目标已删除的注释仍然列出）。
 
 **显示（Desktop）。** 富文本编辑器中，`range` 级的注释高亮所选文字，`target` 级的注释在块左侧加色条，卡片排在正文右侧与锚点同高（窄时排在正文下方）；`entity` 级的卡片排在最前并注明“原位置已不存在”。适配器返回节点命中时，节点装饰的 spec 携带 `{ annotations: [{ id, detail }] }`，应用的 NodeView 可据此在自己的块内画出范围。表格单元格上的注释仍以标记显示。
 

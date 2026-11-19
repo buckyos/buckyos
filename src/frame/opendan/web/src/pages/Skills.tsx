@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { BookOpen, ChevronRight } from 'lucide-react'
+import { BookOpen, ChevronRight, X } from 'lucide-react'
 import { useSWRConfig } from 'swr'
 import { ago, t, type TextKey } from '../i18n'
 import { sessionHref, toText, useQuery } from '../lib'
@@ -19,7 +19,7 @@ import {
 import { pickFile } from '../pickFile'
 import { readSkillPikg } from '../pikg'
 import { outerTarget } from '../runtimes'
-import { Badge, ConfirmDialog, Empty, ErrorBox, Mono, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
+import { Badge, ConfirmDialog, Empty, ErrorBox, Mono, Note, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
 
 const PRIVATE = 'private'
 const KINDS: SkillKind[] = ['work', 'plan', 'goal']
@@ -75,7 +75,7 @@ function WaitingOnline({ waiting }: { waiting: NonNullable<SkillCommandsStatus['
   return (
     <div data-testid="skill-waiting-online">
       {waiting.map((w) => (
-        <div key={`${w.package}/${w.item}`} className="text-warn">{t('skWaitingOnline', { pkg: w.package, item: w.item, commands: w.commands.join(', ') })}</div>
+        <div key={`${w.package}/${w.item}`}>{t('skWaitingOnline', { pkg: w.package, item: w.item, commands: w.commands.join(', ') })}</div>
       ))}
       <div className="text-mute">
         {t('skWaitingOnlineHint')}
@@ -112,28 +112,28 @@ function Availability({ skill, status, loading }: { skill: SkillMeta; status?: S
   const requires = status?.requires ?? skill.requires
   const declared = status ? Object.keys(status.commands.commands).length : 0
   return (
-    <div className="min-w-[14rem] text-xs" data-testid={`skill-availability-${skill.name}`}>
+    <div className="min-w-[16rem] max-w-[28rem] space-y-0.5 text-xs leading-5" data-testid={`skill-availability-${skill.name}`}>
       {!status ? (
         <span className="text-mute">{loading ? t('skChecking') : '–'}</span>
       ) : status.unmet ? (
         <>
           <Badge value={t('skUnavailable')} tone="bad" />
-          <div className="mt-0.5 text-bad">{status.unmet}</div>
+          <div>{status.unmet}</div>
         </>
       ) : status.commands.state === 'partial' ? (
         <>
           <Badge value={t('skPartial')} tone="waiting" />
-          <div className="mt-0.5"><CommandsDetail status={status.commands} /></div>
+          <div><CommandsDetail status={status.commands} /></div>
         </>
       ) : (
         <>
           <Badge value={t('skReady')} tone="ok" />
-          <div className="mt-0.5">
+          <div>
             {declared === 0 ? <span className="text-mute">{t('skNoCommandsDeclared')}</span> : <CommandsDetail status={status.commands} />}
           </div>
         </>
       )}
-      {requires && <div className="mt-0.5 text-mute">{t('skRequires')}: {requires}</div>}
+      {requires && <div className="text-mute">{t('skRequires')}: {requires}</div>}
     </div>
   )
 }
@@ -150,27 +150,29 @@ function SkillRow({ skill, status, statusLoading, busy, run, ask }: {
   const title = `${t(KIND_LABEL[skill.kind])} · ${skill.name}`
   return (
     <tr data-testid={`skill-${skill.kind}-${skill.name}`} className={clsx(!skill.enabled && 'opacity-60')}>
-      <td className="min-w-[14rem]">
-        <Mono className="font-semibold">{skill.name}</Mono>
-        {!skill.enabled && <span className="ml-1.5"><Badge value={t('skDisabled')} tone="finished" /></span>}
-        <div className="text-xs text-mute">{skill.description || '–'}</div>
+      <td className="min-w-[14rem] max-w-[22rem]">
+        <span className="flex flex-wrap items-center gap-x-3">
+          <Mono className="font-medium text-fg">{skill.name}</Mono>
+          {!skill.enabled && <Badge value={t('skDisabled')} tone="finished" />}
+        </span>
+        <div className="text-xs leading-5 text-mute">{skill.description || '–'}</div>
         {skill.disabled && (
-          <div className="text-xs text-warn" data-testid="skill-disabled-reason">
+          <div className="text-xs leading-5" data-testid="skill-disabled-reason">
             {t('skDisabledBy', { by: skill.disabled.by || '?', time: ago(skill.disabled.at_ms) })}
             {skill.disabled.reason ? `: ${skill.disabled.reason}` : ''}
           </div>
         )}
       </td>
       <td className="whitespace-nowrap"><Mono>{skill.scope ?? (skill.kind === 'work' ? 'work' : '–')}</Mono></td>
-      <td className="whitespace-nowrap text-xs">
+      <td className="whitespace-nowrap text-xs leading-5">
         {t(ORIGIN_LABEL[skill.origin] ?? 'skOriginLocal')}
         {skill.install && <div className="text-mute">{`${skill.install.package} ${skill.install.version}`.trim()}</div>}
       </td>
-      <td className="whitespace-nowrap text-xs tabular-nums">
+      <td className="whitespace-nowrap text-xs leading-5 tabular-nums">
         {fmtBytes(skill.size)}
         {skill.references?.length ? <div className="text-mute" title={skill.references.join('\n')}>{t('skReferences', { n: skill.references.length })}</div> : null}
       </td>
-      <td className="whitespace-nowrap text-xs">
+      <td className="whitespace-nowrap text-xs leading-5 tabular-nums">
         {skill.usage?.frozen ? (
           <>
             {t('skUsageFrozen', { n: skill.usage.frozen })}
@@ -186,7 +188,7 @@ function SkillRow({ skill, status, statusLoading, busy, run, ask }: {
           : <span className="text-xs text-mute">{skill.requires ? `${t('skRequires')}: ${skill.requires}` : '–'}</span>}
       </td>
       <td>
-        <div className="flex flex-wrap gap-1">
+        <div className="flex justify-end gap-2">
           {skill.enabled ? (
             <button className="btn" disabled={busy} onClick={() => ask({
               title: t('skDisableTitle', { name: title }),
@@ -199,7 +201,7 @@ function SkillRow({ skill, status, statusLoading, busy, run, ask }: {
             <button className="btn" disabled={busy} onClick={() => run(() => dataModel.setSkillEnabled(skill.kind, skill.name, true))}>{t('skEnable')}</button>
           )}
           {removable && (
-            <button className="btn border-bad text-bad" disabled={busy} onClick={() => ask({
+            <button className="btn text-bad" disabled={busy} onClick={() => ask({
               title: t('skRemoveTitle', { name: title }),
               detail: t('skRemoveHint'),
               confirmLabel: t('skRemove'),
@@ -229,15 +231,16 @@ function UiSetPanel({ busy, run }: { busy: boolean; run: (action: () => Promise<
         </span>
       )}
     >
-      <p className="mb-2 text-xs text-mute">{t('skUiHint')}</p>
+      <p className="mb-3 max-w-3xl text-xs leading-5 text-mute">{t('skUiHint')}</p>
       <ErrorBox error={ui.error} />
-      <div className="mb-2 flex flex-wrap gap-1.5">
+      <div className="mb-3 flex flex-wrap gap-2">
         {names.map((name) => (
-          <span key={name} className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5" data-testid={`ui-skill-${name}`}>
+          <span key={name} className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-bg pl-2.5 pr-1" data-testid={`ui-skill-${name}`}>
             <Mono>{name}</Mono>
-            <button className="text-xs text-bad hover:underline" disabled={busy} aria-label={`${t('skUiRemove')} ${name}`}
+            <button className="flex h-5 w-5 items-center justify-center rounded-md text-mute transition-colors hover:bg-hover hover:text-bad" disabled={busy} aria-label={`${t('skUiRemove')} ${name}`}
+              title={t('skUiRemove')}
               onClick={() => run(() => dataModel.setUiSkills(names.filter((n) => n !== name)))}>
-              {t('skUiRemove')}
+              <X size={12} />
             </button>
           </span>
         ))}
@@ -261,11 +264,11 @@ function CrystallizePanel({ busy, run }: { busy: boolean; run: (action: () => Pr
   return (
     <Panel title={t('skCrystallize')} testId="skills-crystallize">
       <ErrorBox error={state.error} />
-      <label className="mb-2 flex items-center gap-2 text-sm">
+      <label className="mb-3 flex items-center gap-2 text-sm">
         <input
           type="checkbox"
           role="switch"
-          className="h-5 w-5"
+          className="h-4 w-4 accent-[var(--accent)]"
           checked={on}
           disabled={busy || !state.data}
           onChange={(e) => run(() => dataModel.setCrystallize(e.target.checked))}
@@ -274,10 +277,10 @@ function CrystallizePanel({ busy, run }: { busy: boolean; run: (action: () => Pr
         <span>{t('skCrystallize')}</span>
         <span className={clsx('text-xs', on ? 'text-ok' : 'text-mute')} data-testid="skills-crystallize-state">{t(on ? 'switchOn' : 'switchOff')}</span>
       </label>
-      <p className="mb-1 text-xs text-mute">{t('skCrystallizeHint')}</p>
-      <p className="mb-1 text-xs text-mute">{t('skCrystallizeCost')}</p>
+      <p className="max-w-3xl text-xs leading-5 text-mute">{t('skCrystallizeHint')}</p>
+      <p className="text-xs leading-5 text-mute">{t('skCrystallizeCost')}</p>
       {state.data && (
-        <p className="text-xs text-mute" data-testid="skills-crystallize-source">
+        <p className="text-xs leading-5 text-mute" data-testid="skills-crystallize-source">
           {t(state.data.crystallize == null ? 'skCrystallizeDefault' : 'skCrystallizeOwner')}
         </p>
       )}
@@ -319,22 +322,22 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
   }
 
   return (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4">
+    <div className="scrim">
       <div role="dialog" aria-modal="true" aria-label={request.title} data-testid="skill-plan-dialog"
-        className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded border border-line bg-panel p-4">
-        <h3 className="mb-2 text-sm font-semibold">{request.title}</h3>
+        className="dialog max-w-2xl">
+        <h3 className="mb-2 text-[15px] font-medium leading-6">{request.title}</h3>
         <ErrorBox error={plan.error} />
         {!data && !plan.error && <Empty>{t('loading')}</Empty>}
         {data && (
-          <div className={clsx('text-xs', stale && 'opacity-60')}>
-            <div className="mb-2 text-mute">
+          <div className={clsx('text-xs leading-5', stale && 'opacity-60')}>
+            <div className="mb-4 text-mute">
               <Mono>{`${data.package} ${data.version}`.trim()}</Mono> · <Mono>{data.digest}</Mono>
             </div>
-            <h4 className="mb-1 font-semibold text-mute">{t('skPlanSkills')}</h4>
-            <ul className="mb-2" data-testid="plan-skills">
+            <h4 className="mb-1 font-medium text-mute">{t('skPlanSkills')}</h4>
+            <ul className="mb-4" data-testid="plan-skills">
               {data.skills.map((s) => (
-                <li key={`${s.kind}:${s.name}`} className="mb-1">
-                  <Mono className="font-semibold">{s.kind}:{s.name}</Mono>
+                <li key={`${s.kind}:${s.name}`} className="mb-2">
+                  <Mono className="font-medium">{s.kind}:{s.name}</Mono>
                   {s.scope && <Mono className="ml-1 text-mute">scope {s.scope}</Mono>}
                   {s.replaces && <span className="ml-1.5 text-warn" data-testid="plan-replaces">{t('skReplaces', { origin: s.replaces })}</span>}
                   <div className="text-mute">{s.description}</div>
@@ -344,24 +347,24 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
             </ul>
             {partial.length > 0 && (
               <>
-                <h4 className="mb-1 font-semibold text-mute">
+                <h4 className="mb-1 font-medium text-mute">
                   {t('skPartial')}{data.checked_runtime_id ? ` · ${data.checked_runtime_id}` : ''}
                 </h4>
-                <ul className="mb-2">
+                <ul className="mb-4">
                   {partial.map((c) => (
                     <li key={c.name} className="mb-1"><Mono>{c.name}</Mono><CommandsDetail status={c.status} /></li>
                   ))}
                 </ul>
               </>
             )}
-            <h4 className="mb-1 font-semibold text-mute">
+            <h4 className="mb-1 font-medium text-mute">
               {t('skRisk')}: <span data-testid="plan-risk"><Badge value={t(RISK_LABEL[data.risk.level] ?? 'skRiskHigh')} tone={FINDING_TONE[data.risk.level]} /></span>
             </h4>
             {data.risk.findings.length ? (
-              <ul className="mb-2" data-testid="plan-findings">
+              <ul className="mb-4" data-testid="plan-findings">
                 {data.risk.findings.map((f, i) => (
-                  <li key={`${f.code}-${f.where}-${i}`} className="mb-1">
-                    <Badge value={f.level} tone={FINDING_TONE[f.level]} /> <Mono>{f.code}</Mono> <Mono className="text-mute">{f.where}</Mono>
+                  <li key={`${f.code}-${f.where}-${i}`} className="mb-2">
+                    <span className="flex flex-wrap items-center gap-x-2"><Badge value={f.level} tone={FINDING_TONE[f.level]} /> <Mono>{f.code}</Mono> <Mono className="text-mute">{f.where}</Mono></span>
                     <div>{f.note}</div>
                   </li>
                 ))}
@@ -369,7 +372,7 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
             ) : (
               <Empty>{t('skNoFindings')}</Empty>
             )}
-            <p className="mb-2 text-mute" data-testid="plan-text-only">{t('skInstallTextOnly')}</p>
+            <p className="mb-4 text-mute" data-testid="plan-text-only">{t('skInstallTextOnly')}</p>
             {request.ignored?.length ? <p className="mb-2 text-mute">{t('skIgnoredFiles', { n: request.ignored.length })}</p> : null}
           </div>
         )}
@@ -377,7 +380,7 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
         <div className="flex justify-end gap-2">
           <button className="btn" onClick={onClose} disabled={busy}>{t('cancel')}</button>
           {data && !notInstallable && (
-            <button className={clsx('btn', data.risk.level === 'high' ? 'border-bad text-bad' : 'border-accent text-accent')}
+            <button className={clsx('btn', data.risk.level === 'high' ? 'btn-danger' : 'btn-primary')}
               onClick={() => void install()} disabled={busy || stale} data-testid="plan-confirm">
               {t(replaced.length ? 'skInstallReplace' : 'skInstall')}
             </button>
@@ -414,7 +417,7 @@ function InstallPanel({ plan }: { plan: (request: PlanRequest) => void }) {
   }
   return (
     <Panel title={t('skInstallFromFile')} testId="skills-install">
-      <p className="mb-2 text-xs text-mute">{t('skInstallHint')}</p>
+      <p className="mb-3 max-w-3xl text-xs leading-5 text-mute">{t('skInstallHint')}</p>
       <ErrorBox error={error} />
       <button className="btn" disabled={busy} data-testid="skills-pikg-choose" onClick={() => void pick()}>{t(busy ? 'loading' : 'skChoosePikg')}</button>
     </Panel>
@@ -465,31 +468,31 @@ function ImportPanel() {
   }
   return (
     <Panel title={t('skImport')} testId="skills-import">
-      <p className="mb-2 text-xs text-mute">{t('skImportHint')}</p>
-      <textarea className="input mb-2 block w-full font-mono" rows={6} value={text} aria-label={t('skImportText')} placeholder={t('skImportText')}
+      <p className="mb-3 max-w-3xl text-xs leading-5 text-mute">{t('skImportHint')}</p>
+      <textarea className="input mb-3 block w-full resize-y font-mono leading-5" rows={6} value={text} aria-label={t('skImportText')} placeholder={t('skImportText')}
         onChange={(e) => { setText(e.target.value); setSource('') }} />
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-mute">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-mute">
         <button className="btn" data-testid="skills-import-file" onClick={() => void load()}>{t('skImportFile')}</button>
         {source && <Mono>{source}</Mono>}
         <label>
-          {t('skImportName')} <input className="input ml-1" value={name} onChange={(e) => setName(e.target.value)} />
+          {t('skImportName')} <input className="input ml-2" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label>
           {t('skScope')}
-          <select className="input ml-1" value={scope} onChange={(e) => setScope(e.target.value)}>
+          <select className="input ml-2" value={scope} onChange={(e) => setScope(e.target.value)}>
             <option value="">{t('skScopeAuto')}</option>
             <option value="work">work</option>
             <option value="ui">ui</option>
             <option value="plan">plan</option>
           </select>
         </label>
-        <button className="btn border-accent text-accent" disabled={busy || !text.trim()} onClick={() => void submit()}>{t('skImportStart')}</button>
+        <button className="btn btn-primary ml-auto" disabled={busy || !text.trim()} onClick={() => void submit()}>{t('skImportStart')}</button>
       </div>
-      <ErrorBox error={error} />
+      {error != null && <div className="mt-3"><ErrorBox error={error} /></div>}
       {session && (
-        <p className="text-xs text-ok" data-testid="skills-import-started">
+        <Note tone="ok" testId="skills-import-started" className="mt-3">
           {t('skImportStarted')} <a className="font-mono text-accent hover:underline" href={sessionHref(session)}>{session}</a>
-        </p>
+        </Note>
       )}
     </Panel>
   )
@@ -513,25 +516,25 @@ function DraftView({ draft }: { draft: SkillDraft }) {
   const risk = draftField(draft.draft, 'risk')
   const verified = draftField(draft.draft, 'verified')
   return (
-    <div className="mt-2 rounded border border-line p-2 text-xs" data-testid={`draft-view-${draft.slug}`}>
+    <div className="mt-3 rounded-lg border border-line p-3 text-xs leading-5" data-testid={`draft-view-${draft.slug}`}>
       {risk != null && (
-        <div className="mb-2 rounded border border-warn px-2 py-1" data-testid="draft-risk">
-          <div className="font-semibold text-warn">{t('skDraftRisk')}</div>
+        <Note tone="warn" testId="draft-risk" className="mb-3">
+          <div className="font-medium">{t('skDraftRisk')}</div>
           <div className="whitespace-pre-wrap">{toText(risk)}</div>
-        </div>
+        </Note>
       )}
       {verified != null && (
-        <div className="mb-2">
-          <div className="font-semibold text-mute">{t('skDraftVerified')}</div>
+        <div className="mb-3">
+          <div className="mb-1 font-medium text-mute">{t('skDraftVerified')}</div>
           <Pre value={verified} />
         </div>
       )}
-      <div className="mb-1 font-semibold text-mute">draft.json</div>
+      <div className="mb-1 font-medium text-mute">draft.json</div>
       {draft.draft != null ? <Pre value={draft.draft} /> : <Empty />}
-      <div className="mb-1 mt-2 font-semibold text-mute">{t('skDraftFiles')}</div>
-      <div className="mb-2 flex flex-wrap gap-1">
+      <div className="mb-1 mt-3 font-medium text-mute">{t('skDraftFiles')}</div>
+      <div className="mb-2 flex flex-wrap gap-2">
         {draft.files.map((f) => (
-          <button key={f} className={clsx('btn font-mono', file === f && 'border-accent text-accent')} onClick={() => setFile(file === f ? null : f)}>{f}</button>
+          <button key={f} aria-pressed={file === f} className={clsx('btn font-mono', file === f && 'bg-soft')} onClick={() => setFile(file === f ? null : f)}>{f}</button>
         ))}
         {draft.files.length === 0 && <Empty />}
       </div>
@@ -545,24 +548,24 @@ function DraftsPanel({ plan, ask }: { plan: (request: PlanRequest) => void; ask:
   const [open, setOpen] = useState<string | null>(null)
   const sorted = [...(drafts.data ?? [])].sort((a, b) => b.updated_at_ms - a.updated_at_ms)
   return (
-    <Panel title={`${t('skDrafts')} (${sorted.length})`} testId="skills-drafts">
-      <p className="mb-2 text-xs text-mute">{t('skDraftsHint')}</p>
+    <Panel title={t('skDrafts')} count={sorted.length} testId="skills-drafts">
+      <p className="mb-1 max-w-3xl text-xs leading-5 text-mute">{t('skDraftsHint')}</p>
       <ErrorBox error={drafts.error} />
       {sorted.length === 0 && !drafts.error && <Empty>{t(drafts.isLoading ? 'loading' : 'skNoDrafts')}</Empty>}
       <ul className="divide-y divide-line">
         {sorted.map((draft) => (
-          <li key={draft.slug} className="py-2" data-testid={`draft-${draft.slug}`}>
-            <div className="flex flex-wrap items-center gap-2">
-              <Mono className="font-semibold">{draft.slug}</Mono>
+          <li key={draft.slug} className="py-3 last:pb-0" data-testid={`draft-${draft.slug}`}>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <Mono className="font-medium">{draft.slug}</Mono>
               <Time ms={draft.updated_at_ms} />
-              <span className="ml-auto flex gap-1">
+              <span className="ml-auto flex gap-2">
                 <button className="btn" onClick={() => setOpen(open === draft.slug ? null : draft.slug)}>{t(open === draft.slug ? 'skDraftHide' : 'skDraftView')}</button>
-                <button className="btn border-accent text-accent" disabled={Boolean(draft.error)} onClick={() => plan({
+                <button className="btn" disabled={Boolean(draft.error)} onClick={() => plan({
                   source: { draft: draft.slug },
                   key: `draft:${draft.slug}:${draft.updated_at_ms}`,
                   title: t('skInstallTitle', { name: draft.slug }),
                 })}>{t('skInstall')}</button>
-                <button className="btn border-bad text-bad" onClick={() => ask({
+                <button className="btn text-bad" onClick={() => ask({
                   title: t('skDiscardTitle', { name: draft.slug }),
                   detail: t('skDiscardHint'),
                   confirmLabel: t('skDiscard'),
@@ -572,12 +575,12 @@ function DraftsPanel({ plan, ask }: { plan: (request: PlanRequest) => void; ask:
               </span>
             </div>
             {draft.skills.map((s) => (
-              <div key={`${s.kind}:${s.name}`} className="text-xs">
-                <Mono>{s.kind}:{s.name}</Mono>{s.scope && <Mono className="ml-1 text-mute">scope {s.scope}</Mono>}
-                <span className="ml-1.5 text-mute">{s.description}</span>
+              <div key={`${s.kind}:${s.name}`} className="mt-1 text-xs leading-5">
+                <Mono>{s.kind}:{s.name}</Mono>{s.scope && <Mono className="ml-2 text-mute">scope {s.scope}</Mono>}
+                <span className="ml-2 text-mute">{s.description}</span>
               </div>
             ))}
-            {draft.error && <div className="text-xs text-bad" data-testid="draft-error">{draft.error}</div>}
+            {draft.error && <Note tone="bad" testId="draft-error" className="mt-1 text-bad">{draft.error}</Note>}
             {open === draft.slug && <DraftView draft={draft} />}
           </li>
         ))}
@@ -594,13 +597,13 @@ function AuditPanel() {
     <Panel title={t('skAudit')} testId="skills-audit">
       <ErrorBox error={state.error} />
       {none?.frozen ? (
-        <p className="mb-2 text-xs text-mute" data-testid="skills-usage-none">
+        <p className="mb-3 text-xs leading-5 text-mute" data-testid="skills-usage-none">
           {t('skUsageNone', { n: none.frozen })}
           {none.recent_sessions?.length ? <> · {none.recent_sessions.slice(-3).reverse().map((sid) => <span key={sid} className="mr-1.5"><Sid sid={sid} /></span>)}</> : null}
         </p>
       ) : null}
       <details>
-        <summary className="cursor-pointer text-xs text-accent" data-testid="skills-audit-toggle">{t('skAuditShow', { n: audit.length })}</summary>
+        <summary className="cursor-pointer text-xs text-accent hover:underline" data-testid="skills-audit-toggle">{t('skAuditShow', { n: audit.length })}</summary>
         {audit.length ? (
           <table className="tbl mt-2">
             <thead>
@@ -668,16 +671,16 @@ export default function SkillsPage() {
 
   return (
     <div data-testid="skills-page">
-      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-        <h1 className="text-base font-semibold">{t('skills')}</h1>
+      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h1 className="text-lg font-medium leading-7">{t('skills')}</h1>
         {skills.data && (
-          <span className="text-xs text-mute" data-testid="skills-summary">
+          <span className="text-xs tabular-nums text-mute" data-testid="skills-summary">
             {t('skSummary', { available: all.filter((s) => s.enabled).length, disabled: all.filter((s) => !s.enabled).length })}
           </span>
         )}
         <label className="ml-auto text-xs text-mute">
           {t('skRuntime')}
-          <select className="input ml-1" value={runtimeId} onChange={(e) => setChosen(e.target.value)} data-testid="skills-runtime-select">
+          <select className="input ml-2" value={runtimeId} onChange={(e) => setChosen(e.target.value)} data-testid="skills-runtime-select">
             {!selectable.some((r) => r.runtime_id === runtimeId) && <option value={runtimeId}>{runtimeId}</option>}
             {selectable.map((r) => <option key={r.runtime_id} value={r.runtime_id}>{runtimeLabel(r)}</option>)}
           </select>
@@ -686,16 +689,16 @@ export default function SkillsPage() {
           {t(status.isValidating ? 'skChecking' : 'skCheckRuntime')}
         </button>
       </div>
-      <p className="mb-2 text-xs text-mute">{t('skAvailabilityHint')}</p>
+      <p className="mb-4 max-w-4xl text-xs leading-5 text-mute">{t('skAvailabilityHint')}</p>
       <ErrorBox error={skills.error ?? runtimes.error ?? error} />
       {status.error && <ErrorBox error={status.error} />}
-      {notice && <div className="mb-3 rounded border border-ok px-3 py-2 text-xs text-ok" data-testid="skills-notice">{notice}</div>}
+      {notice && <Note tone="ok" testId="skills-notice" className="mb-4 rounded-lg border border-line bg-panel px-3 py-2">{notice}</Note>}
 
       {KINDS.map((kind) => {
         const rows = all.filter((s) => s.kind === kind).sort((a, b) => Number(hasUi(b.scope)) - Number(hasUi(a.scope)) || a.name.localeCompare(b.name))
         if (kind === 'goal' && rows.length === 0) return null
         return (
-          <Panel key={kind} title={`${t(KIND_LABEL[kind])} (${rows.length})`} testId={`skills-${kind}`}>
+          <Panel key={kind} title={t(KIND_LABEL[kind])} count={rows.length} testId={`skills-${kind}`}>
             {rows.length ? (
               <table className="tbl">
                 <thead>

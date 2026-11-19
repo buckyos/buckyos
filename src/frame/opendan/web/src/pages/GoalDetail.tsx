@@ -31,13 +31,13 @@ import {
   type HoldReason,
   type MaintenanceState,
 } from '../model'
-import { Badge, Empty, ErrorBox, Fields, Mono, Panel, Pre, Sid, Time } from '../ui'
+import { Badge, Dot, Empty, ErrorBox, Fields, Mono, Note, PageHead, Panel, Pre, Sid, Tag, Time } from '../ui'
 import { NextOpportunity } from './Goals'
 
 const ACTIVATIONS = 200
 const CHANGES = 50
 
-const list = (items?: string[]): ReactNode => (items?.length ? <ul className="list-disc pl-4 text-xs">{items.map((x) => <li key={x}>{x}</li>)}</ul> : null)
+const list = (items?: string[]): ReactNode => (items?.length ? <ul className="list-disc pl-4 text-xs leading-5 marker:text-mute">{items.map((x) => <li key={x}>{x}</li>)}</ul> : null)
 
 interface DialogSpec {
   title: string
@@ -70,26 +70,26 @@ function GoalDialog({ spec, onClose, onDone }: { spec: DialogSpec; onClose: () =
     }
   }
   return (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4">
+    <div className="scrim">
       <form
         role="dialog"
         aria-modal="true"
         aria-label={spec.title}
-        className="w-full max-w-md rounded border border-line bg-panel p-4"
+        className="dialog"
         onSubmit={(e) => {
           e.preventDefault()
           void confirm()
         }}
       >
-        <h3 className="mb-2 text-sm font-semibold">{spec.title}</h3>
-        <p className="mb-3 text-xs text-mute">{spec.hint}</p>
-        <label className="mb-3 block text-xs text-mute">
+        <h3 className="mb-2 text-[15px] font-medium leading-6">{spec.title}</h3>
+        <p className="mb-4 text-xs leading-5 text-mute">{spec.hint}</p>
+        <label className="mb-4 block text-xs text-mute">
           {t(spec.reasonRequired ? 'opReason' : 'opReasonOptional')}
           <input className="input mt-1 w-full" value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
         {spec.option && (
-          <label className="mb-3 flex items-center gap-2 text-xs">
-            <input type="checkbox" checked={option} onChange={(e) => setOption(e.target.checked)} />
+          <label className="mb-4 flex items-center gap-2 text-xs">
+            <input type="checkbox" className="accent-[var(--accent)]" checked={option} onChange={(e) => setOption(e.target.checked)} />
             {t(spec.option)}
           </label>
         )}
@@ -98,7 +98,7 @@ function GoalDialog({ spec, onClose, onDone }: { spec: DialogSpec; onClose: () =
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             {t('cancel')}
           </button>
-          <button type="submit" className={clsx('btn', spec.danger ? 'border-bad text-bad' : 'border-accent text-accent')} disabled={busy}>
+          <button type="submit" className={clsx('btn', spec.danger ? 'btn-danger' : 'btn-primary')} disabled={busy}>
             {spec.confirmLabel}
           </button>
         </div>
@@ -129,24 +129,25 @@ function Operations({ goal, schedule, onDone }: { goal: GoalDefinition; schedule
   return (
     <Panel title={t('goalOperations')} testId="goal-operations">
       {builtin && (
-        <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="goal-builtin-info">
-          <Badge value={t('goalSystemBuiltin')} tone="running" />
+        <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs" data-testid="goal-builtin-info">
+          <span>{t('goalSystemBuiltin')}</span>
           <span className="text-mute">
-            {t('goalPolicyVersion')}: <Mono>{ext?.policy_version ?? 0}</Mono>
+            {t('goalPolicyVersion')}: <Mono className="text-fg">{ext?.policy_version ?? 0}</Mono>
           </span>
-          <span className="text-mute">
-            {t('goalConfigSwitch')}:{' '}
-            <span className={off ? 'text-bad' : 'text-ok'} data-testid="goal-config-switch">
+          <span className="inline-flex items-baseline gap-2 text-mute">
+            {t('goalConfigSwitch')}:
+            <span className="inline-flex items-baseline gap-1.5 text-fg" data-testid="goal-config-switch">
+              <Dot tone={off ? 'bad' : 'ok'} className="self-center" />
               {t(off ? 'switchOff' : 'switchOn')}
             </span>
           </span>
         </div>
       )}
-      {off && <p className="mb-2 text-xs text-mute" data-testid="goal-off-hint">{t('goalSwitchedOffHint')}</p>}
+      {off && <p className="mb-3 text-xs leading-5 text-mute" data-testid="goal-off-hint">{t('goalSwitchedOffHint')}</p>}
       <div className="flex flex-wrap items-center gap-2">
         {live && (
           <button
-            className="btn border-accent text-accent"
+            className="btn btn-primary"
             onClick={() =>
               setSpec({
                 title: t('opActivateTitle', vars),
@@ -165,13 +166,13 @@ function Operations({ goal, schedule, onDone }: { goal: GoalDefinition; schedule
           </button>
         )}
         {live && goal.status === 'paused' && (
-          <button className="btn border-ok text-ok" onClick={() => setStatus('active', 'opResumeTitle', 'opResumeHint', 'opResume')}>
+          <button className="btn" onClick={() => setStatus('active', 'opResumeTitle', 'opResumeHint', 'opResume')}>
             {t('opResume')}
           </button>
         )}
         {live && (
           <button
-            className="btn border-bad text-bad"
+            className="btn text-bad"
             disabled={builtin}
             title={builtin ? t('opArchiveBuiltinHint') : undefined}
             onClick={() => setStatus('archived', 'opArchiveTitle', 'opArchiveHint', 'opArchive', true)}
@@ -198,7 +199,7 @@ function Operations({ goal, schedule, onDone }: { goal: GoalDefinition; schedule
         )}
         {ended && (
           <button
-            className="btn border-accent text-accent"
+            className="btn btn-primary"
             onClick={() =>
               setSpec({
                 title: t('opReopenTitle', vars),
@@ -216,9 +217,9 @@ function Operations({ goal, schedule, onDone }: { goal: GoalDefinition; schedule
         {builtin && live && <span className="text-xs text-mute">{t('opArchiveBuiltinHint')}</span>}
       </div>
       {done && (
-        <div className="mt-2 text-xs text-ok" data-testid="goal-operation-result">
+        <Note tone="ok" testId="goal-operation-result" className="mt-3">
           {t('opDone', { what: done })}
-        </div>
+        </Note>
       )}
       {spec && (
         <GoalDialog
@@ -287,17 +288,17 @@ function RevisionDiff({ goalId, revision }: { goalId: string; revision: number }
     return v === undefined ? '–' : toText(v)
   }
   return (
-    <div className="mt-2 border-t border-line pt-2" data-testid="goal-revision-diff">
-      <h3 className="mb-1 text-xs font-semibold text-mute">{t('goalDiffTitle', { from: revision - 1, to: revision })}</h3>
+    <div className="mt-4 border-t border-line pt-3" data-testid="goal-revision-diff">
+      <h3 className="mb-2 text-xs font-medium text-mute">{t('goalDiffTitle', { from: revision - 1, to: revision })}</h3>
       <ErrorBox error={error} />
       {!before.data || !after.data ? (
         !error && <Empty>{t('loading')}</Empty>
       ) : rows.length ? (
         rows.map((field) => (
-          <div key={field} className="mb-2 min-w-0 text-xs" data-testid={`goal-diff-${field}`}>
-            <div className="font-mono font-semibold">{field}</div>
-            <pre className="whitespace-pre-wrap break-words rounded bg-bg p-1 font-mono text-bad">− {text(before.data![field])}</pre>
-            <pre className="mt-0.5 whitespace-pre-wrap break-words rounded bg-bg p-1 font-mono text-ok">+ {text(after.data![field])}</pre>
+          <div key={field} className="mb-3 min-w-0 text-xs" data-testid={`goal-diff-${field}`}>
+            <div className="mb-1 font-mono font-medium">{field}</div>
+            <pre className="whitespace-pre-wrap break-words rounded-t-lg bg-bg px-3 py-1 font-mono leading-5 text-bad">− {text(before.data![field])}</pre>
+            <pre className="whitespace-pre-wrap break-words rounded-b-lg border-t border-line bg-bg px-3 py-1 font-mono leading-5 text-ok">+ {text(after.data![field])}</pre>
           </div>
         ))
       ) : (
@@ -321,7 +322,7 @@ function Definition({ goal }: { goal: GoalDefinition }) {
       title={t('goalDefinition')}
       testId="goal-definition"
       extra={
-        <label className="flex items-center gap-1 text-xs text-mute">
+        <label className="flex items-center gap-2 text-xs text-mute">
           {t('goalRevision')}
           <select className="input" aria-label={t('goalRevision')} value={rev ?? goal.revision} onChange={(e) => setRev(Number(e.target.value) === goal.revision ? null : Number(e.target.value))}>
             {revisions.map((n) => (
@@ -387,27 +388,26 @@ function Definition({ goal }: { goal: GoalDefinition }) {
           [
             t('goalEpochs'),
             goal.epochs?.length ? (
-              <table className="tbl">
-                <tbody>
-                  {goal.epochs.map((ep) => (
-                    <tr key={ep.epoch} data-testid={`goal-epoch-${ep.epoch}`}>
-                      <td className="w-px">#{ep.epoch}</td>
-                      <td className="w-px"><Badge value={ep.start} /></td>
-                      <td className="w-px"><Sid sid={ep.sid} /></td>
-                      <td className="w-px"><Time ms={ep.started_at_ms} /></td>
-                      <td className="text-xs">
-                        {ep.end && <Badge value={ep.end} tone="finished" />} {ep.end_reason ?? ep.reason}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ul className="divide-y divide-line">
+                {goal.epochs.map((ep) => (
+                  <li key={ep.epoch} className="py-2 first:pt-0 last:pb-0 text-xs leading-5" data-testid={`goal-epoch-${ep.epoch}`}>
+                    <div className="flex flex-wrap items-baseline gap-x-3">
+                      <span className="font-mono text-mute">#{ep.epoch}</span>
+                      <Tag>{ep.start}</Tag>
+                      <Sid sid={ep.sid} />
+                      <Time ms={ep.started_at_ms} />
+                      {ep.end && <Tag>→ {ep.end}</Tag>}
+                    </div>
+                    {(ep.end_reason ?? ep.reason) && <div>{ep.end_reason ?? ep.reason}</div>}
+                  </li>
+                ))}
+              </ul>
             ) : null,
           ],
         ]}
       />
       {shownRevision > 1 && (
-        <button className="btn mt-2" onClick={() => setDiff(!diff)} data-testid="goal-diff-toggle">
+        <button className="btn mt-3" aria-expanded={diff} onClick={() => setDiff(!diff)} data-testid="goal-diff-toggle">
           {diff ? t('goalDiffHide') : t('goalDiffShow', { n: shownRevision - 1 })}
         </button>
       )}
@@ -429,7 +429,7 @@ function GoalStatePanel({ goal, state }: { goal: GoalDefinition; state?: GoalSta
   const used = (usage.tokens ?? 0) + (usage.work_tokens ?? 0)
   const remaining = (max: number | undefined, value: number) => (max != null ? ` / ${fmtTokens(max)} (${t('goalRemaining', { n: fmtTokens(Math.max(0, max - value)) })})` : '')
   return (
-    <Panel title={t('goalStateTitle')} testId="goal-state" extra={<span className="text-xs text-mute">rev {state.rev} · epoch {state.epoch}</span>}>
+    <Panel title={t('goalStateTitle')} testId="goal-state" extra={<span className="font-mono tabular-nums">rev {state.rev} · epoch {state.epoch}</span>}>
       <Fields
         rows={[
           [
@@ -452,7 +452,7 @@ function GoalStatePanel({ goal, state }: { goal: GoalDefinition; state?: GoalSta
             state.questions?.length ? (
               <ul className="text-xs">
                 {state.questions.map((q, i) => (
-                  <li key={`${q.epoch}-${q.activation}-${i}`} className="mb-1" data-testid="goal-question">
+                  <li key={`${q.epoch}-${q.activation}-${i}`} className="mb-2 leading-5" data-testid="goal-question">
                     <Badge value={q.status ?? 'open'} tone={q.status === 'answered' ? 'ok' : q.status === 'open' || !q.status ? 'waiting' : 'finished'} /> {q.text}
                     <span className="block text-mute">
                       #{q.epoch}.{q.activation} · <Time ms={q.at_ms} />
@@ -516,18 +516,18 @@ function Activations({ goal, activations, error }: { goal: GoalDefinition; activ
     return [...byEpoch.entries()].sort((a, b) => b[0] - a[0]).map(([epoch, rows]) => ({ epoch, rows: rows.sort((a, b) => b.seq - a.seq) }))
   }, [activations])
   return (
-    <Panel title={`${t('goalActivations')} (${activations?.length ?? 0})`} testId="goal-activations">
+    <Panel title={t('goalActivations')} count={activations?.length ?? 0} testId="goal-activations">
       <ErrorBox error={error} />
       {groups.length ? (
         groups.map(({ epoch, rows }) => {
           const ep = goal.epochs?.find((e) => e.epoch === epoch)
           const sid = ep?.sid ?? rows[0].session_id
           return (
-            <div key={epoch} className="mb-3" data-testid={`activations-epoch-${epoch}`}>
-              <div className="mb-1 flex flex-wrap items-center gap-2 text-xs">
-                <span className="font-semibold">{t('goalEpochN', { n: epoch })}</span>
-                {ep && <Badge value={ep.start} />}
-                {ep?.end && <Badge value={ep.end} tone="finished" />}
+            <div key={epoch} className="mb-4 last:mb-0" data-testid={`activations-epoch-${epoch}`}>
+              <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                <span className="font-medium">{t('goalEpochN', { n: epoch })}</span>
+                {ep && <Tag>{ep.start}</Tag>}
+                {ep?.end && <Tag>→ {ep.end}</Tag>}
                 <span className="text-mute">{t('goalSession')}</span> <Sid sid={sid} />
               </div>
               <table className="tbl">
@@ -546,14 +546,14 @@ function Activations({ goal, activations, error }: { goal: GoalDefinition; activ
                 <tbody>
                   {rows.map((a) => (
                     <tr key={a.seq} data-testid="activation-row">
-                      <td className="w-px">{a.seq}</td>
+                      <td className="w-px font-mono text-xs text-mute">{a.seq}</td>
                       <td className="text-xs">
                         {(a.reasons ?? []).map((r, i) => (
                           <div key={`${r.key}-${i}`}>
-                            <Badge value={r.kind} />
-                            {r.note && <span className="ml-1">{r.note}</span>}
-                            {r.ref && <Mono className="ml-1 text-mute">{r.ref}</Mono>}
-                            {r.missed ? <span className="ml-1 text-mute">missed {r.missed}</span> : null}
+                            <Tag>{r.kind}</Tag>
+                            {r.note && <span className="ml-2">{r.note}</span>}
+                            {r.ref && <Mono className="ml-2 text-mute">{r.ref}</Mono>}
+                            {r.missed ? <span className="ml-2 text-mute">missed {r.missed}</span> : null}
                           </div>
                         ))}
                       </td>
@@ -566,7 +566,7 @@ function Activations({ goal, activations, error }: { goal: GoalDefinition; activ
                       <td className="w-px whitespace-nowrap text-xs">
                         {t('goalRuns', { n: a.cost?.runs ?? 0 })} · {fmtTokens(a.cost?.total_tokens ?? 0)}
                       </td>
-                      <td className="text-xs">
+                      <td className="min-w-[16rem] text-xs">
                         {a.summary}
                         {a.works_created?.length ? <span className="block text-mute">+ {a.works_created.map((w) => <Sid key={w} sid={w} />)}</span> : null}
                         {a.end_reason && <span className="block text-mute">{a.end_reason}</span>}
@@ -714,25 +714,25 @@ function GatesForm({ goal, onClose, onSaved, onConflict }: {
     }
   }
 
-  const legend = 'mb-1 text-xs font-semibold text-mute'
-  const group = 'mb-3 grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2'
+  const legend = 'mb-2 text-xs font-medium'
+  const group = 'mb-4 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2'
   return (
     <form
-      className="mt-2 min-w-0 rounded border border-line p-2"
+      className="mt-4 min-w-0 rounded-lg border border-line p-4"
       data-testid="gate-form"
       onSubmit={(e) => {
         e.preventDefault()
         void submit()
       }}
     >
-      <p className="mb-2 text-xs text-mute">{t('formHint')}</p>
+      <p className="mb-4 text-xs leading-5 text-mute">{t('formHint')}</p>
       <fieldset className={group}>
         <legend className={legend}>{t('formGates')}</legend>
         {field('interval', 'formInterval')}
         <div className="min-w-0">
           {field('guarantee', 'formGuarantee', guaranteeOff)}
           <label className="mt-1 flex items-center gap-2 text-xs">
-            <input type="checkbox" checked={guaranteeOff} onChange={(e) => setGuaranteeOff(e.target.checked)} />
+            <input type="checkbox" className="accent-[var(--accent)]" checked={guaranteeOff} onChange={(e) => setGuaranteeOff(e.target.checked)} />
             {t('formGuaranteeOff')}
           </label>
         </div>
@@ -781,7 +781,7 @@ function GatesForm({ goal, onClose, onSaved, onConflict }: {
           </>
         )}
       </fieldset>
-      <label className="mb-2 block text-xs text-mute">
+      <label className="mb-4 block text-xs text-mute">
         {t('opReasonOptional')}
         <input className="input mt-1 block w-full" value={text.reason} onChange={(e) => update('reason', e.target.value)} />
       </label>
@@ -790,7 +790,7 @@ function GatesForm({ goal, onClose, onSaved, onConflict }: {
         <button type="button" className="btn" onClick={onClose} disabled={busy}>
           {t('cancel')}
         </button>
-        <button type="submit" className="btn border-accent text-accent" disabled={busy}>
+        <button type="submit" className="btn btn-primary" disabled={busy}>
           {t('save')}
         </button>
       </div>
@@ -834,7 +834,7 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
   }
   return (
     <Panel title={t('gatesTitle')} testId="goal-gates">
-      <p className="mb-2 text-xs text-mute">{t('gatesHint')}</p>
+      <p className="mb-4 max-w-2xl text-xs leading-5 text-mute">{t('gatesHint')}</p>
       <Fields
         rows={[
           [
@@ -910,7 +910,8 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
           [
             t('gateHolding'),
             holding ? (
-              <span className="text-xs text-warn" data-testid="gate-holding">
+              <span className="inline-flex flex-wrap items-baseline gap-x-1 text-xs" data-testid="gate-holding">
+                <Dot tone="warn" className="mr-1 self-center" />
                 {t(HOLD_LABEL[holding.reason])} · {t('gateSince')} <Time ms={holding.since_ms} />
                 {holding.until_ms ? <> · {t('gateUntil')} <Time ms={holding.until_ms} /></> : null}
               </span>
@@ -920,7 +921,7 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
           ],
         ]}
       />
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className="mt-4 flex flex-wrap gap-2">
         {check && (
           <button className="btn" onClick={() => setScript(!script)} data-testid="gate-script-toggle">
             {t(script ? 'gateScriptHide' : 'gateScriptShow')}
@@ -945,7 +946,7 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
         )}
         {editable && !editing && (
           <button
-            className="btn border-accent text-accent"
+            className="btn"
             data-testid="gate-edit"
             onClick={() => {
               setEditing(true)
@@ -961,13 +962,13 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
       {conflict != null && (
         <div className="mt-2" data-testid="gate-conflict">
           <ErrorBox error={conflict} />
-          <p className="text-xs text-warn">{t('formConflict')}</p>
+          <Note tone="warn">{t('formConflict')}</Note>
         </div>
       )}
       {done && (
-        <div className="mt-2 text-xs text-ok" data-testid="gate-result">
+        <Note tone="ok" testId="gate-result" className="mt-3">
           {t('opDone', { what: done })}
-        </div>
+        </Note>
       )}
       {editing && (
         <GatesForm
@@ -1007,26 +1008,29 @@ function Cost({ goal, state, activations }: { goal: GoalDefinition; state?: Goal
   const week = days.reduce((sum, d) => sum + d.tokens, 0)
   return (
     <Panel title={t('costTitle')} testId="goal-cost">
-      <p className="mb-2 text-xs" data-testid="cost-period">
+      <p className="mb-4 text-xs" data-testid="cost-period">
         {t('costPeriod', {
           total: fmtTokens((usage?.tokens ?? 0) + (usage?.work_tokens ?? 0)),
           goal: fmtTokens(usage?.tokens ?? 0),
           works: fmtTokens(usage?.work_tokens ?? 0),
         })}
       </p>
-      <p className="mb-1 text-xs text-mute">{t('costByDay')}</p>
+      <p className="mb-2 text-xs text-mute">{t('costByDay')}</p>
       <ul className="text-xs">
-        {days.map(({ from, tokens }) => (
-          <li key={from.getTime()} className="flex items-center gap-2 py-0.5" data-testid="cost-day">
-            <span className="w-24 shrink-0 tabular-nums text-mute">{from.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en', { month: '2-digit', day: '2-digit', weekday: 'short' })}</span>
-            <span className="h-2 min-w-0 flex-1 rounded bg-soft">
-              <span className="block h-2 rounded bg-accent" style={{ width: `${(tokens / max) * 100}%` }} />
-            </span>
-            <span className="w-12 shrink-0 text-right tabular-nums">{fmtTokens(tokens)}</span>
-          </li>
-        ))}
+        {days.map(({ from, tokens }, i) => {
+          const today = i === days.length - 1
+          return (
+            <li key={from.getTime()} className="flex h-7 items-center gap-3" data-testid="cost-day">
+              <span className={clsx('w-24 shrink-0 tabular-nums', today ? 'text-fg' : 'text-mute')}>{from.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en', { month: '2-digit', day: '2-digit', weekday: 'short' })}</span>
+              <span className="h-1.5 min-w-0 flex-1 rounded-full bg-soft">
+                {tokens > 0 && <span className={clsx('block h-1.5 min-w-1.5 rounded-full', today ? 'bg-accent' : 'bg-bar')} style={{ width: `${(tokens / max) * 100}%` }} />}
+              </span>
+              <span className={clsx('w-12 shrink-0 text-right font-mono tabular-nums', tokens ? 'text-fg' : 'text-mute')}>{fmtTokens(tokens)}</span>
+            </li>
+          )
+        })}
       </ul>
-      <p className="mt-1 text-xs text-mute" data-testid="cost-week">
+      <p className="mt-2 text-xs text-mute" data-testid="cost-week">
         {t('costWeek', { n: fmtTokens(week) })}
       </p>
     </Panel>
@@ -1036,7 +1040,7 @@ function Cost({ goal, state, activations }: { goal: GoalDefinition; state?: Goal
 function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
   return (
     <Panel title={t('goalMaintenance')} testId="goal-maintenance">
-      <h3 className="mb-1 text-xs font-semibold text-mute">{t('mntTitle')}</h3>
+      <h3 className="mb-2 text-xs font-medium text-mute">{t('mntTitle')}</h3>
       {maintenance ? (
         <Fields
           rows={[
@@ -1058,7 +1062,7 @@ function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
       ) : (
         <Empty />
       )}
-      <h3 className="mb-1 mt-3 text-xs font-semibold text-mute">{t('mntReceipts')} ({maintenance?.receipts?.length ?? 0})</h3>
+      <h3 className="mb-1 mt-4 text-xs font-medium text-mute">{t('mntReceipts')} ({maintenance?.receipts?.length ?? 0})</h3>
       {maintenance?.receipts?.length ? (
         <table className="tbl">
           <thead>
@@ -1078,7 +1082,7 @@ function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
                 <td><Mono>{r.operation_id}</Mono></td>
                 <td>
                   <Badge value={r.stage} tone={r.stage === 'completed' ? 'ok' : r.stage === 'failed' ? 'bad' : 'pending'} />
-                  {r.cleanup_pending && <span className="ml-1"><Badge value={t('cleanupPending')} tone="waiting" /></span>}
+                  {r.cleanup_pending && <span className="ml-2"><Badge value={t('cleanupPending')} tone="waiting" /></span>}
                 </td>
                 <td><Mono>{r.batch_id}</Mono></td>
                 <td className="text-xs">#{r.epoch}.{r.activation}</td>
@@ -1092,7 +1096,7 @@ function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
       ) : (
         <Empty>{t('mntNoReceipts')}</Empty>
       )}
-      <h3 className="mb-1 mt-3 text-xs font-semibold text-mute">{t('mntCandidates')} ({maintenance?.candidates?.length ?? 0})</h3>
+      <h3 className="mb-1 mt-4 text-xs font-medium text-mute">{t('mntCandidates')} ({maintenance?.candidates?.length ?? 0})</h3>
       {maintenance?.candidates?.length ? (
         <table className="tbl">
           <thead>
@@ -1108,7 +1112,7 @@ function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
             {maintenance.candidates.map((c) => (
               <tr key={c.candidate_id} data-testid="candidate-row">
                 <td><Mono>{c.candidate_id}</Mono></td>
-                <td><Badge value={c.kind} /></td>
+                <td><Tag>{c.kind}</Tag></td>
                 <td className="text-xs">
                   {c.title}
                   <span className="block text-mute">{c.action} · {c.intent_basis}{c.notify_id && <> · {t('goalNotification')} <Mono>{c.notify_id}</Mono></>}</span>
@@ -1134,15 +1138,11 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
   const schedule = useQuery(['goals.schedule', goalId], () => dataModel.goalSchedule(goalId))
   const activations = useQuery(['goals.activations', goalId], () => dataModel.goalActivations(goalId, undefined, ACTIVATIONS))
   const changes = useQuery(['goals.changes', goalId], () => dataModel.goalChanges(goalId, CHANGES))
-  const back = (
-    <a href="#/" className="text-xs text-accent">
-      ← {t('goals')}
-    </a>
-  )
+  const back = { href: '#/', label: t('goals') }
   if (!goal.data) {
     return (
       <>
-        {back}
+        <PageHead back={back} title={<span className="font-mono">{goalId}</span>} />
         {goal.error ? <ErrorBox error={goal.error} /> : <Empty>{goal.data === null ? t('goalNotFound') : t('loading')}</Empty>}
       </>
     )
@@ -1155,9 +1155,29 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
   const refresh = () => void mutate(() => true)
   return (
     <>
-      <div className="mb-2 flex flex-wrap items-center gap-2" data-testid="goal-header">
-        {back}
-        <span className="text-sm font-semibold">{def.title}</span>
+      <PageHead
+        back={back}
+        title={def.title}
+        testId="goal-header"
+        meta={
+          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-mute" data-testid="goal-summary">
+            <span>
+              {t('goalLastActivation')}: {last ? <><Time ms={last.at_ms} /> · {t(DECISION_LABEL[last.decision])}</> : t('goalNoActivation')}
+            </span>
+            {schedule.data && (
+              <span>
+                {t('goalNextOpportunity')}: <NextOpportunity schedule={schedule.data} />
+              </span>
+            )}
+            {skip && (
+              <span>
+                {t('goalLastSkip')}: <Mono>{skip}</Mono>
+              </span>
+            )}
+            {schedule.data?.last_error && <span className="inline-flex items-baseline gap-2 text-bad"><Dot tone="bad" className="self-center" />{t('goalLastError')}: {schedule.data.last_error}</span>}
+          </div>
+        }
+      >
         <Mono className="text-mute">{def.goal_id}</Mono>
         {off ? (
           <span data-testid="goal-off">
@@ -1167,37 +1187,21 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
           <Badge value={t(STATUS_LABEL[def.status])} tone={STATUS_TONE[def.status]} />
         )}
         <Badge value={t(LIFECYCLE_LABEL[def.lifecycle ?? 'maintain'])} />
-        {builtin && <Badge value={`${t('goalBuiltin')}: ${builtin}`} tone="running" />}
-      </div>
-      <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-mute" data-testid="goal-summary">
-        <span>
-          {t('goalLastActivation')}: {last ? <><Time ms={last.at_ms} /> · {t(DECISION_LABEL[last.decision])}</> : t('goalNoActivation')}
-        </span>
-        {schedule.data && (
-          <span>
-            {t('goalNextOpportunity')}: <NextOpportunity schedule={schedule.data} />
-          </span>
-        )}
-        {skip && (
-          <span>
-            {t('goalLastSkip')}: <Mono>{skip}</Mono>
-          </span>
-        )}
-        {schedule.data?.last_error && <span className="text-bad">{t('goalLastError')}: {schedule.data.last_error}</span>}
-      </div>
+        {builtin && <Badge value={`${t('goalBuiltin')}: ${builtin}`} />}
+      </PageHead>
       <ErrorBox error={goal.error ?? state.error ?? schedule.error} />
       <Operations goal={def} schedule={schedule.data} onDone={refresh} />
-      <div className="grid grid-cols-1 gap-x-3 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-x-4 lg:grid-cols-2">
         <Definition goal={def} />
         <GoalStatePanel goal={def} state={state.data} />
       </div>
-      <div className="grid grid-cols-1 gap-x-3 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-x-4 lg:grid-cols-2">
         <Gates goal={def} state={state.data} schedule={schedule.data} onDone={refresh} />
         <Cost goal={def} state={state.data} activations={activations.data} />
       </div>
       {builtin === 'memory_maintenance' && <Maintenance maintenance={state.data?.maintenance} />}
       <Activations goal={def} activations={activations.data} error={activations.error} />
-      <Panel title={`${t('goalChanges')} (${changes.data?.length ?? 0})`} testId="goal-changes">
+      <Panel title={t('goalChanges')} count={changes.data?.length ?? 0} testId="goal-changes">
         <ErrorBox error={changes.error} />
         {changes.data?.length ? (
           <table className="tbl">
@@ -1205,7 +1209,7 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
               {[...changes.data].sort((a, b) => b.seq - a.seq).map((c) => (
                 <tr key={c.seq} data-testid="change-row">
                   <td className="w-px text-xs text-mute">{c.seq}</td>
-                  <td className="w-px"><Badge value={c.kind} /></td>
+                  <td className="w-px"><Tag>{c.kind}</Tag></td>
                   <td className="text-xs">
                     <Mono>{c.who}</Mono> <span className="text-mute">via {c.via}</span>
                     {c.revision != null && <span className="text-mute"> · rev {c.revision}</span>}

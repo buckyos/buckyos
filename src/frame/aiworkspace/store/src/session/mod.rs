@@ -2283,7 +2283,9 @@ impl Workspace {
             readable.insert(id.to_string(), ok);
             Ok(ok)
         };
-        crate::workspace::filter_rows(&mut rows, &mut can_read)?;
+        crate::workspace::filter_rows(&mut rows, &mut can_read, &|target| {
+            aiworkspace_core::anchor::target_visible(&ctx, target, &|e| access.can_read(&ctx, e))
+        })?;
         Ok(rows)
     }
 }

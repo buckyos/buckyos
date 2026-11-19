@@ -75,16 +75,16 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { 
             className={`aiws-annotation${mark.entityId === activeAnnotation ? ' is-active' : ''}`}
             data-testid="aiws-annotation"
             data-annotation-id={mark.entityId}
-            data-anchor-state={mark.anchor.state}
-            data-anchor-level={mark.anchor.level}
+            data-anchor-state={mark.anchor?.state}
+            data-anchor-level={mark.anchor?.level}
             style={{ background: typeof mark.payload.style?.color === 'string' ? mark.payload.style.color : undefined }}
             onClick={() => { setActiveAnnotation(mark.entityId); revealAnnotation(mark.entityId) }}
           >
             <div className="aiws-annotation-body">{mark.payload.body}</div>
-            {quote && mark.payload.range && mark.anchor.level !== 'range' && <div className="aiws-annotation-quote" title={t('aiworkspace.shell.annotations.quote')}>{quote}</div>}
+            {quote && mark.payload.range && mark.anchor?.level !== 'range' && <div className="aiws-annotation-quote" title={t('aiworkspace.shell.annotations.quote')}>{quote}</div>}
             <div className="aiws-annotation-meta">
               <span>{free ? t('aiworkspace.shell.annotations.freeNote') : annotationLabel(mark)}</span>
-              {!free && <span data-testid="aiws-anchor-state">{anchorStatus(mark.anchor)}</span>}
+              {!free && mark.anchor && <span data-testid="aiws-anchor-state">{anchorStatus(mark.anchor)}</span>}
               {authorLabel(mark.payload) && <span data-testid="aiws-annotation-author">{authorLabel(mark.payload)}</span>}
               {(capabilities.includes('comment') || capabilities.includes('manage')) && (
                 <button type="button" className="aiws-link" onClick={(event) => {

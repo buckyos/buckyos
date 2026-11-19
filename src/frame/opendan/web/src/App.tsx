@@ -5,7 +5,7 @@ import { useSWRConfig } from 'swr'
 import { t } from './i18n'
 import { REFRESH_MS, useQuery } from './lib'
 import { dataModel } from './model'
-import { Mono } from './ui'
+import { Dot, Mono } from './ui'
 import AgentStatePage from './pages/AgentState'
 import GoalDetailPage from './pages/GoalDetail'
 import HomePage from './pages/Home'
@@ -26,7 +26,7 @@ const readHash = () => window.location.hash
 const TABS = [
   { id: 'sessions', label: 'Sessions' },
   { id: 'skills', label: 'Skills' },
-  { id: 'agent', label: 'Agent State' },
+  { id: 'agent', label: 'Agent state' },
   { id: 'loader', label: 'Loader' },
 ]
 
@@ -35,9 +35,9 @@ const TABS = [
 function LoginLost() {
   return (
     <div className="mx-auto max-w-md px-4 py-16 text-center" data-testid="login-lost" role="alert">
-      <h1 className="mb-2 text-base font-semibold">{t('loginLost')}</h1>
+      <h1 className="mb-2 text-base font-medium">{t('loginLost')}</h1>
       <p className="mb-4 text-sm text-mute">{t('loginLostHint')}</p>
-      <button className="btn mx-auto" onClick={() => window.location.reload()}>
+      <button className="btn btn-primary mx-auto" onClick={() => window.location.reload()}>
         {t('signInAgain')}
       </button>
     </div>
@@ -62,6 +62,7 @@ export default function App() {
   const meta = (
     <>
       <span data-testid="data-source">data: {dataModel.source}</span>
+      <span aria-hidden>·</span>
       <span>auto {REFRESH_MS / 1000}s</span>
     </>
   )
@@ -85,10 +86,10 @@ export default function App() {
   }
 
   return (
-    <div className="mx-auto max-w-[1400px] px-3 pb-8">
-      <header className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line py-2">
-        <a href="#/" className="flex items-center text-sm font-semibold" aria-label="Home">
-          <ChevronLeft size={16} />
+    <div className="mx-auto max-w-[1440px] px-4 pb-12 sm:px-6">
+      <header className="mb-6 flex min-h-14 flex-wrap items-center gap-x-6 gap-y-2 border-b border-line py-2">
+        <a href="#/" className="-ml-1 flex h-8 items-center gap-1 rounded-lg pl-0.5 pr-1.5 text-sm font-medium transition-colors hover:text-accent" aria-label="Home">
+          <ChevronLeft size={16} className="text-mute" />
           OpenDAN Agent Loader
         </a>
         <nav className="flex gap-1">
@@ -96,15 +97,22 @@ export default function App() {
             <a
               key={x.id}
               href={`#/${x.id}`}
-              className={clsx('rounded px-2 py-1 text-xs', tab === x.id ? 'bg-accent text-panel' : 'text-mute hover:text-fg')}
+              aria-current={tab === x.id ? 'page' : undefined}
+              className={clsx(
+                'flex h-7 items-center rounded-lg px-2.5 text-xs transition-colors',
+                tab === x.id ? 'bg-panel text-fg shadow-[inset_0_0_0_1px_var(--line)]' : 'text-mute hover:bg-hover hover:text-fg',
+              )}
             >
               {x.label}
             </a>
           ))}
         </nav>
-        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mute">
-          {status.data && <Mono className="hidden sm:inline">{status.data.agent_did}</Mono>}
-          {meta}
+        <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-mute">
+          {status.data && <Mono className="hidden lg:inline">{status.data.agent_did}</Mono>}
+          <span className="flex items-center gap-2 font-mono" title={status.error ? status.error.message : undefined}>
+            <Dot tone={status.error ? 'bad' : status.data ? 'ok' : 'mute'} />
+            {meta}
+          </span>
           <button className="btn" onClick={() => mutate(() => true)} aria-label="Refresh">
             <RefreshCw size={12} />
             Refresh

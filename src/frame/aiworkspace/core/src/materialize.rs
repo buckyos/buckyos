@@ -258,7 +258,11 @@ pub fn materialize_with(
     cached: &mut dyn FnMut(&EntityRow, Option<&ObjId>) -> Option<ObjId>,
     strip_notes: bool,
 ) -> WsResult<Materialized> {
-    materialize_stripped(ctx, sink, visible, cached, &|e| strip_notes.then(|| without_notes(e)).flatten())
+    materialize_stripped(ctx, sink, visible, cached, &|e| strip_notes.then(|| without_notes(e)).flatten(), true)
+}
+
+pub fn imported_content_root(ctx: &dyn ReadCtx, sink: &mut dyn ObjectSink) -> WsResult<ObjId> {
+    Ok(materialize_stripped(ctx, sink, &|_| Ok(true), &mut |_, _| None, &|_| None, false)?.content_root)
 }
 
 /// A template's content (README "Workspace templates"): without speaker notes, and without the run records of its
@@ -270,7 +274,7 @@ pub fn materialize_template(ctx: &dyn ReadCtx, sink: &mut dyn ObjectSink, visibl
             out.get_or_insert_with(|| e.clone()).payload.remove("history");
         }
         out
-    })
+    }, true)
 }
 
 /// `strip` gives the entity as it is materialized when that differs from what it is (never through `cached`).
@@ -280,6 +284,7 @@ fn materialize_stripped(
     visible: &dyn Fn(&EntityRow) -> WsResult<bool>,
     cached: &mut dyn FnMut(&EntityRow, Option<&ObjId>) -> Option<ObjId>,
     strip: &dyn Fn(&EntityRow) -> Option<EntityRow>,
+    redact_context: bool,
 ) -> WsResult<Materialized> {
     let mut included: BTreeSet<String> = BTreeSet::new();
     let (mut lines, mut objects, mut unresolved, mut excluded) = (Vec::new(), BTreeMap::new(), Vec::new(), 0);
@@ -290,14 +295,19 @@ fn materialize_stripped(
             continue;
         }
         included.insert(e.entity_id.clone());
-        let object_id = match (strip(&e), cached(&e, None)) {
-            (Some(stripped), _) => content_object(ctx, &stripped, sink)?,
-            (None, Some(id)) => id,
-            (None, None) => {
-                let id = content_object(ctx, &e, sink)?;
-                cached(&e, Some(&id));
-                id
-            }
+        let mut stripped = strip(&e);
+        if redact_context && e.type_id == TYPE_ANNOTATION && e.payload.contains_key("context")
+            && !crate::anchor::target_visible(ctx, e.payload.get("target"), visible)? {
+            stripped.get_or_insert_with(|| e.clone()).payload.remove("context");
+        }
+        let object_id = if let Some(stripped) = stripped {
+            content_object(ctx, &stripped, sink)?
+        } else if let Some(id) = cached(&e, None) {
+            id
+        } else {
+            let id = content_object(ctx, &e, sink)?;
+            cached(&e, Some(&id));
+            id
         };
         let mut line = Map::new();
         line.insert("entity_id".into(), json!(e.entity_id));

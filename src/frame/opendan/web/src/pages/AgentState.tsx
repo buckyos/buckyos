@@ -54,7 +54,7 @@ function Artifacts() {
   const { data, error } = useQuery(['artifacts.list'], () => dataModel.artifacts())
   const [open, setOpen] = useState('')
   return (
-    <Panel title={`Artifacts (${data?.length ?? 0})`} testId="agent-artifacts">
+    <Panel title="Artifacts" count={data?.length ?? 0} testId="agent-artifacts">
       <ErrorBox error={error} />
       {data?.length ? (
         <table className="tbl">
@@ -70,15 +70,15 @@ function Artifacts() {
           <tbody>
             {data.map((a) => (
               <tr key={a.aid}>
-                <td><Mono>{a.aid}</Mono></td>
+                <td className="whitespace-nowrap"><Mono>{a.aid}</Mono></td>
                 <td><Mono>{a.head ?? '–'}</Mono></td>
                 <td>{a.rev}</td>
                 <td><Time ms={a.updated_at_ms} /></td>
                 <td className="w-full">
-                  <button className="btn" onClick={() => setOpen(open === a.aid ? '' : a.aid)}>
+                  <button className="btn" aria-expanded={open === a.aid} onClick={() => setOpen(open === a.aid ? '' : a.aid)}>
                     {open === a.aid ? 'Hide' : 'Versions'}
                   </button>
-                  {open === a.aid && <div className="mt-1"><ArtifactVersions aid={a.aid} /></div>}
+                  {open === a.aid && <div className="mt-2 rounded-lg bg-bg px-3 py-1"><ArtifactVersions aid={a.aid} /></div>}
                 </td>
               </tr>
             ))}
@@ -104,9 +104,10 @@ function Behaviors() {
   return (
     <>
       <Panel
-        title={`Behaviors (${data?.behaviors.length ?? 0})`}
+        title="Behaviors"
+        count={data?.behaviors.length ?? 0}
         testId="agent-behaviors"
-        extra={data && <span className="text-xs text-mute">revision <Mono>{data.revision}</Mono></span>}
+        extra={data && <span>revision <Mono>{data.revision}</Mono></span>}
       >
         <ErrorBox error={error} />
         {data?.behaviors.length ? (
@@ -122,7 +123,7 @@ function Behaviors() {
               {data.behaviors.map((b) => (
                 <tr key={b.name}>
                   <td>
-                    <button className="font-mono text-xs text-accent hover:underline" onClick={() => setOpen(open === b.name ? '' : b.name)}>
+                    <button className="whitespace-nowrap font-mono text-xs text-accent hover:underline" aria-expanded={open === b.name} onClick={() => setOpen(open === b.name ? '' : b.name)}>
                       {b.name}
                     </button>
                   </td>
@@ -136,8 +137,8 @@ function Behaviors() {
           <Empty>No behaviors.</Empty>
         )}
         {open && (
-          <div className="mt-2" data-testid="behavior-config">
-            <div className="mb-1 text-xs text-mute">behaviors.get <Mono>{open}</Mono></div>
+          <div className="mt-3" data-testid="behavior-config">
+            <div className="mb-2 text-xs text-mute">behaviors.get <Mono>{open}</Mono></div>
             <BehaviorConfig name={open} />
           </div>
         )}
@@ -185,15 +186,15 @@ function Hints() {
   return (
     <Panel title="Memory recall (as a session)" testId="agent-hints">
       <form
-        className="mb-2 flex gap-2"
+        className="mb-3 flex flex-wrap gap-2"
         onSubmit={(e) => {
           e.preventDefault()
           void recall()
         }}
       >
-        <input className="input w-48" placeholder="session id" aria-label="Session" value={session} onChange={(e) => setSession(e.target.value)} />
-        <input className="input flex-1" placeholder="words or tags (space or comma separated)" aria-label="Tags" value={words} onChange={(e) => setWords(e.target.value)} />
-        <button className="btn" type="submit">Recall</button>
+        <input className="input w-48 font-mono" placeholder="session id" aria-label="Session" value={session} onChange={(e) => setSession(e.target.value)} />
+        <input className="input min-w-[12rem] flex-1" placeholder="words or tags (space or comma separated)" aria-label="Tags" value={words} onChange={(e) => setWords(e.target.value)} />
+        <button className="btn btn-primary" type="submit">Recall</button>
       </form>
       <ErrorBox error={error} />
       {needSession && <Empty>Memory answers as one session: enter its id.</Empty>}
@@ -203,7 +204,7 @@ function Hints() {
             <tbody>
               {rows.map((h) => (
                 <tr key={h.reference}>
-                  <td className="w-px"><Mono>{h.reference}</Mono></td>
+                  <td className="w-px whitespace-nowrap"><Mono>{h.reference}</Mono></td>
                   <td className="w-px">
                     <Badge value={h.layer === 'cognition' ? h.state : 'not yet consolidated'} />
                   </td>

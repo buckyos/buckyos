@@ -31,6 +31,70 @@ fn unzip_all(path: &std::path::Path) -> Vec<u8> {
     all
 }
 
+#[test]
+fn annotation_quotes_follow_target_access_in_packages() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "Example", None).unwrap()["workspace_id"].as_str().unwrap().to_owned();
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    ws.grant(&alice(), "bob", None, &caps(&["read", "comment", "export"])).unwrap();
+    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "source", "type_id": "buckyos.annotation", "parent_id": "data",
+        "order_key": "z", "payload": { "kind": "note", "body": "The quoted passage ends here." } }]));
+    let note = |id: &str, scope: &str| json!({ "op": "entity.create", "entity_id": id, "type_id": "buckyos.annotation",
+        "parent_id": "data", "order_key": "a", "scope": scope, "payload": { "kind": "note", "body": id, "target": { "entity_id": "source" },
+        "context": { "label": "Review", "quote": { "prefix": "The ", "exact": "quoted passage", "suffix": " ends here." } } } });
+    let mut label_only = note("label-only", "shared");
+    label_only["payload"]["context"] = json!({ "label": "Copied selection" });
+    ok(&mut ws, &bob(), json!([note("shared-note", "shared"), label_only, note("personal-note", "personal")]));
+    let full = ws.checkpoint(&alice()).unwrap().objects["shared-note"].clone();
+    ws.acl_set(&alice(), &json!([{ "subject": "bob", "resource": "source", "deny": ["read"] }])).unwrap();
+    let restricted = ws.checkpoint(&bob()).unwrap();
+    assert_ne!(restricted.objects["shared-note"], full);
+    assert_eq!(ws.checkpoint(&alice()).unwrap().objects["shared-note"], full);
+    let replica = ws.replica_bootstrap(&bob()).unwrap();
+    let db = fetched(&ws.objects, &replica);
+    assert!(!contains(&std::fs::read(&db).unwrap(), "Copied selection"));
+    let db = rusqlite::Connection::open(&db).unwrap();
+    let note: String = db.query_row("SELECT payload_json FROM entities WHERE entity_id = 'shared-note'", [], |r| r.get(0)).unwrap();
+    let note: Value = serde_json::from_str(&note).unwrap();
+    assert_eq!(note["body"], "shared-note");
+    assert!(note.get("context").is_none());
+    drop(ws);
+
+    for mode in ["share", "personal_backup"] {
+        let (pkg, _) = export(&env, &id, &bob(), mode, true);
+        let bytes = unzip_all(&pkg);
+        assert!(!contains(&bytes, "quoted passage"), "{mode}");
+        assert!(!contains(&bytes, "Review"), "{mode}");
+        assert!(!contains(&bytes, "Copied selection"), "{mode}");
+        let other = common::env();
+        let imported = other.svc.import(&bob(), &pkg, "restore", false).unwrap();
+        assert_eq!(imported["content_root"], json!(restricted.content_root));
+        let copy = other.svc.workspace(&id).unwrap();
+        let copy = copy.lock().unwrap();
+        for note in ["shared-note", "personal-note"] {
+            if mode == "share" && note == "personal-note" {
+                continue;
+            }
+            let content = copy.read(&bob(), note, None).unwrap();
+            assert!(content["content"]["payload"].get("context").is_none());
+            assert_eq!(content["content"]["payload"]["body"], note);
+        }
+    }
+
+    let mut ws = h.lock().unwrap();
+    let rev = ws.read(&alice(), "source", None).unwrap()["life_rev"].clone();
+    ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "source", "expect": { "rev": rev } }]));
+    drop(ws);
+    let (pkg, manifest) = export(&env, &id, &alice(), "share", true);
+    assert!(contains(&unzip_all(&pkg), "quoted passage"));
+    let other = common::env();
+    let imported = other.svc.import(&alice(), &pkg, "restore", false).unwrap();
+    assert_eq!(imported["content_root"], manifest["content_root"]);
+    let (new_pkg, _) = export(&other, &id, &alice(), "share", true);
+    assert!(!contains(&unzip_all(&new_pkg), "quoted passage"));
+}
+
 /// V04: export at an explicit checkpoint → import elsewhere → same ContentRoot; damaged packages change nothing.
 #[test]
 fn v04_export_import_roundtrip() {

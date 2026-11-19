@@ -203,6 +203,39 @@ fn text_queries_find_what_bodies_show() {
 }
 
 #[test]
+fn annotation_bodies_and_search_follow_target_access() {
+    let mut ws = ws();
+    let quote = "含税金额";
+    ws.ok(json!([{ "op": "entity.create", "entity_id": "note", "type_id": TYPE_ANNOTATION, "parent_id": DATA_ID, "order_key": "b",
+        "payload": { "kind": "note", "target": { "entity_id": "doc", "selector": { "kind": "richtext_block", "block_id": "p1" } },
+                     "context": { "quote": { "exact": quote } }, "body": "review complete" } }]));
+    let limited = Access::granted("bob", CapSet::NONE, [("note".into(), CapSet::parse(&["read".into()]).unwrap())]);
+    for (schema_version, context, expected_text) in [
+        (1, json!({ "quote": { "exact": quote } }), quote),
+        (99, json!({ "quote": { "exact": quote } }), quote),
+        (99, json!({ "label": "按含税金额统计。" }), "按含税金额统计。"),
+    ] {
+        let note = ws.store.entities.get_mut("note").unwrap();
+        note.schema_version = schema_version;
+        note.payload.insert("context".into(), context);
+        let note = &ws.store.entities["note"];
+        let read = |access| body::read_body(&ws.store, access, note, &json!({}), None).unwrap();
+        let search = |access, text| search::text_query(&ws.store, access, &json!({
+            "text": text, "type": "annotation", "at": "note"
+        }), ws.head_seq, None, &|| false).unwrap()["hits"].clone();
+        let full = full();
+        let visible = read(&full);
+        let limited_body = read(&limited);
+        assert!(visible["text"].as_str().unwrap().contains(expected_text));
+        assert!(!limited_body["text"].as_str().unwrap().contains(expected_text));
+        assert_ne!(visible["etag"], limited_body["etag"]);
+        assert_eq!(search(&full, expected_text)[0]["entity_id"], "note");
+        assert_eq!(search(&limited, expected_text), json!([]));
+        assert_eq!(search(&limited, "review complete")[0]["entity_id"], "note");
+    }
+}
+
+#[test]
 fn meta_says_what_an_entity_is_without_reading_it() {
     let ws = ws();
     let ctx = &ws.store;

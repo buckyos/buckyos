@@ -46,8 +46,7 @@ function Avatar({ profile, src, className }: { profile: AgentProfile; src?: stri
   ) : (
     <div
       aria-hidden
-      className={clsx('flex shrink-0 items-center justify-center rounded-full font-semibold text-white', className)}
-      style={{ background: 'linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--ok)))' }}
+      className={clsx('flex shrink-0 items-center justify-center rounded-full bg-accent font-medium text-panel', className)}
     >
       {[...profile.display_name.trim()][0]?.toUpperCase() ?? '?'}
     </div>
@@ -317,7 +316,7 @@ function Overview({ entries }: { entries?: RegistryEntry[] }) {
 
       <div data-testid="model-usage">
         <div className="mt-4 grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem_3.75rem] gap-x-2 text-xs text-mute">
-          <span className="font-medium uppercase tracking-wide">{t('topModels')}</span>
+          <span className="font-medium">{t('topModels')}</span>
           <span className="text-right">{t('lastHour')}</span>
           <span className="text-right">{t('lastDay')}</span>
           <span className="text-right">{t('allTime')}</span>

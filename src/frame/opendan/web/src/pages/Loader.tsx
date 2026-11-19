@@ -1,6 +1,6 @@
 import { useQuery } from '../lib'
 import { dataModel } from '../model'
-import { Badge, Empty, ErrorBox, Fields, Mono, Panel, Sid, Time } from '../ui'
+import { Badge, Dot, Empty, ErrorBox, Fields, Mono, Panel, Sid, Time } from '../ui'
 
 export default function LoaderPage() {
   const { data, error } = useQuery(['loader.status'], () => dataModel.loaderStatus())
@@ -59,7 +59,7 @@ export default function LoaderPage() {
           </tbody>
         </table>
       </Panel>
-      <Panel title={`Hosted sessions (${data.hosted.length})`} testId="loader-hosted">
+      <Panel title="Hosted sessions" count={data.hosted.length} testId="loader-hosted">
         {data.hosted.length ? (
           <table className="tbl">
             <thead>
@@ -83,11 +83,11 @@ export default function LoaderPage() {
                   <td>{h.class}</td>
                   <td>
                     <Badge value={h.loaded ? 'loaded' : 'unloaded'} tone={h.loaded ? 'ok' : undefined} />
-                    {h.loaded && <span className="ml-1"><Time ms={h.loaded_at_ms} /></span>}
+                    {h.loaded && <span className="ml-2"><Time ms={h.loaded_at_ms} /></span>}
                   </td>
                   <td>{h.drives}</td>
                   <td title={JSON.stringify(h.last_result)}>
-                    {h.last_result ? <Badge value={h.last_result.kind} tone={/error|failed|lost|blocked/.test(h.last_result.kind) ? 'bad' : undefined} /> : '–'}
+                    {h.last_result ? <Badge value={h.last_result.kind} tone={/error|failed|lost|blocked/.test(h.last_result.kind) ? 'bad' : undefined} /> : <span className="text-mute">–</span>}
                   </td>
                   <td>
                     <Time ms={h.last_result_at_ms} />
@@ -105,12 +105,12 @@ export default function LoaderPage() {
       <Panel title="UI inbox bridge" testId="loader-ui">
         {data.ui ? (
           <>
-            <div className="mb-2 flex flex-wrap gap-4 text-xs">
-              <span>scans: {data.ui.scans}</span>
+            <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs">
+              <span><span className="text-mute">scans</span> <span className="tabular-nums">{data.ui.scans}</span></span>
               <span>
-                last scan: <Time ms={data.ui.last_scan_ms} />
+                <span className="text-mute">last scan</span> <Time ms={data.ui.last_scan_ms} />
               </span>
-              {data.ui.last_error && <span className="text-bad">last error: {data.ui.last_error}</span>}
+              {data.ui.last_error && <span className="inline-flex items-baseline gap-2 text-bad"><Badge value="last error" tone="bad" /><span className="text-fg">{data.ui.last_error}</span></span>}
             </div>
             {data.ui.inboxes.length ? (
               <table className="tbl">
@@ -133,7 +133,7 @@ export default function LoaderPage() {
                       <td>{i.session_id ? <Sid sid={i.session_id} /> : '–'}</td>
                       <td>{i.delivered}</td>
                       <td className={i.dropped ? 'text-bad' : ''}>{i.dropped}</td>
-                      <td className="text-xs text-warn">{i.held}</td>
+                      <td className="text-xs">{i.held ? <Badge value={i.held} tone="waiting" /> : null}</td>
                       <td>
                         <Time ms={i.last_at_ms} />
                       </td>
@@ -149,7 +149,7 @@ export default function LoaderPage() {
           <Empty>The ui module is not enabled.</Empty>
         )}
       </Panel>
-      <Panel title={`Recent errors (${data.errors.length})`} testId="loader-errors">
+      <Panel title="Recent errors" count={data.errors.length} testId="loader-errors">
         {data.errors.length ? (
           <table className="tbl">
             <tbody>
@@ -158,10 +158,12 @@ export default function LoaderPage() {
                   <td className="w-px">
                     <Time ms={e.at_ms} />
                   </td>
-                  <td className="w-px">
-                    <Mono>{e.source}</Mono>
+                  <td className="w-px whitespace-nowrap">
+                    <Mono className="text-mute">{e.source}</Mono>
                   </td>
-                  <td className="text-xs text-bad">{e.message}</td>
+                  <td className="text-xs">
+                    <span className="flex items-start gap-2"><Dot tone="bad" className="mt-[7px]" />{e.message}</span>
+                  </td>
                 </tr>
               ))}
             </tbody>

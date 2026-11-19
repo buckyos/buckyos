@@ -21,7 +21,7 @@ test('sessions page lists the tree, the active view and filters', async ({ page 
   await expect(page.getByTestId(`session-row-${WORK_RUNNING}`)).toContainText('turn open')
   await expect(page.getByTestId(`session-row-${WORK_PENDING}`)).toContainText('pending')
   await expect(page.getByTestId(`session-row-${UI}`)).toContainText('loaded')
-  await expect(page.getByTestId('active-panel').locator('tbody tr')).toHaveCount(2)
+  await expect(page.getByTestId('active-panel').getByTestId('active-row')).toHaveCount(2)
   await expect(page.getByTestId('active-panel')).toContainText('artifact:art-weekly-report')
 
   await page.getByLabel('run_state').selectOption('finished')

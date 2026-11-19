@@ -878,7 +878,7 @@ export interface AnchorInfo {
   range_status?: 'exact' | 'relocated' | 'lost' | 'unchecked'
   position?: { block_id?: string; end_block_id?: string; text?: string }
 }
-export interface AnnotationContent extends KeyedContent<AnnotationPayload> { anchor: AnchorInfo }
+export interface AnnotationContent extends KeyedContent<AnnotationPayload> { anchor?: AnchorInfo }
 export type AnnotationRead = EntityEnvelope & { content: AnnotationContent }
 export interface ListAnnotationsParams { target_ids?: string[]; parent_id?: string }
 

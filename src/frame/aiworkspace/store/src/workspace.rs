@@ -423,8 +423,12 @@ pub fn derive_origin(caller: &Caller, opts: &CommitOpts, has_run: bool) -> &'sta
     }
 }
 
-/// Keep only the rows of entities `can_read` admits (the replica bootstrap applies the same rule).
-pub(crate) fn filter_rows(rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>) -> WsResult<()> {
+/// Filter replica rows and record target visibility for the annotations at this point in history.
+pub(crate) fn filter_rows(
+    rows: &mut Value,
+    can_read: &mut dyn FnMut(&str) -> WsResult<bool>,
+    target_visible: &dyn Fn(Option<&Value>) -> WsResult<bool>,
+) -> WsResult<BTreeMap<String, bool>> {
     let keep = |table: &str, key: &str, rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>| -> WsResult<()> {
         if let Some(a) = rows.get_mut(table).and_then(Value::as_array_mut) {
             let mut out = Vec::with_capacity(a.len());
@@ -445,7 +449,21 @@ pub(crate) fn filter_rows(rows: &mut Value, can_read: &mut dyn FnMut(&str) -> Ws
     keep("richtext_updates", "entity_id", rows, can_read)?;
     keep("refs", "src_entity_id", rows, can_read)?;
     keep("refs_deleted", "src_entity_id", rows, can_read)?;
-    Ok(())
+    let mut targets = BTreeMap::new();
+    for row in rows.get_mut("entities").and_then(Value::as_array_mut).into_iter().flatten().filter(|r| r["type_id"] == TYPE_ANNOTATION) {
+        let raw = &row["payload_json"];
+        let mut payload: JsonMap = match raw.as_str() {
+            Some(text) => serde_json::from_str(text),
+            None => serde_json::from_value(raw.clone()),
+        }.map_err(|e| WsError::invalid_schema(format!("annotation payload_json: {e}")))?;
+        let visible = target_visible(payload.get("target"))?;
+        if !visible && payload.remove("context").is_some() {
+            let projected = Value::Object(payload);
+            row["payload_json"] = if raw.is_string() { Value::String(projected.to_string()) } else { projected };
+        }
+        targets.insert(row["entity_id"].as_str().unwrap_or("").to_string(), visible);
+    }
+    Ok(targets)
 }
 
 fn add_usage(conn: &Connection, category: &str, bytes: i64) -> WsResult<()> {
@@ -1717,6 +1735,61 @@ impl Workspace {
 
     // ---- change stream ----
 
+    /// The row delta gives the final target. Walk back through re-anchors in this commit so a
+    /// context-only edit is checked against the target it had when the edit was made.
+    fn filter_annotation_ops(
+        &self, ctx: &dyn ReadCtx, seq: u64, ops: &mut [(usize, Value)], mut targets: BTreeMap<String, bool>,
+        target_visible: &dyn Fn(Option<&Value>) -> WsResult<bool>,
+    ) -> WsResult<()> {
+        for (index, op) in ops.iter_mut().rev() {
+            if op["op"] == "entity.create" && op["type_id"] == TYPE_ANNOTATION {
+                if let Some(payload) = op["payload"].as_object_mut() {
+                    if !target_visible(payload.get("target"))? {
+                        payload.remove("context");
+                    }
+                }
+                continue;
+            }
+            if !matches!(op["op"].as_str(), Some("entity.set_keys" | "entity.unset_keys")) {
+                continue;
+            }
+            let id = op["entity_id"].as_str().unwrap_or("").to_string();
+            let Some(keys) = op["keys"].as_array_mut() else { continue };
+            if !keys.iter().any(|k| matches!(k["key"].as_str(), Some("context" | "target"))) {
+                continue;
+            }
+            // Older commits may have only operations. The entity type is immutable, but the head's
+            // target says nothing about that earlier context.
+            if !targets.contains_key(&id) && !ctx.entity(&id)?.is_some_and(|e| e.type_id == TYPE_ANNOTATION) {
+                continue;
+            }
+            let target_edits = keys.iter().filter(|k| k["key"] == "target").count();
+            let visible = match keys.iter().rev().find(|k| k["key"] == "target") {
+                Some(k) => target_visible(k.get("value"))?,
+                None => targets.get(&id).copied().unwrap_or(false),
+            };
+            if !visible {
+                for k in keys.iter_mut().filter(|k| k["key"] == "context" && k.get("value").is_some()) {
+                    k["value"] = Value::Null;
+                }
+            }
+            if target_edits > 0 && *index > 0 {
+                // The inverse written alongside this exact operation records its previous target.
+                let inverse: Option<String> = self.doc.query_row(
+                    "SELECT inverse_json FROM commit_ops WHERE seq = ?1 AND op_index = ?2", params![seq, *index], |r| r.get(0)
+                ).map_err(db_err)?;
+                let inverse: Vec<Value> = serde_json::from_str(inverse.as_deref().unwrap_or("[]")).map_err(|e| WsError::io(e.to_string()))?;
+                let before = inverse.iter().flat_map(|o| o["keys"].as_array().into_iter().flatten()).find(|k| k["key"] == "target");
+                let before_visible = match before {
+                    Some(k) if target_edits == 1 => target_visible(k.get("value"))?,
+                    _ => false,
+                };
+                targets.insert(id, before_visible);
+            }
+        }
+        Ok(())
+    }
+
     /// `doc.get_changes`: the only authoritative propagation mechanism. Entries
     /// are filtered by the caller's *current* read permission; a fully filtered
     /// commit still yields an empty event so `seq` stays contiguous.
@@ -1755,13 +1828,13 @@ impl Workspace {
             readable.insert(id.to_string(), ok);
             Ok(ok)
         };
-        let mut ops_st = self.doc.prepare_cached("SELECT op_json, touched_json FROM commit_ops WHERE seq = ?1 ORDER BY op_index").map_err(db_err)?;
+        let mut ops_st = self.doc.prepare_cached("SELECT op_index, op_json, touched_json FROM commit_ops WHERE seq = ?1 ORDER BY op_index").map_err(db_err)?;
         let (mut events, mut bytes) = (Vec::new(), 0usize);
         for (seq, commit_id, principal, origin, run_id, undoes, idem_key, accepted_at, undo_group) in commits.into_iter().take(limit) {
-            let rows: Vec<(String, String)> =
-                ops_st.query_map([seq], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+            let rows: Vec<(usize, String, String)> =
+                ops_st.query_map([seq], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
             let (mut touched_out, mut ops_out) = (Vec::new(), Vec::new());
-            for (op_json, touched_json) in rows {
+            for (op_index, op_json, touched_json) in rows {
                 let touched: Vec<Value> = serde_json::from_str(&touched_json).map_err(|e| WsError::io(e.to_string()))?;
                 let op: Value = serde_json::from_str(&op_json).map_err(|e| WsError::io(e.to_string()))?;
                 let primary = op.get("entity_id").or_else(|| op.get("source_id")).and_then(Value::as_str).unwrap_or("").to_string();
@@ -1774,7 +1847,7 @@ impl Workspace {
                 }
                 if with_ops && any && can_read(&primary)? {
                     bytes += op_json.len();
-                    ops_out.push(op);
+                    ops_out.push((op_index, op));
                 }
             }
             let mut ev = json!({ "seq": seq });
@@ -1782,15 +1855,18 @@ impl Workspace {
                 ev = json!({ "seq": seq, "commit_id": commit_id, "origin": origin, "run_id": run_id, "undoes": undoes,
                              "undo_group": undo_group, "author": principal, "accepted_at": accepted_at, "touched": touched_out });
                 if with_ops {
-                    ev["ops"] = json!(ops_out);
+                    let target_visible = |target: Option<&Value>| aiworkspace_core::anchor::target_visible(&ctx, target, &|e| access.can_read(&ctx, e));
+                    let mut targets = BTreeMap::new();
                     // the row delta, restricted to what the caller may read (D20)
                     let delta: Option<String> = self.doc.query_row("SELECT rows_json FROM commit_deltas WHERE seq = ?1", [seq], |r| r.get(0)).optional().map_err(db_err)?;
                     if let Some(d) = delta {
                         let mut rows: Value = serde_json::from_str(&d).map_err(|e| WsError::io(e.to_string()))?;
                         bytes += d.len();
-                        filter_rows(&mut rows, &mut can_read)?;
+                        targets = filter_rows(&mut rows, &mut can_read, &target_visible)?;
                         ev["rows"] = rows;
                     }
+                    self.filter_annotation_ops(&ctx, seq, &mut ops_out, targets, &target_visible)?;
+                    ev["ops"] = Value::Array(ops_out.into_iter().map(|(_, op)| op).collect());
                 }
             }
             if principal == caller.principal {

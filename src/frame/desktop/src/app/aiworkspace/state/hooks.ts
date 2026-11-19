@@ -7,7 +7,7 @@ import { useAiwsText } from '../useAiwsText'
 import type { EditEntry } from './edits'
 import type { WorkspaceStore } from './store'
 
-export interface AnnotationMark { entityId: string; payload: AnnotationPayload; anchor: AnchorInfo; envelope: AnnotationRead }
+export interface AnnotationMark { entityId: string; payload: AnnotationPayload; anchor?: AnchorInfo; envelope: AnnotationRead }
 
 export const StoreContext = createContext<WorkspaceStore | null>(null)
 
