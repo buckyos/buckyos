@@ -230,6 +230,58 @@ fn para(id: &str, text: &str) -> Value {
     json!({ "type": "paragraph", "attrs": { "block_id": id }, "content": [{ "type": "text", "text": text }] })
 }
 
+fn notes_with_two_blocks() -> MemWorkspace {
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!([{ "op": "entity.create", "entity_id": "notes", "type_id": TYPE_RICHTEXT, "parent_id": "data", "order_key": "a",
+        "payload": { "content": { "type": "doc", "content": [para("p1", "first")] } } }]));
+    ws.ok(json!([{ "op": "richtext.insert_blocks", "entity_id": "notes", "position": { "end": true },
+        "blocks": [para("p2", "second")] }]));
+    ws
+}
+
+#[test]
+fn richtext_move_of_either_adjacent_block_tracks_the_target_and_undoes() {
+    for (target, sibling, position) in [("p2", "p1", json!({ "before": "p1" })), ("p1", "p2", json!({ "after": "p2" }))] {
+        let mut ws = notes_with_two_blocks();
+        let before = ws.store.richtexts["notes"].meta.clone();
+        let op = json!([{ "op": "richtext.move_block", "entity_id": "notes", "block_id": target, "position": position,
+            "expect": { "struct_rev": before.block_index[target].struct_rev } }]);
+        let moved = ws.ok(op.clone());
+        let after = &ws.store.richtexts["notes"].meta;
+        assert_eq!(after.ast["content"], json!([before.ast["content"][1], before.ast["content"][0]]));
+        assert_eq!(after.block_index[target].struct_rev, moved);
+        assert_eq!(after.block_index[sibling].struct_rev, before.block_index[sibling].struct_rev);
+        let stale = ws.fail(op);
+        assert_eq!(code(&stale), "REVISION_CONFLICT");
+        assert_eq!(stale["conflicts"][0]["current_rev"]["struct_rev"], moved);
+
+        let undone = ws.undo(moved).unwrap_or_else(|f| panic!("undo adjacent move: {}", f.to_json()));
+        let restored = &ws.store.richtexts["notes"].meta;
+        assert_eq!(restored.ast, before.ast);
+        assert_eq!(restored.block_index[target].struct_rev, undone);
+        assert_eq!(restored.block_index[sibling].struct_rev, before.block_index[sibling].struct_rev);
+    }
+}
+
+#[test]
+fn richtext_move_to_current_position_leaves_later_inserts_in_place_on_undo() {
+    let mut ws = notes_with_two_blocks();
+    let before = ws.store.richtexts["notes"].meta.clone();
+    let edit = ws.ok(json!([
+        { "op": "richtext.move_block", "entity_id": "notes", "block_id": "p2",
+          "position": { "end": true }, "expect": { "struct_rev": before.block_index["p2"].struct_rev } },
+        { "op": "richtext.replace_block", "entity_id": "notes", "block_id": "p1",
+          "node": para("p1", "edited"), "expect": { "hash": before.block_index["p1"].hash } }
+    ]));
+    assert_eq!(ws.store.richtexts["notes"].meta.block_index["p2"], before.block_index["p2"]);
+    let inserted = para("p3", "later");
+    ws.ok(json!([{ "op": "richtext.insert_blocks", "entity_id": "notes", "position": { "after": "p1" }, "blocks": [inserted] }]));
+    ws.undo(edit).unwrap_or_else(|f| panic!("undo edit with move to current position: {}", f.to_json()));
+    let restored = &ws.store.richtexts["notes"].meta;
+    assert_eq!(restored.ast["content"], json!([before.ast["content"][0], inserted, before.ast["content"][1]]));
+    assert_eq!(restored.block_index["p2"], before.block_index["p2"]);
+}
+
 #[test]
 fn mixed_batch_is_atomic_and_richtext_blocks_use_tokens() {
     let mut ws = MemWorkspace::new();

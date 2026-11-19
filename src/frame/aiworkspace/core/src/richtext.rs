@@ -474,11 +474,15 @@ fn unmoved(old: &Validated, new: &Validated) -> BTreeSet<String> {
 /// `struct_rev` bumped only for new or moved blocks (design doc §3.3.3).
 pub fn next_block_index(old_index: &BlockIndex, old: &Validated, new: &Validated, seq: u64) -> BlockIndex {
     let keep = unmoved(old, new);
+    block_index_with_moves(old_index, new, seq, |id| !keep.contains(id))
+}
+
+pub(crate) fn block_index_with_moves(old_index: &BlockIndex, new: &Validated, seq: u64, moved: impl Fn(&str) -> bool) -> BlockIndex {
     new.blocks
         .iter()
         .map(|(id, (parent, node_type, hash))| {
             let struct_rev = match old_index.get(id) {
-                Some(o) if keep.contains(id) => o.struct_rev,
+                Some(o) if !moved(id) => o.struct_rev,
                 _ => seq,
             };
             (id.clone(), BlockInfo { parent: parent.clone(), node_type: node_type.clone(), hash: hash.clone(), struct_rev })
