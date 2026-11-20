@@ -31,6 +31,17 @@ impl ProviderRuntime {
             .await
     }
 
+    /// Retire the cached login session and authenticate again, for callers
+    /// that saw the Provider reject the credential. `Ok(None)` for instances
+    /// whose credential is a static API key: re-reading it cannot help.
+    pub(super) async fn refresh_dynamic_credential(
+        &self,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        self.credential_resolver
+            .refresh_dynamic(&self.config.credential)
+            .await
+    }
+
     pub(super) async fn quota_observation(&self) -> ProviderQuotaObservation {
         ProviderQuotaObservation {
             state: ProviderQuotaObservationState::Unsupported,
@@ -848,7 +859,7 @@ async fn load_lkgs(
     {
         return Ok(None);
     }
-    let inventory: ProviderInventorySnapshot = serde_json::from_value(record.snapshot.clone())
+    let mut inventory: ProviderInventorySnapshot = serde_json::from_value(record.snapshot.clone())
         .map_err(|error| ProviderError::Inventory(error.to_string()))?;
     validate_inventory_identity(&inventory, &runtime.profile, &runtime.config)?;
     if inventory.instance_rules_fingerprint != instance_rules_fingerprint(&runtime.config) {
@@ -864,7 +875,10 @@ async fn load_lkgs(
         ));
     }
     let mut model_ids = BTreeSet::new();
-    for model in &inventory.models {
+    for model in &mut inventory.models {
+        model.capabilities.retain(|name, _| {
+            !name.starts_with("image.txt2img.") && !name.starts_with("image.img2img.")
+        });
         if !model_ids.insert(&model.provider_model_id) {
             return Err(ProviderError::Inventory(
                 "LKGS contains duplicate provider model IDs".into(),
@@ -875,10 +889,18 @@ async fn load_lkgs(
             let operation = model.operations.get(&name).ok_or_else(|| {
                 ProviderError::Inventory("LKGS model is missing an operation binding".into())
             })?;
-            runtime
+            let descriptor = runtime
                 .codecs
                 .operation_descriptor(&inventory.protocol_adapter_id, operation, *api_type)
                 .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+            let binding = descriptor
+                .binding(*api_type)
+                .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+            for parameter in &binding.image_parameters {
+                model
+                    .capabilities
+                    .insert(format!("{name}.{parameter}"), Value::Bool(true));
+            }
         }
     }
     Ok(Some(Arc::new(inventory)))

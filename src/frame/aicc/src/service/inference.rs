@@ -1,4 +1,5 @@
 use super::*;
+use buckyos_api::ApiType;
 
 pub(crate) struct RuntimeInferencePort {
     runtime: Arc<RuntimeState>,
@@ -150,6 +151,27 @@ impl RuntimeInferencePort {
             if !access.allows_model(&input.model) {
                 return Err(not_permitted());
             }
+            if let Some(model) = models.exact_model(&input.model) {
+                let unsupported = input
+                    .requirements
+                    .image_parameters
+                    .iter()
+                    .filter(|field| {
+                        model.capabilities.get(*field).and_then(Value::as_bool) != Some(true)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !unsupported.is_empty() {
+                    return Err(inference_error(
+                        AiccErrorCode::UnsupportedOperation,
+                        format!(
+                            "{} does not support requested image parameter(s): {}",
+                            input.model,
+                            unsupported.join(", ")
+                        ),
+                    ));
+                }
+            }
             // A permitted exact model answers a video demand it cannot meet
             // with the field at fault, not an anonymous "no candidate".
             if let Some(unmet) = exact_video_unmet(
@@ -181,15 +203,15 @@ impl RuntimeInferencePort {
                 .map_err(|error| {
                     inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
                 })?;
-            let permitted = reachable
-                .into_iter()
-                .filter(|model| access.allows_model(&model.exact_model.to_string()))
-                .map(|model| model.identity.provider_instance_name)
-                .collect::<Vec<_>>();
-            if permitted.is_empty() {
-                return Err(not_permitted());
-            }
-            permitted
+            permitted_providers(
+                reachable.into_iter().map(|model| {
+                    (
+                        model.exact_model.to_string(),
+                        model.identity.provider_instance_name,
+                    )
+                }),
+                &access,
+            )?
         };
         let quota = self
             .quota
@@ -870,6 +892,11 @@ async fn authorize_ndm_input(token: &str, obj_id: &ndn_lib::ObjId) -> Result<(),
     Ok(())
 }
 
+fn rerouteable_model_unavailable(error: &RPCErrors) -> bool {
+    AiccError::from_krpc_error(error)
+        .is_some_and(|error| crate::error::model_unavailable_error(&error))
+}
+
 fn resource_rpc_error(error: ResourceError) -> RPCErrors {
     error.to_aicc_error().to_krpc_error()
 }
@@ -1047,6 +1074,31 @@ impl InferencePort for RuntimeInferencePort {
     }
 
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors> {
+        // 上游 model_not_found 只说明「这个 exact model 不能用」：这次尝试没有产生
+        // 生成计费，失败的模型已被 health 标记为限时不可用。这里重排一次路由，
+        // 目录里的下一个权重档（llm.code: gpt_codex 3.2 -> gpt_standard 3.0）就会接上。
+        match self.invoke_once(caller, call.clone(), true).await {
+            Err(error) if rerouteable_model_unavailable(&error) => {
+                log::warn!(
+                    "aicc.model_unavailable_reroute method={} caller_app_id={}",
+                    exact_method(&call),
+                    caller.app_id.as_deref().unwrap_or_default()
+                );
+                self.invoke_once(caller, call, false).await
+            }
+            result => result,
+        }
+    }
+}
+
+// 重排路由后的第二次尝试走这里（trait 方法不能带额外参数，所以单独放 inherent impl）。
+impl RuntimeInferencePort {
+    async fn invoke_once(
+        &self,
+        caller: &AuthorizedCaller,
+        call: AiccCall,
+        allow_replay: bool,
+    ) -> Result<Value, RPCErrors> {
         let route_input = route_input_for_call(&call)?;
         let request_model = route_input.model.clone();
         let has_explicit_trace_id = call.trace_id().is_some();
@@ -1064,23 +1116,27 @@ impl InferencePort for RuntimeInferencePort {
             Some(body) => body,
             None => call_params(&call)?,
         };
-        if let Some(key) = canonical_body
-            .get("idempotency_key")
-            .and_then(Value::as_str)
-        {
-            if let Some((receipt, exact_model)) = self
-                .execution
-                .replay(&caller.tenant_id, exact_method(&call), key, &canonical_body)
-                .await
-                .map_err(|error| error.to_krpc_error())?
+        // 重排后的第二次尝试必须真的再执行一次：第一次尝试已经把失败结果写进同一个
+        // 幂等作用域，replay 只会把那份失败原样返回。
+        if allow_replay {
+            if let Some(key) = canonical_body
+                .get("idempotency_key")
+                .and_then(Value::as_str)
             {
-                return inference_response(
-                    receipt,
-                    RouteTrace {
-                        attempts: Vec::new(),
-                        final_model: exact_model,
-                    },
-                );
+                if let Some((receipt, exact_model)) = self
+                    .execution
+                    .replay(&caller.tenant_id, exact_method(&call), key, &canonical_body)
+                    .await
+                    .map_err(|error| error.to_krpc_error())?
+                {
+                    return inference_response(
+                        receipt,
+                        RouteTrace {
+                            attempts: Vec::new(),
+                            final_model: exact_model,
+                        },
+                    );
+                }
             }
         }
         // The first route applies privacy, local-only and visibility policy
@@ -1215,6 +1271,13 @@ impl InferencePort for RuntimeInferencePort {
                 routed.decision.selected = promoted;
             }
         }
+        // 重排的第二次执行要落在新的幂等作用域里，否则 execute 会直接把第一次的
+        // 失败记录当成既有结果返回。
+        let execution_idempotency_key = if allow_replay {
+            idempotency_key.clone()
+        } else {
+            format!("{idempotency_key}@reroute")
+        };
         let receipt = self
             .execution
             .execute(crate::execution::ExecutionRequest {
@@ -1224,7 +1287,7 @@ impl InferencePort for RuntimeInferencePort {
                 attribution: Some(caller.attribution()),
                 trace_id: Some(routed.trace_id.clone()),
                 request_model: request_model.clone(),
-                idempotency_key,
+                idempotency_key: execution_idempotency_key,
                 canonical_body,
                 parent_task_id,
                 runtime_generation: routed.snapshot.generation,
@@ -1306,6 +1369,30 @@ fn execution_state_name(state: ExecutionState) -> &'static str {
 
 pub(super) fn inference_error(code: AiccErrorCode, message: impl Into<String>) -> RPCErrors {
     AiccError::new(code, message).to_krpc_error()
+}
+
+fn permitted_providers(
+    candidates: impl IntoIterator<Item = (String, String)>,
+    access: &crate::visibility::Access,
+) -> Result<Vec<String>, RPCErrors> {
+    let mut found = false;
+    let providers = candidates
+        .into_iter()
+        .filter_map(|(model, provider)| {
+            found = true;
+            access.allows_model(&model).then_some(provider)
+        })
+        .collect::<Vec<_>>();
+    if !found {
+        return Err(inference_error(
+            AiccErrorCode::NoCandidateModel,
+            "no model is configured for this request",
+        ));
+    }
+    if providers.is_empty() {
+        return Err(not_permitted());
+    }
+    Ok(providers)
 }
 
 fn not_permitted() -> RPCErrors {
@@ -1472,7 +1559,10 @@ fn estimate_model_cost(
 }
 
 fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCErrors> {
-    match call {
+    if let AiccCall::ImageToImage(request) = call {
+        request.validate_image_edit().map_err(|error| error.to_krpc_error())?;
+    }
+    let mut input = match call {
         AiccCall::HelperLlmChat(request) => Ok(InferenceRouteInput {
             trace_id: request.trace_id.clone(),
             request_id: None,
@@ -1577,12 +1667,111 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 video_clips: Default::default(),
             })
         }
+    }?;
+    let params = call_params(call)?;
+    if matches!(
+        input.api_type,
+        ApiType::ImageTextToImage | ApiType::ImageImageToImage
+    ) {
+        let prefix = crate::model::api_type_name(input.api_type);
+        for field in [
+            "aspect_ratio",
+            "size",
+            "quality",
+            "negative_prompt",
+            "seed",
+            "strength",
+            "style",
+        ] {
+            if params.get(field).is_some_and(|value| !value.is_null()) {
+                input
+                    .requirements
+                    .image_parameters
+                    .insert(format!("{prefix}.{field}"));
+            }
+        }
+        if params
+            .get("n")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n > 1)
+        {
+            input
+                .requirements
+                .image_parameters
+                .insert(format!("{prefix}.n"));
+        }
+        for field in ["size", "media_type"] {
+            if params
+                .get("output")
+                .and_then(|output| output.get(field))
+                .is_some_and(|value| !value.is_null())
+            {
+                input
+                    .requirements
+                    .image_parameters
+                    .insert(format!("{prefix}.output.{field}"));
+            }
+        }
     }
+    Ok(input)
 }
 
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn empty_inventory_and_denied_inventory_have_distinct_errors() {
+        use crate::visibility::Access;
+        let denied = Access::Restricted(Default::default());
+        for access in [&Access::Unrestricted, &denied] {
+            let error = permitted_providers(Vec::new(), access)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("no_candidate_model"), "{error}");
+            assert!(!error.contains("resource_not_permitted"));
+        }
+        let candidates = vec![
+            ("image@a".into(), "a".into()),
+            ("image@b".into(), "b".into()),
+        ];
+        let error = permitted_providers(candidates.clone(), &denied)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("resource_not_permitted"), "{error}");
+        assert!(!error.contains("image@"));
+        let allowed = Access::Restricted(BTreeMap::from([(
+            "b".into(),
+            BTreeSet::from(["image@b".into()]),
+        )]));
+        assert_eq!(
+            permitted_providers(candidates.clone(), &allowed).unwrap(),
+            vec!["b"]
+        );
+        assert_eq!(
+            permitted_providers(candidates, &Access::Unrestricted).unwrap(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn image_options_become_routing_requirements() {
+        let mut request =
+            buckyos_api::ImageToImageRequest::new("image@provider", Vec::new(), "edit".into());
+        request.aspect_ratio = Some("16:9".into());
+        request.output = Some(buckyos_api::AiOutputOptions {
+            size: Some("2K".into()),
+            ..Default::default()
+        });
+        let input = route_input_for_call(&AiccCall::ImageToImage(request)).unwrap();
+        assert_eq!(
+            input.requirements.image_parameters,
+            BTreeSet::from([
+                "image.img2img.aspect_ratio".into(),
+                "image.img2img.output.size".into()
+            ])
+        );
+    }
 
     #[test]
     fn named_object_urls_require_explicit_public_base_url() {

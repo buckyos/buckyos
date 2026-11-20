@@ -102,6 +102,7 @@ export type ProviderProtocolContract = {
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
+    thinking_level_values_by_model?: Record<string, string[]>;
   };
   thinking?: {
     allowed_types: string[];
@@ -771,6 +772,16 @@ export function validateProviderProtocolCatalog(
             generationConfig.thinking_level_values,
             `${id}.generation_config.thinking_level_values`,
           );
+        }
+        if (generationConfig.thinking_level_values_by_model !== undefined) {
+          const byModel = object(
+            generationConfig.thinking_level_values_by_model,
+            `${id}.generation_config.thinking_level_values_by_model`,
+          );
+          for (const [modelId, levels] of Object.entries(byModel)) {
+            nonEmptyString(modelId, `${id}.generation_config.thinking_level_values_by_model key`);
+            stringArray(levels, `${id}.generation_config.thinking_level_values_by_model.${modelId}`);
+          }
         }
       }
       if (contract.thinking !== undefined) {
@@ -2189,7 +2200,12 @@ function validateGeminiInteractionConfig(
     }
   }
   if (generation?.thinking_level !== undefined) {
-    const allowed = new Set(contract.generation_config?.thinking_level_values);
+    const modelLevels = new Map(Object.entries(
+      contract.generation_config?.thinking_level_values_by_model ?? {},
+    ));
+    const allowed = new Set(
+      modelLevels.get(String(body.model)) ?? contract.generation_config?.thinking_level_values,
+    );
     if (!allowed.has(String(generation.thinking_level))) {
       errors.push(
         `body field generation_config.thinking_level=${generation.thinking_level}; contract ${contract.id} supports ${

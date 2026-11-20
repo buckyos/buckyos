@@ -55,6 +55,12 @@ impl RuntimeProvider {
         self.executable.resolve_credential().await
     }
 
+    pub(crate) async fn refresh_dynamic_credential(
+        &self,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        self.executable.refresh_dynamic_credential().await
+    }
+
     pub(crate) async fn quota_observation(&self) -> ProviderQuotaObservation {
         self.executable.quota_observation().await
     }

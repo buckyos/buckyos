@@ -117,6 +117,8 @@ Helper 接受逻辑模型，一次完成路由与推理。目前冻结三个 Hel
 
 method 已存在不表示任意模型都支持该能力。最终可用集合以 `models.list`、Provider inventory 和 route 结果为准。
 
+图片参数在文生图和图生图之间有不同位置，渠道支持范围也不同，见 [图片参数与错误语义](image_parameters.md)。图生图使用 `output.size`，显式比例为 `aspect_ratio`；不支持的参数不能静默丢弃。
+
 ## 4. 通用请求语义
 
 typed request 共同字段：
@@ -235,6 +237,8 @@ let response = client.helper_llm_chat(request).await?;
 [Trait 与 Protocol 冻结设计](frozen_trait_protocol.md)。
 
 重试规则：
+
+- `no_candidate_model` 表示没有可达或满足请求的模型；`resource_not_permitted` 表示有可达候选但当前身份无权使用，不得混为权限不足；
 
 - `invalid_*`、schema、permission、policy、budget、idempotency conflict 不自动重试；
 - 仅当 `retriable=true` 且请求具有可靠 `idempotency_key` 时重试计费操作；

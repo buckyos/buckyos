@@ -414,8 +414,16 @@ pub fn hand_edited(e: &EntityRow, generated_rev: u64) -> bool {
 const CODING_CODES: &[&str] = &["PROGRAM_FAILED", "MACRO_CODE_CHANGED", "NEEDS_CODING"];
 /// Run codes that say the wish cannot run here now (permissions, AI quota, execution environment).
 const CANNOT_RUN_CODES: &[&str] = &[
-    "AI_QUOTA_EXHAUSTED", "AI_QUOTA_BUDGET_EXCEEDED", "AI_RESOURCE_NOT_PERMITTED", "AI_ATTRIBUTION_UNAVAILABLE", "AI_UNAVAILABLE",
-    "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE", "PERMISSION_DENIED", "ACCESS_DENIED",
+    "AI_QUOTA_EXHAUSTED",
+    "AI_QUOTA_BUDGET_EXCEEDED",
+    "AI_RESOURCE_NOT_PERMITTED",
+    "AI_NO_CANDIDATE_MODEL",
+    "AI_ATTRIBUTION_UNAVAILABLE",
+    "AI_UNAVAILABLE",
+    "EXECUTION_CONTEXT_MISSING",
+    "SNAPSHOT_TOO_LARGE",
+    "PERMISSION_DENIED",
+    "ACCESS_DENIED",
 ];
 
 fn run_code(run: &Value) -> Option<&str> {

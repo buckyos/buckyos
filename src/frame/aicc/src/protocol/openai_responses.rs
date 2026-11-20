@@ -110,6 +110,9 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         )],
         false,
     );
+    images_generate.bindings[0]
+        .image_parameters
+        .extend(["n", "style"].map(str::to_owned));
     let mut images_edit = operation(
         OPENAI_IMAGES_EDIT_OPERATION_ID,
         vec![
@@ -281,6 +284,17 @@ fn binding(
 ) -> OperationBinding {
     let mut binding = OperationBinding::new(api_type, modes);
     binding.supported_features = features.into_iter().map(str::to_string).collect();
+    binding.image_parameters = match api_type {
+        ApiType::ImageTextToImage => ["size", "quality", "output.media_type"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        ApiType::ImageImageToImage => ["output.size", "quality", "output.media_type"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        _ => BTreeSet::new(),
+    };
     binding
 }
 
@@ -1155,7 +1169,7 @@ fn encode_responses_image_generate(
     request: &TextToImageInvokeRequest,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<Value> {
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Responses image generation",
         &[
             ("negative_prompt", request.negative_prompt.is_some()),
@@ -1164,7 +1178,7 @@ fn encode_responses_image_generate(
             ("aspect_ratio", request.aspect_ratio.is_some()),
             ("n", request.n.is_some_and(|count| count != 1)),
         ],
-    );
+    )?;
     let tool = image_generation_tool(
         request.size.as_deref(),
         request.quality.as_deref(),
@@ -1196,10 +1210,15 @@ fn encode_responses_image_edit(
             "OpenAI Responses image edit requires images",
         ));
     }
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Responses image edit",
-        &[("strength", request.strength.is_some())],
-    );
+        &[
+            ("strength", request.strength.is_some()),
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("aspect_ratio", request.aspect_ratio.is_some()),
+            ("seed", request.seed.is_some()),
+        ],
+    )?;
     let mut content = vec![json!({"type": "input_text", "text": request.prompt})];
     for image in &request.images {
         content.push(encode_input_image(image, call)?);
@@ -1209,7 +1228,7 @@ fn encode_responses_image_edit(
             .output
             .as_ref()
             .and_then(|output| output.size.as_deref()),
-        None,
+        request.quality.as_deref(),
         request
             .output
             .as_ref()
@@ -2278,14 +2297,14 @@ fn encode_image_generation(
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<HttpRequest> {
     require_parameter_subset(&call.input.resolved_parameters, &[], "Images generation")?;
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Images generation",
         &[
             ("negative_prompt", request.negative_prompt.is_some()),
             ("aspect_ratio", request.aspect_ratio.is_some()),
             ("seed", request.seed.is_some()),
         ],
-    );
+    )?;
     let mut body = Map::from_iter([
         ("model".to_string(), json!(provider_model_id(call)?)),
         ("prompt".to_string(), json!(request.prompt)),
@@ -2328,13 +2347,21 @@ fn encode_image_edit(
             "OpenAI Images edit requires images",
         ));
     }
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Images edit",
-        &[("strength", request.strength.is_some())],
-    );
+        &[
+            ("strength", request.strength.is_some()),
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("aspect_ratio", request.aspect_ratio.is_some()),
+            ("seed", request.seed.is_some()),
+        ],
+    )?;
     let mut body = MultipartBody::new(32, call.context.limits.max_request_bytes)?;
     body.push(MultipartPart::bytes("model", provider_model_id(call)?))?;
     body.push(MultipartPart::bytes("prompt", request.prompt.clone()))?;
+    if let Some(quality) = &request.quality {
+        body.push(MultipartPart::bytes("quality", quality.clone()))?;
+    }
     for (index, source) in request.images.iter().enumerate() {
         push_multipart_resource(
             &mut body,
@@ -2386,6 +2413,10 @@ fn encode_image_inpaint(
         images: vec![request.image.clone()],
         prompt: request.prompt.clone(),
         strength: None,
+        aspect_ratio: None,
+        negative_prompt: None,
+        quality: None,
+        seed: None,
         output: request.output.clone(),
         idempotency_key: request.idempotency_key.clone(),
         task_options: request.task_options.clone(),

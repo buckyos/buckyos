@@ -2383,6 +2383,10 @@ async fn provider_error_cases() -> Vec<Value> {
             aicc_detailed(C::ResourceNotPermitted, false, None),
         ),
         (
+            "rpc_no_candidate_model",
+            aicc_detailed(C::NoCandidateModel, false, None),
+        ),
+        (
             "rpc_attribution_unavailable",
             aicc_detailed(C::AttributionUnavailable, false, None),
         ),

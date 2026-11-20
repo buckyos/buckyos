@@ -514,6 +514,12 @@ impl ExecutableProviderInstance {
         self.runtime.resolve_credential().await
     }
 
+    pub(crate) async fn refresh_dynamic_credential(
+        &self,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        self.runtime.refresh_dynamic_credential().await
+    }
+
     pub(crate) async fn health(&self) -> ProviderHealth {
         self.runtime.health.read().await.clone()
     }

@@ -87,7 +87,7 @@ impl ModelHealthRegistry {
             .unwrap_or_else(|error| error.into_inner());
         let keys = [model_key(exact_model)];
         for key in keys {
-            let entry = entries.entry(key).or_default();
+            let entry = entries.entry(key.clone()).or_default();
             prune(entry, at_ms);
             entry.samples.push_back(HealthSample {
                 at_ms,
@@ -96,7 +96,11 @@ impl ModelHealthRegistry {
             });
             entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
             if kind == HealthFailureKind::ModelUnavailable {
-                entry.model_unavailable_until_ms = Some(at_ms.saturating_add(MODEL_UNAVAILABLE_MS));
+                let until_ms = at_ms.saturating_add(MODEL_UNAVAILABLE_MS);
+                entry.model_unavailable_until_ms = Some(until_ms);
+                log::warn!(
+                    "aicc.model_unavailable_cooldown model={key} until_ms={until_ms} cooldown_ms={MODEL_UNAVAILABLE_MS}"
+                );
             } else if entry.consecutive_failures >= CIRCUIT_FAILURE_THRESHOLD {
                 entry.circuit_open_until_ms = Some(at_ms.saturating_add(CIRCUIT_OPEN_MS));
             }

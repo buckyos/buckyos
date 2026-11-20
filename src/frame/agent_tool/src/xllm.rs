@@ -5575,6 +5575,7 @@ impl AiccLlmClient {
 /// §7.4); also the `RunErrorRecord.kind` hosts read.
 pub const REFUSED_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 pub const REFUSED_QUOTA_BUDGET_EXCEEDED: &str = "quota_budget_exceeded";
+pub const REFUSED_NO_CANDIDATE_MODEL: &str = "no_candidate_model";
 pub const REFUSED_RESOURCE_NOT_PERMITTED: &str = "resource_not_permitted";
 pub const REFUSED_ATTRIBUTION_UNAVAILABLE: &str = "attribution_unavailable";
 /// The service refused the caller's credentials (kRPC token errors, HTTP
@@ -5592,6 +5593,7 @@ fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
         AiccErrorCode::QuotaExhausted => refused(REFUSED_QUOTA_EXHAUSTED),
         AiccErrorCode::QuotaBudgetExceeded => refused(REFUSED_QUOTA_BUDGET_EXCEEDED),
         AiccErrorCode::ResourceNotPermitted => refused(REFUSED_RESOURCE_NOT_PERMITTED),
+        AiccErrorCode::NoCandidateModel => refused(REFUSED_NO_CANDIDATE_MODEL),
         AiccErrorCode::AttributionUnavailable => refused(REFUSED_ATTRIBUTION_UNAVAILABLE),
         AiccErrorCode::QuotaUnavailable => Some(ProviderFailure::Transient),
         _ => None,
@@ -9116,6 +9118,9 @@ impl XllmRun {
                     Some(match code.as_str() {
                         REFUSED_QUOTA_EXHAUSTED | REFUSED_QUOTA_BUDGET_EXCEEDED => {
                             "the AI token quota does not cover this call; wait for it to reset, lower the output budget, or ask an administrator; do not retry right away".into()
+                        }
+                        REFUSED_NO_CANDIDATE_MODEL => {
+                            "no configured model can serve this request; check the Provider inventory and requested capabilities".into()
                         }
                         REFUSED_RESOURCE_NOT_PERMITTED => {
                             "the model is not permitted to this user; choose a permitted model or ask an administrator".into()

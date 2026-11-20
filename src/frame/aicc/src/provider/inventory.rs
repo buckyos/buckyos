@@ -309,6 +309,17 @@ pub(crate) trait CredentialResolver: Send + Sync {
         descriptor: &CredentialDescriptor,
         reference: &CredentialReference,
     ) -> ProviderResult<ResolvedCredential>;
+
+    /// Drop the cached login session behind `reference` and resolve a fresh
+    /// credential, for callers that saw the Provider reject the current one.
+    /// `Ok(None)` means the reference is not a dynamic-login instance, so
+    /// there is no session to renew and the caller must not retry.
+    async fn refresh_dynamic(
+        &self,
+        _reference: &CredentialReference,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
@@ -1055,6 +1066,7 @@ impl InventoryBuilder {
             let mut api_types = Vec::new();
             let mut operations = BTreeMap::new();
             let mut adapter_features = BTreeSet::new();
+            let mut image_parameters = BTreeSet::new();
             let filtered_start = filtered_capabilities.len();
             for api_type_name in static_api_types {
                 let api_type = parse_api_type(&api_type_name)?;
@@ -1113,6 +1125,9 @@ impl InventoryBuilder {
                 let binding = descriptor
                     .binding(api_type)
                     .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+                for parameter in &binding.image_parameters {
+                    image_parameters.insert(format!("{api_type_name}.{parameter}"));
+                }
                 adapter_features.extend(binding.supported_features.iter().cloned());
                 api_types.push(api_type);
                 operations.insert(api_type_name, operation_id);
@@ -1125,6 +1140,9 @@ impl InventoryBuilder {
                 &adapter_features,
                 discovered.supported_features.as_ref(),
             );
+            for parameter in image_parameters {
+                capabilities.insert(parameter, Value::Bool(true));
+            }
             for feature in &discovered.unsupported_features {
                 capabilities.remove(feature);
             }

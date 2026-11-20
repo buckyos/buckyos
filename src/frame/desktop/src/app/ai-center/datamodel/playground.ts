@@ -66,7 +66,7 @@ export const PLAYGROUND_APIS: Record<ApiType, PlaygroundApi> = {
   decision: { method: 'decision.evaluate', fields: [structuredText('state'), array('questions', question, true)] },
   rerank: { method: 'rerank', fields: [text('query', true), array('documents', object('', [text('id', true), text('text'), resource('resource', 'text/*,application/pdf', false), json('metadata')], true), true), num('n', 1), bool('return_documents')] },
   'image.txt2img': { method: 'images.generate', fields: [prompt, text('negative_prompt'), num('n', 1), aspect, select('size', ['256x256', '512x512', '1024x1024', '1536x1024', '1024x1536']), select('quality', ['auto', 'standard', 'hd', 'low', 'medium', 'high']), select('style', ['natural', 'vivid']), num('seed'), output] },
-  'image.img2img': { method: 'image.img2img', fields: [array('images', resource(''), true), prompt, num('strength', 0, 1, 0.05), output] },
+  'image.img2img': { method: 'image.img2img', fields: [array('images', resource(''), true), prompt, num('strength', 0, 1, 0.05), aspect, text('negative_prompt'), select('quality', ['auto', 'low', 'medium', 'high']), num('seed'), output] },
   'image.inpaint': { method: 'image.inpaint', fields: [resource('image'), resource('mask'), prompt, select('mask_semantics', ['white_area_is_edit_area', 'black_area_is_edit_area', 'alpha_zero_is_edit_area']), output] },
   'image.upscale': { method: 'image.upscale', fields: [resource('image'), num('scale', 1, 16), num('target_width', 1), num('target_height', 1), bool('preserve_faces'), output] },
   'image.bg_remove': { method: 'image.bg_remove', fields: [resource('image'), select('mode', ['auto', 'foreground']), output] },

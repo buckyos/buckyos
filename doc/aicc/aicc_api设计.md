@@ -1964,3 +1964,5 @@ AICC 错误 payload schema：
 ## Decision API（2026-09-25）
 
 新增 API Type/Capability `decision`、typed method `decision.evaluate`。共享 state 与稳定问题 ID 的 choice/score/boolean 批量求值，公共强类型答案保留概率和可选 confidence；Score 为等级索引期望值。通过 `route.resolve` 取得 exact model 后调用，首版 immediate。完整契约、示例及核验来源见 [Decision API](decision_api.md)。
+
+图片接口参数、渠道映射与无候选/无权限错误语义见 [图片参数与错误语义](image_parameters.md)。

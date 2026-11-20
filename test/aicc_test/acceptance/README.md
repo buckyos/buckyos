@@ -92,6 +92,8 @@ NDN fixture 默认使用 `/opt/buckyos`；临时 devtest root 可通过 `AICC_ND
 
 T1.5 与其它层共用 `schema_version=1` 的 acceptance report，输出到 `<report-dir>/<run-id>/`，包含 `summary.json`、Markdown 摘要、逐 case evidence 和零费用 finance 文件；即使初始化失败，也会记录 runner failure、未执行 manifest 单元和 cleanup 结果。
 
+Gemini Interactions 的 `generation_config.thinking_level_values_by_model` 按官方模型 ID 配置允许档位；命中时整份替换 `thinking_level_values`，未配置的模型沿用原枚举。依据 [Google thinking 文档](https://ai.google.dev/gemini-api/docs/thinking#thinking-levels)（2026-11-18 核对），`gemini-4-hydrogen` 支持 low/medium/high/xhigh，不支持 minimal。该覆盖只配置在模型使用的 `gemini.interactions.v1beta` 契约中，不向其他型号全局放开 xhigh。回归覆盖此前失败的 LLM、ASR、OCR、caption、detect、segment 六类，以及 Hydrogen minimal/未知档位和其他型号 xhigh 的拒绝。此修改只影响测试契约和 Mock 校验，不改变 AICC 参数、用户接口或 Agent 手册。
+
 T1.5 契约的 endpoint、header、body、response、stream event、异步状态和错误形态只允许依据 Provider 官方 API 文档、官方 schema/SDK 协议定义和官方错误文档更新。AICC 设计文档只用于确定 typed method、adapter/operation 边界、稳定错误码和 Provider instance 配置，不用于生成 Provider wire 期望。官方资料不明确的协议点不得从 AICC 实现、metadata、日志或旧 Mock 猜测。成功用例同时检查 Provider 响应被映射成对应 canonical typed 输出、usage 和异步 operation 归因；错误用例检查 `provider_start_failed`、Provider 原始错误码摘要和 canonical `retriable`。
 
 真实调用必须通过 `allow_real_model_calls = true` 或命令行 `--allow-real-model-calls` 显式开启，并受调用数、成本和 timeout 上限约束。需要安全审计计划时，`--no-real-model-calls` 可强制覆盖 TOML 中的开启值，仍读取真实 inventory、生成完整 skipped/N/A/基线差异与零成本报告。Provider 返回 `request not allowed` 时记录为 `provider_restricted` 和 `platform_limitation`，不计入 passed、failed 或 skipped。报告会把能力基线不一致、路由/资源/安全断言失败和成功调用后的 usage/trace 归因失败写入结构化 `product_defects`，记录预期、实际结果和证据路径；测试不会修改 AICC/Jarvis 实现。

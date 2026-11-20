@@ -556,7 +556,12 @@ impl ProtocolError {
             &[
                 "model does not exist",
                 "model not found",
+                "model_not_found",
                 "unknown model",
+                "no such model",
+                // LiteLLM / OpenAI 的 model_not_found 原文：
+                // "The model `x` does not exist or you do not have access to it."
+                "does not exist or you do not have access",
                 "当前模型不支持",
                 "始终思考",
                 "不支持关闭思考",
@@ -611,6 +616,25 @@ impl ProtocolError {
                 ],
             )
     }
+}
+
+/// 判定公开错误是否等价于「该 exact model 不可用」。
+///
+/// 这类失败（模型不存在 / 无权限 / 不支持）没有产生任何生成计费，因此可以安全地
+/// 重新排一次路由换下一个候选，并把失败的模型留给 health 去做限时禁用。
+pub(crate) fn model_unavailable_error(error: &AiccError) -> bool {
+    if error.code != AiccErrorCode::ProviderError {
+        return false;
+    }
+    let mut probe = ProtocolError::new(ProtocolErrorKind::ProviderRejected, error.message.clone());
+    probe.provider_code = error.provider_code.clone();
+    probe.http_status = error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("http_status"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok());
+    probe.is_model_unavailable()
 }
 
 fn contains_any(value: &str, needles: &[&str]) -> bool {
@@ -744,6 +768,46 @@ mod tests {
             ProtocolError::new(ProtocolErrorKind::Authentication, "invalid API key");
         assert!(!authentication.retry_same_model());
         assert!(!authentication.allows_model_failover());
+    }
+
+    #[test]
+    fn litellm_model_not_found_requests_candidate_change() {
+        // 线上原文（aicc.llm.error / trace 20261119-155918-8b0b70）：
+        // provider_code = "404"，http_status = 404，message 里带 model_not_found。
+        let error = ProtocolError::new(
+            ProtocolErrorKind::ProviderRejected,
+            concat!(
+                "OpenAI HTTP 404 Not Found 404: litellm.NotFoundError: OpenAIException - ",
+                "{ \"error\": { \"message\": \"The model `gpt-6.1-sol-pro` does not exist ",
+                "or you do not have access to it.\", \"type\": \"invalid_request_error\", ",
+                "\"param\": null, \"code\": \"model_not_found\" } } LiteLLM: model group ",
+                "'gpt-6.1-sol-pro' failed with the error above. No fallback was attempted."
+            ),
+        )
+        .with_provider_code(Some("404".to_owned()))
+        .with_http_status(404);
+        assert!(error.is_model_unavailable());
+        assert!(!error.retry_same_model());
+        assert!(error.allows_model_failover());
+    }
+
+    #[test]
+    fn public_model_not_found_error_is_rerouteable() {
+        let missing: AiccError = ProtocolError::new(
+            ProtocolErrorKind::ProviderRejected,
+            "OpenAI HTTP 404 Not Found 404: litellm.NotFoundError: The model `gpt-6.1-sol-pro` does not exist or you do not have access to it.",
+        )
+        .with_provider_code(Some("404".to_owned()))
+        .with_http_status(404)
+        .into();
+        assert!(model_unavailable_error(&missing));
+        assert!(AiccError::from_krpc_error(&missing.to_krpc_error())
+            .is_some_and(|error| model_unavailable_error(&error)));
+
+        let unrelated: AiccError = ProtocolError::invalid_request("tool schema is invalid").into();
+        assert!(!model_unavailable_error(&unrelated));
+        assert!(!AiccError::from_krpc_error(&unrelated.to_krpc_error())
+            .is_some_and(|error| model_unavailable_error(&error)));
     }
 
     #[test]
