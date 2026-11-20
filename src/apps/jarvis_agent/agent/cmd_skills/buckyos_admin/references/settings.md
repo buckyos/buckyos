@@ -1,0 +1,23 @@
+# Setting owners
+
+| Area | Entry point and checks |
+| --- | --- |
+| Agents | `buckyos agent list`, `agent get\|profile-get <agent_id>` (raw hostname, e.g. `xiaobai.test.buckyos.io`), `agent profile-set <agent_id> --display-name <n> [--bio <t>]` (only supplied fields, empty clears; save `before` and `profile`). Desktop → Users and Agents for create/delete/settings. |
+| Apps | `buckyos app list\|get\|status\|start\|stop\|restart\|install\|upgrade\|uninstall\|cancel`. Availability via `apps.availability.*` requires a user CP login. |
+| Devices, network, gateway, certificates | Read-only CP `zone.devices.list`, `network.overview`, `gateway.overview`, `zone.certificates.list`. RTCP listener follows device document `rtcp_port` (default 2980), rendered in `etc/node_gateway_params.json` at activation/startup. Compare device doc and listening socket. |
+| Developer mode, Zone display, desktop appearance | Desktop UI; `system/buckyos_dev_config` needs a sudo token the CLI lacks. |
+| Build license inventory | Settings → General → Open-source software → select family, component for exact version/source/license. Search finds the family too. Coverage marks missing metadata and stale snapshots; host OS, base images and installed Apps are outside this build inventory. |
+
+## Accounts and sign-in
+
+- User types: admin, user, limited (initially no permissions), root (Zone owner record, never logs in). See `product/users_and_agents/UserType.md`. Desktop → Users and Agents uses admin RPCs `user_group.list|create|update|delete|set_members|set_projections|reset_projections`, `user.change_type`, `user.set_account_options` (`allow_password_change` / `allow_contact_edit`, null = type default). Use these RPCs so RBAC refreshes and msg-center reloads. Group data: `system/user_groups/<id>`, membership in user settings' `groups`, contact rules in `system/user_groups/_projections` (absent: Admin and User see each other). Membership only establishes `g, <u>, group:<id>`. Limited users need `apps.availability` rules for App access; membership alone gives no mailbox, tasks or uploads.
+- `user.delete` soft-deletes; Desktop → Deleted users restores via `user.change_state` (`state:active`), retaining DID, keys, password, roles, groups and data. `user_deleted` on same-name create means restore explicitly. Root and current account cannot be disabled. Read `state`, `rbac_refreshed`, `warning`; a saved state with false refresh needs permission refresh (repeat same state), and a failed list read is inconclusive. Check `user.list` with `include_deleted:true` or `user.get`. Source: `src/frame/control_panel/src/user_mgr.rs`, `doc/control_panel/Control_Panel_Service.md` §4.1.
+- Desktop Settings → Sign-in & Sharing uses admin `sso.settings.get|set` for `self_register_enabled`, `did_login_enabled`, `jump_base_url` in `system/sso/settings`. Users and Agents → Exclusive invites uses `user.exclusive_invite.create|list|get|revoke|rotate|retry_resource`. A Limited account's password-free link lasts 48 h and is shown once at create/rotate. Never log or put it in tasks/messages. Resend requests notify the issuer; deliver the rotated link through the original channel (no system SMS/email).
+- DID invites (`user.invite.create|get|accept`, `/users/invite/:inviteId`) need the invited DID's CP `did_federation` session and matching OwnerDocument declaring this Zone. A password session or invite link alone cannot accept.
+- Limited/External access denial uses kRPC `code:"access_denied"`; branch on `data.reason` (e.g. `session_kind_not_allowed` is a product boundary). Hybrid SSO contract: `doc/arch/verify-hub/混合SSO技术契约.md`. For incorrect login requester display query public CP `auth.describe_target {redirect_url}` and inspect `node_gateway_info.json`; the gateway determines structured target/display name independently of hostname prefix.
+
+## Raw system-config
+
+Use `buckyos system-config get|list|set|set-file|append` only for keys your identity and the owning subsystem allow. Editable examples: `users/<u>/apps/<app>/settings`, `users/<u>/agents/<agent>/{settings,profile}`, `services/<svc>/settings`, `users/<u>/desktop/<session>/<state>`.
+
+Scheduler owns `nodes/<node>/{config,gateway_info,gateway_config}`, `services/<svc>/info`, `system/rbac/policy`, `system/app_registry`, `system/scheduler/*`. Use App lifecycle verbs for installed specs. Runtime reports `*/instances/*` / `devices/*/info` and signed `*/doc` / `boot/config` must go through their owners.

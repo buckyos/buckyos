@@ -4,47 +4,24 @@ description: One-shot model calls from the shell with `agent_tool xllm` — anal
 requires: `agent_tool` on PATH and the session shell's own token (BUCKYOS_APPCLIENT_SESSION_TOKEN, BUCKYOS_APP_ID); models come from the Zone's AICC routes
 baseline: standard
 ---
-#### When to use
-- One-off work on material you already have: classify, summarize, compare, rewrite, translate, pull fields
-  into JSON, get a second opinion. The answer comes back on stdout (or a file) in seconds to minutes.
-- A bounded helper with tools: a model inspects or transforms files in a scratch directory under a small budget.
-- Durable work, a plan, or anything that needs the user fits a Work session better: xllm has no conversation
-  and cannot ask anyone. Nor does it drive or take over a session: session runs
-  (`.opendan_agent_session/runs`) are driven by their host, and xllm refuses them while the host runs them
-  or still has to validate/commit their result.
-- Understanding images, PDFs, audio or video: `llm_understand_media`. Generating media: the `aigc_*` manuals.
+#### One-shot calls
 
-#### Before you start
-- `xllm` is not on PATH; call it as `agent_tool xllm …`.
-- In a session shell it logs in to AICC with the agent's token from the environment (refreshed per shell call,
-  ~15 min life); on a node session-runtime the `agent_tool` entry asks your agent for that token over the session's
-  `.opendan/` token and loads Zone configuration through the node gateway; no local `.buckycli` or private key is needed.
-  Without either (a bare `docker exec`) you get exit 2 `cannot initialize BuckyOS runtime …`.
-- Check: `agent_tool xllm --run-logs warn "Reply with: ok"` prints `ok`, exit 0.
-- A directory per task keeps runs and files apart:
-  `mkdir -p xllm/<task> && cd xllm/<task> && printf 'runs_dir: ./runs\n' > .llm_context`.
-  Records then stay with the session; the default `~/.xllm/runs` sits inside the container, shared by all
-  sessions. A `.llm_context` at the session root would also be merged into `llm_understand_media` calls there.
+Run `agent_tool xllm` from an authenticated session shell to analyze or transform existing material. It uses the session token or the node session's `.opendan/` token exchange. A bare `docker exec` may lack credentials. Choose a Work session for tasks needing a plan or user input. The host drives session runs under `.opendan_agent_session/runs`. Use `llm_understand_media` for media or PDFs.
 
-Native sessions whose owner permits desktop access also expose the `computer` tool. It uses local IPC to the node's existing desktop driver. Begin with `{"request":{"command":"inspect","binding_id":""}}` or `{"request":{"command":"observe","binding_id":"","mode":"auto"}}`; an empty binding selects the local display, and inspect lists the driver's `observation_modes` and `commands`. Modes: `visual` (screenshot), `semantic` (control tree), `hybrid` (both) and `auto` (the tree when the window has a usable one, otherwise a screenshot; `selection_reason` says why); action feedback defaults to `auto`. The model receives the result JSON: `status.result.computer` contains execution, feedback, errors and observation. A semantic observation's outline follows the JSON as plain lines, one control per line — `[e12] tab "Gmail" selected (select) @x,y wxh`, roles/states/actions use the common names in `src/kernel/buckyos-api/src/computer.rs` — with `semantic.windows` listing top-level windows (`ref` `wN`, `accessible:false` for windows the user process may not read); `observe` with `"scope":{"kind":"window","observation_id":…,"ref":"wN"}` reads another window. Target a control with `{"kind":"element","observation_id":…,"ref":"eN"}`: `click`/`scroll` act physically on it, `type`/`keypress` focus it first, `invoke` runs its default action without moving the pointer, `set_value` replaces its whole value, and `toggle`/`select`/`expand`/`collapse` flip a checkbox, select a tab/item/row or open/close a tree item, combobox or menu without moving the pointer. Each of these semantic commands needs the same-named action in the element's line and must be among inspect's `commands`; `state_mismatch` means it ran but the element did not reach that state, so observe again. With a screenshot, `screenshot` is the absolute local path of the PNG, and in a function-call loop the same image comes with the tool result (the context keeps the newest few images; older ones become a placeholder text); locate point targets in the observation's screenshot `width` × `height` coordinates with `space:"screenshot"`. Use an `observation_id` of this binding before `expires_at_ms`, and after each action its new observation. On `stale_element`, `stale_observation` or a screen change, observe again — never substitute a similar element or coordinates — and never blindly retry an unknown execution outcome. A desktop permission or IPC error does not make local shell or files unavailable. Shell/file-only xllm calls need no computer connection.
-
-#### Find the real commands
-- `agent_tool xllm --help`: every flag and exit code. `agent_tool xllm status [--run <id>]`: effective config
-  with the source of each value, limits, usage, last error, resumability; `--format json` adds prompt and input.
-- `.llm_context` is YAML, looked up from the work dir upward and merged parent → child. An unknown key fails
-  with exit 2 and lists the keys your build accepts — the quickest way to see what it supports.
-
-#### Shortest path
 ```sh
-agent_tool xllm "Classify the sentiment of: '…' (positive/negative/mixed, one-sentence reason)"
-agent_tool xllm --file notes.txt "List the decisions and open questions"   # --file repeatable, order kept
-<command> | agent_tool xllm "Summarize the errors in this log"           # stdin becomes material
-agent_tool xllm --system "Translate to French. Output the translation." "…"
-agent_tool xllm --output answer.md "…"                                    # save instead of print
-agent_tool xllm --tools --max-tool-iterations 4 --timeout 300 "…"         # file tools + shell in the work dir
+mkdir -p xllm/notes && cd xllm/notes
+printf 'runs_dir: ./runs\n' > .llm_context
+agent_tool xllm --file notes.txt "List the decisions and open questions"
+agent_tool xllm --system "Translate to French. Output the translation." "Welcome home"
+agent_tool xllm --output answer.md "Summarize the following material: …"
 ```
-Structured result with a schema: there is no CLI flag; put it in the work dir's `.llm_context`, and stdout
-is the JSON value:
+
+Use a new task directory for this example. Place inputs there or pass their paths. Repeat `--file` in order or pipe text on stdin. The default records under `~/.xllm/runs` are shared across sessions. `.llm_context` is YAML merged from parents to the working directory; setting it at the session root also affects `llm_understand_media`. See `agent_tool xllm --help` and `agent_tool xllm status --format json` for installed flags and effective config.
+
+#### Structured output
+
+`--json` requests a JSON object by default. Put `json_schema` in `.llm_context` for a provider-enforced schema. On a strict OpenAI route include every property in `required`, allow `null` for missing values and set `additionalProperties: false`.
+
 ```yaml
 json_schema:
   type: object
@@ -52,134 +29,15 @@ json_schema:
   required: [name, age]
   additionalProperties: false
 ```
-The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in `required`,
-`additionalProperties: false`, optional fields as a `null` type — otherwise exit 1 `invalid_json_schema`.
 
-#### Inputs and outputs
-- Model: `llm.chat` by default, a logical name AICC routes. This Zone also routes `llm.swift` (fast, cheap),
-  `llm.summarize`, `llm.plan`, `llm.vision`, `llm.code` (xhigh reasoning, slow); an exact
-  `model[:variant]@provider` skips routing. Set it with `--model` or `model:`; `--format json` shows
-  `response_model`, the model that answered.
-- Built-in `llm.plan` and `llm.code` prefer available OpenAI specs; Zone/session overrides and provider
-  availability can change the result. Check `response_model`, and use AICC's
-  `src/frame/aicc/src/service/model_defaults.rs` and
-  `src/frame/aicc/driver_metadata/models/openai.model.json` for current priorities and GPT family/effort bindings.
-- A fixed family preset such as `llm.gpt-6-1-sol:medium` is an AICC routing name. The remote model ID stays
-  unchanged; AICC converts the selected effort to protocol parameters. Custom providers without dedicated
-  rules use the matching protocol's default reasoning mappings. A preset with no supported mapping remains
-  unavailable; see `doc/aicc/provider_profile_schema.md` for the selection boundary.
-- Model Driver `supported_efforts` defines each model's reasoning levels. SN maps OpenAI, GLM, Kimi and Qwen
-  presets to Responses parameters with either API Token or device login, without a separate model whitelist.
-  If `llm.chat` / `llm.code` / `llm.plan` has no candidates, check inventory `unmatched_models` and
-  `unavailable_presets` before changing routing. `missing_channel_mapping` means the preset lacks a channel
-  conversion; an empty LLM `logical_mounts` alone is normal because family/spec membership is generated.
-- When none of a usecase's own specs has a capable candidate, AICC falls back to `llm.fallback` (cheapest
-  capable tier first, same tool/JSON/vision/context requirements), so `response_model` may be a cheap model;
-  the route trace shows `fallback_applied`. A usecase override with its own `items`, or
-  `fallback: {mode: strict}`, turns this off.
-- Here `llm.chat`/`llm.plan` add provider web search: a trivial call bills ~4.7k input tokens (mostly cached)
-  against ~0.3k on `llm.swift`. `--json` turns web search off for that run.
-- `--json` (or `json: true`) constrains the model result: at the provider, the schema when
-  `json_schema` is set, otherwise any JSON object (never a bare array or value); and a JSON check on the
-  extracted result (exit 6 if not JSON). xllm itself does not
-  check the reply against the schema; the provider enforces it.
-- `--format json` wraps the CLI result in an envelope (run_id, status, is_terminal, resumable, answer, usage,
-  error, response_model, resume_command). It does not constrain the model; scripts can combine both.
-- `--result-format result.a.b` takes one field of a JSON (or XML) reply. `--loop-model behavior` replies in
-  XML (`<report end="true">…`); `--result-format result.report` gives its text.
-- Records: `<runs_dir>/<run_id>/run.json`, `snapshots/`, tool commands under `exec/<call_id>/`. `list` shows
-  runs of the current work dir; `result --run <id> [--result-format …] [--output f]` re-exports with no
-  model call.
-- Hand results over by naming the files in your Work report artifacts. The run's own `artifacts` counts files
-  written through its file tools, not files written by shell commands.
+`--format json` wraps the CLI result with `run_id`, `status`, `answer`, `usage`, `error`, `response_model` and `resume_command`; it can be combined with `--json`. `--result-format result.a.b` selects a JSON/XML field. Set `--model` to a Zone route (default `llm.chat`) or exact `model[:variant]@provider`. Check the actual `response_model`.
 
-#### Tools, budgets and boundaries
-- Tools are off unless you pass `--tools` or set `tools: {enabled: true}`. You then get read_file, write_file,
-  edit_file, shell (+ wait_task, get_task_state, cancel_task). File tools stay inside the work dir
-  (`filesystem_policy: workspace`, the default; elsewhere: `path not allowed by policy`); shell is not
-  sandboxed and runs with the agent's permissions.
-- The default loop is `function_call`; `actions`/`tools2actions` need `--loop-model behavior`.
-- To target an online Agent Daemon from an authenticated BuckyOS runtime, add
-  `groupname: executor` to the `.llm_context` tool list:
+#### Bounded tool work
 
-  ```yaml
-  tools:
-    enabled: true
-    tools:
-      - groupname: bash
-      - groupname: executor
-  ```
+`agent_tool xllm --tools --max-tool-iterations 4 --timeout 300 "Inspect the files here and summarize them"` enables file tools and shell. By default files stay in the work directory. Shell commands have the agent's permissions. Run one tool-enabled job per work directory and avoid nesting. If a shell call outlives its wait, follow its task to `<<task_result>>`. For the native desktop `computer` tool, Agent Daemon executor, loop choices and limits, read `$OPENDAN_AGENT_ROOT/cmd_skills/xllm/references/tools.md`.
 
-  This adds `executor_list` and `executor_call` while keeping the current runtime.
-  Copy the discovered `executor_id`, `generation` and `store_id`, then choose
-  `profile_id` from `profiles`. Query or cancel an accepted operation by its returned
-  `operation_call_id`; after reconnection rediscover the generation and retain
-  the original store. Unknown outcomes and invalid locators must not be replayed.
-  Linux targets expose commands and files only; UI is unsupported. The current
-  tool schema comes from `src/frame/agent_tool/src/runtime/executor.rs`.
-  Windows target commands use PowerShell 7 from PATH or Windows PowerShell; do not send Bash syntax.
-  Native Windows/macOS desktop operations use the SDK Computer protocol described in
-  `doc/arch/agent_daemon.md`; this does not add Computer commands to `executor_call` or deliver PNGs to the model.
-  Shell users can inspect the equivalent CLI with
-  `buckyos command describe executor exec` and `buckyos command describe executor query`.
-- Limits: `--max-tool-iterations` (default 8), `--timeout` total seconds (3600), `--llm-timeout` per request
-  (600), `--max-tokens` per reply. With the tool budget spent the model still answers, perhaps saying it
-  could not finish (exit 0).
-- One tool-enabled run per work dir at a time; a second gets exit 2 `already has a tool-enabled run`.
-- Nothing stops a tool run's shell from calling xllm again; leaving nesting out avoids stacked cost under
-  separate budgets. Split the job yourself instead.
-- A call that outlives your shell call's wait continues as a task: give the shell call a larger `wait_ms`, or
-  let its end come back to your session as `<<task_result>>` rather than starting a second copy.
+#### Check and recover
 
-#### When it fails
-Exit codes: 0 done · 1 failed, limit reached, or run not found · 2 usage/config/input error or busy (no model
-call) · 3 paused, resumable · 4 interrupted, resumable · 5 done but `--output` not written · 6 done but result
-extraction or JSON check failed (raw reply saved).
-- `no_candidate_model` (unknown model) and `invalid_json_schema` end the run with exit 1.
-  Fix the call and start a new one.
-- A request too large for the model (`context_length_exceeded`) or for AICC (`413 Payload Too Large`, over
-  the 32 MiB RPC body) is compacted and resent in the same run, at most 3 times; if it still does not fit,
-  exit 1 with last error `context_capacity`: split the material and start a new run.
-- Exit 3 (model timeout; transient provider error, including any AICC error marked `retriable` such as an
-  overloaded provider's 503; a rejected or expired token or HTTP 401/403, last error `credentials`) → the
-  printed hint `agent_tool xllm --resume --run <id> --runs-dir <dir>`. Resume reuses the saved config:
-  later `.llm_context` edits and `--model`/`--tools` are ignored and the model sees the tool specs saved with
-  the run (a saved tool this executor cannot provide: exit 1 `cannot be resumed`); `--llm-timeout`,
-  `--timeout`, `--max-tokens`, `--max-tool-iterations` can be raised. Resume resends the unfinished model request; an interrupted HTTP
-  connection does not prove the provider stopped processing it. Check the original task/trace before retrying.
-- `HTTP 504 Gateway Timeout` with `response head timeout` means the gateway stopped waiting for the service.
-  Check `buckyos_admin` and the gateway/AICC logs; increasing only `--llm-timeout` cannot extend a gateway limit.
-  HTTP 408/504 keeps the upstream error text and pauses the run; it does not automatically replay the request.
-- Exit 4 (Ctrl-C/SIGINT): resumable. The interrupted tool call is not replayed, but the model may run it
-  again; mind commands that are not idempotent. A run killed while a tool ran resumes from the checkpoint taken
-  before that call: a `shell` command that recorded its exit gives that result, anything else that may have run
-  comes back as "result unknown" for the model to check (only reads run again).
-- Exit 3 with last error `yield` (behavior loop: a progress report and no actions) or `tasks_running` (the reply
-  came while commands it started still run): the run stopped to wait, it is not done. Resume it with what it
-  waits for: `agent_tool xllm --resume --run <id> --runs-dir <dir> "<message>"` gives the message to the run as
-  new input in the same context.
-- Last error kind `quota_exhausted` / `quota_budget_exceeded` / `resource_not_permitted` (exit 1,
-  `status --run <id>`): AICC refused the call under the AI quota or model permissions of the user it is
-  charged to. Retrying does not help until the quota resets or the user changes the model; report it
-  (`buckyos ai quota` shows the rules and `reset_at_ms`). A lower `--max-tokens` can fit `quota_budget_exceeded`.
-- Exit 1 runs are final: `--resume` on them shows the saved record (with limit flags: exit 1 `is terminal`).
-- Exit 5/6: `agent_tool xllm result --run <id> --result-format raw [--output f]`.
-- `--resume` with `--system`/`--select`/files, or on a run another process is executing: exit 2. A question
-  given to `--resume` is a new input of the saved run, not a new task.
+Inspect `agent_tool xllm status --run <id>`, read the answer, check extracted values against the input, and open generated files. A completed run can exhaust its tool budget or invent a schema value. Attach verified output paths in the Work report. The run's artifact count covers writes through file tools.
 
-#### Check the result
-- Exit 0 means the run completed, not that the answer is right. A schema can force invented values
-  (`"age": 0` for a text without an age); with the budget spent the model may report it could not finish.
-  Read the answer, spot-check extractions against the source, open the files a tool run wrote.
-- `agent_tool xllm status --run <id>` shows status, model, usage and the last error.
-
-#### Source and extending
-- The implementation is Rust and not shipped in the agent runtime (buckyos
-  `src/frame/agent_tool/src/run_local_llm.rs` for the CLI, `xllm.rs` for the SDK); in the runtime, `--help`,
-  `status --format json` and `run.json` are the readable truth.
-- For a call xllm cannot express, websdk's AICC client has `helperLlmChat` (types:
-  `/opt/buckyos/libexec/buckyos-tool/dist/aicc_client.d.ts`; login: buckyos-agent's
-  `lib/runtime.ts`). A derived TS script goes to `$OPENDAN_AGENT_ROOT/tools/` and runs with
-  `deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json`; not yet exercised for LLM calls.
-
-Checked against: BuckyOS 0.7.0, xllm 0.7.0 (aios image 2026-10-12 in the agent container; host build 2026-10-17 for json_schema, `--json` without web search and the resume hint; host build 2026-11-05 for `--json` as a provider JSON Schema on OpenAI Responses and Gemini), DV Zone routes via codex-proxy, 2026-10-17.
+Use `agent_tool xllm list` and `agent_tool xllm result --run <id> --result-format raw` to find runs and re-export answers without another call. Exit 1 is terminal, 2 usage/config/busy, 3 paused, 4 interrupted, 5 output write failure, 6 extraction/JSON failure. For 3/4 inspect the original task and any tool side effects before using the printed resume command. For routing, quota, gateway timeouts, result recovery and resume options, read `$OPENDAN_AGENT_ROOT/cmd_skills/xllm/references/runs.md`.
