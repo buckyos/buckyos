@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto'
 import https from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { expect, test, type Page } from '@playwright/test'
+import { PROTOCOL_VERSION } from '../../src/app/aiworkspace/api/types'
 
 type JsonRecord = Record<string, unknown>
 
@@ -30,7 +31,12 @@ const addresses = new Map(
 )
 
 test.skip(!addresses.has(zoneA) || !addresses.has(zoneB), 'BUCKYOS_TEST_HOST_RULES must map both Zones')
-test.use({ ignoreHTTPSErrors: true, launchOptions: { args: [`--host-resolver-rules=${hostRules}`] } })
+const workspaceHostPattern = `aiws-*.${zoneB}`
+const workspaceAddress = addresses.get(workspaceHostPattern) ?? addresses.get(zoneB)
+const browserRules = workspaceAddress && !addresses.has(workspaceHostPattern)
+  ? `${hostRules}, MAP ${workspaceHostPattern} ${workspaceAddress}`
+  : hostRules
+test.use({ ignoreHTTPSErrors: true, launchOptions: { args: [`--host-resolver-rules=${browserRules}`] } })
 
 const lookup: LookupFunction = (hostname, options, callback) => {
   const address = addresses.get(hostname)
@@ -115,13 +121,20 @@ test('declining at the canonical Zone returns to the target without a session', 
   expect(cookies.find((cookie) => cookie.name === 'buckyos_session_token')).toBeUndefined()
 })
 
-test('a DID from another Zone reaches an AI Workspace entry on the target', async ({ page }) => {
+test('a DID from another Zone joins an editor group and edits on the workspace origin', async ({ page }) => {
   const owner = await ownerToken(zoneB, userB)
   const ws = await rpc(zoneB, 'aiworkspace', 'ws.create', { title: `联合入口 ${runId}` }, owner)
   const workspaceId = String(ws.workspace_id)
+  const workspaceHost = `aiws-${workspaceId.replace(/^ws_/, '')}.${zoneB}`
+  if (workspaceAddress && !addresses.has(workspaceHost)) addresses.set(workspaceHost, workspaceAddress)
+  const at = { workspace_id: workspaceId }
+  const editor = ['read', 'append', 'update', 'delete', 'structure', 'comment']
+  const groupId = 'editors'
+  await rpc(zoneB, 'aiworkspace', 'acl.set_group', { ...at, group_id: groupId, title: 'Editors' }, owner)
+  await rpc(zoneB, 'aiworkspace', 'acl.set', { ...at, changes: [{ subject: `@${groupId}`, resource: '/', allow: editor }] }, owner)
   const entry = await rpc(zoneB, 'aiworkspace', 'ws.create_entry', {
-    workspace_id: workspaceId,
-    capabilities: ['read', 'comment'],
+    ...at,
+    group_id: groupId,
     methods: { guest: false, password: false, self_register: false, did_login: true },
   }, owner)
   const entryId = String((entry.entry as JsonRecord).entry_id)
@@ -134,9 +147,32 @@ test('a DID from another Zone reaches an AI Workspace entry on the target', asyn
 
   // Back on the target's entry page as the External identity the DID brought along: the join the
   // visitor chose before leaving runs by itself and opens the workspace.
-  await page.waitForURL(new RegExp(`^https://aiws-${workspaceId.replace(/^ws_/, '')}\\.${zoneB.replaceAll('.', '\\.')}/`))
-  await expect(page.getByText(`联合入口 ${runId}`)).toBeVisible()
-  await expect(page.getByTestId('aiws-open-error')).toHaveCount(0)
+  await page.waitForURL((url) => url.host === workspaceHost && url.pathname !== '/sso_callback')
+  await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', workspaceId)
+  await expect(page.getByTestId('aiws-principal')).toHaveAttribute('data-principal', didA)
+
+  const workspaceIdentity = await page.evaluate(async () => {
+    const response = await fetch('/sso_refresh', { method: 'POST', credentials: 'same-origin' })
+    if (!response.ok) throw new Error(`Workspace session refresh returned ${response.status}`)
+    return (await response.json()).identity
+  })
+  expect(workspaceIdentity).toMatchObject({ kind: 'external', did: didA, auth_method: 'did_federation', restricted: true })
+  expect(workspaceIdentity.scopes).toContain('aiworkspace')
+  const workspaceSession = (await page.context().cookies(`https://${workspaceHost}`))
+    .find((cookie) => cookie.domain === workspaceHost && cookie.name === 'buckyos_session_token')
+  expect(workspaceSession).toBeDefined()
+  const collaborator = workspaceSession!.value
+  const info = await rpc(workspaceHost, 'aiworkspace', 'ws.get_info', at, collaborator)
+  expect(info.principal).toBe(didA)
+  expect(new Set(info.capabilities as string[])).toEqual(new Set(editor))
+  const field = { field_id: 'title', name: 'Title', type: 'text' }
+  const saved = await rpc(workspaceHost, 'aiworkspace', 'doc.commit', {
+    ...at, epoch: info.epoch, protocol_version: PROTOCOL_VERSION, session_id: 'dv-federation', idempotency_key: runId,
+    operations: [{ op: 'entity.create', entity_id: 'shared-table', type_id: 'buckyos.table-source', parent_id: 'data', order_key: 'a', payload: { fields: [field] } }],
+  }, collaborator)
+  expect(saved.status).toBe('accepted')
+  const read = await rpc(zoneB, 'aiworkspace', 'doc.read', { ...at, entity_id: 'shared-table' }, owner)
+  expect(read.content).toMatchObject({ fields: [field] })
 
   const session = (await page.context().cookies(`https://${zoneB}`)).find((cookie) => cookie.name === 'buckyos_session_token')
   expect(session).toBeTruthy()

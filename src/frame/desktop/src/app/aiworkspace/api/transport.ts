@@ -230,21 +230,21 @@ class ZoneTransport implements Transport {
     return this.restrictedLookup
   }
 
-  learnPrincipal(principal: string) { if (isGuestPrincipal(principal)) this.principalHint = principal }
+  learnPrincipal(principal: string) { this.principalHint = principal }
   async importOptions() { return { endpoint: new URL(this.base(), window.location.origin).origin, sessionToken: await this.token() } }
 
   private client() {
     return buckyos.getServiceRpcClient(SERVICE_NAME)
   }
 
-  /** The session token, or null without a signed-in account. */
+  /** The session token of an account or an external DID. */
   private async token(): Promise<string | null> {
-    let fromClient: string | null | undefined = null
-    try { fromClient = this.client().getSessionToken() } catch { /* no session at all: a guest */ }
-    if (fromClient) return fromClient
-    const account = await buckyos.getAccountInfo().catch(() => null)
-    if (account?.user_id) this.principalHint = account.user_id
-    return account?.session_token || null
+    try {
+      const current = this.client().getSessionToken()
+      if (current) return current
+      const identity = await buckyos.getCurrentIdentity()
+      return identity.kind === 'anonymous' ? null : this.client().getSessionToken()
+    } catch { return null }
   }
 
   private async bearer(): Promise<string> {
@@ -351,8 +351,9 @@ async function guestCall<T>(base: string, method: string, params: Record<string,
 
 async function zonePrincipal(transport: ZoneTransport): Promise<void> {
   try {
-    const account = await buckyos.getAccountInfo()
-    if (account?.user_id) transport.principalHint = account.user_id
+    const identity = await buckyos.getCurrentIdentity()
+    if (identity.kind === 'account') transport.principalHint = identity.user_id
+    else if (identity.kind === 'external') transport.principalHint = identity.did
   } catch { /* the hint is cosmetic */ }
 }
 

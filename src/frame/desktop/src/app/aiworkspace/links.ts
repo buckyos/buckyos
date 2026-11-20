@@ -42,6 +42,17 @@ export function onWorkspaceHost(host = window.location.host): boolean {
   return HOST_LABEL.test(host)
 }
 
+/** Whether the Zone login can hand this address to its own AI Workspace service. */
+export function isZoneWorkspaceUrl(address: string): boolean {
+  try {
+    const url = new URL(address)
+    return !url.username && !url.password && url.protocol === window.location.protocol
+      && onWorkspaceHost(url.hostname) && url.host.replace(HOST_LABEL, '') === window.location.host
+  } catch {
+    return false
+  }
+}
+
 /** The workspace id a Workspace host names, null elsewhere. */
 export function workspaceIdOfHost(host = window.location.host): string | null {
   const m = HOST_LABEL.exec(host)

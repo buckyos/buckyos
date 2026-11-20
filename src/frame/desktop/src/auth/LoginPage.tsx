@@ -15,7 +15,7 @@ import {
 import { Eye, EyeOff, ExternalLink, Fingerprint } from 'lucide-react'
 import { requestServiceLaunch } from '../api/app_launch'
 import { describeLoginTarget, fetchSsoConfig } from '../api/sso'
-import { onWorkspaceHost } from '../app/aiworkspace/links'
+import { isZoneWorkspaceUrl } from '../app/aiworkspace/links'
 import { useI18n } from '../i18n/provider'
 import { useDocumentTitle } from '../presentation/documentHead'
 import { useZonePresentation } from '../presentation/zone'
@@ -136,14 +136,30 @@ function useDidErrorText(code: string): string | null {
   return t('sso.login.didError.failed', 'DID sign-in did not complete. Try again.')
 }
 
+/** On failure, the DID callback wraps its original return page in another /login URL. */
+function loginDestination(params: URLSearchParams): string {
+  const destination = params.get('redirect_url') ?? ''
+  if (params.has('did_error') && URL.canParse(destination)) {
+    const back = new URL(destination)
+    const workspace = back.searchParams.get('redirect_url')
+    if (back.origin === window.location.origin && back.pathname === '/login'
+      && back.searchParams.get('did_return') === '1' && workspace && isZoneWorkspaceUrl(workspace)) {
+      return workspace
+    }
+  }
+  return destination
+}
+
 const LoginPage = () => {
   const { t } = useI18n()
   const [searchParams] = useSearchParams()
   const redirectUrl = useMemo(
-    () => searchParams.get('redirect_url') ?? '',
+    () => loginDestination(searchParams),
     [searchParams],
   )
   const didErrorText = useDidErrorText(searchParams.get('did_error') ?? '')
+  const didReturned = searchParams.get('did_return') === '1'
+  const workspaceTarget = isZoneWorkspaceUrl(redirectUrl)
   const zone = useZonePresentation()
 
   const [requester, setRequester] = useState<{ url: string; name: string } | null>(null)
@@ -180,9 +196,8 @@ const LoginPage = () => {
   // A page on a Workspace's own origin (`aiws-<id>.<zone>`, AI Workspace T4-8) sent its visitor here: someone
   // already signed in on this host is handed over through the Control Panel's launch — the one-time callback on
   // that origin signs them in there — without seeing the form. Anyone else signs in as usual.
-  const [handoff, setHandoff] = useState(() => {
-    try { return !!redirectUrl && onWorkspaceHost(new URL(redirectUrl).host) } catch { return false }
-  })
+  const [handoff, setHandoff] = useState(workspaceTarget && !didErrorText)
+  const [handoffFailed, setHandoffFailed] = useState(false)
   useEffect(() => {
     if (!handoff) return
     let live = true
@@ -192,10 +207,13 @@ const LoginPage = () => {
       const launch = identity.kind === 'anonymous' ? null : await requestServiceLaunch('aiworkspace', redirectUrl).catch(() => null)
       if (!live) return
       if (launch?.status === 'ready') window.location.replace(launch.callback_url)
-      else setHandoff(false)
+      else {
+        setHandoffFailed(didReturned || identity.kind !== 'anonymous')
+        setHandoff(false)
+      }
     })()
     return () => { live = false }
-  }, [handoff, redirectUrl])
+  }, [handoff, redirectUrl, didReturned])
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -233,8 +251,14 @@ const LoginPage = () => {
   )
 
   const disabled = submitting
-  // DID login comes back to the page that asked for sign-in, or to the Desktop.
-  const didRedirectUrl = redirectUrl || new URL('/', window.location.origin).href
+  // Federation sets the Zone root's cookie. Resume here to launch a Workspace on its own host.
+  let didRedirectUrl = redirectUrl || new URL('/', window.location.origin).href
+  if (workspaceTarget) {
+    const didReturn = new URL('/login', window.location.origin)
+    didReturn.searchParams.set('redirect_url', redirectUrl)
+    didReturn.searchParams.set('did_return', '1')
+    didRedirectUrl = didReturn.href
+  }
 
   if (handoff) {
     return (
@@ -292,6 +316,12 @@ const LoginPage = () => {
       {didErrorText && didErrorOpen && (
         <Alert severity="error" sx={{ mb: 2.5 }} onClose={() => setDidErrorOpen(false)} data-testid="login-did-error">
           {didErrorText}
+        </Alert>
+      )}
+
+      {handoffFailed && (
+        <Alert severity="error" sx={{ mb: 2.5 }} data-testid="login-workspace-error">
+          {t('sso.login.workspaceFailed', 'Could not open this workspace with your current sign-in. Reload to retry or sign in again.')}
         </Alert>
       )}
 

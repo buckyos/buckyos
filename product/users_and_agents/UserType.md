@@ -71,6 +71,8 @@ Limited 的会话是受限会话（token 带 `restricted: true` 与 `scopes`，�
 
 ### 3.1 External
 
+以下描述现行实现。外部 DID 邀请的拟议权限模型见本节末尾。
+
 - 只能经 DID 联合登录产生。verify-hub 签发的本 Zone token 以原 DID 为主体（`sub`），`principal_kind` 仍为 `user`，另带 `external: true` 标记（`TOKEN_EXTERNAL_CLAIM`）与受限会话上限（不含 `account_self`），联合会话最长 30 天。不认识该标记的服务按普通用户查账号记录，查不到即拒绝，不会落入“非 User 主体放行”的分支。
 - 本 Zone 不保存 External 的 Profile，只允许保存 verify-hub 会话记录、按 DID 的封禁记录和审计记录；名字与头像从该 DID 的公开文档解析。
 - 服务端用共享的主体解析（`ControlPanelClient::resolve_user_principal`）得到“有账号记录的用户”或“External DID”。
@@ -78,6 +80,16 @@ Limited 的会话是受限会话（token 带 `restricted: true` 与 `scopes`，�
 - 要让某个 External 成为本 Zone 成员，走邀请入驻流程，完成后即有账号记录、不再是 External。
 
 UserType.md 早期的 friends（非系统登录用户，有 SNS 读、评论写权限）由 External 加资源授权表达，不单列类型。
+
+#### 外部 DID 的邀请与登录资格（拟议）
+
+用户的归属 Zone 负责证明 DID。目标 Zone 分别决定这个 DID 能否登录本系统、能否访问某个 App 实例。资源仍由 App 后端按资源与操作判权。
+
+- App 只能为自己的实例签发访问邀请。授予系统登录资格的邀请由有权办理该操作的系统服务签发，使用系统链接。verify-hub 签发会话前须能查询与此次请求对应的有效邀请或已生效的授权，并核对已经证明的 DID 与目标。
+- 每次发邀请都保存记录。仅获得 App 访问资格的 DID 可以显示在管理员的「不可登录用户」中。该记录表示外部 DID 在本 Zone 获得过哪些邀请或授权。写入记录本身不创建密码、Profile 或系统用户组关系。开放链接可以先记录入口，兑换后再记录已经验证的 DID。
+- 管理员可以为该 DID 单独开启本 Zone 登录。受邀者之后仍用自己的 DID 证明身份，已有 App 会话保持原权限。资源 ACL 与账号停用或封禁继续生效。此操作不更改 DID 的归属 Zone。Root 始终不能登录。
+
+客服场景中，客户可以在受邀 Zone 领取临时的本地身份（本 Zone 的二级 DID）。现有专属邀请使用本地 Limited 账号和临时免密凭据，验证由该 Zone 完成。这条本地身份路径独立于访客持自己已有 DID 的联合登录。[用户管理的目标交互](Users_Agents_PRD.md) · [跨 Zone 实施与验收](../../notepads/cross-zone-resource-share-sso-todo.md)
 
 ### 3.2 匿名访问者
 

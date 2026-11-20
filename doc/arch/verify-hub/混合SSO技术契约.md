@@ -2,7 +2,7 @@
 
 日期：2026-10-21。状态：阶段 A 交付物，随实现迭代；与代码冲突时以代码和本文同步修订为准。
 
-依据：[混合 SSO PRD](<BuckyOS 混合SSO PRD.md>)（v0.2）、[实施 TODO](<../../../notepads/done/hybrid-sso-implementation-todo.md>) §4 已定决策（D-1～D-9、Q-01～Q-10、S-1、P-1、P-2）、[UserType.md](<../../../product/users_and_agents/UserType.md>)。本文只冻结工程契约，不新增产品决策；术语沿用 PRD：专属邀请、自助注册、DID 登录、Guest。
+初版依据为[混合 SSO PRD](<BuckyOS 混合SSO PRD.md>) v0.2、[实施 TODO](<../../../notepads/done/hybrid-sso-implementation-todo.md>) §4 已定决策（D-1～D-9、Q-01～Q-10、S-1、P-1、P-2）和 [UserType.md](<../../../product/users_and_agents/UserType.md>)。§8.5 描述拟议的 App 访问邀请、系统登录邀请及用户管理记录。§9.1 记录现有浏览器联合登录行为。
 
 ## 1. 组件职责
 
@@ -301,32 +301,37 @@ system-config `system/sso/settings`（缺省即全部默认值）：
 
 ### 8.3 AI Workspace 入口
 
-`local.sqlite` 新表（与 grants 同库）：
+工作区的分享入口指向一个已有逻辑组。入口决定谁可以加入，组的 ACL 决定成员可以在哪些资源上执行哪些操作。`local.sqlite` 的 `share_entries` 表保存入口 ID、`group_id`、允许方式、状态、过期时间、可选加入人数上限和创建记录。对外使用的 ID 为 `<workspace_id>~<se_…>`。[表定义](../../../src/frame/aiworkspace/store/src/schema.rs) · [入口实现](../../../src/frame/aiworkspace/store/src/entries.rs)
 
-```sql
-CREATE TABLE IF NOT EXISTS share_entries (
-  entry_id TEXT PRIMARY KEY,
-  scope_entity_id TEXT NOT NULL DEFAULT '',
-  capabilities INTEGER NOT NULL,     -- 权限模板（CapSet，不含 manage）
-  methods INTEGER NOT NULL,          -- bit0 guest, bit1 password, bit2 self_register, bit3 did_login
-  state TEXT NOT NULL,               -- active | closed
-  expires_at INTEGER,
-  created_by TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-) WITHOUT ROWID;
-```
-
-- 只有对该 scope 持有 `manage` 的人能创建、关闭入口。
-- Guest：入口 active 且允许 guest 时，`guest:` 主体在该 scope 获得入口模板能力（每次请求计算，入口关闭即失效）。现有 `public` grant 保留为“公开阅读”。
-- 已认证访问者：`ws.join_entry {entry_id}`，按 token 的 `auth_method` 与类别检查入口方式（`did_federation` 需 `did_login`；本地账号需 `password` 或 `self_register`），通过后为该主体写一条 grant（记录 `via_entry`）。关闭入口不回收已加入者的 grant，回收走 `ws.revoke`。
-- 授权对象：`<user_id>`（账号）、`<did>`（External）、`group:<id>`（系统用户组，服务端解析调用者所属组）、`contact:<owner_did>#<tag>`（经 `contact.check_membership` 精确查询）、`public`、`*`。`*` 只匹配非受限的 Admin / User 账号。
-- **工作区页面在自己的源上**（AI Workspace 内核架构改进 T4-8，2026-10-28）：`entry.describe` / `ws.join_entry` 返回的 `resource.path` 是资源页 URL——工作区为绝对地址 `https://aiws-<id>.<zonehost>/<workspace slug>`（无 public base 时为 `/`），不再是 Zone 相对路径。该源持有自己的会话：网关把 `aiws-<label>.<zone>` 折到 `aiws` 服务项，Control Panel 解析 `redirect_url` 时同样折叠，登录目标为 `System(aiworkspace)`（已加入可交互登录目标），`/sso_callback` 在该主机落 host-only cookie、`/sso_refresh` 续期。已登录的 Desktop 用户由 `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` 委派（verify-hub `delegate_user_session` 允许 `App` 与可委派系统服务 `aiworkspace`；External 仍不可委派），Zone 根 `/login?redirect_url=<aiws url>` 对已登录者自动完成这一接力。所有 `aiws-*` 主机共用该目标：cookie 按主机隔离，token 不绑定工作区，服务按 grant 判权。
+- 持有工作区 `manage` 权限的用户调用 `ws.create_entry {group_id, methods, expires_at?, max_joins?}`。目标组在工作区任何资源上都不能持有 `manage` 或 `run`。例如，分享者先给编辑组指定画布的编辑权限，再生成通向该组的入口。
+- `entry.describe` 返回有效入口的 `resource.path` 和允许方式。`ws.join_entry {entry_id}` 检查入口状态、登录方式及 Zone 开关。入口允许 Guest 时，持浏览器访客令牌的 `guest:` 主体也可以加入，已认证用户可以沿用自己的身份加入。
+- 对首次加入该组的主体，服务检查 `max_joins`，再向 `acl_members` 写入 `group_id`、`member` 和来源 `via_entry`。已在组内的主体重复加入保持原成员记录。`ws.join_entry` 成功时返回 `workspace_id`、`entry_id`、`group_id` 和 `joined`。
+- `ws.close_entry {entry_id, remove_members?}` 停止新成员经该入口加入。默认保留已有成员。设 `remove_members: true` 时，一并移除来源为该入口的成员关系。
+- **工作区页面在自己的源上**（AI Workspace 内核架构改进 T4-8，2026-10-28）：`entry.describe` 返回的 `resource.path` 和 `ws.join_entry` 返回的 `path` 都指向资源页——工作区为绝对地址 `https://aiws-<id>.<zonehost>/<workspace slug>`（无 public base 时为 `/`），不再是 Zone 相对路径。该源持有自己的会话：网关把 `aiws-<label>.<zone>` 折到 `aiws` 服务项，Control Panel 解析 `redirect_url` 时同样折叠，登录目标为 `System(aiworkspace)`（已加入可交互登录目标），`/sso_callback` 在该主机落 host-only cookie、`/sso_refresh` 续期。从工作区发起 DID 登录时，联合登录先返回 Zone 根域的 `/login`。根域通过 `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` 将已验证的用户交接到原工作区页面。拥有 `aiworkspace` scope 的 External 用户可获得仅含该 scope 的工作区会话，保留原 DID 和绝对到期时间，续期依赖根域会话。所有 `aiws-*` 主机共用该目标：cookie 按主机隔离，token 不绑定工作区，服务按 grant 判权。
 - **重排页在自己的源上**（Agent 浏览器，2026-11-15）：`https://reflow.<zonehost>/<key>` 由 nfs-server 提供，做法同上：scheduler 在 gateway info 里把 `reflow` 主机指到 nfs-server，登录目标为 `System(nfs-server)`（`nfs-server` 已加入可交互登录目标和可委派系统服务，`buckyos-api` 的 `SYSTEM_LOGIN_TARGETS` / `SYSTEM_DELEGATION_TARGETS`），Desktop 用 `auth.prepare_app_launch { service_id: "nfs-server", redirect_url }` 委派。nfs-server 的另外两个主机 `share.<zone>`、`s3.<zone>` 在 gateway info 里是同一个 `service_id`，因此同一目标的会话也能落到这两个主机上；它们不读会话 cookie，也不执行内容。目标是 `System(nfs-server)` 的用户会话在 nfs-server 里只用来打开重排页，文件、桶和上传接口不接受它（`nfs_server::auth::is_page_session`）：重排页的源上运行页面代码，这个源拿得到的令牌不应该能打开别的东西。
 
 ### 8.4 Message Hub 入口
 
 - 专属邀请：管理员创建专属邀请时指定 Session，CP 以管理员会话调用 `group.invite_session_guest` 邀请该账号 DID；客户登录后在受限页面接受邀请（`accept_session_invitation`），登录本身不等于加入。
 - 公开入口：群 `membership.guest_entry` 增加 `auth_methods: {password, self_register, did_login}`（缺省全 false，即只接受已有成员或邀请）；`group.describe_entry {group_did}` 公开返回群名与方式；访客认证后调用现有 `group.submit_guest_request`。Message Hub 不支持匿名 Guest。
+
+### 8.5 跨 Zone 的 App 访问邀请与系统登录邀请（拟议，待实现）
+
+A 托管资源，B 是收件人及其 DID 的归属 Zone。B 的 Zone 可以为 B 证明身份。A 通过两项检查落实授权。verify-hub 决定能为 B 签发哪一种会话，App 后端决定 B 能否操作具体资源。B 已登录自己的 Zone，只能证明身份，不能替 A 作出其中任何一项授权。
+
+| 用途 | 谁可以签发、用户打开什么 | A 核对身份后的结果 |
+| --- | --- | --- |
+| 访问某个 App | App 以自身实例身份登记邀请，只能指定本实例和有权分享的资源。打开链接先看到 A、App、资源与动作。 | 仅为指定实例建立访问会话。App 根据当前 ACL 决定具体读写。持这条链接不会取得 A 的系统登录资格，已有系统资格也不自动取得该资源的权限。 |
+| 登录 A 的系统 | 有 Zone 登录邀请权限的系统服务通过系统入口签发，链接由 A 根域承载，标明受邀 DID 和登录 A 的用途。服务调用方和其授予权限均由 A 校验。 | 核对实际 DID 与有效的系统登录资格后建立系统会话。已有本地账号映射时还要检查账号状态。访问 App 或资源继续执行相应的授权规则。 |
+| 客服本地临时身份（已有） | A 为客户建本地 Limited 账号，分配 A 内的 DID，通过 §5 的专属邀请或 App 客户登录机制证明本人持有本地凭据。 | 身份来源是本地凭据，无需向 B 的 Zone 请求证明。现有 App 客户的 `kind=code` 交付到本实例，`kind=link` 可在根域登录预设 Limited 身份。两种旧凭据按 §5.6 处理，不可兑换为外部 DID 的系统登录邀请。 |
+
+**记录与用户管理。** 每条邀请在 A 返回链接之前必须持久化为 verify-hub 可查的授权依据。记录至少可区分用途、签发方、目标 DID（定向时）、精确实例或系统目标、资源引用、有效状态及期限。App 只可通过受控入口登记自己的授权范围。资源 ACL 由资源提供方继续维护。verify-hub 在签发和续期时检查可信的邀请或已接受的有效授权，包括目标与收件人。分别定义入口关闭、既有访问权被撤销的效果。资源读写每次按当前 ACL 检查。记录落点、RPC 与存量数据迁移由实施阶段确定。
+
+定向邀请创建成功后，管理员可以按 DID 在用户管理的「不可登录用户」中查看尚无系统登录资格的收件人、邀请来源与既有 App 授权。开放 App 链接先建无收件人的入口记录，在 B 证明身份并使用该入口时，再登记这个实际 DID 和实例的关系。一个 DID 的多个邀请按同一主体展示，各自保留来源和撤销状态。管理员可以独立为这个 DID 开通系统登录，保留原 DID 及其有效 App 授权。操作须幂等且可审计，新系统会话重新签发。旧 App 会话继续受原实例约束。「不可登录」在此指没有 A 的系统登录资格，与被停用的本地账号、Guest、可登录的 Limited 分开表示。
+
+**浏览器往返。** 定向 App 链接从记录取 B 的 DID，开放链接由 B 在用途页填写。二者复用 §9 的 DID 证明和根域回调。A 用服务器保存的一次性上下文关联邀请、实际用途、目标和准确的返回地址。首次身份披露依归属 Zone 的同意规则处理。App 访问回调即使经过 A 根域，也只兑现为受邀目标的访问会话。普通 App 绑定安装者在内的 `AppInstanceId`，工作区等内置服务使用已注册的服务目标并以资源 ACL 限定访问。中转可以使用仅限完成本次交付的短时凭据。根域原有系统会话保持独立。A 校验当前网关路由，在目标主机的一次性回调中写入该主机的 Cookie，最后恢复原资源位置。凭完整 DID 证明、同一收件人与仍有效的系统登录授权才能走系统邀请分支。[开发任务与验收](../../../notepads/cross-zone-resource-share-sso-todo.md)
+
+**与当前实现的差距。** 目前 §9.1 的 `login_by_remote_verify_hub` 只接收 Control Panel 目标。对未映射本地账号的 DID，Zone 允许联合登录并校验归属证明后，会签根域受限 External 会话，未按邀请判定上述两种用途。工作区入口在本地 `ws.join_entry` 检查加入资格。`user.invite.create/accept` 是管理员创建的入驻邀请，接受依赖已验证的 Control Panel 联合会话。引入邀请判定时需为入驻本身保留受限的身份证明路径，避免先要求拥有系统登录资格才能接受系统邀请。[现有联合签发](../../../src/kernel/verify_hub/src/main.rs) · [工作区入口](../../../src/frame/aiworkspace/store/src/entries.rs) · [系统入驻邀请](../../../src/frame/control_panel/src/user_mgr.rs)
 
 ## 9. DID 联合（D-7）
 

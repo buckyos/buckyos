@@ -1,310 +1,137 @@
-# BuckyOS 中的 SSO（使用者指南）
+# BuckyOS Web SSO 的端到端流程
 
-本文从**接入方（App / Web 开发者）视角**讲清楚怎么在 BuckyOS 里完成登录，以及它和主流 SSO（OAuth / Google 登录 / 企业 IdP）"套路"上的关键区别。
+浏览器跨 Zone 登录时，用户的**归属 Zone** 确认身份，提供服务的**目标 Zone** 签发自己的会话并决定访问权限。下面先跟一次跨 Zone 的 DID 登录，再说明同一 Zone 内桌面如何免密启动 App。
 
-> 这是一份使用文档，不是协议规范。
-> - 当前 control panel 的 canonical 认证契约见 `doc/control_panel/Control_Panel_Service.md`。
-> - 名字解析、跨 Zone 信任根、钱包登录的完整设计见 `doc/arch/BNS 去中心的名字系统.md`（场景 6）。
-> - 用户类型、登录方式、sudo 的产品定义见 `product/users_and_agents/UserType.md`。
-> - 标注为「协议目标 / 规划中」的部分尚未在本仓库完整落地，接入时以「当前实现」小节为准。
+## 跨 Zone 的 DID 登录
 
-## 一句话套路
+假设 Alice 的 DID 是 `did:bns:alice`，归属 Zone 是 A，她要使用 B 上的资源。她在 B 的根域登录页选择「使用 DID 登录」，也可以从 B 根域一个允许 DID 登录的资源分享入口开始。地址栏依次经过 **B 的入口 → A 的确认页 → B 的回调 → B 的原页面**。
 
-> 把每个用户自己的 **Zone（的 verify-hub）当成 IdP**，App 通过 **DID 解析**发现该 IdP，登录后拿到一个**绑定到明确 AuthTarget 的 session_token**，之后所有请求都只认这个 token + RBAC。
-
-和主流 SSO 一样的部分：有登录页、有回调、有 access/refresh token、有 scope；接入方最终只关心"拿到一个可信 token"。
-不一样的部分见下一节——这是本文的重点。
-
-## 和主流 SSO 最不一样的地方
-
-| 维度 | 主流 SSO（OAuth / Google / 企业 IdP） | BuckyOS SSO |
-| --- | --- | --- |
-| IdP 是谁 | 固定的中心化大平台 | **用户自己的 Zone**。每个 Zone 的 verify-hub 就是一个 IdP，没有中心 |
-| 怎么找到 IdP | 写死的 endpoint / 配置 | **DID 解析**：`user_did -> owner -> default_zone -> ZoneConfig.verify_hub_info.public_key` |
-| 信任根 | CA / 平台公钥 | Owner / Zone 的 DID 公钥（可不依赖 CA，见 BNS 文档场景 5） |
-| token 绑定 | client_id | **AuthTarget**：普通 App 精确到 `AppInstanceId`，系统服务精确到 `SystemServiceId` |
-| 没有账号的用户 | 必须先在平台注册 | 可以**用浏览器钱包**对登录 challenge 签名，证明"我控制这个 DID"，无需任何 Zone |
-| 跨身份提供方 | 换一个大平台 | **跨 Zone**：current-zone 证明"你是谁"，target-zone 重新签发自己的 token |
-
-实务上要记住三句话：
-
-1. **token 是 target 绑定的**。页面 token 代表“当前操作者 + 这个精确 AppInstance/系统服务”，不要跨 target 复用，也不要拿 app-service 自己的 token 冒充页面 token（见后文「不要混用 token」）。
-2. **登录方式对鉴权方透明**。业务服务只验证 session_token + 跑 RBAC，不关心用户是用密码、钱包还是 Passkey 登录的。新增登录方式不影响下游。
-3. **强权限要 sudo**。高危操作需要二次输入密码换一个短时 sudo token，且仍受 appid 限制。
-
----
-
-## 最小接入：同 Zone 内的 Web App
-
-这是最常见的场景：你的 App 跑在用户 Zone 的某个子域（如 `myapp.alice.buckyos.io`），要让用户登录。
-
-### 1. 跳转到登录页
-
-用 websdk 的 `AuthClient`：
-
-```ts
-import { AuthClient } from "buckyos";
-
-const auth = new AuthClient(zoneHostname /* 如 "alice.buckyos.io" */);
-
-// 跳到 Zone 的登录页，登录完成后回到 redirectUri（默认当前页）
-auth.login(/* redirectUri? */);
+```mermaid
+sequenceDiagram
+    participant U as Alice 的浏览器
+    participant B as B · 目标 Control Panel
+    participant A as A · 归属 Control Panel
+    participant VA as A · verify-hub
+    participant VB as B · verify-hub
+    U->>B: auth.did.begin（Alice 的 DID、B 上的返回地址）
+    B-->>U: A 的确认页 URL（含 PKCE challenge）
+    U->>A: GET /sso/federate，在 A 登录并确认
+    A->>VA: issue_federation_code
+    VA-->>A: 一次性 code
+    A-->>U: B 的回调 URL（含 code 和 state）
+    U->>B: GET /sso/did_callback?code=…&state=…
+    B->>VB: login_by_remote_verify_hub
+    VB->>VA: HTTPS exchange_federation_code（code、PKCE verifier）
+    VA-->>VB: Alice 的身份断言与公开资料
+    VB-->>B: B 签发的 session token 和 refresh token
+    B-->>U: 在 B 根域写 Cookie，302 回原页面
 ```
 
-`buildLoginURL()` 生成的目标就是 Zone 的 control panel 登录页：
+1. **B 根据 DID 找到 A。** B 的 Control Panel 收到 `auth.did.begin { did, redirect_url }`，检查 B 已开启 DID 登录，且返回页属于 B 根域的 `System(control-panel)`。它解析 Alice 的 OwnerDocument，取 `binded_zone_list` 的首项作为归属 Zone DID，列表为空时取 owner DID 自身，再从对应的 ZoneDocument 读出 A 的主机名。B 在内存中保存 10 分钟有效的待登录记录，用 `state` 找回它，用 `nonce` 核对最终断言。PKCE 的 `code_verifier` 留在 B，浏览器只带它的 SHA-256 摘要 `code_challenge` 去 A。[归属 Zone 选择](../../src/kernel/buckyos-api/src/hybrid_sso.rs#L899) · [授权请求构造](../../src/frame/control_panel/src/federation.rs#L112) · [B 的入口校验](../../src/frame/control_panel/src/federation.rs#L419)
+2. **Alice 在 A 确认向谁证明身份。** 浏览器打开 A 的 `/sso/federate`。已有 A 的桌面会话就直接进入确认页，否则先在 A 登录，再回到这张确认页。A 核对当前登录账号是 Active 的 Admin 或 User、其账号文档中的 DID 与请求一致、A 是这个 DID 的归属 Zone。A 也解析 B 的 Zone DID，确认 `redirect_uri` 指向 B 公布主机的 `/sso/did_callback`。页面展示 Alice 的 DID、B 的主机名和 Zone DID，以及将交给 B 的显示名和头像。记住同意后，下次仍由 Alice 点击「继续」。[A 的账号校验](../../src/frame/control_panel/src/federation.rs#L271) · [回调地址核对](../../src/frame/control_panel/src/federation.rs#L647) · [确认页](../../src/frame/desktop/src/sso/FederatePage.tsx#L106)
+3. **浏览器把授权码带回 B。** Alice 同意后，A 的 Control Panel 以本地服务身份请 A 的 verify-hub 签发 60 秒有效的一次性 `code`。浏览器前往 `https://<B>/sso/did_callback?code=…&state=…`。若 Alice 取消，浏览器带 `error=access_denied` 和 `state` 返回，B 保留现有登录状态。[A 的签发与返回](../../src/frame/control_panel/src/federation.rs#L710)
+4. **两个 verify-hub 在后端完成身份交换。** B 的 Control Panel 用 `state` 一次性取回记录，核对回调 origin，并调用 B 的 `login_by_remote_verify_hub`。B 的 verify-hub 自行从 DID 解析 A，向 `https://<A>/kapi/verify-hub` 调 `exchange_federation_code`，提交 code、verifier、B 的 Zone DID 和回调 URI。A 核对有效期、目标 Zone、回调地址和 PKCE，消费 code 后通过 HTTPS 响应返回结构化身份断言。B 核对断言中的 Alice DID、B 的 Zone DID、nonce 和 `purpose=login`。这条路径的信任来自 DID 解析出的归属主机及与该主机的 HTTPS 交换。A 的密码、Cookie 和 session token 都留在 A 的登录流程里。[A 兑换授权码](../../src/kernel/verify_hub/src/federation.rs#L60) · [B 的后端请求](../../src/kernel/verify_hub/src/federation.rs#L120) · [B 核对断言](../../src/kernel/verify_hub/src/main.rs#L2188)
+5. **B 决定 Alice 的本地身份并建立会话。** B 用账号文档 `users/<id>/doc` 匹配 Alice 的 DID，按下表决定结果。成功时，B 的 verify-hub 签发目标为 `System(control-panel)`、登录方式为 `did_federation` 的 token 对。B 的 `/sso/did_callback` 在本次响应中直接写 B 根域的 `buckyos_session_token` 和 `buckyos_refresh_token`，302 回最初的 `redirect_url`。若 B 的浏览器会话已属于另一主体，回调返回 `identity_conflict` 并保留原身份。[账号匹配](../../src/kernel/verify_hub/src/main.rs#L1280) · [签发分支](../../src/kernel/verify_hub/src/main.rs#L2274) · [B 写 Cookie](../../src/frame/control_panel/src/federation.rs#L578)
 
-```text
-https://sys.<zoneHostname>/login?redirect_url=<encoded redirect>
-```
+| Alice 的 DID 在 B 的匹配结果 | 登录后在 B 的身份及权限 |
+| --- | --- |
+| 匹配到可登录的 Active 账号 | `identity.kind=account`，`sub` 为 B 的本地用户 ID。按该账号在 B 的类型和授权访问。 |
+| 匹配到已停用的可登录账号 | B 返回 `account_state`，本次登录结束。 |
+| 没有匹配的可登录账号 | `identity.kind=external`，`sub=did:bns:alice`。B 签发受限会话，scope 上限为 `msg_group`、`aiworkspace`、`homestation`。 |
 
-> `/login` 是 control panel 自身的登录页；当带上 `redirect_url` 时，它同时充当 SSO 授权页。登录目标由 redirect URL 对应的 Gateway 路由确定。（历史上也规划过独立的 `/sso/login` 授权弹窗页。）
+例如 Alice 在 A 是管理员，而 B 没有她的账号，她在 B 就是 External。B 根域的 WebSDK 可用同源 `POST /sso_refresh` 取得她的 `identity` 与 B 签发的 `session_token`。例如她向消息群申请访客 Session 时，页面用这个 token 调 B 的 `group.submit_guest_request`，由群入口的 DID 登录设置和准入规则决定能否进入。联合登录落在 **B 根域**。普通 App 子域不能直接作为 `auth.did.begin` 的返回目标。映射到 B 本地账号的用户还可以按该账号的权限，从 B 桌面启动 App。External 会话无法用桌面委托接口换取普通 App 实例会话。[External 的 scope](../../src/kernel/buckyos-api/src/hybrid_sso.rs#L137) · [群入口验证](../../src/frame/msg_center/src/test_hybrid_sso.rs#L646) · [App 委托条件](../../src/kernel/verify_hub/src/main.rs#L1783)
 
-### 2. 登录完成 → 回调写 Cookie
+**之后由 B 续期。** 短期 token 通常为 15 分钟，refresh token 通常为 7 天，每次轮换都受联合会话自签发起 30 天的上限约束。B 在本地完成续期。Alice 退出 A 或在 A 改密码后，已有 B 会话仍按 B 的退出、撤销和到期规则结束。到达 30 天上限后需要重新走联合登录。[续期时的本地检查](../../src/kernel/verify_hub/src/main.rs#L1168) · [联合会话上限](../../src/kernel/verify_hub/src/federation.rs#L21)
 
-用户在登录页完成认证后，control panel 走 `/sso_callback?nonce=...&redirect_url=...`：
+后台的**服务间跨 Zone 调用**另有入口。例如 A 的 msg-center 为用户向 B 投递消息时，由 A 的设备为该用户的 DID 签短时断言。B 的 verify-hub 在 `login_by_cross_zone_assertion` 中验签、检查设备能否代表该 DID，再签发受限 External 会话。目前允许的目标是 msg-center 和 homestation。[跨 Zone 通讯](cross-zone-communication.md) · [允许的目标与 scope](../../src/kernel/buckyos-api/src/cross_zone_auth.rs#L25)
 
-- 校验 `redirect_url` **必须是本 Zone 内由 Gateway 实际路由的目标**，并从 `app_info` 得到结构化 target：根域 `_` 是 `System(control-panel)`，普通 App entry 必须同时给出且互相匹配 `app_id + app_instance_id + app_owner_user_id`。
-- 正式环境只接受 HTTPS；DV 的 HTTP 必须由显式配置开启。URL 禁止 credentials 和任意端口。pending login 会保存 canonical origin、完整 redirect 和 target；callback 的参数、实际 request origin 和当时 Gateway route 必须全部完全一致。
-- 回调由目标 App origin 承载，同时写入两枚 host-only Cookie：短期 `buckyos_session_token` 供 gateway 在 App 页面加载前完成鉴权，长期 `buckyos_refresh_token` 使用 `HttpOnly`、只供刷新。随后 302 回 `redirect_url`。两枚 cookie 都不设置 `Domain`，因此不会与父域或其它 App 子域共享。
+### 从分享链接回到具体资源
 
-### 3. 用 refresh cookie 换 session_token
+**现有的开放入口。** B 可以发出 `/sso/entry?service=aiworkspace&entry=<id>`。Alice 打开后先看到工作区名称、分享者（如有）和 B 的 Zone。入口允许 DID 登录时，她选择该方式、输入自己的 DID，再到归属 Zone A 确认。回到原标签页后，入口用 B 刚建立的身份调用 `ws.join_entry`，取得该入口授予的工作区权限。如果 Alice 在 B 已有有效会话，她可以直接选择以当前身份继续。[分享入口页面](../../src/frame/desktop/src/sso/EntryPage.tsx#L274)
 
-页面加载后，向 control panel POST `/sso_refresh`（自动带上 HttpOnly cookie）：
+**AI Workspace 在自己的主机上恢复会话。** 加入成功后，B 的页面通过 `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` 取得一次性回调，把 `System(aiworkspace)` 会话写到 `aiws-<id>.<B>`。当前工作树中的修复为 External 开通这项工作区交接，也让 B 的根域登录页在 DID 登录返回后恢复传入的完整工作区地址。普通 App 实例走下文的桌面委托流程，使用 `app_instance_id`，要求用户有该实例的访问资格。[工作区启动](../../src/frame/desktop/src/app/aiworkspace/launch.ts) · [登录后恢复工作区](../../src/frame/desktop/src/auth/LoginPage.tsx#L196)
 
-```text
-POST /sso_refresh
--> 200 { "session_token": "...", "identity": { "kind": "account" | "external", ... } }
-```
+### App 访问邀请与 Zone 登录邀请（目标设计）
 
-- 返回**短期 session_token**（放在响应体里，供 JS 读取并用于后续请求）和当前身份 `identity`：`account`（本 Zone 账号，含 `user_id`、`did`、`user_type`、`restricted`、`scopes`、`password_set`）或 `external`（本 Zone 无账号的已认证 DID）。形状与 fixtures 见 [混合 SSO 技术契约](<../arch/verify-hub/混合SSO技术契约.md>) §2.2。websdk 用 `buckyos.getCurrentIdentity()` 读取，`getAccountInfo()` 只对账号会话返回值；身份变化时清空缓存，不回退旧身份。
-- 同时轮换 `buckyos_refresh_token`，并把短期 token 写入独立的 host-only `buckyos_session_token`。被替换的旧 refresh token 只有 10 秒宽限期：同一 host 的多个窗口共用这枚 cookie，同时续期时，后到的请求拿到的是同一对新 token，不会撤销会话；超出宽限期再出示旧 token 按重用处理，整条会话被撤销。
-- session 快过期时再调一次 `/sso_refresh` 续期即可，无需重新登录。
+沿用上例，Alice 在归属 Zone A 证明自己的 DID，提供资源的 B 分别决定她可否登录 B 的系统、可否访问某个 App 实例。上文描述了当前实现：B 的 DID 登录开关开启且没有匹配账号时，B 可直接签发根域 External 会话。目前这一步没有按邀请类型核对资格。[当前联合登录签发](../../src/kernel/verify_hub/src/main.rs#L2194)
 
-### 4. 带着 session_token 调 kRPC
+| B 发出的邀请 | Alice 打开后获得什么 |
+| --- | --- |
+| App 访问链接 | App 只能邀请 Alice 访问自己的安装实例。定向入口从记录取得 Alice 的 DID，开放入口由她输入。她在 A 证明身份后回到 B 的原 App，B 核对实际 DID 与邀请，App 再按资源权限决定能否读写。使用该链接不增加 B 的系统登录资格。 |
+| 系统登录链接 | 有 Zone 登录邀请权限的服务通过系统入口邀请 Alice。B 的 verify-hub 根据系统邀请及 Alice 已验证的 DID 核对登录资格。成功后她可以登录 B 的系统，打开某个 App 或文档仍需相应权限。 |
 
-后续所有受保护请求都带上 session_token，支持以下任一方式：
+目标设计要求在发链接时持久化邀请，让 verify-hub 能在签发对应会话前查询。用户管理可查看每个已知 DID 的邀请和系统登录资格。管理员可将仅有 App 访问资格的 DID 改为可登录系统，随后通过系统入口使用新增资格。现有 `/users/invite/<id>` 用于把已有 DID 接纳为本 Zone 账号，接受时要求与 OwnerDocument 匹配的联合会话。[现有入驻邀请](../../src/frame/control_panel/src/user_mgr.rs#L1556) · [产品需求](<../arch/verify-hub/BuckyOS 混合SSO PRD.md>) · [开发与测试 TODO](../../notepads/cross-zone-resource-share-sso-todo.md)
 
-```text
-Header:  X-Auth: <session_token>
-Header:  Authorization: Bearer <session_token>
-Query:   ?session_token=<...>  或  ?auth=<...>
-kRPC:    请求体的 token 字段
-```
+**客服场景使用 Zone 内身份。** 客户没有自己的 DID 时，B 的客服专属邀请可以复用一个 Limited 账号，也可以在 B 新建一个。新建时 B 为 `<user>.<zone>` 生成 DID、密钥及 OwnerDocument。客户用链接中的临时免密凭据直接登录这个本地账号，全程无需归属 Zone 证明身份。凭据到期与账号存续分别管理，客户可以设置密码后继续使用账号。[客服专属邀请](../../src/frame/control_panel/src/exclusive_invite.rs#L427) · [生成本地 DID](../../src/frame/control_panel/src/user_mgr.rs#L638)
 
-服务端用 Zone 的 trust keys 验签，确认用户 active，再走 RBAC 判权。
+现有 `sys-test` 客服工单就是一个例子。它用客户在 App 内的标识调用 `user.app_login.issue {kind: "link"}`，由 B 创建或复用本地 Limited 账号。客户用这条链接在 B 建立面向 `System(control-panel)` 的会话，再到指定的 Message Hub 会话接受邀请。另一个 `kind=code` 分支把凭据兑换为签发 App 自己的实例会话。开发新的外部 DID 邀请时，须单独处理旧客服链接的会话范围。[客服工单签发](../../src/apps/sys_test/support_group.ts#L178) · [客服场景与回归入口](../../src/apps/sys_test/README.md#L45) · [链接兑换](../../src/kernel/verify_hub/src/main.rs#L1888) · [App code 兑换](../../src/kernel/verify_hub/src/main.rs#L2030)
 
-### 5. 退出
+## 同一 Zone 内首次登录桌面
 
-POST `/sso_logout`：吊销 refresh token，并清掉当前 App host 下的 `buckyos_refresh_token` 与 `buckyos_session_token`。
+用户在 Zone 桌面登录一次，就能从桌面打开有权使用的 Web App。桌面和 App 各有自己的会话。桌面的登录目标是 `System(control-panel)`，App 的登录目标是一个具体的安装实例。Control Panel 负责把会话交付到正确的浏览器主机，本 Zone 的 verify-hub 负责验证身份、签发和续期。
 
----
+以下用内置 Text Editor 举例。假设 `devtest` 安装了实例 `text-editor.buckyos.bns.did@devtest`，并已允许 `bob` 使用。该实例的网关入口是 `text-editor.<zone>`。我们从 `bob` 第一次打开桌面，一直跟到他在编辑器里读取自己的文件。
+
+1. **桌面检查当前身份。** `bob` 打开 `https://<zone>/`。桌面初始化 WebSDK，调用 `getCurrentIdentity()`。SDK 尝试用当前主机的 Cookie 调 `POST /sso_refresh` 恢复会话。首次访问没有 refresh Cookie，服务返回 401，桌面将浏览器转到根域的 `/login?redirect_url=<原桌面 URL>`。[桌面启动](../../src/frame/desktop/src/main.tsx) · [登录跳转](../../src/frame/desktop/src/auth/loginRedirect.ts)
+2. **登录页提交密码证明。** `bob` 输入用户名和密码。登录页用 `buckyos.hashPassword(username, password, login_nonce)` 生成摘要，以未登录的 kRPC 客户端向 `/kapi/control-panel` 调 `auth.login`，提交 `username`、摘要、`login_nonce` 和 `redirect_url`。`login_nonce` 取自 `Date.now()`，用于本次密码证明。[密码登录页](../../src/frame/desktop/src/auth/passwordLogin.ts)
+3. **服务端为桌面签发会话。** Control Panel 用完整的 `redirect_url` 查网关路由表 `node_gateway_info.json`。默认根域路由 `_` 对应 `System(control-panel)`。它向 verify-hub 调 `login_by_password`，由后者检查密码证明、nonce 和账号状态，签发 session token 与 refresh token。Control Panel 将这对 token、目标、origin 和完整返回 URL 暂存 60 秒，生成另一个一次性随机数 `sso_nonce`。`auth.login` 的成功结果含 `session_token`、`refresh_token`、`user_info`、`identity` 和 `sso_nonce`。[Control Panel 登录处理](../../src/frame/control_panel/src/sys_auth_backend.rs#L165) · [verify-hub 密码登录](../../src/kernel/verify_hub/src/main.rs#L1644)
+4. **浏览器在根域建立会话。** 登录页用 `sso_nonce` 和原返回 URL 构造 `https://<zone>/sso_callback?nonce=…&redirect_url=…`。Control Panel 消费这张票据，核对回调请求的 origin、完整返回 URL、当前路由和 token 目标，写入根域的两枚 Cookie，再以 302 回到桌面。桌面重新加载后可通过 `/sso_refresh` 取得 `bob` 的桌面 session token。[回调实现](../../src/frame/control_panel/src/sys_auth_backend.rs#L418)
 
 ## 从桌面打开 App（免密启动）
 
-用户已经登录 BuckyOS 桌面（Zone 根域上的 `System(control-panel)` 会话）时，从桌面打开一个有权访问的 Web App 不会再出现登录页。桌面不把自己的 token 交给 App，也不共享父域 Cookie，而是为目标 App 实例换一张一次性票据：
+`bob` 点击 Text Editor 时，桌面已经有有效的 `System(control-panel)` 用户会话。桌面先为目标实例申请一次性回调，再加载编辑器的 iframe。
 
-```text
-1. 桌面先构造最终 App URL（含 path、query 和 AppFrame 的 #bfp=<frame nonce>），然后
-   POST /kapi/control-panel  auth.prepare_app_launch
-     params: { app_instance_id, redirect_url: <最终 App URL> }   sys[1] = 桌面 session token
-2. Control Panel 校验来源是普通（非 sudo）Control Panel 用户会话，按 Gateway route 解析
-   redirect_url 得到 AuthTarget::App，并要求与 app_instance_id 完全一致；
-   再以自己的服务会话调用 verify-hub delegate_user_session，换出同一用户、目标实例的
-   普通 User token pair，存进 60 秒的一次性 pending（与密码登录共用）。
-   响应只含 callback_url，不含 token：
-     { "status": "ready", "callback_url": "https://<app-host>/sso_callback?nonce=…&redirect_url=…" }
-3. 桌面让 iframe 导航到 callback_url；后续与上文第 2–4 步相同：/sso_callback 写入目标 host 的
-   两枚 host-only Cookie 并 302 回完整 redirect_url，App 页面再用 /sso_refresh 恢复会话。
+```mermaid
+sequenceDiagram
+    participant D as Zone 根域桌面
+    participant C as Control Panel
+    participant V as verify-hub
+    participant A as 编辑器 iframe（App 主机）
+    participant G as Node Gateway
+    D->>C: auth.prepare_app_launch（桌面 token、实例、完整 App URL）
+    C->>V: delegate_user_session（来源用户会话、目标实例）
+    V-->>C: bob 在编辑器实例上的 session 和 refresh token
+    C-->>D: ready 和一次性 callback_url
+    D->>A: 导航到 App 主机的 callback_url
+    A->>G: GET /sso_callback
+    G->>C: 转发回调，保留外部主机信息
+    C-->>A: Set-Cookie × 2，302 到完整 App URL
+    A->>G: GET App 页面，自动带上该主机的 Cookie
+    G-->>A: 校验实例会话后返回页面
+    A->>C: 经网关同源 POST /sso_refresh
+    C->>V: refresh_token
+    V-->>C: 轮换后的 token 对
+    C-->>A: session_token、identity 和更新的 Cookie
 ```
 
-新 token 的 `sub` 仍是操作者，`app_owner_user_id` 是安装者；它不继承桌面的 system target，也不带 sudo。用户仍受 App availability 和业务 RBAC 约束。
+- **指定实例和返回地址。** 桌面先构造最终 App URL，包括文件打开参数和 AppFrame 用的 `#bfp=…`。它向 `/kapi/control-panel` 调 `auth.prepare_app_launch`，参数是 `app_instance_id`、`redirect_url`，kRPC 的 `sys[1]` 携带桌面用户 token。Control Panel 按网关路由解析 URL，要求解析出的 App 实例与请求一致。[桌面 iframe](../../src/frame/desktop/src/app/web-frame/WebAppFramePanel.tsx) · [启动请求](../../src/frame/desktop/src/api/app_launch.ts)
+- **用桌面会话换取实例会话。** Control Panel 以自己的**服务会话**调用 `delegate_user_session`，另将 `bob` 的**桌面用户会话**作为来源证明。verify-hub 验证调用方、来源会话仍然有效且未提权，并检查 `bob` 对目标实例的访问资格。它签发新的普通用户会话，`sub=bob`、`app_instance_id=text-editor.buckyos.bns.did@devtest`、`app_owner_user_id=devtest`。因此即使编辑器由 `devtest` 安装，它代表的操作者仍是 `bob`。[委托签发](../../src/kernel/verify_hub/src/main.rs#L1747)
+- **在 App 主机兑换票据。** Control Panel 验证新 token 的用户与目标，将它们存入同一套 60 秒的一次性记录。启动接口成功只返回 `{ "status": "ready", "callback_url": "…" }`。iframe 首先访问 **App 主机**的 `/sso_callback`，网关把它交给 Control Panel。回调 URL 带 `nonce` 与 `redirect_url`，两枚 Cookie 由响应写到 `text-editor.<zone>`。浏览器跟随 302 请求编辑器页面。对私有 App，网关验证 session Cookie 的签名，要求签发方是本 Zone 的 verify-hub、凭证是非 sudo 的用户 session，且 App ID、实例、安装者与路由一致。根域的 Cookie 始终留在根域。[启动处理](../../src/frame/control_panel/src/sys_auth_backend.rs#L297) · [网关路由与检查](../../src/rootfs/etc/boot_gateway.yaml#L240)
+- **以操作者身份读文件。** 编辑器初始化 `buckyos.initBuckyOS(APP_ID)` 并调用 `getAccountInfo()`。页面 SDK 通过 **App 主机**的 `POST /sso_refresh` 获取短期 `session_token` 和 `identity`。编辑器把当前页面 token 提供给 NFSP 客户端，读文件的请求以 `Authorization: Bearer <session_token>` 送到 nfs-server。文件服务验证 token，按 `bob` 的身份和文件权限处理请求。走 kRPC 的客户端则把页面 token 放在请求的 `sys[1]`。这里的 App target 表示用户通过哪个实例发起操作，资源服务仍决定该操作是否允许。[编辑器接入](../../src/apps/text_editor/src/main.tsx#L89) · [文件服务认证](../../src/frame/nfs_server/src/auth.rs#L77) · [文件权限](../../src/frame/nfs_server/src/acl.rs)
 
-`auth.prepare_app_launch` 把预期内的失败放在成功响应的 `status` 里，桌面只按这个枚举分支（kRPC 错误在线上只是文本）：
+若 `auth.prepare_app_launch` 返回 `source_session_inactive`，桌面会强制刷新自己的会话并重试一次，刷新失败才进入登录页。`access_denied` 表示当前用户不能使用该实例，`invalid_target` 表示 URL 与请求的目标不匹配。浏览器 DV 用例覆盖了登录桌面、打开编辑器、按完整 URL 落地、App 同源刷新，以及其他用户打开共享实例时的 `sub` 和 owner。[桌面错误处理](../../src/frame/desktop/src/app/web-frame/launch.ts) · [浏览器 E2E 用例](../../src/frame/desktop/tests/dv/app-launch.spec.ts)
 
-| `status` | 含义 | 桌面处理 |
+## 直接打开私有 App 链接
+
+若 `bob` 直接粘贴 `https://text-editor.<zone>/…`，最先收到请求的是网关。它检查**编辑器主机**的 `buckyos_session_token`。已有有效的实例会话就直接返回 App 页面。Cookie 缺失、过期或目标不匹配时，网关在 App JavaScript 加载前将浏览器转到 `https://sys.<zone>/login?redirect_url=<编码后的 App URL>`。公开 App 的页面可直接加载，需要身份的页面也可以通过 `buckyos.login()` 主动发起登录。[网关登录分支](../../src/rootfs/etc/boot_gateway.yaml#L246) · [WebSDK 登录 URL](https://github.com/buckyos/buckyos-websdk/blob/2a5789d438e80949d36bee24214ece44bb7e6bf3/src/auth_client.ts#L24)
+
+此时 `auth.login` 收到的 `redirect_url` 指向编辑器，Control Panel 据此把**编辑器实例**交给 verify-hub 做密码登录和 App 访问资格检查。登录页拿到 `sso_nonce` 后，直接导航到编辑器主机的 `/sso_callback`。从写 Cookie、302 回原页面到同源刷新，后半程和从桌面打开完全相同。这次登录只建立编辑器主机的会话。即使另一标签页已登录桌面，直接粘贴普通私有 App 链接仍可能看到密码页。普通 App 的桌面免密启动依赖前述委托。AI Workspace 的 `aiws-<id>.<zone>` 另有登录页用现有会话自动委托的分支。[目标解析](../../src/frame/control_panel/src/sys_auth_backend.rs#L1220) · [登录页自动委托条件](../../src/frame/desktop/src/auth/LoginPage.tsx#L180)
+
+## 刷新与退出
+
+| 当前主机的 Cookie | 用途 | 普通密码会话的有效期 |
 | --- | --- | --- |
-| `ready` | 附带 `callback_url` | 导航 iframe |
-| `source_session_inactive` | 桌面会话认证失败，或来源会话已注销、不存在（如 verify-hub 重启） | 强制刷新一次桌面会话后重试一次；仍是该状态显示错误和重试；刷新失败才进入登录页 |
-| `access_denied` | availability 拒绝：无权、实例不存在或已删除、owner 不可用 | 显示无权访问，不自动重试 |
-| `invalid_target` | URL/route 不合法、不在本 Zone、不是 App route，或与 `app_instance_id` 不一致 | 显示无法打开；内容打开回退到 Preview |
+| `buckyos_session_token` | 私有 App 首次页面请求可由网关验证 | 15 分钟 |
+| `buckyos_refresh_token` | `HttpOnly`，浏览器自动随同源刷新、退出请求发送 | 7 天，成功轮换后重新计时 |
 
-kRPC error、HTTP 非 200 和网络错误都按暂时性失败处理（显示重试，不跳登录页）。
+两枚 Cookie 均使用 `Path=/`、`SameSite=Lax`，省略 `Domain`，在 HTTPS 下带 `Secure`。`POST /sso_refresh` 核对当前主机路由与 refresh token 的目标后轮换 token，更新两枚 Cookie，并在成功响应体中返回 `{ session_token, identity }`。SDK 复用仍有效的内存 token，在需要恢复或续期时调用这个端点。同一主机的标签页共享 Cookie，刚刚替换掉的上一枚 refresh token 有 10 秒宽限期，并发刷新可以得到同一对 token。宽限期后再次出示已替换且仍未过期的 refresh token，verify-hub 会撤销这条会话的续期资格。一次性回调记录在 Control Panel 内存中，verify-hub 把续期所需的会话记录保存在本地 SQLite `sessions.db`。[Cookie 与刷新](../../src/frame/control_panel/src/sys_auth_backend.rs#L536) · [SDK 浏览器会话](https://github.com/buckyos/buckyos-websdk/blob/2a5789d438e80949d36bee24214ece44bb7e6bf3/src/runtime.ts#L904) · [verify-hub 会话记录](../../src/kernel/verify_hub/src/family_store.rs)
 
-verify-hub 的 `delegate_user_session` 只接受 Control Panel 服务会话作为调用方（`sys` 中的 token 必须是 verify-hub 签发、`principal_kind` 为 System 或 Device、target 为 `System(control-panel)`、非 sudo）。`/kapi/verify-hub` 对浏览器可达，用户会话或其它服务直接调用会被拒绝，浏览器因此拿不到委托出的 token pair。来源 token 必须是本 Zone verify-hub 签发、仍属于活跃会话（未注销）的 Control Panel 用户 session；来源会话 refresh 后，同一会话里旧但未过期的 access token 仍可用。桌面 logout 完成后不能再提交新委托。
+`POST /sso_logout` 使用当前主机的 refresh Cookie 向 verify-hub 请求撤销该会话，并清除本主机的两枚 Cookie。普通密码用户从桌面委托出的 App 会话可以独立续期，因此退出桌面后，再发起委托需要重新登录，已打开的编辑器仍可使用自己的会话。受限委托会话的续期还要求来源会话存活。[退出处理](../../src/frame/control_panel/src/sys_auth_backend.rs#L649) · [委托会话与来源的关系](../../src/kernel/verify_hub/src/main.rs#L1797)
 
-退出语义与已知取舍（第一版有意接受）：
+## 其他入口
 
-- 委托出的 App 会话与桌面会话相互独立：桌面 logout 只阻止之后的新委托，已签发的 callback 票据仍按 60 秒 TTL 可用，App 会话按自身 logout/有效期结束，refresh 轮换后可一直续期。因此泄露一枚 15 分钟有效的桌面 session 就能换出长期有效的 App 会话。
-- 每次启动都签一条新会话并覆盖目标 host 的 Cookie，不探测已有会话。被覆盖的旧会话和过期未兑换的 pending 一样留在 verify-hub 内存里，直到 refresh 过期（7 天）被清理。
-- refresh 宽限期内，出示上一枚 refresh 能拿到当前 token；被窃取的旧 refresh 只在合法轮换后的几秒内有用。
-- 同一 App host 的多个窗口共享这组 Cookie：从另一桌面用户重新启动会把该 host 上的登录切换成新用户。
-- pending 票据在 Control Panel 进程内存，会话缓存在 verify-hub 进程内存；第一版沿用单实例部署前提。
-
----
-
-## Session Token 是什么
-
-登录的目标是让 client 拿到一个可保存、可复用的 **Session Token**，它代表一个已完成认证的会话，至少包含：
-
-```text
-sub / userid   当前用户（username 或 DID）
-principal_kind 登录主体类型；用户页面会话固定为 user
-target_kind    app | system
-appid          AppId 或 SystemServiceId 的兼容 claim
-app_instance_id / app_owner_user_id  App target 必填且互相匹配；System target 禁止出现
-token_use      session | refresh；sudo 仍是 session 的提权子类型
-exp / jti      过期时间、nonce
-iss            签发方（Zone 的 verify-hub）
-```
-
-> 一次登录通常返回**短期 session_token + 长期 refresh token**。session 过期用 refresh 流程换新；refresh token 一旦使用立即轮换，旧的只在 10 秒宽限期内返回当前那对 token，之后再用即视为重用并撤销整条会话。
-
-对鉴权方而言，登录方式（密码 / 钱包 / Passkey）是**透明的**——只看 token 可信不可信、token 里声明的用户/App/权限上下文是什么。这就是为什么扩展登录方式不需要改下游业务。
-
----
-
-## 跨 Zone SSO（DID 登录，去中心 IdP）
-
-当用户想登录的目标 Zone 不是自己的 Zone 时：
-
-- **canonical zone**（PRD 中与 current zone 同义）：用户本人唯一指定的身份归属 Zone，即他的 IdP。
-- **目标 Zone**：他想进去操作的 Zone。
-
-已实现的流程是后端 HTTPS 一次性授权码交换（D-7，不公布 verify-hub 公钥）：
-
-```text
-1. 目标 Zone 页面输入 DID → CP auth.did.begin：resolve(did) → OwnerDocument → canonical zone → ZoneDocument.hostname，
-   （canonical zone = binded_zone_list 首项；为空时是 DID 自身，即 owner DID 就是 Zone DID 的自托管 Zone）
-   生成 state / nonce / PKCE verifier，跳到 https://<canonical>/sso/federate?...
-2. canonical Zone（用户已登录）显示 consent：DID、目标 Zone、公开显示名 / 头像；以 DID + 目标 Zone 记住同意。
-   只有 Active 的 Admin / User、且该 Zone 是其 canonical zone 时才签发 code（60 秒、单次）。
-3. 浏览器回到目标 Zone 的 /sso/did_callback，CP 调 verify-hub.login_by_remote_verify_hub。
-4. 目标 verify-hub 自行解析 canonical 主机，HTTPS 调 exchange_federation_code（PKCE 校验），核对 DID / 目标 Zone / nonce，
-   映射到已入驻账号，否则签发 External 会话；联合会话最长 30 天，续期不回 canonical 复核。
-```
-
-要点：
-
-- 用户最终拿的是 **Target Zone 自己签发的 token**，并继续受 Target Zone 的 RBAC / scope 约束。
-- Current Zone 的凭证只负责"证明身份"，**不自动代表在 Target Zone 有任何权限**。
-- 和 Google SSO 本质相同（信任一个外部 IdP 完成认证），区别只在 IdP 是"用户自己的 Zone"，且发现/信任根来自 DID + ZoneConfig + verify-hub 公钥。
-
-> 跨 Zone 内部 DID 通常是明确的——系统凭证核心是 username / DID，每个可登录用户都能映射到一个确定 DID。账号 → DID 只认 `users/<id>/doc`，本人可编辑的 profile 不是身份证明。canonical 的 logout / 改密不传播到目标 Zone（已知风险，最长 30 天）。
-
----
-
-## 外部访问者入口（混合 SSO）
-
-分享资源时，资源服务持有“入口”，入口声明允许的进入方式；CP 把它与 Zone 开关（`system/sso/settings` 的自助注册 / DID 登录，默认开启）求交后展示在 `/sso/entry?service=&entry=` 页面：
-
-- **Guest**：AI Workspace 的 `gt_` → `guest:` 资源主体，无系统会话；由资源 owner 在入口上开启。
-- **本 Zone 账号登录 / 自助注册**：自助注册建 Limited 账号（不入系统组、不设 canonical zone），之后按普通密码登录。
-- **DID 登录**：见上一节。
-- **专属邀请**：管理员预建 Limited 账号并生成 `https://<zone>/sso/invite/<id>#s=<secret>`，secret 只在 fragment；48 小时内可重复免密进入，设密码后旧链接只作入口；过期后访客申请重发，签发方收到 System Notify 后在“用户与 Agent / 专属邀请”生成新链接，经原渠道发送（系统不发短信 / 邮件）。
-
-**AI Workspace 页面**（2026-10-28）：每个工作区是自己的站点 `https://aiws-<id>.<zone>/<工作区 slug>/<画布 slug>?id=<画布 id>`（`<id>` 去掉 `ws_`），由 aiworkspace 服务出页。它的登录态在该主机自持：从桌面或列表打开时 CP 用 `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` 委派会话并经一次性 `/sso_callback` 落 cookie；直接打开链接而没有登录态时，公开工作区以访客身份打开，否则到 Zone 根 `/login?redirect_url=` 登录（已在 Zone 根登录者自动接力）。入口页进入工作区时也走这一步。
-
-**Agent 浏览器的重排页**（2026-11-15）：`https://reflow.<zone>/<key>` 由 nfs-server 出页，路径是登录用户的重排桶 `user/control-panel/<user>/reflow` 里的 key（[Agent Browser Protocol](../opendan/protocol/Agent%20Browser%20Protocol.md) §5.4）。登录态同样在该主机自持：Desktop 用 `auth.prepare_app_launch { service_id: "nfs-server", redirect_url }` 委派会话，经一次性 `/sso_callback` 落 cookie，`/sso_refresh` 续期。nfs-server 在这个主机上只认目标是 `System(nfs-server)` 的用户会话，没有就回 401，不跳登录页。这种会话只用来打开重排页：带着它访问 nfs-server 的文件、桶和上传接口，Bearer 被拒，cookie 按匿名处理。
-
-Limited、External 及其衍生会话是**受限会话**：token 带 `restricted: true` 与 `scopes`（`account_self` / `msg_group` / `aiworkspace` / `homestation` / `aicc`）。`BuckyOSRuntime::verify_trusted_session_token` 默认拒绝受限会话，服务对需要开放的方法改用 `verify_session_token_opened(token, scope)`；类型升级不会让旧会话增权，降级在下一次 refresh 收窄。拒绝在 kRPC 失败响应中带 `code: "access_denied"` 与 `data: AccessDenial`（原因码与调整方），websdk 用 `accessDenialOf(error)` 读取，不解析错误文本。
-
-第三方网页不知道用户 Zone 时，用 websdk `buildJumpUrl(action, params)` 跳到 jump（默认 `https://jump.buckyos.org`，可由 `system/sso/settings.jump_base_url` 覆盖），由用户选择目标 Zone 后到达该 Zone 的同路径 action 页面，仍需在该 Zone 登录并确认操作；jump 页面见 `src/frame/jump/`。
-
----
-
-## 没有 Zone 的用户：浏览器钱包登录
-
-没有 Zone 的用户没有 verify-hub，签不出 Zone session token，但他仍能通过钱包证明"我控制这个 DID / owner key"。
-
-```text
-1. 联合登录页做 capability detection：检测浏览器是否有 BuckyOS wallet 扩展。
-   - 没有 -> 回到普通 Zone SSO / 输入 DID / 装钱包 / 建 Zone 的引导。
-   - 有   -> 展示"用钱包登录"。
-2. App 生成登录 challenge（app_did + nonce + redirect_uri + requested_scope）。
-3. 钱包返回 active DID / 公钥；若是 did:bns 则 resolve(wallet_did, owner) 拿可信公钥。
-4. 钱包对登录断言签名（覆盖 app_did / challenge / redirect_uri / wallet_did / iat / exp / scope）。
-5. App 用 BNS OwnerDocument 公钥验证签名。
-```
-
-结果是一个 **wallet-signed login assertion**，不是 Zone session_token。适合：跨应用登录、证明钱包身份、读公开 profile、买内容、引导建 Zone。**不能**自动获得任何已有 Zone 的私有资源权限——要访问 Zone 资源仍走该 Zone 的 verify-hub / RBAC。
-
-> 产品建议：钱包登录优先用于"忘记密码 / 账号恢复"，日常登录不鼓励频繁暴露 Root/Control Key 的签名能力。
-
----
-
-## 用户类型与匿名访问（接入方需要知道的）
-
-不同用户类型决定了 App 能拿到什么权限（完整定义见 `product/users_and_agents/UserType.md`）：
-
-- **admin / su_admin**：可登录用户中权限最大；敏感操作需 sudo。
-- **user / su_user**：最常见的登录用户，能用 App 但不能管系统。
-- **limited**：零权限底座的登录用户（企业客户、员工、未成年人等）。默认不能用任何 App，由管理员加入系统用户组（`group:<id>`）后，经 App 可用性规则和资源授权开放；不签发对外联合断言。
-- **root**：Zone owner 的账号记录，不可登录。
-- **External**：已认证、但本 Zone 没有账号记录的 DID（经 DID 登录产生）。token 的 `principal_kind` 仍为 `user`，另带 `external: true` 标记，`sub` 是原 DID；只有 verify-hub、msg-center 群路径、AI Workspace、HomeStation 接受，其它服务由受限会话闸口拒绝。
-- **匿名访问者**：不是用户类型。默认**全部拒绝**；只有明确公开的资源（App 可用性的 `guest` 伪组、AI Workspace 的 `guest:` 主体等）才允许匿名访问。
-
-让一个传统 app 提供公共服务的方式：把 app 设为 gateway 公共访问（= 授予特殊权限），或 app 自带用户管理、在自己的 app data 范围内管理读写。
-
----
-
-## sudo：高权限二次确认
-
-sudo 由 verify-hub 提供：弹出提权对话框，要求管理员**再次输入密码**，换发一个**短时（约 3 分钟）SUDO Session Token**，可能带明确操作边界。
-
-接入要点：
-
-- sudo token 仍受 **AuthTarget 限制**，必须是 `token_use=session, sudo=true`；它不能写进普通页面 session cookie。
-- 所以 sudo 一般只在 Control Panel 这类**本身就有大权限的系统 UI**里才有意义。
-
----
-
-## 不要混用两种 session_token
-
-> 这是一条容易踩坑的架构不变量。
-
-在 `app-web-page -> app-service -> kRPC` 链路里，**必须继续使用来自页面的 token**，不能换成 app-service 自己的 token：
-
-- 页面 token 代表**当前操作者**。
-- app-service 自己的 token 往往只代表 **app owner**。
-
-用错会导致越权或审计主体错乱。
-
----
-
-## 兼容（未接入 websdk 的历史 app）
-
-历史 Web app 没接 `buckyos-web-sdk` 时，node-gateway 可以把首个请求导向 `login_index.html` 完成 cookie 写入。这是**兼容迁移路径**，新接入请直接用 `AuthClient` + `/sso_refresh`，不要依赖这条路径。
-
----
-
-## 当前实现 vs 协议目标
-
-**当前已经能用（本仓库已落地）：**
-
-- verify-hub `auth.login`（用户名/DID + 密码）签发 session_token + refresh_token。
-- websdk `AuthClient.login()` -> `sys.<zone>/login?redirect_url=`。
-- control panel `/sso_callback`（把 nonce、canonical origin/route 与 AuthTarget 一起校验后才写 cookie）、`/sso_refresh`（只接受同 origin/route 的 refresh target并轮换 token，旧 refresh 有 10 秒宽限期）、`/sso_logout`。
-- 桌面免密启动 App：control panel `auth.prepare_app_launch` + verify-hub `delegate_user_session`（仅 Control Panel 可调用）。
-- session_token 多通道传递（X-Auth / Bearer / query / kRPC token）+ trust keys 验签 + RBAC。
-- sudo 机制（提权对话框 + 短时 sudo token，受 appid 限制；Limited 不签发 sudo）。
-- refresh family 持久化在 verify-hub 本地 SQLite（`data/var/verify-hub/sessions.db`），重启后可继续刷新；单实例，迁移到其它 OOD 后需重新登录。
-- 混合 SSO：当前身份三态、受限会话闸口与原因码、专属邀请、自助注册、入口描述、DID 登录（授权码交换）、jump 静态页。
-
-**协议目标 / 规划中（接入时不要假设已可用）：**
-
-- 浏览器钱包扩展 detection 与 wallet-signed assertion 的标准格式（首期不展示钱包入口）。
-- App access token 登录（`login_by_app_access_token`，S-1 后排）。
-- 全局 logout、canonical zone 迁移、匿名历史归并、忘记密码恢复。
-- Gmail 等外部账号绑定到 DID。
-
----
-
-## 参考
-
-- `doc/arch/verify-hub/混合SSO技术契约.md` — 混合 SSO 的 wire、状态机、撤销矩阵与持久状态。
-- `doc/arch/BNS 去中心的名字系统.md` — 场景 6（联合登录）、场景 5（不依赖 CA 的强验证）、DID 解析与 IdP 发现。
-- `product/users_and_agents/UserType.md` — 用户类型、登录/SSO 产品流程、sudo、用户数据隔离。
-- `doc/control_panel/Control_Panel_Service.md` — control panel 认证契约。
-- `doc/arch/07_identity_and_rbac.md` — verify-hub、session token、trust keys、RBAC 的实现说明。
-</content>
-</invoke>
+- **系统服务自己的页面。** 桌面打开 AI Workspace 或 `reflow.<zone>` 时，以 `service_id` 调 `auth.prepare_app_launch`，分别委托到 `System(aiworkspace)` 或 `System(nfs-server)`，仍在页面自己的主机回调和刷新。reflow 的页面会话只用于读取重排页。[服务启动请求](../../src/frame/desktop/src/api/app_launch.ts) · [reflow 页面认证](../../src/frame/nfs_server/src/auth.rs)
+- **分享、访客和专属邀请。** `/sso/entry` 根据入口与 Zone 的配置显示可用方式。资源级 Guest 可只访问对应资源，自助注册或邀请可建立 Limited 账号会话。页面通过 `getCurrentIdentity()` 区分账号、External DID 和匿名访问者，`getAccountInfo()` 只返回账号会话。[混合 SSO 契约](../arch/verify-hub/混合SSO技术契约.md) · [用户类型](../../product/users_and_agents/UserType.md)
+- **App 代登录。** 已启用此能力的 App 后端可以调用 `user.app_login.issue` 申请一次性 code。App 页面调用 `auth.app_login.exchange` 后，通过返回的 `callback_url` 在本实例主机建立受限用户会话。[App 代登录实现](../../src/frame/control_panel/src/app_login.rs)
+- **从第三方网页选择 Zone。** 第三方网页可以用 WebSDK 的 `buildJumpUrl` 将用户带到 jump 选择 Zone，随后由所选 Zone 的页面处理登录与操作确认。[jump 实现](../../src/frame/jump/README.md)
+- **sudo 与后台服务身份。** sudo 需要单独提交密码证明，得到绑定目标的短时提权 token。App 后端代页面访问数据时应传递操作者的页面 token。后台任务使用服务自身的运行时身份。[verify-hub 提权](../../src/kernel/verify_hub/src/main.rs#L1703) · [运行时登录](runtime-login.md)

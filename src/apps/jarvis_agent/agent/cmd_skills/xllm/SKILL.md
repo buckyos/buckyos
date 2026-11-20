@@ -1,12 +1,12 @@
 ---
 name: xllm
-description: One-shot model calls from the shell with `agent_tool xllm` — analysis, rewriting, translation and JSON/schema extraction over text, files or piped output, plus small tool-assisted jobs in a scratch directory, with run records you can inspect, re-export and resume.
+description: Write or debug a model call in a macro or script using `agent_tool xllm`. Pass text, files or stdin, return text or structured JSON, and inspect or resume the run.
 requires: `agent_tool` on PATH and the session shell's own token (BUCKYOS_APPCLIENT_SESSION_TOKEN, BUCKYOS_APP_ID); models come from the Zone's AICC routes
 baseline: standard
 ---
-#### One-shot calls
+#### Call a model from a macro or script
 
-Run `agent_tool xllm` from an authenticated session shell to analyze or transform existing material. It uses the session token or the node session's `.opendan/` token exchange. A bare `docker exec` may lack credentials. Choose a Work session for tasks needing a plan or user input. The host drives session runs under `.opendan_agent_session/runs`. Use `llm_understand_media` for media or PDFs.
+Use this CLI when the program needs a model step, such as extracting fields from text. It uses the session token or the node session's `.opendan/` token exchange. AI Workspace wish macros use the host's `aiws.ai.complete` or `aiws.llm.map` API. When the Agent itself owns a bounded task, execute and verify it directly in `work_simple` so progress, tool calls and the final report stay in one session. Use `llm_understand_media` for media or PDFs.
 
 ```sh
 mkdir -p xllm/notes && cd xllm/notes

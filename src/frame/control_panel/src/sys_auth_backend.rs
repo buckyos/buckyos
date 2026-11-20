@@ -7,7 +7,7 @@ use buckyos_api::{
     AuthTarget, BuckyOSRuntime, ControlPanelClient, CurrentIdentity, DelegateUserSessionResult,
     DenyReason, LoginByPasswordResponse, SessionCeiling, SessionScope, SystemServiceId, TokenPair,
     TokenPrincipalKind, TokenUse, UserSettings, UserState, UserType,
-    AIWORKSPACE_GATEWAY_APP_KEY, CONTROL_PANEL_SERVICE_UNIQUE_ID,
+    AIWORKSPACE_GATEWAY_APP_KEY, AIWORKSPACE_UNIQUE_ID, CONTROL_PANEL_SERVICE_UNIQUE_ID,
 };
 use buckyos_http_server::{server_err, ServerError, ServerErrorCode, ServerResult, StreamInfo};
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -263,6 +263,14 @@ impl ControlPanelServer {
             ));
         }
         let params: PrepareAppLaunchParams = Self::typed_params(&req)?;
+        if principal.session.is_external
+            && (params.service_id.as_deref() != Some(AIWORKSPACE_UNIQUE_ID)
+                || params.app_instance_id.is_some())
+        {
+            return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed)
+                .at(CONTROL_PANEL_SERVICE_UNIQUE_ID, PREPARE_APP_LAUNCH_METHOD)
+                .into_rpc_error());
+        }
         let result = self
             .prepare_app_launch(principal.username.as_str(), &source_token, &params)
             .await?;
@@ -1652,7 +1660,7 @@ async fn verify_session_any_ceiling(
 }
 
 /// D-4 default deny for restricted sessions (SSO-04): a Limited session reaches
-/// its own-account methods, an External one its identity and invitation acceptance, and
+/// its own-account methods, an External one its identity, invitation acceptance and workspace handoff, and
 /// either only as a Control Panel (Zone root) session or an App-signed customer session
 /// (`self_service_session`).
 fn restricted_method_access(
@@ -1670,10 +1678,15 @@ fn restricted_method_access(
     if ANY_SESSION_METHODS.contains(&method) {
         return Ok(());
     }
-    if is_external || !ACCOUNT_SELF_METHODS.contains(&method) {
+    let required_scope = if is_external && method == PREPARE_APP_LAUNCH_METHOD {
+        // The launch handler also checks the root session, requested service and gateway route.
+        SessionScope::AiWorkspace
+    } else if !is_external && ACCOUNT_SELF_METHODS.contains(&method) {
+        SessionScope::AccountSelf
+    } else {
         return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed));
-    }
-    if !ceiling.allows(SessionScope::AccountSelf) {
+    };
+    if !ceiling.scopes.contains(&required_scope) {
         return Err(AccessDenial::new(DenyReason::SessionCeilingExceeded));
     }
     Ok(())
@@ -1743,18 +1756,22 @@ mod tests {
             deny("user.profile.get", &narrowed, false, true),
             Some(DenyReason::SessionCeilingExceeded)
         );
-        // External: current identity and authenticated invitation acceptance.
+        // External: current identity, authenticated invitation acceptance and scoped Workspace handoff.
         assert_eq!(deny("auth.current_identity", &external, true, true), None);
         assert_eq!(deny("user.invite.accept", &external, true, true), None);
         assert!(!ControlPanelServer::is_public_rpc_method(
             "user.invite.accept"
         ));
-        for method in [
-            "user.get",
-            PREPARE_APP_LAUNCH_METHOD,
-            "desktop.api",
-            "apps.list",
-        ] {
+        assert_eq!(deny(PREPARE_APP_LAUNCH_METHOD, &external, true, true), None);
+        assert_eq!(
+            deny(PREPARE_APP_LAUNCH_METHOD, &narrowed, true, true),
+            Some(DenyReason::SessionCeilingExceeded)
+        );
+        assert_eq!(
+            deny(PREPARE_APP_LAUNCH_METHOD, &external, true, false),
+            Some(DenyReason::SessionKindNotAllowed)
+        );
+        for method in ["user.get", "desktop.api", "apps.list"] {
             assert_eq!(
                 deny(method, &external, true, true),
                 Some(DenyReason::SessionKindNotAllowed),

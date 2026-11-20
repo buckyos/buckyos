@@ -1776,12 +1776,18 @@ impl VerifyHubApiHandler for VerifyHubServer {
             );
             return Ok(DelegateUserSessionResult::SourceInactive);
         };
-        let claims = match self.recheck_family(&source_family).await? {
+        let mut claims = match self.recheck_family(&source_family).await? {
             FamilyRecheck::Allowed(claims) => claims,
             FamilyRecheck::Ended(_) => return Ok(DelegateUserSessionResult::SourceInactive),
         };
         if claims.external {
-            return Ok(DelegateUserSessionResult::AccessDenied);
+            if !matches!(target, AuthTarget::System { service_id } if service_id.as_str() == AIWORKSPACE_UNIQUE_ID)
+                || !claims.restricted
+                || !claims.scopes.contains(&SessionScope::AiWorkspace)
+            {
+                return Ok(DelegateUserSessionResult::AccessDenied);
+            }
+            claims = claims.narrowed(&SessionCeiling::restricted([SessionScope::AiWorkspace]));
         }
         let target = match self
             .resolve_user_auth_target(source.user_id.as_str(), target)
@@ -5179,6 +5185,98 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 .await,
             Err(RPCErrors::NoPermission(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn delegate_external_workspace_session_preserves_identity_scope_and_lifetime() {
+        let fed = federation().await;
+        let did = "did:bns:alice";
+        let code = fed.code("v-1").await;
+        let LoginByRemoteVerifyHubResult::Issued { token_pair, .. } =
+            fed.login(did, &code, "v-1").await
+        else {
+            panic!("expected an External session");
+        };
+        let workspace = system_target(AIWORKSPACE_UNIQUE_ID);
+        let delegate = async |target: &AuthTarget| {
+            fed.target
+                .handle_delegate_user_session(Some(&fed.caller), &token_pair.session_token, target)
+                .await
+                .unwrap()
+        };
+        for other in [app_target("notes@bob"), system_target("nfs-server")] {
+            assert!(matches!(
+                delegate(&other).await,
+                DelegateUserSessionResult::AccessDenied
+            ));
+        }
+        let DelegateUserSessionResult::Issued(child) = delegate(&workspace).await else {
+            panic!("expected a workspace session");
+        };
+        let family = |pair: &TokenPair| {
+            fed.target
+                .families()
+                .get(&session_key_of(&pair.refresh_token))
+                .unwrap()
+                .unwrap()
+        };
+        let parent = family(&token_pair);
+        let delegated = family(&child);
+        assert_eq!(delegated.parent_key, Some(parent.key()));
+        assert_eq!(delegated.absolute_exp, parent.absolute_exp);
+        assert_eq!(delegated.source, parent.source);
+        let refreshed = fed
+            .target
+            .handle_refresh_token(&child.refresh_token)
+            .await
+            .unwrap();
+        for pair in [&child, &refreshed] {
+            for raw in [&pair.session_token, &pair.refresh_token] {
+                let token = decoded(raw);
+                assert_eq!(token_auth_target(&token).unwrap(), workspace);
+                assert_eq!(token.sub.as_deref(), Some(did));
+                assert_eq!(token_auth_method(&token), Some(AuthMethod::DidFederation));
+                assert!(token_is_external(&token));
+                assert_eq!(
+                    ceiling_of(raw),
+                    SessionCeiling::restricted([SessionScope::AiWorkspace])
+                );
+            }
+        }
+        assert!(fed
+            .target
+            .handle_logout(&token_pair.refresh_token)
+            .await
+            .unwrap());
+        assert!(fed
+            .target
+            .handle_refresh_token(&refreshed.refresh_token)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn delegate_external_workspace_requires_workspace_scope() {
+        setup_test_environment().await;
+        let (hub, _) = test_hub();
+        let session = SessionSubject {
+            subject: "did:bns:alice".into(),
+            principal_kind: SessionPrincipalKind::User,
+            target: system_target("control-panel"),
+            session_id: rand::thread_rng().gen(),
+            claims: FamilyClaims::external(AuthMethod::DidFederation)
+                .narrowed(&SessionCeiling::restricted([SessionScope::MsgGroup])),
+        };
+        let root = hub.issue_family(session, None, None).await.unwrap();
+        let result = hub
+            .handle_delegate_user_session(
+                Some(&cp_caller().await),
+                &root.session_token,
+                &system_target(AIWORKSPACE_UNIQUE_ID),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, DelegateUserSessionResult::AccessDenied));
     }
 
     #[tokio::test]

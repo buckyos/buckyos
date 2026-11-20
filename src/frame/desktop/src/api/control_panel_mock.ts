@@ -1333,6 +1333,7 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       const redirectUrl = stringParam(params, 'redirect_url')
       if (!sso.settings.did_login_enabled) return { status: 'denied', denial: denialFor('zone_method_disabled', undefined, method) }
       if (!did.startsWith('did:')) throw new MockRpcError('invalid did')
+      if (new URL(redirectUrl).origin !== window.location.origin) throw new MockRpcError('DID login returns to a page on the Zone root')
       if (did.includes('offline')) return { status: 'canonical_unavailable' }
       const canonicalHost = `${did.split(':').pop()}.web3.buckyos.ai`
       const url = new URL(`https://${canonicalHost}/sso/federate`)
