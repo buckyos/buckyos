@@ -1,6 +1,6 @@
 # BuckyOS Web SSO 的端到端流程
 
-浏览器跨 Zone 登录时，用户的**归属 Zone** 确认身份，提供服务的**目标 Zone** 签发自己的会话并决定访问权限。下面先跟一次跨 Zone 的 DID 登录，再说明同一 Zone 内桌面如何免密启动 App。
+使用 BuckyOS 原生 DID 跨 Zone 登录时，用户的**归属 Zone** 确认身份，提供服务的**目标 Zone** 签发自己的会话并决定访问权限。拟接入的 Google OAuth 可以让外部用户接受本区的 App 邀请，也可以作为本区普通账号的一种登录凭据。邀请写的是哪个 DID，决定由谁验证身份、verify-hub 为哪个主体签发会话。[分享、原生联合、Google 与 App 回调的完整 URL](#sso-url-examples)
 
 ## 跨 Zone 的 DID 登录
 
@@ -57,14 +57,91 @@ sequenceDiagram
 
 | B 发出的邀请 | Alice 打开后获得什么 |
 | --- | --- |
-| App 访问链接 | App 只能邀请 Alice 访问自己的安装实例。定向入口从记录取得 Alice 的 DID，开放入口由她输入。她在 A 证明身份后回到 B 的原 App，B 核对实际 DID 与邀请，App 再按资源权限决定能否读写。使用该链接不增加 B 的系统登录资格。 |
+| App 访问链接 | App 只能邀请 Alice 访问自己的安装实例。定向入口从记录取得 Alice 的 DID。开放入口让她从 `Login from` 选择来源。使用原生 DID 时填写自己的 DID，选择 Google 等外部来源时直接到该提供方登录。B 核对实际 DID 与邀请，App 再按资源权限决定能否读写。使用该链接不增加 B 的系统登录资格。 |
 | 系统登录链接 | 有 Zone 登录邀请权限的服务通过系统入口邀请 Alice。B 的 verify-hub 根据系统邀请及 Alice 已验证的 DID 核对登录资格。成功后她可以登录 B 的系统，打开某个 App 或文档仍需相应权限。 |
 
-目标设计要求在发链接时持久化邀请，让 verify-hub 能在签发对应会话前查询。用户管理可查看每个已知 DID 的邀请和系统登录资格。管理员可将仅有 App 访问资格的 DID 改为可登录系统，随后通过系统入口使用新增资格。现有 `/users/invite/<id>` 用于把已有 DID 接纳为本 Zone 账号，接受时要求与 OwnerDocument 匹配的联合会话。[现有入驻邀请](../../src/frame/control_panel/src/user_mgr.rs#L1556) · [产品需求](<../arch/verify-hub/BuckyOS 混合SSO PRD.md>) · [开发与测试 TODO](../../notepads/cross-zone-resource-share-sso-todo.md)
+目标设计要求在发链接时持久化邀请，让 verify-hub 能在签发对应会话前查询。用户管理可查看每个已知 DID 的邀请和系统登录资格。对于有归属 Zone 的原生 DID，管理员可以按系统登录或入驻规则另行开通资格。若访问者使用本区合成的 Google DID，要允许其用 Google 登录系统，则需建立普通本地账户并绑定 Google 凭据。现有 `/users/invite/<id>` 用于把已有 DID 接纳为本 Zone 账号，接受时要求与 OwnerDocument 匹配的联合会话。[现有入驻邀请](../../src/frame/control_panel/src/user_mgr.rs#L1556) · [产品需求](<../arch/verify-hub/BuckyOS 混合SSO PRD.md>) · [开发与测试 TODO](../../notepads/cross-zone-resource-share-sso-todo.md)
 
 **客服场景使用 Zone 内身份。** 客户没有自己的 DID 时，B 的客服专属邀请可以复用一个 Limited 账号，也可以在 B 新建一个。新建时 B 为 `<user>.<zone>` 生成 DID、密钥及 OwnerDocument。客户用链接中的临时免密凭据直接登录这个本地账号，全程无需归属 Zone 证明身份。凭据到期与账号存续分别管理，客户可以设置密码后继续使用账号。[客服专属邀请](../../src/frame/control_panel/src/exclusive_invite.rs#L427) · [生成本地 DID](../../src/frame/control_panel/src/user_mgr.rs#L638)
 
 现有 `sys-test` 客服工单就是一个例子。它用客户在 App 内的标识调用 `user.app_login.issue {kind: "link"}`，由 B 创建或复用本地 Limited 账号。客户用这条链接在 B 建立面向 `System(control-panel)` 的会话，再到指定的 Message Hub 会话接受邀请。另一个 `kind=code` 分支把凭据兑换为签发 App 自己的实例会话。开发新的外部 DID 邀请时，须单独处理旧客服链接的会话范围。[客服工单签发](../../src/apps/sys_test/support_group.ts#L178) · [客服场景与回归入口](../../src/apps/sys_test/README.md#L45) · [链接兑换](../../src/kernel/verify_hub/src/main.rs#L1888) · [App code 兑换](../../src/kernel/verify_hub/src/main.rs#L2030)
+
+<a id="oauth-identities"></a>
+
+### Login from 选择 Google 后，verify-hub 给谁签发会话（目标设计）
+
+假设 `example.com` 的管理员启用了 Google。登录页的 `Login from` 只显示该入口允许的来源。用户选择 Google，浏览器将授权码带回发起请求的 Zone。该 Zone 校验 Google ID Token，取经验证的发行方和 `sub` 识别外部账号。只支持 OAuth 2.0 的来源，则用 access token 调用管理员配置的受保护账号接口取得稳定的账号 ID。接下来用哪个 DID，要看这次请求的用途和账户绑定。[Google 登录指南](https://developers.google.com/identity/openid-connect/openid-connect) · [技术契约 §9.3](../arch/verify-hub/混合SSO技术契约.md)
+
+| 用户要做什么 | 由谁证明哪个身份 | verify-hub 签发什么 |
+| --- | --- | --- |
+| **1. 接受 example.com 的 App 或 service 邀请** | `example.com` 根据验证后的 OAuth 账号资料合成 `did:web:$accountid.google.com` 的 DID 文档。该文档只在本 Zone 的解析器可用，内容可随上游资料重建。下文假设账号标签为 `alice`，因此收件人写作 `did:web:alice.google.com`。 | `example.com` 的 verify-hub 核对邀请后，为该外部 DID 签发目标仅限获邀 App 实例或 service 的有效 token。目标服务验 token、查资源 ACL。该用户可以编辑获邀文档，仍不能登录 Zone 桌面。 |
+| **2. 登录 example.com 的本地普通账户** | `example.com` 先创建普通账户 `alice`（已有则复用），并把验证过的 Google 账号明确绑定为它的登录方式。该本地账户的 DID 是 **`did:web:alice.example.com`**。 | 系统入口经 Google 验证绑定后，verify-hub 签发本地 `alice` 的账户会话。Alice 后续可以设密码，用 `alice` + 密码登录。两种凭据使用同一账户、DID 和权限。本地会话的 `sub` 可为用户名 `alice`。 |
+| **3. 接受没有配置 Google 的 Zone A 的邀请** | 若邀请写的是 `did:web:alice.google.com`，A 无法在本区验证该收件人，邀请不能兑现。Alice 即使已经登录 `example.com`，她在那里能对外证明的身份也是 **`did:web:alice.example.com`**。 | 分享者须另发一条定向给 `did:web:alice.example.com` 的邀请。A 走原生 `Sign by DID`，由归属 Zone `example.com` 证明本地 Alice。A 核对完整 DID 后，为获邀目标签发 **A 自己的 token**。 |
+
+`$accountid` 表示接入方从已验证主体取得的账号标签，示例简写为 `alice`。Google 的 `sub` 可以稳定识别上游账号，外部 DID 文档仍是本区根据 OAuth 资料合成的结果。系统登录从 `https://example.com/login` 开始，Google 回调后须查到对本地 `alice` 的有效绑定才能签发账户会话。邮箱、显示名或既有 App 邀请都不能代替这项绑定。绑定也不会把发给外部 DID 的邀请或 ACL 自动转移给本地 Alice。[用户类型与授权](../../product/users_and_agents/UserType.md) · [开发与测试](../../notepads/cross-zone-resource-share-sso-todo.md)
+
+<a id="sso-url-examples"></a>
+
+## 从分享 URL 到原文档
+
+资源 Zone A 的根域是 `a.example`，分享目标是 **`https://appx.a.example/docs/42?mode=edit#comments`**。先看原生用户 Bob 通过归属 Zone `b.example` 登录，再看 A 自己启用 Google、邀请外部用户的情况。最后以未启用 Google 的 A 为例，走一遍邀请 `example.com` 本地 Alice 的流程。下文以短值代指一次性状态、授权码和票据。
+
+| 地址 | 谁打开，记录里有什么 |
+| --- | --- |
+| `https://a.example/sso/share/inv-7m2`（拟议） | X 为 Bob 申请定向邀请。A 按 `app_doc` 声明上限和安装实例的实际授权检查，登记收件人 `did:bns:bob`、X、文档 42、允许的操作及完整返回地址，再把 URL 给 X 分享。Bob 打开后先看用途。 |
+| `https://a.example/sso/share/inv-8p3`（拟议） | X 获准发开放邀请，A 为同一资源登记另一条记录。访问者可在用途页的 `Login from` 选择 Google。定向给 Google DID 时也使用同类 URL，由记录指定预期 DID 并预选来源。 |
+| `https://a.example/sso/entry?service=aiworkspace&entry=ws-42`（现有地址形式） | 当前工作区分享页按 `service`、`entry` 读取资源入口。工作区的登录恢复页会追加 `join=1`。新设计中的 `/sso/share/` 是系统签发邀请的入口，ID、收件人和目的地以系统记录为准。[当前工作区分享页](../../src/frame/desktop/src/sso/EntryPage.tsx#L57) |
+
+### 路线一 · Bob 用自己的 Zone 登录
+
+| 顺序和调用方 | URL 与结果 |
+| --- | --- |
+| 1 · 浏览器 → A | Bob 在 `/sso/share/inv-7m2` 确认。页面 `POST https://a.example/kapi/control-panel`，现有 kRPC 方法 `auth.did.begin` 接收 `did=did:bns:bob` 和 A 根域的 `redirect_url`（本例拟用该邀请页）。A 保存本次请求，返回 B 的登录 URL。 |
+| 2 · 浏览器 → B | 打开下方的 `/sso/federate`。B 按需先让 Bob 登录。现有页面在 B 同源的 `POST https://b.example/kapi/control-panel` 调 `auth.federation.describe`、`auth.federation.approve`。目标体验是在 B 的跨区登录界面显示「正在登录 appx.a.example」和风险提示。 |
+| 3 · B 内部，再由浏览器 → A | B 的 Control Panel 用本地服务身份调 B 的 verify-hub 的 `issue_federation_code`。同意后浏览器打开 `GET https://a.example/sso/did_callback?code=fc-D1&state=STATE_D`。取消则回到 `https://a.example/sso/did_callback?error=access_denied&state=STATE_D`，邀请保留。 |
+| 4 · A 的 verify-hub → B 的 verify-hub | A 的回调取出待处理请求，内部调用本地 `login_by_remote_verify_hub`。A 的 verify-hub 独立解析 B，向 **`POST https://b.example/kapi/verify-hub`** 发送 kRPC 方法 `exchange_federation_code`。请求体中含 `code=fc-D1`、A 留存的 `code_verifier`、`client_zone=did:bns:a` 和原 `redirect_uri`。B 在同一 HTTPS 响应返回身份断言。A 核对实际 DID、接收 Zone、nonce 和用途。这是本流程唯一一次跨 Zone 的 verify-hub 换码。 |
+
+第 2 步现有实现生成如下 URL。
+
+```text
+https://b.example/sso/federate?did=did%3Abns%3Abob&client_zone=did%3Abns%3Aa&redirect_uri=https%3A%2F%2Fa.example%2Fsso%2Fdid_callback&state=STATE_D&nonce=NONCE_D&code_challenge=CHALLENGE_D
+```
+
+`client_zone` 和 `redirect_uri` 让 B 核对请求方是 A，目前这组字段只能确认到 Zone。为让风险提示精确展示 X，一种拟议设计是在上面的 URL 追加 `&app_context=CTX_D`。A 根据邀请记录签发有时效的上下文，绑定本次请求、受邀实例及主机 `appx.a.example`，B 核验后展示。字段名与封装待协议评审。现行原生回调会在 A 根域写会话并回到起始页，普通 App 的邀请仍需接通下文的实例会话交付。[原生跳转参数](../../src/frame/control_panel/src/federation.rs#L124) · [归属侧确认与签码](../../src/frame/control_panel/src/federation.rs#L710) · [跨区 verify-hub URL](../../src/kernel/verify_hub/src/federation.rs#L146)
+
+### 路线二 · 从同一资源邀请打开 Google OAuth
+
+| 顺序和调用方 | URL 与结果 |
+| --- | --- |
+| 1 · 浏览器 → A | 访问者打开 `https://a.example/sso/share/inv-8p3`，确认用途并在 `Login from` 选择 Google。页面拟向 `POST https://a.example/kapi/control-panel` 调 `auth.oauth.begin`，传入已登记的来源 ID `google` 和邀请 ID `inv-8p3`。A 保存请求并返回下方授权 URL。 |
+| 2 · 浏览器 → Google | 浏览器打开 Google 的授权端点。Google 可复用已有登录态，或让访问者选账号、登录。请求中的 `client_id` 是 A 在 Google 登记的客户端，`redirect_uri` 是 A 登记的精确回调。 |
+| 3 · 浏览器 → A | Google 将浏览器送回 **`GET https://a.example/sso/oauth/google/callback?code=CODE_G&state=STATE_G`**（A 的路由为拟议）。A 核对来源和一次性状态，取回原邀请。用户取消时，同一回调可收到 `error=access_denied&state=STATE_G`。 |
+| 4 · A 后端 → Google | `POST https://oauth2.googleapis.com/token`。A 以登记的客户端身份提交表单，含 `grant_type=authorization_code`、`code=CODE_G`、同一 `redirect_uri` 和 `code_verifier`。A 用 Google 的公钥验证 ID Token，核对发行方、`aud`、有效期和 `nonce`，再用已验证的主体为本次外部访问合成本区可解析的 DID 文档。本例外部 DID 为 `did:web:alice.google.com`。A 的 verify-hub 以此 DID 向 X 签发受限 token，Google token 留在 A 后端。 |
+
+第 2 步浏览器打开的 Google 授权 URL 示意如下。Google 的授权、换码和验签密钥地址来自发行方的 Discovery 元数据。客户端凭据、PKCE verifier 和上游令牌只在后端使用。[Google Discovery](https://accounts.google.com/.well-known/openid-configuration) · [Google 登录指南](https://developers.google.com/identity/openid-connect/openid-connect)
+
+```text
+https://accounts.google.com/o/oauth2/v2/auth?client_id=CLIENT_A&redirect_uri=https%3A%2F%2Fa.example%2Fsso%2Foauth%2Fgoogle%2Fcallback&response_type=code&scope=openid&state=STATE_G&nonce=NONCE_G&code_challenge=CHALLENGE_G&code_challenge_method=S256
+```
+
+### A 没有 Google 端点，改邀 example.com 的本地 Alice
+
+这里改用**未启用 Google** 的 `a.example`。三步即可判断邀请该发给谁，以及两份授权码应回哪里。
+
+1. A 若把邀请定向给 `did:web:alice.google.com`，用途页提示 Google 来源不可用，保留该条邀请。A 既不能解析 `example.com` 本地合成的 Google DID 文档，也不能拿另一个 DID 的会话兑现原邀请。
+2. A 另发一条定向给 `did:web:alice.example.com` 的分享 URL，例如 `https://a.example/sso/share/inv-alice-local`（拟议）。Alice 确认后，A 沿原生路线打开 `https://example.com/sso/federate`，请求参数中的 `did` 为 `did:web:alice.example.com`，`redirect_uri` 为 `https://a.example/sso/did_callback`。
+3. 若 Alice 尚未在 `example.com` 登录，可用 `alice` + 密码，也可选已绑定的 Google。这一次 **Google OAuth 回调是 `https://example.com/sso/oauth/google/callback`**（拟议），由 `example.com` 为本地账户建立会话并继续原生联合。获准后浏览器带另一份 BuckyOS code 回 `https://a.example/sso/did_callback?code=fc-L2&state=STATE_L`。A 后端向 `POST https://example.com/kapi/verify-hub` 兑换证明，核对的收件人始终是 `did:web:alice.example.com`。A 不接收 Google 授权码或令牌。
+
+### 成功接受邀请后回到 X 的文档 42
+
+A 从本次请求找回邀请，按实际 DID 和现行资格判权。定向邀请精确匹配收件人，开放邀请成功后登记接受者。原生身份已有的本地资格按原授权处理。对 Google 外部 DID 的邀请只交付受邀目标，不能建立桌面账户会话。X 接收限定到本实例的 token，文档操作继续查 ACL。交付可复用目标主机上已有的回调格式，每次成功访问由系统生成独立的 App 交付票据。
+
+```text
+GET https://appx.a.example/sso_callback?nonce=731004&redirect_url=https%3A%2F%2Fappx.a.example%2Fdocs%2F42%3Fmode%3Dedit%23comments
+302 Location: https://appx.a.example/docs/42?mode=edit#comments
+```
+
+App 主机校验一次性票据、实例及返回地址，写入该主机的会话 Cookie。浏览器最终定位到评论区。`#comments` 在创建分享时就随资源地址保存，嵌入回调参数时编码为 `%23comments`。只获邀使用 X 的用户走完这条链也无需获得 A 的系统登录资格。[App 回调生成与校验](../../src/frame/control_panel/src/sys_auth_backend.rs#L409) · [邀请及 URL 验收](../../notepads/cross-zone-resource-share-sso-todo.md)
 
 ## 同一 Zone 内首次登录桌面
 

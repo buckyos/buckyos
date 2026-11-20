@@ -2,7 +2,7 @@
 
 日期：2026-10-21。状态：阶段 A 交付物，随实现迭代；与代码冲突时以代码和本文同步修订为准。
 
-初版依据为[混合 SSO PRD](<BuckyOS 混合SSO PRD.md>) v0.2、[实施 TODO](<../../../notepads/done/hybrid-sso-implementation-todo.md>) §4 已定决策（D-1～D-9、Q-01～Q-10、S-1、P-1、P-2）和 [UserType.md](<../../../product/users_and_agents/UserType.md>)。§8.5 描述拟议的 App 访问邀请、系统登录邀请及用户管理记录。§9.1 记录现有浏览器联合登录行为。
+初版依据为[混合 SSO PRD](<BuckyOS 混合SSO PRD.md>) v0.2、[实施 TODO](<../../../notepads/done/hybrid-sso-implementation-todo.md>) §4 已定决策（D-1～D-9、Q-01～Q-10、S-1、P-1、P-2）和 [UserType.md](<../../../product/users_and_agents/UserType.md>)。§8.5 描述拟议的 App 访问邀请、系统登录邀请及用户管理记录。§9.1 记录已有归属 Zone 的 DID 联合登录。§9.3 描述拟实现的 `Login from`，区分外部用户访问获邀 App 与在本地普通账号上使用 OAuth 登录。
 
 ## 1. 组件职责
 
@@ -29,7 +29,8 @@ Origin / CSRF：浏览器写 Cookie 的接口只有 CP 的 `/sso_callback`、`/s
 
 - **账号 → DID 的唯一真相源是 `users/<id>/doc`**。`users/<id>/profile.did` 只是展示资料的一部分；system-config 拒绝非管理者写入与 doc 不一致的 `profile.did`（§3.5），所有服务改为读 doc（`ControlPanelClient::get_user_did`）。profile 中 `system_contact.did` 不再参与身份或收件人判定。
 - **user_id 稳定且不可复用**：删除只把 `state` 置为 `deleted`，记录保留，`user.create` 以 `KVAction::Create` 写入，同名再建失败。
-- **External 入驻**：同一 DID 之后被接受为本 Zone 账号时，DID 登录改为映射到该账号；旧 External 会话保持原 claims 直至过期，不升级。`user.invite.accept` 必须携带该 DID 经联合登录取得的 Control Panel 用户会话，并提交匹配的 OwnerDocument；匿名或密码会话不能接受邀请。
+- **原生 DID 的 External 入驻**：同一 DID 之后被接受为本 Zone 账号时，DID 登录改为映射到该账号；旧 External 会话保持原 claims 直至过期，不升级。`user.invite.accept` 必须携带该 DID 经联合登录取得的 Control Panel 用户会话，并提交匹配的 OwnerDocument；匿名或密码会话不能接受邀请。
+- §9.3 的 OAuth 身份分流为拟议能力。verify-hub 按本 Zone 解析的 Google DID 为获邀的外部 App 访问者签发 External 会话。普通账号绑定 Google 后仍按 `users/<id>/doc` 识别为 Account。两者分别匹配各自的 DID、邀请和授权。
 - 展示资料（昵称、头像）不决定授权主体。
 - **App 代登录的账号**（§5.6）也是 Account：`sub` 是 CP 为 `(app_instance_id, external_account_id)` 创建的 Limited 账号；`auth_method=app_access_token`，target 是签发 code 的 App 实例。
 
@@ -60,6 +61,8 @@ CP 的 `/sso_refresh` 与 `auth.current_identity` 返回 `identity`（Rust：`bu
 | `restricted` | bool，缺省 false | 受限会话；缺省即普通会话 |
 | `scopes` | string[]，仅 `restricted=true` 时出现 | 批准的上限，见 3.2 |
 | `external` | bool | 已有，见 2.1 |
+
+§9.3 的拟议 OAuth 会话须记录外部认证方式和具体来源，以便区分使用 Google 或密码登录的同一 Account，以及接受 Google 访问邀请的 External。上表枚举为现有实现。
 
 服务端 family 记录（§7）另存来源（专属邀请 ID / 版本、联合 canonical）、父 family、绝对期限；这些不进 claims。
 
@@ -317,25 +320,31 @@ system-config `system/sso/settings`（缺省即全部默认值）：
 
 ### 8.5 跨 Zone 的 App 访问邀请与系统登录邀请（拟议，待实现）
 
-A 托管资源，B 是收件人及其 DID 的归属 Zone。B 的 Zone 可以为 B 证明身份。A 通过两项检查落实授权。verify-hub 决定能为 B 签发哪一种会话，App 后端决定 B 能否操作具体资源。B 已登录自己的 Zone，只能证明身份，不能替 A 作出其中任何一项授权。
+A 托管资源，B 是收件人。原生账号 DID 由归属 Zone 证明。若邀请指定 Google 来源的外部 DID，A 必须在本区启用该来源、验证账号，并向受邀 App 或服务签发 External token。若 B 用 Google 登录 A 的本地普通账号，verify-hub 按绑定的本地账号签发 Account token，其 DID 取自本地 OwnerDocument。App 后端按本次实际主体检查资源权限。
 
-| 用途 | 谁可以签发、用户打开什么 | A 核对身份后的结果 |
+| 用途 | 谁可申请系统链接、用户打开什么 | A 核对身份后的结果 |
 | --- | --- | --- |
-| 访问某个 App | App 以自身实例身份登记邀请，只能指定本实例和有权分享的资源。打开链接先看到 A、App、资源与动作。 | 仅为指定实例建立访问会话。App 根据当前 ACL 决定具体读写。持这条链接不会取得 A 的系统登录资格，已有系统资格也不自动取得该资源的权限。 |
-| 登录 A 的系统 | 有 Zone 登录邀请权限的系统服务通过系统入口签发，链接由 A 根域承载，标明受邀 DID 和登录 A 的用途。服务调用方和其授予权限均由 A 校验。 | 核对实际 DID 与有效的系统登录资格后建立系统会话。已有本地账号映射时还要检查账号状态。访问 App 或资源继续执行相应的授权规则。 |
+| 访问某个 App | App 以自身实例身份向 A 的系统申请链接，只能指定本实例和有权分享的资源。打开链接先看到 A、App、资源与动作。 | 仅为指定实例建立访问会话。App 根据当前 ACL 决定具体读写。持这条链接不会取得 A 的系统登录资格，已有系统资格也不自动取得该资源的权限。 |
+| 登录 A 的系统 | 有 Zone 登录邀请权限的 service 向 A 的系统申请链接，链接由 A 根域承载，标明受邀 DID 和登录 A 的用途。服务调用方和其授予权限均由 A 校验。 | 原生 DID 按本区授予的系统登录资格处理。OAuth 系统登录须有显式绑定且可登录的本地普通账号，签发前核对该账号的 DID、状态及系统资格。仅有外部 Google DID 的 App 邀请不建立系统会话。 |
 | 客服本地临时身份（已有） | A 为客户建本地 Limited 账号，分配 A 内的 DID，通过 §5 的专属邀请或 App 客户登录机制证明本人持有本地凭据。 | 身份来源是本地凭据，无需向 B 的 Zone 请求证明。现有 App 客户的 `kind=code` 交付到本实例，`kind=link` 可在根域登录预设 Limited 身份。两种旧凭据按 §5.6 处理，不可兑换为外部 DID 的系统登录邀请。 |
 
-**记录与用户管理。** 每条邀请在 A 返回链接之前必须持久化为 verify-hub 可查的授权依据。记录至少可区分用途、签发方、目标 DID（定向时）、精确实例或系统目标、资源引用、有效状态及期限。App 只可通过受控入口登记自己的授权范围。资源 ACL 由资源提供方继续维护。verify-hub 在签发和续期时检查可信的邀请或已接受的有效授权，包括目标与收件人。分别定义入口关闭、既有访问权被撤销的效果。资源读写每次按当前 ACL 检查。记录落点、RPC 与存量数据迁移由实施阶段确定。
+**申请与签发。** App 在 `app_doc` 中声明申请的邀请等级，安装时为实例选择不超过申请上限的等级，管理员可随时调整。系统按安装实例、现行等级、分享者的资源授权以及定向或开放的请求决定能否发链接。策略调整对新申请立即生效，是否连带关闭已发但尚未接受的链接仍待确定。
 
-定向邀请创建成功后，管理员可以按 DID 在用户管理的「不可登录用户」中查看尚无系统登录资格的收件人、邀请来源与既有 App 授权。开放 App 链接先建无收件人的入口记录，在 B 证明身份并使用该入口时，再登记这个实际 DID 和实例的关系。一个 DID 的多个邀请按同一主体展示，各自保留来源和撤销状态。管理员可以独立为这个 DID 开通系统登录，保留原 DID 及其有效 App 授权。操作须幂等且可审计，新系统会话重新签发。旧 App 会话继续受原实例约束。「不可登录」在此指没有 A 的系统登录资格，与被停用的本地账号、Guest、可登录的 Limited 分开表示。
+**记录与用户管理。** 每条邀请在 A 返回链接之前必须持久化为 verify-hub 可查的授权依据。记录至少可区分用途、签发方、目标 DID（定向时）、精确实例或系统目标、资源引用、有效状态及期限。App 只可通过受控入口登记自己的授权范围。资源 ACL 由资源提供方继续维护。verify-hub 在签发和续期时检查可信的邀请或已接受的有效授权，包括目标与收件人。分别定义入口关闭、既有访问权被撤销的效果。资源读写每次按当前 ACL 检查。本版按 breaking change 交付，没有跨版本的旧会话需要迁移。记录落点和内部 RPC 在实现时确定。
 
-**浏览器往返。** 定向 App 链接从记录取 B 的 DID，开放链接由 B 在用途页填写。二者复用 §9 的 DID 证明和根域回调。A 用服务器保存的一次性上下文关联邀请、实际用途、目标和准确的返回地址。首次身份披露依归属 Zone 的同意规则处理。App 访问回调即使经过 A 根域，也只兑现为受邀目标的访问会话。普通 App 绑定安装者在内的 `AppInstanceId`，工作区等内置服务使用已注册的服务目标并以资源 ACL 限定访问。中转可以使用仅限完成本次交付的短时凭据。根域原有系统会话保持独立。A 校验当前网关路由，在目标主机的一次性回调中写入该主机的 Cookie，最后恢复原资源位置。凭完整 DID 证明、同一收件人与仍有效的系统登录授权才能走系统邀请分支。[开发任务与验收](../../../notepads/cross-zone-resource-share-sso-todo.md)
+定向邀请创建成功后，管理员可以按 DID 在用户管理的「不可登录用户」中查看尚无系统登录资格的收件人、邀请来源与既有 App 授权。开放 App 链接先建无收件人的入口记录，在 B 证明身份并使用该入口时，再登记这个实际 DID 和实例的关系。一个 DID 的多个邀请按同一主体展示，各自保留来源和撤销状态。管理员可以独立为可经归属 Zone 证明的原生 DID 开通系统登录。若要让 Google 访问者登录本 Zone，须创建或选定普通本地账号、明确绑定 Google 来源和账号主体，并授予本地账号相应资格。此时系统登录使用本地账号 DID。原先给 Google DID 的 App 邀请与授权仍属于该外部主体，不随绑定移交。本地账号已有的有效资格继续适用，所有开通操作须幂等且可审计。「不可登录」在此指没有 A 的系统登录资格，与被停用的本地账号、Guest、可登录的 Limited 分开表示。
+
+**浏览器往返。** 定向 App 链接从记录取收件人 DID。开放链接由 B 在用途页选择身份来源。使用原生 DID 时，B 在开放入口填写 DID，按 §9.1 转往归属 Zone 完成身份证明和必要的披露同意。接受面向外部账号的 App 邀请时，B 在 `Login from` 选择 A 启用的提供方，按 §9.3 跳转到该提供方登录。A 用服务器保存的一次性上下文关联邀请、认证来源、目标和准确的返回地址。App 访问回调即使经过 A 根域，也只兑现为受邀目标的访问会话。普通 App 绑定安装者在内的 `AppInstanceId`，工作区等内置服务使用已注册的服务目标并以资源 ACL 限定访问。中转可以使用仅限完成本次交付的短时凭据。根域原有系统会话保持独立。A 校验当前网关路由，在目标主机的一次性回调中写入该主机的 Cookie，最后恢复原资源位置。凭完整 DID 证明、同一收件人与仍有效的系统登录授权才能走系统邀请分支。[开发任务与验收](../../../notepads/cross-zone-resource-share-sso-todo.md)
+
+**归属页的目标提示（拟实现）。** B 的跨区确认页将这次请求展示为登录 A 的 App。风险提示框列出实际 App 主机（例如 `appx.a.example`）及将向外部 Zone 披露的资料。B 须能验证 A 为本次登录给出的实例和 App 主机。§9.1 的现有请求参数没有这些信息，当前页面显示目标 Zone 的主机和 DID。传递并核验 App 上下文的协议字段由实现评审确定，原生联合回调仍由 A 根域接收。[现有确认页](../../../src/frame/desktop/src/sso/FederatePage.tsx#L116)
 
 **与当前实现的差距。** 目前 §9.1 的 `login_by_remote_verify_hub` 只接收 Control Panel 目标。对未映射本地账号的 DID，Zone 允许联合登录并校验归属证明后，会签根域受限 External 会话，未按邀请判定上述两种用途。工作区入口在本地 `ws.join_entry` 检查加入资格。`user.invite.create/accept` 是管理员创建的入驻邀请，接受依赖已验证的 Control Panel 联合会话。引入邀请判定时需为入驻本身保留受限的身份证明路径，避免先要求拥有系统登录资格才能接受系统邀请。[现有联合签发](../../../src/kernel/verify_hub/src/main.rs) · [工作区入口](../../../src/frame/aiworkspace/store/src/entries.rs) · [系统入驻邀请](../../../src/frame/control_panel/src/user_mgr.rs)
 
-## 9. DID 联合（D-7）
+## 9. 原生 DID 联合（D-7）与外部 OAuth
 
 ### 9.1 流程与方法
+
+本节沿用现有协议示例的命名，B 托管资源，A 是身份归属 Zone。§8.5 和 SDK 的 URL 走读另以 A 表示资源 Zone。§9.3 用域名区分执行 OAuth 登录的 Zone 与发邀请的 Zone。
 
 1. 目标 Zone B：页面调用 CP `auth.did.begin {did, redirect_url}`。CP 解析 `did → OwnerDocument → canonical zone → ZoneDocument.hostname`（canonical zone 取 `binded_zone_list` 首项；列表为空时取 DID 自身——自托管 Zone 的 owner DID 就是 Zone DID，如 `did:bns:alice` 拥有 `alice.bns.did`，见 `buckyos_api::owner_canonical_zone`），生成 `state`（32 字节）、`nonce`、PKCE `code_verifier`（S256 得 `code_challenge`），写 pending（10 分钟，内存），返回 `{status:"redirect", url}`：
 
@@ -374,13 +383,47 @@ A 托管资源，B 是收件人及其 DID 的归属 Zone。B 的 Zone 可以为 
 - 开发环境可在 `system/sso/settings` 设 `dev_federation_http: true` 允许 HTTP 兑换，只用于本机联调。
 - consent 资料范围（Q-05）：DID、来源与目标 Zone、公开显示名 / 头像。
 
+### 9.3 Login from 与外部 OAuth 2.0 登录（拟议，待实现）
+
+以启用 Google 的 `example.com` 为例。上游 OAuth 回调确认“使用了哪个 Google 账号”。本 Zone 再按发起时的用途、邀请的收件人和已建立的本地账号绑定决定 verify-hub token 的主体与目标。下面两种用途可以发生在同一个浏览器，须为每次请求分别判断。
+
+| `example.com` 收到什么请求 | 使用哪个 DID | verify-hub 签发什么 |
+| --- | --- | --- |
+| 仅邀请 Google 用户访问指定 App 或服务 | 本地合成的 `did:web:$accountid.google.com`，例如 `did:web:alice.google.com`。此处 `alice` 代表提供方账号标识的示例值。 | 校验邀请后签发本区有效的 External token。按 §2.1，`sub` 是外部 DID，target 为指定 App 实例或服务。接收方校验 token 和资源 ACL，此邀请不授予系统登录资格。 |
+| 在本区系统登录页选择 Google 登录普通账号 `alice` | 先在本区创建普通账号或选定已有账号，将经验证的 Google 主体显式绑定到它。本地 OwnerDocument 的 DID 为 `did:web:alice.example.com`，归属 Zone 为 `example.com`。 | 只有绑定、账号状态及资格均有效时才签发本地 Account 会话。按 §2.1，`sub=alice`，当前身份的 DID 来自 `users/alice/doc`。Alice 以后能为同一账号设置密码，以 `alice + 密码` 登录并使用该账号的权限。 |
+
+绑定键为本 Zone 受信的来源和经验证的账号标识。创建、选定已有账号及绑定须经获准的账号流程完成。邮箱、昵称、相同的 `alice` 字样及既有 App 邀请均不足以建立绑定。同一 Google 主体同时关联本地账号和外部 App 邀请时，外部邀请仍精确匹配外部 DID，本地系统登录仍要求账号绑定。
+
+以下流程以 OAuth 客户端 A 表示实际发起 OAuth 请求的 Zone，此例中为 `example.com`。
+
+**管理员配置。** A 的管理员为每个来源登记固定标识、显示名、身份域 `$webhost`、端点、客户端 ID、受保护的凭据引用、所需 scope、A 已在提供方登记的精确 HTTPS 回调 URI 及启用状态。Google 对应的身份域是 `google.com`，OIDC 发行方是 `https://accounts.google.com`。A 可在核对 Discovery 元数据中的 issuer 后采用其授权、token 和验签密钥端点。仅支持 OAuth 2.0 的来源还须配置受保护的当前账号接口及稳定用户 ID 字段。公开配置只返回登录页需要的来源标识和显示名称。[Google Discovery 元数据](https://accounts.google.com/.well-known/openid-configuration) · [OIDC Discovery §4](https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationRequest)
+
+1. **选择来源。** 登录页和邀请用途页提供 `Login from` 下拉框，展示 A 已启用且本入口允许的登录来源。使用开放邀请时，用户看清目标，在下拉框选择 Google 并继续，无需填 DID。定向邀请若指定 `did:web:alice.google.com`，A 从受信配置预选 Google，保留完整收件人 DID 供回调后核对。A 未启用该来源时显示「此 Zone 未启用 Google 登录」并保留邀请。登录分流依据受信来源记录，合成的 Google DID 不会触发 `auth.did.begin`、OwnerDocument 或 canonical Zone 发现。
+2. **发起 OAuth 登录。** A 的 CP 新建一次性尝试，绑定浏览器会话、所选来源、外部 App/服务访问或本地账号登录用途、预期 DID（定向时）、本次邀请、系统登录或原生联合确认页的准确返回位置、`state` 和 PKCE S256 挑战，OIDC 再绑定 `nonce`。浏览器转到该来源已配置的授权端点。提供方可复用用户在该处的登录态，随后将授权码直接送回 A 的 OAuth 回调。该回调独立于 §9.1 的 `/sso/did_callback`。[OAuth 2.0 授权码流程](https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1)
+3. **验证账号。** A 在回调中核对一次性 `state`、来源、回调地址和期限，使用对应的 PKCE verifier 在后端兑换 code，再按下表取得可信主体。多来源回调按授权响应的 `iss` 校验来源，无法提供时为各来源注册不同的回调地址。取消、重放、中途停用或验证失败都不消耗邀请。[RFC 9700 §2.1](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1) · [§4.4.2](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.4.2)
+
+| 来源 | A 如何验证主体 | 稳定主体键 |
+| --- | --- | --- |
+| Google 等 OIDC 来源 | 请求 `openid` scope。以受信 issuer 的公钥和配置允许的算法验证 ID Token，核对发行方、客户端受众、适用的 `azp`、有效期和 `nonce`。使用 UserInfo 时核对其 `sub` 与 ID Token 一致。 | 已验证的 `(iss, sub)`。[Google 登录指南](https://developers.google.com/identity/openid-connect/openid-connect) · [OIDC Core §3.1.3.7](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation) |
+| 仅 OAuth 2.0 的来源 | 用刚兑换的 access token 调用所配置的账号接口，取当前用户不可变、不可重分配的 ID。缺少稳定 ID 的来源不能作为登录来源。 | 固定的受信来源命名空间和账号 ID。[RFC 6749 §1.4](https://www.rfc-editor.org/rfc/rfc6749.html#section-1.4) |
+
+**来源主体与本地合成文档。** 对 Google，A 验证 ID Token 的 `aud` 包含本区客户端并按 `(iss, sub)` 识别上游账号。Google 的 `public` subject 在不同客户端也稳定。A 从已验证的账号标识取得适合 DID 的 `$accountid`，结合本区配置的身份域组成 `did:web:$accountid.google.com`。同一外部主体在本区重复或并发访问应命中同一绑定，使原邀请仍能匹配。A 按 OAuth 查询结果在本地合成 DID 文档。账号资料更新后文档也会变化，它只在本 Zone 的 OAuth 解析上下文中有效。解析成功无需在 Google 用户子域发布文档。其他 Zone 无法将 A 的合成结果用作归属证明。Google 的 `sub` 稳定仅描述上游账号，其他来源若采用 `pairwise`，还要遵循其主体标识范围。[Google 登录指南](https://developers.google.com/identity/openid-connect/openid-connect) · [Google Discovery 元数据](https://accounts.google.com/.well-known/openid-configuration) · [OIDC 主体标识类型](https://openid.net/specs/openid-connect-core-1_0.html#SubjectIDTypes) · [did:web 解析规范](https://w3c-ccg.github.io/did-method-web/#read-resolve)
+
+**恢复原请求。** A 的后端把已验证的上游主体与本次尝试关联，verify-hub 依据上表选择签发主体与目标。外部访问的定向邀请精确比对完整 DID，开放邀请在接受成功后登记实际 DID。账号不匹配或来源停用时保留邀请。系统登录若只有外部主体、缺少可用的本地账号绑定，则不签系统会话。Google 的 token 留在 A 的后端，目标 App/服务收到由本 Zone verify-hub 签发的 token。设置本地密码不改变本地账号 DID、既有授权或 Google 绑定。[本地账号文档](../../../src/frame/control_panel/src/user_mgr.rs#L638) · [开发与验收](../../../notepads/cross-zone-resource-share-sso-todo.md)
+
+**跨 Zone 定向邀请。** 资源 Zone A（`a.example`）没有启用 Google。若它邀请 `did:web:alice.google.com`，该外部 DID 在 A 没有相应的本地 OAuth 解析和验证途径，A 提示来源不可用并保留原邀请。即使 Alice 可以在 `example.com` 通过 Google 登录，也不能用那里生成的文档或系统会话兑现这条邀请。分享者应另行向 **`did:web:alice.example.com`** 发定向邀请。A 按 §9.1 从这个账号 DID 找到归属 Zone `example.com`。Alice 可在归属 Zone 用绑定的 Google 或本地密码登录 `alice`，随后由归属 Zone 证明本地账号 DID。若选 Google，上游 OAuth code 只回 `https://example.com/sso/oauth/google/callback`（拟议）。原生联合 code 回 `https://a.example/sso/did_callback`，A 在后端向 `https://example.com/kapi/verify-hub` 兑换证明，并仅兑现收件人为本地账号 DID 的邀请。[SDK URL 走读](../../sdk/SSO.md#sso-url-examples)
+
 ## 10. 浏览器流程
+
+同一份 App 分享的原生 DID 与 Google OAuth 路径分别列出了浏览器 GET、CP kRPC、两区 verify-hub 之间的服务端请求及落回原 App 的 URL。[SDK URL 走读](../../sdk/SSO.md#sso-url-examples)
 
 | 入口 | 页面（Desktop SPA，公开路由） | CP 方法 |
 | --- | --- | --- |
-| 分享入口 | `/sso/entry?service=&entry=` | `auth.entry.describe`、`auth.login`、`auth.register`、`auth.did.begin` |
+| 系统签发的 App 分享（拟议） | `/sso/share/<invite_id>` | CP 读取邀请及本次登录上下文，按 §8.5 和 §9 处理 |
+| 现有资源分享入口 | `/sso/entry?service=&entry=` | `auth.entry.describe`、`auth.login`、`auth.register`、`auth.did.begin` |
 | 专属邀请 | `/sso/invite/:inviteId#s=` | `auth.invite.login`、`auth.invite.request_resend`、`auth.invite.set_password` |
-| DID 回跳 | `GET /sso/did_callback`（CP HTTP） | — |
+| 原生 DID 回跳 | `GET /sso/did_callback`（CP HTTP） | — |
+| 外部 OAuth（拟议） | `Login from` → 提供方授权端点 → 发起 OAuth 的 Zone 登记的 `/sso/oauth/<provider_id>/callback` | CP 按 §9.3 恢复外部目标访问或本地普通账号登录，由 verify-hub 签发对应主体的 token |
 | canonical consent | `/sso/federate?…` | `auth.federation.describe`、`auth.federation.approve`、`auth.federation.deny` |
 
 - 登录类方法返回 `{status, sso_nonce?}`；成功后页面跳到 `/sso_callback?nonce=&redirect_url=`（现有 pending，60 秒单次）。`redirect_url` 由服务端解析为本 Zone 路由（现有 `resolve_sso_auth_target`），不接受外站。
@@ -401,6 +444,7 @@ A 托管资源，B 是收件人及其 DID 的归属 Zone。B 的 Zone 可以为 
 | 专属邀请 / App 登录码 | CP | `services/control_panel/exclusive_invites/<invite_id>` | exec_tx 主键版本 | 撤销后保留记录；App 登录码 10 分钟后只剩审计价值 |
 | App 代登录开关 | CP | `services/control_panel/app_login/<app_instance_id>` | exec_tx 主键版本 | 卸载不自动删除；读为缺省关 |
 | App 外部账号绑定 | CP | `services/control_panel/app_identities/<app_instance_id>/<digest>` | Create 防重；更新 CAS | 保留；账号删除后 `issue` 拒绝 |
+| OAuth 外部主体与本地账号登录绑定（§9.3 拟议） | CP | 本 Zone 的受信来源、稳定上游主体 → 本地 user_id | 一个已绑定的上游主体应明确指向一个本地账号，重复绑定操作幂等 | 解除登录绑定不改写本地账号 DID 或外部 App 邀请的收件人 |
 | Zone SSO 设置 | CP | `system/sso/settings` | 覆盖写 | — |
 | federation consent | CP（canonical 侧） | `users/<id>/federation_consents` | 覆盖写 | 用户撤回即删 |
 | session family | verify-hub | `data/var/verify-hub/sessions.db` | 行级 CAS | refresh 到期 / 绝对期限 / 撤销即删 |
@@ -422,7 +466,7 @@ A 托管资源，B 是收件人及其 DID 的归属 Zone。B 的 Zone 可以为 
 - 登录 nonce 防重放缓存在内存，重启后丢失。
 - App 登录码的“已兑换”标记在 verify-hub 内存与 CP 记录各一份：verify-hub 重启后，同 nonce 的幂等重试会得到 `consumed`（需重新领 code），不会重复签发。
 - `allowed_clients` 不能区分系统 SPA：Message Hub、Desktop、AI Workspace 的 `appid` 都是 `control-panel`（扩展 TODO D-4）。
-- External（DID 登录）仍不能 delegate 进 App；外部客户进 App 只能经 App 代登录（§5.6）。
+- 现有 External 联合会话与普通 App 实例委派仍有 §8.5 所述限制。现有 App 客户代登录走 §5.6，§9.3 的外部访问将直接为获邀目标签发 verify-hub token。
 
 ### 登录请求方展示
 
