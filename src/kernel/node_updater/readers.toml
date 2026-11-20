@@ -1,0 +1,293 @@
+[audited_sources]
+cyfs-ndn = "e36948ce347a7325ba4d550c5dbef9db537da5e2"
+
+[[reader]]
+id = "system-config"
+library = "system_config"
+rust = "config::open"
+owner = "system-config"
+areas = ["sled/local/system_config"]
+schema = "1"
+audit = ["kernel/sys_config_service/src/sled_provider.rs"]
+depends = []
+
+[[reader]]
+id = "kernel-config"
+library = "buckyos-api"
+rust = "config::kernel"
+owner = "kernel"
+areas = ["kv/system/buckyos_info", "kv/system/buckyos_dev_config", "kv/system/zone_presentation"]
+schema = "1"
+audit = ["kernel/buckyos-api/src/system_config.rs", "kernel/buckyos-api/src/completed_install.rs", "kernel/sys_config_service/src/install_info.rs"]
+depends = ["system-config"]
+
+[[reader]]
+id = "application-config"
+library = "buckyos-api"
+rust = "config::applications"
+owner = "scheduler"
+areas = ["kv/system/app_registry", "kv/users/*/apps/*/install_record", "kv/users/*/agents/*/spec", "kv/users/*/agents/*/install_record"]
+schema = "registry 1, app 4, agent 1"
+audit = ["kernel/buckyos-api/src/app_schema.rs", "kernel/scheduler/src/install_plan_executor.rs"]
+depends = ["system-config"]
+
+[[reader]]
+id = "service-settings"
+library = "aicc"
+rust = "config::settings"
+owner = "aicc, smb-service, text-editor"
+areas = ["kv/services/aicc/driver_metadata", "kv/services/aicc/settings", "kv/services/smb-service/latest_smb_items", "kv/services/smb-service/latest_users", "kv/users/*/samba/settings", "kv/users/*/apps/text-editor.buckyos.bns.did/settings"]
+schema = "buckyos.aicc.settings.v1, driver metadata 1, buckyos.samba.settings.v1, SMB sync arrays, text-editor 1"
+audit = ["frame/aicc/src/settings/mod.rs", "frame/aicc/src/service/ports.rs", "kernel/buckyos-api/src/aicc_client.rs", "kernel/scheduler/src/system_config_builder.rs", "kernel/scheduler/src/system_config_agent.rs", "dev_configs/aicc.json", "rootfs/etc/scheduler/buckyos_boot.toml.sample", "frame/smb_service/src/samba.rs", "frame/smb_service/src/main.rs", "apps/text_editor/src/platform/settings.ts"]
+depends = ["system-config"]
+
+[[reader]]
+id = "identity-config"
+library = "buckyos-api"
+owner = "kernel"
+rust = "identity_config::identity"
+areas = ["kv/system/rbac/policy", "kv/users/*/doc", "kv/users/*/settings", "kv/users/*/profile", "kv/devices/*/doc", "kv/devices/*/info"]
+schema = "1"
+audit = ["kernel/buckyos-api/src/control_panel.rs", "kernel/buckyos-api/src/rbac_config.rs", "kernel/buckyos-api/src/device_identity.rs", "kernel/sys_config_service/src/main.rs"]
+depends = ["system-config"]
+
+[[reader]]
+id = "rdb"
+library = "buckyos-api"
+rust = "sql::discover"
+owner = "kernel"
+areas = ["kv/services/*/spec", "kv/users/*/apps/*/spec"]
+schema = "1"
+audit = ["kernel/buckyos-api/src/rdb_mgr.rs"]
+depends = ["system-config"]
+
+[[reader]]
+id = "task-manager"
+library = "buckyos-api"
+rust = "sql::tasks"
+owner = "task-manager"
+areas = ["rdb/task-manager/task-mgr-main"]
+schema = "8"
+audit = ["kernel/task_manager/src/task_store.rs", "kernel/buckyos-api/src/task_mgr.rs"]
+depends = ["rdb"]
+
+[[reader]]
+id = "msg-center"
+library = "buckyos-api"
+rust = "sql::messages"
+owner = "msg-center"
+areas = ["rdb/msg-center/msg-center-main"]
+schema = "13"
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/msg_center/src/msg_box_db.rs", "frame/msg_center/src/group_store.rs", "frame/msg_center/src/notify.rs", "frame/msg_center/src/groups.sql", "frame/msg_center/src/notify.sql", "kernel/buckyos-api/src/msg_center_client.rs"]
+depends = ["rdb"]
+
+[[reader]]
+id = "task-dispatcher"
+library = "buckyos-api"
+rust = "sql::dispatcher"
+owner = "task-dispatcher"
+areas = ["rdb/task-manager/task-dispatcher-main"]
+schema = "4"
+audit = ["kernel/sqlite_schema/src/lib.rs", "kernel/buckyos-api/src/task_dispatcher.rs", "kernel/task_manager/src/dispatcher/dispatch_db.rs"]
+depends = ["rdb"]
+
+[[reader]]
+id = "repo-service"
+library = "buckyos-api"
+rust = "sql::repo"
+owner = "repo-service"
+areas = ["rdb/repo-service/repo-service-main"]
+schema = "2"
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/repo_service/src/repo_db.rs", "kernel/buckyos-api/src/repo_client.rs"]
+depends = ["rdb"]
+
+[[reader]]
+id = "aicc"
+library = "aicc"
+rust = "sql::aicc"
+owner = "aicc"
+areas = ["rdb/aicc/aicc-usage-log"]
+schema = "3"
+audit = ["frame/aicc/src/storage/mod.rs", "frame/aicc/src/storage/quota.rs", "frame/aicc/src/storage/schema.sql", "frame/aicc/src/storage/quota.sql"]
+depends = ["rdb"]
+
+[[reader]]
+id = "homestation"
+library = "buckyos-api"
+rust = "sql::home"
+owner = "homestation"
+areas = ["rdb/homestation/homestation-main"]
+schema = "3"
+audit = ["frame/homestation/src/db.rs", "kernel/buckyos-api/src/homestation_client.rs"]
+depends = ["rdb"]
+
+[[reader]]
+id = "nfs-server"
+library = "bucket_store"
+rust = "sql::bucket"
+owner = "nfs-server"
+areas = ["rdb/nfs-server/bucket-index"]
+schema = "cyfs-ndn native layout (user_version 0)"
+audit = ["frame/nfs_server/src/bucket/mod.rs", "kernel/buckyos-api/src/bucket_client.rs", "cyfs-ndn:src/bucket_store/src/db.rs"]
+depends = ["rdb"]
+
+[[reader]]
+id = "verify-hub"
+library = "node_updater"
+rust = "sql::families"
+owner = "verify-hub"
+areas = ["file/data/var/verify-hub/sessions.db"]
+schema = "1"
+audit = ["kernel/sqlite_schema/src/lib.rs", "kernel/verify_hub/src/family_store.rs", "kernel/verify_hub/src/families.sql"]
+depends = []
+
+[[reader]]
+id = "workflow"
+library = "node_updater"
+rust = "sql::workflow"
+owner = "workflow"
+areas = ["file/data/srv/workflow/workflow.db"]
+schema = "1"
+audit = ["kernel/sqlite_schema/src/lib.rs", "kernel/workflow/src/persistence.rs", "kernel/workflow/src/workflow.sql"]
+depends = []
+
+[[reader]]
+id = "nfs-metadata"
+library = "node_updater"
+rust = "sql::filedb"
+owner = "nfs-server"
+areas = ["file/data/.fsdb/filedb.sqlite"]
+schema = "1"
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/nfs_server/src/filedb.rs", "frame/nfs_server/src/filedb.sql", "frame/nfs_server/src/share/share.sql", "frame/nfs_server/src/ndm/ndm.sql", "frame/nfs_server/src/preview/preview.sql", "frame/nfs_server/src/archive/password.sql"]
+depends = []
+
+[[reader]]
+id = "nfs-copy"
+library = "node_updater"
+rust = "sql::copy_jobs"
+owner = "nfs-server"
+areas = ["file/data/.fsdb/copy.sqlite"]
+schema = "1"
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/nfs_server/src/copy.rs", "frame/nfs_server/src/copy.sql"]
+depends = []
+
+[[reader]]
+id = "node-daemon"
+library = "node_updater"
+rust = "files::startup"
+owner = "node-daemon"
+areas = ["file/etc/start_config.json", "security/start_config.json", "security/start_config.legacy.json"]
+schema = "buckyos.start_config.v1"
+audit = ["kernel/buckyos-api/src/device_identity.rs", "kernel/buckyos-api/src/test_config.rs", "kernel/node_daemon/src/active_server.rs", "kernel/scheduler/src/system_config_builder.rs", "frame/control_panel/src/zone_mgr.rs", "make_config.ts", "active.ts"]
+depends = []
+
+[[reader]]
+id = "zone-last-known-state"
+library = "name-lib"
+rust = "files::zones"
+owner = "node-daemon"
+areas = ["file/etc/*.zone_lkgs.json"]
+schema = "buckyos.zone_lkgs.v1"
+audit = ["kernel/node_daemon/src/zone_boot_resolve.rs"]
+depends = []
+
+[[reader]]
+id = "host-account"
+library = "buckyos-api"
+rust = "files::account"
+owner = "node-daemon"
+areas = ["file/etc/host_account.json"]
+schema = "buckyos.host_account.v1"
+audit = ["kernel/buckyos-api/src/host_account.rs", "kernel/node_daemon/src/host_account.rs", "make_config.ts"]
+depends = []
+
+[[reader]]
+id = "tool-receipts"
+library = "buckyos-api"
+rust = "files::receipts"
+owner = "node-daemon"
+areas = ["file/tools/installs/*.json"]
+schema = "ext_tools.install/1"
+audit = ["kernel/buckyos-api/src/ext_tools_install.rs"]
+depends = []
+
+[[reader]]
+id = "package-index"
+library = "package-lib"
+rust = "sql::index"
+owner = "cyfs-ndn"
+areas = ["file/bin/pkgs/meta_index.db"]
+schema = "cyfs-ndn native layout (user_version 0)"
+audit = ["kernel/node_daemon/src/node_daemon.rs", "cyfs-ndn:src/package-lib/src/meta_index_db.rs"]
+depends = []
+
+[[reader]]
+id = "node-executor"
+library = "node_executor"
+rust = "files::executor"
+owner = "node-executor"
+areas = ["file/local/node_daemon/executor"]
+schema = "1"
+audit = ["kernel/node_executor/src/store.rs"]
+depends = []
+
+[[reader]]
+id = "kmsg"
+library = "kmsg"
+rust = "files::kmsg"
+owner = "kmsg"
+areas = ["sled/local/kmsg"]
+schema = "1"
+audit = ["kernel/kmsg/src/sled_msg_queue.rs"]
+depends = []
+
+[[reader]]
+id = "aiworkspace"
+library = "aiworkspace-store"
+rust = "sql::workspaces"
+owner = "aiworkspace"
+areas = ["file/data/aiworkspace/workspaces/*", "file/data/aiworkspace/sessions.sqlite", "file/data/aiworkspace/users.sqlite", "file/data/aiworkspace/library.sqlite"]
+schema = "format 1.0, doc 7, local/library/users/sessions 1"
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/aiworkspace/store/src/users.rs", "frame/aiworkspace/store/src/session/registry.rs", "frame/aiworkspace/store/src/workspace.rs", "frame/aiworkspace/store/src/schema.rs", "frame/aiworkspace/store/src/acl.rs", "frame/aiworkspace/store/src/users.sql", "frame/aiworkspace/store/src/library.rs", "frame/aiworkspace/store/src/session/mod.rs", "frame/aiworkspace/store/src/session/sessions.sql"]
+depends = []
+
+[[reader]]
+id = "named-store"
+library = "named_store"
+rust = "sql::named"
+owner = "cyfs-ndn"
+areas = ["file/storage/named_store.json"]
+schema = "cyfs-ndn native layout (user_version 0)"
+audit = ["kernel/buckyos-api/src/runtime.rs", "cyfs-ndn:src/named_store/src/store_db.rs", "cyfs-ndn:src/named_store/src/ndm.rs", "cyfs-ndn:src/named_store/src/named_store.rs"]
+depends = []
+
+[[reader]]
+id = "agent-storage"
+library = "libopendan"
+rust = "files::agents"
+owner = "OpenDAN"
+areas = ["file/data/home/*/agents/*/state/sessions", "file/data/home/*/agents/*/state/goals", "file/data/home/*/agents/*/.meta/skills.json", "file/data/home/*/agents/*/.meta/skills_state.json", "file/data/home/*/agents/*/memory"]
+schema = "session 7/6/3, memory 4.0"
+audit = ["frame/lib_opendan/src/protocol/mod.rs", "frame/lib_opendan/src/session/live.rs", "frame/lib_opendan/src/session/mod.rs", "frame/lib_opendan/src/session/worklog.rs", "frame/lib_opendan/src/state/registry.rs", "frame/lib_opendan/src/state/fs_client.rs", "frame/lib_opendan/src/protocol/config.rs", "frame/lib_opendan/src/protocol/state.rs", "frame/lib_opendan/src/protocol/summary.rs", "frame/lib_opendan/src/protocol/goal.rs", "frame/lib_opendan/src/protocol/worklog.rs", "frame/lib_opendan/src/skills.rs", "frame/agent_tool/src/agent_memory/mod.rs"]
+depends = ["application-config"]
+
+
+[[reader]]
+id = "text-editor"
+library = "bucket_store"
+owner = "text-editor"
+rust = "appdata::text_editor"
+areas = ["bucket/text-editor.buckyos.bns.did/buffers", "bucket/text-editor.buckyos.bns.did/recovery"]
+schema = "buffer/1, recovery/1"
+depends = ["nfs-server", "named-store"]
+audit = ["apps/text_editor/src/fs/bufferStore.ts", "apps/text_editor/src/fs/recoveryStore.ts", "apps/text_editor/src/fs/appData.ts"]
+
+[[reader]]
+id = "fs-meta"
+library = "fs_meta"
+owner = "cyfs-ndn"
+rust = "sql::fsmeta"
+areas = ["file/etc/fs_daemon.json", "file/var/fs_meta/fs_meta.db"]
+schema = "cyfs-ndn native layout (user_version 0)"
+depends = []
+audit = ["kernel/buckyos-api/src/runtime.rs", "cyfs-ndn:src/fs_meta/src/fs_meta_service.rs", "cyfs-ndn:src/fs_daemon/src/fs_daemon.rs"]

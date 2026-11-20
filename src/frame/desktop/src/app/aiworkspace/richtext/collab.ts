@@ -54,6 +54,7 @@ export class RichTextCollab {
   private currentPhase: CollabPhase = 'clean'
   /** Set while commits are refused for a reason that keeps the edits valid (write lock missing). */
   private blockedReason: string | null = null
+  private markdown: { text: string; unapplied: boolean } | null = null
   /** Reads the editor document for the draft kept on a refusal. */
   editorJson: (() => unknown) | null = null
   readonly subscribe = this.emitter.subscribe
@@ -95,6 +96,8 @@ export class RichTextCollab {
       const created = new RichTextCollab(store, entityId, state.lineage_id, RichTextCollab.documents(store, state))
       collab = created
       collab.unsubscribe.push(off)
+      window.addEventListener('pagehide', created.keepUnsentMarkdown)
+      collab.unsubscribe.push(() => window.removeEventListener('pagehide', created.keepUnsentMarkdown))
       if (store.session.offline) collab.unsubscribe.push(store.session.offline.subscribeSubmissions((event) => created.onSubmission(event)))
       collab.watchWorking()
       early.forEach((event) => collab?.onRemote(event))
@@ -117,6 +120,7 @@ export class RichTextCollab {
   private get label() { return aiwsT('aiworkspace.richtext.collab.label', { id: this.entityId }) }
 
   private setPhase(phase: CollabPhase) {
+    if (phase === 'clean' && !this.markdown?.unapplied) this.markdown = null
     if (phase === this.currentPhase) return
     this.currentPhase = phase
     this.emitter.emit()
@@ -146,6 +150,21 @@ export class RichTextCollab {
 
   private hasUnsent(): boolean {
     return this.workingDoc.oplogVersion().compare(this.baseDoc.oplogVersion()) !== 0
+  }
+
+  /** Only the latest source input is needed if this page closes before conversion or durable submission. */
+  noteMarkdown(text: string, unapplied: boolean) {
+    this.markdown = { text, unapplied }
+  }
+
+  readonly keepUnsentMarkdown = () => {
+    if (!this.markdown || (!this.markdown.unapplied && !this.hasUnsent())) return
+    const kept = saveDraft({
+      draft_id: randomId('d'), workspace_id: this.store.session.workspaceId, entity_id: this.entityId,
+      saved_at: new Date().toISOString(), reason: aiwsT('aiworkspace.richtext.source.draft'), markdown: this.markdown.text,
+    })
+    if (kept) this.markdown = null
+    else this.store.notify('error', aiwsT('aiworkspace.richtext.source.draftFailed'))
   }
 
   private preview(): string {
@@ -300,6 +319,7 @@ export class RichTextCollab {
     const draft = {
       draft_id: randomId('d'), workspace_id: this.store.session.workspaceId, entity_id: this.entityId,
       saved_at: new Date().toISOString(), reason: `${code}${detail ? `: ${detail}` : ''}`, ast,
+      ...(this.markdown && { markdown: this.markdown.text }),
     }
     const kept = saveDraft(draft)
     // a replica session also keeps the draft in the replica database, where the export finds it
@@ -355,6 +375,7 @@ export class RichTextCollab {
       await this.flush()
     }
     if (this.timer !== null) { window.clearTimeout(this.timer); this.timer = null }
+    this.keepUnsentMarkdown()
     this.closed = true
     this.unsubscribe.splice(0).forEach((off) => off())
   }

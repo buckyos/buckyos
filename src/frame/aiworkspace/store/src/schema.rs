@@ -3,10 +3,10 @@
 //! the retention roots and the usage ledger, `user_state.revision`; version 5 keeps objects in the named
 //! store, retained by bucket bindings (`bucket_key` / `bucket_version`, doc/workspace `BuckyOS AiWorkspace
 //! Durable Data Schema.md`); version 6 gives every entity but the root a name (核心 API 调整 R14, R19); version 7
-//! records who created each entity and how each Commit was attributed (权限需求 R6, R16, R31). Version 5 and 6
-//! stores are converted when opened; older ones are refused, not migrated.
+//! records who created each entity and how each Commit was attributed (权限需求 R6, R16, R31). Only the current document and local formats are accepted.
 
 pub const STORAGE_SCHEMA_VERSION: u32 = 7;
+pub const LOCAL_SCHEMA_VERSION: u32 = 1;
 
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"

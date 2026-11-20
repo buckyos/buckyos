@@ -16,6 +16,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/dev-tests.yml"
+      - ".github/scripts/audit-node-readers.py"
       - "make_local_pkg.py"
       - "notepads/GitActionv2.md"
       - "src/**"
@@ -42,6 +43,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Report affected Desktop data formats
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/audit-node-readers.py --base HEAD^1 >> "$GITHUB_STEP_SUMMARY"
 
       - name: Free Linux runner disk space
         run: |

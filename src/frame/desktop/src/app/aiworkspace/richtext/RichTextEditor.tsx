@@ -405,6 +405,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   const [names] = useState(() => new Map<'f', (id: string) => string>())
   const codec = useMemo(() => markdownCodec(store.core, (id) => names.get('f')?.(id) ?? id), [store, names])
   const toggleSourceRef = useRef<() => void>(() => undefined)
+  const requestSourceExit = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     openEntityRef.current = onOpenEntity
@@ -511,8 +512,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     const view = built?.view
     if (!view || view.isDestroyed) return
     if (source.on) {
-      setSource({ on: false, blockId: null })
-      writeSourcePref(collab.entityId, false)
+      requestSourceExit.current?.()
     } else {
       setSource({ on: true, blockId: blockIdAt(view.state.doc, view.state.selection.head) })
       writeSourcePref(collab.entityId, true)
@@ -634,7 +634,8 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       <div className="aiws-richtext-body">
         <div ref={hostRef} className="aiws-prose-host" hidden={source.on} />
         {source.on && built && (
-          <MarkdownSourceEditor key={collab.generation} view={built.view} codec={codec} editable={editable} startBlockId={source.blockId} onExit={leaveSource} subscribeDoc={docEvents.subscribe} />
+          <MarkdownSourceEditor key={collab.generation} view={built.view} codec={codec} editable={editable} startBlockId={source.blockId} onExit={leaveSource}
+            requestExit={requestSourceExit} subscribeDoc={docEvents.subscribe} collab={collab} />
         )}
         {!source.on && (
           <AnnotationGutter container={built?.host ?? null} marks={annotations} placements={placements} active={activeAnnotation}
@@ -653,7 +654,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
         </div>
       )}
       {[...embeds].map(([dom, reference]) => createPortal(renderEmbed(reference), dom))}
-      <DraftsBar entityId={collab.entityId} open={showDrafts} onToggle={() => setShowDrafts((value) => !value)} generation={collab.generation} />
+      <DraftsBar entityId={collab.entityId} open={showDrafts} onToggle={() => setShowDrafts((value) => !value)} generation={collab.generation} sourceMode={source.on} />
     </div>
   )
 }
@@ -683,7 +684,7 @@ function LinkPicker({ objects, cells, nameOf, onPick }: { objects: EntityEnvelop
   )
 }
 
-function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string; open: boolean; onToggle: () => void; generation: number }) {
+function DraftsBar({ entityId, open, onToggle, generation, sourceMode }: { entityId: string; open: boolean; onToggle: () => void; generation: number; sourceMode: boolean }) {
   const store = useStore()
   const { t, dateTime } = useAiwsText()
   const [tick, setTick] = useState(0)
@@ -691,7 +692,7 @@ function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string;
   useEffect(() => {
     const id = window.setTimeout(() => setDrafts(listDrafts(store.session.workspaceId, entityId)), 0)
     return () => window.clearTimeout(id)
-  }, [store, entityId, tick, generation])
+  }, [store, entityId, tick, generation, sourceMode])
   if (drafts.length === 0) return null
   return (
     <div className="aiws-drafts" data-testid="aiws-drafts">
@@ -699,8 +700,11 @@ function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string;
       {open && drafts.map((draft) => (
         <div key={draft.draft_id} className="aiws-draft">
           <div className="aiws-muted">{dateTime(draft.saved_at)} · {draft.reason}</div>
-          <pre>{astPlainText(draft.ast) || JSON.stringify(draft.ast)}</pre>
-          <details><summary>{t('aiworkspace.richtext.drafts.exportJson')}</summary><textarea readOnly rows={6} value={JSON.stringify(draft.ast, null, 2)} /></details>
+          {typeof draft.markdown === 'string' && <textarea readOnly rows={6} aria-label={t('aiworkspace.richtext.source.label')} value={draft.markdown} />}
+          {draft.ast !== undefined && <>
+            <pre>{astPlainText(draft.ast) || JSON.stringify(draft.ast)}</pre>
+            <details><summary>{t('aiworkspace.richtext.drafts.exportJson')}</summary><textarea readOnly rows={6} value={JSON.stringify(draft.ast, null, 2)} /></details>
+          </>}
           <button type="button" onClick={() => { deleteDraft(draft.draft_id); setTick((value) => value + 1) }}>{t('aiworkspace.richtext.drafts.delete')}</button>
         </div>
       ))}

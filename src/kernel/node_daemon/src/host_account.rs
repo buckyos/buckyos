@@ -1,17 +1,9 @@
+use buckyos_api::host_account::{HostAccountFile, HOST_ACCOUNT_FILE};
 use buckyos_api::node_control::{lookup_os_user, OsUser};
 use buckyos_api::{atomic_write, ComputerAccess, ExecutorRunAs, OwnerAgentsPolicy};
 use buckyos_kit::get_buckyos_system_etc_dir;
 use log::error;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-const HOST_ACCOUNT_FILE: &str = "host_account.json";
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HostAccountFile {
-    account: String,
-}
 
 fn node_daemon_is_linux_root() -> bool {
     #[cfg(target_os = "linux")]
@@ -63,7 +55,7 @@ pub(crate) fn save(account: &str) -> Result<(), String> {
             _ => Ok(()),
         };
     }
-    let body = serde_json::to_vec_pretty(&HostAccountFile {
+    let body = serde_json::to_vec_pretty(&HostAccountFile::V1 {
         account: account.to_string(),
     })
     .map_err(|error| error.to_string())?;
@@ -76,22 +68,22 @@ pub(crate) fn load() -> Option<OsUser> {
     }
     let path = host_account_path();
     let raw = std::fs::read(&path).ok()?;
-    let file: HostAccountFile = match serde_json::from_slice(&raw) {
+    let HostAccountFile::V1 { account } = match serde_json::from_slice(&raw) {
         Ok(file) => file,
         Err(error) => {
             error!("invalid {}: {error}", path.display());
             return None;
         }
     };
-    let account = lookup_os_user(&file.account);
-    if account.is_none() {
+    let user = lookup_os_user(&account);
+    if user.is_none() {
         error!(
             "{} names an unknown OS account: {}",
             path.display(),
-            file.account
+            account
         );
     }
-    account
+    user
 }
 
 pub(crate) fn runs_as_node_daemon(account: Option<&OsUser>) -> bool {

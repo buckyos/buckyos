@@ -3,7 +3,7 @@ use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 use crate::linux_smb::{check_samba_status, stop_smb_service, update_samba_conf};
 #[cfg(target_os = "macos")]
 use crate::macos_smb::{check_samba_status, stop_smb_service, update_samba_conf};
-use crate::samba::{SmbItem, SmbUserItem};
+use crate::samba::{SmbItem, SmbUserItem, UserSambaInfo};
 #[cfg(target_os = "windows")]
 use crate::windows_smb::{check_samba_status, stop_smb_service, update_samba_conf};
 use buckyos_api::{
@@ -18,12 +18,6 @@ use std::fs::File;
 use std::sync::OnceLock;
 use std::time::Duration;
 use sysinfo::{ProcessesToUpdate, System};
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct UserSambaInfo {
-    password: String,
-    is_enable: bool,
-}
 
 #[cfg(target_os = "linux")]
 mod linux_smb;
@@ -244,7 +238,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             }
         };
 
-        let user_info = match system_config_client
+        let UserSambaInfo::V1 { password, is_enable } = match system_config_client
             .get(format!("users/{}/samba/settings", user).as_str())
             .await
         {
@@ -269,7 +263,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
                 }
             }
         };
-        if !user_info.is_enable || user_info.password.is_empty() {
+        if !is_enable || password.is_empty() {
             log::debug!("user {} samba is not enable or password is empty", user);
             continue;
         }
@@ -302,7 +296,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         smb_items.push(smb_item);
         smb_users.push(SmbUserItem {
             user,
-            password: user_info.password,
+            password,
         });
     }
 

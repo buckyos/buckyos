@@ -18,28 +18,7 @@ use std::sync::Mutex;
 /// so pages of one host refreshing over the same cookie at once do not revoke their family.
 pub const REFRESH_GRACE_SECONDS: u64 = 10;
 
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS families (
-  family_key TEXT PRIMARY KEY,
-  subject TEXT NOT NULL,
-  principal_kind TEXT NOT NULL,
-  target TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  claims TEXT NOT NULL,
-  source TEXT,
-  parent_key TEXT,
-  absolute_exp INTEGER,
-  created_at INTEGER NOT NULL,
-  refresh_jti TEXT NOT NULL,
-  refresh_exp INTEGER NOT NULL,
-  session_jti TEXT NOT NULL,
-  session_exp INTEGER NOT NULL,
-  prev_refresh_jti TEXT,
-  prev_rotated_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS families_subject ON families(subject);
-CREATE INDEX IF NOT EXISTS families_parent ON families(parent_key);
-";
+const SCHEMA: &str = include_str!("families.sql");
 
 const COLUMNS: &str = "family_key, subject, principal_kind, target, session_id, claims, source, \
      parent_key, absolute_exp, created_at, refresh_jti, refresh_exp, session_jti, session_exp, \
@@ -402,8 +381,6 @@ impl FamilyStore {
             })?;
         }
         let conn = Connection::open(path).map_err(db_error)?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(db_error)?;
         Self::init(conn)
     }
 
@@ -415,7 +392,8 @@ impl FamilyStore {
     fn init(conn: Connection) -> Result<Self, RPCErrors> {
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(db_error)?;
-        conn.execute_batch(SCHEMA).map_err(db_error)?;
+        buckyos_sqlite_schema::initialize(&conn, 1, &[SCHEMA]).map_err(db_error)?;
+        conn.pragma_update(None, "journal_mode", "WAL").map_err(db_error)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -684,6 +662,27 @@ mod tests {
         assert_eq!(store.remove(&family.key()).unwrap(), 1);
         assert_eq!(store.get(&family.key()).unwrap(), None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn owner_schema_requires_versioned_family_store() {
+        let path = temp_db("schema");
+        drop(FamilyStore::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        assert!(FamilyStore::open(&path).is_err());
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(conn);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

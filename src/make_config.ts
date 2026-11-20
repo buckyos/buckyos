@@ -306,6 +306,8 @@ function makeGlobalEnvConfig(
 
 // Build (or rebuild) the user env dir <envRoot>/<zone_id> with provision.
 // Mirrors the create_user_env + create_node_configs part of make_identity_files.
+const START_CONFIG_SCHEMA = "buckyos.start_config.v1";
+
 export async function buildUserEnv(
   params: OODGroupParams,
   envRoot: string,
@@ -339,6 +341,10 @@ export async function buildUserEnv(
     ownerKeyPair: keyPairs.ownerKeyPair,
     deviceKeyPair: keyPairs.deviceKeyPair,
   });
+  const startConfigPath = path.join(userDir, params.node_name, "start_config.json");
+  const startConfig = readJsonObject(startConfigPath);
+  startConfig.schema = START_CONFIG_SCHEMA;
+  writeJson(startConfigPath, startConfig);
   return userDir;
 }
 
@@ -777,6 +783,9 @@ export function copyIdentityOutputs(
 ): LocalDeviceIdentityFiles {
   const startConfigPath = path.join(nodeDir, "start_config.json");
   const startConfig = readJsonObject(startConfigPath);
+  if (startConfig.schema !== START_CONFIG_SCHEMA) {
+    throw new Error(`Invalid schema in ${startConfigPath}; expected ${START_CONFIG_SCHEMA}`);
+  }
   if (startConfig.admin_password_hash !== hashAdminPassword(params.username, "bucky2025")) {
     throw new Error(
       `${startConfigPath} has a stale admin_password_hash for ${params.username}; use a new --env_root and regenerate OOD and SN together`,
@@ -1116,7 +1125,7 @@ function applyDevBootTemplate(
     ![...merged.matchAll(BOOT_ENTRY_PATTERN)].some((match) => match[1] === nodeSettingsKey)) {
     writeText(
       path.join(targetDir, "etc", "host_account.json"),
-      `${JSON.stringify({ account: os.userInfo().username }, null, 2)}\n`,
+      `${JSON.stringify({ schema: "buckyos.host_account.v1", account: os.userInfo().username }, null, 2)}\n`,
     );
   }
 

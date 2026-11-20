@@ -16,6 +16,14 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 
+/// Persisted envelope at `services/aicc/settings`. Provider-management RPCs exchange the payload.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "schema")]
+pub enum StoredAiccSettings<T> {
+    #[serde(rename = "buckyos.aicc.settings.v1")]
+    V1(T),
+}
+
 pub const AICC_SERVICE_UNIQUE_ID: &str = "aicc";
 pub const AICC_SERVICE_SERVICE_NAME: &str = "aicc";
 pub const AICC_SERVICE_SERVICE_PORT: u16 = 4040;

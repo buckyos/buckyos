@@ -25,6 +25,7 @@ permissions:
   contents: read
 
 env:
+  BUCKYOS_MIN_APP_SDK: ${{ vars.BUCKYOS_MIN_APP_SDK }}
   DENO_VERSION: v2.9.2
 
 jobs:
@@ -147,6 +148,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) {
           throw "Installation descriptor generation failed with exit code $LASTEXITCODE"
         }
+        python ../.github/scripts/verify-staged-updater.py "$payloadRoot"
     - name: Archive staged payload
       shell: pwsh
       run: |

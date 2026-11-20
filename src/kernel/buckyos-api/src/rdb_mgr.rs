@@ -140,6 +140,36 @@ pub async fn get_rdb_instance(
     )
 }
 
+/// Resolve the SQLite files owned by an offline installation. Uses the same
+/// template expansion and partition checks as the running service without
+/// creating the parent or opening a connection.
+pub fn offline_rdb_paths(
+    root: &Path,
+    appid: &str,
+    owner: Option<&str>,
+    id: &str,
+    cfg: &RdbInstanceConfig,
+) -> Result<Vec<(RdbPartition, PathBuf)>> {
+    validate_identity(appid, owner, id)?;
+    validate_rdb_instance_config(cfg, appid, id, owner.is_some())?;
+    if cfg.backend != RdbBackend::Sqlite {
+        return Err(RPCErrors::ReasonError(format!(
+            "Desktop instance {appid}/{id} uses unsupported backend {:?}",
+            cfg.backend
+        )));
+    }
+    cfg.partitions
+        .iter()
+        .map(|&part| {
+            let (_, path) = resolve_partition_connection(cfg, root, appid, owner, id, part, false)?;
+            let path = path.ok_or_else(|| {
+                RPCErrors::ReasonError(format!("missing local SQLite path for {appid}/{id}"))
+            })?;
+            Ok((part, path))
+        })
+        .collect()
+}
+
 fn select_implicit_partition(
     cfg: &RdbInstanceConfig,
     appid: &str,
@@ -346,6 +376,33 @@ fn resolve_instance(
     partition: RdbPartition,
     ensure_dir: bool,
 ) -> Result<RdbInstance> {
+    let (connection, _) = resolve_partition_connection(
+        cfg,
+        buckyos_root,
+        appid,
+        owner_user_id,
+        instance_id,
+        partition,
+        ensure_dir,
+    )?;
+    Ok(RdbInstance {
+        backend: cfg.backend,
+        version: cfg.version,
+        partition,
+        connection,
+        schema: pick_schema(cfg),
+    })
+}
+
+fn resolve_partition_connection(
+    cfg: &RdbInstanceConfig,
+    buckyos_root: &Path,
+    appid: &str,
+    owner_user_id: Option<&str>,
+    instance_id: &str,
+    partition: RdbPartition,
+    ensure_dir: bool,
+) -> Result<(String, Option<PathBuf>)> {
     let base_dir = resolve_partition_base_dir(buckyos_root, appid, owner_user_id, partition)?;
     let context = ConnectionResolveContext {
         buckyos_root,
@@ -356,14 +413,7 @@ fn resolve_instance(
         base_dir: &base_dir,
         ensure_dir,
     };
-    let connection = build_connection_string(cfg, &context)?;
-    Ok(RdbInstance {
-        backend: cfg.backend,
-        version: cfg.version,
-        partition,
-        connection,
-        schema: pick_schema(cfg),
-    })
+    build_connection_string(cfg, &context)
 }
 
 struct ConnectionResolveContext<'a> {
@@ -379,7 +429,7 @@ struct ConnectionResolveContext<'a> {
 fn build_connection_string(
     cfg: &RdbInstanceConfig,
     context: &ConnectionResolveContext<'_>,
-) -> Result<String> {
+) -> Result<(String, Option<PathBuf>)> {
     let buckyos_root = context.buckyos_root;
     let appid = context.appid;
     let owner_user_id = context.owner_user_id;
@@ -387,7 +437,25 @@ fn build_connection_string(
     let partition = context.partition;
     let base_dir = context.base_dir;
     let ensure_dir = context.ensure_dir;
-    let partdata = base_dir.to_string_lossy();
+    // A verbatim Windows drive prefix contains a question mark, which SQLite
+    // URLs interpret as the start of their query. Keep the native path for all
+    // filesystem access and use its ordinary drive spelling only in the URI.
+    let uri_base = if cfg.backend == RdbBackend::Sqlite {
+        dunce::simplified(base_dir)
+    } else {
+        base_dir
+    };
+    let partdata = uri_base.to_string_lossy();
+    if cfg.backend == RdbBackend::Sqlite && partdata.contains('?') {
+        return Err(rdb_error(
+            RDB_ERR_PARTITION_PATH_ESCAPE,
+            appid,
+            instance_id,
+            Some(partition),
+            &partdata,
+            "partition directory cannot be represented in a SQLite URL",
+        ));
+    }
     if partition != RdbPartition::UserData && cfg.connection.contains("$appdata") {
         return Err(rdb_error(
             RDB_ERR_PARTITION_PLACEHOLDER_CONFLICT,
@@ -447,15 +515,23 @@ fn build_connection_string(
         resolve_partition_base_dir(buckyos_root, appid, owner_user_id, RdbPartition::UserData)?;
     let resolved = template
         .replace("$partdata", &partdata)
-        .replace("$appdata", &appdata.to_string_lossy())
+        .replace(
+            "$appdata",
+            &if cfg.backend == RdbBackend::Sqlite {
+                dunce::simplified(&appdata)
+            } else {
+                &appdata
+            }
+            .to_string_lossy(),
+        )
         .replace("$partition", partition.as_str())
         .replace("$instance", instance_id);
 
     if cfg.backend != RdbBackend::Sqlite {
-        return Ok(resolved);
+        return Ok((resolved, None));
     }
     let resolved = normalize_sqlite_url(&resolved);
-    validate_sqlite_partition_path(
+    let path = validate_sqlite_partition_path(
         &resolved,
         base_dir,
         appid,
@@ -463,7 +539,7 @@ fn build_connection_string(
         partition,
         ensure_dir,
     )?;
-    Ok(resolved)
+    Ok((resolved, Some(path)))
 }
 
 fn resolve_partition_base_dir(
@@ -550,14 +626,14 @@ fn validate_sqlite_partition_path(
     instance_id: &str,
     partition: RdbPartition,
     ensure_dir: bool,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let path_str = connection
         .strip_prefix("sqlite:")
         .and_then(|body| body.split('?').next())
         .unwrap_or_default();
     let path = Path::new(path_str);
     let normalized_path = normalize_lexical_path(path);
-    let normalized_base = normalize_lexical_path(base_dir);
+    let normalized_base = normalize_lexical_path(dunce::simplified(base_dir));
     let valid = !path_str.is_empty()
         && !path_str.contains('%')
         && path.is_absolute()
@@ -575,26 +651,25 @@ fn validate_sqlite_partition_path(
             "sqlite path must be absolute and remain inside the partition base",
         ));
     }
-    let normalized_path = normalized_path.expect("checked above");
     let normalized_base = normalized_base.expect("checked above");
-    validate_existing_ancestor(
-        &normalized_path,
-        &normalized_base,
-        appid,
-        instance_id,
-        partition,
-    )?;
+    let normalized_path = normalized_path.expect("checked above");
+    let native_path = base_dir.join(
+        normalized_path
+            .strip_prefix(&normalized_base)
+            .expect("checked above"),
+    );
+    validate_existing_ancestor(&native_path, base_dir, appid, instance_id, partition)?;
     if !ensure_dir {
-        return Ok(());
+        return Ok(native_path);
     }
-    std::fs::create_dir_all(&normalized_base).map_err(|error| {
+    std::fs::create_dir_all(base_dir).map_err(|error| {
         RPCErrors::ReasonError(format!(
             "create rdb partition base {} failed: {}",
             normalized_base.display(),
             error
         ))
     })?;
-    let parent = normalized_path.parent().ok_or_else(|| {
+    let parent = native_path.parent().ok_or_else(|| {
         rdb_error(
             RDB_ERR_PARTITION_PATH_ESCAPE,
             appid,
@@ -611,13 +686,8 @@ fn validate_sqlite_partition_path(
             error
         ))
     })?;
-    validate_existing_ancestor(
-        &normalized_path,
-        &normalized_base,
-        appid,
-        instance_id,
-        partition,
-    )
+    validate_existing_ancestor(&native_path, base_dir, appid, instance_id, partition)?;
+    Ok(native_path)
 }
 
 fn validate_existing_ancestor(
@@ -1007,6 +1077,43 @@ mod tests {
         assert!(error.to_string().contains(RDB_ERR_PARTITION_PATH_ESCAPE));
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_sqlite_keeps_verbatim_drive_paths_out_of_uri_parameters() {
+        let base = std::env::temp_dir().canonicalize().unwrap();
+        let root = base.join(format!("offline sqlite {}", uuid::Uuid::new_v4()));
+        let ordinary = dunce::simplified(&root);
+        assert_ne!(ordinary.as_os_str(), root.as_os_str());
+        let drive_path = ordinary.to_str().unwrap().replace('\\', "/");
+        for (connection, name) in [
+            ("", "main.db"),
+            ("sqlite://$partdata/custom.db?mode=rwc", "custom.db"),
+        ] {
+            let cfg = sqlite_config(
+                vec![RdbPartition::UserData, RdbPartition::Local],
+                connection,
+            );
+            for spelling in [&*root, ordinary] {
+                let paths = offline_rdb_paths(spelling, "demo", None, "main", &cfg).unwrap();
+                for (part, dir) in [
+                    (RdbPartition::UserData, "data"),
+                    (RdbPartition::Local, "local"),
+                ] {
+                    let expected = spelling.join(dir).join("demo").join(name);
+                    assert_eq!(paths.iter().find(|(p, _)| *p == part).unwrap().1, expected);
+                    let uri = resolve_for_test(spelling, &cfg, part, false)
+                        .unwrap()
+                        .connection;
+                    assert_eq!(
+                        uri,
+                        format!("sqlite:{drive_path}/{dir}/demo/{name}?mode=rwc")
+                    );
+                }
+            }
+        }
+        assert!(!root.exists());
     }
 
     #[test]

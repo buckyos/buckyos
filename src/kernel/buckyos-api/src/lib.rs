@@ -4,11 +4,13 @@ use log::{info, warn};
 
 mod aiworkspace_client;
 mod control_panel;
+pub mod completed_install;
 mod cross_zone_auth;
 mod cross_zone_client;
 mod device_identity;
 mod group_hook;
 mod homestation_client;
+pub mod host_account;
 pub mod bucket_client;
 mod hybrid_sso;
 mod msg_center_client;

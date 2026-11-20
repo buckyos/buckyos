@@ -12,13 +12,20 @@ spec.loader.exec_module(module)
 
 
 class DescriptorTests(unittest.TestCase):
-    def test_adds_one_file_without_moving_existing_payload(self):
+    def test_records_release_identity_without_moving_existing_payload(self):
         for component in ('buckyos','cyfs-gateway'):
             with self.subTest(component=component),tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp)
                 (root/'bin/service').mkdir(parents=True)
                 (root/'bin/service/service').write_bytes(b'binary')
                 (root/'data').mkdir()
+                if component == 'buckyos':
+                    updater = root / 'bin/node-updater/node_updater'
+                    updater.parent.mkdir()
+                    identity = {'target_build': '0.7.0+build261013', 'platform': 'arm64-linux',
+                                'schemas': {'task-manager': '8'}}
+                    updater.write_text('#!/bin/sh\necho \'' + json.dumps(identity) + '\'\n')
+                    updater.chmod(0o755)
                 project=root.parent/(root.name+'.yaml')
                 project.write_text('apps:\n  '+component+':\n    modules:\n      service: bin/service/\n    data_paths:\n      - data/\n')
                 before={p.relative_to(root).as_posix():p.read_bytes() for p in root.rglob('*') if p.is_file()}
@@ -33,7 +40,15 @@ class DescriptorTests(unittest.TestCase):
                 self.assertEqual(descriptor['component'],component)
                 self.assertEqual(descriptor['modules'],{'service':'bin/service/'})
                 self.assertEqual(descriptor['platform'],'arm64-linux')
-                self.assertEqual({p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}-set(before),{'.install-'+component+'.json'})
+                generated = {'.install-'+component+'.json'}
+                if component == 'buckyos':
+                    generated.add('bin/node-updater/release.json')
+                    release = json.loads((root/'bin/node-updater/release.json').read_text())
+                    self.assertEqual(release['schemas'], identity['schemas'])
+                    self.assertEqual(len(release['sha256']), 64)
+                    with self.assertRaisesRegex(ValueError, 'does not match'):
+                        module.record_updater_release(root, '0.7.0+build261014', 'arm64-linux')
+                self.assertEqual({p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}-set(before),generated)
 
     def test_unsafe_and_missing_paths_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

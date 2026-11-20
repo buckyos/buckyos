@@ -1287,7 +1287,7 @@
 .aiws-frame-block.is-control > .aiws-data-body { position: absolute; inset: 0; pointer-events: none; }
 .aiws-frame-block.is-control > .aiws-data-body[data-active='true'] { pointer-events: auto; }
 .aiws-data-flow { position: relative; width: 100%; border: 1px solid var(--cp-border); border-radius: 12px; overflow: hidden; background: var(--cp-surface-opaque, var(--cp-surface)); }
-.aiws-data-flow.is-page { height: 100%; border: none; border-radius: 0; }
+.aiws-data-flow.is-page { flex: 1; min-height: 0; border: none; border-radius: 0; }
 .aiws-dc { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border);
   border-radius: 12px; overflow: hidden; color: var(--cp-text); font-size: 14px; box-sizing: border-box; outline: none; user-select: none; -webkit-user-select: none; }
 .aiws-data-flow > .aiws-dc { border: none; border-radius: 0; }

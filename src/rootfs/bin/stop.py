@@ -21,12 +21,16 @@ def _windows_subprocess_kwargs() -> dict[str, object]:
         "creationflags": subprocess.CREATE_NO_WINDOW,
     }
 
+def _installation_root():
+    return os.environ.get("BUCKYOS_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def _product_runs_containers():
     """etc/product.json of this installation (the full edition when absent):
     BuckyOS Desktop Lite never calls docker, not even to clean up."""
     import json
 
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "etc", "product.json")
+    path = os.path.join(_installation_root(), "etc", "product.json")
     try:
         with open(path, encoding="utf-8") as file:
             return bool(json.load(file).get("capabilities", {}).get("container", False))
@@ -139,7 +143,7 @@ def kill_native_apps():
     import signal
     import time
 
-    records = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "local", "app_native")
+    records = os.path.join(_installation_root(), "local", "app_native")
     if not os.path.isdir(records):
         return
     for name in sorted(os.listdir(records)):

@@ -1,5 +1,5 @@
-mod kv_provider;
-mod sled_provider;
+use system_config::{kv_provider, sled_provider};
+mod install_info;
 mod zone_did_resolver;
 
 use std::collections::HashMap;
@@ -505,6 +505,11 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     };
 
     let store = SYS_STORE.lock().await;
+    if real_key_path == buckyos_api::BUCKYOS_INFO_KEY {
+        install_info::refresh(&get_buckyos_root_dir(), &*store)
+            .await
+            .map_err(RPCErrors::ReasonError)?;
+    }
     let result = store
         .get_with_revision(real_key_path)
         .await
@@ -1639,6 +1644,11 @@ async fn service_main() {
     };
     BOOTSTRAP_CONFIG_MODE.store(!boot_config_exists, Ordering::Release);
     info!("system config bootstrap mode: {}", !boot_config_exists);
+    tokio::spawn(install_info::monitor(
+        get_buckyos_root_dir(),
+        SYS_STORE.clone(),
+        std::time::Duration::from_secs(30),
+    ));
     init_by_boot_document().await.unwrap();
 
     let server = SystemConfigServer::new();
@@ -1948,8 +1958,9 @@ mod test {
         token
     }
 
-    async fn identity_store() -> SledStore {
-        let store = SledStore::from_db(sled::Config::new().temporary(true).open().unwrap());
+    async fn identity_store() -> (tempfile::TempDir, SledStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SledStore::open(dir.path()).unwrap();
         for (key, value) in [
             ("users/bob/doc", json!({ "id": "did:bns:bob", "name": "bob" })),
             ("users/bob/profile", json!({ "did": "did:bns:bob", "name": "Bob" })),
@@ -1969,12 +1980,12 @@ mod test {
             )
             .await
             .unwrap();
-        store
+        (dir, store)
     }
 
     #[tokio::test]
     async fn profile_writes_keep_the_did_bound_by_the_account_doc() {
-        let store = identity_store().await;
+        let (_dir, store) = identity_store().await;
         let store: &dyn KVStoreProvider = &store;
         let bob = principal_token("bob", TokenPrincipalKind::User);
         let mut sudo_bob = bob.clone();

@@ -447,7 +447,10 @@ impl SystemConfigBuilder {
         };
         let settings =
             build_aicc_settings_with_endpoints(config, sn_ai_provider_endpoints.as_ref());
-        self.insert_json_if_absent("services/aicc/settings", &settings)?;
+        self.insert_json_if_absent(
+            "services/aicc/settings",
+            &buckyos_api::StoredAiccSettings::V1(settings),
+        )?;
         Ok(self)
     }
 
@@ -956,6 +959,7 @@ impl TryFrom<&Value> for StartConfigSummary {
     type Error = anyhow::Error;
 
     fn try_from(value: &Value) -> Result<Self> {
+        buckyos_api::validate_start_config_schema(value).map_err(anyhow::Error::msg)?;
         let owner_document: OwnerDocument = serde_json::from_value(
             value
                 .get("owner_document")
@@ -1079,6 +1083,7 @@ mod beta22_tests {
 
     fn start_config() -> StartConfigSummary {
         StartConfigSummary::from_value(&json!({
+            "schema": buckyos_api::START_CONFIG_SCHEMA,
             "user_name": "alice",
             "admin_password_hash": "hashed",
             "owner_document": {
@@ -1216,6 +1221,7 @@ mod beta22_tests {
     #[test]
     fn start_config_reads_owner_telegram_account_id() {
         let config = StartConfigSummary::from_value(&json!({
+            "schema": buckyos_api::START_CONFIG_SCHEMA,
             "user_name": "alice",
             "admin_password_hash": "hashed",
             "owner_document": start_config().owner_document,
@@ -1238,6 +1244,7 @@ mod beta22_tests {
     fn checked_in_aicc_dev_and_rootfs_settings_are_canonical() {
         let dev: Value = serde_json::from_str(include_str!("../../../dev_configs/aicc.json"))
             .expect("dev AICC settings must be valid JSON");
+        let buckyos_api::StoredAiccSettings::V1(dev) = serde_json::from_value(dev).unwrap();
         assert_canonical_aicc_settings(&dev);
 
         let rootfs: toml::Value = toml::from_str(include_str!(
@@ -1247,8 +1254,8 @@ mod beta22_tests {
         let raw = rootfs["services/aicc/settings"]
             .as_str()
             .expect("rootfs boot sample must contain AICC settings");
-        let settings: Value =
-            serde_json::from_str(raw).expect("rootfs AICC settings must contain valid JSON");
+        let buckyos_api::StoredAiccSettings::V1(settings) = serde_json::from_str(raw)
+            .expect("rootfs AICC settings must match the persisted schema");
         assert_canonical_aicc_settings(&settings);
     }
 

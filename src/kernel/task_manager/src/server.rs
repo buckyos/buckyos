@@ -3937,6 +3937,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     async fn test_db_pool(temp_dir: &tempfile::TempDir, name: &str) -> sqlx::AnyPool {
+        sqlx::any::install_default_drivers();
         let conn = format!(
             "sqlite://{}?mode=rwc",
             temp_dir.path().join(name).to_str().unwrap()
@@ -4011,6 +4012,39 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             task_ids_in(&temp_dir, "system.db").await,
             vec![task.task_id]
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn owner_schema_rejects_invalid_partition_before_initializing_its_peer() {
+        for (ddl, expected) in [
+            (vec!["CREATE TABLE previous_format (n INTEGER)"], "no schema version"),
+            (
+                vec![
+                    "CREATE TABLE task_store_meta (meta_key TEXT PRIMARY KEY, meta_value INTEGER)",
+                    "INSERT INTO task_store_meta VALUES ('schema_version', 999)",
+                ],
+                "schema version 999",
+            ),
+        ] {
+            let dir = tempdir().unwrap();
+            let pool = test_db_pool(&dir, "system.db").await;
+            for statement in ddl {
+                sqlx::query(statement).execute(&pool).await.unwrap();
+            }
+            pool.close().await;
+            let err = open_test_partitions(&dir)
+                .await
+                .err()
+                .expect("invalid partition must fail startup");
+            assert!(err.contains(expected), "{err}");
+            let user = test_db_pool(&dir, "user.db").await;
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_schema")
+                .fetch_one(&user)
+                .await
+                .unwrap();
+            assert_eq!(count, 0);
+            user.close().await;
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

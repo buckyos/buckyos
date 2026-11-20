@@ -27,7 +27,7 @@ use tokio::sync::watch;
 
 pub use auth::{ApplyResult, Grant, RbacChecker, TokenVerifier, VerifiedSession};
 pub use spawn::{default_shell, WorkerLauncher};
-pub use store::{Actor, StoreOpenError};
+pub use store::{validate_offline_record, Actor, StoreOpenError};
 
 use auth::AuthState;
 use ops::{CancelReason, OpsManager};

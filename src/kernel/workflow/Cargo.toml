@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO", "Codex"]
 
 
 [dependencies]
+buckyos-sqlite-schema.workspace = true
 async-trait = { workspace = true }
 bucket_store = { workspace = true }
 image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }

@@ -52,6 +52,24 @@ pub fn generate_service_login_assertion(
     Ok((jwt, login_token))
 }
 
+pub fn generate_node_daemon_login_token(
+    device_doc: &name_lib::DeviceDocument,
+    device_private_key: &EncodingKey,
+) -> std::result::Result<String, String> {
+    let (_, mut assertion) = generate_service_login_assertion(
+        device_doc.name.as_str(),
+        "node-daemon",
+        device_doc.name.as_str(),
+        device_private_key,
+    )
+    .map_err(|err| err.to_string())?;
+    assertion.aud = Some(crate::SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string());
+    assertion.token = None;
+    assertion
+        .generate_jwt(Some(device_doc.name.clone()), device_private_key)
+        .map_err(|err| err.to_string())
+}
+
 pub fn generate_user_login_assertion(
     user_id: &str,
     target_appid: &str,

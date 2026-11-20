@@ -60,6 +60,10 @@ Deno.test("generated runtime startup config and CA keys stay in security", async
       throw new Error("runtime CA key does not match the generated CA");
     }
     await Deno.stat(`${target}/etc/ca.cert`);
+    const config = JSON.parse(await Deno.readTextFile(`${target}/security/start_config.json`));
+    if (config.schema !== "buckyos.start_config.v1") {
+      throw new Error("runtime startup config must declare its schema");
+    }
     for (const filename of ["start_config.json", "ca_key.pem"]) {
       if (Deno.build.os !== "windows") {
         const file = await Deno.stat(`${target}/security/${filename}`);
@@ -104,6 +108,9 @@ Deno.test("dev bootstrap secrets are merged into a private template", async () =
     const hostAccountPath = `${target}/etc/host_account.json`;
     if (Deno.build.os === "linux") {
       const chosen = JSON.parse(await Deno.readTextFile(hostAccountPath));
+      if (chosen.schema !== "buckyos.host_account.v1") {
+        throw new Error("dev bootstrap must write the current host account schema");
+      }
       if (chosen.account !== os.userInfo().username) {
         throw new Error("dev bootstrap must choose the user running it as the host account");
       }

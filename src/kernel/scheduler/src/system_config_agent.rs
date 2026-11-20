@@ -998,6 +998,12 @@ fn build_static_web_app_host_entry(
     app_spec: &AppServiceSpec,
     guest_allowed: bool,
 ) -> Option<NodeGatewayAppInfoEntry> {
+    if let Err(reason) = buckyos_api::check_app_sdk(
+        app_spec.app_doc.sdk_version.as_deref(), buckyos_api::MINIMUM_APP_SDK,
+    ) {
+        warn!("cannot publish static web App {}: {reason}", app_spec.app_instance_id());
+        return None;
+    }
     let web_pkg = app_spec.app_doc.pkg_list.web.as_ref()?;
     let dir_pkg_id = PackageId::get_pkg_id_unique_name(web_pkg.pkg_id.as_str());
     let dir_pkg_objid = web_pkg.pkg_objid.as_ref().map(|objid| objid.to_string());
@@ -2660,7 +2666,8 @@ fn update_managed_sn_ai_provider(
     let Some(current_settings) = input_system_config.get(AICC_SETTINGS_KEY) else {
         return Ok(HashMap::new());
     };
-    let current_settings: Value = serde_json::from_str(current_settings)?;
+    let buckyos_api::StoredAiccSettings::V1(current_settings) =
+        serde_json::from_str::<buckyos_api::StoredAiccSettings<Value>>(current_settings)?;
 
     let endpoints = (|| -> Result<_> {
         let boot_config = input_system_config
@@ -2701,7 +2708,7 @@ fn update_managed_sn_ai_provider(
     let mut actions = HashMap::new();
     actions.insert(
         AICC_SETTINGS_KEY.to_string(),
-        KVAction::Update(serde_json::to_string_pretty(&reconciled)?),
+        KVAction::Update(serde_json::to_string_pretty(&buckyos_api::StoredAiccSettings::V1(reconciled))?),
     );
     Ok(actions)
 }

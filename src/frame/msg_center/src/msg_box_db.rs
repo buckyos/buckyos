@@ -108,7 +108,6 @@ impl MsgBoxDbMgr {
             opts = opts.max_lifetime(None).idle_timeout(None).after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
-                    conn.execute("PRAGMA journal_mode = WAL;").await?;
                     Ok(())
                 })
             });
@@ -122,6 +121,12 @@ impl MsgBoxDbMgr {
         let inner = Arc::new(MsgBoxDbInner { pool, backend });
         let mgr = Self { inner };
         mgr.apply_schema(schema).await?;
+        if backend == RdbBackend::Sqlite {
+            mgr.pool()
+                .execute("PRAGMA journal_mode = WAL")
+                .await
+                .map_err(|e| RPCErrors::ReasonError(format!("configure msg-center WAL: {e}")))?;
+        }
         Ok(mgr)
     }
 
@@ -170,8 +175,27 @@ impl MsgBoxDbMgr {
             RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
             RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
         };
-        let override_ddl = override_ddl.filter(|ddl| !ddl.trim().is_empty() && *ddl != required_ddl);
-        for ddl in override_ddl.into_iter().chain(std::iter::once(required_ddl)) {
+        let override_ddl =
+            override_ddl.filter(|ddl| !ddl.trim().is_empty() && *ddl != required_ddl);
+        let scripts: Vec<_> = override_ddl
+            .into_iter()
+            .chain([
+                required_ddl,
+                include_str!("groups.sql"),
+                include_str!("notify.sql"),
+            ])
+            .collect();
+        if self.backend() == RdbBackend::Sqlite {
+            return buckyos_sqlite_schema::initialize_pool(
+                self.pool(),
+                buckyos_api::MSG_CENTER_RDB_SCHEMA_VERSION as u32,
+                &[],
+                &scripts,
+            )
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("initialize msg-center schema: {e}")));
+        }
+        for ddl in scripts {
             for statement in split_sql_statements(ddl) {
                 self.pool().execute(statement.as_str()).await.map_err(|e| {
                     RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
@@ -2092,6 +2116,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn open_and_upsert_record_roundtrip() {
         let (mgr, _tmp) = setup_test_mgr().await;
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(mgr.pool())
+            .await
+            .unwrap();
+        assert_eq!(version, buckyos_api::MSG_CENTER_RDB_SCHEMA_VERSION as i64);
         let owner = sample_owner();
         let record = sample_record(&owner, MailboxKind::Inbox, "one");
         mgr.upsert_record(&record).await.unwrap();
@@ -2102,6 +2131,28 @@ mod tests {
         assert_eq!(got.box_kind, MailboxKind::Inbox);
         assert_eq!(got.state, RecipientState::Unread);
         assert_eq!(got.session_id.as_deref(), Some("topic-1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn opening_an_unversioned_or_unsupported_mailbox_preserves_it() {
+        let (mgr, tmp) = setup_test_mgr().await;
+        let conn = format!("sqlite://{}?mode=rwc", tmp.path().join("msg-box.db").display());
+        mgr.pool().execute("DROP TABLE friend_requests").await.unwrap();
+        for version in [0_i64, 12, 14] {
+            mgr.pool()
+                .execute(format!("PRAGMA user_version = {version}").as_str())
+                .await
+                .unwrap();
+            assert!(MsgBoxDbMgr::open_default_sqlite(&conn).await.is_err());
+            let (actual, exists): (i64, i64) = sqlx::query_as(
+                "SELECT user_version, EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'friend_requests')
+                 FROM pragma_user_version",
+            )
+            .fetch_one(mgr.pool())
+            .await
+            .unwrap();
+            assert_eq!((actual, exists), (version, 0));
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -37,6 +37,8 @@ pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 /// opaque string task ids, immutable input, one-shot result, composite
 /// phase, executor binding with runner epoch, ACL grants and durable events.
 pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 8;
+pub const TASK_MANAGER_READ_PHYSICAL_SCHEMA: &str =
+    "SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'";
 
 /// Sqlite DDL for the Task Core database. `CREATE TABLE IF NOT EXISTS` so the
 /// bootstrap is safe to re-run on every process start. Boolean-like columns

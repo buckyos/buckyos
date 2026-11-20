@@ -1287,8 +1287,9 @@ count on the owner's app pool (`storage_quota_mib`).
 (revoking there ends the audience's access here); any write right, a subtree's included, locks the Workspace
 for the show; a Workspace runs at most 4 clones at once and each counts on its quota (`clones`).
 
-`storage_schema_version` is 6 (FORMAT 1.0: `commit_deltas`, `usage`, `user_state.revision`, `refs.mode` / `integrity`, `entities.schema_id`, `grants.task_digest` / `outputs_json`; 5: `bucket_key` / `bucket_version` on `assets`, `snapshots`, `entity_versions` and `staged_assets`, no `retentions`; 6: every entity named — a version-5 folder is opened and its unnamed entities named in tree order, no Commit, see “Paths and names”); folders older than 5 are refused, not migrated —
-reinstall the data of a development Zone.
+This Desktop release uses `workspace_meta.storage_schema_version = 7` and `format_version = 1.0` in
+`doc.sqlite`. Its paired `local.sqlite` and the service's sessions, users and library databases each carry
+`PRAGMA user_version = 1`. Opening an existing workspace requires its explicit current versions.
 
 One writer per Workspace (a mutex around its connections); a Commit is planned on an overlay,
 checked, and written in one SQLite transaction together with its history row, which is also the
@@ -1324,8 +1325,7 @@ precise reads and writes stay with each type (`doc.read` with a selector, `doc.c
   and `entity.restore`, and `entity.rename { name: null }` gives the name back to the rule. A name given on
   `entity.create` that is just the title's name moves aside like a following one; any other name that is taken is
   `NAME_CONFLICT`. Names: 1–128 characters, no `/`, no control characters, not starting with `~`, not `.` / `..`.
-  Storage schema 6: a version-5 store gets names for its unnamed entities when it is opened (`naming::backfill`, tree
-  order, no Commit); an imported package of an older build is named after its content root is verified.
+  Package import assigns names after verifying the content root.
 - **One path syntax** (R5) for `doc.resolve`, `doc.list` / `doc.find` / `doc.query`, `doc.read { path }`, the object
   paths, the stage tools, the CLI and the HTML host's `aiws.resolve`: `/` is the root, each step a name
   (`/data/销售`, `/surfaces/看板/text-3`); `~<entity_id>` starts at an entity (`~sales/…`). Every step must be readable

@@ -1794,24 +1794,6 @@ async fn generate_boot_session_token(
     return Ok(device_session_token_jwt);
 }
 
-fn generate_node_daemon_login_token(
-    device_doc: &DeviceDocument,
-    device_private_key: &EncodingKey,
-) -> std::result::Result<String, String> {
-    let (_, mut assertion) = generate_service_login_assertion(
-        device_doc.name.as_str(),
-        "node-daemon",
-        device_doc.name.as_str(),
-        device_private_key,
-    )
-    .map_err(|err| err.to_string())?;
-    assertion.aud = Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string());
-    assertion.token = None;
-    assertion
-        .generate_jwt(Some(device_doc.name.clone()), device_private_key)
-        .map_err(|err| err.to_string())
-}
-
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");

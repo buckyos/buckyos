@@ -8,7 +8,9 @@ export interface RichTextDraft {
   saved_at: string
   reason: string
   /** Editor document JSON at the moment of the refusal. */
-  ast: unknown
+  ast?: unknown
+  /** Verbatim textarea input that had not reached durable storage. */
+  markdown?: string
 }
 
 const KEY = 'aiworkspace.richtext-drafts'

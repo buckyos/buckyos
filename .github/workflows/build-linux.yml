@@ -25,6 +25,7 @@ permissions:
   contents: read
 
 env:
+  BUCKYOS_MIN_APP_SDK: ${{ vars.BUCKYOS_MIN_APP_SDK }}
   DENO_VERSION: v2.9.2
 
 jobs:
@@ -168,6 +169,7 @@ jobs:
           --project bucky_project.yaml --component buckyos \
           --root "$STAGE_ROOT/buckyos" --version "$PAYLOAD_VERSION" \
           --platform "$PAYLOAD_PLATFORM"
+        python ../.github/scripts/verify-staged-updater.py "$STAGE_ROOT/buckyos"
     - name: Archive staged payload
       env:
         STAGE_ROOT: ${{ runner.temp }}/staged

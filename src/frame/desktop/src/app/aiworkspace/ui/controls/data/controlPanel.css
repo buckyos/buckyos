@@ -10,6 +10,9 @@
 /* a menu fills the panel (its margins were for the pop-over's corner ✕) */
 .aiws-ctl-panel-body > .aiws-ctl-menu, .aiws-ctl-sheet .aiws-sheet-body > .aiws-ctl-menu { margin: -6px -8px; }
 .aiws-root .aiws-ctl-sheet .aiws-ctl-menu-item { min-height: 48px; font-size: 15px; }
+.aiws-control-page { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.aiws-control-page-bar { display: flex; flex: none; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--cp-border); }
+.aiws-control-page-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-control-page-menu { margin-left: auto; }
 /* touch: the ✕ is a finger's size */
 @media (pointer: coarse) { .aiws-root .aiws-ctl-panel-head > button.aiws-tool-small { min-width: 44px; height: 44px; } }

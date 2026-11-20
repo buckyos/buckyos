@@ -388,8 +388,7 @@ fn refresh_table_stats(doc: &Connection) -> WsResult<usize> {
     Ok(table_stats(doc).unwrap_or(0))
 }
 
-fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
-    let conn = Connection::open(path).map_err(db_err)?;
+fn configure_db(conn: &Connection, synchronous_full: bool) -> WsResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
     // an answered commit must survive power loss
     conn.pragma_update(None, "synchronous", if synchronous_full { "FULL" } else { "NORMAL" }).map_err(db_err)?;
@@ -397,7 +396,7 @@ fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
     // a WAL that grew while a wish stage held its snapshot shrinks back once the snapshot ends (余下任务 D2)
     conn.pragma_update(None, "journal_size_limit", 16 * 1024 * 1024).map_err(db_err)?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
-    Ok(conn)
+    Ok(())
 }
 
 /// The origin of a Commit as the server reads it (内核架构改进 D08): internal compensations are `system`,
@@ -536,6 +535,22 @@ pub(crate) fn backfill_names(doc: &Connection) -> WsResult<()> {
     }
 }
 
+/// This release recognizes one persistent workspace format.
+pub fn validate_workspace_storage(doc: &Connection, local: &Connection) -> WsResult<()> {
+    let storage = meta_get(doc, "storage_schema_version")?;
+    let format = meta_get(doc, "format_version")?;
+    let local_version: i64 = local.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(db_err)?;
+    if storage.as_deref() != Some(STORAGE_SCHEMA_VERSION.to_string().as_str())
+        || format.as_deref() != Some(FORMAT_VERSION)
+        || local_version != i64::from(crate::schema::LOCAL_SCHEMA_VERSION)
+    {
+        return Err(WsError::new(Code::UnsupportedVersion, format!(
+            "unsupported workspace format {format:?}, document schema {storage:?}, local schema {local_version}"
+        )));
+    }
+    Ok(())
+}
+
 impl Workspace {
     pub fn now(&self) -> String {
         format_utc_ms((self.clock)())
@@ -551,11 +566,14 @@ impl Workspace {
         if !aiworkspace_core::id::is_workspace_id(workspace_id) {
             return Err(WsError::invalid_op("workspace_id must be ws_ + YYMM + 4 base36 chars"));
         }
-        std::fs::create_dir_all(dir).map_err(|e| WsError::io(e.to_string()))?;
-        let doc = open_db(&dir.join("doc.sqlite"), true)?;
-        let local = open_db(&dir.join("local.sqlite"), false)?;
+        // Reserve a fresh directory before creating either half of the workspace.
+        std::fs::create_dir(dir).map_err(|e| WsError::io(e.to_string()))?;
+        let doc = Connection::open(dir.join("doc.sqlite")).map_err(db_err)?;
+        let local = Connection::open(dir.join("local.sqlite")).map_err(db_err)?;
+        configure_db(&doc, true)?;
+        configure_db(&local, false)?;
         doc.execute_batch(DOC_DDL).map_err(db_err)?;
-        local.execute_batch(LOCAL_DDL).map_err(db_err)?;
+        buckyos_sqlite_schema::initialize(&local, crate::schema::LOCAL_SCHEMA_VERSION, &[LOCAL_DDL, LOCAL_ADDED_DDL]).map_err(db_err)?;
         let now = format_utc_ms(clock());
         let epoch = random_id("ep_");
         let peer_id: u64 = rand::random::<u64>() >> 1;
@@ -582,7 +600,6 @@ impl Workspace {
             }
         }
         apply_changes(&doc, &changes, 0)?;
-        local.execute_batch(LOCAL_ADDED_DDL).map_err(db_err)?;
         local.execute("INSERT INTO local_meta (key, value) VALUES ('owner', ?1)", [owner]).map_err(db_err)?;
         drop(doc);
         drop(local);
@@ -593,31 +610,15 @@ impl Workspace {
         if !dir.join("doc.sqlite").exists() {
             return Err(WsError::not_found("workspace not found"));
         }
-        let doc = open_db(&dir.join("doc.sqlite"), true)?;
-        let local = open_db(&dir.join("local.sqlite"), false)?;
-        crate::acl::upgrade_local(&local)?;
-        local.execute_batch(LOCAL_ADDED_DDL).map_err(db_err)?;
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE;
+        let doc = Connection::open_with_flags(dir.join("doc.sqlite"), flags).map_err(db_err)?;
+        let local = Connection::open_with_flags(dir.join("local.sqlite"), flags).map_err(db_err)?;
+        validate_workspace_storage(&doc, &local)?;
+        configure_db(&doc, true)?;
+        configure_db(&local, false)?;
         let get = |k: &str| -> WsResult<String> {
             meta_get(&doc, k)?.ok_or_else(|| WsError::io(format!("workspace_meta.{k} missing")))
         };
-        // unknown storage or format versions are refused; the file is never modified or emptied
-        let mut storage: u32 = get("storage_schema_version")?.parse().unwrap_or(0);
-        if storage == 5 {
-            backfill_names(&doc)?;
-            meta_set(&doc, "storage_schema_version", "6")?;
-            storage = 6;
-        }
-        if storage == 6 {
-            let owner: Option<String> = local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)?;
-            crate::acl::upgrade_doc_7(&doc, owner.as_deref())?;
-            storage = 7;
-        }
-        if storage != STORAGE_SCHEMA_VERSION {
-            return Err(WsError::new(Code::UnsupportedVersion, format!("storage_schema_version {storage} is not supported")));
-        }
-        if get("format_version")? != FORMAT_VERSION {
-            return Err(WsError::new(Code::UnsupportedVersion, "format_version is not supported"));
-        }
         let session_events: bool = doc
             .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_events'", [], |_| Ok(true))
             .optional()

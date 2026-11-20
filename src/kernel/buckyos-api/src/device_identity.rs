@@ -13,6 +13,16 @@ use name_lib::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const START_CONFIG_SCHEMA: &str = "buckyos.start_config.v1";
+
+pub fn validate_start_config_schema(value: &Value) -> Result<(), String> {
+    if value.get("schema").and_then(Value::as_str) == Some(START_CONFIG_SCHEMA) {
+        Ok(())
+    } else {
+        Err(format!("start_config.json requires schema {START_CONFIG_SCHEMA}"))
+    }
+}
+
 pub const NODE_IDENTITY_SCHEMA_V2: &str = "buckyos.node_identity.v2";
 pub const DEVICE_DOC_JWT_FILE_NAME: &str = "device_doc.jwt";
 pub const DEVICE_MINI_DOC_JWT_FILE_NAME: &str = "device_mini_doc.jwt";

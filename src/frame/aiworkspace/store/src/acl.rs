@@ -103,43 +103,6 @@ impl AclData {
     }
 }
 
-/// Drop what the permission model replaced (`grants`, entries carrying a capability template): not migrated (§4.2).
-pub fn upgrade_local(local: &Connection) -> WsResult<()> {
-    local.execute_batch("DROP TABLE IF EXISTS grants;").map_err(db_err)?;
-    let template_form: bool = local
-        .query_row("SELECT 1 FROM pragma_table_info('share_entries') WHERE name = 'capabilities'", [], |_| Ok(true))
-        .optional()
-        .map_err(db_err)?
-        .unwrap_or(false);
-    if template_form {
-        local.execute_batch("DROP TABLE share_entries;").map_err(db_err)?;
-    }
-    Ok(())
-}
-
-/// Storage 6 → 7: entities learn their creator — the writer of the Commit that created them, the owner when that
-/// history is gone — and Commits get room for their attribution. One transaction with the version change.
-pub fn upgrade_doc_7(doc: &Connection, owner: Option<&str>) -> WsResult<()> {
-    doc.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
-    let r = (|| -> WsResult<()> {
-        doc.execute_batch("ALTER TABLE entities ADD COLUMN created_by TEXT; ALTER TABLE commits ADD COLUMN attribution_json TEXT;").map_err(db_err)?;
-        doc.execute(
-            "UPDATE entities SET created_by = COALESCE((SELECT principal FROM commits WHERE commits.seq = entities.created_seq), ?1) WHERE created_seq > 0",
-            [owner],
-        )
-        .map_err(db_err)?;
-        crate::docdb::meta_set(doc, "storage_schema_version", "7")?;
-        Ok(())
-    })();
-    match r {
-        Ok(()) => doc.execute_batch("COMMIT").map_err(db_err),
-        Err(e) => {
-            let _ = doc.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
 /// How one caller is judged on one Workspace (§4.6 step 3).
 #[derive(Debug, Clone, Default)]
 pub struct Judgment {

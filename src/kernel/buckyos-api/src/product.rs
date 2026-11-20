@@ -20,6 +20,34 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::Path;
 
+/// Set by the target release. Legacy AppDocs with no SDK field use the
+/// compatibility loader. A declared SDK must meet an active release floor.
+pub const MINIMUM_APP_SDK: Option<&str> = match option_env!("BUCKYOS_MIN_APP_SDK") {
+    Some(v) if !v.is_empty() => Some(v),
+    _ => None,
+};
+
+pub fn check_app_sdk(declared: Option<&str>, minimum: Option<&str>) -> Result<(), String> {
+    let Some(minimum) = minimum else {
+        return Ok(());
+    };
+    let parse = |value: &str| {
+        let value = value.trim();
+        semver::Version::parse(value.strip_prefix('v').unwrap_or(value))
+            .map_err(|_| format!("invalid SDK version {value:?}"))
+    };
+    let floor = parse(minimum)?;
+    let Some(declared) = declared else {
+        return Ok(());
+    };
+    if parse(declared)?.cmp_precedence(&floor).is_lt() {
+        return Err(format!(
+            "App SDK {declared} is below the release minimum {minimum}"
+        ));
+    }
+    Ok(())
+}
+
 /// `$BUCKYOS_ROOT`-relative location of the installed product profile.
 pub const PRODUCT_PROFILE_PATH: &str = "etc/product.json";
 /// system-config copy of the installed product profile.
@@ -196,6 +224,7 @@ pub enum AppAdmission {
 pub enum AdmissionDenied {
     /// The app needs a container runtime.
     ContainerApp,
+    IncompatibleSdk(String),
     /// A script or native service that is not one of the product's
     /// preinstalled script apps (or one users may not add themselves).
     ServiceApp,
@@ -217,6 +246,7 @@ impl AdmissionDenied {
     /// Stable code for RPC errors and deployment reports.
     pub fn code(&self) -> &'static str {
         match self {
+            AdmissionDenied::IncompatibleSdk(_) => "product_minimum_sdk",
             AdmissionDenied::ContainerApp => "product_container_app",
             AdmissionDenied::ServiceApp => "product_service_app",
             AdmissionDenied::PreinstalledVersion { .. } => "product_preinstalled_version",
@@ -232,6 +262,7 @@ impl AdmissionDenied {
 impl fmt::Display for AdmissionDenied {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            AdmissionDenied::IncompatibleSdk(reason) => f.write_str(reason),
             AdmissionDenied::ContainerApp => f.write_str(
                 "this BuckyOS edition has no container runtime and does not run docker apps",
             ),
@@ -388,6 +419,8 @@ impl ProductProfile {
         app_doc: &AppDoc,
         origin: AdmissionOrigin,
     ) -> Result<AppAdmission, AdmissionDenied> {
+        check_app_sdk(app_doc.sdk_version.as_deref(), MINIMUM_APP_SDK)
+            .map_err(AdmissionDenied::IncompatibleSdk)?;
         let caps = &self.capabilities;
         let forms = app_execution_forms(app_doc);
         // controls are a library entry in every edition: only a user's submission adds one, nothing deploys it

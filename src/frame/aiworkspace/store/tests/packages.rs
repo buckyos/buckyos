@@ -454,16 +454,21 @@ fn v20_unknown_content_is_preserved() {
     assert_eq!(ws2.read(&alice(), "chart-1", None).unwrap()["content"]["payload"], json!({ "series": [1, 2, 3], "future": { "x": null } }));
     assert_eq!(ws2.read(&alice(), "rec-v9", None).unwrap()["schema_version"], 9);
     drop(ws2);
-    // an unknown storage version is refused and the file is left exactly as it was
+    // A workspace must already carry the current versions in both databases.
     env.svc.close(&id);
-    {
-        let conn = rusqlite::Connection::open(dir.join("doc.sqlite")).unwrap();
-        conn.execute("UPDATE workspace_meta SET value = '99' WHERE key = 'storage_schema_version'", []).unwrap();
-        conn.pragma_update(None, "wal_checkpoint", "TRUNCATE").ok();
+    let doc = dir.join("doc.sqlite");
+    let local = dir.join("local.sqlite");
+    for (storage, local_version) in [("5", 1), ("6", 1), ("99", 1), ("7", 0), ("7", 2)] {
+        {
+            let conn = rusqlite::Connection::open(&doc).unwrap();
+            conn.execute("UPDATE workspace_meta SET value = ?1 WHERE key = 'storage_schema_version'", [storage]).unwrap();
+            let conn = rusqlite::Connection::open(&local).unwrap();
+            conn.pragma_update(None, "user_version", local_version).unwrap();
+        }
+        let before = (std::fs::read(&doc).unwrap(), std::fs::read(&local).unwrap());
+        assert_eq!(env.svc.workspace(&id).err().unwrap().code.as_str(), "UNSUPPORTED_VERSION");
+        assert_eq!((std::fs::read(&doc).unwrap(), std::fs::read(&local).unwrap()), before);
     }
-    let before = std::fs::read(dir.join("doc.sqlite")).unwrap();
-    assert_eq!(env.svc.workspace(&id).err().unwrap().code.as_str(), "UNSUPPORTED_VERSION");
-    assert_eq!(std::fs::read(dir.join("doc.sqlite")).unwrap(), before);
 }
 
 /// V22: no dangling asset references; history keeps old assets retained; damage is explained.

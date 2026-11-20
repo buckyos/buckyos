@@ -120,3 +120,4 @@ src/frame/opendan/web/test-results-zone/
 src/apps/jarvis_runtime/dapp_dist/
 
 /test/aicc_test/*_REVIEW.md
+src/rootfs/bin/node-updater/node_updater

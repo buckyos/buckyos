@@ -125,7 +125,8 @@ pub(crate) struct SettingsDocument {
 
 impl SettingsDocument {
     pub(crate) fn parse(revision: u64, contents: &str) -> Result<Self, SettingsError> {
-        let settings: AiccSettings = serde_json::from_str(contents)?;
+        let buckyos_api::StoredAiccSettings::V1(settings) =
+            serde_json::from_str::<buckyos_api::StoredAiccSettings<AiccSettings>>(contents)?;
         settings.validate()?;
         Ok(Self {
             revision,
@@ -406,13 +407,25 @@ impl ProductionMetadataOverrideLoader {
             Err(SystemConfigError::KeyNotFound(_)) => return Ok((0, Vec::new())),
             Err(error) => return Err(SettingsError::SystemConfig(error.to_string())),
         };
-        let document: SystemConfigMetadataDocument = serde_json::from_str(&value.value)?;
-        if document.schema_version != SYSTEM_CONFIG_METADATA_SCHEMA_VERSION {
-            return Err(SettingsError::UnsupportedMetadataSchema(
-                document.schema_version,
-            ));
-        }
-        Ok((value.version, document.into_files()?))
+        Ok((value.version, parse_metadata(&value.value)?))
+    }
+}
+
+fn parse_metadata(contents: &str) -> Result<Vec<MetadataFile>, SettingsError> {
+    let document: SystemConfigMetadataDocument = serde_json::from_str(contents)?;
+    if document.schema_version != SYSTEM_CONFIG_METADATA_SCHEMA_VERSION {
+        return Err(SettingsError::UnsupportedMetadataSchema(
+            document.schema_version,
+        ));
+    }
+    document.into_files()
+}
+
+pub(crate) fn validate_persisted(key: &str, contents: &str) -> Result<(), SettingsError> {
+    if key == SYSTEM_CONFIG_METADATA_KEY {
+        parse_metadata(contents).map(drop)
+    } else {
+        SettingsDocument::parse(0, contents).map(drop)
     }
 }
 
@@ -778,11 +791,26 @@ mod tests {
         })
     }
 
+    fn parse_payload(revision: u64, payload: Value) -> Result<SettingsDocument, SettingsError> {
+        let stored = serde_json::to_string(&buckyos_api::StoredAiccSettings::V1(payload)).unwrap();
+        SettingsDocument::parse(revision, &stored)
+    }
+
+    #[test]
+    fn requires_the_persisted_schema() {
+        for raw in [
+            r#"{"providers":[]}"#,
+            r#"{"schema":"buckyos.aicc.settings.v2","providers":[]}"#,
+        ] {
+            assert!(SettingsDocument::parse(1, raw).is_err());
+        }
+    }
+
     #[test]
     fn parses_only_unified_provider_array() {
-        let document = SettingsDocument::parse(
+        let document = parse_payload(
             12,
-            &json!({"providers": [provider("primary")], "session_config": {}}).to_string(),
+            json!({"providers": [provider("primary")], "session_config": {}}),
         )
         .unwrap();
         assert_eq!(document.revision, 12);
@@ -792,14 +820,12 @@ mod tests {
         );
         assert!(document.settings.providers[0].enabled);
 
-        assert!(
-            SettingsDocument::parse(1, &json!({"openai": {"instances": []}}).to_string()).is_err()
-        );
+        assert!(parse_payload(1, json!({"openai": {"instances": []}})).is_err());
         for legacy_field in ["provider_driver", "endpoint", "instance_id", "api_key"] {
             let mut legacy_provider = provider("legacy");
             legacy_provider[legacy_field] = json!("old-value");
             let legacy = json!({"providers": [legacy_provider]});
-            assert!(SettingsDocument::parse(1, &legacy.to_string()).is_err());
+            assert!(parse_payload(1, legacy).is_err());
         }
     }
 
@@ -807,29 +833,25 @@ mod tests {
     fn rejects_duplicate_names_invalid_urls_and_empty_credentials() {
         let duplicate = json!({"providers": [provider("same"), provider("same")]});
         assert!(matches!(
-            SettingsDocument::parse(1, &duplicate.to_string()),
+            parse_payload(1, duplicate),
             Err(SettingsError::DuplicateProvider(name)) if name == "same"
         ));
 
         let mut invalid = provider("invalid");
         invalid["base_url"] = json!("file:///tmp/models");
-        assert!(SettingsDocument::parse(1, &json!({"providers": [invalid]}).to_string()).is_err());
+        assert!(parse_payload(1, json!({"providers": [invalid]})).is_err());
 
         let mut empty = provider("empty");
         empty["credentials"] = json!({});
-        assert!(SettingsDocument::parse(1, &json!({"providers": [empty]}).to_string()).is_err());
+        assert!(parse_payload(1, json!({"providers": [empty]})).is_err());
 
         let mut plaintext = provider("plaintext");
         plaintext["credentials"] = json!({"api_key": "not-allowed"});
-        assert!(
-            SettingsDocument::parse(1, &json!({"providers": [plaintext]}).to_string()).is_err()
-        );
+        assert!(parse_payload(1, json!({"providers": [plaintext]})).is_err());
 
         let mut legacy_locked = provider("legacy-locked");
         legacy_locked["credentials"] = json!({"api_token": {"locked": "not-allowed"}});
-        assert!(
-            SettingsDocument::parse(1, &json!({"providers": [legacy_locked]}).to_string()).is_err()
-        );
+        assert!(parse_payload(1, json!({"providers": [legacy_locked]})).is_err());
 
         let mut dynamic = provider("dynamic");
         dynamic["credentials"] = json!({"device_token": {"runtime_ref": "runtime://device-jwt"}});
@@ -838,33 +860,25 @@ mod tests {
             "login_profile": "device_jwt",
             "login_endpoint": "https://sn.example/kapi/ai"
         });
-        assert!(
-            SettingsDocument::parse(1, &json!({"providers": [dynamic.clone()]}).to_string())
-                .is_ok()
-        );
+        assert!(parse_payload(1, json!({"providers": [dynamic.clone()]})).is_ok());
 
         dynamic["credentials"] = json!({"api_token": {"inline_secret": "wrong-source"}});
-        assert!(SettingsDocument::parse(1, &json!({"providers": [dynamic]}).to_string()).is_err());
+        assert!(parse_payload(1, json!({"providers": [dynamic]})).is_err());
 
         let mut static_with_runtime_ref = provider("static-runtime");
         static_with_runtime_ref["credentials"] =
             json!({"device_token": {"runtime_ref": "runtime://device-jwt"}});
-        assert!(SettingsDocument::parse(
-            1,
-            &json!({"providers": [static_with_runtime_ref]}).to_string()
-        )
-        .is_err());
+        assert!(parse_payload(1, json!({"providers": [static_with_runtime_ref]})).is_err());
     }
 
     #[test]
     fn public_named_object_base_url_is_explicit_and_https_only() {
-        let parsed = SettingsDocument::parse(
+        let parsed = parse_payload(
             1,
-            &json!({
+            json!({
                 "providers": [],
                 "public_named_object_base_url": "https://zone.example/ndn"
-            })
-            .to_string(),
+            }),
         )
         .unwrap();
         assert_eq!(
@@ -876,13 +890,12 @@ mod tests {
             "https://user@zone.example/ndn",
             "https://zone.example/ndn?token=secret",
         ] {
-            assert!(SettingsDocument::parse(
+            assert!(parse_payload(
                 1,
-                &json!({
+                json!({
                     "providers": [],
                     "public_named_object_base_url": invalid
-                })
-                .to_string(),
+                }),
             )
             .is_err());
         }
@@ -895,17 +908,14 @@ mod tests {
         value["workspace"] = json!("engineering");
         value["credentials"] = json!({"api_token": {"inline_secret": secret}});
         value["auth"] = json!({"mode": "api_key", "credential_ref": secret});
-        let document =
-            SettingsDocument::parse(1, &json!({"providers": [value]}).to_string()).unwrap();
+        let document = parse_payload(1, json!({"providers": [value]})).unwrap();
         let debug = format!("{document:?}");
         assert!(!debug.contains(secret));
         assert!(debug.contains("engineering"));
 
         let mut unsafe_url = provider("unsafe-url");
         unsafe_url["base_url"] = json!("https://token@example.test/v1?api_key=secret");
-        assert!(
-            SettingsDocument::parse(1, &json!({"providers": [unsafe_url]}).to_string()).is_err()
-        );
+        assert!(parse_payload(1, json!({"providers": [unsafe_url]})).is_err());
     }
 
     #[test]
@@ -914,21 +924,23 @@ mod tests {
         value["region"] = json!("us-west");
         value["workspace"] = json!("engineering");
         value["account"] = json!("production");
-        let document =
-            SettingsDocument::parse(7, &json!({"providers": [value]}).to_string()).unwrap();
+        let document = parse_payload(7, json!({"providers": [value]})).unwrap();
         assert_eq!(
             document.settings.providers[0].workspace.as_deref(),
             Some("engineering")
         );
 
-        let serialized = serde_json::to_string(document.settings.as_ref()).unwrap();
+        let serialized = serde_json::to_string(&buckyos_api::StoredAiccSettings::V1(
+            document.settings.as_ref(),
+        ))
+        .unwrap();
         let round_tripped = SettingsDocument::parse(7, &serialized).unwrap();
         assert_eq!(round_tripped, document);
 
         let mut invalid = provider("invalid");
         invalid["workspace"] = json!("  ");
         assert!(matches!(
-            SettingsDocument::parse(1, &json!({"providers": [invalid]}).to_string()),
+            parse_payload(1, json!({"providers": [invalid]})),
             Err(SettingsError::InvalidField {
                 field: "workspace",
                 ..

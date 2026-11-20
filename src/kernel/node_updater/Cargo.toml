@@ -1,0 +1,48 @@
+[package]
+name = "node_updater"
+version.workspace = true
+license.workspace = true
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+aiworkspace-store = { path = "../../frame/aiworkspace/store" }
+aicc = { path = "../../frame/aicc" }
+agent_tool = { path = "../../frame/agent_tool" }
+libopendan = { path = "../../frame/lib_opendan" }
+kmsg = { path = "../kmsg" }
+node_executor = { path = "../node_executor" }
+bucket_store.workspace = true
+named_store.workspace = true
+ndn-lib.workspace = true
+name-lib.workspace = true
+rbac.workspace = true
+package-lib.workspace = true
+buckyos-api = { path = "../buckyos-api" }
+buckyos-kit.workspace = true
+clap = { workspace = true, features = ["derive"] }
+fs2.workspace = true
+fs_meta = { git = "https://github.com/buckyos/cyfs-ndn.git", branch = "main" }
+rusqlite = { workspace = true, features = ["backup"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sled.workspace = true
+system_config = { path = "../sys_config_service" }
+tempfile.workspace = true
+tokio.workspace = true
+uuid = { workspace = true, features = ["serde"] }
+
+[build-dependencies]
+serde_json.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_SystemServices"] }

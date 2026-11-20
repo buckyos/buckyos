@@ -36,7 +36,7 @@ pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// The capabilities a presenter who is not the owner holds on the run Workspace (everything but `manage`).
 const PRESENTER_CAPS: u16 = CapSet::ALL.0 & !(Cap::Manage as u16);
 
-const EVENTS_DDL: &str = r#"
+pub const EVENTS_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS session_events (
   seq          INTEGER PRIMARY KEY AUTOINCREMENT,
   t_rel_ms     INTEGER NOT NULL,

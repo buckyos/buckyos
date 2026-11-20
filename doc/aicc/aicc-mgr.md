@@ -65,6 +65,7 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
 
 ```json
 {
+  "schema": "buckyos.aicc.settings.v1",
   "providers": [
     {
       "provider_instance_name": "openai-main",
@@ -600,20 +601,24 @@ config_client.set_context(RPCContext {
 }).await?;
 let current = config_client.get("services/aicc/settings").await;
 let (mut settings, version) = match current {
-    Ok(value) => (serde_json::from_str::<Value>(&value.value)?, value.version),
-    Err(KeyNotFound(_)) => (json!({}), 0),
+    Ok(value) => {
+        let StoredAiccSettings::V1(settings) = serde_json::from_str(&value.value)?;
+        (settings, value.version)
+    }
+    Err(KeyNotFound(_)) => (json!({"providers": []}), 0),
     Err(err) => return Err(...),
 };
 
 mutate_settings(&mut settings)?;
+let document = serde_json::to_string_pretty(&StoredAiccSettings::V1(settings))?;
 
 let mut tx = HashMap::new();
 tx.insert(
     "services/aicc/settings".to_string(),
     if version == 0 {
-        KVAction::Create(serde_json::to_string_pretty(&settings)?)
+        KVAction::Create(document)
     } else {
-        KVAction::Update(serde_json::to_string_pretty(&settings)?)
+        KVAction::Update(document)
     },
 );
 

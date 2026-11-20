@@ -1599,6 +1599,7 @@ async fn wait_for_json_projection(
 
 fn build_start_config(req: &CommitActiveReq, owner_document: &OwnerDocument) -> Value {
     json!({
+        "schema": buckyos_api::START_CONFIG_SCHEMA,
         "user_name": owner_document.name,
         "owner_document": owner_document,
         "zone_name": req.prepared.names.zone_did.to_string(),
@@ -2186,6 +2187,7 @@ mod tests {
         );
         commit_req.prepared.names.access_hostname = "alice.web3.example.com".to_string();
         let config = build_start_config(&commit_req, &prepared.owner_document);
+        buckyos_api::validate_start_config_schema(&config).unwrap();
         let config_text = serde_json::to_string(&config).unwrap();
         for forbidden in [
             "mnemonic_words",

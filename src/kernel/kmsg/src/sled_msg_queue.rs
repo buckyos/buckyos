@@ -127,6 +127,9 @@ pub struct SledMsgQueue {
 
 /// Messages removed per transaction when trimming a queue.
 const TRIM_CHUNK: u64 = 512;
+const TREES: &[&str] = &["queues", "queue_meta", "messages", "subs", "queue_subs", "meta"];
+const SCHEMA_KEY: &[u8] = b"schema_version";
+const SCHEMA: [u8; 8] = 1u64.to_be_bytes();
 
 fn storage_err(err: impl std::fmt::Display) -> RPCErrors {
     RPCErrors::ReasonError(err.to_string())
@@ -141,7 +144,20 @@ impl SledMsgQueue {
     pub fn new_in_dir<P: AsRef<Path>>(
         path: P,
     ) -> std::result::Result<Self, Box<dyn std::error::Error>> {
+        let path = path.as_ref();
+        let fresh = match std::fs::read_dir(path) {
+            Ok(mut entries) => entries.next().transpose()?.is_none(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => return Err(e.into()),
+        };
+        if !fresh && (!path.join("conf").is_file() || !path.join("db").is_file()) {
+            return Err("incomplete KMsg database".into());
+        }
         let db = sled::open(path)?;
+        let initialize = fresh && !db.was_recovered();
+        if !initialize {
+            validate_header(&db)?;
+        }
         let queue = Self {
             queues: db.open_tree("queues")?,
             queue_meta: db.open_tree("queue_meta")?,
@@ -151,18 +167,25 @@ impl SledMsgQueue {
             meta: db.open_tree("meta")?,
             db: Arc::new(db),
         };
-        // The index is derived from `subs`: rebuilt on open (databases
-        // written before it existed, interrupted updates).
-        queue.queue_subs.clear()?;
+        if initialize {
+            queue.meta.insert(SCHEMA_KEY, &SCHEMA)?;
+            queue.db.flush()?;
+            return Ok(queue);
+        }
+        // Repair the derived index after an interrupted subscription update.
+        let mut index = sled::Batch::default();
+        for key in queue.queue_subs.iter().keys() {
+            index.remove(key?);
+        }
         for item in queue.subs.iter() {
             let (sub_id, value) = item?;
-            if let Ok(sub) = serde_json::from_slice::<SubscriptionState>(&value) {
-                queue.queue_subs.insert(
-                    Self::queue_sub_key(&sub.queue_urn, &String::from_utf8_lossy(&sub_id)),
-                    &[],
-                )?;
-            }
+            let sub: SubscriptionState = serde_json::from_slice(&value)?;
+            index.insert(
+                Self::queue_sub_key(&sub.queue_urn, std::str::from_utf8(&sub_id)?),
+                &[],
+            );
         }
+        queue.queue_subs.apply_batch(index)?;
         Ok(queue)
     }
 
@@ -1255,4 +1278,65 @@ mod tests {
 
         Ok(())
     }
+}
+
+fn validate_header(db: &Db) -> std::result::Result<(), String> {
+    let names = db.tree_names();
+    for &required in TREES {
+        if !names.iter().any(|n| n.as_ref() == required.as_bytes()) {
+            return Err(format!("required tree {required} missing"));
+        }
+    }
+    if names.iter().any(|name| {
+        name.as_ref() != b"__sled__default"
+            && !TREES.iter().any(|expected| name.as_ref() == expected.as_bytes())
+    }) {
+        return Err("unknown KMsg tree".into());
+    }
+    let meta = db.open_tree("meta").map_err(|e| e.to_string())?;
+    if meta.get(SCHEMA_KEY).map_err(|e| e.to_string())?.as_deref() != Some(&SCHEMA[..]) {
+        return Err("missing or unsupported KMsg schema_version (expected 1)".into());
+    }
+    Ok(())
+}
+
+/// Verify a private copy without rebuilding indices or expiring messages.
+pub fn validate_offline_copy(db: &Db) -> std::result::Result<(), String> {
+    validate_header(db)?;
+    for name in db.tree_names() {
+        let name = std::str::from_utf8(&name).map_err(|e| e.to_string())?;
+        let tree = db.open_tree(name).map_err(|e| e.to_string())?;
+        for item in tree.iter() {
+            let (key, value) = item.map_err(|e| e.to_string())?;
+            let utf8_key = || std::str::from_utf8(&key).map_err(|e| e.to_string());
+            match name {
+                "queues" => {
+                    utf8_key()?;
+                    SledMsgQueue::decode_queue_config(&value).map_err(|e| e.to_string())?;
+                }
+                "queue_meta" => {
+                    utf8_key()?;
+                    SledMsgQueue::decode_queue_meta(&value).map_err(|e| e.to_string())?;
+                }
+                "messages" => {
+                    let msg = SledMsgQueue::decode_message(&value).map_err(|e| e.to_string())?;
+                    let prefix = key
+                        .strip_suffix(msg.index.to_be_bytes().as_slice())
+                        .and_then(|prefix| prefix.strip_suffix(&[0]))
+                        .ok_or_else(|| "message key disagrees with its stored index".to_owned())?;
+                    std::str::from_utf8(prefix).map_err(|e| e.to_string())?;
+                }
+                "subs" => {
+                    utf8_key()?;
+                    serde_json::from_slice::<SubscriptionState>(&value)
+                        .map_err(|e| e.to_string())?;
+                }
+                "queue_subs" if value.is_empty() && utf8_key()?.contains('\0') => {}
+                "meta" if key.as_ref() == SCHEMA_KEY => {}
+                "meta" if matches!(key.as_ref(), b"queue_id" | b"sub_id") && value.len() == 8 => {}
+                _ => return Err(format!("unsupported record layout in tree {name}")),
+            }
+        }
+    }
+    Ok(())
 }

@@ -30,22 +30,6 @@ pub struct GroupTransaction<'a> {
 }
 impl GroupStore {
     pub async fn open(db: MsgBoxDbMgr) -> Result<Self> {
-        for ddl in [
-            "CREATE TABLE IF NOT EXISTS group_joined_bindings (owner TEXT NOT NULL, group_did TEXT NOT NULL, binding_json TEXT NOT NULL, PRIMARY KEY(owner, group_did))",
-            "CREATE TABLE IF NOT EXISTS group_states (group_did TEXT PRIMARY KEY, state_json TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS group_objects (obj_id TEXT PRIMARY KEY, group_did TEXT NOT NULL, body_json TEXT, jwt TEXT)",
-            "CREATE INDEX IF NOT EXISTS idx_group_objects_group ON group_objects(group_did)",
-            "CREATE TABLE IF NOT EXISTS group_sync_tokens (token TEXT PRIMARY KEY, group_did TEXT NOT NULL, reader_did TEXT NOT NULL, group_seq BIGINT NOT NULL, created_at_ms BIGINT NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS idx_group_sync_reader ON group_sync_tokens(group_did, reader_did)",
-            "CREATE INDEX IF NOT EXISTS idx_group_sync_token_expiry ON group_sync_tokens(created_at_ms)",
-            "CREATE TABLE IF NOT EXISTS group_create_operations (actor TEXT NOT NULL, operation_key TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(actor,operation_key))",
-            "CREATE TABLE IF NOT EXISTS group_locks (lock_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL)",
-            "INSERT INTO group_locks(lock_key,schema_version) VALUES ('create',1) ON CONFLICT(lock_key) DO NOTHING",
-            "CREATE TABLE IF NOT EXISTS group_object_purges (obj_id TEXT PRIMARY KEY, attachment_prefix TEXT, schema_version BIGINT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS group_doc_publications (group_did TEXT PRIMARY KEY, generation BIGINT NOT NULL, published_generation BIGINT NOT NULL DEFAULT 0, document_status TEXT NOT NULL, document_json TEXT)",
-            "CREATE TABLE IF NOT EXISTS joined_groups (owner TEXT NOT NULL, group_did TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(owner, group_did))",
-            "CREATE TABLE IF NOT EXISTS joined_group_projections (owner TEXT NOT NULL, group_did TEXT NOT NULL, member_epoch BIGINT NOT NULL, session_key TEXT NOT NULL, session_seq BIGINT NOT NULL, obj_id TEXT NOT NULL, PRIMARY KEY(owner,group_did,member_epoch,session_key,session_seq))",
-        ] { sqlx::query(ddl).execute(db.pool()).await.map_err(db_error)?; }
         Ok(Self {
             db,
             push: Default::default(),

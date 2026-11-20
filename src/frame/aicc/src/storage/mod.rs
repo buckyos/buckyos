@@ -17,10 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
-use sqlx::{Any, AnyPool, ConnectOptions, Connection, Executor, QueryBuilder, Row};
+use sqlx::{Any, AnyPool, Executor, QueryBuilder, Row};
 use std::collections::{BTreeMap, HashMap};
-use std::str::FromStr;
 use std::sync::Once;
 use std::time::Duration;
 
@@ -36,79 +34,7 @@ static INSTALL_DRIVERS: Once = Once::new();
 
 /// The complete current table set, applied together with `quota::QUOTA_SCHEMA`
 /// only when the database holds no AICC table yet.
-const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS aicc_schema_meta (
- schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
-CREATE TABLE IF NOT EXISTS aicc_provider_inventory_lkgs (
- provider_instance_name TEXT PRIMARY KEY, schema_version INTEGER NOT NULL DEFAULT 1,
- provider_profile_id TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
- provider_model_list_fingerprint TEXT NOT NULL, metadata_applied_seq BIGINT NOT NULL,
- inventory_revision TEXT, discovered_at_ms BIGINT NOT NULL, snapshot_json TEXT NOT NULL,
- snapshot_sha256 TEXT NOT NULL, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_updated ON aicc_provider_inventory_lkgs(updated_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_metadata ON aicc_provider_inventory_lkgs(metadata_applied_seq);
-CREATE TABLE IF NOT EXISTS aicc_usage_event (
- event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
- caller_app_id TEXT, task_id TEXT NOT NULL, trace_id TEXT, idempotency_key TEXT, method TEXT NOT NULL,
- capability TEXT NOT NULL, request_model TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
- provider_model TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT,
- request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT,
- finance_amount REAL, finance_currency TEXT, finance_valid INTEGER NOT NULL DEFAULT 0,
- created_at_ms BIGINT NOT NULL, operator_id TEXT, attribution_json TEXT);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time ON aicc_usage_event(trace_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time ON aicc_usage_event(user_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time ON aicc_usage_event(method, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time ON aicc_usage_event(provider_instance_name, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time ON aicc_usage_event(provider_model, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time ON aicc_usage_event(request_model, created_at_ms);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task ON aicc_usage_event(tenant_id, task_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_idem ON aicc_usage_event(tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
-CREATE TABLE IF NOT EXISTS aicc_execution_record (
- tenant_id TEXT NOT NULL, method TEXT NOT NULL, idempotency_key TEXT NOT NULL,
- task_id TEXT NOT NULL UNIQUE, body_fingerprint TEXT NOT NULL, state TEXT NOT NULL,
- record_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL, expires_at_ms BIGINT NOT NULL,
- PRIMARY KEY (tenant_id, method, idempotency_key));
-CREATE INDEX IF NOT EXISTS idx_aicc_execution_record_state ON aicc_execution_record(state, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_execution_record_expiry ON aicc_execution_record(expires_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_route_trace_event (
- trace_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, task_id TEXT NOT NULL,
- request_id TEXT, route_id TEXT, provider_trace_id TEXT, request_model TEXT NOT NULL,
- selected_exact_model TEXT, provider_instance_name TEXT, api_type TEXT NOT NULL,
- scheduler_profile TEXT, outcome TEXT, route_trace_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL,
- fallback_applied INTEGER NOT NULL DEFAULT 0, warning_count BIGINT NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_time ON aicc_route_trace_event(created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_tenant_time ON aicc_route_trace_event(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_task_time ON aicc_route_trace_event(task_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_fallback_time ON aicc_route_trace_event(tenant_id, fallback_applied, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_warning_time ON aicc_route_trace_event(tenant_id, warning_count, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_session_route_history (
- tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
- session_id TEXT NOT NULL, selected_exact_model TEXT NOT NULL, updated_at_ms BIGINT NOT NULL,
- PRIMARY KEY (tenant_id, user_id, caller_app_id, session_id));
-CREATE INDEX IF NOT EXISTS idx_aicc_session_route_history_updated ON aicc_session_route_history(updated_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_artifact_scope (
- obj_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
- caller_app_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_aicc_artifact_scope_tenant ON aicc_artifact_scope(tenant_id, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_artifact_url_source (
- url_hash TEXT PRIMARY KEY, url TEXT NOT NULL,
- provider_instance_name TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
- origin_provider TEXT NOT NULL, artifact_id TEXT, content_digest TEXT, expires_at_ms BIGINT,
- tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
- request_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_tenant ON aicc_artifact_url_source(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_provider ON aicc_artifact_url_source(provider_instance_name, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_provider_artifact (
- content_digest TEXT NOT NULL, obj_id TEXT NOT NULL,
- provider_instance_name TEXT NOT NULL, origin_provider TEXT NOT NULL, tenant_id TEXT NOT NULL,
- artifact_id TEXT NOT NULL, expires_at_ms BIGINT, created_at_ms BIGINT NOT NULL,
- CHECK ((content_digest='') <> (obj_id='')),
- PRIMARY KEY (content_digest, obj_id, provider_instance_name, origin_provider, tenant_id));
-CREATE INDEX IF NOT EXISTS idx_aicc_provider_artifact_provider
- ON aicc_provider_artifact(provider_instance_name, origin_provider, created_at_ms);
-"#;
+const SCHEMA: &str = include_str!("schema.sql");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct InventoryLkgsRecord {
@@ -306,78 +232,64 @@ impl AiccStorage {
             8
         };
         let sqlite = backend == RdbBackend::Sqlite;
-        if sqlite && connections > 1 {
-            let options =
-                SqliteConnectOptions::from_str(connection)?.journal_mode(SqliteJournalMode::Wal);
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-            let mut delay = Duration::from_millis(100);
-            loop {
-                match options.connect().await {
-                    Ok(mut connection) => {
-                        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-                            .fetch_one(&mut connection)
-                            .await?;
-                        connection.close().await?;
-                        if !mode.eq_ignore_ascii_case("wal") {
-                            return Err(StorageError::InvalidRecord(format!(
-                                "SQLite WAL mode is required, got {mode}"
-                            )));
-                        }
-                        break;
-                    }
-                    Err(error) => {
-                        let error = StorageError::from(error);
-                        if !error.is_retryable() || tokio::time::Instant::now() >= deadline {
-                            return Err(error);
-                        }
-                        tokio::time::sleep(delay).await;
-                        delay = (delay * 2).min(Duration::from_secs(1));
-                    }
-                }
-            }
-        }
         let mut options = AnyPoolOptions::new().max_connections(connections);
         if sqlite {
             options = options.max_lifetime(None).idle_timeout(None);
         }
-        let pool = options
-            .after_connect(move |connection, _| {
-                Box::pin(async move {
-                    if sqlite && connections > 1 {
-                        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-                            .fetch_one(connection)
-                            .await?;
-                        if !mode.eq_ignore_ascii_case("wal") {
-                            return Err(sqlx::Error::Protocol(format!(
-                                "SQLite WAL mode is required, got {mode}"
-                            )));
-                        }
-                    }
-                    Ok(())
-                })
-            })
-            .connect(connection)
-            .await?;
+        let pool = options.connect(connection).await?;
         let storage = Self { pool, backend };
-        storage.init_schema().await?;
+        if sqlite && connections > 1 {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            let mut delay = Duration::from_millis(100);
+            loop {
+                match storage.init_sqlite_file().await {
+                    Ok(()) => break,
+                    Err(error) if error.is_retryable() && tokio::time::Instant::now() < deadline => {
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(1));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        } else {
+            storage.init_schema().await?;
+        }
+        storage.seed_default_visibility().await?;
         Ok(storage)
+    }
+
+    async fn init_sqlite_file(&self) -> StorageResult<()> {
+        // Changing the journal mode would also modify an unsupported database.
+        self.init_schema().await?;
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode=WAL")
+            .fetch_one(&self.pool)
+            .await?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            return Err(StorageError::InvalidRecord(format!(
+                "SQLite WAL mode is required, got {mode}"
+            )));
+        }
+        Ok(())
     }
 
     /// Creates the full current schema in an empty database; an existing one
     /// must already record `STORAGE_SCHEMA_VERSION`.
     async fn init_schema(&self) -> StorageResult<()> {
         let tables_sql = match self.backend {
-            RdbBackend::Sqlite => {
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'aicc\\_%' ESCAPE '\\'"
-            }
+            RdbBackend::Sqlite => "SELECT name FROM main.sqlite_schema",
             RdbBackend::Postgres => {
                 "SELECT table_name::text FROM information_schema.tables
                  WHERE table_schema=current_schema() AND table_name LIKE 'aicc\\_%' ESCAPE '\\'"
             }
         };
-        let tables: Vec<String> = sqlx::query_scalar(tables_sql).fetch_all(&self.pool).await?;
+        let mut transaction = match self.backend {
+            RdbBackend::Sqlite => self.pool.begin_with("BEGIN IMMEDIATE").await?,
+            RdbBackend::Postgres => self.pool.begin().await?,
+        };
+        let tables: Vec<String> = sqlx::query_scalar(tables_sql)
+            .fetch_all(&mut *transaction)
+            .await?;
         if tables.is_empty() {
-            let mut transaction = self.pool.begin().await?;
             for statement in [SCHEMA, quota::QUOTA_SCHEMA]
                 .into_iter()
                 .flat_map(|script| script.split(';'))
@@ -393,13 +305,12 @@ impl AiccStorage {
                 .bind(STORAGE_SCHEMA_VERSION)
                 .execute(&mut *transaction)
                 .await?;
-            transaction.commit().await?;
         } else {
             let version: Option<i64> = if tables.iter().any(|name| name == "aicc_schema_meta") {
                 sqlx::query_scalar(
                     "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'",
                 )
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *transaction)
                 .await?
             } else {
                 None
@@ -418,7 +329,8 @@ impl AiccStorage {
                 }
             }
         }
-        self.seed_default_visibility().await
+        transaction.commit().await?;
+        Ok(())
     }
 
     pub(crate) async fn open_from_service_spec() -> StorageResult<Self> {
@@ -2201,6 +2113,9 @@ mod tests {
     };
     use buckyos_api::{AiCost, ApiType, UsageQueryBucket, UsageQueryFilters};
     use serde_json::json;
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::{ConnectOptions, Connection};
+    use std::str::FromStr;
 
     async fn db() -> AiccStorage {
         AiccStorage::open("sqlite::memory:", RdbBackend::Sqlite)
@@ -2259,6 +2174,27 @@ mod tests {
                 vec!["trace-kept".to_string()]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn owner_schema_rejects_unrecognized_database_without_changing_its_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aicc.db");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let mut conn = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE previous_format (n INTEGER)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        conn.close().await.unwrap();
+        let old = std::fs::read(&path).unwrap();
+        let result = AiccStorage::open(&url, RdbBackend::Sqlite).await;
+        assert!(matches!(result, Err(StorageError::UnsupportedSchema(_))));
+        assert_eq!(std::fs::read(path).unwrap(), old);
     }
 
     #[tokio::test]
@@ -2368,12 +2304,12 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE held (value INTEGER)")
+        sqlx::query("PRAGMA user_version=0")
             .execute(&mut connection)
             .await
             .unwrap();
         let mut reader = connection.begin().await.unwrap();
-        sqlx::query("SELECT * FROM held")
+        sqlx::query("SELECT COUNT(*) FROM sqlite_schema")
             .fetch_all(&mut *reader)
             .await
             .unwrap();

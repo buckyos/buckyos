@@ -60,13 +60,13 @@ async fn create_init_list_by_template(
     );
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
     let mut start_params: serde_json::Value = serde_json::from_str(&start_params_str)?;
+    let start_config = StartConfigSummary::from_value(&start_params)?;
     // 将Windows路径中的反斜杠转换为正斜杠，避免TOML转义问题
     let buckyos_root = buckyos_root_dir
         .to_string_lossy()
         .to_string()
         .replace('\\', "/");
     start_params["BUCKYOS_ROOT"] = json!(buckyos_root);
-    let start_config = StartConfigSummary::from_value(&start_params)?;
 
     //generate dynamic params
     let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
@@ -477,7 +477,7 @@ mod test {
                 .expect("AICC settings should be initialized"),
         )
         .expect("AICC settings should be valid JSON");
-        assert_eq!(aicc_settings, serde_json::json!({"providers": []}));
+        assert_eq!(aicc_settings, serde_json::json!({"schema": "buckyos.aicc.settings.v1", "providers": []}));
         assert!(init_map.contains_key("services/msg-center/spec"));
         assert!(init_map.contains_key("services/nfs-server/spec"));
         assert!(init_map.contains_key("services/nfs-server/settings"));

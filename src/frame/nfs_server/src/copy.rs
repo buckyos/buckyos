@@ -133,10 +133,9 @@ impl CopyJournal {
     pub fn open(data: &Path) -> NfsResult<Self> {
         let db = Connection::open(data.join("copy.sqlite"))?;
         db.busy_timeout(Duration::from_secs(10))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-            CREATE TABLE IF NOT EXISTS copy_job(task TEXT PRIMARY KEY, input TEXT NOT NULL, rules TEXT NOT NULL DEFAULT '{}');
-            CREATE TABLE IF NOT EXISTS copy_item(task TEXT NOT NULL, id INTEGER NOT NULL, parent INTEGER, state TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(task,id));
-            CREATE INDEX IF NOT EXISTS copy_state ON copy_item(task,state,id);")?;
+        buckyos_sqlite_schema::initialize(&db, 1, &[include_str!("copy.sql")])?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "FULL")?;
         let locks = data.join("copy-locks");
         std::fs::create_dir_all(&locks)?;
         Ok(Self {

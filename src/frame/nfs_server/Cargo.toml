@@ -6,6 +6,7 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
+buckyos-sqlite-schema.workspace = true
 tokio = { workspace = true }
 axum = { workspace = true }
 futures = { workspace = true }

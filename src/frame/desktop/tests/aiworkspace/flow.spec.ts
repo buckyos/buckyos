@@ -3,7 +3,9 @@
  * ("notepad") mode and its block-level sync; the table as a database grid. Real backend, sample workspace. */
 
 import type { Page } from '@playwright/test'
-import { expect, expectAllCommitted, openWorkspace, setCanvasMode, test, type Api } from './fixtures'
+import { markdownCodec } from '../../src/app/aiworkspace/richtext/markdownSource'
+import { buildRichTextSchema } from '../../src/app/aiworkspace/richtext/schema'
+import { core, expect, expectAllCommitted, openWorkspace, setCanvasMode, test, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -199,6 +201,87 @@ test('FP04 Markdown source ("notepad") mode: typed text reaches the rich text bl
   await expect(page.getByTestId('aiws-md-source')).toHaveCount(0)
   await expect(notes(page).locator('h1')).toHaveText('本周进展')
   await expect(notes(page).locator('blockquote')).toContainText('引用一段')
+})
+
+test('FP04 escaped outline survives reopening Markdown source and editing one word', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `escaped outline ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const toggle = frame(page, 'cell-notes').getByTestId('aiws-md-toggle')
+  const source = frame(page, 'cell-notes').getByTestId('aiws-md-source')
+  const outline = ['\\===', '\\- Agent 核心机制\\', '&#x20; \\- chat_route\\', '&#x20;   \\- 选择runtime\\', '&#x20;     \\- work_simple\\', '&#x20;       \\- 最后一行\\'].join('\n')
+  const lines = ['=== - Agent 核心机制', '  - chat_route', '    - 选择runtime', '      - work_simple', '        - 最后一行\\']
+  await toggle.click()
+  await source.fill(outline)
+  await source.press('Control+/')
+  await expect(notes(page).locator('p')).toHaveCount(1)
+  const storedLines = async () => (await api.ast(ALICE, ws.workspace_id, 'notes')).content[0].content
+    .map((node: Json) => node.type === 'hard_break' ? '\n' : node.text).join('').split('\n')
+  await expect.poll(storedLines).toEqual(lines)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await toggle.click()
+  await source.fill((await source.inputValue()).replace('选择runtime', '选择环境'))
+  await source.press('Control+/')
+  await expect.poll(storedLines).toEqual(lines.map((line) => line.replace('选择runtime', '选择环境')))
+})
+
+test('FP04 a deeply nested Markdown list can be saved verbatim', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `deep outline ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const block = frame(page, 'cell-notes')
+  await block.getByTestId('aiws-md-toggle').click()
+  const source = block.getByTestId('aiws-md-source')
+  const outline = ['- 机制', '  - 任务', '    - 执行', '      - runtime', '        - 子任务'].join('\n')
+  await source.fill(outline)
+  await source.press('Control+/')
+  await expect(source).toHaveValue(outline)
+  await block.getByTestId('aiws-md-toggle').click()
+  await expect(source).toHaveValue(outline)
+  await block.getByTestId('aiws-md-save-plain').click()
+  await source.press('Control+/')
+  await expect.poll(async () => {
+    const { content } = await api.ast(ALICE, ws.workspace_id, 'notes')
+    return content.flatMap((p: Json) => p.content ?? []).map((node: Json) => node.type === 'hard_break' ? '\n' : node.text).join('')
+  }).toBe(outline)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await expect(notes(page).locator('p')).toHaveCount(1)
+  await expect(notes(page).locator('br')).toHaveCount(4)
+})
+
+test('FP04 refreshing with a pending source edit keeps the original in local drafts', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `source recovery ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const block = frame(page, 'cell-notes')
+  await block.getByTestId('aiws-md-toggle').click()
+  const input = '# 变更记录\n\n  \\- 待验证\\'
+  await block.getByTestId('aiws-md-source').evaluate((el, value) => {
+    (el as HTMLTextAreaElement).value = value
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    location.reload()
+  }, input)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const drafts = block.getByTestId('aiws-drafts')
+  await drafts.getByRole('button').first().click()
+  await expect(drafts.locator('textarea[readonly]')).toHaveValue(input)
+})
+
+test('Markdown source preserves a literal indented outline, blank lines, and inline formatting on re-edit', () => {
+  const wasm = core()
+  const schema = buildRichTextSchema(JSON.parse(wasm.richtext_schema()))
+  const codec = markdownCodec(wasm, (id) => id)
+  const br = { type: 'hard_break' }
+  const literal = (text: string) => ({ type: 'text', text })
+  const paragraph = schema.nodeFromJSON({ type: 'paragraph', attrs: { block_id: 'outline' }, content: [
+    literal('==='), br, literal('- Agent'), br, literal('  - chat_route'), br, literal('    - nested'), br,
+    literal('      - deeper'), br, literal('        - deepest'), br, br,
+    literal('1. text'), br, literal('\t # **literal** &amp; [ref](entity:ref) \\ '), br,
+    { type: 'text', text: 'bold', marks: [{ type: 'strong' }] }, literal(' and '),
+    { type: 'text', text: 'code_name', marks: [{ type: 'code' }] }, br, literal('last\\'), br,
+  ] })
+  const source = codec.toMd(paragraph)
+  const parsed = codec.parse(source)
+  expect(parsed).toHaveLength(1)
+  expect(parsed[0].type).toBe('paragraph')
+  expect(schema.nodeFromJSON(parsed[0]).content.toJSON()).toEqual(paragraph.content.toJSON())
 })
 
 test('FP05 source mode and a colleague: changes from elsewhere come in, my typing is kept', async ({ browser, api }) => {
