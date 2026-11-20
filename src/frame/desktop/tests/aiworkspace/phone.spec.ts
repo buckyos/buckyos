@@ -548,7 +548,15 @@ test('UI-PH45 §4.5 the phone\'s status bar opens its panel from the bottom; the
   expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1)
   const row = (await page.getByTestId('aiws-status-row').boundingBox())!
   expect(box.y + box.height).toBeLessThanOrEqual(row.y + 1)
+  await page.getByTestId('aiws-status-online').tap()
+  const members = page.getByTestId('aiws-members-sheet')
+  await expect(members).toBeVisible()
+  await expect(panel).toHaveCount(0)
+  await members.getByTestId('aiws-members-sheet-close').tap()
+  await expect(members).toHaveCount(0)
+  await expect(panel).toHaveCount(0)
   await page.getByTestId('aiws-status').tap()
+  await panel.getByRole('button', { name: '收起工作区状态' }).tap()
   await expect(panel).toHaveCount(0)
   // a comment on a Block from its context window: the comments come up from the bottom
   const fingers = await Fingers.of(page)

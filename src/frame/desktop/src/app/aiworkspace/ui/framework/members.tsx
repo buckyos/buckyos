@@ -108,20 +108,28 @@ export function AvatarStack() {
 
 /** The online count of the status bar (only while the service answers): it opens the online members — the way in on a
  * phone, which has no collaboration zone (§6.1). */
-export function OnlineCount() {
+export function OnlineCount({ statusExpanded, onCollapseStatus }: { statusExpanded: boolean; onCollapseStatus: () => void }) {
   const shell = useShell()
   const { t } = useAiwsText()
   const presence = usePresence()
-  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  const { open, setOpen, close, bindAnchor, bindTrigger } = usePopover()
+  const membersOpen = open && !statusExpanded
+  useEffect(() => {
+    if (statusExpanded || !presence.live) setOpen(false)
+  }, [statusExpanded, presence.live, setOpen])
   if (!presence.live) return null
   const label = t('aiworkspace.activity.online', { count: presence.online })
+  const toggleMembers = () => {
+    if (statusExpanded) onCollapseStatus()
+    setOpen(!membersOpen)
+  }
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-status-online" aria-haspopup="dialog" aria-expanded={open} aria-label={t('aiworkspace.members.openList', { label })}
-        title={t('aiworkspace.framework.members.panel')} data-testid="aiws-status-online" data-count={presence.online} onClick={toggle}>
+      <button ref={bindTrigger} type="button" className="aiws-status-online" aria-haspopup="dialog" aria-expanded={membersOpen} aria-label={t('aiworkspace.members.openList', { label })}
+        title={t('aiworkspace.framework.members.panel')} data-testid="aiws-status-online" data-count={presence.online} onClick={toggleMembers}>
         {label}
       </button>
-      {open && (shell.phone
+      {membersOpen && (shell.phone
         ? <MembersSheet onClose={close} />
         : (
           <PopoverPanel align="end" label={t('aiworkspace.framework.members.panel')} testId="aiws-members-popover" className="aiws-popover-up aiws-members-panel">

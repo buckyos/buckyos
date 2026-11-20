@@ -10,7 +10,8 @@
  * read-only direct mode and the show lock stay stacked above the status bar with their recovery actions, never folded,
  * hidden or configured away. */
 
-import { useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { unwrap } from '../../api/client'
 import { describeError } from '../../api/session'
@@ -48,7 +49,7 @@ function useConnection() {
   return { status, sessionMode, readOnlyDirect, text }
 }
 
-function StatusSummary() {
+function StatusSummary({ ref, open, onToggle }: { ref: Ref<HTMLButtonElement>; open: boolean; onToggle: () => void }) {
   const store = useStore()
   const shell = useShell()
   const { t } = useAiwsText()
@@ -59,11 +60,10 @@ function StatusSummary() {
   useSyncExternalStore(store.userState.subscribe, store.userState.snapshot)
   const userSync = store.userState.syncState
   const modeWarning = sessionMode.kind === 'direct' && sessionMode.reason !== 'not_prepared'
-  const [open, setOpen] = useStatusExpanded()
   const uploads = useActiveUploads()
   return (
-    <button type="button" className={`aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-expanded={open} aria-controls="aiws-status-panel" aria-label={t('aiworkspace.shell.status.label')}
-      title={t(open ? 'aiworkspace.framework.status.collapse' : 'aiworkspace.framework.status.expand')} data-testid="aiws-status" onClick={() => setOpen(!open)}>
+    <button ref={ref} type="button" className={`aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-expanded={open} aria-controls="aiws-status-panel" aria-label={t('aiworkspace.shell.status.label')}
+      title={t(open ? 'aiworkspace.framework.status.collapse' : 'aiworkspace.framework.status.expand')} data-testid="aiws-status" onClick={onToggle}>
       <span className={`aiws-conn aiws-conn-${status.kind}`} data-testid="aiws-conn" data-status={status.kind} data-browser-offline={status.kind === 'offline' ? String(status.browserOffline) : undefined} title={text}>
         <span className="aiws-dot" aria-hidden="true" />{status.kind !== 'live' && <span>{text}</span>}
       </span>
@@ -88,9 +88,14 @@ function StatusSummary() {
  * the data mode's bar across the bottom (§5.5) — the current object on its left half, this status on the right, the
  * panel and the alerts above it. */
 export function StatusDock({ info }: { info?: ReactNode } = {}) {
-  const [open] = useStatusExpanded()
+  const [open, setOpen] = useStatusExpanded()
+  const statusButton = useRef<HTMLButtonElement>(null)
   const isBar = info !== undefined
-  const details = <><ShellAlerts />{open && <StatusPanel />}</>
+  const collapse = () => {
+    setOpen(false)
+    statusButton.current?.focus({ preventScroll: true })
+  }
+  const details = <><ShellAlerts />{open && <StatusPanel onCollapse={collapse} />}</>
   return (
     <div className={`aiws-status-dock${isBar ? ' is-bar' : ''}`} data-testid="aiws-status-dock">
       {isBar ? <div className="aiws-status-stack">{details}</div> : details}
@@ -98,8 +103,8 @@ export function StatusDock({ info }: { info?: ReactNode } = {}) {
         {isBar && <div className="aiws-status-info">{info}</div>}
         <JarvisButton />
         <div className="aiws-panel aiws-status-bubble">
-          <StatusSummary />
-          <OnlineCount />
+          <StatusSummary ref={statusButton} open={open} onToggle={() => setOpen(!open)} />
+          <OnlineCount statusExpanded={open} onCollapseStatus={() => setOpen(false)} />
         </div>
       </div>
     </div>
@@ -108,7 +113,7 @@ export function StatusDock({ info }: { info?: ReactNode } = {}) {
 
 /** The status panel (§4.5): what needs attention, the connection and offline details (folded by default), the runs
  * under way, the work log. */
-function StatusPanel() {
+function StatusPanel({ onCollapse }: { onCollapse: () => void }) {
   const { t } = useAiwsText()
   const counts = useSaveCounts()
   const ref = useRef<HTMLDivElement>(null)
@@ -126,7 +131,13 @@ function StatusPanel() {
   }, [])
   const attention = counts.unsaved + counts.saved_locally + counts.needs_attention > 0
   return (
-    <div ref={ref} id="aiws-status-panel" className="aiws-panel aiws-status-panel aiws-status-detail" role="region" aria-label={t('aiworkspace.framework.status.panel')} data-testid="aiws-status-detail">
+    <div ref={ref} id="aiws-status-panel" className="aiws-panel aiws-status-panel aiws-status-detail" role="region" aria-labelledby="aiws-status-title" data-testid="aiws-status-detail">
+      <div className="aiws-dialog-head aiws-status-head">
+        <b id="aiws-status-title" className="aiws-grow">{t('aiworkspace.framework.status.panel')}</b>
+        <button type="button" className="aiws-tool aiws-tool-small aiws-dialog-close" aria-label={t('aiworkspace.framework.status.collapse')} title={t('aiworkspace.framework.status.collapse')} onClick={onCollapse}>
+          <ChevronDown size={18} aria-hidden="true" />
+        </button>
+      </div>
       {attention && (
         <section data-testid="aiws-status-attention">
           <div className="aiws-panel-title">{t('aiworkspace.framework.status.attention')}</div>

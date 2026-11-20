@@ -33,7 +33,8 @@
 }
 
 /* ---- the status panel (§4.5): opens above the status bar, at most half the work area, scrolls */
-.aiws-status-panel { pointer-events: auto; width: 100%; box-sizing: border-box; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; flex: none; }
+.aiws-status-panel { pointer-events: auto; width: 100%; box-sizing: border-box; overflow-y: auto; padding: 0 12px 8px; display: flex; flex-direction: column; gap: 8px; flex: none; }
+.aiws-status-head { position: sticky; top: 0; z-index: 1; flex: none; padding: 4px 0; background: var(--cp-surface-opaque, var(--cp-surface)); }
 .aiws-status-panel > section + section, .aiws-status-panel > section + details, .aiws-status-panel > details + details { border-top: 1px solid var(--cp-border); padding-top: 8px; }
 .aiws-status-panel summary { font-weight: 600; font-size: 13px; }
 .aiws-status-panel .aiws-edits { margin: 0; }

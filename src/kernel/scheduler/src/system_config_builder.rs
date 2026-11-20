@@ -445,9 +445,17 @@ impl SystemConfigBuilder {
         } else {
             None
         };
+        if let Some(input) = self.entries.get("services/aicc/settings") {
+            anyhow::ensure!(
+                serde_json::from_str::<buckyos_api::StoredAiccSettings<Value>>(input).is_ok(),
+                "invalid services/aicc/settings in the scheduler boot template: \
+                 expected a JSON object with schema buckyos.aicc.settings.v1"
+            );
+            return Ok(self);
+        }
         let settings =
             build_aicc_settings_with_endpoints(config, sn_ai_provider_endpoints.as_ref());
-        self.insert_json_if_absent(
+        self.insert_json(
             "services/aicc/settings",
             &buckyos_api::StoredAiccSettings::V1(settings),
         )?;
@@ -1238,6 +1246,32 @@ mod beta22_tests {
 
         assert_eq!(settings, json!({"providers": []}));
         assert_canonical_aicc_settings(&settings);
+    }
+
+    #[tokio::test]
+    async fn aicc_boot_override_requires_the_explicit_schema_before_writing_system_config() {
+        let key = "services/aicc/settings";
+        let example = include_str!("../../../dev_configs/aicc.json");
+        let mut builder = SystemConfigBuilder::new(HashMap::from([(key.into(), example.into())]));
+        builder.add_aicc(&start_config(), None).await.unwrap();
+        assert_eq!(builder.entries[key], example);
+        for invalid in [
+            r#"{"schema":"buckyos.aicc.settings.v2","providers":[]}"#,
+            r#"{"providers":[]}"#,
+            r#"{"providers":["not-for-logs"]"#,
+        ] {
+            let mut builder =
+                SystemConfigBuilder::new(HashMap::from([(key.into(), invalid.into())]));
+            let error = builder
+                .add_aicc(&start_config(), None)
+                .await
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains(key));
+            assert!(error.contains("buckyos.aicc.settings.v1"));
+            assert!(!error.contains("not-for-logs"));
+        }
     }
 
     #[test]
