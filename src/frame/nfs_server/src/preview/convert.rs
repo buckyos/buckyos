@@ -18,7 +18,7 @@
 
 use super::heif::{HeifInfo, Nclx, Transform};
 use super::media::{Kind, MediaInfo, Stream};
-use super::tools::{PdfTools, Tool, Toolchain};
+use super::tools::{child_dir, PdfTools, Tool, Toolchain};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -408,6 +408,9 @@ async fn drain<R: tokio::io::AsyncRead + Unpin>(mut r: R, keep: usize) -> String
 fn command(path: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(path);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    if let Some(dir) = child_dir() {
+        cmd.current_dir(dir);
+    }
     buckyos_api::hide_child_console_async(&mut cmd);
     cmd
 }
@@ -553,6 +556,9 @@ async fn network_isolation() -> &'static [&'static str] {
             for way in WAYS {
                 let mut cmd = tokio::process::Command::new(way[0]);
                 cmd.args(&way[1..]).arg("true").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                if let Some(dir) = child_dir() {
+                    cmd.current_dir(dir);
+                }
                 if matches!(cmd.status().await, Ok(s) if s.success()) {
                     log::info!("preview: soffice runs without network ({})", way.join(" "));
                     return way;
@@ -833,6 +839,13 @@ mod tests {
         assert_eq!(document_timeout(0).as_secs(), 120);
         assert_eq!(document_timeout(12 * 1024 * 1024).as_secs(), 120);
         assert_eq!(document_timeout(30 * 1024 * 1024 + 1).as_secs(), 310);
+    }
+
+    #[test]
+    fn converters_run_outside_the_service_directory() {
+        let dir = child_dir().expect("temporary directory exists");
+        assert_eq!(dir, std::env::temp_dir());
+        assert_eq!(command(Path::new("ffprobe")).as_std().get_current_dir(), Some(dir));
     }
 
     #[cfg(unix)]

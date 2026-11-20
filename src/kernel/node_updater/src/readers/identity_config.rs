@@ -1,7 +1,7 @@
 use super::{Context, Failure};
 use buckyos_api::{
     build_current_rbac_config, decode_device_config_without_verify, user_did_from_doc_value,
-    UserSettings,
+    UserSettings, UserType,
 };
 use name_lib::{DeviceInfo, UserPrivateProfile};
 
@@ -42,7 +42,13 @@ pub(super) fn identity(ctx: &mut Context) -> Result<(), Failure> {
             ["users", owner, "settings"] => {
                 let settings: UserSettings = serde_json::from_slice(bytes)
                     .map_err(|_| ctx.unsupported(key, "unrecognized user settings"))?;
-                if settings.user_id != *owner {
+                // Scheduler stores the zone root account at users/root/settings
+                // under the owner's user ID (SystemConfigBuilder::add_default_accounts).
+                if *owner == "root" {
+                    if !matches!(settings.user_type, UserType::Root) {
+                        return Err(ctx.unsupported(key, "root settings must have type root"));
+                    }
+                } else if settings.user_id != *owner {
                     return Err(ctx.unsupported(key, "user ID differs from the config path"));
                 }
             }
@@ -102,5 +108,44 @@ mod tests {
             policy
         );
         assert!(db.scan_prefix("__meta/revision/").next().is_none());
+    }
+
+    #[test]
+    fn root_settings_carry_the_owner_id_and_other_accounts_match_their_path() {
+        let settings = |user_id: &str, user_type: &str| {
+            serde_json::json!({
+                "user_id": user_id, "type": user_type, "password": "hash",
+                "state": "active", "res_pool_id": "default", "is_local": true,
+            })
+            .to_string()
+        };
+        for (key, value, accepted) in [
+            // As written by SystemConfigBuilder::add_default_accounts.
+            ("users/root/settings", settings("alice", "root"), true),
+            ("users/alice/settings", settings("alice", "admin"), true),
+            ("users/root/settings", settings("alice", "admin"), false),
+            ("users/bob/settings", settings("alice", "user"), false),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("local/system_config");
+            drop(system_config::sled_provider::SledStore::open(&path).unwrap());
+            let db = sled::open(&path).unwrap();
+            db.insert(key, value.as_bytes()).unwrap();
+            db.flush().unwrap();
+            drop(db);
+            let result = super::super::prepare(
+                root.path(),
+                &root.path().join("security"),
+                tempfile::tempdir().unwrap().path(),
+                &|_| Ok(false),
+            );
+            match result {
+                Ok(run) => assert!(accepted && run.changes.is_empty(), "{key} {value}"),
+                Err(e) => assert!(
+                    !accepted && e.unsupported && e.module == "identity-config" && e.area == key,
+                    "{key} {value}: {e}"
+                ),
+            }
+        }
     }
 }

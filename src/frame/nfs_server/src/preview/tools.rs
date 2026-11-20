@@ -378,9 +378,23 @@ pub fn identity(paths: &[&Path]) -> Identity {
         .collect()
 }
 
+/// Working directory of every converter process. Inherited, it would be the
+/// service's package under `$BUCKYOS_ROOT/bin`: a converter that never exits
+/// (one wedged in an uncancellable kernel wait outlives a kill) then keeps that
+/// directory open and an update cannot replace the package. The temporary
+/// directory itself is never removed. Inputs and outputs are absolute paths.
+pub(super) fn child_dir() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| Some(std::env::temp_dir()).filter(|dir| dir.is_dir()))
+        .as_deref()
+}
+
 fn run(path: &Path, args: &[&str]) -> Option<std::process::Output> {
     let mut cmd = Command::new(path);
     cmd.args(args).stdin(std::process::Stdio::null());
+    if let Some(dir) = child_dir() {
+        cmd.current_dir(dir);
+    }
     buckyos_api::hide_child_console(&mut cmd);
     cmd.output().ok().filter(|o| o.status.success())
 }
@@ -683,6 +697,16 @@ mod tests {
     #[test]
     fn an_installed_tool_wins_over_the_extension_package() {
         assert!(search_dirs().last().unwrap().ends_with("tools/bin"));
+    }
+
+    #[test]
+    fn probes_run_outside_the_service_directory() {
+        let (shell, args): (&str, &[&str]) = if cfg!(windows) { ("cmd", &["/C", "cd"]) } else { ("sh", &["-c", "pwd"]) };
+        let reported = output_of(Path::new(shell), args).expect("shell runs");
+        let reported = std::fs::canonicalize(reported.trim()).unwrap();
+        let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        assert_eq!(reported, temp);
+        assert_ne!(reported, std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap());
     }
 
     #[test]
