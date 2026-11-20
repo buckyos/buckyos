@@ -24,7 +24,15 @@ export class ZoneClient {
   private renewed: string | null = null
 
   /** `renew`: a fresh session of the same user (a password login), for a test that outlives its login token. */
-  constructor(readonly page: Page, readonly token: string, private readonly renew: (() => Promise<string>) | null = null) {}
+  constructor(page: Page, token: string, renew: (() => Promise<string>) | null = null) {
+    this.page = page
+    this.token = token
+    this.renew = renew
+  }
+
+  readonly page: Page
+  readonly token: string
+  private readonly renew: (() => Promise<string>) | null
 
   /** The session this user has now: the newest of the login token, the browser's (refreshed) session cookies and a
    * renewed login. */
@@ -105,7 +113,7 @@ function hashPassword(user: string, value: string, nonce?: number) {
   return nonce === undefined ? stored : createHash('sha256').update(`${stored}${nonce}`).digest('base64')
 }
 
-async function login(page: Page, userId: string, value: string): Promise<Actor> {
+export async function login(page: Page, userId: string, value: string): Promise<Actor> {
   await page.goto('/')
   await page.getByLabel('Username', { exact: true }).fill(userId)
   await page.getByLabel('Password', { exact: true }).fill(value)
@@ -116,7 +124,7 @@ async function login(page: Page, userId: string, value: string): Promise<Actor> 
   const claims = JSON.parse(Buffer.from(cookie.value.split('.')[1], 'base64url').toString('utf8')) as { sub: string }
   expect(claims.sub).toBe(userId)
   expect(await page.evaluate(() => localStorage.getItem('aiworkspace.dev'))).toBeNull()
-  const client = new ZoneClient(page, cookie.value, async () => {
+  const client: ZoneClient = new ZoneClient(page, cookie.value, async (): Promise<string> => {
     const nonce = Date.now()
     const renewed = await client.service<{ session_token: string }>('verify-hub', 'login_by_password', {
       type: 'password', username: userId, password: hashPassword(userId, value, nonce), target: { kind: 'system', service_id: 'control-panel' }, login_nonce: nonce,

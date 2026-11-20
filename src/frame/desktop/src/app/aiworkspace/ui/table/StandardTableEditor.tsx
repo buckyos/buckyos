@@ -30,7 +30,7 @@ export function StandardTableEditor({ cellId, sourceId, source, size = 'embedded
   return (
     <LockScope entity={readOnly ? undefined : source}>
       <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} readOnly={readOnly || lockBlocks} readOnlyReason={readOnlyReason} size={size} annotations={ui.annotations}
-        onAnnotate={readOnly ? undefined : ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
+        onAnnotate={ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
     </LockScope>
   )
 }

@@ -123,7 +123,7 @@ test('[ext] a control from home in the Desktop, an instance, a rebuild, the libr
   // 3. one shared workspace: each brings its own control from its own library
   const shared = await owner.client.ok<WorkspaceSummary>('ws.create', { title: owner.client.prefix })
   owner.client.owned.add(shared.workspace_id)
-  await owner.client.ok('ws.grant', { workspace_id: shared.workspace_id, subject: peer.userId, capabilities: ['read', 'update', 'append', 'structure', 'delete', 'comment'] })
+  await owner.client.ok('acl.set', { workspace_id: shared.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read', 'update', 'append', 'structure', 'delete', 'comment'] }] })
   const ownerLib = await owner.client.ok<{ packages: { pkg_id: string; controls: { ident: string }[] }[] }>('ext.list_library', {})
   expect(ownerLib.packages.map((p) => p.pkg_id)).toContain(`dv-owner-${tag}`)
   await owner.client.ok('ext.import', { workspace_id: shared.workspace_id, items: [{ pkg_id: `dv-owner-${tag}`, ident: `did:bns:${owner.userId}#${name}` }] })

@@ -1,5 +1,5 @@
 import { unwrap } from '../../src/app/aiworkspace/api/client'
-import type { ChangesPage, QueryPage, QueryParams, Result, SqlResult, WorkspaceInfo, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
+import type { ChangesPage, QueryParams, Result, SqlResult, WorkspaceInfo, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
 import { createSample, expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
@@ -18,7 +18,7 @@ function collaboration(actor: Actor, ws: Workspace) {
 
 test('[logic-clone] a clone preserves local references but starts independent content, collaboration and permissions', async ({ owner, peer }, info) => {
   const source = await createSample(owner)
-  await owner.client.ok('ws.grant', { workspace_id: source.workspace_id, subject: peer.userId, capabilities: ['read', 'export'] })
+  await owner.client.ok('acl.set', { workspace_id: source.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read', 'export'] }] })
   expect((await peer.client.info(source)).workspace_id).toBe(source.workspace_id)
   const sourceInfo = await owner.client.info(source)
   const originalRoot = await root(owner, source)
