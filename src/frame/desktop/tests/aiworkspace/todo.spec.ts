@@ -61,7 +61,12 @@ test('TD01 list: projected items, quick add keeps adding, tick to complete, comp
   await openCanvas(page, ALICE, ws.workspace_id)
   await expect(item(page, 'a')).toContainText('Write the report')
   await expect(page.getByTestId('aiws-todo-count-tl')).toContainText('3')
+  const doneHead = page.getByTestId('aiws-todo-donehead-tl')
+  const outline = page.getByTestId('aiws-selection-tl')
+  await expect(doneHead).toHaveCSS('opacity', '1')
   await activate(page)
+  await expect(outline).toBeVisible()
+  await expect(doneHead).toHaveCSS('opacity', '1')
   // quick add: Enter adds and keeps the field for the next one
   const add = page.getByTestId('aiws-todo-add-tl')
   await add.click()
@@ -77,11 +82,14 @@ test('TD01 list: projected items, quick add keeps adding, tick to complete, comp
   await expect.poll(() => cell(api, ws.workspace_id, 'a', 'status')).toBe('done')
   expect(await cell(api, ws.workspace_id, 'a', 'done_at')).toBeTruthy()
   // the completed section folds and unfolds
-  await page.getByTestId('aiws-todo-donehead-tl').click()
+  await doneHead.click()
   await expect(item(page, 'd')).toHaveCount(0)
-  await page.getByTestId('aiws-todo-donehead-tl').click()
+  await doneHead.click()
   await expect(item(page, 'd')).toBeVisible()
   await page.getByTestId('aiws-canvas-view').screenshot({ path: `${SHOTS}/td01-list.png` })
+  await page.getByTestId('aiws-canvas').click({ position: { x: 600, y: 750 } })
+  await expect(outline).toBeHidden()
+  await expect(doneHead).toHaveCSS('opacity', '1')
 })
 
 test('TD07 a newly added title saves once on Enter and Escape discards the next edit', async ({ page, api }) => {
@@ -241,6 +249,13 @@ test('TD05 read-only members cannot change; the kernel refuses a bad status', as
   await openCanvas(page, BOB, ws.workspace_id)
   await expect(item(page, 'a')).toBeVisible()
   await expect(page.getByTestId('aiws-todo-add-tl')).toBeDisabled()
+  await activate(page)
+  await page.getByTestId('aiws-todo-mode-board').click()
+  const addCard = page.getByTestId('aiws-board-add-todo')
+  await expect(addCard).toBeDisabled()
+  await expect(addCard).toHaveCSS('opacity', '0.6')
+  await page.getByTestId('aiws-canvas').click({ position: { x: 600, y: 750 } })
+  await expect(addCard).toHaveCSS('opacity', '0.6')
   const a = await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks', selector: { kind: 'table_record', record_id: 'a' } }) as { content: { revs: Record<string, number> } }
   const bad = await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'tasks', values: [{ record_id: 'a', field_id: 'order', value: 'Not a key!', expect: { rev: a.content.revs.order ?? 0 } }] }])
   expect(bad.status, JSON.stringify(bad)).toBe('rejected')

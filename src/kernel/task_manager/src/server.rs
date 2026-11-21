@@ -1204,8 +1204,16 @@ impl TaskManagerHandler for TaskManagerService {
         let (tasks, next_cursor) = self.store.list_tasks(&req).await?;
         let mut summaries = Vec::new();
         for task in tasks {
-            let permission = compute_permission(&self.store, &principal, &task).await?;
-            if permission.visible() {
+            // This RBAC grant unconditionally includes ReadMeta in compute_permission.
+            // For other callers the full relation and inheritance checks still apply.
+            if principal
+                .view_gate
+                .may_view_user_tasks(&principal, &task.creator.user_id)
+                .await
+                || compute_permission(&self.store, &principal, &task)
+                    .await?
+                    .visible()
+            {
                 summaries.push(summarize_task(&task));
             }
         }
@@ -3877,6 +3885,98 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let mut expected = vec![user.task_id, system.task_id];
         expected.sort();
         assert_eq!(task_ids, expected);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tasks_newest_first_has_stable_cross_partition_cursor_and_acl() {
+        let (service, dir) = setup_service().await;
+        let alice = user_ctx("alice", "app-a");
+        let bob = user_ctx("bob", "app-b");
+        let mut expected = Vec::new();
+        for (label, domain, created_at, visible) in [
+            ("first", StorageDomain::System, 10_i64, true),
+            ("tie-a", StorageDomain::User, 20, true),
+            ("tie-b", StorageDomain::System, 20, true),
+            ("newest", StorageDomain::System, 30, false),
+        ] {
+            let mut req = raw_create_req(label, label);
+            req.storage_domain = Some(domain);
+            let ctx = if visible { &alice } else { &bob };
+            let task = service.handle_create_task(req, ctx.clone()).await.unwrap();
+            let db = if domain == StorageDomain::User {
+                "user.db"
+            } else {
+                "system.db"
+            };
+            let url = format!("sqlite://{}", dir.path().join(db).display());
+            let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+            sqlx::query("UPDATE task SET created_at = ? WHERE task_id = ?")
+                .bind(created_at)
+                .bind(&task.task_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            if visible {
+                expected.push((created_at, task.task_id));
+            }
+        }
+        expected.sort_unstable_by(|a, b| b.cmp(a));
+        let oldest_first = service
+            .handle_list_tasks(ListTasksReq::default(), alice.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            oldest_first
+                .tasks
+                .iter()
+                .map(|task| &task.task_id)
+                .collect::<Vec<_>>(),
+            expected.iter().rev().map(|(_, id)| id).collect::<Vec<_>>(),
+        );
+        let request = ListTasksReq {
+            newest_first: true,
+            limit: Some(1),
+            ..Default::default()
+        };
+        let hidden = service
+            .handle_list_tasks(request.clone(), alice.clone())
+            .await
+            .unwrap();
+        assert!(hidden.tasks.is_empty());
+        let mut cursor = hidden.next_cursor.expect("later visible candidates");
+
+        // The hidden first candidate came from System. A concurrent insertion into User must
+        // not leap ahead of this cursor even though no User rows have been consumed yet.
+        let mut inserted = raw_create_req("inserted", "late-user");
+        inserted.storage_domain = Some(StorageDomain::User);
+        service
+            .handle_create_task(inserted, alice.clone())
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        loop {
+            let page = service
+                .handle_list_tasks(
+                    ListTasksReq {
+                        cursor: Some(cursor),
+                        ..request.clone()
+                    },
+                    alice.clone(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.tasks.len(), 1);
+            let task = &page.tasks[0];
+            seen.push((task.created_at as i64, task.task_id.clone()));
+            if task.storage_domain == StorageDomain::User {
+                assert!(page.next_cursor.as_deref().unwrap().starts_with("v1|end|"));
+            }
+            match page.next_cursor {
+                Some(next) => cursor = next,
+                None => break,
+            }
+        }
+        assert_eq!(seen, expected);
     }
 
     #[tokio::test(flavor = "current_thread")]

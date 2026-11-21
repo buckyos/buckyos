@@ -37,7 +37,7 @@ import { UnboundSource } from '../data/BindDialogs'
 import { bindControl } from '../data/binding'
 import { dataColors } from '../data/colors'
 import { bindDialogs } from '../data/dialogBus'
-import type { ControlBodyProps } from '../registry'
+import { controlInputProps, type ControlBodyProps } from '../registry'
 import { EventDetail } from './EventDetail'
 import { draftOf, draftTimes, EventForm, hhmm, locale, MiniMonth, QuickCreate, ScopeAsk, type EventDraft } from './EventForm'
 import {
@@ -584,20 +584,20 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
     <div className="aiws-dc-head aiws-cal-head" data-testid={`aiws-cal-head-${containerId}`}>
       {/* on a flow page the Block's title row (UI 框架 PRD §6.2) carries the title and ⋯ */}
       {host !== 'flow' && <span className="aiws-dc-title">{container.title || t('aiworkspace.calendar.title')}</span>}
-      <button type="button" className="aiws-cal-today" disabled={!active} data-testid={`aiws-cal-today-${containerId}`} onClick={() => go(null)} title="T">{t('aiworkspace.calendar.today')}</button>
-      <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.calendar.prev')} title={`${t('aiworkspace.calendar.prev')} (←)`} data-testid={`aiws-cal-prev-${containerId}`} onClick={() => step(-1)}><ChevronLeft size={16} aria-hidden="true" /></button>
-      <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.calendar.next')} title={`${t('aiworkspace.calendar.next')} (→)`} data-testid={`aiws-cal-next-${containerId}`} onClick={() => step(1)}><ChevronRight size={16} aria-hidden="true" /></button>
-      <button type="button" className="aiws-cal-range" disabled={!active} data-testid={`aiws-cal-range-${containerId}`} onClick={(e) => setPopover({ kind: 'jump', anchor: anchorOf(e.currentTarget) })}>{rangeLabel}</button>
+      <button type="button" className="aiws-cal-today" {...controlInputProps(active)} data-testid={`aiws-cal-today-${containerId}`} onClick={() => go(null)} title="T">{t('aiworkspace.calendar.today')}</button>
+      <button type="button" className="aiws-dc-iconbtn" {...controlInputProps(active)} aria-label={t('aiworkspace.calendar.prev')} title={`${t('aiworkspace.calendar.prev')} (←)`} data-testid={`aiws-cal-prev-${containerId}`} onClick={() => step(-1)}><ChevronLeft size={16} aria-hidden="true" /></button>
+      <button type="button" className="aiws-dc-iconbtn" {...controlInputProps(active)} aria-label={t('aiworkspace.calendar.next')} title={`${t('aiworkspace.calendar.next')} (→)`} data-testid={`aiws-cal-next-${containerId}`} onClick={() => step(1)}><ChevronRight size={16} aria-hidden="true" /></button>
+      <button type="button" className="aiws-cal-range" {...controlInputProps(active)} data-testid={`aiws-cal-range-${containerId}`} onClick={(e) => setPopover({ kind: 'jump', anchor: anchorOf(e.currentTarget) })}>{rangeLabel}</button>
       <span className="aiws-dc-spacer" />
       <div className="aiws-dc-seg" role="radiogroup" aria-label={t('aiworkspace.calendar.view')}>
         {CAL_VIEWS.map((v) => (
-          <button key={v} type="button" role="radio" aria-checked={view.view === v} className={view.view === v ? 'is-on' : undefined} disabled={!active}
+          <button key={v} type="button" role="radio" aria-checked={view.view === v} className={view.view === v ? 'is-on' : undefined} {...controlInputProps(active)}
             data-testid={`aiws-cal-view-${v}`} title={`${t(VIEW_LABEL[v])} (${VIEW_KEY[v]})`} onClick={() => setView(v)}><span>{t(VIEW_LABEL[v])}</span></button>
         ))}
       </div>
-      {canCreate && !phone && <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.calendar.newEvent')} title={`${t('aiworkspace.calendar.newEvent')} (N)`} data-testid={`aiws-cal-new-${containerId}`}
+      {canCreate && !phone && <button type="button" className="aiws-dc-iconbtn" {...controlInputProps(active)} aria-label={t('aiworkspace.calendar.newEvent')} title={`${t('aiworkspace.calendar.newEvent')} (N)`} data-testid={`aiws-cal-new-${containerId}`}
         onClick={(e) => setPopover({ kind: 'form', draft: newEventDraft(anchor, 9 * 60), p: null, anchor: anchorOf(e.currentTarget) })}><Plus size={16} aria-hidden="true" /></button>}
-      {host === 'canvas' && <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} data-testid={`aiws-cal-menu-${containerId}`}
+      {host === 'canvas' && <button type="button" className="aiws-dc-iconbtn" {...controlInputProps(active)} aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} data-testid={`aiws-cal-menu-${containerId}`}
         onClick={(e) => openBlockMenu(containerId, e.currentTarget)}><Ellipsis size={16} aria-hidden="true" /></button>}
     </div>
   )
@@ -617,7 +617,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
             {Array.from({ length: days }, (_, i) => {
               const day = range.first + i
               return (
-                <button key={day} type="button" className={`aiws-cal-dayname${day === today ? ' is-today' : ''}`} style={{ width: colW }} disabled={!active} onClick={() => { go(day); setView('day') }}>
+                <button key={day} type="button" className={`aiws-cal-dayname${day === today ? ' is-today' : ''}`} style={{ width: colW }} {...controlInputProps(active)} onClick={() => { go(day); setView('day') }}>
                   <LabelArt text={wdFmt.format(new Date(day * DAY_MS))} look={{ font_size: 11, muted: true, align: 'center' }} />
                   <span className="aiws-cal-daynum"><LabelArt text={String(new Date(day * DAY_MS).getUTCDate())} look={{ font_size: 18, weight: day === today ? 'bold' : 'normal', align: 'center' }} /></span>
                 </button>

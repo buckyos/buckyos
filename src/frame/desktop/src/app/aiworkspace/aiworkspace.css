@@ -1329,6 +1329,7 @@
   border-radius: 12px; overflow: hidden; color: var(--cp-text); font-size: 14px; box-sizing: border-box; outline: none; user-select: none; -webkit-user-select: none; }
 .aiws-data-flow > .aiws-dc { border: none; border-radius: 0; }
 .aiws-dc.is-active { box-shadow: 0 1px 2px rgb(0 0 0 / 4%); }
+.aiws-root .aiws-dc [data-awaiting-selection]:disabled { opacity: 1; }
 .aiws-dc:focus-visible { box-shadow: 0 0 0 2px var(--cp-accent); }
 .aiws-dc-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; min-height: 24px; }
 .aiws-dc-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

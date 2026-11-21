@@ -135,3 +135,13 @@ test.describe('phone', () => {
     await expect(row(page, 'Verify package integrity')).toBeVisible()
   })
 })
+
+test('an old active task updates through Waiting and completion and is removed when access is revoked', async ({ page }) => {
+  await page.goto('/taskcenter')
+  const result = await page.evaluate(async () => {
+    const path = '/tests/e2e/fixtures/task-center-rpc.ts'
+    const { pollOlderTask } = await import(path)
+    return pollOlderTask()
+  })
+  expect(result).toEqual({ states: ['Running', 'Running', 'Waiting', 'Terminal', null], shared: true, sharedReads: 1 })
+})

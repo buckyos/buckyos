@@ -42,7 +42,11 @@ pub struct TaskViewGate {
 }
 
 impl TaskViewGate {
-    async fn may_view_user_tasks(&self, principal: &Principal, owner_user_id: &str) -> bool {
+    pub(crate) async fn may_view_user_tasks(
+        &self,
+        principal: &Principal,
+        owner_user_id: &str,
+    ) -> bool {
         if let Some(cached) = self.memo.lock().await.get(owner_user_id) {
             return *cached;
         }

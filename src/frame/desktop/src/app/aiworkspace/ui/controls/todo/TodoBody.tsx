@@ -30,7 +30,7 @@ import { submitData, type DataWrite } from '../data/write'
 import { UnboundSource } from '../data/BindDialogs'
 import { registerControlKeys } from '../data/keys'
 import { annotatedRecords, copyRecordLink, openControlPage, recordAnchor, useRecordFocus } from '../data/focus'
-import type { ControlBodyProps } from '../registry'
+import { controlInputProps, type ControlBodyProps } from '../registry'
 import { TodoDetail } from './TodoDetail'
 import { CARD_GAP, CARD_TEMPLATE, cardHeight, COLUMN_COLLAPSED_W, COLUMN_GAP, COLUMN_HEADER, COLUMN_W, ITEMS_BINDING, itemScope, itemsOf, LIST_GAP, LIST_ROW_H, LIST_TEMPLATE, todayLocal, TODO_VIEW_DEFAULTS, TODO_VIEW_KEYS, type TodoView } from './model'
 
@@ -462,13 +462,13 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       <div className="aiws-dc-seg" role="radiogroup" aria-label={t('aiworkspace.todo.mode')}>
         {(['list', 'board'] as const).map((m) => (
           <button key={m} type="button" role="radio" aria-checked={view.mode === m} className={view.mode === m ? 'is-on' : undefined} data-testid={`aiws-todo-mode-${m}`}
-            title={t(MODE_LABEL[m])} disabled={!active} onClick={() => ctl.set({ mode: m })}>
+            title={t(MODE_LABEL[m])} {...controlInputProps(active)} onClick={() => ctl.set({ mode: m })}>
             {m === 'list' ? <List size={14} aria-hidden="true" /> : <Columns3 size={14} aria-hidden="true" />}<span>{t(MODE_LABEL[m])}</span>
           </button>
         ))}
       </div>
       {host === 'canvas' && (
-        <button type="button" className="aiws-dc-iconbtn" aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} disabled={!active} data-testid={`aiws-todo-menu-${containerId}`}
+        <button type="button" className="aiws-dc-iconbtn" aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} {...controlInputProps(active)} data-testid={`aiws-todo-menu-${containerId}`}
           onClick={(e) => openBlockMenu(containerId, e.currentTarget)}><Ellipsis size={16} aria-hidden="true" /></button>
       )}
     </div>
@@ -488,7 +488,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       {view.mode === 'list' && (
         <div className="aiws-todo-add">
           <Plus size={16} aria-hidden="true" />
-          <input value={adding?.column === null ? adding.text : ''} placeholder={canAdd ? t('aiworkspace.todo.addPlaceholder') : noWrite} disabled={!canAdd || !active} data-testid={`aiws-todo-add-${containerId}`}
+          <input value={adding?.column === null ? adding.text : ''} placeholder={canAdd ? t('aiworkspace.todo.addPlaceholder') : noWrite} {...controlInputProps(active, canAdd)} data-testid={`aiws-todo-add-${containerId}`}
             onFocus={() => { if (!adding) setAdding({ column: null, text: '' }) }}
             onChange={(e) => setAdding({ column: null, text: e.target.value })}
             onBlur={() => { if (!adding?.text) setAdding(null) }}
@@ -514,7 +514,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
           {view.mode === 'board' && (
             <div className="aiws-board-newcol" style={{ left: board.width + COLUMN_GAP, width: 200 }}>
               {newColumn === null ? (
-                <button type="button" className="aiws-dc-ghostbtn" disabled={!canStructure || !active} title={canStructure ? undefined : t('aiworkspace.todo.needStructure')} data-testid={`aiws-todo-addcol-${containerId}`}
+                <button type="button" className="aiws-dc-ghostbtn" {...controlInputProps(active, canStructure)} title={canStructure ? undefined : t('aiworkspace.todo.needStructure')} data-testid={`aiws-todo-addcol-${containerId}`}
                   onClick={() => setNewColumn('')}><Plus size={14} aria-hidden="true" /> {t('aiworkspace.todo.addColumn')}</button>
               ) : (
                 <input autoFocus value={newColumn} placeholder={t('aiworkspace.todo.columnName')} data-testid={`aiws-todo-colname-${containerId}`}
@@ -525,7 +525,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
             </div>
           )}
           {view.mode === 'list' && (done.length > 0) && (
-            <button type="button" className="aiws-todo-donehead" style={{ top: list.doneY, width: contentW }} disabled={!active} data-testid={`aiws-todo-donehead-${containerId}`}
+            <button type="button" className="aiws-todo-donehead" style={{ top: list.doneY, width: contentW }} {...controlInputProps(active)} data-testid={`aiws-todo-donehead-${containerId}`}
               onClick={() => ctl.set({ hide_done: !view.hide_done })}>
               {view.hide_done ? <ChevronRight size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
               {t('aiworkspace.todo.doneSection', { n: done.length })}
@@ -612,14 +612,14 @@ function BoardColumn({ column, label, count, height, dropping, active, onToggle,
   return (
     <>
       <div className={`aiws-board-col${column.collapsed ? ' is-collapsed' : ''}${dropping ? ' is-dropping' : ''}`} style={{ left: r.x, top: r.y, width: r.w, height }} data-testid={`aiws-board-col-${column.id}`} />
-      <button type="button" className={`aiws-board-colhead${column.collapsed ? ' is-collapsed' : ''}`} style={{ left: r.x, top: r.y, width: r.w, height: column.collapsed ? height : COLUMN_HEADER }} disabled={!active}
+      <button type="button" className={`aiws-board-colhead${column.collapsed ? ' is-collapsed' : ''}`} style={{ left: r.x, top: r.y, width: r.w, height: column.collapsed ? height : COLUMN_HEADER }} {...controlInputProps(active)}
         title={column.collapsed ? t('aiworkspace.todo.expandColumn', { name: label }) : t('aiworkspace.todo.foldColumn', { name: label })} data-testid={`aiws-board-colhead-${column.id}`} onClick={onToggle}>
         {column.collapsed ? <ChevronRight size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
         <span className="aiws-board-colname">{label}</span>
         <span className="aiws-board-colcount">{count}</span>
       </button>
       {!column.collapsed && (adding === null ? (
-        <button type="button" className="aiws-dc-ghostbtn aiws-board-add" style={{ left: column.body.x, top: addTop, width: column.body.w }} disabled={!canAdd || !active} title={canAdd ? undefined : noWrite}
+        <button type="button" className="aiws-dc-ghostbtn aiws-board-add" style={{ left: column.body.x, top: addTop, width: column.body.w }} {...controlInputProps(active, canAdd)} title={canAdd ? undefined : noWrite}
           data-testid={`aiws-board-add-${column.id}`} onClick={onAddStart}><Plus size={14} aria-hidden="true" /> {t('aiworkspace.todo.addCard')}</button>
       ) : (
         <input className="aiws-board-addinput" style={{ left: column.body.x, top: addTop, width: column.body.w }} autoFocus value={adding} placeholder={t('aiworkspace.todo.addPlaceholder')}

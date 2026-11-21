@@ -354,12 +354,22 @@ impl TaskStore {
         )))
     }
 
+    async fn contains_task(&self, task_id: &str) -> Result<bool> {
+        let sql = self.render_sql("SELECT 1 FROM task WHERE task_id = ?");
+        Ok(sqlx::query(&sql)
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?
+            .is_some())
+    }
+
     async fn shard_for_task(&self, task_id: &str) -> Result<Option<&TaskStore>> {
-        if self.get_task_local(task_id).await?.is_some() {
+        if self.contains_task(task_id).await? {
             return Ok(Some(self));
         }
         if let Some(system) = self.system.as_deref() {
-            if system.get_task_local(task_id).await?.is_some() {
+            if system.contains_task(task_id).await? {
                 return Ok(Some(system));
             }
         }
@@ -611,47 +621,65 @@ impl TaskStore {
         let (user_tasks, user_more) = self.list_tasks_local(&user_req).await?;
         let (system_tasks, system_more) = system.list_tasks_local(&system_req).await?;
 
-        let mut user_index = 0usize;
-        let mut system_index = 0usize;
+        let mut user_tasks = user_tasks.into_iter().peekable();
+        let mut system_tasks = system_tasks.into_iter().peekable();
         let mut tasks = Vec::with_capacity(limit);
         let mut next_user_cursor = user_cursor;
         let mut next_system_cursor = system_cursor;
-        while tasks.len() < limit
-            && (user_index < user_tasks.len() || system_index < system_tasks.len())
-        {
-            let take_user = match (user_tasks.get(user_index), system_tasks.get(system_index)) {
+        while tasks.len() < limit {
+            let take_user = match (user_tasks.peek(), system_tasks.peek()) {
                 (Some(user), Some(system)) => {
-                    (user.created_at, user.task_id.as_str())
-                        <= (system.created_at, system.task_id.as_str())
+                    let user_key = (user.created_at, user.task_id.as_str());
+                    let system_key = (system.created_at, system.task_id.as_str());
+                    if req.newest_first {
+                        user_key >= system_key
+                    } else {
+                        user_key <= system_key
+                    }
                 }
                 (Some(_), None) => true,
-                _ => false,
+                (None, Some(_)) => false,
+                (None, None) => break,
             };
-            let task = if take_user {
-                let task = user_tasks[user_index].clone();
-                user_index += 1;
-                next_user_cursor = Some(make_cursor(task.created_at, &task.task_id));
-                task
+            let (iter, cursor) = if take_user {
+                (&mut user_tasks, &mut next_user_cursor)
             } else {
-                let task = system_tasks[system_index].clone();
-                system_index += 1;
-                next_system_cursor = Some(make_cursor(task.created_at, &task.task_id));
-                task
+                (&mut system_tasks, &mut next_system_cursor)
             };
+            let task = iter.next().expect("selected a non-empty shard");
+            *cursor = Some(make_cursor(task.created_at, &task.task_id));
             tasks.push(task);
         }
-        let has_more = user_index < user_tasks.len()
-            || system_index < system_tasks.len()
-            || user_more.is_some()
-            || system_more.is_some();
-        let next_cursor = has_more
-            .then(|| make_partitioned_cursor(next_user_cursor, next_system_cursor))
-            .flatten();
+        let user_has_more = user_tasks.peek().is_some() || user_more.is_some();
+        let system_has_more = system_tasks.peek().is_some() || system_more.is_some();
+        let next_cursor = if !user_has_more && !system_has_more {
+            None
+        } else if req.newest_first {
+            // Live shards resume at the global boundary even if they contributed no rows.
+            // An exhausted shard can skip the database entirely on subsequent pages.
+            let last = tasks.last().expect("positive page limit");
+            let cursor = make_cursor(last.created_at, &last.task_id);
+            let shard_cursor = |has_more| {
+                Some(if has_more {
+                    cursor.clone()
+                } else {
+                    EXHAUSTED_SHARD.to_owned()
+                })
+            };
+            make_partitioned_cursor(shard_cursor(user_has_more), shard_cursor(system_has_more))
+        } else {
+            make_partitioned_cursor(next_user_cursor, next_system_cursor)
+        };
         Ok((tasks, next_cursor))
     }
 
     async fn list_tasks_local(&self, req: &ListTasksReq) -> Result<(Vec<Task>, Option<String>)> {
-        let mut sql = String::from("SELECT * FROM task");
+        if req.newest_first && req.cursor.as_deref() == Some(EXHAUSTED_SHARD) {
+            return Ok((Vec::new(), None));
+        }
+        // Install progress and input can be large. Select the ordered page by key before loading
+        // its bodies so SQLite's unindexed sorts never materialize payloads for all candidates.
+        let mut sql = String::from("SELECT * FROM task WHERE task_id IN (SELECT task_id FROM task");
         let mut conditions: Vec<String> = Vec::new();
         enum Param {
             Text(String),
@@ -708,8 +736,8 @@ impl TaskStore {
         }
         if let Some(cursor) = req.cursor.as_deref() {
             let (created_at, task_id) = parse_cursor(cursor)?;
-            conditions.push("(created_at > ? OR (created_at = ? AND task_id > ?))".into());
-            params.push(Param::Int(created_at));
+            let comparison = if req.newest_first { "<" } else { ">" };
+            conditions.push(format!("(created_at, task_id) {comparison} (?, ?)"));
             params.push(Param::Int(created_at));
             params.push(Param::Text(task_id));
         }
@@ -719,8 +747,10 @@ impl TaskStore {
             sql.push_str(&conditions.join(" AND "));
         }
         let limit = req.limit.unwrap_or(100).clamp(1, 500) as i64;
-        sql.push_str(" ORDER BY created_at ASC, task_id ASC LIMIT ");
+        let order = if req.newest_first { "DESC" } else { "ASC" };
+        sql.push_str(&format!(" ORDER BY created_at {order}, task_id {order} LIMIT "));
         sql.push_str(&(limit + 1).to_string());
+        sql.push(')');
 
         let sql = self.render_sql(&sql);
         let mut query = sqlx::query(&sql);
@@ -735,6 +765,14 @@ impl TaskStore {
             .into_iter()
             .map(|row| self.decode_task(row))
             .collect::<Result<_>>()?;
+        tasks.sort_unstable_by(|a, b| {
+            let order = (a.created_at, &a.task_id).cmp(&(b.created_at, &b.task_id));
+            if req.newest_first {
+                order.reverse()
+            } else {
+                order
+            }
+        });
         let next_cursor = if tasks.len() as i64 > limit {
             tasks.truncate(limit as usize);
             tasks
@@ -2372,6 +2410,8 @@ fn note_from_row(row: AnyRow) -> DbResult<TaskNote> {
 // ---------------------------------------------------------------------------
 // Cursor & SQL helpers
 // ---------------------------------------------------------------------------
+
+const EXHAUSTED_SHARD: &str = "end";
 
 fn make_cursor(created_at: u64, task_id: &str) -> String {
     format!("{}:{}", created_at, task_id)

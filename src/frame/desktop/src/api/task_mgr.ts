@@ -22,6 +22,7 @@ import type {
   TaskSummary,
   TaskWaitReason,
 } from 'buckyos'
+import { TaskHistory } from './task_history.ts'
 import { isMockRuntime } from '../runtime'
 import { fetchAgentList } from './user_mgr'
 import { getSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
@@ -203,6 +204,7 @@ export interface TaskCenterFilter {
 }
 
 export interface TaskCenterModel {
+  readonly listState: 'loading' | 'ready' | 'error'
   getSnapshot(): number
   subscribe(listener: () => void): () => void
   refresh(): Promise<void>
@@ -286,7 +288,7 @@ interface TaskSnapshot {
 }
 
 interface TaskCenterRpcProvider {
-  listTasks(): Promise<TaskSnapshot[]>
+  listTasks(publish: (snapshots: TaskSnapshot[]) => void, stopped: () => boolean): Promise<TaskSnapshot[]>
   loadDetail(taskId: string): Promise<TaskMgrTask | null>
   handleNotificationAction(task: Task, action: string): Promise<void>
   createDownload(input: CreateDownloadInput): Promise<string>
@@ -826,6 +828,7 @@ export class TaskCenterMockModel
   extends TaskCenterMockStore
   implements TaskCenterModel
 {
+  readonly listState = 'ready' as const
   private readonly subscription = new SubscribableModel()
   private readonly appServiceStore = getSharedAppServiceStore()
   /**
@@ -943,19 +946,21 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   private events: SystemEvent[] = []
   private handledNotifications = new Map<string, Pick<SystemNotification, 'handledAction' | 'handledAt'>>()
   private readonly provider: TaskCenterRpcProvider
-  /** The list fetch in flight, so detail loads can wait for it. */
+  /** Polls and user refreshes share a single history traversal. */
   private pendingRefresh: Promise<void> | null = null
   /** Keeps an open Task Center current: often while a task runs, rarely when idle. */
   private pollTimer: ReturnType<typeof setTimeout> | null = null
   private lastRefreshAt = 0
+  private disposed = false
+  listState: TaskCenterModel['listState'] = 'loading'
 
   constructor(provider: TaskCenterRpcProvider = new BuckyOSTaskMgrProvider()) {
     super()
     this.provider = provider
-    void this.refresh()
   }
 
   refresh(): Promise<void> {
+    if (this.pendingRefresh) return this.pendingRefresh
     const pending = this.fetchTasks().finally(() => {
       if (this.pendingRefresh === pending) this.pendingRefresh = null
     })
@@ -965,22 +970,41 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
 
   private async fetchTasks(): Promise<void> {
     this.lastRefreshAt = Date.now()
-    const agents = fetchAgentList().then(({ data }) => data?.agents ?? null)
+    if (this.listState === 'error') {
+      this.listState = this.tasks.length ? 'ready' : 'loading'
+      this.emitChange()
+    }
+    const publish = (snapshots: TaskSnapshot[]) => {
+      if (this.disposed) return
+      this.snapshots = snapshots
+      this.listState = 'ready'
+      this.rebuild()
+    }
+    // Agent labels are enrichment. They must never block the first page.
+    void fetchAgentList().then(({ data }) => {
+      if (data?.agents && !this.disposed) {
+        const ids = new Set(data.agents.map((agent) => agent.agent_id.toLowerCase()))
+        if (ids.size === this.agentAppIds.size && [...ids].every((id) => this.agentAppIds.has(id))) return
+        this.agentAppIds = ids
+        if (this.snapshots.length) this.rebuild()
+      }
+    }).catch(() => {})
     try {
-      this.snapshots = await this.provider.listTasks()
+      publish(await this.provider.listTasks(publish, () => this.disposed))
     } catch (error) {
       console.error('task_mgr.list_tasks failed', error)
-      return
+      if (!this.disposed) {
+        this.listState = 'error'
+        this.emitChange()
+      }
     }
-    const list = await agents
-    // AppId == AgentId for each Agent's constructed App; keep the last known set when the list fails.
-    if (list) this.agentAppIds = new Set(list.map((agent) => agent.agent_id.toLowerCase()))
-    this.rebuild()
   }
 
   /** Polling runs only while someone is subscribed, and a later `subscribe` restarts it. */
   override subscribe(listener: () => void): () => void {
     const unsubscribe = super.subscribe(listener)
+    this.disposed = false
+    if (!this.lastRefreshAt) void this.refresh()
     this.schedulePoll()
     return () => {
       unsubscribe()
@@ -993,10 +1017,8 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
     this.pollTimer = setTimeout(() => {
       this.pollTimer = null
       if (!this.hasListeners()) return
-      const active = flattenTasks(this.tasks).some(
-        (task) =>
-          task.schemaType !== WORKFLOW_SCHEDULE_TASK_SCHEMA_ID &&
-          (task.status === 'running' || task.status === 'pending'),
+      const active = this.snapshots.some(({ summary }) =>
+        summary.schema_id !== WORKFLOW_SCHEDULE_TASK_SCHEMA_ID && summary.phase !== TaskPhase.Terminal,
       )
       const due = active || Date.now() - this.lastRefreshAt >= IDLE_POLL_MS
       if (!due || (typeof document !== 'undefined' && document.hidden)) {
@@ -1013,6 +1035,7 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   }
 
   dispose(): void {
+    this.disposed = true
     this.stopPoll()
   }
 
@@ -1024,23 +1047,37 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
 
   async cancelTask(taskId: string): Promise<void> {
     await this.provider.cancelTask(taskId)
+    await this.refreshDetail(taskId)
     await this.refresh()
   }
 
   async loadTaskDetail(taskId: string): Promise<void> {
-    // A deep link (`?taskid=`) can open before the initial list resolves.
-    if (this.pendingRefresh) await this.pendingRefresh
-    const snapshot = this.snapshots.find((item) => item.summary.task_id === taskId)
-    if (!snapshot || snapshot.detail) return
+    await this.refreshDetail(taskId)
+  }
+
+  private async refreshDetail(taskId: string): Promise<void> {
     let detail: TaskMgrTask | null
     try {
       detail = await this.provider.loadDetail(taskId)
     } catch (error) {
-      console.error('task_mgr.get_task failed', taskId, error)
+      console.debug('task_mgr.get_task failed', taskId, error)
       return
     }
-    if (!detail) return
-    snapshot.detail = detail
+    if (this.disposed) return
+    if (!detail || detail.archived_at != null) {
+      this.snapshots = this.snapshots.filter((item) => item.summary.task_id !== taskId)
+      this.rebuild()
+      return
+    }
+    const snapshot = this.snapshots.find((item) => item.summary.task_id === taskId)
+    if (snapshot && snapshot.summary.revision > detail.revision) return
+    const summary = summaryFromTask(detail)
+    if (snapshot) {
+      snapshot.summary = summary
+      snapshot.detail = detail
+    } else {
+      this.snapshots.push({ summary, detail })
+    }
     this.rebuild()
   }
 
@@ -1109,6 +1146,7 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
     if (!task) return
 
     void this.provider.handleNotificationAction(task, action)
+      .then(() => this.refreshDetail(task.taskId))
       .then(() => this.refresh())
       .catch((error) => {
         console.error('task_mgr.commit_result failed', error)
@@ -1138,36 +1176,62 @@ export function createTaskCenterModel(options: { useMock?: boolean } = {}): Task
 const ACTIVE_POLL_MS = 3_000
 const IDLE_POLL_MS = 30_000
 
-/** Pages to walk before giving up; the Task Center is a human-scale list. */
-const LIST_PAGE_LIMIT = 200
-const MAX_LIST_PAGES = 10
 /** Concurrent `get_task` reads while hydrating a refresh. */
 const DETAIL_FETCH_CONCURRENCY = 8
 /** Upper bound on details pulled per refresh, newest first. */
 const REFRESH_HYDRATE_LIMIT = 300
 
+function summaryFromTask(task: TaskMgrTask): TaskSummary {
+  return {
+    task_id: task.task_id, name: task.name, root_id: task.root_id, parent_id: task.parent_id,
+    schema_id: task.schema_id, schema_version: task.schema_version,
+    creator: task.creator, storage_domain: task.storage_domain,
+    executor_kind: task.executor.kind as TaskExecutorKind, phase: task.phase, wait_reason: task.wait_reason,
+    pending_control_action: task.pending_control?.action, outcome: task.outcome, message: task.message,
+    revision: task.revision, created_at: task.created_at, updated_at: task.updated_at,
+    completed_at: task.completed_at, archived_at: task.archived_at,
+  }
+}
+
 class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
   private client: TaskManagerClient | null = null
+  private readonly history = new TaskHistory((request) => this.getClient().listTasks(request))
   /**
    * `list_tasks` only returns metadata (doc §14.3), so the payload-bearing
    * views read details separately. Cached by revision: a steady-state refresh
    * only re-reads the tasks that actually changed, and a detail fetched on
    * demand survives later refreshes for free.
    */
+  private pendingDetails = new Map<string, Promise<TaskMgrTask>>()
   private details = new Map<string, { revision: number; task: TaskMgrTask }>()
 
-  async listTasks(): Promise<TaskSnapshot[]> {
-    const summaries = await this.listSummaries()
+  async listTasks(publish: (snapshots: TaskSnapshot[]) => void, stopped: () => boolean): Promise<TaskSnapshot[]> {
+    await this.history.refresh(() => publish(this.snapshots(this.history.summaries)), stopped)
+    if (stopped()) return []
+    const summaries = this.history.summaries
     const live = new Set(summaries.map((summary) => summary.task_id))
-    for (const taskId of [...this.details.keys()]) {
+    for (const taskId of this.details.keys()) {
       if (!live.has(taskId)) this.details.delete(taskId)
     }
-    return this.hydrate(summaries)
+    await this.hydrate(summaries, stopped)
+    return this.snapshots(this.history.summaries)
   }
 
   async loadDetail(taskId: string): Promise<TaskMgrTask | null> {
-    const detail = await this.getTask(taskId)
-    this.details.set(detail.task_id, { revision: detail.revision, task: detail })
+    let detail: TaskMgrTask
+    try {
+      detail = await this.getTask(taskId)
+    } catch (error) {
+      const code = taskMgrErrorCode(error)
+      if (code !== TASK_ERR_NOT_FOUND && code !== TASK_ERR_PERMISSION_DENIED) throw error
+      this.details.delete(taskId)
+      this.history.remove(taskId)
+      return null
+    }
+    if ((this.details.get(taskId)?.revision ?? -1) <= detail.revision) {
+      this.details.set(taskId, { revision: detail.revision, task: detail })
+      this.history.remember(summaryFromTask(detail))
+    }
     return detail
   }
 
@@ -1212,18 +1276,6 @@ class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
     })
   }
 
-  private async listSummaries(): Promise<TaskSummary[]> {
-    const summaries: TaskSummary[] = []
-    let cursor: string | undefined
-    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const result = await this.getClient().listTasks({ limit: LIST_PAGE_LIMIT, cursor })
-      summaries.push(...(result.tasks ?? []))
-      cursor = result.next_cursor
-      if (!cursor) break
-    }
-    return summaries
-  }
-
   /**
    * A refresh only pulls the details the list views actually render: the
    * schedule payloads and the progress of still-active tasks. Finished tasks
@@ -1239,49 +1291,48 @@ class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
     )
   }
 
-  private async hydrate(summaries: TaskSummary[]): Promise<TaskSnapshot[]> {
-    const snapshots: TaskSnapshot[] = summaries.map((summary) => {
+  private snapshots(summaries: TaskSummary[]): TaskSnapshot[] {
+    return summaries.map((summary) => {
       const cached = this.details.get(summary.task_id)
       return { summary, detail: cached?.revision === summary.revision ? cached.task : null }
     })
-    const candidates = snapshots
-      .filter(
-        (snapshot) =>
-          snapshot.detail === null && BuckyOSTaskMgrProvider.needsRefreshDetail(snapshot.summary),
-      )
+  }
+
+  private async hydrate(summaries: TaskSummary[], stopped: () => boolean): Promise<void> {
+    const snapshots = this.snapshots(summaries)
+    // Creation-time deltas cannot report revisions to old tasks. Reread open
+    // tasks (including Waiting) on every poll, with bounded concurrency.
+    const active = snapshots.filter(({ summary }) => summary.phase !== TaskPhase.Terminal)
+    const missing = snapshots
+      .filter(({ summary, detail }) => summary.phase === TaskPhase.Terminal && !detail
+        && BuckyOSTaskMgrProvider.needsRefreshDetail(summary))
       .sort((a, b) => b.summary.updated_at - a.summary.updated_at)
-    const stale = candidates.slice(0, REFRESH_HYDRATE_LIMIT)
-    if (candidates.length > stale.length) {
-      console.debug(
-        `task_mgr: hydrated ${stale.length} of ${candidates.length} active tasks; ` +
-          'the rest show metadata until opened',
-      )
-    }
+    const stale = [...active, ...missing.slice(0, REFRESH_HYDRATE_LIMIT)]
 
     let next = 0
     const workers = Array.from(
       { length: Math.min(DETAIL_FETCH_CONCURRENCY, stale.length) },
       async () => {
-        for (let index = next++; index < stale.length; index = next++) {
+        for (let index = next++; index < stale.length && !stopped(); index = next++) {
           const snapshot = stale[index]
           try {
-            const detail = await this.getTask(snapshot.summary.task_id)
-            this.details.set(detail.task_id, { revision: detail.revision, task: detail })
-            snapshot.detail = detail
+            await this.loadDetail(snapshot.summary.task_id)
           } catch (error) {
-            // Metadata-only visibility (doc §8.4 DataScope) and tasks that
-            // vanished mid-refresh both land here: keep the summary row.
+            // A transient detail failure leaves the last known task intact.
             console.debug('task_mgr.get_task failed', snapshot.summary.task_id, error)
           }
         }
       },
     )
     await Promise.all(workers)
-    return snapshots
   }
 
-  private async getTask(taskId: string): Promise<TaskMgrTask> {
-    return this.getClient().getTask(taskId)
+  private getTask(taskId: string): Promise<TaskMgrTask> {
+    const pending = this.pendingDetails.get(taskId)
+    if (pending) return pending
+    const request = this.getClient().getTask(taskId).finally(() => this.pendingDetails.delete(taskId))
+    this.pendingDetails.set(taskId, request)
+    return request
   }
 
   private getClient(): TaskManagerClient {

@@ -1661,6 +1661,9 @@ pub struct ListTasksReq {
     pub created_after: Option<u64>,
     #[serde(default)]
     pub created_before: Option<u64>,
+    /// Descending (created_at, task_id) order. Keep the same order when following a cursor.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub newest_first: bool,
     /// Include archived tasks (hidden by default).
     #[serde(default)]
     pub include_archived: bool,

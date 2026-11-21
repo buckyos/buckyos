@@ -40,6 +40,10 @@ export interface ControlBodyProps {
   phone: boolean
 }
 
+export function controlInputProps(active: boolean, available = true) {
+  return { disabled: !active || !available, 'data-awaiting-selection': !active && available ? true : undefined }
+}
+
 /** What the control's keys and actions act with: the canvas's selection and editing. */
 export interface ControlCommandContext {
   store: WorkspaceStore

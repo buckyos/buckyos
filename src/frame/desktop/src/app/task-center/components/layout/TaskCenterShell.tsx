@@ -7,6 +7,7 @@ import { Sidebar } from './Sidebar'
 import { MobileTabBar } from './MobileTabBar'
 import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavContext'
 import type { TaskCenterPage, TaskCenterNav } from './navigation'
+import { useTaskCenterStore } from '../../hooks/use-task-center-store'
 import { HomePage } from '../../pages/HomePage'
 import { TasksPage } from '../../pages/TasksPage'
 import { ScheduledTasksPage } from '../../pages/ScheduledTasksPage'
@@ -28,6 +29,7 @@ interface TaskCenterShellProps {
 
 export function TaskCenterShell({ initialTaskId }: TaskCenterShellProps) {
   const { t } = useI18n()
+  const store = useTaskCenterStore()
   const [nav, setNav] = useState<TaskCenterNav>(
     initialTaskId ? { page: 'tasks', taskId: initialTaskId } : { page: 'home' },
   )
@@ -82,6 +84,22 @@ export function TaskCenterShell({ initialTaskId }: TaskCenterShellProps) {
         return <HomePage {...pageProps} />
     }
   })()
+  const pageBody = (
+    <>
+      {store.listState === 'loading' && (
+        <p className="tc-muted py-4" role="status">{t('taskCenter.tasks.loading', 'Loading tasks…')}</p>
+      )}
+      {store.listState === 'error' && (
+        <div className="flex items-center gap-3 py-3" role="alert">
+          <span>{t('taskCenter.tasks.loadFailed', 'Could not load tasks.')}</span>
+          <button className="tc-btn" type="button" onClick={() => void store.refresh()}>
+            {t('taskCenter.tasks.retry', 'Retry')}
+          </button>
+        </div>
+      )}
+      {(store.listState === 'ready' || store.getAllTasks().length > 0) && page}
+    </>
+  )
   const detail = (variant: 'panel' | 'page') =>
     nav.taskId ? (
       <TaskDetailPage
@@ -100,7 +118,7 @@ export function TaskCenterShell({ initialTaskId }: TaskCenterShellProps) {
         <MobileTabBar currentPage={nav.page} onNavigate={handlePage} />
         <main ref={mainRef} className="min-h-0 flex-1 overflow-y-auto">
           <div className="p-4">
-            <div hidden={nav.taskId != null}>{page}</div>
+            <div hidden={nav.taskId != null}>{pageBody}</div>
             {detail('page')}
           </div>
         </main>
@@ -113,7 +131,7 @@ export function TaskCenterShell({ initialTaskId }: TaskCenterShellProps) {
       <Sidebar currentPage={nav.page} onNavigate={handlePage} />
       <div className="relative flex min-w-0 flex-1">
         <main ref={mainRef} className="desktop-scrollbar min-w-0 flex-1 overflow-y-auto">
-          <div className="px-6 py-5">{page}</div>
+          <div className="px-6 py-5">{pageBody}</div>
         </main>
         {nav.taskId && (
           <aside

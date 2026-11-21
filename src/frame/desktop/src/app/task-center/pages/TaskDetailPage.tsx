@@ -153,10 +153,13 @@ export function TaskDetailPage({ taskId, page, variant, onNavigate, onClose }: T
   const [copyState, setCopyState] = useState('')
   const [canceling, setCanceling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
+  const [checkedId, setCheckedId] = useState<string | null>(null)
   // Lists carry metadata only; the payload/progress of a finished task is
   // fetched when its detail opens.
   useEffect(() => {
-    void store.loadTaskDetail(taskId)
+    let open = true
+    void store.loadTaskDetail(taskId).then(() => { if (open) setCheckedId(taskId) })
+    return () => { open = false }
   }, [store, taskId])
   const task = store.getTaskById(taskId)
   const parent = task?.parentTaskId ? store.getTaskById(task.parentTaskId) : null
@@ -206,7 +209,7 @@ export function TaskDetailPage({ taskId, page, variant, onNavigate, onClose }: T
   if (!task) {
     return frame(
       <div className="tc-empty">
-        <p>{t('taskCenter.detail.notFound', 'Task not found')}</p>
+        <p>{checkedId === taskId && store.listState !== 'loading' ? t('taskCenter.detail.notFound', 'Task not found') : t('taskCenter.tasks.loading', 'Loading tasks…')}</p>
         <p className="tc-mono mt-1 text-xs">{taskId}</p>
       </div>,
     )

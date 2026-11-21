@@ -1194,7 +1194,7 @@ Task ID。
 | --- | --- | --- | --- |
 | `create_task` | schema、input、executor、parent、policy、storage_domain、idempotency_key | Task | 创建直接绑定或 HumanSet Task |
 | `get_task` | task_id | Task | 按 ACL 返回允许读取的字段 |
-| `list_tasks` | creator/idempotency_key/schema/phase/root/executor/storage_domain/time/cursor | TaskSummary[] | 分页查询；creator + idempotency_key 可直接命中唯一幂等任务，调用方不得为重放逐项 `get_task` 扫描历史列表 |
+| `list_tasks` | creator/idempotency_key/schema/phase/root/executor/storage_domain/time/newest_first/cursor | TaskSummary[] | 默认按创建时间升序，`newest_first: true` 按创建时间倒序，同一毫秒按 task_id 同向排序。后续页沿用相同参数。ACL 过滤后可能得到带游标的空页。creator + idempotency_key 可直接查询幂等任务。 |
 | `get_task_tree` | root_id、depth、cursor | TaskSummary[] | 查询树结构和状态摘要 |
 | `get_subtasks` | task_id、cursor | TaskSummary[] | 查询直接子任务 |
 | `archive_task` | task_id、expected_revision | Task | 从默认列表隐藏，不物理删除 |
