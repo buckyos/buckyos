@@ -59,8 +59,8 @@ function shown(field: ConfigField, value: Json | null): string {
 export const changeLabel = (field: ConfigField, value: Json | null) => (field.editLabel ? field.editLabel(value) : aiwsT('aiworkspace.blocks.edit.change', { label: field.label, value: shown(field, value) }))
 
 /** The `config` keys a property writes for `value`: its own patch, or its key (the default stored as absent). */
-function configPatch(field: ConfigField, context: RenderContext, value: Json | null): Record<string, Json | null> {
-  if (field.patch) return field.patch(context, value)
+function configPatch(field: ConfigField, context: RenderContext, value: Json | null, store: WorkspaceStore): Record<string, Json | null> {
+  if (field.patch) return field.patch(context, value, store)
   const fallback = defaultOf(field)
   const stored = value === null || value === '' || (fallback !== undefined && JSON.stringify(value) === JSON.stringify(fallback)) ? null : value
   return { [field.key]: stored }
@@ -76,7 +76,7 @@ export function writeField(field: ConfigField, context: RenderContext, store: Wo
       .catch((error: unknown) => store.notify('error', describeError(error)))
     return
   }
-  setCellConfig(context, store, configPatch(field, context, value), label)
+  setCellConfig(context, store, configPatch(field, context, value, store), label)
 }
 
 /** Can the property be written for several Blocks in one commit (no writer of its own)? */
@@ -92,7 +92,7 @@ export async function writeFieldAll(targets: { field: ConfigField; context: Rend
     const id = context.cell.entity_id
     const read = await store.session.read<KeyedContent<CellPayload>>(id)
     const current = read.content.payload.config ?? {}
-    const patch = configPatch(field, context, value)
+    const patch = configPatch(field, context, value, store)
     const props = Object.fromEntries(Object.entries(patch).filter(([key, v]) => (v === null ? key in current : JSON.stringify(current[key]) !== JSON.stringify(v))))
     if (Object.keys(props).length === 0) continue
     operations.push(setPropsOp(id, 'config', props, read.content.key_revs))

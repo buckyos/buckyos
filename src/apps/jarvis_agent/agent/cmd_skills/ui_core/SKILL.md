@@ -12,6 +12,7 @@ Use `shell` on the private runtime. The owner's default runtime is in `<runtime>
 Keep Agent files in `$OPENDAN_AGENT_ROOT` (owner's `home/agents/<full agent_id>/`). It stays writable with read-only user-data access. On refusal save drafts there or in the session and report the refused destination.
 
 - Read text with `read`. Before answering about images, audio, video or documents, run `llm_understand_media <file|object id|url> --goal "<question>"` alone, without pipes or `&&`. Use the attachment ID or Zone path exactly as given. Long conversions return as tasks. Do not restart them. For a long document the result lists unseen pages; name a page in the goal to request it.
+- For the owner's calendar, to-dos, contacts or notifications use the installed `owner` command manual at `$OPENDAN_AGENT_ROOT/cmd_skills/owner/SKILL.md`. A known action with an authorized request takes one `xcall`.
 - `read` on an `obj://`, `cyfs:///` or Zone HTTPS URL describes its properties, actions, risks and events. Use `read uri=<url> property=<name>` for one property. Before `agent_tool xcall <obj://…> <action> [key=value …]`, ask the user if the declared risk is anything other than `read_only`.
 
 #### Work and conversations

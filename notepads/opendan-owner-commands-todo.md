@@ -140,11 +140,13 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 
 ## 6. CodeAgent 的工作顺序
 
-- [ ] **M0 · 修正私人日程归属。** 具名创建、ensure、重建索引都使用经验证的 `(owner_principal, name)`，沿用同一并发互斥。命中已有空间也校验真实 caller 对它的访问。为纯查询添加只读的按名查找，缺省时不建空空间。重建索引时识别已有重复项，只让冲突键报错。选定前仍可用原权限和 ID 读写各副本，使用含糊名字的写操作返回冲突。提供本人可执行的选主处理，保留原 ID、内容、历史、ACL 与旧链接，显式解除其他副本的冲突命名。处理中断可重做，禁止按目录遍历顺序选一本。复用名字测试夹具和现有日程页。[服务索引](../src/frame/aiworkspace/store/src/service.rs#L318) · [命名测试](../src/frame/aiworkspace/store/tests/names.rs)
-- [ ] **M1 · 本地提醒与原生日历。** 在通用扩展机制可用后交付两个独立的本地别名。先在没有个人对象 Provider 的 Zone 用 `xcall owner notify` 生成一张通知卡，用 `xcall owner.cal add` 将一条记录写入本人的 AIWS 日历。验证同键重试、桌面可见性及无可发布用途引用时的回执。再迁移 §4.2 的日历、待办、系统通讯录、`who/resolve` 和询问。分别用人类和 Agent 会话核实实际服务身份、权限和数据归属。
-- [ ] **M2 · 两种实现与资源换绑。** 接入 `owner.bindings` 的资源修订检查、外部日历和跨进程幂等。用本地用途脚本及第二个测试 Provider 验证同一动作契约，分别覆盖链接固定日历和链接个人用途对象。单独切换 `owner` 和 `owner.cal`。核对新写、旧回执、原键重试的实际目的地，别名改绑后的原键重试只记录、不判失败。外部 HTTPS Provider 按其声明的 endpoint/form 和受众调用，Zone 身份凭据只发给适用的 Zone 服务。记录测试 Provider 的能力和范围。[Rust 对象适配](../src/frame/agent-did-object-lib/src/adapters/did_object.rs) · [Zone 凭据范围](../src/frame/agent-did-object-lib/src/zone.rs#L69)
-- [ ] **M3 · 让 Jarvis 实际选用它。** 新增 `src/apps/jarvis_agent/agent/cmd_skills/owner/SKILL.md`，声明已安装的 `commands: xcall` 和 `scope: ui, work`，在 `ui_core` 留短入口。让 UI/Work 通过现有机制发现手册。写明何时用逻辑名、何时复用 Hint URL 或记录回执。参数以各对象的 Profile 为准。迁移 `aiworkspace_template_dev`、控件说明、帮助和 DV 中操作个人日程的示例。分别在打包的 Agent 环境和人类登录终端执行示例。[Jarvis 配置](../src/apps/jarvis_agent/agent/agent.toml#L49) · [AIWS 手册](../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_template_dev/SKILL.md#L40)
-- [ ] **M4 · 联系人协作及其他能力。** 为需要被其他人调用的用途发布稳定对象 URL，可复用已有 Provider 或实施 §3 的用户目录。首先交付本 Zone 的忙闲授权、按名字消歧、保存可见 Hint 和一次直调。再按 §5 分项交付邀请、团队分派、位置、实时通话和订阅。复用日程与提醒已有的分工。[提醒实施边界](opendan-d4-timer-reminder-todo.md#L19)
+勾选表示首版实现已落地。各环境的验收结果与待完成的真实 Zone 界面验证见 §8。
+
+- [x] **M0 · 修正私人日程归属。** 具名创建、ensure、重建索引都使用经验证的 `(owner_principal, name)`，沿用同一并发互斥。命中已有空间也校验真实 caller 对它的访问。为纯查询添加只读的按名查找，缺省时不建空空间。重建索引时识别已有重复项，只让冲突键报错。选定前仍可用原权限和 ID 读写各副本，使用含糊名字的写操作返回冲突。提供本人可执行的选主处理，保留原 ID、内容、历史、ACL 与旧链接，显式解除其他副本的冲突命名。处理中断可重做，禁止按目录遍历顺序选一本。复用名字测试夹具和现有日程页。[服务索引](../src/frame/aiworkspace/store/src/service.rs#L318) · [命名测试](../src/frame/aiworkspace/store/tests/names.rs)
+- [x] **M1 · 本地提醒与原生日历。** 在通用扩展机制可用后交付两个独立的本地别名。先在没有个人对象 Provider 的 Zone 用 `xcall owner notify` 生成一张通知卡，用 `xcall owner.cal add` 将一条记录写入本人的 AIWS 日历。验证同键重试、桌面可见性及无可发布用途引用时的回执。再迁移 §4.2 的日历、待办、系统通讯录、`who/resolve` 和询问。分别用人类和 Agent 会话核实实际服务身份、权限和数据归属。
+- [x] **M2 · 两种实现与资源换绑。** 接入 `owner.bindings` 的资源修订检查、外部日历和跨进程幂等。用本地用途脚本及第二个测试 Provider 验证同一动作契约，分别覆盖链接固定日历和链接个人用途对象。单独切换 `owner` 和 `owner.cal`。核对新写、旧回执、原键重试的实际目的地，别名改绑后的原键重试只记录、不判失败。外部 HTTPS Provider 按其声明的 endpoint/form 和受众调用，Zone 身份凭据只发给适用的 Zone 服务。记录测试 Provider 的能力和范围。[Rust 对象适配](../src/frame/agent-did-object-lib/src/adapters/did_object.rs) · [Zone 凭据范围](../src/frame/agent-did-object-lib/src/zone.rs#L69)
+- [x] **M3 · 让 Jarvis 实际选用它。** 新增 `src/apps/jarvis_agent/agent/cmd_skills/owner/SKILL.md`，声明已安装的 `commands: xcall` 和 `scope: ui, work`，在 `ui_core` 留短入口。让 UI/Work 通过现有机制发现手册。写明何时用逻辑名、何时复用 Hint URL 或记录回执。参数以各对象的 Profile 为准。迁移 `aiworkspace_template_dev`、控件说明、帮助和 DV 中操作个人日程的示例。分别在打包的 Agent 环境和人类登录终端执行示例。[Jarvis 配置](../src/apps/jarvis_agent/agent/agent.toml#L49) · [AIWS 手册](../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_template_dev/SKILL.md#L40)
+- [ ] **M4 · 联系人协作及其他能力。** 本 Zone 忙闲直达已实现，其余能力按 §5 后续分项交付。为需要被其他人调用的用途发布稳定对象 URL，可复用已有 Provider 或实施 §3 的用户目录。首先交付本 Zone 的忙闲授权、按名字消歧、保存可见 Hint 和一次直调。再按 §5 分项交付邀请、团队分派、位置、实时通话和订阅。复用日程与提醒已有的分工。[提醒实施边界](opendan-d4-timer-reminder-todo.md#L19)
 
 ## 7. 验收用例
 
@@ -165,3 +167,21 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 从 BuckyOS 的 `src/` 运行 `cargo test -p agent_tool_cli_dev -p agent-did-object-lib`、`cargo test -p aiworkspace-store --test names`、`cargo test -p aiworkspace --test objects`。利用通用别名与路由测试夹具覆盖 A10，A1/A2/A11 用真实的多身份路径验证。在 buckyos-websdk 运行 `pnpm run check:cli`、`pnpm run test:cli`，以相同契约验证原生脚本和第二个 Provider。
 
 最后沿用 Desktop 的 Zone DV，检查人类、Agent App 及点击链接后的行为。为每阶段记录实测 caller、Provider、命令、具体资源 ID 及回执，把独立服务、测试 Provider 和真实 Zone 的结果分别写清。[独立服务测试](../src/frame/aiworkspace/server/tests/objects.rs) · [日程 Zone DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts) · [CLI 验证入口](../../buckyos-websdk/cli/README.md)
+
+## 8. 首版实现与验收记录
+
+默认包安装的六个独立别名为 `owner`、`owner.cal`、`owner.todo`、`owner.contacts`、`owner.bindings`、`owner.sharing`。每个会话的 `owner.context` 由 Control Panel 验证。改变个人绑定与授予忙闲访问需要本人管理会话。Jarvis 的 UI 和 Work 会话共用同一份 owner 手册。[默认扩展](../../buckyos-websdk/owner-extensions/object_extensions.toml) · [Jarvis 使用手册](../src/apps/jarvis_agent/agent/cmd_skills/owner/SKILL.md)
+
+个人资源 Provider 在 Profile 中声明 `x-buckyos:slot`（`calendar` 或 `todo`），或相应的 `buckyos.calendar`、`buckyos.todo` trait，并将 `list` 声明为只读（`read` 或 `pure`）。派发时重新核实当前 Profile 的类型、动作、effect 和 form。转发到另一项个人用途的对象还要声明 `x-buckyos:resource-binding`，包含 `zone_did`、`owner_did`、`slot`。同 Zone 的环检测、绑定修订及该修订的来源历史在同一事务中提交。外部记录回执保留 Provider 的原始 `provider_record_ref` 和面向人的 `open_url`。后续编辑传入完整 `record_ref`，即使两个 Provider 使用同一个原始 URL 也能定位到创建时的来源。[控制面绑定](../src/frame/control_panel/src/owner.rs) · [原目标回归](../src/frame/control_panel/src/owner_access_tests.rs)
+
+外部写入回包丢失时，运行时在原 Provider 的当前 Profile 上查找只读 `get_submission`，以原调用者身份传入 `action` 和 `idempotency_key`。成功确认的响应在 `result` 中携带 `{"status":"accepted","result":<原业务回执>}`。查无记录、未声明该动作或无法确认，返回 `WRITE_OUTCOME_UNKNOWN` 和原键。撤权后返回权限错误。原生 AIWS 使用自己的 `doc.get_submission`，查询记录操作的回执时复核表权限。[Provider 派发](../src/frame/agent-did-object-lib/src/adapters/did_object.rs) · [AIWS 回执](../src/frame/aiworkspace/store/src/workspace.rs)
+
+| 环境与覆盖 | 实测结果 |
+| --- | --- |
+| 独立 AIWS 服务，A1、A2、A3、A9、A11 | 四个不同身份运行默认脚本。Alice、`did:bns:agent1`、`did:bns:agent2` 并发新增到 `ws_2611spda`，三条记录为 `r3`、`r4`、`r5`。Bob 首次只读查询得到 `initialized=false`，首次写入得到 `ws_26114a17`。注入回包丢失后按原键 `lost` 重取待办 `r68`。具名索引的两种首建顺序、重启、旧副本选主和 ACL 用服务及存储测试核对。[服务测试](../src/frame/aiworkspace/server/tests/home.rs) · [存储测试](../src/frame/aiworkspace/store/tests/names.rs) |
+| Rust CLI、打包的 Deno 脚本、两个 HTTP 日历 Provider，A4、A5、A10 | 控制面使用夹具。以 `add-b` 新增，改绑后同键仅向 B 查询回执。以 `loss-b` 注入提交后断线，B 只写一次。B、C 的列表均返回同一个含 fragment 的记录 URL，使用 C 的回执更新时，仅 C 收到原始 URL。固定 URL 与逻辑别名传递相同业务键。控制面的持久键、条件更新、拒绝跨用户引用及互相改绑成环有独立回归。[双 Provider 联调](../test/object_url_dv/owner_provider_dv.py) · [通用路由测试](../src/frame/agent-did-object-lib/tests/owner_routing.rs) |
+| 独立 MessageCenter HTTP、SQLite 和已签名会话，A5、A7 | Agent 的同键通知只生成 `nt-b5dfbe8e9c7c4385a759c17aeb4dfc35` 一张卡，改正文返回 `IDEMPOTENCY_CONFLICT`。询问 `nt-5ced41f687ad41579400f87362dc04ba` 关联测试 TaskManager 的 `t-1`，本人答复后状态从 Open 变为 Answered。其他用户读取与改变通知收件人均被拒绝。已绑定的 Agent DID 和 Agent App 能查询、更新本人允许编辑的联系人。只读、跨人及系统通讯录写入均被拒绝。[通知测试](../src/frame/msg_center/src/test_notify.rs) · [联系人测试](../src/frame/msg_center/src/test_contact_network.rs) |
+| 独立 AIWS 服务与发行版投影脚本，A6、A11 | Alice 的 `ws_2611s8qj` 中有私有记录 `r-review`。Bob 和 Bob 的 Agent 直接调用 `obj://aiworkspace/people/did%3Abns%3Aalice/availability`，响应只有裁剪至 06:30–07:00 UTC 的区间和 `coverage=complete`。未共享者和撤权后的 Agent 均被拒绝。另一会话持有同一 URL 也不能召回私聊 Hint。外部日历如未提供本服务可用的忙闲投影，则返回来源不可用。当前用途停用则返回 `RESOURCE_DISABLED`。[共享对象测试](../src/frame/aiworkspace/server/tests/objects.rs) · [Memory 测试](../src/frame/lib_opendan/tests/memory_recall.rs) |
+| 发行包与真实 Zone 的界面验收，A3、A9 | 在提取的 SDK 发行包与打包的 Deno 中执行裸 `xcall owner who` 和 `xcall owner notify`，SDK 在临时安装根使用 Alice 的 Ed25519 密钥执行 `login_by_jwt`，登录服务夹具核验签名后签发会话。通过 `who` 核对调用身份，覆盖收件人被篡改时返回错误。发行版执行旧 `buckyos aiws cal list`、`buckyos aiws todo list` 均返回 `UNKNOWN_COMMAND`，退出码为 2。已迁移 Desktop 的 Chromium 场景。真实 Zone 的这次执行停在登录夹具，缺少 `BUCKYOS_TEST_ADMIN_PASSWORD_FILE` 或 `BUCKYOS_TEST_ADMIN_PASSWORD`。真人登录、Agent App 以及从浏览器点击链接改期的联测仍待验证。[Desktop Zone DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts) |
+
+本次验证通过了 180 项 WebSDK CLI 测试、42 项日程与重复规则测试、60 项 Rust CLI 与对象路由测试。服务和路由测试可沿用 §7 的命令。控制面使用 `cargo test -p control_panel owner::`。将 `BUCKYOS_ROOT` 指向含 Deno 及 SDK `dist/owner-extensions` 的安装根，可另运行 `cargo test -p aiworkspace --test objects installed_availability -- --ignored`，用真实私有日历行验证发行版忙闲投影。

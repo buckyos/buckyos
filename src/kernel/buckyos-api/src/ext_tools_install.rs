@@ -459,12 +459,26 @@ impl ToolsRoot {
     }
 
     fn write_current(&self) -> ExtToolsResult<()> {
-        let packages: BTreeMap<String, serde_json::Value> = self
-            .installed()
-            .into_iter()
-            .map(|(id, install)| (id, serde_json::json!({"version": install.version, "digest": install.payload_digest})))
-            .collect();
-        Self::write_json(&self.root.join("current.json"), &serde_json::json!({"packages": packages}))
+        let mut packages = BTreeMap::new();
+        let mut extensions = BTreeMap::new();
+        for (id, install) in self.installed() {
+            packages.insert(
+                id.clone(),
+                serde_json::json!({"version":install.version,"digest":install.payload_digest}),
+            );
+            let version_dir = self.version_dir(&id, &install.dir);
+            if let Some(manifest) = fs::read_to_string(version_dir.join(EXT_TOOLS_MANIFEST_FILE))
+                .ok()
+                .and_then(|raw| ExtToolsManifest::parse(&raw).ok())
+                .and_then(|m| m.object_extensions)
+            {
+                extensions.insert(id, serde_json::json!({"version":install.version,"digest":install.payload_digest,"dir":install.dir,"manifest":manifest}));
+            }
+        }
+        Self::write_json(
+            &self.root.join("current.json"),
+            &serde_json::json!({"packages":packages,"object_extensions":extensions}),
+        )
     }
 
     /// A problem with an active package that a reinstall of its version directory would fix.
@@ -477,6 +491,7 @@ impl ToolsRoot {
         if !missing.is_empty() {
             return Err(format!("{id} is missing launchers: {missing:?}"));
         }
+        self.extension_aliases(id,&install.dir)?;
         Ok(())
     }
 
@@ -728,10 +743,17 @@ impl ToolsRoot {
 
     /// Launchers another package owns are not ours to replace.
     fn check_ownership(&self, id: &str, dir: &str) -> ExtToolsResult<()> {
+        let requested = self.extension_aliases(id, dir)?;
         let names = self.launchers_of(id, dir)?;
         for (other, install) in self.installed() {
             if other == id {
                 continue;
+            }
+            if !requested.is_empty() {
+                let existing = self.extension_aliases(&other, &install.dir)?;
+                if let Some(name) = requested.intersection(&existing).next() {
+                    return Err(format!("{other} already binds object alias {name}"));
+                }
             }
             let shared: Vec<&String> = names.iter().filter(|name| install.launchers.contains(name)).collect();
             if !shared.is_empty() {
@@ -739,6 +761,29 @@ impl ToolsRoot {
             }
         }
         Ok(())
+    }
+
+    fn extension_aliases(
+        &self,
+        id: &str,
+        dir: &str,
+    ) -> ExtToolsResult<std::collections::BTreeSet<String>> {
+        let root = self.version_dir(id, dir);
+        let manifest = ExtToolsManifest::parse(
+            &fs::read_to_string(root.join(EXT_TOOLS_MANIFEST_FILE)).map_err(|e| e.to_string())?,
+        )?;
+        let Some(path) = manifest.object_extensions else {
+            return Ok(Default::default());
+        };
+        let prefix = format!("store/{id}/");
+        let objects = crate::object_extensions::load_object_extensions(
+            id,
+            &manifest.version,
+            &root.join(&prefix),
+            path.strip_prefix(&prefix)
+                .ok_or("invalid extension manifest path")?,
+        )?;
+        Ok(objects.aliases.into_keys().collect())
     }
 
     /// Check a payload and make it active. `on_stage` hears each step; a failure at any of them leaves what was active in
@@ -1020,6 +1065,7 @@ mod tests {
 
     fn manifest(id: &str, version: &str, commands: &[&str], requires: &[&str]) -> ExtToolsManifest {
         ExtToolsManifest {
+            object_extensions: None,
             schema: EXT_TOOLS_MANIFEST_SCHEMA.to_string(),
             id: id.to_string(),
             version: version.to_string(),

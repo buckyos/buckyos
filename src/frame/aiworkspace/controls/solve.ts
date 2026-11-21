@@ -6,6 +6,7 @@
 import { solveComposite } from './composite.ts'
 import { COMPOSITE, isControlKind, isDataControl, isTextView } from './contract.ts'
 import { PDF_FRAME, solvePdfFrame } from './pdfframe.ts'
+import { readLabelLook } from './label.ts'
 import { NODE_PAD, NodeMeasurer } from './measure.ts'
 import { num, type StoredPlacement } from './placement.ts'
 import { layoutTree, mindmapConfig, type LaidNode, type MindmapConfig, type Rect, type TreeLayout, type TreeNode } from './tree.ts'
@@ -80,7 +81,8 @@ export function solveControl(src: ControlSource, containerId: string, opts: Solv
     let w = num(p.w)
     let h = num(p.h)
     if ((w === undefined || h === undefined) && isTextView(e.view_type)) {
-      const m = opts.measurer.measure(e.title, depth, w !== undefined ? Math.max(1, w - NODE_PAD.x * 2) : undefined)
+      const look = e.view_type === 'mindnode' || e.view_type === 'label' ? readLabelLook(e.config) : undefined
+      const m = opts.measurer.measure(e.title, depth, w !== undefined ? Math.max(1, w - NODE_PAD.x * 2) : undefined, look)
       w ??= m.w
       h ??= m.h
     }

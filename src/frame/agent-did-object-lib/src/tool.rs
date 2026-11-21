@@ -80,7 +80,24 @@ impl AgentTool for AgentDIDObjectReadTool {
         ctx: &SessionRuntimeContext,
         args: Value,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let input = self.input_from_args(ctx, args)?;
+        let mut input = self.input_from_args(ctx, args)?;
+        if buckyos_api::object_extensions::object_alias_name(&input.object) {
+            let base = self.file_base_dir.as_deref().unwrap_or(Path::new("."));
+            if let Some(resolved) = crate::extensions::resolve(&input.object, base)
+                .await
+                .map_err(object_error_to_agent_tool_error)?
+            {
+                let response = self
+                    .runtime
+                    .read_resolved(&input, resolved)
+                    .await
+                    .map_err(object_error_to_agent_tool_error)?;
+                return Ok(
+                    crate::runtime::read_response_to_tool_result(&input, response).with_tool_name(),
+                );
+            }
+            input.object = canonical_object_url(&input.object, self.file_base_dir.as_deref())?;
+        }
         self.runtime
             .read(input)
             .await
@@ -112,7 +129,11 @@ impl AgentDIDObjectReadTool {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| AgentToolError::InvalidArgs("`uri` is required".to_string()))?;
-        let object = canonical_object_url(raw_object, self.file_base_dir.as_deref())?;
+        let object = if buckyos_api::object_extensions::object_alias_name(raw_object) {
+            raw_object.to_string()
+        } else {
+            canonical_object_url(raw_object, self.file_base_dir.as_deref())?
+        };
         let offset = parse_usize_arg(map.get("offset"), "offset")?;
         let limit = parse_usize_arg(map.get("limit"), "limit")?;
         let content_only = map
@@ -173,44 +194,76 @@ impl ObjectUrlReader {
 
 #[async_trait]
 impl UrlReader for ObjectUrlReader {
+    async fn read_alias(
+        &self,
+        ctx: &SessionRuntimeContext,
+        name: &str,
+        cwd: &Path,
+        property: Option<&str>,
+    ) -> Result<Option<UrlContent>, AgentToolError> {
+        let Some(resolved) = crate::extensions::resolve(name, cwd)
+            .await
+            .map_err(object_error_to_agent_tool_error)?
+        else {
+            return Ok(None);
+        };
+        let input = read_url_input(ctx, name, property);
+        let response = self
+            .runtime
+            .read_resolved(&input, resolved)
+            .await
+            .map_err(object_error_to_agent_tool_error)?;
+        Ok(Some(url_content(response)))
+    }
+
     async fn read_url(
         &self,
         ctx: &SessionRuntimeContext,
         url: &str,
         property: Option<&str>,
     ) -> Result<UrlContent, AgentToolError> {
-        let input = ReadInput {
-            object: url.to_string(),
-            purpose: None,
-            session_id: Some(ctx.session_id.clone()),
-            content_only: true,
-            range: None,
-            max_tokens: None,
-            options: property.map(|p| json!({ "properties": [p] })).unwrap_or_else(|| json!({})),
-        };
+        let input = read_url_input(ctx, url, property);
         let response = self
             .runtime
             .read_response(&input)
             .await
             .map_err(object_error_to_agent_tool_error)?;
-        let mut text = response.content.clone().unwrap_or_default();
-        if !response.errors.is_empty() {
-            text.push_str("\n\nNot read:\n");
-            for error in &response.errors {
-                text.push_str(&format!("- {}\n", error.message));
-            }
+        Ok(url_content(response))
+    }
+}
+
+fn read_url_input(ctx: &SessionRuntimeContext, url: &str, property: Option<&str>) -> ReadInput {
+    ReadInput {
+        object: url.to_string(),
+        purpose: None,
+        session_id: Some(ctx.session_id.clone()),
+        content_only: true,
+        range: None,
+        max_tokens: None,
+        options: property
+            .map(|p| json!({ "properties": [p] }))
+            .unwrap_or_else(|| json!({})),
+    }
+}
+
+fn url_content(response: crate::AdapterReadResponse) -> UrlContent {
+    let mut text = response.content.clone().unwrap_or_default();
+    if !response.errors.is_empty() {
+        text.push_str("\n\nNot read:\n");
+        for error in &response.errors {
+            text.push_str(&format!("- {}\n", error.message));
         }
-        Ok(UrlContent {
-            text,
-            details: json!({
-                "object": response.object,
-                "object_did": response.object_did,
-                "source": response.meta.source,
-                "content_type": response.meta.content_type,
-                "version": response.version,
-                "route": response.route,
-            }),
-        })
+    }
+    UrlContent {
+        text,
+        details: json!({
+            "object": response.object,
+            "object_did": response.object_did,
+            "source": response.meta.source,
+            "content_type": response.meta.content_type,
+            "version": response.version,
+            "route": response.route,
+        }),
     }
 }
 
@@ -322,6 +375,7 @@ fn percent_encode_file_path(path: &Path) -> String {
 fn object_error_to_agent_tool_error(err: crate::AgentDIDObjectError) -> AgentToolError {
     use crate::AgentDIDObjectError as ObjErr;
     match err {
+        ObjErr::Business { .. } => AgentToolError::ExecFailed(err.to_string()),
         ObjErr::InvalidConfig(message)
         | ObjErr::RouteNotFound(message)
         | ObjErr::UnsupportedObjectRef(message)

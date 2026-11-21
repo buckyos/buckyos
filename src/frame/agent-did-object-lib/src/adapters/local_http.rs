@@ -310,6 +310,7 @@ impl AgentObjectAdapter for LocalHttpAdapter {
             .await?;
         let response: LocalHttpSubscribeEventResponse = parse_json_response(response).await?;
         let subscription = EventBridgeSubscription {
+            alias_revision: None,
             subscription_id: response.subscription_id,
             object: response.object,
             object_did: response.object_did,
@@ -436,6 +437,7 @@ mod tests {
 
     fn x_call_request(action: &str) -> AdapterXCallRequest {
         AdapterXCallRequest {
+            alias_context: None,
             object_ref: ObjectRef::parse("obj://example/item/1").unwrap(),
             input: XCallInput {
                 object: "obj://example/item/1".to_string(),

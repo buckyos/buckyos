@@ -1305,6 +1305,7 @@ mod command_tests {
     fn entry(id: &str, version: &str, commands: &[&str], requires: &[&str]) -> ExtToolsCatalogEntry {
         ExtToolsCatalogEntry {
             manifest: ExtToolsManifest {
+                object_extensions: None,
                 schema: buckyos_api::EXT_TOOLS_MANIFEST_SCHEMA.to_string(),
                 id: id.to_string(),
                 version: version.to_string(),

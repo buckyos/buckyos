@@ -1283,15 +1283,15 @@
 .aiws-define-slots th, .aiws-define-slots td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--cp-border); }
 .aiws-define-slots input { width: 100%; box-sizing: border-box; }
 .aiws-plain-fieldset { border: none; margin: 0; padding: 0; min-width: 0; }
-.aiws-mindnode { box-sizing: border-box; width: 100%; height: 100%; border-radius: 8px; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque); color: var(--cp-text);
+.aiws-label.aiws-mindnode { --aiws-node-border: 1px; box-sizing: border-box; width: 100%; height: 100%; border-radius: 8px; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque); color: var(--cp-text);
   white-space: pre; overflow: visible; }
-.aiws-mindnode.is-depth-0 { border: none; border-radius: 10px; background: var(--cp-text); color: var(--cp-surface-opaque); }
-.aiws-mindnode.is-depth-1 { border: 2px solid var(--aiws-branch, var(--cp-accent)); }
-.aiws-mindnode-line { white-space: pre; }
+.aiws-mindnode.is-depth-0 { --aiws-node-border: 0px; border: none; border-radius: 10px; background: var(--cp-text); color: var(--cp-surface-opaque); }
+.aiws-mindnode.is-depth-1 { --aiws-node-border: 2px; border: 2px solid var(--aiws-branch, var(--cp-accent)); }
+.aiws-mindnode-line { display: block; min-height: 1lh; white-space: pre; }
 .aiws-mindnode-line > .is-code { background: color-mix(in srgb, var(--cp-text) 8%, transparent); border-radius: 4px; }
 .aiws-mindnode-line > a { color: inherit; }
 .aiws-mindnode-empty { color: var(--cp-muted); }
-.aiws-mindnode-edit { outline: none; white-space: pre-wrap; min-width: 1em; cursor: text; user-select: text; -webkit-user-select: text; }
+.aiws-mindnode-edit { display: block; outline: none; white-space: pre-wrap; min-width: 1em; cursor: text; user-select: text; -webkit-user-select: text; }
 .aiws-mindnode-edit:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
 .aiws-frame-block.is-node.is-editing { overflow: visible; }
 .aiws-frame-block.is-node.is-editing .aiws-mindnode { flex: none; width: max-content; min-width: 100%; max-width: var(--aiws-node-max-w, none); height: auto; min-height: 100%; }
@@ -1309,14 +1309,16 @@
 
 /* ---- label Block (控件机制 TODO G1) */
 .aiws-label-block { width: 100%; height: 100%; display: flex; }
-.aiws-label { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; width: 100%; height: 100%; box-sizing: border-box;
-  color: var(--cp-text); line-height: 1.35; min-width: 0; }
-.aiws-label:not(.is-wrap) { display: flex; flex-direction: column; }
-.aiws-label:not(.is-wrap) > .aiws-label-text { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
-.aiws-label.is-wrap > .aiws-label-text { overflow-wrap: anywhere; }
+.aiws-label { display: flex; gap: 4px; overflow: hidden; width: 100%; height: 100%; min-width: 0; box-sizing: border-box;
+  color: var(--cp-text); line-height: 1.35; }
+.aiws-label-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.aiws-label.is-wrap > .aiws-label-text { display: -webkit-box; -webkit-box-orient: vertical; overflow-wrap: anywhere; white-space: pre-wrap; }
+.aiws-label-icon { flex: 0 0 1em; width: 1em; height: 1em; line-height: 1; text-align: center; font-family: system-ui, sans-serif; font-style: normal; font-weight: normal; }
 .aiws-label.is-empty { color: var(--cp-muted); font-style: italic; }
-.aiws-label.is-editing { outline: none; cursor: text; display: block; overflow: visible; }
-.aiws-label.is-editing:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
+.aiws-label.is-editing, .aiws-label.is-editing > .aiws-label-text { overflow: visible; }
+.aiws-label.is-editing > .aiws-label-text { display: block; }
+.aiws-label-input { display: block; min-width: 1ch; outline: none; cursor: text; white-space: pre-wrap; overflow-wrap: anywhere; }
+.aiws-label-input:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
 
 /* ---- data controls: their body in the frame, projected Blocks, gestures (控件机制 TODO G2–G7) */
 .aiws-frame-block.is-control > .aiws-data-body { position: absolute; inset: 0; pointer-events: none; }

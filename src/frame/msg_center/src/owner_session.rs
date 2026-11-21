@@ -109,6 +109,51 @@ pub trait SessionTokenVerifier: Send + Sync {
         Ok(self.zone_agent(did).await?.is_some())
     }
 
+    /// Verify the Agent's current binding and permission with the original caller token.
+    async fn authorize_agent_contact_update(
+        &self,
+        token: &str,
+        agent: &DID,
+        owner: &DID,
+    ) -> std::result::Result<(), RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let endpoint = format!(
+            "http://{}:{}/kapi/control-panel",
+            runtime.get_local_gateway_host(),
+            runtime.node_gateway_port
+        );
+        let unavailable = |_| RPCErrors::ReasonError("owner authorization unavailable".into());
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(unavailable)?;
+        let response = client
+            .post(endpoint)
+            .json(&serde_json::json!({"method":"owner.context","params":{},"sys":[0,token]}))
+            .send()
+            .await
+            .map_err(unavailable)?
+            .error_for_status()
+            .map_err(unavailable)?;
+        let reply: Value = response.json().await.map_err(unavailable)?;
+        let context = &reply["result"];
+        let denied = || permission_denied("agent may not edit this owner's contacts");
+        if !reply["error"].is_null()
+            || context["caller_did"] != agent.to_string()
+            || context["owner_did"] != owner.to_string()
+            || context["read_only"] != false
+        {
+            return Err(denied());
+        }
+        let user = context["owner_user_id"].as_str().ok_or_else(denied)?;
+        self.account_settings(user)
+            .await?
+            .filter(|account| account.is_active() && account.can_edit_contacts())
+            .map(|_| ())
+            .ok_or_else(denied)
+    }
+
     /// Owner of a zone-hosted agent (`AgentDocument.owner`).
     async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
         Ok(self.zone_agent(did).await?.map(|agent| agent.owner))
@@ -418,6 +463,12 @@ struct RequestScopedVerifier(Arc<dyn SessionTokenVerifier>);
 
 #[async_trait]
 impl SessionTokenVerifier for RequestScopedVerifier {
+    async fn authorize_agent_contact_update(
+        &self, token: &str, agent: &DID, owner: &DID,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.0.authorize_agent_contact_update(token, agent, owner).await
+    }
+
     async fn authorize_imported_attachment(&self, token: &str, obj_id: &ndn_lib::ObjId) -> std::result::Result<bool, RPCErrors> {
         self.0.authorize_imported_attachment(token, obj_id).await
     }
@@ -956,6 +1007,47 @@ impl MessageCenter {
         .await
     }
 
+    /// A bound Agent may edit its owner's contact card through `update_contact`.
+    /// All other address book changes keep the ordinary contact-store rules.
+    pub(crate) async fn authorize_contact_update(
+        &self,
+        ctx: &RPCContext,
+        owner: Option<&DID>,
+    ) -> std::result::Result<(), RPCErrors> {
+        let caller = self.caller_identity(ctx).await?;
+        let delegate = caller.filter(|c| {
+            !c.restricted()
+                && matches!(
+                    c.principal_kind,
+                    TokenPrincipalKind::Agent | TokenPrincipalKind::App
+                )
+        });
+        let (Some(owner), Some(delegate)) = (owner, delegate) else {
+            return self.authorize_contact_scope(ctx, owner, true).await;
+        };
+        let Some((agent, Some(account), _)) = self.caller_mailbox_identity(&delegate).await? else {
+            return self.authorize_contact_scope(ctx, Some(owner), true).await;
+        };
+        if &account != owner {
+            return self.authorize_contact_scope(ctx, Some(owner), true).await;
+        }
+        if !self.contact_mgr.owner_can_edit(owner) {
+            return Err(permission_denied("contact-edit-not-allowed"));
+        }
+        let resource = MailboxAddress::new(owner.clone(), None)
+            .map_err(RPCErrors::ParseRequestError)?
+            .contacts_resource();
+        self.authorize_resource(ctx, &resource, "write").await?;
+        let token = ctx
+            .token
+            .as_deref()
+            .ok_or_else(|| permission_denied("session token required"))?;
+        self.token_verifier
+            .get()
+            .authorize_agent_contact_update(token, &agent, owner)
+            .await
+    }
+
     /// Contact stores are owner scoped: a zone user reads and changes only the
     /// store named by their own DID (reads also cover observable agents). The
     /// system scope (no owner) is readable, but only services may change it.
@@ -1034,9 +1126,9 @@ impl MessageCenter {
             }
             None => match self.caller_identity(ctx).await? {
                 Some(caller) if caller.external => Err(external_denied()),
-                Some(caller) if write && caller.principal_kind == TokenPrincipalKind::User => {
+                Some(caller) if write && !matches!(caller.principal_kind, TokenPrincipalKind::System | TokenPrincipalKind::Device) => {
                     Err(permission_denied(format!(
-                        "user {} may not change system contacts",
+                        "{} may not change system contacts",
                         caller.user_id
                     )))
                 }

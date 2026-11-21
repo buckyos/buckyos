@@ -120,6 +120,9 @@ pub struct ExtToolsManifest {
     /// Packages that cannot be enabled together with this one: two packages providing one command must say so.
     #[serde(default)]
     pub conflicts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_extensions: Option<String>,
+    #[serde(default)]
     pub provides: Vec<ExtToolsCommand>,
     pub platforms: Vec<String>,
     #[serde(default)]
@@ -214,7 +217,12 @@ impl ExtToolsManifest {
         if self.version.trim().is_empty() || !self.version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-')) {
             return fail(format!("version `{}` must be letters, digits and `._+-`", self.version));
         }
-        if self.provides.is_empty() && self.online.is_empty() {
+        if let Some(path) = &self.object_extensions {
+            if !safe_relative(path) || !path.starts_with(&format!("store/{}/", self.id)) {
+                return fail("object_extensions must be under the package store directory".into());
+            }
+        }
+        if self.provides.is_empty() && self.online.is_empty() && self.object_extensions.is_none() {
             return fail("a package provides commands or declares online items".to_string());
         }
         let mut items = BTreeSet::new();
@@ -317,6 +325,12 @@ pub fn ext_tools_payload_errors(manifest: &ExtToolsManifest, platform: &ExtTools
         Ok(_) => errors.push(format!("{}: differs from the package's manifest", manifest_path.display())),
         Err(e) => errors.push(format!("{}: {e}", manifest_path.display())),
     }
+    if let Some(path) = &manifest.object_extensions {
+        let prefix = format!("store/{}/", manifest.id);
+        if let Err(error) = crate::object_extensions::load_object_extensions(&manifest.id, &manifest.version, &dir.join(&prefix), path.strip_prefix(&prefix).unwrap_or("")) {
+            errors.push(error);
+        }
+    }
     let windows = platform.os == "windows";
     for provided in &manifest.provides {
         let bin = dir.join("bin");
@@ -380,6 +394,7 @@ pub fn ext_tools_payload_errors(manifest: &ExtToolsManifest, platform: &ExtTools
 /// provide one: `tools/bin` comes before `bin/agent-tools` on the PATH, so it would shadow an Agent's identity and control
 /// commands.
 pub const EXT_TOOLS_RESERVED_COMMANDS: &[&str] = &[
+    "xcall",
     "agent-session", "agent_tool", "ai_provider", "ai_provider_test", "ai_quota", "aicc-tool", "ask_user", "buckyos",
     "caption_image", "detect_image", "edit_image", "edit_video", "enhance_audio", "extend_video", "gen_image", "gen_music",
     "gen_video", "import_office", "import_table", "inpaint_image", "llm_understand_media", "materialize_resource",
@@ -726,6 +741,7 @@ mod tests {
 
     fn manifest() -> ExtToolsManifest {
         ExtToolsManifest {
+            object_extensions: None,
             schema: EXT_TOOLS_MANIFEST_SCHEMA.to_string(),
             id: "ext-media".to_string(),
             version: "1.2.0".to_string(),
@@ -743,6 +759,7 @@ mod tests {
     fn entry(id: &str, version: &str, commands: &[&str], requires: &[(&str, &str)]) -> ExtToolsCatalogEntry {
         ExtToolsCatalogEntry {
             manifest: ExtToolsManifest {
+                object_extensions: None,
                 schema: EXT_TOOLS_MANIFEST_SCHEMA.to_string(),
                 id: id.to_string(),
                 version: version.to_string(),

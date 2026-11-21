@@ -128,6 +128,7 @@ apps:
       agent_tool: bin/opendan/
       xagent: bin/opendan/xagent
       opendan_web: bin/opendan/web/
+      xcall-bin: bin/xcall
       buckyos-tool-bin: bin/buckyos
       buckyos-tool: libexec/buckyos-tool/
       buckyos-agent: libexec/buckyos-agent/

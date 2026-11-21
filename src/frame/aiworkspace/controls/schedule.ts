@@ -37,7 +37,7 @@ numeric \`placement { x, y, w, h }\` (it holds no Blocks). \`config\` is the def
 \`buckyos aiws place todo --workspace <ws> --surface <canvas> [--bind "items=<table>"]\` runs the control's on_bind the
 way a person's insertion does: no to-do table in the workspace → one is created on the canvas (owned by the control),
 exactly one → it is shown, several → give \`--bind\` (the command fails with \`NEEDS_UI\` naming the binding). It answers the
-control's id and the table it shows; add items with \`table.insert_records\` or \`buckyos aiws todo\` (for the schedule).
+control's id and the table it shows; add items with \`table.insert_records\` or \`xcall owner.todo\` (for the schedule).
 
 ## By hand (doc.commit)
 
@@ -59,9 +59,9 @@ The placement is numbers (never \`"auto"\`): a data control is sized like a Bloc
 
 ## The private schedule
 
-Every person has a Workspace named \`schedule\` (\`ws.ensure { name: "schedule" }\`) whose to-do table has the fixed id
-\`todo\` (and calendar \`calendar\`). Use the \`buckyos aiws todo\` commands (or buckyos-websdk \`ScheduleClient\`) to
-read and change it.
+Use \`xcall owner.todo list\` or \`xcall owner.todo add title="Buy milk"\` for the signed-in person's to-dos. The
+default provider looks up the workspace named \`schedule\` and creates the standard tables on the first authorized
+write. Pass a returned \`record_ref\` to edit an item and give the person its \`open_url\`.
 `
 
 const CALENDAR_AGENT = `# calendar — the calendar control
@@ -112,7 +112,8 @@ Only when the command is not at hand: create the table and the control in one Co
 
 The placement is numbers (never \`"auto"\`): a data control is sized like a Block.
 
-Use \`buckyos aiws cal\` (or buckyos-websdk \`ScheduleClient\`) to read and change the private schedule.
+Use \`xcall owner.cal list\` with an offset-bearing \`from\` and \`to\` for the person's calendar. Use
+\`xcall owner.cal add\` to create an event. Keep its \`record_ref\` for changes and open its \`open_url\` from the desktop.
 `
 
 export const TODO_CONTROL: ControlDescriptor = {

@@ -34,6 +34,7 @@
         "head_seq": "number",
         "judged_as": "string",
         "ok": "boolean",
+        "owned_by_caller_user": "boolean",
         "owner": "boolean",
         "planner_version": "number",
         "principal": "string",
@@ -1544,6 +1545,7 @@
         "head_seq": "number",
         "judged_as": "string",
         "ok": "boolean",
+        "owned_by_caller_user": "boolean",
         "owner": "boolean",
         "planner_version": "number",
         "principal": "string",
@@ -2569,6 +2571,16 @@
       }
     },
     {
+      "method": "ws.lookup",
+      "params": {
+        "name": "string"
+      },
+      "result": {
+        "found": "boolean",
+        "ok": "boolean"
+      }
+    },
+    {
       "method": "ws.ensure",
       "params": {
         "name": "string",
@@ -2581,6 +2593,33 @@
         "name": "string",
         "ok": "boolean",
         "title": "string",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.lookup",
+      "params": {
+        "name": "string"
+      },
+      "result": {
+        "epoch": "string",
+        "found": "boolean",
+        "head_seq": "number",
+        "name": "string",
+        "ok": "boolean",
+        "title": "string",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.select_name",
+      "params": {
+        "name": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "name": "string",
+        "ok": "boolean",
         "workspace_id": "string"
       }
     },

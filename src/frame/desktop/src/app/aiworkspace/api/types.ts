@@ -213,7 +213,7 @@ export interface EntityEnvelope {
   title?: string | null
   kind?: ContainerKind | string
   layout?: { mode: 'flow' | 'free' | 'tree' } | null
-  /** A control's attributes (outline only; a Surface's `config` is not projected). */
+  /** A control's attributes, or the appearance used to lay out and draw a label or mindnode. */
   config?: Record<string, Json> | null
   /** A data control's or a composite's bound data, by binding name: one id, or a list for a `many` binding (控件机制 TODO
    * G2; 控件 on_bind TODO Q2). */

@@ -10,6 +10,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 from pathlib import Path, PurePosixPath
 
 
@@ -146,6 +147,14 @@ def build(args: argparse.Namespace) -> None:
         missing = [str(path.relative_to(staging)) for path in required if not path.is_file()]
         if missing:
             raise ValueError(f"npm artifact is missing system files: {', '.join(missing)}")
+        extensions = staging / "dist" / "owner-extensions"
+        manifest = tomllib.loads((extensions / "object_extensions.toml").read_text(encoding="utf-8"))
+        for obj in manifest["objects"]:
+            files = [obj["profile"], *(action["script"] for action in obj["actions"].values())]
+            for entry in files:
+                target = (extensions / entry).resolve(strict=True)
+                if not target.is_relative_to(extensions) or not target.is_file():
+                    raise ValueError(f"invalid installed owner extension file {entry}")
         files = package_file_manifest(staging)
         if files != release["npm_files"]:
             raise ValueError("npm file manifest differs from the release manifest")

@@ -896,3 +896,118 @@ async fn ui_state_without_owner_is_the_callers_own() {
     c.handle_update_ui_session_state("s-1".into(), "cursor".into(), json!(7), in_process()).await.unwrap();
     assert!(c.handle_get_ui_session_state("s-1".into(), "cursor".into(), user_ctx("alice")).await.unwrap().is_none(), "the shared namespace is not the user's");
 }
+
+#[tokio::test]
+async fn owner_notification_keys_and_answers_cross_the_message_center_http_boundary() {
+    use axum::body::{to_bytes, Body};
+    use axum::extract::{ConnectInfo, Request};
+    use buckyos_http_server::{HttpServer, StreamInfo};
+    use std::net::SocketAddr;
+
+    let env = env().await;
+    let sync = Arc::new(crate::ZoneSync::new(
+        env.center.clone(),
+        Arc::new(crate::msg_tunnel::DeliveryExecutorMgr::new()),
+    ));
+    let server = Arc::new(crate::MsgCenterHttpServer::new(env.center.clone(), sync));
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/kapi/msg-center", socket.local_addr().unwrap());
+    let app = axum::Router::new().fallback(
+        move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request| async move {
+            let (parts, body) = req.into_parts();
+            let bytes = to_bytes(body, 1 << 20).await.unwrap();
+            server
+                .serve_request(
+                    buffered_request(parts, bytes),
+                    StreamInfo::new(peer.to_string()),
+                )
+                .await
+                .unwrap()
+                .map(Body::new)
+        },
+    );
+    let task = tokio::spawn(async move {
+        axum::serve(
+            socket,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    let agent = MsgCenterClient::new(kRPC::kRPC::new(&endpoint, agent_ctx().token));
+    let alice_client = MsgCenterClient::new(kRPC::kRPC::new(&endpoint, user_ctx("alice").token));
+    let bob_client = MsgCenterClient::new(kRPC::kRPC::new(&endpoint, user_ctx("bob").token));
+
+    let key = "xcall:owner:notify:review";
+    let notice = NotifySendReq::notice("alice", "Ready", "The review is ready", key);
+    let (first, second) =
+        tokio::join!(agent.notify_send(notice.clone()), agent.notify_send(notice));
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.notify_id, second.notify_id);
+    assert_eq!(
+        first.home.as_ref().unwrap().record_id,
+        second.home.as_ref().unwrap().record_id
+    );
+    assert_eq!(
+        first.source.agent_did.as_deref(),
+        Some(jarvis().to_string().as_str())
+    );
+    let home = &first.home.as_ref().unwrap().session_id;
+    assert_eq!(session_records(&env.center, &alice(), home).await.len(), 1);
+    let changed = NotifySendReq::notice("alice", "Ready", "The review moved", key);
+    let error = agent.notify_send(changed).await.unwrap_err();
+    assert!(matches!(error, RPCErrors::Detailed(detail) if detail.code == "IDEMPOTENCY_CONFLICT"));
+    assert_eq!(session_records(&env.center, &alice(), home).await.len(), 1);
+    assert_eq!(
+        alice_client
+            .notify_get(&first.notify_id)
+            .await
+            .unwrap()
+            .status,
+        NotifyStatus::Open
+    );
+    assert!(bob_client.notify_get(&first.notify_id).await.is_err());
+    assert!(agent
+        .notify_send(NotifySendReq::notice(
+            "bob",
+            "Ready",
+            "The review is ready",
+            key
+        ))
+        .await
+        .is_err());
+
+    let question = NotifySendReq::input(
+        "alice",
+        "Proceed?",
+        "Proceed?",
+        vec![],
+        true,
+        "xcall:owner:ask:review",
+    );
+    let pending = agent.notify_send(question.clone()).await.unwrap();
+    let replay = agent.notify_send(question).await.unwrap();
+    assert_eq!(pending.notify_id, replay.notify_id);
+    assert_eq!(pending.task_id, replay.task_id);
+    assert_eq!(env.tasks.count(), 1);
+    assert_eq!(
+        agent.notify_get(&pending.notify_id).await.unwrap().status,
+        NotifyStatus::Open
+    );
+    env.tasks.answer(
+        pending.task_id.as_ref().unwrap(),
+        NotifyAnswer::text("Proceed"),
+    );
+    let answered = agent.notify_get(&pending.notify_id).await.unwrap();
+    assert_eq!(answered.status, NotifyStatus::Answered);
+    assert_eq!(answered.result.unwrap().text(), Some("Proceed"));
+    assert_eq!(session_records(&env.center, &alice(), home).await.len(), 2);
+    eprintln!(
+        "MessageCenter fixture notify_id={} ask_ref={} task_id={}",
+        first.notify_id,
+        answered.notify_id,
+        pending.task_id.unwrap()
+    );
+    task.abort();
+}

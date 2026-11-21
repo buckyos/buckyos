@@ -202,6 +202,16 @@ fn judge_one(data: &AclData, caller: &Caller) -> WsResult<Judgment> {
     Ok(Judgment { principal: caller.principal.clone(), owner, groups, direct, guest, member, agent_as_owner: false, publication: None })
 }
 
+/// Apply the agent ceiling outside the ACL, including when the agent inherits its owner's grants.
+fn agent_ceiling(caller: &Caller, access: Access) -> Access {
+    if caller.agent_read_only {
+        let read = Access::uniform(&access.principal, CapSet::of(Cap::Read));
+        access.bounded_by(read)
+    } else {
+        access
+    }
+}
+
 /// Where an entry's subject applies to a judged caller: its tier, and whether it is `@creator`'s.
 fn applies(j: &Judgment, subject: &str) -> Option<(Tier, bool)> {
     if subject == j.principal {
@@ -311,10 +321,11 @@ impl Workspace {
     pub fn access(&self, caller: &Caller) -> WsResult<Access> {
         let data = self.acl_data()?;
         let base = access_of(&data, &judge(&data, caller)?);
-        match caller.macro_of.as_deref() {
-            Some(wish_id) => self.bounded_by_binding(&data, base, wish_id),
-            None => Ok(base),
-        }
+        let access = match caller.macro_of.as_deref() {
+            Some(wish_id) => self.bounded_by_binding(&data, base, wish_id)?,
+            None => base,
+        };
+        Ok(agent_ceiling(caller, access))
     }
 
     /// What `ws.list` shows: the owner's Workspaces and those naming the caller or one of its groups — never one it
@@ -322,7 +333,7 @@ impl Workspace {
     pub fn listed(&self, caller: &Caller) -> WsResult<Option<Access>> {
         let data = self.acl_data()?;
         let j = judge(&data, caller)?;
-        Ok((j.owner || !j.groups.is_empty() || j.direct).then(|| access_of(&data, &j)))
+        Ok((j.owner || !j.groups.is_empty() || j.direct).then(|| agent_ceiling(caller, access_of(&data, &j))))
     }
 
     /// Member specs whose membership the service settles per request: `group:` and `contact:`.
@@ -811,7 +822,7 @@ impl Workspace {
     pub fn macro_access(&self, triggerer: &Caller, wish_id: &str) -> WsResult<Access> {
         let data = self.acl_data()?;
         let base = access_of(&data, &judge(&data, triggerer)?);
-        self.bounded_by_binding(&data, base, wish_id)
+        Ok(agent_ceiling(triggerer, self.bounded_by_binding(&data, base, wish_id)?))
     }
 
     fn bounded_by_binding(&self, data: &AclData, base: Access, wish_id: &str) -> WsResult<Access> {

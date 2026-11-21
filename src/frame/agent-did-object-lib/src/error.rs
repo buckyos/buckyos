@@ -2,6 +2,12 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AgentDIDObjectError {
+    #[error("{code}: {message}")]
+    Business {
+        code: String,
+        message: String,
+        detail: serde_json::Value,
+    },
     #[error("invalid config: {0}")]
     InvalidConfig(String),
     #[error("route not found: {0}")]
@@ -47,5 +53,29 @@ impl From<std::io::Error> for AgentDIDObjectError {
 impl From<toml::de::Error> for AgentDIDObjectError {
     fn from(err: toml::de::Error) -> Self {
         Self::InvalidConfig(err.to_string())
+    }
+}
+
+impl AgentDIDObjectError {
+    pub fn detail(&self) -> serde_json::Value {
+        if let Self::Business {
+            code,
+            message,
+            detail,
+        } = self
+        {
+            return serde_json::json!({"code":code,"message":message,"details":detail});
+        }
+        let code = match self {
+            Self::DeclaredCapabilityNotFound(_) | Self::UnsupportedMethod(_) => {
+                "UNSUPPORTED_ACTION"
+            }
+            Self::SchemaError(_) => "INVALID_PARAMS",
+            Self::InvalidConfig(_) => "INVALID_CONFIG",
+            Self::UnsupportedObjectRef(_) => "INVALID_OBJECT_REF",
+            Self::RouteNotFound(_) | Self::AdapterNotFound(_) => "ROUTE_NOT_FOUND",
+            _ => "PROVIDER_UNAVAILABLE",
+        };
+        serde_json::json!({"code":code,"message":self.to_string()})
     }
 }

@@ -1592,7 +1592,31 @@ impl ControlPanelServer {
                 session,
             }));
         }
-        let agent_permission_mode = if claims.principal_kind == TokenPrincipalKind::App {
+        let mut owner_user = username.clone();
+        let owner_agent = claims.principal_kind == TokenPrincipalKind::Agent && method.starts_with("owner.");
+        let agent_permission_mode = if owner_agent {
+            let did = name_lib::DID::from_str(&username)
+                .map_err(|_| RPCErrors::InvalidToken("invalid Agent DID".into()))?;
+            let id = buckyos_api::AgentId::from_agent_did(&did).map_err(RPCErrors::InvalidToken)?;
+            let kv = crate::agent_mgr::ZoneKv::connect().await?;
+            let unavailable = || RPCErrors::NoPermission("Agent owner binding unavailable".into());
+            let key = format!("services/control_panel/agent_names/{id}");
+            let reservation = crate::agent_mgr::get_value::<Value>(&kv, &key)
+                .await
+                .ok_or_else(unavailable)?;
+            owner_user = reservation["owner_user_id"].as_str().ok_or_else(unavailable)?.to_owned();
+            let key = buckyos_api::agent_spec_key(&owner_user, &id);
+            let spec = crate::agent_mgr::get_value::<buckyos_api::AgentSpec>(&kv, &key)
+                .await
+                .ok_or_else(unavailable)?;
+            if spec.validate().is_err()
+                || spec.agent_did != did
+                || spec.binding.target_app_instance_id.owner_user_id() != owner_user
+            {
+                return Err(unavailable());
+            }
+            Some(spec.permission_mode)
+        } else if claims.principal_kind == TokenPrincipalKind::App {
             match &claims.target {
                 AuthTarget::App { app_instance_id } => {
                     buckyos_api::load_agent_permission_mode(
@@ -1606,7 +1630,7 @@ impl ControlPanelServer {
         } else {
             None
         };
-        let settings_path = format!("users/{}/settings", username);
+        let settings_path = format!("users/{}/settings", owner_user);
         let settings_val = system_config_client
             .get(&settings_path)
             .await
@@ -1624,7 +1648,7 @@ impl ControlPanelServer {
             )));
         }
         let owner_did = match ControlPanelClient::from_shared(system_config_client)
-            .get_user_did(&username)
+            .get_user_did(&owner_user)
             .await
         {
             Ok(did) => did.to_string(),
@@ -1635,7 +1659,7 @@ impl ControlPanelServer {
         };
 
         Ok(Some(RpcAuthPrincipal {
-            owner_user_id: username.clone(),
+            owner_user_id: owner_user,
             username,
             authenticated_app_id,
             user_type: user_settings.user_type,

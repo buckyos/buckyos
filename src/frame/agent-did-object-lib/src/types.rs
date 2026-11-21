@@ -105,6 +105,8 @@ pub struct SubscribeEventInput {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventBridgeSubscription {
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub alias_revision: Option<Value>,
     pub subscription_id: String,
     pub object: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -61,6 +61,7 @@ pub struct AdapterReadRequest {
 
 #[derive(Clone, Debug)]
 pub struct AdapterXCallRequest {
+    pub alias_context: Option<Value>,
     pub object_ref: ObjectRef,
     pub input: XCallInput,
     pub route: ObjectRoute,

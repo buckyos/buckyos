@@ -201,7 +201,10 @@ impl Access {
     /// Never more than `limit` allows (a macro bound with `intersection`).
     pub fn bounded_by(mut self, limit: Access) -> Access {
         self.ws_caps = self.ws_caps.intersect(limit.ws_caps);
-        self.limit = Some(Box::new(limit));
+        self.limit = Some(Box::new(match self.limit.take() {
+            Some(previous) => previous.bounded_by(limit),
+            None => limit,
+        }));
         self
     }
 

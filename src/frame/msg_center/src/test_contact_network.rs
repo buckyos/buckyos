@@ -657,6 +657,10 @@ impl SessionTokenVerifier for AccountsVerifier {
 }
 
 fn token_context(sub: &str, kind: TokenPrincipalKind, holder: &str) -> RPCContext {
+    signed_context(sub, kind, AuthTarget::system(SystemServiceId::parse(holder).unwrap()))
+}
+
+fn signed_context(sub: &str, kind: TokenPrincipalKind, target: AuthTarget) -> RPCContext {
     let mut token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
         token: None,
@@ -665,14 +669,14 @@ fn token_context(sub: &str, kind: TokenPrincipalKind, holder: &str) -> RPCContex
         iss: Some(buckyos_api::VERIFY_HUB_UNIQUE_ID.into()),
         jti: None,
         sub: Some(sub.to_string()),
-        appid: Some(holder.into()),
+        appid: None,
         sudo: false,
         extra: HashMap::new(),
     };
     bind_token_principal_kind(&mut token, kind);
     bind_token_target(
         &mut token,
-        &AuthTarget::system(SystemServiceId::parse(holder).unwrap()),
+        &target,
         TokenUse::Session,
     )
     .unwrap();
@@ -681,6 +685,146 @@ fn token_context(sub: &str, kind: TokenPrincipalKind, holder: &str) -> RPCContex
         token: Some(token.generate_jwt(None, &key).unwrap()),
         from_ip: Some("127.0.0.1".parse().unwrap()),
         ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn bound_agent_subject_and_app_use_the_owners_contacts_and_notifications() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct AgentVerifier {
+        owner: DID,
+        agent: DID,
+        writable: AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl SessionTokenVerifier for AgentVerifier {
+        async fn verify(&self, token: &str) -> Result<RPCSessionToken, RPCErrors> {
+            Verifier.verify(token).await
+        }
+        async fn authorize(&self, _: &str, resource: &str, _: &str) -> Result<(), RPCErrors> {
+            assert!(resource.ends_with("/contacts") || resource == "obj://msg-center/notify");
+            Ok(())
+        }
+        async fn resolve_user_did(&self, id: &str) -> Result<DID, RPCErrors> {
+            Ok(user(id, "z.example"))
+        }
+        async fn zone_agent(&self, did: &DID) -> Result<Option<ZoneAgentInfo>, RPCErrors> {
+            Ok((did == &self.agent).then(|| ZoneAgentInfo {
+                owner: self.owner.clone(),
+                allow_group: false,
+            }))
+        }
+        async fn authorize_agent_contact_update(
+            &self,
+            token: &str,
+            agent: &DID,
+            owner: &DID,
+        ) -> Result<(), RPCErrors> {
+            self.verify(token).await?;
+            assert_eq!((agent, owner), (&self.agent, &self.owner));
+            self.writable
+                .load(Ordering::SeqCst)
+                .then_some(())
+                .ok_or_else(|| RPCErrors::NoPermission("read-only agent".into()))
+        }
+    }
+    let alice = user("alice", "z.example");
+    let bob = user("bob", "z.example");
+    let agent = user("jarvis", "z.example");
+    let (c, _tmp) = open(
+        "owner-contacts",
+        "z.example",
+        &[alice.clone(), bob.clone(), agent.clone()],
+    )
+    .await;
+    c.set_notify_identity(hub(), Some("z.example".into()));
+    c.directory.set(StaticDirectory::with(vec![]));
+    c.upsert_zone_user_contacts(
+        vec![crate::contact_mgr::ZoneUserContactSeed {
+            did: bob.clone(),
+            name: "Bob".into(),
+            avatar: None,
+            note: None,
+            bindings: vec![],
+            tags: vec![],
+        }],
+        Some(alice.clone()),
+    )
+    .await
+    .unwrap();
+    let verifier = Arc::new(AgentVerifier {
+        owner: alice.clone(),
+        agent: agent.clone(),
+        writable: AtomicBool::new(true),
+    });
+    c.set_token_verifier(verifier.clone());
+    let target = AuthTarget::app("jarvis.z.example@alice".parse().unwrap());
+    for (ctx, label) in [
+        (
+            signed_context(&agent.to_string(), TokenPrincipalKind::Agent, target.clone()),
+            "did",
+        ),
+        (
+            token_context(&agent.to_string(), TokenPrincipalKind::Agent, "control-panel"),
+            "did-panel",
+        ),
+        (signed_context("alice", TokenPrincipalKind::App, target), "app"),
+    ] {
+        let lookup = |owner: &DID| {
+            c.contact_ext_rpc(
+                "contact.lookup",
+                json!({"input":"Bob","contact_mgr_owner":owner}),
+                ctx.clone(),
+            )
+        };
+        assert_eq!(
+            lookup(&alice).await.unwrap()["candidates"][0]["did"],
+            bob.to_string()
+        );
+        assert!(lookup(&bob).await.is_err());
+        let update = |owner: &DID| {
+            c.handle_update_contact(
+                bob.clone(),
+                buckyos_api::ContactPatch {
+                    note: Some(label.into()),
+                    ..Default::default()
+                },
+                Some(owner.clone()),
+                ctx.clone(),
+            )
+        };
+        verifier.writable.store(true, Ordering::SeqCst);
+        assert_eq!(update(&alice).await.unwrap().note.as_deref(), Some(label));
+        assert!(update(&bob).await.is_err());
+        assert!(matches!(
+            c.handle_update_contact(bob.clone(), Default::default(), None, ctx.clone())
+                .await,
+            Err(RPCErrors::NoPermission(_))
+        ));
+        verifier.writable.store(false, Ordering::SeqCst);
+        assert!(matches!(update(&alice).await, Err(RPCErrors::NoPermission(_))));
+        assert!(lookup(&alice).await.is_ok());
+        verifier.writable.store(true, Ordering::SeqCst);
+        let mut projection = crate::contact_mgr::ContactProjection::default();
+        projection.read_only_owners.insert(alice.to_string());
+        c.contact_mgr.set_projection(projection);
+        assert!(matches!(update(&alice).await, Err(RPCErrors::NoPermission(_))));
+        c.contact_mgr.set_projection(Default::default());
+        let send = |user| {
+            c.handle_notify(
+                buckyos_api::METHOD_NOTIFY_SEND,
+                json!(buckyos_api::NotifySendReq::notice(
+                    user,
+                    "Owner notice",
+                    "",
+                    label
+                )),
+                ctx.clone(),
+            )
+        };
+        let sent = send("alice").await.unwrap();
+        assert_eq!(sent["source"]["agent_did"], agent.to_string());
+        assert!(send("bob").await.is_err());
     }
 }
 

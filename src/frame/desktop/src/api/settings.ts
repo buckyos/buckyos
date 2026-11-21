@@ -387,6 +387,7 @@ export interface ExtToolsOnlineItem {
 }
 
 export interface ExtToolsManifest {
+  object_extensions?: string
   id: string
   version: string
   requires?: Array<{ id: string; version: string }>

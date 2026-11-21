@@ -1668,6 +1668,8 @@ async fn update_rbac(
             rbac_literal(&agent_spec.binding.target_app_instance_id.to_string());
         let mailbox = MailboxAddress::new(agent_spec.agent_did.clone(), None)
             .map_err(anyhow::Error::msg)?;
+        let owner_contacts = MailboxAddress::new(agent_spec.agent_doc.owner.clone(), None)
+            .map_err(anyhow::Error::msg)?.contacts_resource();
         let agent_host = rbac_literal(&agent_spec.agent_did.to_host_name());
         for resource in [format!("obj://{agent_host}"), format!("obj://{agent_host}/*")] {
             push_policy_line(
@@ -1676,6 +1678,17 @@ async fn update_rbac(
             );
         }
         for subject in [&runtime_subject, &agent_subject] {
+            let contact_actions = if agent_spec.permission_mode == AgentPermissionMode::ReadWrite
+                && (subject != &runtime_subject || !runtime_read_only)
+            {
+                "read|write"
+            } else {
+                "read"
+            };
+            push_policy_line(
+                &mut rbac_policy,
+                format!("p, {subject}, {},{contact_actions},allow", rbac_literal(&owner_contacts)),
+            );
             for key in ["settings", "profile", "spec", "info"] {
                 push_policy_line(
                     &mut rbac_policy,
@@ -1973,6 +1986,18 @@ mod agent_rbac_tests {
             .unwrap();
         let writer = "app:writer.example.com";
         let reader = "app:reader.example.com";
+        let contacts = MailboxAddress::new(writable.agent_doc.owner.clone(), None).unwrap().contacts_resource();
+        let foreign_contacts = MailboxAddress::new(DID::new("web", "outside.example.com"), None).unwrap().contacts_resource();
+        for (app, spec, writable) in [(writer, &writable, true), (reader, &readonly, false)] {
+            for sub in ["bob".to_string(), spec.agent_did.to_string()] {
+                assert!(rbac::enforce(&sub, app, &contacts, "read", None).await);
+                assert_eq!(rbac::enforce(&sub, app, &contacts, "write", None).await, writable);
+            }
+            let agent = spec.agent_did.to_string();
+            assert!(rbac::enforce(&agent, "system:control-panel", &contacts, "read", None).await);
+            assert_eq!(rbac::enforce(&agent, "system:control-panel", &contacts, "write", None).await, writable);
+            assert!(!rbac::enforce(&agent, "system:control-panel", &foreign_contacts, "write", None).await);
+        }
         for resource in [
             "obj://config/users/bob/profile",
             "obj://config/users/bob/apps/notes/settings",

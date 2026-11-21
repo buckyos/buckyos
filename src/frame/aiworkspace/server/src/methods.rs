@@ -66,6 +66,10 @@ const SHOW_ROLE: Check = Handler("the presenter's read; a prompter token");
 pub const METHODS: &[MethodSpec] = &[
     m("ws.create", "stable", &[MayOwn]),
     m("ws.ensure", "stable", &[MayOwn]),
+    m("ws.lookup", "stable", &[MayOwn]),
+    m("ws.select_name", "stable", &[Handler("the signed-in owner of the named workspaces")]),
+    m("availability.describe", "experimental", &[Session, Handler("the subject shared availability with the current account")]),
+    m("availability.free_busy", "experimental", &[Session, Handler("current availability grant on the subject; only busy intervals")]),
     m("ws.time", "stable", &[Session]),
     m("ws.list", "stable", &[Session]),
     m("ws.get_info", "stable", &[Member]),

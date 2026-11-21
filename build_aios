@@ -680,6 +680,7 @@ COPY web /opt/buckyos/bin/opendan/web
 COPY licenses /opt/buckyos/licenses
 # One multi-call executable: agent_tool and xagent dispatch on argv[0].
 RUN printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c - && \
+    ln -s opendan /opt/buckyos/bin/opendan/xcall && \
     ln -s opendan /opt/buckyos/bin/opendan/agent_tool && \
     ln -s opendan /opt/buckyos/bin/opendan/xagent
 
@@ -702,7 +703,7 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
 
 # The standard environment baseline (libopendan `baseline.rs`): every
 # command it lists must be here; session helpers come from the session bin.
-RUN xagent --help >/dev/null && agent_tool --help >/dev/null && \
+RUN xagent --help >/dev/null && xcall --help >/dev/null && agent_tool --help >/dev/null && \
     xagent runtime baseline --check --overlay >/dev/null
 
 EXPOSE 3180

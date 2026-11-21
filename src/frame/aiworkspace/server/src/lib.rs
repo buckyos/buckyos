@@ -4,6 +4,7 @@
 //! through the zone's NDM and application object buckets (Durable Data Schema §3).
 
 pub mod auth;
+mod availability;
 pub mod buckets;
 pub mod control;
 pub mod ext;
@@ -487,6 +488,8 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         ext::build(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if method == "ext.install" {
         ext::install(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
+    } else if matches!(method.as_str(), "availability.describe"|"availability.free_busy") {
+        availability::handle(&state,&method,&params,token.unwrap_or_default()).await
     } else if method == "ws.import" {
         import_package(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if method == "print.package" {
@@ -587,6 +590,8 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
     let ws_id = || s(p, "workspace_id");
     Ok(okv(match method {
         "ws.create" => svc.create_workspace_with(caller, p.get("title").and_then(Value::as_str).unwrap_or(""), p.get("workspace_id").and_then(Value::as_str), p.get("name").and_then(Value::as_str))?,
+        "ws.lookup" => svc.lookup_workspace(caller, s(p, "name")?)?,
+        "ws.select_name" => svc.select_workspace_name(caller, s(p, "name")?, ws_id()?)?,
         "ws.ensure" => svc.ensure_workspace(caller, s(p, "name")?, p.get("title").and_then(Value::as_str))?,
         // the service's clock for the clients' calibration (控件机制 TODO G16, Q10): any session, no Workspace
         "ws.time" => json!({ "ok": true, "server_ms": (svc.clock)() }),
@@ -709,7 +714,10 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
         "doc.prepare" => state.with_ws(ws_id()?, |ws| Ok(ws.prepare(p, caller)))?,
         "doc.commit" => state.with_ws(ws_id()?, |ws| Ok(ws.commit(p, caller, &CommitOpts::default())))?,
         "doc.stage" => state.with_ws(ws_id()?, |ws| ws.stage_commit(caller, p))?,
-        "doc.get_submission" => state.with_ws(ws_id()?, |ws| ws.get_submission(caller, s(p, "epoch")?, s(p, "idempotency_key")?))?,
+        "doc.get_submission" => state.with_ws(ws_id()?, |ws| match p.get("source_id").and_then(Value::as_str) {
+            Some(table) => ws.table_submission(caller, s(p, "epoch")?, s(p, "idempotency_key")?, table),
+            None => ws.get_submission(caller, s(p, "epoch")?, s(p, "idempotency_key")?),
+        })?,
         "doc.undo" => state.with_ws(ws_id()?, |ws| Ok(ws.undo(caller, p)))?,
         "doc.get_changes" => state.with_ws(ws_id()?, |ws| {
             let with_ops = p.get("filter").and_then(|f| f.get("detail")).and_then(Value::as_str) != Some("touched");

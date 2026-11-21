@@ -70,6 +70,9 @@ class PackageFileManifestTests(unittest.TestCase):
             package_files = {
                 "LICENSE": "license",
                 "dist/node.mjs": "export {};",
+                "dist/owner-extensions/object_extensions.toml": '[[objects]]\nprofile="profile.json"\n[objects.actions.who]\nscript="who.mjs"',
+                "dist/owner-extensions/profile.json": "{}",
+                "dist/owner-extensions/who.mjs": "export default () => ({});",
                 "cli/main.ts": "export {};",
                 "cli/system_bootstrap.ts": "export {};",
                 "cli/system_launcher.ts": "export {};",

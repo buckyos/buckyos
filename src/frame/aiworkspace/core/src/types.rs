@@ -478,7 +478,7 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     if is_changed("view") && !is_text_view(&view_type) {
         if let Some(pl) = p.ov.edge(&e.entity_id)?.and_then(|edge| edge.placement) {
             if pl.get("w").is_some_and(Value::is_string) || pl.get("h").is_some_and(Value::is_string) {
-                return Err(bad(format!("a {view_type} Block needs a numeric w / h: only text views ({}) size themselves", controls_contract().1.join(", "))));
+                return Err(bad(format!("a {view_type} Block needs a numeric w / h: only text views ({}) size themselves", controls_contract().text_views.join(", "))));
             }
         }
     }
@@ -909,7 +909,7 @@ fn container_primitive(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
         ("folder" | "surface" | "group", None) => {}
         (k, None) if is_control_kind(k) => {}
         ("root" | "data" | "surfaces", None) if p.env.internal => {}
-        (_, None) => return Err(bad(format!("container kind must be folder, surface, group or a control ({})", controls_contract().0.join(", ")))),
+        (_, None) => return Err(bad(format!("container kind must be folder, surface, group or a control ({})", controls_contract().control_kinds.join(", ")))),
         (k, Some(b)) if b.payload.get("kind").and_then(Value::as_str) == Some(k) => {}
         _ => return Err(WsError::invalid_op("container kind cannot be changed")),
     }
@@ -1064,31 +1064,39 @@ fn container_schema(e: &EntityRow) -> WsResult<()> {
 /// The constants the core shares with the Desktop's control registry (one file, read by both).
 const CONTROLS_JSON: &str = include_str!("../../controls/core.json");
 
-fn controls_contract() -> &'static (Vec<String>, Vec<String>, Vec<String>) {
-    static C: std::sync::OnceLock<(Vec<String>, Vec<String>, Vec<String>)> = std::sync::OnceLock::new();
-    C.get_or_init(|| {
-        let v: Value = serde_json::from_str(CONTROLS_JSON).expect("controls/core.json is valid JSON");
-        let list = |k: &str| v[k].as_array().expect("controls/core.json lists").iter().map(|s| s.as_str().unwrap().to_string()).collect();
-        (list("control_kinds"), list("text_views"), list("data_controls"))
-    })
+#[derive(serde::Deserialize)]
+struct ControlsContract {
+    control_kinds: Vec<String>,
+    text_views: Vec<String>,
+    data_controls: Vec<String>,
+    label_appearance: Vec<String>,
+}
+
+fn controls_contract() -> &'static ControlsContract {
+    static C: std::sync::OnceLock<ControlsContract> = std::sync::OnceLock::new();
+    C.get_or_init(|| serde_json::from_str(CONTROLS_JSON).expect("controls/core.json is valid JSON"))
+}
+
+pub(crate) fn label_appearance_keys() -> &'static [String] {
+    &controls_contract().label_appearance
 }
 
 /// Container kinds that are Block-controls (方案 §6.2, R2): the kind is the control id; the control lays out the
 /// Blocks it holds with its named algorithm. `mindmap` is the first.
 pub fn is_control_kind(kind: &str) -> bool {
-    controls_contract().0.iter().any(|k| k == kind)
+    controls_contract().control_kinds.iter().any(|k| k == kind)
 }
 
 /// Data controls (控件机制 TODO G2, Q19): the official to-do and calendar. They show the records of the tables they bind
 /// (`bindings`) as projected Blocks the clients compute and never store, hold no Blocks themselves and have a numeric
 /// size the user sets.
 pub fn is_data_control(kind: &str) -> bool {
-    controls_contract().2.iter().any(|k| k == kind)
+    controls_contract().data_controls.iter().any(|k| k == kind)
 }
 
 /// Text views (R17): their size comes from the title, so their `w` / `h` may be `"auto"` inside a control.
 pub fn is_text_view(view_type: &str) -> bool {
-    controls_contract().1.iter().any(|k| k == view_type)
+    controls_contract().text_views.iter().any(|k| k == view_type)
 }
 
 /// A container drawn on a canvas: a UI group or a control.

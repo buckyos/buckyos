@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use crate::extensions::{self, Destination, Resolved};
 use std::sync::Arc;
 
 use agent_tool::{AgentToolResult, AgentToolStatus, AGENT_TOOL_PROTOCOL_VERSION};
@@ -70,8 +71,44 @@ impl AgentDIDObjectRuntime {
     }
 
     /// What the routed adapter read, before it is rendered as a tool result.
-    pub async fn read_response(&self, input: &ReadInput) -> Result<AdapterReadResponse, AgentDIDObjectError> {
-        let object_ref = ObjectRef::parse(&input.object)?;
+    pub async fn read_response(
+        &self,
+        input: &ReadInput,
+    ) -> Result<AdapterReadResponse, AgentDIDObjectError> {
+        if let Some(resolved) = extensions::resolve(&input.object, Path::new(".")).await? {
+            return self.read_resolved(input, resolved).await;
+        }
+        self.read_route(input, ObjectRef::parse(&input.object)?)
+            .await
+    }
+
+    pub(crate) async fn read_resolved(
+        &self,
+        input: &ReadInput,
+        resolved: Resolved,
+    ) -> Result<AdapterReadResponse, AgentDIDObjectError> {
+        let mut response = match resolved.target {
+            Destination::Local(object) => crate::local_script::read(object, input)?,
+            Destination::Route(target) => self.read_route(input, target).await?,
+        };
+        if let Some(revision) = resolved.revision {
+            response.adapt_meta["alias_revision"] = revision.clone();
+            response.version = Some(format!(
+                "{}@{}",
+                response.version.unwrap_or_default(),
+                revision
+            ));
+            response.cache_key = Some(input.object.clone());
+            response.object = input.object.clone();
+        }
+        Ok(response)
+    }
+
+    async fn read_route(
+        &self,
+        input: &ReadInput,
+        object_ref: ObjectRef,
+    ) -> Result<AdapterReadResponse, AgentDIDObjectError> {
         let route_match = self.router.route(RouteMethod::Read, &object_ref)?;
         let adapter_config = self
             .router
@@ -98,31 +135,55 @@ impl AgentDIDObjectRuntime {
     }
 
     pub async fn x_call(&self, input: XCallInput) -> Result<AgentToolResult, AgentDIDObjectError> {
-        let object_ref = ObjectRef::parse(&input.object)?;
-        let route_match = self.router.route(RouteMethod::XCall, &object_ref)?;
-        let adapter_config = self
-            .router
-            .config()
-            .adapter(&route_match.route.adapter)
-            .ok_or_else(|| AgentDIDObjectError::AdapterNotFound(route_match.route.adapter.clone()))?
-            .clone();
-        let adapter = self
-            .registry
-            .get(&route_match.route.adapter)
-            .ok_or_else(|| {
-                AgentDIDObjectError::AdapterNotFound(route_match.route.adapter.clone())
-            })?;
+        self.x_call_in(input, Path::new(".")).await
+    }
 
-        let response = adapter
-            .x_call(AdapterXCallRequest {
-                object_ref,
-                input: input.clone(),
-                route: route_match.route,
-                route_trace: route_match.trace,
-                adapter_config,
-            })
-            .await?;
-
+    pub async fn x_call_in(
+        &self,
+        input: XCallInput,
+        cwd: &Path,
+    ) -> Result<AgentToolResult, AgentDIDObjectError> {
+        let resolved = extensions::resolve(&input.object, cwd).await?;
+        let response = match resolved {
+            Some(Resolved {
+                target: Destination::Local(object),
+                context,
+                revision,
+            }) => {
+                let mut response = crate::local_script::invoke(object, &input, context).await?;
+                if let Some(revision) = revision {
+                    response.detail["alias_revision"] = revision;
+                }
+                response
+            }
+            Some(Resolved {
+                target: Destination::Route(target),
+                revision,
+                context,
+            }) => {
+                let mut response = self.call_route(&input, target, Some(context)).await?;
+                response.detail["object"] = json!(input.object);
+                response.detail["alias_revision"] = json!(revision);
+                response
+            }
+            None => {
+                let target = if buckyos_api::object_extensions::object_alias_name(&input.object) {
+                    let path = cwd.join(&input.object);
+                    if !path.exists() {
+                        return Err(extensions::failure(
+                            "UNKNOWN_ALIAS",
+                            format!("unknown alias {}", input.object),
+                        ));
+                    }
+                    let url = url::Url::from_file_path(path.canonicalize()?)
+                        .map_err(|_| extensions::failure("INVALID_OBJECT_REF", "invalid path"))?;
+                    ObjectRef::parse(url.as_str())?
+                } else {
+                    ObjectRef::parse(&input.object)?
+                };
+                self.call_route(&input, target, None).await?
+            }
+        };
         Ok(AgentToolResult {
             agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
             hints: Vec::new(),
@@ -165,11 +226,64 @@ impl AgentDIDObjectRuntime {
         })
     }
 
+    async fn call_route(
+        &self,
+        input: &XCallInput,
+        object_ref: ObjectRef,
+        alias_context: Option<Value>,
+    ) -> Result<crate::adapters::AdapterXCallResponse, AgentDIDObjectError> {
+        let route_match = self.router.route(RouteMethod::XCall, &object_ref)?;
+        let adapter_config = self
+            .router
+            .config()
+            .adapter(&route_match.route.adapter)
+            .ok_or_else(|| AgentDIDObjectError::AdapterNotFound(route_match.route.adapter.clone()))?
+            .clone();
+        let adapter = self
+            .registry
+            .get(&route_match.route.adapter)
+            .ok_or_else(|| {
+                AgentDIDObjectError::AdapterNotFound(route_match.route.adapter.clone())
+            })?;
+
+        if alias_context.is_some()
+            && input.object == "owner"
+            && adapter_config.adapter_type != crate::AdapterType::DidObject
+        {
+            return Err(extensions::failure(
+                "OWNER_IDENTITY_UNVERIFIED",
+                "the linked owner requires a verified provider",
+            ));
+        }
+        adapter
+            .x_call(AdapterXCallRequest {
+                object_ref,
+                input: input.clone(),
+                alias_context,
+                route: route_match.route,
+                route_trace: route_match.trace,
+                adapter_config,
+            })
+            .await
+    }
+
     pub async fn subscribe_event(
         &self,
-        input: SubscribeEventInput,
+        mut input: SubscribeEventInput,
     ) -> Result<EventBridgeSubscription, AgentDIDObjectError> {
-        let object_ref = ObjectRef::parse(&input.object)?;
+        let (object_ref,revision) = match extensions::resolve(&input.object, Path::new(".")).await? {
+            Some(Resolved {
+                target: Destination::Route(target),
+                revision,..
+            }) => (target,revision),
+            Some(_) => {
+                return Err(extensions::failure(
+                    "UNSUPPORTED_EVENT",
+                    "local objects do not publish events",
+                ))
+            }
+            None => (ObjectRef::parse(&input.object)?,None),
+        };
         let route_match = self
             .router
             .route(RouteMethod::SubscribeEvent, &object_ref)?;
@@ -185,7 +299,8 @@ impl AgentDIDObjectRuntime {
             .ok_or_else(|| {
                 AgentDIDObjectError::AdapterNotFound(route_match.route.adapter.clone())
             })?;
-        self.event_bridge
+        input.object = object_ref.normalized.clone();
+        let mut receipt = self.event_bridge
             .subscribe(
                 adapter,
                 AdapterSubscribeEventRequest {
@@ -196,7 +311,9 @@ impl AgentDIDObjectRuntime {
                     adapter_config,
                 },
             )
-            .await
+            .await?;
+        receipt.alias_revision = revision;
+        Ok(receipt)
     }
 
     pub async fn unsubscribe_event(
@@ -207,7 +324,7 @@ impl AgentDIDObjectRuntime {
     }
 }
 
-fn read_response_to_tool_result(
+pub(crate) fn read_response_to_tool_result(
     input: &ReadInput,
     response: AdapterReadResponse,
 ) -> AgentToolResult {
@@ -570,6 +687,7 @@ mod tests {
         ) -> Result<AdapterEventSubscription, AgentDIDObjectError> {
             Ok(AdapterEventSubscription {
                 subscription: EventBridgeSubscription {
+                    alias_revision: None,
                     subscription_id: "remote-sub".to_string(),
                     object: req.object_ref.normalized,
                     object_did: None,

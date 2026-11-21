@@ -4,6 +4,7 @@
  * here, so what is measured is what is shown. */
 
 import { parseInline, type Run } from './inline.ts'
+import { LABEL_ICON_GAP, labelFontFamily, labelIcon, type LabelLook } from './label.ts'
 
 export interface TextMetrics {
   /** Advance width of `text` in the CSS font `font`. */
@@ -24,16 +25,20 @@ export const MIN_NODE_WIDTH = 48
 
 export interface NodeTypography { size: number; weight: number; lineHeight: number }
 
-export function typography(depth: number): NodeTypography {
+export function typography(depth: number, look?: LabelLook): NodeTypography {
   const i = Math.min(Math.max(depth, 0), SIZES.length - 1)
-  return { size: SIZES[i], weight: WEIGHTS[i], lineHeight: Math.round(SIZES[i] * LINE_HEIGHT) }
+  const size = look?.font_size ?? SIZES[i]
+  const weight = look?.weight === 'bold' ? 700 : look?.weight === 'medium' ? 500 : look?.weight === 'normal' ? 400 : WEIGHTS[i]
+  return { size, weight, lineHeight: Math.round(size * LINE_HEIGHT) }
 }
 
 /** The CSS font of a run at `depth`. */
-export function runFont(run: Run, depth: number): string {
-  const t = typography(depth)
+export function runFont(run: Run, depth: number, look?: LabelLook): string {
+  const t = typography(depth, look)
   if (run.code) return `${Math.round(t.size * 0.9)}px ${NODE_CODE_FAMILY}`
-  return `${run.italic ? 'italic ' : ''}${run.bold ? Math.max(t.weight, 700) : t.weight} ${t.size}px ${NODE_FONT_FAMILY}`
+  const family = look && labelFontFamily(look)
+  const weight = run.bold ? Math.max(t.weight, 700) : t.weight
+  return `${run.italic || look?.italic ? 'italic ' : ''}${weight} ${t.size}px ${family ?? NODE_FONT_FAMILY}`
 }
 
 export interface MeasuredLine { runs: Run[]; width: number }
@@ -63,7 +68,7 @@ function tokens(runs: Run[]): Run[] {
 }
 
 /** Greedy line filling at `max` (a word wider than a line is cut by characters). */
-export function wrapRuns(runs: Run[], depth: number, metrics: TextMetrics, max = MAX_TEXT_WIDTH): MeasuredLine[] {
+export function wrapRuns(runs: Run[], depth: number, metrics: TextMetrics, max = MAX_TEXT_WIDTH, look?: LabelLook): MeasuredLine[] {
   const lines: MeasuredLine[] = []
   let line: MeasuredLine = { runs: [], width: 0 }
   const append = (tok: Run, w: number) => {
@@ -77,7 +82,7 @@ export function wrapRuns(runs: Run[], depth: number, metrics: TextMetrics, max =
     const last = line.runs[line.runs.length - 1]
     if (last && /\s$/.test(last.text)) {
       const trimmed = last.text.replace(/\s+$/, '')
-      line.width -= metrics.width(last.text, runFont(last, depth)) - metrics.width(trimmed, runFont(last, depth))
+      line.width -= metrics.width(last.text, runFont(last, depth, look)) - metrics.width(trimmed, runFont(last, depth, look))
       if (trimmed) last.text = trimmed
       else line.runs.pop()
     }
@@ -86,7 +91,7 @@ export function wrapRuns(runs: Run[], depth: number, metrics: TextMetrics, max =
   }
   for (const tok of tokens(runs)) {
     if (tok.text === '\n') { breakLine(); continue }
-    const font = runFont(tok, depth)
+    const font = runFont(tok, depth, look)
     const space = /^\s+$/.test(tok.text)
     if (space && line.runs.length === 0) continue
     const w = metrics.width(tok.text, font)
@@ -107,24 +112,25 @@ function sameStyle(a: Run, b: Run): boolean {
   return !!a.bold === !!b.bold && !!a.italic === !!b.italic && !!a.code === !!b.code && !!a.strike === !!b.strike && a.href === b.href
 }
 
-/** Measures node titles, with a cache per (depth, title). */
+/** Cache measurements by the text, available space and typography. */
 export class NodeMeasurer {
   private readonly cache = new Map<string, MeasuredNode>()
   readonly metrics: TextMetrics
   constructor(metrics: TextMetrics = approxMetrics) { this.metrics = metrics }
 
-  /** `maxText`: the text width a pinned node width leaves (its height then follows the wrapped text). */
-  measure(title: string | null | undefined, depth: number, maxText = MAX_TEXT_WIDTH): MeasuredNode {
+  /** Available width inside the padding, shared by the text and the optional label icon. */
+  measure(title: string | null | undefined, depth: number, maxText = MAX_TEXT_WIDTH, look?: LabelLook): MeasuredNode {
     const text = title ?? ''
-    const key = `${Math.min(depth, SIZES.length - 1)}\u0000${Math.round(maxText)}\u0000${text}`
+    const t = typography(depth, look)
+    const iconWidth = look && labelIcon(look) ? t.size + LABEL_ICON_GAP : 0
+    const key = JSON.stringify([maxText, iconWidth, runFont({ text: '' }, depth, look), text])
     const hit = this.cache.get(key)
     if (hit) return hit
     if (this.cache.size > 20_000) this.cache.clear()
-    const t = typography(depth)
-    const lines = wrapRuns(parseInline(text), depth, this.metrics, maxText)
+    const lines = wrapRuns(parseInline(text), depth, this.metrics, Math.max(1, maxText - iconWidth), look)
     const textW = Math.max(0, ...lines.map((l) => l.width))
     const out: MeasuredNode = {
-      w: Math.ceil(Math.max(MIN_NODE_WIDTH, textW + NODE_PAD.x * 2)),
+      w: Math.ceil(Math.max(MIN_NODE_WIDTH, textW + iconWidth + NODE_PAD.x * 2)),
       h: Math.ceil(lines.length * t.lineHeight + NODE_PAD.y * 2),
       lines,
     }

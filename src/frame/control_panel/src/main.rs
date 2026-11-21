@@ -26,6 +26,7 @@ mod federation;
 mod federation_context;
 mod share_session;
 mod oauth;
+mod owner;
 mod image_data_url;
 mod ndn_download;
 use buckyos_api::pikg;
@@ -153,6 +154,11 @@ impl RpcAuthPrincipal {
                 method,
                 "executor.online.list"
                     | "executor.stream.open"
+                    | "owner.context"
+                    | "owner.resolve"
+                    | "owner.prepare"
+                    | "owner.sharing.discover"
+                    | "owner.sharing.check"
                     | "ui.locale.get"
                     | "ui.dashboard"
                     | "user.list"
@@ -1252,6 +1258,7 @@ impl ControlPanelServer {
     ) -> Result<futures::future::BoxFuture<'a, Result<RPCResponse, RPCErrors>>, RPCErrors> {
         Ok(match req.method.as_str() {
             method if method.starts_with("executor.") => Box::pin(self.handle_agent_daemon_rpc(req, principal)),
+            method if method.starts_with("owner.") => Box::pin(self.handle_owner(req, principal)),
             // UI bootstrap
             "ui.locale.get" => Box::pin(self.handle_ui_locale_get(req)),
             "ui.locale.set" => Box::pin(self.handle_ui_locale_set(req)),

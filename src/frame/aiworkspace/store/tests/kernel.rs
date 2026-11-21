@@ -224,6 +224,23 @@ fn v12_idempotency_and_unknown_result() {
     assert_eq!(ws.get_submission(&bob(), &ws.epoch.clone(), &key).unwrap_err().code.as_str(), "NOT_FOUND");
 }
 
+#[test]
+fn table_submission_rechecks_the_writer_after_revocation() {
+    let env = env();
+    let id = project(&env);
+    let handle = env.svc.workspace(&id).unwrap();
+    let mut ws = handle.lock().unwrap();
+    ws.grant(&alice(), "bob", None, &caps(&["read", "update"])).unwrap();
+    let rev = cell_rev(&ws, &bob(), "task-42", "title");
+    let req = request(&ws, set_cell("task-42", "title", json!("review"), rev));
+    assert_eq!(ws.commit(&req, &bob(), &CommitOpts::default())["status"], "accepted");
+    let key = req["idempotency_key"].as_str().unwrap();
+    let receipt = ws.table_submission(&bob(), &ws.epoch, key, "tasks").unwrap();
+    assert_eq!(receipt["changed"], json!(["task-42"]));
+    ws.grant(&alice(), "bob", None, &caps(&["read"])).unwrap();
+    assert_eq!(ws.table_submission(&bob(), &ws.epoch, key, "tasks").unwrap_err().code.as_str(), "PERMISSION_DENIED");
+}
+
 /// V13: compensation never overwrites later changes of others; redo = undo of the undo.
 #[test]
 fn v13_undo_redo() {

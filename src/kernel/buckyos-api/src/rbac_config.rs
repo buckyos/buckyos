@@ -89,6 +89,37 @@ pub const DEFAULT_RBAC_POLICY: &str = r#"
 p, agent_read_only, obj://config/users/{user}/settings,all,deny
 p, agent_read_only, obj://config/users/{user}/agents/{agent}/key,all,deny
 p, agent_read_only, obj://config/security/*,all,deny
+# Control Panel checks the caller and the expected revision before writing these facts as the service.
+p, system:control-panel, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,allow
+p, system:control-panel, obj://config/users/{user}/(?:resource_bindings|object_aliases)(?:/.*)?,all,allow
+# The reservation proves ownership of an Agent DID. The runtime binding and its enabled flag are checked on each request.
+p, system:aiworkspace, obj://config/services/control_panel/agent_names/{id},^read$,allow
+p, system:aiworkspace, obj://config/users/{user}/agents,^read$,allow
+p, system:aiworkspace, obj://config/users/{user}/agents/{agent}/(?:spec|settings),^read$,allow
+p, app, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, app, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, app, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, agent_read_only, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, agent_read_only, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, agent_read_only, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, agent_read_write, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, agent_read_write, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, agent_read_write, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, frame, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, frame, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, frame, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, system, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, system, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, system, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, kernel, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, kernel, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, kernel, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, users, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, users, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, users, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, admin, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, admin, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, admin, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
 p, agent_read_write, obj://*, all,allow
 p, agent_read_only, obj://*, ^(read|list|query|subscribe)$,allow
 p, system:scheduler, obj://config/system/content_registry,all,allow
@@ -117,6 +148,9 @@ p, frame, obj://config/services/{service}/info,read,allow
 p, frame, obj://config/users*,read,allow
 
 p, app, obj://config/system/content_registry,read,allow
+p, app, obj://config/users/{user}/object_aliases(?:/.*)?,^read$,allow
+p, users, obj://config/users/{users}/object_aliases(?:/.*)?,^read$,allow
+p, admin, obj://config/users/{admin}/object_aliases(?:/.*)?,^read$,allow
 p, app, obj://config/users/{user}/content_defaults,read,allow
 p, users, obj://config/system/content_registry,read,allow
 p, users, obj://config/users/{users}/content_defaults,read|write,allow
@@ -446,6 +480,40 @@ mod tests {
         assert!(rbac::enforce("alice", "app:reader.example.com", other, "read", None).await);
         assert!(!rbac::enforce("alice", "app:reader.example.com", other, "write", None).await);
         assert!(rbac::enforce("alice", "app:writer.example.com", "obj://bucket/user/writer.example.com/alice/artifacts/x", "write", None).await);
+    }
+
+    #[tokio::test]
+    async fn owner_resource_control_state_requires_the_control_panel_service() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some(
+            "g, alice, admin\ng, eve, users\ng, ood1, ood\ng, app:writer, agent_read_write\ng, app:reader, agent_read_only\ng, app:reader, app",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy).await.unwrap();
+        for key in ["services/control_panel/owner_operations", "services/control_panel/owner_records/r",
+                    "services/control_panel/owner_shares/s", "users/alice/resource_bindings", "users/alice/resource_bindings/calendar"] {
+            let url = format!("obj://config/{key}");
+            for op in ["read", "list", "create", "write", "update", "delete"] {
+                assert!(rbac::enforce("ood1", "system:control-panel", &url, op, None).await, "{key} {op}");
+                for app in ["app:reader", "app:writer", "system:buckycli", "system:aiworkspace"] {
+                    assert!(!rbac::enforce("alice", app, &url, op, None).await, "{app} {key} {op}");
+                    assert!(!rbac::enforce("ood1", app, &url, op, None).await, "{app} {key} {op}");
+                }
+            }
+        }
+        let alias = "obj://config/users/alice/object_aliases/owner.cal";
+        for app in ["app:reader", "app:writer"] {
+            assert!(rbac::enforce("alice", app, alias, "read", None).await);
+            assert!(!rbac::enforce("eve", app, alias, "read", None).await);
+            for op in ["create", "update", "write", "delete"] {
+                assert!(!rbac::enforce("alice", app, alias, op, None).await);
+                assert!(rbac::enforce("ood1", "system:control-panel", alias, op, None).await);
+            }
+        }
+        for key in ["services/control_panel/agent_names/demo", "users/alice/agents", "users/alice/agents/demo/settings", "users/alice/agents/demo/spec"] {
+            let url = format!("obj://config/{key}");
+            assert!(rbac::enforce("ood1", "system:aiworkspace", &url, "read", None).await, "{key}");
+            assert!(!rbac::enforce("ood1", "system:aiworkspace", &url, "write", None).await, "{key}");
+        }
     }
 
     #[tokio::test]

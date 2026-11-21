@@ -70,6 +70,8 @@ pub struct Caller {
     /// An Agent's owner (权限需求 R16), from a trusted source (its AgentSpec), memberships settled like the caller's:
     /// a Workspace that configured nothing for the Agent judges it as this owner.
     pub acting_for: Option<Box<Caller>>,
+    /// Current permission ceiling of a verified agent, independent of its workspace ACL.
+    pub agent_read_only: bool,
     /// The reader of an inner-path publication (R26): it holds that publication's own subject and nothing else.
     pub publication: Option<String>,
     /// The wish whose macro this caller acts as (a coding or running stage, its run token): what it reads and writes
@@ -99,7 +101,7 @@ pub enum MemberMatch {
 impl Caller {
     fn with_class(principal: &str, class: CallerClass) -> Caller {
         Caller { principal: principal.to_string(), app_id: None, class, kind: None, run_scope: None, auth_method: None, oauth_source_id: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new(),
-                 acting_for: None, publication: None, macro_of: None }
+                 acting_for: None, agent_read_only: false, publication: None, macro_of: None }
     }
     /// The holder of a run token (M3): acts as the run's principal, for that run only.
     pub fn run_token(principal: &str, run_id: &str) -> Caller {
@@ -142,8 +144,10 @@ impl Caller {
             CallerClass::Guest => ("guest", true, None),
             CallerClass::Service => ("service", false, None),
         };
-        serde_json::json!({ "principal": self.principal, "class": class, "restricted": restricted, "did": did, "kind": self.kind,
-                            "owner": self.acting_for.as_ref().map(|o| o.principal.clone()) })
+        let mut identity = serde_json::json!({ "principal": self.principal, "class": class, "restricted": restricted, "did": did, "kind": self.kind,
+                            "owner": self.acting_for.as_ref().map(|o| o.principal.clone()) });
+        if self.agent_read_only { identity["agent_read_only"] = serde_json::json!(true); }
+        identity
     }
     /// The caller a run acts for, rebuilt from [`Self::identity_json`] (R14): its class and restriction, an Agent with its
     /// owner; memberships empty until the service settles them. Never an unrestricted account made up from a name.
@@ -155,6 +159,7 @@ impl Caller {
             Some("service") => Caller::service(principal),
             _ => Caller::with_class(principal, CallerClass::Guest),
         };
+        c.agent_read_only = identity["agent_read_only"].as_bool().unwrap_or(false);
         c.kind = identity["kind"].as_str().map(str::to_string);
         if let Some(owner) = identity["owner"].as_str() {
             c.acting_for = Some(Box::new(Caller::user(owner)));
@@ -198,6 +203,9 @@ impl Caller {
     }
     /// Creates, imports and clones Workspaces and lists the Zone's principals: unrestricted accounts and services.
     pub fn may_own(&self) -> bool {
+        if self.is_agent() {
+            return self.acting_for.as_ref().is_some_and(|o| matches!(o.class, CallerClass::Account { restricted: false, .. }));
+        }
         matches!(self.class, CallerClass::Account { restricted: false, .. } | CallerClass::Service)
     }
     /// Who owns what this caller creates: an Agent's Workspaces belong to its owner (R16).
@@ -1143,11 +1151,20 @@ impl Workspace {
                    "cloned_from": meta_get(&self.doc, "cloned_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
                    "acl_rev": self.acl_rev(), "anonymous": self.anonymous()?, "judged_as": access.principal });
+        let account = if caller.is_agent() { caller.acting_for.as_deref() } else { Some(caller) };
+        let owner = self.owner()?;
+        info["owned_by_caller_user"] = json!(account.is_some_and(|c| matches!(c.class, CallerClass::Account { .. })
+            && owner.as_deref() == Some(c.principal.as_str())));
         if access.is_owner() {
             info["owner"] = json!(true);
         }
         if let Some(name) = self.name()? {
             info["name"] = json!(name);
+        } else if info["owned_by_caller_user"] == true {
+            let former: Option<String> = self.local.query_row("SELECT value FROM local_meta WHERE key = 'former_name'", [], |r| r.get(0)).optional().map_err(db_err)?;
+            if let Some(name) = former {
+                info["former_name"] = json!(name);
+            }
         }
         Ok(info)
     }
@@ -1636,6 +1653,44 @@ impl Workspace {
             Some(r) => json!({ "ok": true, "status": "accepted", "result": serde_json::from_str::<Value>(&r).unwrap_or(Value::Null) }),
             None => json!({ "ok": true, "status": "not_found" }),
         })
+    }
+
+    /// A table-action receipt: recheck each operation on its original table before replaying its result.
+    pub fn table_submission(&self, caller: &Caller, epoch: &str, key: &str, source: &str) -> WsResult<Value> {
+        self.require_on(caller, Some(source), Cap::Read)?;
+        let receipt = self.get_submission(caller, epoch, key)?;
+        if receipt["status"] != "accepted" {
+            return Ok(receipt);
+        }
+        let seq = receipt["result"]["seq"].as_i64().ok_or_else(|| WsError::io("submission has no sequence"))?;
+        let mut st = self.doc.prepare("SELECT op_json FROM commit_ops WHERE seq = ?1 ORDER BY op_index").map_err(db_err)?;
+        let mut rows = st.query([seq]).map_err(db_err)?;
+        let mut changed = Vec::new();
+        let mut inserted = Vec::new();
+        let mut seen = false;
+        while let Some(row) = rows.next().map_err(db_err)? {
+            let raw: String = row.get(0).map_err(db_err)?;
+            let op: Value = serde_json::from_str(&raw).map_err(|e| WsError::io(e.to_string()))?;
+            if op["source_id"].as_str() != Some(source) {
+                return Err(WsError::denied("submission targets another resource"));
+            }
+            let (cap, field) = match op["op"].as_str() {
+                Some("table.insert_records") => (Cap::Append, "records"),
+                Some("table.delete_records") => (Cap::Delete, "records"),
+                Some("table.set_values" | "table.unset_values") => (Cap::Update, "values"),
+                _ => return Err(WsError::invalid_op("submission is not a table record action")),
+            };
+            self.require_on(caller, Some(source), cap)?;
+            let ids = if cap == Cap::Append { &mut inserted } else { &mut changed };
+            if let Some(records) = op[field].as_array() {
+                for id in records.iter().filter_map(|r| r["record_id"].as_str()) {
+                    if !ids.iter().any(|v| v == id) { ids.push(id.to_owned()); }
+                }
+            }
+            seen = true;
+        }
+        if !seen { return Ok(json!({"ok": true, "status": "unknown"})); }
+        Ok(json!({"ok": true, "status": "accepted", "inserted": inserted, "changed": changed}))
     }
 
     // ---- undo ----

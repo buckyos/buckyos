@@ -23,6 +23,9 @@ fn unavailable() -> AccessDenial {
 #[async_trait]
 pub trait Authenticator: Send + Sync {
     async fn authenticate(&self, token: &str) -> Result<Caller, AuthError>;
+    async fn availability_grant(&self, _token: &str, _did: &str) -> aiworkspace_core::WsResult<serde_json::Value> {
+        Err(aiworkspace_core::WsError::denied("availability has not been shared"))
+    }
     /// Principals a grant can name (phase two §6.3 "主体选择"): users of the zone, or the static
     /// identities in standalone mode. Best effort; an empty list means "type the subject yourself".
     async fn subjects(&self) -> Vec<serde_json::Value> {
@@ -105,6 +108,8 @@ pub struct StaticIdentity {
     /// `contact:<owner_did>#<tag>` subjects the identity belongs to.
     #[serde(default)]
     pub contacts: Vec<String>,
+    #[serde(default)]
+    pub availability_shared_with: Vec<String>,
     /// Every contact check fails, as with an unreachable msg-center.
     #[serde(default)]
     pub contacts_unavailable: bool,
@@ -115,10 +120,27 @@ pub struct StaticIdentity {
     /// An Agent's owner (class `agent`).
     #[serde(default)]
     pub owner: Option<String>,
+    #[serde(default)]
+    pub agent_read_only: bool,
 }
 
 #[async_trait]
 impl Authenticator for StaticTokens {
+    async fn availability_grant(&self, token:&str,did:&str)->aiworkspace_core::WsResult<serde_json::Value>{
+        let refused=||aiworkspace_core::WsError::denied("availability has not been shared");
+        let fresh:Option<StaticTokens>=self.source.as_ref().map(|p|std::fs::read(p).ok().and_then(|b|serde_json::from_slice(&b).ok()).ok_or_else(refused)).transpose()?;
+        let tokens=&fresh.as_ref().unwrap_or(self).tokens;
+        let id=tokens.get(token).ok_or_else(refused)?;
+        let user=match id.class {
+            StaticClass::Account=>id,
+            StaticClass::Agent=>tokens.values().find(|u|u.class==StaticClass::Account && id.owner.as_ref()==Some(&u.principal)).ok_or_else(refused)?,
+            _=>return Err(refused()),
+        };
+        let target=tokens.values().find(|u|u.class==StaticClass::Account && !u.restricted && u.did.as_deref()==Some(did)).ok_or_else(refused)?;
+        let viewer=user.did.as_ref().filter(|_|!user.restricted).ok_or_else(refused)?;
+        if viewer!=did && !target.availability_shared_with.contains(viewer){return Err(refused())}
+        Ok(serde_json::json!({"owner_user_id":target.principal,"mode":"default","binding_revision":0}))
+    }
     async fn authenticate(&self, token: &str) -> Result<Caller, AuthError> {
         let id = self.tokens.get(token).ok_or_else(|| AuthError::Invalid("invalid session token".to_string()))?;
         let mut caller = match id.class {
@@ -140,6 +162,7 @@ impl Authenticator for StaticTokens {
                 None => Caller::agent(&id.principal),
             },
         };
+        caller.agent_read_only = id.class == StaticClass::Agent && id.agent_read_only;
         caller.app_id = id.app_id.clone();
         caller.auth_method = id.auth_method.clone();
         caller.oauth_source_id = id.oauth_source_id.clone();
@@ -215,6 +238,9 @@ pub struct RuntimeAuth;
 
 #[async_trait]
 impl Authenticator for RuntimeAuth {
+    async fn availability_grant(&self,token:&str,did:&str)->aiworkspace_core::WsResult<serde_json::Value>{
+        crate::availability::grant(token,did).await
+    }
     /// Restricted sessions (Limited, External) are accepted when their ceiling includes `aiworkspace`; what they
     /// reach is then decided by grants (and they never match `*` or own anything).
     async fn authenticate(&self, token: &str) -> Result<Caller, AuthError> {
@@ -234,15 +260,22 @@ impl Authenticator for RuntimeAuth {
             TokenPrincipalKind::User if token_is_external(&verified) => Caller::external(&principal),
             TokenPrincipalKind::User => Caller::account(&principal, ceiling.restricted),
             // an Agent acts as itself; a Workspace that configured nothing for it judges it as its owner (权限需求 R16)
-            TokenPrincipalKind::Agent => match agent_owner(&principal).await {
-                Some(owner) => Caller::agent_of(&principal, &owner),
-                None => Caller::agent(&principal),
-            },
-            // an Agent's own runtime signs in as its App (AppId = AgentId, the owner as subject): that is the Agent
-            TokenPrincipalKind::App => match app_agent(&principal, verified.appid.as_deref()).await {
-                Some(did) => Caller::agent_of(&did, &principal),
-                None => Caller::service(&principal),
-            },
+            TokenPrincipalKind::Agent => {
+                let (owner, spec) = agent_for_did(&principal).await?.ok_or_else(inactive_agent)?;
+                self.bound_agent(token, &owner, &spec).await?
+            }
+            TokenPrincipalKind::App => {
+                let buckyos_api::AuthTarget::App { app_instance_id } = &claims.target else {
+                    return Err(AuthError::Invalid("App session has no verified App instance".into()));
+                };
+                if app_instance_id.owner_user_id() != principal {
+                    return Err(AuthError::Invalid("App instance owner does not match the session".into()));
+                }
+                match app_agent(app_instance_id).await? {
+                    Some(spec) => self.bound_agent(token, &principal, &spec).await?,
+                    None => Caller::service(&claims.target.canonical_key()),
+                }
+            }
             _ => Caller::service(&principal),
         };
         // a service names itself in `appid` (kernel and frame services sign in with the device as subject); anyone
@@ -369,8 +402,13 @@ impl Authenticator for RuntimeAuth {
     }
     async fn caller_for(&self, principal: &str) -> Caller {
         if principal.starts_with("did:") {
-            if let Some(owner) = agent_owner(principal).await {
-                return Caller::agent_of(principal, &owner);
+            if let Ok(Some((owner, spec))) = agent_for_did(principal).await {
+                if let Ok(account) = self.share_author(&owner).await {
+                    let mut agent = Caller::agent(&spec.agent_did.to_string());
+                    agent.acting_for = Some(Box::new(account));
+                    agent.agent_read_only = spec.permission_mode == buckyos_api::AgentPermissionMode::ReadOnly;
+                    return agent;
+                }
             }
         }
         guessed_caller(principal)
@@ -430,46 +468,138 @@ impl Authenticator for RuntimeAuth {
     }
 }
 
-/// The account an Agent DID belongs to, from its AgentSpec (`users/<u>/agents/<id>/spec`): a trusted source, never
-/// a request parameter (权限需求 R16). Cached once found; `None` when it is no Agent of this Zone.
-/// The Agent an App session of `owner` is, as its DID: `app_id` names one of `owner`'s Agents.
-async fn app_agent(owner: &str, app_id: Option<&str>) -> Option<String> {
-    static CACHE: std::sync::Mutex<Option<HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
-    let app = app_id.filter(|a| !a.is_empty())?;
-    let key = format!("{owner}\n{app}");
-    if let Some(hit) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(&key).cloned()) {
-        return hit;
-    }
-    let agent = buckyos_api::AgentId::parse(app).ok();
-    let found = match agent {
-        Some(agent) => {
-            let client = buckyos_api::get_buckyos_api_runtime().ok()?.get_system_config_client().await.ok()?;
-            match client.get(&buckyos_api::agent_spec_key(owner, &agent)).await {
-                Ok(spec) => serde_json::from_str::<buckyos_api::AgentSpec>(&spec.value).ok().map(|s| s.agent_doc.id.to_string()),
-                Err(_) => None,
-            }
-        }
-        None => None,
-    };
-    CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, found.clone());
-    found
+fn inactive_agent() -> AuthError {
+    AuthError::Denied(AccessDenial::new(DenyReason::EntryUnavailable).at("aiworkspace", "*"))
 }
 
-pub async fn agent_owner(subject: &str) -> Option<String> {
-    static CACHE: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
-    if let Some(hit) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(subject).cloned()) {
-        return Some(hit);
+impl RuntimeAuth {
+    async fn bound_agent(&self, token: &str, owner: &str, spec: &buckyos_api::AgentSpec) -> Result<Caller, AuthError> {
+        // The user's account state and actual DID are checked by Control Panel with this session.
+        // AIWS only reads the Agent's binding. It needs no access to the account's password-bearing settings.
+        let rt = buckyos_api::get_buckyos_api_runtime().map_err(|_| AuthError::Denied(unavailable()))?;
+        let endpoint = format!("http://{}:{}/kapi/control-panel", rt.get_local_gateway_host(), rt.node_gateway_port);
+        let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(10))
+            .build().map_err(|_| AuthError::Denied(unavailable()))?;
+        let response = http.post(endpoint).json(&serde_json::json!({"method":"owner.context","params":{},"sys":[0,token]}))
+            .send().await.map_err(|_| AuthError::Denied(unavailable()))?;
+        if !response.status().is_success() {
+            return Err(AuthError::Denied(unavailable()));
+        }
+        let reply: serde_json::Value = response.json().await.map_err(|_| AuthError::Denied(unavailable()))?;
+        let mut agent = Caller::agent(&spec.agent_did.to_string());
+        agent.agent_read_only = spec.permission_mode == buckyos_api::AgentPermissionMode::ReadOnly;
+        verified_owner_context(agent, owner, &reply)
     }
-    let did = name_lib::DID::from_str(subject).ok()?;
-    let agent_id = buckyos_api::AgentId::from_agent_did(&did).ok()?;
-    let client = buckyos_api::get_buckyos_api_runtime().ok()?.get_system_config_client().await.ok()?;
-    for user in client.list("users").await.ok()? {
-        let Ok(spec) = client.get(&buckyos_api::agent_spec_key(&user, &agent_id)).await else { continue };
-        let Ok(spec) = serde_json::from_str::<buckyos_api::AgentSpec>(&spec.value) else { continue };
-        if spec.agent_doc.id == did {
-            CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(subject.to_string(), user.clone());
-            return Some(user);
+}
+
+fn verified_owner_context(mut agent: Caller, owner: &str, reply: &serde_json::Value) -> Result<Caller, AuthError> {
+    if let Some(error) = reply.get("error").filter(|e| !e.is_null()) {
+        // A session refused an owner context may still hold explicit grants as this verified Agent DID.
+        // No owner is attached and it cannot own or locate named workspaces.
+        let refusal = error.to_string().to_ascii_lowercase();
+        if refusal.contains("permission") || refusal.contains("denied") {
+            return Ok(agent);
+        }
+        return Err(AuthError::Denied(unavailable()));
+    }
+    let ctx = &reply["result"];
+    let did = ctx["owner_did"].as_str().filter(|s| name_lib::DID::from_str(s).is_ok()).ok_or_else(inactive_agent)?;
+    if ctx["owner_user_id"] != owner || ctx["caller_did"] != agent.principal {
+        return Err(inactive_agent());
+    }
+    agent.agent_read_only |= ctx["read_only"].as_bool().ok_or_else(inactive_agent)?;
+    let mut account = Caller::user(owner);
+    if let CallerClass::Account { did: owner_did, .. } = &mut account.class {
+        *owner_did = Some(did.to_string());
+    }
+    agent.acting_for = Some(Box::new(account));
+    Ok(agent)
+}
+
+async fn current_agent(client: &buckyos_api::SystemConfigClient, owner: &str, id: &buckyos_api::AgentId) -> Result<Option<buckyos_api::AgentSpec>, AuthError> {
+    use buckyos_api::{agent_settings_key, agent_spec_key, AgentSettings, AgentSpec, SystemConfigError};
+    let key = agent_spec_key(owner, id);
+    client.invalidate_cache(&key).await;
+    let spec: AgentSpec = match client.get(&key).await {
+        Ok(v) => serde_json::from_str(&v.value).map_err(|_| inactive_agent())?,
+        Err(SystemConfigError::KeyNotFound(_)) => return Ok(None),
+        Err(_) => return Err(AuthError::Denied(unavailable())),
+    };
+    if spec.validate().is_err() || spec.agent_id != *id || spec.binding.target_app_instance_id.owner_user_id() != owner {
+        return Err(inactive_agent());
+    }
+    let key = agent_settings_key(owner, id);
+    client.invalidate_cache(&key).await;
+    match client.get(&key).await {
+        Ok(v) if !serde_json::from_str::<AgentSettings>(&v.value).map_err(|_| inactive_agent())?.enabled => Ok(None),
+        Ok(_) | Err(SystemConfigError::KeyNotFound(_)) => Ok(Some(spec)),
+        Err(_) => Err(AuthError::Denied(unavailable())),
+    }
+}
+
+async fn app_agent(instance: &buckyos_api::AppInstanceId) -> Result<Option<buckyos_api::AgentSpec>, AuthError> {
+    use buckyos_api::{get_buckyos_api_runtime, AgentId, SystemConfigError};
+    let client = get_buckyos_api_runtime().map_err(|_| AuthError::Denied(unavailable()))?.get_system_config_client().await.map_err(|_| AuthError::Denied(unavailable()))?;
+    let owner = instance.owner_user_id();
+    let entries = match client.list(&format!("users/{owner}/agents")).await {
+        Ok(entries) => entries,
+        Err(SystemConfigError::KeyNotFound(_)) => return Ok(None),
+        Err(_) => return Err(AuthError::Denied(unavailable())),
+    };
+    let mut found = None;
+    for entry in entries {
+        let id = AgentId::parse(&entry).map_err(|_| inactive_agent())?;
+        if let Some(spec) = current_agent(&client, owner, &id).await? {
+            if spec.binding.references_runtime(instance) {
+                if found.is_some() { return Err(inactive_agent()); }
+                found = Some(spec);
+            }
         }
     }
-    None
+    Ok(found)
+}
+
+async fn agent_for_did(subject: &str) -> Result<Option<(String, buckyos_api::AgentSpec)>, AuthError> {
+    use buckyos_api::{get_buckyos_api_runtime, AgentId, SystemConfigError};
+    let did = name_lib::DID::from_str(subject).map_err(|_| inactive_agent())?;
+    let Ok(id) = AgentId::from_agent_did(&did) else { return Ok(None) };
+    let client = get_buckyos_api_runtime().map_err(|_| AuthError::Denied(unavailable()))?.get_system_config_client().await.map_err(|_| AuthError::Denied(unavailable()))?;
+    let key = format!("services/control_panel/agent_names/{id}");
+    client.invalidate_cache(&key).await;
+    let record: serde_json::Value = match client.get(&key).await {
+        Ok(v) => serde_json::from_str(&v.value).map_err(|_| inactive_agent())?,
+        Err(SystemConfigError::KeyNotFound(_)) => return Ok(None),
+        Err(_) => return Err(AuthError::Denied(unavailable())),
+    };
+    let owner = record["owner_user_id"].as_str().ok_or_else(inactive_agent)?;
+    let spec = current_agent(&client, owner, &id).await?;
+    Ok(spec.filter(|s| s.agent_did == did).map(|s| (owner.to_owned(), s)))
+}
+
+#[cfg(test)]
+mod owner_context_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn owner_and_caller_must_both_match_the_authenticated_agent() {
+        let mut ctx = json!({"result": {"owner_user_id":"alice", "owner_did":"did:bns:alice",
+            "caller_did":"did:bns:jarvis", "read_only":true}});
+        let agent = Caller::agent("did:bns:jarvis");
+        let authorized = verified_owner_context(agent.clone(), "alice", &ctx).unwrap();
+        assert_eq!(authorized.owner_principal(), "alice");
+        assert_eq!(authorized.acting_for.as_ref().unwrap().did(), Some("did:bns:alice"));
+        assert!(authorized.agent_read_only);
+        ctx["result"]["read_only"] = json!(false);
+        let mut already_read_only = agent.clone();
+        already_read_only.agent_read_only = true;
+        assert!(verified_owner_context(already_read_only, "alice", &ctx).unwrap().agent_read_only);
+        assert!(verified_owner_context(agent.clone(), "bob", &ctx).is_err());
+        ctx["result"]["caller_did"] = json!("did:bns:other");
+        assert!(verified_owner_context(agent.clone(), "alice", &ctx).is_err());
+        let explicit_only = verified_owner_context(agent.clone(), "alice", &json!({"error":"NoPermission"})).unwrap();
+        assert!(explicit_only.acting_for.is_none());
+        assert!(!explicit_only.may_own());
+        assert!(verified_owner_context(agent, "alice", &json!({"error":"control panel unavailable"})).is_err());
+    }
 }

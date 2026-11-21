@@ -487,7 +487,8 @@ tree (a node's children are Cells under it), `order_key` the sibling order; edge
   same step (a name, or `null` to drop it).
 - **Outline**: a control's envelope carries `config`; a Cell's carries `slot`, and `side` / `branch_color` when its
   `config` has valid ones (a node's layout hints: the layout runs on the outline alone); a composite's carries
-  `def_id`, a Block container's `slot`.
+  `def_id`, a Block container's `slot`. For label and mindnode Cells, the outline also includes the label appearance
+  keys listed in `controls/core.json` so geometry and previews can follow the configured font and icon.
 - **Versions** (R12): new kinds and the `"auto"` literal are additions within FORMAT 1.0; PROTOCOL is 1.1
   (`model.rs` `supports_protocol`: requests of the same major and an older minor are accepted). A client that does
   not know a control kind draws it as a group.
@@ -1741,10 +1742,15 @@ content token (a hash) it stands for. New kinds are protocol changes.
 | `entity_prop` `{ key, name }` | one property of an object key (`config`, `bindings`, `on`) of a Cell or container (扩展控件 P2, Q28) | the property's own rev (`p:<key>.<name>`; 0 when never written) |
 
 **Workspace names (控件机制 TODO G9).** A Workspace may have a `name`, `^[a-z0-9][a-z0-9._-]{0,63}$`, given to `ws.create` or
-`ws.ensure` and never changed (no method changes it); the title stays independent and editable. It is unique among the
+`ws.ensure`. The title stays independent and editable. It is unique among the
 Workspaces of one owner (`local_meta` `owner` and `name` of `local.sqlite`, never exported). `ws.ensure { name, title? }` returns
 the caller's Workspace of that name or creates it; concurrent calls create one (the service serializes the lookup and the
-creation over an `(owner, name)` index read from the folders on first use). `ws.delete` frees the name. `ws.clone`, `ws.import`
+creation over an `(owner, name)` index read from the folders on first use). An authenticated account and its
+bound Agents use the same owner key. Reading a match requires workspace read access for the actual caller.
+`ws.lookup { name }` returns `found: false` for an unused name. A legacy duplicate yields `NAME_CONFLICT` for
+that name. A read-only Agent can look up a name and open an existing workspace within its ACL. Creating the workspace or committing content needs write permission. The signed-in owner can run
+`buckyos aiws select-name schedule --workspace <preferred-id>` (`ws.select_name { name, workspace_id }`). The other
+copies lose only the conflicting name and remain accessible by ID with their original permissions. `ws.delete` frees the name. `ws.clone`, `ws.import`
 `new` and a restore that creates a missing Workspace carry no name; a restore over an existing Workspace keeps its name; a show
 clone has none.
 
@@ -1773,8 +1779,12 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | --- | --- | --- |
 | `ws.create` | stable | `title`, `workspace_id?`, `name?` (see “Workspace names”; a name the caller already uses is `INVALID_OPERATION` / `NAME_CONFLICT` with `data.workspace_id`) → `workspace_id`, `epoch`, `head_seq`, `title`, `name?` |
 | `ws.ensure` | stable | `name`, `title?` (default: the name), no `workspace_id` → `workspace_id`, `name`, `title`, `epoch`, `head_seq`, `created` — the caller's Workspace of that name, created when it has none (callers as for `ws.create`) |
+| `ws.lookup` | stable | `name` → `found`; an accessible match also returns `workspace_id`, `name`, `title`, `epoch`, `head_seq` |
+| `ws.select_name` | stable | `name`, `workspace_id` → `name`, `workspace_id`; keep this workspace's name and clear the same name from other copies |
+| `availability.describe` | experimental | `did` → the subject's published `availability_ref` for a caller with a current sharing grant |
+| `availability.free_busy` | experimental | `did`, offset-bearing `from`, `to` → `intervals`, `coverage` after checking the current sharing grant |
 | `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
-| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (the picture chosen in the settings, `{ workspace_id, object_id, media_type }`, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
+| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.owned_by_caller_user` reports whether the actual account or verified Agent owner owns this workspace; for that owner, an old copy explicitly deselected by `ws.select_name` retains its `former_name`; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (the picture chosen in the settings, `{ workspace_id, object_id, media_type }`, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
 | `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
 | `acl.set` | stable | `changes: [{ subject, resource?, allow?, deny? }]` (≤ 500): each replaces the subject's entry on the resource (path or id, default `/`; both empty removes it), all or none, one record; `manage` on each resource, the owner's when `manage` is touched |
 | `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry with who wrote it, `complete: true`, for a manager; otherwise the entries that apply to the caller — its own, its groups', `@all`, `@guest` while it is a guest — without who wrote them). Anyone may ask about itself; the rest is the managers' |
@@ -1816,7 +1826,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `doc.get_collab_state` | internal | `entity_id` |
 | `doc.prepare` / `doc.commit` | stable | the Commit request (design §2.6) |
 | `doc.stage` | stable | one part of a Commit too large for one request: `{ epoch, idempotency_key, part, operations }` → `{ part, digest, operations, expires_at }`; the final `doc.commit` / `doc.prepare` names the digests in `staged` (design §2.6) |
-| `doc.get_submission` | stable | `epoch`, `idempotency_key` |
+| `doc.get_submission` | stable | `epoch`, `idempotency_key`; with `source_id`, a table-action receipt rechecks current access to every recorded operation and returns `inserted` and `changed` record IDs. |
 | `doc.undo` | stable | `epoch`, `commit_id`, `idempotency_key`, `mode?`, `plan_digest?`, `session_id?` |
 | `doc.get_changes` | stable | `epoch`, `after_seq`, `limit?`, `filter: { detail: "touched" }?` — each change carries `touched`, and (unless `touched` only) `ops` and the row delta `rows` (D20); `after_seq` below `base_seq` is `BASE_TOO_OLD` |
 | `doc.wait_changes` | stable | `epoch?`, `after_seq`, `timeout_ms?` (long poll) → `epoch`, `head_seq`, `timed_out`, `show_lock`, `server_ms` (unix ms when answering: clients calibrate against half the round trip, 控件机制 TODO G16) |
@@ -1860,6 +1870,10 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | --- | --- | --- |
 | `ws.create` | stable | may own (unrestricted account or service) |
 | `ws.ensure` | stable | may own (unrestricted account or service) |
+| `ws.lookup` | stable | may own (unrestricted account or service) |
+| `ws.select_name` | stable | the signed-in owner of the named workspaces |
+| `availability.describe` | experimental | a session; the subject shared availability with the current account |
+| `availability.free_busy` | experimental | a session; current availability grant on the subject; only busy intervals |
 | `ws.time` | stable | a session |
 | `ws.list` | stable | a session |
 | `ws.get_info` | stable | may enter |

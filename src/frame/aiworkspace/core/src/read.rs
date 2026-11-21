@@ -324,6 +324,17 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
                 env["slot"] = v.clone();
             }
             let config = e.payload.get("config");
+            if matches!(env["view_type"].as_str(), Some("mindnode" | "label")) {
+                if let Some(config) = config.and_then(Value::as_object) {
+                    let appearance: serde_json::Map<_, _> = types::label_appearance_keys().iter().filter_map(|key| {
+                        let value = config.get(key)?;
+                        (value.is_string() || value.is_number() || value.is_boolean()).then(|| (key.clone(), value.clone()))
+                    }).collect();
+                    if !appearance.is_empty() {
+                        env["config"] = Value::Object(appearance);
+                    }
+                }
+            }
             if let Some(side) = config.and_then(|c| c.get("side")).filter(|s| matches!(s.as_str(), Some("left" | "right"))) {
                 env["side"] = side.clone();
             }

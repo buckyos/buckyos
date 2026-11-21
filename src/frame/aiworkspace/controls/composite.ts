@@ -6,6 +6,7 @@
  * removed here. Shared by the canvas, the static exports and tests. */
 
 import { isTextView } from './contract.ts'
+import { readLabelLook } from './label.ts'
 import { NODE_PAD } from './measure.ts'
 import { num } from './placement.ts'
 import { solveControl, type ControlEntity, type ControlSource, type SolvedControl, type SolveOptions } from './solve.ts'
@@ -219,7 +220,8 @@ export function solveComposite(src: ControlSource, containerId: string, opts: So
     let w = num(p.w)
     let h = num(p.h)
     if ((w === undefined || h === undefined) && e.type_id === 'buckyos.cell' && isTextView(e.view_type)) {
-      const m = opts.measurer.measure(e.title, 1, w !== undefined ? Math.max(1, w - NODE_PAD.x * 2) : undefined)
+      const look = e.view_type === 'mindnode' || e.view_type === 'label' ? readLabelLook(e.config) : undefined
+      const m = opts.measurer.measure(e.title, 1, w !== undefined ? Math.max(1, w - NODE_PAD.x * 2) : undefined, look)
       w ??= m.w
       h ??= m.h
     }

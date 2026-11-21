@@ -19,7 +19,7 @@ control lays the nodes out and draws the edges between parent and child; nothing
 - Text nodes: \`view: { type: "mindnode" }\`, the text in \`title\` (at most 256 characters; inline Markdown —
   **bold**, *italic*, \`code\`, [links](https://…) — is kept and shown formatted).
 - A node may be any Block (an image, a table view, a shape…). A node that is not a text view (mindnode, shape,
-  richtext) needs numeric \`w\` / \`h\`: \`{ "x": "auto", "y": "auto", "w": 240, "h": 160 }\`.
+  richtext, label) needs numeric \`w\` / \`h\`: \`{ "x": "auto", "y": "auto", "w": 240, "h": 160 }\`.
 - A node may itself be another mindmap control (its own tree inside one node).
 - Normally one root node directly under the container; several roots are stacked.
 - Relation lines between nodes are ordinary connectors on the canvas (\`view.type: connector\`), not children.
@@ -36,6 +36,12 @@ control lays the nodes out and draws the edges between parent and child; nothing
 
 A node's \`config\` may carry \`branch_color\` (\`#rrggbb\`, inherited by its subtree) and, on a first-level node of a
 \`both\` map, \`side: "left" | "right"\`.
+
+Text nodes share the standard label appearance. Set these optional properties in the node's own
+\`config\`: \`icon\` (star, heart, flag, target, idea, book, work, calendar), \`icon_position\` (left or right),
+\`font_family\` (sans, serif, mono), \`font_size\` (pixels), \`font_color\`, \`weight\` (normal, medium, bold),
+\`italic\`, \`align\` (left, center, right), \`background_color\` and \`background_image\` (an absolute HTTP(S) image URL).
+A background image covers the node above its background colour. With no overrides, the node uses the map's depth styling.
 
 ## Create one with doc.commit
 

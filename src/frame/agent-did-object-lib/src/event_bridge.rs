@@ -691,6 +691,7 @@ mod tests {
             self.subscribe_count.fetch_add(1, Ordering::SeqCst);
             Ok(AdapterEventSubscription {
                 subscription: EventBridgeSubscription {
+                    alias_revision: None,
                     subscription_id: "remote-sub".to_string(),
                     object: req.object_ref.normalized.clone(),
                     object_did: None,
@@ -928,6 +929,7 @@ mod tests {
         ) -> Result<AdapterEventSubscription, AgentDIDObjectError> {
             Ok(AdapterEventSubscription {
                 subscription: EventBridgeSubscription {
+                    alias_revision: None,
                     subscription_id: "pending-remote".to_string(),
                     object: req.object_ref.normalized.clone(),
                     object_did: None,

@@ -336,7 +336,12 @@ pub fn object_kinds() -> Vec<ObjectKind> {
         }
         v
     }));
-    vec![root, workspace, entity, by_path]
+    let availability=ObjectKind::new("people/{did}/availability","aiworkspace.availability","Availability","Busy intervals shared by this Zone account.")
+        .private_profile()
+        .summary_property("availability","Shared availability entry",json!({"type":"object"}),RpcBinding::new("availability.describe",|c,_|Ok(json!({"did":cap(c,"did")}))))
+        .action("free_busy","Busy intervals in the half-open window",json!({"type":"object","additionalProperties":false,"required":["from","to"],"properties":{"from":{"type":"string","format":"date-time"},"to":{"type":"string","format":"date-time"}}}),
+            ActionRisk::ReadOnly,"read",RpcBinding::new("availability.free_busy",|c,p|Ok(json!({"did":cap(c,"did"),"from":p["from"],"to":p["to"]}))));
+    vec![root, workspace, entity, by_path, availability]
 }
 
 pub fn provider(state: Arc<AppState>, zone_did: DID) -> DIDObjectHttpServer<KrpcObjectProvider> {

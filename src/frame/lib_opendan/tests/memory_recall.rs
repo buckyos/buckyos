@@ -104,6 +104,109 @@ fn refs(d: &BatchDelivery) -> Vec<String> {
     d.items.iter().map(|c| c.hint.reference.clone()).collect()
 }
 
+#[test]
+fn a_private_availability_hint_is_recalled_only_with_its_conversations_grants() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = host(&tmp);
+    let alice = "did:bns:alice";
+    let lin = "did:bns:lin";
+    let zone = "did:web:alpha.example";
+    let url = buckyos_api::obj_service_url("aiworkspace", &["people", lin, "availability"]);
+    let mut owner = h.session("Alice", "ui-alice", &[alice, AGENT], &[alice], &[]);
+    let mut other = h.session("Lin", "ui-lin", &[lin, AGENT], &[lin], &[&url]);
+    let observed_at = iso_ms(h.memory.now_ms());
+    let event = h.event(
+        "ui-alice/e1",
+        &owner.sid,
+        ActorKind::User,
+        "Remember where to find Lin's availability.",
+    );
+    let summary =
+        format!("Use {url} in Zone {zone} for Lin ({lin}) when scheduling meetings with free_busy.");
+    let mut input = observation(&summary, event.clone(), &[&url], "ui-alice/e1/availability");
+    input.tags = tags(&["availability"]);
+    input.suggested_kind = Some("fact".into());
+    input.memory_intent = Some("explicit".into());
+    let receipt = owner.record(&mut h, input).unwrap().reference.unwrap();
+
+    let entry = "Check Lin's availability for scheduling meetings.";
+    let query = MemoryQuery {
+        text: Some(entry.into()),
+        objects: vec![url.clone()],
+        include_recent_perceptions: true,
+        ..Default::default()
+    };
+    let recall = h.memory.query(&owner.caller, &query).unwrap();
+    let [hint] = recall.recent_perceptions.as_slice() else {
+        panic!("{recall:?}")
+    };
+    assert_eq!(hint.reference, receipt);
+    assert!(hint.explicit);
+    assert_eq!(hint.summary, summary);
+    assert_eq!(hint.object_url.as_deref(), Some(url.as_str()));
+    assert_eq!(hint.observed_at.as_deref(), Some(observed_at.as_str()));
+    assert_eq!(hint.scope.as_ref().unwrap().subjects, [alice]);
+    // Even Lin, who owns the shared object and knows its URL, has no grant for Alice's note.
+    assert!(h
+        .memory
+        .query(&other.caller, &query)
+        .unwrap()
+        .recent_perceptions
+        .is_empty());
+    assert!(matches!(
+        h.memory.read(&other.caller, &receipt),
+        Err(MemoryError::NotFound(_))
+    ));
+
+    let scope = hint.scope.clone().unwrap();
+    let si = h.si("si");
+    si.run(&mut h, 10, |_, _| {
+        plan(
+            "remember-availability",
+            &summary,
+            vec![
+                obs_op(
+                    "obs_availability",
+                    ObservationKind::ExplicitStatement,
+                    &summary,
+                    &event,
+                    scope.clone(),
+                ),
+                ItemSpec {
+                    explicit: true,
+                    tags: &["availability"],
+                    last_evidence_at: Some(observed_at.clone()),
+                    ..ItemSpec::new(
+                        "item_availability",
+                        "fact",
+                        &summary,
+                        &["obs_availability"],
+                        scope.clone(),
+                        Basis::UserStatement,
+                    )
+                }
+                .op(),
+            ],
+            vec![memory_sim::absorbed(&receipt, &["item_availability"])],
+        )
+    })
+    .unwrap();
+
+    h.advance_hours(24);
+    let delivery = batch(&h, &mut owner, entry, |_| true);
+    assert_eq!(refs(&delivery), ["item_availability@1"]);
+    let cognition = &delivery.items[0].hint;
+    assert_eq!(cognition.object_url.as_deref(), Some(url.as_str()));
+    assert_eq!(cognition.summary, summary);
+    let line = libopendan::runner::memory_batch::line(&delivery.items[0], &delivery.corrections);
+    assert!(line.text.contains(&url), "{}", line.text);
+    assert!(batch(&h, &mut other, entry, |_| true).items.is_empty());
+    assert!(matches!(
+        h.memory.read(&other.caller, &cognition.reference),
+        Err(MemoryError::NotFound(_))
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // the facade, batch by batch
 // ---------------------------------------------------------------------------

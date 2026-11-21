@@ -3581,7 +3581,7 @@ impl MsgCenterHandler for MessageCenter {
         contact_mgr_owner: Option<DID>,
         ctx: RPCContext,
     ) -> std::result::Result<Contact, RPCErrors> {
-        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
+        self.authorize_contact_update(&ctx, contact_mgr_owner.as_ref())
             .await?;
         if patch.access_level == Some(AccessGroupLevel::Block) {
             if let Some(owner) = contact_mgr_owner.as_ref().filter(|o| self.is_local_recipient(o)) {

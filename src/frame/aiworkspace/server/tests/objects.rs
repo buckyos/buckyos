@@ -231,3 +231,78 @@ fn actions_are_declared_where_they_apply_and_judged_as_their_krpc_method() {
         assert!(controls["controls"].as_array().unwrap().iter().any(|c| c["kind"] == "mindmap"), "{controls}");
     })
 }
+
+#[test]
+fn availability_url_requires_the_current_accounts_grant_at_discovery_and_invocation() {
+    run_test(|| async move {
+        let srv = Srv::start_with(tempfile::tempdir().unwrap(), model(), json!({
+            "tok-alice":{"principal":"alice","did":"did:bns:alice","availability_shared_with":["did:bns:bob"]},
+            "bob":{"principal":"bob","did":"did:bns:bob"},
+            "assistant":{"principal":"did:bns:assistant","class":"agent","owner":"bob"},
+            "other":{"principal":"other","did":"did:bns:other"}
+        })).await;
+        let path = format!("{}/obj/people/did%3Abns%3Aalice/availability", srv.base);
+        let input=json!({"method":"free_busy","params":{"from":"2026-11-20T14:00:00+08:00","to":"2026-11-20T15:00:00+08:00"}});
+        for token in ["bob","assistant","other"] {
+            let card=srv.http.get(format!("{path}?type=profile")).bearer_auth(token).send().await.unwrap();
+            let action=srv.http.post(format!("{path}/methods/free_busy")).bearer_auth(token).json(&input).send().await.unwrap();
+            let success=action.status().is_success();
+            let out:Value=action.json().await.unwrap();
+            if token=="other" {
+                assert!(!card.status().is_success());
+                assert!(!success || out.get("error").is_some(),"{out}");
+                assert!(out.get("result").is_none());
+            } else {
+                assert!(card.status().is_success());
+                assert_eq!(out["result"],json!({"intervals":[],"coverage":"complete"}),"{out}");
+            }
+        }
+        assert_eq!(srv.rpc("ws.lookup",json!({"name":"schedule"})).await["found"],false);
+        let invalid = srv.call_as("bob","availability.free_busy",json!({"did":"did:bns:alice","from":"2026-11-20","to":"2026-11-21"})).await;
+        assert_eq!(invalid["result"]["error"]["code"],"INVALID_OPERATION","{invalid}");
+    })
+}
+
+/// Run with BUCKYOS_ROOT pointing to a built SDK tool distribution.
+#[test]
+#[ignore = "requires the packaged Deno runtime and owner-extensions"]
+fn installed_availability_projects_private_calendar_rows() {
+    run_test(|| async move {
+        let mut srv = Srv::start_with(tempfile::tempdir().unwrap(), model(), json!({
+            "tok-alice": {"principal":"alice","did":"did:bns:alice","availability_shared_with":["did:bns:bob"]},
+            "tok-bob": {"principal":"bob","did":"did:bns:bob"},
+            "tok-agent": {"principal":"did:bns:assistant","class":"agent","owner":"bob"},
+        })).await;
+        let ws = srv.rpc("ws.ensure", json!({"name":"schedule"})).await;
+        srv.ws = ws["workspace_id"].as_str().unwrap().into();
+        let fields: Vec<_> = [
+            ("title","text"), ("all_day","boolean"), ("start","datetime"), ("end","datetime"),
+            ("start_date","date"), ("end_date","date"), ("status","select"), ("ext","json")
+        ].into_iter().map(|(id, ty)| {
+            let mut field = json!({"field_id":id,"name":id,"type":ty,"nullable":true});
+            if ty == "select" {
+                field["options"] = json!([{"option_id":"confirmed","label":"Confirmed"}]);
+            }
+            field
+        }).collect();
+        let created = srv.commit(json!([
+            {"op":"entity.create","entity_id":"calendar","parent_id":"data","order_key":"a",
+             "type_id":"buckyos.table-source","schema_id":"buckyos.calendar@1","payload":{"title_field_id":"title","fields":fields}},
+            {"op":"table.insert_records","source_id":"calendar","records":[
+                {"record_id":"private-id","values":{"title":"Private review","all_day":false,
+                 "start":"2026-11-20T14:00:00+08:00","end":"2026-11-20T15:00:00+08:00"}}
+            ]}
+        ])).await;
+        assert_eq!(created["status"], "accepted", "{created}");
+        let url = format!("{}/obj/people/did%3Abns%3Aalice/availability/methods/free_busy", srv.base);
+        for token in ["tok-bob", "tok-agent"] {
+            let reply: Value = srv.http.post(&url).bearer_auth(token).json(&json!({
+                "method":"free_busy","params":{"from":"2026-11-20T06:30:00Z","to":"2026-11-20T08:00:00Z"}
+            })).send().await.unwrap().json().await.unwrap();
+            assert_eq!(reply["result"], json!({
+                "intervals":[{"start":"2026-11-20T06:30:00.000Z","end":"2026-11-20T07:00:00.000Z"}],
+                "coverage":"complete"
+            }), "{reply}");
+        }
+    })
+}

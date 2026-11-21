@@ -72,6 +72,7 @@ const fn helper(name: &'static str, category: ToolCategory, source: &'static str
 /// commands of `buckyos-agent` are its `commands/*.ts` (a test keeps the
 /// two in step).
 pub const STANDARD_TOOLS: &[BaselineTool] = &[
+    tool("xcall", ToolCategory::Runtime, AGENT_TOOL_SOURCE),
     tool("agent_tool", ToolCategory::Runtime, AGENT_TOOL_SOURCE),
     helper("agent-session", ToolCategory::AgentState, XAGENT_SOURCE, "xagent"),
     tool("xagent", ToolCategory::AgentState, XAGENT_SOURCE),
