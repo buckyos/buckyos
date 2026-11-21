@@ -17,6 +17,7 @@ interface Props {
   cellId?: string
   sourceId?: string
   /** No editing at all (embedded rendering, missing capability, write lock not held). */
+  awaitingLock?: boolean
   readOnly: boolean
   /** Why nothing can be edited, for the title row (else worked out from the capability, the source and the connection). */
   readOnlyReason?: string | null
@@ -29,14 +30,14 @@ interface Props {
   onActivateAnnotation?: (entityId: string | null) => void
 }
 
-export function TableViewCell({ cellId, sourceId, readOnly, readOnlyReason, compact, size = 'embedded', annotations, onAnnotate, onActivateAnnotation }: Props) {
+export function TableViewCell({ cellId, sourceId, awaitingLock, readOnly, readOnlyReason, compact, size = 'embedded', annotations, onAnnotate, onActivateAnnotation }: Props) {
   const { t } = useAiwsText()
   const store = useStore()
   const id = cellId ?? ''
   const cellVersion = useVersion(`e:${id}`)
   const loadCell = useCallback(() => (cellId ? store.session.read<KeyedContent<CellPayload>>(cellId) : Promise.resolve(null)), [store, cellId])
   const cell = useLoad<CellRead | null>(loadCell, cellVersion)
-  const common = { readOnly, readOnlyReason, compact, size, annotations, onAnnotate, onActivateAnnotation }
+  const common = { awaitingLock, readOnly, readOnlyReason, compact, size, annotations, onAnnotate, onActivateAnnotation }
   if (!cellId && sourceId) {
     // no Block: the table itself, with the sort / filter and the columns kept in the user work state (§4.4)
     const synthetic: CellRead = {

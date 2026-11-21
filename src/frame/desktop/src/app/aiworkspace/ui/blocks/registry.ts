@@ -58,6 +58,7 @@ export interface RenderContext {
   interactive: boolean
   /** Explicit activation ("edit content" / double-click in edit mode); the host mounts the Editor. */
   activateEditor: () => void
+  selectBlock?: () => void
   deactivateEditor: () => void
   /** Open another entity (data-source detail or canvas focus). */
   openEntity: (entityId: string) => void

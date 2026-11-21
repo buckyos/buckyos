@@ -79,10 +79,9 @@ env.AIWS_VOICE_SEGMENT_MS ??= '1000'
 delete env.AIWS_FAILPOINT
 // workspace pages live on `aiws-<label>.localhost:<dev server port>` (T4-8): the dev server serves aiws.html there
 const publicBase = process.env.AIWS_E2E_PUBLIC_BASE ? ['--public-base', process.env.AIWS_E2E_PUBLIC_BASE] : []
-// the print renderer goes into print packages from the Desktop build (`print.package`): AIWS_E2E_WEB, else this
-// app's own dist when it holds one
+// The suite builds its production print renderer while this service starts. It is read when a print package is requested.
 const webDir = process.env.AIWS_E2E_WEB ?? resolve(here, '../../dist')
-const web = existsSync(join(webDir, 'aiws-print', 'index.html')) ? ['--web', webDir] : []
+const web = ['--web', webDir]
 const child = spawn(binary, ['--data-dir', join(root, 'data'), '--listen', `127.0.0.1:${port}`, '--auth-file', auth, '--fixture-sources', '--wish-config', wishConfig, '--nfs-server', ndmBase, '--named-store-config', storeConfig, ...publicBase, ...web, '--log-level', 'warn'], { stdio: 'inherit', env })
 
 let stopping = false

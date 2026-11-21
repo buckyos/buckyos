@@ -17,8 +17,20 @@ await aiws.commit(ws, { protocol_version: "1.1", workspace_id: ws, epoch, idempo
 
 Check `buckyos aiws cat /data/销售 --workspace <ws>`, `ls /surfaces/看板` and `info`. A canvas owns data under `canvas-content` (deleted with its last Block); data under `data` is shared. Nested folders under `surfaces` hold canvases and folders. Move the canvas with `mv` and keep its content folder under `canvas-content`. Grants on folders cover children; only empty folders can be deleted.
 
+Use `object_ref` fields with `ref_purpose: "image"` or `"canvas"` to link to a readable picture AssetRef or a Surface. These links keep the ID when the target is deleted and resolve again after restoration.
+
+Read the rows in a saved Block's order through the websdk, including its user's manual moves.
+
+```ts
+const { shows } = await aiws.readMeta(ws, "blk-sales")
+if (shows?.view_sql) {
+  const page = await aiws.sql(ws, shows.view_sql + " LIMIT ? OFFSET ?", { params: [...(shows.view_params ?? []), 100, 0] })
+  console.log(page.rows)
+}
+```
+
 #### Data types and imports
-- Tables: `text`, `number`, `decimal` (scale), `currency` (ISO 4217 code, default scale 2), `date`, `datetime`, `boolean`, `select`, `multi_select`, `object_ref` and `json` (object ≤16 KiB, depth ≤8; emptiness filters). Write `{"amount":"12.50","currency":"CNY"}` or a bare default-currency amount. A `submitter:true` text field is service-filled, one record per principal (`SUBMITTER_EXISTS` gives `data.record_id`); append-only users edit/delete their own. `table field-add … --default <display value>` or `table.update_field` sets typed defaults on new records, except `submitter`, `unique`, `object_ref`. Use `null` to remove a default, `backfill` for existing rows. SQL `json_each(v."<picks>#raw")` expands a multi-select vote.
+- Tables: `text`, `number`, `decimal` (scale), `currency` (ISO 4217 code, default scale 2), `date`, `datetime`, `boolean`, `select`, `multi_select`, `object_ref` and `json` (object ≤16 KiB, depth ≤8; emptiness filters). Write `{"amount":"12.50","currency":"CNY"}` or a bare default-currency amount. A `submitter:true` text field is service-filled, one record per principal (`SUBMITTER_EXISTS` gives `data.record_id`); append-only users edit/delete their own. `table field-add … --default <display value>` or `table.update_field` sets typed defaults on new records, except `submitter`, `unique`, `object_ref`. Use `null` to remove a default, `backfill` for existing rows. Omit optional and defaulted values in `table.insert_records`. Supply an explicit `null` for a required nullable field with no default. For image and canvas fields use `object_ref` with `ref_purpose: "image" | "canvas"` and the corresponding `target_types` list (`buckyos.asset-ref` or `buckyos.container`). Store the readable image asset or surface entity ID in the value. SQL `json_each(v."<picks>#raw")` expands a multi-select vote.
 - CSV/TSV/XLSX/SQLite: `import_table <file> --workspace <ws> --dry-run`, review inferred types, sample rows and conversions, then repeat without `--dry-run`. Use `--sheet`/`--all-sheets` or `--table`, header/date/timezone/locale options as needed.
 - DOCX/PPTX: `import_office <file> --workspace <ws> --dry-run`, check simplifications, then import. DOCX makes a flow page, PPTX a canvas and presentation path. For unsupported charts, SmartArt, EMF/WMF, formulas, or older/ODF files use Desktop’s Office import (LibreOffice).
 - `buckyos.richtext` stores a doc tree; use core `markdown.rs` for conversion. For `buckyos.asset-ref` upload via `buckyos bucket put obj://bucket/<bucket>/<key> <file>`, then `asset.import_object {workspace_id,obj_id}` and use its `object_id`. Optional `poster` is an imported PNG/JPEG/WebP/GIF; dimensions, duration and page count are metadata. `buckyos.dir` members map relative paths to `{kind:"file",object_id}` or `{kind:"folder"}`. Update with `dir.set_member|remove_member|replace`; removing a folder removes its subtree.
@@ -26,7 +38,7 @@ Check `buckyos aiws cat /data/销售 --workspace <ws>`, `ls /surfaces/看板` an
 #### Built-in controls and records
 Use `buckyos aiws controls list` / `describe <kind>` for the renderer contract. Create mind maps with `buckyos aiws import plan.md --workspace <ws> --parent <surface> --at 100,80` (nested Markdown or OPML). Read back with `buckyos aiws export <control> --workspace <ws> [--format opml] [--out plan.md]`. For operations use `buckyos.cell` with `view.type: mindnode`, title text, parent node and automatic layout (numeric width/height for non-text nodes). Ink Cells use `view:{type:"ink",version:1}` and the Desktop's `ink/model.ts` encoder.
 
-For the owner's personal schedule, read `$OPENDAN_AGENT_ROOT/cmd_skills/owner/SKILL.md` and call `xcall owner.todo` or `xcall owner.cal` with the requested action. Give the person the returned `open_url`. To place controls in a project workspace, use `buckyos aiws place todo|calendar --workspace <ws> --surface <canvas> [--bind "name=id[,id];…"]`. The service creates a missing table, binds an unambiguous match or returns `NEEDS_UI`. For manual writes use `table.*` and `schemas/standard-tables.md` (`buckyos.todo@1`, `buckyos.calendar@1`).
+For the owner's personal schedule, read `$OPENDAN_AGENT_ROOT/cmd_skills/owner/SKILL.md` and call `xcall owner.todo` or `xcall owner.cal` with the requested action. Give the person the returned `open_url`. To place controls in a project workspace, use `buckyos aiws place todo|calendar --workspace <ws> --surface <canvas> [--bind "name=id[,id];…"]`. The service creates a missing table, binds an unambiguous match or returns `NEEDS_UI`. For manual writes use `table.*` and `schemas/standard-tables.md` (`buckyos.todo@1`, `buckyos.calendar@1`). A new to-do takes the status default (initially `todo`). A timed event needs `start`, and an all-day event needs `start_date`. Both need a title.
 
 #### Composite instances and wish Blocks
 A composite's `def_ref` is immutable. Child Blocks carry their `slot`; layout is automatic except in fixed layouts.

@@ -624,6 +624,7 @@ impl Workspace {
         let local = Connection::open_with_flags(dir.join("local.sqlite"), flags).map_err(db_err)?;
         validate_workspace_storage(&doc, &local)?;
         configure_db(&doc, true)?;
+        doc.execute_batch(crate::schema::RECORD_ORDER_INDEX).map_err(db_err)?;
         configure_db(&local, false)?;
         local.execute_batch(crate::entries::REGISTERED_ENTRIES_DDL).map_err(db_err)?;
         let get = |k: &str| -> WsResult<String> {

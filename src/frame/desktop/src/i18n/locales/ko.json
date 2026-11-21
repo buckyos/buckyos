@@ -5461,6 +5461,8 @@
   "sso.provider.email_field": "이메일 필드",
   "sso.provider.email_verified_field": "이메일 인증 여부 필드",
   "sso.provider.enabled": "활성화",
+  "sso.provider.googleSecretLocation": "제어판이 실행되는 서버에서 Google 클라이언트 보안 비밀을 다음 파일에 저장하고 제어판에 파일 읽기 권한을 부여하세요.",
+  "sso.provider.googleSecretContents": "Linux에서 $BUCKYOS_ROOT 경로는 일반적으로 /opt/buckyos입니다. Google 사용자 인증 정보 JSON 파일을 다운로드했다면 web.client_secret 값만 따옴표 없이 복사하세요.",
   "sso.provider.id": "소스 ID",
   "sso.provider.id_field": "고정 계정 ID 필드",
   "sso.provider.issuer": "발급자 URL",

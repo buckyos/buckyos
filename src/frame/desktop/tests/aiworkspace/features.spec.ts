@@ -169,7 +169,7 @@ test('write locks: policy toggle, acquire, holder display, break, LOCK_LOST keep
   // releasing makes it available again; a table source can be locked the same way
   await bob.getByTestId('aiws-lock-release').click()
   await expect(bob.getByTestId('aiws-lock-notes')).toHaveAttribute('data-held', 'false')
-  expect((await api.rpc(ALICE, 'lock.list', { workspace_id: ws.workspace_id })).locks).toEqual([])
+  await expect.poll(async () => (await api.rpc(ALICE, 'lock.list', { workspace_id: ws.workspace_id })).locks).toEqual([])
   await alice.getByTestId('aiws-top-sources').click()
   await alice.getByTestId('aiws-tree-tasks').click()
   await alice.getByTestId('aiws-toggle-policy').click()
@@ -191,9 +191,17 @@ test('a refused rich text update is kept as a recoverable draft and the editor r
   await openWorkspace(bob, BOB, ws.workspace_id)
   await typeAtEnd(bob, 'n-end', '被接受的一句。')
   await expectAllCommitted(bob)
-  // the permission is withdrawn while bob keeps typing
-  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
-  await bob.keyboard.type('不会被接受的一句。')
+  // Revoke the permission after the editor accepts the input, before the service receives its update.
+  let revoked = false
+  await bob.route('**/kapi/aiworkspace', async (route) => {
+    const body = route.request().postDataJSON()
+    if (!revoked && body.method === 'doc.commit' && body.params.operations.some((op: { op: string }) => op.op === 'richtext.apply_update')) {
+      revoked = true
+      await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
+    }
+    await route.continue()
+  })
+  await bob.keyboard.insertText('不会被接受的一句。')
   await expect(bob.getByTestId('aiws-notice').filter({ hasText: 'PERMISSION_DENIED' })).toContainText('已保留为草稿')
   await expect(bob.getByTestId('aiws-save-summary')).toHaveAttribute('data-attention', '1')
   // the working document was rebuilt from the confirmed one
@@ -201,8 +209,7 @@ test('a refused rich text update is kept as a recoverable draft and the editor r
   // the refused text is recoverable
   const drafts = bob.getByTestId('aiws-drafts')
   await drafts.getByRole('button').first().click()
-  // the withdrawn permission reaches the editor while bob types (acl_rev): the keys after it no longer enter the text
-  await expect(drafts).toContainText('不会被接受的一句')
+  await expect(drafts).toContainText('不会被接受的一句。')
   await expect(drafts).toContainText('PERMISSION_DENIED')
   expect(JSON.stringify(await api.ast(ALICE, ws.workspace_id, 'notes'))).not.toContain('不会被接受的一句')
   await context.close()
@@ -608,19 +615,19 @@ test('record properties, asset upload, object embed and object link', async ({ p
   // record: each property is its own version cell
   // the record form (UI 框架 PRD §7.5): every property in the control of its type, written when it is left
   const record = page.getByTestId('aiws-cell-frame-cell-info').getByTestId('aiws-record-project-info')
-  await page.getByLabel('负责人', { exact: true }).fill('王')
-  await page.getByLabel('负责人', { exact: true }).press('Enter')
+  await record.getByRole('textbox', { name: '负责人', exact: true }).fill('王')
+  await record.getByRole('textbox', { name: '负责人', exact: true }).press('Enter')
   await expect(record.getByLabel('截止', { exact: true })).toHaveAttribute('type', 'date')
-  await page.getByLabel('截止', { exact: true }).fill('2026-11-01')
-  await page.getByLabel('截止', { exact: true }).press('Enter')
+  await record.getByLabel('截止', { exact: true }).fill('2026-11-01')
+  await record.getByLabel('截止', { exact: true }).press('Enter')
   await expectAllCommitted(page)
   const info = (await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'project-info' })).content
   expect(info.props).toEqual({ owner: '王', deadline: '2026-11-01', budget: '1200.00' })
   // a stale write to a property conflicts and shows both values
-  await page.getByLabel('预算', { exact: true }).fill('999')
+  await record.getByLabel('预算', { exact: true }).fill('999')
   expect((await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'project-info', keys: [{ key: 'p:budget', value: '1500.00', expect: { rev: info.key_revs['p:budget'] } }] }])).status).toBe('accepted')
   await expect(page.getByTestId('aiws-cell-frame-cell-info')).toBeVisible()
-  await page.getByLabel('预算', { exact: true }).press('Enter')
+  await record.getByLabel('预算', { exact: true }).press('Enter')
   const budget = record.getByTestId('aiws-prop-budget')
   await expect(budget).toHaveAttribute('data-state', 'needs_attention')
   await expect(budget.getByTestId('aiws-conflict-theirs')).toHaveText('1500.00')
@@ -664,7 +671,7 @@ test('record properties, asset upload, object embed and object link', async ({ p
   expect(text).toContain('"entity_id":"project-info"')
   // the embedded record is live: a change of the source shows up inside the document
   await record.getByLabel('负责人', { exact: true }).fill('赵')
-  await page.getByLabel('负责人', { exact: true }).press('Enter')
+  await record.getByRole('textbox', { name: '负责人', exact: true }).press('Enter')
   await expect(page.getByTestId('aiws-embed-cell-info')).toContainText('赵')
   // while editing, an object link opens with Ctrl+click (a plain click only places the caret)
   await page.getByTestId('aiws-richtext-notes').locator('.aiws-object-link', { hasText: '任务 42 详情' }).click({ modifiers: ['Control'] })
@@ -720,23 +727,27 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   const sourceId = await frame.getAttribute('data-cell-source') as string
   const cellId = await frame.getAttribute('data-cell-id') as string
 
-  // add two records from the "+ 新建" line under the rows (the required title is typed there; the line stays open for the next one)
-  await page.getByTestId(`aiws-add-record-${cellId}`).click()
-  for (const name of ['买菜', '写周报']) {
-    await page.getByLabel('新记录 标题').fill(name)
-    await page.getByLabel('新记录 标题').press('Enter')
-    await expect(frame.getByTestId('aiws-row').filter({ hasText: name })).toBeVisible()
+  const rows = async () => (await api.table(ALICE, workspaceId, { source_id: sourceId })).rows
+  const created = await rows()
+  expect(created.map((r) => r.values)).toEqual([{}, {}])
+  const { content } = await api.read(ALICE, workspaceId, sourceId)
+  const titleField = content.payload.title_field_id
+  for (const [index, name] of ['买菜', '写周报'].entries()) {
+    const cell = frame.getByTestId(`aiws-cell-${created[index].record_id}-${titleField}`)
+    await cell.locator('.aiws-cell-value').click()
+    await cell.getByRole('textbox').fill(name)
+    await cell.getByRole('textbox').press('Enter')
+    await expect.poll(async () => (await rows())[index]?.values[titleField]).toBe(name)
   }
-  await expect(frame.getByTestId('aiws-row')).toHaveCount(2)
-  const rows = async () => (await api.table(ALICE, workspaceId, { source_id: sourceId })).rows as { record_id: string; values: Record<string, unknown> }[]
-  const first = (await rows()).find((row) => row.values.title === '买菜')?.record_id as string
+  const add = page.getByTestId(`aiws-add-record-${cellId}`)
+  await add.hover()
+  await add.click()
+  await expect(frame.getByTestId('aiws-row')).toHaveCount(3)
+  expect((await rows())[2]?.values).toEqual({})
+  const first = created[0].record_id
 
-  // boolean: a tick box, one click writes
-  await page.getByLabel(`完成 ${first}`, { exact: true }).check()
-  await expect(page.getByLabel(`完成 ${first}`, { exact: true })).toBeChecked()
-  // more field types
   await page.getByTestId(`aiws-fields-${cellId}`).click()
-  for (const [name, type] of [['标签', 'multi_select'], ['提醒', 'datetime'], ['数量', 'number']]) {
+  for (const [name, type] of [['完成', 'boolean'], ['标签', 'multi_select'], ['提醒', 'datetime'], ['数量', 'number']]) {
     await page.getByLabel('新字段名').fill(name)
     await page.getByLabel('新字段类型').selectOption(type)
     await page.getByTestId('aiws-add-field').click()
@@ -751,6 +762,9 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
     await expect(frame.getByTestId('aiws-field-detail').locator('.aiws-option-item input').last()).toHaveValue(label)
   }
   await page.getByTestId(`aiws-fields-${cellId}`).click()
+  const checkbox = frame.getByTestId(`aiws-cell-${first}-${id('完成')}`).getByRole('checkbox')
+  await checkbox.check()
+  await expect(checkbox).toBeChecked()
   // multi_select
   await frame.getByTestId(`aiws-cell-${first}-${id('标签')}`).getByRole('button').first().click()
   const group = page.getByRole('group', { name: `标签 ${first}` })
@@ -771,7 +785,7 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   await page.getByLabel(`数量 ${first}`, { exact: true }).press('Enter')
   await expectAllCommitted(page)
   const stored = (await rows()).find((row) => row.record_id === first)?.values as Record<string, unknown>
-  expect(stored.done).toBe(true)
+  expect(stored[id('完成')]).toBe(true)
   expect([...(stored[id('标签')] as string[])].length).toBe(2)
   expect(stored[id('提醒')]).toBe(await page.evaluate(() => new Date('2026-10-04T16:00').toISOString()))
   expect(stored[id('数量')]).toBe(3)

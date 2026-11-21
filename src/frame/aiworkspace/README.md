@@ -1361,7 +1361,7 @@ etag, records, bytes, reason? }`, `data { mode: local | url_query | synced, writ
 `SOURCE_READ_ONLY` — or nobody here, the rows being remote; `capabilities` and `ops` stay the ACL's and the type's),
 `children`, `capabilities` (the caller's, as everywhere), `ops` (the Commit operations its type takes: the `types` column
 of `schemas/operations.json`), `shows` (a Block: what it shows `{ entity_id, path, type }`, a table view with
-`view_sql`, `view_count_sql`, `view_group_sql?`, `view_diagnostics?` or `view_error`; a control: its bindings),
+`view_sql`, `view_params?`, `view_count_sql`, `view_group_sql?`, `view_diagnostics?` or `view_error`; a control: its bindings),
 `definition`, `ref`, `degraded?`, `lock_holder?`, `availability?`.
 
 `doc.read { as: "body" }` (the property `body`) is the entity in plain text (R6) — what Agents read, text queries match
@@ -1422,7 +1422,7 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
 - **SQL** `{ sql, params?, tables?, max_rows?, expect_head? }`: one SELECT run by SQLite itself (R12) on a read-only
   connection, over **logical tables**: the temporary view of a local table, created the first time the statement names
   it — by its path (`FROM "/data/销售"`), `"~<entity_id>"`, its id, or an alias of `tables: { alias: path | id }` (with
-  `tables`, only those). Columns: `_id` (record id), `_rev`, `_body` (the path of the record's body), `_record` (the
+  `tables`, only those). Columns: `_id` (record id), `_created_seq` (insertion commit), `_rev`, `_body` (the path of the record's body), `_record` (the
   record as `doc.read` gives it, as JSON text: what the Desktop renders and edits), and per live field `"<name>"` (the
   display value) and `"<name>#raw"` (the stored value: option ids, the exact decimal, a reference or currency object as
   JSON text); a currency field also `"<name>#currency"`; a field named like a system column is `"<name>#field"`.
@@ -1443,10 +1443,19 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
   `aiws_dec` (exact decimal order) are there for the compiled views. `expect_head: { epoch, seq }` refuses a Workspace
   at another head (`SNAPSHOT_EXPIRED` / `HEAD_MISMATCH`): the Desktop sends its confirmed head and runs no SQL while it
   has unconfirmed changes (R16). SQL runs on the service and on a wish stage's snapshot, never on a browser replica.
-- **Table views as SQL.** A table view Block keeps its definition (`filter`, `sorts`, `group`, `manual_order`,
+- **Table views as SQL.** A table view Block keeps its definition (`filter`, `sorts`, `group`, `row_order`,
   `fields`); `sqlview::compile_view` turns it into the SELECT that gives the rows, the order and the group counts of
   the evaluator (`filter::run_query`, kept for the browser replica, R16) — `store/tests/sql.rs` holds them side by side.
-  It appears in the Block's `meta.shows.view_sql`, is what the stage tools and wish inputs (`table_view`,
+  Without explicit sorts, records follow `created_seq`, then `record_id`. A view's `row_order` maps
+  each moved record ID to `<16-digit hex creation sequence>!<anchor record ID>!<fraction>`.
+  The unmoved anchor occupies fraction `h`. A live anchor supplies its actual creation sequence after replica rebase.
+  The stored sequence holds its place after deletion. Wish result views use sequence zero for their program order.
+  The `ref_purpose` of an `object_ref` field may be `image` or `canvas`. The references index records each
+  as a live, weak `value_link`. Selecting a value requires a readable image AssetRef or Surface in this workspace.
+  Deleting the target leaves its ID in the cell so that undo restores the link. General object references keep the
+  strong `value` edge.
+  Send `meta.shows.view_params` as `doc.query.params` for a view with manual positions.
+  The SELECT appears in the Block's `meta.shows.view_sql`, is what the stage tools and wish inputs (`table_view`,
   `table_query`) read through, and what the Desktop runs when a tab holds no replica (WASM `view_sql`). A view's
   `row_limit` (B7-3) is a display limit only: the Block shows the first `row_limit` rows of that SQL (`meta.shows.row_limit`); the
   data keeps every row.
@@ -1688,7 +1697,7 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | cell | `check_slot` (from `validate_primitive`, `check_position`) | reference | `slot` only inside a control; inside a composite required and a slot of the definition (several Blocks may share one); elsewhere unique among the live siblings (`SLOT_CONFLICT`); re-judged by `tree.move`; a connector never turns into a box or back |
 | cell, container (composite) | `check_on_shape` (from `validate_primitive` / `container_primitive`) | primitive | `on` (扩展控件 P2): ≤ 16 event names, each one handler or ≤ 4, each an object whose `kind` is write / wish / open / notify, ≤ 16 KiB; never on a connector, ink, or a container other than a composite |
 | cell, container | `entity.set_props` (`plan.rs`) | primitive | `key` config / bindings / on, ≤ 64 property names `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`, values ≤ 64 KiB; the key then goes through the entity's validators like a `set_keys` of it |
-| cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `manual_order` only on table views, named fields live, ≤ 4 sorts, group field type; `row_limit` (1–100000, a table view only) |
+| cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `row_order` only on table views, named fields live, ≤ 4 sorts, group field type; `row_limit` (1–100000, a table view only) |
 | cell | `validate_cell` (`config.snapshot`) | primitive | an embedded snapshot is an AssetRef (checked by `validate_asset`) |
 | cell (connector) | `validate_connector` (shapes) | schema | `flip`, `route`, ≤ 64 `controls`, `label.t` in [0, 1]; `start` / `end` are `{ entity_id, anchor { kind: named, id } }` |
 | cell (connector) | `validate_connector` (endpoints) | reference | a bound endpoint is a readable Block or group on the connector's Surface, never itself or another line |

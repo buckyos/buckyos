@@ -5461,6 +5461,8 @@
   "sso.provider.email_field": "Поле электронной почты",
   "sso.provider.email_verified_field": "Поле подтверждения почты",
   "sso.provider.enabled": "Включён",
+  "sso.provider.googleSecretLocation": "На сервере, где работает панель управления, сохраните секрет клиента Google в следующем файле и предоставьте панели доступ на чтение.",
+  "sso.provider.googleSecretContents": "В Linux путь $BUCKYOS_ROOT обычно имеет значение /opt/buckyos. Если вы скачали файл учётных данных Google в формате JSON, скопируйте только значение web.client_secret без кавычек.",
   "sso.provider.id": "ID источника",
   "sso.provider.id_field": "Поле постоянного ID аккаунта",
   "sso.provider.issuer": "URL издателя",

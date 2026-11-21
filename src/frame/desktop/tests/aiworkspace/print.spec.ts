@@ -1,16 +1,12 @@
-/* Export a printable PDF (打印 TODO §3.1, T4, T6, T7; §7 验收) against the real backend. The service's `print.package`,
- * the Workflow's `media.page` Run and the NDM read of the PDF are answered by the page's own routes (the service side
- * and Chromium are not part of this suite): the requests the dialog makes are what is checked. Saving goes into the
- * mock Zone through the system file picker; a download is the browser's. Covered: a flow page straight to the dialog
- * (A4 portrait, no PDF Frame, the place first, progress, the pages and issues afterwards), another size downloaded; a
- * free canvas without a presentation path (the reason, path editing) and with paths (the guide left out, the pages and
- * the ones on another canvas, what is skipped, the stage's page size); the print fonts (set in the Workspace, a
- * missing one named with the way to install it); the browser not downloaded (the administrator downloads it, then the
- * print goes through); cancelling; no `export`; a phone. */
+/* The dialog tests cover PDF export from flow pages and presentation paths, fonts, errors, cancellation, permissions
+ * and phones. They intercept print.package, media.page and the PDF download so the workflow can be driven through each
+ * outcome. The table test uses the production renderer from a real print.package and prints its pages in Chromium. */
 
 import { devices, type Page } from '@playwright/test'
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { PACK_FONTS } from '@print/fonts'
 import { expect, hooks, mainMenu, openCanvas, openWorkspacePage, openedPicker, test, zoneGoto, type Api } from './fixtures'
 
@@ -350,4 +346,72 @@ test.describe('phone', () => {
     await expect(dialog.getByTestId('aiws-print-done')).toContainText('/home/Documents/项目工作区.pdf', { timeout: 30_000 })
     expect(fake.runs).toHaveLength(1)
   })
+})
+
+test('two views of one source print their own titles, columns, row heights, headers and styles while the screen keeps its card preference', async ({ page, api }, testInfo) => {
+  const ws = await api.sample(ALICE, `打印表格 ${Date.now()}`)
+  const allId = 'cell-all-tasks'
+  const openId = 'cell-open-tasks'
+  const setView = async (id: string, title: string, titleWidth: number, config: Json) => {
+    const { content } = await api.read(ALICE, ws.workspace_id, id)
+    const settings = { title, fields: [{ field_id: 'title', width: titleWidth }, { field_id: 'owner', width: 90 }], config }
+    return { op: 'entity.set_keys', entity_id: id, keys: Object.entries(settings).map(([key, value]) => ({ key, value, expect: { rev: content.key_revs[key] ?? 0 } })) }
+  }
+  const saved = await api.commit(ALICE, ws, [
+    await setView(allId, '全表交付清单', 200, { row_heights: { 'task-41': 80 }, grid_style: 'striped', show_header: false }),
+    await setView(openId, '待办交付清单', 300, { row_heights: { 'task-41': 45 }, grid_style: 'lines', show_header: true }),
+  ])
+  expect(saved.status, JSON.stringify(saved)).toBe('accepted')
+  await openWorkspacePage(page, ALICE, ws.workspace_id, 'surface-main')
+  const allOnScreen = page.getByTestId(`aiws-table-${allId}`)
+  const openOnScreen = page.getByTestId(`aiws-cell-frame-${openId}`).getByTestId(`aiws-table-${openId}`)
+  await allOnScreen.getByTestId(`aiws-table-menu-${allId}`).click()
+  await page.getByTestId('aiws-ctl-menu-table-layout-cards').click()
+  await expect(allOnScreen).toHaveAttribute('data-layout', 'cards')
+  await expect(openOnScreen).toHaveAttribute('data-layout', 'grid')
+
+  const pkg = await api.rpc(ALICE, 'print.package', { workspace_id: ws.workspace_id, surface_id: 'surface-main',
+    paper: { name: 'A4', width_mm: 210, height_mm: 297 }, locale: 'zh-CN', date: '2026年10月8日' })
+  expect(pkg.ok, JSON.stringify(pkg)).toBe(true)
+  // The standalone NFS serves the workspace owner's exports bucket, including the immutable print package.
+  const bucket = 'user/aiworkspace/alice/exports'
+  const listed = await fetch(`${api.nfs}/kapi/nfs-server`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ method: 'bucket.list_objects', params: { bucket_id: bucket, prefix: `${ws.workspace_id}/print/` }, sys: [1, ''] }) })
+  const listing = await listed.json()
+  expect(listing.result?.items, JSON.stringify(listing)).toHaveLength(1)
+  const item = listing.result.items[0]
+  expect(item.obj_id).toBe(pkg.obj_id)
+  const zip = await fetch(`${api.nfs}/bucket/v1/${bucket}/${item.key}`)
+  expect(zip.ok).toBe(true)
+  const archive = testInfo.outputPath('package.zip')
+  writeFileSync(archive, Buffer.from(await zip.arrayBuffer()))
+  const folder = testInfo.outputPath('print')
+  execFileSync('unzip', ['-q', archive, '-d', folder])
+  const printed = await page.context().newPage()
+  await printed.emulateMedia({ media: 'print' })
+  await printed.goto(pathToFileURL(resolve(folder, 'index.html')).href)
+  await printed.waitForFunction(READY)
+  const allBlock = printed.locator(`[data-cell-id="${allId}"]`)
+  const openBlock = printed.locator(`[data-cell-id="${openId}"]`)
+  await expect(allBlock.locator('.aiws-fblock-title')).toHaveText('全表交付清单')
+  await expect(openBlock.locator('.aiws-fblock-title')).toHaveText('待办交付清单')
+  const all = allBlock.getByTestId(`aiws-print-table-${allId}`)
+  const open = openBlock.getByTestId(`aiws-print-table-${openId}`)
+  await expect(all.locator('thead')).toHaveCount(0)
+  await expect(open.first().locator('thead th')).toHaveText(['任务', '负责人'])
+  const allRow = all.locator('tbody tr').filter({ hasText: '定义对象格式' })
+  const openRow = open.locator('tbody tr').filter({ hasText: '定义对象格式' })
+  await expect(allRow).toHaveCSS('height', '80px')
+  await expect(openRow).toHaveCSS('height', '45px')
+  await expect(all.locator('tbody tr').filter({ hasText: '完成第一期架构验证' })).toHaveCSS('height', '34px')
+  await expect(all.first().locator('col').first()).toHaveCSS('width', '200px')
+  await expect(open.first().locator('col').first()).toHaveCSS('width', '300px')
+  await expect(all.locator('tr[data-stripe="1"]').first()).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(allRow.locator('td').first()).toHaveCSS('border-left-width', '1px')
+  await expect(openRow.locator('td').first()).toHaveCSS('border-left-width', '0px')
+  await expect(printed.getByTestId('aiws-table-card')).toHaveCount(0)
+  const pdf = await printed.pdf({ preferCSSPageSize: true, printBackground: true })
+  expect(pdf.subarray(0, 5).toString()).toBe('%PDF-')
+  await expect(allOnScreen).toHaveAttribute('data-layout', 'cards')
+  await expect(openOnScreen).toHaveAttribute('data-layout', 'grid')
 })

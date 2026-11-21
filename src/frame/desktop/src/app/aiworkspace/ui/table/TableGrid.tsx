@@ -1,30 +1,24 @@
-/* The grid of the table editor (UI 框架 PRD §7.3): virtualised rows, the head of each row (tick it to select, open
- * the record's form), cells edited in place. On a computer a click edits a cell, arrows and Tab move between cells,
- * column edges drag to resize and headers drag to reorder. On a phone the head and the first column stay put while the
- * rest scrolls sideways; a tap selects a cell and a second tap edits it in the bar at the bottom. */
-
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { useMemo, useEffect, useId, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ExternalLink, Maximize2, MessageSquare, MessageSquarePlus, Plus, Type } from 'lucide-react'
-import type { FieldDef, Json, QueryRow } from '../../api/types'
-import { contactRecordHref } from '../../links'
+import { GripHorizontal, GripVertical, Menu, Maximize2, MessageSquare, Plus } from 'lucide-react'
 import type { CapturedAnchor } from '../../anchors/registry'
-import { EDIT_STATE_LABEL } from '../../state/edits'
-import { useEdit, useStore, type AnnotationMark } from '../../state/hooks'
+import type { FieldDef } from '../../api/types'
+import { useStore, type AnnotationMark } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
-import { asFormula, formulaResult } from '../formula'
 import type { PagerSnapshot, TablePager } from '../tablePager'
-import { ConflictBox } from './ConflictBox'
-import { FIELD_ICONS } from './fieldIcons'
-import { ValueEditor } from '../ValueEditor'
-import { FIELD_TYPE_LABEL, UNSET, formatValue, type Input } from '../values'
-import { MAX_WIDTH, MIN_WIDTH, WIDTHS, cellAnchor, cellEditId, writeOperation, type Column } from './model'
-import { CellDisplay } from './RecordForm'
-import { usePress } from './usePress'
+import { FIELD_TYPE_LABEL, formatValue } from '../values'
+import { MAX_ROW_HEIGHT, MIN_ROW_HEIGHT, ROW_HEIGHT } from './appearance'
+import { fieldIcon } from './fieldIcons'
+import { GridFieldName } from './GridFieldName'
+import { trackGridDrag } from './gridDrag'
+import { MAX_WIDTH, MIN_WIDTH, WIDTHS, type Column } from './model'
+import { TableCell } from './TableCell'
+import { anchorOf, TableMenu, type AnchorRect, type MenuItem } from './TablePop'
 
-export const ROW_HEIGHT = 34
 const PHONE_ROW_HEIGHT = 44
-const ADD_COLUMN = 40
+type Axis = 'row' | 'column'
+type Side = 'before' | 'after'
+type Track = { axis: Axis; id: string }
 
 export interface CellRef { recordId: string; fieldId: string }
 
@@ -60,358 +54,332 @@ export interface TableGridProps {
   columnsEditable: boolean
   onResize: (fieldId: string, width: number) => void
   onMove: (fieldId: string, to: number) => void
-  /** The header's "+" (a field by name and type), or null. */
-  onAddField: ((button: HTMLElement) => void) | null
-  addFieldOpen: boolean
+  showHeader?: boolean
+  rowHeights?: Record<string, number>
+  sorted?: boolean
+  limited?: boolean
+  canRenameField?: boolean
+  activateCells?: boolean
+  allowNearRow?: boolean
+  onInsertRow?: (anchorId?: string, side?: Side) => void | Promise<void>
+  onInsertColumn?: (anchorId?: string, side?: Side) => void | Promise<void>
+  onResizeRow?: (recordId: string, height: number) => void
+  onMoveRow?: (recordId: string, anchorId: string, side: Side) => void
+  onClearSelection?: () => void
+  onExitGrid?: () => void
+  focusRequest?: { recordId: string; fieldId?: string; action: 'edit' | 'focus' | 'rename'; seq: number } | null
 }
 
 export function TableGrid(props: TableGridProps) {
   const { t } = useAiwsText()
-  const { tableId, columns, rows, pager, scrollRef, phone, compact, rowHead, selection } = props
-  const rowHeight = phone && !compact ? PHONE_ROW_HEIGHT : ROW_HEIGHT
-  const headWidth = rowHead ? (phone ? 44 : 56) : 0
-  const [resizing, setResizing] = useState<{ fieldId: string; width: number } | null>(null)
-  const [dragging, setDragging] = useState<{ fieldId: string; to: number; x: number } | null>(null)
-  const headRef = useRef<HTMLDivElement>(null)
-  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual returns unstable functions by design; nothing here is memoised on them.
-  const virtualizer = useVirtualizer({ count: rows.total, getScrollElement: () => scrollRef.current, estimateSize: () => rowHeight, overscan: 8 })
-  const items = virtualizer.getVirtualItems()
-  const lastIndex = items.length > 0 ? items[items.length - 1].index : 0
-  useEffect(() => { pager.ensure(lastIndex) }, [pager, lastIndex])
-
-  // a phone keeps its fixed first column narrow enough to leave room for the rest
-  const widthOf = (column: Column, index: number) => {
-    const width = resizing?.fieldId === column.field.field_id ? resizing.width : column.width
-    return phone && rowHead && index === 0 ? Math.min(width, WIDTHS.medium) : width
-  }
-  const totalWidth = headWidth + columns.reduce((sum, column, index) => sum + widthOf(column, index), 0) + (props.onAddField ? ADD_COLUMN : 0)
-  const loaded = rows.rows.filter(Boolean)
-  const allSelected = Boolean(selection && loaded.length > 0 && loaded.every((row) => selection.has(row.record_id)))
-
-  /** Keyboard move between cells (流式页交互改进 §5.3): rows outside the rendered window are scrolled in first. */
-  const navigate = (row: number, col: number) => {
-    if (row < 0 || row >= rows.total || col < 0 || col >= columns.length) return
-    const focus = () => scrollRef.current?.querySelector<HTMLElement>(`[data-row="${row}"][data-col="${col}"]`)?.focus()
-    if (scrollRef.current?.querySelector(`[data-row="${row}"][data-col="${col}"]`)) { focus(); return }
-    virtualizer.scrollToIndex(row, { align: 'auto' })
-    window.requestAnimationFrame(() => window.requestAnimationFrame(focus))
-  }
-
-  const startResize = (event: ReactPointerEvent<HTMLElement>, column: Column) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const handle = event.currentTarget
-    handle.setPointerCapture(event.pointerId)
-    const x0 = event.clientX
-    const w0 = column.width
-    let width = w0
-    const move = (e: PointerEvent) => { width = Math.round(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, w0 + e.clientX - x0))); setResizing({ fieldId: column.field.field_id, width }) }
-    const up = () => {
-      handle.removeEventListener('pointermove', move)
-      handle.removeEventListener('pointerup', up)
-      handle.removeEventListener('pointercancel', up)
-      setResizing(null)
-      if (width !== w0) props.onResize(column.field.field_id, width)
-    }
-    handle.addEventListener('pointermove', move)
-    handle.addEventListener('pointerup', up)
-    handle.addEventListener('pointercancel', up)
-  }
-  /** A header dragged sideways moves its column (a click alone does nothing). */
-  const startMove = (event: ReactPointerEvent<HTMLElement>, index: number) => {
-    if (!props.columnsEditable || phone || event.button !== 0) return
-    const el = event.currentTarget
-    const x0 = event.clientX
-    let started = false
-    let to = index
-    const targetIndex = (clientX: number) => {
-      const left = (headRef.current?.getBoundingClientRect().left ?? 0) + headWidth
-      let x = left
-      for (let i = 0; i < columns.length; i++) {
-        const w = columns[i].width
-        if (clientX < x + w / 2) return i
-        x += w
-      }
-      return columns.length
-    }
-    const move = (e: PointerEvent) => {
-      if (!started && Math.abs(e.clientX - x0) < 6) return
-      if (!started) { started = true; el.setPointerCapture(e.pointerId) }
-      to = targetIndex(e.clientX)
-      let x = headWidth
-      for (let i = 0; i < to; i++) x += columns[i].width
-      setDragging({ fieldId: columns[index].field.field_id, to, x })
-    }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      window.removeEventListener('pointercancel', up)
-      setDragging(null)
-      if (!started) return
-      const target = to > index ? to - 1 : to
-      if (target !== index) props.onMove(columns[index].field.field_id, target)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-    window.addEventListener('pointercancel', up)
-  }
-
-  return (
-    <div ref={scrollRef} className="aiws-table-scroll" style={props.maxHeight === null ? undefined : { maxHeight: props.maxHeight }} data-testid={`aiws-table-scroll-${tableId}`} role="grid" aria-rowcount={rows.total} data-phone={phone ? 'true' : undefined}>
-      <div ref={headRef} className="aiws-table-head" style={{ width: totalWidth }} role="row">
-        {rowHead && (
-          <div className="aiws-th-rowhead" style={{ width: headWidth }}>
-            {(!phone || selection) && (
-              <label className="aiws-row-check-hit">
-                <input type="checkbox" className="aiws-row-check" aria-label={t('aiworkspace.table.selectAllLoaded')} title={t('aiworkspace.table.selectAllLoaded')} data-testid={`aiws-row-check-all-${tableId}`}
-                  checked={allSelected} onChange={(event) => props.onToggleAll(event.target.checked)} />
-              </label>
-            )}
-          </div>
-        )}
-        {columns.map((column, index) => {
-          const { field } = column
-          const Icon = FIELD_ICONS[field.type] ?? Type
-          return (
-            <div key={field.field_id} className={`aiws-th${phone && index === 0 && rowHead ? ' is-sticky' : ''}${dragging?.fieldId === field.field_id ? ' is-dragged' : ''}${props.columnsEditable && !phone ? ' is-movable' : ''}`} role="columnheader" data-type={field.type} style={{ width: widthOf(column, index), ...(phone && index === 0 && rowHead ? { left: headWidth } : {}) }}
-              data-testid={`aiws-th-${field.field_id}`} title={t('aiworkspace.data.table.columnTitle', { name: field.name, type: FIELD_TYPE_LABEL[field.type] })}
-              onPointerDown={(event) => startMove(event, index)}>
-              <Icon size={13} className="aiws-th-icon" aria-hidden="true" />
-              <span className="aiws-th-name">{field.name}</span>
-              {field.maintained_by === 'program' && <span className="aiws-chip" title={t('aiworkspace.data.table.programTitle')}>{t('aiworkspace.data.table.program')}</span>}
-              {props.columnsEditable && !phone && (
-                <span className="aiws-col-resize" role="separator" aria-orientation="vertical" aria-label={t('aiworkspace.table.column.resize', { name: field.name })} data-testid={`aiws-col-resize-${field.field_id}`}
-                  onPointerDown={(event) => startResize(event, column)} />
-              )}
-            </div>
-          )
-        })}
-        {props.onAddField && (
-          <div className="aiws-th aiws-th-add" style={{ width: ADD_COLUMN }}>
-            <button type="button" className="aiws-table-tool" aria-label={t('aiworkspace.data.field.addColumn')} title={t('aiworkspace.data.field.addColumn')} data-testid={`aiws-add-field-open-${tableId}`} aria-expanded={props.addFieldOpen}
-              onClick={(event) => props.onAddField?.(event.currentTarget)}><Plus size={15} aria-hidden="true" /></button>
-          </div>
-        )}
-        {dragging && <span className="aiws-col-drop" style={{ left: dragging.x }} aria-hidden="true" data-testid="aiws-col-drop" />}
-      </div>
-      <div style={{ height: virtualizer.getTotalSize(), width: totalWidth, position: 'relative' }}>
-        {items.map((item) => {
-          const row = rows.rows[item.index]
-          const selected = Boolean(row && selection?.has(row.record_id))
-          return (
-            <div key={item.key} className={`aiws-tr${selected ? ' is-selected' : ''}`} role="row" data-testid="aiws-row" data-record-id={row?.record_id} aria-selected={selection ? selected : undefined}
-              style={{ transform: `translateY(${item.start}px)`, height: rowHeight }}>
-              {row ? (
-                <>
-                  {rowHead && <RowHead {...props} row={row} width={headWidth} selected={selected} />}
-                  {columns.map((column, col) => (
-                    <TableCell
-                      key={column.field.field_id}
-                      {...props}
-                      field={column.field}
-                      row={row}
-                      rowIndex={item.index}
-                      colIndex={col}
-                      width={widthOf(column, col)}
-                      sticky={phone && col === 0 && rowHead ? headWidth : null}
-                      onNavigate={navigate}
-                      annotation={props.annotations.find((mark) => mark.payload.target?.entity_id === props.sourceId && mark.payload.target.selector?.kind === 'table_cell'
-                        && mark.payload.target.selector.record_id === row.record_id && mark.payload.target.selector.field_id === column.field.field_id)}
-                    />
-                  ))}
-                  {props.onAddField && <div className="aiws-td aiws-td-pad" style={{ width: ADD_COLUMN }} />}
-                </>
-              ) : <div className="aiws-td aiws-muted" style={{ width: totalWidth }}>…</div>}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function RowHead({ row, width, selected, selection, phone, titleField, annotatedRecords, onToggle, onStartSelect, onOpen, tableId }: TableGridProps & { row: QueryRow; width: number; selected: boolean }) {
-  const { t } = useAiwsText()
-  const name = (titleField && formatValue(titleField, row.values[titleField.field_id])) || row.record_id
-  // a phone: a long press on the head starts selecting, a tap opens the record
-  const press = usePress({ onTap: () => (selection ? onToggle(row.record_id, !selected) : onOpen(row.record_id)), onLong: () => onStartSelect(row.record_id) })
-  return (
-    <div className="aiws-td aiws-td-rowhead" style={{ width }} data-testid={`aiws-rowhead-${row.record_id}`}>
-      {(!phone || selection) && (
-        <label className="aiws-row-check-hit">
-          <input type="checkbox" className="aiws-row-check" aria-label={t('aiworkspace.table.selectRecord', { name })} data-testid={`aiws-row-check-${row.record_id}`} checked={selected}
-            onChange={(event) => onToggle(row.record_id, event.target.checked)} />
-        </label>
-      )}
-      {(!phone || !selection) && (
-        <button type="button" className="aiws-row-open" aria-label={t('aiworkspace.table.openRecord', { name })} title={t('aiworkspace.table.openRecord', { name })} data-testid={`aiws-row-open-${row.record_id}`}
-          {...(phone ? press : { onClick: () => onOpen(row.record_id) })} data-table={tableId}>
-          {annotatedRecords.has(row.record_id) ? <MessageSquare size={14} aria-hidden="true" /> : <Maximize2 size={13} aria-hidden="true" />}
-        </button>
-      )}
-    </div>
-  )
-}
-
-const ARROWS: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }
-
-interface TableCellProps extends TableGridProps {
-  field: FieldDef
-  row: QueryRow
-  rowIndex: number
-  colIndex: number
-  width: number
-  /** Kept in place while the rest scrolls sideways (a phone's first column): its left offset. */
-  sticky: number | null
-  onNavigate: (row: number, col: number) => void
-  annotation?: AnnotationMark
-}
-
-function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate, width, sticky, editable: canEdit, resultTable, fields, annotation, onAnnotate, onActivateAnnotation, phone, phoneCell, onPhoneCell, onPhoneEdit }: TableCellProps) {
-  const { t } = useAiwsText()
   const store = useStore()
-  const editId = cellEditId(sourceId, row.record_id, field.field_id)
-  const entry = useEdit(editId)
-  // The rev the user saw when the edit began: a change that arrives while typing must conflict, not be overwritten.
-  const [editing, setEditing] = useState<{ baseRev: number; text?: string } | null>(null)
-  /** A tick box shows the click at once; the write follows (and the stored value takes over when it lands). */
-  const [ticked, setTicked] = useState<boolean | null>(null)
-  const value = row.values[field.field_id]
-  const meta = row.meta?.[field.field_id]
-  const pending = entry && entry.state !== 'committed' && entry.hasMine
-  // When the inline editor closes by Enter/Escape focus would fall to <body>: give it back to the cell.
-  const valueRef = useRef<HTMLButtonElement | HTMLInputElement>(null)
-  const wasEditing = useRef(false)
-  useEffect(() => {
-    if (editing) { wasEditing.current = true; return }
-    if (!wasEditing.current) return
-    wasEditing.current = false
-    if (document.activeElement === document.body || document.activeElement === null) valueRef.current?.focus()
-  }, [editing])
+  const { tableId, columns, rows, pager, scrollRef, phone, compact, rowHead, selection, rowHeights, focusRequest } = props
+  const helpId = useId()
+  const [touch, setTouch] = useState(() => window.matchMedia('(pointer: coarse)').matches)
+  const [hovered, setHovered] = useState<CellRef | null>(null)
+  const [track, setTrack] = useState<Track | null>(null)
+  const [menu, setMenu] = useState<{ track: Track; anchor: AnchorRect } | null>(null)
+  const [preview, setPreview] = useState<(Track & { size: number }) | null>(null)
+  const [drop, setDrop] = useState<(Track & { side: Side }) | null>(null)
+  const [destination, setDestination] = useState<{ row: number; col: number } | null>(null)
+  const handled = useRef<number | null>(null)
+  const inserting = useRef(false)
+  const suppressGripClick = useRef(false)
+  const moveRow = useRef(props.onMoveRow)
+  useLayoutEffect(() => { moveRow.current = props.onMoveRow }, [props.onMoveRow])
+  const exitRef = useRef<HTMLSpanElement>(null)
+  const defaultHeight = touch && rowHead ? PHONE_ROW_HEIGHT : ROW_HEIGHT
+  const rowSelected = track?.axis === 'row' && selection?.has(track.id)
+  const headWidth = rowHead ? (touch ? (phone && !rowSelected ? (selection ? 88 : 44) : 132) : 78) : 0
+  const railHeight = (touch ? 44 : 22) * (track?.axis === 'column' ? 2 : 1)
+  const headerHeight = (rowHead ? railHeight : 0) + (props.showHeader !== false ? 33 : 0)
+  const widthOf = (c: Column, i: number) => {
+    const width = preview?.axis === 'column' && preview.id === c.field.field_id ? preview.size : c.width
+    return phone && i === 0 && rowHead ? Math.min(width, WIDTHS.narrow) : width
+  }
+  const totalWidth = headWidth + columns.reduce((sum, c, i) => sum + widthOf(c, i), 0)
+  const rowPreview = preview?.axis === 'row' ? preview : null
+  const geometry = useMemo(() => ({
+    getItemKey: (i: number) => rows.rows[i]?.record_id ?? i,
+    estimateSize: (i: number) => {
+      const id = rows.rows[i]?.record_id
+      if (!id) return defaultHeight
+      const px = rowPreview?.id === id ? rowPreview.size : rowHeights?.[id]
+      return px && Number.isFinite(px) ? Math.max(MIN_ROW_HEIGHT, Math.min(MAX_ROW_HEIGHT, px)) : defaultHeight
+    },
+  }), [rows.rows, defaultHeight, rowHeights, rowPreview])
+  // eslint-disable-next-line react-hooks/incompatible-library -- the virtualizer owns viewport measurements
+  const virtualizer = useVirtualizer({ count: rows.total, getScrollElement: () => scrollRef.current, ...geometry,
+    overscan: 8, scrollMargin: headerHeight, scrollPaddingStart: headerHeight })
+  const items = virtualizer.getVirtualItems()
+  const lastIndex = items.at(-1)?.index ?? 0
+  useEffect(() => { pager.ensure(lastIndex) }, [pager, lastIndex])
+  const loaded = rows.rows
+  const allSelected = Boolean(selection && loaded.length && loaded.every((row) => selection.has(row.record_id)))
 
-  const write = async (input: Input, baseRev: number) => {
-    const label = `${field.name} · ${row.record_id}`
-    const outcome = await store.submit({
-      editId, label, mine: input === UNSET ? null : input, hasMine: true,
-      operations: [writeOperation(sourceId, field, row.record_id, input, baseRev)],
-    })
-    if (outcome.status === 'accepted') pager.patchLocal(row.record_id, field.field_id, input === UNSET ? undefined : input, outcome.seq)
-  }
-
-  const current = pending ? (entry.mine === null ? undefined : entry.mine as Json) : value
-  // a formula (D18) is shown evaluated over this row; the kernel keeps the formula itself, "materialize" is in the record's ⋯
-  const formula = !pending ? asFormula(value) : null
-  const formulaValue = formula ? formulaResult(formula, row.values, fields) : null
-  const editable = canEdit && !formula
-  const shown = pending ? (entry.mine === null ? '' : formatValue(field, entry.mine)) : formula ? (formulaValue === null ? `= ${formula.$formula.expr}` : String(formulaValue)) : formatValue(field, value)
-  const selectedOnPhone = phone && phoneCell?.recordId === row.record_id && phoneCell.fieldId === field.field_id
-  const startEdit = (text?: string) => {
-    if (!editable || editing) return
-    setEditing({ baseRev: row.revs[field.field_id] ?? 0, ...(text !== undefined ? { text } : {}) })
-  }
-  /** A phone: the first tap selects the cell, the second opens the edit bar. */
-  const tap = () => {
-    if (!phone) { startEdit(); return }
-    const cell = { recordId: row.record_id, fieldId: field.field_id }
-    if (selectedOnPhone && editable) onPhoneEdit(cell)
-    else onPhoneCell(cell)
-  }
-  // arrows move between cells; a typed character starts editing with it (a spreadsheet's habit, 流式页交互改进 §5.3)
-  const onCellKey = (event: ReactKeyboardEvent<HTMLElement>) => {
-    const arrow = ARROWS[event.key]
-    if (arrow && !event.altKey && !event.ctrlKey && !event.metaKey) { event.preventDefault(); onNavigate(rowIndex + arrow[0], colIndex + arrow[1]); return }
-    if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      const next = colIndex + (event.shiftKey ? -1 : 1)
-      if (next < 0 || !event.currentTarget.closest('.aiws-tr')?.querySelector(`[data-col="${next}"]`)) return
-      event.preventDefault()
-      onNavigate(rowIndex, next)
+  useLayoutEffect(() => {
+    const request = focusRequest && handled.current !== focusRequest.seq ? focusRequest : null
+    if (!request && !destination) return
+    const root = scrollRef.current
+    if (!root) return
+    if (request?.action === 'rename') {
+      const button = root.querySelector<HTMLElement>(`[data-field-name="${CSS.escape(request.fieldId ?? '')}"]`)
+      if (button) { handled.current = request.seq; button.click() }
       return
     }
-    if (field.type === 'boolean') return
-    if ((event.key === 'Backspace' || event.key === 'Delete') && editable && value !== undefined) { event.preventDefault(); void write(UNSET, row.revs[field.field_id] ?? 0); return }
-    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey && !event.nativeEvent.isComposing && editable
-      && field.type !== 'select' && field.type !== 'multi_select' && field.type !== 'object_ref' && field.type !== 'date' && field.type !== 'datetime') {
-      event.preventDefault()
-      startEdit(event.key)
+    const row = request ? loaded.findIndex((r) => r.record_id === request.recordId) : destination!.row
+    if (row < 0 || row >= rows.total) return
+    if (!loaded[row]) { pager.ensure(row); return }
+    const col = request?.fieldId ? columns.findIndex((c) => c.field.field_id === request.fieldId) : destination?.col
+    const targetRow = root.querySelector<HTMLElement>(`[data-row-index="${row}"]`)
+    if (!targetRow) { virtualizer.scrollToIndex(row, { align: 'auto' }); return }
+    const button = col === undefined
+      ? targetRow.querySelector<HTMLElement>('[data-editable="true"] [data-col], [data-editable="true"] [data-ref-edit]') ?? targetRow.querySelector<HTMLElement>('[data-col]')
+      : targetRow.querySelector<HTMLElement>(`[data-col="${col}"]`)
+    if (!button || (request?.action === 'edit' && !props.editable)) return
+    if (request) handled.current = request.seq
+    if (destination) setDestination(null)
+    button.focus({ preventScroll: true })
+    virtualizer.scrollToIndex(row, { align: 'auto' })
+    const rect = button.getBoundingClientRect(), bounds = root.getBoundingClientRect()
+    const scale = bounds.width / (root.offsetWidth || 1) || 1
+    if (rect.right > bounds.right) root.scrollLeft += (rect.right - bounds.right) / scale
+    else if (rect.left < bounds.left + headWidth * scale) root.scrollLeft -= (bounds.left + headWidth * scale - rect.left) / scale
+    if (request?.action === 'edit') button.click()
+  }, [destination, focusRequest, loaded, rows.total, columns, items, pager, scrollRef, virtualizer, props.editable, headWidth])
+
+  const navigate = (row: number, col: number) => {
+    if (row >= 0 && row < rows.total && col >= 0 && col < columns.length) setDestination({ row, col })
+  }
+  const tab = (row: number, col: number, back: boolean) => {
+    const next = row * columns.length + col + (back ? -1 : 1)
+    if (next < 0) return
+    if (next < rows.total * columns.length) { navigate(Math.floor(next / columns.length), next % columns.length); return }
+    if (props.limited) { store.notify('info', t('aiworkspace.table.grid.limit')); return }
+    if (!rows.done) { pager.ensure(row + 1); return }
+    if (!props.onInsertRow) { store.notify('info', t('aiworkspace.table.readOnly.noAppend')); return }
+    if (inserting.current) return
+    inserting.current = true
+    Promise.resolve(props.onInsertRow()).finally(() => { inserting.current = false })
+  }
+
+  const select = (target: Track) => {
+    setTrack(target)
+    if (target.axis === 'row') props.onStartSelect(target.id)
+    else props.onClearSelection?.()
+  }
+  const resize = (event: ReactPointerEvent<HTMLElement>, target: Track, size: number) => {
+    const root = scrollRef.current
+    if (!root) return
+    const column = target.axis === 'column'
+    const rect = root.getBoundingClientRect()
+    const scale = (column ? rect.width / root.offsetWidth : rect.height / root.offsetHeight) || 1
+    const start = column ? event.clientX : event.clientY
+    let value = size
+    trackGridDrag(event, (next) => {
+      const delta = ((column ? next.clientX : next.clientY) - start) / scale
+      value = Math.round(Math.min(column ? MAX_WIDTH : MAX_ROW_HEIGHT, Math.max(column ? MIN_WIDTH : MIN_ROW_HEIGHT, size + delta)))
+      setPreview({ ...target, size: value })
+    }, (cancelled) => {
+      setPreview(null)
+      if (cancelled || value === size) return
+      if (column) props.onResize(target.id, value)
+      else props.onResizeRow?.(target.id, value)
+    })
+  }
+  const move = (event: ReactPointerEvent<HTMLElement>, target: Track) => {
+    const root = scrollRef.current
+    if (!root) return
+    const column = target.axis === 'column'
+    const movable = column ? props.columnsEditable : props.onMoveRow && !props.sorted
+    const start = column ? event.clientX : event.clientY
+    let moved = false
+    let position = start
+    let frame = 0
+    let result: { id: string; side: Side } | undefined
+    const update = () => {
+      const box = root.getBoundingClientRect()
+      const scale = column ? box.width / root.offsetWidth : box.height / root.offsetHeight
+      const near = column ? box.left : box.top + headerHeight * scale
+      const far = column ? box.right : box.bottom
+      const step = position < near + 16 ? -12 : position > far - 16 ? 12 : 0
+      const previous = column ? root.scrollLeft : root.scrollTop
+      if (column) root.scrollLeft += step
+      else root.scrollTop += step
+      const scrolled = previous !== (column ? root.scrollLeft : root.scrollTop)
+      const targets = [...root.querySelectorAll<HTMLElement>(column ? '[data-col-track]' : '[data-row-index][data-record-id]')]
+      const found = targets.find((el) => { const r = el.getBoundingClientRect(); return position < (column ? r.right : r.bottom) }) ?? targets.at(-1)
+      if (!found) return
+      const r = found.getBoundingClientRect()
+      const id = column ? found.dataset.colTrack! : found.dataset.recordId!
+      const side = position < (column ? r.left + r.width / 2 : r.top + r.height / 2) ? 'before' : 'after'
+      result = { id, side }
+      setDrop((current) => current?.axis === target.axis && current.id === id && current.side === side ? current : { axis: target.axis, id, side })
+      if (scrolled) frame = requestAnimationFrame(update)
+    }
+    trackGridDrag(event, (next) => {
+      position = column ? next.clientX : next.clientY
+      if (!movable || (!moved && Math.abs(position - start) < 6)) return
+      moved = true
+      cancelAnimationFrame(frame)
+      update()
+    }, (cancelled) => {
+      cancelAnimationFrame(frame)
+      setDrop(null)
+      suppressGripClick.current = true
+      if (cancelled) return
+      if (!moved) { select(target); return }
+      if (!result || result.id === target.id) return
+      if (!column) { moveRow.current?.(target.id, result.id, result.side); return }
+      const from = columns.findIndex((c) => c.field.field_id === target.id)
+      const slot = columns.findIndex((c) => c.field.field_id === result!.id) + (result.side === 'after' ? 1 : 0)
+      const to = slot > from ? slot - 1 : slot
+      if (to !== from) props.onMove(target.id, to)
+    })
+  }
+
+  const grip = (target: Track, label: string, name: string) => {
+    const active = track?.axis === target.axis && track.id === target.id && (target.axis !== 'row' || selection?.has(target.id))
+    const column = target.axis === 'column'
+    return (
+      <>
+        {active && <button type="button" className="aiws-track-menu" aria-label={t('aiworkspace.table.grid.actions', { name })} aria-haspopup="menu"
+          data-testid={`aiws-${column ? 'col' : 'row'}-menu-${target.id}`} onClick={(e) => setMenu({ track: target, anchor: anchorOf(e.currentTarget) })}><Menu size={14} /></button>}
+        <button type="button" className="aiws-track-grip" aria-pressed={active} aria-label={label} title={label} data-testid={`aiws-${column ? 'col' : 'row'}-handle-${target.id}`}
+          onClick={(e) => { if (e.detail === 0) select(target) }}
+          onPointerDown={(e) => move(e, target)}>{column ? <GripHorizontal size={15} /> : <GripVertical size={15} />}</button>
+      </>
+    )
+  }
+  const insertLabels = {
+    row: { before: 'aiworkspace.table.grid.row.before', after: 'aiworkspace.table.grid.row.after' },
+    column: { before: 'aiworkspace.table.grid.column.before', after: 'aiworkspace.table.grid.column.after' },
+  }
+  const menuItems: MenuItem[] = []
+  if (menu) {
+    const { axis, id } = menu.track
+    const insert = axis === 'row' ? (props.allowNearRow === false ? undefined : props.onInsertRow) : props.onInsertColumn
+    if (insert) for (const side of ['before', 'after'] as const) {
+      menuItems.push({ id: `insert-${axis}-${side}`, label: t(insertLabels[axis][side]), run: () => void insert(id, side) })
+    }
+    if (axis === 'row') {
+      menuItems.push({ id: 'open-record', label: t('aiworkspace.table.openRecord', { name: id }), run: () => props.onOpen(id) })
+      if (props.sorted) menuItems.push({ id: 'move-sorted', label: t('aiworkspace.table.grid.sorted'), disabled: t('aiworkspace.table.grid.sorted'), run: () => {} })
     }
   }
-  const href = contactRecordHref(field.field_id, current)
-  const cellAttrs = { 'data-row': rowIndex, 'data-col': colIndex }
 
+  const headStyle = (col: Column, i: number) => ({ width: widthOf(col, i), ...(phone && rowHead && i === 0 ? { left: headWidth } : {}) })
+  const separator = (target: Track, size: number, label: string, dot: boolean) => (
+    <span role="separator" aria-orientation={target.axis === 'column' ? 'vertical' : 'horizontal'} aria-label={label}
+      className={`aiws-grid-resize is-${target.axis}${dot ? ' has-dot' : ''}`}
+      data-testid={`aiws-${target.axis === 'column' ? 'col' : 'row'}-resize-${target.id}`} onPointerDown={(e) => resize(e, target, size)} />
+  )
+  const exited = () => {
+    if (props.onExitGrid) props.onExitGrid()
+    else exitRef.current?.focus({ preventScroll: true })
+  }
   return (
-    <div
-      className={`aiws-td${sticky !== null ? ' is-sticky' : ''}${selectedOnPhone ? ' is-picked' : ''}`}
-      role="gridcell"
-      style={{ width, ...(sticky !== null ? { left: sticky } : {}) }}
-      data-testid={`aiws-cell-${row.record_id}-${field.field_id}`}
-      data-state={entry?.state ?? 'clean'}
-      data-editable={editable ? 'true' : 'false'}
-      data-type={field.type}
-      aria-selected={phone ? selectedOnPhone : undefined}
-      onDoubleClick={() => { if (field.type !== 'boolean' && !phone) startEdit() }}
-    >
-      {editing ? (
-        <ValueEditor
-          def={field}
-          value={value}
-          initialText={editing.text}
-          ariaLabel={`${field.name} ${row.record_id}`}
-          onCancel={() => setEditing(null)}
-          onCommit={(input) => { setEditing(null); void write(input, editing.baseRev) }}
-          onTab={(back) => onNavigate(rowIndex, colIndex + (back ? -1 : 1))}
-        />
-      ) : field.type === 'boolean' && !formula ? (
-        <label className="aiws-cell-check">
-          <input ref={valueRef as RefObject<HTMLInputElement>} type="checkbox" aria-label={`${field.name} ${row.record_id}`} checked={ticked ?? current === true} disabled={!editable} {...cellAttrs}
-            onChange={(event) => { const next = event.target.checked; setTicked(next); void write(next, row.revs[field.field_id] ?? 0).finally(() => setTicked(null)) }} onKeyDown={onCellKey} />
-        </label>
-      ) : href && !editable ? (
-        <a href={href} target="_blank" rel="noreferrer" className="aiws-cell-value" {...cellAttrs}>{shown}</a>
-      ) : (
-        <button ref={valueRef as RefObject<HTMLButtonElement>} type="button" className="aiws-cell-value" disabled={!editable} onClick={tap} onKeyDown={onCellKey} title={formula ? t('aiworkspace.table.cell.formulaTitle', { formula: formula.$formula.expr }) : editable ? shown || undefined : undefined} {...cellAttrs}>
-          <CellDisplay def={field} value={formula ? undefined : current} shown={shown} />
-        </button>
-      )}
-      {!editing && href && editable && <a href={href} target="_blank" rel="noreferrer" aria-label={t('aiworkspace.blockui.openLink')}><ExternalLink size={14} /></a>}
-      {!editing && formula && <span className="aiws-chip" data-testid="aiws-cell-formula" title={t('aiworkspace.table.cell.formulaTitle', { formula: formula.$formula.expr })}>{t('aiworkspace.table.record.formula')}</span>}
-      {!editing && meta?.derived && !resultTable && (
-        <span className="aiws-chip aiws-chip-derived" data-testid="aiws-derived" title={t('aiworkspace.data.cell.derivedBy', { program: meta.derived.program ?? t('aiworkspace.data.cell.processingProgram') })}>
-          {t('aiworkspace.data.cell.derived')}
-        </span>
-      )}
-      {!editing && meta?.manual_override && <span className="aiws-chip aiws-chip-warn" data-testid="aiws-manual-override" title={t('aiworkspace.data.cell.manualOverrideTitle')}>{t('aiworkspace.data.cell.manualOverride')}</span>}
-      {!editing && annotation && (
-        <button type="button" className="aiws-chip aiws-chip-note" title={annotation.payload.body} data-testid="aiws-cell-annotation"
-          {...{ [`data-anno-${annotation.entityId}`]: '' }} onClick={() => onActivateAnnotation?.(annotation.entityId)}>{t('aiworkspace.data.cell.annotation')}</button>
-      )}
-      {!editing && onAnnotate && !annotation && !phone && (
-        <button type="button" className="aiws-cell-annotate" title={t('aiworkspace.table.cell.comment')} aria-label={t('aiworkspace.table.cell.commentAria', { field: field.name, record: row.record_id })}
-          onClick={() => onAnnotate(cellAnchor(sourceId, field, row))}><MessageSquarePlus size={14} aria-hidden="true" /></button>
-      )}
-      {entry && !editing && (
-        <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state" title={entry.detail}>{EDIT_STATE_LABEL[entry.state]}</span>
-      )}
-      {entry && entry.state === 'needs_attention' && !editing && editable && (
-        <ConflictBox
-          store={store}
-          editId={editId}
-          theirs={entry.hasTheirs ? formatValue(field, entry.theirs) || t('aiworkspace.data.value.notSet') : null}
-          mine={entry.hasMine ? (entry.mine === null ? t('aiworkspace.data.value.cleared') : formatValue(field, entry.mine ?? undefined)) : null}
-          detail={entry.detail ?? ''}
-          onKeepMine={entry.hasMine && entry.currentRev !== undefined ? () => { void write(entry.mine === null ? UNSET : (entry.mine as Json), entry.currentRev ?? 0) } : undefined}
-          onEditAgain={entry.hasMine ? () => {
-            // Start a new edit from my kept input, based on what is current now.
-            const mineText = entry.mine === null || entry.mine === undefined ? '' : typeof entry.mine === 'object' ? '' : String(entry.mine)
-            setEditing({ baseRev: entry.currentRev ?? row.revs[field.field_id] ?? 0, text: mineText })
-          } : undefined}
-        />
-      )}
-      {entry && entry.state === 'unsaved' && entry.unknownKey && !editing && (
-        <button type="button" className="aiws-link" onClick={() => {
-          const input: Input = entry.mine === null || entry.mine === undefined ? UNSET : entry.mine
-          void store.retry({ editId, label: entry.label, mine: entry.mine, hasMine: true, operations: [writeOperation(sourceId, field, row.record_id, input, 0)] }, entry.unknownKey ?? '')
-        }}>{t('aiworkspace.common.retry')}</button>
-      )}
+    <div className="aiws-grid-frame" data-pointer={touch ? 'touch' : 'mouse'} style={{ maxWidth: totalWidth + (props.onInsertColumn ? 20 : 0) }}
+      onPointerDownCapture={() => { suppressGripClick.current = false }}
+      onClickCapture={(e) => {
+        if (e.detail && suppressGripClick.current) { e.preventDefault(); e.stopPropagation(); suppressGripClick.current = false }
+      }}
+      onPointerMove={(e) => {
+        if (e.pointerType !== 'mouse' || e.buttons || !scrollRef.current) return
+        const viewport = scrollRef.current.getBoundingClientRect()
+        const threshold = 16 * (viewport.width / scrollRef.current.offsetWidth || 1)
+        const bottom = Math.abs(viewport.bottom - e.clientY), right = Math.abs(viewport.right - e.clientX)
+        const near = bottom < threshold && props.onInsertRow && (bottom <= right || !props.onInsertColumn) ? 'row'
+          : right < threshold && props.onInsertColumn ? 'column' : ''
+        if (e.currentTarget.dataset.near !== near) e.currentTarget.dataset.near = near
+      }}
+      onPointerOver={(event) => {
+        setTouch(event.pointerType === 'touch')
+        const cell = (event.target as HTMLElement).closest<HTMLElement>('[role=gridcell]')
+        if (cell && cell.dataset.recordId && cell.dataset.fieldId) {
+          const { recordId, fieldId } = cell.dataset
+          setHovered((last) => last?.recordId === recordId && last.fieldId === fieldId ? last : { recordId, fieldId })
+        }
+      }} onPointerLeave={(e) => { delete e.currentTarget.dataset.near; setHovered(null) }}>
+      <span className="aiws-grid-help" id={helpId}>{t('aiworkspace.table.grid.keys')}</span>
+      <div ref={scrollRef} className="aiws-table-scroll" style={{ maxHeight: props.maxHeight ?? undefined, scrollPaddingInlineStart: phone ? headWidth + (columns[0] ? widthOf(columns[0], 0) : 0) : headWidth }}
+        data-testid={`aiws-table-scroll-${tableId}`} role="grid" aria-describedby={helpId}
+        aria-rowcount={rows.total + (props.showHeader === false ? 0 : 1)} aria-colcount={columns.length} data-phone={phone ? 'true' : undefined}>
+        <div className="aiws-grid-top" style={{ width: totalWidth }}>
+          {rowHead && (
+            <div className="aiws-track-header" style={{ height: railHeight }}>
+              <div className="aiws-track-corner" style={{ width: headWidth }}>
+                {(!phone || selection) && <input type="checkbox" className="aiws-row-check" aria-label={t('aiworkspace.table.selectAllLoaded')} data-testid={`aiws-row-check-all-${tableId}`}
+                  checked={allSelected} onChange={(e) => props.onToggleAll(e.target.checked)} />}
+              </div>
+              {columns.map((column, i) => {
+                const id = column.field.field_id, name = column.field.name
+                const selected = track?.axis === 'column' && track.id === id
+                return <div key={id} className={`aiws-col-track${selected || hovered?.fieldId === id ? ' is-active' : ''}`} data-col-track={id} style={headStyle(column, i)}>
+                  {grip({ axis: 'column', id }, t('aiworkspace.table.grid.selectColumn', { name }), name)}
+                  {props.columnsEditable && separator({ axis: 'column', id }, widthOf(column, i), t('aiworkspace.table.column.resize', { name }), selected)}
+                  {drop?.axis === 'column' && drop.id === id && <span className={`aiws-track-drop is-${drop.side}`} data-testid="aiws-col-drop" />}
+                </div>
+              })}
+            </div>
+          )}
+          {props.showHeader !== false && <div className="aiws-table-head" role="row">
+            {rowHead && <div className="aiws-th-rowhead" style={{ width: headWidth }} />}
+            {columns.map((column, i) => {
+              const { field } = column, Icon = fieldIcon(field)
+              return <div key={field.field_id} className={`aiws-th${phone && i === 0 && rowHead ? ' is-sticky' : ''}${track?.axis === 'column' && track.id === field.field_id ? ' is-selected-column' : ''}`}
+                role="columnheader" aria-label={field.name} data-field-id={field.field_id} data-type={field.type} data-testid={`aiws-th-${field.field_id}`}
+                title={t('aiworkspace.data.table.columnTitle', { name: field.name, type: FIELD_TYPE_LABEL[field.type] })} style={headStyle(column, i)}>
+                <Icon size={13} className="aiws-th-icon" aria-hidden="true" />
+                <GridFieldName field={field} fields={props.fields} sourceId={props.sourceId} editable={Boolean(props.canRenameField) && !compact} />
+                {field.maintained_by === 'program' && <span className="aiws-chip" title={t('aiworkspace.data.table.programTitle')}>{t('aiworkspace.data.table.program')}</span>}
+                {props.columnsEditable && <span className="aiws-grid-resize is-column" aria-hidden="true" onPointerDown={(e) => resize(e, { axis: 'column', id: field.field_id }, widthOf(column, i))} />}
+              </div>
+            })}
+          </div>}
+        </div>
+        <div style={{ height: virtualizer.getTotalSize(), width: totalWidth, position: 'relative' }}>
+          {items.map((item) => {
+            const row = rows.rows[item.index]
+            const id = row?.record_id ?? ''
+            const selected = Boolean(row && selection?.has(id))
+            const sole = track?.axis === 'row' && track.id === id && selected
+            const title = row && props.titleField ? formatValue(props.titleField, row.values[props.titleField.field_id]) || id : id
+            return (
+              <div key={item.key} className={`aiws-tr${selected ? ' is-selected' : ''}`} role="row" aria-rowindex={item.index + (props.showHeader === false ? 1 : 2)}
+                data-row-index={item.index} data-stripe={item.index % 2} data-drop={drop?.axis === 'row' && drop.id === id ? drop.side : undefined}
+                data-testid="aiws-row" data-record-id={id || undefined} aria-selected={selection ? selected : undefined}
+                style={{ transform: `translateY(${item.start - headerHeight}px)`, height: item.size }}>
+                {row ? <>
+                  {rowHead && <div className={`aiws-td aiws-td-rowhead${sole || hovered?.recordId === id ? ' is-active' : ''}`} style={{ width: headWidth }} data-testid={`aiws-rowhead-${id}`}>
+                    {(!phone || selection) && !sole && <label className="aiws-row-check-hit"><input type="checkbox" className="aiws-row-check"
+                      aria-label={t('aiworkspace.table.selectRecord', { name: title })} data-testid={`aiws-row-check-${id}`} checked={selected} onChange={(e) => props.onToggle(id, e.target.checked)} /></label>}
+                    {grip({ axis: 'row', id }, t('aiworkspace.table.selectRecord', { name: title }), title)}
+                    {!phone && (!touch || !sole) && <button type="button" className="aiws-row-open" aria-label={t('aiworkspace.table.openRecord', { name: title })} data-testid={`aiws-row-open-${id}`} onClick={() => props.onOpen(id)}>
+                      {props.annotatedRecords.has(id) ? <MessageSquare size={13} /> : <Maximize2 size={13} />}
+                    </button>}
+                    {props.onResizeRow && separator({ axis: 'row', id }, item.size, t('aiworkspace.table.grid.resizeRow', { name: title }), sole)}
+                  </div>}
+                  {columns.map((column, col) => <TableCell key={column.field.field_id} {...props} field={column.field} row={row} rowIndex={item.index} colIndex={col}
+                    resizeColumn={!touch && props.columnsEditable ? (event) => resize(event, { axis: 'column', id: column.field.field_id }, widthOf(column, col)) : undefined}
+                    activeColumn={track?.axis === 'column' && track.id === column.field.field_id}
+                    width={widthOf(column, col)} sticky={phone && col === 0 && rowHead ? headWidth : null} onNavigate={navigate} onTab={tab} onExit={exited}
+                    annotation={props.annotations.find((mark) => mark.payload.target?.entity_id === props.sourceId && mark.payload.target.selector?.kind === 'table_cell'
+                      && mark.payload.target.selector.record_id === id && mark.payload.target.selector.field_id === column.field.field_id)} />)}
+                  {!touch && props.onResizeRow && <span className="aiws-grid-resize is-row" style={{ left: headWidth }} aria-hidden="true"
+                    onPointerDown={(event) => resize(event, { axis: 'row', id }, item.size)} />}
+                </> : <div className="aiws-td aiws-muted" style={{ width: totalWidth }}>…</div>}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      {props.onInsertColumn && <button type="button" className="aiws-grid-edge is-right" data-testid={`aiws-edge-column-${tableId}`} aria-label={t('aiworkspace.table.grid.addColumn')}
+        onClick={() => void props.onInsertColumn?.()}><Plus size={13} />{t('aiworkspace.table.grid.column')}</button>}
+      {props.onInsertRow && <button type="button" className="aiws-grid-edge is-bottom" data-testid={`aiws-add-record-${tableId}`} aria-label={t('aiworkspace.table.grid.addRow')}
+        onClick={() => void props.onInsertRow?.()}><Plus size={13} />{t('aiworkspace.table.grid.row')}</button>}
+      {menu && menuItems.length > 0 && <TableMenu anchor={menu.anchor} label={t('aiworkspace.table.grid.actions', { name: menu.track.id })} items={menuItems} onClose={() => setMenu(null)} />}
+      <span ref={exitRef} tabIndex={-1} className="aiws-grid-help" aria-label={t('aiworkspace.table.grid.keys')} />
     </div>
   )
 }

@@ -1196,17 +1196,17 @@ Cell 是版面上的一个展现实例：它引用一个内容实体，并保存
   "filter": { "op": "cmp", "field_id": "status", "operator": "ne", "value": "option-done" },
   "sorts": [ { "field_id": "due", "direction": "asc" } ],
   "group": null,
-  "manual_order": null
+  "row_order": null
 }
 ```
 
-顶层键即并发单位：`source_ref`、`view`、`title`、`fields`、`filter`、`sorts`、`group`、`manual_order`、`options`。两人同时一个改筛选一个调列宽不冲突；同时调列宽则后者冲突（列宽是低价值冲突，UI 的处理是静默以最新状态重试一次，这是 UI 策略，不是后台放宽检查）。
+顶层键即并发单位：`source_ref`、`view`、`title`、`fields`、`filter`、`sorts`、`group`、`row_order`、`options`。两人同时一个改筛选一个调列宽不冲突；同时调列宽则后者冲突（列宽是低价值冲突，UI 的处理是静默以最新状态重试一次，这是 UI 策略，不是后台放宽检查）。
 
 `view.type` 与允许的源类型：
 
 | `view.type` | 源 `type_id` | 专有键 |
 | --- | --- | --- |
-| `table` | `buckyos.table-source` | `fields`、`filter`、`sorts`、`group`、`manual_order` |
+| `table` | `buckyos.table-source` | `fields`、`filter`、`sorts`、`group`、`row_order` |
 | `richtext` | `buckyos.richtext` | 无（`options` 可含 `readonly`） |
 | `record` | `buckyos.record` | `fields`（属性 `key` 的显示顺序） |
 | `asset` | `buckyos.asset-ref` | `options.fit`: `contain` \| `cover` |
@@ -1252,7 +1252,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 
 分组：`group: { "field_id": ... }`，仅支持 select、boolean、date；分组是展现行为，查询接口返回的仍是带排序的平面行，另附每组计数。
 
-手工顺序：`manual_order: { <record_id>: <order_key> }`，仅在 `sorts` 为空时生效；不在表中的记录按 `record_id` 排在其后。它是视图的键，不改变记录本身。整键一个版本格，两人同时手工排序同一视图会冲突；第一期接受这一点。
+手工顺序保存在 `row_order: { <record_id>: "<16位十六进制创建序号>!<锚点记录ID>!<局部顺序键>" }`。无显式排序时按创建序号、记录 ID 排列；移动记录只写其在锚点旁的局部顺序键，锚点自身的键是 `h`。它是视图的键，不改变记录本身。整键一个版本格，两人同时手工排序同一视图会冲突；第一期接受这一点。
 
 查询请求既可以引用一个已保存的 TableView（`view_id`，使用其 `filter`/`sorts`），也可以直接给出 `source_id` + 过滤排序；还可以在 `view_id` 之上叠加会话级的额外过滤（`and` 组合）。
 

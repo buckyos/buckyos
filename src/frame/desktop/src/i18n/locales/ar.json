@@ -5461,6 +5461,8 @@
   "sso.provider.email_field": "حقل البريد الإلكتروني",
   "sso.provider.email_verified_field": "حقل حالة التحقق من البريد الإلكتروني",
   "sso.provider.enabled": "مفعّل",
+  "sso.provider.googleSecretLocation": "على الخادم الذي يشغّل لوحة التحكم، احفظ سرّ عميل Google في الملف التالي وامنح لوحة التحكم صلاحية قراءته.",
+  "sso.provider.googleSecretContents": "في Linux، يكون مسار $BUCKYOS_ROOT عادةً /opt/buckyos. إذا نزّلت ملف بيانات اعتماد Google بتنسيق JSON، فانسخ قيمة web.client_secret فقط من دون علامتَي الاقتباس.",
   "sso.provider.id": "معرّف المصدر",
   "sso.provider.id_field": "حقل معرّف الحساب الثابت",
   "sso.provider.issuer": "عنوان URL للمُصدِر",

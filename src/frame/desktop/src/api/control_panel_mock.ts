@@ -64,7 +64,7 @@ import type {
   UserTunnelBinding,
   UserInviteRecord,
 } from './user_mgr.ts'
-import type { ExclusiveInvite, InviteResource } from './sso.ts'
+import type { ExclusiveInvite, InviteResource, SsoSettings } from './sso.ts'
 
 export const MOCK_CONTROL_PANEL_STORAGE_KEY = 'buckyos.mock.control-panel.v1'
 
@@ -178,7 +178,7 @@ interface MockEntry {
 type MockInvite = ExclusiveInvite & { secret: string }
 
 interface MockSso {
-  settings: { self_register_enabled: boolean; did_login_enabled: boolean; jump_base_url?: string }
+  settings: SsoSettings
   entries: MockEntry[]
   accounts: Record<string, MockSsoAccount>
   invites: MockInvite[]
@@ -1392,6 +1392,7 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       sso.settings = {
         self_register_enabled: params.self_register_enabled,
         did_login_enabled: params.did_login_enabled,
+        oauth_sources: Array.isArray(params.oauth_sources) ? params.oauth_sources : sso.settings.oauth_sources,
         ...(jump ? { jump_base_url: jump } : {}),
       }
       return { ...sso.settings }

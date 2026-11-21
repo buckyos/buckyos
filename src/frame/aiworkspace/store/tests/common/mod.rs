@@ -181,6 +181,6 @@ pub fn view_ids(ws: &Workspace, who: &Caller, cell: &str) -> Result<Vec<String>,
     if let Some(e) = m["shows"].get("view_error") {
         return Err(e.clone());
     }
-    let q = ws.query(who, &json!({ "sql": m["shows"]["view_sql"] })).unwrap();
+    let q = ws.query(who, &json!({ "sql": m["shows"]["view_sql"], "params": m["shows"]["view_params"] })).unwrap();
     Ok(q["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect())
 }

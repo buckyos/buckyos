@@ -5461,6 +5461,8 @@
   "sso.provider.email_field": "電子郵件欄位",
   "sso.provider.email_verified_field": "電子郵件驗證狀態欄位",
   "sso.provider.enabled": "啟用",
+  "sso.provider.googleSecretLocation": "在執行控制面板的伺服器上，將 Google 用戶端密鑰存入以下檔案，並授予控制面板讀取權限。",
+  "sso.provider.googleSecretContents": "在 Linux 上，$BUCKYOS_ROOT 通常是 /opt/buckyos。如果你下載了 Google 的 JSON 憑證檔，只需複製 web.client_secret 的值，不含引號。",
   "sso.provider.id": "來源 ID",
   "sso.provider.id_field": "固定帳號 ID 欄位",
   "sso.provider.issuer": "簽發者 URL",

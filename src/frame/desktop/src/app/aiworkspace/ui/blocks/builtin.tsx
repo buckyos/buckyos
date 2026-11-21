@@ -8,6 +8,7 @@
 
 import { useCallback, useContext, type CSSProperties, type ReactNode } from 'react'
 import { ALargeSmall, ClipboardCopy, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, LetterText, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, StickyNote, Table } from 'lucide-react'
+import { ordinaryTableOps } from '../fieldOps'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
 import type { AnnotationContent, Json, KeyedContent, Operation, Reference, RichTextContent } from '../../api/types'
@@ -22,10 +23,12 @@ import type { WorkspaceStore } from '../../state/store'
 import { pdfImports } from '../canvas/pdfImportRequest'
 import { officeImports } from '../import/officeImportRequest'
 import { officeKind } from '@office/package'
+import { TableBlockContext } from '../table/TableBlockContext'
+import { StandardTableEditor } from '../table/StandardTableEditor'
 import { TableViewCell } from '../TableViewCell'
 import { sourceLabel } from './affordances'
 import { requestIntent, useOnFreeCanvas } from './editorToolbar'
-import { AssetCell, LockScope, NoteEditor, NoteReplies, RecordCell, RichTextCell, TableEditor } from './editors'
+import { AssetCell, LockScope, NoteEditor, NoteReplies, RecordCell, RichTextCell } from './editors'
 import { cellOp, createOp, MAX_EMBED_DEPTH, replaceAccept, replaceAsset } from './ops'
 import { assetMediaType, mediaKindOf, playsInPlace } from '../media/kinds'
 import type { StagedPayload } from '../media/stage'
@@ -68,18 +71,19 @@ function TableStatic(context: RenderContext) {
   if (context.mode === 'print') return <div className="aiws-block-static"><PrintTable cellId={context.cell.entity_id} width={flow?.width ?? context.size.w} height={flow ? null : context.size.h} /></div>
   return (
     <div className="aiws-block-static">
-      <TableViewCell cellId={context.cell.entity_id} readOnly compact annotations={ui.annotations} onActivateAnnotation={ui.setActiveAnnotation} />
+      <TableBlockContext.Provider value={context}><TableViewCell cellId={context.cell.entity_id} readOnly compact annotations={ui.annotations} onActivateAnnotation={ui.setActiveAnnotation} /></TableBlockContext.Provider>
     </div>
   )
 }
 
 function TableEditorView(context: RenderContext) {
-  return <TableEditor cellId={context.cell.entity_id} sourceId={context.source?.entity_id ?? ''} source={context.source} readOnly={context.readOnlyReason !== null} />
+  return <TableBlockContext.Provider value={context}><StandardTableEditor cellId={context.cell.entity_id} sourceId={context.source?.entity_id ?? ''} source={context.source} readOnly={context.readOnlyReason !== null} /></TableBlockContext.Provider>
 }
 
 function TableSimplified(context: RenderContext) {
   const { t } = useAiwsText()
-  return <div className="aiws-block-simplified">{t('aiworkspace.blocks.table.simplified', { name: context.source?.name ?? context.source?.title ?? context.payload.title ?? '' })}</div>
+  const name = context.cell.title ?? context.payload.title ?? context.source?.title ?? context.source?.name ?? ''
+  return <div className="aiws-block-simplified">{t('aiworkspace.blocks.table.simplified', { name })}</div>
 }
 
 const canAppend = (context: RenderContext) => context.readOnlyReason === null && Boolean(context.source?.capabilities.some((c) => c === 'append' || c === 'update'))
@@ -105,11 +109,7 @@ const table: BlockDefinition = {
     // "copy as table" (表格数据导入 TODO §4.1): run by the table's editor, which knows the view's rows
     { id: 'table-copy', icon: ClipboardCopy, primary: true, get label() { return aiwsT('aiworkspace.data.table.copyAsTable') }, modes: ['edit'], when: (context) => !context.editorActive, run: (context) => openWith(context, 'copy') },
   ],
-  // the hover button is the "add record" action (reached by touch from the toolbar and the menu)
-  hover: (context) => [
-    ...sourceLabel(context, Table),
-    ...(canAppend(context) ? [{ id: 'add-row', kind: 'button' as const, at: 'bottom-out' as const, icon: Plus, label: aiwsT('aiworkspace.blocks.table.addRow'), action: 'table-add' }] : []),
-  ],
+  hover: () => [],
   create: (rawArgs) => {
     const config = Object.entries(rawArgs.config ?? {}).filter(([key]) => key !== 'standard')
     const args: CreateArgs = { ...rawArgs, config: config.length > 0 ? Object.fromEntries(config) : undefined }
@@ -125,12 +125,7 @@ const table: BlockDefinition = {
 }
 
 function newTableOps(args: CreateArgs): Operation[] {
-  return [
-    createOp(args.dataId, 'buckyos.table-source', args.contentFolderId, args.dataOrderKey, {
-      title_field_id: 'title', fields: [{ field_id: 'title', name: aiwsT('aiworkspace.blocks.table.fieldTitle'), type: 'text', required: true }, { field_id: 'done', name: aiwsT('aiworkspace.blocks.table.fieldDone'), type: 'boolean' }],
-    }, args.title || undefined),
-    cellOp(args, 'table', args.dataId),
-  ]
+  return [...ordinaryTableOps(args.dataId, args.contentFolderId, args.dataOrderKey, args.title || undefined), cellOp(args, 'table', args.dataId)]
 }
 
 // ---- rich text

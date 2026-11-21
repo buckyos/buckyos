@@ -386,7 +386,7 @@ test('FP07 insertion where the user is: ＋ before a Block, and a click below th
   expect((ast.content as Json[]).map(text)).toEqual(['页尾第一段', '页尾第二段'])
 })
 
-test('FP08 the table as a database grid: new rows by typing, a field from the header, tick boxes, keyboard between cells', async ({ page, api }) => {
+test('FP08 the table as a database grid: required fields for new rows, a typed field from field management, tick boxes, keyboard between cells', async ({ page, api }) => {
   const ws = await api.sample(ALICE, `fp08 ${Date.now()}`)
   await openWorkspace(page, ALICE, ws.workspace_id)
   const all = frame(page, 'cell-all-tasks')
@@ -394,22 +394,23 @@ test('FP08 the table as a database grid: new rows by typing, a field from the he
   // field types show as icons in the header; options as pills
   await expect(all.locator('.aiws-th').first().locator('svg')).toBeVisible()
   await expect(all.getByTestId('aiws-cell-task-40-status').locator('.aiws-pill')).toHaveText('完成')
-  // "+ 新建": type, Enter, type the next one
-  await all.getByTestId('aiws-add-record-cell-all-tasks').click()
-  await page.getByTestId('aiws-new-record-input').fill('第一条新任务')
-  await page.getByTestId('aiws-new-record-input').press('Enter')
-  await expect(page.getByTestId('aiws-new-record-input')).toHaveValue('')
-  await page.getByTestId('aiws-new-record-input').fill('第二条新任务')
-  await page.getByTestId('aiws-new-record-input').press('Enter')
+  const add = all.getByTestId('aiws-add-record-cell-all-tasks')
+  await add.hover()
+  await add.click()
+  const form = page.getByTestId('aiws-table-record-panel')
+  await form.getByLabel('新记录 任务').fill('第一条新任务')
+  await form.getByTestId('aiws-table-record-add-next').click()
+  await expect(form.getByLabel('新记录 任务')).toHaveValue('')
+  await form.getByLabel('新记录 任务').fill('第二条新任务')
+  await form.getByTestId('aiws-table-record-add').click()
   await expect.poll(async () => (await rows()).length).toBe(7)
-  await page.getByTestId('aiws-new-record-input').press('Escape')
-  await expect(page.getByTestId('aiws-new-record-input')).toHaveCount(0)
   await expect(all.getByTestId('aiws-row').filter({ hasText: '第二条新任务' })).toBeVisible()
-  // a field from the header's "+": name and type only
-  await all.getByTestId('aiws-add-field-open-cell-all-tasks').click()
-  await page.getByTestId('aiws-quick-field-name').fill('已复核')
-  await page.getByTestId('aiws-quick-field-type-boolean').click()
-  await page.getByTestId('aiws-quick-field-add').click()
+  await all.getByTestId('aiws-fields-cell-all-tasks').click()
+  const manager = all.getByTestId('aiws-field-manager')
+  await manager.getByLabel('新字段名').fill('已复核')
+  await manager.getByLabel('新字段类型').selectOption('boolean')
+  await manager.getByTestId('aiws-add-field').click()
+  await all.getByTestId('aiws-fields-cell-all-tasks').click()
   await expect(all.locator('.aiws-th').filter({ hasText: '已复核' })).toBeVisible()
   const fieldId = ((await api.read(ALICE, ws.workspace_id, 'tasks')).content.fields as { field_id: string; name: string }[]).find((f) => f.name === '已复核')?.field_id as string
   // a tick box writes with one click

@@ -582,7 +582,7 @@ impl Workspace {
                 produced.push(it.entity_id.clone());
             }
             // the program's row order is shown by its table Blocks (records have no order of their own)
-            let order = row_order.filter(|ids| ids.len() <= MAX_ORDERED_ROWS).map(|ids| manual_order(&ids));
+            let order = row_order.filter(|ids| ids.len() <= MAX_ORDERED_ROWS).map(|ids| result_row_order(&ids));
             let order_digest = order.as_ref().map(|o| sha256_hex(canonical_json(o).unwrap_or_default().as_bytes())[..16].to_string());
             let mut reordered = false;
             if let Some(d) = &order_digest {
@@ -624,7 +624,7 @@ impl Workspace {
                         cp["options"] = json!({ "fit": "contain" });
                     }
                     if let (true, Some(o)) = (renderer == "table", &order) {
-                        cp["manual_order"] = o.clone();
+                        cp["row_order"] = o.clone();
                     }
                     cells_to_place.push(Place { id: cell_id.clone(), type_id: TYPE_CELL, payload: cp, size: (w, h), auto_size: false, then: Vec::new() });
                     cells.push(cell_id);
@@ -636,10 +636,10 @@ impl Workspace {
                     let Some(cell) = p.alive(c)? else { continue };
                     let is_table = cell.payload.get("view").and_then(|v| v["type"].as_str()) == Some("table");
                     let sorted = cell.payload.get("sorts").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
-                    let current = cell.payload.get("manual_order").filter(|m| !m.is_null());
+                    let current = cell.payload.get("row_order").filter(|m| !m.is_null());
                     let current_digest = current.map(|m| sha256_hex(canonical_json(m).unwrap_or_default().as_bytes())[..16].to_string());
                     if is_table && !sorted && current_digest.as_deref() == prev && current != Some(o) {
-                        p.ops.push(json!({ "op": "entity.set_keys", "entity_id": c, "keys": [{ "key": "manual_order", "value": o, "expect": { "rev": cell.key_rev("manual_order") } }] }));
+                        p.ops.push(json!({ "op": "entity.set_keys", "entity_id": c, "keys": [{ "key": "row_order", "value": o, "expect": { "rev": cell.key_rev("row_order") } }] }));
                         reordered = true;
                     }
                 }
@@ -1145,10 +1145,10 @@ fn widen_op(f: &FieldPlan, source_id: &str, changes: &mut Vec<Value>, ops: &mut 
 /// Table results keep the program's row order on their Blocks up to this many rows.
 const MAX_ORDERED_ROWS: usize = 1000;
 
-/// A table Block's `manual_order` for rows in this order (fixed-width keys sort as listed).
-fn manual_order(ids: &[String]) -> Value {
+/// A table Block's `row_order` for rows in this order (fixed-width keys sort as listed).
+fn result_row_order(ids: &[String]) -> Value {
     let width = format!("{:x}", ids.len()).len();
-    Value::Object(ids.iter().enumerate().map(|(i, id)| (id.clone(), json!(format!("{:0>w$x}x", i, w = width)))).collect())
+    Value::Object(ids.iter().enumerate().map(|(i, id)| (id.clone(), json!(format!("0000000000000000!wish!{:0>w$x}x", i, w = width)))).collect())
 }
 
 fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value, row_order: &mut Option<Vec<String>>) -> WsResult<bool> {

@@ -18,7 +18,7 @@ shows the change at once. Nothing is stored per item in the control.
 | field | type | meaning |
 | --- | --- | --- |
 | \`title\` | text, required | the to-do |
-| \`status\` | select, required | a column of the board, in option order; option \`done\` means completed (default options \`todo\`, \`doing\`, \`done\`) |
+| \`status\` | select, required | omitting this field on insert takes its schema default (initially \`todo\`); a column of the board, in option order; option \`done\` means completed (default options \`todo\`, \`doing\`, \`done\`) |
 | \`due\` | date | due date |
 | \`order\` | text | an order key (base-36 fractional index, as \`order_key\`): list and column order |
 | \`done_at\` | datetime | when it was completed |
@@ -47,12 +47,12 @@ Only when the command is not at hand: create the table and the control in one Co
 { "op": "entity.create", "entity_id": "todo1", "type_id": "buckyos.table-source", "schema_id": "buckyos.todo@1", "parent_id": "<content folder>",
   "order_key": "a", "payload": { "title_field_id": "title", "fields": [
     { "field_id": "title", "name": "Title", "type": "text", "required": true },
-    { "field_id": "status", "name": "Status", "type": "select", "required": true, "options": [{ "option_id": "todo", "label": "To do" }, { "option_id": "doing", "label": "In progress" }, { "option_id": "done", "label": "Done" }] },
+    { "field_id": "status", "name": "Status", "type": "select", "required": true, "default": "todo", "options": [{ "option_id": "todo", "label": "To do" }, { "option_id": "doing", "label": "In progress" }, { "option_id": "done", "label": "Done" }] },
     { "field_id": "due", "name": "Due", "type": "date", "nullable": true }, { "field_id": "order", "name": "Order", "type": "text", "nullable": true },
     { "field_id": "done_at", "name": "Completed", "type": "datetime", "nullable": true }, { "field_id": "ext", "name": "Extension", "type": "json", "nullable": true }] } }
 { "op": "entity.create", "entity_id": "todoctl1", "type_id": "buckyos.container", "parent_id": "<surface>", "order_key": "b",
   "placement": { "x": 40, "y": 40, "w": 420, "h": 560 }, "payload": { "kind": "todo", "layout": { "mode": "data" }, "bindings": { "items": { "entity_id": "todo1" } } } }
-{ "op": "table.insert_records", "source_id": "todo1", "records": [{ "record_id": "t1", "values": { "title": "Buy milk", "status": "todo", "order": "i" } }] }
+{ "op": "table.insert_records", "source_id": "todo1", "records": [{ "record_id": "t1", "values": { "title": "Buy milk", "order": "i" } }] }
 \`\`\`
 
 The placement is numbers (never \`"auto"\`): a data control is sized like a Block.
@@ -76,8 +76,8 @@ both bindings are lists, \`[{ "entity_id": … }, …]\`. **Events are the table
 | --- | --- | --- |
 | \`title\` | text, required | |
 | \`all_day\` | boolean | an all-day event (absent: timed) |
-| \`start\` / \`end\` | datetime (RFC 3339) | a timed event; \`end\` not before \`start\` |
-| \`start_date\` / \`end_date\` | date | an all-day event, \`end_date\` inclusive |
+| \`start\` / \`end\` | datetime (RFC 3339) | a timed event requires \`start\`; \`end\` cannot precede it |
+| \`start_date\` / \`end_date\` | date | an all-day event requires \`start_date\`; \`end_date\` is inclusive |
 | \`status\` | select | confirmed / tentative / cancelled |
 | \`ext\` | json object | \`rrule\` (iCalendar RRULE subset), \`exdate\` (excluded original starts), \`recurrence_id\` \`{ master, original }\` (overrides one occurrence), \`tz\` (IANA zone the series repeats in), \`location\`, \`color\`, \`reminders\`, \`rule_text\` + \`occurrences\` + \`covered_until\` (rules outside the subset, occurrences an Agent wrote), \`maintenance\` |
 

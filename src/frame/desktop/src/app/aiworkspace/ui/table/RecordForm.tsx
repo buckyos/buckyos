@@ -10,13 +10,15 @@ import type { Json } from '../../api/types'
 import { EDIT_STATE_LABEL, type EditEntry } from '../../state/edits'
 import { useEdit, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+import { ReferenceDisplay, ReferenceInput } from './TableReference'
 import { ConflictBox } from './ConflictBox'
-import { UNSET, formatValue, type Input, type ValueDef } from '../values'
+import { UNSET, emptyInput, formatValue, type Input, type ValueDef } from '../values'
 import { inputOf, isEmptyRaw, rawOf, sameRaw, toneOf, type Raw } from './model'
 
 /** The value as a page shows it: option pills, or text. */
 export function CellDisplay({ def, value, shown }: { def: ValueDef; value: Json | undefined; shown: string }) {
   const { t } = useAiwsText()
+  if (def.type === 'object_ref') return <ReferenceDisplay field={def} value={value} />
   if ((def.type === 'select' || def.type === 'multi_select') && value !== undefined && value !== null) {
     const ids = Array.isArray(value) ? value.map(String) : [String(value)]
     const known = (def.options ?? []).filter((option) => ids.includes(option.option_id))
@@ -54,7 +56,8 @@ export function useLiveValue(field: FormField, write: FieldWrite) {
   const { t } = useAiwsText()
   const entry = useEdit(field.editId)
   const pending = Boolean(entry && entry.state !== 'committed' && entry.hasMine)
-  const current: Json | undefined = pending ? (entry?.mine === null ? undefined : entry?.mine) : field.value
+  const mine = entry?.mine === null ? emptyInput(field.def) : entry?.mine
+  const current = pending ? (mine === UNSET ? undefined : mine) : field.value
   const [draft, setDraft] = useState<Raw | null>(null)
   const [error, setError] = useState<string | null>(null)
   const base = useRef<number | null>(null)
@@ -88,7 +91,7 @@ export function useLiveValue(field: FormField, write: FieldWrite) {
     settled.current = null
     setDraft(rawOf(field.def, from.mine === null ? undefined : from.mine))
   }
-  return { entry, current, raw, draft, error, begin, change, commit, cancel, editAgain }
+  return { entry, current, mine, raw, draft, error, begin, change, commit, cancel, editAgain } as const
 }
 
 interface ControlProps {
@@ -146,7 +149,8 @@ export function ValueControl({ def, raw, ariaLabel, disabled, autoFocus, id, onF
     )
   }
   if (def.type === 'object_ref') {
-    return <span className="aiws-muted">{t('aiworkspace.data.value.objectRefNotEditable')}</span>
+    return <ReferenceInput field={def} disabled={disabled} ariaLabel={ariaLabel} autoFocus={autoFocus} value={typeof raw === 'string' && raw ? JSON.parse(raw) as Json : undefined}
+      onChange={(value) => choose(value === undefined ? '' : JSON.stringify(value))} />
   }
   const text = typeof raw === 'string' ? raw : ''
   const keys = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>, multiline: boolean) => {
@@ -184,9 +188,9 @@ export function EditState({ field, live, write }: { field: FormField; live: Retu
           store={store}
           editId={field.editId}
           theirs={entry.hasTheirs ? show(entry.theirs) || t('aiworkspace.data.value.notSet') : null}
-          mine={entry.hasMine ? (entry.mine === null ? t('aiworkspace.data.value.cleared') : show(entry.mine ?? undefined)) : null}
+          mine={entry.hasMine ? (live.mine === UNSET ? t('aiworkspace.data.value.cleared') : show(live.mine)) : null}
           detail={entry.detail ?? ''}
-          onKeepMine={entry.hasMine && entry.currentRev !== undefined ? () => { void write(field, entry.mine === null || entry.mine === undefined ? UNSET : entry.mine, entry.currentRev ?? 0) } : undefined}
+          onKeepMine={entry.hasMine && entry.currentRev !== undefined ? () => { void write(field, live.mine === undefined ? UNSET : live.mine, entry.currentRev ?? 0) } : undefined}
           onEditAgain={entry.hasMine ? () => live.editAgain(entry) : undefined}
         />
       )}
@@ -239,33 +243,29 @@ export function RecordForm({ fields, write, testId, autoFocusFirst }: { fields: 
 export interface DraftFieldDef { id: string; name: string; def: ValueDef; testId: string; fallback?: Json }
 
 export function useDraftRecord(fields: readonly DraftFieldDef[]) {
-  const { t } = useAiwsText()
   const [drafts, setDrafts] = useState<Record<string, Raw>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const rawFor = (field: DraftFieldDef): Raw => drafts[field.id] ?? rawOf(field.def, field.fallback)
-  const set = (id: string, raw: Raw) => { setDrafts((d) => ({ ...d, [id]: raw })); setErrors((e) => { if (!(id in e)) return e; const next = { ...e }; delete next[id]; return next }) }
-  /** The values to insert, or null with every problem shown under its field. */
-  const build = (): Record<string, Json> | null => {
-    const values: Record<string, Json> = {}
-    const problems: Record<string, string> = {}
-    for (const field of fields) {
-      const raw = rawFor(field)
-      // left empty, a field with a default gets it from the service
-      const needed = field.def.required && field.fallback === undefined
-      if (isEmptyRaw(raw) && !(field.def.type === 'boolean' && raw !== '')) {
-        if (needed) problems[field.id] = t('aiworkspace.data.record.required', { name: field.name })
-        continue
-      }
-      const parsed = inputOf(field.def, raw)
-      if (!parsed.ok) { problems[field.id] = parsed.error; continue }
-      if (parsed.value !== UNSET) values[field.id] = parsed.value
-      else if (needed) problems[field.id] = t('aiworkspace.data.record.required', { name: field.name })
-    }
-    setErrors(problems)
-    return Object.keys(problems).length > 0 ? null : values
+  const set = (id: string, raw: Raw) => {
+    setDrafts((previous) => ({ ...previous, [id]: raw }))
+    setErrors((previous) => {
+      if (!(id in previous)) return previous
+      const next = { ...previous }
+      delete next[id]
+      return next
+    })
+  }
+  const values: Record<string, Json> = {}
+  const invalid: Record<string, string> = {}
+  for (const field of fields) {
+    const raw = drafts[field.id]
+    if (raw === undefined || isEmptyRaw(raw) || (field.fallback !== undefined && sameRaw(raw, rawOf(field.def, field.fallback)))) continue
+    const parsed = inputOf(field.def, raw)
+    if (!parsed.ok) invalid[field.id] = parsed.error
+    else if (parsed.value !== UNSET) values[field.id] = parsed.value
   }
   const reset = () => { setDrafts({}); setErrors({}) }
-  return { rawFor, set, errors, build, reset }
+  return { rawFor, set, drafts, errors, setErrors, values, invalid, reset }
 }
 
 /** The fields of a new record: nothing is written until the host adds it. */

@@ -5461,6 +5461,8 @@
   "sso.provider.email_field": "Campo de correo electrónico",
   "sso.provider.email_verified_field": "Campo de correo verificado",
   "sso.provider.enabled": "Activado",
+  "sso.provider.googleSecretLocation": "En el servidor donde se ejecuta el panel de control, guarda el secreto de cliente de Google en el siguiente archivo y concede al panel permiso para leerlo.",
+  "sso.provider.googleSecretContents": "En Linux, $BUCKYOS_ROOT suele ser /opt/buckyos. Si descargaste el archivo JSON de credenciales de Google, copia solo el valor de web.client_secret, sin las comillas.",
   "sso.provider.id": "ID del origen",
   "sso.provider.id_field": "Campo del ID permanente de la cuenta",
   "sso.provider.issuer": "URL del emisor",

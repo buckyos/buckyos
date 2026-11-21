@@ -780,6 +780,51 @@ export function markdown_to_richtext(markdown, prefix, links_json) {
 }
 
 /**
+ * @param {string} fields_json
+ * @param {string | null | undefined} schema_id
+ * @param {string} draft_json
+ * @returns {string}
+ */
+export function missing_record_fields(fields_json, schema_id, draft_json) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        let ptr0, len0, ptr1, len1, ptr2, len2;
+        try {
+            ptr0 = passStringToWasm0(fields_json, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            len0 = WASM_VECTOR_LEN;
+            ptr1 = isLikeNone(schema_id) ? 0 : passStringToWasm0(schema_id, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            len1 = WASM_VECTOR_LEN;
+            ptr2 = passStringToWasm0(draft_json, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            len2 = WASM_VECTOR_LEN;
+        } catch (e) {
+            if (ptr2) { wasm.__wbindgen_export5(ptr2, len2 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export5(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export5(ptr0, len0 * 1, 1); }
+            throw e;
+        }
+        wasm.missing_record_fields(retptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr4 = r0;
+        var len4 = r1;
+        if (r3) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(r2);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
  * Normalize a value for a field definition (same rules as a write).
  * @param {string} field_def_json
  * @param {string} value_json
@@ -1164,7 +1209,7 @@ export function verify_object(id, canonical_text) {
  * A table view compiled to SQL over the logical table named `table` (a path or an alias, quoted here) — core
  * `sqlview::compile_view`, the one compiler the service uses too (核心 API 调整 §3.5). For sessions without a replica,
  * which read a view with `doc.query { sql }`. `fields_json`: the table's live fields as `doc.read` gives them;
- * `view_json`: `{ filter?, sorts?, fields?, group?, manual_order? }`; `projection`: `records` (`_record`, the native
+ * `view_json`: `{ filter?, sorts?, fields?, group?, row_order? }`; `projection`: `records` (`_record`, the native
  * rows) or `display` (`_id` and the display columns). → `{ sql, count_sql, group_sql?, diagnostics }`.
  * @param {string} table
  * @param {string} fields_json
@@ -1365,7 +1410,7 @@ function __wbg_get_imports() {
             const ret = arg0.node;
             return ret;
         },
-        __wbg_now_e9a103e6f2c18d6d: function() {
+        __wbg_now_9bf5511d775c411f: function() {
             const ret = Date.now();
             return ret;
         },

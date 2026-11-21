@@ -565,7 +565,7 @@ pub fn rebuild_refs(ctx: &dyn ReadCtx, entity_ids: &[String]) -> WsResult<BTreeS
                     if r.alive() {
                         for d in &refs {
                             if let Some(v) = r.values.get(&d.field_id).filter(|v| v.is_object()) {
-                                out.insert(types::value_ref_edge(id, &r.record_id, &d.field_id, v));
+                                out.insert(types::value_ref_edge(id, &r.record_id, d, v));
                             }
                         }
                         if let Some(b) = &r.body_entity_id {

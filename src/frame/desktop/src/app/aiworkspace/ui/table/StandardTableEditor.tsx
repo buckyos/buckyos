@@ -28,8 +28,8 @@ export function StandardTableEditor({ cellId, sourceId, source, size = 'embedded
   const readOnlyNow = useDirectReadOnly()
   const lockBlocks = (access.required && !access.held) || readOnlyNow
   return (
-    <LockScope entity={readOnly ? undefined : source}>
-      <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} readOnly={readOnly || lockBlocks} readOnlyReason={readOnlyReason} size={size} annotations={ui.annotations}
+    <LockScope entity={readOnly ? undefined : source} intentKey={cellId ?? `source:${sourceId}`}>
+      <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} awaitingLock={!readOnly && !readOnlyNow && lockBlocks} readOnly={readOnly || lockBlocks} readOnlyReason={readOnlyReason} size={size} annotations={ui.annotations}
         onAnnotate={readOnly ? undefined : ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
     </LockScope>
   )

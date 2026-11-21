@@ -326,6 +326,8 @@ export function RenderHost(props: RenderHostProps) {
   const [, forceOverlay] = useState(0)
   const [settled, setSettled] = useState(0)
   const pointerTypeRef = useRef('mouse')
+  const tableTouch = useRef(false)
+  const ignoreTableClick = useRef(false)
   const pointer = usePointerType()
   const shellPhone = useContext(ShellContext)?.phone ?? false
   const sizes = HANDLES[pointer]
@@ -701,6 +703,12 @@ export function RenderHost(props: RenderHostProps) {
   const selectionLayerRef = useRef<SVGGElement>(null)
   // per-Block props that must keep their identity so a memoised BlockHost skips pans (§9.3)
   const { onEditingChange } = props
+  const selectionHandler = useRef(props.onSelectionChange)
+  useLayoutEffect(() => { selectionHandler.current = props.onSelectionChange }, [props.onSelectionChange])
+  const selectTable = useCallback((id: string) => {
+    selectionHandler.current(new Set([id]))
+    frames.current.get(id)?.focus({ preventScroll: true })
+  }, [])
   const [blockHandlers] = useState(() => new Map<string, { key: typeof onEditingChange; onActivate: () => void; onDeactivate: () => void }>())
   const handlersFor = (id: string) => {
     let h = blockHandlers.get(id)
@@ -855,7 +863,13 @@ export function RenderHost(props: RenderHostProps) {
 
   // ---- writing: the writing area takes every press first — Blocks, editors and handles get none
   const onPointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!inkOn) return
+    if (!inkOn) {
+      if (!touch.fingers()) {
+        ignoreTableClick.current = false
+        tableTouch.current = event.pointerType === 'touch' && Boolean((event.target as Element).closest('[data-table-interactive] .aiws-table-scroll'))
+      }
+      return
+    }
     event.stopPropagation()
     pointerTypeRef.current = event.pointerType
     if (event.pointerType === 'touch') {
@@ -876,6 +890,10 @@ export function RenderHost(props: RenderHostProps) {
   // ---- pointer gestures
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     pointerTypeRef.current = event.pointerType
+    const target = event.target as Element
+    const tableControl = target.closest('[data-table-interactive] :is([role="gridcell"], [role="columnheader"], button, select, input, [data-row-title])')
+    if (tableControl && event.button === 0 && !spaceHeld.current && (!props.tool || props.tool === 'select') && !props.placing &&
+      (event.pointerType !== 'touch' || !tableControl.closest('.aiws-table-scroll'))) return
     if (event.pointerType === 'touch') { touch.down(event.nativeEvent); return }
     if (props.gesturesPaused || dragRef.current) return
     if (insideEditor(event.target)) return
@@ -1322,7 +1340,12 @@ export function RenderHost(props: RenderHostProps) {
   // ---- touch (UI improvement §16): what a touch gesture means here; touch.ts recognises the gestures
   const beginTouch = (event: PointerEvent, p: Point): OneFingerDrag | null => {
     const target = event.target instanceof Element ? event.target : null
-    if (props.gesturesPaused || dragRef.current || target?.closest(TOUCH_EXEMPT)) return null
+    if (props.gesturesPaused || dragRef.current) return null
+    const tableScroll = target?.closest<HTMLElement>('[data-table-interactive] .aiws-table-scroll')
+    if (!props.placing && (!props.tool || props.tool === 'select') && tableScroll && !target?.closest('textarea, select, input:not([type=checkbox]), [contenteditable=true]')) {
+      return { kind: 'scroll', element: tableScroll, nativeTap: true, scale: camera.zoom }
+    }
+    if (target?.closest(TOUCH_EXEMPT)) return null
     const w = camera.toWorld(p.x, p.y)
     if (props.placing && !spaceHeld.current) { event.preventDefault(); props.onPlace?.(w); return null }
     const tappable = Boolean(target?.closest(TAPPABLE))
@@ -1369,6 +1392,7 @@ export function RenderHost(props: RenderHostProps) {
       delegateEnd: finishDrag,
       moving: (on) => {
         // a second finger on a phone's writing: the stroke of the first is dropped, the two pan and zoom
+        if (on && tableTouch.current) ignoreTableClick.current = true
         if (on && input.busy() && input.byTouch()) input.cancel()
         setDragging(on); worldRef.current?.classList.toggle('is-moving', on)
       },
@@ -1589,6 +1613,7 @@ export function RenderHost(props: RenderHostProps) {
         key={id}
         ref={(el) => { if (el) frames.current.set(id, el); else frames.current.delete(id) }}
         className={`aiws-frame-block${l.isGroup ? ' is-group' : ''}${l.control ? ' is-control' : ''}${l.node ? ' is-node' : ''}${selection.has(id) ? ' is-selected' : ''}${hover === id ? ' is-hovered' : ''}${editing === id ? ' is-editing' : ''}`}
+        tabIndex={l.entity.view_type === 'table' ? -1 : undefined}
         data-block-id={id}
         data-testid={`aiws-canvas-block-${id}`}
         data-lod={lod}
@@ -1609,6 +1634,7 @@ export function RenderHost(props: RenderHostProps) {
           <div className="aiws-block-placeholder" data-testid={`aiws-placeholder-${id}`}>{l.entity.title ?? l.entity.view_type ?? ''}</div>
         ) : (
           <BlockHost cellId={id} mode={mode} view="canvas" selected={selection.has(id)} hovered={hover === id} editorActive={editing === id}
+            onSelect={l.entity.view_type === 'table' ? selectTable : undefined}
             onActivate={handlersFor(id).onActivate} onDeactivate={handlersFor(id).onDeactivate} size={sizeFor(id, l.rect.w, l.rect.h)} zoom={zoom} lod={lod} />
         )}
         {/* a free topic (placed by hand) is marked in its corner, over the node */}
@@ -1762,7 +1788,7 @@ export function RenderHost(props: RenderHostProps) {
         if (event.pointerType !== 'touch') finishDrag(true)
       }}
       onLostPointerCapture={(event) => input.lost(event.pointerId)}
-      onClickCapture={(event) => { if (inkOn) { event.stopPropagation(); event.preventDefault() } }}
+      onClickCapture={(event) => { if (inkOn || (event.detail && ignoreTableClick.current)) { event.stopPropagation(); event.preventDefault() } }}
       onDragStart={(event) => { if (inkOn || !insideEditor(event.target)) event.preventDefault() }}
       onContextMenu={onContextMenu}
       onPointerLeave={() => {

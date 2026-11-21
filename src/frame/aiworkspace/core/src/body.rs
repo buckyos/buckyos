@@ -320,7 +320,7 @@ impl<'a> Builder<'a> {
         self.dep(table);
         self.table_header(table)?;
         for r in self.ctx.refs_from(&table.entity_id)? {
-            if matches!(r.kind.as_str(), "value" | "body") && r.dst_workspace_id.is_empty() {
+            if matches!(r.kind.as_str(), "value" | "value_link" | "body") && r.dst_workspace_id.is_empty() {
                 if let Some(t) = self.ctx.entity(&r.dst_entity_id)? {
                     self.dep(&t);
                 }
@@ -710,7 +710,12 @@ impl<'a> Builder<'a> {
                     };
                     lines.push(format!("columns: {}", shown.join(", ")));
                     match crate::sqlview::cell_view(self.ctx, self.access, e, crate::sqlview::Projection::Display) {
-                        Ok(Some(v)) => lines.push(format!("sql: {}", v.sql)),
+                        Ok(Some(v)) => {
+                            lines.push(format!("sql: {}", v.sql));
+                            if !v.params.is_empty() {
+                                lines.push(format!("params: {}", Value::Array(v.params)));
+                            }
+                        }
                         Ok(None) => {}
                         Err(err) => lines.push(format!("view broken: {}", err.detail)),
                     }

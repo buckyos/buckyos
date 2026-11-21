@@ -60,7 +60,7 @@ test.describe('settings: sign-in and sharing', () => {
     await ssoPage.getByTestId('settings-sso-jump').fill('https://jump.example.com')
     await ssoPage.getByTestId('settings-sso-save').click()
     await expect(ssoPage.getByTestId('settings-sso-status')).toHaveText('Saved.')
-    expect((await mockState(page)).sso.settings).toEqual({ self_register_enabled: true, did_login_enabled: false, jump_base_url: 'https://jump.example.com' })
+    expect((await mockState(page)).sso.settings).toEqual({ oauth_sources: [], self_register_enabled: true, did_login_enabled: false, jump_base_url: 'https://jump.example.com' })
 
     await page.evaluate((key) => {
       const state = JSON.parse(localStorage.getItem(key) ?? '{}')
@@ -69,6 +69,55 @@ test.describe('settings: sign-in and sharing', () => {
     await page.goto('/sso/entry?service=aiworkspace&entry=se-dj')
     await expect(page.getByTestId('sso-entry-method-did_login')).toBeDisabled()
     expect(errors).toEqual([])
+  })
+
+  test('shows the Google credential path and saves it when adding a provider', async ({ page }) => {
+    const win = await openSettings(page)
+    await win.getByRole('button', { name: 'Sign-in & Sharing', exact: true }).click()
+    const settings = win.getByTestId('settings-sso-page')
+    await settings.getByRole('button', { name: 'Add login provider' }).click()
+
+    const filename = settings.getByRole('textbox', { name: 'Secret file name' })
+    await expect(filename).toHaveCount(0)
+    await expect(settings).toContainText('$BUCKYOS_ROOT/security/oauth/google-demo')
+    await expect(settings).toContainText('web.client_secret')
+
+    await settings.getByRole('combobox').click()
+    await page.getByRole('option', { name: 'OpenID Connect', exact: true }).click()
+    await filename.fill('custom-oidc')
+    await settings.getByRole('combobox').click()
+    await page.getByRole('option', { name: 'Google', exact: true }).click()
+    await expect(filename).toHaveCount(0)
+    await expect(settings).toContainText('$BUCKYOS_ROOT/security/oauth/google-demo')
+
+    await settings.getByRole('textbox', { name: 'Client ID', exact: true }).fill('test.apps.googleusercontent.com')
+    await settings.getByTestId('settings-sso-save').click()
+    await expect(settings.getByTestId('settings-sso-status')).toHaveText('Saved.')
+    expect((await mockState(page)).sso.settings.oauth_sources).toMatchObject([
+      { id: 'google', client_id: 'test.apps.googleusercontent.com', secret_ref: 'google-demo' },
+    ])
+  })
+
+  test('keeps an existing Google credential filename when the client ID changes', async ({ page }) => {
+    await seedControlPanel(page, { sso: { settings: {
+      self_register_enabled: true,
+      did_login_enabled: true,
+      oauth_sources: [{
+        kind: 'google', id: 'google', display_name: 'Google', enabled: true,
+        client_id: 'old.apps.googleusercontent.com', secret_ref: 'existing-google',
+      }],
+    } } })
+    const win = await openSettings(page)
+    await win.getByRole('button', { name: 'Sign-in & Sharing', exact: true }).click()
+    const settings = win.getByTestId('settings-sso-page')
+    await expect(settings).toContainText('$BUCKYOS_ROOT/security/oauth/existing-google')
+    await expect(settings.getByRole('textbox', { name: 'Secret file name' })).toHaveCount(0)
+    await settings.getByRole('textbox', { name: 'Client ID', exact: true }).fill('new.apps.googleusercontent.com')
+    await settings.getByTestId('settings-sso-save').click()
+    await expect(settings.getByTestId('settings-sso-status')).toHaveText('Saved.')
+    expect((await mockState(page)).sso.settings.oauth_sources).toMatchObject([
+      { id: 'google', client_id: 'new.apps.googleusercontent.com', secret_ref: 'existing-google' },
+    ])
   })
 
   test('is hidden from non-admins', async ({ page }) => {

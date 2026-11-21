@@ -5461,6 +5461,8 @@
   "sso.provider.email_field": "メールアドレスのフィールド",
   "sso.provider.email_verified_field": "メール確認済みフラグのフィールド",
   "sso.provider.enabled": "有効",
+  "sso.provider.googleSecretLocation": "コントロールパネルが動作するサーバーで、Google のクライアント シークレットを次のファイルに保存し、コントロールパネルに読み取り権限を付与してください。",
+  "sso.provider.googleSecretContents": "Linux では、$BUCKYOS_ROOT は通常 /opt/buckyos です。Google の認証情報を JSON ファイルでダウンロードした場合は、web.client_secret の値だけを引用符を付けずにコピーしてください。",
   "sso.provider.id": "ソース ID",
   "sso.provider.id_field": "固定アカウント ID のフィールド",
   "sso.provider.issuer": "発行者 URL",

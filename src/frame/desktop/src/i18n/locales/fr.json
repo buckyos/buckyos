@@ -5461,6 +5461,8 @@
   "sso.provider.email_field": "Champ de l’adresse e-mail",
   "sso.provider.email_verified_field": "Champ de vérification de l’e-mail",
   "sso.provider.enabled": "Activé",
+  "sso.provider.googleSecretLocation": "Sur le serveur où s’exécute le panneau de configuration, enregistrez le secret client Google dans le fichier suivant et accordez au panneau le droit de le lire.",
+  "sso.provider.googleSecretContents": "Sous Linux, $BUCKYOS_ROOT correspond généralement à /opt/buckyos. Si vous avez téléchargé le fichier JSON des identifiants Google, copiez uniquement la valeur de web.client_secret, sans les guillemets.",
   "sso.provider.id": "Identifiant de la source",
   "sso.provider.id_field": "Champ de l’identifiant permanent du compte",
   "sso.provider.issuer": "URL de l’émetteur",

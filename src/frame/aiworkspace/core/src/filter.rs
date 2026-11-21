@@ -291,7 +291,7 @@ pub struct QuerySpec {
     pub sorts: Vec<Value>,
     pub fields: Option<Vec<String>>,
     pub group: Option<String>,
-    pub manual_order: Option<JsonMap>,
+    pub row_order: Option<JsonMap>,
     pub limit: usize,
     pub cursor: Option<String>,
     pub best_effort: bool,
@@ -328,7 +328,7 @@ fn row_json(r: &RecordRow, live: &BTreeMap<String, FieldDef>, proj: Option<&Vec<
     let keep = |k: &String| live.contains_key(k) && proj.map_or(true, |p| p.contains(k));
     let values: JsonMap = r.values.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
     let revs: JsonMap = r.revs.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), json!(v))).collect();
-    let mut out = json!({ "record_id": r.record_id, "rev": r.rev, "values": values, "revs": revs });
+    let mut out = json!({ "record_id": r.record_id, "created_seq": r.created_seq, "rev": r.rev, "values": values, "revs": revs });
     let m = out.as_object_mut().unwrap();
     if with_meta {
         let meta: JsonMap = r.meta.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -397,7 +397,7 @@ pub fn run_query(ctx: &dyn ReadCtx, source: &EntityRow, spec: &QuerySpec) -> WsR
 
     let type_revs: BTreeMap<&str, u64> = fields.iter().map(|f| (f.field_id.as_str(), f.type_rev)).collect();
     let digest = sha256_hex(
-        canonical_json(&json!({ "f": spec.filter, "s": spec.sorts, "g": spec.group, "m": spec.manual_order, "t": type_revs }))?
+        canonical_json(&json!({ "f": spec.filter, "s": spec.sorts, "g": spec.group, "m": spec.row_order, "t": type_revs }))?
             .as_bytes(),
     )[..16]
         .to_string();
@@ -419,7 +419,7 @@ pub fn run_query(ctx: &dyn ReadCtx, source: &EntityRow, spec: &QuerySpec) -> WsR
         None => None,
     };
 
-    let manual = if sorts.is_empty() { spec.manual_order.as_ref() } else { None };
+    let manual = if sorts.is_empty() { spec.row_order.as_ref() } else { None };
     let mut rows: Vec<RecordRow> = Vec::new();
     ctx.scan_records(&source.entity_id, &mut |r| {
         if r.alive() && compiled.as_ref().map_or(true, |c| eval(c, &r.values)) {
@@ -427,21 +427,26 @@ pub fn run_query(ctx: &dyn ReadCtx, source: &EntityRow, spec: &QuerySpec) -> WsR
         }
         Ok(true)
     })?;
-    let manual_key = |id: &str| manual.and_then(|m| m.get(id)).and_then(Value::as_str).map(str::to_string);
-    let cmp = |a: (&JsonMap, &str), b: (&JsonMap, &str)| -> Ordering {
-        if manual.is_some() {
-            // records without a manual key follow the keyed ones, by record_id
-            let o = match (manual_key(a.1), manual_key(b.1)) {
-                (Some(x), Some(y)) => x.cmp(&y),
-                (Some(_), None) => Ordering::Less,
-                (None, Some(_)) => Ordering::Greater,
-                (None, None) => Ordering::Equal,
-            };
-            return o.then_with(|| a.1.cmp(b.1));
-        }
-        compare_rows(&sorts, a, b)
-    };
-    rows.sort_by(|a, b| cmp((&a.values, &a.record_id), (&b.values, &b.record_id)));
+    let mut positions = BTreeMap::new();
+    for (id, v) in manual.into_iter().flatten() {
+        let Some(rank) = v.as_str() else { continue };
+        let mut parts = rank.split('!');
+        let (Some(seq), Some(anchor), Some(fraction)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let anchor = if seq == "0000000000000000" { None } else { ctx.record(&source.entity_id, anchor)?.filter(RecordRow::alive) };
+        let rank = match anchor {
+            Some(r) => format!("{:016x}!{}!{fraction}", r.created_seq, r.record_id),
+            None => rank.to_owned(),
+        };
+        positions.insert(id.as_str(), rank);
+    }
+    let key = |seq: u64, id: &str| positions.get(id).cloned().unwrap_or_else(|| crate::order_key::base_row_key(seq, id));
+    if !sorts.is_empty() {
+        rows.sort_by(|a, b| compare_rows(&sorts, (&a.values, &a.record_id), (&b.values, &b.record_id)));
+    } else if !positions.is_empty() {
+        rows.sort_by_cached_key(|r| (key(r.created_seq, &r.record_id), r.record_id.clone()));
+    } else {
+        rows.sort_by(|a, b| a.created_seq.cmp(&b.created_seq).then_with(|| a.record_id.cmp(&b.record_id)));
+    }
     let total = rows.len();
 
     let mut groups = None;
@@ -478,7 +483,12 @@ pub fn run_query(ctx: &dyn ReadCtx, source: &EntityRow, spec: &QuerySpec) -> WsR
         Some(c) => {
             let last_vals = c["k"].as_object().cloned().unwrap_or_default();
             let last_id = c["id"].as_str().unwrap_or("").to_string();
-            rows.partition_point(|r| cmp((&r.values, &r.record_id), (&last_vals, &last_id)) != Ordering::Greater)
+            if sorts.is_empty() {
+                let last = key(c["seq"].as_u64().unwrap_or_default(), &last_id);
+                rows.partition_point(|r| key(r.created_seq, &r.record_id).cmp(&last).then_with(|| r.record_id.cmp(&last_id)) != Ordering::Greater)
+            } else {
+                rows.partition_point(|r| compare_rows(&sorts, (&r.values, &r.record_id), (&last_vals, &last_id)) != Ordering::Greater)
+            }
         }
         None => 0,
     };
@@ -498,7 +508,7 @@ pub fn run_query(ctx: &dyn ReadCtx, source: &EntityRow, spec: &QuerySpec) -> WsR
             .iter()
             .filter_map(|s| last.values.get(&s.def.field_id).map(|v| (s.def.field_id.clone(), v.clone())))
             .collect();
-        let raw = json!({ "r": source.content_rev, "d": digest, "k": k, "id": last.record_id });
+        let raw = json!({ "r": source.content_rev, "d": digest, "k": k, "id": last.record_id, "seq": last.created_seq });
         m.insert(
             "next_cursor".into(),
             json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.to_string())),

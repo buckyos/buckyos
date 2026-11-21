@@ -54,16 +54,23 @@ export function useEditorToolbar(owner: string, items: ToolbarItem[] | null): bo
 export interface CanvasCaret { left: number; top: number; scrollLeft: number; scrollTop: number }
 
 /** An intent waiting for an Editor; `seq` tells a new request from one already handled. */
-export interface Intent { value: string; seq: number; caretAt?: CanvasCaret }
+export interface TableIntent {
+  action: 'edit' | 'rename' | 'insertRow' | 'insertColumn' | 'openRecord'
+  recordId?: string
+  rowIndex?: number
+  fieldId?: string
+  side?: 'before' | 'after'
+}
+export interface Intent { table?: TableIntent; value: string; seq: number; caretAt?: CanvasCaret }
 
 const intents = new Map<string, Intent>()
 const intentEmitter = new Emitter()
 let intentSeq = 0
 
 /** Ask the Editor of `key` (a Block id) to do `value` when it mounts, or now if it is mounted. */
-export function requestIntent(key: string, value: string | CanvasCaret) {
+export function requestIntent(key: string, value: string | CanvasCaret | TableIntent) {
   intentSeq += 1
-  intents.set(key, typeof value === 'string' ? { value, seq: intentSeq } : { value: 'caret', caretAt: value, seq: intentSeq })
+  intents.set(key, typeof value === 'string' ? { value, seq: intentSeq } : 'action' in value ? { value: 'table', table: value, seq: intentSeq } : { value: 'caret', caretAt: value, seq: intentSeq })
   intentEmitter.emit()
 }
 

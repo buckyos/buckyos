@@ -2,6 +2,7 @@ import { Button, FormControlLabel, MenuItem, Switch, TextField } from '@mui/mate
 import { useEffect, useState } from 'react'
 import { fetchSsoConfig, type OAuthSource } from '../../../api/sso'
 import { useI18n } from '../../../i18n/provider'
+import { SectionNote } from './shared/Section'
 
 type Field =
   | 'id'
@@ -33,11 +34,12 @@ const labels: Record<Field, string> = {
   email_verified_field: 'Verified-email field',
 }
 function fields(kind: OAuthSource['kind']): Field[] {
-  const result: Field[] = ['display_name', 'client_id', 'secret_ref']
-  if (kind === 'google') return result
+  if (kind === 'google') return ['display_name', 'client_id']
   return [
     'id',
-    ...result,
+    'display_name',
+    'client_id',
+    'secret_ref',
     'webhost',
     'authorization_endpoint',
     'token_endpoint',
@@ -45,6 +47,13 @@ function fields(kind: OAuthSource['kind']): Field[] {
       ? ['issuer', 'jwks_uri'] as const
       : ['account_endpoint', 'id_field', 'email_field', 'email_verified_field'] as const),
   ]
+}
+
+function providerDefaults(kind: OAuthSource['kind'], customSecretRef = '') {
+  if (kind === 'google') {
+    return { kind, id: 'google', display_name: 'Google', secret_ref: 'google-demo' }
+  }
+  return { kind, id: '', display_name: '', secret_ref: customSecretRef }
 }
 
 export function OAuthSourcesEditor(
@@ -79,11 +88,7 @@ export function OAuthSourcesEditor(
             value={s.kind}
             onChange={(e) => {
               const kind = e.target.value as OAuthSource['kind']
-              update(i, {
-                kind,
-                id: kind === 'google' ? 'google' : '',
-                display_name: kind === 'google' ? 'Google' : '',
-              })
+              update(i, providerDefaults(kind, s.kind === 'google' ? '' : s.secret_ref))
             }}
           >
             <MenuItem value='google'>Google</MenuItem>
@@ -100,7 +105,15 @@ export function OAuthSourcesEditor(
               onChange={(e) => update(i, { [field]: e.target.value })}
             />
           ))}
-          {s.kind !== 'google' && (
+          {s.kind === 'google' ? (
+            <SectionNote>
+              {t('sso.provider.googleSecretLocation')}
+              <code dir="ltr" className="my-1 block break-all select-all" style={{ color: 'var(--cp-text)' }}>
+                {`$BUCKYOS_ROOT/security/oauth/${s.secret_ref}`}
+              </code>
+              {t('sso.provider.googleSecretContents')}
+            </SectionNote>
+          ) : (
             <TextField
               size='small'
               fullWidth
@@ -126,12 +139,9 @@ export function OAuthSourcesEditor(
         onClick={() => {
           const kind = sources.some((s) => s.kind === 'google') ? 'oidc' : 'google'
           onChange([...sources, {
-            kind,
-            id: kind === 'google' ? 'google' : '',
-            display_name: kind === 'google' ? 'Google' : '',
+            ...providerDefaults(kind),
             enabled: true,
             client_id: '',
-            secret_ref: '',
           }])
         }}
       >

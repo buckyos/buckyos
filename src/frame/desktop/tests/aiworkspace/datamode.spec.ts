@@ -149,6 +149,14 @@ test('§15-12 new data from the tree’s menu goes where the menu was opened: in
   await expect(dialog).toHaveCount(0)
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e) => e.name === '预算表')?.parent_id).toBe('f-docs')
   const table = (await api.outline(ALICE, ws.workspace_id)).find((e) => e.name === '预算表')
+  const source = (await api.read(ALICE, ws.workspace_id, table.entity_id)).content
+  expect(source.fields.map((f: { name: string }) => f.name)).toEqual(['列 A', '列 B', '列 C'])
+  expect(source.fields.every((f: { type: string; required?: boolean }) => f.type === 'text' && !f.required)).toBe(true)
+  expect(source.payload.title_field_id).toBe(source.fields[0].field_id)
+  const initial = await api.table(ALICE, ws.workspace_id, { source_id: table.entity_id })
+  expect(initial.total).toBe(2)
+  expect(new Set(initial.rows.map((r) => r.record_id)).size).toBe(2)
+  expect(initial.rows.map((r) => r.values)).toEqual([{}, {}])
   // it opens in a tab of its own, and its row is inside the folder
   await expect(tab(page, table.entity_id)).toHaveAttribute('data-preview', 'false')
   await expect(page.locator('[data-testid="aiws-tree-item"][data-entity-id="f-docs"]').locator(`[data-entity-id="${table.entity_id}"]`)).toBeVisible()

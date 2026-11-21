@@ -28,6 +28,7 @@ export interface BlockHostProps {
   hovered?: boolean
   /** The host that owns selection decides activation (double-click / "edit content"); the source view activates at once. */
   editorActive?: boolean
+  onSelect?: (id: string) => void
   onActivate?: () => void
   onDeactivate?: () => void
   size?: { w: number; h: number }

@@ -766,3 +766,31 @@ fn canvas_folders_travel_in_packages_and_clones() {
     let cid = f["workspace_id"].as_str().unwrap().to_string();
     assert_eq!(path_in(&env.svc.workspace(&cid).unwrap().lock().unwrap()), "/surfaces/归档/2026/深处");
 }
+
+#[test]
+fn a_deleted_canvas_link_roundtrips_through_a_workspace_package() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "Links", None).unwrap()["workspace_id"].as_str().unwrap().to_owned();
+    let handle = env.svc.workspace(&id).unwrap();
+    {
+        let mut ws = handle.lock().unwrap();
+        ok(&mut ws, &alice(), json!([
+            { "op": "entity.create", "entity_id": "s-data", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "s",
+              "payload": { "kind": "folder", "system": "surface_content", "surface_id": "s", "title": "Sketch" } },
+            { "op": "entity.create", "entity_id": "s", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "s",
+              "payload": { "kind": "surface", "layout": { "mode": "free" }, "title": "Sketch", "content_folder_id": "s-data" } },
+            { "op": "entity.create", "entity_id": "links", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "a",
+              "payload": { "fields": [{ "field_id": "canvas", "name": "Canvas", "type": "object_ref", "ref_purpose": "canvas" }] } },
+            { "op": "table.insert_records", "source_id": "links", "records": [{ "record_id": "r1", "values": { "canvas": { "entity_id": "s" } } }] }
+        ]));
+        let rev = ws.read(&alice(), "s", None).unwrap()["life_rev"].clone();
+        ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "s", "expect": { "rev": rev } }]));
+    }
+    let (pkg, _) = export(&env, &id, &alice(), "share", true);
+    let imported = env.svc.import(&alice(), &pkg, "new", false).unwrap();
+    let handle = env.svc.workspace(imported["workspace_id"].as_str().unwrap()).unwrap();
+    let ws = handle.lock().unwrap();
+    let row = ws.read(&alice(), "links", Some(&json!({ "kind": "table_record", "record_id": "r1" }))).unwrap();
+    assert_eq!(row["content"]["values"]["canvas"]["entity_id"], "s");
+    assert_eq!(ws.verify_refs().unwrap()["ok"], true);
+}

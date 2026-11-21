@@ -27,6 +27,7 @@ export interface BlockContextOptions {
   selected?: boolean
   hovered?: boolean
   editorActive?: boolean
+  onSelect?: (id: string) => void
   onActivate?: () => void
   onDeactivate?: () => void
   size?: { w: number; h: number }
@@ -94,15 +95,15 @@ export function useBlockContext(options: BlockContextOptions) {
     : depth > 0 ? t('aiworkspace.blocks.readOnly.embedded')
       : !policy.writes ? mode === 'view' ? t('aiworkspace.blocks.readOnly.viewMode') : mode === 'print' ? t('aiworkspace.printrender.readOnly') : t('aiworkspace.blocks.readOnly.pathEdit')
         : !editable ? t('aiworkspace.blocks.readOnly.show')
-        : !cell.capabilities.includes('update') ? t('aiworkspace.blocks.noPermission')
+        : !cell.capabilities.includes('update') && payload.view.type !== 'table' ? t('aiworkspace.blocks.noPermission')
           : dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded' ? t('aiworkspace.blocks.readOnly.dataUnavailable')
-            : source && !source.capabilities.some((c) => c === 'update' || c === 'append') ? t('aiworkspace.blocks.readOnly.noDataPermission') : null
+            : source && !source.capabilities.some((c) => c === 'update' || c === 'append' || (payload.view.type === 'table' && c === 'structure')) ? t('aiworkspace.blocks.readOnly.noDataPermission') : null
   const context: RenderContext = {
     cell, payload, keyRevs: current.content.key_revs, source, definition: resolution?.ok ? resolution.definition : MISSING_DEF, documentDefinition, depth,
     mode, view, selected: Boolean(options.selected), hovered: Boolean(options.hovered), editorActive: Boolean(options.editorActive) && activatable, interactive,
     capabilities: cell.capabilities, readOnlyReason, dataState, size: options.size ?? { w: num(cell.placement?.w) ?? 320, h: num(cell.placement?.h) ?? 200 }, zoom: options.zoom ?? 1,
     activateEditor: () => { if (activatable && resolution?.ok) options.onActivate?.() },
-    deactivateEditor: () => options.onDeactivate?.(), openEntity: ui.openEntity,
+    selectBlock: options.onSelect ? () => options.onSelect?.(cell.entity_id) : undefined, deactivateEditor: () => options.onDeactivate?.(), openEntity: ui.openEntity,
     setEditorToolbar: (items: ToolbarItem[] | null) => toolbarSink?.set(`block:${cellId}`, items), pointerType,
     annotate: ui.annotate, showAnnotations: ui.showAnnotations, pickFile: picker.file,
   }

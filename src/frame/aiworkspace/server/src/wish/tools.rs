@@ -68,7 +68,7 @@ impl Kind {
             Kind::Query => (
                 "One SQL SELECT over the tables of the snapshot (SQLite). Name a table by its path (\"/data/sales\"), its handle (\"@T1\") or its id; columns are the field names with the displayed values (a select's label, a reference's path, a currency's amount), \"<field>#raw\" the stored values (option ids, exact decimals), and _id (record id). Joins, GROUP BY and window functions work; no writes. At most 200 rows per call. A table view Block's SQL is in ws_read of the Block.",
                 json!({ "type": "object", "properties": {
-                    "sql": { "type": "string" }, "tables": { "type": "object", "description": "Optional aliases { alias: handle | path | id }" },
+                    "sql": { "type": "string" }, "params": { "type": "array", "description": "Positional SQL parameters" }, "tables": { "type": "object", "description": "Optional aliases { alias: handle | path | id }" },
                     "max_rows": { "type": "integer", "minimum": 1, "maximum": 200 } },
                     "required": ["sql"] }),
             ),

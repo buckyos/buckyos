@@ -24,7 +24,7 @@ export interface TableQueryDeps {
 
 interface TableRead { content_rev: number; type_id: string; content: { payload: Record<string, Json>; fields: Json[] } }
 interface CellRead { type_id: string; content: { payload: Record<string, Json> } }
-interface Compiled { sql: string; count_sql: string; group_sql?: string | null; diagnostics: QueryPage['diagnostics'] }
+interface Compiled { sql: string; params?: Json[]; count_sql: string; group_sql?: string | null; diagnostics: QueryPage['diagnostics'] }
 
 function compile(deps: TableQueryDeps, run: () => string): Compiled {
   try {
@@ -82,14 +82,15 @@ export async function queryBySql(deps: TableQueryDeps, params: QueryParams): Pro
   // a manual order counts only without sorts (the compiler and the evaluator alike)
   // the fields a row carries: the caller's, else the view's (values, revs and meta of the others are left out)
   const shownFields = params.fields ?? (saved.fields as { field_id?: string }[] | undefined)?.map((f) => f.field_id).filter((f): f is string => typeof f === 'string')
-  const view = { ...(filter ? { filter } : {}), sorts, ...(shownFields ? { fields: shownFields } : {}), ...(group ? { group } : {}), ...(saved.manual_order ? { manual_order: saved.manual_order } : {}) }
+  const rowOrder = cell ? saved.row_order : params.row_order
+  const view = { ...(filter ? { filter } : {}), sorts, ...(shownFields ? { fields: shownFields } : {}), ...(group ? { group } : {}), ...(rowOrder ? { row_order: rowOrder } : {}) }
   const fields = table.content.fields
   const c = compile(deps, () => deps.viewSql(ALIAS, JSON.stringify(fields), JSON.stringify(view), 'records'))
   const limit = Math.max(1, Math.min(params.limit ?? 100, 1000))
   const offset = params.cursor ? Number.parseInt(params.cursor, 10) || 0 : 0
   const tables = { [ALIAS]: sourceId }
   const [page, count, groups] = await Promise.all([
-    deps.sql({ sql: `${c.sql} LIMIT ? OFFSET ?`, params: [limit, offset], tables, max_rows: limit }),
+    deps.sql({ sql: `${c.sql} LIMIT ? OFFSET ?`, params: [...(c.params ?? []), limit, offset], tables, max_rows: limit }),
     deps.sql({ sql: c.count_sql, tables }),
     c.group_sql ? deps.sql({ sql: c.group_sql, tables, max_rows: 5000 }) : Promise.resolve(null),
   ])

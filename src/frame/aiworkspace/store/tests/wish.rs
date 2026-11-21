@@ -537,7 +537,7 @@ fn bindings(ws: &Workspace) -> std::collections::BTreeMap<String, Value> {
 fn view_months(ws: &Workspace, cell: &str) -> Vec<String> {
     let m = ws.read_as(&alice(), &json!({ "entity_id": cell, "as": "meta" })).unwrap();
     let sql = m["shows"]["view_sql"].as_str().unwrap().replacen("SELECT \"_id\"", "SELECT \"_record\"", 1);
-    let q = ws.query(&alice(), &json!({ "sql": sql })).unwrap();
+    let q = ws.query(&alice(), &json!({ "sql": sql, "params": m["shows"]["view_params"] })).unwrap();
     q["rows"].as_array().unwrap().iter().map(|r| serde_json::from_str::<Value>(r[0].as_str().unwrap()).unwrap()["values"]["f1"].as_str().unwrap().to_string()).collect()
 }
 fn ids(ws: &Workspace, table: &str) -> Vec<String> {
