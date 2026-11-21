@@ -28,7 +28,7 @@ const STAGE_LABEL: Record<TransferStatus, { key: string; fallback: string }> = {
 }
 
 function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (path: string) => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const stage = STAGE_LABEL[task.status] ?? STAGE_LABEL.queued
   const running = isTransferRunning(task.status)
   const percent =
@@ -92,13 +92,13 @@ function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (p
             />
           </div>
           <span className="shrink-0 text-[12px] tabular-nums text-[color:var(--cp-muted)]">
-            {formatBytes(task.bytesSent)} / {formatBytes(task.totalBytes)}
+            {formatBytes(task.bytesSent, locale)} / {formatBytes(task.totalBytes, locale)}
           </span>
         </div>
       ) : null}
       {task.status === 'error' && task.error ? (
         <p className="mt-1 pl-6 text-[12px] text-[color:var(--files-warning-ink)]">
-          {t(task.error.messageKey, task.error.fallback)}
+          {t(task.error.messageKey, task.error.fallback, { name: task.candidate.name })}
         </p>
       ) : null}
     </div>

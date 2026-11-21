@@ -15,9 +15,20 @@ Deno.test('English and Simplified Chinese are there from the start, with their p
   equal(aiwsText().t('aiworkspace.calendar.reminder.hours', { count: 1 }), '1 hour before')
   equal(aiwsText().t('aiworkspace.calendar.reminder.hours', { count: 3 }), '3 hours before')
   equal(aiwsText('zh-CN').t('aiworkspace.calendar.reminder.hours', { count: 1 }), '提前 1 小时')
-  // a Desktop language without a table (Arabic) reads English and formats for English
-  equal(aiwsText('ar').t('aiworkspace.common.cancel'), 'Cancel')
-  equal(aiwsText('ar').intl, 'en')
+})
+
+Deno.test('Arabic loads its own strings and number formats', async () => {
+  setAiwsLocale('en')
+  equal(aiwsText().intl, 'en')
+  setAiwsLocale('ar')
+  await loadAiwsLocale('ar')
+  const text = aiwsText()
+  equal(text.intl, 'ar')
+  equal(text.t('aiworkspace.common.cancel'), 'إلغاء')
+  equal(text.t(PAGES, { count: 1 }), 'صفحة واحدة')
+  equal(text.t(PAGES, { count: 2 }), 'صفحتان')
+  equal(text.t(PAGES, { count: 7 }), '7 صفحات')
+  setAiwsLocale(null)
 })
 
 Deno.test('another language keeps the shown text until its table arrives, then tells its listeners', async () => {
@@ -59,5 +70,5 @@ Deno.test('the SDK helpers take the product languages', () => {
   equal(sdkLocale('zh-CN'), 'zh')
   equal(sdkLocale('zh-TW'), 'zh-TW')
   equal(sdkLocale('ru'), 'ru')
-  equal(sdkLocale('ar'), 'en')
+  equal(sdkLocale('ar'), 'ar')
 })

@@ -42,6 +42,14 @@ export function onWorkspaceHost(host = window.location.host): boolean {
   return HOST_LABEL.test(host)
 }
 
+/** The language for a navigation to another workspace origin. A public or copied link keeps its canonical URL. */
+export function workspaceLinkForLocale(url: string, locale: string): string {
+  const address = new URL(url, window.location.href)
+  if (address.origin === window.location.origin || !onWorkspaceHost(address.host)) return url
+  address.searchParams.set('lang', locale)
+  return address.href
+}
+
 /** Whether the Zone login can hand this address to its own AI Workspace service. */
 export function isZoneWorkspaceUrl(address: string): boolean {
   try {

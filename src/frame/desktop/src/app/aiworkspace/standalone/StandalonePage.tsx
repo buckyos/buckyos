@@ -12,6 +12,7 @@ import { AiwsClient } from '../api/client'
 import { resolveTransport } from '../api/transport'
 import { openWorkspaceById } from '../launch'
 import { loginUrl, targetOf, workspaceIdOfHost, WORKSPACE_ROUTE, zoneOrigin } from '../links'
+import { useAiwsText } from '../useAiwsText'
 import { SessionPage } from '../session/SessionPage'
 
 /** This origin's session is ended here (`/sso_logout` of this host), then the Zone host asks to sign in again. */
@@ -51,6 +52,7 @@ function useEntryJoin(): boolean {
 
 export function StandalonePage() {
   const { t } = useI18n()
+  const text = useAiwsText()
   const workspaceId = useMemo(() => workspaceIdOfHost(), [])
   const joined = useEntryJoin()
   const [target] = useState(() => targetOf(new URLSearchParams(window.location.search)))
@@ -59,7 +61,7 @@ export function StandalonePage() {
   useDocumentTitle(shownTitle ? `${shownTitle} · ${appName}` : appName)
 
   if (!workspaceId) {
-    return <main className="h-dvh w-full overflow-hidden bg-[color:var(--cp-bg)]"><div className="aiws-root"><div className="aiws-error" role="alert">{t('aiworkspace.core.app.notWorkspaceHost')}</div></div></main>
+    return <main className="h-dvh w-full overflow-hidden bg-[color:var(--cp-bg)]"><div className="aiws-root"><div className="aiws-error" role="alert">{text.t('aiworkspace.core.app.notWorkspaceHost')}</div></div></main>
   }
 
   // a session of this workspace (第四期规划 §1: its rooms live on the workspace's own host)
@@ -89,7 +91,7 @@ export function StandalonePage() {
 
   return (
     <main className="h-dvh w-full overflow-hidden bg-[color:var(--cp-bg)]" data-testid="aiws-tab">
-      {joined ? <AIWorkspaceAppPanel tab={tab} /> : <div className="aiws-root"><div className="aiws-muted" data-testid="aiws-entry-joining">{t('aiworkspace.core.app.joiningEntry')}</div></div>}
+      {joined ? <AIWorkspaceAppPanel tab={tab} /> : <div className="aiws-root"><div className="aiws-muted" data-testid="aiws-entry-joining">{text.t('aiworkspace.core.app.joiningEntry')}</div></div>}
     </main>
   )
 }

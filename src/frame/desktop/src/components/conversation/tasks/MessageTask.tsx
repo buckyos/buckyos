@@ -38,13 +38,13 @@ export function MessageTaskArea({ message }: { message: MessageObject }) {
   const taskId = messageAgentTaskId(message)
   const { snapshot, children } = useTaskSummary(taskId)
   const now = useConversationClock()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const text = useTaskText()
   const [expanded, setExpanded] = useTaskExpanded(messageObjId(message) ?? taskId ?? '')
   if (!taskId) return null
   const view = taskAreaView(snapshot, children, { edited: !!messageRelations(message)?.edited, createdAt: message.created_at_ms }, now)
   if (!view) return null
-  const second = [...view.secondary.map(text), view.updatedAt ? t('messagehub.task.updated', undefined, { time: relativeActivity(view.updatedAt, now, t('messagehub.now')) }) : ''].filter(Boolean).join(' · ')
+  const second = [...view.secondary.map(text), view.updatedAt ? t('messagehub.task.updated', undefined, { time: relativeActivity(view.updatedAt, now, t('messagehub.now'), locale) }) : ''].filter(Boolean).join(' · ')
   const expandLabel = t(expanded ? 'messagehub.task.collapse' : 'messagehub.task.expand')
   return (
     <div className="mh-task mt-2 rounded-xl px-2.5 py-2" data-testid="message-task" data-tone={view.tone} data-state={view.label.key.split('.').at(-1)}>

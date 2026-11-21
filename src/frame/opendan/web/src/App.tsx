@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react'
 import clsx from 'clsx'
 import { ChevronLeft, RefreshCw } from 'lucide-react'
 import { useSWRConfig } from 'swr'
-import { t } from './i18n'
+import { currentLanguage, subscribeLanguage, t } from './i18n'
 import { REFRESH_MS, useQuery } from './lib'
 import { dataModel } from './model'
 import { Dot, Mono } from './ui'
@@ -24,11 +24,11 @@ const subscribeHash = (notify: () => void) => {
 const readHash = () => window.location.hash
 
 const TABS = [
-  { id: 'sessions', label: 'Sessions' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'agent', label: 'Agent state' },
-  { id: 'loader', label: 'Loader' },
-]
+  { id: 'sessions', label: 'sessions' },
+  { id: 'skills', label: 'skills' },
+  { id: 'agent', label: 'observeAgentState' },
+  { id: 'loader', label: 'observeLoader' },
+] as const
 
 // Reloading is a navigation: the zone gateway sends it to the zone's login
 // page, which comes back here once signed in.
@@ -45,6 +45,7 @@ function LoginLost() {
 }
 
 export default function App() {
+  useSyncExternalStore(subscribeLanguage, currentLanguage)
   const hash = useSyncExternalStore(subscribeHash, readHash)
   const loginLost = useSyncExternalStore(dataModel.login.subscribe, dataModel.login.lost)
   const [page = '', arg] = hash.replace(/^#\/?/, '').split('/')
@@ -61,9 +62,9 @@ export default function App() {
   if (loginLost) return <LoginLost />
   const meta = (
     <>
-      <span data-testid="data-source">data: {dataModel.source}</span>
+      <span data-testid="data-source">{t('observeMetaSource', { source: dataModel.source })}</span>
       <span aria-hidden>·</span>
-      <span>auto {REFRESH_MS / 1000}s</span>
+      <span>{t('observeAutoRefresh', { seconds: REFRESH_MS / 1000 })}</span>
     </>
   )
 
@@ -88,9 +89,9 @@ export default function App() {
   return (
     <div className="mx-auto max-w-[1440px] px-4 pb-12 sm:px-6">
       <header className="mb-6 flex min-h-14 flex-wrap items-center gap-x-6 gap-y-2 border-b border-line py-2">
-        <a href="#/" className="-ml-1 flex h-8 items-center gap-1 rounded-lg pl-0.5 pr-1.5 text-sm font-medium transition-colors hover:text-accent" aria-label="Home">
+        <a href="#/" className="-ml-1 flex h-8 items-center gap-1 rounded-lg pl-0.5 pr-1.5 text-sm font-medium transition-colors hover:text-accent" aria-label={t('backHome')}>
           <ChevronLeft size={16} className="text-mute" />
-          OpenDAN Agent Loader
+          {t('observeOpendanAgentLoader')}
         </a>
         <nav className="flex gap-1">
           {TABS.map((x) => (
@@ -103,7 +104,7 @@ export default function App() {
                 tab === x.id ? 'bg-panel text-fg shadow-[inset_0_0_0_1px_var(--line)]' : 'text-mute hover:bg-hover hover:text-fg',
               )}
             >
-              {x.label}
+              {t(x.label)}
             </a>
           ))}
         </nav>
@@ -113,9 +114,9 @@ export default function App() {
             <Dot tone={status.error ? 'bad' : status.data ? 'ok' : 'mute'} />
             {meta}
           </span>
-          <button className="btn" onClick={() => mutate(() => true)} aria-label="Refresh">
+          <button className="btn" onClick={() => mutate(() => true)} aria-label={t('refresh')}>
             <RefreshCw size={12} />
-            Refresh
+            {t('refresh')}
           </button>
         </div>
       </header>

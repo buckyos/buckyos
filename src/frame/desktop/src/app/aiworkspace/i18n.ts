@@ -1,7 +1,7 @@
 /* AI Workspace text. Every string the app shows is a key `aiworkspace.<area>.<name>` with an English and a
  * Chinese entry in src/i18n/aiworkspace/<area>.ts, and an entry in each other language's table
  * src/i18n/aiworkspace/locales/<language>.ts; tests/datamodel/aiworkspace-i18n.test.ts keeps the tables
- * complete and the source free of hard-coded Chinese. A Desktop language without a table (Arabic) reads English.
+ * complete and the source free of hard-coded Chinese.
  *
  * English and Simplified Chinese are in the bundle; every other table is a chunk of its own, loaded when its
  * language is first asked for (`loadAiwsLocale`; the app's entries wait for it before they render). Until it
@@ -10,7 +10,7 @@
  *
  * React code takes the language from the Desktop's I18nProvider (`useAiwsText` in useAiwsText.ts) and
  * re-renders when it changes. Code outside React (store, session, offline replica, extension runtime) asks
- * `aiwsT` / `aiwsText()` here, which read the language the provider persisted; a context without page
+ * `aiwsT` / `aiwsText()` here, which follow the language this document is showing; a context without page
  * storage (the replica worker, Node test fixtures) is told its language with `setAiwsLocale`. This module
  * imports neither React nor the Desktop dictionaries, so the worker can use it.
  *
@@ -19,6 +19,7 @@
  * clauses are joined with the language's separators (`list`, `clauses`); numbers and times are formatted for
  * the language of the text (`intl`), never for a fixed one. */
 
+import { currentTextLocale } from '../../i18n/language'
 import { aiWorkspaceEn, aiWorkspaceZh } from '../../i18n/aiworkspace'
 
 export type TextVars = Record<string, string | number>
@@ -45,8 +46,6 @@ export interface AiwsText {
 
 type Table = Record<string, string>
 
-const LOCALE_STORAGE_KEY = 'buckyos.prototype.locale.v1'
-
 /** The languages with a table of their own, loaded on first use (keys: the Desktop's locale codes). */
 const LOADERS: Record<string, () => Promise<{ default: Table }>> = {
   'zh-TW': () => import('../../i18n/aiworkspace/locales/zh-TW'),
@@ -56,6 +55,7 @@ const LOADERS: Record<string, () => Promise<{ default: Table }>> = {
   de: () => import('../../i18n/aiworkspace/locales/de'),
   es: () => import('../../i18n/aiworkspace/locales/es'),
   ru: () => import('../../i18n/aiworkspace/locales/ru'),
+  ar: () => import('../../i18n/aiworkspace/locales/ar'),
 }
 
 /** Every language AI Workspace has text for. */
@@ -74,14 +74,9 @@ export function setAiwsLocale(locale: string | null): void {
   pinned = locale
 }
 
-/** The language code-outside-React text is in right now: pinned, else the one the I18nProvider persisted. */
+/** The language code-outside-React text is in right now: pinned, else the language the I18nProvider is showing. */
 export function currentAiwsLocale(): string {
-  if (pinned) return pinned
-  try {
-    const saved = globalThis.localStorage?.getItem(LOCALE_STORAGE_KEY)
-    if (saved) return saved
-  } catch { /* no storage */ }
-  return globalThis.document?.documentElement.lang || 'en'
+  return pinned ?? currentTextLocale()
 }
 
 /** Whether a language's text can be shown now (its table is here, or it has none and reads English). */
@@ -197,8 +192,8 @@ export function localizedLabels<K extends string>(keys: Record<K, string>): Read
 }
 
 /** The language the shared SDK helpers (buckyos: standard tables, recurrence texts) take for the current one. */
-export type SdkLocale = 'zh' | 'zh-TW' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'ru'
+export type SdkLocale = 'zh' | 'zh-TW' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'ru' | 'ar'
 export function sdkLocale(locale: string = aiwsText().intl): SdkLocale {
   if (locale === 'zh-CN') return 'zh'
-  return (['zh-TW', 'ja', 'ko', 'fr', 'de', 'es', 'ru'] as const).find((l) => l === locale) ?? 'en'
+  return (['zh-TW', 'ja', 'ko', 'fr', 'de', 'es', 'ru', 'ar'] as const).find((l) => l === locale) ?? 'en'
 }

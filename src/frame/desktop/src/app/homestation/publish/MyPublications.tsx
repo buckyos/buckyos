@@ -32,7 +32,7 @@ function HeadDebugPanel() {
           <tr style={{ color: 'var(--cp-muted)' }}>
             <th className="py-1 text-left font-medium">{t('homestation.debug.entry', 'Entry')}</th>
             <th className="py-1 text-left font-medium">{t('homestation.debug.kind', 'Kind')}</th>
-            <th className="py-1 text-right font-medium">seq</th>
+            <th className="py-1 text-right font-medium">{t('homestation.debug.sequence')}</th>
             <th className="py-1 text-left font-medium">{t('homestation.debug.state', 'State')}</th>
           </tr>
         </thead>

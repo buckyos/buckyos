@@ -398,3 +398,24 @@ test('Discuss with Agent embeds the system conversation beside the editor and as
   await page.getByRole('button', { name: 'Close the conversation' }).click()
   await expect(panel).toHaveCount(0)
 })
+
+test('the editor and its search panel follow the desktop language without losing edits', async ({ page }) => {
+  await page.goto('/tests/harness/shell.html')
+  const frame = page.frameLocator('#app')
+  const editor = frame.locator('.cm-content')
+  await expect(editor).toContainText('Hello')
+  await editor.click()
+  await page.keyboard.press('Control+End')
+  await page.keyboard.insertText(' unsaved')
+  await editor.press('Control+f')
+  await frame.getByRole('textbox', { name: 'Find', exact: true }).fill('unsaved')
+  await page.evaluate(() => {
+    const host = (window as unknown as { host: { send: (type: string, payload: unknown) => void } }).host
+    host.send('frame.localeChanged', { locale: 'fr-FR' })
+  })
+  await expect(frame.locator('html')).toHaveAttribute('lang', 'fr')
+  await expect(frame.getByRole('listbox', { name: 'Fichiers' })).toBeVisible()
+  await expect(frame.getByRole('textbox', { name: 'Rechercher', exact: true })).toHaveValue('unsaved')
+  await expect(editor).toContainText('unsaved')
+  await expect(page.locator('#title')).toContainText('Éditeur de texte')
+})

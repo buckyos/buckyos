@@ -364,15 +364,16 @@ const levelColor: Record<StatusLevel, string> = {
   critical: 'var(--cp-danger)',
 }
 
-function formatPercent(value: number) {
-  return `${Math.round(value)}%`
+function formatPercent(value: number, locale: string) {
+  return (value / 100).toLocaleString(locale, { style: 'percent', maximumFractionDigits: 0 })
 }
 
 function formatGb(value: number, locale: string) {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: value < 100 ? 1 : 0 }).format(value)
 }
 
-function formatTokens(value: number) {
+function formatTokens(value: number, locale: string) {
+  if (locale !== 'en') return value.toLocaleString(locale, { notation: 'compact', maximumFractionDigits: 2 })
   return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M` : `${(value / 1_000).toFixed(2)}K`
 }
 
@@ -404,12 +405,12 @@ export function SystemStatusLines({
   connectionState: ConnectionState
   status: SystemStatusState
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { metrics } = status
   const lines: Array<{ label: string; value: string; level: StatusLevel }> = metrics
     ? [
-        { label: t('shell.status.cpu', 'CPU'), value: formatPercent(metrics.cpu.usagePercent), level: usageLevel(metrics.cpu.usagePercent) },
-        { label: t('shell.status.memoryShort', 'MEM'), value: formatPercent(metrics.memory.usagePercent), level: usageLevel(metrics.memory.usagePercent) },
+        { label: t('shell.status.cpu', 'CPU'), value: formatPercent(metrics.cpu.usagePercent, locale), level: usageLevel(metrics.cpu.usagePercent) },
+        { label: t('shell.status.memoryShort', 'MEM'), value: formatPercent(metrics.memory.usagePercent, locale), level: usageLevel(metrics.memory.usagePercent) },
       ]
     : status.failed
       ? [
@@ -445,12 +446,13 @@ function UsageRow({
   label: string
   percent: number
 }) {
+  const { locale } = useI18n()
   const level = usageLevel(percent)
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-[13px] text-[color:var(--cp-muted)]">{label}</span>
-        <span className="text-[20px] font-medium leading-6 tabular-nums">{formatPercent(percent)}</span>
+        <span className="text-[20px] font-medium leading-6 tabular-nums">{formatPercent(percent, locale)}</span>
       </div>
       <div className="h-1 overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--cp-text)_8%,transparent)]">
         <div
@@ -479,7 +481,7 @@ function TokenUsageChart({ usage, failed }: { usage: SystemTokenUsage | null; fa
     <div className="space-y-2 px-4 pb-4" data-testid="taskbar-token-chart">
       <div className="flex items-center justify-between gap-2 text-xs text-[color:var(--cp-muted)]">
         <span className="whitespace-nowrap tabular-nums">
-          {t('shell.status.tokenPeak', 'AI Token peak {{count}}', { count: usage ? formatTokens(peak) : '--' })}
+          {t('shell.status.tokenPeak', 'AI Token peak {{count}}', { count: usage ? formatTokens(peak, locale) : '--' })}
         </span>
         <span className="flex gap-3">
           <span className="inline-flex items-center gap-1"><span className="size-2 rounded-[2px] bg-[color:var(--cp-chart-input)]" />{inputLabel}</span>
@@ -604,7 +606,7 @@ export function SystemStatusCard({
           ] as const).map(([period, label]) => (
             <div key={period} className="flex items-baseline justify-between gap-1" title={`${label} · ${t('shell.status.tokenTotals', 'Total tokens')}: ${tokenUsage ? tokenUsage.totals[period].toLocaleString(locale) : '--'}`}>
               <span className="whitespace-nowrap text-[color:var(--cp-muted)]">{label}</span>
-              <span className="font-medium tabular-nums">{tokenUsage ? formatTokens(tokenUsage.totals[period]) : '--'}</span>
+              <span className="font-medium tabular-nums">{tokenUsage ? formatTokens(tokenUsage.totals[period], locale) : '--'}</span>
             </div>
           ))}
         </div>
@@ -619,7 +621,7 @@ export function SystemStatusCard({
             <div className={rowClassName}>
               <span className="text-[color:var(--cp-muted)]">{t('shell.status.storage', 'Storage')}</span>
               <span className="tabular-nums">
-                {formatGb(metrics.disk.usedGb, locale)} / {formatGb(metrics.disk.totalGb, locale)} GB · {formatPercent(metrics.disk.usagePercent)}
+                {formatGb(metrics.disk.usedGb, locale)} / {formatGb(metrics.disk.totalGb, locale)} GB · {formatPercent(metrics.disk.usagePercent, locale)}
               </span>
             </div>
             <div className={rowClassName}>

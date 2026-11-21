@@ -95,7 +95,7 @@ export const taskCenterZh: Record<string, string> = {
 
   'taskCenter.source.system': '系统',
   'taskCenter.source.user': '用户',
-  'taskCenter.source.agent': 'Agent',
+  'taskCenter.source.agent': '智能体',
   'taskCenter.source.app': '应用',
 
   'taskCenter.home.running': '运行中',
@@ -133,7 +133,7 @@ export const taskCenterZh: Record<string, string> = {
   'taskCenter.detail.started': '开始',
   'taskCenter.detail.ended': '结束',
   'taskCenter.detail.updated': '更新',
-  'taskCenter.detail.schema': 'Schema',
+  'taskCenter.detail.schema': '数据结构',
   'taskCenter.detail.payload': '扩展数据',
 
   'taskCenter.schedules.rule': '周期',

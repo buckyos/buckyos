@@ -92,34 +92,34 @@ const classifyError = (error: unknown): LoginError => {
   return { kind: 'unknown', detail: message }
 }
 
-const errorMessage = (err: Exclude<LoginError, { kind: 'denied' }>): string => {
+const errorMessage = (err: Exclude<LoginError, { kind: 'denied' }>, t: ReturnType<typeof useI18n>['t']): string => {
   switch (err.kind) {
     case 'empty_fields':
-      return 'Please enter your username and password.'
+      return t('sso.login.error.empty_fields')
     case 'invalid_redirect':
-      return 'Invalid or missing redirect URL. Unable to continue sign-in.'
+      return t('sso.login.error.invalid_redirect')
     case 'init_failed':
-      return `Failed to initialize: ${err.detail}`
+      return t('sso.login.error.init_failed', undefined, { detail: err.detail })
     case 'invalid_password':
-      return 'Incorrect password. Please check and try again.'
+      return t('sso.login.error.invalid_password')
     case 'user_not_found':
       return err.username
-        ? `User "${err.username}" does not exist.`
-        : 'User does not exist. Please check your username.'
+        ? t('sso.login.error.user_not_found_named', undefined, { username: err.username })
+        : t('sso.login.error.user_not_found')
     case 'account_locked':
       return err.username
-        ? `Account "${err.username}" has been locked. Please contact the administrator.`
-        : 'Your account has been locked. Please contact the administrator.'
+        ? t('sso.login.error.account_locked_named', undefined, { username: err.username })
+        : t('sso.login.error.account_locked')
     case 'rate_limited':
-      return 'Too many login attempts. Please wait a moment and try again.'
+      return t('sso.login.error.rate_limited')
     case 'network':
-      return 'Unable to reach the server. Please check your network connection.'
+      return t('sso.login.error.network')
     case 'timeout':
-      return 'Request timed out. Please try again.'
+      return t('sso.login.error.timeout')
     case 'server':
-      return `Server error: ${err.detail}`
+      return t('sso.login.error.server', undefined, { detail: err.detail })
     case 'unknown':
-      return err.detail || 'An unexpected error occurred. Please try again.'
+      return err.detail || t('sso.login.error.unknown')
   }
 }
 
@@ -186,7 +186,7 @@ const LoginPage = () => {
   const [showDidLogin, setShowDidLogin] = useState(false)
   const [didErrorOpen, setDidErrorOpen] = useState(true)
 
-  useDocumentTitle('Sign in')
+  useDocumentTitle(t('sso.userInvite.signIn'))
 
   useEffect(() => {
     let live = true
@@ -284,7 +284,7 @@ const LoginPage = () => {
 
   return (
     <AuthPageFrame
-      title={<>Sign in to {zone.title}</>}
+      title={t('sso.login.zone', undefined, { zone: zone.title })}
       header={
         <>
           {zone.description && (
@@ -302,7 +302,7 @@ const LoginPage = () => {
             color="text.secondary"
             sx={{ mt: 0.5 }}
           >
-            Enter your credentials to continue
+            {t('sso.login.credentials')}
           </Typography>
           {requesterName && (
             <Box
@@ -320,7 +320,7 @@ const LoginPage = () => {
             >
               <ExternalLink size={14} style={{ opacity: 0.6 }} />
               <Typography variant="caption" color="text.secondary">
-                Requested by <strong>{requesterName}</strong>
+                {t('sysdlg.select.requestedBy', undefined, { name: requesterName })}
               </Typography>
             </Box>
           )}
@@ -350,7 +350,7 @@ const LoginPage = () => {
           onClose={() => setError(null)}
           data-testid="login-error"
         >
-          {error.kind === 'denied' ? denialText(t, error.denial) : errorMessage(error)}
+          {error.kind === 'denied' ? denialText(t, error.denial) : errorMessage(error, t)}
         </Alert>
       )}
 
@@ -359,7 +359,7 @@ const LoginPage = () => {
       ) : (
         <Box component="form" onSubmit={handleSubmit} noValidate>
           <TextField
-            label="Username"
+            label={t('sso.login.username')}
             autoComplete="username"
             slotProps={{ htmlInput: { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } }}
             autoFocus
@@ -375,7 +375,8 @@ const LoginPage = () => {
           />
 
           <TextField
-            label="Password"
+            id="login-password"
+            label={t('sso.register.password')}
             type={showPassword ? 'text' : 'password'}
             autoComplete="current-password"
             value={password}
@@ -392,6 +393,9 @@ const LoginPage = () => {
                   <InputAdornment position="end">
                     <IconButton
                       size="small"
+                      aria-label={t('sso.login.showCharacters')}
+                      aria-pressed={showPassword}
+                      aria-controls="login-password"
                       onClick={() => setShowPassword((v) => !v)}
                       edge="end"
                       sx={{ border: 'none' }}
@@ -427,7 +431,7 @@ const LoginPage = () => {
               }}
               sx={{ whiteSpace: 'nowrap' }}
             >
-              Forgot password?
+              {t('sso.login.forgotPassword')}
             </Link>
           </Box>
 
@@ -441,7 +445,7 @@ const LoginPage = () => {
             {submitting ? (
               <CircularProgress size={22} color="inherit" />
             ) : (
-              'Sign In'
+              t('sso.login.submit')
             )}
           </Button>
 

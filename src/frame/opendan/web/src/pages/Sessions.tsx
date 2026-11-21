@@ -1,3 +1,4 @@
+import { stateText, t } from '../i18n'
 import { useMemo, useState } from 'react'
 import { fmtAgo, useQuery } from '../lib'
 import { dataModel, type HostedStatus, type RegistryEntry } from '../model'
@@ -39,10 +40,10 @@ function Select({ label, value, options, onChange }: { label: string; value: str
     <label className="flex items-center gap-2 text-xs text-mute">
       {label}
       <select className="input" aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">all</option>
+        <option value="">{t('observeAll')}</option>
         {options.map((o) => (
           <option key={o} value={o}>
-            {o}
+            {stateText(o)}
           </option>
         ))}
       </select>
@@ -52,7 +53,7 @@ function Select({ label, value, options, onChange }: { label: string; value: str
 
 function HostedMark({ hosted }: { hosted?: HostedStatus }) {
   if (!hosted) return <span className="text-xs text-mute">–</span>
-  return <Badge value={hosted.loaded ? 'loaded' : 'unloaded'} tone={hosted.loaded ? 'ok' : undefined} />
+  return <Badge value={hosted.loaded ? t('observeLoaded') : t('observeUnloaded')} tone={hosted.loaded ? 'ok' : undefined} />
 }
 
 export default function SessionsPage() {
@@ -76,7 +77,7 @@ export default function SessionsPage() {
   return (
     <>
       <ErrorBox error={sessions.error ?? active.error} />
-      <Panel title="Active" count={active.data?.length ?? 0} testId="active-panel">
+      <Panel title={t('gsActive')} count={active.data?.length ?? 0} testId="active-panel">
         {active.data?.length ? (
           <ul className="divide-y divide-line">
             {active.data.map((a) => (
@@ -84,7 +85,7 @@ export default function SessionsPage() {
                 <div className="flex min-w-0 flex-col gap-1">
                   <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
                     <Badge value={a.run_state} />
-                    {a.possibly_interrupted && <Badge value="possibly interrupted" tone="bad" />}
+                    {a.possibly_interrupted && <Badge value={t('observePossiblyInterrupted')} tone="bad" />}
                   </span>
                   <span className="flex items-baseline gap-2">
                     <Sid sid={a.session_id} />
@@ -103,28 +104,28 @@ export default function SessionsPage() {
                       ))}
                     </ul>
                   )}
-                  {a.overlap.length > 0 && <div className="mt-1"><Badge value={`overlap: ${a.overlap.join(', ')}`} tone="pending" /></div>}
+                  {a.overlap.length > 0 && <div className="mt-1"><Badge value={t('observeOverlap', { items: a.overlap.join(', ') })} tone="pending" /></div>}
                 </div>
                 <div className="flex min-w-0 flex-col gap-1 text-xs md:items-end md:text-right">
-                  <span className="tabular-nums text-mute" title="heartbeat">{fmtAgo(a.activity.heartbeat_ms)}</span>
+                  <span className="tabular-nums text-mute" title={t('observeHeartbeat')}>{fmtAgo(a.activity.heartbeat_ms)}</span>
                   <Mono className="text-mute">{a.driver}</Mono>
                 </div>
               </li>
             ))}
           </ul>
         ) : (
-          <Empty>No session is running or waiting.</Empty>
+          <Empty>{t('observeNoSessionIsRunningOrWaiting')}</Empty>
         )}
       </Panel>
       <Panel
-        title="Sessions"
-        count={filtered ? `${visible.length} of ${rows.length}` : visible.length}
+        title={t('sessions')}
+        count={filtered ? t('observePartsOf', { count: visible.length, total: rows.length }) : visible.length}
         testId="sessions-panel"
         extra={
           <>
-            <Select label="kind" value={kind} options={kinds} onChange={setKind} />
-            <Select label="class" value={cls} options={classes} onChange={setCls} />
-            <Select label="run_state" value={runState} options={['created', 'ready', 'running', 'waiting', 'finished']} onChange={setRunState} />
+            <Select label={t('observeKind')} value={kind} options={kinds} onChange={setKind} />
+            <Select label={t('observeClass')} value={cls} options={classes} onChange={setCls} />
+            <Select label={t('observeRunState')} value={runState} options={['created', 'ready', 'running', 'waiting', 'finished']} onChange={setRunState} />
           </>
         }
       >
@@ -133,13 +134,13 @@ export default function SessionsPage() {
             <thead>
               <tr>
                 <th>sid</th>
-                <th>kind / class</th>
-                <th>run_state</th>
-                <th>outcome</th>
-                <th>status</th>
-                <th>driver</th>
-                <th>hosted</th>
-                <th>updated</th>
+                <th>{t('observeKindClass')}</th>
+                <th>{t('observeRunState')}</th>
+                <th>{t('observeOutcome')}</th>
+                <th>{t('observeStatus')}</th>
+                <th>{t('observeDriver')}</th>
+                <th>{t('observeHosted')}</th>
+                <th>{t('observeUpdated')}</th>
               </tr>
             </thead>
             <tbody>
@@ -148,8 +149,8 @@ export default function SessionsPage() {
                   <td style={{ paddingLeft: filtered ? 0 : depth * 16 }} className="whitespace-nowrap">
                     {depth > 0 && <span className="mr-1.5 font-mono text-xs text-bar">{filtered ? '↳' : '└'}</span>}
                     <Sid sid={entry.session_id} />
-                    {filtered && entry.origin?.parent_session && <span className="ml-1.5 text-xs text-mute">of {entry.origin.parent_session}</span>}
-                    {entry.unreachable && <span className="ml-2"><Badge value="unreachable" tone="bad" /></span>}
+                    {filtered && entry.origin?.parent_session && <span className="ml-1.5 text-xs text-mute">{t('observeOf')} {entry.origin.parent_session}</span>}
+                    {entry.unreachable && <span className="ml-2"><Badge value={t('observeUnreachable')} tone="bad" /></span>}
                   </td>
                   <td className="whitespace-nowrap">
                     {entry.kind}
@@ -158,8 +159,8 @@ export default function SessionsPage() {
                   <td className="whitespace-nowrap">
                     <span className="inline-flex items-baseline gap-x-2">
                       <Badge value={entry.status.run_state} />
-                      {entry.status.needs_input && <span className="text-xs text-mute">needs input</span>}
-                      {entry.status.turn_open && <span className="text-xs text-mute">turn open</span>}
+                      {entry.status.needs_input && <span className="text-xs text-mute">{t('observeNeedsInput')}</span>}
+                      {entry.status.turn_open && <span className="text-xs text-mute">{t('observeTurnOpen')}</span>}
                       {entry.status.paused && <Badge value={`paused: ${entry.status.paused}`} tone="waiting" />}
                     </span>
                   </td>
@@ -171,9 +172,9 @@ export default function SessionsPage() {
                   </td>
                   <td>
                     {entry.status.one_line_status || <span className="text-mute">{entry.objective}</span>}
-                    {entry.status.last_error != null && <span className="ml-2"><Badge value="error" tone="bad" /></span>}
+                    {entry.status.last_error != null && <span className="ml-2"><Badge value={t('observeError')} tone="bad" /></span>}
                     {entry.runtime_unavailable && (
-                      <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-mute"><Badge value="runtime unavailable" tone="waiting" /> {entry.runtime_unavailable}</span>
+                      <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-mute"><Badge value={t('observeRuntimeUnavailable')} tone="waiting" /> {entry.runtime_unavailable}</span>
                     )}
                   </td>
                   <td>

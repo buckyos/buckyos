@@ -1,5 +1,6 @@
 /* ── Workflow sidebar: Definitions (system / mine) + recent Runs ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useState } from 'react'
 import {
   AlertTriangle,
@@ -16,7 +17,7 @@ import {
 } from 'lucide-react'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
 import type { WorkflowDefinition, WorkflowRunSummary, WorkflowSelection } from '../types'
-import { runStatusStyle, sourceLabels, statusBadge } from './run-status'
+import { runStatusStyle, statusBadge } from './run-status'
 
 interface SidebarProps {
   selection: WorkflowSelection
@@ -25,6 +26,7 @@ interface SidebarProps {
 }
 
 export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps) {
+  const { t } = useI18n()
   const store = useWorkflowStore()
   const [search, setSearch] = useState('')
   const [showArchived, setShowArchived] = useState(false)
@@ -87,7 +89,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
               className="rounded px-1 py-px text-[9px] uppercase tracking-wide"
               style={{ background: sb.bg, color: sb.fg }}
             >
-              {sb.label}
+              {t(`workflow.status.${d.status}`, d.status)}
             </span>
             <span
               className="rounded px-1 py-px text-[9px]"
@@ -97,7 +99,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
                 border: '1px solid var(--cp-border)',
               }}
             >
-              {sourceLabels[d.source]}
+              {t(`workflow.source.${d.source}`, d.source)}
             </span>
             {errors > 0 && (
               <span className="flex items-center gap-0.5 text-[10px]" style={{ color: 'var(--cp-danger)' }}>
@@ -141,7 +143,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
             {r.definitionName}
           </div>
           <div className="mt-0.5 flex items-center gap-1 text-[10px]" style={{ color: 'var(--cp-muted)' }}>
-            <span style={{ color: sty.color }}>{sty.label}</span>
+            <span style={{ color: sty.color }}>{t(`workflow.status.${r.status}`, r.status)}</span>
             <span className="truncate font-mono">{r.runId.slice(0, 16)}</span>
           </div>
         </div>
@@ -168,12 +170,12 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
           <WorkflowIcon size={15} />
         </div>
         <div className="flex-1 text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-          Workflow
+          {t('apps.workflow')}
         </div>
         <button
           type="button"
           onClick={() => void store.load()}
-          title="Reload"
+          title={t('workflow.reload')}
           className="flex h-7 w-7 items-center justify-center rounded-lg"
           style={{
             background: 'var(--cp-surface-2)',
@@ -186,7 +188,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
         <button
           type="button"
           onClick={onImport}
-          title="Import Workflow"
+          title={t('workflow.importWorkflow')}
           className="flex h-7 w-7 items-center justify-center rounded-lg"
           style={{
             background: 'var(--cp-surface-2)',
@@ -199,7 +201,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
         <button
           type="button"
           onClick={() => onSelect({ kind: 'ai_prompt' })}
-          title="AI Generate Prompt"
+          title={t('workflow.promptTitle')}
           className="flex h-7 w-7 items-center justify-center rounded-lg"
           style={{
             background: 'var(--cp-surface-2)',
@@ -225,7 +227,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search definitions"
+            placeholder={t('workflow.search')}
             className="w-full bg-transparent text-xs outline-none placeholder:text-[color:var(--cp-muted)]"
             style={{ color: 'var(--cp-text)' }}
           />
@@ -247,7 +249,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
         )}
         <SectionHeader
           icon={<Lock size={13} />}
-          label="System"
+          label={t('workflow.system')}
           expanded={expanded.system}
           onToggle={() => setExpanded((e) => ({ ...e, system: !e.system }))}
           count={systemDefs.length}
@@ -255,14 +257,14 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
         {expanded.system && (
           <div className="mt-1 space-y-0.5">
             {systemDefs.map(renderDefinition)}
-            {systemDefs.length === 0 && <Empty text={store.loading ? 'Loading…' : 'No system definitions.'} />}
+            {systemDefs.length === 0 && <Empty text={store.loading ? t('states.loading') : t('workflow.noSystem')} />}
           </div>
         )}
 
         <div className="mt-3">
           <SectionHeader
             icon={<FileCode2 size={13} />}
-            label="Definitions"
+            label={t('workflow.definitions')}
             expanded={expanded.mine}
             onToggle={() => setExpanded((e) => ({ ...e, mine: !e.mine }))}
             count={ownDefs.length}
@@ -275,16 +277,16 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
                 }}
                 className="text-[10px] uppercase tracking-wider"
                 style={{ color: showArchived ? 'var(--cp-accent)' : 'var(--cp-muted)' }}
-                title="Toggle archived"
+                title={t('workflow.toggleArchived')}
               >
-                archived
+                {t('workflow.status.archived')}
               </button>
             }
           />
           {expanded.mine && (
             <div className="mt-1 space-y-0.5">
               {ownDefs.map(renderDefinition)}
-              {ownDefs.length === 0 && <Empty text="No definitions match." />}
+              {ownDefs.length === 0 && <Empty text={t('workflow.noMatches')} />}
             </div>
           )}
         </div>
@@ -292,7 +294,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
         <div className="mt-3">
           <SectionHeader
             icon={<ListChecks size={13} />}
-            label="Runs"
+            label={t('workflow.runs')}
             expanded={expanded.runs}
             onToggle={() => setExpanded((e) => ({ ...e, runs: !e.runs }))}
             count={store.listRuns().length}
@@ -300,7 +302,7 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
           {expanded.runs && (
             <div className="mt-1 space-y-0.5">
               {runs.map(renderRun)}
-              {runs.length === 0 && <Empty text="No runs visible to you." />}
+              {runs.length === 0 && <Empty text={t('workflow.noVisibleRuns')} />}
             </div>
           )}
         </div>

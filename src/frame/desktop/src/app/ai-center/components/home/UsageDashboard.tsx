@@ -11,9 +11,10 @@ import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageOverview, UsageScope, UsageSummary, UsageTimeRange, UserUsageSummary } from '../../../../api/aicc_mgr'
-import type { QuotaRuleDraft } from '../../datamodel/quota'
+import { formatTokens as formatQuotaTokens, type QuotaRuleDraft } from '../../datamodel/quota'
 
-function formatTokens(n: number): string {
+function formatTokens(n: number, locale: string): string {
+  if (locale !== 'en') return formatQuotaTokens(n, locale)
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return String(n)
@@ -30,29 +31,29 @@ function usageStatusLabel(status: UsageEvent['status'], t: TFn): string {
   return status === 'success' ? t('aiCenter.home.usageStatusSuccess', 'Success') : t('aiCenter.home.usageStatusFailed', 'Failed')
 }
 
-function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number], t: TFn): string {
+function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number], t: TFn, locale: string): string {
   const inputs = candidate.preference_score_inputs
   const exact = inputs?.exact_model_weight ?? candidate.exact_model_weight ?? 1
   const provider = inputs?.provider_weight ?? candidate.provider_weight ?? 1
   const combined = inputs?.combined_weight ?? exact * provider
   return t('aiCenter.home.weightSummary', 'exact {{exact}} · provider {{provider}} · combined {{combined}}', {
-    exact: formatWeight(exact),
-    provider: formatWeight(provider),
-    combined: formatWeight(combined),
+    exact: formatWeight(exact, locale),
+    provider: formatWeight(provider, locale),
+    combined: formatWeight(combined, locale),
   })
 }
 
-function formatWeight(weight: number): string {
-  return weight.toFixed(2).replace(/\.?0+$/, '')
+function formatWeight(weight: number, locale: string): string {
+  return weight.toLocaleString(locale, { maximumFractionDigits: 2, useGrouping: false })
 }
 
 function usageFinanceAmount(event: UsageEvent): number {
   return event.finance_snapshot?.amount ?? 0
 }
 
-function formatUsageEventMoney(event: UsageEvent): string {
+function formatUsageEventMoney(event: UsageEvent, locale: string): string {
   const currency = event.finance_snapshot?.currency
-  return currency ? formatMoney(usageFinanceAmount(event), currency) : '-'
+  return currency ? formatMoney(usageFinanceAmount(event), currency, locale) : '-'
 }
 
 function usageTokens(event: UsageEvent): number {
@@ -98,20 +99,20 @@ function usageProviderDisplayName(event: UsageEvent, providerNames: Map<string, 
   return providerNames.get(identifier) ?? identifier
 }
 
-function formatMoney(amount: number, currency: string): string {
+function formatMoney(amount: number, currency: string, locale: string): string {
   const abs = Math.abs(amount)
   const digits = abs > 0 && abs < 0.01 ? 4 : 2
   try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency, currencyDisplay: 'code', maximumFractionDigits: digits }).format(amount)
+    return new Intl.NumberFormat(locale, { style: 'currency', currency, currencyDisplay: 'code', maximumFractionDigits: digits }).format(amount)
   } catch {
-    return `${amount.toFixed(digits)} ${currency}`
+    return `${amount.toLocaleString(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${currency}`
   }
 }
 
-function formatFinanceTotals(totals: UsageSummary['finance_totals'], expanded = false): string {
+function formatFinanceTotals(totals: UsageSummary['finance_totals'], locale: string, expanded = false): string {
   if (totals.length === 0) return '-'
   const visible = expanded ? totals : totals.slice(0, 1)
-  return visible.map((money) => formatMoney(money.amount, money.currency)).join('\n')
+  return visible.map((money) => formatMoney(money.amount, money.currency, locale)).join('\n')
 }
 
 function formatLocalTime(value: string, locale: string): string {
@@ -338,7 +339,11 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
   const isUsagePage = mode === 'usage'
   const pageLimit = isUsagePage ? PAGE_SIZE : HOME_USAGE_LIMIT
   const hasMultipleCurrencies = summary.finance_totals.length > 1
-  const costValue = formatFinanceTotals(summary.finance_totals, costExpanded)
+  const trendDates = useMemo(() => ({
+    axis: new Intl.DateTimeFormat(locale, { day: 'numeric' }),
+    tooltip: new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }),
+  }), [locale])
+  const costValue = formatFinanceTotals(summary.finance_totals, locale, costExpanded)
   const currencyInteraction = hasMultipleCurrencies
     ? costExpanded
       ? t('aiCenter.home.collapseCurrenciesHint', 'Click to collapse currencies')
@@ -674,22 +679,28 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
             </span>
           </div>
           <div className="flex items-end gap-1 h-40 md:h-52">
-            {trend.map((point) => (
-              <div key={point.timestamp} className="flex-1 flex flex-col items-center gap-1 min-w-0">
-                <div
-                  className="w-full rounded-t-sm"
-                  title={t('aiCenter.home.trendPointTitle', '{{time}}: {{tokens}} tokens / {{cost}}', { time: point.timestamp, tokens: formatTokens(point.tokens), cost: formatFinanceTotals(point.finance_totals, true) })}
-                  style={{
-                    height: `${Math.max(4, (point.tokens / maxTrendTokens) * (isMobile ? 132 : 180))}px`,
-                    background: point.tokens > 0 ? 'var(--cp-accent)' : 'var(--cp-border)',
-                    opacity: point.tokens > 0 ? 0.78 : 0.4,
-                  }}
-                />
-                <span className="text-[10px] hidden sm:block" style={{ color: 'var(--cp-muted)' }}>
-                  {point.timestamp.slice(3)}
-                </span>
-              </div>
-            ))}
+            {trend.map((point) => {
+              // Older fixtures use MM-DD; the service sends YYYY-MM-DD local calendar dates.
+              const date = new Date(`${point.timestamp.length === 5 ? '2000-' : ''}${point.timestamp}T00:00:00`)
+              const day = Number.isNaN(date.getTime()) ? point.timestamp : trendDates.axis.format(date)
+              const dateLabel = Number.isNaN(date.getTime()) ? point.timestamp : trendDates.tooltip.format(date)
+              return (
+                <div key={point.timestamp} className="flex-1 flex flex-col items-center gap-1 min-w-0">
+                  <div
+                    className="w-full rounded-t-sm"
+                    title={t('aiCenter.home.trendPointTitle', '{{time}}: {{tokens}} tokens / {{cost}}', { time: dateLabel, tokens: formatTokens(point.tokens, locale), cost: formatFinanceTotals(point.finance_totals, locale, true) })}
+                    style={{
+                      height: `${Math.max(4, (point.tokens / maxTrendTokens) * (isMobile ? 132 : 180))}px`,
+                      background: point.tokens > 0 ? 'var(--cp-accent)' : 'var(--cp-border)',
+                      opacity: point.tokens > 0 ? 0.78 : 0.4,
+                    }}
+                  />
+                  <span className="text-[10px] hidden sm:block" style={{ color: 'var(--cp-muted)' }}>
+                    {day}
+                  </span>
+                </div>
+              )
+            })}
           </div>
         </section>
 
@@ -698,10 +709,10 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
             {t('aiCenter.home.usageSummary', 'Usage Summary')}
           </h3>
           <div className="grid grid-cols-2 gap-4 items-stretch">
-            <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens) })} />
-            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens) })} />
-            <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens) })} />
-            <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={formatFinanceTotals(summary.finance_totals)} />
+            <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens, locale) })} />
+            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens, locale) })} />
+            <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens, locale) })} />
+            <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={formatFinanceTotals(summary.finance_totals, locale)} />
           </div>
         </section>
       </div>}
@@ -711,11 +722,11 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           {t('aiCenter.home.usageSummary', 'Usage Summary')}
         </h3>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 items-stretch">
-          <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens) })} />
-          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens) })} />
-          <Stat label={t('aiCenter.home.total', 'Total')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens) })} />
+          <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens, locale) })} />
+          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens, locale) })} />
+          <Stat label={t('aiCenter.home.total', 'Total')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens, locale) })} />
           <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
-          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals)} />
+          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals, locale)} />
         </div>
       </section>}
 
@@ -972,8 +983,8 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
                         <CopyableText value={event.session_id ?? '-'} mono />
                       )}
                     </td>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens)}</td>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event)}</td>
+                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens, locale)}</td>
+                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event, locale)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</td>
                   </tr>
                 )
@@ -1099,7 +1110,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
 }
 
 function UserUsageTable({ users, onSelect }: { users: UserUsageSummary[]; onSelect: (user: string) => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [page, setPage] = useState(0)
   const sorted = useMemo(() => [...users].sort((left, right) => right.total_tokens - left.total_tokens || left.user_id.localeCompare(right.user_id)), [users])
   const rows = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
@@ -1120,9 +1131,9 @@ function UserUsageTable({ users, onSelect }: { users: UserUsageSummary[]; onSele
             {rows.map((user) => (
               <tr key={user.user_id} data-testid="user-usage-row" data-user-id={user.user_id} style={{ borderTop: '1px solid var(--cp-border)' }}>
                 <td className="max-w-48 px-3 py-1"><button type="button" onClick={() => onSelect(user.user_id)} className="min-h-11 max-w-full break-all text-left underline-offset-2 hover:underline" style={{ color: 'var(--cp-accent)' }}>{user.user_id}</button></td>
-                <td className="px-3 py-2 tabular-nums">{user.total_requests.toLocaleString()}</td>
-                <td className="px-3 py-2 tabular-nums" title={user.total_tokens.toLocaleString()}>{formatTokens(user.total_tokens)}</td>
-                <td className="px-3 py-2"><span className="whitespace-pre-line">{formatFinanceTotals(user.finance_totals, true)}</span>{!user.finance_complete && <div style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.partialFinance', 'Partial financial total')}</div>}</td>
+                <td className="px-3 py-2 tabular-nums">{user.total_requests.toLocaleString(locale)}</td>
+                <td className="px-3 py-2 tabular-nums" title={user.total_tokens.toLocaleString(locale)}>{formatTokens(user.total_tokens, locale)}</td>
+                <td className="px-3 py-2"><span className="whitespace-pre-line">{formatFinanceTotals(user.finance_totals, locale, true)}</span>{!user.finance_complete && <div style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.partialFinance', 'Partial financial total')}</div>}</td>
               </tr>
             ))}
             {users.length === 0 && <tr><td colSpan={4} className="px-3 py-8 text-center" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.noBreakdownData', 'No usage data yet.')}</td></tr>}
@@ -1311,14 +1322,14 @@ function UsageEventCard({
   const providerDisplayName = usageProviderDisplayName(event, providerNames)
   const appAgent = `${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`
   const copyValue = [
-    `user: ${event.user_id ?? event.tenant_id}`,
-    `provider: ${providerDisplayName}`,
-    `model: ${event.exact_model}`,
-    `tokens: ${formatTokens(tokens)}`,
-    `cost: ${formatUsageEventMoney(event)}`,
-    `time: ${formatLocalTime(event.timestamp, locale)}`,
-    `status: ${event.status}`,
-    event.session_id ? `task/session: ${event.session_id}` : '',
+    `${t('aiCenter.home.usageUser')}: ${event.user_id ?? event.tenant_id}`,
+    `${t('aiCenter.home.filterProvider')}: ${providerDisplayName}`,
+    `${t('aiCenter.home.filterModel')}: ${event.exact_model}`,
+    `${t('aiCenter.home.colTokens')}: ${formatTokens(tokens, locale)}`,
+    `${t('aiCenter.home.colCost')}: ${formatUsageEventMoney(event, locale)}`,
+    `${t('aiCenter.home.colTime')}: ${formatLocalTime(event.timestamp, locale)}`,
+    `${t('aiCenter.home.colStatus')}: ${usageStatusLabel(event.status, t)}`,
+    event.session_id ? `${t('aiCenter.home.taskSession')}: ${event.session_id}` : '',
   ].filter(Boolean).join('\n')
 
   const copyDetails = async () => {
@@ -1356,8 +1367,8 @@ function UsageEventCard({
           </div>
         </div>
         <div className="text-right">
-          <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event)}</div>
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(tokens) })}</div>
+          <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event, locale)}</div>
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(tokens, locale) })}</div>
         </div>
       </div>
       <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
@@ -1416,7 +1427,7 @@ function RecentUsageRow({
       <span style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp, locale)}</span>
       <span className="truncate" title={providerDisplayName} style={{ color: 'var(--cp-text)' }}>{providerDisplayName}</span>
       <span className="truncate font-mono" title={event.exact_model} style={{ color: 'var(--cp-text)' }}>{event.exact_model}</span>
-      <span style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens)}</span>
+      <span style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens, locale)}</span>
       <span style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</span>
       <span className="break-all md:col-span-5" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.usageUser', 'User')}: {event.user_id ?? event.tenant_id}</span>
     </div>
@@ -1537,16 +1548,16 @@ function RecentTraceCandidate({
   candidate: RouteTrace['ranked_candidates'][number]
   selected: boolean
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   return (
     <div className="flex justify-between gap-3 text-xs">
       <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-muted)' }}>
         <span className="block truncate">{candidate.exact_model}</span>
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
-          {candidateWeightSummary(candidate, t)}
+          {candidateWeightSummary(candidate, t, locale)}
         </span>
       </span>
-      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toFixed(2)}</span>
+      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
     </div>
   )
 }
@@ -1855,12 +1866,13 @@ function MeterRow({
   active?: boolean
   actionLabel?: string
 }) {
+  const { locale } = useI18n()
   const percent = max > 0 ? Math.max(3, (value / max) * 100) : 0
   const content = (
     <>
       <div className="flex items-center justify-between gap-3 text-xs mb-1 min-w-0">
         <TruncatedText value={label} className="flex-1" />
-        <span className="shrink-0 tabular-nums" style={{ color: 'var(--cp-muted)' }}>{formatTokens(value)}</span>
+        <span className="shrink-0 tabular-nums" style={{ color: 'var(--cp-muted)' }}>{formatTokens(value, locale)}</span>
       </div>
       <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--cp-bg)' }}>
         <div className="h-full rounded-full" style={{ width: `${percent}%`, background: 'var(--cp-accent)' }} />

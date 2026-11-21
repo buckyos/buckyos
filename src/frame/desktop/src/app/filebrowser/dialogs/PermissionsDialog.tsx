@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import { PUBLIC_PRINCIPAL, ZONE_USERS_PRINCIPAL, permissionSource } from '../data/permissions'
 import type { AclGrant, AclView, GrantLevel, PrincipalOption } from '../data/permissions'
-import { toUiError } from '../data/state'
+import { toUiError, type UiError } from '../data/state'
 import { levelLabel, principalLabel } from './permissionLabels'
 
 export interface PermissionsRequest {
@@ -31,7 +31,7 @@ export function PermissionsDialog({ request, onClose }: { request: PermissionsRe
   const [acl, setAcl] = useState<AclView | null>(null)
   const [draft, setDraft] = useState<{ inherit: boolean; entries: AclGrant[] } | null>(null)
   const [users, setUsers] = useState<PrincipalOption[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<UiError | null>(null)
   const [saving, setSaving] = useState(false)
   const [reload, setReload] = useState(0)
   const [adding, setAdding] = useState<{ text: string; level: GrantLevel }>({ text: '', level: 'read' })
@@ -44,7 +44,7 @@ export function PermissionsDialog({ request, onClose }: { request: PermissionsRe
       setAcl(view)
       setDraft({ inherit: view.inherit, entries: view.entries.map((entry) => ({ ...entry })) })
       setError(null)
-    }).catch((err: unknown) => { if (alive) setError(toUiError(err).fallback) })
+    }).catch((err: unknown) => { if (alive) setError(toUiError(err)) })
     source.listUsers().then((list) => { if (alive) setUsers(list) }).catch(() => {})
     return () => { alive = false }
   }, [source, request.path, reload])
@@ -82,7 +82,7 @@ export function PermissionsDialog({ request, onClose }: { request: PermissionsRe
       request.onSaved?.()
       onClose()
     } catch (err) {
-      setError(toUiError(err).fallback)
+      setError(toUiError(err))
       setReload((n) => n + 1)
     } finally {
       setSaving(false)
@@ -166,7 +166,7 @@ export function PermissionsDialog({ request, onClose }: { request: PermissionsRe
         </div>
         {hasPublic && <p className="mt-3 rounded-[8px] bg-[color:color-mix(in_srgb,var(--cp-warning)_14%,var(--cp-surface-opaque))] px-3 py-2 text-[12px] text-[color:color-mix(in_srgb,var(--cp-warning)_55%,var(--cp-text))]" data-testid="acl-public-warning">{t('filebrowser.permissions.publicWarning', 'Anyone can open this without signing in, including anyone who gets a link to it.')}</p>}
       </>}
-      {error && <p className="mt-3 text-sm text-[color:var(--cp-danger)]" role="alert">{error}</p>}
+      {error && <p className="mt-3 text-sm text-[color:var(--cp-danger)]" role="alert">{t(error.messageKey, error.fallback)}</p>}
     </DialogContent>
     <DialogActions>
       {acl?.canManage

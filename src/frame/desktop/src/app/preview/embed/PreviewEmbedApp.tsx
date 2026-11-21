@@ -34,6 +34,11 @@ const host = new PreviewEmbedHost({
 })
 const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn) } }
 
+function StandaloneNotice() {
+  const { t } = useI18n()
+  return <p role="alert" className="p-6 text-sm">{t('previewApp.embedOnly')}</p>
+}
+
 /**
  * The system Preview component alone, for an App to show inside its own UI (`buckyos.preview-embed`): no
  * Desktop shell, no Preview App window. The content is read with this origin's own session; the App only ever
@@ -43,7 +48,7 @@ const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listen
  */
 export function PreviewEmbedApp() {
   const { init, theme, locale } = useSyncExternalStore(subscribe, () => view)
-  if (!host.parentOrigin) return <p role="alert" className="p-6 text-sm">This page only shows content inside an App.</p>
+  if (!host.parentOrigin) return <I18nProvider><StandaloneNotice /></I18nProvider>
   if (!init) return null
   return (
     <PrototypeThemeProvider mode={theme}>

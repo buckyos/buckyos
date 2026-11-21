@@ -13,7 +13,7 @@ interface Identity {
   sources: {invite_id:string; title:string; target:string; issuer:string; expires_at?:number; accepted_at?:number; state?:string}[]
 }
 export function InvitedIdentities() {
-  const {t} = useI18n()
+  const { t, locale } = useI18n()
   const [users,setUsers] = useState<Identity[]>()
   const [error,setError] = useState('')
   const [selected,setSelected] = useState<Identity>()
@@ -38,7 +38,7 @@ export function InvitedIdentities() {
       <div>{user.user_id ? `${user.user_id} · ${user.account_state}${user.account_did ? " · "+user.account_did : ""}` : t('sso.userInvite.appOnly','App access only')}</div>
       <ul>{user.sources.map(src => <li key={src.invite_id} className="break-words">
         {src.title} · {src.target} · {src.issuer} · {src.state || (src.accepted_at ? t('sso.userInvite.acceptedState','Accepted') : t('sso.userInvite.offered','Invited'))}
-        {src.expires_at ? ' · ' + new Date(src.expires_at * 1000).toLocaleString() : ''}
+        {src.expires_at ? ' · ' + new Date(src.expires_at * 1000).toLocaleString(locale) : ''}
       </li>)}</ul>
       {!user.user_id && <Button onClick={() => setSelected(user)}>{t('sso.userInvite.allow','Allow login to this Zone')}</Button>}
     </section>)}

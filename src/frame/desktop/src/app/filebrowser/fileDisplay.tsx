@@ -22,6 +22,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { extensionOf, mediaTypeFromExtension, TEXT_CODE_EXTENSIONS } from 'buckyos/content'
+import { dictionaries } from '../../i18n/dictionaries'
+import { matchSupportedLocale } from '../../models/ui'
 import type { FileEntry } from './types'
 
 const TYPE_TONE = {
@@ -152,17 +154,23 @@ export function wantsThumbnail(entry: { kind: FileEntry['kind']; name: string; m
   return THUMB_DOCUMENTS.has(extensionOf(entry.name))
 }
 
+function unknownLabel(locale: string): string {
+  const table = dictionaries[matchSupportedLocale(locale) ?? 'en']
+  return table['filebrowser.meta.unknown'] ?? dictionaries.en['filebrowser.meta.unknown']
+}
+
 export function formatBytes(bytes?: number, locale = document.documentElement.lang || 'en') {
-  if (bytes === undefined || !Number.isFinite(bytes)) return locale.startsWith('zh') ? '未知' : 'Unknown'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
+  if (bytes === undefined || !Number.isFinite(bytes)) return unknownLabel(locale)
+  const decimal = { minimumFractionDigits: 1, maximumFractionDigits: 1 }
+  if (bytes < 1024) return `${bytes.toLocaleString(locale)} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toLocaleString(locale, decimal)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toLocaleString(locale, decimal)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toLocaleString(locale, decimal)} GB`
 }
 
 export function formatDate(iso: string, locale = document.documentElement.lang || 'en') {
   const date = new Date(iso)
-  if (!Number.isFinite(date.getTime())) return locale.startsWith('zh') ? '未知' : 'Unknown'
+  if (!Number.isFinite(date.getTime())) return unknownLabel(locale)
   return date.toLocaleString(locale, {
     year: 'numeric',
     month: '2-digit',

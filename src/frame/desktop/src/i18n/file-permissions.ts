@@ -1,4 +1,12 @@
 export const filePermissionsEn: Record<string, string> = {
+  'filebrowser.error.backend': "The file service reported an error",
+  'filebrowser.error.conflict': "The item changed while you were working. Refresh and retry.",
+  'filebrowser.error.invalidRequest': "The server rejected this request",
+  'filebrowser.error.network': "Cannot reach the file service",
+  'filebrowser.error.notFound': "This item no longer exists",
+  'filebrowser.error.stale': "This item moved or changed. Refresh the view.",
+  'filebrowser.error.unauthenticated': "Your session has ended. Sign in again.",
+  'filebrowser.error.unsupported': "This operation is not supported by the server",
   'filebrowser.menu.permissions': 'Permissions…',
   'filebrowser.menu.folderPermissions': 'Folder permissions…',
   'filebrowser.error.permissionDenied': 'You do not have access to this item',
@@ -53,6 +61,14 @@ export const filePermissionsEn: Record<string, string> = {
 }
 
 export const filePermissionsZh: Record<string, string> = {
+  'filebrowser.error.backend': "文件服务发生错误。",
+  'filebrowser.error.conflict': "操作期间项目已更改，请刷新后重试。",
+  'filebrowser.error.invalidRequest': "服务器拒绝了此请求。",
+  'filebrowser.error.network': "无法连接文件服务。",
+  'filebrowser.error.notFound': "此项目已不存在。",
+  'filebrowser.error.stale': "此项目已移动或更改，请刷新。",
+  'filebrowser.error.unauthenticated': "会话已结束，请重新登录。",
+  'filebrowser.error.unsupported': "服务器不支持此操作。",
   'filebrowser.menu.permissions': '权限…',
   'filebrowser.menu.folderPermissions': '文件夹权限…',
   'filebrowser.error.permissionDenied': '你没有访问此项目的权限',

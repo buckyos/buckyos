@@ -9,7 +9,7 @@ import { isMockRuntime } from '../../runtime'
 import { requestServiceLaunch } from '../../api/app_launch'
 import { AiwsClient } from './api/client'
 import { DEV_OVERRIDE_KEY, resolveTransport } from './api/transport'
-import { onWorkspaceHost, workspacePageUrl } from './links'
+import { onWorkspaceHost, workspaceLinkForLocale, workspacePageUrl } from './links'
 
 function devOverride(): boolean {
   try { return window.localStorage.getItem(DEV_OVERRIDE_KEY) !== null } catch { return false }
@@ -17,6 +17,7 @@ function devOverride(): boolean {
 
 /** Where the browser should go to open `url` as the current Desktop user: the one-time callback, or the page. */
 export async function workspaceLaunchUrl(url: string): Promise<string> {
+  url = workspaceLinkForLocale(url, document.documentElement.lang || 'en')
   if (isMockRuntime() || devOverride() || onWorkspaceHost()) return url
   const launch = await requestServiceLaunch('aiworkspace', url).catch(() => null)
   return launch?.status === 'ready' ? launch.callback_url : url

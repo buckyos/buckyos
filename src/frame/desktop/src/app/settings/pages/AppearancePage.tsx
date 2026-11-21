@@ -21,9 +21,9 @@ interface AppearancePageProps {
 }
 
 /** The desktop's current preferences, so one changed field is saved with all the others intact. */
-function currentPreferences(appProps: AppContentLoaderProps): SystemPreferencesInput {
+function currentPreferences(appProps: AppContentLoaderProps, locale: SupportedLocale): SystemPreferencesInput {
   return {
-    locale: appProps.locale as SupportedLocale,
+    locale,
     theme: appProps.themeMode === 'dark' ? 'dark' : 'light',
     runtimeContainer: appProps.runtimeContainer as SystemPreferencesInput['runtimeContainer'],
     deadZoneTop: appProps.layoutState.deadZone.top,
@@ -71,13 +71,13 @@ function OpacitySlider({
 }
 
 export function AppearancePage({ appProps }: AppearancePageProps) {
-  const { t } = useI18n()
+  const { t, preferredLocale } = useI18n()
   const { desktopIconSize, messagePreview } = useSettingsSnapshot()
   const store = useSettingsStore()
   const desktop = useDesktopUIStore()
   const { layoutState } = useDesktopUISnapshot()
   const hasSystemInfo = layoutState?.pages.some((page) => page.items.some((item) => item.type === 'widget' && item.widgetType === 'system-info'))
-  const save = (patch: Partial<SystemPreferencesInput>) => appProps.onSaveSettings({ ...currentPreferences(appProps), ...patch })
+  const save = (patch: Partial<SystemPreferencesInput>) => appProps.onSaveSettings({ ...currentPreferences(appProps, preferredLocale), ...patch })
 
   return (
     <div className="space-y-4" data-testid="settings-appearance-page">
@@ -100,7 +100,7 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
             select
             size="small"
             label={t('common.language', 'Language')}
-            value={appProps.locale}
+            value={preferredLocale}
             onChange={(event) => save({ locale: event.target.value as SupportedLocale })}
             SelectProps={{ native: true }}
             inputProps={{ 'data-testid': 'settings-language' }}

@@ -43,9 +43,9 @@ function isLockedEntry(entry: FileItem['entry']): boolean {
   return entry.accessLevel === 'none' && entry.path.startsWith('device://')
 }
 
-function entryIcon(entry: FileItem['entry'], size: number) {
+function entryIcon(entry: FileItem['entry'], size: number, t: ReturnType<typeof useI18n>['t']) {
   return isLockedEntry(entry)
-    ? <Lock size={size} className="text-[color:var(--cp-muted)]" aria-label="locked" data-locked="true" />
+    ? <Lock size={size} className="text-[color:var(--cp-muted)]" aria-label={t('filebrowser.host.locked')} data-locked="true" />
     : fileIcon(entry, size)
 }
 
@@ -507,7 +507,7 @@ function DesktopListView({
   handleViewContextMenu: (event: React.MouseEvent) => void
   handleBlankClick: (event: React.MouseEvent) => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const parentRef = useRef<HTMLDivElement>(null)
   const count = virtualCountOf(list)
   const rowHeight = presentation.density === 'comfortable' ? 48 : LIST_ROW_HEIGHT
@@ -651,7 +651,7 @@ function DesktopListView({
                   <div className="flex items-center gap-2.5">
                     <input type="checkbox" aria-label={t('filebrowser.operation.selectName', 'Select {{name}}', { name: entry.name })} checked={selected} onClick={(event) => event.stopPropagation()} onChange={() => onSelect(item, { toggle: true })} />
                     <span className="relative inline-flex shrink-0">
-                      {entryIcon(entry, 16)}
+                      {entryIcon(entry, 16, t)}
                       {isReferenceItem(item) ? <LinkBadge size={8} /> : null}
                     </span>
                     <span className="truncate text-[14px] text-[color:var(--cp-text)]">
@@ -664,10 +664,10 @@ function DesktopListView({
                   {t(`filebrowser.kind.${entry.kind}`, entry.kind)}
                 </div>
                 <div role="cell" className="fb-column-size px-2 text-[color:var(--cp-muted)]">
-                  {entry.kind === 'folder' ? <span title={t('filebrowser.meta.notCalculated', 'Not calculated')}>—</span> : formatBytes(entry.sizeBytes)}
+                  {entry.kind === 'folder' ? <span title={t('filebrowser.meta.notCalculated', 'Not calculated')}>—</span> : formatBytes(entry.sizeBytes, locale)}
                 </div>
                 <div role="cell" className="fb-column-modified truncate px-2 text-[color:var(--cp-muted)]">
-                  {formatDate(entry.modifiedAt)}
+                  {formatDate(entry.modifiedAt, locale)}
                 </div>
                 <div role="cell" className="fb-column-tags min-w-0 px-2">
                   <div className="flex min-w-0 gap-2 overflow-hidden text-[12px] text-[color:var(--cp-muted)]">
@@ -860,7 +860,7 @@ function IconGridCell({
   onMenu?: () => void
   onLongPress?: () => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { handlers, consumeLongPress } = useLongPress(onLongPress)
   const { entry } = item
   const broken = isBrokenItem(item)
@@ -894,7 +894,7 @@ function IconGridCell({
       >
         <div className="relative shrink-0" style={{ width: box, height: box }}>
           <div className="flex size-full items-center justify-center overflow-hidden rounded-[8px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-2-opaque)]">
-            {isLockedEntry(entry) ? entryIcon(entry, Math.round(Math.min(56, box * 0.42))) : <FileThumb entry={entry} source={source} iconSize={Math.round(Math.min(56, box * 0.42))} box={box} marks />}
+            {isLockedEntry(entry) ? entryIcon(entry, Math.round(Math.min(56, box * 0.42)), t) : <FileThumb entry={entry} source={source} iconSize={Math.round(Math.min(56, box * 0.42))} box={box} marks />}
           </div>
           {isReferenceItem(item) ? <LinkBadge /> : null}
         </div>
@@ -906,7 +906,7 @@ function IconGridCell({
           {entry.triggersActive ? <span className="ml-1.5 inline-block align-middle"><AiDot title={t('filebrowser.status.aiActive', 'AI pipeline active')} /></span> : null}
         </span>
         <span className="text-[12px] tabular-nums text-[color:var(--cp-muted)]">
-          {entry.kind === 'folder' ? '\u00a0' : formatBytes(entry.sizeBytes)}
+          {entry.kind === 'folder' ? '\u00a0' : formatBytes(entry.sizeBytes, locale)}
         </span>
       </button>
       {selectionMode ? (
@@ -1039,14 +1039,14 @@ function MobileListRow({
   onMenu?: () => void
   onLongPress?: () => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { handlers, consumeLongPress } = useLongPress(onLongPress)
   const { entry } = item
   const broken = isBrokenItem(item)
   const meta =
     entry.kind === 'folder'
-      ? `${t('filebrowser.kind.folder', 'Folder')} · ${formatDate(entry.modifiedAt)}`
-      : `${formatBytes(entry.sizeBytes)} · ${formatDate(entry.modifiedAt)}`
+      ? `${t('filebrowser.kind.folder', 'Folder')} · ${formatDate(entry.modifiedAt, locale)}`
+      : `${formatBytes(entry.sizeBytes, locale)} · ${formatDate(entry.modifiedAt, locale)}`
   return (
     <div
       role="button"
@@ -1072,7 +1072,7 @@ function MobileListRow({
       )}
     >
       <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-[color:var(--cp-surface-2-opaque)]">
-        {entryIcon(entry, 24)}
+        {entryIcon(entry, 24, t)}
         {isReferenceItem(item) ? <LinkBadge /> : null}
       </div>
       <div className="min-w-0 flex-1">

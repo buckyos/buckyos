@@ -14,7 +14,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useSWRConfig } from 'swr'
-import { ago, t, type TextKey } from '../i18n'
+import { lang, ago, t, type TextKey } from '../i18n'
 import { didName, fmtTokens, messageHubHref, sessionHref, useQuery } from '../lib'
 import {
   dataModel,
@@ -292,7 +292,7 @@ function ModelRow({ usage, max }: { usage: ModelUsage; max: number }) {
         <div
           key={i}
           className={clsx('text-right text-sm tabular-nums', i === 2 ? 'font-semibold' : w.total ? '' : 'text-mute')}
-          title={`${w.total.toLocaleString()} ${t('tokens')} (in ${w.input.toLocaleString()} / out ${w.output.toLocaleString()})`}
+          title={`${w.total.toLocaleString(lang)} ${t('tokens')} (${t('observeInputOutput', { input: w.input.toLocaleString(lang), output: w.output.toLocaleString(lang) })})`}
         >
           {fmtTokens(w.total)}
         </div>
@@ -335,7 +335,7 @@ function Overview({ entries }: { entries?: RegistryEntry[] }) {
         )}
         {usage.data?.since_ms != null && (
           <p className="text-xs text-mute">
-            {t('usageSince', { date: new Date(usage.data.since_ms).toLocaleDateString() })} · {t('tokens')}
+            {t('usageSince', { date: new Date(usage.data.since_ms).toLocaleDateString(lang) })} · {t('tokens')}
           </p>
         )}
       </div>

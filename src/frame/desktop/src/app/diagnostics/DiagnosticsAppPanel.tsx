@@ -13,7 +13,7 @@ export function DiagnosticsAppPanel({
   return (
     <div className="space-y-4">
       <PanelIntro
-        kicker="Telemetry"
+        kicker={t('diagnostics.telemetry')}
         title={t('diagnostics.title')}
         body={t('diagnostics.body')}
       />

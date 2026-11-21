@@ -54,11 +54,11 @@ function failure(error: unknown, status = 502): Response {
 }
 
 const panelHtml = `<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>客服工单</title>
+<title data-i18n="ticket.title">Support ticket</title>
 <style>
   :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
   body { margin: 0; padding: 12px; }
@@ -72,33 +72,34 @@ const panelHtml = `<!doctype html>
 </style>
 </head>
 <body>
-<h1>客服工单</h1>
-<p class="muted">sys-test 官方例子的群自定义页面。它只拿到群和 Session 的地址（D-1），内容由 sys-test 后台以应用身份汇总，不含消息正文。</p>
-<dl id="summary"><dt>状态</dt><dd id="status">加载中…</dd></dl>
+<h1 data-i18n="ticket.title">Support ticket</h1>
+<p class="muted" data-i18n="panel.intro">This custom group panel receives the group and session IDs only. The app service summarizes activity without message bodies.</p>
+<dl id="summary"><dt data-i18n="panel.status">Status</dt><dd id="status" data-i18n="panel.loading">Loading…</dd></dl>
 <ul id="recent"></ul>
 <script type="module">
+import { bindText, locale, t } from '/assets/systest-locale.js'
 const q = new URLSearchParams(location.search)
 const groupDid = q.get('group_did') ?? ''
 const sessionId = q.get('session_id') ?? ''
 const status = document.getElementById('status')
 const dl = document.getElementById('summary')
-const row = (k, v) => { const dt = document.createElement('dt'); dt.textContent = k; const dd = document.createElement('dd'); dd.textContent = v; dl.append(dt, dd) }
+const row = (k, v) => { const dt = document.createElement('dt'); bindText(dt, k); const dd = document.createElement('dd'); dd.textContent = v; dl.append(dt, dd) }
 try {
   const res = await fetch('/sdk/appservice/support/summary?' + new URLSearchParams({ group_did: groupDid, session_id: sessionId }))
   const data = await res.json()
   if (!res.ok || !data.ok) throw new Error(data.error ?? ('HTTP ' + res.status))
-  status.textContent = '正常'
-  row('群', groupDid)
-  row('Session', sessionId || '（默认）')
-  row('消息数', String(data.count))
-  row('参与者', String(data.participants))
-  row('最近一条', data.last_at ? new Date(data.last_at).toLocaleString() : '—')
+  bindText(status, 'panel.ok')
+  row('panel.group', groupDid)
+  row('support.session', sessionId || t('panel.default'))
+  row('panel.count', String(data.count))
+  row('panel.people', String(data.participants))
+  row('panel.latest', data.last_at ? new Date(data.last_at).toLocaleString(locale) : '—')
   const ul = document.getElementById('recent')
-  for (const item of data.recent) { const li = document.createElement('li'); li.textContent = '#' + item.seq + ' ' + item.from + ' · ' + new Date(item.at).toLocaleTimeString(); ul.append(li) }
-  if (!data.recent.length) { const li = document.createElement('li'); li.className = 'muted'; li.textContent = '这个 Session 还没有消息。'; ul.append(li) }
+  for (const item of data.recent) { const li = document.createElement('li'); li.textContent = '#' + item.seq + ' ' + item.from + ' · ' + new Date(item.at).toLocaleTimeString(locale); ul.append(li) }
+  if (!data.recent.length) { const li = document.createElement('li'); li.className = 'muted'; bindText(li, 'panel.empty'); ul.append(li) }
 } catch (error) {
   status.className = 'warn'
-  status.textContent = '面板内容不可用：' + (error instanceof Error ? error.message : String(error))
+  bindText(status, 'panel.failed', { error: error instanceof Error ? error.message : String(error) })
 }
 </script>
 </body>

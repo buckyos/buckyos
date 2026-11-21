@@ -376,7 +376,7 @@ function Definition({ goal }: { goal: GoalDefinition }) {
           ],
           [t('goalBehavior'), shown.behavior ? <Mono>{shown.behavior}</Mono> : null],
           [t('goalRevision'), <Mono>{shown.revision}{shown.revision !== goal.revision ? ` / ${goal.revision}` : ''}</Mono>],
-          [t('goalCreatedBy'), <Mono>{goal.created_by.principal} via {goal.created_by.via}</Mono>],
+          [t('goalCreatedBy'), <Mono>{goal.created_by.principal} {t('observeVia')} {goal.created_by.via}</Mono>],
           [
             t('goalStatusField'),
             <span className="flex flex-wrap items-center gap-1">
@@ -429,7 +429,7 @@ function GoalStatePanel({ goal, state }: { goal: GoalDefinition; state?: GoalSta
   const used = (usage.tokens ?? 0) + (usage.work_tokens ?? 0)
   const remaining = (max: number | undefined, value: number) => (max != null ? ` / ${fmtTokens(max)} (${t('goalRemaining', { n: fmtTokens(Math.max(0, max - value)) })})` : '')
   return (
-    <Panel title={t('goalStateTitle')} testId="goal-state" extra={<span className="font-mono tabular-nums">rev {state.rev} · epoch {state.epoch}</span>}>
+    <Panel title={t('goalStateTitle')} testId="goal-state" extra={<span className="font-mono tabular-nums">{t('observeRev')} {state.rev} {t('observeEpoch')} {state.epoch}</span>}>
       <Fields
         rows={[
           [
@@ -495,10 +495,10 @@ function GoalStatePanel({ goal, state }: { goal: GoalDefinition; state?: GoalSta
             <span className="text-xs" data-testid="goal-usage">
               {t('goalUsageLine', { tokens: fmtTokens(used), activations: usage.activations ?? 0, works: usage.works ?? 0 })}
               <span className="block text-mute">
-                tokens {fmtTokens(used)}{remaining(period?.max_total_tokens, used)}
+                {t('tokens')} {fmtTokens(used)}{remaining(period?.max_total_tokens, used)}
                 {period?.max_activations != null && ` · activations ${usage.activations ?? 0} / ${period.max_activations}`}
                 {period?.max_works != null && ` · works ${usage.works ?? 0} / ${period.max_works}`}
-                {' · '}{t('goalPeriodSince', { time: new Date(usage.period_start_ms).toLocaleString() })}
+                {' · '}{t('goalPeriodSince', { time: new Date(usage.period_start_ms).toLocaleString(lang) })}
               </span>
             </span>,
           ],
@@ -553,7 +553,7 @@ function Activations({ goal, activations, error }: { goal: GoalDefinition; activ
                             <Tag>{r.kind}</Tag>
                             {r.note && <span className="ml-2">{r.note}</span>}
                             {r.ref && <Mono className="ml-2 text-mute">{r.ref}</Mono>}
-                            {r.missed ? <span className="ml-2 text-mute">missed {r.missed}</span> : null}
+                            {r.missed ? <span className="ml-2 text-mute">{t('observeMissed')} {r.missed}</span> : null}
                           </div>
                         ))}
                       </td>
@@ -1021,7 +1021,7 @@ function Cost({ goal, state, activations }: { goal: GoalDefinition; state?: Goal
           const today = i === days.length - 1
           return (
             <li key={from.getTime()} className="flex h-7 items-center gap-3" data-testid="cost-day">
-              <span className={clsx('w-24 shrink-0 tabular-nums', today ? 'text-fg' : 'text-mute')}>{from.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en', { month: '2-digit', day: '2-digit', weekday: 'short' })}</span>
+              <span className={clsx('w-24 shrink-0 tabular-nums', today ? 'text-fg' : 'text-mute')}>{from.toLocaleDateString(lang, { month: '2-digit', day: '2-digit', weekday: 'short' })}</span>
               <span className="h-1.5 min-w-0 flex-1 rounded-full bg-soft">
                 {tokens > 0 && <span className={clsx('block h-1.5 min-w-1.5 rounded-full', today ? 'bg-accent' : 'bg-bar')} style={{ width: `${(tokens / max) * 100}%` }} />}
               </span>
@@ -1068,12 +1068,12 @@ function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
           <thead>
             <tr>
               <th>operation_id</th>
-              <th>stage</th>
-              <th>batch</th>
+              <th>{t('observeStage')}</th>
+              <th>{t('observeBatch')}</th>
               <th>#</th>
-              <th>operations</th>
-              <th>dispositions</th>
-              <th>updated</th>
+              <th>{t('observeOperations')}</th>
+              <th>{t('observeDispositions')}</th>
+              <th>{t('observeUpdated')}</th>
             </tr>
           </thead>
           <tbody>
@@ -1102,10 +1102,10 @@ function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
           <thead>
             <tr>
               <th>candidate_id</th>
-              <th>kind</th>
-              <th>title</th>
-              <th>status</th>
-              <th>updated</th>
+              <th>{t('observeKind')}</th>
+              <th>{t('observeTitle')}</th>
+              <th>{t('observeStatus')}</th>
+              <th>{t('observeUpdated')}</th>
             </tr>
           </thead>
           <tbody>
@@ -1211,9 +1211,9 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
                   <td className="w-px text-xs text-mute">{c.seq}</td>
                   <td className="w-px"><Tag>{c.kind}</Tag></td>
                   <td className="text-xs">
-                    <Mono>{c.who}</Mono> <span className="text-mute">via {c.via}</span>
-                    {c.revision != null && <span className="text-mute"> · rev {c.revision}</span>}
-                    {c.epoch != null && <span className="text-mute"> · epoch {c.epoch}</span>}
+                    <Mono>{c.who}</Mono> <span className="text-mute">{t('observeVia')} {c.via}</span>
+                    {c.revision != null && <span className="text-mute"> {t('observeRevMeta')} {c.revision}</span>}
+                    {c.epoch != null && <span className="text-mute"> {t('observeEpoch')} {c.epoch}</span>}
                     {c.reason && <span className="block">{c.reason}</span>}
                     {c.detail != null && <Mono className="text-mute">{errorText(c.detail)}</Mono>}
                   </td>

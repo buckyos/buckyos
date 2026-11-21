@@ -1,3 +1,4 @@
+import { t, stateText } from './i18n'
 import { useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { ChevronLeft } from 'lucide-react'
@@ -14,12 +15,13 @@ export function Dot({ tone, className }: { tone?: Tone; className?: string }) {
 
 /** A state with its dot; a value with no known state is a quiet label. */
 export function Badge({ value, tone }: { value: ReactNode; tone?: string }) {
+  const label = typeof value === 'string' ? stateText(value) : value
   const resolved = toneOf(tone ?? (typeof value === 'string' ? value : ''))
-  if (!resolved) return <span className="whitespace-nowrap text-xs text-mute">{value}</span>
+  if (!resolved) return <span className="whitespace-nowrap text-xs text-mute">{label}</span>
   return (
     <span className={clsx('inline-flex items-baseline gap-1.5 whitespace-nowrap text-xs', resolved === 'bad' ? 'text-bad' : resolved === 'mute' ? 'text-mute' : 'text-fg')}>
       <Dot tone={resolved} className="self-center" />
-      {value}
+      {label}
     </span>
   )
 }
@@ -82,7 +84,7 @@ export function Time({ ms }: { ms?: number | null }) {
   )
 }
 
-export function Empty({ children = 'None' }: { children?: ReactNode }) {
+export function Empty({ children = t('observeNone') }: { children?: ReactNode }) {
   return <div className="py-1 text-xs text-mute">{children}</div>
 }
 
@@ -171,7 +173,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; o
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
           <button className="btn" onClick={onClose} disabled={busy}>
-            Cancel
+            {t('cancel')}
           </button>
           <button className={clsx('btn', request.danger ? 'btn-danger' : 'btn-primary')} onClick={confirm} disabled={busy}>
             {request.confirmLabel}

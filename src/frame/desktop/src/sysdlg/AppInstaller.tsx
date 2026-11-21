@@ -281,11 +281,11 @@ function CheckStep({
           {t('app22.check.identity')}
         </summary>
         <dl>
-          <Row label="AppDID">{app.did}</Row>
-          <Row label="AppDoc Object ID">{app.object_id}</Row>
+          <Row label={t('app22.identity.appDid')}>{app.did}</Row>
+          <Row label={t('app22.identity.appDocId')}>{app.object_id}</Row>
           <Row label={t('app22.check.objectOwner')}>{app.owner}</Row>
-          <Row label="controller">{app.controller}</Row>
-          <Row label="author">{app.author}</Row>
+          <Row label={t('app22.identity.controller')}>{app.controller}</Row>
+          <Row label={t('app22.identity.author')}>{app.author}</Row>
           {draft.source.referrer && (
             <Row label={t('app22.referrer')}>{draft.source.referrer}</Row>
           )}
@@ -1163,7 +1163,7 @@ function TaskStep({
           <dl>
             <Row label={t('app22.version')}>{task.result.version}</Row>
             <Row label={t('app22.owner')}>{task.owner_user_id}</Row>
-            <Row label="AppInstanceId">{task.app_instance_id}</Row>
+            <Row label={t('app22.identity.instanceId')}>{task.app_instance_id}</Row>
             <Row label={t('app22.address')}>
               {task.result.address ?? t('app22.assigned')}
             </Row>
@@ -1173,13 +1173,13 @@ function TaskStep({
               {t('app22.diagnostics')}
             </summary>
             <dl>
-              <Row label="AppName">
+              <Row label={t('app22.identity.name')}>
                 {task.result.app_name ?? t('app22.assigned')}
               </Row>
-              <Row label="AppHostName">
+              <Row label={t('app22.identity.hostname')}>
                 {task.result.app_host_name ?? t('app22.assigned')}
               </Row>
-              <Row label="AppIndex">
+              <Row label={t('app22.identity.index')}>
                 {task.result.app_index ?? t('app22.assigned')}
               </Row>
             </dl>
@@ -1199,8 +1199,8 @@ function TaskStep({
           <Row label={t('app22.components')}>
             {task.plan.input.install_params.selected_components.join(', ')}
           </Row>
-          <Row label="AppDID">{task.app.did}</Row>
-          <Row label="AppDoc Object ID">{task.app.object_id}</Row>
+          <Row label={t('app22.identity.appDid')}>{task.app.did}</Row>
+          <Row label={t('app22.identity.appDocId')}>{task.app.object_id}</Row>
         </dl>
       </details>
       <footer className="flex flex-wrap gap-2 border-t border-[var(--cp-border)] pt-4">

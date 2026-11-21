@@ -127,7 +127,7 @@ function Stat({ label, value, tone, testId }: { label: string; value: string | n
 
 /** The Agent as a whole: who it is, how it is doing, its home, and whether it may notify. */
 function AgentOverview({ entity, context, onEntityPreferences }: { entity: EntityDetail; context: MessageHubContext; onEntityPreferences?: (entityIds: string[], patch: EntityPreferencePatch) => Promise<void> }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const now = useMessageHubClock()
   const source = getAgentPanelSource()
   const summary = usePanelResource<AgentSummary>(`summary:${entity.id}`, () => source.summary(entity.id), { live: () => false })
@@ -161,7 +161,7 @@ function AgentOverview({ entity, context, onEntityPreferences }: { entity: Entit
             <Stat label={t('messagehub.agentPanel.cognitions')} value={value.memory.cognitions} testId="summary-cognitions" />
             <Stat label={value.memory.pending > 0 ? t('messagehub.agentPanel.perceptionsPending', undefined, { count: value.memory.pending }) : t('messagehub.agentPanel.perceptions')} value={value.memory.perceptions} testId="summary-perceptions" />
           </div>
-          <p className="mt-1.5 text-xs text-[color:var(--cp-muted)]" data-testid="summary-consolidation">{value.memory.last_consolidation_at_ms ? t('messagehub.agentPanel.lastConsolidation', undefined, { time: relativeActivity(value.memory.last_consolidation_at_ms, now, t('messagehub.now')) }) : t('messagehub.agentPanel.neverConsolidated')}</p>
+          <p className="mt-1.5 text-xs text-[color:var(--cp-muted)]" data-testid="summary-consolidation">{value.memory.last_consolidation_at_ms ? t('messagehub.agentPanel.lastConsolidation', undefined, { time: relativeActivity(value.memory.last_consolidation_at_ms, now, t('messagehub.now'), locale) }) : t('messagehub.agentPanel.neverConsolidated')}</p>
         </div>}
       <div className="flex flex-wrap gap-2">
         {hasDesktop ? <button type="button" className={`${hubButtonClass} flex items-center gap-2`} disabled={action.pending === 'home'} onClick={() => void openHome()} data-testid="agent-open-home"><ExternalLink size={15} aria-hidden />{t('messagehub.agentPanel.openHome')}</button> : null}
@@ -384,7 +384,7 @@ function Deliveries({ agentDid, routeKey, timeline, context, onLocateMessage, on
 }
 
 function DeliveryRow({ delivery, agentDid, context, now, carrier, onLocateMessage, onForward }: { delivery: Delivery; agentDid: string; context: MessageHubContext; now: number; carrier?: MessageObject; onLocateMessage: (messageId: string) => void; onForward: (message: MessageObject) => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [note, setNote] = useState<'collected' | 'failed' | ''>('')
   const owner = context.mode === 'self' && context.ownerDid === context.viewerDid
   const carrierContext = carrier ? objectContextOf(carrier) : undefined
@@ -416,7 +416,7 @@ function DeliveryRow({ delivery, agentDid, context, now, carrier, onLocateMessag
         <DeliveryIcon delivery={delivery} />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px]">{delivery.name}</span>
-          <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{[relativeActivity(delivery.at_ms, now, t('messagehub.now')), delivery.size !== undefined ? formatSize(delivery.size) : '', t(`messagehub.agentPanel.delivery.source.${delivery.source}`), delivery.session_id].filter(Boolean).join(' · ')}{note === 'failed' ? ` · ${t('messagehub.media.collectFailed')}` : ''}</span>
+          <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{[relativeActivity(delivery.at_ms, now, t('messagehub.now'), locale), delivery.size !== undefined ? formatSize(delivery.size) : '', t(`messagehub.agentPanel.delivery.source.${delivery.source}`), delivery.session_id].filter(Boolean).join(' · ')}{note === 'failed' ? ` · ${t('messagehub.media.collectFailed')}` : ''}</span>
         </span>
       </button>
       <HeaderMenu label={`${t('messagehub.agentPanel.delivery.more')}: ${delivery.name}`} icon={<MoreHorizontal size={16} />} items={items} testId="delivery-menu" buttonClassName="flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg text-[color:var(--cp-muted)]" />

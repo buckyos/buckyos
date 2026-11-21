@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { BookOpen, ChevronRight, X } from 'lucide-react'
 import { useSWRConfig } from 'swr'
-import { ago, t, type TextKey } from '../i18n'
+import { lang, ago, t, type TextKey } from '../i18n'
 import { sessionHref, toText, useQuery } from '../lib'
 import {
   dataModel,
@@ -176,7 +176,7 @@ function SkillRow({ skill, status, statusLoading, busy, run, ask }: {
         {skill.usage?.frozen ? (
           <>
             {t('skUsageFrozen', { n: skill.usage.frozen })}
-            <div className="text-mute" title={new Date(skill.usage.last_ms).toLocaleString()}>{ago(skill.usage.last_ms)}</div>
+            <div className="text-mute" title={new Date(skill.usage.last_ms).toLocaleString(lang)}>{ago(skill.usage.last_ms)}</div>
           </>
         ) : (
           <span className="text-mute">{t('skNeverUsed')}</span>
@@ -338,7 +338,7 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
               {data.skills.map((s) => (
                 <li key={`${s.kind}:${s.name}`} className="mb-2">
                   <Mono className="font-medium">{s.kind}:{s.name}</Mono>
-                  {s.scope && <Mono className="ml-1 text-mute">scope {s.scope}</Mono>}
+                  {s.scope && <Mono className="ml-1 text-mute">{t('observeScope')} {s.scope}</Mono>}
                   {s.replaces && <span className="ml-1.5 text-warn" data-testid="plan-replaces">{t('skReplaces', { origin: s.replaces })}</span>}
                   <div className="text-mute">{s.description}</div>
                   {s.requires && <div className="text-mute">{t('skRequires')}: {s.requires}</div>}
@@ -481,9 +481,9 @@ function ImportPanel() {
           {t('skScope')}
           <select className="input ml-2" value={scope} onChange={(e) => setScope(e.target.value)}>
             <option value="">{t('skScopeAuto')}</option>
-            <option value="work">work</option>
-            <option value="ui">ui</option>
-            <option value="plan">plan</option>
+            <option value="work">{t('observeWork')}</option>
+            <option value="ui">{t('observeUi')}</option>
+            <option value="plan">{t('observePlan')}</option>
           </select>
         </label>
         <button className="btn btn-primary ml-auto" disabled={busy || !text.trim()} onClick={() => void submit()}>{t('skImportStart')}</button>
@@ -576,7 +576,7 @@ function DraftsPanel({ plan, ask }: { plan: (request: PlanRequest) => void; ask:
             </div>
             {draft.skills.map((s) => (
               <div key={`${s.kind}:${s.name}`} className="mt-1 text-xs leading-5">
-                <Mono>{s.kind}:{s.name}</Mono>{s.scope && <Mono className="ml-2 text-mute">scope {s.scope}</Mono>}
+                <Mono>{s.kind}:{s.name}</Mono>{s.scope && <Mono className="ml-2 text-mute">{t('observeScope')} {s.scope}</Mono>}
                 <span className="ml-2 text-mute">{s.description}</span>
               </div>
             ))}

@@ -8,6 +8,8 @@ import './index.css'
 import App from './App.tsx'
 import { consumePendingSiteDataReset } from './app/settings/siteDataReset'
 import { isMockRuntime } from './runtime'
+import { dictionaries, localeDictionary } from './i18n/dictionaries'
+import { savedLocale, showTextLocale } from './i18n/language'
 import { isPublicRoute } from './publicRoutes'
 import { CONVERSATION_EMBED_PATH, PREVIEW_EMBED_PATH, SELECT_EMBED_PATH } from 'buckyos/app-frame'
 import { isPortalRoot } from './app/homestation/links'
@@ -128,17 +130,24 @@ function renderBootstrapFailure(error: unknown) {
     'max-width:32rem;margin:15vh auto 0;padding:1.5rem;font:14px/1.6 system-ui,sans-serif;'
   const title = document.createElement('p')
   title.style.cssText = 'font-size:1.25rem;font-weight:600;margin:0 0 .5rem'
-  title.textContent = 'BuckyOS failed to start'
+  title.textContent = dictionaries.en['shell.bootstrapFailed']
   const body = document.createElement('p')
   body.style.margin = '0 0 1rem'
   body.textContent = message
   const retry = document.createElement('button')
   retry.type = 'button'
-  retry.textContent = 'Retry'
+  retry.textContent = dictionaries.en['common.retry']
   retry.style.cssText = 'padding:.5rem 1rem;font:inherit;cursor:pointer'
   retry.addEventListener('click', () => window.location.reload())
   panel.append(title, body, retry)
   root.append(panel)
+
+  const locale = savedLocale() ?? 'en'
+  void Promise.resolve(localeDictionary(locale)).then(table => {
+    title.textContent = table['shell.bootstrapFailed']
+    retry.textContent = table['common.retry']
+    showTextLocale(locale)
+  }).catch(() => { /* The English recovery controls are available offline. */ })
 }
 
 // Application resources for a cold start without the network (production builds only).

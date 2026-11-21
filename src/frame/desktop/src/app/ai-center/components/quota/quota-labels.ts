@@ -34,16 +34,18 @@ export function timeZoneName(): string {
   }
 }
 
-export function formatLocal(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+export function formatLocal(ms: number, locale: string): string {
+  return new Date(ms).toLocaleString(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-export function remaining(ms: number): string {
+export function remaining(ms: number, locale: string): string {
   const minutes = Math.max(0, Math.round(ms / 60_000))
   const days = Math.floor(minutes / 1440)
   const hours = Math.floor((minutes % 1440) / 60)
   const mins = minutes % 60
-  return days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${mins}m` : `${mins}m`
+  const unit = (value: number, unit: 'day' | 'hour' | 'minute') =>
+    value.toLocaleString(locale, { style: 'unit', unit, unitDisplay: 'narrow' })
+  return days > 0 ? `${unit(days, 'day')} ${unit(hours, 'hour')}` : hours > 0 ? `${unit(hours, 'hour')} ${unit(mins, 'minute')}` : unit(mins, 'minute')
 }
 
 /** Wall clock refreshed every 30 s, for countdowns and current windows. */

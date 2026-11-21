@@ -133,7 +133,7 @@ export interface DesktopRuntimeState {
   /** 活动日志 */
   activityLog: string[]
   /** Snackbar 提示信息 */
-  snackbar: string | null
+  snackbar: string | { key: string } | null
   /** 系统侧边栏是否展开（桌面端即左侧 taskbar 是否划出） */
   isSystemSidebarOpen: boolean
   /** 桌面端 taskbar 是否锁定常驻（持久化到 localStorage） */
@@ -1710,7 +1710,7 @@ export class DesktopUIStore {
         windowAppearance: nextWindowAppearance,
         deadZone: nextDeadZone,
       },
-      runtime: { snackbar: 'Settings saved' },
+      runtime: { snackbar: { key: 'shell.settingsSaved' } },
     })
 
     if (this.snapshot.formFactor === 'desktop') {

@@ -37,7 +37,7 @@ const statusColor = {
 
 export function LocalUserDetailPage({ user, onRemoved, onNotice }: LocalUserDetailPageProps) {
   const store = useUsersAgentsStore()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [binding, setBinding] = useState(false)
   const isAdmin = useViewerIsAdmin()
   const requestSudo = useSudoByPassword()
@@ -184,7 +184,7 @@ export function LocalUserDetailPage({ user, onRemoved, onNotice }: LocalUserDeta
               [t('usersAgents.localUser.inviteUrl'), user.invitation.inviteUrl],
               [t('usersAgents.localUser.targetZone'), user.invitation.targetZone],
               [t('usersAgents.localUser.requestedDid'), user.invitation.requestedDid],
-              [t('usersAgents.localUser.expires'), new Date(user.invitation.expiresAt).toLocaleString()],
+              [t('usersAgents.localUser.expires'), new Date(user.invitation.expiresAt).toLocaleString(locale)],
             ].map(([label, value]) => (
               <div key={label} className="flex items-baseline gap-3">
                 <span className="w-28 shrink-0 text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }}>
@@ -260,7 +260,7 @@ export function LocalUserDetailPage({ user, onRemoved, onNotice }: LocalUserDeta
             <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
               {user.status === 'pending-invitation'
                 ? t('usersAgents.localUser.notActivated')
-                : new Date(user.lastActive).toLocaleString()}
+                : new Date(user.lastActive).toLocaleString(locale)}
             </span>
           </div>
           <div className="flex items-baseline gap-3">

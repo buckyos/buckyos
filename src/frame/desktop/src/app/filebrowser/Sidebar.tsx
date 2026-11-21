@@ -289,9 +289,9 @@ export function Sidebar({
           <SectionHeader label={t('filebrowser.sidebar.diagnostics', 'Diagnostics (mock)')} />
           {(
             [
-              ['view://demo/unknown-total', 'Unknown total'],
-              ['view://demo/flaky', 'Flaky view'],
-              ['view://demo/error', 'Failing view'],
+              ['view://demo/unknown-total', t('filebrowser.sidebar.unknownTotal')],
+              ['view://demo/flaky', t('filebrowser.sidebar.flaky')],
+              ['view://demo/error', t('filebrowser.sidebar.error')],
             ] as const
           ).map(([url, label]) =>
             navButton({

@@ -27,9 +27,10 @@ const toneColor = {
 
 /** Abbreviated amount with the exact integer as its title (§13: both forms). */
 export function Tokens({ value, strong = false }: { value: number; strong?: boolean }) {
+  const { locale } = useI18n()
   return (
-    <span title={formatTokensExact(value)} className={strong ? 'font-semibold' : undefined} style={{ color: 'var(--cp-text)' }}>
-      {formatTokens(value)}
+    <span title={formatTokensExact(value, locale)} className={strong ? 'font-semibold' : undefined} style={{ color: 'var(--cp-text)' }}>
+      {formatTokens(value, locale)}
     </span>
   )
 }
@@ -109,7 +110,7 @@ export function SourceBadge({ source }: { source: QuotaRuleSource }) {
 
 /** Next reset in local time with its time zone and a countdown; totals never reset by themselves. */
 export function ResetLabel({ state }: { state: QuotaUsageState }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const now = useNow()
   if (state.reset_at_ms === null) {
     return <span style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.quota.noAutoReset', 'No automatic reset')}</span>
@@ -120,9 +121,9 @@ export function ResetLabel({ state }: { state: QuotaUsageState }) {
   return (
     <span style={{ color: 'var(--cp-muted)' }} title={`${new Date(state.reset_at_ms).toISOString()} UTC`}>
       {t('aiCenter.quota.resetsAt', 'Resets {{time}} ({{zone}}), in {{left}}', {
-        time: formatLocal(state.reset_at_ms),
+        time: formatLocal(state.reset_at_ms, locale),
         zone: timeZoneName(),
-        left: remaining(state.reset_at_ms - now),
+        left: remaining(state.reset_at_ms - now, locale),
       })}
     </span>
   )
@@ -142,7 +143,7 @@ export function TokenInput({
   testId?: string
   allowZero?: boolean
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   // The parent only ever changes `value` through this input, so the text is the source of truth.
   const [text, setText] = useState(value === null ? '' : String(value))
   const parsed = parseTokens(text)
@@ -167,7 +168,7 @@ export function TokenInput({
         {invalid
           ? t('aiCenter.quota.input.invalid', 'Enter a whole number of tokens, e.g. 50000, 50K or 1.5M')
           : parsed !== null
-            ? t('aiCenter.quota.input.exact', '= {{exact}} tokens', { exact: formatTokensExact(parsed) })
+            ? t('aiCenter.quota.input.exact', '= {{exact}} tokens', { exact: formatTokensExact(parsed, locale) })
             : t('aiCenter.quota.input.hint', 'K and M are accepted')}
       </span>
     </label>
@@ -242,7 +243,7 @@ export function Segmented<T extends string>({ label, value, options, onChange }:
 
 /** What an AICC refusal means for the caller (§7.4), from its code; shown next to the raw error. */
 export function QuotaRefusalNote({ error }: { error: unknown }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const refusal = quotaRefusalOf(error)
   if (!refusal) return null
   const details = refusal.details
@@ -250,11 +251,11 @@ export function QuotaRefusalNote({ error }: { error: unknown }) {
   switch (refusal.code) {
     case 'quota_exhausted':
       text = details?.reset_at_ms
-        ? t('aiCenter.quota.refusal.exhaustedUntil', 'AI token quota exhausted until {{time}}.', { time: formatLocal(details.reset_at_ms) })
+        ? t('aiCenter.quota.refusal.exhaustedUntil', 'AI token quota exhausted until {{time}}.', { time: formatLocal(details.reset_at_ms, locale) })
         : t('aiCenter.quota.refusal.exhausted', 'AI token quota exhausted. A total quota needs an administrator to recharge it.')
       break
     case 'quota_budget_exceeded':
-      text = t('aiCenter.quota.refusal.budget', 'This request may need more tokens than the quota has left ({{max}} available). Lower the max output tokens or shorten the input.', { max: formatTokensExact(details?.max_allowed_tokens ?? 0) })
+      text = t('aiCenter.quota.refusal.budget', 'This request may need more tokens than the quota has left ({{max}} available). Lower the max output tokens or shorten the input.', { max: formatTokensExact(details?.max_allowed_tokens ?? 0, locale) })
       break
     case 'quota_unavailable':
       text = t('aiCenter.quota.refusal.unavailable', 'The quota state is temporarily unavailable, so the call was not started. Try again shortly.')

@@ -1,9 +1,10 @@
 import { Annotation, Compartment, EditorState, Transaction, type Extension } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, rectangularSelection, highlightWhitespace } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands'
-import { selectNextOccurrence, search, searchKeymap, openSearchPanel, gotoLine } from '@codemirror/search'
+import { selectNextOccurrence, search, searchKeymap, openSearchPanel, closeSearchPanel, searchPanelOpen, getSearchQuery, setSearchQuery, gotoLine } from '@codemirror/search'
 import { bracketMatching, defaultHighlightStyle, foldGutter, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language'
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
+import { editorPhrases } from '../i18n/index.ts'
 import { languageFor } from './languages.ts'
 import type { EditorDocument, Workspace } from '../model/workspace.ts'
 const sync = Annotation.define<boolean>()
@@ -14,6 +15,7 @@ export class DocumentEditor {
   private language = new Compartment()
   private languageKey = ''
   private configKey = ''
+  private locale = ''
   private serial = 0
   doc: EditorDocument; workspace: Workspace
   constructor(doc: EditorDocument, workspace: Workspace) {
@@ -43,13 +45,13 @@ export class DocumentEditor {
   }
   configure(): void {
     const d = this.doc; const w = this.workspace; const s = w.settings
-    const key = JSON.stringify([s, w.theme, d.readOnly, d.mutating, d.name, d.largeFile])
+    const key = JSON.stringify([s, w.theme, w.locale, d.readOnly, d.mutating, d.name, d.largeFile])
     if (key !== this.configKey) {
       this.configKey = key
       const indentation = d.text.match(/^([ \t]+)\S/m)?.[1]
       const unit = indentation?.startsWith('\t') ? '\t' : indentation && indentation.length <= 8 ? indentation : s.insertSpaces ? ' '.repeat(s.tabSize) : '\t'
       const wrap = s.wordWrap === 'on' || s.wordWrap === 'auto' && /\.(md|markdown|txt|text)$/i.test(d.name)
-      const extensions: Extension[] = [EditorState.allowMultipleSelections.of(true), EditorState.readOnly.of(d.readOnly || !!d.mutating), EditorView.editable.of(!d.readOnly && !d.mutating),
+      const extensions: Extension[] = [EditorState.phrases.of(editorPhrases(w.locale)), EditorState.allowMultipleSelections.of(true), EditorState.readOnly.of(d.readOnly || !!d.mutating), EditorView.editable.of(!d.readOnly && !d.mutating),
         EditorState.tabSize.of(s.tabSize), indentUnit.of(unit), drawSelection(), rectangularSelection(), search({ top: true }),
         EditorView.theme({ '&': { height: '100%', fontSize: `${s.fontSize}px` }, '.cm-scroller': { overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' }, '.cm-content': { padding: '12px 0' }, '.cm-gutters': { backgroundColor: 'var(--panel)', color: 'var(--muted)', border: 'none' }, '&.cm-focused': { outline: 'none' }, '.cm-activeLine': { backgroundColor: 'var(--active)' }, '.cm-cursor': { borderLeftColor: 'var(--fg)' }, '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { background: 'var(--selection)' } }, { dark: w.theme === 'dark' }),
         keymap.of([{ key: 'Mod-z', run: () => this.primary ? undo(this.primary) : false }, { key: 'Mod-Shift-z', run: () => this.primary ? redo(this.primary) : false }, { key: 'Mod-y', run: () => this.primary ? redo(this.primary) : false }, { key: 'Mod-h', run: openSearchPanel }, { key: 'Mod-g', run: gotoLine }, { key: 'Mod-d', run: selectNextOccurrence }, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab])]
@@ -57,7 +59,18 @@ export class DocumentEditor {
       if (s.renderWhitespace) extensions.push(highlightWhitespace())
       if (wrap) extensions.push(EditorView.lineWrapping)
       if (!d.largeFile) extensions.push(highlightActiveLine(), foldGutter(), bracketMatching(), indentOnInput(), syntaxHighlighting(defaultHighlightStyle), closeBrackets(), keymap.of(closeBracketsKeymap))
+      const panels = this.locale === w.locale ? [] : [...this.views].filter(view => searchPanelOpen(view.state))
+      const focus = document.activeElement
+      if (focus instanceof HTMLInputElement && panels.some(view => view.dom.contains(focus))) focus.blur()
+      const queries = panels.map(view => getSearchQuery(view.state))
+      for (const view of panels) closeSearchPanel(view)
+      this.locale = w.locale
       this.reconfigure(this.config.reconfigure(extensions))
+      panels.forEach((view, index) => {
+        openSearchPanel(view)
+        view.dispatch({ effects: setSearchQuery.of(queries[index]) })
+      })
+      if (panels.length && focus instanceof HTMLElement && focus.isConnected) focus.focus()
     }
     const languageKey = `${d.name}:${d.language}:${d.largeFile}`
     if (languageKey !== this.languageKey) {

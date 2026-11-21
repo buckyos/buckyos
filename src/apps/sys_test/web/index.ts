@@ -15,6 +15,8 @@
  * Each group also leaves a placeholder area for future per-service manual
  * call panels (point 4 of the task brief).
  */
+import { AppFrameClient, embedderOrigin, originInZone } from 'buckyos/app-frame'
+import { bindText, hasTranslation, localize, locale, setLocale, t } from './src/i18n'
 import { buckyos, ndm, RuntimeType } from 'buckyos'
 import { NfspClient } from 'buckyos/nfsp'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
@@ -59,23 +61,23 @@ function setAuthStatus(state: AuthState) {
   status.classList.remove('ok', 'err')
   switch (state.kind) {
     case 'init':
-      status.textContent = '正在初始化 SDK...'
+      bindText(status, 'auth.init')
       loginBtn.disabled = true
       logoutBtn.disabled = true
       break
     case 'logged-out':
-      status.textContent = '未登录'
+      bindText(status, 'auth.loggedOut')
       loginBtn.disabled = false
       logoutBtn.disabled = true
       break
     case 'logged-in':
-      status.textContent = `已登录: ${state.userName} (${state.userId})`
+      bindText(status, 'auth.loggedIn', { name: state.userName, id: state.userId })
       status.classList.add('ok')
       loginBtn.disabled = true
       logoutBtn.disabled = false
       break
     case 'error':
-      status.textContent = `错误: ${state.message}`
+      bindText(status, 'auth.error', { error: state.message })
       status.classList.add('err')
       loginBtn.disabled = false
       logoutBtn.disabled = true
@@ -108,7 +110,7 @@ async function ensureLoggedInContext(): Promise<TestContext> {
     await refreshAuthFromSdk()
   }
   if (authState.kind !== 'logged-in') {
-    throw new Error('not logged in — click Login to start an SSO session first')
+    throw new Error(t('auth.needed'))
   }
   return {
     sdk: buckyos,
@@ -197,11 +199,11 @@ function renderResults(container: HTMLElement, origin: RunOrigin, results: CaseR
   header.className = 'run-header'
   const badge = document.createElement('span')
   badge.className = `badge ${origin}`
-  badge.textContent = origin === 'in-page' ? '在页面中运行' : '在后台服务中运行'
+  bindText(badge, origin === 'in-page' ? 'group.browser' : 'group.server')
   header.appendChild(badge)
 
   const ts = document.createElement('span')
-  ts.textContent = new Date().toLocaleTimeString()
+  ts.textContent = new Date().toLocaleTimeString(locale)
   header.appendChild(ts)
 
   block.appendChild(header)
@@ -211,7 +213,7 @@ function renderResults(container: HTMLElement, origin: RunOrigin, results: CaseR
     errEl.className = 'case err'
     errEl.innerHTML =
       '<span class="icon">✕</span>' +
-      '<span class="name">运行失败</span>' +
+      '<span class="name" data-i18n="group.fail">运行失败</span>' +
       '<span class="duration"></span>' +
       `<div class="details error">${escapeHtml(error)}</div>`
     block.appendChild(errEl)
@@ -224,16 +226,19 @@ function renderResults(container: HTMLElement, origin: RunOrigin, results: CaseR
         ? result.details && Object.keys(result.details).length > 0
           ? `<div class="details">${escapeHtml(JSON.stringify(result.details, null, 2))}</div>`
           : ''
-        : `<div class="details error">${escapeHtml(result.error ?? 'unknown error')}</div>`
+        : `<div class="details error">${escapeHtml(result.error ?? t('group.unknown'))}</div>`
       caseEl.innerHTML =
         `<span class="icon">${icon}</span>` +
         `<span class="name">${escapeHtml(result.name)}</span>` +
         `<span class="duration">${result.durationMs}ms</span>` +
         detailsHtml
+      const labelKey = `cases.${result.name}`
+      if (hasTranslation(labelKey)) bindText(caseEl.querySelector('.name')!, labelKey)
       block.appendChild(caseEl)
     }
   }
 
+  localize(block)
   container.appendChild(block)
 }
 
@@ -246,10 +251,9 @@ function setRunningPlaceholder(container: HTMLElement, origin: RunOrigin) {
   block.className = 'run-block'
   block.dataset.origin = origin
   block.innerHTML =
-    `<div class="run-header"><span class="badge ${origin}">${
-      origin === 'in-page' ? '在页面中运行' : '在后台服务中运行'
-    }</span><span>运行中...</span></div>` +
-    `<div class="case run"><span class="icon">⏳</span><span class="name">running</span><span class="duration"></span></div>`
+    `<div class="run-header"><span class="badge ${origin}" data-i18n="${origin === 'in-page' ? 'group.browser' : 'group.server'}"></span><span data-i18n="group.running">运行中...</span></div>` +
+    `<div class="case run"><span class="icon">⏳</span><span class="name" data-i18n="group.running">running</span><span class="duration"></span></div>`
+  localize(block)
   container.appendChild(block)
 }
 
@@ -276,11 +280,12 @@ function renderGroups() {
     header.innerHTML =
       `<h2 class="group-title">${escapeHtml(group.title)}</h2>` +
       `<span class="group-id">${escapeHtml(group.id)}</span>`
+    if (group.titleKey) bindText(header.querySelector('h2')!, group.titleKey)
     card.appendChild(header)
 
     const desc = document.createElement('p')
     desc.className = 'group-desc'
-    desc.textContent = group.description
+    bindText(desc, `tests.${group.id}.description`)
     card.appendChild(desc)
 
     const actions = document.createElement('div')
@@ -288,7 +293,7 @@ function renderGroups() {
 
     const runInPage = document.createElement('button')
     runInPage.className = 'btn primary'
-    runInPage.textContent = '在页面中运行检测'
+    bindText(runInPage, 'group.runBrowser')
     runInPage.addEventListener('click', async () => {
       runInPage.disabled = true
       try {
@@ -305,7 +310,7 @@ function renderGroups() {
 
     const runOnServer = document.createElement('button')
     runOnServer.className = 'btn secondary'
-    runOnServer.textContent = '在后台服务中运行检测'
+    bindText(runOnServer, 'group.runServer')
     runOnServer.addEventListener('click', async () => {
       runOnServer.disabled = true
       try {
@@ -329,7 +334,7 @@ function renderGroups() {
     // Placeholder for the future "manual call" sub-panel for each service.
     const placeholder = document.createElement('div')
     placeholder.className = 'placeholder'
-    placeholder.textContent = '手动调用面板（占位）：后续将在此暴露该 service 的逐个方法调用 UI。'
+    bindText(placeholder, 'group.manual')
     card.appendChild(placeholder)
 
     container.appendChild(card)
@@ -355,29 +360,28 @@ function renderNdmDemoPanel() {
   card.className = 'group'
   card.dataset.group = 'ndm_client'
   card.innerHTML = `
-    <div class="group-header"><h2 class="group-title">NDM 文件 / 目录导入</h2></div>
-    <p class="group-desc">SDK：QCID 查询 → 对象标识 → 缺失内容上传 → 元数据登记 → 强依赖就绪。默认只取得 ObjId，不落盘。相同内容可再次选择以验证去重。</p>
+    <div class="group-header"><h2 class="group-title" data-i18n="ndm.title">NDM 文件 / 目录导入</h2></div>
+    <p class="group-desc" data-i18n="ndm.about">SDK：QCID 查询 → 对象标识 → 缺失内容上传 → 元数据登记 → 强依赖就绪。默认只取得 ObjId，不落盘。相同内容可再次选择以验证去重。</p>
     <div class="group-actions">
-      <button id="ndm-single-btn" class="btn primary">选择文件</button>
-      <button id="ndm-multi-btn" class="btn">选择多个文件</button>
-      <button id="ndm-folder-btn" class="btn">选择文件夹</button>
-      <button id="ndm-cancel-btn" class="btn" disabled>取消</button>
-      <button id="ndm-retry-btn" class="btn" disabled>重试此任务</button>
-      <button id="ndm-release-btn" class="btn" disabled>释放任务</button>
+      <button id="ndm-single-btn" class="btn primary" data-i18n="ndm.one">选择文件</button>
+      <button id="ndm-multi-btn" class="btn" data-i18n="ndm.many">选择多个文件</button>
+      <button id="ndm-folder-btn" class="btn" data-i18n="ndm.folder">选择文件夹</button>
+      <button id="ndm-cancel-btn" class="btn" disabled data-i18n="cancel">取消</button>
+      <button id="ndm-retry-btn" class="btn" disabled data-i18n="ndm.retry">重试此任务</button>
+      <button id="ndm-release-btn" class="btn" disabled data-i18n="ndm.release">释放任务</button>
     </div>
     <p id="ndm-capability" class="group-desc"></p>
     <div class="group-actions">
-      <input id="ndm-target-path" type="text" aria-label="目标父目录" placeholder="目标父目录，例如 /home/alice" />
-      <button id="ndm-extract-btn" class="btn" disabled>按 ObjId 本地提取到目标目录</button>
+      <input id="ndm-target-path" type="text" data-i18n-label="ndm.target" aria-label="目标父目录" data-i18n-placeholder="ndm.example" placeholder="目标父目录，例如 /home/alice" />
+      <button id="ndm-extract-btn" class="btn" disabled data-i18n="ndm.extract">按 ObjId 本地提取到目标目录</button>
     </div>
-    <p class="group-desc">本地提取通过 NFSP 提交，服务端重新校验权限及目标冲突，不覆盖已有路径。多根目录/文件分别提交；部分失败会保留已完成项，重试仅处理未确认项。响应丢失后的冲突需检查目标，不自动覆盖。</p>
+    <p class="group-desc" data-i18n="ndm.help">本地提取通过 NFSP 提交，服务端重新校验权限及目标冲突，不覆盖已有路径。多根目录/文件分别提交；部分失败会保留已完成项，重试仅处理未确认项。响应丢失后的冲突需检查目标，不自动覆盖。</p>
     <div id="ndm-results" class="results"></div>
   `
+  localize(card)
   $('groups').appendChild(card)
   const folderSupported = ndm.getImportProvider().getCapabilities().canPickDirectory
-  $('ndm-capability').textContent = folderSupported
-    ? '目录 picker 保留根目录及路径；浏览器 FileList 无法枚举空目录。支持目录节点的应用可调用 SDK importDirectory 保留空目录。'
-    : '当前浏览器不支持目录选择；仍可上传单文件或多文件。'
+  bindText($('ndm-capability'), folderSupported ? 'ndm.canFolder' : 'ndm.noFolder')
   ;($('ndm-folder-btn') as HTMLButtonElement).disabled = !folderSupported
   ;(['single', 'multi', 'folder'] as const).forEach(kind => {
     $(`ndm-${kind}-btn`).addEventListener('click', () => void handleNdmUpload(kind === 'single' ? 'single_file' : kind === 'multi' ? 'multi_file' : 'single_dir'))
@@ -391,7 +395,7 @@ function renderNdmDemoPanel() {
     if (ndmState.snapshot) ndm.releaseImportSession(ndmState.snapshot.sessionId)
     ndmState.snapshot = null
     ndmState.committed.clear()
-    ndmState.entries.push({ icon: '✓', label: '已释放本地任务；再次操作请重新选择', status: 'ok' })
+    ndmState.entries.push({ icon: '✓', label: t('ndm.released'), status: 'ok' })
     renderNdmLog($('ndm-results'), ndmState.entries)
     updateNdmButtons(false)
   })
@@ -417,10 +421,10 @@ function renderNdmLog(container: HTMLElement, entries: NdmLogEntry[]) {
   header.className = 'run-header'
   const badge = document.createElement('span')
   badge.className = 'badge in-page'
-  badge.textContent = 'NDM 上传'
+  bindText(badge, 'ndm.upload')
   header.appendChild(badge)
   const ts = document.createElement('span')
-  ts.textContent = new Date().toLocaleTimeString()
+  ts.textContent = new Date().toLocaleTimeString(locale)
   header.appendChild(ts)
   block.appendChild(header)
 
@@ -434,10 +438,12 @@ function renderNdmLog(container: HTMLElement, entries: NdmLogEntry[]) {
       (entry.detail ? `<div class="details${entry.status === 'err' ? ' error' : ''}">${escapeHtml(entry.detail)}</div>` : '')
     block.appendChild(el)
   }
+  localize(block)
   container.appendChild(block)
 }
 
 type NdmLogEntry = {
+  progress?: boolean
   icon: string
   label: string
   status: 'ok' | 'err' | 'run'
@@ -465,14 +471,15 @@ function renderProgressBar(container: HTMLElement, entries: NdmLogEntry[], progr
     : ''
 
   const progressEntry: NdmLogEntry = {
+    progress: true,
     icon: '⏳',
-    label: `上传进度: ${pct}%  (${formatBytes(progress.uploadedBytes)} / ${formatBytes(progress.totalBytes)})  对象: ${progress.uploadedObjects}/${progress.totalObjects}`,
+    label: t('ndm.progress', { pct, uploaded: formatBytes(progress.uploadedBytes), total: formatBytes(progress.totalBytes), objects: progress.uploadedObjects, count: progress.totalObjects }),
     status: 'run',
-    extra: [speedStr, etaStr ? `剩余 ${etaStr}` : ''].filter(Boolean).join(' | '),
+    extra: [speedStr, etaStr ? t('ndm.remaining', { time: etaStr }) : ''].filter(Boolean).join(' | '),
   }
 
   // Replace or append progress entry
-  const idx = entries.findIndex(e => e.label.startsWith('上传进度:'))
+  const idx = entries.findIndex(e => e.progress)
   if (idx >= 0) {
     entries[idx] = progressEntry
   } else {
@@ -518,7 +525,7 @@ async function handleNdmUpload(mode?: 'single_file' | 'multi_file' | 'single_dir
     if (ndmState.snapshot) ndm.releaseImportSession(ndmState.snapshot.sessionId)
     ndmState.snapshot = null
     ndmState.committed.clear()
-    ndmState.entries = [{ icon: '⏳', label: '正在选择并导入...', status: 'run' }]
+    ndmState.entries = [{ icon: '⏳', label: t('ndm.selecting'), status: 'run' }]
   }
   const entries = ndmState.entries
   const container = $('ndm-results')
@@ -535,7 +542,7 @@ async function handleNdmUpload(mode?: 'single_file' | 'multi_file' | 'single_dir
     }
     const snapshot = ndmState.snapshot
     if (!snapshot) return
-    entries.push({ icon: '✓', label: '对象标识已生成；尚未视为就绪', status: 'ok', detail: JSON.stringify({
+    entries.push({ icon: '✓', label: t('ndm.identify'), status: 'ok', detail: JSON.stringify({
       roots: snapshot.items.map(item => ({ kind: item.kind, name: item.name, objectId: item.objectId })),
       summary: snapshot.summary, materializationStatus: snapshot.materializationStatus,
     }, null, 2) })
@@ -545,14 +552,14 @@ async function handleNdmUpload(mode?: 'single_file' | 'multi_file' | 'single_dir
     })
     const progress = await ndm.getUploadProgress(snapshot.sessionId)
     ready = status.objectStatus === 'ready'
-    entries.push({ icon: '✓', label: '对象及全部强依赖已就绪；可直接消费 ObjId', status: 'ok', detail: JSON.stringify({
+    entries.push({ icon: '✓', label: t('ndm.ready'), status: 'ok', detail: JSON.stringify({
       objectStatus: status.objectStatus, uploadStatus: status.uploadStatus,
       logicalBytes: progress.uploadedBytes, transmittedBytes: progress.transmittedBytes,
       roots: snapshot.items.map(item => item.objectId),
     }, null, 2) })
-    for (const warning of status.warnings) entries.push({ icon: '!', label: '能力 / 查重优化提示', status: 'run', detail: warning })
+    for (const warning of status.warnings) entries.push({ icon: '!', label: t('ndm.warn'), status: 'run', detail: warning })
   } catch (error) {
-    entries.push({ icon: '✕', label: ndmState.abort.signal.aborted ? '已取消；保留任务可重试' : '导入未就绪', status: 'err', detail: error instanceof Error ? error.message : String(error) })
+    entries.push({ icon: '✕', label: ndmState.abort.signal.aborted ? t('ndm.cancelled') : t('ndm.notReady'), status: 'err', detail: error instanceof Error ? error.message : String(error) })
   } finally {
     ndmState.busy = false
     ndmState.abort = null
@@ -566,7 +573,7 @@ async function extractNdmObjects() {
   if (!snapshot || ndmState.busy) return
   const target = ($('ndm-target-path') as HTMLInputElement).value.trim()
   if (!target) {
-    ndmState.entries.push({ icon: '✕', label: '请填写目标父目录后再提取', status: 'err' })
+    ndmState.entries.push({ icon: '✕', label: t('ndm.needTarget'), status: 'err' })
     renderNdmLog($('ndm-results'), ndmState.entries)
     return
   }
@@ -576,7 +583,7 @@ async function extractNdmObjects() {
   const client = new NfspClient({ baseUrl: window.location.origin, sessionToken: async () => (await buckyos.getAccountInfo())?.session_token ?? null })
   try {
     const status = await ndm.getImportSessionStatus(snapshot.sessionId)
-    if (status.objectStatus !== 'ready') throw new Error('对象尚未就绪')
+    if (status.objectStatus !== 'ready') throw new Error(t('ndm.objectNotReady'))
     await client.hello()
     const parent = await client.resolve(target)
     for (const item of snapshot.items) {
@@ -584,10 +591,10 @@ async function extractNdmObjects() {
       if (ndmState.committed.has(key)) continue
       const committed = await client.commitObject(parent.ref, item.name, item.objectId, { overwrite: false })
       ndmState.committed.add(key)
-      ndmState.entries.push({ icon: '✓', label: `本地提取并提交: ${target}/${item.name}`, status: 'ok', detail: JSON.stringify(committed, null, 2) })
+      ndmState.entries.push({ icon: '✓', label: t('ndm.committed', { path: `${target}/${item.name}` }), status: 'ok', detail: JSON.stringify(committed, null, 2) })
     }
   } catch (error) {
-    ndmState.entries.push({ icon: '✕', label: '目标提交失败；已就绪对象与已完成路径仍保留', status: 'err', detail: error instanceof Error ? error.message : String(error) })
+    ndmState.entries.push({ icon: '✕', label: t('ndm.failed'), status: 'err', detail: error instanceof Error ? error.message : String(error) })
   } finally {
     await client.bye().catch(() => undefined)
     ndmState.busy = false
@@ -619,6 +626,8 @@ async function main() {
     ) {
       throw new Error('AppService runtime is missing its app instance identity or Zone hostname')
     }
+    const shellOrigin = embedderOrigin(origin => originInZone(origin, runtime.zoneHost))
+    if (shellOrigin) new AppFrameClient({ shellOrigin, appId: APP_ID, onInit: init => setLocale(init.locale), onLocale: setLocale })
     await buckyos.initBuckyOS(APP_ID, {
       appId: APP_ID,
       appInstanceId: runtime.appInstanceId,
@@ -630,7 +639,7 @@ async function main() {
   } catch (error) {
     setAuthStatus({
       kind: 'error',
-      message: `initBuckyOS 失败: ${error instanceof Error ? error.message : String(error)}`,
+      message: t('auth.initFailed', { error: error instanceof Error ? error.message : String(error) }),
     })
     return
   }

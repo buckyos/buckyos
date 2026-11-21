@@ -59,7 +59,7 @@ function Panel({ title, children, testId, actions }: { title: string; children: 
   )
 }
 
-const formatTime = (secs: number) => new Date(secs * 1000).toLocaleString()
+const formatTime = (secs: number, locale: string) => new Date(secs * 1000).toLocaleString(locale)
 
 type ResourceKind = 'none' | InviteResource['kind']
 
@@ -217,7 +217,7 @@ function InviteRow({
   onRevoke: () => void
   onRetry: () => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const revoked = invite.state === 'revoked'
   const passwordSet = invite.credential.state === 'consumed_by_password'
   const expired = invite.credential.state === 'active' && now > invite.credential.expires_at
@@ -229,7 +229,7 @@ function InviteRow({
         ? t('sso.invites.state.superseded', 'Replaced')
         : expired
           ? t('sso.invites.state.expired', 'Link expired')
-          : t('sso.invites.state.active', 'Link valid until {{time}}', { time: formatTime(invite.credential.expires_at) })
+          : t('sso.invites.state.active', 'Link valid until {{time}}', { time: formatTime(invite.credential.expires_at, locale) })
 
   return (
     <li className="rounded-[16px] px-3 py-2.5" style={itemStyle} data-testid="exclusive-invite-row" data-invite-id={invite.invite_id}>
@@ -249,7 +249,7 @@ function InviteRow({
               <Chip
                 size="small"
                 color="warning"
-                label={t('sso.invites.resendRequested', 'Customer asked for a new link · {{time}}', { time: formatTime(invite.resend.requested_at) })}
+                label={t('sso.invites.resendRequested', 'Customer asked for a new link · {{time}}', { time: formatTime(invite.resend.requested_at, locale) })}
                 data-testid="exclusive-invite-resend-badge"
               />
             ) : null}

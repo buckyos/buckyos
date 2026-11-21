@@ -113,13 +113,13 @@ function Outbox({ entries }: { entries: OutboxEntry[] }) {
     <table className="tbl">
       <thead>
         <tr>
-          <th>key</th>
-          <th>turn</th>
-          <th>status</th>
-          <th>attempts</th>
-          <th>msg_id / deliveries</th>
-          <th>error</th>
-          <th>updated</th>
+          <th>{t('observeKey')}</th>
+          <th>{t('observeTurn')}</th>
+          <th>{t('observeStatus')}</th>
+          <th>{t('observeAttempts')}</th>
+          <th>{t('observeMsgIdDeliveries')}</th>
+          <th>{t('observeError')}</th>
+          <th>{t('observeUpdated')}</th>
         </tr>
       </thead>
       <tbody>
@@ -177,22 +177,22 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
   const decide = (decision: 'accept' | 'discard') =>
     ask(
       {
-        title: `${decision === 'accept' ? 'Accept' : 'Discard'} the result of ${sid}?`,
-        detail: 'Posts control(decide) to the session input bus.',
-        inputLabel: 'Note (optional)',
-        confirmLabel: decision === 'accept' ? 'Accept' : 'Discard',
+        title: t(decision === 'accept' ? 'observeAcceptResult' : 'observeDiscardResult', { sid }),
+        detail: t('observeDecideHint'),
+        inputLabel: t('observeNoteOptional'),
+        confirmLabel: t(decision === 'accept' ? 'observeAccept' : 'observeDiscard'),
         danger: decision === 'discard',
       },
-      async (note) => `decide(${decision}) posted at index ${(await dataModel.decideSession(sid, decision, note || undefined)).index}`,
+      async (note) => t('observeControlPosted', { operation: `decide(${decision})`, index: (await dataModel.decideSession(sid, decision, note || undefined)).index }),
     )
   const stop = (scope: StopScope, label: string, hint: string) =>
     ask(
       { title: `${label}?`, detail: hint, inputLabel: t('opReasonOptional'), confirmLabel: label, danger: true },
-      async (reason) => `stop(${scope}) posted at index ${(await dataModel.stopSession(sid, scope, reason || undefined)).index}`,
+      async (reason) => t('observeControlPosted', { operation: `stop(${scope})`, index: (await dataModel.stopSession(sid, scope, reason || undefined)).index }),
     )
 
   return (
-    <Panel title="Operations" testId="operations">
+    <Panel title={t('goalOperations')} testId="operations">
       {paused && (
         <Note tone="warn" testId="session-paused" className="mb-3">
           {t(pauseLabel[paused])} · {t(PAUSE_HINT[paused])}
@@ -241,10 +241,10 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
         {decidable && (
           <>
             <button className="btn btn-primary" onClick={() => decide('accept')}>
-              Accept
+              {t('observeAccept')}
             </button>
             <button className="btn text-bad" onClick={() => decide('discard')}>
-              Discard
+              {t('skDiscard')}
             </button>
           </>
         )}
@@ -273,8 +273,8 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
             <textarea
               className="input flex-1 resize-y"
               rows={1}
-              placeholder="Message to the session"
-              aria-label="Message"
+              placeholder={t('observeMessageToTheSession')}
+              aria-label={t('observeMessage')}
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -283,16 +283,16 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
               disabled={!text.trim()}
               onClick={() =>
                 ask(
-                  { title: `Post a message to ${sid}?`, detail: <Pre value={text} />, confirmLabel: 'Post message' },
+                  { title: t('observePostToSession', { sid }), detail: <Pre value={text} />, confirmLabel: t('observePostMessage') },
                   async () => {
                     const r = await dataModel.postMessage(sid, text)
                     setText('')
-                    return `message posted at index ${r.index} (${r.key})`
+                    return t('observeMessagePosted', { index: r.index, key: r.key })
                   },
                 )
               }
             >
-              Post
+              {t('observePost')}
             </button>
           </div>
         )}
@@ -314,8 +314,8 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
   if (!data) {
     return (
       <>
-        <PageHead back={{ href: '#/sessions', label: 'Sessions' }} title={<span className="font-mono">{sid}</span>} />
-        {error ? <ErrorBox error={error} /> : <Empty>Loading…</Empty>}
+        <PageHead back={{ href: '#/sessions', label: t('sessions') }} title={<span className="font-mono">{sid}</span>} />
+        {error ? <ErrorBox error={error} /> : <Empty>{t('loading')}</Empty>}
       </>
     )
   }
@@ -327,93 +327,93 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
 
   return (
     <>
-      <PageHead back={{ href: '#/sessions', label: 'Sessions' }} title={<span className="font-mono">{entry.session_id}</span>}>
+      <PageHead back={{ href: '#/sessions', label: t('sessions') }} title={<span className="font-mono">{entry.session_id}</span>}>
         <span className="text-xs text-mute">{entry.kind}</span>
         <Badge value={status.run_state} />
         {status.outcome && <Badge value={status.outcome} />}
         {status.acceptance !== 'n/a' && <Badge value={`acceptance: ${status.acceptance}`} tone={status.acceptance} />}
         {status.paused && <Badge value={t(pauseLabel[status.paused])} tone="waiting" />}
-        {entry.unreachable && <Badge value="unreachable" tone="bad" />}
-        {entry.runtime_unavailable && <><Badge value="runtime unavailable" tone="waiting" /><span className="text-xs text-mute">{entry.runtime_unavailable}</span></>}
+        {entry.unreachable && <Badge value={t('observeUnreachable')} tone="bad" />}
+        {entry.runtime_unavailable && <><Badge value={t('observeRuntimeUnavailable')} tone="waiting" /><span className="text-xs text-mute">{entry.runtime_unavailable}</span></>}
       </PageHead>
       <ErrorBox error={error} />
       {data.note && <Note tone="warn" className="mb-4 rounded-lg border border-line bg-panel px-3 py-2">{data.note}</Note>}
       <Operations detail={data} onDone={() => mutate(() => true)} />
 
       <div className="grid gap-x-4 lg:grid-cols-2">
-        <Panel title="Session" testId="session-summary">
+        <Panel title={t('goalSession')} testId="session-summary">
           <Fields
             rows={[
-              ['objective', entry.objective],
-              ['status', status.one_line_status],
-              ['class', entry.class],
-              ['driver', <Mono>{entry.driver.principal}</Mono>],
-              ['created_by', <Mono>{entry.created_by.principal} via {entry.created_by.via}</Mono>],
-              ['parent', entry.origin?.parent_session ? <Sid sid={entry.origin.parent_session} /> : null],
-              ['children', data.children.length ? <span className="flex flex-wrap gap-2">{data.children.map((c) => <Sid key={c} sid={c} />)}</span> : null],
+              [t('observeObjective'), entry.objective],
+              [t('observeStatus'), status.one_line_status],
+              [t('observeClass'), entry.class],
+              [t('observeDriver'), <Mono>{entry.driver.principal}</Mono>],
+              [t('observeCreatedBy'), <Mono>{entry.created_by.principal} {t('observeVia')} {entry.created_by.via}</Mono>],
+              [t('observeParent'), entry.origin?.parent_session ? <Sid sid={entry.origin.parent_session} /> : null],
+              [t('observeChildren'), data.children.length ? <span className="flex flex-wrap gap-2">{data.children.map((c) => <Sid key={c} sid={c} />)}</span> : null],
               ['route_key', entry.route_key ? <Mono>{entry.route_key}</Mono> : null],
-              ['input_queue', entry.input_queue ? <Mono>{entry.input_queue}</Mono> : null],
-              ['artifact', entry.artifact_id ? <Mono>{entry.artifact_id}</Mono> : null],
-              ['location', <Mono>{entry.location}</Mono>],
-              ['rev', `registry ${status.rev}${state ? ` · state ${state.rev}` : ''}`],
-              ['updated', <Time ms={state?.updated_at_ms ?? status.updated_at_ms} />],
+              [t('observeInputQueue'), entry.input_queue ? <Mono>{entry.input_queue}</Mono> : null],
+              [t('observeArtifact'), entry.artifact_id ? <Mono>{entry.artifact_id}</Mono> : null],
+              [t('observeLocation'), <Mono>{entry.location}</Mono>],
+              [t('observeRev'), `registry ${status.rev}${state ? ` · state ${state.rev}` : ''}`],
+              [t('observeUpdated'), <Time ms={state?.updated_at_ms ?? status.updated_at_ms} />],
             ]}
           />
         </Panel>
-        <Panel title="Turn" testId="session-turn">
+        <Panel title={t('observeTurnLabel')} testId="session-turn">
           <Fields
             rows={[
-              ['open turn', state?.open_turn ? (
+              [t('observeOpenTurn'), state?.open_turn ? (
                 <span>
                   #{state.open_turn.index} <Mono>{state.open_turn.run_id}</Mono> input_seq {state.open_turn.input_seq}
                   {state.open_turn.hook && ` hook ${state.open_turn.hook}`}
                   {state.open_turn.inputs?.length ? <Mono> [{state.open_turn.inputs.join(', ')}]</Mono> : null} <Time ms={state.open_turn.at_ms} />
                 </span>
               ) : null],
-              ['waiting for', state?.run_state === 'waiting' && (state.wait_children?.length || state.watched_tasks?.length) ? (
+              [t('observeWaitingFor'), state?.run_state === 'waiting' && (state.wait_children?.length || state.watched_tasks?.length) ? (
                 <span>
-                  {state.wait_children?.length ? <><Badge value="sub sessions" tone="waiting" /> <Mono>{state.wait_children.join(', ')}</Mono> </> : null}
-                  {state.watched_tasks?.length ? <><Badge value="tasks" tone="waiting" /> <Mono>{state.watched_tasks.join(', ')}</Mono></> : null}
+                  {state.wait_children?.length ? <><Badge value={t('observeSubSessions')} tone="waiting" /> <Mono>{state.wait_children.join(', ')}</Mono> </> : null}
+                  {state.watched_tasks?.length ? <><Badge value={t('observeTasks')} tone="waiting" /> <Mono>{state.watched_tasks.join(', ')}</Mono></> : null}
                 </span>
-              ) : status.needs_input ? <Badge value="input" tone="waiting" /> : null],
-              ['paused', status.paused ? <Badge value={t(pauseLabel[status.paused])} tone="waiting" /> : null],
-              ['turns', state ? `${state.turns_completed} completed · seq ${state.turn_seq}` : null],
-              ['behavior', state?.current_behavior ? <Mono>{state.current_behavior}</Mono> : null],
-              ['process entry', state?.process_entry ? <Mono>{state.process_entry}</Mono> : null],
-              ['live run', state?.live_run ? <Mono>{state.live_run.run_id}</Mono> : null],
-              ['last run', state?.last_run ? <Mono>{state.last_run}</Mono> : null],
-              ['stop requested', state?.stop_requested ? <Badge value="yes" tone="bad" /> : null],
-              ['activity', state?.activity.summary || status.activity.summary || null],
-              ['touching', (state?.activity.touching ?? status.activity.touching)?.length ? (
+              ) : status.needs_input ? <Badge value={t('observeInput')} tone="waiting" /> : null],
+              [t('observePaused'), status.paused ? <Badge value={t(pauseLabel[status.paused])} tone="waiting" /> : null],
+              [t('observeTurns'), state ? `${state.turns_completed} completed · seq ${state.turn_seq}` : null],
+              [t('observeBehavior'), state?.current_behavior ? <Mono>{state.current_behavior}</Mono> : null],
+              [t('observeProcessEntry'), state?.process_entry ? <Mono>{state.process_entry}</Mono> : null],
+              [t('observeLiveRun'), state?.live_run ? <Mono>{state.live_run.run_id}</Mono> : null],
+              [t('observeLastRun'), state?.last_run ? <Mono>{state.last_run}</Mono> : null],
+              [t('observeStopRequested'), state?.stop_requested ? <Badge value={t('observeYes')} tone="bad" /> : null],
+              [t('observeActivity'), state?.activity.summary || status.activity.summary || null],
+              [t('observeTouching'), (state?.activity.touching ?? status.activity.touching)?.length ? (
                 <span>
                   {(state?.activity.touching ?? status.activity.touching ?? []).map((t) => (
                     <div key={`${t.kind}:${t.ref}`}><Mono>{t.mode} {t.kind}:{t.ref}</Mono></div>
                   ))}
                 </span>
               ) : null],
-              ['watched tasks', state?.watched_tasks?.length ? <Mono>{state.watched_tasks.join(', ')}</Mono> : null],
-              ['pending decision', (state?.pending_decision ?? status.pending_decision) != null ? <Mono>{str(state?.pending_decision ?? status.pending_decision)}</Mono> : null],
+              [t('observeWatchedTasks'), state?.watched_tasks?.length ? <Mono>{state.watched_tasks.join(', ')}</Mono> : null],
+              [t('observePendingDecision'), (state?.pending_decision ?? status.pending_decision) != null ? <Mono>{str(state?.pending_decision ?? status.pending_decision)}</Mono> : null],
             ]}
           />
         </Panel>
       </div>
 
       {lastError != null && (
-        <Panel title="Last error" testId="session-last-error">
+        <Panel title={t('goalLastError')} testId="session-last-error">
           <Pre value={lastError} className="text-bad" />
         </Panel>
       )}
 
       <div className="grid gap-x-4 lg:grid-cols-2">
-        <Panel title="Process stack" count={state?.process_stack?.length ?? 0} testId="session-process-stack">
+        <Panel title={t('observeProcessStack')} count={state?.process_stack?.length ?? 0} testId="session-process-stack">
           {state?.process_stack?.length ? (
             <table className="tbl">
               <thead>
                 <tr>
-                  <th>entry</th>
-                  <th>role</th>
-                  <th>calls</th>
-                  <th>run</th>
+                  <th>{t('observeEntry')}</th>
+                  <th>{t('observeRole')}</th>
+                  <th>{t('observeCalls')}</th>
+                  <th>{t('observeRun')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -430,19 +430,19 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
               </tbody>
             </table>
           ) : (
-            <Empty>Empty.</Empty>
+            <Empty>{t('observeEmpty')}</Empty>
           )}
         </Panel>
-        <Panel title="Pending events" count={state?.pending_events?.length ?? 0} testId="session-pending-events">
+        <Panel title={t('observePendingEvents')} count={state?.pending_events?.length ?? 0} testId="session-pending-events">
           {state?.pending_events?.length ? (
             <table className="tbl">
               <thead>
                 <tr>
-                  <th>source</th>
-                  <th>subscription</th>
-                  <th>latest</th>
-                  <th>terminal</th>
-                  <th>superseded</th>
+                  <th>{t('observeSource')}</th>
+                  <th>{t('observeSubscription')}</th>
+                  <th>{t('observeLatest')}</th>
+                  <th>{t('observeTerminal')}</th>
+                  <th>{t('observeSuperseded')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -458,24 +458,24 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
               </tbody>
             </table>
           ) : (
-            <Empty>None.</Empty>
+            <Empty>{t('observeNoneLabel')}</Empty>
           )}
         </Panel>
       </div>
 
-      <Panel title="Outbox" count={state?.outbox?.length ?? 0} testId="session-outbox">
-        {state?.outbox?.length ? <Outbox entries={state.outbox} /> : <Empty>No reply queued.</Empty>}
-        {state?.reply != null && <div className="mt-2 text-xs text-mute">reply route: <Mono>{str(state.reply)}</Mono></div>}
+      <Panel title={t('observeOutbox')} count={state?.outbox?.length ?? 0} testId="session-outbox">
+        {state?.outbox?.length ? <Outbox entries={state.outbox} /> : <Empty>{t('observeNoReplyQueued')}</Empty>}
+        {state?.reply != null && <div className="mt-2 text-xs text-mute">{t('observeReplyRoute')} <Mono>{str(state.reply)}</Mono></div>}
       </Panel>
 
       <Panel
-        title="Worklog"
+        title={t('observeWorklog')}
         count={worklog.length}
         testId="session-worklog"
         extra={
           <label className="flex items-center gap-2 text-xs text-mute">
-            newest first · tail
-            <select className="input" aria-label="Worklog tail" value={tail} onChange={(e) => setTail(Number(e.target.value))}>
+            {t('observeNewestFirstTail')}
+            <select className="input" aria-label={t('observeWorklogTail')} value={tail} onChange={(e) => setTail(Number(e.target.value))}>
               {[40, 100, 200, 500].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
@@ -486,51 +486,51 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
             <tbody>{worklog.map((w) => <WorklogRow key={w.seq} entry={w} />)}</tbody>
           </table>
         ) : (
-          <Empty>No entries.</Empty>
+          <Empty>{t('observeNoEntries')}</Empty>
         )}
       </Panel>
 
-      <Panel title="Report" testId="session-report">
-        {data.report ? <Pre value={data.report} /> : <Empty>{status.report_brief || 'No report.'}</Empty>}
+      <Panel title={t('observeReport')} testId="session-report">
+        {data.report ? <Pre value={data.report} /> : <Empty>{status.report_brief || t('observeNoReport')}</Empty>}
       </Panel>
 
       <div className="grid gap-x-4 lg:grid-cols-2">
-        <Panel title="Runtime & hosting" testId="session-runtime">
+        <Panel title={t('observeRuntimeHosting')} testId="session-runtime">
           <Fields
             rows={[
-              ['binding', binding ? <span><Mono>{binding.runtime_id}</Mono> <span className="text-xs text-mute">· {binding.connector}</span></span> : null],
-              ['workdir', binding ? <Mono>{binding.workdir}</Mono> : null],
-              ['target', binding ? <Mono>{str(binding.target)}</Mono> : null],
-              ['bound', binding ? <span><Time ms={binding.bound_at_ms} /> by <Mono>{binding.bound_by}</Mono></span> : null],
-              ['lease holder', lease ? (
+              [t('observeBinding'), binding ? <span><Mono>{binding.runtime_id}</Mono> <span className="text-xs text-mute">· {binding.connector}</span></span> : null],
+              [t('observeWorkdir'), binding ? <Mono>{binding.workdir}</Mono> : null],
+              [t('observeTarget'), binding ? <Mono>{str(binding.target)}</Mono> : null],
+              [t('observeBound'), binding ? <span><Time ms={binding.bound_at_ms} /> {t('observeBy')} <Mono>{binding.bound_by}</Mono></span> : null],
+              [t('observeLeaseHolder'), lease ? (
                 <span>
-                  <Mono>{lease.holder.principal} · {lease.holder.runner_id} · pid {lease.holder.pid}{lease.holder.host ? `@${lease.holder.host}` : ''} · epoch {lease.epoch}</Mono>{' '}
-                  {lease.released_at_ms ? <Badge value="released" /> : <Badge value="held" tone="running" />}
+                  <Mono>{lease.holder.principal} · {lease.holder.runner_id} {t('observePid')} {lease.holder.pid}{lease.holder.host ? `@${lease.holder.host}` : ''} {t('observeEpoch')} {lease.epoch}</Mono>{' '}
+                  {lease.released_at_ms ? <Badge value={t('observeReleased')} /> : <Badge value={t('observeHeld')} tone="running" />}
                 </span>
               ) : null],
-              ['hosted', hosted ? (
+              [t('observeHosted'), hosted ? (
                 <span>
-                  <Badge value={hosted.loaded ? 'loaded' : 'unloaded'} tone={hosted.loaded ? 'ok' : undefined} /> · drives {hosted.drives} · last{' '}
+                  <Badge value={hosted.loaded ? t('observeLoaded') : t('observeUnloaded')} tone={hosted.loaded ? 'ok' : undefined} /> {t('observeDrivesMeta')} {hosted.drives} {t('observeLastMeta')}{' '}
                   <Mono>{hosted.last_result?.kind ?? '–'}</Mono> <Time ms={hosted.last_result_at_ms} /> · {hosted.reason}
                 </span>
-              ) : <span className="text-xs text-mute">not hosted by this loader</span>],
-              ['runs', data.runs?.length ? <Mono>{data.runs.join(', ')}</Mono> : null],
-              ['statistics', data.statistics ? <Mono>{Object.entries(data.statistics).map(([k, v]) => `${k}=${v}`).join(' ')}</Mono> : null],
+              ) : <span className="text-xs text-mute">{t('observeNotHostedByThisLoader')}</span>],
+              [t('observeRuns'), data.runs?.length ? <Mono>{data.runs.join(', ')}</Mono> : null],
+              [t('observeStatistics'), data.statistics ? <Mono>{Object.entries(data.statistics).map(([k, v]) => `${k}=${v}`).join(' ')}</Mono> : null],
             ]}
           />
         </Panel>
-        <Panel title="Behaviors (frozen)" testId="session-behaviors">
+        <Panel title={t('observeBehaviorsFrozen')} testId="session-behaviors">
           <Fields
             rows={[
-              ['entry behavior', config?.behavior ? <Mono>{config.behavior}</Mono> : null],
+              [t('observeEntryBehavior'), config?.behavior ? <Mono>{config.behavior}</Mono> : null],
               ['catalog_rev', config?.frozen ? <Mono>{config.frozen.catalog_rev}</Mono> : null],
-              ['frozen', config?.frozen ? <span><Time ms={config.frozen.frozen_at_ms} /> by <Mono>{config.frozen.frozen_by}</Mono></span> : null],
-              ['behaviors', config?.frozen?.behaviors.length ? <Mono>{config.frozen.behaviors.join(', ')}</Mono> : null],
+              [t('observeFrozen'), config?.frozen ? <span><Time ms={config.frozen.frozen_at_ms} /> {t('observeBy')} <Mono>{config.frozen.frozen_by}</Mono></span> : null],
+              [t('observeBehaviorsLabel'), config?.frozen?.behaviors.length ? <Mono>{config.frozen.behaviors.join(', ')}</Mono> : null],
             ]}
           />
           {config && (
             <details className="mt-3">
-              <summary className="cursor-pointer text-xs text-mute transition-colors hover:text-fg">session config</summary>
+              <summary className="cursor-pointer text-xs text-mute transition-colors hover:text-fg">{t('observeSessionConfig')}</summary>
               <Pre value={{ session: config.session, runtime: config.runtime, workspace: config.workspace, workspace_binding: config.workspace_binding, subscriptions: config.subscriptions, channels: config.channels }} />
             </details>
           )}

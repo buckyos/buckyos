@@ -54,7 +54,10 @@ async function adminToken(request: APIRequestContext): Promise<string> {
 
 async function fixLocale(page: Page) {
   await page.addInitScript(() => {
-    try { window.localStorage.setItem('buckyos.prototype.locale.v1', 'en') } catch { /* no storage */ }
+    try {
+      window.localStorage.setItem('buckyos.prototype.locale.v1', 'en')
+      window.sessionStorage.setItem('buckyos.systest.locale', 'en')
+    } catch { /* no storage */ }
   })
 }
 
@@ -125,7 +128,7 @@ test('owner creates the support group and a customer link; the customer joins, s
     await passForm.locator('input').nth(0).fill(`ui-pass-${runId}`)
     await passForm.locator('input').nth(1).fill(`ui-pass-${runId}`)
     await passForm.locator('button').click()
-    await expect(guest.locator('#ticket-status')).toContainText('密码已设置')
+    await expect(guest.locator('#ticket-status')).toContainText('Password set')
     const userId = (await guest.locator('#ticket-status').textContent())!.split(' ').pop()
     expect(userId).toBeTruthy()
     await customer.close()
@@ -157,7 +160,7 @@ test('owner creates the support group and a customer link; the customer joins, s
     await expect(hub.getByTestId('desktop-taskbar')).toBeVisible()
     await hub.goto(`${zoneOrigin}/messagehub?entityId=${encodeURIComponent(groupDid)}`)
     await hub.getByRole('button', { name: /^(Sessions|会话)$/ }).click()
-    await hub.locator('[data-testid="session-row"]', { hasText: '客服工单' }).first().click()
+    await hub.locator('[data-testid="session-row"]', { hasText: 'Support ticket' }).first().click()
     await expect(hub.getByText(`客户留言 ${runId}`).first()).toBeVisible({ timeout: 30_000 })
     await hub.screenshot({ path: 'test-results/dv-support-group-hub.png', fullPage: true })
     await hubContext.close()

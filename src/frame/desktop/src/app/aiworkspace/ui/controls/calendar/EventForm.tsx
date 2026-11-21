@@ -69,13 +69,13 @@ export function EventForm({ initial, calendars, isNew, disabled, onSave, onCance
   initial: EventDraft; calendars: { id: string; label: string; color: string }[]; isNew: boolean; disabled: string | null
   onSave: (draft: EventDraft) => void; onCancel: () => void
 }) {
-  const { t } = useAiwsText()
+  const { intl, t } = useAiwsText()
   const [d, setD] = useState(initial)
   const set = (patch: Partial<EventDraft>) => setD((x) => ({ ...x, ...patch }))
   const [custom, setCustom] = useState(false)
-  const presets = useMemo(() => recurrencePresets(d.startDate, sdkLocale()), [d.startDate])
+  const presets = useMemo(() => recurrencePresets(d.startDate, sdkLocale(intl)), [d.startDate, intl])
   const preset = presets.find((p) => p.rrule === d.rrule)
-  const ruleText = useMemo(() => { try { return d.rrule ? describeRRule(parseRRule(d.rrule), sdkLocale()) : null } catch { return null } }, [d.rrule])
+  const ruleText = useMemo(() => { try { return d.rrule ? describeRRule(parseRRule(d.rrule), sdkLocale(intl)) : null } catch { return null } }, [d.rrule, intl])
   const valid = d.title.trim() !== '' && (d.allDay ? d.endDate >= d.startDate : `${d.endDate}${hhmm(d.endMin)}` >= `${d.startDate}${hhmm(d.startMin)}`)
   return (
     <form className="aiws-ctl-form" data-testid="aiws-cal-form" onSubmit={(e) => { e.preventDefault(); if (valid && !disabled) onSave(d) }}>

@@ -437,13 +437,13 @@ export function TopBar({
 
       {/* Address row: history navigation + path / search input */}
       <div className="flex items-center gap-1">
-        <button type="button" className="files-icon-btn" disabled={!canBack} onClick={onBack} aria-label="back">
+        <button type="button" className="files-icon-btn" disabled={!canBack} onClick={onBack} aria-label={t('filebrowser.topbar.back')}>
           <ArrowLeft size={16} />
         </button>
-        <button type="button" className="files-icon-btn" disabled={!canForward} onClick={onForward} aria-label="forward">
+        <button type="button" className="files-icon-btn" disabled={!canForward} onClick={onForward} aria-label={t('filebrowser.topbar.forward')}>
           <ArrowRight size={16} />
         </button>
-        <button type="button" className="files-icon-btn" disabled={!canUp} onClick={onUp} aria-label="up">
+        <button type="button" className="files-icon-btn" disabled={!canUp} onClick={onUp} aria-label={t('filebrowser.topbar.up')}>
           <ArrowUp size={16} />
         </button>
 
@@ -470,7 +470,7 @@ export function TopBar({
                 className="min-w-0 flex-1 bg-transparent px-1 text-[13px] text-[color:var(--cp-text)] outline-none placeholder:text-[color:var(--cp-muted)] focus-visible:!outline-none"
               />
               <Tooltip title={t('common.close', 'Close')}>
-                <button type="button" className="files-icon-btn !h-6 !min-w-6 !p-0" onClick={closeSearch} aria-label="close-search">
+                <button type="button" className="files-icon-btn !h-6 !min-w-6 !p-0" onClick={closeSearch} aria-label={t('messagehub.search.close', 'Close search')}>
                   <X size={14} />
                 </button>
               </Tooltip>
@@ -486,7 +486,7 @@ export function TopBar({
               }}
               onBlur={() => setPathEditing(false)}
               spellCheck={false}
-              aria-label="path"
+              aria-label={t('filebrowser.topbar.path')}
               className="min-w-0 flex-1 bg-transparent px-1.5 font-[family-name:var(--files-mono)] text-[13px] text-[color:var(--cp-text)] outline-none focus-visible:!outline-none"
             />
           ) : (

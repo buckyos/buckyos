@@ -629,7 +629,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.shell.share.recipient': '收件人 DID 或 Google 邮箱',
   'aiworkspace.shell.share.method.oauth': 'OAuth',
   'aiworkspace.shell.share.unavailable': '邀请不可用',
-  'aiworkspace.shell.share.method.guest': 'Guest',
+  'aiworkspace.shell.share.method.guest': '访客',
   'aiworkspace.shell.share.method.password': '本 Zone 账号登录',
   'aiworkspace.shell.share.method.selfRegister': '自助注册',
   'aiworkspace.shell.share.method.didLogin': 'DID 登录',

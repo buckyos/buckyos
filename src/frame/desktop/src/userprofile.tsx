@@ -1,3 +1,4 @@
+import { useI18n } from './i18n/provider'
 import { useSearchParams } from 'react-router-dom'
 import { ShieldCheck } from 'lucide-react'
 
@@ -11,7 +12,6 @@ import { ShieldCheck } from 'lucide-react'
 interface TempProfile {
   id: string
   name: string
-  bio: string
   postCount: number
   followerCount: number
   followingCount: number
@@ -22,7 +22,6 @@ function buildTempProfile(userId: string): TempProfile {
   return {
     id: userId,
     name,
-    bio: `Public profile of ${name} (temporary placeholder)`,
     postCount: 0,
     followerCount: 0,
     followingCount: 0,
@@ -30,6 +29,7 @@ function buildTempProfile(userId: string): TempProfile {
 }
 
 export function UserProfileRoute() {
+  const { t } = useI18n()
   const [searchParams] = useSearchParams()
   const userId = searchParams.get('user') ?? 'guest'
   const profile = buildTempProfile(userId)
@@ -82,29 +82,20 @@ export function UserProfileRoute() {
                 color: 'color-mix(in srgb, var(--cp-text) 75%, transparent)',
               }}
             >
-              {profile.bio}
+              {t('profile.publicBio', undefined, { name: profile.name })}
             </p>
             <div
               className="mt-2 flex items-center gap-4 text-sm"
               style={{ color: 'var(--cp-muted)' }}
             >
               <span>
-                <strong style={{ color: 'var(--cp-text)' }}>
-                  {profile.postCount}
-                </strong>{' '}
-                posts
+                {t('profile.posts', undefined, { count: profile.postCount })}
               </span>
               <span>
-                <strong style={{ color: 'var(--cp-text)' }}>
-                  {profile.followerCount}
-                </strong>{' '}
-                followers
+                {t('profile.followers', undefined, { count: profile.followerCount })}
               </span>
               <span>
-                <strong style={{ color: 'var(--cp-text)' }}>
-                  {profile.followingCount}
-                </strong>{' '}
-                following
+                {t('profile.following', undefined, { count: profile.followingCount })}
               </span>
             </div>
           </div>

@@ -1,3 +1,4 @@
+import { translate } from '../i18n/index.ts'
 import { contentRefString, contentDescriptor, parentSource, SystemDialogError, type OpenRequest, type SelectDialogParams, type SelectDialogResult, type TransferableContentRef, type TransferableSessionContext } from 'buckyos/content'
 import type { PreviewEmbedOpenWith } from 'buckyos/app-frame'
 import { ContentError, decodeText, encodeText, FULL_FEATURE_LIMIT } from '../fs/codec.ts'
@@ -190,7 +191,7 @@ export class Workspace {
     } else if (!transient) group.tabs.find(t => t.doc === doc.id)!.transient = false
     group.active = doc.id; this.emit()
   }
-  newDocument(text = '', name = 'untitled.txt'): EditorDocument {
+  newDocument(text = '', name = translate(this.locale, 'untitledFile')): EditorDocument {
     const doc: EditorDocument = { id: crypto.randomUUID(), name, text, savedText: '', encoding: 'utf-8', bom: false, eol: '\n', mixedEol: false, savedFormat: JSON.stringify(['utf-8', false, '\n']), readOnly: false, writable: true, largeFile: false, disk: 'in-sync', version: 0, syncedVersion: -1, localVersion: -1 }
     this.documents.set(doc.id, doc); this.show(doc)
     if (text) this.changed(doc)

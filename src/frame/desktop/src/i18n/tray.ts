@@ -66,7 +66,7 @@ export const trayZh: Record<string, string> = {
   'tray.messages.title': '消息',
   'tray.messages.unavailable': '消息加载失败。',
 
-  'tray.notify.agent': 'Agent',
+  'tray.notify.agent': '智能体',
   'tray.notify.app': '应用通知',
   'tray.notify.empty': '没有新通知',
   'tray.notify.needsAnswer': '等待你回答',

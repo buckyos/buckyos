@@ -238,7 +238,7 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
         onPointerMove={handleSessionSidebarSplitterPointerMove}
         onPointerUp={handleSessionSidebarSplitterPointerUp}
         onPointerCancel={handleSessionSidebarSplitterPointerUp}
-        title="Resize session list"
+        title={t('messagehub.resizeSessionList')}
         style={{
           width: PANEL_SPLITTER_WIDTH,
           marginLeft: -(PANEL_SPLITTER_WIDTH / 2),

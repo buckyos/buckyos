@@ -684,7 +684,7 @@ const ConversationComposerInner = forwardRef<
             className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm"
             style={{ color: 'var(--cp-text)' }}
             onClick={() => directoryInputRef.current?.click()}
-            title="The folder picker omits empty subfolders. Drop a folder to include them."
+            title={t('messagehub.composer.emptyFolders')}
             type="button"
           >
             <FolderOpen size={16} />

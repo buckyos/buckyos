@@ -12,13 +12,23 @@ import { RecoveryStore } from './fs/recoveryStore.ts'
 import { LocalStore } from './fs/localStore.ts'
 import { SettingsStore } from './platform/settings.ts'
 import { parseLaunch } from './platform/launch.ts'
+import { browserLocale, matchSupportedLocale } from '../../shared/locale.ts'
 import { translate } from './i18n/index.ts'
 import './ui/styles.css'
 const root = createRoot(document.getElementById('root')!)
 let workspace: Workspace | undefined
 let initial: FrameInit | undefined
 const pending: OpenRequest[] = []
-const t = (key: string) => translate(navigator.language, key)
+let locale = matchSupportedLocale(new URLSearchParams(location.search).get('locale')) ?? browserLocale()
+const t = (key: string) => translate(locale, key)
+function useLocale(tag: string) {
+  locale = matchSupportedLocale(tag) ?? 'en'
+  document.documentElement.lang = locale
+  document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
+  document.title = t('title')
+  if (workspace) { workspace.locale = locale; workspace.emit() }
+}
+useLocale(locale)
 // The system entry is the Zone root (the SDK knows the Zone host). The shell that embeds us is the only window we
 // talk to over the App Frame protocol; it is whichever window inside our Zone actually frames us.
 function origins(test: boolean): { shell: string; system: string } {
@@ -32,10 +42,10 @@ function origins(test: boolean): { shell: string; system: string } {
 }
 let frame: AppFrameClient
 const connectFrame = (shellOrigin: string, systemOrigin: string) => new AppFrameClient({ shellOrigin, systemOrigin, appId: APP_ID,
-  onInit: init => { initial = init; if (workspace) { applyFrame(init); if (init.launch) workspace.run(open(init.launch)) } },
+  onInit: init => { initial = init; useLocale(init.locale); if (workspace) { applyFrame(init); if (init.launch) workspace.run(open(init.launch)) } },
   onOpen: async request => { if (!workspace) pending.push(request); else await open(request); return { accepted: true } },
   onTheme: theme => { if (workspace) { workspace.theme = theme.mode; workspace.emit() } },
-  onLocale: locale => { if (workspace) { workspace.locale = locale; workspace.emit() } },
+  onLocale: useLocale,
   onBeforeClose: async reason => {
     if (!workspace) return 'allow'
     if (reason === 'logout') return await workspace.prepareClose(undefined, reason) ? 'allow' : 'deny'
@@ -48,7 +58,7 @@ const connectFrame = (shellOrigin: string, systemOrigin: string) => new AppFrame
 })
 function applyFrame(init: FrameInit): void {
   if (!workspace) return
-  workspace.locale = init.locale; workspace.theme = init.theme.mode; workspace.origin.windowId = init.windowId
+  workspace.locale = locale; workspace.theme = init.theme.mode; workspace.origin.windowId = init.windowId
   if (init.formFactor === 'mobile') workspace.sidebar = false
   workspace.emit()
 }
@@ -100,6 +110,7 @@ async function start(): Promise<void> {
   const local = new LocalStore(account.user_id)
   const config = test ? { get: async (key: string) => ({ value: localStorage.getItem(key) ?? '{}' }), set: async (key: string, value: string) => { localStorage.setItem(key, value) } } : buckyos.getSystemConfigClient()
   workspace = new Workspace(store, new BufferStore(data, local), new RecoveryStore(data), local, new SettingsStore(config, account.user_id))
+  workspace.locale = locale
   workspace.home = `cyfs:///home/${account.user_id}`
   workspace.onLogin = relogin
   workspace.systemOrigin = system
@@ -107,7 +118,7 @@ async function start(): Promise<void> {
   workspace.selectContent = params => frame.selectContent(params, { theme: workspace!.theme === 'dark' ? 'dark' : 'light', locale: workspace!.locale })
   root.render(<App workspace={workspace} />)
   workspace.subscribe(() => {
-    const title = `${workspace!.active?.name ?? t('title')} — Text Editor`
+    const title = workspace!.active ? `${workspace!.active.name} — ${t('title')}` : t('title')
     const changed = [...workspace!.documents.values()].some(dirty)
     document.title = (changed ? '● ' : '') + title; frame.setTitle(title, changed)
   })

@@ -63,11 +63,16 @@ function Panel({ input, caller }: { input: SelectDialogInput; caller: string }) 
  * The system file picker alone, for a standalone App tab to frame over itself (`buckyos.sysdlg-embed`): no Desktop
  * shell. It browses with this origin's own session; the App only receives what the user confirmed.
  */
+function EmbedOnlyNotice() {
+  const { t } = useI18n()
+  return <p role="alert" className="p-6 text-sm">{t('sysdlg.select.embedOnly')}</p>
+}
+
 export function SelectEmbedApp() {
   const current = useSyncExternalStore(subscribe, () => view)
   // The App's page shows through around the dialog.
   useEffect(() => { document.documentElement.style.background = 'transparent'; document.body.style.background = 'transparent' }, [])
-  if (!host.parentOrigin) return <p role="alert" className="p-6 text-sm">This page only works inside an App.</p>
+  if (!host.parentOrigin) return <I18nProvider><EmbedOnlyNotice /></I18nProvider>
   if (!current) return null
   return (
     <PrototypeThemeProvider mode={current.init.theme}>

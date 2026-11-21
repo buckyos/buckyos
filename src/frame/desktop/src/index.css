@@ -245,6 +245,10 @@ a {
   min-height: 100%;
 }
 
+.react-grid-layout > .react-grid-item.cssTransforms {
+  left: 0;
+}
+
 .react-grid-layout > .react-grid-item.react-grid-placeholder {
   background: color-mix(in srgb, var(--cp-accent) 8%, transparent);
   border-radius: 16px;

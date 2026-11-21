@@ -57,27 +57,28 @@ async function actor(request: Request, context: SupportContext) {
 }
 
 const page =
-  `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared document</title>
-<main><h1 id="title">Shared document</h1><textarea id="body" disabled rows="16" cols="70" aria-label="Document text"></textarea>
-<button id="save" hidden disabled type="button">Save</button><form id="share" hidden><select id="audience" aria-label="Audience"><option value="directed">Specific recipient</option><option value="open">Open invitation</option></select>
-<input id="recipient" aria-label="Recipient DID or Google email"><select id="action" aria-label="Permission"><option value="read">Read</option><option value="edit">Edit</option></select><button>Create invitation</button><output id="link"></output><button id="copy" hidden type="button">Copy link</button></form><p id="status" role="status"></p></main>
+  `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="doc.title">Shared document</title>
+<main><h1 id="title" data-i18n="doc.title">Shared document</h1><textarea id="body" disabled rows="16" cols="70" data-i18n-label="doc.text" aria-label="Document text"></textarea>
+<button id="save" hidden disabled type="button" data-i18n="doc.save">Save</button><form id="share" hidden><select id="audience" data-i18n-label="doc.audience" aria-label="Audience"><option value="directed" data-i18n="doc.recipient">Specific recipient</option><option value="open" data-i18n="doc.open">Open invitation</option></select>
+<input id="recipient" data-i18n-label="doc.to" aria-label="Recipient DID or Google email"><select id="action" data-i18n-label="doc.permission" aria-label="Permission"><option value="read" data-i18n="doc.read">Read</option><option value="edit" data-i18n="doc.edit">Edit</option></select><button data-i18n="doc.create">Create invitation</button><output id="link"></output><button id="copy" hidden type="button" data-i18n="doc.copy">Copy link</button></form><p id="status" role="status"></p></main>
 <script type="module">
+import { bindText, t } from '/assets/systest-locale.js'
 const el=id=>document.getElementById(id)
 const api=location.pathname.replace('/docs/','/sdk/appservice/documents/')
-async function call(path,opts) {const r=await fetch(path,opts); if(!r.ok) throw new Error('Request failed ('+r.status+')'); return r.json()}
+async function call(path,opts) {const r=await fetch(path,opts); if(!r.ok) throw new Error(t('doc.failed',{status:r.status})); return r.json()}
 const post=(method,data)=>({method,headers:{'content-type':'application/json'},body:JSON.stringify(data)})
 try {
-  const doc=await call(api); el('title').textContent=doc.title; el('body').value=doc.body; el('body').disabled=false; el('save').disabled=!doc.can_edit; el('body').readOnly=!doc.can_edit; el('save').hidden=!doc.can_edit; el('share').hidden=!doc.owner;
-  el('save').onclick=async()=>{try{await call(api,post('PUT',{body:el('body').value}));el('status').textContent='Saved'}catch(e){el('status').textContent=e.message}}
+  const doc=await call(api); delete el('title').dataset.i18n; el('title').textContent=doc.title; el('body').value=doc.body; el('body').disabled=false; el('save').disabled=!doc.can_edit; el('body').readOnly=!doc.can_edit; el('save').hidden=!doc.can_edit; el('share').hidden=!doc.owner;
+  el('save').onclick=async()=>{try{await call(api,post('PUT',{body:el('body').value}));bindText(el('status'),'doc.saved')}catch(e){delete el('status').dataset.i18n; el('status').textContent=e.message}}
   let lastRequest = null;
-  el('copy').onclick=async()=>{try {await navigator.clipboard.writeText(el('link').textContent);el('status').textContent='Link copied'}catch(e){el('status').textContent=e.message}};
+  el('copy').onclick=async()=>{try {await navigator.clipboard.writeText(el('link').textContent);bindText(el('status'),'doc.copied')}catch(e){delete el('status').dataset.i18n; el('status').textContent=e.message}};
   el('share').onsubmit=async(e)=>{e.preventDefault();try{const to=el('recipient').value.trim(),open=el('audience').value==='open',email=to.includes('@')&&!to.startsWith('did:');
     const request={action:el('action').value,audience:open?{kind:'open'}:email?{kind:'directed'}:{kind:'directed',did:to},...(!open&&email?{recipient_email:{source_id:'google',email:to}}:{}),return_path:location.pathname+location.search+location.hash};
     const key=JSON.stringify(request); if(lastRequest?.key!==key) lastRequest={key,id:crypto.randomUUID()};
     const r=await call(api+'/invitations',post('POST',{...request,request_id:lastRequest.id}));
     el('link').textContent=r.url; el('copy').hidden=false; lastRequest=null;
-  }catch(e){el('status').textContent=e.message}}
-}catch(e){el('status').textContent=e.message;el('save').hidden=true;el('body').hidden=true}
+  }catch(e){delete el('status').dataset.i18n; el('status').textContent=e.message}}
+}catch(e){delete el('status').dataset.i18n; el('status').textContent=e.message;el('save').hidden=true;el('body').hidden=true}
 </script></html>`;
 
 export async function handleResourceShare(

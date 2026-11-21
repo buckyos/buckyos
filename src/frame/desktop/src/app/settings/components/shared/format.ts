@@ -1,6 +1,8 @@
+import { currentTextLocale } from '../../../../i18n/language'
+
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
-export function formatBytes(bytes: number | null | undefined): string {
+export function formatBytes(bytes: number | null | undefined, locale = currentTextLocale()): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return '—'
   let value = bytes
   let unit = 0
@@ -8,15 +10,15 @@ export function formatBytes(bytes: number | null | undefined): string {
     value /= 1024
     unit += 1
   }
-  return `${value >= 100 || unit === 0 ? Math.round(value) : Number(value.toFixed(1))} ${UNITS[unit]}`
+  return `${value.toLocaleString(locale, { maximumFractionDigits: value >= 100 || unit === 0 ? 0 : 1 })} ${UNITS[unit]}`
 }
 
 /** `used / total` when both are known, otherwise whichever is. */
-export function formatUsage(used: number | null | undefined, total: number | null | undefined): string {
+export function formatUsage(used: number | null | undefined, total: number | null | undefined, locale = currentTextLocale()): string {
   if (used != null && total != null && total > 0) {
-    return `${formatBytes(used)} / ${formatBytes(total)} (${Math.round((used / total) * 100)}%)`
+    return `${formatBytes(used, locale)} / ${formatBytes(total, locale)} (${(used / total).toLocaleString(locale, { style: 'percent', maximumFractionDigits: 0 })})`
   }
-  return total != null ? formatBytes(total) : formatBytes(used)
+  return total != null ? formatBytes(total, locale) : formatBytes(used, locale)
 }
 
 export function formatDateTime(value: string | number | null | undefined, locale: string): string {

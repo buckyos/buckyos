@@ -1,5 +1,6 @@
 /* ── Static analysis summary bar ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronUp, Info } from 'lucide-react'
 import type { AnalysisReport, AnalysisIssue } from '../types'
@@ -17,6 +18,7 @@ export function AnalysisBar({
   report: AnalysisReport
   onLocateNode?: (nodeId: string) => void
 }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(report.errorCount > 0)
   const total = report.errorCount + report.warnCount + report.infoCount
   return (
@@ -42,25 +44,25 @@ export function AnalysisBar({
           className="flex items-center gap-1 text-xs"
           style={{ color: 'var(--cp-danger)' }}
         >
-          <AlertTriangle size={13} /> {report.errorCount} errors
+          <AlertTriangle size={13} /> {t('workflow.errorCount', undefined, { count: report.errorCount })}
         </span>
         <span
           className="flex items-center gap-1 text-xs"
           style={{ color: 'var(--cp-warning)' }}
         >
-          <AlertTriangle size={13} /> {report.warnCount} warns
+          <AlertTriangle size={13} /> {t('workflow.warnCount', undefined, { count: report.warnCount })}
         </span>
         <span
           className="flex items-center gap-1 text-xs"
           style={{ color: 'var(--cp-muted)' }}
         >
-          <Info size={13} /> {report.infoCount} info
+          <Info size={13} /> {t('workflow.infoCount', undefined, { count: report.infoCount })}
         </span>
         <span
           className="ml-auto text-[10px] uppercase tracking-wider"
           style={{ color: 'var(--cp-muted)' }}
         >
-          Static analysis
+          {t('workflow.staticAnalysis')}
         </span>
         {total > 0 &&
           (open ? <ChevronUp size={14} /> : <ChevronDown size={14} />)}
@@ -87,7 +89,7 @@ export function AnalysisBar({
                   border: '1px solid var(--cp-border)',
                 }}
               >
-                {iss.severity}
+                {t(`workflow.severity.${iss.severity}`, iss.severity)}
               </span>
               <span className="font-mono text-[10px]" style={{ color: 'var(--cp-muted)' }}>
                 {iss.code}

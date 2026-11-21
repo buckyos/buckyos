@@ -934,7 +934,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   ) => {
     if (context.contextToken !== pane.contextToken) { showToast(t('filebrowser.operation.contextChanged', 'The selection changed. Open the menu again.')); return }
     const state = commandState(action.command, { ...context, busy: busyRef.current || pane.enumerating })
-    if (state.state !== 'available') { showToast(t(`filebrowser.commandReason.${state.reason}`, state.reason)); return }
+    if (state.state !== 'available') { showToast(state.reason ? t(`filebrowser.commandReason.${state.reason}`, state.reason) : t('filebrowser.operation.unavailable')); return }
     const items = context.items
     const first = items[0]
     const entries = context.entries
@@ -1246,7 +1246,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
         if (pane.list.capabilities.acceptsReferences) { void runBatch(source.pane, source.items, 'add-ref', pane.currentUrl); return }
         const copying = event.ctrlKey || event.altKey
         const state = commandState(copying ? 'copy-to' : 'move-to', contextFor(source.pane, source.items))
-        if (state.state !== 'available') { showToast(t(`filebrowser.commandReason.${state.reason}`, state.reason ?? 'This action is unavailable')); return }
+        if (state.state !== 'available') { showToast(state.reason ? t(`filebrowser.commandReason.${state.reason}`, state.reason) : t('filebrowser.operation.unavailable')); return }
         const target = writablePathOf(pane.currentUrl)
         if (!target || !pane.list.capabilities.acceptsContent) { showToast(t('filebrowser.operation.invalidDestination', 'Choose a writable folder outside the selected folders.')); return }
         void runBatch(source.pane, source.items, copying ? 'copy' : 'move', target)

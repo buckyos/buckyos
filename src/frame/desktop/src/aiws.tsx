@@ -7,7 +7,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ANONYMOUS_IDENTITY, buckyos, RuntimeType, type CurrentIdentity } from 'buckyos'
 import './index.css'
-import { loadAiwsLocale } from './app/aiworkspace/i18n'
+import { aiwsText, loadAiwsLocale } from './app/aiworkspace/i18n'
 import { StandalonePage } from './app/aiworkspace/standalone/StandalonePage'
 import { defaultLocaleFromBrowser, I18nProvider } from './i18n/provider'
 import { setPresentationViewer } from './presentation/zone'
@@ -17,9 +17,14 @@ import { setBootIdentity } from './sso/identity'
 import { PrototypeThemeProvider } from './theme/provider'
 
 async function bootstrap() {
-  defaultLocaleFromBrowser()
+  const url = new URL(window.location.href)
+  const locale = defaultLocaleFromBrowser(url.searchParams.get('lang'))
+  if (url.searchParams.has('lang')) {
+    url.searchParams.delete('lang')
+    window.history.replaceState(window.history.state, '', url)
+  }
   // the language's text table is a chunk of its own: fetched while the session starts, there before the first render
-  const text = loadAiwsLocale()
+  const text = loadAiwsLocale(locale)
   let identity: CurrentIdentity = ANONYMOUS_IDENTITY
   if (!isMockRuntime()) {
     if (import.meta.env.VITE_ZONE_PROXY) {
@@ -40,7 +45,7 @@ async function bootstrap() {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <PrototypeThemeProvider>
-        <I18nProvider>
+        <I18nProvider initialLocale={locale}>
           <StandalonePage />
         </I18nProvider>
       </PrototypeThemeProvider>
@@ -54,5 +59,5 @@ registerDesktopServiceWorker()
 bootstrap().catch((error) => {
   console.error('[aiws] failed to start:', error)
   const root = document.getElementById('root')
-  if (root) root.textContent = `AI Workspace failed to start: ${error instanceof Error ? error.message : String(error)}`
+  if (root) root.textContent = aiwsText().t('aiworkspace.core.app.openFailed', { error: error instanceof Error ? error.message : String(error) })
 })

@@ -275,7 +275,7 @@ interface DesktopMenuState extends DesktopPlacement {
 export function DesktopRoute() {
   const store = useDesktopUIStore()
   const snap = useDesktopUISnapshot()
-  const { locale, setLocale, t } = useI18n()
+  const { locale, preferredLocale, setLocale, t } = useI18n()
   const appText = useAppText()
   const { themeMode, setThemeMode } = useThemeMode()
   const isMobile = useMediaQuery('(max-width:768px)')
@@ -676,8 +676,8 @@ export function DesktopRoute() {
     return () => window.removeEventListener('buckyos:request-logout', onRequest)
   }, [handleLogout])
   const handleCycleLocale = useCallback(
-    () => setLocale(nextSupportedLocale(locale)),
-    [setLocale, locale],
+    () => setLocale(nextSupportedLocale(preferredLocale)),
+    [setLocale, preferredLocale],
   )
   const handleToggleTheme = useCallback(
     () => setThemeMode(themeMode === 'light' ? 'dark' : 'light'),
@@ -1184,6 +1184,7 @@ export function DesktopRoute() {
       <OpenWithHost />
       <Alert
         severity="success"
+        closeText={t('common.close')}
         onClose={() => store.setSnackbar(null)}
         sx={{
           display: snackbar ? 'flex' : 'none',
@@ -1195,7 +1196,7 @@ export function DesktopRoute() {
           color: 'var(--cp-text)',
         }}
       >
-        {snackbar}
+        {snackbar && (typeof snackbar === 'string' ? snackbar : t(snackbar.key))}
       </Alert>
     </main>
   )
@@ -1254,6 +1255,8 @@ const DesktopPages = memo(function DesktopPages({
   selectedItemId,
   width,
 }: DesktopPagesProps) {
+  const { locale } = useI18n()
+  const direction = locale === 'ar' ? 'rtl' : 'ltr'
   const pageCount = layout.pages.length
   const gridLayouts = useMemo(
     () => layout.pages.map((page) => mapPageToGrid(page)),
@@ -1274,6 +1277,9 @@ const DesktopPages = memo(function DesktopPages({
     [gridConfig, width],
   )
   const swiperRef = useRef<SwiperInstance | null>(null)
+  useLayoutEffect(() => {
+    swiperRef.current?.changeLanguageDirection(direction)
+  }, [direction])
   const lockPaging = useCallback((locked: boolean) => {
     if (swiperRef.current) swiperRef.current.allowTouchMove = !locked
   }, [])
@@ -1332,6 +1338,7 @@ const DesktopPages = memo(function DesktopPages({
 
   return (
     <Swiper
+      dir={direction}
       modules={[Pagination]}
       // A touch swipes pages on any screen (an iPad shows the desktop layout); the mouse drags tiles and uses the dots.
       simulateTouch={false}

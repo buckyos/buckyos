@@ -45,7 +45,7 @@ const BY_CODE: Record<string, ErrorShape> = {
     retryable: false,
   },
   NAMESPACE_CONFLICT: {
-    messageKey: 'filebrowser.error.nameConflict',
+    messageKey: 'filebrowser.operation.CONFLICT',
     fallback: 'This name already exists here',
     retryable: false,
   },

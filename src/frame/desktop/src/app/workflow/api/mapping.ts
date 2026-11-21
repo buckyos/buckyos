@@ -189,10 +189,6 @@ export function mapGraph(
         maxItems: node.max_items,
         concurrency,
         effectiveConcurrency: effective,
-        degradedReason:
-          effective < concurrency
-            ? `upstream output is finite_sequential; concurrency capped to ${effective}`
-            : undefined,
       })
       if (node.steps[0]) edge(node.id, node.steps[0], true)
       for (let i = 1; i < node.steps.length; i += 1) edge(node.steps[i - 1], node.steps[i], true)

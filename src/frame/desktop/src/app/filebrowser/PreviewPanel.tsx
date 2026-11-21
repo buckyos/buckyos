@@ -179,13 +179,13 @@ export function PreviewPanel({
           <>
             <div className="space-y-2">
               <Row label={t('filebrowser.preview.size', 'Size')}>
-                {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes)}
+                {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes, locale)}
               </Row>
               <Row label={t('filebrowser.preview.kind', 'Kind')}>
                 <span className="capitalize">{t(`filebrowser.kind.${entry.kind}`, entry.kind)}</span>
               </Row>
               <Row label={t('filebrowser.preview.modified', 'Modified')}>
-                {formatDate(entry.modifiedAt)}
+                {formatDate(entry.modifiedAt, locale)}
               </Row>
               <Row label={t('filebrowser.preview.source', 'Source')}>
                 {entry.source?.label ?? '—'}
@@ -309,7 +309,7 @@ export function PreviewPanel({
                     {story.excerpt}
                   </p>
                   <p className="mt-1.5 text-[12px] tabular-nums text-[color:var(--cp-muted)]">
-                    {formatDate(story.occurredAt)}
+                    {formatDate(story.occurredAt, locale)}
                     {story.source ? ` · ${story.source}` : ''}
                   </p>
                 </div>

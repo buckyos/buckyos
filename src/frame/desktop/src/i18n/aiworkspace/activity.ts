@@ -58,7 +58,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.activity.group.separator': '、',
   'aiworkspace.activity.online': '在线 {{count}}',
   'aiworkspace.activity.devices': '{{count}} 台设备',
-  'aiworkspace.activity.actor.agent': '{{name}}（Agent）',
+  'aiworkspace.activity.actor.agent': '{{name}}（智能体）',
   'aiworkspace.activity.actor.macro': '{{name}}（宏）',
   'aiworkspace.activity.actor.system': '系统',
   'aiworkspace.activity.commit.changed': '修改了{{target}}',

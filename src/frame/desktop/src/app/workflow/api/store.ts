@@ -1,5 +1,6 @@
 /* ── Workflow WebUI store backed by the workflow service RPC ── */
 
+import type { useI18n } from '../../../i18n/provider'
 import { buckyos, WorkflowRequestError } from 'buckyos'
 import type { WorkflowClient, WorkflowDefinition as DslDefinition } from 'buckyos'
 import type {
@@ -217,32 +218,37 @@ export class WorkflowStore {
     return this.runs.filter((r) => !isTerminalStatus(r.status)).length
   }
 
-  buildAiPrompt(): string {
-    const exec = this.executors
-      .map((e) => `- ${e.id} :: ${e.description} (in: ${e.inputSummary ?? '?'}; out: ${e.outputSummary ?? '?'})`)
-      .join('\n')
+  buildAiPrompt(t: ReturnType<typeof useI18n>['t']): string {
+    const functions = this.executors.map((entry) => '- ' + t('workflow.prompt.function', undefined, {
+      id: entry.id,
+      description: entry.description,
+      input: entry.inputSummary ?? '?',
+      output: entry.outputSummary ?? '?',
+    }))
     return [
-      `You are generating a BuckyOS Workflow definition (DSL JSON).`,
+      t('workflow.prompt.intro'),
       `schema_version: ${this.schemaVersion}`,
-      ``,
-      `Top-level fields: id, name, schema_version, trigger, steps, nodes?, edges, guards?, defs?.`,
-      ``,
-      `Step fields: id, name, type ("autonomous" | "human_confirm" | "human_required"), executor, input, input_schema?, output_schema, output_mode ("single" | "finite_seekable" | "finite_sequential"), idempotent, skippable, subject_ref?, prompt?, guards?.`,
-      `Control nodes (in "nodes"):`,
-      `  * {type:"branch", id, on, paths, max_iterations}  // paths is exhaustive enum -> nodeId map`,
-      `  * {type:"parallel", id, branches[], join: "all" | "any" | "n_of_m", n?}`,
-      `  * {type:"for_each", id, items, steps[], max_items, concurrency}  // upstream finite_sequential forces concurrency=1`,
-      ``,
-      `Edges: { from, to }; an edge without "to" marks a terminal node. branch.paths and parallel.branches imply edges; do not duplicate them.`,
-      ``,
-      `References (in step input) use:  \${node_id.output[.field[.sub]]}; \${trigger.output.<field>} reads the run input declared in trigger.input_schema.`,
-      `No expressions, function calls, or string concatenation in references.`,
-      ``,
-      `Executors: "/tool/<name>@<version>" binds a published FunctionObject; "service::<svc>.<method>" calls a service adapter.`,
-      `Published functions in this zone:`,
-      exec,
-      ``,
-      `Output requirements: emit ONE valid JSON object (no commentary, no markdown fences). Conform exactly to schema_version ${this.schemaVersion}.`,
+      '',
+      t('workflow.prompt.topFields', undefined, { fields: 'id, name, schema_version, trigger, steps, nodes?, edges, guards?, defs?' }),
+      '',
+      t('workflow.prompt.stepFields', undefined, {
+        fields: 'id, name, type ("autonomous" | "human_confirm" | "human_required"), executor, input, input_schema?, output_schema, output_mode ("single" | "finite_seekable" | "finite_sequential"), idempotent, skippable, subject_ref?, prompt?, guards?',
+      }),
+      t('workflow.prompt.controls', undefined, { field: '"nodes"' }),
+      '  * {type:"branch", id, on, paths, max_iterations}  // ' + t('workflow.prompt.paths', undefined, { paths: 'paths' }),
+      '  * {type:"parallel", id, branches[], join: "all" | "any" | "n_of_m", n?}',
+      '  * {type:"for_each", id, items, steps[], max_items, concurrency}  // ' + t('workflow.prompt.concurrency', undefined, { mode: 'finite_sequential', limit: 'concurrency=1' }),
+      '',
+      t('workflow.prompt.edges', undefined, { edge: '{ from, to }', to: '"to"', paths: 'branch.paths', branches: 'parallel.branches' }),
+      '',
+      t('workflow.prompt.refs', undefined, { ref: '${node_id.output[.field[.sub]]}', schema: 'trigger.input_schema', trigger: '${trigger.output.<field>}' }),
+      t('workflow.prompt.noExpressions'),
+      '',
+      t('workflow.prompt.executors', undefined, { tool: '"/tool/<name>@<version>"', service: '"service::<svc>.<method>"' }),
+      t('workflow.prompt.functions'),
+      ...functions,
+      '',
+      t('workflow.prompt.result', undefined, { schema: 'schema_version', version: this.schemaVersion }),
     ].join('\n')
   }
 }

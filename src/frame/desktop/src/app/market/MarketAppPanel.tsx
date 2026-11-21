@@ -51,7 +51,7 @@ export function MarketAppPanel() {
   return (
     <div className="space-y-4">
       <PanelIntro
-        kicker="Launcher"
+        kicker={t('market.launcher')}
         title={t('market.title')}
         body={t('market.body')}
       />

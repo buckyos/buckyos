@@ -169,9 +169,9 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       })
     }}>
       <label>{t('messagehub.share.visitor','Visitor sign-in invitation')} <select value={guestAudience} onChange={e=>setGuestAudience(e.target.value as 'open'|'directed')}>
-        <option value="directed">{t('sso.share.directed','Directed only')}</option><option value="open">{t('aiworkspace.shell.share.open','Open invitation')}</option>
+        <option value="directed">{t('sso.share.directed','Directed only')}</option><option value="open">{t('messagehub.share.openInvitation','Open invitation')}</option>
       </select></label>
-      {guestAudience==='directed' && <input required value={guestRecipient} aria-label={t('aiworkspace.shell.share.recipient','Recipient DID or Google email')} placeholder={t('aiworkspace.shell.share.recipient','Recipient DID or Google email')} onChange={e=>setGuestRecipient(e.target.value)}/>}
+      {guestAudience==='directed' && <input required value={guestRecipient} aria-label={t('messagehub.share.recipient','Recipient DID or Google email')} placeholder={t('messagehub.share.recipient','Recipient DID or Google email')} onChange={e=>setGuestRecipient(e.target.value)}/>}
       <button className={hubButtonClass} disabled={pending || (guestAudience === 'directed' && !guestRecipient.trim())}>{t('messagehub.share.issue','Create sign-in link')}</button>
       {guestLink && <input readOnly value={guestLink} aria-label={t('messagehub.share.visitor','Visitor sign-in invitation')} onFocus={e=>e.target.select()}/>}
     </form>}

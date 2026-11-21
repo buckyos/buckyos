@@ -1,7 +1,7 @@
 import { AppFrameClient, embedderOrigin, originInZone } from 'buckyos/app-frame'
 import { SystemDialogError, type ContentSelector, type ZoneContent } from 'buckyos/content'
 import { NfspClient } from 'buckyos/nfsp'
-import { lang } from './i18n'
+import { lang, setLanguage } from './i18n'
 import { dataModel } from './model'
 import { sessionToken } from './model/krpc'
 
@@ -32,7 +32,7 @@ export function startAppFrame(): Promise<AppFrameClient | null> {
     const restore = /[#&]bfp=/.test(bootHash) && current !== bootHash
     if (restore) setHash(bootHash)
     try {
-      return new AppFrameClient({ shellOrigin: shell ?? system, systemOrigin: system })
+      return new AppFrameClient({ shellOrigin: shell ?? system, systemOrigin: system, onInit: (init) => { void setLanguage(init.locale) }, onLocale: setLanguage })
     } finally {
       if (restore) setHash(current)
     }
@@ -85,7 +85,7 @@ export async function pickFile(accept: ContentSelector[] = []): Promise<File | n
   let result
   try {
     result = await client.selectContent({ mode: 'open', accept, allowLocal: true }, {
-      locale: lang === 'zh' ? 'zh-CN' : 'en',
+      locale: lang,
       theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
     })
   } catch (error) {

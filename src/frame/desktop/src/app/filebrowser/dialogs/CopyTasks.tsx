@@ -28,9 +28,9 @@ export function CopyTasks({ ownerId, reveal, compact = false, onShowTransfers }:
       ? t('filebrowser.transfer.statusFailed', 'Transfers failed: {{count}}', { count: transfer.failed })
       : null
   const [tasks, setTasks] = useState<{ task_id: string; name: string; phase: string }[]>([])
-  const [error, setError] = useState('')
+  const [error, setError] = useState<ReturnType<typeof toUiError> | null>(null)
   const refresh = async () => {
-    try { setTasks(await folderOps().listCopies?.() ?? []); setError('') } catch (error) { setError(toUiError(error).fallback) }
+    try { setTasks(await folderOps().listCopies?.() ?? []); setError(null) } catch (error) { setError(toUiError(error)) }
   }
   const view = async (taskId: string, retry = false) => {
     if (operationFeedback.isRunning()) return
@@ -50,7 +50,7 @@ export function CopyTasks({ ownerId, reveal, compact = false, onShowTransfers }:
       const results: OperationResult[] = retry ? await folderOps().copyEntries([], '', options) : await folderOps().resumeCopy!(taskId, options)
       operationFeedback.setBatchTask((task) => task ? { ...task, results, running: false, cancelling: false, retry: () => void view(currentId, true) } : task)
     } catch (error) {
-      setError(toUiError(error).fallback)
+      setError(toUiError(error))
       operationFeedback.setBatchTask((task) => task ? { ...task, running: false, cancelling: false } : task)
       setOpen(true)
     }
@@ -75,11 +75,11 @@ export function CopyTasks({ ownerId, reveal, compact = false, onShowTransfers }:
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm" data-testid="copy-tasks-dialog">
       <DialogTitle>{t('filebrowser.operation.copyTasks', 'Copy tasks')}</DialogTitle>
       <DialogContent>
-        {error && <p role="alert">{error}</p>}
+        {error && <p role="alert">{t(error.messageKey, error.fallback)}</p>}
         {!tasks.length && <p>{t('filebrowser.operation.noCopyTasks', 'No submitted copy tasks')}</p>}
         {tasks.map((task) => <div key={task.task_id} className="border-b py-2"><p>{task.name} · {task.phase}</p><p className="break-all text-xs">{task.task_id}</p><Button disabled={operationFeedback.isRunning()} onClick={() => void view(task.task_id)}>{t('filebrowser.operation.viewTask', 'View task')}</Button></div>)}
       </DialogContent>
-      <DialogActions><Button onClick={() => void refresh()}>{t('filebrowser.toolbar.refresh', 'Refresh')}</Button><Button onClick={() => setOpen(false)}>{t('common.close', 'Close')}</Button></DialogActions>
+      <DialogActions><Button onClick={() => void refresh()}>{t('filebrowser.topbar.refresh', 'Refresh')}</Button><Button onClick={() => setOpen(false)}>{t('common.close', 'Close')}</Button></DialogActions>
     </Dialog>
   </>
 }

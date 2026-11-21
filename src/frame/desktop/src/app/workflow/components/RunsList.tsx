@@ -1,5 +1,6 @@
 /* ── Workflow Run list. Rows open the run detail page; TaskMgr holds the control actions. ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { ExternalLink } from 'lucide-react'
 import type { WorkflowRunSummary } from '../types'
 import { formatTime, runStatusStyle } from './run-status'
@@ -11,6 +12,7 @@ export function RunsList({
   runs: WorkflowRunSummary[]
   onOpen: (runId: string) => void
 }) {
+  const { t, locale } = useI18n()
   if (runs.length === 0) {
     return (
       <div
@@ -21,7 +23,7 @@ export function RunsList({
           color: 'var(--cp-muted)',
         }}
       >
-        No runs visible to you for this definition.
+        {t('workflow.noRunsForDefinition')}
       </div>
     )
   }
@@ -42,13 +44,13 @@ export function RunsList({
           borderBottom: '1px solid var(--cp-border)',
         }}
       >
-        <span>Run ID</span>
-        <span>Status</span>
-        <span>Revision</span>
-        <span>Requested by</span>
-        <span>Updated</span>
-        <span>Progress</span>
-        <span className="text-right">Open</span>
+        <span>{t('workflow.runId')}</span>
+        <span>{t('workflow.statusLabel')}</span>
+        <span>{t('workflow.revision')}</span>
+        <span>{t('workflow.requestedBy')}</span>
+        <span>{t('workflow.updated')}</span>
+        <span>{t('workflow.progress')}</span>
+        <span className="text-right">{t('common.open')}</span>
       </div>
       <div className="divide-y" style={{ borderColor: 'var(--cp-border)' }}>
         {runs.map((r) => {
@@ -71,7 +73,7 @@ export function RunsList({
               </span>
               <span className="inline-flex items-center gap-1 text-[11px] font-medium" style={{ color: sty.color }}>
                 <span className="h-1.5 w-1.5 rounded-full" style={{ background: sty.color }} />
-                {sty.label}
+                {t(`workflow.status.${r.status}`, r.status)}
               </span>
               <span className="truncate font-mono text-[10px]" style={{ color: 'var(--cp-muted)' }} title={r.revision}>
                 {r.revision.slice(0, 10)}
@@ -80,7 +82,7 @@ export function RunsList({
                 {r.requestedBy ?? `${r.owner.userId}/${r.owner.appId}`}
               </span>
               <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-                {formatTime(r.updatedAt)}
+                {formatTime(r.updatedAt, locale)}
               </span>
               <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>
                 {Math.round(r.progress)}%
@@ -95,7 +97,7 @@ export function RunsList({
                   border: '1px solid var(--cp-border)',
                 }}
               >
-                Detail <ExternalLink size={11} />
+                {t('workflow.details')} <ExternalLink size={11} />
               </button>
             </div>
           )

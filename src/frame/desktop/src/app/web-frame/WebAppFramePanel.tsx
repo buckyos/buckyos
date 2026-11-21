@@ -9,6 +9,7 @@ import { appFrames, openContent } from '../content/open'
 import { requestOpenWith } from '../content/OpenWithSheet'
 import { openPreview } from '../preview/launch'
 import { isMockRuntime } from '../../runtime'
+import { useI18n } from '../../i18n/provider'
 import { useAppText } from '../../presentation/appText'
 import { useAppLaunch } from './launch'
 import { AppLaunchStatus } from './AppLaunchStatus'
@@ -18,6 +19,7 @@ import { SELECT_DIALOG_PATH, useSystemDialog, type SelectDialogParams } from '..
 const APP_DIALOGS: ReadonlySet<string> = new Set([SELECT_DIALOG_PATH])
 export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: AppContentLoaderProps) {
   const iframe = useRef<HTMLIFrameElement>(null)
+  const { t } = useI18n()
   const title = useAppText()(app).title
   const host = useRef<AppFrameHost | undefined>(undefined)
   const nonce = useMemo(() => crypto.randomUUID(), [])
@@ -43,11 +45,11 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
   const frameUrl = appLaunch.outcome?.kind === 'ready' ? appLaunch.outcome.url : undefined
   const unopenable = !src || appLaunch.outcome?.kind === 'invalid_target'
   const systemDialog = useSystemDialog()
-  const latest = useRef({ request, themeMode, locale, title, systemDialog })
-  useEffect(() => { latest.current = { request, themeMode, locale, title, systemDialog } }, [request, themeMode, locale, title, systemDialog])
+  const latest = useRef({ request, themeMode, locale, title, systemDialog, t })
+  useEffect(() => { latest.current = { request, themeMode, locale, title, systemDialog, t } }, [request, themeMode, locale, title, systemDialog, t])
   useEffect(() => {
-    if (unopenable && request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) }
-  }, [unopenable, request, title])
+    if (unopenable && request) { desktopUIStore.setSnackbar(t('webFrame.unableToOpenWith', undefined, { app: title })); openPreview({ source: request.source, session: request.session }) }
+  }, [unopenable, request, title, t])
   useEffect(() => {
     if (!origin || !windowId || !frameUrl) return
     const { request, themeMode, locale } = latest.current
@@ -76,7 +78,7 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
     host.current = frame; appFrames.set(windowId, { host: frame, handlerKey: payload?.handlerKey })
     const unregister = desktopUIStore.registerCloseGuard(windowId, async (reason = 'user') => {
       try { return await frame.beforeClose(reason) === 'allow' }
-      catch { return window.confirm(locale.startsWith('zh') ? '应用无响应，是否强制关闭？' : 'App is not responding. Force close?') }
+      catch { return window.confirm(latest.current.t('webFrame.forceClose')) }
     })
     return () => { unregister(); appFrames.delete(windowId); frame.dispose(); host.current = undefined }
   }, [origin, frameUrl, windowId, app.id, app.appInstanceId, nonce, payload?.handlerKey])
@@ -98,7 +100,7 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
     void host.current?.back().then(handled => { if (!handled && windowId) desktopUIStore.closeWindow(windowId) }).catch(() => { if (windowId) desktopUIStore.closeWindow(windowId) })
     return true
   })
-  if (!src) return <p>Unable to open {title}</p>
+  if (!src) return <p>{t('webFrame.unableToOpen', undefined, { app: title })}</p>
   if (!frameUrl) return <AppLaunchStatus outcome={appLaunch.outcome} title={title} onRetry={appLaunch.retry} />
-  return <iframe ref={iframe} className="block h-full w-full border-0" data-testid="web-app-frame" src={frameUrl} title={title} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) } }} />
+  return <iframe ref={iframe} className="block h-full w-full border-0" data-testid="web-app-frame" src={frameUrl} title={title} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(t('webFrame.unableToOpenWith', undefined, { app: title })); openPreview({ source: request.source, session: request.session }) } }} />
 }

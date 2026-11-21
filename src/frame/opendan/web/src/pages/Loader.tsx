@@ -1,44 +1,45 @@
+import { t } from '../i18n'
 import { useQuery } from '../lib'
 import { dataModel } from '../model'
 import { Badge, Dot, Empty, ErrorBox, Fields, Mono, Panel, Sid, Time } from '../ui'
 
 export default function LoaderPage() {
   const { data, error } = useQuery(['loader.status'], () => dataModel.loaderStatus())
-  if (!data) return error ? <ErrorBox error={error} /> : <Empty>Loading…</Empty>
+  if (!data) return error ? <ErrorBox error={error} /> : <Empty>{t('loading')}</Empty>
 
   return (
     <>
       <ErrorBox error={error} />
-      <Panel title="Loader" testId="loader-info">
+      <Panel title={t('observeLoader')} testId="loader-info">
         <Fields
           rows={[
-            ['agent_did', <Mono>{data.agent_did}</Mono>],
-            ['agent_id', <Mono>{data.agent_id}</Mono>],
-            ['who', <Mono>{data.who}</Mono>],
-            ['agent_root', <Mono>{data.agent_root}</Mono>],
-            ['started', <Time ms={data.started_at_ms} />],
+            [t('observeAgentDid'), <Mono>{data.agent_did}</Mono>],
+            [t('observeAgentId'), <Mono>{data.agent_id}</Mono>],
+            [t('observeWho'), <Mono>{data.who}</Mono>],
+            [t('observeAgentRoot'), <Mono>{data.agent_root}</Mono>],
+            [t('observeStarted'), <Time ms={data.started_at_ms} />],
           ]}
         />
       </Panel>
-      <Panel title="Authentication" testId="loader-authentication">
+      <Panel title={t('observeAuthentication')} testId="loader-authentication">
         {data.authentication ? (
           <Fields rows={[
-            ['state', <Badge value={data.authentication.state} tone={data.authentication.state === 'ready' ? 'ok' : data.authentication.state === 'retry_pending' ? 'pending' : 'bad'} />],
-            ['error', data.authentication.last_error ?? '–'],
-            ['code', data.authentication.error_code ?? '–'],
-            ['since', data.authentication.since ? <Time ms={data.authentication.since * 1000} /> : '–'],
-            ['next retry', data.authentication.next_retry_time ? <Time ms={data.authentication.next_retry_time * 1000} /> : '–'],
+            [t('observeState'), <Badge value={data.authentication.state} tone={data.authentication.state === 'ready' ? 'ok' : data.authentication.state === 'retry_pending' ? 'pending' : 'bad'} />],
+            [t('observeError'), data.authentication.last_error ?? '–'],
+            [t('observeCode'), data.authentication.error_code ?? '–'],
+            [t('gateSince'), data.authentication.since ? <Time ms={data.authentication.since * 1000} /> : '–'],
+            [t('observeNextRetry'), data.authentication.next_retry_time ? <Time ms={data.authentication.next_retry_time * 1000} /> : '–'],
           ]} />
-        ) : <Empty>Authentication is not configured in development mode.</Empty>}
+        ) : <Empty>{t('observeAuthenticationIsNotConfiguredInDevelopmentMode')}</Empty>}
       </Panel>
-      <Panel title="Modules" testId="loader-modules">
+      <Panel title={t('observeModules')} testId="loader-modules">
         <table className="tbl">
           <thead>
             <tr>
-              <th>name</th>
-              <th>enabled</th>
-              <th>running</th>
-              <th>note</th>
+              <th>{t('observeName')}</th>
+              <th>{t('observeEnabled')}</th>
+              <th>{t('observeRunning')}</th>
+              <th>{t('observeNote')}</th>
             </tr>
           </thead>
           <tbody>
@@ -51,7 +52,7 @@ export default function LoaderPage() {
                   <Badge value={m.enabled ? 'enabled' : 'disabled'} tone={m.enabled ? 'ok' : undefined} />
                 </td>
                 <td>
-                  <Badge value={m.running ? 'running' : 'stopped'} tone={m.running ? 'ok' : m.enabled ? 'pending' : undefined} />
+                  <Badge value={m.running ? t('observeRunning') : t('observeStopped')} tone={m.running ? 'ok' : m.enabled ? 'pending' : undefined} />
                 </td>
                 <td className="text-xs">{m.note}</td>
               </tr>
@@ -59,19 +60,19 @@ export default function LoaderPage() {
           </tbody>
         </table>
       </Panel>
-      <Panel title="Hosted sessions" count={data.hosted.length} testId="loader-hosted">
+      <Panel title={t('observeHostedSessions')} count={data.hosted.length} testId="loader-hosted">
         {data.hosted.length ? (
           <table className="tbl">
             <thead>
               <tr>
                 <th>sid</th>
-                <th>class</th>
-                <th>loaded</th>
-                <th>drives</th>
-                <th>last result</th>
-                <th>when</th>
-                <th>idle unload</th>
-                <th>reason</th>
+                <th>{t('observeClass')}</th>
+                <th>{t('observeLoaded')}</th>
+                <th>{t('observeDrives')}</th>
+                <th>{t('observeLastResult')}</th>
+                <th>{t('observeWhen')}</th>
+                <th>{t('observeIdleUnload')}</th>
+                <th>{t('observeReason')}</th>
               </tr>
             </thead>
             <tbody>
@@ -82,7 +83,7 @@ export default function LoaderPage() {
                   </td>
                   <td>{h.class}</td>
                   <td>
-                    <Badge value={h.loaded ? 'loaded' : 'unloaded'} tone={h.loaded ? 'ok' : undefined} />
+                    <Badge value={h.loaded ? t('observeLoaded') : t('observeUnloaded')} tone={h.loaded ? 'ok' : undefined} />
                     {h.loaded && <span className="ml-2"><Time ms={h.loaded_at_ms} /></span>}
                   </td>
                   <td>{h.drives}</td>
@@ -99,29 +100,29 @@ export default function LoaderPage() {
             </tbody>
           </table>
         ) : (
-          <Empty>No hosted session.</Empty>
+          <Empty>{t('observeNoHostedSession')}</Empty>
         )}
       </Panel>
-      <Panel title="UI inbox bridge" testId="loader-ui">
+      <Panel title={t('observeUiInboxBridge')} testId="loader-ui">
         {data.ui ? (
           <>
             <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs">
-              <span><span className="text-mute">scans</span> <span className="tabular-nums">{data.ui.scans}</span></span>
+              <span><span className="text-mute">{t('observeScans')}</span> <span className="tabular-nums">{data.ui.scans}</span></span>
               <span>
-                <span className="text-mute">last scan</span> <Time ms={data.ui.last_scan_ms} />
+                <span className="text-mute">{t('observeLastScan')}</span> <Time ms={data.ui.last_scan_ms} />
               </span>
-              {data.ui.last_error && <span className="inline-flex items-baseline gap-2 text-bad"><Badge value="last error" tone="bad" /><span className="text-fg">{data.ui.last_error}</span></span>}
+              {data.ui.last_error && <span className="inline-flex items-baseline gap-2 text-bad"><Badge value={t('observeLastError')} tone="bad" /><span className="text-fg">{data.ui.last_error}</span></span>}
             </div>
             {data.ui.inboxes.length ? (
               <table className="tbl">
                 <thead>
                   <tr>
                     <th>route_key</th>
-                    <th>session</th>
-                    <th>delivered</th>
-                    <th>dropped</th>
-                    <th>held</th>
-                    <th>last</th>
+                    <th>{t('observeSession')}</th>
+                    <th>{t('observeDelivered')}</th>
+                    <th>{t('observeDropped')}</th>
+                    <th>{t('observeHeld')}</th>
+                    <th>{t('observeLast')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -142,14 +143,14 @@ export default function LoaderPage() {
                 </tbody>
               </table>
             ) : (
-              <Empty>No inbox bound.</Empty>
+              <Empty>{t('observeNoInboxBound')}</Empty>
             )}
           </>
         ) : (
-          <Empty>The ui module is not enabled.</Empty>
+          <Empty>{t('observeTheUiModuleIsNotEnabled')}</Empty>
         )}
       </Panel>
-      <Panel title="Recent errors" count={data.errors.length} testId="loader-errors">
+      <Panel title={t('observeRecentErrors')} count={data.errors.length} testId="loader-errors">
         {data.errors.length ? (
           <table className="tbl">
             <tbody>
@@ -169,7 +170,7 @@ export default function LoaderPage() {
             </tbody>
           </table>
         ) : (
-          <Empty>No error recorded.</Empty>
+          <Empty>{t('observeNoErrorRecorded')}</Empty>
         )}
       </Panel>
     </>

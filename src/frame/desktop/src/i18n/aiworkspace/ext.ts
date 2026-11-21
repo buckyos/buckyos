@@ -279,7 +279,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.ext.define.layout': '布局',
   'aiworkspace.ext.define.layoutFixed': '固定：每个 Block 保持原位',
   'aiworkspace.ext.define.layoutStack': '堆叠：Block 依次排列',
-  'aiworkspace.ext.define.block': 'Block',
+  'aiworkspace.ext.define.block': '内容块',
   'aiworkspace.ext.define.slot': '插槽',
   'aiworkspace.ext.define.accepts': '接受',
   'aiworkspace.ext.define.slotRule': '插槽名由小写字母、数字和 _ 组成，以字母开头，互不相同。',

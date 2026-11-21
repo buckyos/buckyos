@@ -1,3 +1,4 @@
+import { translateNow } from '../../../i18n/translate'
 import { bucket, buckyos, ndm } from 'buckyos'
 
 /** AICC's per-user bucket for call inputs (`temp`, one day): the upload stays retained while the request uses it. */
@@ -8,7 +9,7 @@ const AICC_INPUTS_BUCKET = 'inputs'
 export async function importPlaygroundResource(file: File, signal: AbortSignal, onProgress?: (percent: number) => void): Promise<string> {
   const endpoint = new URL(buckyos.getZoneServiceURL('control-panel'), window.location.origin).origin
   const account = await buckyos.getAccountInfo()
-  if (!account?.user_id) throw new Error('Sign in to upload a resource')
+  if (!account?.user_id) throw new Error(translateNow('aiCenter.playground.signInToUpload'))
   const sessionToken = account.session_token ?? undefined
   const snapshot = await ndm.importFiles([file], { mode: 'single_file', endpoint, sessionToken, signal })
   try {

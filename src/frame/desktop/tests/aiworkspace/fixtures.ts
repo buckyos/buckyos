@@ -241,8 +241,15 @@ export async function openWorkspacePage(page: Page, who: string | { guest: true 
 /** Open the Desktop shell and the AI Workspace app in it, talking to the standalone backend as `token`, and
  * end on the workspace list (a normal start restores the last workspace: it is closed again here). */
 /** A Desktop label in any of its languages (a spec may run the Desktop in any of them). */
+const desktopTables: Record<string, string>[] = [
+  dictionaries.en,
+  dictionaries['zh-CN'],
+  ...readdirSync(resolve('src/i18n/locales')).filter(name => name.endsWith('.json'))
+    .map(name => JSON.parse(readFileSync(resolve('src/i18n/locales', name), 'utf8'))),
+]
+
 export function desktopLabel(key: string): RegExp {
-  const names = new Set(Object.values(dictionaries).map((table) => table[key]).filter(Boolean))
+  const names = new Set(desktopTables.map((table) => table[key]).filter(Boolean))
   return new RegExp(`^(${[...names].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`)
 }
 

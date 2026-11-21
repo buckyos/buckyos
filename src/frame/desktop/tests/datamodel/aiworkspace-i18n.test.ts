@@ -122,7 +122,7 @@ const PARTS: Part[] = [
 ]
 
 /** The languages with a table of their own besides English and Simplified Chinese (src/app/aiworkspace/i18n.ts). */
-const LOCALES = ['zh-TW', 'ja', 'ko', 'fr', 'de', 'es', 'ru']
+const LOCALES = ['zh-TW', 'ja', 'ko', 'fr', 'de', 'es', 'ru', 'ar']
 
 const ROOT = new URL('../../', import.meta.url).pathname
 const SOURCE_DIRS = ['src/app/aiworkspace', '../aiworkspace/import-drawio', '../aiworkspace/import-pdf', '../aiworkspace/import-table', '../aiworkspace/import-office']

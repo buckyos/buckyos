@@ -1,12 +1,14 @@
 /* ── AI prompt page – copy-and-paste a structured prompt to ChatGPT/etc. ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useState } from 'react'
 import { Check, ClipboardCopy, Sparkles } from 'lucide-react'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
 
 export function AIPromptPage({ onImport }: { onImport: () => void }) {
+  const { t } = useI18n()
   const store = useWorkflowStore()
-  const prompt = store.buildAiPrompt()
+  const prompt = store.buildAiPrompt(t)
   const [copied, setCopied] = useState(false)
 
   function copy() {
@@ -38,11 +40,10 @@ export function AIPromptPage({ onImport }: { onImport: () => void }) {
           </div>
           <div className="flex-1">
             <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
-              AI generate prompt
+              {t('workflow.promptTitle')}
             </div>
             <p className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>
-              Copy the prompt below into ChatGPT or another AI tool, describe the workflow you
-              want, then paste the JSON it returns into the import dialog.
+              {t('workflow.promptIntro')}
             </p>
           </div>
         </div>
@@ -58,7 +59,7 @@ export function AIPromptPage({ onImport }: { onImport: () => void }) {
             }}
           >
             {copied ? <Check size={13} /> : <ClipboardCopy size={13} />}
-            {copied ? 'Copied' : 'Copy prompt'}
+            {copied ? t('common.copied') : t('workflow.copyPrompt')}
           </button>
           <button
             type="button"
@@ -70,7 +71,7 @@ export function AIPromptPage({ onImport }: { onImport: () => void }) {
               border: '1px solid var(--cp-border)',
             }}
           >
-            Open import dialog
+            {t('workflow.openImport')}
           </button>
         </div>
       </div>
@@ -90,7 +91,7 @@ export function AIPromptPage({ onImport }: { onImport: () => void }) {
             className="text-[10px] uppercase tracking-wider"
             style={{ color: 'var(--cp-muted)' }}
           >
-            schema_version: {store.schemaVersion} · functions: {store.executors.length}
+            {t('workflow.promptMetadata', undefined, { version: store.schemaVersion, count: store.executors.length })}
           </span>
         </div>
         <pre

@@ -1,5 +1,6 @@
 /* ── Workflow home / welcome page ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { FileCode2, Lock, Plus, Sparkles, Workflow as WorkflowIcon } from 'lucide-react'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
 import type { WorkflowSelection } from '../types'
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export function HomePage({ onSelect, onImport }: Props) {
+  const { t } = useI18n()
   const store = useWorkflowStore()
   const defs = store.listDefinitions()
   const runs = store.listRuns()
@@ -37,11 +39,10 @@ export function HomePage({ onSelect, onImport }: Props) {
           </div>
           <div className="flex-1">
             <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
-              Workflow Definitions
+              {t('workflow.definitionsTitle')}
             </div>
             <p className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>
-              Browse the system pipelines and your own definitions, and observe Run progress step by
-              step. System definitions are read-only; approval / retry / abort actions live in TaskMgr.
+              {t('workflow.intro')}
             </p>
           </div>
         </div>
@@ -52,7 +53,7 @@ export function HomePage({ onSelect, onImport }: Props) {
             className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs"
             style={{ background: 'var(--cp-accent)', color: 'white', border: '1px solid var(--cp-border)' }}
           >
-            <Plus size={13} /> Import Definition
+            <Plus size={13} /> {t('workflow.importDefinition')}
           </button>
           <button
             type="button"
@@ -60,25 +61,25 @@ export function HomePage({ onSelect, onImport }: Props) {
             className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs"
             style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
           >
-            <Sparkles size={13} /> Use AI prompt
+            <Sparkles size={13} /> {t('workflow.usePrompt')}
           </button>
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Definitions" value={`${defs.length} (${defs.filter((d) => d.source === 'system').length} system)`} />
-        <Stat label="Active runs" value={store.activeRunCount().toString()} />
+        <Stat label={t('workflow.definitions')} value={t('workflow.systemCount', undefined, { total: defs.length, count: defs.filter((d) => d.source === 'system').length })} />
+        <Stat label={t('workflow.activeRuns')} value={store.activeRunCount().toString()} />
         <Stat
-          label="Issues (warn / error)"
+          label={t('workflow.issues')}
           value={`${warnCount} / ${errorCount}`}
           tone={errorCount > 0 ? 'danger' : warnCount > 0 ? 'warning' : 'normal'}
         />
-        <Stat label="Failed runs" value={failed.toString()} tone={failed > 0 ? 'danger' : 'normal'} />
+        <Stat label={t('workflow.failedRuns')} value={failed.toString()} tone={failed > 0 ? 'danger' : 'normal'} />
       </div>
 
       <section>
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--cp-muted)' }}>
-          Definitions
+          {t('workflow.definitions')}
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {defs.slice(0, 8).map((d) => (
@@ -117,19 +118,19 @@ export function HomePage({ onSelect, onImport }: Props) {
                             : 'var(--cp-muted)',
                     }}
                   >
-                    {d.status}
+                    {t(`workflow.status.${d.status}`, d.status)}
                   </span>
                   <span className="rounded px-1" style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-muted)' }}>
-                    {d.source}
+                    {t(`workflow.source.${d.source}`, d.source)}
                   </span>
-                  <span style={{ color: 'var(--cp-muted)' }}>{d.graph.nodes.length} nodes</span>
+                  <span style={{ color: 'var(--cp-muted)' }}>{t('workflow.nodeCount', undefined, { count: d.graph.nodes.length })}</span>
                 </div>
               </div>
             </button>
           ))}
           {defs.length === 0 && (
             <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-              {store.loading ? 'Loading…' : store.error ?? 'No definitions.'}
+              {store.loading ? t('states.loading') : store.error ?? t('workflow.noDefinitions')}
             </div>
           )}
         </div>
@@ -137,7 +138,7 @@ export function HomePage({ onSelect, onImport }: Props) {
 
       <section>
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--cp-muted)' }}>
-          Recent runs
+          {t('workflow.recentRuns')}
         </div>
         <RunsList runs={runs.slice(0, 10)} onOpen={(runId) => onSelect({ kind: 'run', runId })} />
       </section>
