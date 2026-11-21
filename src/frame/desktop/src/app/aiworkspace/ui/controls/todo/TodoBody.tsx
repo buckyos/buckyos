@@ -80,7 +80,6 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   const [newColumn, setNewColumn] = useState<string | null>(null)
   const [scroll, setScroll] = useState({ top: 0, left: 0, h: 600, w: 600 })
   const rootRef = useRef<HTMLDivElement>(null)
-  const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
   const ui = useWorkspaceUi()
   const noted = useMemo(() => annotatedRecords(ui.annotations, sourceId), [ui.annotations, sourceId])
@@ -176,7 +175,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       pendingAdds.current.delete(record_id)
     }
     // the new item scrolls into sight
-    window.requestAnimationFrame(() => scrollRef.current?.querySelector(`[data-item="${record_id}"]`)?.scrollIntoView({ block: 'nearest' }))
+    window.requestAnimationFrame(() => rootRef.current?.querySelector(`[data-item="${record_id}"]`)?.scrollIntoView({ block: 'nearest' }))
   }
 
   const removeItems = (ids: string[]) => {
@@ -284,7 +283,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       const next = order[Math.max(0, Math.min(order.length - 1, at < 0 ? 0 : at + (event.key === 'ArrowDown' ? 1 : -1)))]
       if (next) {
         select(next, { shiftKey: event.shiftKey })
-        scrollRef.current?.querySelector(`[data-item="${next}"]`)?.scrollIntoView({ block: 'nearest' })
+        scrollEl?.querySelector(`[data-item="${next}"]`)?.scrollIntoView({ block: 'nearest' })
       }
       return true
     }
@@ -314,7 +313,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
     if (item && view.mode === 'board' && view.collapsed.includes(item.status)) ctl.set({ collapsed: view.collapsed.filter((c) => c !== item.status) })
     setSelection([focus.record])
     setAnchorSel(focus.record)
-    window.setTimeout(() => scrollRef.current?.querySelector(`[data-item="${focus.record}"]`)?.scrollIntoView({ block: 'center' }), 80)
+    window.setTimeout(() => rootRef.current?.querySelector(`[data-item="${focus.record}"]`)?.scrollIntoView({ block: 'center' }), 80)
   })
 
   // the canvas hands the keys of a selected control to it (the handler of the latest render)
@@ -323,10 +322,10 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   useEffect(() => registerControlKeys(containerId, (event) => keyRef.current(event)), [containerId])
 
   // ---- pointer
-  const toLocal = (x: number, y: number) => localPoint(scrollRef.current, x, y)
+  const toLocal = (x: number, y: number) => localPoint(scrollEl, x, y)
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!active) return
-    const hit = projectedAt(event.target, scrollRef.current)
+    const hit = projectedAt(event.target, scrollEl)
     if (!hit) {
       if ((event.target as HTMLElement).closest('.aiws-dc-canvas') && !(event.target as HTMLElement).closest('button, input')) setSelection([])
       return
@@ -383,10 +382,10 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   // a drag near the edge scrolls
   useEffect(() => {
     if (!drag) return
-    const onMove = (e: PointerEvent) => edgeScroll(scrollRef.current, e.clientX, e.clientY, view.mode === 'board' ? 'both' : 'y')
+    const onMove = (e: PointerEvent) => edgeScroll(scrollEl, e.clientX, e.clientY, view.mode === 'board' ? 'both' : 'y')
     window.addEventListener('pointermove', onMove)
     return () => window.removeEventListener('pointermove', onMove)
-  }, [drag, view.mode])
+  }, [drag, scrollEl, view.mode])
 
   const openDetail = (id: string) => {
     const rect = (view.mode === 'list' ? list.rects : board.rects).get(id)
@@ -399,13 +398,12 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
 
   // keep the visible window for the projection
   useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const update = () => setScroll({ top: el.scrollTop, left: el.scrollLeft, h: el.clientHeight, w: el.clientWidth })
+    if (!scrollEl) return
+    const update = () => setScroll({ top: scrollEl.scrollTop, left: scrollEl.scrollLeft, h: scrollEl.clientHeight, w: scrollEl.clientWidth })
     update()
-    el.addEventListener('scroll', update, { passive: true })
-    return () => el.removeEventListener('scroll', update)
-  }, [view.mode, size.w, size.h])
+    scrollEl.addEventListener('scroll', update, { passive: true })
+    return () => scrollEl.removeEventListener('scroll', update)
+  }, [scrollEl, view.mode, size.w, size.h])
 
   // the view menu (UI 框架 PRD §10.1): published to the Block's menu — the ⋯ of this title row on a canvas, of the Block's title row on a flow
   // page (§6.2), its toolbar's "more", the phone's context window, the control page's bar; "open as a page" is the Block menu's "expand",
@@ -479,7 +477,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       data-testid={`aiws-todo-${containerId}`} data-host={host} data-role={active ? 'editor' : undefined} tabIndex={active ? 0 : -1}
       onKeyDown={(event) => { if (event.target === rootRef.current && onKey(event)) { event.preventDefault(); event.stopPropagation() } }}
       onContextMenu={(event) => {
-        const hit = projectedAt(event.target, scrollRef.current)
+        const hit = projectedAt(event.target, scrollEl)
         if (!hit || !active) return
         event.preventDefault()
         openMenu(selected.has(hit.item) ? selection : [hit.item], hit.item)
@@ -501,7 +499,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
           <CornerDownLeft size={14} className="aiws-todo-add-hint" aria-hidden="true" />
         </div>
       )}
-      <div ref={(el) => { scrollRef.current = el; if (el !== scrollEl) setScrollEl(el) }} className={`aiws-dc-scroll${view.mode === 'board' ? ' is-board' : ''}`} onPointerDown={onPointerDown} data-testid={`aiws-todo-scroll-${containerId}`}>
+      <div ref={setScrollEl} className={`aiws-dc-scroll${view.mode === 'board' ? ' is-board' : ''}`} onPointerDown={onPointerDown} data-testid={`aiws-todo-scroll-${containerId}`}>
         <div className="aiws-dc-canvas" style={view.mode === 'list' ? { height: list.height, width: contentW } : { height: boardHeight, width: board.width + (canStructure || caps.length ? 220 : 0) }}>
           {view.mode === 'board' && board.columns.map((c) => (
             <BoardColumn key={c.id} column={c} label={options.find((o) => o.option_id === c.id)?.label ?? c.id} count={c.keys.filter((k) => !k.startsWith('__')).length} height={boardHeight}

@@ -13,6 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { useAiwsText } from '../../../useAiwsText'
+import { EditorToolbarContext } from '../../blocks/editorToolbar'
 import { Sheet, useOverlayMounted, usePhoneSheets } from '../../shell/popover'
 import './controlPanel.css'
 
@@ -89,7 +90,8 @@ function useDismiss(ref: RefObject<HTMLDivElement | null>, onClose: () => void) 
 /** A data control's or an editor's details, forms and menus in the framework's panel: beside the anchor on a computer, the
  * bottom sheet on a phone. */
 export function ControlPanel(props: ControlPanelProps) {
-  return usePhoneSheets() ? <SheetPanel {...props} /> : <FloatingPanel {...props} />
+  const Panel = usePhoneSheets() ? SheetPanel : FloatingPanel
+  return <EditorToolbarContext.Provider value={null}><Panel {...props} /></EditorToolbarContext.Provider>
 }
 
 function FloatingPanel({ anchor, onClose, label, children, width = 340, testId, side = 'right' }: ControlPanelProps) {

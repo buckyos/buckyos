@@ -172,6 +172,32 @@ for (const mode of ['inline', 'detail'] as const) {
   })
 }
 
+for (const mode of ['list', 'board'] as const) {
+  test(`TD09 open details for a to-do with existing notes in the ${mode}`, async ({ page, api }) => {
+    const ws = await todoWorkspace(api, 'To-do with notes')
+    const record = await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks', selector: { kind: 'table_record', record_id: 'a' } })
+    const text = 'Include the budget figures.'
+    const made = await api.commit(ALICE, ws, [
+      { op: 'entity.create', entity_id: 'report-notes', type_id: 'buckyos.richtext', parent_id: 'tasks', order_key: 'n',
+        payload: { content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: 'first' }, content: [{ type: 'text', text }] }] } } },
+      { op: 'table.set_body', source_id: 'tasks', record_id: 'a', body_ref: { entity_id: 'report-notes' }, expect: { rev: record.content.rev } },
+    ])
+    expect(made.status, JSON.stringify(made)).toBe('accepted')
+    await openCanvas(page, ALICE, ws.workspace_id)
+    await activate(page)
+    if (mode === 'board') await page.getByTestId('aiws-todo-mode-board').click()
+    await item(page, 'a').click({ button: 'right' })
+    await page.getByTestId('aiws-ctl-menu-detail').click()
+    const detail = page.getByTestId('aiws-todo-detail-tl')
+    const notes = detail.getByTestId('aiws-richtext-report-notes')
+    await expect(notes).toBeVisible()
+    await expect(notes).toHaveText(text)
+    await detail.getByTestId('aiws-ctl-panel-close').click()
+    await expect(detail).toHaveCount(0)
+    await expect(item(page, 'a')).toBeVisible()
+  })
+}
+
 test('TD02 list: drag to reorder with an insertion line, keyboard, undo', async ({ page, api }) => {
   const ws = await todoWorkspace(api, `todo-drag ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
