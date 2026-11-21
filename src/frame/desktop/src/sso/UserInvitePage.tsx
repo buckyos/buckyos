@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
-import { Alert, Button, CircularProgress, TextField } from '@mui/material'
+import { Alert, Button, CircularProgress } from '@mui/material'
 import { accessDenialOf } from 'buckyos'
 import { acceptUserInvite, fetchUserInvite, type UserInviteResponse } from '../api/user_mgr'
+import { OAuthButtons } from './OAuthButtons'
 import { AuthPageFrame } from '../auth/AuthPageFrame'
 import { endSessionInPlace } from '../auth/signOut'
 import { useI18n } from '../i18n/provider'
@@ -11,6 +12,7 @@ import { denialText } from './denial'
 import { DidLoginForm } from './DidLoginForm'
 import { IdentityCard } from './IdentityCard'
 import { useCurrentIdentity } from './identity'
+import { invitationReturnUrl } from './shareReturn'
 
 export function UserInvitePage() {
   const { t } = useI18n()
@@ -18,14 +20,16 @@ export function UserInvitePage() {
   const { identity, reload } = useCurrentIdentity()
   const [invitation, setInvitation] = useState<UserInviteResponse | null>(null)
   const [failed, setFailed] = useState(false)
-  const [ownerDocument, setOwnerDocument] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [accepted, setAccepted] = useState(false)
   const targetDid = invitation?.invite.target_did || undefined
-  const verified = identity && identity.kind !== 'anonymous'
-    && identity.auth_method === 'did_federation'
-    && (!targetDid || identity.did === targetDid)
+  const returnPage = invitationReturnUrl(window.location.href)
+  const signInInterrupted = new URLSearchParams(window.location.search).has('did_error')
+  const oauthSource = invitation?.oauth_source
+  const verified = !!targetDid && (identity?.kind === 'anonymous'
+    ? invitation?.verified_did === targetDid
+    : identity?.auth_method === 'did_federation' && identity.did === targetDid)
 
   useDocumentTitle(t('sso.userInvite.title', 'Join this Zone'))
 
@@ -44,7 +48,6 @@ export function UserInvitePage() {
     setError(null)
     try {
       await endSessionInPlace()
-      setOwnerDocument('')
       reload()
     } catch {
       setError(t('sso.userInvite.signOutFailed', 'Could not sign out. Try again.'))
@@ -57,24 +60,10 @@ export function UserInvitePage() {
     event.preventDefault()
     if (!verified || busy) return
     setError(null)
-    let ownerConfig: Record<string, unknown>
-    try {
-      const parsed: unknown = JSON.parse(ownerDocument)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
-      ownerConfig = parsed as Record<string, unknown>
-    } catch {
-      setError(t('sso.userInvite.invalidDocument', 'Enter a valid OwnerDocument JSON object.'))
-      return
-    }
-    if (ownerConfig.id !== identity.did) {
-      setError(t('sso.userInvite.documentMismatch', 'The document DID must match the DID you used to sign in.'))
-      return
-    }
     setBusy(true)
-    const { data, error: failure } = await acceptUserInvite({ inviteId, ownerConfig })
+    const { data, error: failure } = await acceptUserInvite({ inviteId })
     setBusy(false)
     if (data?.ok) {
-      setOwnerDocument('')
       setInvitation(data)
       setAccepted(true)
       return
@@ -109,9 +98,18 @@ export function UserInvitePage() {
           {targetDid ? t('sso.userInvite.forDid', 'Invitation for {{did}}', { did: targetDid })
             : t('sso.userInvite.verifyDid', 'Sign in with your DID before accepting this invitation.')}
         </p>
+        <p className="text-sm">{t('sso.userInvite.purpose', '{{issuer}} invites you to sign in to {{zone}} as {{user}} ({{type}}).', { issuer: invitation.invite.created_by, zone: invitation.zone_host || window.location.host, user: invitation.invite.target_user_id || targetDid || '', type: invitation.invite.default_user_type })}</p>
+        {invitation.invite.groups?.length ? <p>{invitation.invite.groups.join(', ')}</p> : null}
+        {invitation.invite.expires_at ? <p>{t('sso.userInvite.expires', 'Expires {{time}}', {time: new Date(invitation.invite.expires_at * 1000).toLocaleString()})}</p> : null}
         {identity.kind !== 'anonymous' ? <IdentityCard identity={identity} compact /> : null}
+        {signInInterrupted && (
+          <Alert severity="warning">{t('sso.share.interrupted', 'Sign-in did not complete. You can retry this invitation or switch accounts.')}</Alert>
+        )}
         {error ? <Alert severity="error" data-testid="user-invite-error">{error}</Alert> : null}
-        {!verified && identity.kind !== 'anonymous' ? (
+        {oauthSource ? (
+          invitation.source_enabled === false ? <Alert severity="warning">{t('sso.userInvite.disabled', 'The login provider has been disabled.')}</Alert>
+            : <OAuthButtons sources={[{id:oauthSource,display_name:'Google'}]} purpose="user_invite" inviteId={inviteId} redirectUrl={returnPage} />
+        ) : !verified && identity.kind !== 'anonymous' ? (
           <div className="space-y-3" data-testid="user-invite-switch">
             <Alert severity="info">{t('sso.userInvite.requiresFederation', 'Accepting this invitation requires a DID sign-in as the invited identity. Sign out here, then verify that DID.')}</Alert>
             <Button disabled={busy} onClick={() => void switchIdentity()}>
@@ -119,20 +117,11 @@ export function UserInvitePage() {
             </Button>
           </div>
         ) : !verified ? (
-          <DidLoginForm redirectUrl={window.location.href} requiredDid={targetDid} />
+          <DidLoginForm redirectUrl={returnPage} requiredDid={targetDid} purpose="user_invite" inviteId={inviteId} />
         ) : (
           <form className="space-y-4" onSubmit={(event) => void accept(event)} data-testid="user-invite-form">
-            <TextField
-              fullWidth
-              multiline
-              minRows={6}
-              label={t('sso.userInvite.ownerDocument', 'OwnerDocument JSON')}
-              helperText={t('sso.userInvite.ownerDocumentHint', 'Provide the public document for your DID, with a binding to this Zone: {{zone}}.', { zone: invitation.zone_did || invitation.zone_host || window.location.host })}
-              value={ownerDocument}
-              disabled={busy}
-              onChange={(event) => setOwnerDocument(event.target.value)}
-            />
-            <Button type="submit" variant="contained" disabled={busy || !ownerDocument.trim()} data-testid="user-invite-accept">
+            <p>{t('sso.userInvite.binding', 'Confirm the binding to this Zone in your DID wallet. The Zone will check your published OwnerDocument when you accept.')}</p>
+            <Button type="submit" variant="contained" disabled={busy} data-testid="user-invite-accept">
               {busy ? <CircularProgress size={18} color="inherit" /> : t('sso.userInvite.accept', 'Accept invitation')}
             </Button>
           </form>

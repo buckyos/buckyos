@@ -328,7 +328,7 @@ impl Workspace {
     /// Member specs whose membership the service settles per request: `group:` and `contact:`.
     pub fn dynamic_subjects(&self) -> WsResult<Vec<String>> {
         let data = self.acl_data()?;
-        let set: BTreeSet<String> = data.members.into_iter().map(|m| m.member).filter(|m| m.starts_with(GROUP_PREFIX) || m.starts_with(CONTACT_PREFIX)).collect();
+        let set: BTreeSet<String> = data.members.into_iter().map(|m| m.member).filter(|m| m.starts_with(GROUP_PREFIX) || m.starts_with(CONTACT_PREFIX) || m.starts_with("did:")).collect();
         Ok(set.into_iter().collect())
     }
 
@@ -656,6 +656,7 @@ impl Workspace {
         let (_, rev) = self.acl_txn(caller, |tx| {
             tx.execute("DELETE FROM acl_entries WHERE subject = ?1", [&subject]).map_err(db_err)?;
             tx.execute("DELETE FROM acl_members WHERE group_id = ?1", [group_id]).map_err(db_err)?;
+            tx.execute("DELETE FROM entry_acceptances WHERE entry_id IN (SELECT entry_id FROM share_entries WHERE group_id=?1)", [group_id]).map_err(db_err)?;
             tx.execute("DELETE FROM acl_macro_bindings WHERE group_id = ?1", [group_id]).map_err(db_err)?;
             tx.execute("UPDATE share_entries SET state = 'closed' WHERE group_id = ?1", [group_id]).map_err(db_err)?;
             tx.execute("DELETE FROM acl_groups WHERE group_id = ?1", [group_id]).map_err(db_err)?;
@@ -717,12 +718,18 @@ impl Workspace {
         let (n, rev) = self.acl_txn(caller, |tx| {
             let (mut added, mut removed) = (Vec::new(), Vec::new());
             for m in add {
-                if tx.execute("INSERT OR IGNORE INTO acl_members (group_id, member, via_entry, added_by, added_at) VALUES (?1, ?2, NULL, ?3, ?4)", params![group_id, m, caller.principal, now]).map_err(db_err)? > 0 {
+                if tx.execute("INSERT INTO acl_members (group_id, member, via_entry, added_by, added_at) VALUES (?1, ?2, NULL, ?3, ?4) ON CONFLICT(group_id,member) DO UPDATE SET via_entry=NULL,added_by=excluded.added_by,added_at=excluded.added_at WHERE acl_members.via_entry IS NOT NULL", params![group_id, m, caller.principal, now]).map_err(db_err)? > 0 {
                     added.push(m.clone());
                 }
             }
             for m in remove {
                 if tx.execute("DELETE FROM acl_members WHERE group_id = ?1 AND member = ?2", params![group_id, m]).map_err(db_err)? > 0 {
+                    // Keep revocation tied to each accepted invitation even if another source adds this member back.
+                    tx.execute(
+                        "UPDATE entry_acceptances SET committed=-1, reserved_until=0
+                         WHERE member=?2 AND committed=1 AND entry_id IN (SELECT entry_id FROM share_entries WHERE group_id=?1)",
+                        params![group_id, m],
+                    ).map_err(db_err)?;
                     removed.push(m.clone());
                 }
             }

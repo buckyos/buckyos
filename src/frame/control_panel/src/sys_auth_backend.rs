@@ -53,7 +53,7 @@ const ACCOUNT_SELF_METHODS: [&str; 12] = [
 ];
 
 /// Methods every verified user session reaches, External included.
-const ANY_SESSION_METHODS: [&str; 2] = ["auth.current_identity", "user.invite.accept"];
+const ANY_SESSION_METHODS: [&str; 4] = ["auth.current_identity", "user.invite.accept", "auth.share.accept", "auth.share.identity"];
 
 /// Expected outcomes of `auth.prepare_app_launch`. kRPC errors reach the browser as plain
 /// text, so everything the desktop branches on travels as this status instead.
@@ -884,7 +884,7 @@ impl ControlPanelServer {
             .collect()
     }
 
-    fn extract_http_cookie(
+    pub(crate) fn extract_http_cookie(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         cookie_name: &str,
     ) -> Option<String> {
@@ -1160,6 +1160,7 @@ impl ControlPanelServer {
             "auth.login"
                 | "auth.sso_config"
                 | "auth.describe_target"
+                | "auth.share.describe"
                 | "auth.entry.describe"
                 | "auth.register"
                 | "auth.invite.describe"
@@ -1167,6 +1168,7 @@ impl ControlPanelServer {
                 | "auth.invite.request_resend"
                 | "auth.app_login.exchange"
                 | "auth.did.begin"
+                | "auth.oauth.begin"
                 | "user.invite.get"
                 | "zone.presentation.get"
         )
@@ -1481,7 +1483,7 @@ impl ControlPanelServer {
         method: &str,
         token: Option<String>,
     ) -> Result<Option<RpcAuthPrincipal>, RPCErrors> {
-        if Self::is_public_rpc_method(method) {
+        if Self::is_public_rpc_method(method) || (matches!(method, "user.invite.accept" | "auth.share.accept" | "auth.share.identity") && token.is_none()) {
             return Ok(None);
         }
 
@@ -1495,6 +1497,13 @@ impl ControlPanelServer {
         let is_control_panel_session = is_control_panel_user_session(&parsed)?;
         // An App-signed customer session (EXT-09) lives on the App's origin and targets that App;
         // it reaches the same own-account methods a Control Panel restricted session does.
+        let is_app_ticket = parsed.extra.contains_key(buckyos_api::TOKEN_SUPPORT_TICKET)
+            && token_auth_method(&parsed) == Some(buckyos_api::AuthMethod::ExclusiveInvite)
+            && matches!(claims.target, AuthTarget::App { .. })
+            && claims.principal_kind == TokenPrincipalKind::User;
+        if is_app_ticket && !matches!(method,"auth.current_identity"|"auth.invite.set_password") {
+            return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed).into_rpc_error());
+        }
         let is_app_login_session = token_auth_method(&parsed)
             == Some(buckyos_api::AuthMethod::AppAccessToken)
             && matches!(claims.target, AuthTarget::App { .. })
@@ -1503,7 +1512,7 @@ impl ControlPanelServer {
             method,
             &ceiling,
             is_external,
-            is_control_panel_session || is_app_login_session,
+            is_control_panel_session || is_app_login_session || is_app_ticket,
         )
         .map_err(
             |denial| {
@@ -1526,6 +1535,17 @@ impl ControlPanelServer {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
+        if matches!(method, "resource.share.issue" | "resource.share.verify_grant" | "user.invite.create")
+            && matches!(claims.principal_kind, TokenPrincipalKind::System | TokenPrincipalKind::Device)
+            && matches!(&claims.target, AuthTarget::System { .. })
+            && !session.is_sudo
+        {
+            return Ok(Some(RpcAuthPrincipal {
+                owner_user_id: username.clone(), username, authenticated_app_id,
+                user_type: UserType::Limited, owner_did: String::new(), is_user_session: false,
+                is_control_panel_session: false, principal_kind: claims.principal_kind, agent_permission_mode: None, session,
+            }));
+        }
         if is_external {
             // No account record: the DID is the principal. Only methods that need no
             // account reach here, so the type is the least privileged placeholder.

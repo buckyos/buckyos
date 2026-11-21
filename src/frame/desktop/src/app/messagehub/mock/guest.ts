@@ -41,6 +41,7 @@ interface MockGuestHost {
   lifecycle: Record<string, 'active' | 'archived'>
   /** The group's public entry takes guest requests. */
   entry: boolean
+  shareUrl?: string
 }
 
 interface StoredMessage { seq: number; objId: string; msg: ndn.MsgObject }
@@ -156,6 +157,10 @@ const api: GuestApi = {
   async groupHost(groupDid) {
     requireGroup(groupDid)
     return MOCK_SUPPORT_HOST
+  },
+  async invitationUrl(groupDid) {
+    requireGroup(groupDid)
+    return loadHost().shareUrl || null
   },
   async entry(groupDid) {
     requireGroup(groupDid)

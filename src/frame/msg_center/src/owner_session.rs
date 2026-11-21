@@ -592,6 +592,7 @@ pub struct CallerIdentity {
     /// The session's approved upper bound (restricted: Limited, External).
     pub ceiling: SessionCeiling,
     pub auth_method: Option<AuthMethod>,
+    pub oauth_source_id: Option<String>,
     /// The client the session was issued to (token `appid`).
     pub appid: Option<String>,
 }
@@ -709,6 +710,9 @@ impl MessageCenter {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| permission_denied("session token has no subject"))?;
+        if verified.extra.contains_key(buckyos_api::TOKEN_SUPPORT_TICKET) && !buckyos_api::SupportTicket::allows_method(&gate.method) {
+            return Err(gate_denial(DenyReason::ResourceGrantMissing, &user_id));
+        }
         let ceiling = token_session_ceiling(&verified)
             .map_err(|error| permission_denied(format!("invalid session ceiling: {}", error)))?;
         if ceiling.restricted {
@@ -747,6 +751,7 @@ impl MessageCenter {
             external,
             ceiling,
             auth_method: token_auth_method(&verified),
+            oauth_source_id: buckyos_api::token_oauth_source_id(&verified).map(str::to_owned),
             appid: verified.appid.clone(),
         }))
     }

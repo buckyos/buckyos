@@ -18,6 +18,16 @@ const appHost = process.env.BUCKYOS_TEST_APP_HOST || 'buckyos-systest'
 const appId = process.env.BUCKYOS_TEST_APP_ID || 'buckyos-systest.buckyos.bns.did'
 const appOrigin = `https://${appHost}.${zoneHost}`
 const runId = Date.now().toString(36)
+const members = (process.env.BUCKYOS_TEST_MEMBERS || 'alice,bob').split(',').map(item => item.trim())
+const hostRules = process.env.BUCKYOS_TEST_HOST_RULES
+const proxy = process.env.BUCKYOS_TEST_PROXY
+test.use({
+  trace: 'off',
+  screenshot: 'off',
+  video: 'off',
+  ...(proxy ? { proxy: { server: proxy } } : {}),
+  ...(hostRules ? { launchOptions: { args: ['--ignore-certificate-errors', `--host-resolver-rules=${hostRules}`] } } : {}),
+})
 
 function hashPassword(username: string, password: string, nonce?: number): string {
   const original = createHash('sha256').update(`${password}${username}.buckyos`, 'utf8').digest('base64')
@@ -68,54 +78,55 @@ async function openSysTest(page: Page) {
 
 test('owner creates the support group and a customer link; the customer joins, sets a password, then needs it', async ({ page, browser, request }) => {
   const token = await adminToken(request)
-  await rpc(request, 'control-panel', 'apps.app_login.set', { app_instance_id: `${appId}@${adminUser}`, enabled: true }, token)
-
-  await openSysTest(page)
-  const card = page.locator('[data-group="support_group"]')
-  await card.locator('#sg-name').fill(`客服群（sys-test UI ${runId}）`)
-  await card.getByTestId('support-create').click()
-  const groupRow = card.getByTestId('support-group-did')
-  await expect(groupRow).toBeVisible({ timeout: 30_000 })
-  const groupDid = (await groupRow.locator('code').first().textContent())!.trim()
-  expect(groupDid).toMatch(/^did:/)
+  const instance = { app_instance_id: `${appId}@${adminUser}` }
+  const previous = await rpc(request, 'control-panel', 'apps.app_login.get', instance, token)
+  const wasEnabled = (previous.settings as JsonRecord).enabled === true
+  let groupDid = ''
   try {
+    await rpc(request, 'control-panel', 'apps.app_login.set', { app_instance_id: `${appId}@${adminUser}`, enabled: true }, token)
+
+    await openSysTest(page)
+    const card = page.locator('[data-group="support_group"]')
+    await card.locator('#sg-name').fill(`客服群（sys-test UI ${runId}）`)
+    await card.locator('#sg-member-a').fill(members[0] || '')
+    await card.locator('#sg-member-b').fill(members[1] || '')
+    await card.getByTestId('support-create').click()
+    const groupRow = card.getByTestId('support-group-did')
+    await expect(groupRow).toBeVisible({ timeout: 30_000 })
+    groupDid = (await groupRow.locator('code').first().textContent())!.trim()
+    expect(groupDid).toMatch(/^did:/)
     await card.locator('#sg-customer-name').fill('UI 客户')
     await card.locator('#sg-customer-id').fill(`ui:${runId}`)
     await card.getByTestId('support-link').click()
     const linkNode = card.getByTestId('support-customer-link')
     await expect(linkNode).toBeVisible({ timeout: 30_000 })
     const link = (await linkNode.textContent())!.trim()
-    expect(link).toMatch(new RegExp(`^https://${zoneHost.replace(/\\./g, '\\\\.')}/sso/invite/[^#]+#s=`))
-    await page.screenshot({ path: 'test-results/dv-support-group-owner.png', fullPage: true })
+    const invitation = new URL(link)
+    expect(invitation.origin).toBe(zoneOrigin)
+    expect(invitation.pathname).toMatch(/^\/sso\/invite\/[^/]+$/)
+    expect(new URLSearchParams(invitation.hash.slice(1)).has('s')).toBe(true)
 
     // The customer, no password yet: the link signs in, the guest page offers (not forces) a password.
     const customer = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 900 } })
     const guest = await customer.newPage()
     await fixLocale(guest)
     await guest.goto(link)
-    await guest.waitForURL(/\/messagehub\/guest\?/)
-    await expect(guest.getByTestId('sso-first-password')).toBeVisible()
-    await guest.getByTestId('guest-accept').click()
-    await expect(guest.getByTestId('guest-conversation')).toBeVisible()
-    const side = guest.getByTestId('guest-side-panel')
-    await expect(side.getByRole('tab', { name: '客服工单' })).toBeVisible()
-    await expect(side.getByTestId('group-panel-frame')).toHaveAttribute('data-state', 'ready', { timeout: 20_000 })
-    const frameSrc = new URL((await side.locator('iframe').getAttribute('src'))!)
-    expect(frameSrc.origin).toBe(appOrigin)
-    expect(frameSrc.pathname).toBe('/support/panel')
-    const composer = guest.getByPlaceholder(/^(Message|输入消息)/).first()
+    await guest.waitForURL(url => url.origin === appOrigin && url.pathname === '/support/ticket')
+    const cookies = await customer.cookies(zoneOrigin)
+    expect(cookies.some(c => c.name === 'buckyos_session_token')).toBe(false)
+    const join = guest.locator('#ticket-join')
+    const composer = guest.locator('#ticket-message textarea')
+    await expect(join.or(composer).filter({ visible: true })).toBeVisible()
+    if (await join.isVisible()) await join.click()
     await composer.fill(`客户留言 ${runId}`)
-    await composer.press('Enter')
-    await expect(guest.getByText(`客户留言 ${runId}`).first()).toBeVisible()
-    await guest.screenshot({ path: 'test-results/dv-support-group-guest.png', fullPage: true })
-
-    // Set a password from the prompt; the current terminal stays signed in.
-    await guest.getByTestId('sso-first-password-open').click()
-    await guest.getByLabel('New password').fill(`ui-pass-${runId}`)
-    await guest.getByLabel('Confirm password').fill(`ui-pass-${runId}`)
-    await guest.getByTestId('sso-first-password-save').click()
-    await expect(guest.getByTestId('sso-first-password-done')).toBeVisible()
-    const userId = (await guest.getByTestId('sso-first-password-done').textContent())!.match(/as (\S+) with/)?.[1]
+    await guest.locator('#ticket-message button').click()
+    await expect(guest.locator('#ticket-messages')).toContainText(`客户留言 ${runId}`)
+    const passForm = guest.locator('#ticket-password')
+    await passForm.locator('input').nth(0).fill(`ui-pass-${runId}`)
+    await passForm.locator('input').nth(1).fill(`ui-pass-${runId}`)
+    await passForm.locator('button').click()
+    await expect(guest.locator('#ticket-status')).toContainText('密码已设置')
+    const userId = (await guest.locator('#ticket-status').textContent())!.split(' ').pop()
     expect(userId).toBeTruthy()
     await customer.close()
 
@@ -151,6 +162,7 @@ test('owner creates the support group and a customer link; the customer joins, s
     await hub.screenshot({ path: 'test-results/dv-support-group-hub.png', fullPage: true })
     await hubContext.close()
   } finally {
-    await rpc(request, 'msg-center', 'group.delete', { group_did: groupDid }, token).catch(() => {})
+    if (groupDid) await rpc(request, 'msg-center', 'group.delete', { group_did: groupDid }, token)
+    if (!wasEnabled) await rpc(request, 'control-panel', 'apps.app_login.set', { ...instance, enabled: false }, token)
   }
 })

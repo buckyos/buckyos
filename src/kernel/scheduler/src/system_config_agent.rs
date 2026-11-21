@@ -779,6 +779,8 @@ struct NodeGatewayAppInfoEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deployment: Option<buckyos_api::DeploymentIdentity>,
     access_mode: NodeGatewayAccessMode,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    resource_share_callback: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -939,6 +941,7 @@ fn build_app_host_entry(
         app_id: app_spec.app_id().clone(),
         app_instance_id: app_spec.app_instance_id().clone(),
         app_owner_user_id: app_spec.owner_user_id.clone(),
+        resource_share_callback: app_spec.app_doc.permissions.iter().any(|p| p.scope_path == buckyos_api::SHARE_DIRECTED_PERMISSION),
         sdk_version: parse_sdk_version(app_spec),
         deployment: Some(app_spec.deployment.clone()),
         access_mode,
@@ -983,6 +986,7 @@ fn build_app_host_entry_from_persisted_service_info(
         app_id: app_spec.app_id().clone(),
         app_instance_id: app_spec.app_instance_id().clone(),
         app_owner_user_id: app_spec.owner_user_id.clone(),
+        resource_share_callback: app_spec.app_doc.permissions.iter().any(|p| p.scope_path == buckyos_api::SHARE_DIRECTED_PERMISSION),
         sdk_version: parse_sdk_version(app_spec),
         deployment: Some(app_spec.deployment.clone()),
         access_mode,
@@ -1012,6 +1016,7 @@ fn build_static_web_app_host_entry(
         app_id: app_spec.app_id().clone(),
         app_instance_id: app_spec.app_instance_id().clone(),
         app_owner_user_id: app_spec.owner_user_id.clone(),
+        resource_share_callback: false,
         sdk_version: parse_sdk_version(app_spec),
         deployment: Some(app_spec.deployment.clone()),
         access_mode: if guest_allowed {
@@ -1347,6 +1352,11 @@ pub(crate) async fn update_node_gateway_info(
             },
         );
 
+        if node_gateway_info.service_info.contains_key("msg-center") {
+            node_gateway_info.app_info.insert("messagehub".into(), NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
+                service_id:"msg-center".into(), selector:control_panel_selector.clone(),
+            }));
+        }
         let control_panel_entry = NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
             service_id: "control-panel".to_string(),
             selector: control_panel_selector,
@@ -2122,6 +2132,7 @@ fn validate_beta22_app_state(input: &HashMap<String, String>) -> Result<()> {
         "www".to_string(),
         "sys".to_string(),
         "homestation".to_string(),
+        "messagehub".to_string(),
         "share".to_string(),
         "s3".to_string(),
         "reflow".to_string(),

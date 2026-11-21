@@ -20,7 +20,7 @@ import { registerObjectAccess } from '../../../components/conversation/history/o
 import { MessageMediaHost } from '../../../components/conversation/media/MessageMediaHost'
 import { loadGuestApi, type GuestApi } from './api'
 import { GuestHub, type GuestSnapshot } from './hub'
-import { guestEntryPath, guestPagePath, isGroupDid, type GuestSession } from './model'
+import { guestPagePath, isGroupDid, type GuestSession } from './model'
 import { useGuestText, type GuestText } from './text'
 import { isMessageHubMock } from '../store'
 import { GroupExtensionPanels } from '../extensions/GroupExtensionPanels'
@@ -89,15 +89,23 @@ function useGuestHub(groupDid: string, sessionId: string | null, attempt: number
 function GuestPage({ groupDid, sessionId, onOpenSession }: { groupDid: string; sessionId: string | null; onOpenSession: (id: string) => void }) {
   const text = useGuestText()
   const { t } = useI18n()
+  const [missingInvitation,setMissingInvitation]=useState(false)
   const [attempt, setAttempt] = useState(0)
   const { api, hub, snapshot } = useGuestHub(groupDid, sessionId, attempt)
   const { step, identity, groupName } = snapshot
   const session = step.kind === 'session' ? step.session : null
   useDocumentTitle(groupName ? `${session?.title || groupName} · ${t('apps.messagehub')}` : t('apps.messagehub'))
   useEffect(() => {
-    if (step.kind === 'anonymous') window.location.replace(guestEntryPath(groupDid))
+    let active=true
+    if (step.kind === 'anonymous' && api) {
+      void api.invitationUrl(groupDid).then(url=>{
+        if (active && url) window.location.replace(url)
+        else if (active) setMissingInvitation(true)
+      }).catch(()=>{if (active) setMissingInvitation(true)})
+    }
     if (step.kind === 'identity_changed') window.location.reload()
-  }, [step.kind, groupDid])
+    return ()=>{active=false}
+  }, [step.kind, groupDid, api])
   const startConversation = async () => {
     const id = await hub?.startConversation()
     if (id) onOpenSession(id)
@@ -107,7 +115,7 @@ function GuestPage({ groupDid, sessionId, onOpenSession }: { groupDid: string; s
     case 'loading':
     case 'anonymous':
     case 'identity_changed':
-      body = <Centered><p role="status">{text('loading')}</p></Centered>
+      body = <Centered><p role="status">{missingInvitation ? t('messagehub.share.needed','Open the invitation provided by the group administrator.') : text('loading')}</p></Centered>
       break
     case 'error':
       body = <Centered testId="guest-error"><p role="alert">{text('error.title')}</p><button type="button" className={hubButtonClass} onClick={() => setAttempt(value => value + 1)}>{text('retry')}</button></Centered>
@@ -143,7 +151,7 @@ function GuestPage({ groupDid, sessionId, onOpenSession }: { groupDid: string; s
       break
   }
   return <>
-    <GuestHeader groupName={groupName} session={session} identity={identity} api={api} groupDid={groupDid} offline={snapshot.offline} members={snapshot.members.length} />
+    <GuestHeader groupName={groupName} session={session} identity={identity} api={api} offline={snapshot.offline} members={snapshot.members.length} />
     {identity ? <div className="shrink-0 px-3 py-2 empty:hidden md:px-4"><FirstPasswordPrompt identity={identity} /></div> : null}
     <div className="flex min-h-0 flex-1 flex-col">{body}</div>
   </>
@@ -161,7 +169,7 @@ function DeniedView({ denial, text, showAdjust }: { denial: AccessDenial | null;
   </Centered>
 }
 
-function GuestHeader({ groupName, session, identity, api, groupDid, offline, members }: { groupName: string; session: GuestSession | null; identity: CurrentIdentity | null; api: GuestApi | null; groupDid: string; offline: boolean; members: number }) {
+function GuestHeader({ groupName, session, identity, api, offline, members }: { groupName: string; session: GuestSession | null; identity: CurrentIdentity | null; api: GuestApi | null; offline: boolean; members: number }) {
   const text = useGuestText()
   const [open, setOpen] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
@@ -181,7 +189,7 @@ function GuestHeader({ groupName, session, identity, api, groupDid, offline, mem
     setSigningOut(true); setFailed(false)
     try {
       await api.signOut()
-      window.location.replace(guestEntryPath(groupDid))
+      window.location.reload()
     } catch {
       setFailed(true); setSigningOut(false)
     }

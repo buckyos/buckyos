@@ -1548,26 +1548,11 @@ then `guest:<26 chars>` (derived from the token's SHA-256, never the token itsel
 anonymous access is on and what a share entry it joined gives, and cannot own anything. `ws.get_info` returns `principal`
 (and `judged_as`) so a guest learns who it is.
 
-**Share entries** (`local.sqlite` `share_entries`, R8): a link that offers ways in — `methods`
-`{ guest, password, self_register, did_login }` (`self_register` implies `password`) — into one logical group (never one
-holding `manage` or `run`), optionally until `expires_at` (unix seconds) and for at most `max_joins` people. The id names
-its Workspace, `<workspace_id>~se_<26 chars>`, so a link resolves without a service-wide index; the visitor's page is
-`/sso/entry?service=aiworkspace&entry=<entry_id>`.
+**Share entries.** A manager selects one logical group, its allowed authentication methods, an explicit audience, an optional expiry and a visitor limit. The group can grant read, comment and edit capabilities. Groups granting `manage` or `run` cannot be shared this way. A guest-only entry uses `ws.create_entry` and `ws.join_entry` with the workspace origin's guest token. Directed invitations require an authenticated recipient.
 
-- Nobody gets anything from an entry without presenting it: `ws.join_entry` makes the visitor a member of the group
-  (`via_entry`). A signed-in visitor (account or External) joins if the entry ∩ the Zone switches (`system/sso/settings`)
-  admit the session's sign-in method — `did_federation` needs `did_login`, any local method `password` / `self_register`
-  — or if the entry is open to guests; a guest (its token) joins an entry open to guests. The entry page joins a signed-in
-  visitor itself; "continue as a guest" goes to the workspace's page with `?entry=<entry_id>`, which joins with that origin's
-  own guest token before the workspace opens (Desktop `StandalonePage`). Joining again changes nothing;
-  nobody becomes the owner. A member of a group is no longer in `@guest`.
-- `ws.close_entry { entry_id, remove_members? }` stops new joins; with `remove_members` those who joined through it leave
-  the group too.
-- `entry.describe` is public (no session): `buckyos_api::EntryDescription` (`state`, `resource: { kind: "workspace",
-  title, owner_name, path }` — `path` is the workspace's page on its own origin, `https://aiws-<id>.<zonehost>/<workspace
-  slug>`, or `/` without a public base —, the entry's own `methods`, `expires_at`) plus `ok: true`; a missing,
-  closed or expired entry is `{ state: "unavailable" }` and nothing else. The Control Panel's `auth.entry.describe`
-  intersects the methods with the Zone switches.
+For authenticated sharing, `ws.issue_share` registers the entry with Control Panel under the AI Workspace service identity and returns `entry.share_url`. The creating client supplies an idempotent `request_id` and can include the original same-origin `return_path` with its query and fragment. The system invitation names the target group and the disclosed operations. The workspace checks the author's current capability at registration and acceptance. `prepare` reserves a visitor slot and `commit` records group membership by DID. An unsigned visitor cannot acquire this membership by presenting a workspace entry ID to `ws.join_entry`.
+
+`ws.close_entry { entry_id, remove_members? }` closes new admissions. With `remove_members`, it removes grants derived only from this invitation. Independent grants are preserved. Reopening an accepted link checks the current group membership. `entry.describe` remains a public description for the anonymous guest route. It returns an unavailable state for a missing, closed or expired entry.
 
 **Refusals (D-4).** A business failure that is a refusal carries `error.denial`, the full `AccessDenial`
 (`reason`, `adjust: { party, location? }`, `service: "aiworkspace"`, `method`). NOT_FOUND and PERMISSION_DENIED without a
@@ -1800,10 +1785,12 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `acl.bind_macro` | stable | `wish` (path or id), `group_id` (null unbinds), `mode: union \| intersection` (§4.5); whoever may change the wish holds the group's permissions through it, so the group never holds `manage` |
 | `acl.audit` | stable | `after?`, `limit?`: the operation record (`manage`) |
 | `ws.list_subjects` | stable | principals an entry or a group can name (static identities / zone users and `group:` member specs) |
+| `ws.issue_share` | internal | group, explicit audience, request ID and return path → registered entry with share URL |
+| `share.callback` | internal | inspect, prepare, commit or resume a registered resource invitation |
 | `ws.create_entry` | stable | `group_id`, `methods`, `expires_at?`, `max_joins?` → `entry` (`manage`) |
 | `ws.list_entries` | stable | → `entries`, each with how many `joined` (`manage`) |
 | `ws.close_entry` | stable | `entry_id` (`workspace_id` optional, must match), `remove_members?` → `entry`, `removed_members` |
-| `ws.join_entry` | stable | `entry_id` only (a session or a guest token) → `workspace_id`, `entry_id`, `group_id`, `joined`, `path` |
+| `ws.join_entry` | stable | `entry_id` only (a browser guest token and an entry open to anonymous guests) → `workspace_id`, `entry_id`, `group_id`, `joined`, `path` |
 | `entry.describe` | stable | `entry_id` only, no session → `EntryDescription` |
 | `ws.get_user_state` / `ws.set_user_state` | stable | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
 | `user.get_prefs` / `user.set_prefs` | experimental | no `workspace_id`. The caller's own preferences across Workspaces (UI 框架 PRD §4.6, K4), one JSON object kept by the service (`users.sqlite`), never part of a Workspace, never exported, cloned or carried by a template: `get` → `prefs`, `revision`, `updated_at`; `set` takes `prefs` (the whole object) or `merge: { key: value \| null }` (top-level keys; null removes), and `expect?` (the revision read: `REVISION_CONFLICT` with `data.current` when it moved) → `prefs`, `revision`, `updated_at`. ≤ 500 keys of ≤ 128 bytes, ≤ 256 KiB. A guest or a link's visitor keeps none (`PERMISSION_DENIED`) |
@@ -1888,10 +1875,12 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `acl.bind_macro` | stable | `manage` on `/` |
 | `acl.audit` | stable | `manage` on `/` |
 | `ws.list_subjects` | stable | may own (unrestricted account or service) |
+| `ws.issue_share` | internal | `manage` on `/` |
+| `share.callback` | internal | resource-scoped registration credential and current manage capability |
 | `ws.create_entry` | stable | `manage` on `/` |
 | `ws.list_entries` | stable | `manage` on `/` |
 | `ws.close_entry` | stable | `manage` on `/` |
-| `ws.join_entry` | stable | a person presenting an active entry the Zone switches admit |
+| `ws.join_entry` | stable | an anonymous guest presenting an active guest entry |
 | `entry.describe` | stable | none (no session) |
 | `ws.get_user_state` | stable | may enter |
 | `ws.set_user_state` | stable | may enter |

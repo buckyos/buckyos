@@ -5,7 +5,7 @@ import { displayContext } from '../../src/components/conversation/history/object
 import { foldMessageRelations } from '../../src/components/conversation/history/relations.ts'
 import { GuestHub } from '../../src/app/messagehub/guest/hub.ts'
 import type { GuestApi, GuestMessagePage } from '../../src/app/messagehub/guest/api.ts'
-import { guestEntryAllows, guestEntryPath, guestPagePath, guestSessions, guestTimeline, guestTimelineMessage, isCustomerUserId, isGroupDid, suggestCustomerUserId } from '../../src/app/messagehub/guest/model.ts'
+import { guestEntryAllows, guestPagePath, guestSessions, guestTimeline, guestTimelineMessage, isCustomerUserId, isGroupDid, suggestCustomerUserId } from '../../src/app/messagehub/guest/model.ts'
 import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
@@ -41,7 +41,6 @@ Deno.test('attachments are read with the context_path of the message that carrie
 
 Deno.test('the guest page model: paths, sessions, named objects and the timeline', () => {
   equal(guestPagePath(GROUP, 't 1'), '/messagehub/guest?group=did%3Abns%3Asupport.test&session=t+1')
-  equal(guestEntryPath(GROUP), '/sso/entry?service=msg-center&entry=did%3Abns%3Asupport.test')
   equal([isGroupDid(GROUP), isGroupDid('support'), isGroupDid('did:bns:a/b'), isGroupDid(null)], [true, false, false, false])
   equal(guestSessions(GROUP, [
     { session_id: null, session: GROUP, lifecycle: 'active', revision: 'r0', has_guests: false },
@@ -85,6 +84,7 @@ function fakeApi(host: FakeHost, identity: CurrentIdentity): GuestApi {
     identity: () => Promise.resolve(identity),
     groupName: () => Promise.resolve('Acme Support'),
     entry: () => Promise.resolve(null),
+    invitationUrl: () => Promise.resolve(null),
     sessions: async () => { requireIncluded('group.list_sessions'); return [{ sessionId: 't-123', address: ADDRESS, title: 'Order', lifecycle: 'active' }] },
     invited: async () => host.state === 'invited',
     members: async () => { requireIncluded('group.list_session_members'); return [{ member_did: STAFF, kind: 'group_member', role: 'admin', entity_kind: 'user', state: 'included' }] },

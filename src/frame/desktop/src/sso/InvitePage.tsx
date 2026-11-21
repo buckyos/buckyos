@@ -119,7 +119,7 @@ export function InvitePage() {
   const enter = useCallback(async (invite: Active, current: CurrentIdentity) => {
     if (!secret) return
     let viewer = current
-    if (current.kind !== 'anonymous') {
+    if (current.kind !== 'anonymous' && !invite.app_instance_id) {
       try {
         await endSessionInPlace()
       } catch {
@@ -152,7 +152,7 @@ export function InvitePage() {
         setView({ kind: 'denied', denial: result.denial, userId: result.user_id, returnPath: result.return_path, current })
         return
       }
-      if (current.kind === 'account' && current.user_id === result.user_id) {
+      if (!result.app_instance_id && current.kind === 'account' && current.user_id === result.user_id) {
         window.location.assign(result.return_path)
         return
       }

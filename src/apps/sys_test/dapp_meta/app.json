@@ -9,7 +9,18 @@
   "categories": [
     "dapp"
   ],
-  "permissions": [],
+  "permissions": [
+    {
+      "scope_path": "sso/share/directed",
+      "required": false,
+      "exp": null
+    },
+    {
+      "scope_path": "sso/share/open",
+      "required": false,
+      "exp": null
+    }
+  ],
   "selector_type": "single",
   "service_config_tips": {
     "service_endpoints": {

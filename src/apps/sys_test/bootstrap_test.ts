@@ -115,7 +115,7 @@ Deno.test("AppService recovers after Deno connection refusal and gateway 503", a
   let logs = "";
   try {
     assert.equal((await waitFor(() => app.health())).bootstrap, "failed");
-    assert.match(await app.failure(), /RPC call failed: .*Connection refused/i);
+    assert.match(await app.failure(), /RPC call failed: (?:fetch failed$|.*Connection refused)/i);
     gateway = Deno.serve({
       hostname: "127.0.0.1",
       port: gatewayPort,

@@ -35,6 +35,10 @@ struct UserInviteRecord {
     target_did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     show_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    oauth_email: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    bind_existing: bool,
     default_user_type: UserType,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     groups: Vec<String>,
@@ -427,16 +431,43 @@ fn profile_value_from_doc(doc: &Value) -> Option<Value> {
         .filter(|value| value.is_object())
 }
 
-fn parse_owner_config_value(value: &Value) -> Result<OwnerDocument, RPCErrors> {
-    match value {
-        Value::String(raw) => serde_json::from_str(raw)
-            .map_err(|e| RPCErrors::ParseRequestError(format!("Invalid owner_config: {}", e))),
-        Value::Object(_) => serde_json::from_value(value.clone())
-            .map_err(|e| RPCErrors::ParseRequestError(format!("Invalid owner_config: {}", e))),
-        _ => Err(RPCErrors::ParseRequestError(
-            "owner_config must be a JSON object or string".to_string(),
-        )),
+/// Importing an already-mapped DID as a fresh account must not bypass its state or change its privileges.
+async fn require_unmapped_native_did(kv: &dyn AgentKv, did: &DID) -> Result<(), RPCErrors> {
+    let denied = || RPCErrors::NoPermission("This DID already belongs to a Zone account".into());
+    if kv
+        .get(&buckyos_api::native_login_binding_key(&did.to_string()))
+        .await?
+        .is_some()
+    {
+        return Err(denied());
     }
+    for id in kv.list("users").await? {
+        let key = format!("users/{id}/doc");
+        if let Some((raw, _)) = kv.get(&key).await? {
+            if buckyos_api::user_did_from_doc_value(&key, &raw)? == *did {
+                return Err(denied());
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn verified_owner_document(did: &DID) -> Result<OwnerDocument, RPCErrors> {
+    buckyos_api::resolve_federation_owner(did)
+        .await
+        .map_err(|error| RPCErrors::ReasonError(format!("resolve invited DID: {error}")))
+}
+
+fn invite_key(id: &str) -> Result<String, RPCErrors> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(RPCErrors::ParseRequestError("invalid invite_id".into()));
+    }
+    Ok(format!("{USER_INVITE_PREFIX}/{id}"))
 }
 
 fn require_invite_owner_session(
@@ -457,137 +488,198 @@ fn require_invite_owner_session(
     Ok(())
 }
 
-async fn accept_user_invitation(
+async fn pending_invitation(
     kv: &dyn AgentKv,
-    invite_id: &str,
-    owner_config: &OwnerDocument,
-    password_hash: &str,
+    id: &str,
     now: u64,
-) -> Result<(String, UserInviteRecord), RPCErrors> {
-    let invite_path = format!("{USER_INVITE_PREFIX}/{invite_id}");
+) -> Result<(UserInviteRecord, u64), RPCErrors> {
     let (raw, version) = kv
-        .get(&invite_path)
+        .get(&invite_key(id)?)
         .await?
-        .ok_or_else(|| RPCErrors::ReasonError(format!("Invite '{invite_id}' not found")))?;
-    let mut invite: UserInviteRecord = serde_json::from_str(&raw)
-        .map_err(|error| RPCErrors::ReasonError(format!("Corrupted invite: {error}")))?;
-    if invite.state != "pending" {
-        return Err(RPCErrors::ReasonError(format!(
-            "Invite '{invite_id}' is not pending"
-        )));
-    }
-    if invite
-        .expires_at
-        .map(|expires| expires < now)
-        .unwrap_or(false)
+        .ok_or_else(|| RPCErrors::ReasonError("Invitation not found".into()))?;
+    let record: UserInviteRecord = serde_json::from_str(&raw)
+        .map_err(|e| RPCErrors::ReasonError(format!("Corrupted invitation: {e}")))?;
+    if record.invite_id != id
+        || record.state != "pending"
+        || record.expires_at.is_some_and(|exp| exp <= now)
     {
-        return Err(RPCErrors::ReasonError(format!(
-            "Invite '{invite_id}' has expired"
-        )));
+        return Err(RPCErrors::ReasonError(
+            "Invitation is closed or has expired".into(),
+        ));
     }
-    if let Some(target_did) = invite.target_did.as_ref() {
-        if target_did != &owner_config.id.to_string() {
-            return Err(RPCErrors::ReasonError(format!(
-                "Invite target '{target_did}' does not match owner_config '{}'",
-                owner_config.id.to_string()
-            )));
-        }
-    }
+    Ok((record, version))
+}
 
-    let user_id = invite
-        .target_user_id
-        .clone()
-        .unwrap_or_else(|| owner_config.name.trim().to_lowercase());
+async fn finish_invitation(
+    kv: &dyn AgentKv,
+    mut invite: UserInviteRecord,
+    invite_version: u64,
+    zone: &DID,
+    user_id: String,
+    password: &str,
+    now: u64,
+    mut actions: HashMap<String, KVAction>,
+) -> Result<(String, UserInviteRecord), RPCErrors> {
     validate_username(&user_id)?;
-    if !password_hash.is_empty() {
-        validate_password_hash(password_hash)?;
+    if !password.is_empty() {
+        validate_password_hash(password)?;
     }
-    let settings_path = format!("users/{user_id}/settings");
-    let existing = kv.get(&settings_path).await?;
-    let new_account = existing.is_none();
-    let mut settings = match existing {
-        Some((raw, _)) => {
-            let mut settings: UserSettings = serde_json::from_str(&raw).map_err(|error| {
-                RPCErrors::ReasonError(format!("Corrupted user settings: {error}"))
-            })?;
-            if invite.target_user_id.as_deref() != Some(user_id.as_str())
-                || !matches!(settings.state, UserState::Pending)
-            {
-                return Err(RPCErrors::ReasonError(format!(
-                    "User '{user_id}' already exists or is reserved by another invitation"
-                )));
-            }
-            settings.user_type = invite.default_user_type;
-            settings.groups = invite.groups.clone();
-            if !password_hash.is_empty() {
-                settings.password = password_hash.to_string();
-            }
-            settings.state = UserState::Active;
-            settings.is_local = false;
-            settings
+    let path = invite_key(&invite.invite_id)?;
+    let settings_key = format!("users/{user_id}/settings");
+    let existing = kv.get(&settings_key).await?;
+    let mut guard = (path.clone(), invite_version);
+    let reserved = existing.is_some();
+    if let Some((raw, version)) = existing {
+        let settings: UserSettings = serde_json::from_str(&raw)
+            .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {e}")))?;
+        if invite.target_user_id.as_ref() != Some(&user_id)
+            || settings.user_id != user_id
+            || !(if invite.bind_existing {
+                settings.is_active()
+                    && matches!(settings.user_type, UserType::User | UserType::Admin)
+            } else {
+                matches!(settings.state, UserState::Pending)
+            })
+        {
+            return Err(RPCErrors::ReasonError(
+                "Account is unavailable for this invitation".into(),
+            ));
         }
-        None => UserSettings {
+        // An administrator can suspend or delete the reservation between this read and activation.
+        // The consumption record below protects the invite when this CAS protects the account.
+        guard = (settings_key.clone(), version);
+    } else if invite.bind_existing || invite.target_user_id.is_some() {
+        return Err(RPCErrors::ReasonError("Reserved account is missing".into()));
+    }
+    if !invite.bind_existing {
+        let settings = UserSettings {
             user_id: user_id.clone(),
             user_type: invite.default_user_type,
-            password: password_hash.to_string(),
+            password: password.to_string(),
             state: UserState::Active,
             res_pool_id: "default".to_string(),
-            is_local: false,
+            is_local: true,
             allow_password_change: None,
             allow_contact_edit: None,
             groups: invite.groups.clone(),
-            password_state: PasswordState::Unset,
-        },
-    };
-    settings.password_state = if settings.password.is_empty() {
-        PasswordState::Unset
-    } else {
-        PasswordState::Set
-    };
-    let mut profile = profile_from_owner_config(owner_config);
-    profile.display_name = Some(
-        invite
-            .show_name
-            .clone()
-            .unwrap_or_else(|| owner_config.display_name.clone()),
-    );
-    set_profile_system_contact(
-        &mut profile,
-        &default_contact_settings(Some(owner_config.id.to_string())),
-    )?;
-    invite.state = "accepted".to_string();
+            password_state: if password.is_empty() {
+                PasswordState::Unset
+            } else {
+                PasswordState::Set
+            },
+        };
+        let (mut account, _) = new_account_actions(
+            &settings,
+            invite.show_name.as_deref().unwrap_or(&user_id),
+            zone,
+            true,
+        )?;
+        if reserved {
+            for key in [&settings_key, &format!("users/{user_id}/profile")] {
+                if let Some(KVAction::Create(record)) = account.remove(key) {
+                    account.insert(key.to_string(), KVAction::Update(record));
+                }
+            }
+        }
+        actions.extend(account);
+    }
+    invite.state = "accepted".into();
     invite.accepted_at = Some(now);
     invite.accepted_user_id = Some(user_id.clone());
-
-    let settings_json = to_json(&settings)?;
-    let profile_json = to_json(&profile)?;
-    let tx = HashMap::from([
-        (
-            settings_path,
-            if new_account {
-                KVAction::Create(settings_json)
-            } else {
-                KVAction::Update(settings_json)
-            },
+    actions.insert(
+        format!(
+            "services/control_panel/user_invite_receipts/{}",
+            invite.invite_id
         ),
-        (
-            format!("users/{user_id}/doc"),
-            KVAction::Create(to_json(owner_config)?),
-        ),
-        (
-            format!("users/{user_id}/profile"),
-            if new_account {
-                KVAction::Create(profile_json)
-            } else {
-                KVAction::Update(profile_json)
-            },
-        ),
-        (invite_path.clone(), KVAction::Update(to_json(&invite)?)),
-    ]);
-    kv.exec_tx(tx, Some((invite_path, version)))
-        .await
-        .map_err(|error| RPCErrors::ReasonError(format!("Failed to accept invite: {error}")))?;
+        KVAction::Create(to_json(&user_id)?),
+    );
+    actions.insert(path, KVAction::Update(to_json(&invite)?));
+    kv.exec_tx(actions, Some(guard)).await?;
     Ok((user_id, invite))
+}
+
+async fn accept_user_invitation(
+    kv: &dyn AgentKv,
+    invite_id: &str,
+    owner: &OwnerDocument,
+    zone: &DID,
+    password: &str,
+    now: u64,
+) -> Result<(String, UserInviteRecord), RPCErrors> {
+    let (invite, version) = pending_invitation(kv, invite_id, now).await?;
+    let did = owner.id.to_string();
+    if invite.oauth_email.is_some() || invite.target_did.as_deref() != Some(&did) {
+        return Err(RPCErrors::NoPermission(
+            "Invitation recipient mismatch".into(),
+        ));
+    }
+    let user_id = invite
+        .target_user_id
+        .clone()
+        .unwrap_or_else(|| owner.name.trim().to_lowercase());
+    let actions = HashMap::from([(
+        buckyos_api::native_login_binding_key(&did),
+        KVAction::Create(to_json(&user_id)?),
+    )]);
+    finish_invitation(kv, invite, version, zone, user_id, password, now, actions).await
+}
+
+pub(crate) async fn oauth_invite_user(
+    kv: &dyn AgentKv,
+    invite_id: &str,
+) -> Result<String, RPCErrors> {
+    let (invite, _) = pending_invitation(kv, invite_id, buckyos_get_unix_timestamp()).await?;
+    invite
+        .target_user_id
+        .ok_or_else(|| RPCErrors::ReasonError("Invitation is missing its reserved user".into()))
+}
+
+pub(crate) async fn accept_oauth_invite(
+    kv: &dyn AgentKv,
+    invite_id: &str,
+    identity: &crate::oauth::VerifiedOAuth,
+) -> Result<String, RPCErrors> {
+    let zone = &get_buckyos_api_runtime()?.zone_id;
+    let user =
+        activate_oauth_invite(kv, invite_id, identity, zone, buckyos_get_unix_timestamp()).await?;
+    if let Err(error) = after_account_created(&user, "user.invite.accept").await {
+        warn!("OAuth account {user} committed; RBAC refresh failed: {error}");
+    }
+    Ok(user)
+}
+
+async fn activate_oauth_invite(
+    kv: &dyn AgentKv,
+    invite_id: &str,
+    identity: &crate::oauth::VerifiedOAuth,
+    zone: &DID,
+    now: u64,
+) -> Result<String, RPCErrors> {
+    let (invite, version) = pending_invitation(kv, invite_id, now).await?;
+    if identity.source_id != "google"
+        || invite.oauth_email.as_deref() != Some(identity.email.as_str())
+    {
+        return Err(RPCErrors::NoPermission(
+            "Invitation recipient mismatch".into(),
+        ));
+    }
+    let user_id = invite
+        .target_user_id
+        .clone()
+        .ok_or_else(|| RPCErrors::ReasonError("Invitation is missing its reserved user".into()))?;
+    let (subject, mut actions) =
+        crate::oauth::subject_actions(kv, identity, Some(&user_id)).await?;
+    if invite.target_did.as_deref() != Some(&subject.did) {
+        return Err(RPCErrors::NoPermission(
+            "Invitation recipient mismatch".into(),
+        ));
+    }
+    actions.insert(
+        format!("services/control_panel/user_login_sources/{user_id}/google"),
+        KVAction::Create(to_json(&subject.did)?),
+    );
+    finish_invitation(kv, invite, version, zone, user_id.clone(), "", now, actions).await?;
+    Ok(user_id)
 }
 
 fn parse_user_profile_payload(
@@ -1404,26 +1496,83 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        require_admin(principal)?;
-
-        let invite_id = Self::param_str(&req, "invite_id")
-            .unwrap_or_else(|| Uuid::new_v4().to_string())
-            .trim()
-            .to_string();
-        if invite_id.is_empty() {
-            return Err(RPCErrors::ParseRequestError(
-                "invite_id cannot be empty".to_string(),
-            ));
+        let kv = ZoneKv::connect().await?;
+        let delegated = matches!(
+            principal.principal_kind,
+            buckyos_api::TokenPrincipalKind::System | buckyos_api::TokenPrincipalKind::Device
+        ) && matches!(
+            buckyos_api::AuthTarget::from_canonical_key(&principal.authenticated_app_id),
+            Ok(buckyos_api::AuthTarget::System { .. })
+        );
+        let issuer = if delegated {
+            let granted = kv
+                .get("services/control_panel/system_invite_issuers")
+                .await?
+                .map(|(raw, _)| serde_json::from_str::<Vec<String>>(&raw))
+                .transpose()
+                .map_err(|e| RPCErrors::ReasonError(format!("system_invite_issuers: {e}")))?
+                .unwrap_or_default();
+            if !granted.contains(&principal.authenticated_app_id) || principal.session.is_sudo {
+                return Err(RPCErrors::NoPermission(
+                    "Service may not grant Zone login".into(),
+                ));
+            }
+            principal.authenticated_app_id.clone()
+        } else {
+            require_control_panel_admin(principal)?;
+            principal.username.clone()
+        };
+        let invite_id =
+            Self::param_str(&req, "invite_id").unwrap_or_else(|| Uuid::new_v4().to_string());
+        let invite_path = invite_key(&invite_id)?;
+        let target_user_id = Self::param_str(&req, "user_id").map(|id| id.trim().to_lowercase());
+        if let Some(id) = &target_user_id {
+            validate_username(id)?;
         }
-        let target_user_id = Self::param_str(&req, "user_id")
-            .map(|value| value.trim().to_lowercase())
-            .filter(|value| !value.is_empty());
-        if let Some(user_id) = target_user_id.as_ref() {
-            validate_username(user_id)?;
-        }
-        let target_did = Self::param_str(&req, "target_did");
+        let bind_existing = Self::param_bool(&req, "bind_existing").unwrap_or(false);
+        let raw_did = Self::param_str(&req, "target_did");
+        let raw_email = Self::param_str(&req, "google_email");
+        let runtime = get_buckyos_api_runtime()?;
+        let (target_did, oauth_email) = match (raw_did, raw_email) {
+            (Some(did), None) if !bind_existing => {
+                let settings = crate::sso_settings::load_sso_settings(&kv).await?;
+                if did.contains('*')
+                    || buckyos_api::external_source_for_did(&settings, &did).is_some()
+                {
+                    return Err(RPCErrors::ParseRequestError(
+                        "Invite the native account DID or select Google email".into(),
+                    ));
+                }
+                let parsed = DID::from_str(&did)
+                    .map_err(|e| RPCErrors::ParseRequestError(format!("invalid DID: {e}")))?;
+                use crate::federation::{NameServiceDirectory, ZoneDirectory};
+                NameServiceDirectory.canonical_host(&parsed).await?;
+                (Some(parsed.to_string()), None)
+            }
+            (None, Some(raw)) if target_user_id.is_some() && !(delegated && bind_existing) => {
+                let (email, label) = buckyos_api::oauth_account_label(true, &raw)
+                    .map_err(RPCErrors::ParseRequestError)?;
+                let external = format!("did:web:{label}.google.com");
+                if crate::oauth::resolve_email(&kv, "google", &email).await? != external {
+                    return Err(RPCErrors::ReasonError(
+                        "Google credential already bound to a local account".into(),
+                    ));
+                }
+                (Some(external), Some(email))
+            }
+            _ => {
+                return Err(RPCErrors::ParseRequestError(
+                    "Select a recipient DID or a Google email and local username".into(),
+                ))
+            }
+        };
         let show_name = Self::param_str(&req, "show_name");
         let default_user_type = invite_user_type(Self::param_str(&req, "user_type").as_deref())?;
+        if oauth_email.is_some() && default_user_type != UserType::User {
+            return Err(RPCErrors::ParseRequestError(
+                "Google enrollment requires an ordinary account".into(),
+            ));
+        }
         let now = buckyos_get_unix_timestamp();
         let expires_at = Self::param_u64(&req, "expires_at")
             .or_else(|| Self::param_u64(&req, "ttl_secs").map(|ttl| now.saturating_add(ttl)));
@@ -1436,7 +1585,7 @@ impl ControlPanelServer {
 
         let invite = UserInviteRecord {
             invite_id: invite_id.clone(),
-            created_by: principal.username.clone(),
+            created_by: issuer,
             created_at: now,
             expires_at,
             state: "pending".to_string(),
@@ -1445,31 +1594,37 @@ impl ControlPanelServer {
             show_name: show_name.clone(),
             default_user_type,
             groups: groups.clone(),
+            oauth_email,
+            bind_existing,
             accepted_at: None,
             accepted_user_id: None,
         };
 
-        let client = system_config_client_for_caller(&req).await?;
-        let invite_path = format!("{}/{}", USER_INVITE_PREFIX, invite_id);
-        if client.get(&invite_path).await.is_ok() {
-            return Err(RPCErrors::ReasonError(format!(
-                "Invite '{}' already exists",
-                invite.invite_id
-            )));
-        }
         let invite_json = serde_json::to_string(&invite)
             .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
 
         let mut tx = HashMap::new();
         tx.insert(invite_path.clone(), KVAction::Create(invite_json));
-        if let Some(user_id) = target_user_id.as_ref() {
-            let settings_path = format!("users/{}/settings", user_id);
-            if client.get(&settings_path).await.is_ok() {
-                return Err(RPCErrors::ReasonError(format!(
-                    "User '{}' already exists",
-                    user_id
-                )));
+        if bind_existing {
+            let user = target_user_id
+                .as_deref()
+                .ok_or_else(|| RPCErrors::ParseRequestError("Missing user_id".into()))?;
+            let (raw, _) = kv
+                .get(&format!("users/{user}/settings"))
+                .await?
+                .ok_or_else(|| RPCErrors::ReasonError("Account not found".into()))?;
+            let settings: UserSettings =
+                serde_json::from_str(&raw).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+            if !settings.is_active()
+                || !matches!(settings.user_type, UserType::User | UserType::Admin)
+            {
+                return Err(RPCErrors::NoPermission(
+                    "Binding requires an active ordinary account".into(),
+                ));
             }
+        } else if let Some(user_id) = target_user_id.as_ref() {
+            crate::agent_mgr::ensure_name_available(&runtime.zone_id, user_id).await?;
+            let settings_path = format!("users/{user_id}/settings");
             let pending_settings = UserSettings {
                 user_id: user_id.clone(),
                 user_type: default_user_type,
@@ -1510,8 +1665,7 @@ impl ControlPanelServer {
             );
         }
 
-        client
-            .exec_tx(tx, None)
+        kv.exec_tx(tx, None)
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to create invite: {}", e)))?;
 
@@ -1519,8 +1673,122 @@ impl ControlPanelServer {
             RPCResult::Success(json!({
                 "ok": true,
                 "invite": invite,
-                "invite_url": format!("/users/invite/{}", invite_id),
+                "invite_url": format!("{}/users/invite/{}", Self::zone_root_origin(&req,&Self::sso_zone_host(runtime)?), invite_id),
             })),
+            req.seq,
+        ))
+    }
+
+    /// Administrator directory derived from invitation and acceptance authorities.
+    pub(crate) async fn handle_user_invite_directory(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        use crate::exclusive_invite::get_json;
+        use buckyos_api::{
+            ResourceShare, ResourceShareAcceptance, ShareAudience, RESOURCE_SHARES_PREFIX,
+            RESOURCE_SHARE_ACCEPTANCES_PREFIX,
+        };
+        use std::collections::BTreeMap;
+        require_control_panel_admin(Self::require_rpc_principal(principal)?)?;
+        let kv = ZoneKv::connect().await?;
+        let mut sources: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut emails: HashMap<String, String> = HashMap::new();
+        let mut accounts: HashMap<String, String> = HashMap::new();
+        for id in kv.list(RESOURCE_SHARES_PREFIX).await? {
+            let Some((share, _)) =
+                get_json::<ResourceShare>(&kv, &buckyos_api::resource_share_key(&id)).await?
+            else {
+                continue;
+            };
+            let source = json!({"invite_id":id,"target":share.target.canonical_key(),"issuer":share.sharer,"title":share.title,"expires_at":share.expires_at});
+            if let ShareAudience::Directed { did } = &share.audience {
+                sources.entry(did.clone()).or_default().push(source.clone());
+                if let Some((recipient, _)) = get_json::<Value>(
+                    &kv,
+                    &format!("services/control_panel/resource_share_recipients/{id}"),
+                )
+                .await?
+                {
+                    if let Some(email) = recipient.get("email").and_then(Value::as_str) {
+                        emails.insert(did.clone(), email.into());
+                    }
+                }
+            }
+            let prefix = format!("{RESOURCE_SHARE_ACCEPTANCES_PREFIX}/{id}");
+            for key in kv.list(&prefix).await? {
+                if let Some((accepted, _)) =
+                    get_json::<ResourceShareAcceptance>(&kv, &format!("{prefix}/{key}")).await?
+                {
+                    let records = sources.entry(accepted.did).or_default();
+                    if let Some(existing) = records.iter_mut().find(|item| item["invite_id"] == id)
+                    {
+                        existing["accepted_at"] = json!(accepted.accepted_at);
+                    } else {
+                        let mut record = source.clone();
+                        record["accepted_at"] = json!(accepted.accepted_at);
+                        records.push(record);
+                    }
+                }
+            }
+        }
+        for id in kv.list(USER_INVITE_PREFIX).await? {
+            let Some((invite, _)) = get_json::<UserInviteRecord>(&kv, &invite_key(&id)?).await?
+            else {
+                continue;
+            };
+            if let Some(did) = invite.target_did {
+                if let Some(user) = invite.accepted_user_id.or(invite.target_user_id) {
+                    accounts.insert(did.clone(), user);
+                }
+                if let Some(email) = invite.oauth_email {
+                    emails.insert(did.clone(), email);
+                }
+                sources.entry(did).or_default().push(json!({"invite_id":id,"target":"system:control-panel","title":"Zone login","issuer":invite.created_by,"state":invite.state,"expires_at":invite.expires_at}));
+            }
+        }
+        let prefix = "services/control_panel/oauth/subjects";
+        for key in kv.list(prefix).await? {
+            if let Some((subject, _)) =
+                get_json::<crate::oauth::OAuthSubject>(&kv, &format!("{prefix}/{key}")).await?
+            {
+                emails.insert(subject.did, subject.email);
+            }
+        }
+        for user in kv.list("users").await? {
+            let key = format!("users/{user}/doc");
+            if let Some((raw, _)) = kv.get(&key).await? {
+                accounts.insert(
+                    buckyos_api::user_did_from_doc_value(&key, &raw)?.to_string(),
+                    user,
+                );
+            }
+        }
+        let mut result = Vec::new();
+        for (did, sources) in sources {
+            let user = accounts.get(&did);
+            let account_state = match user {
+                Some(id) => get_json::<UserSettings>(&kv, &format!("users/{id}/settings"))
+                    .await?
+                    .map(|(s, _)| s.state),
+                None => None,
+            };
+            let account_did = match user {
+                Some(id) => {
+                    let key = format!("users/{id}/doc");
+                    kv.get(&key)
+                        .await?
+                        .map(|(raw, _)| buckyos_api::user_did_from_doc_value(&key, &raw))
+                        .transpose()?
+                        .map(|did| did.to_string())
+                }
+                None => None,
+            };
+            result.push(json!({"did":did,"email":emails.get(&did),"user_id":user,"account_did":account_did,"account_state":account_state,"sources":sources}));
+        }
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({"users":result})),
             req.seq,
         ))
     }
@@ -1533,19 +1801,32 @@ impl ControlPanelServer {
         let invite_id = Self::require_param_str(&req, "invite_id")?;
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
-        let invite_path = format!("{}/{}", USER_INVITE_PREFIX, invite_id);
+        let invite_path = invite_key(&invite_id)?;
         let invite_val = client.get(&invite_path).await.map_err(|e| {
             RPCErrors::ReasonError(format!("Invite '{}' not found: {}", invite_id, e))
         })?;
-        let invite: UserInviteRecord = serde_json::from_str(&invite_val.value)
+        let mut invite: UserInviteRecord = serde_json::from_str(&invite_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted invite: {}", e)))?;
         let now = buckyos_get_unix_timestamp();
-        let expired = invite.expires_at.map(|exp| exp < now).unwrap_or(false);
+        let expired = invite.expires_at.map(|exp| exp <= now).unwrap_or(false);
 
+        let oauth = invite.oauth_email.take().is_some();
+        let enabled = if oauth {
+            crate::sso_settings::load_sso_settings(&ZoneKv::connect().await?)
+                .await?
+                .oauth_sources
+                .iter()
+                .any(|s| s.id == "google" && s.enabled)
+        } else {
+            true
+        };
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
                 "invite": invite,
                 "expired": expired,
+                "oauth_source": oauth.then_some("google"),
+                "source_enabled": enabled,
+                "verified_did": self.native_invite_identity(&req,"user_invite",&invite_id).await,
                 "zone_did": runtime.zone_id.to_string(),
                 "zone_host": runtime.zone_id.to_host_name(),
             })),
@@ -1559,13 +1840,33 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let invite_id = Self::require_param_str(&req, "invite_id")?;
-        let owner_config_value = req
-            .params
-            .get("owner_config")
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing owner_config".to_string()))?;
-        let owner_config = parse_owner_config_value(owner_config_value)?;
-        require_invite_owner_session(principal, &owner_config.id)?;
         let runtime = get_buckyos_api_runtime()?;
+        let kv = ZoneKv::connect().await?;
+        let (record, _) = pending_invitation(&kv, &invite_id, buckyos_get_unix_timestamp()).await?;
+        let target = record
+            .target_did
+            .filter(|_| record.oauth_email.is_none())
+            .ok_or_else(|| {
+                RPCErrors::NoPermission(
+                    "This invite requires its configured identity provider".into(),
+                )
+            })?;
+        let did = DID::from_str(&target)
+            .map_err(|e| RPCErrors::ReasonError(format!("invalid invited DID: {e}")))?;
+        if principal.is_some() {
+            require_invite_owner_session(principal, &did)?;
+        } else if self
+            .native_invite_identity(&req, "user_invite", &invite_id)
+            .await
+            .as_deref()
+            != Some(&target)
+        {
+            return Err(RPCErrors::InvalidToken(
+                "Verify the invited DID before accepting".into(),
+            ));
+        }
+        require_unmapped_native_did(&kv, &did).await?;
+        let owner_config = verified_owner_document(&did).await?;
         if !owner_is_bound_to_zone(&owner_config, &runtime.zone_id) {
             return Err(RPCErrors::ReasonError(format!(
                 "OwnerDocument '{}' is not bound to zone '{}'",
@@ -1574,12 +1875,12 @@ impl ControlPanelServer {
             )));
         }
 
-        let kv = ZoneKv::connect().await?;
         let password_hash = Self::param_str(&req, "password_hash").unwrap_or_default();
         let (user_id, invite) = accept_user_invitation(
             &kv,
             &invite_id,
             &owner_config,
+            &runtime.zone_id,
             &password_hash,
             buckyos_get_unix_timestamp(),
         )
@@ -1932,6 +2233,8 @@ mod tests {
             target_user_id: None,
             target_did: Some(owner.id.to_string()),
             show_name: Some("Invited Alice".to_string()),
+            oauth_email: None,
+            bind_existing: false,
             default_user_type: UserType::User,
             groups: vec!["family".to_string()],
             accepted_at: None,
@@ -1941,31 +2244,154 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn google_enrollment_binds_only_the_confirmed_recipient_and_activates_canonical_account()
+    {
+        let kv = InviteKv::default();
+        let (mut invite, _) = invitation_fixture();
+        let identity = crate::oauth::VerifiedOAuth {
+            source_id: "google".into(),
+            issuer: "https://accounts.google.com".into(),
+            sub: "stable-alice".into(),
+            email: "alice@gmail.com".into(),
+            label: "alice".into(),
+            did: "did:web:alice.google.com".into(),
+            webhost: "google.com".into(),
+        };
+        invite.target_did = Some(identity.did.clone());
+        invite.target_user_id = Some("alice".into());
+        invite.oauth_email = Some(identity.email.clone());
+        let reservation = |user: &str| {
+            let mut settings = account(UserType::User, None, PasswordState::Unset);
+            settings.user_id = user.into();
+            settings.state = UserState::Pending;
+            kv.put(&format!("users/{user}/settings"), &settings);
+            kv.put(
+                &format!("users/{user}/profile"),
+                &profile_from_user_id(user),
+            );
+        };
+        let path = invite_key(&invite.invite_id).unwrap();
+        kv.put(&path, &invite);
+        reservation("alice");
+        let before = kv.snapshot();
+        let zone = DID::new("web", "example.com");
+        let wrong = crate::oauth::VerifiedOAuth {
+            email: "another@gmail.com".into(),
+            ..identity.clone()
+        };
+        assert!(
+            activate_oauth_invite(&kv, &invite.invite_id, &wrong, &zone, 50)
+                .await
+                .is_err()
+        );
+        assert_eq!(kv.snapshot(), before);
+        assert_eq!(
+            activate_oauth_invite(&kv, &invite.invite_id, &identity, &zone, 50)
+                .await
+                .unwrap(),
+            "alice"
+        );
+        let user: OwnerDocument = kv.read("users/alice/doc");
+        assert_eq!(user.id.to_string(), "did:web:alice.example.com");
+        assert_eq!(buckyos_api::owner_canonical_zone(&user), zone);
+        assert_eq!(
+            crate::oauth::bound_account_did(&kv, &identity.did)
+                .await
+                .unwrap(),
+            Some(user.id.to_string())
+        );
+        assert!(
+            activate_oauth_invite(&kv, &invite.invite_id, &identity, &zone, 50)
+                .await
+                .is_err()
+        );
+        invite.invite_id = "another".into();
+        invite.target_user_id = Some("second".into());
+        kv.put(&invite_key(&invite.invite_id).unwrap(), &invite);
+        reservation("second");
+        let before = kv.snapshot();
+        assert!(
+            activate_oauth_invite(&kv, &invite.invite_id, &identity, &zone, 50)
+                .await
+                .is_err()
+        );
+        assert_eq!(kv.snapshot(), before);
+    }
+
+    #[tokio::test]
+    async fn acceptance_does_not_reactivate_a_concurrently_suspended_reservation() {
+        let (mut invite, owner) = invitation_fixture();
+        let mut settings = account(UserType::User, None, PasswordState::Unset);
+        settings.user_id = "alice".into();
+        settings.state = UserState::Suspended("blocked".into());
+        let kv = InviteKv {
+            before_commit: Mutex::new(Some((
+                "users/alice/settings".into(),
+                to_json(&settings).unwrap(),
+            ))),
+            ..Default::default()
+        };
+        invite.target_user_id = Some("alice".into());
+        kv.put(&invite_key(&invite.invite_id).unwrap(), &invite);
+        settings.state = UserState::Pending;
+        kv.put("users/alice/settings", &settings);
+        assert!(accept_user_invitation(
+            &kv,
+            &invite.invite_id,
+            &owner,
+            &DID::new("web", "example.com"),
+            "",
+            50
+        )
+        .await
+        .is_err());
+        assert!(matches!(
+            kv.read::<UserSettings>("users/alice/settings").state,
+            UserState::Suspended(_)
+        ));
+        assert_eq!(
+            kv.read::<UserInviteRecord>(&invite_key(&invite.invite_id).unwrap())
+                .state,
+            "pending"
+        );
+    }
+
+    #[tokio::test]
     async fn invite_accept_creates_all_records_and_consumes_invite_in_one_cas() {
         let (invite, owner) = invitation_fixture();
         let kv = InviteKv::default();
         let path = format!("{USER_INVITE_PREFIX}/{}", invite.invite_id);
         kv.put(&path, &invite);
         let password = STANDARD.encode([7u8; 32]);
-        let (user_id, accepted) =
-            accept_user_invitation(&kv, &invite.invite_id, &owner, &password, 50)
-                .await
-                .unwrap();
+        let (user_id, accepted) = accept_user_invitation(
+            &kv,
+            &invite.invite_id,
+            &owner,
+            &DID::new("web", "a.example"),
+            &password,
+            50,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(user_id, "alice");
         assert_eq!(kv.tx_calls.load(Ordering::SeqCst), 1);
         assert_eq!(*kv.guard.lock().unwrap(), Some((path.clone(), 1)));
-        assert_eq!(kv.snapshot().len(), 4);
+        assert_eq!(kv.snapshot().len(), 7);
         let settings: UserSettings = kv.read("users/alice/settings");
         assert!(matches!(settings.state, UserState::Active));
         assert_eq!(settings.password, password);
         assert!(settings.password_state.is_set());
-        assert!(!settings.is_local);
+        assert!(settings.is_local);
         assert_eq!(settings.groups, invite.groups);
         let document: OwnerDocument = kv.read("users/alice/doc");
-        assert_eq!(document.id, owner.id);
+        assert_eq!(document.id.to_string(), "did:web:alice.a.example");
+        assert_eq!(
+            buckyos_api::owner_canonical_zone(&document),
+            DID::new("web", "a.example")
+        );
         let profile: UserPrivateProfile = kv.read("users/alice/profile");
-        assert_eq!(profile.did, owner.id);
+        assert_eq!(profile.did, document.id);
         assert_eq!(profile.display_name.as_deref(), Some("Invited Alice"));
         assert_eq!(accepted.state, "accepted");
         assert_eq!(accepted.accepted_at, Some(50));
@@ -1989,16 +2415,28 @@ mod tests {
         kv.put("users/reserved/settings", &pending);
         kv.put("users/reserved/profile", &profile_from_user_id("reserved"));
 
-        let (user_id, _) = accept_user_invitation(&kv, &invite.invite_id, &owner, "", 50)
-            .await
-            .unwrap();
+        let (user_id, _) = accept_user_invitation(
+            &kv,
+            &invite.invite_id,
+            &owner,
+            &DID::new("web", "a.example"),
+            "",
+            50,
+        )
+        .await
+        .unwrap();
         assert_eq!(user_id, "reserved");
-        assert_eq!(kv.snapshot().len(), 4);
+        assert_eq!(kv.snapshot().len(), 7);
         let settings: UserSettings = kv.read("users/reserved/settings");
         assert!(matches!(settings.state, UserState::Active));
         assert_eq!(settings.user_type, UserType::User);
         assert!(!settings.password_state.is_set());
-        assert_eq!(kv.read::<OwnerDocument>("users/reserved/doc").id, owner.id);
+        assert_eq!(
+            kv.read::<OwnerDocument>("users/reserved/doc")
+                .id
+                .to_string(),
+            "did:web:reserved.a.example"
+        );
     }
 
     #[tokio::test]
@@ -2023,11 +2461,16 @@ mod tests {
             kv.put("users/alice/settings", &settings);
             let before = kv.snapshot();
 
-            assert!(
-                accept_user_invitation(&kv, &invite.invite_id, &owner, "", 50)
-                    .await
-                    .is_err()
-            );
+            assert!(accept_user_invitation(
+                &kv,
+                &invite.invite_id,
+                &owner,
+                &DID::new("web", "a.example"),
+                "",
+                50
+            )
+            .await
+            .is_err());
             assert_eq!(kv.snapshot(), before);
             assert_eq!(kv.tx_calls.load(Ordering::SeqCst), 0);
         }
@@ -2049,9 +2492,16 @@ mod tests {
             );
             let before = kv.snapshot();
 
-            let error = accept_user_invitation(&kv, &invite.invite_id, &owner, "", 50)
-                .await
-                .unwrap_err();
+            let error = accept_user_invitation(
+                &kv,
+                &invite.invite_id,
+                &owner,
+                &DID::new("web", "a.example"),
+                "",
+                50,
+            )
+            .await
+            .unwrap_err();
             assert!(error.to_string().contains("read unavailable"));
             assert_eq!(kv.snapshot(), before);
             assert_eq!(kv.tx_calls.load(Ordering::SeqCst), 0);
@@ -2085,9 +2535,16 @@ mod tests {
             let before = kv.snapshot();
 
             assert!(
-                accept_user_invitation(&kv, &invite.invite_id, &owner, password, 50)
-                    .await
-                    .is_err(),
+                accept_user_invitation(
+                    &kv,
+                    &invite.invite_id,
+                    &owner,
+                    &DID::new("web", "a.example"),
+                    password,
+                    50
+                )
+                .await
+                .is_err(),
                 "{condition}"
             );
             assert_eq!(kv.snapshot(), before, "{condition}");
@@ -2111,9 +2568,16 @@ mod tests {
             expected.insert(collision_key, (collision_value, 1));
 
             assert!(
-                accept_user_invitation(&kv, &invite.invite_id, &owner, "", 50)
-                    .await
-                    .is_err(),
+                accept_user_invitation(
+                    &kv,
+                    &invite.invite_id,
+                    &owner,
+                    &DID::new("web", "a.example"),
+                    "",
+                    50
+                )
+                .await
+                .is_err(),
                 "{suffix}"
             );
             assert_eq!(kv.snapshot(), expected, "{suffix}");
@@ -2135,9 +2599,16 @@ mod tests {
         };
         kv.put(&path, &invite);
 
-        let error = accept_user_invitation(&kv, &invite.invite_id, &owner, "", 50)
-            .await
-            .unwrap_err();
+        let error = accept_user_invitation(
+            &kv,
+            &invite.invite_id,
+            &owner,
+            &DID::new("web", "a.example"),
+            "",
+            50,
+        )
+        .await
+        .unwrap_err();
         assert!(error.to_string().contains("revision mismatch"));
         assert_eq!(kv.snapshot().len(), 1);
         assert_eq!(

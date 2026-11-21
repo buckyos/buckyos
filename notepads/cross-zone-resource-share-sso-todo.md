@@ -1,6 +1,6 @@
 # 跨 Zone SSO 邀请、OAuth 2.0 登录与 DID 映射 · 设计评审与实施 TODO
 
-2026-11-20 · 评审已定案，可以进入实施。裁决见 §4。PRD、技术契约、SDK 文档中与 §4 不一致的段落以本文为准，由第 7 步同步。A 是资源所在的 Zone，X 是安装在 A 的 App 实例，B 是收件人，C 是收到转发链接的另一人。使用原生 BuckyOS 身份的 B 有自己的归属 Zone。Alice 只有 Google 账号，`example.com` 是接入了 Google 的 Zone。[产品场景和 AC-25～39](<../doc/arch/verify-hub/BuckyOS 混合SSO PRD.md>) · [邀请与 OAuth 技术契约 §8.5、§9.3](../doc/arch/verify-hub/混合SSO技术契约.md) · [SDK 流程](../doc/sdk/SSO.md)
+2026-11-20 · 实施与实测记录见 §7。§4 的裁决已同步至 PRD、技术契约和 SDK 文档。A 是资源所在的 Zone，X 是安装在 A 的 App 实例，B 是收件人，C 是收到转发链接的另一人。使用原生 BuckyOS 身份的 B 有自己的归属 Zone。Alice 只有 Google 账号，`example.com` 是接入了 Google 的 Zone。[产品场景和 AC-25～39](<../doc/arch/verify-hub/BuckyOS 混合SSO PRD.md>) · [邀请与 OAuth 技术契约 §8.5、§9.3](../doc/arch/verify-hub/混合SSO技术契约.md) · [SDK 流程](../doc/sdk/SSO.md)
 
 ## 1. 设计动机
 
@@ -22,7 +22,7 @@ A 想请 B 编辑 X 中的一份文档。A 应能在 X 里选文档、选收件�
 
 ## 3. 新契约与用户流程
 
-**系统是 SSO 邀请链接的签发方，App 可以是申请方。** X 用自己的实例身份向 A 的系统服务提交用途、明确的受众方式、资源引用、允许操作及返回位置。系统校验实例策略及分享者的资源授权，通过内部接口让 verify-hub 登记可核验的邀请，再由系统返回正确的 URL。URL 的域名与路径由已注册目标和路由确定。只拼出相似的 URL 不会获得可兑现的邀请。这里描述服务职责，具体 RPC 名称和记录存储位置在协议实现时确定。
+**系统是 SSO 邀请链接的签发方，App 可以是申请方。** X 用自己的实例身份向 A 的系统服务提交用途、明确的受众方式、资源引用、允许操作及返回位置。系统校验实例策略及分享者的资源授权，通过内部接口让 verify-hub 登记可核验的邀请，再由系统返回正确的 URL。URL 的域名与路径由已注册目标和路由确定。只拼出相似的 URL 不会获得可兑现的邀请。调用方、RPC 和存储记录见 [Control Panel 接口说明](../doc/control_panel/Control_Panel_Service.md)。
 
 | 用途 | 谁能向系统申请 | 谁可以接受 | 系统最终交付什么 |
 | --- | --- | --- | --- |
@@ -39,7 +39,7 @@ A 想请 B 编辑 X 中的一份文档。A 应能在 X 里选文档、选收件�
 
 **分清记录的寿命。** 邀请记录决定谁还能新加入。接受时按实例当前的邀请等级、`app_doc` 声明的上限和分享者当前授权复查，任何一项不满足都不能兑现，记录保留并显示原因。接受记录把实际 DID、邀请来源和已获实例或资源资格关联起来。一次性登录尝试只负责本次往返，会话只在指定目标生效。管理员关闭新邀请、关闭一张入口、移除 B 的既有授权，是三个操作。B 以后直接重开深链接时，可根据仍有效的资格恢复访问。单张邀请关闭不应抹掉通过其他来源获得的独立权限。
 
-### 3.1 外部 OAuth 身份：DID 规则与三个场景（拟实现）
+### 3.1 外部 OAuth 身份：DID 规则与三个场景
 
 **来源配置。** Google 是内置预设，身份域 `google.com` 和发行方 `https://accounts.google.com` 固定，管理员只填 client ID、凭据引用和本区的 HTTPS 回调。自定义来源的身份域由管理员填写，须满足三条：是发行方（纯 OAuth 时为账号接口）主机所在的域或其上级域；不是本 Zone 的主机或其下级域，否则会与本地账号 DID 冲突；同一身份域在本区只绑定一个来源。
 
@@ -167,19 +167,19 @@ B 的外部登录确认页要显示正在登录的 App 主机，例如 `appx.a.e
 
 ## 5. 实施顺序与完成条件
 
-- [ ] **0. 保住工作区修复。** 复验 e372a5257 的 External 工作区交接和私有工作区深链接。记录根域与工作区主机的身份、授权结果。
+- [x] **0. 保住工作区修复。** 复验 e372a5257 的 External 工作区交接和私有工作区深链接。记录根域与工作区主机的身份、授权结果。
   - 对应 T1、T6 的旧路径基线。B 能在工作区主机写入，A 能读回，其他资源仍按 ACL 拒绝。该修复可独立交付。
 
-- [ ] **1. 系统签发与实例策略。** 定义申请、登记和返回 URL 的接口。在安装界面按 `app_doc` 声明展示可授予的邀请等级，将安装时选定的等级及管理员后续调整保存到实例。签发时同时检查声明上限和实例当前等级。鉴权从真实服务身份推导安装实例，另查操作者分享权。定向必须提供通过 §3.1 签发校验的 DID，开放须显式选择。记录含系统签发方、申请来源、目标、受众、资源引用、期限和状态。写入成功才返回 URL，重复申请按约定幂等。接受时复查当前等级、声明上限和分享者授权。
+- [x] **1. 系统签发与实例策略。** 定义申请、登记和返回 URL 的接口。在安装界面按 `app_doc` 声明展示可授予的邀请等级，将安装时选定的等级及管理员后续调整保存到实例。签发时同时检查声明上限和实例当前等级。鉴权从真实服务身份推导安装实例，另查操作者分享权。定向必须提供通过 §3.1 签发校验的 DID，开放须显式选择。记录含系统签发方、申请来源、目标、受众、资源引用、期限和状态。写入成功才返回 URL，重复申请按约定幂等。接受时复查当前等级、声明上限和分享者授权。
   - T2、T10。直接调用接口与 UI 得到相同判定，拒绝后没有可兑现记录。登记失败可安全重试。
 
-- [ ] **2. 工作区接入系统签发。** 把 AI Workspace 分享按钮接到系统申请入口。保留 `group_id` 及资源端 `manage`、加入和 ACL 检查。以相同契约接入 Message Hub 中触发 SSO 的入口。纯业务群邀请和匿名 Guest 继续用各自的准入规则。签发或接受分享时均按当前授权校验。旧客户端手拼 URL 或直接调用资源接口也不能自行取得资格。
+- [x] **2. 工作区接入系统签发。** 把 AI Workspace 分享按钮接到系统申请入口。保留 `group_id` 及资源端 `manage`、加入和 ACL 检查。以相同契约接入 Message Hub 中触发 SSO 的入口。纯业务群邀请和匿名 Guest 继续用各自的准入规则。签发或接受分享时均按当前授权校验。旧客户端手拼 URL 或直接调用资源接口也不能自行取得资格。
   - T1～T6、T8、T10。开放受众在成功接受后才关联实际 DID。拒绝、取消、并发和中断均不误授、不重复占名额。
 
-- [ ] **3. 区分两种会话。** 原生链路在 B 的外部登录页展示经过核验的目标 App 主机及风险提示：A 签发 `app_context`，B 核验并按 (`client_zone`, App) 记住同意。CP 恢复 A 根域 pending，复用既有 code 交换。verify-hub 核对邀请或已接受资格及准确目标。只有 App 资格时，以限于该次交付的证明向目标服务建立可撤销的会话，不依赖一个可登录系统的 CP 父会话。已有适用系统会话的委派则继续继承其权限上限和期限。经网关核对主机/安装者，在目标主机写 host-only Cookie。[同意记录](../src/frame/control_panel/src/federation.rs#L209)
+- [x] **3. 区分两种会话。** 原生链路在 B 的外部登录页展示经过核验的目标 App 主机及风险提示：A 签发 `app_context`，B 核验并按 (`client_zone`, App) 记住同意。CP 恢复 A 根域 pending，复用既有 code 交换。verify-hub 核对邀请或已接受资格及准确目标。只有 App 资格时，以限于该次交付的证明向目标服务建立可撤销的会话，不依赖一个可登录系统的 CP 父会话。已有适用系统会话的委派则继续继承其权限上限和期限。经网关核对主机/安装者，在目标主机写 host-only Cookie。[同意记录](../src/frame/control_panel/src/federation.rs#L209)
   - T3～T7、T9、T12。从 `sys.<A>/login` 和根域两条起点都能恢复原资源。身份证明失败、入口失效、资源无权或暂时交付失败分别给出对应处理，重试时恢复原分享。创建链接时或浏览器离开前保存 `#fragment`，HTTP 请求本身不携带片段。
 
-- [ ] **4. 系统登录、用户管理与邀请添加用户。** 补全 Users & Agents 的「邀请添加用户」，Add User 增加邀请路径（向导现在只调 `user.create`）：
+- [x] **4. 系统登录、用户管理与邀请添加用户。** 补全 Users & Agents 的「邀请添加用户」，Add User 增加邀请路径（向导现在只调 `user.create`）：
   - (a) 原生 DID 用户：给现有 `user.invite.create/accept` 加上界面，流程按 Users & Agents PRD §9.2。
   - (b) Google 邮箱：管理员指定用户名、用户类型、用户组和邮箱，系统登记待生效账号和邀请。被邀者用已验证邮箱规范化后相同的 Google 账号登录，账号随即生效并绑定该主体，同时写入 §3.1 的外部主体记录和标签索引。
   - (c) 「不可登录用户」详情里的「允许登录本 Zone」：原生 DID 走 (a)，OAuth 访客预填其固定的邮箱走 (b)。
@@ -189,21 +189,21 @@ B 的外部登录确认页要显示正在登录的 App 主机，例如 `appx.a.e
   - [Add User 向导](../src/frame/desktop/src/app/users-agents/components/shared/NewUserWizard.tsx#L159) · [user.create](../src/frame/control_panel/src/user_mgr.rs#L1025) · [账号记录与 canonical_here](../src/frame/control_panel/src/user_mgr.rs#L674) · [现有入驻路径](../src/frame/control_panel/src/user_mgr.rs#L1556) · [用户管理设计](../product/users_and_agents/Users_Agents_PRD.md)
   - T4、T8～T12、T16、T17。在 B 首访之前和之后均能开通。新登录使用新资格，本次 App 会话以签发目标为限。
 
-- [ ] **5. 普通 App 与客服。** 接一个真实普通 App 和第二个安装实例。通过已注册实例定位应用，CP 调用它时只使用面向该实例的受限凭据。App 能识别 External，在每次读写时检查资源 ACL。另行迁移和回归客服的本地身份、同一工单、设密码和凭据到期流程。
+- [x] **5. 普通 App 与客服。** 接一个真实普通 App 和第二个安装实例。通过已注册实例定位应用，CP 调用它时只使用面向该实例的受限凭据。App 能识别 External，在每次读写时检查资源 ACL。另行迁移和回归客服的本地身份、同一工单、设密码和凭据到期流程。
   - T6～T9、T13。验证同 App 不同安装者、同实例不同资源、权限撤销及实例停用。
 
-- [ ] **6. 接入 OAuth 来源与登录选择。**
+- [x] **6. 接入 OAuth 来源与登录选择。**
   - 来源配置：扩展 CP 管理端和公开登录配置。Google 为内置预设，自定义来源校验 §3.1 的身份域三条约束。向前端返回适用于入口的来源 ID 和显示名。[SSO 配置入口](../src/frame/control_panel/src/sso_settings.rs#L95)
-  - 登录选择：系统登录页、分享页、系统邀请页接入同一个 `Login from` 选择逻辑。定向邀请由受信的邀请记录和来源配置预选来源，来源在签发后停用时保留类型并提示。[系统登录页](../src/frame/desktop/src/auth/LoginPage.tsx#L344) · [分享登录页](../src/frame/desktop/src/sso/EntryPage.tsx#L387) · [系统邀请页](../src/frame/desktop/src/sso/UserInvitePage.tsx#L122)
+  - 登录选择：系统登录页、分享页、系统邀请页接入同一个 `Login from` 选择逻辑。定向邀请由受信的邀请记录和来源配置预选来源，来源在签发后停用时保留类型并提示。[系统登录页](../src/frame/desktop/src/auth/LoginPage.tsx#L344) · [分享登录页](../src/frame/desktop/src/sso/SharePage.tsx) · [系统邀请页](../src/frame/desktop/src/sso/UserInvitePage.tsx#L122)
   - 发起与回调：实现 OAuth 发起与回调，持久保存本次登录用途、目标和邀请。`iss` 规范化，要求已验证邮箱。
   - 映射与记录：按 §3.1 的规则从邮箱算出标签，带上测试向量。维护外部主体记录和标签索引，只在接受邀请或绑定时写入。本区解析器按记录合成文档。
   - 主体选择：外部邀请交付精确的 App/service token，本地账号登录查账号资格并返回本地身份。主体已绑定本地账号时，按 §3.1 选用稳定 DID：收件人选择器、未接受邀请的接受。
   - 认证方式：`AuthMethod` 增加 OAuth 方式并携带来源 ID，供下游核对。[AuthMethod](../src/kernel/buckyos-api/src/hybrid_sso.rs#L18)
   - 拒绝外部 DID：`auth.did.begin` 和 CrossZoneAssertion 拒绝外部 DID 作为主体。[auth.did.begin](../src/frame/control_panel/src/federation.rs#L422) · [跨 Zone 断言登录](../src/kernel/verify_hub/src/main.rs#L2332)
   - 停用：拒绝新验证和在途兑换，保留既有记录与绑定。
-  - T14～T17。从同一 X 的授权入口实跑原生 DID、OIDC、普通 OAuth 三条路径。入口按显式认证来源判断。当前 `EntryMethods::allows_session` 会把其他方式归到密码/注册，工作区会把 External 归成 DID 联合，接入时要同时修正这两个分支。[入口规则](../src/kernel/buckyos-api/src/hybrid_sso.rs#L518) · [工作区加入](../src/frame/aiworkspace/server/src/lib.rs#L892)
+  - T14～T17。从同一 X 的授权入口实跑原生 DID、OIDC、普通 OAuth 三条路径。入口按显式认证来源判断。入口与工作区均按会话声明的认证方式和来源 ID 判定。[入口规则](../src/kernel/buckyos-api/src/hybrid_sso.rs#L518) · [工作区加入](../src/frame/aiworkspace/server/src/lib.rs#L892)
 
-- [ ] **7. SDK 与文档收口。** 同步 Rust/TypeScript 类型、SDK、CP 服务说明、产品文档和权限设置界面。用同一 App 示例演示替换身份来源，业务代码始终读取系统提供的 DID 和 App 会话。记录普通 App、工作区、系统登录、客服及 OAuth 来源的实测能力。[CP 接口说明](../doc/control_panel/Control_Panel_Service.md) · [用户类型](../product/users_and_agents/UserType.md)
+- [x] **7. SDK 与文档收口。** 同步 Rust/TypeScript 类型、SDK、CP 服务说明、产品文档和权限设置界面。用同一 App 示例演示替换身份来源，业务代码始终读取系统提供的 DID 和 App 会话。记录普通 App、工作区、系统登录、客服及 OAuth 来源的实测能力。[CP 接口说明](../doc/control_panel/Control_Panel_Service.md) · [用户类型](../product/users_and_agents/UserType.md)
   - 按 §4 改写以下段落：PRD §4.8、AC-36～39 中 `$accountid` 的含义和“已有授权仍按原主体判定”的说法；技术契约 §9.3 的“来源主体与本地合成文档”“恢复原请求”，删去“文档不披露邮箱”与按邮箱定向矛盾的部分；SDK SSO.md 中 Google 一节的 `$accountid` 说明；UserType 的 Google 段落；Users & Agents PRD §4.2「管理获邀 DID 的系统登录资格」和 §9.1、§9.2 的邀请路径状态。
   - 按 AGENTS.md 的 cmd_skills 联动表检查 `buckyos_admin`：身份、用户管理、登录来源变化后，手册里的设置与诊断命令仍然可用。
 
@@ -250,10 +250,57 @@ VITE_CP_USE_MOCK=true pnpm exec playwright test tests/e2e/pages/sso-entry.spec.t
 BUCKYOS_TEST_HOST_RULES='MAP bob.web3.devtests.org <B_IP>, MAP charlie.me <A_IP>' pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/hybrid-sso-federation.spec.ts
 ```
 
-**这条双 Zone 测试要改起点和终点。** 当前用例直接调 `ws.create_entry`、手拼 URL，最后还断言 A 根域存在 External 会话并能打开受限首页。保留子域身份、实际写入、owner 读回的断言。新链路从 X 正常申请并复制系统返回的 URL 开始。分别以「仅受邀 App」和「具有系统登录资格」验证根域结果，覆盖 T9。管理流程增加首访前可见和开通前后的真实浏览器断言。脚本里的 `zoneA` 是归属侧 Bob、`zoneB` 是资源侧 Charlie，与本文 A/B 相反，改写时换成 `homeZone` / `resourceZone`。[当前 DV](../src/frame/desktop/tests/dv/hybrid-sso-federation.spec.ts#L21)
+新双 Zone 浏览器用例从分享者复制系统签发的 URL 开始，核对真实目标主机、工作区主体、实际写入、owner 读回以及根域资格。第三个归属 Zone 用于同一开放链接的另一接受者。已入驻账号另测登录后仍读不到私有工作区，直至接受该工作区的邀请。[原生浏览器用例](../src/frame/desktop/tests/dv/hybrid-sso-federation.spec.ts)
 
 系统入驻另跑 Node 24 的协议 DV，需三个开发 Zone、测试 SN、CA 和 Charlie 的 OwnerDocument。客服使用安装了 `sys-test` 的开发 Zone，运行现有浏览器与业务 DV。[协议 DV 环境及命令](../test/test_hybrid_sso/README.md) · [客服浏览器 DV](../src/frame/desktop/tests/dv/support-group-link.spec.ts) · [客服业务 DV](../test/test_sys_test/support_group_dv.ts)
 
-OAuth 用例是待新增的测试。为接入来源的测试 Zone 准备可控的 OIDC 和纯 OAuth 服务（能返回已验证邮箱、可改邮箱、可让同一邮箱换 `sub`）、HTTPS 回调、一个只有外部身份的访客，以及一个经邀请添加并绑定 Google 的普通账号。T17 另设未启用 Google 的资源 Zone A。核对每次浏览器跳转、授权码的兑换方、目标 token 的身份、系统与资源操作结果。整组测试不应请求 Google 用户子域的 DID 文档。已有原生联合 Playwright DV 单独回归，有登记的 Google 测试客户端时可另跑真实登录。
+OAuth 浏览器用例使用两个开发 Zone。为接入来源的一侧准备可控的 OIDC 和纯 OAuth 服务（能返回已验证邮箱、可改邮箱、可让同一邮箱换 `sub`）、HTTPS 回调、一个只有外部身份的访客，以及一个经邀请添加并绑定 Google 的普通账号。T17 另设未启用 Google 的资源 Zone A。测试核对浏览器跳转、后端换码、目标身份及业务操作。公开互联网 Google 账号交互另外使用已授权专用测试账号。[受控来源、运行环境及命令](../test/test_hybrid_sso/README.md)
 
 完成时按各条身份与授权路径记录版本、实际命令、通过/失败/跳过数，以及脱敏的目标主机、主体、会话用途和业务操作结果。报告保留失败时的资格状态，不记录上游 token、client secret、code 或邀请 secret。
+
+## 7. 实施与验证记录
+
+实现对应 §5 的 0～7 项。Google 生产授权页面需要专用账号，单列为跳过；本地 Google 绑定、签名校验及会话签发的结果见下表。
+
+本次验证从 `1c9209ebe` 的工作树构建。历史基线为 `e372a5257` 的服务，候选服务使用同一组开发 Zone 和测试 CA。以下用主机、DID、权限结果标识会话。
+
+| 路径 | 实际观察 |
+| --- | --- |
+| 工作区旧路径 | 双 Zone 浏览器 2 项通过。Bob 取消后没有 Charlie 会话。另一次以 `did:bns:bob` 加入编辑组，在工作区主机写入，Charlie 读回，访问相邻私有工作区被拒。当时 Charlie 根域还有受限 External 会话。空工作区隐藏头像，基线通过刷新接口和资源响应分别核对真实主体。 |
+| 新原生资源邀请 | Charlie 在 AI Workspace 的分享面板创建并复制系统 URL。Bob 首访前已出现在管理员的邀请目录。归属页显示工作区主机。Bob 接受后在原 path、query、fragment 写入，Charlie 读回，相邻私有工作区拒绝，Charlie 根域没有为 Bob 建立系统会话。 |
+| 开放邀请 | 同一开放邀请在接受前未产生用户。Bob、Alice 分别在各自归属 Zone 确认，两人在资源 Zone 各有一条只读授权。匿名访客能在允许 Guest 的工作区读回指定文档，全程没有根域会话。同一开放链接也支持自助开户，回原邀请接受后，目标主机令牌中的邀请 ID、DID 与接受记录一致，该账号只可读取。关闭入口后，新的浏览器从用途页、旧入口或工作区直接加入均被拒绝。 |
+| 归属端同意与撤回 | Bob 对 Charlie 的第一份工作区确认一次并勾选记住，第二个工作区复用同一服务同意。撤回后再次要求确认。普通 App 的另一安装实例显示自己的主机，要求独立同意。 |
+| 三 Zone 入驻 | Charlie 从无 Alice 根域会话开始，原生流程验证权威 OwnerDocument。Alice 拒绝未绑定的版本，再以开发 BNS 发布的有效绑定完成入驻。该测试在验收后恢复了原始绑定并读回核对。Bob 随后定向邀请 Alice 建立的本地账号 `did:bns:multi-zone-charlie.alice`，用户以 Alice 为归属完成验证，在 Bob 领取到仅限该邀请的证明。 |
+| 普通 App 双实例 | Bob 和第二个安装者分别安装测试包 `sys-test 0.5.2`，随后在两实例升级到 `0.5.3`。Charlie 的定向链接只交付给第一实例，编辑后 owner 读回。相邻文档和第二实例被拒绝。停止新加入后原访问能续期，撤去文档授权后现有 token 的下次读和续期均被拒绝。该开放 URL 也分别由 Charlie 和 Alice 以各自 DID 编辑，owner 两次读回。第二实例由开放降为定向后，未接受的开放邀请保留并返回拒绝原因。停止实例使已有会话和续期均失效，管理端仍能调整邀请等级。两实例已恢复运行及原先策略。 |
+| 中断、并发与独立授权 | 资源已提交、CP 尚未登记成功时，两个并发重试得到同一条有效接受记录。撤权后再恢复被拒。普通 App 中同一文档来自两个邀请的读、写资格分别撤销，先撤编辑后仍能读。工作区成员移出后重新加入，先前的邀请继续失效；删除后重建同名组也无法复用旧资格。 |
+| Message Hub 与客服 | 原生 DID 在 `messagehub.<zone>` 接受后只能访问其获准的访客 Session。客服另用 App 签发的 Limited 凭据。5 项业务 DV 通过，包括复用客户、限定工单、消息、设密码和关闭入口。 |
+| OAuth 受控来源 | OIDC 与纯 OAuth 分别实跑取消、未绑定系统登录、分享交付、工作区编辑与 owner 读回。受控来源的签名、PKCE、验证邮箱、来源停用与稳定主体另有协议测试。默认 HTTP/2 下 5 项真实浏览器通过，1 项真实 Google 账号交互因缺少专用测试会话跳过。取消授权或在换码前停用来源都回原邀请，保留查询串与片段；账号改邮箱时页面提示身份不符，直接接受也被拒。Google 本地账号路径另用受控 RS256 交换及真实 verify-hub 签发验证。Bob 未接入 Google，拒绝邮箱和外部 DID。改用 Charlie 本地账号 DID，经密码登录归属端后，可回到 Bob 的工作区编辑。 |
+
+### 可复跑的命令
+
+`src/` 下运行 §6 末的七条 Cargo 命令。实测过滤后的用例数依次为 5、6、5、1、2、20（ACL 9、SSO 11）、1。签名上下文另运行 `cargo test -p control_panel federation_context::tests`。Control Panel 完整测试 222 项通过、1 项忽略，verify-hub 完整测试 47 项通过。BNS 托管账号解析专项 2 项、system-config 的 DID 解析器 34 项通过。msg-center 有 257 项通过、1 项忽略。桌面六组 mock Playwright 有 41 项通过。同级 `buckyos-websdk` 仓库的 `src/hybrid_sso.ts` 及发布类型已同步，五项契约测试及类型检查通过。管理员指引的 `buckyos command describe system-config get`、`log query` 和 `app status` 均可解析。
+
+旧测试网关在 HTTP/2 上对静态页面返回 403。对照组使用 `BUCKYOS_TEST_HTTP1=1`。三个 Zone 换回本工作树配套的网关后，根域 HTTP/2 均返回 200。默认 HTTP/2 下，原生联合浏览器套件 5 项全部通过，普通 App 双实例、Message Hub 和匿名工作区的浏览器套件 6 项全部通过。客服浏览器在默认 HTTP/2 上设密码后，从另一设备再次登录同一工单，owner 在 Message Hub 读回消息。三台 Zone 均保留部署前快照 `pre_share_sso_20261120_1407`。实测结束后，三台 Zone 和测试 SN 已恢复关机。
+
+浏览器在 `src/frame/desktop` 运行。将三台主机映射到 devtest 环境，relay-only 的 Alice 指向测试 SN。要验证已有系统资格，先运行三 Zone 入驻 DV。Google 真实登录需要其独立测试客户端和已授权账号。普通 App 和客服的路由使用各自安装实例。客服浏览器的 API 客户端使用系统 DNS；测试网通过代理访问时，设置 `BUCKYOS_TEST_PROXY` 指向能解析这些 Zone 的 HTTP CONNECT 代理。
+
+```sh
+# 仓库根目录。测试 CA 的变量名为 BUCKYOS_TEST_CA
+BUCKYOS_TEST_DNS="$SN_IP" node test/test_hybrid_sso/test_user_invite_dv.ts
+# 以下命令在 src/frame/desktop 中执行，使用测试机的实际地址
+BUCKYOS_TEST_ENROLLED=1 BUCKYOS_TEST_HOST_RULES="$HOST_RULES" pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/hybrid-sso-federation.spec.ts
+```
+
+普通 App 的两个安装实例与 Message Hub 在 `tests/dv/resource-share-targets.spec.ts` 中验证，客服使用 `tests/dv/support-group-link.spec.ts` 和 `test/test_sys_test/support_group_dv.ts`。OpenID Connect、OAuth2、未接入 Google 的资源 Zone 及可选的真实 Google 测试位于 `tests/dv/oauth-share.spec.ts`。复跑时使用测试 CA、服务主机和真正的安装者。OAuth 临时凭据、DNS 测试条目和夹具进程在测试后清理。
+
+```sh
+# 在仓库根目录设置客服所在 Zone、安装者和 App 的主机前缀。系统 DNS 需能解析这些主机。
+export BUCKYOS_TEST_ZONE_HOST=bob.web3.devtests.org BUCKYOS_TEST_ADMIN_USER=bob
+export BUCKYOS_TEST_APP_HOST=buckyos-systest BUCKYOS_TEST_MEMBERS=sharetester,bob
+deno run --config test/deno.json --allow-env --allow-net --cert "$BUCKYOS_TEST_CA" test/test_sys_test/support_group_dv.ts
+# 在 src/frame/desktop 运行，HOST_RULES 需包含 Bob 的 App 子域
+export BUCKYOS_TEST_HOST_RULES="$HOST_RULES"
+pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/resource-share-targets.spec.ts
+pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/support-group-link.spec.ts
+BUCKYOS_DV_OAUTH=1 pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/oauth-share.spec.ts
+```

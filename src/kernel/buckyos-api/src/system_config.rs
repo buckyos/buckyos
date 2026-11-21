@@ -821,6 +821,22 @@ impl SystemConfigClient {
         Ok(0)
     }
 
+    pub async fn resolve_oauth_did(
+        &self,
+        source_zone: &str,
+        did: &str,
+    ) -> SytemConfigResult<Option<Value>> {
+        let value = self
+            .client
+            .call(
+                "sys_config_resolve_oauth_did",
+                json!({"source_zone":source_zone,"did":did}),
+            )
+            .await
+            .map_err(SystemConfigError::from)?;
+        Ok((!value.is_null()).then_some(value))
+    }
+
     pub async fn dump_configs_for_scheduler(&self) -> SytemConfigResult<Value> {
         let client = self.get_krpc_client()?;
         let result = client

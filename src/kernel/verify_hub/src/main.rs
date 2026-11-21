@@ -1203,7 +1203,7 @@ impl VerifyHubServer {
                 // An App-signed-in session targeting the App that vouched for the account:
                 // its availability is the App login source check below, not the policy.
                 // The same App's customer link targets the Zone root and keeps the policy.
-                let vouched_by_app = matches!(family.source, Some(SessionSource::AppLogin { .. }))
+                let vouched_by_app = matches!(family.source, Some(SessionSource::AppLogin { .. } | SessionSource::ResourceShare { .. }))
                     && matches!(session.target, AuthTarget::App { .. });
                 if !vouched_by_app {
                     self.resolve_user_auth_target(&session.subject, &session.target)
@@ -1218,6 +1218,11 @@ impl VerifyHubServer {
             }
         }
         match &family.source {
+            Some(SessionSource::ResourceShare { invite_id, did }) => {
+                if !self.state.zone.has_share_acceptance(invite_id, did, &session.target).await? {
+                    return Err(AccessDenial::new(DenyReason::ResourceGrantMissing).into_rpc_error());
+                }
+            }
             Some(SessionSource::ExclusiveInvite { invite_id, .. }) => {
                 self.require_active_invite(invite_id).await?;
             }
@@ -1278,6 +1283,14 @@ impl VerifyHubServer {
 
     /// The local account `did` belongs to: `users/<id>/doc` names it. Root never maps.
     async fn account_for_did(&self, did: &DID) -> Result<DidAccount> {
+        if let Some(user_id) = self.state.zone.native_login_binding(did).await? {
+            let settings = self.state.zone.user_settings(&user_id).await?;
+            return Ok(match settings {
+                Some(account) if !is_root_userid(&user_id) && account.user_id == user_id
+                    && account.user_type.can_login() && user_is_active(&account) => DidAccount::Active(account),
+                _ => DidAccount::Inactive,
+            });
+        }
         let mut inactive = false;
         for user_id in self.state.zone.list_users().await? {
             if is_root_userid(&user_id) {
@@ -1881,6 +1894,25 @@ impl VerifyHubApiHandler for VerifyHubServer {
                 }
             }
 
+            if let Some(invite) = rpc_session_token
+                .extra
+                .get("resource_share")
+                .and_then(|v| v.as_str())
+            {
+                let key = family_key(
+                    rpc_session_token.sub.as_deref().unwrap_or_default(),
+                    &claims.target,
+                    get_token_session_id(&rpc_session_token)?,
+                );
+                let family = self.families().get(&key)?.ok_or_else(family_invalidated)?;
+                if !matches!(&family.source,Some(SessionSource::ResourceShare { invite_id,.. }) if invite_id == invite)
+                {
+                    return Err(family_invalidated());
+                }
+                if let FamilyRecheck::Ended(err) = self.recheck_family(&family).await? {
+                    return Err(err);
+                }
+            }
             Ok(true)
         }
     }
@@ -1893,13 +1925,16 @@ impl VerifyHubApiHandler for VerifyHubServer {
         const METHOD: &str = "login_by_exclusive_invite";
         self.gc().await;
         authorize_control_panel_caller(caller_token, METHOD).await?;
-        let target = require_control_panel_target(&request.target, METHOD)?;
+        let target = request.target.clone();
 
         let invite = if valid_record_id(&request.invite_id) {
             self.state.zone.exclusive_invite(&request.invite_id).await?
         } else {
             None
         };
+        if invite.as_ref().is_some_and(|i| matches!(&i.issuer, InviteIssuer::User { .. })) {
+            require_control_panel_target(&target, METHOD)?;
+        }
         let account = match invite
             .as_ref()
             .filter(|invite| invite.state == InviteState::Active)
@@ -1926,6 +1961,8 @@ impl VerifyHubApiHandler for VerifyHubServer {
         };
         // A link an App issued (EXT-11) stays tied to that App: switch, runtime and
         // revocation by instance apply to the family like to the App's code sessions.
+        let mut claims = FamilyClaims::account(AuthMethod::ExclusiveInvite, UserType::Limited);
+        let mut absolute_exp = None;
         let source = match &invite.issuer {
             InviteIssuer::App { app_instance_id } => {
                 let instance = app_instance_id.parse::<AppInstanceId>().map_err(|error| {
@@ -1934,6 +1971,15 @@ impl VerifyHubApiHandler for VerifyHubServer {
                         invite.invite_id
                     ))
                 })?;
+                if target != AuthTarget::app(instance.clone()) {
+                    return Ok(ExclusiveInviteLoginResult::Denied { denial: AccessDenial::new(DenyReason::EntryUnavailable).with_detail("target_mismatch") });
+                }
+                let Some(InviteResource::GroupSession {group_did,session_id,..}) = &invite.resource else {
+                    return Ok(ExclusiveInviteLoginResult::Denied {denial: AccessDenial::new(DenyReason::ResourceGrantMissing)});
+                };
+                claims = FamilyClaims::restricted(AuthMethod::ExclusiveInvite,app_login_scopes());
+                claims.support_ticket = Some(SupportTicket{ group_did:group_did.clone(), session_id:session_id.clone() });
+                absolute_exp = Some(invite.credential.expires_at);
                 if let Err(denial) = self.state.zone.app_login_available(&instance).await? {
                     info!(
                         "exclusive invite {} of app {} refused: {:?}",
@@ -1958,9 +2004,9 @@ impl VerifyHubApiHandler for VerifyHubServer {
             principal_kind: SessionPrincipalKind::User,
             target,
             session_id: rand::thread_rng().gen(),
-            claims: FamilyClaims::account(AuthMethod::ExclusiveInvite, UserType::Limited),
+            claims,
         };
-        let token_pair = self.issue_family(session, Some(source), None).await?;
+        let token_pair = self.issue_family(session, Some(source), absolute_exp).await?;
         info!(
             "exclusive invite {} v{} signed in {}",
             invite.invite_id, invite.credential.version, account.user_id
@@ -2191,6 +2237,53 @@ impl VerifyHubApiHandler for VerifyHubServer {
         Ok(result)
     }
 
+    async fn handle_login_by_oauth_account(
+        &self,
+        caller: Option<&str>,
+        request: OAuthAccountLogin,
+    ) -> Result<TokenPair> {
+        authorize_control_panel_caller(caller, "login_by_oauth_account").await?;
+        let settings = self.state.zone.sso_settings().await?;
+        if !settings
+            .oauth_sources
+            .iter()
+            .any(|s| s.enabled && s.id == request.source_id && s.issuer == request.issuer)
+            || self
+                .state
+                .zone
+                .oauth_binding(&request.issuer, &request.sub)
+                .await?
+                .as_deref()
+                != Some(&request.user_id)
+        {
+            return Err(RPCErrors::NoPermission(
+                "OAuth account binding unavailable".into(),
+            ));
+        }
+        let account = self
+            .state
+            .zone
+            .user_settings(&request.user_id)
+            .await?
+            .filter(|s| s.is_active() && s.user_type.can_federate_out())
+            .ok_or_else(|| RPCErrors::NoPermission("OAuth account unavailable".into()))?;
+        reject_root_user_settings(&account)?;
+        let mut claims = FamilyClaims::account(AuthMethod::OAuth, account.user_type);
+        claims.oauth_source_id = Some(request.source_id);
+        let session = SessionSubject {
+            subject: account.user_id,
+            principal_kind: SessionPrincipalKind::User,
+            target: AuthTarget::system(
+                CONTROL_PANEL_SERVICE_UNIQUE_ID
+                    .parse()
+                    .map_err(|_| RPCErrors::ReasonError("invalid control-panel target".into()))?,
+            ),
+            session_id: rand::thread_rng().gen(),
+            claims,
+        };
+        self.issue_family(session, None, None).await
+    }
+
     async fn handle_login_by_remote_verify_hub(
         &self,
         caller_token: Option<&str>,
@@ -2204,7 +2297,9 @@ impl VerifyHubApiHandler for VerifyHubServer {
         let denied = |denial: AccessDenial| Ok(LoginByRemoteVerifyHubResult::Denied { denial });
 
         let sso_settings = self.state.zone.sso_settings().await?;
-        if !sso_settings.did_login_enabled {
+        if !sso_settings.did_login_enabled
+            || external_source_for_did(&sso_settings, &did.to_string()).is_some()
+        {
             return denied(AccessDenial::new(DenyReason::ZoneMethodDisabled));
         }
         let canonical_host = match tokio::time::timeout(
@@ -2277,31 +2372,31 @@ impl VerifyHubApiHandler for VerifyHubServer {
             );
         }
 
-        let (user_id, session) = match self.account_for_did(&did).await? {
-            DidAccount::Active(user_settings) => (
-                Some(user_settings.user_id.clone()),
-                SessionSubject {
-                    subject: user_settings.user_id,
-                    principal_kind: SessionPrincipalKind::User,
-                    target,
-                    session_id: rand::thread_rng().gen(),
-                    claims: FamilyClaims::account(
-                        AuthMethod::DidFederation,
-                        user_settings.user_type,
-                    ),
-                },
-            ),
+        let account = match self.account_for_did(&did).await? {
+            DidAccount::Active(user) => Some(user),
+            DidAccount::Unknown => None,
             DidAccount::Inactive => return denied(AccessDenial::new(DenyReason::AccountState)),
-            DidAccount::Unknown => (
-                None,
-                SessionSubject {
-                    subject: request.did.clone(),
-                    principal_kind: SessionPrincipalKind::User,
-                    target,
-                    session_id: rand::thread_rng().gen(),
-                    claims: FamilyClaims::external(AuthMethod::DidFederation),
-                },
-            ),
+        };
+        if request.proof_only {
+            return Ok(LoginByRemoteVerifyHubResult::Verified {
+                did: did.to_string(),
+                user_id: account.map(|user| user.user_id),
+                profile: assertion.profile,
+            });
+        }
+        let Some(user) = account else {
+            return denied(
+                AccessDenial::new(DenyReason::ResourceGrantMissing)
+                    .with_detail("system_login_required"),
+            );
+        };
+        let user_id = Some(user.user_id.clone());
+        let session = SessionSubject {
+            subject: user.user_id,
+            principal_kind: SessionPrincipalKind::User,
+            target,
+            session_id: rand::thread_rng().gen(),
+            claims: FamilyClaims::account(AuthMethod::DidFederation, user.user_type),
         };
         let absolute_exp = buckyos_get_unix_timestamp() + FEDERATION_SESSION_MAX_SECONDS;
         let token_pair = self
@@ -2326,6 +2421,109 @@ impl VerifyHubApiHandler for VerifyHubServer {
         })
     }
 
+    async fn handle_issue_resource_share_session(
+        &self,
+        caller: Option<&str>,
+        request: ResourceSessionRequest,
+    ) -> Result<TokenPair> {
+        authorize_control_panel_caller(caller, "issue_resource_share_session").await?;
+        let deny = || AccessDenial::new(DenyReason::ResourceGrantMissing).into_rpc_error();
+        let scopes = match &request.target {
+            AuthTarget::App { .. } => vec![],
+            AuthTarget::System { service_id } if service_id.as_str() == AIWORKSPACE_UNIQUE_ID => {
+                vec![SessionScope::AiWorkspace]
+            }
+            AuthTarget::System { service_id } if service_id.as_str() == "msg-center" => {
+                vec![SessionScope::MsgGroup]
+            }
+            _ => return Err(deny()),
+        };
+        if !self
+            .state
+            .zone
+            .has_share_acceptance(&request.invite_id, &request.did, &request.target)
+            .await?
+        {
+            return Err(deny());
+        }
+        let did = parse_did_field("issue_resource_share_session", "did", &request.did)?;
+        let (subject, mut claims) = match self.account_for_did(&did).await? {
+            DidAccount::Active(user) => (
+                user.user_id,
+                FamilyClaims::account(request.auth_method, user.user_type),
+            ),
+            DidAccount::Unknown => (
+                request.did.clone(),
+                FamilyClaims::external(request.auth_method),
+            ),
+            DidAccount::Inactive => return Err(account_state_denied()),
+        };
+        claims = claims.narrowed(&SessionCeiling::restricted(scopes));
+        if request.auth_method == AuthMethod::OAuth {
+            let enabled = self
+                .state
+                .zone
+                .sso_settings()
+                .await?
+                .oauth_sources
+                .iter()
+                .any(|p| p.enabled && Some(&p.id) == request.oauth_source_id.as_ref());
+            if !enabled {
+                return Err(AccessDenial::new(DenyReason::ZoneMethodDisabled).into_rpc_error());
+            }
+        } else if request.oauth_source_id.is_some() {
+            return Err(deny());
+        }
+        claims.resource_share = Some(request.invite_id.clone());
+        claims.resource_share_did = Some(request.did.clone());
+        claims.oauth_source_id = request.oauth_source_id;
+        let now = buckyos_get_unix_timestamp();
+        let mut expires = now + FEDERATION_SESSION_MAX_SECONDS;
+        let mut parent_key = None;
+        if let Some(token) = &request.parent_session {
+            let parent = verify_delegation_source(token).await?.ok_or_else(deny)?;
+            if parent.user_id != subject {
+                return Err(deny());
+            }
+            let family = self.families().get(&parent.session_key)?.ok_or_else(deny)?;
+            match self.recheck_family(&family).await? {
+                FamilyRecheck::Allowed(parent_claims) => {
+                    claims = claims.narrowed(&parent_claims.ceiling())
+                }
+                FamilyRecheck::Ended(_) => return Err(deny()),
+            }
+            expires = expires.min(family.absolute_exp.unwrap_or(expires));
+            parent_key = Some(family.key());
+        } else if !matches!(
+            request.auth_method,
+            AuthMethod::DidFederation | AuthMethod::OAuth
+        ) {
+            return Err(deny());
+        }
+        let session = SessionSubject {
+            subject,
+            target: request.target,
+            principal_kind: SessionPrincipalKind::User,
+            session_id: rand::thread_rng().gen(),
+            claims,
+        };
+        let stamp = fresh_stamp(now, Some(expires));
+        let pair = sign_pair(&session, &stamp).await?;
+        self.families().insert(&FamilyRecord {
+            session,
+            stamp,
+            source: Some(SessionSource::ResourceShare {
+                invite_id: request.invite_id,
+                did: request.did,
+            }),
+            absolute_exp: Some(expires),
+            parent_key,
+            created_at: now,
+            previous: None,
+        })?;
+        Ok(pair)
+    }
+
     /// A device of another Zone vouches for its user or Agent (跨Zone登录断言契约 §4): the
     /// assertion and its custody verify, the RTCP peer (if any) is of the same Zone, and the
     /// result is an External family for the asserted target and scopes.
@@ -2338,6 +2536,10 @@ impl VerifyHubApiHandler for VerifyHubServer {
         let zone = self.state.zone.zone_did().await?;
         let hostname = self.state.zone.zone_hostname().await?;
         let now = buckyos_get_unix_timestamp();
+        let settings = self.state.zone.sso_settings().await?;
+        if name_lib::decode_jwt_claim_without_verify(&request.assertion).ok().and_then(|v|v.get("sub").and_then(Value::as_str).map(str::to_owned)).is_some_and(|sub|external_source_for_did(&settings,&sub).is_some()) {
+            return Err(AssertionInvalid.into_rpc_error("external OAuth identity cannot federate"));
+        }
         let resolver = self.state.custody.as_ref();
         let verified = match tokio::time::timeout(
             FEDERATION_PEER_TIMEOUT,
@@ -2645,6 +2847,8 @@ mod test {
         sso: SsoSettings,
         apps: HashSet<(String, String)>,
         app_logins: HashSet<String>,
+        oauth_bindings: HashMap<(String, String), String>,
+        resource_grants: HashSet<(String,String,String)>,
     }
 
     struct MemoryDirectory(std::sync::Mutex<DirectoryData>);
@@ -2741,6 +2945,14 @@ mod test {
 
         async fn exclusive_invite(&self, invite_id: &str) -> Result<Option<ExclusiveInvite>> {
             Ok(self.data().invites.get(invite_id).cloned())
+        }
+
+        async fn has_share_acceptance(&self,id:&str,did:&str,target:&AuthTarget)->Result<bool> {
+            Ok(self.data().resource_grants.contains(&(id.into(),did.into(),target.canonical_key())))
+        }
+
+        async fn oauth_binding(&self, issuer: &str, sub: &str) -> Result<Option<String>> {
+            Ok(self.data().oauth_bindings.get(&(issuer.into(), sub.into())).cloned())
         }
 
         async fn sso_settings(&self) -> Result<SsoSettings> {
@@ -4296,7 +4508,8 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let mut record = app_code_record(invite_id, user_id, secret, app, now);
         record.credential.expires_at = now + EXCLUSIVE_INVITE_TTL_SECS;
         record.credential.kind = InviteCredentialKind::Link;
-        record.return_path = "/messagehub/guest?group=did%3Abns%3Ag&session=t".to_string();
+        record.resource = Some(InviteResource::GroupSession {group_did:"did:bns:g".into(),session_id:"t".into(),title:"Support".into()});
+        record.return_path = "/support/ticket?group=did%3Abns%3Ag&session=t".to_string();
         record
     }
 
@@ -4319,7 +4532,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     }
 
     #[tokio::test]
-    async fn app_issued_links_sign_in_on_the_zone_root_and_follow_the_app_switch() {
+    async fn app_issued_links_deliver_the_ticket_to_its_instance_and_follow_the_app_switch() {
         setup_test_environment().await;
         let (hub, zone) = test_hub();
         let caller = cp_caller().await;
@@ -4341,16 +4554,22 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             (DenyReason::EntryUnavailable, Some("credential_kind".into()))
         );
 
-        // The link signs the customer in like an admin-issued invite, bound to the App.
-        let pair = issued_pair(invite_login(&hub, &caller, "ei-link", "l1nk").await);
+        assert_eq!(invite_denial(invite_login(&hub,&caller,"ei-link","l1nk").await).0, DenyReason::EntryUnavailable);
+        let login_ticket = || hub.handle_login_by_exclusive_invite(Some(&caller),ExclusiveInviteLoginRequest{
+            invite_id:"ei-link".into(),secret:"l1nk".into(),target:app_target(crm),
+        });
+        let pair = issued_pair(login_ticket().await);
         let session = decoded(&pair.session_token);
         assert_eq!(token_auth_method(&session), Some(AuthMethod::ExclusiveInvite));
         assert_eq!(
             ceiling_of(&pair.session_token),
-            SessionCeiling::for_user_type(UserType::Limited)
+            SessionCeiling::restricted(app_login_scopes())
         );
         let claims = validate_verify_hub_token_claims(&session, TokenUse::Session).unwrap();
-        assert_eq!(claims.target, system_target("control-panel"));
+        assert_eq!(claims.target, app_target(crm));
+        let ticket:SupportTicket=serde_json::from_value(session.extra[TOKEN_SUPPORT_TICKET].clone()).unwrap();
+        assert!(ticket.allows_request("group.list_messages",&serde_json::json!({"group_did":"did:bns:g","session_id":"t"})));
+        assert!(!ticket.allows_request("group.list_messages",&serde_json::json!({"group_did":"did:bns:g","session_id":"other"})));
         let family = hub
             .families()
             .get(&session_key_of(&pair.refresh_token))
@@ -4365,7 +4584,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             })
         );
         // Unlike a code, the link stays usable: a second device signs in too.
-        let other = issued_pair(invite_login(&hub, &caller, "ei-link", "l1nk").await);
+        let other = issued_pair(login_ticket().await);
         let pair = hub.handle_refresh_token(&pair.refresh_token).await.unwrap();
 
         // Revoking by App instance ends the link families as well.
@@ -4386,10 +4605,10 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         assert!(hub.handle_refresh_token(&other.refresh_token).await.is_err());
 
         // The owner switches App login off: no new sign-in, and a live family is refused on refresh.
-        let pair = issued_pair(invite_login(&hub, &caller, "ei-link", "l1nk").await);
+        let pair = issued_pair(login_ticket().await);
         zone.set_app_login(crm, false);
         assert_eq!(
-            invite_denial(invite_login(&hub, &caller, "ei-link", "l1nk").await),
+            invite_denial(login_ticket().await),
             (DenyReason::SourceRevoked, Some("app_login_disabled".into()))
         );
         let error = hub.handle_refresh_token(&pair.refresh_token).await.unwrap_err();
@@ -4402,7 +4621,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // Once the account sets a password the link asks for it, like any invite.
         zone.update_user(&customer, |user| user.password_state = PasswordState::Set);
         assert_eq!(
-            invite_denial(invite_login(&hub, &caller, "ei-link", "l1nk").await),
+            invite_denial(login_ticket().await),
             (DenyReason::CredentialState, Some("password_required".into()))
         );
     }
@@ -5005,6 +5224,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 .handle_login_by_remote_verify_hub(
                     Some(&self.caller),
                     LoginByRemoteVerifyHubRequest {
+                        proof_only: false,
                         did: did.to_string(),
                         code: code.to_string(),
                         code_verifier: verifier.to_string(),
@@ -5026,7 +5246,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     }
 
     #[tokio::test]
-    async fn did_login_issues_an_external_session_through_a_single_use_code() {
+    async fn did_login_proves_external_identity_without_issuing_root_session() {
         let fed = federation().await;
         let issued = fed
             .issue("alice", "did:bns:alice", "did:bns:zoneb", "v-1")
@@ -5035,59 +5255,13 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         assert!(issued.code.starts_with("fc-"));
         assert_eq!(issued.expires_in, FEDERATION_CODE_TTL_SECONDS);
 
-        let LoginByRemoteVerifyHubResult::Issued {
-            user_id,
-            token_pair,
-            profile,
-        } = fed.login("did:bns:alice", &issued.code, "v-1").await
-        else {
-            panic!("expected an issued External session");
-        };
-        assert_eq!(user_id, None);
-        assert_eq!(profile.show_name, "Alice");
-        assert_eq!(
-            fed.peer.exchanges.lock().unwrap().as_slice(),
-            &[("a.example".to_string(), false)]
-        );
-        let session = decoded(&token_pair.session_token);
-        assert_eq!(session.sub.as_deref(), Some("did:bns:alice"));
-        assert!(token_is_external(&session));
-        assert_eq!(
-            token_principal_kind(&session).unwrap(),
-            SessionPrincipalKind::User
-        );
-        assert_eq!(token_auth_method(&session), Some(AuthMethod::DidFederation));
-        assert_eq!(
-            ceiling_of(&token_pair.session_token),
-            SessionCeiling::external()
-        );
-        let family = fed
-            .target
-            .families()
-            .get(&session_key_of(&token_pair.refresh_token))
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            family.source,
-            Some(SessionSource::DidFederation {
-                canonical_host: "a.example".into()
-            })
-        );
-        let absolute_exp = family.absolute_exp.unwrap();
-        assert!(absolute_exp >= buckyos_get_unix_timestamp() + FEDERATION_SESSION_MAX_SECONDS - 5);
-        assert!(family.stamp.refresh_exp <= absolute_exp);
-
-        // External families refresh without an account and stay External.
-        let refreshed = fed
-            .target
-            .handle_refresh_token(&token_pair.refresh_token)
-            .await
-            .unwrap();
-        assert!(token_is_external(&decoded(&refreshed.session_token)));
-        assert_eq!(
-            ceiling_of(&refreshed.session_token),
-            SessionCeiling::external()
-        );
+        assert_eq!(remote_denial(fed.login("did:bns:alice", &issued.code, "v-1").await).0, DenyReason::ResourceGrantMissing);
+        assert_eq!(fed.peer.exchanges.lock().unwrap().as_slice(), &[("a.example".into(),false)]);
+        let proof = fed.target.handle_login_by_remote_verify_hub(Some(&fed.caller),LoginByRemoteVerifyHubRequest {
+            proof_only:true,did:"did:bns:alice".into(),code:fed.code("v-proof").await,code_verifier:"v-proof".into(),nonce:"n-1".into(),
+            redirect_uri:REDIRECT_URI.into(),target:system_target("control-panel")
+        }).await.unwrap();
+        assert!(matches!(proof,LoginByRemoteVerifyHubResult::Verified {did,user_id:None,..} if did=="did:bns:alice"));
 
         let invalid_code = (
             DenyReason::CredentialState,
@@ -5125,6 +5299,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             .handle_login_by_remote_verify_hub(
                 Some(&fed.caller),
                 LoginByRemoteVerifyHubRequest {
+                    proof_only: false,
                     did: "did:bns:alice".into(),
                     code,
                     code_verifier: "v-4".into(),
@@ -5148,7 +5323,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let code = fed.code("v-5").await;
         assert!(matches!(
             fed.login("did:bns:alice", &code, "v-5").await,
-            LoginByRemoteVerifyHubResult::Issued { .. }
+            LoginByRemoteVerifyHubResult::Denied { .. }
         ));
         assert_eq!(
             fed.peer.exchanges.lock().unwrap().last(),
@@ -5166,6 +5341,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         );
 
         let request = LoginByRemoteVerifyHubRequest {
+            proof_only: false,
             did: "did:bns:alice".into(),
             code: "fc-x".into(),
             code_verifier: "v".into(),
@@ -5181,22 +5357,128 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         ));
         assert!(matches!(
             fed.target
-                .handle_login_by_remote_verify_hub(Some(&token_pair.session_token), request)
+                .handle_login_by_remote_verify_hub(Some("invalid-caller"), request)
                 .await,
-            Err(RPCErrors::NoPermission(_))
+            Err(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn oauth_binding_and_password_issue_the_same_home_account() {
+        setup_test_environment().await;
+        let (hub, zone) = test_hub();
+        let caller = cp_caller().await;
+        let target = system_target("control-panel");
+        let user = unique_user("oauth");
+        let local_did = format!("did:web:{user}.zone.example");
+        zone.add_user(&user, UserType::User, Some("stored-password"));
+        zone.set_doc(&user, &local_did, Some("did:bns:zone"));
+        let google = serde_json::from_value(json!({
+            "id":"google", "display_name":"Google", "kind":"google", "enabled":true,
+            "client_id":"test", "secret_ref":"fixture", "issuer":"https://accounts.google.com"
+        })).unwrap();
+        zone.data().sso.oauth_sources.push(google);
+        let request = OAuthAccountLogin {
+            source_id: "google".into(), issuer: "https://accounts.google.com".into(),
+            sub: "verified-test-subject".into(), user_id: user.clone(),
+        };
+        let login = async |request: OAuthAccountLogin| hub.handle_login_by_oauth_account(Some(&caller),request).await;
+        assert!(login(request.clone()).await.is_err());
+        zone.data().oauth_bindings.insert((request.issuer.clone(), request.sub.clone()), user.clone());
+        let oauth = login(request.clone()).await.unwrap();
+        let nonce = login_nonce();
+        let password = hub.handle_login_by_password(&user, &password_proof("stored-password", nonce), &target, nonce).await.unwrap();
+        for token in [&oauth.session_token, &password.session_token] {
+            let claims = decoded(token);
+            assert_eq!(claims.sub.as_deref(), Some(user.as_str()));
+            assert!(!token_is_external(&claims));
+            assert_eq!(ceiling_of(token), SessionCeiling::for_user_type(UserType::User));
+            assert!(hub.handle_verify_token(token, Some(target.clone())).await.unwrap());
+        }
+        assert_eq!(token_auth_method(&decoded(&oauth.session_token)),Some(AuthMethod::OAuth));
+        assert_eq!(decoded(&oauth.session_token).extra["oauth_source_id"], "google");
+        assert_eq!(token_auth_method(&decoded(&password.session_token)),Some(AuthMethod::Password));
+        assert!(login(OAuthAccountLogin {sub:"replacement".into(), ..request.clone()}).await.is_err());
+        assert!(login(OAuthAccountLogin {user_id:"another".into(), ..request.clone()}).await.is_err());
+        zone.data().sso.oauth_sources[0].enabled = false;
+        assert!(login(request.clone()).await.is_err());
+        zone.data().sso.oauth_sources[0].enabled = true;
+        zone.update_user(&user, |settings| settings.state = UserState::Suspended("test suspension".into()));
+        assert!(login(request).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn share_session_is_revocable_and_bound_to_one_instance() {
+        let fed = federation().await;
+        let target = app_target("notes@bob");
+        let other = app_target("notes@carol");
+        let grant = (
+            "inv-01".to_owned(),
+            "did:bns:alice".to_owned(),
+            target.canonical_key(),
+        );
+        fed.target_zone.data().resource_grants.insert(grant.clone());
+        let request = ResourceSessionRequest {
+            invite_id: grant.0.clone(),
+            did: grant.1.clone(),
+            target: target.clone(),
+            auth_method: AuthMethod::DidFederation,
+            oauth_source_id: None,
+            parent_session: None,
+        };
+        let pair = fed
+            .target
+            .handle_issue_resource_share_session(Some(&fed.caller), request.clone())
+            .await
+            .unwrap();
+        assert!(token_is_external(&decoded(&pair.session_token)));
+        assert_eq!(
+            decoded(&pair.session_token).extra["resource_share_did"],
+            "did:bns:alice"
+        );
+        assert!(fed
+            .target
+            .handle_verify_token(&pair.session_token, Some(target.clone()))
+            .await
+            .unwrap());
+        assert!(fed
+            .target
+            .handle_verify_token(&pair.session_token, Some(other.clone()))
+            .await
+            .is_err());
+        assert!(fed
+            .target
+            .handle_issue_resource_share_session(
+                Some(&fed.caller),
+                ResourceSessionRequest {
+                    target: other,
+                    ..request
+                }
+            )
+            .await
+            .is_err());
+        fed.target_zone.data().resource_grants.remove(&grant);
+        assert!(fed
+            .target
+            .handle_verify_token(&pair.session_token, Some(target))
+            .await
+            .is_err());
+        assert!(fed
+            .target
+            .handle_refresh_token(&pair.refresh_token)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn delegate_external_workspace_session_preserves_identity_scope_and_lifetime() {
         let fed = federation().await;
         let did = "did:bns:alice";
-        let code = fed.code("v-1").await;
-        let LoginByRemoteVerifyHubResult::Issued { token_pair, .. } =
-            fed.login(did, &code, "v-1").await
-        else {
-            panic!("expected an External session");
-        };
+        // Existing, already authorized restricted source families still delegate within their ceiling.
+        let token_pair = fed.target.issue_family(SessionSubject {
+            subject:did.into(), principal_kind:SessionPrincipalKind::User, target: system_target("control-panel"),
+            session_id: 11001, claims:FamilyClaims::external(AuthMethod::DidFederation),
+        },Some(SessionSource::DidFederation{canonical_host:"a.example".into()}),Some(buckyos_get_unix_timestamp()+300)).await.unwrap();
         let workspace = system_target(AIWORKSPACE_UNIQUE_ID);
         let delegate = async |target: &AuthTarget| {
             fed.target

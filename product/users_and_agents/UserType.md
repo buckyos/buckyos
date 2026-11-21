@@ -284,7 +284,7 @@ SSO 可以看成是 Verify Hub 登录能力在 Zone 之间的扩展。
 
 对 BuckyOS 内部跨 Zone 登录来说，DID 通常是明确的。因为系统凭证的核心是 username / DID，每个可登录用户都应该能映射到一个确定的 DID。
 
-拟接入 Google 时，verify-hub 根据请求用途签发两类身份。获邀访问 App 或 service 的用户使用 `did:web:$accountid.google.com`，本地合成的文档仅在接入方 Zone 可解析，外部 token 仅限获邀目标。要登录 `example.com` 的系统，需有普通本地账户，例如 `alice`，将 Google 绑定为这个账户的登录方式。以后 Google 和 `alice` + 密码都登录同一账户。其他 Zone 可以通过原生联合邀请它的账户 DID `did:web:alice.example.com`。[SDK 的身份与会话示例](../../doc/sdk/SSO.md#oauth-identities)
+Google 可以证明两种用途的身份。受邀访问 App 或 service 时，`alice@gmail.com` 经规范化得到 `did:web:alice.google.com`。首次接受邀请时，Zone 将上游主体与该 DID 固定关联。管理员在 Add User 邀请或绑定该 Google 账号后，可用 Google 或账号密码登录同一个本地普通账户，其他 Zone 可邀请其稳定 DID `did:web:alice.example.com`。绑定前已接受的外部授权保留在原外部主体名下。绑定前发出的待接受邀请可用 Google 或绑定后的本地会话兑现到本地 DID。之后分享者按邮箱选收件人时系统返回本地账号。[SDK 的身份与会话示例](../../doc/sdk/SSO.md#oauth-identities)
 
 
 

@@ -15,6 +15,7 @@ pub mod pages;
 pub mod presence;
 pub mod print;
 pub mod session;
+mod share;
 pub mod show;
 pub mod source;
 pub mod stream;
@@ -375,6 +376,12 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
     let Some(method) = req["method"].as_str().map(str::to_string) else { return rpc_error(seq, "method required") };
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     // public: the entry page describes a link before anyone signs in
+    if method == "share.callback" {
+        return match share::callback(&state,&params).await {
+            Ok(result) => Json(json!({"result": result, "sys":[seq]})).into_response(),
+            Err(e) => Json(json!({"result":{"ok":false,"error":failure_json(&e,None,&method)},"sys":[seq]})).into_response(),
+        };
+    }
     if method == "entry.describe" {
         return match describe_entry(&state, &params).await {
             Ok(v) => Json(json!({ "result": v, "sys": [seq] })).into_response(),
@@ -470,6 +477,8 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         }
     } else if method == "doc.wait_changes" {
         wait_changes(&state, &params, caller.as_ref().expect("authenticated above")).await
+    } else if method == "ws.issue_share" {
+        share::issue(&state,&params,caller.as_ref().expect("authenticated above")).await
     } else if method == "ws.join_entry" {
         join_entry(&state, &params, caller.as_ref().expect("authenticated above")).await
     } else if method == "asset.import_object" {
@@ -638,6 +647,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
                     Some(v) => Ok(Some(v.as_i64().ok_or_else(|| WsError::invalid_op(format!("{k} must be an integer")))?)),
                 }
             };
+            if methods != ENTRY_GUEST { return Err(WsError::invalid_op("an authenticated entry requires ws.issue_share")); }
             ws.create_entry(caller, s(p, "group_id")?, methods, int("expires_at")?, int("max_joins")?)
         })?,
         "ws.list_entries" => state.with_ws(ws_id()?, |ws| ws.list_entries(caller))?,
@@ -828,6 +838,7 @@ fn entry_of(p: &Value) -> WsResult<(&str, &str)> {
 
 fn entry_methods(bits: u8) -> EntryMethods {
     EntryMethods {
+        oauth: bits & aiworkspace_store::entries::ENTRY_OAUTH != 0,
         guest: bits & ENTRY_GUEST != 0,
         password: bits & ENTRY_PASSWORD != 0,
         self_register: bits & ENTRY_SELF_REGISTER != 0,
@@ -885,14 +896,23 @@ async fn join_entry(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResu
     let unavailable = || WsError::refused(Code::NotFound, Deny::EntryUnavailable, "the entry is closed, expired or does not exist");
     let entry_id = s(p, "entry_id")?.to_string();
     let (ws_id, local) = split_entry_id(&entry_id).map(|(w, l)| (w.to_string(), l.to_string())).ok_or_else(unavailable)?;
+    if !matches!(caller.class,CallerClass::Guest) {
+        return Err(WsError::refused(Code::PermissionDenied,Deny::EntryUnavailable,"sign in through the system invitation"));
+    }
     let settings = state.auth.sso_settings().await.map_err(|_| {
         WsError::refused(Code::PermissionDenied, Deny::AuthorizationUnavailable, "the Zone's sign-in settings could not be read; retry later")
     })?;
     let method = match caller.class {
-        CallerClass::External { .. } => Some(AuthMethod::DidFederation),
+
         CallerClass::Guest => None,
         _ => caller.auth_method.as_deref().and_then(AuthMethod::parse),
     };
+    if method == Some(AuthMethod::OAuth) && !settings.oauth_sources.iter().any(|s|s.enabled && Some(&s.id)==caller.oauth_source_id.as_ref()) {
+        return Err(WsError::refused(Code::PermissionDenied, Deny::ZoneMethodDisabled, "the OAuth provider is disabled"));
+    }
+    if matches!(caller.class, CallerClass::External { .. }) && method.is_none() {
+        return Err(WsError::refused(Code::PermissionDenied, Deny::EntryUnavailable, "external session has no sign-in source"));
+    }
     let (st, c) = (state.clone(), caller.clone());
     let joined = blocking(move || st.with_ws(&ws_id, |ws| ws.join_entry(&c, &local, |bits| entry_admits(bits, &settings, method)).map(|v| (v, ws.workspace_slug())))).await;
     let (mut v, slug) = joined.map_err(|e| if e.code == Code::NotFound && e.denial.is_none() { unavailable() } else { e })?;

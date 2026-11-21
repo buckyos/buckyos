@@ -98,7 +98,7 @@ test('the identity menu shows who is signed in to which Zone and signs out to th
   await expect(panel.getByTestId('sso-identity-kind')).toHaveText('Restricted account')
   await expect(panel.getByTestId('sso-identity-did')).toHaveText(CUSTOMER)
   await panel.getByTestId('guest-sign-out').click()
-  await page.waitForURL(url => url.pathname === '/sso/entry' && url.searchParams.get('service') === 'msg-center' && url.searchParams.get('entry') === GROUP)
+  await expect(page.getByRole('status')).toHaveText('Open the invitation provided by the group administrator.')
   const session = await page.evaluate(key => JSON.parse(window.localStorage.getItem(key) ?? '{}').session, CP_KEY)
   expect(session).toEqual({ kind: 'anonymous' })
 })
@@ -155,7 +155,7 @@ test('an External identity sees its badge and no password prompt; without a sess
   const anonymous = await context.newPage()
   await seed(anonymous, { session: { kind: 'anonymous' } })
   await anonymous.goto(guestPage('t-123'))
-  await anonymous.waitForURL(url => url.pathname === '/sso/entry' && url.searchParams.get('entry') === GROUP)
+  await expect(anonymous.getByRole('status')).toHaveText('Open the invitation provided by the group administrator.')
 })
 
 test('a Zone admin invites an external customer to a group session with a private link shown once', async ({ page }) => {

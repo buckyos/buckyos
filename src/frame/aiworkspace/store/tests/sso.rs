@@ -366,3 +366,172 @@ fn restore_keeps_permissions_and_entries() {
     assert_eq!(caps(&ws, &guest), json!(["read"]));
     assert!(ws.acl_audit(&alice(), 0, 100).unwrap()["items"].as_array().unwrap().iter().any(|i| i["action"] == "entry.join"), "the record moves over too");
 }
+
+#[test]
+fn registered_grants_reserve_capacity_and_keep_independent_sources() {
+    let env = env();
+    let id = new_ws(&env, "shared workspace");
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    group(&mut ws,"editors",&[],&["read","comment"]);
+    let alice=alice();
+    let (first, secret, _)=ws.share_request(&alice,"first",&json!({"request_id":"first"}),"editors",ENTRY_DID_LOGIN,None,Some(1)).unwrap();
+    let (second, second_secret, _)=ws.share_request(&alice,"second",&json!({"request_id":"second"}),"editors",ENTRY_DID_LOGIN,None,Some(1)).unwrap();
+    let local=split_entry_id(&first).unwrap().1;
+    let second_local=split_entry_id(&second).unwrap().1;
+    let entry=ws.check_share_callback(local,&secret,true).unwrap();
+    let other=ws.check_share_callback(second_local,&second_secret,true).unwrap();
+    assert!(ws.check_share_callback(local,&second_secret,true).is_err());
+    let b="did:web:b.example";
+    ws.share_grant(local,&entry,b,false).unwrap();
+    assert!(!ws.has_share_grant(local,&entry,b).unwrap());
+    assert!(ws.share_grant(local,&entry,"did:web:c.example",false).is_err());
+    ws.share_grant(local,&entry,b,true).unwrap();
+    ws.share_grant(local,&entry,b,true).unwrap();
+    ws.share_grant(second_local,&other,b,false).unwrap();
+    ws.share_grant(second_local,&other,b,true).unwrap();
+    assert_eq!(caps(&ws,&Caller::external(b)),json!(["read","comment"]));
+    ws.close_entry(&alice,local,true).unwrap();
+    assert!(!ws.has_share_grant(local,&entry,b).unwrap());
+    assert!(ws.has_share_grant(second_local,&other,b).unwrap());
+    ws.close_entry(&alice,second_local,false).unwrap();
+    assert!(ws.check_share_callback(second_local,&second_secret,true).is_err());
+    assert!(ws.check_share_callback(second_local,&second_secret,false).is_ok());
+    assert_eq!(caps(&ws,&Caller::external(b)),json!(["read","comment"]));
+}
+
+#[test]
+fn concurrent_registered_joins_charge_once_and_survive_delivery_interruption() {
+    let env = env();
+    let id = new_ws(&env, "shared notes");
+    let did = "did:web:visitor.example";
+    let handle = env.svc.workspace(&id).unwrap();
+    let (entry_id, secret, _) = {
+        let mut ws = handle.lock().unwrap();
+        group(&mut ws, "editors", &[], &["read", "update"]);
+        ws.share_request(
+            &alice(),
+            "share-42",
+            &json!({"request_id":"share-42"}),
+            "editors",
+            ENTRY_DID_LOGIN,
+            Some(T0 / 1000 + 60),
+            Some(2),
+        )
+        .unwrap()
+    };
+    let local = split_entry_id(&entry_id).unwrap().1;
+    for commit in [false, true] {
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    start.wait();
+                    let mut ws = handle.lock().unwrap();
+                    let entry = ws.check_share_callback(local, &secret, true).unwrap();
+                    ws.share_grant(local, &entry, did, commit).unwrap();
+                    assert_eq!(ws.has_share_grant(local, &entry, did).unwrap(), commit);
+                });
+            }
+        });
+    }
+    {
+        let mut ws = handle.lock().unwrap();
+        assert_eq!(
+            ws.list_entries(&alice()).unwrap()["entries"][0]["joined"],
+            1
+        );
+        let audit = ws.acl_audit(&alice(), 0, 100).unwrap();
+        assert_eq!(
+            audit["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|i| i["action"] == "entry.join")
+                .count(),
+            1
+        );
+        let entry = ws.check_share_callback(local, &secret, true).unwrap();
+        let other = "did:web:another.example";
+        ws.share_grant(local, &entry, other, false).unwrap();
+        ws.share_grant(local, &entry, other, true).unwrap();
+        assert_eq!(
+            ws.list_entries(&alice()).unwrap()["entries"][0]["joined"],
+            2
+        );
+        assert!(ws
+            .share_grant(local, &entry, "did:web:third.example", false)
+            .is_err());
+    }
+    drop(handle);
+
+    // The resource restarts before either tab receives its session. New admissions have expired.
+    let env = env.reopen();
+    env.advance(61_000);
+    {
+        let h = env.svc.workspace(&id).unwrap();
+        let ws = h.lock().unwrap();
+        assert!(ws.check_share_callback(local, &secret, true).is_err());
+        let entry = ws.check_share_callback(local, &secret, false).unwrap();
+        assert!(ws.has_share_grant(local, &entry, did).unwrap());
+        assert!(!ws
+            .has_share_grant(local, &entry, "did:web:third.example")
+            .unwrap());
+        assert_eq!(caps(&ws, &Caller::external(did)), json!(["read", "update"]));
+    }
+    env.svc.delete_workspace(&alice(), &id).unwrap();
+    let env = env.reopen();
+    assert!(matches!(env.svc.workspace(&id), Err(e) if e.code == Code::NotFound));
+    let replacement = new_ws(&env, "shared notes");
+    assert_ne!(replacement, id);
+    let handle = env.svc.workspace(&replacement).unwrap();
+    let ws = handle.lock().unwrap();
+    assert!(ws.check_share_callback(local, &secret, false).is_err());
+    not_found(&ws, &Caller::external(did));
+}
+
+#[test]
+fn removing_a_group_member_does_not_reactivate_the_old_invitation_after_a_new_join() {
+    let env = env();
+    let id = new_ws(&env, "shared workspace");
+    let handle = env.svc.workspace(&id).unwrap();
+    let mut ws = handle.lock().unwrap();
+    let did = "did:web:visitor.example";
+    group(&mut ws, "editors", &[], &["read", "update"]);
+    group(&mut ws, "readers", &[did], &["read"]);
+    let mut invite = |request: &str| {
+        let (id, secret, _) = ws
+            .share_request(
+                &alice(),
+                request,
+                &json!({"request_id":request}),
+                "editors",
+                ENTRY_DID_LOGIN,
+                None,
+                None,
+            )
+            .unwrap();
+        let local = split_entry_id(&id).unwrap().1.to_string();
+        let entry = ws.check_share_callback(&local, &secret, true).unwrap();
+        (local, entry)
+    };
+    let (old, first) = invite("first-invitation");
+    let (new, second) = invite("new-invitation");
+    ws.share_grant(&old, &first, did, false).unwrap();
+    ws.share_grant(&old, &first, did, true).unwrap();
+    ws.acl_members(&alice(), "editors", &[], &strings(&[did]))
+        .unwrap();
+    assert!(!ws.has_share_grant(&old, &first, did).unwrap());
+    assert!(ws.share_grant(&old, &first, did, true).is_err());
+    assert_eq!(caps(&ws, &Caller::external(did)), json!(["read"]));
+    ws.share_grant(&new, &second, did, false).unwrap();
+    ws.share_grant(&new, &second, did, true).unwrap();
+    assert!(ws.has_share_grant(&new, &second, did).unwrap());
+    assert!(!ws.has_share_grant(&old, &first, did).unwrap());
+    assert!(ws.share_grant(&old, &first, did, false).is_err());
+    assert_eq!(caps(&ws, &Caller::external(did)), json!(["read", "update"]));
+    ws.acl_delete_group(&alice(), "editors").unwrap();
+    group(&mut ws, "editors", &[did], &["read", "update"]);
+    assert!(!ws.has_share_grant(&new, &second, did).unwrap());
+    assert_eq!(caps(&ws, &Caller::external(did)), json!(["read", "update"]));
+}

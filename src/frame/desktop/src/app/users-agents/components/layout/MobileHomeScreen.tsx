@@ -399,6 +399,7 @@ export function MobileHomeScreen({
           isActive={selection?.kind === 'user-groups'}
           onClick={() => onSelect({ kind: 'user-groups' })}
         />
+        {isAdmin && <Button fullWidth onClick={() => onSelect({kind: 'invited-identities'})}>{t('sso.userInvite.directory','Invited identities')}</Button>}
         <ExclusiveInvitesNavItem
           isActive={selection?.kind === 'exclusive-invites'}
           onClick={() => onSelect({ kind: 'exclusive-invites' })}

@@ -42,6 +42,10 @@ pub trait Authenticator: Send + Sync {
     async fn caller_for(&self, principal: &str) -> Caller {
         guessed_caller(principal)
     }
+    /// Reconstruct the current authorization identity of a registered invitation author.
+    async fn share_author(&self, principal: &str) -> Result<Caller, AccessDenial> {
+        Ok(self.caller_for(principal).await)
+    }
     /// The Agents of the account `owner` as `(AgentId, DID)`: whom a hosted run it starts can be handed to.
     async fn agents_of(&self, owner: &str) -> Result<Vec<(String, String)>, String>;
 }
@@ -106,6 +110,8 @@ pub struct StaticIdentity {
     pub contacts_unavailable: bool,
     #[serde(default)]
     pub auth_method: Option<String>,
+    #[serde(default)]
+    pub oauth_source_id: Option<String>,
     /// An Agent's owner (class `agent`).
     #[serde(default)]
     pub owner: Option<String>,
@@ -136,6 +142,7 @@ impl Authenticator for StaticTokens {
         };
         caller.app_id = id.app_id.clone();
         caller.auth_method = id.auth_method.clone();
+        caller.oauth_source_id = id.oauth_source_id.clone();
         Ok(caller)
     }
     async fn subjects(&self) -> Vec<serde_json::Value> {
@@ -244,6 +251,7 @@ impl Authenticator for RuntimeAuth {
             (aiworkspace_store::CallerClass::Service, Some(app)) => Some(app.to_string()),
             _ => Some(claims.target.canonical_key()),
         };
+        caller.oauth_source_id = buckyos_api::token_oauth_source_id(&verified).map(str::to_owned);
         caller.auth_method = token_auth_method(&verified).map(|m| m.as_str().to_string());
         Ok(caller)
     }
@@ -272,6 +280,9 @@ impl Authenticator for RuntimeAuth {
         use buckyos_api::{get_buckyos_api_runtime, ContactCheckMembershipReq};
         let groups: Vec<&String> = subjects.iter().filter(|s| s.starts_with(GROUP_PREFIX)).collect();
         let contacts: Vec<&String> = subjects.iter().filter(|s| s.starts_with(CONTACT_PREFIX)).collect();
+        if subjects.iter().any(|s| s.starts_with("did:")) {
+            let _ = self.load_did(caller).await;
+        }
         if groups.is_empty() && contacts.is_empty() {
             return;
         }
@@ -363,6 +374,19 @@ impl Authenticator for RuntimeAuth {
             }
         }
         guessed_caller(principal)
+    }
+    async fn share_author(&self, principal: &str) -> Result<Caller, AccessDenial> {
+        use buckyos_api::{get_buckyos_api_runtime, UserState, UserType};
+        if principal.starts_with("did:") {
+            return Ok(self.caller_for(principal).await);
+        }
+        let runtime = get_buckyos_api_runtime().map_err(|_| unavailable())?;
+        let cp = runtime.get_control_panel_client().await.map_err(|_| unavailable())?;
+        let user = cp.get_user_settings_by_username(principal).await.map_err(|_| unavailable())?;
+        if !matches!(user.state, UserState::Active) || user.user_type == UserType::Root {
+            return Err(unavailable());
+        }
+        Ok(Caller::account(principal, user.user_type == UserType::Limited))
     }
     /// From system-config: `users/<owner>/agents/<id>/spec` (a trusted source, never a request parameter).
     async fn agents_of(&self, owner: &str) -> Result<Vec<(String, String)>, String> {

@@ -262,6 +262,23 @@ async fn create(c: &MessageCenter, config: Value) -> Value {
     .await
     .unwrap()
 }
+/// Exercise the group service's side of registered visitor admission before opening a ticket.
+async fn accept_visitor_share(c: &MessageCenter, visitor: &DID) {
+    let secret = "resource-scoped-test-credential";
+    let mut tx = c.groups.begin(&group()).await.unwrap();
+    tx.state.resource_shares.insert("visit".into(), GroupResourceShare {
+        creator: tx.state.owner.clone(),
+        request: json!({"audience":{"kind":"directed","did":visitor}}),
+        secret: secret.into(), url: None, admitted: Default::default(),
+    });
+    tx.commit().await.unwrap();
+    for operation in ["prepare","commit"] {
+        let args = json!({"resource_id":format!("{}~visit",group().to_string()),"callback_secret":secret,
+                          "operation":operation, "did":visitor,"auth_method":"password"});
+        assert_eq!(c.resource_share_callback(&args).await.unwrap()["ok"],true);
+    }
+}
+
 /// Invite `d` and accept explicitly: without a contact relationship the
 /// invitee is a stranger to the inviter, so nothing is accepted automatically.
 async fn join(c: &MessageCenter, d: &DID) -> Value {
@@ -1040,6 +1057,7 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
 async fn guest_requests_are_atomic_idempotent_and_do_not_leak_other_sessions() {
     let (c, _tmp, _) = center().await;
     create(&c, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1,"auth_methods":{"password":true}}},"session_templates":{"tickets":{"membership":{"roles":["owner","admin"]},"rules":{"allow_guests":true}}}})).await;
+    accept_visitor_share(&c, &guest()).await;
     let p = json!({"request_id":"request1"});
     let one = call(&c, &guest(), "group.submit_guest_request", p.clone())
         .await
@@ -1366,6 +1384,7 @@ async fn attachments_require_the_exact_message_context_and_remote_client_policy(
 async fn deleted_guest_sessions_keep_minimal_notifications_and_existing_local_copies() {
     let (host, _htmp, _) = center().await;
     create(&host, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1,"auth_methods":{"password":true}}},"session_templates":{"tickets":{"membership":{"roles":["owner"]},"rules":{"allow_guests":true}}}})).await;
+    accept_visitor_share(&host, &guest()).await;
     let session = call(
         &host,
         &guest(),

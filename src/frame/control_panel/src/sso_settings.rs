@@ -29,6 +29,8 @@ pub(crate) struct SsoSettingsPatch {
     #[serde(default)]
     self_register_enabled: Option<bool>,
     #[serde(default)]
+    oauth_sources: Option<Vec<buckyos_api::OAuthSource>>,
+    #[serde(default)]
     did_login_enabled: Option<bool>,
     #[serde(default, deserialize_with = "patch_field")]
     jump_base_url: Option<Option<String>>,
@@ -44,6 +46,9 @@ fn patch_field<'de, D: serde::Deserializer<'de>>(
 
 impl SsoSettingsPatch {
     pub(crate) fn apply(self, mut settings: SsoSettings) -> Result<SsoSettings, RPCErrors> {
+        if let Some(sources) = self.oauth_sources {
+            settings.oauth_sources = sources;
+        }
         if let Some(value) = self.self_register_enabled {
             settings.self_register_enabled = value;
         }
@@ -87,6 +92,7 @@ fn settings_value(settings: &SsoSettings) -> Value {
         "did_login_enabled": settings.did_login_enabled,
         "jump_base_url": settings.jump_base_url,
         "dev_federation_http": settings.dev_federation_http,
+        "oauth_sources": settings.oauth_sources,
     })
 }
 
@@ -97,10 +103,10 @@ impl ControlPanelServer {
         req: RPCRequest,
     ) -> Result<RPCResponse, RPCErrors> {
         let settings = load_sso_settings(&ZoneKv::connect().await?).await?;
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!(settings.public_config())),
-            req.seq,
-        ))
+        let mut public = json!(settings.public_config());
+        let runtime = buckyos_api::get_buckyos_api_runtime()?;
+        public["zone_origin"] = json!(Self::zone_root_origin(&req, &Self::sso_zone_host(runtime)?));
+        Ok(RPCResponse::new(RPCResult::Success(public), req.seq))
     }
 
     /// `sso.settings.get {}` (admin) → `{self_register_enabled, did_login_enabled,
@@ -130,16 +136,35 @@ impl ControlPanelServer {
         require_control_panel_admin(principal)?;
         let patch: SsoSettingsPatch = Self::typed_params(&req)?;
         let kv = ZoneKv::connect().await?;
-        let settings = patch.apply(load_sso_settings(&kv).await?)?;
+        let previous = kv.get(SSO_SETTINGS_KEY).await?;
+        let current: SsoSettings = match &previous {
+            Some((raw, _)) => serde_json::from_str(raw)
+                .map_err(|e| RPCErrors::ReasonError(format!("invalid SSO settings: {e}")))?,
+            None => SsoSettings::default(),
+        };
+        let mut settings = patch.apply(current.clone())?;
+        let zone = Self::sso_zone_host(buckyos_api::get_buckyos_api_runtime()?)?;
+        buckyos_api::validate_oauth_sources(&mut settings.oauth_sources, &zone)
+            .map_err(RPCErrors::ParseRequestError)?;
+        for old in &current.oauth_sources {
+            if !settings.oauth_sources.iter().any(|s| {
+                s.id == old.id
+                    && s.kind == old.kind
+                    && s.webhost == old.webhost
+                    && s.issuer == old.issuer
+            }) {
+                return Err(RPCErrors::ParseRequestError("disable the provider to preserve its existing identities; its namespace is permanent".into()));
+            }
+        }
         let raw = serde_json::to_string(&settings)
             .map_err(|error| RPCErrors::ReasonError(format!("serialize SSO settings: {error}")))?;
-        let action = match kv.get(SSO_SETTINGS_KEY).await? {
+        let action = match &previous {
             Some(_) => KVAction::Update(raw),
             None => KVAction::Create(raw),
         };
         kv.exec_tx(
             HashMap::from([(SSO_SETTINGS_KEY.to_string(), action)]),
-            None,
+            previous.map(|(_, v)| (SSO_SETTINGS_KEY.into(), v)),
         )
         .await?;
         log::info!(

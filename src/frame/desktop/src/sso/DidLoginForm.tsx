@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Alert, Button, CircularProgress, TextField } from '@mui/material'
 import { accessDenialOf, type AccessDenial } from 'buckyos'
-import { beginDidLogin } from '../api/sso'
+import { beginDidLogin, type LoginPurpose } from '../api/sso'
 import { useI18n } from '../i18n/provider'
 import { DenialNotice } from './DenialNotice'
 
@@ -11,7 +11,7 @@ type Failure = { kind: 'denied'; denial: AccessDenial } | { kind: 'canonical_una
  * DID login: the visitor names their DID, this Zone sends the browser to that DID's canonical Zone
  * for consent and comes back to `redirectUrl` signed in.
  */
-export function DidLoginForm({ redirectUrl, requiredDid, onCancel }: { redirectUrl: string; requiredDid?: string; onCancel?: () => void }) {
+export function DidLoginForm({ redirectUrl, requiredDid, purpose, inviteId, onCancel }: { redirectUrl: string; requiredDid?: string; purpose?: LoginPurpose; inviteId?: string; onCancel?: () => void }) {
   const { t } = useI18n()
   const [did, setDid] = useState('')
   const [busy, setBusy] = useState(false)
@@ -26,7 +26,7 @@ export function DidLoginForm({ redirectUrl, requiredDid, onCancel }: { redirectU
     }
     setBusy(true)
     setFailure(null)
-    const { data, error } = await beginDidLogin(value, redirectUrl)
+    const { data, error } = await beginDidLogin(value, redirectUrl, purpose, inviteId)
     if (data?.status === 'redirect') {
       window.location.assign(data.url)
       return

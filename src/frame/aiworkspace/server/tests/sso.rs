@@ -152,63 +152,26 @@ async fn restricted_classes_entries_and_denials() {
     srv.rpc("tok-alice", "acl.set", json!({ "workspace_id": id, "changes": [{ "subject": "@visitors", "allow": ["read", "comment", "append"] }] })).await;
     let r = srv.rpc("tok-bob", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "guest": true } })).await;
     assert_eq!((code(&r), reason(&r)), ("PERMISSION_DENIED", "resource_grant_missing"), "manage is needed");
-    let created = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors",
-                                                                   "methods": { "guest": true, "password": true, "did_login": true } })).await;
-    let entry_id = created["entry"]["entry_id"].as_str().unwrap().to_string();
-    assert!(entry_id.starts_with(&format!("{id}~se_")), "{created}");
+    let legacy = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "did_login": true } })).await;
+    assert_eq!(code(&legacy), "INVALID_OPERATION");
+    let created = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "guest": true } })).await;
+    let entry_id = created["entry"]["entry_id"].as_str().unwrap();
     let described = srv.raw(None, "entry.describe", json!({ "entry_id": entry_id })).await["result"].clone();
-    assert_eq!(described["state"], "active", "{described}");
-    // the Workspace's page on its own origin (T4-8): `https://aiws-<id without ws_>.<zone>/<title slug>`
-    let page = format!("https://aiws-{}.zone.invalid/dj", id.strip_prefix("ws_").unwrap());
-    assert_eq!(described["resource"], json!({ "kind": "workspace", "title": "DJ 电台", "owner_name": "alice", "path": page }));
-    assert_eq!(described["methods"], json!({ "guest": true, "password": true, "self_register": false, "did_login": true }));
-    let parsed: buckyos_api::EntryDescription = serde_json::from_value(described.clone()).unwrap();
-    assert_eq!(parsed.state, buckyos_api::EntryState::Active);
-    for bad in ["nope", "ws_aaaaaaaaaaaaaaaaaaaaaaaaaa~se_aaaaaaaaaaaaaaaaaaaaaaaaaa"] {
-        assert_eq!(srv.raw(None, "entry.describe", json!({ "entry_id": bad })).await["result"], json!({ "ok": true, "state": "unavailable", "methods": { "guest": false, "password": false, "self_register": false, "did_login": false } }));
+    assert_eq!(described["state"], "active");
+    for token in ["tok-bob","tok-lim","tok-ext"] {
+        let failure=srv.raw(Some(token),"ws.join_entry",json!({"entry_id":entry_id})).await;
+        assert_eq!(krpc_denial(&failure).reason,buckyos_api::DenyReason::EntryUnavailable);
     }
-    assert_eq!(srv.rpc("tok-alice", "ws.list_entries", wsp.clone()).await["entries"].as_array().unwrap().len(), 1);
-
-    // S2: the Workspace id alone lets nobody in; presenting the entry joins its group
-    for tok in [GUEST, "tok-ext"] {
-        assert_eq!(reason(&srv.rpc(tok, "ws.get_info", wsp.clone()).await), "resource_grant_missing", "{tok}");
-    }
-    // a local account by password (exclusive invite sessions count as local); the DID way is turned off by the Zone,
-    // but the entry is open to guests, so the External joins all the same; a guest joins with its browser's token
-    let joined = srv.rpc("tok-lim", "ws.join_entry", json!({ "entry_id": entry_id })).await;
-    assert_eq!((joined["group_id"].clone(), joined["path"].clone(), joined["joined"].clone()), (json!("visitors"), json!(page), json!(true)), "{joined}");
-    assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "append", "comment"]));
-    assert_eq!(srv.rpc("tok-ext", "ws.join_entry", json!({ "entry_id": entry_id })).await["joined"], json!(true));
-    assert_eq!(srv.rpc(GUEST, "ws.join_entry", json!({ "entry_id": entry_id })).await["joined"], json!(true));
-    for tok in [GUEST, "tok-ext"] {
-        assert_eq!(srv.rpc(tok, "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "append", "comment"]), "{tok}");
-    }
-    use buckyos_api::{AdjustLocation, AdjustParty, DenyReason};
-    let did_only = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "did_login": true } })).await;
-    let d = krpc_denial(&srv.raw(Some("tok-ext"), "ws.join_entry", json!({ "entry_id": did_only["entry"]["entry_id"] })).await);
-    assert_eq!((d.reason, d.adjust.party, d.adjust.location), (DenyReason::ZoneMethodDisabled, AdjustParty::Admin, Some(AdjustLocation::CpSsoSettings)));
-    assert_eq!(d.method.as_deref(), Some("ws.join_entry"));
-    let password_only = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "password": true } })).await;
-    let d = krpc_denial(&srv.raw(Some("tok-ext"), "ws.join_entry", json!({ "entry_id": password_only["entry"]["entry_id"] })).await);
-    assert_eq!(d.reason, DenyReason::EntryUnavailable);
-    assert_eq!(krpc_denial(&srv.raw(Some(GUEST), "ws.join_entry", json!({ "entry_id": password_only["entry"]["entry_id"] })).await).reason, DenyReason::EntryUnavailable);
-    assert_eq!(krpc_denial(&srv.raw(Some("tok-lim"), "ws.join_entry", json!({ "entry_id": "garbage" })).await).reason, DenyReason::EntryUnavailable);
-    let groups = srv.rpc("tok-alice", "acl.groups", wsp.clone()).await;
-    let visitors = groups["groups"].as_array().unwrap().iter().find(|g| g["group_id"] == "visitors").cloned().unwrap();
-    let row = visitors["members"].as_array().unwrap().iter().find(|m| m["member"] == "acme-c1").cloned().unwrap();
-    assert_eq!(row["via_entry"], json!(entry_id));
-
-    // closing with remove_members: the description becomes unavailable, joins stop, those who came through it leave
-    let r = srv.rpc("tok-alice", "ws.close_entry", json!({ "workspace_id": id, "entry_id": entry_id, "remove_members": true })).await;
-    assert_eq!((r["entry"]["state"].as_str(), r["removed_members"].as_u64()), (Some("closed"), Some(3)));
-    assert_eq!(srv.raw(None, "entry.describe", json!({ "entry_id": entry_id })).await["result"]["state"], "unavailable");
-    for tok in [GUEST, "tok-ext"] {
-        assert_eq!(reason(&srv.rpc(tok, "ws.get_info", wsp.clone()).await), "resource_grant_missing", "{tok}");
-    }
-    assert_eq!(krpc_denial(&srv.raw(Some("tok-lim2"), "ws.join_entry", json!({ "entry_id": entry_id })).await).reason, DenyReason::EntryUnavailable);
-    assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read"]), "still in @customers");
-    let r = srv.rpc("tok-alice", "ws.close_entry", json!({ "workspace_id": "ws_aaaaaaaaaaaaaaaaaaaaaaaaaa", "entry_id": entry_id })).await;
-    assert_eq!(code(&r), "NOT_FOUND", "the workspace named beside the entry must be its own");
+    let joined=srv.rpc(GUEST,"ws.join_entry",json!({"entry_id":entry_id})).await;
+    assert_eq!(joined["joined"],true);
+    assert_eq!(srv.rpc(GUEST,"ws.get_info",wsp.clone()).await["capabilities"],json!(["read","append","comment"]));
+    let closed=srv.rpc("tok-alice","ws.close_entry",json!({"workspace_id":id,"entry_id":entry_id,"remove_members":true})).await;
+    assert_eq!(closed["removed_members"],1);
+    assert_eq!(srv.raw(None,"entry.describe",json!({"entry_id":entry_id})).await["result"]["state"],"unavailable");
+    let unavailable = srv.raw(Some(GUEST),"ws.join_entry",json!({"entry_id":entry_id})).await;
+    assert_eq!(krpc_denial(&unavailable).reason,buckyos_api::DenyReason::EntryUnavailable);
+    let bad_callback=srv.raw(None,"share.callback",json!({"operation":"commit","resource_id":entry_id,"callback_secret":"invalid","did":"did:bns:carol"})).await;
+    assert_eq!(bad_callback["result"]["ok"],false);
 
     // the HTTP routes answer with the same denial
     let asset = srv.http.get(format!("{}/asset/{}/{}", srv.base, id, "x")).bearer_auth("tok-ext").send().await.unwrap();

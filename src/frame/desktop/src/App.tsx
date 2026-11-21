@@ -56,6 +56,7 @@ const AppInstallerRoute = lazy(() =>
 const RestrictedHome = lazy(() =>
   import('./sso/RestrictedHome').then((m) => ({ default: m.RestrictedHome })),
 )
+const SsoSharePage = lazy(() => import('./sso/SharePage'))
 const SsoEntryPage = lazy(() =>
   import('./sso/EntryPage').then((m) => ({ default: m.EntryPage })),
 )
@@ -166,6 +167,7 @@ const router = createBrowserRouter([
       </Suspense>
     ),
   },
+  { path: '/sso/share/:inviteId', element: <Suspense fallback={null}><SsoSharePage /></Suspense> },
   {
     path: '/sso/entry',
     element: (

@@ -13,6 +13,8 @@ import {
   type CurrentIdentity,
   type EntryDescriptor,
   type EntryService,
+  type PublicOAuthSource,
+  type ResourceShare,
   type SsoPublicConfig,
 } from 'buckyos'
 import { callRpc } from './rpc.ts'
@@ -64,7 +66,47 @@ type Denied = { status: 'denied'; denial: AccessDenial }
 // ── Zone switches and entries ──
 
 /** `system/sso/settings` as admins edit it; an empty `jump_base_url` means the default. */
+export interface OAuthSource extends PublicOAuthSource {
+  enabled: boolean
+  kind: 'google' | 'oidc' | 'oauth2'
+  client_id: string
+  secret_ref: string
+  redirect_uri?: string
+  webhost?: string
+  issuer?: string
+  authorization_endpoint?: string
+  token_endpoint?: string
+  jwks_uri?: string
+  account_endpoint?: string
+  id_field?: string
+  email_field?: string
+  email_verified_field?: string
+  scopes?: string[]
+}
+
+export type LoginPurpose = 'login' | 'share' | 'user_invite'
+export const beginOAuthLogin = (sourceId: string, redirectUrl: string, purpose: LoginPurpose, inviteId?: string): RpcResult<DidBeginResult> =>
+  enveloped(callPublic('auth.oauth.begin', {source_id: sourceId, redirect_url: redirectUrl, purpose, ...(inviteId ? {invite_id: inviteId} : {})}), ['redirect', 'denied'])
+
+export interface ResourceShareDescription extends ResourceShare {
+  unavailable_reason?: string | null
+}
+export interface ShareIdentities {
+  session: string | null
+  native: string | null
+  oauth: string | null
+  mismatches?: ('session' | 'native' | 'oauth')[]
+  required_source?: string | null
+}
+export const describeShare = (inviteId:string): RpcResult<ResourceShareDescription> =>
+  callPublic('auth.share.describe', {invite_id:inviteId})
+export const shareIdentities = (inviteId:string, signedIn:boolean): RpcResult<ShareIdentities> =>
+  (signedIn ? callSession<ShareIdentities> : callPublic<ShareIdentities>)('auth.share.identity', {invite_id:inviteId})
+export const acceptShare = (inviteId:string, source:'session'|'native'|'oauth', signedIn:boolean): RpcResult<{callback_url:string}> =>
+  (signedIn ? callSession<{callback_url:string}> : callPublic<{callback_url:string}>)('auth.share.accept',{invite_id:inviteId,source})
+
 export interface SsoSettings {
+  oauth_sources?: OAuthSource[]
   self_register_enabled: boolean
   did_login_enabled: boolean
   jump_base_url?: string | null
@@ -82,6 +124,7 @@ export const saveSsoSettings = (settings: SsoSettings): RpcResult<SsoSettings> =
     did_login_enabled: settings.did_login_enabled,
     // An empty field returns the Zone to the default jump entry.
     jump_base_url: jump || null,
+    ...(settings.oauth_sources ? {oauth_sources:settings.oauth_sources} : {}),
   })
 }
 
@@ -131,14 +174,15 @@ export async function joinWorkspaceEntry(entryId: string): RpcResult<Record<stri
 export type DidBeginResult = { status: 'redirect'; url: string } | { status: 'canonical_unavailable' } | Denied
 
 /** Starts a DID login on this Zone; the browser then goes to the DID's canonical Zone. */
-export const beginDidLogin = (did: string, redirectUrl: string): RpcResult<DidBeginResult> =>
+export const beginDidLogin = (did: string, redirectUrl: string, purpose?: LoginPurpose, inviteId?: string): RpcResult<DidBeginResult> =>
   enveloped<DidBeginResult>(
-    callPublic<Envelope>('auth.did.begin', { did, redirect_url: redirectUrl }),
+    callPublic<Envelope>('auth.did.begin', { did, redirect_url: redirectUrl, purpose, invite_id: inviteId }),
     ['redirect', 'canonical_unavailable', 'denied'],
   )
 
 /** What the target Zone sent to the canonical consent page (`/sso/federate?…`). */
 export interface FederationRequest {
+  app_context: string
   did: string
   client_zone: string
   redirect_uri: string
@@ -147,13 +191,14 @@ export interface FederationRequest {
   code_challenge: string
 }
 
-export const FEDERATION_REQUEST_KEYS = ['did', 'client_zone', 'redirect_uri', 'state', 'nonce', 'code_challenge'] as const
+export const FEDERATION_REQUEST_KEYS = ['did', 'client_zone', 'redirect_uri', 'state', 'nonce', 'code_challenge', 'app_context'] as const
 
 export type FederationConsent = {
   status: 'consent'
   client_zone: string
   client_host: string
   profile: { show_name: string; avatar?: string | null }
+  app_host: string
   already_granted: boolean
 }
 
@@ -181,7 +226,7 @@ export const denyFederation = (request: FederationRequest): RpcResult<Federation
 // ── Exclusive invites: visitor side ──
 
 export type InviteDescribeResult =
-  | { status: 'active'; user_id: string; show_name: string; resource_title?: string | null; return_path: string }
+  | { status: 'active'; app_instance_id?: string; user_id: string; show_name: string; resource_title?: string | null; return_path: string }
   | (Denied & { user_id?: string; return_path?: string })
 
 export type InviteLoginResult = { status: 'ready'; callback_url: string } | Denied

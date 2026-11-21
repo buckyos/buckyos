@@ -215,8 +215,8 @@ impl RPCHandler for MsgCenterHttpServer {
         ip_from: IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
         let center = &self.rpc_handler.0;
-        if req.method == group_service::METHOD_GROUP_DESCRIBE_ENTRY {
-            let value = center.describe_group_entry(&req.params).await?;
+        if matches!(req.method.as_str(), group_service::METHOD_GROUP_DESCRIBE_ENTRY | "share.callback") {
+            let value = if req.method=="share.callback" {center.resource_share_callback(&req.params).await?} else {center.describe_group_entry(&req.params).await?};
             return Ok(RPCResponse {
                 result: RPCResult::Success(value),
                 seq: req.seq,
@@ -231,7 +231,17 @@ impl RPCHandler for MsgCenterHttpServer {
             let ctx = RPCContext::from_request(&req, ip_from);
             // Every method checks the session first: restricted sessions only
             // reach the methods that open their scope (D-4).
-            center.caller_identity(&ctx).await?;
+            let caller = center.caller_identity(&ctx).await?;
+            if caller.is_some_and(|c| c.auth_method == Some(buckyos_api::AuthMethod::ExclusiveInvite)
+                && c.app_key.starts_with("app:")) {
+                let verified = ::kRPC::RPCSessionToken::from_string(req.token.as_deref().unwrap_or_default())?;
+                let permitted = verified.extra.get(buckyos_api::TOKEN_SUPPORT_TICKET)
+                    .and_then(|value|serde_json::from_value::<buckyos_api::SupportTicket>(value.clone()).ok())
+                    .is_some_and(|ticket| ticket.allows_request(&req.method,&req.params));
+                if !permitted {
+                    return Err(buckyos_api::AccessDenial::new(buckyos_api::DenyReason::ResourceGrantMissing).into_rpc_error());
+                }
+            }
             if req.method == METHOD_RELOAD_SETTINGS
                 || req.method == METHOD_SERVICE_RELOAD_SETTINGS
                 || req.method == METHOD_REALOAD_SETTINGS

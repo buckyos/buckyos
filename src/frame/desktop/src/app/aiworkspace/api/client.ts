@@ -104,6 +104,9 @@ export class AiwsClient {
   wsCreateEntry(ws: Ws, params: { group_id: string; methods: ShareEntry['methods']; expires_at?: number; max_joins?: number }) {
     return this.call<Result<{ entry: ShareEntry }>>('ws.create_entry', { ...ws, ...params })
   }
+  wsIssueShare(ws: Ws, params: { request_id: string; group_id: string; methods: ShareEntry['methods']; audience: { kind: 'open' } | { kind: 'directed'; did?: string }; recipient_email?: {source_id: string; email: string}; return_path?: string; expires_at?: number; max_joins?: number }) {
+    return this.call<Result<{entry: ShareEntry}>>('ws.issue_share', {...ws, ...params})
+  }
   wsListEntries(ws: Ws) { return this.call<Result<{ entries: ShareEntry[] }>>('ws.list_entries', ws) }
   wsCloseEntry(ws: Ws, entry_id: string, remove_members = false) { return this.call<Result<{ entry: ShareEntry; removed_members: number }>>('ws.close_entry', { ...ws, entry_id, remove_members }) }
   wsJoinEntry(entry_id: string) { return this.call<Result<EntryJoin>>('ws.join_entry', { entry_id }) }

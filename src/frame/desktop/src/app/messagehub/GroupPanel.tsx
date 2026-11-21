@@ -11,6 +11,7 @@ import { useNetworkDialogs } from '../../components/network/dialogs'
 import { hubButtonClass, hubInputClass, hubPrimaryButtonClass } from '../../components/conversation/DialogFocus'
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, GroupMember, MessageHubContext } from './types'
+import { issueGroupShare } from './datamodel/sessionApi'
 import { MemberAvatar } from './HubAvatar'
 import { GroupExtensionPanels } from './extensions/GroupExtensionPanels'
 import { GroupDisplaySection, GroupHooksSection } from './extensions/GroupDisplaySection'
@@ -84,6 +85,10 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
   const { t, locale } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs()
   const [pending, setPending] = useState(false), [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
+  const [guestAudience, setGuestAudience] = useState<'open' | 'directed'>('directed')
+  const [guestRecipient, setGuestRecipient] = useState('')
+  const [guestLink, setGuestLink] = useState('')
+  const guestRequest = useRef<{ key: string; id: string } | null>(null)
   const [inviteToken, setInviteToken] = useState<string | null>(null), [copied, setCopied] = useState(false)
   const inviteLink = inviteToken ? formatInviteLink(entity.id, inviteToken) : null
   useEffect(() => { void store.ensureGroup(context, entity.id) }, [store, context.ownerDid, context.viewerDid, context.mode, entity.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -152,6 +157,24 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       <span className="min-w-0 flex-1">{t('messagehub.group.transferPending', undefined, { name: nameOf(group.pendingTransfer.memberDid) })}</span>
       <button type="button" disabled={pending} className="shrink-0 font-medium text-[color:var(--cp-accent)] disabled:opacity-40" onClick={() => void run(() => store.cancelGroupOwnerTransfer(context, group.did))}>{t('messagehub.group.cancelTransfer')}</button>
     </div>}
+    {group.hosted && group.can.invite && <form className="space-y-2 text-sm" onSubmit={e=>{
+      e.preventDefault()
+      void run(async () => {
+        const recipient = guestAudience === 'open' ? null : guestRecipient.trim()
+        const key = JSON.stringify([group.did, recipient])
+        if (guestRequest.current?.key !== key) guestRequest.current = { key, id: crypto.randomUUID() }
+        const result = await issueGroupShare(group.did, guestRequest.current.id, recipient)
+        setGuestLink(result.url)
+        guestRequest.current = null
+      })
+    }}>
+      <label>{t('messagehub.share.visitor','Visitor sign-in invitation')} <select value={guestAudience} onChange={e=>setGuestAudience(e.target.value as 'open'|'directed')}>
+        <option value="directed">{t('sso.share.directed','Directed only')}</option><option value="open">{t('aiworkspace.shell.share.open','Open invitation')}</option>
+      </select></label>
+      {guestAudience==='directed' && <input required value={guestRecipient} aria-label={t('aiworkspace.shell.share.recipient','Recipient DID or Google email')} placeholder={t('aiworkspace.shell.share.recipient','Recipient DID or Google email')} onChange={e=>setGuestRecipient(e.target.value)}/>}
+      <button className={hubButtonClass} disabled={pending || (guestAudience === 'directed' && !guestRecipient.trim())}>{t('messagehub.share.issue','Create sign-in link')}</button>
+      {guestLink && <input readOnly value={guestLink} aria-label={t('messagehub.share.visitor','Visitor sign-in invitation')} onFocus={e=>e.target.select()}/>}
+    </form>}
     <div className="flex items-center justify-between gap-2">
       <h4 className="text-[13px] font-medium text-[color:var(--cp-muted)]">{t('messagehub.group.membersTitle')}{group.members ? ` · ${activeCount}` : ''}{group.members && waitingCount > 0 ? <span className="font-normal"> · {t('messagehub.group.waitingCount', undefined, { count: waitingCount })}</span> : null}</h4>
       {group.can.invite && <div className="flex items-center gap-1">

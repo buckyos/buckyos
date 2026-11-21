@@ -152,7 +152,7 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     let entry_id = entry["entry"]["entry_id"].as_str().unwrap().to_string();
     s.call(None, "entry.describe", json!({ "entry_id": entry_id })).await;
     s.rpc("ws.list_entries", wsp(json!({}))).await;
-    s.call(Some("tok-bob"), "ws.join_entry", json!({ "entry_id": entry_id })).await;
+    s.call(Some("gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM"), "ws.join_entry", json!({ "entry_id": entry_id })).await;
     s.rpc("ws.close_entry", json!({ "entry_id": entry_id, "remove_members": true })).await;
     s.rpc("acl.delete_group", wsp(json!({ "group_id": "visitors" }))).await;
     let lock = s.rpc("lock.acquire", wsp(json!({ "entity_ids": ["t1"], "session_id": "s1" }))).await;

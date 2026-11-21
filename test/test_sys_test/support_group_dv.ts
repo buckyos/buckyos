@@ -55,7 +55,19 @@ async function customerLink(groupDid: string, external: string, showName: string
   });
 }
 
+async function requireTicketDenial(service: string, method: string, params: JsonRecord, token: string, expectedReason: string) {
+  const response = await fetch(`https://${zoneHost}/kapi/${service}`, {
+    method: "POST",
+    headers: {"content-type":"application/json"},
+    body: JSON.stringify({method, params, sys: [Date.now(), token]}),
+  });
+  assert(response.ok, `${method} denial reached the service`);
+  const body = await response.json() as {code?:string; data?:{reason?:string}; error?:string};
+  assert(body.code === "access_denied" && body.data?.reason === expectedReason, `${method} expected ${expectedReason}, received ${body.code}/${body.data?.reason}`);
+}
+
 async function followCallback(url: string): Promise<string> {
+  assert(new URL(url).origin === appOrigin, "customer callback is on the issuing App instance");
   const response = await fetch(url, { redirect: "manual" });
   const cookie = response.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("buckyos_session_token="));
   assert(cookie, `callback set the session cookie (status ${response.status})`);
@@ -67,7 +79,7 @@ async function signInWithLink(link: string): Promise<{ token: string; inviteId: 
   const inviteId = url.pathname.split("/").pop()!;
   const secret = new URLSearchParams(url.hash.slice(1)).get("s")!;
   const result = asRecord(await cp("auth.invite.login", { invite_id: inviteId, secret }, null), "auth.invite.login");
-  assert(result.status === "ready" && typeof result.callback_url === "string", `invite login: ${JSON.stringify(result)}`);
+  assert(result.status === "ready" && typeof result.callback_url === "string", `invite login: ${result.status}`);
   return { token: await followCallback(String(result.callback_url)), inviteId, secret };
 }
 
@@ -100,7 +112,7 @@ try {
       extensions: { panels: [{ id: "tickets", title: "客服工单", entry_url: panelUrl, scope: "group" }] },
       session_templates: { support: { membership: { roles: ["owner", "admin"] }, rules: { allow_guests: true, post: "all_participants", panels: ["tickets"] } } },
     },
-    sessions: [{ session_id: SESSION_ID, template: "support", title: "客服工单" }],
+    sessions: [{ session_id: SESSION_ID, template: "support", title: "客服工单" }, { session_id: "neighbor", template: "support", title: "另一个客户工单" }],
     invitations: members.filter((m) => m !== adminUser).map((m) => ({ member_did: didOf(m) })),
   }), "group.create");
   groupDid = String(created.group_did);
@@ -114,7 +126,7 @@ try {
   assert(forbidden.status === 401, `no page session → 401 (got ${forbidden.status})`);
   const external = `dv:${runId}`;
   const issued = await customerLink(groupDid, external, "DV 客户");
-  assert(issued.status === 200 && issued.body.ok === true && typeof issued.body.link === "string", `customer_link: ${JSON.stringify(issued.body)}`);
+  assert(issued.status === 200 && issued.body.ok === true && typeof issued.body.link === "string", `customer_link: HTTP ${issued.status}`);
   const link = String(issued.body.link);
   assert(link.startsWith(`https://${zoneHost}/sso/invite/`) && link.includes("#s="), `link is a Zone-root exclusive invite: ${link.split("#")[0]}`);
   const ttl = Number(issued.body.expires_at) - Math.floor(Date.now() / 1000);
@@ -132,9 +144,10 @@ try {
   const identity = asRecord(await cp("auth.current_identity", {}, first.token), "customer identity");
   assert(identity.auth_method === "exclusive_invite" && identity.restricted === true && identity.user_id === customer, `identity: ${JSON.stringify(identity)}`);
   await call("msg-center", "group.accept_session_invitation", { group_did: groupDid, session_id: SESSION_ID }, first.token);
-  const view = asRecord(await call("msg-center", "group.list_sessions", { group_did: groupDid }, first.token), "customer list_sessions");
-  const seen = view.items as JsonRecord[];
-  assert(seen.length === 1 && seen[0].session_id === SESSION_ID && (seen[0].panels as JsonRecord[]).length === 1, "the customer sees only its Session, with the panel");
+  const view = asRecord(await call("msg-center", "group.list_messages", {group_did:groupDid,session_id:SESSION_ID},first.token),"customer ticket");
+  assert(Array.isArray(view.items), "ticket messages are readable");
+  await requireTicketDenial("msg-center", "group.list_messages", {group_did:groupDid,session_id:"neighbor"}, first.token, "resource_grant_missing");
+  await requireTicketDenial("control-panel", "auth.prepare_app_launch", {callback_url:`${appOrigin}/sso_callback`,redirect_url:`${appOrigin}/`}, first.token, "session_kind_not_allowed");
   const customerDid = String(identity.did);
   const posted = asRecord(await call("msg-center", "msg.post_send", {
     idempotency_key: crypto.randomUUID(),

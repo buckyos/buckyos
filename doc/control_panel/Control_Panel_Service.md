@@ -329,7 +329,8 @@ identifier / staging handle
 | 公开 RPC 方法 | 用途 |
 |---|---|
 | `auth.login` | 用户名/密码登录（返回中带 `identity`） |
-| `auth.sso_config` | Zone 自助注册 / DID 登录开关与 jump 入口 |
+| `auth.sso_config` | 返回 Zone 登录开关、jump 入口和启用的 `oauth_sources`，公开来源仅含 `id`、`display_name` |
+| `auth.oauth.begin` | 传入 `source_id`、`redirect_url` 与 `purpose`（`login`、`share`、`user_invite`），后两项用途须提供 `invite_id`。成功返回 `{status:"redirect",url}` |
 | `auth.entry.describe` | 分享入口描述（资源方允许的方式 ∩ Zone 开关） |
 | `auth.register` | 在允许自助注册的入口建 Limited 账号 |
 | `auth.invite.describe` / `auth.invite.login` / `auth.invite.request_resend` | 专属邀请：凭 secret 读取、免密登录、申请重发 |
@@ -337,12 +338,16 @@ identifier / staging handle
 | `user.invite.get` | 凭邀请链接读邀请详情 |
 | `zone.presentation.get` | 登录页等读取 Zone 名称、描述、图标（只含展示字段，不开放 `zone.overview`） |
 
+管理员以 `sso.settings.get/set` 管理 `oauth_sources`。Google 使用固定的 `id=google`、`kind=google`、`webhost=google.com` 及官方端点。填写 `display_name`、`enabled`、`client_id` 和 `secret_ref`。凭据引用是 `$BUCKYOS_ROOT/security/oauth/<secret_ref>` 里的文件名。精确 HTTPS 回调是 `https://<zone>/sso/oauth/<id>/callback`，可显式登记或采用此默认值。自定义 OIDC 还须登记 `webhost`、`issuer`、`authorization_endpoint`、`token_endpoint`、`jwks_uri`。纯 OAuth 使用 `kind=oauth2`、受保护的 `account_endpoint` 及其 `id_field`、`email_field`、`email_verified_field`。停用来源用 `enabled=false`，保留命名空间和绑定。[来源配置类型](../../src/kernel/buckyos-api/src/oauth.rs)
+
 ### 6.2 后端：公开 HTTP 路由
 
-`user.invite.accept` 不在公开白名单中。External 可以用其已验证的 DID 会话调用该方法，密码、专属免密邀请、App/设备会话以及其他 DID 的会话均不能代为接受。`/users/invite/:inviteId` 页面保留完整邀请地址完成 DID 登录，再提交 OwnerDocument；后端在任何账号、口令或邀请状态写入之前验证 DID 会话。
+用户从 `/users/invite/:inviteId` 开始，以绑定本邀请的原生证明或 Google 证明调用 `user.invite.accept`。CP 从身份的权威来源核对已发布的 OwnerDocument、根公钥和 Zone 绑定。Google 路径核对已验证邮箱和上游主体。凭据、账号、邀请和绑定的更新使用同一事务。邀请用途的证明不给浏览器创建根域系统会话。
 
 | 路由 | 方法 | 用途 |
 |---|---|---|
+| `/sso/oauth/:id/authorize` | GET | 建立本次浏览器绑定，再带 S256 PKCE 跳往来源 |
+| `/sso/oauth/:id/callback` | GET | 校验 state、来源、浏览器、有效期、上游账号与已验证邮箱，按请求用途恢复 |
 | `/sso_callback` | GET | SSO 回调（内部校验 nonce 与 redirect_url） |
 | `/sso_refresh` | POST | 凭 refresh cookie 刷新会话 |
 | `/sso_logout` | POST | 注销并清会话 Cookie |
@@ -366,6 +371,18 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 | `/userprofile` | 可分享的公开用户资料页（渲染某用户的公开信息，登出态可见） |
 
 ---
+
+## 资源邀请
+
+安装者在安装计划或 App 详情中选择允许的资源邀请范围。包的可选权限 `sso/share/directed` 允许定向邀请，另声明 `sso/share/open` 才能选择开放邀请。CP 按安装实例保存选项。`apps.share.get` 和 `apps.share.set` 接受 `app_instance_id`，后者另传 `level`（`disabled`、`directed` 或 `open`）。调用者须为实例安装者或管理员。
+
+资源服务以自己的服务会话调用 `resource.share.issue`，传入稳定的 `request_id`、`resource_id`、`return_path`、随机的单邀请 `callback_secret` 以及明确的 `audience`。定向指定完整 DID，也可提交 `{"kind":"directed"}` 与 `recipient_email: {source_id,email}`。CP 校验安装授权和目标路由，向资源服务确认创建者当前的分享权、资源标题、可执行操作、登录方式和过期时间。只有登记成功才返回 `{invite_id,url}`。调用方重试时使用相同的请求标识和参数。
+
+普通 App 在其注册主机的 `POST /sdk/appservice/resource-share/callback` 验证邀请凭据。AI Workspace 和 Message Hub 通过各自服务的 `share.callback` 接受同样的请求。`inspect` 提供用途页元数据。`prepare` 验证本次主体的资格并可保留名额。`commit` 再检查并落实资源授权，重复交付应返回相同结果。`resume` 核实此主体仍持有已接受的资源授权。资源服务应该支持重复调用；CP 仅在资源授权落地后登记最终接受记录。
+
+verify-hub 通过 `resource.share.verify_grant {invite_id,did}` 核对已接受记录并复查实时业务授权。正常返回的 `ok` 表示允许或已撤权，传输错误允许稍后重试。签发、续期及使用受邀身份调用服务时均执行该检查。
+
+`/sso/share/<invite_id>` 展示 `auth.share.describe` 的用途，`auth.share.accept` 根据已验证的主体交付指定主机的会话。完整返回路径包含查询和片段。权限关闭后，既有接受者还能否重开由其当前业务授权决定。邀请记录在 `services/control_panel/resource_shares/<invite_id>`，接受记录在 `resource_share_acceptances/<invite_id>/<did_digest>`（同一 CP 前缀），回调凭据与定向邮箱分别保存在受保护的键下。
 
 ## 7. 数据存储与配置树 (Storage Layout)
 

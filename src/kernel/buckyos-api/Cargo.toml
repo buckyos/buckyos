@@ -49,6 +49,7 @@ buckyos-kit = { workspace = true }
 package-lib = { workspace = true }
 name-lib = { workspace = true }
 name-client = { workspace = true }
+bns-client = { workspace = true }
 buckyos-http-server = { workspace = true }
 kRPC ={ workspace = true }
 rbac = { workspace = true }

@@ -56,3 +56,6 @@ tar = { workspace = true }
 named_store = { workspace = true }
 ndn-toolkit = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
+
+[dev-dependencies]
+openssl = { workspace = true }

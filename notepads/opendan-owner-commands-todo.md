@@ -60,12 +60,14 @@
 
 ### 4.2 首批对象
 
+**首批对象交付后，必须退役由这些对象接替的 AIWS 命令行。** 本批的 `buckyos aiws cal` 与 `buckyos aiws todo` 分别由 `xcall owner.cal <动作>` 与 `xcall owner.todo <动作>` 接替。新入口覆盖原命令的全部操作并通过验收后，按 §4.3 迁移现有调用方，移除这两个子命令的注册和帮助条目。
+
 每次调用只有一个对象和一个动作。动词就是相应 Profile 的 action 名。下面同一行列出的各动作分别声明参数、读写性质及返回值。脚本与外部 Provider 都按这份契约验收。对象能提供的属性和事件分别通过 DID Object 的 read 和订阅入口访问。
 
 | 对象 | 动作 | 输入和结果 |
 | --- | --- | --- |
 | `owner` | `who`、`resolve` | 默认本地 Profile 提供这两个纯读动作。`who` 返回可信 `owner_did`，已发布且可见时另给 `person_ref`。`resolve slot=calendar` 给出本人的用途绑定状态、已知动作和资源绑定修订。存在可见的已发布用途对象时才返回 `resource_ref`。此结果描述个人用途配置。实际调用 `owner.cal` 时以该独立别名的绑定为准。 |
-| `owner` | `notify`、`ask`、`notification_status` | 提醒映射到 `notify.send(kind=notice)`，请主人回答映射到 `kind=input`。传消息文本，返回 `notify_id`、状态及已有的 `task_id`/会话链接。按 `notify_id` 取答复。发送成功表示系统已接收，保留 Agent 会话来源供人点击返回。[NotifyHost](../src/frame/lib_opendan/src/notify.rs#L57) · [通知类型](../../buckyos-websdk/src/msg_center_client.ts#L659) |
+| `owner` | `notify`、`ask`、`notification_status` | 提醒映射到 `notify.send(kind=notice)`，请主人回答映射到 `kind=input`。传消息文本，没带幂等键时宿主按内容 hash 加时间片构造（前置 TODO §5），返回 `notify_id`、状态及已有的 `task_id`/会话链接。按 `notify_id` 取答复。发送成功表示系统已接收，保留 Agent 会话来源供人点击返回。[NotifyHost](../src/frame/lib_opendan/src/notify.rs#L57) · [通知类型](../../buckyos-websdk/src/msg_center_client.ts#L659) |
 | `owner.cal`（用途 `calendar`） | `list`、`add`、`update`、`rm`、`skip`、`postpone` | 列表窗口 `[from,to)`，带 offset 的 RFC 3339 时刻，支持 `tz, limit, cursor`，返回 `events[], next_cursor`。新增传 `title` 和 `start/end` 或全天 `start_date/end_date`（结束日含当天）。单条变更传 `record_ref`，更新另传 `patch`。重复事件保留系列、原发生时刻及 `scope=one/following/all`。返回可打开的记录回执。 |
 | `owner.todo` | `list`、`add`、`done`、`undone`、`update`、`move`、`rm` | 列表传 `include_done, limit, cursor` 等，返回 `items[], next_cursor`。新增传 `title, due?`，日期型截止日按用户日历解释。单项操作传 `record_ref`。保留重开、排序和显式批量清理语义，返回受影响记录或数量。 |
 | `owner.contacts` | `find`、`get`、`update` | 按姓名查询可返回多个候选。get/update 传已消歧的 DID，允许编辑的字段经系统 `contact.*` 写入。返回 `contact_ref`（通讯录关系）及已核实的用户 DID。对方个人对象已发布且可见时另给 `person_ref`。工作区选择联系人时复用该来源。[联系人字段与写入规则](../doc/message_hub/Contact%20Mgr.md#L123) |
@@ -109,7 +111,7 @@ xcall owner ask --params '{"text":"周五评审是否照常？"}'
 }
 ```
 
-**先认领写入，再派发。** 个人用途实现以 `(zone, caller, subject_did, slot, action, idempotency_key)` 认领操作，在首次派发前持久化规范化输入摘要、已选扩展或链接目标及其别名修订、相关的资源绑定修订、实际存储目标与记录 ID。并发只认领一次，同键不同输入报冲突。重启或改绑后沿原认领查回执、按原目标安全续办或报告结果未知。链接到同一已发布用途对象时，直接 URL 调用和通过别名调用要把相同业务键交给同一对象。独立的固定日历有自己的幂等范围。持旧键重试时，通用层先恢复原别名修订选中的具体目标，领域层再按原资源绑定继续。若原目标无法确认结果，返回 `WRITE_OUTCOME_UNKNOWN`，新目标收到零次派发。重放回执仍检查当前权限。
+**先认领写入，再派发。** 个人用途实现以 `(zone, caller, subject_did, slot, action, idempotency_key)` 认领操作，在首次派发前持久化规范化输入摘要、已选扩展或链接目标及其别名修订、相关的资源绑定修订、实际存储目标与记录 ID。并发只认领一次，同键不同输入报冲突。重启或改绑后沿原认领查回执、按原目标安全续办或报告结果未知。链接到同一已发布用途对象时，直接 URL 调用和通过别名调用要把相同业务键交给同一对象。独立的固定日历有自己的幂等范围。通用层不记录派发（前置 TODO §5）：别名在首次调用与重试之间改绑时，重试按新绑定派发，这是已知风险。别名未改绑时，领域层按原认领和原资源绑定继续。若原目标无法确认结果，返回 `WRITE_OUTCOME_UNKNOWN`，新的资源目标收到零次派发。重放回执仍检查当前权限。
 
 `agent_tool xcall` 已解析 `--idempotency-key`，Rust DID Object 客户端目前构造 `ActionInvocation` 时却把 `idempotency_key/confirm_token/trace_id` 设为 `None`。实现时沿调用链传递现有 envelope 元数据，领域脚本把原业务键交给 `doc.commit` 并复用记录 ID。模板初始化和业务写入各有稳定的提交键。现有 `ScheduleClient.commitTo` 每次独立提交都会生成新键。业务层和 Provider 须支持以原键取回结果，可用 `doc.get_submission`。Agent 若要安全重试，应在首次发送前保存该键。Provider 无法确认提交时返回 `WRITE_OUTCOME_UNKNOWN`、原键及可见的查询线索，结束自动重试。[CLI 参数](../src/frame/agent_tool_cli_dev/src/lib.rs#L779) · [动作请求](../../buckyos-base/src/name-client/src/did_obj_client.rs#L177) · [协议字段](../../buckyos-base/doc/did-object-protocol.md#L1015) · [SDK 提交](../../buckyos-websdk/src/aiws_schedule.ts#L830) · [AIWS 提交查询](../src/frame/aiworkspace/README.md#L1832)
 
@@ -140,7 +142,7 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 
 - [ ] **M0 · 修正私人日程归属。** 具名创建、ensure、重建索引都使用经验证的 `(owner_principal, name)`，沿用同一并发互斥。命中已有空间也校验真实 caller 对它的访问。为纯查询添加只读的按名查找，缺省时不建空空间。重建索引时识别已有重复项，只让冲突键报错。选定前仍可用原权限和 ID 读写各副本，使用含糊名字的写操作返回冲突。提供本人可执行的选主处理，保留原 ID、内容、历史、ACL 与旧链接，显式解除其他副本的冲突命名。处理中断可重做，禁止按目录遍历顺序选一本。复用名字测试夹具和现有日程页。[服务索引](../src/frame/aiworkspace/store/src/service.rs#L318) · [命名测试](../src/frame/aiworkspace/store/tests/names.rs)
 - [ ] **M1 · 本地提醒与原生日历。** 在通用扩展机制可用后交付两个独立的本地别名。先在没有个人对象 Provider 的 Zone 用 `xcall owner notify` 生成一张通知卡，用 `xcall owner.cal add` 将一条记录写入本人的 AIWS 日历。验证同键重试、桌面可见性及无可发布用途引用时的回执。再迁移 §4.2 的日历、待办、系统通讯录、`who/resolve` 和询问。分别用人类和 Agent 会话核实实际服务身份、权限和数据归属。
-- [ ] **M2 · 两种实现与资源换绑。** 接入 `owner.bindings` 的资源修订检查、外部日历和跨进程幂等。用本地用途脚本及第二个测试 Provider 验证同一动作契约，分别覆盖链接固定日历和链接个人用途对象。单独切换 `owner` 和 `owner.cal`。核对新写、旧回执、原键重试的实际目的地。外部 HTTPS Provider 按其声明的 endpoint/form 和受众调用，Zone 身份凭据只发给适用的 Zone 服务。记录测试 Provider 的能力和范围。[Rust 对象适配](../src/frame/agent-did-object-lib/src/adapters/did_object.rs) · [Zone 凭据范围](../src/frame/agent-did-object-lib/src/zone.rs#L69)
+- [ ] **M2 · 两种实现与资源换绑。** 接入 `owner.bindings` 的资源修订检查、外部日历和跨进程幂等。用本地用途脚本及第二个测试 Provider 验证同一动作契约，分别覆盖链接固定日历和链接个人用途对象。单独切换 `owner` 和 `owner.cal`。核对新写、旧回执、原键重试的实际目的地，别名改绑后的原键重试只记录、不判失败。外部 HTTPS Provider 按其声明的 endpoint/form 和受众调用，Zone 身份凭据只发给适用的 Zone 服务。记录测试 Provider 的能力和范围。[Rust 对象适配](../src/frame/agent-did-object-lib/src/adapters/did_object.rs) · [Zone 凭据范围](../src/frame/agent-did-object-lib/src/zone.rs#L69)
 - [ ] **M3 · 让 Jarvis 实际选用它。** 新增 `src/apps/jarvis_agent/agent/cmd_skills/owner/SKILL.md`，声明已安装的 `commands: xcall` 和 `scope: ui, work`，在 `ui_core` 留短入口。让 UI/Work 通过现有机制发现手册。写明何时用逻辑名、何时复用 Hint URL 或记录回执。参数以各对象的 Profile 为准。迁移 `aiworkspace_template_dev`、控件说明、帮助和 DV 中操作个人日程的示例。分别在打包的 Agent 环境和人类登录终端执行示例。[Jarvis 配置](../src/apps/jarvis_agent/agent/agent.toml#L49) · [AIWS 手册](../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_template_dev/SKILL.md#L40)
 - [ ] **M4 · 联系人协作及其他能力。** 为需要被其他人调用的用途发布稳定对象 URL，可复用已有 Provider 或实施 §3 的用户目录。首先交付本 Zone 的忙闲授权、按名字消歧、保存可见 Hint 和一次直调。再按 §5 分项交付邀请、团队分派、位置、实时通话和订阅。复用日程与提醒已有的分工。[提醒实施边界](opendan-d4-timer-reminder-todo.md#L19)
 
@@ -152,11 +154,11 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 | A2 旧数据与只读 | 预置同 owner 同名的两本有数据的日历，重启、选主、重启。另测空账号、只读 Agent 及工作区显式拒绝某个 Agent。 | 冲突可诊断，选主前按名写入被拒，选主后两本原记录按 ID 仍可访问。只读查询不初始化。身份或权限拒绝不伪装成空表，且不泄露候选资源详情。 |
 | A3 效率与人可操作 | 在仅安装本地扩展的环境中，主人让新会话创建一条评审日程。人从返回链接改期，Agent 再查询。以 CLI JSON、服务调用记录和 Agent 工具轨迹核对。 | 已知 owner 的常用操作只需一条业务命令，不列全 Zone 工作区、不扫描通讯录、不需模型先 `read` 探索。桌面和 CLI 指向同一记录，跨时区和全天事件日期正确。缺时区时用例覆盖同一绝对时刻在主人和容器分别属于两天的情形。 |
 | A4 换源 | 保持本地用途别名不动，将个人资源绑定从 AIWS A 改为 Provider B，A 保持在线可写。再新增。用旧记录回执改期。把 B 设为只读而 A 仍可写，再持原回执改期。另测 B 失联、撤权和过期的并发配置写。 | B 可写时新增只到 B。B 变为只读后原记录仍按 A 当前 ACL 改期，B 没有收到该调用。B 的失败有明确原因，两边均无意外新增。并发配置写只能有一个成功。只增加该用户 calendar 的资源绑定修订。切换后原数据仍留在 A。 |
-| A5 重试 | 注入一次“原 Provider 已提交但回包丢失”，随后重启派发进程、切换资源绑定，再以原键重试。再测直接改别名使它指向另一日历，以及链接到同一已发布用途对象时改用其完整 URL 重试。另测相同键不同输入、撤权后读取回执及外部 Provider 无法确认提交。 | 原请求取回原回执或明确给出结果未知，双方至多出现一次写入。不同输入报冲突，撤权后不披露旧结果。通知重试只生成一张通知卡。 |
+| A5 重试 | 注入一次“原 Provider 已提交但回包丢失”，随后重启派发进程、切换资源绑定，再以原键重试。再测链接到同一已发布用途对象时改用其完整 URL 重试。别名改绑后的原键重试属已知风险，不在此判定。另测相同键不同输入、撤权后读取回执及外部 Provider 无法确认提交。 | 原请求取回原回执或明确给出结果未知，双方至多出现一次写入。不同输入报冲突，撤权后不披露旧结果。通知重试只生成一张通知卡。 |
 | A6 人与权限 | 两个小林同名，选定其一。只有他向 Alice 分享了忙闲。下次用可见 Hint 直调，随后撤销共享。从另一人的会话再试。 | 首次消歧不产生写入。已知目标一次 `xcall` 取得忙闲，无标题或底表 URL。撤权生效。另一个会话既不能据此召回 Alice 的私有 Hint，也不能凭一个 URL 越权。 |
 | A7 通讯与团队 | 修改本人通讯录备注。让主人确认一个问题。尝试改收件人发通知。在团队项目分派一项任务，再撤销该成员的读取权。 | 备注由 ContactMgr 返回，询问得到通知/任务引用，答复前保持待处理。越权通知被拒。分派完成后只有一条项目记录，撤权后个人视图不再展示其内容。 |
 | A8 可选能力 | 未接位置源、位置已过期、无实时通话 Provider、Provider 缺某项 action、有事件声明但实际断线。 | 未配置、陈旧与不可用分别可辨。不会报出推测位置或“已接通”。重连按最新授权重读。未实现能力不出现在可用动作中。 |
-| A9 默认脚本 | 关闭个人对象 Provider，安装本地 `owner` 与 `owner.cal` 并运行通知和日程 DV，记录 `list/add/update` 的 AIWS 调用。检查裸入口帮助、个人日历 Profile、工作区命令表和打包手册。 | 提醒只发一张卡。人类和 Agent 的日历脚本都能运行，回执有真实 `record_ref`，没有发布用途 URL 时省略 `resource_ref`。原生路径只调用工作区定位、查询、读取及提交等基础 API，桌面能编辑同一记录。旧日历和待办命令的全部操作已有对应动作，AIWS 命令表已移除旧注册。 |
+| A9 默认脚本与旧 CLI 退役 | 关闭个人对象 Provider，安装本地 `owner`、`owner.cal` 和 `owner.todo`，运行通知和日程 DV，记录 `list/add/update` 的 AIWS 调用。检查裸入口帮助、个人日历 Profile、工作区命令表和打包手册。退役后在发行版中执行 `buckyos aiws cal list` 和 `buckyos aiws todo list`。 | 提醒只发一张卡。人类和 Agent 的日历脚本都能运行，回执有真实 `record_ref`，没有发布用途 URL 时省略 `resource_ref`。原生路径只调用工作区定位、查询、读取及提交等基础 API，桌面能编辑同一记录。旧日历和待办命令的全部操作均可通过对应的 `xcall` 动作完成。AIWS 命令表和帮助已移除这两个子命令，调用旧入口均返回未知命令。 |
 | A10 两种实现 | 同一组 `xcall owner notify` 和 `xcall owner.cal add` 用例先设为“本地提醒 + 链接日历”，再设为“链接个人对象 + 本地 AIWS 日历”。分别改动、移除 `owner` 和 `owner.cal`。另测链接端失联、缺少动作与本地脚本不可用。 | 每次只有选定的处理器执行。只改根别名时日历行为及其别名修订保持原值，移除根后日历仍可调用。反向同理。链接实现及直接访问同一 URL 的结果和权限一致。任一失败都返回明确原因，没有自动尝试另一个实现或二次写入。 |
 | A11 作用域与发布 | Alice、Alice 的 Agent、Bob 分别运行本地 `xcall owner who` 和 `xcall owner.cal list`，再用无可信身份的会话尝试。发布忙闲用途对象后，让获准的 Bob 保存并调用 Alice 的 URL，再尝试未获授权的动作。 | Alice 和她的 Agent 定位到相同的 owner DID，调用者 DID 和权限仍可区分。Bob 读到自己的日历，无有效身份时报错。纯本地阶段无公开用途引用，发布后 Hint 的 URL 始终指向 Alice 的获准用途。 |
 

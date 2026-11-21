@@ -90,32 +90,7 @@ test('an exclusive invite opens the guest Session: join, post, the host sees it'
   expect(identity).toMatchObject({ kind: 'account', restricted: true, auth_method: 'exclusive_invite', password_set: false })
 })
 
-test('a guest entry of an AI Workspace opens the workspace without an account', async ({ browser, request }) => {
-  const token = await adminToken(request)
-  const ws = await rpc(request, 'aiworkspace', 'ws.create', { title: `DJ 电台 ${runId}` }, token)
-  const workspaceId = String(ws.workspace_id)
-  const entry = await rpc(request, 'aiworkspace', 'ws.create_entry', {
-    workspace_id: workspaceId,
-    capabilities: ['read', 'comment'],
-    methods: { guest: true, password: false, self_register: true, did_login: false },
-  }, token)
-  const entryId = String((entry.entry as JsonRecord).entry_id)
-
-  const context = await browser.newContext({ ignoreHTTPSErrors: true })
-  const page = await context.newPage()
-  await page.goto(`${zoneOrigin}/sso/entry?service=aiworkspace&entry=${encodeURIComponent(entryId)}`)
-  await expect(page.getByTestId('sso-entry-method-guest')).toBeVisible()
-  await expect(page.getByTestId('sso-entry-method-self_register')).toBeVisible()
-  await expect(page.getByTestId('sso-entry-method-did_login')).toHaveCount(0)
-  await page.getByTestId('sso-entry-method-guest').click()
-  await page.waitForURL(new RegExp(`^https://aiws-${workspaceId.replace(/^ws_/, '')}\\.`))
-  await expect(page.getByTestId('aiws-open-error')).toHaveCount(0)
-  await context.close()
-
-  await rpc(request, 'aiworkspace', 'ws.close_entry', { workspace_id: workspaceId, entry_id: entryId }, token)
-  const closed = await rpc(request, 'control-panel', 'auth.entry.describe', { service: 'aiworkspace', entry_id: entryId })
-  expect(closed.state).toBe('unavailable')
-})
+// Registered open Workspace links and anonymous access are exercised in resource-share-targets.spec.ts.
 
 test('a Limited account signed in with its password keeps the Desktop', async ({ browser, request }) => {
   const token = await adminToken(request)

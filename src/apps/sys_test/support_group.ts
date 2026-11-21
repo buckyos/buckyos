@@ -24,7 +24,7 @@ export interface SupportContext {
   appInstanceId: string;
   zoneHost: string;
   /** Control Panel / msg-center kRPC clients holding the App service session. */
-  serviceClient(service: "control-panel" | "msg-center"): RpcClient;
+  serviceClient(service: "control-panel" | "msg-center" | "verify-hub"): RpcClient;
   /** A Control Panel kRPC client holding the caller's session (to learn who they are). */
   clientWithToken(service: "control-panel", token: string): RpcClient;
 }
@@ -175,7 +175,7 @@ export async function handleSupportRoute(
     if (!isRecord(caller) || caller.user_id !== context.ownerUserId) {
       return json({ ok: false, error: "only the installing account of this App issues customer links" }, 403);
     }
-    const returnPath = `/messagehub/guest?${new URLSearchParams({ group: groupDid, session: sessionId })}`;
+    const returnPath = `/support/ticket?${new URLSearchParams({ group: groupDid, session: sessionId })}`;
     try {
       const issued = await context.serviceClient("control-panel").call("user.app_login.issue", {
         kind: "link",

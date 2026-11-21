@@ -329,6 +329,10 @@ servers:
                 global SERVICE_ID="control-panel";
               elif match $REQ.path "/sso_logout" then
                 global SERVICE_ID="control-panel";
+              elif match $REQ.path "/sso/oauth/*" then
+                global SERVICE_ID="control-panel";
+              elif match $REQ.path "/sso/did_start" then
+                global SERVICE_ID="control-panel";
               elif match $REQ.path "/sso/did_callback" then
                 global SERVICE_ID="control-panel";
               elif match $REQ.path "/ndm/*" then
@@ -380,6 +384,14 @@ servers:
             priority: 135
             block: |
               eq $TARGET_APP_INFO.access_mode "public" && return true;
+              # Resource services authenticate the one registered, POST-only callback with their per-invitation credential.
+              if eq $REQ.path "/sdk/appservice/resource-share/callback" then
+                if oneof --ignore-case $REQ.method "post" then
+                  if match-include $TARGET_APP_INFO "resource_share_callback" then
+                    eq $TARGET_APP_INFO.resource_share_callback true && return true;
+                  end
+                end
+              end
               local cookies=$(parse-cookie $REQ.Cookie);
               match-include $cookies "buckyos_session_token" || error false;
 

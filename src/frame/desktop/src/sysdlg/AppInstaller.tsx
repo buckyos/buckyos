@@ -640,7 +640,21 @@ function PlanStep({
           )}
           <section data-testid="app-installer-permissions">
             <h3 className="text-sm font-semibold">{t('app22.permissions')}</h3>
-            {draft.app.permissions.map((permission) => (
+            {draft.app.permissions.some(item => item.scope_path === 'sso/share/directed') && <label className="block text-sm">
+              {t('sso.share.level', 'Resource invitations')}
+              <select className="ml-2" value={p.permissions.some(item => item.scope_path === 'sso/share/open') ? 'open' : p.permissions.some(item => item.scope_path === 'sso/share/directed') ? 'directed' : 'disabled'}
+                onChange={e => {
+                  const level=e.target.value
+                  const selected=draft.app.permissions.filter(item => item.scope_path === 'sso/share/directed' && level !== 'disabled' || item.scope_path === 'sso/share/open' && level === 'open')
+                  form.setValue('install_params.permissions',[...p.permissions.filter(item=>!['sso/share/directed','sso/share/open'].includes(item.scope_path)),...selected])
+                  update()
+                }}>
+                <option value="disabled">{t('sso.share.disabled','Disabled')}</option>
+                <option value="directed">{t('sso.share.directed','Directed only')}</option>
+                {draft.app.permissions.some(item => item.scope_path === 'sso/share/open') && <option value="open">{t('sso.share.open','Directed and open')}</option>}
+              </select>
+            </label>}
+            {draft.app.permissions.filter(item=>!['sso/share/directed','sso/share/open'].includes(item.scope_path)).map((permission) => (
               <label
                 key={permission.scope_path}
                 className="flex min-h-14 items-center gap-3 text-sm"

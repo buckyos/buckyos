@@ -21,6 +21,7 @@ function consentUrl(did = 'did:bns:alice') {
     state: 'flow-1',
     nonce: 'n-1',
     code_challenge: 'c-1',
+    app_context: 'mock-system-context',
   })
   return `/sso/federate?${params}`
 }
@@ -30,7 +31,7 @@ async function routeTarget(page: Page) {
 }
 
 test.describe('DID consent page', () => {
-  test('shows what is shared and returns a code on approval; a remembered Zone gets one-click continue', async ({ page }) => {
+  test('shows what is shared and returns a code on approval; a remembered application returns automatically', async ({ page }) => {
     await routeTarget(page)
     await page.goto(consentUrl())
     const consent = page.getByTestId('sso-federate-consent')
@@ -47,8 +48,7 @@ test.describe('DID consent page', () => {
     expect(back.searchParams.get('state')).toBe('flow-1')
 
     await page.goto(consentUrl())
-    await expect(page.getByTestId('sso-federate-consent')).toHaveAttribute('data-already-granted', 'true')
-    await expect(page.getByTestId('sso-federate-approve')).toHaveText('Continue')
+    await page.waitForURL(`${TARGET}/sso/did_callback?**`)
   })
 
   test('cancel goes back with access_denied', async ({ page }) => {

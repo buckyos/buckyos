@@ -413,6 +413,7 @@ pub struct GuestEntry {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuestEntryMethods {
+    pub oauth: bool,
     pub password: bool,
     pub self_register: bool,
     pub did_login: bool,
@@ -421,6 +422,7 @@ impl From<GuestEntryMethods> for buckyos_api::EntryMethods {
     fn from(m: GuestEntryMethods) -> Self {
         Self {
             guest: false,
+            oauth: m.oauth,
             password: m.password,
             self_register: m.self_register,
             did_login: m.did_login,
@@ -694,6 +696,15 @@ pub struct GroupInviteLink {
     pub revoked: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupResourceShare {
+    pub creator: DID,
+    pub request: Value,
+    pub secret: String,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub admitted: BTreeSet<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageMeta {
     pub obj_id: ObjId,
     pub session_id: Option<String>,
@@ -750,6 +761,8 @@ pub struct GroupState {
     #[serde(default)]
     pub pending_owner_transfer: Option<OwnerTransfer>,
     pub invite_links: BTreeMap<String, GroupInviteLink>,
+    #[serde(default)]
+    pub resource_shares: BTreeMap<String, GroupResourceShare>,
     pub group_seq: u64,
     pub session_seqs: BTreeMap<String, u64>,
     pub accepted_at_ms: u64,

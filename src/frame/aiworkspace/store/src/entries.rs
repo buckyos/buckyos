@@ -22,13 +22,17 @@ pub const ENTRY_PASSWORD: u8 = 2;
 /// A visitor registers a local account (implies `password`).
 pub const ENTRY_SELF_REGISTER: u8 = 4;
 pub const ENTRY_DID_LOGIN: u8 = 8;
-const ENTRY_METHODS: [(u8, &str); 4] =
-    [(ENTRY_GUEST, "guest"), (ENTRY_PASSWORD, "password"), (ENTRY_SELF_REGISTER, "self_register"), (ENTRY_DID_LOGIN, "did_login")];
+pub const ENTRY_OAUTH: u8 = 16;
+const ENTRY_METHODS: [(u8, &str); 5] =
+    [(ENTRY_GUEST, "guest"), (ENTRY_PASSWORD, "password"), (ENTRY_SELF_REGISTER, "self_register"), (ENTRY_DID_LOGIN, "did_login"), (ENTRY_OAUTH, "oauth")];
 const ENTRY_SEPARATOR: char = '~';
 
 /// `{ guest, password, self_register, did_login }` (buckyos-api `EntryMethods`).
 pub fn entry_methods_json(bits: u8) -> Value {
-    Value::Object(ENTRY_METHODS.iter().map(|(bit, name)| (name.to_string(), json!(bits & bit != 0))).collect())
+    Value::Object(ENTRY_METHODS.iter()
+        .filter(|(bit, _)| *bit != ENTRY_OAUTH || bits & bit != 0)
+        .map(|(bit, name)| (name.to_string(), json!(bits & bit != 0)))
+        .collect())
 }
 
 pub fn parse_entry_methods(v: &Value) -> WsResult<u8> {
@@ -152,6 +156,10 @@ impl Workspace {
     /// `ws.create_entry { group_id, methods, expires_at?, max_joins? }` (`manage`): at least one way in; the group exists
     /// and holds neither `manage` nor `run` (R8, R18).
     pub fn create_entry(&mut self, caller: &Caller, group_id: &str, methods: u8, expires_at: Option<i64>, max_joins: Option<i64>) -> WsResult<Value> {
+        self.create_entry_with_registration(caller,group_id,methods,expires_at,max_joins,None)
+    }
+
+    fn create_entry_with_registration(&mut self, caller: &Caller, group_id: &str, methods: u8, expires_at: Option<i64>, max_joins: Option<i64>, registration: Option<(&str,&Value,&str)>) -> WsResult<Value> {
         self.require_ws(caller, Cap::Manage)?;
         let data = self.acl_data()?;
         if !data.groups.contains_key(group_id) {
@@ -178,6 +186,10 @@ impl Workspace {
                 params![local, group_id, methods, expires_at, max_joins, caller.principal, now],
             )
             .map_err(db_err)?;
+            if let Some((request_id, request, secret)) = registration {
+                tx.execute("INSERT INTO registered_entries(entry_id,request_id,creator,request,secret) VALUES(?1,?2,?3,?4,?5)",
+                    params![local,request_id,caller.principal,request.to_string(),secret]).map_err(db_err)?;
+            }
             let after = json!({ "entry_id": self.entry_public_id(&local), "group_id": group_id, "methods": entry_methods_json(methods), "expires_at": expires_at, "max_joins": max_joins });
             Ok(((), vec![AuditItem { action: "entry.create", target: json!({ "entry_id": self.entry_public_id(&local) }), before: None, after: Some(after) }]))
         })?;
@@ -193,7 +205,14 @@ impl Workspace {
             let local = e.entry_id.split_once('~').map(|(_, l)| l.to_string()).unwrap_or_default();
             let joined: i64 = self.local.query_row("SELECT COUNT(*) FROM acl_members WHERE via_entry = ?1", [&local], |r| r.get(0)).map_err(db_err)?;
             let mut v = e.to_json();
-            v["joined"] = json!(joined);
+            let registration: Option<Option<String>> = self.local.query_row("SELECT share_url FROM registered_entries WHERE entry_id=?1",[&local],|r| r.get(0)).optional().map_err(db_err)?;
+            if let Some(url) = registration {
+                v["share_url"] = json!(url);
+                let count:i64 = self.local.query_row("SELECT COUNT(*) FROM (SELECT member FROM entry_acceptances WHERE entry_id=?1 AND committed=1 UNION SELECT member FROM acl_members WHERE via_entry=?1)",[&local],|r|r.get(0)).map_err(db_err)?;
+                v["joined"] = json!(count);
+            } else {
+                v["joined"] = json!(joined);
+            }
             out.push(v);
         }
         Ok(json!({ "ok": true, "entries": out }))
@@ -206,7 +225,11 @@ impl Workspace {
         let entry = self.entry(local)?.ok_or_else(|| WsError::not_found("entry not found"))?;
         let (removed, _) = self.acl_txn(caller, |tx| {
             tx.execute("UPDATE share_entries SET state = 'closed' WHERE entry_id = ?1", [local]).map_err(db_err)?;
-            let removed = if remove_members { tx.execute("DELETE FROM acl_members WHERE via_entry = ?1", [local]).map_err(db_err)? } else { 0 };
+            let removed = if remove_members {
+                tx.execute("DELETE FROM entry_acceptances WHERE entry_id=?1",[local]).map_err(db_err)?;
+                tx.execute("UPDATE acl_members SET via_entry=(SELECT MIN(a.entry_id) FROM entry_acceptances a JOIN share_entries e ON e.entry_id=a.entry_id WHERE a.member=acl_members.member AND e.group_id=acl_members.group_id AND a.committed=1) WHERE via_entry=?1 AND EXISTS(SELECT 1 FROM entry_acceptances a JOIN share_entries e ON e.entry_id=a.entry_id WHERE a.member=acl_members.member AND e.group_id=acl_members.group_id AND a.committed=1)",[local]).map_err(db_err)?;
+                tx.execute("DELETE FROM acl_members WHERE via_entry = ?1", [local]).map_err(db_err)?
+            } else { 0 };
             Ok((removed, vec![AuditItem { action: "entry.close", target: json!({ "entry_id": entry.entry_id, "group_id": entry.group_id }),
                                          before: Some(json!({ "state": entry.state.as_str() })), after: Some(json!({ "state": "closed", "removed_members": removed })) }]))
         })?;
@@ -220,6 +243,11 @@ impl Workspace {
     /// an entry open to guests. Joining again changes nothing; nobody becomes the owner by joining.
     pub fn join_entry(&mut self, caller: &Caller, local: &str, allowed: impl FnOnce(u8) -> WsResult<()>) -> WsResult<Value> {
         let entry = self.entry(local)?.filter(|e| e.state == EntryState::Active).ok_or_else(unavailable)?;
+        let awaiting_registration: bool = self.local.query_row(
+            "SELECT EXISTS(SELECT 1 FROM registered_entries WHERE entry_id=?1 AND share_url IS NULL)",
+            [local], |r| r.get(0),
+        ).map_err(db_err)?;
+        if awaiting_registration { return Err(unavailable()); }
         match caller.class {
             CallerClass::Account { .. } | CallerClass::External { .. } => {
                 if let Err(refused) = allowed(entry.methods) {
@@ -243,7 +271,7 @@ impl Workspace {
             .unwrap_or(false);
         if !already {
             if let Some(max) = entry.max_joins {
-                let joined: i64 = self.local.query_row("SELECT COUNT(*) FROM acl_members WHERE via_entry = ?1", [local], |r| r.get(0)).map_err(db_err)?;
+                let joined: i64 = self.local.query_row("SELECT COUNT(*) FROM (SELECT member FROM acl_members WHERE via_entry=?1 UNION SELECT member FROM entry_acceptances WHERE entry_id=?1 AND (committed=1 OR reserved_until>?2))", params![local,self.now_secs()], |r| r.get(0)).map_err(db_err)?;
                 if joined >= max {
                     return Err(WsError::refused(Code::PermissionDenied, Deny::EntryUnavailable, "the entry admits nobody else"));
                 }
@@ -257,4 +285,124 @@ impl Workspace {
         }
         Ok(json!({ "ok": true, "workspace_id": self.workspace_id, "entry_id": entry.entry_id, "group_id": entry.group_id, "joined": !already }))
     }
+}
+
+pub const REGISTERED_ENTRIES_DDL: &str = "
+CREATE TABLE IF NOT EXISTS registered_entries (
+  entry_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, creator TEXT NOT NULL,
+  request TEXT NOT NULL, secret TEXT NOT NULL, share_url TEXT,
+  UNIQUE(creator, request_id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS entry_acceptances (
+  entry_id TEXT NOT NULL, member TEXT NOT NULL, reserved_until INTEGER NOT NULL, committed INTEGER NOT NULL,
+  PRIMARY KEY(entry_id, member)
+) WITHOUT ROWID;";
+
+impl Workspace {
+    pub fn share_request(
+        &mut self,
+        caller: &Caller,
+        request_id: &str,
+        request: &Value,
+        group: &str,
+        methods: u8,
+        expiry: Option<i64>,
+        maximum: Option<i64>,
+    ) -> WsResult<(String, String, Option<String>)> {
+        self.require_ws(caller, Cap::Manage)?;
+        if let Some((id, secret, old, url)) = self.local.query_row(
+            "SELECT entry_id, secret, request, share_url FROM registered_entries WHERE creator=?1 AND request_id=?2",
+            params![caller.principal,request_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?)))
+            .optional().map_err(db_err)? {
+            if old != request.to_string() { return Err(WsError::invalid_op("share request_id was already used")); }
+            return Ok((self.entry_public_id(&id),secret,url));
+        }
+        let secret = format!("{}{}", random_id("sc_"), random_id(""));
+        let value = self.create_entry_with_registration(
+            caller,
+            group,
+            methods,
+            expiry,
+            maximum,
+            Some((request_id, request, &secret)),
+        )?;
+        let id = value["entry"]["entry_id"]
+            .as_str()
+            .ok_or_else(unavailable)?;
+        Ok((id.to_owned(), secret, None))
+    }
+
+    pub fn save_share_url(&self, local: &str, url: &str) -> WsResult<()> {
+        self.local
+            .execute(
+                "UPDATE registered_entries SET share_url=?2 WHERE entry_id=?1",
+                params![local, url],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn check_share_callback(&self, local: &str, secret: &str, active: bool) -> WsResult<Entry> {
+        let matches: bool = self
+            .local
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM registered_entries WHERE entry_id=?1 AND secret=?2)",
+                params![local, secret],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if !matches {
+            return Err(unavailable());
+        }
+        self.entry(local)?
+            .filter(|e| !active || e.state == EntryState::Active)
+            .ok_or_else(unavailable)
+    }
+
+    pub fn has_share_grant(&self, local: &str, entry: &Entry, did: &str) -> WsResult<bool> {
+        let acl = self.acl_data()?;
+        if !acl.groups.contains_key(&entry.group_id) || acl.allowed_anywhere(&format!("@{}", entry.group_id)).is_empty() {
+            return Ok(false);
+        }
+        self.local.query_row("SELECT EXISTS(SELECT 1 FROM entry_acceptances a JOIN acl_members m ON m.group_id=?2 AND m.member=a.member WHERE a.entry_id=?1 AND a.member=?3 AND a.committed=1)",
+            params![local,entry.group_id,did],|r|r.get(0)).map_err(db_err)
+    }
+
+    pub fn share_grant(
+        &mut self,
+        local: &str,
+        entry: &Entry,
+        did: &str,
+        commit: bool,
+    ) -> WsResult<()> {
+        let now = self.now_secs();
+        let caller = Caller::external(did);
+        self.acl_txn(&caller, |tx| {
+            // 0 is reserved, 1 is committed, and -1 records an explicit membership revocation.
+            let committed: Option<i64> = tx.query_row("SELECT committed FROM entry_acceptances WHERE entry_id=?1 AND member=?2",
+                params![local,did],|r| r.get(0)).optional().map_err(db_err)?;
+            if committed == Some(-1) {
+                return Err(WsError::denied("resource authorization was removed"));
+            }
+            if committed == Some(1) {
+                let present: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM acl_members WHERE group_id=?1 AND member=?2)", params![entry.group_id,did],|r| r.get(0)).map_err(db_err)?;
+                if !present { return Err(WsError::denied("resource authorization was removed")); }
+                return Ok(((),vec![]));
+            }
+            if let Some(max) = entry.max_joins {
+                let count:i64 = tx.query_row("SELECT COUNT(*) FROM (SELECT member FROM entry_acceptances WHERE entry_id=?1 AND member!=?2 AND (committed=1 OR reserved_until>?3) UNION SELECT member FROM acl_members WHERE via_entry=?1 AND member!=?2)",
+                    params![local,did,now],|r| r.get(0)).map_err(db_err)?;
+                if count >= max { return Err(unavailable()); }
+            }
+            if commit && committed.is_none() { return Err(unavailable()); }
+            tx.execute("INSERT INTO entry_acceptances VALUES(?1,?2,?3,?4) ON CONFLICT(entry_id,member) DO UPDATE SET reserved_until=excluded.reserved_until,committed=excluded.committed",
+                params![local,did,now+60,commit]).map_err(db_err)?;
+            if !commit { return Ok(((),vec![])); }
+            tx.execute("INSERT OR IGNORE INTO acl_members (group_id, member, via_entry, added_by, added_at) VALUES (?1,?2,?3,?2,?4)",
+                params![entry.group_id,did,local,self.now()]).map_err(db_err)?;
+            Ok(((),vec![AuditItem{action:"entry.join",target:json!({"entry_id":entry.entry_id,"group_id":entry.group_id}),before:None,after:Some(json!({"member":did}))}]))
+        })?;
+        Ok(())
+    }
+
 }

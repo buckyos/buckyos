@@ -18,6 +18,7 @@
 import { buckyos, ndm, RuntimeType } from 'buckyos'
 import { NfspClient } from 'buckyos/nfsp'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
+import { renderCustomerTicket } from './src/customer_ticket'
 import { renderSupportGroupPanel } from './src/support_group'
 
 const APP_ID = 'buckyos-systest.buckyos.bns.did'
@@ -634,6 +635,10 @@ async function main() {
     return
   }
 
+  if (location.pathname === '/support/ticket') {
+    await renderCustomerTicket()
+    return
+  }
   renderSupportGroupPanel()
   await refreshAuthFromSdk()
 

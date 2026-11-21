@@ -1,5 +1,8 @@
 import { Button, FormControlLabel, Switch, TextField } from '@mui/material'
+import { OAuthSourcesEditor } from '../components/OAuthSourcesEditor'
+import { type OAuthSource } from '../../../api/sso'
 import { Save } from 'lucide-react'
+import { callControlPanel } from '../../../api/user_mgr'
 import { accessDenialOf, DEFAULT_JUMP_BASE_URL } from 'buckyos'
 import { useEffect, useState } from 'react'
 import { fetchSsoSettings, saveSsoSettings, type SsoSettings } from '../../../api/sso'
@@ -8,7 +11,36 @@ import { denialText } from '../../../sso/denial'
 import { Section, SectionNote } from '../components/shared/Section'
 import { useViewerIsAdmin } from '../hooks/use-viewer-is-admin'
 
+interface RememberedApp { id: string; client_zone: string; target: string }
+
+function RememberedApps() {
+  const { t } = useI18n()
+  const [apps, setApps] = useState<RememberedApp[]>([])
+  const [error, setError] = useState(false)
+  useEffect(() => {
+    let live = true
+    void callControlPanel<{consents: RememberedApp[]}>('auth.federation.consents', {}).then(({data}) => {
+      if (live && data) setApps(data.consents)
+    })
+    return () => { live = false }
+  }, [])
+  if (!apps.length) return null
+  const forget = async (id: string) => {
+    const { data } = await callControlPanel<{consents: RememberedApp[]}>('auth.federation.forget', {id})
+    setError(!data)
+    if (data) setApps(data.consents)
+  }
+  return <Section title={t('sso.consent.remembered', 'Remembered sign-ins')}>
+    {apps.map(app => <div key={app.id} className="flex items-center justify-between gap-2">
+      <span>{app.client_zone} · {app.target}</span>
+      <Button onClick={() => void forget(app.id)}>{t('sso.consent.forget', 'Ask next time')}</Button>
+    </div>)}
+    {error && <SectionNote tone="danger">{t('sso.consent.failed','Could not update remembered sign-ins.')}</SectionNote>}
+  </Section>
+}
+
 interface Draft {
+  oauth_sources: OAuthSource[]
   self_register_enabled: boolean
   did_login_enabled: boolean
   jump_base_url: string
@@ -16,6 +48,7 @@ interface Draft {
 
 function draftOf(settings: SsoSettings): Draft {
   return {
+    oauth_sources: settings.oauth_sources ?? [],
     self_register_enabled: settings.self_register_enabled,
     did_login_enabled: settings.did_login_enabled,
     jump_base_url: settings.jump_base_url?.trim() ?? '',
@@ -25,6 +58,7 @@ function draftOf(settings: SsoSettings): Draft {
 const sameDraft = (left: Draft, right: Draft) =>
   left.self_register_enabled === right.self_register_enabled
   && left.did_login_enabled === right.did_login_enabled
+  && JSON.stringify(left.oauth_sources) === JSON.stringify(right.oauth_sources)
   && left.jump_base_url.trim() === right.jump_base_url.trim()
 
 /** An https origin, or empty for the default jump entry. */
@@ -75,6 +109,7 @@ export function SsoPage() {
   if (isAdmin === false) {
     return (
       <div className="space-y-4" data-testid="settings-sso-page">
+        <RememberedApps />
         <Section title={t('sso.settings.title', 'Sign-in & Sharing')}>
           <SectionNote>{t('sso.settings.adminOnly', 'Only Zone administrators can change these settings.')}</SectionNote>
         </Section>
@@ -107,6 +142,7 @@ export function SsoPage() {
 
   return (
     <div className="space-y-4" data-testid="settings-sso-page">
+        <RememberedApps />
       <Section
         title={t('sso.settings.methods', 'Ways in for visitors')}
         description={t('sso.settings.methodsHint', 'A share link offers a method only when the link allows it and it is switched on here. Guest access is chosen by each resource owner on the link itself.')}
@@ -153,6 +189,10 @@ export function SsoPage() {
           </div>
         )}
       </Section>
+
+      {draft && <Section title={t('sso.provider.title','External login providers')}>
+        <OAuthSourcesEditor sources={draft.oauth_sources} onChange={oauth_sources=>update({oauth_sources})} disabled={busy}/>
+      </Section>}
 
       {status.kind !== 'load_failed' ? (
         <Section

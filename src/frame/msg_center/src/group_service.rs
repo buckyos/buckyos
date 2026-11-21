@@ -182,7 +182,7 @@ impl MessageCenter {
             .await?
             .map(|contact| contact.name)
             .filter(|name| !name.trim().is_empty());
-        encoded(EntryDescription {
+        let mut description = encoded(EntryDescription {
             state: EntryState::Active,
             resource: Some(EntryResource {
                 kind: "message_group".into(),
@@ -192,7 +192,127 @@ impl MessageCenter {
             }),
             methods,
             expires_at: None,
-        })
+        })?;
+        let public_share = g.resource_shares.values().find(|s| {
+            s.url.is_some() && s.request["audience"]["kind"] == "open" && g.capability(&s.creator, "group.invite_member")
+        });
+        if let Some(share) = public_share {
+            description["share_url"] = json!(share.url);
+        }
+        Ok(description)
+    }
+
+    async fn issue_resource_share(
+        &self,
+        group: &DID,
+        actor: &GroupActor,
+        p: &Value,
+    ) -> Result<Value> {
+        let request_id: String = field(p, "request_id")?;
+        if !(1..=96).contains(&request_id.len())
+            || !request_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        {
+            return Err(invalid("invalid-share-request-id"));
+        }
+        let key = buckyos_api::invite_secret_digest(&json!([actor.did, request_id]).to_string());
+        let mut tx = self.groups.begin(group).await?;
+        tx.state.require_cap(actor, "group.invite_member", None)?;
+        if tx.state.lifecycle != "active" || tx.state.config()?.membership.guest_entry.is_none() {
+            return Err(denied("guest-entry-disabled"));
+        }
+        let request = json!({"audience":p["audience"],"recipient_email":p["recipient_email"]});
+        let entry = tx
+            .state
+            .resource_shares
+            .entry(key.clone())
+            .or_insert_with(|| GroupResourceShare {
+                creator: actor.did.clone(),
+                request: request.clone(),
+                secret: format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                ),
+                url: None,
+                admitted: BTreeSet::new(),
+            });
+        if entry.request != request || entry.creator != actor.did {
+            return Err(invalid("request-id-already-used"));
+        }
+        if let Some(url) = &entry.url {
+            return Ok(json!({"url":url}));
+        }
+        let secret = entry.secret.clone();
+        tx.commit().await?;
+        let resource = format!("{}~{}", group.to_string(), key);
+        let result=get_buckyos_api_runtime()?.get_zone_service_krpc_client("control-panel").await?.call("resource.share.issue",
+            json!({"request_id":resource,"resource_id":resource,"audience":p["audience"],"recipient_email":p["recipient_email"],"return_path":format!("/messagehub/guest?group={}",group.to_string()),"callback_secret":secret})).await?;
+        let url = field::<String>(&result, "url")?;
+        let mut tx = self.groups.begin(group).await?;
+        tx.state
+            .resource_shares
+            .get_mut(&key)
+            .ok_or_else(missing)?
+            .url = Some(url);
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    pub(crate) async fn resource_share_callback(&self, p: &Value) -> Result<Value> {
+        let resource: String = field(p, "resource_id")?;
+        let (group, key) = resource.rsplit_once('~').ok_or_else(missing)?;
+        let did = DID::from_str(group).map_err(invalid)?;
+        let mut tx = self.groups.begin(&did).await?;
+        let secret = field::<String>(p, "callback_secret")?;
+        let registered = tx
+            .state
+            .resource_shares
+            .get(key)
+            .filter(|entry| entry.secret == secret)
+            .ok_or_else(missing)?;
+        if p["operation"] == "resume" {
+            let did: DID = field(p, "did")?;
+            return Ok(
+                json!({"ok":tx.state.lifecycle=="active" && !tx.state.blocked(&did) && registered.admitted.contains(&did.to_string())}),
+            );
+        }
+        if tx.state.lifecycle != "active"
+            || !tx
+                .state
+                .capability(&registered.creator, "group.invite_member")
+        {
+            return Err(denied("stale-share-authorization"));
+        }
+        let config = tx.state.config()?;
+        let entry = config.membership.guest_entry.ok_or_else(missing)?;
+        let methods = EntryMethods::from(entry.auth_methods);
+        let op: String = field(p, "operation")?;
+        if op == "inspect" {
+            return Ok(
+                json!({"ok":true,"title":config.profile.get("name").and_then(Value::as_str).unwrap_or(group),"sharer":registered.creator,"methods":methods,"operations":["group.submit_guest_request"],"expires_at":null}),
+            );
+        }
+        let subject: DID = field(p, "did")?;
+        let method: buckyos_api::AuthMethod = field(p, "auth_method")?;
+        if !methods.allows_session(Some(method)) || tx.state.blocked(&subject) {
+            return Err(denied("guest-entry-unavailable"));
+        }
+        if op == "prepare" {
+            return Ok(json!({"ok":true}));
+        }
+        if op != "commit" {
+            return Err(invalid("unknown-share-operation"));
+        }
+        tx.state
+            .resource_shares
+            .get_mut(key)
+            .ok_or_else(missing)?
+            .admitted
+            .insert(subject.to_string());
+        tx.commit().await?;
+        Ok(json!({"ok":true}))
     }
 
     /// A visitor opens a Session through the public entry only by a sign-in
@@ -229,7 +349,9 @@ impl MessageCenter {
                 &caller.user_id,
             )
         })?;
-        if !methods.effective(&settings).0.allows_session(caller.auth_method) {
+        if !methods.effective(&settings).0.allows_session(caller.auth_method) ||
+            (caller.auth_method == Some(buckyos_api::AuthMethod::OAuth) &&
+             !settings.oauth_sources.iter().any(|s| s.enabled && Some(&s.id)==caller.oauth_source_id.as_ref())) {
             return Err(crate::owner_session::gate_denial(
                 DenyReason::ZoneMethodDisabled,
                 &caller.user_id,
@@ -362,6 +484,7 @@ impl MessageCenter {
             );
         }
         let group: DID = field(&p, "group_did")?;
+        if method == "group.issue_share" { return self.issue_resource_share(&group,&actor,&p).await; }
         if !actor.remote
             && matches!(
                 method,
@@ -388,6 +511,10 @@ impl MessageCenter {
         }
         if method == "group.submit_guest_request" {
             self.require_guest_entry_method(&ctx, &group).await?;
+            let group_state = self.groups.load(&group).await?.ok_or_else(missing)?;
+            if !group_state.resource_shares.values().any(|share| share.admitted.contains(&actor.did.to_string())) {
+                return Err(denied("system-resource-invitation-required"));
+            }
         }
         if method == "group.sync_joined" {
             if let Some(value) = self.sync_remote_group(&actor.did, &group).await? {
@@ -871,6 +998,7 @@ impl MessageCenter {
             intervals: BTreeMap::new(),
             moderation: BTreeMap::new(),
             pending_owner_transfer: None,
+            resource_shares: BTreeMap::new(),
             invite_links: BTreeMap::new(),
             group_seq: 0,
             session_seqs: BTreeMap::new(),

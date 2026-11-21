@@ -20,6 +20,7 @@
  */
 import { fromFileUrl, join, toFileUrl } from "jsr:@std/path@^1";
 import { runXllmIdentitySelftest } from "./xllm_selftest.ts";
+import { handleResourceShare } from "./resource_share.ts";
 import { handleSupportRoute, type SupportContext } from "./support_group.ts";
 import { serveSystestStatic } from "./static_web.ts";
 
@@ -1063,6 +1064,8 @@ Deno.serve({
   };
 
   try {
+    const shared = await handleResourceShare(req,url,supportContext());
+    if (shared) return tap(url.pathname,shared);
     const support = await handleSupportRoute(req, url, sdkRoutePrefix, supportContext());
     if (support) return tap(url.pathname, support);
 

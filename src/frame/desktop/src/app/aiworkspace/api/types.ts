@@ -1051,10 +1051,11 @@ export interface ExportResult { export_id: string; download: BucketDownload; man
 /** A share entry (hybrid SSO contract §8.3, 权限需求 R8): its id names the workspace (`<workspace_id>~se_…`); a visitor
  * joins `group_id`; times are unix seconds. `joined`: how many came in through it (`ws.list_entries`). */
 export interface ShareEntry {
+  share_url?: string | null
   entry_id: string
   workspace_id: string
   group_id: string
-  methods: { guest: boolean; password: boolean; self_register: boolean; did_login: boolean }
+  methods: { guest: boolean; password: boolean; self_register: boolean; did_login: boolean; oauth?: boolean }
   state: 'active' | 'closed' | 'expired'
   expires_at: number | null
   max_joins: number | null

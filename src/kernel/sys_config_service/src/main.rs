@@ -1325,6 +1325,12 @@ impl SystemConfigServer {
                 "sys_config_list" => {
                     return handle_list(param, &rpc_session_token).await;
                 }
+                "sys_config_resolve_oauth_did" => {
+                    require_session_identity(&rpc_session_token)?;
+                    let source_zone=param["source_zone"].as_str().ok_or_else(||RPCErrors::ParseRequestError("source_zone is required".into()))?;
+                    let did=param["did"].as_str().ok_or_else(||RPCErrors::ParseRequestError("did is required".into()))?;
+                    return (ZoneDidResolver {}).resolve_oauth_subject(source_zone,did).await.map_err(RPCErrors::ReasonError);
+                }
                 "dump_configs_for_scheduler" => {
                     return dump_configs_for_scheduler(param, &rpc_session_token).await;
                 }

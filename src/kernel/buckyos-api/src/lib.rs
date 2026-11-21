@@ -13,6 +13,11 @@ mod homestation_client;
 pub mod host_account;
 pub mod bucket_client;
 mod hybrid_sso;
+mod federation_owner;
+pub use federation_owner::resolve_federation_owner;
+mod oauth;
+mod resource_share;
+pub use resource_share::*;
 mod msg_center_client;
 mod msg_contact;
 mod msg_notify;
@@ -112,6 +117,7 @@ pub use bucket_client::{
     BUCKET_EVENT_PREFIX, BUCKET_INDEX_RDB_INSTANCE_ID,
 };
 pub use hybrid_sso::*;
+pub use oauth::*;
 pub use msg_center_client::*;
 pub use msg_contact::*;
 pub use msg_notify::*;

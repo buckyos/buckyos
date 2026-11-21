@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { accessDenialOf, ANONYMOUS_IDENTITY, DENY_REASONS, type AccessDenial, type DenyReason } from 'buckyos'
+import { accessDenialOf, ANONYMOUS_IDENTITY, DENY_REASONS, type AccessDenial, type DenyReason, type PublicOAuthSource } from 'buckyos'
 import {
   Alert,
   Box,
@@ -21,6 +21,8 @@ import { useDocumentTitle } from '../presentation/documentHead'
 import { useZonePresentation } from '../presentation/zone'
 import { denialText } from '../sso/denial'
 import { loadCurrentIdentity } from '../sso/identity'
+import { rememberedSharePage } from '../sso/shareReturn'
+import { OAuthButtons } from '../sso/OAuthButtons'
 import { DidLoginForm } from '../sso/DidLoginForm'
 import { AuthPageFrame } from './AuthPageFrame'
 import { loginWithPassword } from './passwordLogin'
@@ -179,6 +181,7 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<LoginError | null>(null)
+  const [providers,setProviders] = useState<PublicOAuthSource[]>([])
   const [didLoginEnabled, setDidLoginEnabled] = useState(false)
   const [showDidLogin, setShowDidLogin] = useState(false)
   const [didErrorOpen, setDidErrorOpen] = useState(true)
@@ -188,10 +191,21 @@ const LoginPage = () => {
   useEffect(() => {
     let live = true
     void fetchSsoConfig().then(({ data }) => {
-      if (live) setDidLoginEnabled(data?.did_login_enabled === true)
+      if (!live) return
+      if (data?.zone_origin && window.location.origin !== data.zone_origin &&
+          window.location.hostname === 'sys.' + new URL(data.zone_origin).hostname) {
+        const root = new URL('/login',data.zone_origin)
+        root.search = window.location.search
+        root.hash = window.location.hash
+        window.location.replace(root.href)
+        return
+      }
+      const remembered = rememberedSharePage(redirectUrl,window.location.hash)
+      if (remembered) { window.location.replace(remembered); return }
+      if (live) { setDidLoginEnabled(data?.did_login_enabled === true); setProviders(data?.oauth_sources ?? []) }
     })
     return () => { live = false }
-  }, [])
+  }, [redirectUrl])
 
   // A page on a Workspace's own origin (`aiws-<id>.<zone>`, AI Workspace T4-8) sent its visitor here: someone
   // already signed in on this host is handed over through the Control Panel's launch — the one-time callback on
@@ -431,6 +445,7 @@ const LoginPage = () => {
             )}
           </Button>
 
+          <OAuthButtons sources={providers} purpose="login" redirectUrl={didRedirectUrl} />
           {didLoginEnabled && (
             <Button
               fullWidth

@@ -72,7 +72,15 @@ export function FederatePage() {
     let live = true
     void describeFederation(request).then(({ data, error }) => {
       if (!live) return
-      if (data?.status === 'consent') setView({ kind: 'consent', consent: data })
+      if (data?.status === 'consent' && data.already_granted) {
+        setView({ kind: 'leaving' })
+        void approveFederation(request, false).then(({data: answer}) => {
+          if (!live) return
+          if (answer?.status === 'redirect') window.location.assign(answer.url)
+          else if (answer?.status === 'denied') setView({ kind: 'denied', denial: answer.denial })
+          else setView({ kind: 'failed' })
+        })
+      } else if (data?.status === 'consent') setView({ kind: 'consent', consent: data })
       else if (data?.status === 'denied') setView({ kind: 'denied', denial: data.denial })
       else {
         const denial = accessDenialOf(error)
@@ -110,10 +118,13 @@ export function FederatePage() {
         <p className="text-sm" style={{ color: 'var(--cp-text)' }}>
           {t('sso.federate.intro', '{{host}} asks to sign you in with your DID. It receives only what is listed below.', { host: consent.client_host })}
         </p>
+        <Alert severity="warning" data-testid="sso-federate-risk">
+          {t('sso.federate.risk', 'You are signing in to {{host}} outside your home Zone. Continue only if you trust this application with your DID and public profile.', {host: consent.app_host})}
+        </Alert>
         <IdentityCard identity={identity} compact />
         <div className="rounded-2xl px-4 py-2" style={{ border: '1px solid color-mix(in srgb, var(--cp-border) 60%, transparent)' }}>
           <Row label={t('sso.federate.did', 'DID')}><span className="font-mono text-xs" data-testid="sso-federate-did">{request.did}</span></Row>
-          <Row label={t('sso.federate.target', 'Signing in to')}><span data-testid="sso-federate-target">{consent.client_host}</span></Row>
+          <Row label={t('sso.federate.target', 'Signing in to')}><span data-testid="sso-federate-target">{consent.app_host}</span></Row>
           <Row label={t('sso.federate.targetZone', 'Target Zone DID')}><span className="font-mono text-xs">{consent.client_zone}</span></Row>
           <Row label={t('sso.federate.displayName', 'Display name')}><span data-testid="sso-federate-name">{consent.profile.show_name}</span></Row>
           <Row label={t('sso.federate.avatar', 'Avatar')}>
@@ -132,7 +143,7 @@ export function FederatePage() {
         ) : (
           <FormControlLabel
             control={<Checkbox size="small" checked={remember} onChange={(event) => setRemember(event.target.checked)} />}
-            label={<span className="text-sm">{t('sso.federate.remember', 'Remember this choice for {{host}}', { host: consent.client_host })}</span>}
+            label={<span className="text-sm">{t('sso.federate.remember', 'Remember this choice for {{host}}', { host: consent.app_host })}</span>}
             data-testid="sso-federate-remember"
           />
         )}

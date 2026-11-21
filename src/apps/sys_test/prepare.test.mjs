@@ -28,7 +28,7 @@ function fixture(t) {
     join(root, "prepare.mjs"),
   );
   for (
-    const name of ["static_web.ts", "xllm_selftest.ts", "support_group.ts"]
+    const name of ["static_web.ts", "xllm_selftest.ts", "support_group.ts","resource_share.ts"]
   ) {
     write(name, "export {};\n");
   }

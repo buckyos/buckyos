@@ -1346,14 +1346,20 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       url.searchParams.set('state', flowState)
       url.searchParams.set('nonce', 'mock-nonce')
       url.searchParams.set('code_challenge', 'mock-challenge')
+      url.searchParams.set('app_context','mock-system-context')
       return { status: 'redirect', url: url.toString() }
+    }
+    case 'auth.federation.consents':
+    case 'auth.federation.forget': {
+      if (method === 'auth.federation.forget') sso.consents = sso.consents.filter(id => id !== params.id)
+      return {consents: sso.consents.map(id => ({ id, client_zone: id, target: 'system:control-panel' }))}
     }
     case 'auth.federation.describe': {
       const { clientZone, clientHost } = federationChecks(state, method, params)
       return {
         status: 'consent',
         client_zone: clientZone,
-        client_host: clientHost,
+        client_host: clientHost, app_host: clientHost,
         profile: { show_name: state.account.user_name, avatar: state.account.profile?.avatar ?? null },
         already_granted: sso.consents.includes(clientZone),
       }
@@ -1472,6 +1478,30 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
 
 function handle(state: MockState, method: string, params: Record<string, unknown>): unknown {
   switch (method) {
+    case 'user.invite.directory': {
+      requireAdmin(state)
+      const rows = Object.values(state.user_invites ?? {}).map(invite => ({
+        did:invite.target_did, email:invite.oauth_email, user_id:invite.target_user_id,
+        account_state:invite.state === 'pending' ? 'pending' : 'active',
+        sources:[{invite_id:invite.invite_id, target:'system:control-panel', issuer:invite.created_by, title:'Zone login',state:invite.state}],
+      }))
+      return {users:rows}
+    }
+    case 'user.invite.create': {
+      requireAdmin(state)
+      const userId = stringParam(params, 'user_id')
+      const targetDid = stringParam(params, 'target_did')
+      if (!userId || !targetDid) throw new MockRpcError('A user and target DID are required')
+      if (state.zone_users[userId]) throw new MockRpcError('Account already exists')
+      const id = crypto.randomUUID()
+      const invite: UserInviteRecord = {invite_id:id, target_user_id:userId, target_did:targetDid, created_at:nowSecs(),
+        created_by:state.account.user_id, state:'pending', default_user_type: stringParam(params,'user_type') || 'user',
+        groups: Array.isArray(params.groups) ? params.groups.map(String) : [],
+        expires_at: nowSecs() + Number(params.ttl_secs || 604800)}
+      ;(state.user_invites ??= {})[id] = invite
+      state.zone_users[userId] = {user_type:invite.default_user_type, state:'pending'}
+      return {ok:true,invite,invite_url:new URL(`/users/invite/${id}`,location.origin).href}
+    }
     case 'user.invite.get':
     case 'user.invite.accept': {
       const invite = state.user_invites?.[stringParam(params, 'invite_id')]
@@ -1482,14 +1512,11 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       }
       const identity = identityOf(state)
       if (identity.kind === 'anonymous' || identity.auth_method !== 'did_federation') deny('session_kind_not_allowed', method)
-      const document = typeof params.owner_config === 'string' ? JSON.parse(params.owner_config) : params.owner_config
-      if (!document || typeof document !== 'object' || Array.isArray(document)) throw new MockRpcError('Invalid owner_config')
-      const owner = document as Record<string, unknown>
-      if (owner.id !== identity.did || (invite.target_did && invite.target_did !== identity.did)) {
+      if (invite.target_did !== identity.did) {
         deny('session_ceiling_exceeded', method)
       }
       if (expired || invite.state !== 'pending') throw new MockRpcError('Invitation is no longer pending')
-      const userId = invite.target_user_id || String(owner.name || '').trim().toLowerCase()
+      const userId = invite.target_user_id
       if (!userId) throw new MockRpcError('Account name is required')
       invite.state = 'accepted'
       invite.accepted_at = nowSecs()

@@ -61,6 +61,7 @@ pub struct Caller {
     pub run_scope: Option<String>,
     /// How the session was established (`password`, `exclusive_invite`, `did_federation`, `assertion`).
     pub auth_method: Option<String>,
+    pub oauth_source_id: Option<String>,
     /// `contact:<owner_did>#<tag>` member specs the service confirmed the caller belongs to.
     pub contacts: BTreeSet<String>,
     /// `group:` / `contact:` member specs whose membership could not be checked: a decision depending on one is
@@ -97,7 +98,7 @@ pub enum MemberMatch {
 
 impl Caller {
     fn with_class(principal: &str, class: CallerClass) -> Caller {
-        Caller { principal: principal.to_string(), app_id: None, class, kind: None, run_scope: None, auth_method: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new(),
+        Caller { principal: principal.to_string(), app_id: None, class, kind: None, run_scope: None, auth_method: None, oauth_source_id: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new(),
                  acting_for: None, publication: None, macro_of: None }
     }
     /// The holder of a run token (M3): acts as the run's principal, for that run only.
@@ -228,7 +229,7 @@ impl Caller {
     /// Whether a logical group's member spec names this caller: the exact principal, `*` for unrestricted accounts,
     /// the caller's system groups, confirmed contact groups.
     pub fn matches_member(&self, member: &str) -> MemberMatch {
-        if member == self.principal {
+        if member == self.principal || self.did() == Some(member) {
             return MemberMatch::Yes;
         }
         if self.unconfirmed.contains(member) {
@@ -616,6 +617,7 @@ impl Workspace {
         validate_workspace_storage(&doc, &local)?;
         configure_db(&doc, true)?;
         configure_db(&local, false)?;
+        local.execute_batch(crate::entries::REGISTERED_ENTRIES_DDL).map_err(db_err)?;
         let get = |k: &str| -> WsResult<String> {
             meta_get(&doc, k)?.ok_or_else(|| WsError::io(format!("workspace_meta.{k} missing")))
         };

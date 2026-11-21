@@ -6,7 +6,7 @@
  * cannot call (D-4). Failures keep their kRPC error: callers branch on
  * `denialOf`, never on the text.
  */
-import { ndn, type CurrentIdentity, type EntryMethods } from 'buckyos'
+import { buckyos, ndn, type CurrentIdentity, type EntryMethods } from 'buckyos'
 import { loadCurrentIdentity } from '../../../sso/identity'
 import { endSessionInPlace } from '../../../auth/signOut'
 import { isMessageHubMock } from '../store'
@@ -30,6 +30,7 @@ export interface GuestApi {
   groupHost(groupDid: string): Promise<string>
   /** The methods the group's public entry offers after the Zone switches (`auth.entry.describe`); null when it has none open. */
   entry(groupDid: string): Promise<EntryMethods | null>
+  invitationUrl(groupDid: string): Promise<string | null>
   sessions(groupDid: string): Promise<GuestSession[]>
   /** Whether the visitor holds a pending invitation into the Session (`group.list_by_member`). */
   invited(groupDid: string, sessionId: string): Promise<boolean>
@@ -56,6 +57,11 @@ export const msgCenterGuestApi: GuestApi = {
   },
   async groupHost(groupDid) {
     return text((await getGroupDoc(groupDid)).doc.host)
+  },
+  async invitationUrl(groupDid) {
+    const client = new buckyos.kRPCClient('/kapi/msg-center')
+    const result = await client.call<{share_url?: string}, {group_did: string}>('group.describe_entry', {group_did: groupDid})
+    return result.share_url || null
   },
   async entry(groupDid) {
     // The Control Panel applies the Zone's switches to the entry's own methods.
