@@ -1253,9 +1253,23 @@ impl AiccStorage {
              COALESCE(SUM(COALESCE(total_tokens,COALESCE(input_tokens,0)+COALESCE(output_tokens,0))),0) AS total_tokens,\
              COALESCE(SUM(CASE WHEN request_units IS NULL OR request_units<1 THEN 1 ELSE request_units END),0) AS request_units,\
              COALESCE(SUM(CASE WHEN finance_valid=1 THEN finance_amount ELSE 0 END),0.0) AS finance_amount,\
-             COALESCE(SUM(finance_valid),0) AS valid_finance_count \
-             FROM aicc_usage_event WHERE created_at_ms>=",
+             COALESCE(SUM(finance_valid),0) AS valid_finance_count",
         );
+        for name in buckyos_api::AI_USAGE_DIMENSIONS {
+            let value = match self.backend {
+                RdbBackend::Sqlite => {
+                    format!("CAST(json_extract(usage_json, '$.{name}') AS DOUBLE PRECISION)")
+                }
+                RdbBackend::Postgres => {
+                    format!("CAST(usage_json::jsonb->>'{name}' AS DOUBLE PRECISION)")
+                }
+            };
+            let value = format!("CASE WHEN {value} >= 0 THEN {value} ELSE NULL END");
+            select.push_str(&format!(
+                ",COALESCE(SUM({value}),0.0) AS dim_{name},COUNT({value}) AS count_{name}"
+            ));
+        }
+        select.push_str(" FROM aicc_usage_event WHERE created_at_ms>=");
         let mut query = usage_query(select, start, end, filters, None);
         query.push(" GROUP BY ");
         if let Some(span) = bucket_span_ms {
@@ -1936,6 +1950,22 @@ fn merge_usage_aggregate_rows(
         accumulator.aggregate.total_tokens += from_i64(row.try_get("total_tokens")?)?;
         accumulator.aggregate.consumed_request_units += from_i64(row.try_get("request_units")?)?;
         accumulator.valid_finance_count += valid_finance_count;
+        accumulator.aggregate.unpriced_requests += total_requests - valid_finance_count;
+        for name in buckyos_api::AI_USAGE_DIMENSIONS {
+            let count = from_i64(row.try_get(format!("count_{name}").as_str())?)?;
+            if count > 0 {
+                let dimension = accumulator
+                    .aggregate
+                    .dimensions
+                    .entry((*name).to_owned())
+                    .or_default();
+                dimension.amount += row.try_get::<f64, _>(format!("dim_{name}").as_str())?;
+                if !dimension.amount.is_finite() {
+                    return Err(StorageError::InvalidRecord("usage dimension subtotal overflow".into()));
+                }
+                dimension.reported_events += count;
+            }
+        }
         if valid_finance_count > 0 {
             let currency: Option<String> = row.try_get("finance_currency")?;
             let amount: f64 = row.try_get("finance_amount")?;
@@ -1982,6 +2012,11 @@ fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageA
     let mut finance = BTreeMap::<String, Option<f64>>::new();
     for e in events {
         a.total_requests += 1;
+        for (name, amount) in e.usage_json.dimensions() {
+            let dimension = a.dimensions.entry(name.to_owned()).or_default();
+            dimension.amount += amount;
+            dimension.reported_events += 1;
+        }
         a.input_tokens += e.input_tokens.unwrap_or(0);
         a.output_tokens += e.output_tokens.unwrap_or(0);
         a.total_tokens += e
@@ -2001,7 +2036,10 @@ fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageA
                     }
                 }
             }
-            None => a.finance_complete = false,
+            None => {
+                a.finance_complete = false;
+                a.unpriced_requests += 1;
+            }
         }
     }
     a.finance_totals = finance
@@ -2989,8 +3027,10 @@ mod tests {
                     cache_write_1h_input_token: None,
                     audio_input_token: None,
                     image_input_token: None,
+                    video_input_token: None,
                     audio_output_token: None,
                     image_output_token: None,
+                    video_output_token: None,
                     input_token: Some(0.000_001_25),
                     cache_input_token: Some(0.000_000_125),
                     output_token: Some(0.000_01),
@@ -3227,6 +3267,61 @@ mod tests {
         assert_eq!(result.total.consumed_request_units, 1);
         assert_eq!(result.total.finance_totals, vec![Money::new(0.25, "EUR")]);
         assert!(result.total.finance_complete);
+    }
+
+    #[tokio::test]
+    async fn usage_dimensions_aggregate_all_filtered_pages_without_filling_missing_values() {
+        let db = db().await;
+        for (id, currency, amount, units) in [
+            ("a", Some("USD"), 0.2, Some(2)),
+            ("b", Some("EUR"), 0.3, Some(0)),
+            ("c", None, 0.0, None),
+        ] {
+            let mut event = usage_event(
+                id,
+                currency.map(|currency| json!({"currency":currency,"amount":amount})),
+                Some(1),
+            );
+            event.usage_json.image_units = units;
+            event.usage_json.video_seconds = Some(-1.0);
+            event.usage_json.audio_seconds = Some(1.25);
+            db.write_usage(&event).await.unwrap();
+        }
+        let mut excluded = usage_event("excluded", None, Some(1));
+        excluded.provider_instance_name = "other".into();
+        excluded.usage_json.image_units = Some(1000);
+        db.write_usage(&excluded).await.unwrap();
+        let mut req = QueryUsageRequest {
+            time_range: UsageQueryTimeRange::Explicit {
+                start_time_ms: 1,
+                end_time_ms: 20_000,
+            },
+            filters: UsageQueryFilters {
+                provider_instance_names: vec!["openai-primary".into()],
+                ..Default::default()
+            },
+            group_by: vec![UsageQueryGroup::ProviderInstanceName],
+            output_mode: UsageQueryOutputMode::SummaryAndEvents,
+            limit: Some(1),
+            time_bucket: None,
+            cursor: None,
+            zone_wide: false,
+        };
+        let first = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(first.events.len(), 1);
+        assert_eq!(first.total.total_requests, 3);
+        assert_eq!(first.total.unpriced_requests, 1);
+        assert!(!first.total.finance_complete);
+        assert_eq!(first.total.finance_totals.len(), 2);
+        assert_eq!(first.total.dimensions["image_units"].amount, 2.0);
+        assert_eq!(first.total.dimensions["image_units"].reported_events, 2);
+        assert_eq!(first.total.dimensions["audio_seconds"].amount, 3.75);
+        assert!(!first.total.dimensions.contains_key("video_seconds"));
+        assert_eq!(first.grouped[0].aggregate, first.total);
+        req.cursor = first.next_cursor;
+        let second = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(second.total, first.total);
+        assert_ne!(second.events[0].event_id, first.events[0].event_id);
     }
 
     #[tokio::test]

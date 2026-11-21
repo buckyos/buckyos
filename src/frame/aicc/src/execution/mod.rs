@@ -207,13 +207,7 @@ impl TryFrom<ProtocolOutput> for ExecutionOutput {
 
     fn try_from(value: ProtocolOutput) -> Result<Self, Self::Error> {
         let usage_empty = value.usage.as_ref().is_none_or(|usage| {
-            usage.input_tokens.is_none()
-                && usage.output_tokens.is_none()
-                && usage.total_tokens.is_none()
-                && usage.image_units.is_none()
-                && usage.audio_seconds.is_none()
-                && usage.video_seconds.is_none()
-                && usage.request_units.is_none()
+            usage.dimensions().is_empty() && usage.reported_cost.is_none() && usage.cost.is_none()
         });
         let usage = if usage_empty {
             log::warn!(
@@ -255,6 +249,11 @@ pub(crate) struct PinnedProviderTask {
 
 impl PinnedProviderTask {
     fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
+        if let Some(cost) = &usage.cost {
+            if !invalid_price(cost.amount) && !cost.currency.trim().is_empty() {
+                return Some(cost.clone());
+            }
+        }
         if let (Some(currency), Some(amount)) = (&self.reported_cost_currency, usage.reported_cost)
         {
             if !invalid_price(amount) {
@@ -264,7 +263,92 @@ impl PinnedProviderTask {
                 });
             }
         }
+        if usage.cost_unknown_reason.is_some() {
+            return None;
+        }
         self.pricing.as_ref()?.completion_cost(usage)
+    }
+
+    fn cost_unknown_reason(&self, usage: &AiUsage) -> String {
+        if let Some(reason) = &usage.cost_unknown_reason {
+            return reason.clone();
+        }
+        let Some(pricing) = &self.pricing else {
+            return if usage.reported_cost.is_some() && self.reported_cost_currency.is_none() {
+                "unverified_reported_currency"
+            } else {
+                "missing_pricing"
+            }
+            .to_owned();
+        };
+        match &pricing.basis {
+            PinnedPricingBasis::Units { unit, addons, .. } => {
+                for unit in std::iter::once(unit).chain(addons.iter().map(|addon| &addon.unit)) {
+                    if unit_count(*unit, usage).is_none() {
+                        return format!(
+                            "missing_usage:{}",
+                            serde_json::to_value(unit).unwrap().as_str().unwrap()
+                        );
+                    }
+                }
+                "invalid_usage".to_owned()
+            }
+            PinnedPricingBasis::Tokens {
+                audio_input_token,
+                image_input_token,
+                video_input_token,
+                audio_output_token,
+                image_output_token,
+                video_output_token,
+                tiers,
+                ..
+            } => {
+                if tiers.is_none() {
+                    for (name, count, rate) in [
+                        (
+                            "audio_input_token",
+                            usage.audio_input_tokens,
+                            audio_input_token,
+                        ),
+                        (
+                            "image_input_token",
+                            usage.image_input_tokens,
+                            image_input_token,
+                        ),
+                        (
+                            "video_input_token",
+                            usage.video_input_tokens,
+                            video_input_token,
+                        ),
+                        (
+                            "audio_output_token",
+                            usage.audio_output_tokens,
+                            audio_output_token,
+                        ),
+                        (
+                            "image_output_token",
+                            usage.image_output_tokens,
+                            image_output_token,
+                        ),
+                        (
+                            "video_output_token",
+                            usage.video_output_tokens,
+                            video_output_token,
+                        ),
+                    ] {
+                        if count.is_some_and(|value| value > 0) && rate.is_none() {
+                            return format!("missing_rate:{name}");
+                        }
+                    }
+                }
+                if usage.input_tokens.is_none() || usage.output_tokens.is_none() {
+                    "missing_token_usage"
+                } else {
+                    "missing_rate_or_uncovered_tier_or_invalid_usage"
+                }
+                .to_owned()
+            }
+        }
     }
 
     fn from_call(runtime_generation: u64, call: &ResolvedProviderCall) -> Result<Self, AiccError> {
@@ -304,8 +388,10 @@ pub(crate) enum PinnedPricingBasis {
         cache_write_1h_input_token: Option<f64>,
         audio_input_token: Option<f64>,
         image_input_token: Option<f64>,
+        video_input_token: Option<f64>,
         audio_output_token: Option<f64>,
         image_output_token: Option<f64>,
+        video_output_token: Option<f64>,
         output_token: Option<f64>,
         #[serde(default)]
         tiers: Option<PricingTiers>,
@@ -404,8 +490,10 @@ fn apply_time_window(base: &Pricing, window: Option<&PricingTimeWindow>) -> Pric
             .or(base.cache_write_1h_input_token),
         audio_input_token: window.audio_input_token.or(base.audio_input_token),
         image_input_token: window.image_input_token.or(base.image_input_token),
+        video_input_token: window.video_input_token.or(base.video_input_token),
         audio_output_token: window.audio_output_token.or(base.audio_output_token),
         image_output_token: window.image_output_token.or(base.image_output_token),
+        video_output_token: window.video_output_token.or(base.video_output_token),
         estimated_cost: base.estimated_cost,
         unit: window.unit.or(base.unit),
         amount: window.amount.or(base.amount),
@@ -461,8 +549,10 @@ impl PinnedPricingSnapshot {
                 cache_write_1h_input_token: pricing.cache_write_1h_input_token,
                 audio_input_token: pricing.audio_input_token,
                 image_input_token: pricing.image_input_token,
+                video_input_token: pricing.video_input_token,
                 audio_output_token: pricing.audio_output_token,
                 image_output_token: pricing.image_output_token,
+                video_output_token: pricing.video_output_token,
                 output_token: pricing.output_token,
                 tiers: pricing.tiers.clone(),
             }
@@ -500,8 +590,10 @@ impl PinnedPricingSnapshot {
                 cache_write_1h_input_token,
                 audio_input_token,
                 image_input_token,
+                video_input_token,
                 audio_output_token,
                 image_output_token,
+                video_output_token,
                 output_token,
                 tiers,
             } => {
@@ -512,8 +604,10 @@ impl PinnedPricingSnapshot {
                     cache_write_1h_input_token: *cache_write_1h_input_token,
                     audio_input_token: *audio_input_token,
                     image_input_token: *image_input_token,
+                    video_input_token: *video_input_token,
                     audio_output_token: *audio_output_token,
                     image_output_token: *image_output_token,
+                    video_output_token: *video_output_token,
                     output_token: *output_token,
                 };
                 let resolved = match tiers {
@@ -527,9 +621,15 @@ impl PinnedPricingSnapshot {
                 amount,
                 addons,
             } => {
-                let mut total = unit_count(*unit, usage)? * amount;
+                let mut total = if *amount == 0.0 {
+                    0.0
+                } else {
+                    unit_count(*unit, usage)? * amount
+                };
                 for addon in addons {
-                    total += unit_count(addon.unit, usage)? * addon.amount;
+                    if addon.amount != 0.0 {
+                        total += unit_count(addon.unit, usage)? * addon.amount;
+                    }
                 }
                 total
             }
@@ -554,11 +654,10 @@ fn unit_count(unit: PricingUnit, usage: &AiUsage) -> Option<f64> {
         PricingUnit::VideoSecond => usage.video_seconds?,
         PricingUnit::Character => usage.characters? as f64,
         PricingUnit::ReferenceImage => usage.reference_images? as f64,
-        // Billable by compute-second or megapixel (for example fal.ai); the
-        // vocabulary is expressible but no adapter reports these counters yet,
-        // so the cost stays unresolved rather than wrong.
-        PricingUnit::Second | PricingUnit::Megapixel => return None,
+        PricingUnit::Second => usage.compute_seconds?,
+        PricingUnit::Megapixel => usage.megapixels?,
     })
+    .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -569,8 +668,10 @@ struct TokenRates {
     cache_write_1h_input_token: Option<f64>,
     audio_input_token: Option<f64>,
     image_input_token: Option<f64>,
+    video_input_token: Option<f64>,
     audio_output_token: Option<f64>,
     image_output_token: Option<f64>,
+    video_output_token: Option<f64>,
     output_token: Option<f64>,
 }
 
@@ -593,15 +694,21 @@ impl TokenRates {
         let image_in = usage.image_input_tokens.unwrap_or(0);
         let audio_out = usage.audio_output_tokens.unwrap_or(0);
         let image_out = usage.image_output_tokens.unwrap_or(0);
-        if read > 0 && (audio_in > 0 || image_in > 0) {
+        let video_in = usage.video_input_tokens.unwrap_or(0);
+        let video_out = usage.video_output_tokens.unwrap_or(0);
+        if read > 0 && (audio_in > 0 || image_in > 0 || video_in > 0) {
             return None;
         }
         let text_in = input
             .checked_sub(read)?
             .checked_sub(write)?
             .checked_sub(audio_in)?
-            .checked_sub(image_in)?;
-        let text_out = output.checked_sub(audio_out)?.checked_sub(image_out)?;
+            .checked_sub(image_in)?
+            .checked_sub(video_in)?;
+        let text_out = output
+            .checked_sub(audio_out)?
+            .checked_sub(image_out)?
+            .checked_sub(video_out)?;
         [
             (text_in, self.input_token),
             (read, self.cache_input_token),
@@ -612,6 +719,8 @@ impl TokenRates {
             (image_in, self.image_input_token),
             (audio_out, self.audio_output_token),
             (image_out, self.image_output_token),
+            (video_in, self.video_input_token),
+            (video_out, self.video_output_token),
         ]
         .into_iter()
         .try_fold(0.0, |total, (tokens, rate)| {
@@ -657,8 +766,10 @@ impl PricingTierStep {
                 .or(base.cache_write_1h_input_token),
             audio_input_token: self.audio_input_token.or(base.audio_input_token),
             image_input_token: self.image_input_token.or(base.image_input_token),
+            video_input_token: self.video_input_token.or(base.video_input_token),
             audio_output_token: self.audio_output_token.or(base.audio_output_token),
             image_output_token: self.image_output_token.or(base.image_output_token),
+            video_output_token: self.video_output_token.or(base.video_output_token),
             output_token: self.output_token.or(base.output_token),
         }
     }
@@ -2448,6 +2559,26 @@ impl ExecutionEngine {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
+        output.usage.cost_source =
+            finance_snapshot.as_ref().map(|_| {
+                if output.usage.cost.as_ref().is_some_and(|cost| {
+                    !invalid_price(cost.amount) && !cost.currency.trim().is_empty()
+                }) || (binding.reported_cost_currency.is_some()
+                    && output
+                        .usage
+                        .reported_cost
+                        .is_some_and(|amount| !invalid_price(amount)))
+                {
+                    "provider_reported".to_owned()
+                } else {
+                    "static_pricing".to_owned()
+                }
+            });
+        output.usage.cost_unknown_reason = if finance_snapshot.is_some() {
+            None
+        } else {
+            Some(binding.cost_unknown_reason(&output.usage))
+        };
         output.usage.cost = finance_snapshot.clone();
         output.cost = finance_snapshot.clone();
         if let Err(error) = check_result_payload(&output) {
@@ -2480,7 +2611,22 @@ impl ExecutionEngine {
         error: AiccError,
         usage: AiUsage,
     ) -> Result<ExecutionReceipt, AiccError> {
+        let mut usage = usage;
         let finance_snapshot = binding.completion_cost(&usage);
+        usage.cost_unknown_reason = finance_snapshot
+            .is_none()
+            .then(|| binding.cost_unknown_reason(&usage));
+        usage.cost_source = finance_snapshot.as_ref().map(|_| {
+            if usage.cost.is_some()
+                || (binding.reported_cost_currency.is_some() && usage.reported_cost.is_some())
+            {
+                "provider_reported"
+            } else {
+                "static_pricing"
+            }
+            .to_owned()
+        });
+        usage.cost = finance_snapshot.clone();
         if let Err(error) = self
             .record_usage_completion(task_id, scope, binding, &usage, finance_snapshot)
             .await
@@ -3303,8 +3449,10 @@ mod tests {
             cache_write_1h_input_token: None,
             audio_input_token: None,
             image_input_token: None,
+            video_input_token: None,
             audio_output_token: None,
             image_output_token: None,
+            video_output_token: None,
             from: from.into(),
             to: to.into(),
             utc_offset_minutes: 480,
@@ -3371,8 +3519,10 @@ mod tests {
             cache_write_1h_input_token: None,
             audio_input_token: None,
             image_input_token: None,
+            video_input_token: None,
             audio_output_token: None,
             image_output_token: None,
+            video_output_token: None,
             currency: "USD".into(),
             input_token: Some(1e-6),
             output_token: Some(4e-6),
@@ -3405,8 +3555,10 @@ mod tests {
             cache_write_1h_input_token: None,
             audio_input_token: None,
             image_input_token: None,
+            video_input_token: None,
             audio_output_token: None,
             image_output_token: None,
+            video_output_token: None,
             currency: "USD".into(),
             input_token: Some(1e-6),
             output_token: Some(4e-6),
@@ -3440,8 +3592,10 @@ mod tests {
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
                 image_input_token: None,
+                video_input_token: None,
                 audio_output_token: None,
                 image_output_token: None,
+                video_output_token: None,
                 currency: "USD".into(),
                 input_token: Some(input_token),
                 output_token: Some(output_token),
@@ -3473,8 +3627,10 @@ mod tests {
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
                 image_input_token: None,
+                video_input_token: None,
                 audio_output_token: None,
                 image_output_token: None,
+                video_output_token: None,
                 currency: "CNY".into(),
                 input_token: None,
                 output_token: None,
@@ -3509,10 +3665,16 @@ mod tests {
             reference_images: None,
             request_units: None,
             characters: None,
+            compute_seconds: None,
+            megapixels: None,
+            cost_source: None,
+            cost_unknown_reason: None,
             audio_input_tokens: None,
             image_input_tokens: None,
+            video_input_tokens: None,
             audio_output_tokens: None,
             image_output_tokens: None,
+            video_output_tokens: None,
             reported_cost: None,
             cost: None,
         }
@@ -3528,8 +3690,10 @@ mod tests {
                     cache_write_1h_input_token: None,
                     audio_input_token: None,
                     image_input_token: None,
+                    video_input_token: None,
                     audio_output_token: None,
                     image_output_token: None,
+                    video_output_token: None,
                     up_to: Some(32 * 1024),
                     input_token: Some(6e-6),
                     output_token: Some(24e-6),
@@ -3542,8 +3706,10 @@ mod tests {
                     cache_write_1h_input_token: None,
                     audio_input_token: None,
                     image_input_token: None,
+                    video_input_token: None,
                     audio_output_token: None,
                     image_output_token: None,
+                    video_output_token: None,
                     up_to: None,
                     input_token: Some(8e-6),
                     output_token: Some(28e-6),
@@ -3585,8 +3751,10 @@ mod tests {
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
                 image_input_token: None,
+                video_input_token: None,
                 audio_output_token: None,
                 image_output_token: None,
+                video_output_token: None,
                 input_token: Some(6e-6),
                 cache_input_token: None,
                 output_token: Some(24e-6),
@@ -3611,8 +3779,10 @@ mod tests {
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
                 image_input_token: None,
+                video_input_token: None,
                 audio_output_token: None,
                 image_output_token: None,
+                video_output_token: None,
                 input_token: Some(6e-6),
                 cache_input_token: None,
                 output_token: Some(24e-6),
@@ -3633,8 +3803,10 @@ mod tests {
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
                 image_input_token: None,
+                video_input_token: None,
                 audio_output_token: None,
                 image_output_token: None,
+                video_output_token: None,
                 input_token: Some(6e-6),
                 cache_input_token: None,
                 output_token: Some(24e-6),
@@ -3682,8 +3854,10 @@ mod tests {
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
                 image_input_token: None,
+                video_input_token: None,
                 audio_output_token: None,
                 image_output_token: None,
+                video_output_token: None,
                 input_token: Some(0.01),
                 cache_input_token: Some(0.001),
                 output_token: Some(0.02),
@@ -6021,6 +6195,101 @@ mod billing_boundary_tests {
                 amount: 0.25,
                 currency: "CNY".into()
             })
+        );
+    }
+}
+
+#[cfg(test)]
+mod cost_dimension_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn binding(price: serde_json::Value) -> PinnedProviderTask {
+        let mut binding: PinnedProviderTask = serde_json::from_value(json!({"runtime_generation":1,"origin_provider":"sn","exact_model":"kimi-k3.1-pro@sn","provider_model_id":"kimi-k3.1-pro","provider_instance_name":"sn","protocol_adapter_id":"sn-openai","operation":"chat.completions.create","api_type":"llm","remote_task_id":null,"result_artifacts":{},"cancel_supported":false,"resume":null,"pricing":null,"reported_cost_currency":"USD"})).unwrap();
+        binding.pricing = PinnedPricingSnapshot::from_pricing(
+            &serde_json::from_value(price).unwrap(),
+            None,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+        binding
+    }
+
+    #[test]
+    fn response_cost_wins_including_explicit_currency_then_falls_back_to_frozen_price() {
+        let binding =
+            binding(json!({"currency":"USD","input_token":0.000002,"output_token":0.000010}));
+        let mut usage = AiUsage {
+            input_tokens: Some(5433),
+            output_tokens: Some(435),
+            reported_cost: Some(0.01),
+            ..Default::default()
+        };
+        assert_eq!(
+            binding.completion_cost(&usage).unwrap(),
+            AiCost::new(0.01, "USD")
+        );
+        usage.cost = Some(AiCost::new(0.02, "EUR"));
+        assert_eq!(
+            binding.completion_cost(&usage).unwrap(),
+            AiCost::new(0.02, "EUR")
+        );
+        usage.cost = None;
+        usage.reported_cost = None;
+        assert!((binding.completion_cost(&usage).unwrap().amount - 0.015216).abs() < 1e-12);
+        usage.reported_cost = Some(-1.0);
+        assert!((binding.completion_cost(&usage).unwrap().amount - 0.015216).abs() < 1e-12);
+    }
+
+    #[test]
+    fn video_tokens_are_billed_separately_from_text_and_image_inputs() {
+        let binding = binding(
+            json!({"currency":"USD","input_token":0.0000015,"image_input_token":0.0000015,"video_input_token":0.0000015,"output_token":0.000009,"video_output_token":0.0000175}),
+        );
+        let usage = AiUsage {
+            input_tokens: Some(3053),
+            image_input_tokens: Some(1100),
+            output_tokens: Some(46903),
+            video_output_tokens: Some(46336),
+            reasoning_tokens: Some(567),
+            ..Default::default()
+        };
+        let expected = 3053.0 * 0.0000015 + 567.0 * 0.000009 + 46336.0 * 0.0000175;
+        assert!((binding.completion_cost(&usage).unwrap().amount - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compute_and_pixel_units_require_reported_quantities_and_free_is_explicit() {
+        for (unit, usage, expected) in [
+            (
+                "second",
+                AiUsage {
+                    compute_seconds: Some(3.42),
+                    ..Default::default()
+                },
+                0.00342,
+            ),
+            (
+                "megapixel",
+                AiUsage {
+                    megapixels: Some(10.0),
+                    ..Default::default()
+                },
+                0.01,
+            ),
+        ] {
+            let binding = binding(json!({"currency":"USD","unit":unit,"amount":0.001}));
+            assert!((binding.completion_cost(&usage).unwrap().amount - expected).abs() < 1e-12);
+            assert!(binding.completion_cost(&AiUsage::default()).is_none());
+            assert_eq!(
+                binding.cost_unknown_reason(&AiUsage::default()),
+                format!("missing_usage:{unit}")
+            );
+        }
+        let free = binding(json!({"currency":"USD","unit":"second","amount":0.0}));
+        assert_eq!(
+            free.completion_cost(&AiUsage::default()).unwrap().amount,
+            0.0
         );
     }
 }

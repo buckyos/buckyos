@@ -7133,3 +7133,10 @@ test("Doubao vision Mock accepts official reasoning levels and rejects unknown v
     }
   }
 });
+
+test('T1.5 billing mapping fails when media quantities are lost despite successful artifacts', async () => {
+  const { assertT15ResponseMapping } = await import('./run_t15_gateway.ts');
+  const contract = { success_fixture: {}, expected_billable_usage: { 'audio.enhance': { audio_seconds: 6.9544375, compute_seconds: 0.01 } } } as any;
+  assert.throws(() => assertT15ResponseMapping('audio.enhance', { audio: {}, artifacts: [], usage: { request_units: 1 } }, contract), /billable usage audio_seconds/);
+  assert.doesNotThrow(() => assertT15ResponseMapping('audio.enhance', { audio: {}, usage: { audio_seconds: 6.9544375, compute_seconds: 0.01 } }, contract));
+});

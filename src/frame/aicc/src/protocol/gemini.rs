@@ -1857,10 +1857,16 @@ fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>>
         reference_images: None,
         request_units: None,
         characters: None,
+        compute_seconds: None,
+        megapixels: None,
+        cost_source: None,
+        cost_unknown_reason: None,
         audio_input_tokens: None,
         image_input_tokens: None,
+        video_input_tokens: None,
         audio_output_tokens: None,
         image_output_tokens: None,
+        video_output_tokens: None,
         reported_cost: None,
         cost: None,
     }))
@@ -2169,6 +2175,11 @@ fn normalize_media(
             "Gemini response has no {kind} output"
         )));
     }
+    let mut usage = usage.unwrap_or_default();
+    usage.request_units = usage.request_units.or(Some(1));
+    if kind == "image" {
+        usage.image_units = Some(resources.len() as u64);
+    }
     let value = if field == "images" {
         json!({"images":resources,"provider_states":[]})
     } else {
@@ -2179,7 +2190,7 @@ fn normalize_media(
     };
     Ok(ProtocolOutput {
         value,
-        usage,
+        usage: Some(usage),
         artifacts,
     })
 }
@@ -2194,6 +2205,11 @@ fn normalize_video(
             "Gemini returned {} videos but one was requested",
             output.artifacts.len()
         )));
+    }
+    if let Some(usage) = &mut output.usage {
+        if usage.output_tokens.is_some() && usage.video_output_tokens.is_none() {
+            usage.cost_unknown_reason = Some("missing_usage:video_output_tokens".to_owned());
+        }
     }
     let artifact = &output.artifacts[0];
     let video = generated_video(
@@ -2489,8 +2505,10 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         cache_read_input_tokens: object.get("total_cached_tokens").and_then(Value::as_u64),
         audio_input_tokens: modality_tokens(object, "input_tokens_by_modality", "audio"),
         image_input_tokens: modality_tokens(object, "input_tokens_by_modality", "image"),
+        video_input_tokens: modality_tokens(object, "input_tokens_by_modality", "video"),
         audio_output_tokens: modality_tokens(object, "output_tokens_by_modality", "audio"),
         image_output_tokens: modality_tokens(object, "output_tokens_by_modality", "image"),
+        video_output_tokens: modality_tokens(object, "output_tokens_by_modality", "video"),
         reasoning_tokens: reasoning,
         request_units: None,
         ..AiUsage::default()

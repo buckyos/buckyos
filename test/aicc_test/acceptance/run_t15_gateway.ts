@@ -1426,6 +1426,21 @@ export function assertT15ResponseMapping(
       `typed ${apiType} response is missing mapped Provider usage`,
     );
   }
+  const expectedUsage = contract.expected_billable_usage?.[apiType];
+  if (expectedUsage) {
+    const usageObjects = (node: unknown): Record<string, unknown>[] => {
+      if (!node || typeof node !== "object") return [];
+      const object = node as Record<string, unknown>;
+      const direct = object.usage && typeof object.usage === "object" ? [object.usage as Record<string, unknown>] : [];
+      return [...direct, ...Object.values(object).flatMap(usageObjects)];
+    };
+    const observed = usageObjects(value);
+    for (const [field, expected] of Object.entries(expectedUsage)) {
+      if (!observed.some((usage) => typeof usage[field] === "number" && Math.abs(Number(usage[field])-expected) < 1e-9)) {
+        throw new Error(`typed ${apiType} is missing billable usage ${field}=${expected}`);
+      }
+    }
+  }
   if (
     contract.async_protocol &&
     !hasMappedField(

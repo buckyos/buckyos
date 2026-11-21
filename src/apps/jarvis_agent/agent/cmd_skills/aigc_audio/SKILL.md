@@ -28,3 +28,9 @@ Read the one-line JSON result on stdout. Check `status`, `detail.task_id`, and `
 A background shell task finishes via `<<task_result>>` (xllm uses `wait_task`). The separate AICC id appears in `__BUCKYOS_AGENT_PROGRESS__` or `detail.task_id`. On `wait_timeout` with `still_running`, use `resume_aicc_task <task_id> [out]`. After an HTTP 408/504 or disconnect, check a known id with `--no-wait`. For an unknown outcome keep the trace for `buckyos_admin`. The same command and `--idempotency-key` reattach within 24 h, including a saved failure. Resubmission with a new key can incur another charge.
 
 Check the requested local file exists and has bytes. Verify content with `speech_to_text` or `llm_understand_media`. Use `ffprobe` for duration/streams and `ffmpeg` for decoding when required. Report the task id and only the checks performed. For long scripts, conversion, model options, stems, pricing or errors, read `$OPENDAN_AGENT_ROOT/cmd_skills/aigc_audio/references/audio.md`.
+
+## 用量与成本核对
+
+AICenter 的 Usage 消费卡统计当前筛选条件下的全部记录，不限当前分页；金额按币种分开显示。点击 token 数值可以查看已上报的缓存、模态 token、图片张数、音视频秒数、字符和请求单位等明细，不把这些不同单位相加。不存在的维度不会显示；部分上报只代表已知小计。
+
+调用结果的 `usage.cost_source` 区分 Provider 实报和静态价格估算；`usage.cost_unknown_reason` 说明缺失用量、费率或币种。费用未知不表示免费。媒体任务已成功但费用未知时，先核对结果与计费用量，不为获取费用重复生成。历史记录不会随新价格自动改写。

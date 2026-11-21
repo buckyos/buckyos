@@ -1069,7 +1069,13 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         video_seconds: None,
         reference_images: None,
         request_units: None,
+        video_input_tokens: None,
+        video_output_tokens: None,
         characters: None,
+        compute_seconds: None,
+        megapixels: None,
+        cost_source: None,
+        cost_unknown_reason: None,
         audio_input_tokens: value
             .pointer("/prompt_tokens_details/audio_tokens")
             .and_then(Value::as_u64),

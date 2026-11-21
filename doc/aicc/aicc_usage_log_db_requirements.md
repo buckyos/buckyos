@@ -138,7 +138,8 @@ Array filter fields use exact multi-value matching. Empty arrays mean no filter 
 Output:
 
 - `total_requests`
-- aggregated usage values
+- aggregated usage values, including `dimensions: {field: {amount, reported_events}}` from raw numeric AiUsage fields (absent and explicitly reported zero remain distinct)
+- `unpriced_requests`: number of matching events without a valid finance snapshot
 - `finance_totals`: valid finance snapshots grouped by normalized currency and sorted by currency
 - `finance_complete`: false when any event lacks a valid finance snapshot or a currency subtotal overflows; valid subtotals remain available
 - grouped rows when grouping is set

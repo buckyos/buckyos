@@ -1301,7 +1301,25 @@ fn decode_response_object(
     });
     Ok(ProtocolOutput {
         value,
-        usage: decode_usage(response.get("usage"), reported_cost_currency)?,
+        usage: {
+            let mut usage =
+                decode_usage(response.get("usage"), reported_cost_currency)?.unwrap_or_default();
+            usage.request_units = Some(1);
+            if !artifacts.is_empty() {
+                usage.image_units = Some(
+                    artifacts
+                        .iter()
+                        .filter(|artifact| {
+                            artifact
+                                .mime
+                                .as_deref()
+                                .is_some_and(|mime| mime.starts_with("image/"))
+                        })
+                        .count() as u64,
+                );
+            }
+            Some(usage)
+        },
         artifacts,
     })
 }
@@ -1491,7 +1509,13 @@ fn decode_usage(
         video_seconds: None,
         reference_images: None,
         request_units: None,
+        video_input_tokens: None,
+        video_output_tokens: None,
         characters: None,
+        compute_seconds: None,
+        megapixels: None,
+        cost_source: None,
+        cost_unknown_reason: None,
         audio_input_tokens: value
             .pointer("/input_tokens_details/audio_tokens")
             .and_then(Value::as_u64),
@@ -2728,7 +2752,7 @@ fn decode_audio_transcription(response: HttpResponse) -> ProtocolResultValue<Pro
         })
         .transpose()?
         .unwrap_or_default();
-    let usage = match value
+    let mut usage = match value
         .get("usage")
         .and_then(|usage| usage.get("type"))
         .and_then(Value::as_str)
@@ -2748,6 +2772,14 @@ fn decode_audio_transcription(response: HttpResponse) -> ProtocolResultValue<Pro
         // shapes working and stops the flat shape settling as `unknown`.
         None => flat_transcription_usage(&value)?,
     };
+    if let Some(duration) = value
+        .get("duration")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite() && *v >= 0.0)
+    {
+        let usage = usage.get_or_insert_with(|| AiUsage::request_units(1));
+        usage.audio_seconds = usage.audio_seconds.or(Some(duration));
+    }
     Ok(ProtocolExecution::Immediate(ProtocolOutput {
         value: json!({
             "text": text,

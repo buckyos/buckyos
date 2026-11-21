@@ -29,7 +29,7 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
         total: aggregate,
         grouped: key ? [{ group: { [key]: key === 'user_id' ? 'bob' : 'model@provider' }, aggregate }] : [],
         buckets: params.time_bucket ? [{ bucket_start_ms: 1_700_000_000_000, aggregate }] : [],
-        events: params.output_mode === 'events' ? [{
+        events: params.output_mode === 'summary_and_events' ? [{
           event_id: 'event-bob', tenant_id: 'tenant-bob', user_id: 'bob', created_at_ms: 1_700_000_000_000,
           provider_model: 'model@provider', total_tokens: 120,
         }] : [],

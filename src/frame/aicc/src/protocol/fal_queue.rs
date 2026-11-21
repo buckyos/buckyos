@@ -381,7 +381,14 @@ fn decode_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput
         }
     };
     Ok(NativeTaskOutput::Status {
-        result_usage: None,
+        result_usage: value
+            .pointer("/metrics/inference_time")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|seconds| AiUsage {
+                compute_seconds: Some(seconds),
+                ..AiUsage::default()
+            }),
         state,
         retry_after,
         result_ref: None,
@@ -456,7 +463,7 @@ fn decode_result(
             })?
         },
     )]));
-    let image_units = (field == "images").then_some(resources.len() as u64);
+    let image_units = matches!(field, "images" | "image").then_some(resources.len() as u64);
     let artifacts = resources
         .into_iter()
         .enumerate()
@@ -479,6 +486,11 @@ fn decode_result(
         value: normalized,
         usage: Some(AiUsage {
             image_units,
+            audio_seconds: value
+                .pointer("/audio_file/duration")
+                .or_else(|| value.pointer("/audio/duration"))
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v >= 0.0),
             ..AiUsage::request_units(1)
         }),
         artifacts,

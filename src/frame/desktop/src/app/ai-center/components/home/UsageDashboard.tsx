@@ -10,6 +10,8 @@ import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
+import { UsageConsumption, UsageUnits, UsageCost } from '../usage/UsageConsumption'
+import { aggregateUsageEvents, eventUsageDimensions } from '../../datamodel/usage-units'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageOverview, UsageScope, UsageSummary, UsageTimeRange, UserUsageSummary } from '../../../../api/aicc_mgr'
 import { formatTokens as formatQuotaTokens, type QuotaRuleDraft } from '../../datamodel/quota'
 
@@ -321,7 +323,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
   // and kept stable while paging through that series.
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [pageCursors, setPageCursors] = useState<Record<number, string | undefined>>({ 1: undefined })
-  const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0 })
+  const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [usageRetryKey, setUsageRetryKey] = useState(0)
@@ -730,6 +732,8 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
         </div>
       </section>}
 
+      {isUsagePage && usageTab === 'usage' && <UsageConsumption page={usagePage} loading={usageLoading} error={usageError} />}
+
       {!isUsagePage && onSelectUser && <UserUsageTable users={overview.users} onSelect={onSelectUser} />}
 
       {!isUsagePage && (
@@ -983,8 +987,8 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
                         <CopyableText value={event.session_id ?? '-'} mono />
                       )}
                     </td>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens, locale)}</td>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event, locale)}</td>
+                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}><UsageUnits tokens={tokens} dimensions={eventUsageDimensions(event)} count={1} /></td>
+                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}><UsageCost event={event} /></td>
                     <td className="px-4 py-2 text-xs" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</td>
                   </tr>
                 )
@@ -1367,8 +1371,8 @@ function UsageEventCard({
           </div>
         </div>
         <div className="text-right">
-          <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event, locale)}</div>
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(tokens, locale) })}</div>
+          <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}><UsageCost event={event} /></div>
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}><UsageUnits tokens={tokens} dimensions={eventUsageDimensions(event)} count={1} /></div>
         </div>
       </div>
       <div className="mt-3 grid grid-cols-1 gap-2 text-xs">

@@ -2007,7 +2007,20 @@
             "https://ai.google.dev/gemini-api/docs/image-generation",
             "https://ai.google.dev/gemini-api/docs/api-errors"
           ],
-          "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks."
+          "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks.",
+          "expected_billable_usage": {
+            "image.txt2img": {
+              "image_units": 1,
+              "request_units": 1
+            },
+            "image.img2img": {
+              "image_units": 1,
+              "request_units": 1
+            },
+            "audio.music": {
+              "request_units": 1
+            }
+          }
         },
         {
           "id": "gemini.interactions.tts.v1beta",
@@ -2470,6 +2483,12 @@
           "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle uses the app root, with canonical result retrieval at /requests/{request_id} and a returned response_url ending in /response.",
           "aicc_error_code_by_scenario": {
             "validation": "invalid_request"
+          },
+          "expected_billable_usage": {
+            "image.upscale": {
+              "compute_seconds": 0.01,
+              "image_units": 1
+            }
           }
         },
         {
@@ -2621,7 +2640,8 @@
               "url": "http://mock-artifact/artifacts/result.wav",
               "content_type": "audio/wav",
               "file_name": "result.wav",
-              "file_size": 2048
+              "file_size": 2048,
+              "duration": 6.9544375
             },
             "timings": {
               "preprocess": 0.01,
@@ -2636,6 +2656,12 @@
           "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle exposes canonical result retrieval and the returned /response alias.",
           "aicc_error_code_by_scenario": {
             "validation": "invalid_request"
+          },
+          "expected_billable_usage": {
+            "audio.enhance": {
+              "audio_seconds": 6.9544375,
+              "compute_seconds": 0.01
+            }
           }
         },
         {

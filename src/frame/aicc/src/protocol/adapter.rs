@@ -729,6 +729,19 @@ pub(crate) trait OperationCodec: Send + Sync {
                 .characters
                 .or(Some(request.text.chars().count() as u64));
         }
+        if let ProtocolExecution::Immediate(output) = &mut execution {
+            let images = match &input.canonical_request {
+                AiccCall::ImagesGenerate(_) => Some(0),
+                AiccCall::ImageToImage(request) => Some(request.images.len() as u64),
+                _ => None,
+            };
+            if let Some(count) = images {
+                output
+                    .usage
+                    .get_or_insert_with(Default::default)
+                    .reference_images = Some(count);
+            }
+        }
         Ok(execution)
     }
 

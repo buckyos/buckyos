@@ -2260,7 +2260,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 334);
+    assert_eq!(pricing_count, 385);
 }
 
 #[test]
@@ -2583,7 +2583,6 @@ fn custom_base_urls_override_inherited_operation_endpoints_and_policy_region_is_
 
 #[test]
 fn all_builtin_prices_with_supported_units_can_complete_finance() {
-    use crate::catalog::PricingUnit;
     let catalog = catalog();
     let usage = buckyos_api::AiUsage {
         input_tokens: Some(100),
@@ -2594,6 +2593,9 @@ fn all_builtin_prices_with_supported_units_can_complete_finance() {
         audio_seconds: Some(1.0),
         video_seconds: Some(1.0),
         characters: Some(1),
+        compute_seconds: Some(1.0),
+        megapixels: Some(1.0),
+        reference_images: Some(1),
         ..Default::default()
     };
     for provider in catalog.known_providers() {
@@ -2639,18 +2641,11 @@ fn all_builtin_prices_with_supported_units_can_complete_finance() {
             )
             .unwrap()
             .unwrap();
-            if matches!(
-                price.unit,
-                Some(PricingUnit::Second | PricingUnit::Megapixel)
-            ) {
-                assert!(pinned.completion_cost(&usage).is_none());
-            } else {
-                assert!(
-                    pinned.completion_cost(&usage).is_some(),
-                    "{} pricing[{index}] cannot be billed",
-                    provider.provider_profile_id
-                );
-            }
+            assert!(
+                pinned.completion_cost(&usage).is_some(),
+                "{} pricing[{index}] cannot be billed",
+                provider.provider_profile_id
+            );
         }
     }
 }
@@ -2920,4 +2915,46 @@ fn doubao_november_inventory_resolves_official_models_and_operations() {
             assert_eq!(video["output"]["resolutions"].as_array().unwrap().len(), 2);
         }
     }
+}
+
+#[test]
+fn sn_static_usd_prices_cover_published_offerings_and_omni_has_distinct_video_rate() {
+    let sn: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/sn.provider.json"
+    ))
+    .unwrap();
+    assert_eq!(sn["reported_cost"]["currency"], "USD");
+    let unavailable = [
+        "ui-tars-1.5-7b",
+        "qwen3-embedding-8b",
+        "voxtral-small-24b-2507",
+    ];
+    for name in sn["model_driver_overrides"].as_object().unwrap().keys() {
+        if unavailable.contains(&name.as_str()) {
+            continue;
+        }
+        let price = sn["model_pricing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("SN {name} has no price"));
+        assert_eq!(price["pricing"]["currency"], "USD");
+        assert!(price["pricing"]["source_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://"));
+    }
+    let gemini: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/gemini.provider.json"
+    ))
+    .unwrap();
+    let price = &gemini["model_pricing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "gemini-omni-1.1-flash")
+        .unwrap()["pricing"];
+    assert_eq!(price["image_input_token"].as_f64().unwrap(), 1.5e-6);
+    assert_eq!(price["video_output_token"].as_f64().unwrap(), 17.5e-6);
 }

@@ -1,5 +1,7 @@
 import { createCustomRulesDraft, parseProviderRulesFile, toProviderRuleOptions, type ProviderRuleOptions } from './custom_provider_rules'
 import { buckyos, getActiveSessionToken } from 'buckyos'
+import { aggregateUsageEvents, groupUsageEvents, toUsageTotals } from '../app/ai-center/datamodel/usage-units'
+import type { UsageTotals, UsageBreakdown } from '../app/ai-center/mock/types'
 import { isMockRuntime } from '../runtime'
 import type { ModelCatalog } from '../app/ai-center/datamodel/model-catalog'
 import { mockModelCatalog } from '../app/ai-center/mock/model-catalog'
@@ -320,6 +322,8 @@ interface RawRoutingSettings {
 }
 
 interface RawUsageAggregate {
+  dimensions?: unknown
+  unpriced_requests?: unknown
   total_requests?: unknown
   input_tokens?: unknown
   output_tokens?: unknown
@@ -374,6 +378,7 @@ interface RawUsageBucketedRow {
 }
 
 interface RawUsageEvent {
+  usage_json?: unknown
   event_id?: unknown
   tenant_id?: unknown
   user_id?: unknown
@@ -525,6 +530,8 @@ export interface UsageEventsQuery {
 }
 
 export interface UsageEventsPage {
+  total: UsageTotals
+  grouped: UsageBreakdown[]
   events: StoreSnapshot['usageEvents']
   totalRequests: number
   nextCursor?: string
@@ -899,6 +906,8 @@ class MockAiccProvider implements AiccDataProvider {
     const nextOffset = offset + page.length
     return {
       events: page,
+      total: aggregateUsageEvents(filtered),
+      grouped: groupUsageEvents(filtered),
       totalRequests: filtered.length,
       nextCursor: nextOffset < filtered.length ? nextOffset.toString() : undefined,
     }
@@ -1200,12 +1209,15 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         ...toRawUsageFilters(params.filters),
         ...(params.scope?.userId ? { user_ids: [params.scope.userId] } : {}),
       },
-      output_mode: 'events',
+      output_mode: 'summary_and_events',
+      group_by: ['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'],
       limit: params.limit,
       cursor: params.cursor,
     })
     return {
       events: toUsageEvents(response),
+      total: toUsageTotals(response.total),
+      grouped: (response.grouped ?? []).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([k,v]) => [k, String(v ?? '')])), aggregate: toUsageTotals(row.aggregate) })),
       totalRequests: asNumber(response.total?.total_requests, 0),
       nextCursor: asOptionalString(response.next_cursor),
     }
@@ -1574,8 +1586,7 @@ function toUsageEvents(raw: RawUsageQueryResponse): StoreSnapshot['usageEvents']
     const tokensIn = asOptionalNumber(event.input_tokens)
     const tokensOut = asOptionalNumber(event.output_tokens)
     const tokenEquivalent = asOptionalNumber(event.total_tokens)
-      ?? asOptionalNumber(event.request_units)
-      ?? ((tokensIn ?? 0) + (tokensOut ?? 0))
+      ?? (tokensIn != null || tokensOut != null ? (tokensIn ?? 0) + (tokensOut ?? 0) : undefined)
 
     return {
       id: asNonEmptyString(event.event_id, asNonEmptyString(event.task_id, `usage-${asNumber(event.created_at_ms, 0)}`)),
@@ -1588,6 +1599,7 @@ function toUsageEvents(raw: RawUsageQueryResponse): StoreSnapshot['usageEvents']
       user_id: asOptionalString(event.user_id),
       app_id: asOptionalString(event.caller_app_id),
       session_id: asOptionalString(event.task_id),
+      usage: (event.usage_json && typeof event.usage_json === "object" ? event.usage_json : {}) as Record<string, unknown>,
       tokens_in: tokensIn,
       tokens_out: tokensOut,
       token_equivalent: tokenEquivalent,
@@ -1955,7 +1967,7 @@ function aggregateTokens(raw?: RawUsageAggregate): number {
   if (!raw) return 0
   return asNumber(raw.total_tokens, 0)
     || asNumber(raw.input_tokens, 0) + asNumber(raw.output_tokens, 0)
-    || asNumber(raw.request_units, 0)
+
 }
 
 function localDayStart(value = new Date()): Date {

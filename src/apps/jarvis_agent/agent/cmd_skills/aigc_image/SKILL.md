@@ -31,3 +31,9 @@ Include `detail.files[].url` in the Work report's `artifacts`; for a further edi
 A background shell id finishes via `<<task_result>>` (xllm uses `wait_task`). Save the separate AICC id from `__BUCKYOS_AGENT_PROGRESS__` or `detail.task_id`. On `wait_timeout` with `still_running`, use `resume_aicc_task <task_id> [out]`. After an HTTP 408/504 or disconnect, check a known id with `--no-wait`. Without one, retain the trace for `buckyos_admin`. The same command and `--idempotency-key` reattach within 24 h, including an earlier failure.
 
 Exit 1 means bad arguments, 2 provider/request failure, 3 no route, 4 timeout, 5 file I/O. Correct rejected inputs/options before any billable retry with a new key. `resource_not_permitted` needs an accessible model. Report `quota_exhausted` or `quota_budget_exceeded` with `detail.details` and `reset_at_ms`; `ai_quota` lists the owner's rules.
+
+## 用量与成本核对
+
+AICenter 的 Usage 消费卡统计当前筛选条件下的全部记录，不限当前分页；金额按币种分开显示。点击 token 数值可以查看已上报的缓存、模态 token、图片张数、音视频秒数、字符和请求单位等明细，不把这些不同单位相加。不存在的维度不会显示；部分上报只代表已知小计。
+
+调用结果的 `usage.cost_source` 区分 Provider 实报和静态价格估算；`usage.cost_unknown_reason` 说明缺失用量、费率或币种。费用未知不表示免费。媒体任务已成功但费用未知时，先核对结果与计费用量，不为获取费用重复生成。历史记录不会随新价格自动改写。

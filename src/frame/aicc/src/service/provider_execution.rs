@@ -2030,24 +2030,42 @@ fn merge_native_result_usage(
     status_usage: Option<buckyos_api::AiUsage>,
     fallback_video_seconds: Option<f64>,
 ) {
-    let reported_cost = status_usage.as_ref().and_then(|usage| usage.reported_cost);
-    let settled_cost = status_usage.as_ref().and_then(|usage| usage.cost.clone());
-    let video_seconds = status_usage
-        .and_then(|usage| usage.video_seconds)
-        .or(fallback_video_seconds);
-    if reported_cost.is_none() && settled_cost.is_none() && video_seconds.is_none() {
+    if status_usage.is_none() && fallback_video_seconds.is_none() {
         return;
     }
+    let mut status = status_usage.unwrap_or_default();
+    status.video_seconds = status.video_seconds.or(fallback_video_seconds);
     let usage = output.usage.get_or_insert_with(Default::default);
-    if usage.reported_cost.is_none() {
-        usage.reported_cost = reported_cost;
+    macro_rules! fill {
+        ($($field:ident),*) => {$( usage.$field = usage.$field.take().or(status.$field); )*};
     }
-    if usage.cost.is_none() {
-        usage.cost = settled_cost;
-    }
-    if usage.video_seconds.is_none() {
-        usage.video_seconds = video_seconds;
-    }
+    fill!(
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_read_input_tokens,
+        cache_write_input_tokens,
+        cache_write_1h_input_tokens,
+        reasoning_tokens,
+        audio_input_tokens,
+        image_input_tokens,
+        video_input_tokens,
+        audio_output_tokens,
+        image_output_tokens,
+        video_output_tokens,
+        image_units,
+        audio_seconds,
+        video_seconds,
+        reference_images,
+        request_units,
+        characters,
+        compute_seconds,
+        megapixels,
+        reported_cost,
+        cost,
+        cost_source,
+        cost_unknown_reason
+    );
 }
 
 fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_api::AiUsage) -> Result<(), ProtocolError> {
@@ -2060,10 +2078,25 @@ fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_a
             };
         )*};
     }
-    add!(input_tokens, output_tokens, total_tokens, cache_read_input_tokens,
-        cache_write_input_tokens, cache_write_1h_input_tokens, reasoning_tokens,
-        audio_input_tokens, image_input_tokens, audio_output_tokens, image_output_tokens,
-        image_units, request_units, characters);
+    add!(
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_read_input_tokens,
+        cache_write_input_tokens,
+        cache_write_1h_input_tokens,
+        reasoning_tokens,
+        audio_input_tokens,
+        image_input_tokens,
+        video_input_tokens,
+        audio_output_tokens,
+        image_output_tokens,
+        video_output_tokens,
+        image_units,
+        reference_images,
+        request_units,
+        characters
+    );
     macro_rules! add_float {
         ($($field:ident),*) => {$(
             if source.$field.is_some() {
@@ -2073,7 +2106,13 @@ fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_a
             }
         )*};
     }
-    add_float!(audio_seconds, video_seconds, reported_cost);
+    add_float!(
+        audio_seconds,
+        video_seconds,
+        compute_seconds,
+        megapixels,
+        reported_cost
+    );
     if let Some(cost) = source.cost {
         if let Some(target_cost) = target.cost.as_mut() {
             if target_cost.currency != cost.currency {
@@ -2117,6 +2156,23 @@ fn credential_fingerprint(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuation_media_counters_are_added_exactly_once() {
+        let mut target = buckyos_api::AiUsage::default();
+        let source = buckyos_api::AiUsage { reference_images:Some(1),audio_input_tokens:Some(2),video_input_tokens:Some(3),audio_output_tokens:Some(4),video_output_tokens:Some(5),compute_seconds:Some(0.25),megapixels:Some(2.0),..Default::default() };
+        merge_continuation_usage(&mut target, source.clone()).unwrap();
+        assert_eq!(target.audio_input_tokens,Some(2));
+        assert_eq!(target.video_input_tokens,Some(3));
+        merge_continuation_usage(&mut target, source).unwrap();
+        assert_eq!(target.audio_input_tokens,Some(4));
+        assert_eq!(target.video_input_tokens,Some(6));
+        assert_eq!(target.audio_output_tokens,Some(8));
+        assert_eq!(target.video_output_tokens,Some(10));
+        assert_eq!(target.compute_seconds,Some(0.5));
+        assert_eq!(target.megapixels,Some(4.0));
+        assert_eq!(target.reference_images,Some(2));
+    }
 
     #[test]
     fn native_result_usage_keeps_result_values_and_fills_status_settlement() {

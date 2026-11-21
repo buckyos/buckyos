@@ -321,7 +321,7 @@ Old inventory caches and removed Provider fields are rejected.
 
 Pricing belongs to Provider Rules/discovery and supports `source_url`,
 `verified_at`, `ratio_exception`, cache reads/writes (including one-hour writes),
-audio/image token rates, tiers and time windows. Discovery and catalog share
+audio/image/video token rates, tiers and time windows. Discovery and catalog share
 validation. Output/input token price ratios have no upper limit and do not
 require `ratio_exception`. Cache read prices above input prices and cache write
 prices above 10 times input prices require a non-empty `ratio_exception`.
@@ -385,3 +385,7 @@ numeric capacities. Omitted limits leave existing model behavior unchanged.
 A single-image model declares `max_images: 1`; it must not erase a multi-image
 request with an `omit` canonical mapping. Protocol-specific wire fields remain
 the responsibility of the corresponding image codec.
+
+Cost-source diagnostics, all usage dimensions, SN USD pricing and historical repair are described in [Usage costs](usage_costs.md).
+
+`reported_cost.model_ids` optionally restricts a declared response currency to explicit provider model IDs. An empty set applies to the whole Provider; SN restricts its USD declaration to the verified Kimi offerings. A response with its own valid currency always takes precedence.

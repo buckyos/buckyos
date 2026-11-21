@@ -331,9 +331,13 @@ pub(crate) struct Pricing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -369,8 +373,10 @@ impl Pricing {
             self.cache_write_1h_input_token,
             self.audio_input_token,
             self.image_input_token,
+            self.video_input_token,
             self.audio_output_token,
             self.image_output_token,
+            self.video_output_token,
         ]
         .into_iter()
         .chain(
@@ -386,8 +392,10 @@ impl Pricing {
                         step.cache_write_1h_input_token,
                         step.audio_input_token,
                         step.image_input_token,
+                        step.video_input_token,
                         step.audio_output_token,
                         step.image_output_token,
+                        step.video_output_token,
                     ]
                 }),
         )
@@ -431,9 +439,13 @@ pub(crate) struct PricingRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_output_token: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -480,9 +492,13 @@ pub(crate) struct PricingTierStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -553,9 +569,13 @@ pub(crate) struct PricingTimeWindow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<PricingUnit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -958,6 +978,14 @@ pub(crate) enum ProviderModelMatch {
 pub(crate) struct ReportedCostPolicy {
     pub currency: String,
     pub semantics: ReportedCostSemantics,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub model_ids: BTreeSet<String>,
+}
+
+impl ReportedCostPolicy {
+    pub(crate) fn currency_for(&self, model: &str) -> Option<&str> {
+        (self.model_ids.is_empty() || self.model_ids.contains(model)).then_some(self.currency.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
