@@ -58,7 +58,7 @@ export function WorkspaceCard({ workspace, transport, me, openedAt, prepared, op
   const menu = (): MenuItem[] => [
     { id: 'open-tab', label: t('aiworkspace.home.menu.openTab'), run: actions.openTab, testId: 'aiws-home-open-tab' },
     ...(can('manage') && !restricted ? [{ id: 'clone', label: t('aiworkspace.core.list.clone'), disabled: busy, run: actions.clone, testId: 'aiws-clone' }] : []),
-    ...(can('export') ? [{ id: 'export', label: t('aiworkspace.home.menu.export'), run: actions.exportPackage, testId: 'aiws-home-export' }] : []),
+    ...(workspace.owner ? [{ id: 'export', label: t('aiworkspace.home.menu.export'), run: actions.exportPackage, testId: 'aiws-home-export' }] : []),
     { id: 'prepare', label: t('aiworkspace.shell.prepareOffline'), disabled: busy || offlineReason !== null, reason: offlineReason, explain: true, run: actions.prepare, testId: 'aiws-home-prepare' },
     { id: 'details', label: t('aiworkspace.home.menu.details'), run: actions.details, testId: 'aiws-home-details' },
     ...(can('manage') ? [{ id: 'cover', label: t('aiworkspace.cover.menu'), disabled: busy, run: actions.cover, testId: 'aiws-home-cover-set' }] : []),

@@ -593,7 +593,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
       ) : (
         <TableGrid tableId={tableId} sourceId={sourceId} fields={fields} columns={columns} rows={shown} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight} compact={Boolean(compact)} phone={phone}
           editable={canUpdate} resultTable={Boolean(source.data.derived)} titleField={titleField} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation}
-          rowHead={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll} onStartSelect={(id) => setSelection(new Set([id]))}
+          showHandles={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll} onStartSelect={(id) => setSelection(new Set([id]))}
           onOpen={(id) => { if (interactiveStatic) activeBlock({ action: 'openRecord', recordId: id }); else setRecord({ kind: 'edit', recordId: id }) }}
           annotatedRecords={annotatedSet} phoneCell={phoneCell} onPhoneCell={setPhoneCell} onPhoneEdit={(c) => { setPhoneCell(c); setEditBar(c) }}
           columnsEditable={(!compact || interactiveStatic) && columnsReason === null}
@@ -616,7 +616,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
           onExitGrid={leave} focusRequest={focusRequest} />
       )}
       {!compact && !rows.error && !pending && rows.done && rows.total === 0 && <div className="aiws-muted aiws-table-empty" data-testid={`aiws-table-empty-${tableId}`}>{canAppend ? t('aiworkspace.table.emptyAdd') : t('aiworkspace.table.empty')}</div>}
-      {!compact && (selection ? (
+      {selection ? (
         <div className="aiws-table-foot aiws-table-selection" role="toolbar" aria-label={t('aiworkspace.table.selection.label')} data-testid={`aiws-table-selection-${tableId}`}>
           <span data-testid="aiws-table-selection-count">{t('aiworkspace.table.selection.count', { count: selection.size })}</span>
           <span className="aiws-grow" />
@@ -624,7 +624,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
           {canDelete && <button type="button" className="aiws-table-foot-btn is-danger" data-testid="aiws-table-selection-delete" disabled={selection.size === 0} onClick={(event) => pops.open('delete-selected', event.currentTarget)}>{t('aiworkspace.common.delete')}</button>}
           <button type="button" className="aiws-table-foot-btn" data-testid="aiws-table-selection-cancel" aria-label={t('aiworkspace.table.selection.cancel')} onClick={() => setSelection(null)}><X size={15} aria-hidden="true" />{t('aiworkspace.table.selection.cancel')}</button>
         </div>
-      ) : (
+      ) : !compact && (
         <div className="aiws-table-foot">
           <span className="aiws-grow" />
           <span className="aiws-table-count" data-testid={`aiws-table-count-${tableId}`} data-limited={limited ? 'true' : undefined}>{pending ? '' : limited
@@ -633,7 +633,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
             ? t('aiworkspace.table.countLoaded', { loaded: rows.rows.length, count: rows.total })
             : rows.loading ? t('aiworkspace.data.table.countLoading', { count: rows.total }) : t('aiworkspace.data.table.count', { count: rows.total })}</span>
         </div>
-      ))}
+      )}
       {pops.pop?.kind === 'menu' && <TableMenu anchor={pops.pop.anchor} onClose={pops.close} label={t('aiworkspace.table.more')} items={menuItems} testId={`aiws-table-menu-pop-${tableId}`} />}
       {pops.pop?.kind === 'delete-selected' && selection && (
         <ConfirmPop anchor={pops.pop.anchor} title={t('aiworkspace.table.selection.deleteAsk', { count: selection.size })} detail={t('aiworkspace.table.undoHint')} confirm={t('aiworkspace.common.delete')}

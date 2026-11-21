@@ -366,7 +366,10 @@ test('§5.5 the status bar shows the row a table is on: the current cell’s row
   await expect(info).toHaveText('表 · 第 4 行 / 共 12 行')
   // the record open in its form; its next record moves the table along, and it stays the current one when closed
   const fifth = await grid.getByTestId('aiws-row').nth(4).getAttribute('data-record-id')
-  await grid.getByTestId(`aiws-row-open-${fifth}`).click()
+  await grid.getByTestId('aiws-row').nth(4).getByRole('gridcell').first().hover()
+  await grid.getByTestId(`aiws-row-handle-${fifth}`).click()
+  await grid.getByTestId(`aiws-row-menu-${fifth}`).click()
+  await page.getByTestId('aiws-ctl-menu-open-record').click()
   await expect(info).toHaveText('表 · 第 5 行 / 共 12 行')
   await page.getByTestId('aiws-table-record-next').click()
   await expect(info).toHaveText('表 · 第 6 行 / 共 12 行')

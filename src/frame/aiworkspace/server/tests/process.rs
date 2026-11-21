@@ -135,6 +135,33 @@ fn mixed_batch(ws: &str, epoch: &str) -> Value {
     ]))
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_export_requires_the_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let nfs = Nfs::start(dir.path()).await;
+    let server = Server::start(dir.path(), &nfs, None).await;
+    let created = server.rpc("tok-alice", "ws.create", json!({ "title": "Backup" })).await;
+    let id = created["workspace_id"].as_str().unwrap();
+
+    let hidden = server.rpc("tok-bob", "doc.export", json!({ "workspace_id": id })).await;
+    assert_eq!(hidden["error"]["code"], "NOT_FOUND", "{hidden}");
+    let grants = server.rpc("tok-alice", "acl.set", json!({
+        "workspace_id": id,
+        "changes": [{ "subject": "bob", "allow": aiworkspace_core::access::CapSet::ALL.names() }]
+    })).await;
+    assert_eq!(grants["ok"], true, "{grants}");
+
+    for mode in ["share", "personal_backup"] {
+        let params = json!({ "workspace_id": id, "mode": mode });
+        let denied = server.rpc("tok-bob", "doc.export", params.clone()).await;
+        assert_eq!(denied["error"]["code"], "PERMISSION_DENIED", "{denied}");
+        assert_eq!(denied["error"]["sub_code"], "OWNER_ONLY", "{denied}");
+        let package = server.rpc("tok-alice", "doc.export", params).await;
+        assert_eq!(package["manifest"]["export_mode"], mode, "{package}");
+        assert!(package["download"]["token"].is_string(), "{package}");
+    }
+}
+
 /// V23 (backend): the service starts on its own, serves the whole workflow through
 /// its API with nothing but HTTP, authenticates every call, and keeps accepted
 /// commits across a process restart.

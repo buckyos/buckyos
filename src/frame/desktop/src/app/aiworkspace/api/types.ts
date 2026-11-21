@@ -30,6 +30,8 @@ export interface WorkspaceSummary {
   epoch: string
   head_seq: number
   capabilities: Capability[]
+  /** The caller has the Workspace owner's effective access. */
+  owner?: boolean
 }
 
 export interface ClonedFrom {
@@ -97,8 +99,6 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   anonymous?: boolean
   /** Who the caller is judged as (an Agent nobody configured here: its owner, R16). */
   judged_as?: string
-  /** The caller is the Workspace's owner. */
-  owner?: boolean
   /** The Workspace's shared settings (the root's `config`, K4) and the version a conditional write expects. */
   settings?: WorkspaceSettings
   settings_rev?: number

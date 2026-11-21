@@ -1540,15 +1540,16 @@ may turn a refusal into an allowance), never for the owner; nothing is cached. A
 presenter's memberships settled again at each `show.notes`.
 
 Only the owner (R17): giving or taking `manage` (an entry touching it, the members of a group holding it), `ws.delete`,
-a restore over the Workspace (`ws.import restore`). Managers do the rest: groups, members, entries
+exporting the Workspace (`doc.export` in both `share` and `personal_backup` modes), and a restore over the Workspace
+(`ws.import restore`). Managers do the rest: groups, members, entries
 without `manage` (denials included), anonymous access, share entries, publications, macro bindings, maintenance. Every
 change is one record in `acl_audit` (who, judged as whom, when, the object with its path then, before, after; `acl.audit`),
 bumps `acl_rev` (`ws.get_info`), wakes `doc.wait_changes { after_acl_rev }` and publishes the kevent
 `…/aiworkspace/<ws>/acl`. A purged entity takes its entries along; a deleted one keeps them for a restore.
 
 **The permission design** — group definitions, the entries of groups and fixed groups, macro bindings — travels with a
-template (`templates/<id>/permissions.json`, written when a manager exports), a Clone and a package (`permission_design`
-in the manifest) made by a manager, and loads into the new Workspace with no members and anonymous access off. Members,
+template (`templates/<id>/permissions.json`) or Clone made by a manager, and with every workspace package
+(`permission_design` in the manifest). It loads into the new Workspace with no members and anonymous access off. Members,
 single callers' entries, the anonymous switch and share entries never travel; a restore over a Workspace keeps that
 Workspace's own.
 
@@ -1793,7 +1794,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `availability.describe` | experimental | `did` → the subject's published `availability_ref` for a caller with a current sharing grant |
 | `availability.free_busy` | experimental | `did`, offset-bearing `from`, `to` → `intervals`, `coverage` after checking the current sharing grant |
 | `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
-| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.owned_by_caller_user` reports whether the actual account or verified Agent owner owns this workspace; for that owner, an old copy explicitly deselected by `ws.select_name` retains its `former_name`; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (the picture chosen in the settings, `{ workspace_id, object_id, media_type }`, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
+| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one and `owner: true` when the caller has effective owner access; `ws.get_info.owned_by_caller_user` reports whether the actual account or verified Agent owner owns this workspace; for that owner, an old copy explicitly deselected by `ws.select_name` retains its `former_name`; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (the picture chosen in the settings, `{ workspace_id, object_id, media_type }`, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
 | `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
 | `acl.set` | stable | `changes: [{ subject, resource?, allow?, deny? }]` (≤ 500): each replaces the subject's entry on the resource (path or id, default `/`; both empty removes it), all or none, one record; `manage` on each resource, the owner's when `manage` is touched |
 | `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry with who wrote it, `complete: true`, for a manager; otherwise the entries that apply to the caller — its own, its groups', `@all`, `@guest` while it is a guest — without who wrote them). Anyone may ask about itself; the rest is the managers' |
@@ -1956,7 +1957,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `doc.list_versions` | stable | `read` on `entity_id` |
 | `doc.restore_version` | experimental | `read` on `entity_id` |
 | `doc.checkpoint` | experimental | `export` on `/` |
-| `doc.export` | experimental | `export` on `/` |
+| `doc.export` | experimental | the owner |
 | `print.package` | experimental | may enter; `export` on the canvas, and on each canvas of a free canvas's path (the steps on others are left out); `read` on the PDF Frame; what is printed is what the caller may read |
 | `source.bind_contacts` | experimental | the owner |
 | `proc.start` | stable | a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish; hosted: an account, executed by one of its own Agents |

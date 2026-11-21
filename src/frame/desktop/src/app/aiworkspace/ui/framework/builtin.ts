@@ -119,7 +119,7 @@ export const BUILTIN_ACTIONS: ActionDef[] = [
     menu: { group: 'workspace', order: 50, id: 'import' }, run: ({ shell }) => shell.openDialog({ kind: 'import' }) },
   { id: 'ws.export', label: () => aiwsT('aiworkspace.framework.ws.export'), phone: true, visible: member,
     menu: { group: 'workspace', order: 60, id: 'export', hint: () => aiwsT('aiworkspace.shell.menu.exportPackageHint') },
-    reason: (ctx) => (caps(ctx).includes('export') ? null : aiwsT('aiworkspace.shell.menu.noExportPermission')), run: ({ shell }) => shell.openDialog({ kind: 'export' }) },
+    reason: ({ store }) => (store.session.info().owner ? null : aiwsT('aiworkspace.perm.ownerOnlyShort')), run: ({ shell }) => shell.openDialog({ kind: 'export' }) },
   // the home card's cover (Q37): a picture its managers choose, a Workspace setting
   { id: 'ws.cover', label: () => aiwsT('aiworkspace.cover.menu'), phone: true, visible: member,
     menu: { group: 'workspace', order: 65, id: 'cover' },

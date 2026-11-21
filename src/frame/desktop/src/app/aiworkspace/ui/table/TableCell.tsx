@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type RefObject } from 'react'
-import { ExternalLink, MessageSquarePlus } from 'lucide-react'
+import { ExternalLink, MessageSquare, MessageSquarePlus } from 'lucide-react'
 import type { TableGridProps } from './TableGrid'
 import { ReferenceDisplay } from './TableReference'
 import type { FieldDef, QueryRow } from '../../api/types'
@@ -32,7 +32,7 @@ interface TableCellProps extends TableGridProps {
   annotation?: AnnotationMark
 }
 
-export function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate, onTab, onExit, activeColumn, resizeColumn, compact, activateCells, width, sticky, editable: canEdit, resultTable, fields, annotation, onAnnotate, onActivateAnnotation, phone, phoneCell, onPhoneCell, onPhoneEdit }: TableCellProps) {
+export function TableCell({ showHandles, annotatedRecords, pager, sourceId, field, row, rowIndex, colIndex, onNavigate, onTab, onExit, activeColumn, resizeColumn, compact, activateCells, width, sticky, editable: canEdit, resultTable, fields, annotation, onAnnotate, onActivateAnnotation, phone, phoneCell, onPhoneCell, onPhoneEdit }: TableCellProps) {
   const { t } = useAiwsText()
   const store = useStore()
   const editId = cellEditId(sourceId, row.record_id, field.field_id)
@@ -188,6 +188,9 @@ export function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onN
           const input: Input = mine === undefined ? UNSET : mine
           void store.retry({ editId, label: entry.label, mine: entry.mine, hasMine: true, operations: [writeOperation(sourceId, field, row.record_id, input, 0)] }, entry.unknownKey ?? '')
         }}>{t('aiworkspace.common.retry')}</button>
+      )}
+      {!editing && showHandles && colIndex === 0 && annotatedRecords.has(row.record_id) && (
+        <MessageSquare size={13} className="aiws-table-record-note-icon" aria-label={t('aiworkspace.table.record.hasComments')} />
       )}
     </div>
   )

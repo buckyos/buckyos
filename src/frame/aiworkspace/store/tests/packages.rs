@@ -2,6 +2,7 @@
 //! (V04, V05, V14, V20, V22, V24).
 
 mod common;
+use aiworkspace_core::{access::CapSet, Code};
 use aiworkspace_store::urlsource::GeneratedSource;
 use aiworkspace_store::workspace::Caller;
 use aiworkspace_store::Service;
@@ -127,30 +128,19 @@ fn annotation_quotes_follow_target_access_in_packages() {
     let note: Value = serde_json::from_str(&note).unwrap();
     assert_eq!(note["body"], "shared-note");
     assert!(note.get("context").is_none());
-    drop(ws);
 
-    for mode in ["share", "personal_backup"] {
-        let (pkg, _) = export(&env, &id, &bob(), mode, true);
-        let bytes = unzip_all(&pkg);
-        assert!(!contains(&bytes, "quoted passage"), "{mode}");
-        assert!(!contains(&bytes, "Review"), "{mode}");
-        assert!(!contains(&bytes, "Copied selection"), "{mode}");
-        let other = common::env();
-        let imported = other.svc.import(&bob(), &pkg, "restore", false).unwrap();
-        assert_eq!(imported["content_root"], json!(restricted.content_root));
-        let copy = other.svc.workspace(&id).unwrap();
-        let copy = copy.lock().unwrap();
-        for note in ["shared-note", "personal-note"] {
-            if mode == "share" && note == "personal-note" {
-                continue;
-            }
-            let content = copy.read(&bob(), note, None).unwrap();
-            assert!(content["content"]["payload"].get("context").is_none());
-            assert_eq!(content["content"]["payload"]["body"], note);
+    let manager = Caller::user("manager");
+    ws.grant(&alice(), "manager", None, &caps(&CapSet::ALL.names())).unwrap();
+    for caller in [bob(), manager] {
+        for mode in ["share", "personal_backup"] {
+            let err = ws.export(&caller, mode, true, None).unwrap_err();
+            assert_eq!((err.code, err.sub.as_deref()), (Code::PermissionDenied, Some("OWNER_ONLY")), "{mode}, {}", caller.principal);
         }
     }
+    let doc = rusqlite::Connection::open(ws.dir.join("doc.sqlite")).unwrap();
+    let recorded: bool = doc.query_row("SELECT EXISTS(SELECT 1 FROM snapshots WHERE kind = 'export')", [], |row| row.get(0)).unwrap();
+    assert!(!recorded, "a refused export must not materialize a snapshot");
 
-    let mut ws = h.lock().unwrap();
     let rev = ws.read(&alice(), "source", None).unwrap()["life_rev"].clone();
     ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "source", "expect": { "rev": rev } }]));
     drop(ws);

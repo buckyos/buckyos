@@ -84,6 +84,8 @@ test('EP-01 §7.3 (computer) the table\'s ⋯ and its confirmation are floating 
   await expect(all).toHaveAttribute('data-layout', 'grid')
 
   // a confirmation: the question is the panel's title; Esc keeps the records, the button deletes them
+  await more.click()
+  await page.getByTestId('aiws-ctl-menu-table-select').click()
   await all.getByTestId('aiws-row-check-task-43').check()
   const remove = all.getByTestId('aiws-table-selection-delete')
   await remove.click()

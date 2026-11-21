@@ -383,6 +383,8 @@ test('annotations, field and option management, migration pre-check, broken view
   await expect(open.getByTestId('aiws-table-error-cell-open-tasks')).toHaveCount(0)
 
   // deleting an annotated record (ticked, deleted from the selection bar, asked first): the annotation stays, falls back to its table and keeps what it was about
+  await all.getByTestId('aiws-table-menu-cell-all-tasks').click()
+  await page.getByTestId('aiws-ctl-menu-table-select').click()
   await all.getByTestId('aiws-row-check-task-41').check()
   await all.getByTestId('aiws-table-selection-delete').click()
   await page.getByTestId('aiws-table-confirm-ok').click()
