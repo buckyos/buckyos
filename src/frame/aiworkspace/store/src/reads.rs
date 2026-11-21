@@ -83,6 +83,9 @@ impl Workspace {
                     if m["data"].get("state").is_some() {
                         self.data_source_state(&e, &mut m["data"])?;
                     }
+                    if e.type_id == TYPE_TABLE {
+                        self.contact_metadata(&e, &mut m["data"])?;
+                    }
                     m
                 } else {
                     aiworkspace_core::body::read_body(&ctx, &access, &e, params, Some(&loader))?
@@ -100,7 +103,9 @@ impl Workspace {
         data["attempt"] = self.source_attempt(&e.entity_id)?.unwrap_or(Value::Null);
         let version = e.payload.get("data_version");
         let ms = |v: Option<&Value>| v.and_then(Value::as_str).and_then(aiworkspace_core::value::parse_datetime_ms);
-        let checked = crate::source::refreshed_at(self, &e.entity_id)?.and_then(|s| aiworkspace_core::value::parse_datetime_ms(&s));
+        let refreshed = crate::source::refreshed_at(self, &e.entity_id)?;
+        let checked = refreshed.as_deref().and_then(aiworkspace_core::value::parse_datetime_ms);
+        if let Some(at) = refreshed { data["last_success_at"] = json!(at); }
         let at = ms(version.and_then(|v| v.get("business_time"))).or_else(|| ms(version.and_then(|v| v.get("synced_at"))).max(checked));
         let max_age = aiworkspace_core::types::source_def(e).and_then(|d| d["freshness"]["max_age_s"].as_i64());
         data["expired"] = json!(match (at, max_age) {

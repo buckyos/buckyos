@@ -278,3 +278,123 @@ fn a_wish_on_a_pending_source() {
     assert_eq!(failed["error"]["data"]["blockers"][0]["wanted"]["meaning"], "daily weather of Paris", "{failed}");
     });
 }
+
+#[derive(Default)]
+struct ContactBook {
+    owners: std::sync::Mutex<Vec<String>>,
+    fail: std::sync::atomic::AtomicBool,
+    delay: std::sync::atomic::AtomicBool,
+    fetching: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl aiworkspace_server::contacts::ContactsClient for ContactBook {
+    async fn list(&self, owner: &name_lib::DID, _offset: u64, _limit: usize) -> aiworkspace_core::WsResult<Vec<buckyos_api::Contact>> {
+        self.owners.lock().unwrap().push(owner.to_string());
+        if self.delay.load(std::sync::atomic::Ordering::SeqCst) {
+            self.fetching.notify_one();
+            self.release.notified().await;
+        }
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(aiworkspace_core::WsError::new(aiworkspace_core::Code::DependencyUnavailable, "test upstream offline"));
+        }
+        Ok(vec![serde_json::from_value(json!({
+            "did":"did:web:remote.example", "name":format!("{}'s contact", owner.to_string()), "source":"shared",
+            "friend_state":"friend", "is_verified":true, "bindings":[], "tags":[], "access_level":"allow", "created_at":1, "updated_at":1
+        })).unwrap()])
+    }
+    async fn get(&self, _: &name_lib::DID, _: &name_lib::DID) -> aiworkspace_core::WsResult<Option<buckyos_api::Contact>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn contacts_are_bound_by_the_owner_and_refresh_under_that_identity() {
+    run_test(|| async {
+        use std::sync::{atomic::Ordering::SeqCst, Arc};
+        let book = Arc::new(ContactBook::default());
+        let tokens = json!({"tok-alice":{"principal":"alice","did":"did:bns:alice"},"tok-bob":{"principal":"bob","did":"did:bns:bob"},
+            "tok-agent":{"principal":"alice-helper","class":"agent","owner":"alice"}});
+        let mut srv = Srv::start_with_contacts(tempfile::tempdir().unwrap(), model(), tokens, Default::default(), book.clone()).await;
+        let info = srv.rpc("ws.create", json!({"title":"Contacts"})).await;
+        srv.ws = info["workspace_id"].as_str().unwrap().into();
+        srv.rpc("acl.set", json!({"changes":[{"subject":"bob","resource":"/","allow":["read","run","export"]}]})).await;
+        let mut add = json!({"epoch":info["epoch"],"entity_id":"friends","idempotency_key":"contacts-1",
+                             "create":{"parent_id":"data","order_key":"a","name":"Friends"}});
+        assert_eq!(srv.call_as("tok-bob", "source.bind_contacts", add.clone()).await["result"]["ok"], false);
+        add["owner"] = json!("bob");
+        assert_eq!(srv.rpc("source.bind_contacts", add.clone()).await["ok"], false);
+        add.as_object_mut().unwrap().remove("owner");
+        assert!(book.owners.lock().unwrap().is_empty());
+        let first = srv.rpc("source.bind_contacts", add.clone()).await;
+        let run = first["run_id"].as_str().unwrap_or_else(|| panic!("{first}"));
+        assert_eq!(srv.wait_as("tok-alice", run).await["state"], "succeeded");
+        assert_eq!(srv.rpc("source.bind_contacts", add).await["run_id"], run);
+        let data = meta(&srv,"friends").await["data"].clone();
+        assert_eq!(data["binding"], "bound");
+        assert_eq!(data["source"]["refresh"]["interval_s"], 900);
+        assert_eq!(data["version"]["records"], 1);
+        assert_eq!(refresh_as(&srv, "tok-bob", "friends").await["state"], "succeeded");
+        assert!(book.owners.lock().unwrap().iter().all(|o| o == "did:bns:alice"));
+        let id = aiworkspace_core::wish::record_id_for_key(&[json!("did:web:remote.example")]);
+        assert_eq!(srv.records("friends").await[0]["record_id"], id);
+        let tags = srv.rpc("doc.query", json!({"sql":"SELECT tags FROM t","tables":{"t":"friends"}})).await;
+        assert_eq!(tags["rows"][0][0], "[]", "{tags}");
+        let cell = srv.rpc("doc.read",json!({"entity_id":"friends","selector":{"kind":"table_cell","record_id":id,"field_id":"name"}})).await;
+        let edit = json!([{"op":"table.set_values","source_id":"friends","values":[
+            {"record_id":id,"field_id":"name","value":"local","expect":{"rev":cell["content"]["rev"]}}]}]);
+        let rejected = srv.commit_raw(edit.clone()).await;
+        assert_eq!(rejected["errors"][0]["sub_code"], "SOURCE_READ_ONLY", "{rejected}");
+        let m = meta(&srv,"friends").await;
+        let manual = json!({"epoch":info["epoch"],"entity_id":"friends","mode":"manual","idempotency_key":"manual",
+                            "expect_content_rev":m["version"]["content_rev"]});
+        let changed = srv.rpc("source.bind_contacts",manual).await;
+        assert_eq!(changed["configured"], true, "{changed}");
+        assert!(meta(&srv,"friends").await["data"]["source"].get("refresh").is_none());
+        let cloned = srv.call_as("tok-bob","ws.clone",json!({})).await["result"]["workspace_id"].clone();
+        let copy = srv.call_as("tok-bob","doc.read",json!({"workspace_id":cloned,"as":"meta","entity_id":"friends"})).await;
+        assert_eq!(copy["result"]["data"]["binding"], "needs_rebind", "{copy}");
+        let rejected = srv.call_as("tok-bob","proc.start",json!({"workspace_id":cloned,"program":"source.refresh@1",
+            "params":{"entity_id":"friends"},"idempotency_key":"copied"})).await;
+        assert_eq!(rejected["result"]["error"]["sub_code"], "CONTACTS_BINDING_REQUIRED", "{rejected}");
+
+        let bob_bind = srv.call_as("tok-bob","source.bind_contacts",json!({"workspace_id":cloned,"epoch":copy["result"]["version"]["epoch"],
+            "entity_id":"friends","idempotency_key":"bob-consent","mode":"manual","expect_content_rev":copy["result"]["version"]["content_rev"]})).await;
+        let bob_run = bob_bind["result"]["run_id"].as_str().unwrap_or_else(|| panic!("{bob_bind}"));
+        let original_ws = std::mem::replace(&mut srv.ws, cloned.as_str().unwrap().to_owned());
+        assert_eq!(srv.wait_as("tok-bob",bob_run).await["state"], "succeeded");
+        let bob_data = srv.call_as("tok-bob","doc.query",json!({"sql":"SELECT name FROM t","tables":{"t":"friends"}})).await;
+        assert_eq!(bob_data["result"]["rows"][0][0], "did:bns:bob's contact", "{bob_data}");
+        srv.ws = original_ws;
+        book.delay.store(true, SeqCst);
+        let inflight = srv.rpc("proc.start",json!({"program":"source.refresh@1","params":{"entity_id":"friends"},"idempotency_key":"in-flight"})).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5),book.fetching.notified()).await.unwrap();
+        let current = srv.rpc("doc.read",json!({"entity_id":"friends"})).await;
+        srv.commit(json!([{"op":"entity.unset_keys","entity_id":"friends","keys":[{"key":"source","expect":{"rev":current["content"]["key_revs"]["source"]}}]}])).await;
+        srv.commit(edit).await;
+        book.delay.store(false, SeqCst);
+        book.release.notify_one();
+        assert_eq!(srv.wait_as("tok-alice",inflight["run_id"].as_str().unwrap()).await["state"], "failed");
+        let local = meta(&srv,"friends").await;
+        assert_eq!(local["data"]["write"], "edit");
+        let bind = json!({"epoch":info["epoch"],"entity_id":"friends","mode":"manual","idempotency_key":"reconnect",
+                          "expect_content_rev":local["version"]["content_rev"]});
+        book.fail.store(true, SeqCst);
+        let retry = srv.rpc("source.bind_contacts",bind).await;
+        assert_eq!(srv.wait_as("tok-alice",retry["run_id"].as_str().unwrap()).await["state"], "failed");
+        assert_eq!(srv.records("friends").await[0]["values"]["name"], "local");
+        book.fail.store(false, SeqCst);
+        let done = refresh_as(&srv, "tok-alice","friends").await;
+        assert_eq!(done["state"], "succeeded", "{done}");
+        assert_eq!(srv.records("friends").await[0]["values"]["name"], "did:bns:alice's contact");
+        assert_eq!(meta(&srv,"friends").await["data"]["write"], "refresh");
+
+        let once = srv.call_as("tok-agent", "source.bind_contacts",json!({"epoch":info["epoch"],"entity_id":"snapshot","mode":"once",
+            "idempotency_key":"snapshot","create":{"parent_id":"data","order_key":"b","name":"Snapshot"}})).await;
+        let done = srv.wait_as("tok-agent",once["result"]["run_id"].as_str().unwrap_or_else(|| panic!("{once}"))).await;
+        assert_eq!(done["state"], "succeeded", "{done}");
+        assert_eq!(meta(&srv,"snapshot").await["data"]["write"], "edit");
+        assert_eq!(srv.records("snapshot").await[0]["record_id"], id);
+    });
+}

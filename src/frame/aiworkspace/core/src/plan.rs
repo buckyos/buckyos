@@ -1313,7 +1313,7 @@ pub fn plan_commit<'a>(
         if name != "entity.create" {
             p.sibling_cache.clear();
         }
-        let result = if is_internal_op(name) && !env.internal {
+        let result = if is_internal_op(name) && !env.internal && !(env.origin == "source" && name == "table.restore_records") {
             Err(WsError::invalid_op(format!("{name} is an internal operation")))
         } else {
             dispatch(&mut p, name, op)

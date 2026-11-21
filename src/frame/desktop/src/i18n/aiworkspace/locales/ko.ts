@@ -3,6 +3,21 @@
  * A `{{count}}` text may have plural forms (`<key>_one`) after its plain key. */
 
 const text: Record<string, string> = {
+  'aiworkspace.datasource.contacts.catalog': '이 Zone의 데이터 소스',
+  'aiworkspace.datasource.contacts.title': '내 연락처',
+  'aiworkspace.datasource.contacts.account': '주소록 소유자: {{owner}}',
+  'aiworkspace.datasource.contacts.target': '대상: {{workspace}} · {{path}}',
+  'aiworkspace.datasource.contacts.fields': '복사할 필드: DID, 표시 이름, 태그, 친구 상태 및 원본 연락처 링크.',
+  'aiworkspace.datasource.contacts.sharing': '이 표를 읽을 수 있는 멤버는 동기화한 연락처를 볼 수 있습니다.',
+  'aiworkspace.datasource.contacts.mode': '동기화 방식',
+  'aiworkspace.datasource.contacts.auto': '자동 동기화',
+  'aiworkspace.datasource.contacts.manual': '수동 동기화',
+  'aiworkspace.datasource.contacts.once': '동기화 안 함 (편집 가능한 복사본 유지)',
+  'aiworkspace.datasource.contacts.replace': '연결하면 모든 로컬 행과 필드가 소유자의 연락처로 교체됩니다.',
+  'aiworkspace.datasource.contacts.rebind': '이 Zone의 연락처 연결',
+  'aiworkspace.datasource.contacts.unbound': '다시 연결해야 합니다',
+  'aiworkspace.datasource.contacts.online': '이 Zone의 데이터 소스를 추가하려면 작업 공간에 연결하세요.',
+  'aiworkspace.datasource.contacts.changed': '표가 변경되었습니다. 최신 버전을 확인한 후 다시 시도하세요.',
   // activity
   'aiworkspace.activity.offline.presence': '접속 중인 사람은 서버가 있어야 볼 수 있습니다',
   'aiworkspace.activity.offline.workLog': '작업 로그는 서버가 있어야 볼 수 있습니다',
@@ -1147,8 +1162,8 @@ const text: Record<string, string> = {
   'aiworkspace.data.fieldType.multiSelect': '다중 선택',
   'aiworkspace.data.fieldType.objectRef': '개체 참조',
   'aiworkspace.data.fieldType.currency': '통화',
-  'aiworkspace.data.fieldType.json': 'JSON 개체',
-  'aiworkspace.data.value.invalidJson': 'JSON 개체를 입력하세요. 예: {"priority": "high"}',
+  'aiworkspace.data.fieldType.json': 'JSON',
+  'aiworkspace.data.value.invalidJson': 'JSON 객체 또는 배열을 입력하세요.',
   'aiworkspace.data.operator.isEmpty': '비어 있음',
   'aiworkspace.data.operator.isNotEmpty': '비어 있지 않음',
   'aiworkspace.data.operator.eq': '같음',

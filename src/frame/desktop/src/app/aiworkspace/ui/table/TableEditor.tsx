@@ -154,10 +154,11 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   // ---- what may be done here, and why not
   const caps = source.data?.capabilities ?? []
   const external = Boolean(entity?.source ?? source.data?.source)
-  const canUpdate = !readOnly && caps.includes('update')
-  const canAppend = !readOnly && caps.some((capability) => capability === 'append' || capability === 'update')
-  const canDelete = !readOnly && caps.includes('delete')
-  const canStructure = !readOnly && caps.includes('structure')
+  const canWriteContent = !external && !readOnly
+  const canUpdate = canWriteContent && caps.includes('update')
+  const canAppend = canWriteContent && caps.some((capability) => capability === 'append' || capability === 'update')
+  const canDelete = canWriteContent && caps.includes('delete')
+  const canStructure = canWriteContent && caps.includes('structure')
   const canEditView = !readOnly && !sourceMode && cell.capabilities.includes('update')
   const reason = readOnlyReason ?? directReason ?? (external ? t('aiworkspace.table.readOnly.external')
     : source.data && !caps.some((capability) => capability === 'update' || capability === 'append') ? t('aiworkspace.table.readOnly.noPermission') : null)

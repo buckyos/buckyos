@@ -1,6 +1,6 @@
 # AIWorkspace 本 Zone 联系人数据源 TODO
 
-状态为待实施。2026-11-20，源码基线为 BuckyOS `51792a174`。
+2026-11-20 已实现。需求编写基线为 BuckyOS `51792a174`，实施基线为 `d3ab763d6`。验收结果见文末。
 
 ## 产品行为
 
@@ -68,11 +68,11 @@
 
 ## 实施清单
 
-- [ ] **内核与协议**　扩展 `check_source` 和标准表的来源校验，把 `provider` 暴露给 `doc.read` 的来源摘要、Desktop/SDK 的 Source 类型及协议说明。已有的自动、手动、解绑统一从 `source` 推导。更新 Rust/WASM 和消费端的契约用例。[内核](../src/frame/aiworkspace/core/src/types.rs) · [Desktop 类型](../src/frame/desktop/src/app/aiworkspace/api/types.ts)
-- [ ] **授权与适配器**　接通精确 RBAC 资源、owner 解析、本地绑定生命周期、五列投影和完整分页。为后台取数提供可注入的联系人客户端，使失败、慢响应和两用户数据可以独立测试。
-- [ ] **刷新与本地化**　接入标准刷新、定时器与版本记录，处理一次性取数、重连时保留本地修改、过期 run、恢复同一 DID、重启与重试。同步期间让普通编辑继续由后端返回 `SOURCE_READ_ONLY`。
-- [ ] **Desktop**　在数据模式的现有新建菜单增加「我的联系人」。属性面板显示同步方式、来源账号、最后成功时间、记录数、最近失败和可用操作。添加后打开普通表格。菜单与按钮使用后端同样的 owner、目标目录和 `may_run` 权限。[新建菜单](../src/frame/desktop/src/app/aiworkspace/ui/datamode/actions.ts) · [来源属性面板](../src/frame/desktop/src/app/aiworkspace/ui/sources/SourcePanel.tsx)
-- [ ] **文档与回归**　更新内核数据源文档和已有 AIWS Agent 使用手册的联系人示例。通过下列场景后回填测试命令、结果和实机 Zone 验证记录。[内核文档](../doc/workspace/kernel/04-数据源发布与同步.md) · [同步手册](../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_sync/SKILL.md)
+- [x] **内核与协议**　扩展 `check_source` 和标准表的来源校验，把 `provider` 暴露给 `doc.read` 的来源摘要、Desktop/SDK 的 Source 类型及协议说明。已有的自动、手动、解绑统一从 `source` 推导。更新 Rust/WASM 和消费端的契约用例。[内核](../src/frame/aiworkspace/core/src/types.rs) · [Desktop 类型](../src/frame/desktop/src/app/aiworkspace/api/types.ts)
+- [x] **授权与适配器**　接通精确 RBAC 资源、owner 解析、本地绑定生命周期、五列投影和完整分页。为后台取数提供可注入的联系人客户端，使失败、慢响应和两用户数据可以独立测试。
+- [x] **刷新与本地化**　接入标准刷新、定时器与版本记录，处理一次性取数、重连时保留本地修改、过期 run、恢复同一 DID、重启与重试。同步期间让普通编辑继续由后端返回 `SOURCE_READ_ONLY`。
+- [x] **Desktop**　在数据模式的现有新建菜单增加「我的联系人」。属性面板显示同步方式、来源账号、最后成功时间、记录数、最近失败和可用操作。添加后打开普通表格。菜单与按钮使用后端同样的 owner、目标目录和 `may_run` 权限。[新建菜单](../src/frame/desktop/src/app/aiworkspace/ui/datamode/actions.ts) · [来源属性面板](../src/frame/desktop/src/app/aiworkspace/ui/sources/SourcePanel.tsx)
+- [x] **文档与回归**　更新内核数据源文档和已有 AIWS Agent 使用手册的联系人示例。通过下列场景后回填测试命令、结果和实机 Zone 验证记录。[内核文档](../doc/workspace/kernel/04-数据源发布与同步.md) · [同步手册](../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_sync/SKILL.md)
 
 ## 验收用例
 
@@ -86,3 +86,24 @@
 | 两个账号与共享工作区 | Alice 添加自己的通讯录，Bob 按表 ACL 阅读。有运行权的 Bob 刷新时仍取 Alice 的视图。用客户端指定另一个 owner、伪造 source、复制文档或恢复旧绑定均不能取得额外上游权限。 |
 
 回归入口为 [core 的 Source 权限测试](../src/frame/aiworkspace/core/tests/sources.rs)、[store 的 Source 测试](../src/frame/aiworkspace/store/tests/sources.rs)、[server 的来源集成测试](../src/frame/aiworkspace/server/tests/zone_source.rs) 和 [Desktop 的来源用例](../src/frame/desktop/tests/aiworkspace/sources.spec.ts)。最终用真实 Zone 的两个账号验证服务身份、owner 投影和无人打开页面时的自动刷新。
+
+## 实施与验收记录（2026-11-20）
+
+- BuckyOS 内的添加与重绑入口为 `source.bind_contacts`。Desktop、服务端与同级 `buckyos-websdk` 均已更新。WASM 和 SDK 类型声明已从源码重新生成。
+- `cargo test --offline -p aiworkspace-core --test sources --test vectors` 验证来源描述、读模型与标签数组的跨语言值契约。`cargo test --offline -p aiworkspace-store --test sources --test packages` 验证本地授权、配置变更的崩溃重试、SQL 和 Wish 读取 1,201 条记录、一次性本地化、恢复原行 ID，以及导入、Clone 和恢复后的授权隔离。最终 store 来源回归共 6 项，也验证了完整及部分撤销遵守同步表的只读约束。
+- `cargo test --offline -p aiworkspace --lib contacts::tests` 验证分页、缺失 DID 复核、两用户视图、账号变更与错误处理。`cargo test --offline -p aiworkspace --test contract --test zone_source --test source --test sync_source` 验证 HTTP 请求、owner 与其 Agent 的授权、Bob 在 Clone 后重新绑定自己的视图、来源只读、过期刷新、原子重绑和已有来源兼容性。
+- `cargo test --offline -p buckyos-api --lib homestation_reads_owner_contacts_only` 验证 AIWS 的权限仅扩至 owner 联系人集合的精确读取路径。
+- 同级 WebSDK 运行 `node_modules/.bin/tsc -p tsconfig.build.json` 与 `node_modules/.bin/jest --runInBand tests/aiws_write.test.ts`。13 项测试通过，含 `readMeta` 的内建联系人来源类型。
+- Desktop 运行 `pnpm run build`、`node_modules/.bin/tsc -b` 及改动文件 ESLint。用新构建的 AIWS 和 Chromium 运行 `node_modules/.bin/playwright test --config playwright.aiworkspace.config.ts tests/aiworkspace/sources.spec.ts tests/aiworkspace/datasource.spec.ts`，8 项通过。浏览器检查了添加前的共享提示、来源只读、取消重绑、本地编辑标签数组和对象链接。i18n 表结构与语言区域检查 55 项通过，全量 i18n 中 3 项既有失败与实施基线相同。
+- `bash src/frame/aiworkspace/wasm/build.sh` 生成 Desktop 的 WASM。实际载入 WASM 后运行共用向量，15 组值规范化检查通过。
+- 实机原记录链接已在 Chromium 验证。两个用户分别通过本 Zone SSO 登录，打开同一条 `contact_ref`。该通讯录的 owner 收到 Message Center 的 HTTP 200，协作者 Bob 收到 HTTP 403。
+- 扩展回归时，store 既有用例 `session::a_registry_from_before_gets_the_speaking_columns` 失败。它用版本 0 的非空会话数据库测试升级，当前版本 1 的会话注册库拒绝打开该数据库。用 `cargo test --offline -p aiworkspace-core -p aiworkspace-store -- --skip a_registry_from_before_gets_the_speaking_columns` 复跑，其余 351 项通过、7 项按配置忽略。
+- server 全包在用户运行目录的独立临时目录下串行执行 `cargo test --offline -p aiworkspace --no-fail-fast -- --test-threads=1`，91 项通过、2 项按配置忽略。
+
+### 真实 Zone 验证
+
+使用独立启动的 dev Zone，运行完整的 node_daemon、Verify Hub、Message Center 和 AIWorkspace。命令为 `deno run --allow-net --allow-env src/frame/aiworkspace/server/tests/contacts_zone_dv.mjs`，退出码为 0。
+
+owner 添加通讯录后，Bob 在共享工作区通过 SQL 读到 owner 的五列投影；Bob 点击刷新后仍读取 owner 的通讯录。2026-11-21 08:09:59 UTC 在上游修改临时联系人的名字。期间工作区页面关闭，并重启 AIWorkspace。08:27:24 UTC 已能从表中读到新名字，记录 ID 与改名前一致。共用时约 17 分 25 秒，符合 900 秒间隔与调度器的巡检周期。完成后已清理两条临时联系人、共享工作区和测试 Zone。
+
+现役宿主机已备份并替换这两个服务的可执行文件。截至上述验收结束，旧进程仍在运行。宿主机账号的免密 sudo 仅允许整站停启，单独重启两个服务仍需操作员从有 sudo 权限的终端发送 TERM。

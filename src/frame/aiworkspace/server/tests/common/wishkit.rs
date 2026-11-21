@@ -102,12 +102,18 @@ impl Srv {
     }
 
     pub async fn start_with_limits(dir: tempfile::TempDir, model: Arc<ScriptedModel>, tokens: Value, limits: Limits) -> Srv {
+        Self::start_with_contacts(dir, model, tokens, limits, Arc::new(aiworkspace_server::contacts::RuntimeContacts)).await
+    }
+
+    pub async fn start_with_contacts(dir: tempfile::TempDir, model: Arc<ScriptedModel>, tokens: Value, limits: Limits,
+                                     contacts: Arc<dyn aiworkspace_server::contacts::ContactsClient>) -> Srv {
         let nfs = nfs::Nfs::start(dir.path()).await;
         let svc = Service::open(&dir.path().join("data"), nfs.objects().await).unwrap();
         let tokens: StaticTokens = serde_json::from_value(json!({ "tokens": tokens })).unwrap();
         let mut cfg = WishConfig::default();
         cfg.program_timeout_secs = 60;
-        let state = AppState::new(svc, Arc::new(tokens), limits, None, cfg);
+        let mut state = AppState::new(svc, Arc::new(tokens), limits, None, cfg);
+        Arc::get_mut(&mut state).unwrap().contacts = contacts;
         let _ = state.ndm_gateway.set(nfs.base.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

@@ -95,7 +95,7 @@ fn display_expr(def: &FieldDef, refs: &str) -> String {
         }
         FieldType::Json => {
             let f = lit(&format!("{}.\"$formula\"", json_path(&def.field_id)));
-            format!("CASE WHEN {t} = 'object' AND json_type(values_json, {f}) IS NULL THEN {x} END")
+            format!("CASE WHEN {t} IN ('object','array') AND json_type(values_json, {f}) IS NULL THEN {x} END")
         }
     }
 }

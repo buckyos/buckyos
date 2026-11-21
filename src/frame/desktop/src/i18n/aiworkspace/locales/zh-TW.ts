@@ -3,6 +3,21 @@
  * A `{{count}}` text may have plural forms (`<key>_one`) after its plain key. */
 
 const text: Record<string, string> = {
+  'aiworkspace.datasource.contacts.catalog': '本 Zone 資料來源',
+  'aiworkspace.datasource.contacts.title': '我的聯絡人',
+  'aiworkspace.datasource.contacts.account': '通訊錄所屬帳號：{{owner}}',
+  'aiworkspace.datasource.contacts.target': '目的地：{{workspace}} · {{path}}',
+  'aiworkspace.datasource.contacts.fields': '複製欄位：DID、顯示名稱、標籤、好友狀態及原始記錄連結。',
+  'aiworkspace.datasource.contacts.sharing': '有權讀取這張表的成員可以看到同步進來的聯絡人。',
+  'aiworkspace.datasource.contacts.mode': '同步方式',
+  'aiworkspace.datasource.contacts.auto': '自動同步',
+  'aiworkspace.datasource.contacts.manual': '手動同步',
+  'aiworkspace.datasource.contacts.once': '不同步（保留可編輯副本）',
+  'aiworkspace.datasource.contacts.replace': '重新綁定後，通訊錄將取代本表的所有本機資料列和欄位。',
+  'aiworkspace.datasource.contacts.rebind': '綁定本 Zone 聯絡人',
+  'aiworkspace.datasource.contacts.unbound': '需要重新綁定',
+  'aiworkspace.datasource.contacts.online': '請連線至工作區後再新增本 Zone 資料來源。',
+  'aiworkspace.datasource.contacts.changed': '資料表已變更，請查看最新版本後再試。',
   // activity
   'aiworkspace.activity.offline.presence': '查看線上成員需要連線至伺服器',
   'aiworkspace.activity.offline.workLog': '工作記錄需要連線至伺服器',
@@ -1147,8 +1162,8 @@ const text: Record<string, string> = {
   'aiworkspace.data.fieldType.multiSelect': '多選',
   'aiworkspace.data.fieldType.objectRef': '物件參照',
   'aiworkspace.data.fieldType.currency': '貨幣',
-  'aiworkspace.data.fieldType.json': 'JSON 物件',
-  'aiworkspace.data.value.invalidJson': '請輸入一個 JSON 物件，例如 {"priority": "high"}',
+  'aiworkspace.data.fieldType.json': 'JSON',
+  'aiworkspace.data.value.invalidJson': '請輸入 JSON 物件或陣列。',
   'aiworkspace.data.operator.isEmpty': '為空',
   'aiworkspace.data.operator.isNotEmpty': '不為空',
   'aiworkspace.data.operator.eq': '等於',

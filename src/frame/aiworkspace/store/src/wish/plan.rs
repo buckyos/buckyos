@@ -144,7 +144,7 @@ pub fn store_value(ty: FieldType, scale: Option<u8>, options: &BTreeMap<String, 
             }
         }
         FieldType::Json => match v {
-            Value::Object(_) => v.clone(),
+            Value::Object(_) | Value::Array(_) => v.clone(),
             _ => return None,
         },
     })

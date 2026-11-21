@@ -5,8 +5,9 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Maximize2, MessageSquare, MessageSquarePlus, Plus, Type } from 'lucide-react'
+import { ExternalLink, Maximize2, MessageSquare, MessageSquarePlus, Plus, Type } from 'lucide-react'
 import type { FieldDef, Json, QueryRow } from '../../api/types'
+import { contactRecordHref } from '../../links'
 import type { CapturedAnchor } from '../../anchors/registry'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdit, useStore, type AnnotationMark } from '../../state/hooks'
@@ -334,6 +335,7 @@ function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate
       startEdit(event.key)
     }
   }
+  const href = contactRecordHref(field.field_id, current)
   const cellAttrs = { 'data-row': rowIndex, 'data-col': colIndex }
 
   return (
@@ -363,11 +365,14 @@ function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate
           <input ref={valueRef as RefObject<HTMLInputElement>} type="checkbox" aria-label={`${field.name} ${row.record_id}`} checked={ticked ?? current === true} disabled={!editable} {...cellAttrs}
             onChange={(event) => { const next = event.target.checked; setTicked(next); void write(next, row.revs[field.field_id] ?? 0).finally(() => setTicked(null)) }} onKeyDown={onCellKey} />
         </label>
+      ) : href && !editable ? (
+        <a href={href} target="_blank" rel="noreferrer" className="aiws-cell-value" {...cellAttrs}>{shown}</a>
       ) : (
         <button ref={valueRef as RefObject<HTMLButtonElement>} type="button" className="aiws-cell-value" disabled={!editable} onClick={tap} onKeyDown={onCellKey} title={formula ? t('aiworkspace.table.cell.formulaTitle', { formula: formula.$formula.expr }) : editable ? shown || undefined : undefined} {...cellAttrs}>
           <CellDisplay def={field} value={formula ? undefined : current} shown={shown} />
         </button>
       )}
+      {!editing && href && editable && <a href={href} target="_blank" rel="noreferrer" aria-label={t('aiworkspace.blockui.openLink')}><ExternalLink size={14} /></a>}
       {!editing && formula && <span className="aiws-chip" data-testid="aiws-cell-formula" title={t('aiworkspace.table.cell.formulaTitle', { formula: formula.$formula.expr })}>{t('aiworkspace.table.record.formula')}</span>}
       {!editing && meta?.derived && !resultTable && (
         <span className="aiws-chip aiws-chip-derived" data-testid="aiws-derived" title={t('aiworkspace.data.cell.derivedBy', { program: meta.derived.program ?? t('aiworkspace.data.cell.processingProgram') })}>

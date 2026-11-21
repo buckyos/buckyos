@@ -9,6 +9,7 @@ import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
 import type { FieldDef, Json, QueryRow } from '../../api/types'
 import { useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
+import { contactRecordHref } from '../../links'
 import { useAiwsText } from '../../useAiwsText'
 import { copyRecordLink, recordAnchor } from '../controls/data/focus'
 import { asFormula, formulaResult } from '../formula'
@@ -99,11 +100,13 @@ function EditRecord({ recordId, sourceId, cellId, fields, titleField, rows, page
   const formulas = row ? fields.flatMap((field) => { const formula = asFormula(row.values[field.field_id]); return formula ? [{ field, formula, value: formulaResult(formula, row.values, fields) }] : [] }) : []
   const formFields: FormField[] = row ? fields.map((field) => {
     const value = row.values[field.field_id]
+    const href = canUpdate ? null : contactRecordHref(field.field_id, value)
     const formula = formulas.find((item) => item.field.field_id === field.field_id)
     return {
       id: field.field_id, name: field.name, def: field, value, rev: row.revs[field.field_id] ?? 0,
       editId: cellEditId(sourceId, recordId, field.field_id), testId: `aiws-record-field-${field.field_id}`,
       locked: !canUpdate ? (readOnlyReason ?? '') : field.type === 'object_ref' ? '' : null,
+      ...(href ? { display: <a href={href} target="_blank" rel="noreferrer">{String(value)}</a> } : {}),
       ...(formula ? { display: <span title={t('aiworkspace.data.cell.formulaTitle', { formula: formula.formula.$formula.expr })}>{formula.value === null ? `= ${formula.formula.$formula.expr}` : String(formula.value)} <span className="aiws-chip">{t('aiworkspace.table.record.formula')}</span></span> } : {}),
     }
   }) : []

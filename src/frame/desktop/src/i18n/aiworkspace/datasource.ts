@@ -3,6 +3,21 @@
  * (ui/table/TableEditor.tsx). English first; the Chinese table has the
  * same keys. */
 export const en: Record<string, string> = {
+  'aiworkspace.datasource.contacts.catalog': 'This Zone’s data sources',
+  'aiworkspace.datasource.contacts.title': 'My contacts',
+  'aiworkspace.datasource.contacts.account': 'Address book owner: {{owner}}',
+  'aiworkspace.datasource.contacts.target': 'Destination: {{workspace}} · {{path}}',
+  'aiworkspace.datasource.contacts.fields': 'Fields: DID, display name, tags, friend state and link to the original contact.',
+  'aiworkspace.datasource.contacts.sharing': 'Members who can read this table can see the contacts copied into it.',
+  'aiworkspace.datasource.contacts.mode': 'Sync mode',
+  'aiworkspace.datasource.contacts.auto': 'Automatic sync',
+  'aiworkspace.datasource.contacts.manual': 'Manual sync',
+  'aiworkspace.datasource.contacts.once': 'No sync (keep an editable copy)',
+  'aiworkspace.datasource.contacts.replace': 'Binding replaces all local rows and fields with the owner’s contacts.',
+  'aiworkspace.datasource.contacts.rebind': 'Bind to this Zone’s contacts',
+  'aiworkspace.datasource.contacts.unbound': 'Needs rebinding',
+  'aiworkspace.datasource.contacts.online': 'Connect to the workspace to add a Zone data source.',
+  'aiworkspace.datasource.contacts.changed': 'The table changed. Review the latest version and try again.',
   'aiworkspace.datasource.zone': 'File in the owner’s home',
   'aiworkspace.datasource.pending': 'No data yet: this data source waits for its first sync. It is not an empty table.',
   'aiworkspace.datasource.pendingTable': 'This data source has no data yet: it waits for its first sync.',
@@ -50,6 +65,21 @@ export const en: Record<string, string> = {
 }
 
 export const zh: Record<string, string> = {
+  'aiworkspace.datasource.contacts.catalog': '本 Zone 数据源',
+  'aiworkspace.datasource.contacts.title': '我的联系人',
+  'aiworkspace.datasource.contacts.account': '通讯录所属账号：{{owner}}',
+  'aiworkspace.datasource.contacts.target': '目标位置：{{workspace}} · {{path}}',
+  'aiworkspace.datasource.contacts.fields': '复制字段：DID、显示名、标签、好友状态、原记录链接。',
+  'aiworkspace.datasource.contacts.sharing': '有权读取这张表的成员可以看到同步进来的联系人。',
+  'aiworkspace.datasource.contacts.mode': '同步方式',
+  'aiworkspace.datasource.contacts.auto': '自动同步',
+  'aiworkspace.datasource.contacts.manual': '手动同步',
+  'aiworkspace.datasource.contacts.once': '不同步（保留可编辑副本）',
+  'aiworkspace.datasource.contacts.replace': '重新绑定后，通讯录将替换本表的全部本地行和字段。',
+  'aiworkspace.datasource.contacts.rebind': '绑定本 Zone 联系人',
+  'aiworkspace.datasource.contacts.unbound': '需要重新绑定',
+  'aiworkspace.datasource.contacts.online': '请连接工作区后再添加本 Zone 数据源。',
+  'aiworkspace.datasource.contacts.changed': '表已变更，请查看最新版本后再试。',
   'aiworkspace.datasource.zone': '所有者家目录里的文件',
   'aiworkspace.datasource.pending': '还没有数据：这个数据源在等第一次同步。它不是一张空表。',
   'aiworkspace.datasource.pendingTable': '这个数据源还没有数据，在等第一次同步。',

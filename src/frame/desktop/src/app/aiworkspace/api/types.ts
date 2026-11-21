@@ -106,7 +106,8 @@ export interface WorkspaceInfo extends WorkspaceSummary {
 
 /** Where a sourced entity's content comes from (内核架构改进 D12); such an entity is read-only for people and Blocks. */
 export interface EntitySource {
-  kind: 'url' | 'workspace' | 'session'
+  kind: 'url' | 'workspace' | 'session' | 'zone' | 'builtin'
+  provider?: 'contacts' | null
   mode: 'live' | 'fixed'
   /** A session feed (第四期规划 §5.3): which of the seven. */
   feed?: SessionFeed | null
@@ -1030,7 +1031,7 @@ export interface LockInfo { entity_id: string; lock_id?: string; principal: stri
 export interface RunView {
   run_id: string
   program: string
-  state: 'planning' | 'running' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'cancelled'
+  state: 'queued' | 'planning' | 'running' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
   params: Record<string, Json>
   candidate: CommitRequest | null
   prepare: PrepareResult | null

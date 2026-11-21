@@ -103,7 +103,7 @@ function Properties({ entity, focus }: { entity: EntityEnvelope; focus: { sectio
           </form>
         ) : <div className="aiws-muted">{t('aiworkspace.data.props.lookupName')}: {entity.name ?? '—'}</div>}
       </Section>
-      {entity.source && (
+      {(entity.source || (type === 'buckyos.table-source' && !entity.derived)) && (
         <Section id="source" title={t('aiworkspace.datamode.section.source')} {...sectionProps}><SourceSection entity={entity} /></Section>
       )}
       {PUBLISHABLE.has(type) && !entity.source && (

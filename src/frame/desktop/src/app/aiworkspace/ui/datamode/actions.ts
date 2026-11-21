@@ -7,7 +7,7 @@
 import { CANVAS_CONTENT_ID, DATA_ID, SHOWS_ID, SURFACES_ID, type EntityEnvelope } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { defaultRendererFor } from '../blocks/ops'
-import { actionRegistry, type ActionCandidate, type ActionContext, type ActionDef } from '../framework/actions'
+import { actionRegistry, candidateItem, type ActionCandidate, type ActionContext, type ActionDef } from '../framework/actions'
 import type { MenuItem } from '../shell/popover'
 import type { NewDataKind } from '../sources/dataOps'
 import { acceptsData, blocksShowing, isFolder, nameOf, pathText, SESSION_FOLDER } from './model'
@@ -19,6 +19,7 @@ export type SideTab = 'properties' | 'permissions' | 'history'
 export type PropSection = 'basic' | 'source' | 'publish' | 'derived' | 'relations' | 'policy' | 'diagnostics'
 
 export type DataDialog =
+  | { kind: 'contacts'; place: Place }
   | { kind: 'new'; type: NewDataKind; place: Place }
   | { kind: 'rename'; entityId: string }
   | { kind: 'move'; entityId: string }
@@ -97,7 +98,16 @@ export const DATA_ACTIONS: ActionDef[] = [
     run: (ctx) => { data(ctx).host.open(target(ctx)!.entity_id, { preview: true }); data(ctx).host.side('properties', 'relations') } },
   { id: 'data.new', label: () => aiwsT('aiworkspace.datamode.new'), visible: (ctx) => onPlace(ctx) || onData(ctx),
     reason: placeReason,
-    candidates: (ctx) => NEW_KINDS.map(({ kind, label }) => ({ id: `new-${kind}`, testId: `aiws-dm-new-${kind}`, label: `${aiwsT(label)}…`, run: () => data(ctx).host.dialog({ kind: 'new', type: kind, place: placeOf(ctx.store, data(ctx).target) }) })) },
+    candidates: (ctx) => {
+      const place = placeOf(ctx.store, data(ctx).target)
+      const contactsReason = !ctx.store.session.info().owner ? aiwsT('aiworkspace.datasource.ownerOnly') : ctx.store.session.status().kind !== 'live' ? aiwsT('aiworkspace.datasource.contacts.online') : null
+      return [
+        ...NEW_KINDS.map(({ kind, label }) => ({ id: `new-${kind}`, testId: `aiws-dm-new-${kind}`, label: `${aiwsT(label)}…`, run: () => data(ctx).host.dialog({ kind: 'new', type: kind, place }) })),
+        { id: 'zone-sources', testId: 'aiws-dm-zone-sources', label: aiwsT('aiworkspace.datasource.contacts.catalog'), items: [
+          { id: 'new-contacts', testId: 'aiws-dm-new-contacts', label: aiwsT('aiworkspace.datasource.contacts.title'), reason: contactsReason, run: () => data(ctx).host.dialog({ kind: 'contacts', place }) },
+        ] },
+      ]
+    } },
   { id: 'data.import', label: () => aiwsT('aiworkspace.datamode.import'), visible: (ctx) => onPlace(ctx) || onData(ctx),
     reason: placeReason,
     candidates: (ctx) => {
@@ -156,7 +166,7 @@ export function dataMenu(ctx: DataActionContext): MenuItem[] {
       const base = { id: id.replace(/^data\./, ''), testId: TEST_ID[id] ?? `aiws-dm-menu-${id.slice(5)}`, label: def.label(ctx), danger: id === 'data.delete' }
       if (def.candidates) {
         const candidates = def.candidates(ctx)
-        items.push({ ...base, disabled: reason !== null || candidates.length === 0, reason, items: candidates.map((c) => ({ id: c.id, testId: c.testId, label: c.label, hint: c.hint, disabled: Boolean(c.reason), reason: c.reason ?? null, run: c.run })) })
+        items.push({ ...base, disabled: reason !== null || candidates.length === 0, reason, items: candidates.map(candidateItem) })
       } else items.push({ ...base, disabled: reason !== null, reason, run: () => def.run?.(ctx) })
     }
     if (items.length === 0) continue

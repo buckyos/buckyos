@@ -53,6 +53,7 @@ export interface ActionCandidate {
   separator?: boolean
   /** Offered only in the drop-down, never counted: with one real candidate the tool item runs it directly. */
   extra?: boolean
+  items?: ActionCandidate[]
   run?: () => void
 }
 
@@ -176,7 +177,7 @@ export function candidateItem(candidate: ActionCandidate): MenuItem {
   if (candidate.separator) return { id: candidate.id, separator: true }
   return {
     id: candidate.id, testId: candidate.testId, label: candidate.label, hint: candidate.hint, checked: candidate.checked, danger: candidate.danger,
-    disabled: Boolean(candidate.reason), reason: candidate.reason ?? null, explain: candidate.explain, run: candidate.run,
+    disabled: Boolean(candidate.reason), reason: candidate.reason ?? null, explain: candidate.explain, run: candidate.run, items: candidate.items?.map(candidateItem),
   }
 }
 

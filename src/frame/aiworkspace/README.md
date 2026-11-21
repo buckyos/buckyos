@@ -1834,6 +1834,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `asset.import_object` | stable | `workspace_id` and either `bucket_id` + `key` (the uploader's own binding in `user/aiworkspace/<user>/assets`) or `obj_id` (an unbound, ready NDM FileObject the caller may read) → `object_id`, `media_type`, `size`, `expires_at`, `bucket_id`, `key`, `version` (staged under `<workspace_id>/<object_id>` in the owner's `assets` bucket) |
 | `replica.bootstrap` | internal | → `replica_id`, `epoch`, `head_seq`, `principal`, `prepared_at`, `download` (as `doc.export`) |
 | `print.package` | experimental | `surface_id`, `path_id?` (a free canvas: a presentation path through it), `paper: { name, width_mm, height_mm }` (as printed), `frame_id?` (a PDF Frame), `date`, `locale` → `obj_id` (the print package, a FileObject the caller's App session holds), `size`, `job`, `issues` — see “Printing” |
+| `source.bind_contacts` | experimental | `workspace_id, epoch, entity_id, idempotency_key, mode?`, with `create {parent_id,order_key,name}` or `expect_content_rev` → refresh run or `configured` |
 | `proc.start` / `proc.get` / `proc.cancel` | stable | `program` (`wish.xllm@1`, `source.refresh@1`), `params`, `idempotency_key`; `run_id` — wish programs below; another program is `MISSING_EXTENSION` |
 | `proc.rollback` | stable | `run_id`, `confirm?`, `session_id?` — rolls a wish stage's current record back (“Wish runs”) → `{ status: needs_confirm, lost, hidden_lost }` or `{ status: accepted, commit, record }`; another record is `INVALID_OPERATION` / `NOT_CURRENT_RECORD` |
 | `proc.list` | stable | `wish_id?`, `limit?` — wish runs, newest first |
@@ -1948,6 +1949,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `doc.checkpoint` | experimental | `export` on `/` |
 | `doc.export` | experimental | `export` on `/` |
 | `print.package` | experimental | may enter; `export` on the canvas, and on each canvas of a free canvas's path (the steps on others are left out); `read` on the PDF Frame; what is printed is what the caller may read |
+| `source.bind_contacts` | experimental | the owner |
 | `proc.start` | stable | a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish; hosted: an account, executed by one of its own Agents |
 | `proc.get` | stable | one's own run, or `update` / `manage` on its wish |
 | `proc.cancel` | stable | one's own run, or `update` / `manage` on its wish |

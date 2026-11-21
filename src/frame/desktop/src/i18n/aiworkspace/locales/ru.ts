@@ -3,6 +3,21 @@
  * A `{{count}}` text may have plural forms (`<key>_one`, `<key>_few`) after its plain key. */
 
 const text: Record<string, string> = {
+  'aiworkspace.datasource.contacts.catalog': 'Источники данных этой зоны',
+  'aiworkspace.datasource.contacts.title': 'Мои контакты',
+  'aiworkspace.datasource.contacts.account': 'Владелец адресной книги: {{owner}}',
+  'aiworkspace.datasource.contacts.target': 'Назначение: {{workspace}} · {{path}}',
+  'aiworkspace.datasource.contacts.fields': 'Поля: DID, отображаемое имя, метки, статус дружбы и ссылка на исходный контакт.',
+  'aiworkspace.datasource.contacts.sharing': 'Участники с правом чтения таблицы смогут видеть синхронизированные контакты.',
+  'aiworkspace.datasource.contacts.mode': 'Режим синхронизации',
+  'aiworkspace.datasource.contacts.auto': 'Автоматически',
+  'aiworkspace.datasource.contacts.manual': 'Вручную',
+  'aiworkspace.datasource.contacts.once': 'Без синхронизации (оставить редактируемую копию)',
+  'aiworkspace.datasource.contacts.replace': 'При привязке все локальные строки и поля будут заменены контактами владельца.',
+  'aiworkspace.datasource.contacts.rebind': 'Привязать контакты этой зоны',
+  'aiworkspace.datasource.contacts.unbound': 'Требуется повторная привязка',
+  'aiworkspace.datasource.contacts.online': 'Подключитесь к рабочему пространству, чтобы добавить источник этой зоны.',
+  'aiworkspace.datasource.contacts.changed': 'Таблица изменилась. Проверьте последнюю версию и повторите попытку.',
   // activity
   'aiworkspace.activity.offline.presence': 'Чтобы увидеть, кто в сети, нужно подключение к серверу',
   'aiworkspace.activity.offline.workLog': 'Для журнала работы нужно подключение к серверу',
@@ -1181,8 +1196,8 @@ const text: Record<string, string> = {
   'aiworkspace.data.fieldType.multiSelect': 'Несколько вариантов',
   'aiworkspace.data.fieldType.objectRef': 'Ссылка на объект',
   'aiworkspace.data.fieldType.currency': 'Валюта',
-  'aiworkspace.data.fieldType.json': 'Объект JSON',
-  'aiworkspace.data.value.invalidJson': 'Введите объект JSON, например {"priority": "high"}',
+  'aiworkspace.data.fieldType.json': 'JSON',
+  'aiworkspace.data.value.invalidJson': 'Введите объект или массив JSON.',
   'aiworkspace.data.operator.isEmpty': 'пусто',
   'aiworkspace.data.operator.isNotEmpty': 'не пусто',
   'aiworkspace.data.operator.eq': 'равно',

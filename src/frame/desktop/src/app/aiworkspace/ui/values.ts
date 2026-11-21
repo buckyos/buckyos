@@ -113,7 +113,7 @@ export function parseInput(def: ValueDef, text: string): { ok: true; value: Inpu
     case 'json': {
       try {
         const value = JSON.parse(text) as Json
-        return value && typeof value === 'object' && !Array.isArray(value) ? { ok: true, value } : { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
+        return value !== null && typeof value === 'object' ? { ok: true, value } : { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
       } catch {
         return { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
       }

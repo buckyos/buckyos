@@ -3,6 +3,21 @@
  * A `{{count}}` text may have plural forms (`<key>_one`) after its plain key. */
 
 const text: Record<string, string> = {
+  'aiworkspace.datasource.contacts.catalog': 'この Zone のデータソース',
+  'aiworkspace.datasource.contacts.title': '自分の連絡先',
+  'aiworkspace.datasource.contacts.account': '連絡帳の所有者：{{owner}}',
+  'aiworkspace.datasource.contacts.target': 'コピー先：{{workspace}} · {{path}}',
+  'aiworkspace.datasource.contacts.fields': 'コピーする項目：DID、表示名、タグ、友だち状態、元の連絡先へのリンク。',
+  'aiworkspace.datasource.contacts.sharing': 'この表を閲覧できるメンバーは、同期された連絡先を閲覧できます。',
+  'aiworkspace.datasource.contacts.mode': '同期方法',
+  'aiworkspace.datasource.contacts.auto': '自動同期',
+  'aiworkspace.datasource.contacts.manual': '手動同期',
+  'aiworkspace.datasource.contacts.once': '同期しない（編集可能なコピーを保持）',
+  'aiworkspace.datasource.contacts.replace': '再接続すると、すべてのローカル行と項目が所有者の連絡先に置き換わります。',
+  'aiworkspace.datasource.contacts.rebind': 'この Zone の連絡先に接続',
+  'aiworkspace.datasource.contacts.unbound': '再接続が必要です',
+  'aiworkspace.datasource.contacts.online': 'この Zone のデータソースを追加するにはワークスペースに接続してください。',
+  'aiworkspace.datasource.contacts.changed': '表が変更されました。最新の内容を確認してから再試行してください。',
   // activity
   'aiworkspace.activity.offline.presence': 'オンラインのメンバーを見るにはサーバーへの接続が必要です',
   'aiworkspace.activity.offline.workLog': '作業ログを見るにはサーバーへの接続が必要です',
@@ -1147,8 +1162,8 @@ const text: Record<string, string> = {
   'aiworkspace.data.fieldType.multiSelect': '複数選択',
   'aiworkspace.data.fieldType.objectRef': 'オブジェクト参照',
   'aiworkspace.data.fieldType.currency': '通貨',
-  'aiworkspace.data.fieldType.json': 'JSON オブジェクト',
-  'aiworkspace.data.value.invalidJson': 'JSON オブジェクトを入力してください（例: {"priority": "high"}）',
+  'aiworkspace.data.fieldType.json': 'JSON',
+  'aiworkspace.data.value.invalidJson': 'JSON オブジェクトまたは配列を入力してください。',
   'aiworkspace.data.operator.isEmpty': 'が空',
   'aiworkspace.data.operator.isNotEmpty': 'が空でない',
   'aiworkspace.data.operator.eq': 'に等しい',

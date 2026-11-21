@@ -3,6 +3,21 @@
  * A `{{count}}` text may have plural forms (`<key>_one`) after its plain key. */
 
 const text: Record<string, string> = {
+  'aiworkspace.datasource.contacts.catalog': 'Datenquellen dieser Zone',
+  'aiworkspace.datasource.contacts.title': 'Meine Kontakte',
+  'aiworkspace.datasource.contacts.account': 'Adressbuch von {{owner}}',
+  'aiworkspace.datasource.contacts.target': 'Ziel: {{workspace}} · {{path}}',
+  'aiworkspace.datasource.contacts.fields': 'Felder: DID, Anzeigename, Tags, Freundschaftsstatus und Link zum Originalkontakt.',
+  'aiworkspace.datasource.contacts.sharing': 'Mitglieder mit Lesezugriff auf diese Tabelle können die synchronisierten Kontakte sehen.',
+  'aiworkspace.datasource.contacts.mode': 'Synchronisierung',
+  'aiworkspace.datasource.contacts.auto': 'Automatisch synchronisieren',
+  'aiworkspace.datasource.contacts.manual': 'Manuell synchronisieren',
+  'aiworkspace.datasource.contacts.once': 'Nicht synchronisieren (bearbeitbare Kopie behalten)',
+  'aiworkspace.datasource.contacts.replace': 'Beim Verknüpfen werden alle lokalen Zeilen und Felder durch die Kontakte des Eigentümers ersetzt.',
+  'aiworkspace.datasource.contacts.rebind': 'Kontakte dieser Zone verknüpfen',
+  'aiworkspace.datasource.contacts.unbound': 'Erneute Verknüpfung erforderlich',
+  'aiworkspace.datasource.contacts.online': 'Stelle eine Verbindung zum Arbeitsbereich her, um eine Datenquelle dieser Zone hinzuzufügen.',
+  'aiworkspace.datasource.contacts.changed': 'Die Tabelle hat sich geändert. Prüfe die aktuelle Version und versuche es erneut.',
   // activity
   'aiworkspace.activity.offline.presence': 'Wer online ist, wird vom Server angezeigt',
   'aiworkspace.activity.offline.workLog': 'Das Arbeitsprotokoll benötigt den Server',
@@ -1179,8 +1194,8 @@ const text: Record<string, string> = {
   'aiworkspace.data.fieldType.multiSelect': 'Mehrfachauswahl',
   'aiworkspace.data.fieldType.objectRef': 'Objektverweis',
   'aiworkspace.data.fieldType.currency': 'Währung',
-  'aiworkspace.data.fieldType.json': 'JSON-Objekt',
-  'aiworkspace.data.value.invalidJson': 'Schreiben Sie ein JSON-Objekt, z. B. {"priority": "high"}',
+  'aiworkspace.data.fieldType.json': 'JSON',
+  'aiworkspace.data.value.invalidJson': 'Gib ein JSON-Objekt oder ein Array ein.',
   'aiworkspace.data.operator.isEmpty': 'ist leer',
   'aiworkspace.data.operator.isNotEmpty': 'ist nicht leer',
   'aiworkspace.data.operator.eq': 'ist gleich',

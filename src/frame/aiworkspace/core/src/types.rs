@@ -2414,7 +2414,7 @@ fn check_build_record(p: &Planner, o: &Map<String, Value>, content_rev: u64) -> 
 
 // ---- Source (内核架构改进 D12, D24, D26): where a data entity's content comes from ----
 
-/// `source{ kind: url | workspace | zone | session, url?, zone?, workspace_id?, entity_id?, path?, mode: live | fixed,
+/// `source{ kind: url | workspace | zone | session | builtin, provider?, url?, zone?, workspace_id?, entity_id?, path?, mode: live | fixed,
 /// version?, query?, refresh?: { interval_s }, auth_mode: none | hosted, name?, def?, sync? }`. An entity with a Source is
 /// read-only for Blocks and people: its content is written only by a refresh run (commit origin `source`). Credentials
 /// never belong in it (§6.2): `auth_mode: hosted` means the owner's Agent refreshes it. `kind: zone` reads a file of the
@@ -2422,7 +2422,11 @@ fn check_build_record(p: &Planner, o: &Map<String, Value>, content_rev: u64) -> 
 /// freshness, row limit); `sync` names the Agent's sync task that writes the file (§8.2, [`check_source_sync`]).
 pub fn check_source(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| bad("source must be an object"))?;
+    let builtin = o.get("kind").and_then(Value::as_str) == Some("builtin");
     for k in o.keys() {
+        if builtin && k == "provider" {
+            continue;
+        }
         if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "path" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name" | "feed" | "def" | "sync") {
             return Err(bad(format!("source: unknown key {k}")));
         }
@@ -2449,6 +2453,17 @@ pub fn check_source(v: &Value) -> WsResult<()> {
                 check_absolute_url(u.as_str().unwrap_or(""))?;
             }
         }
+        Some("builtin") => {
+            if o.get("provider").and_then(Value::as_str) != Some("contacts")
+                || o.keys().any(|k| !matches!(k.as_str(), "kind" | "provider" | "refresh" | "def"))
+            {
+                return Err(bad("a builtin Source accepts provider contacts, def and optional refresh"));
+            }
+            let def = o.get("def").and_then(Value::as_object).ok_or_else(|| bad("contacts requires source.def"))?;
+            if def.get("primary_key") != Some(&json!(["did"])) || def.keys().any(|k| !matches!(k.as_str(), "primary_key" | "meaning")) {
+                return Err(bad("contacts def requires meaning and primary_key [did]"));
+            }
+        }
         Some("zone") => {
             if o.keys().any(|k| !matches!(k.as_str(), "kind" | "path" | "mode" | "refresh" | "name" | "def" | "sync")) {
                 return Err(bad("a zone source has kind, path, mode, refresh, name, def and sync only"));
@@ -2470,7 +2485,7 @@ pub fn check_source(v: &Value) -> WsResult<()> {
                 return Err(bad("a session source has kind, feed, mode and name only"));
             }
         }
-        _ => return Err(bad("source.kind must be url, workspace, zone or session")),
+        _ => return Err(bad("source.kind must be url, workspace, zone, builtin or session")),
     }
     if o.get("kind").and_then(Value::as_str) != Some("session") && o.contains_key("feed") {
         return Err(bad("source.feed belongs to a session source"));
@@ -2512,6 +2527,15 @@ pub fn check_source(v: &Value) -> WsResult<()> {
     }
     if let Some(d) = o.get("def") {
         check_source_def(d)?;
+    }
+    Ok(())
+}
+
+fn check_builtin_target(type_id: &str, payload: &JsonMap) -> WsResult<()> {
+    if payload.get("source").is_some_and(|s| s["kind"] == "builtin")
+        && (type_id != TYPE_TABLE || payload.get("data_mode").is_some_and(|m| m != "embedded"))
+    {
+        return Err(bad("a builtin Source requires a local table"));
     }
     Ok(())
 }
@@ -2765,6 +2789,7 @@ pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut E
     if canonical_len(&Value::Object(e.payload.clone())) > MAX_PAYLOAD_BYTES {
         return Err(WsError::limit(format!("payload of {} exceeds {MAX_PAYLOAD_BYTES} bytes", e.entity_id)));
     }
+    check_builtin_target(&e.type_id, &e.payload)?;
     let has = |k: &str| changed.is_none_or(|c| c.iter().any(|x| x == k));
     match e.type_id.as_str() {
         TYPE_CONTAINER => {
@@ -2968,6 +2993,7 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
     if canonical_len(&Value::Object(payload.clone())) > MAX_PAYLOAD_BYTES {
         return Err(WsError::limit(format!("payload of {} exceeds {MAX_PAYLOAD_BYTES} bytes", row.entity_id)));
     }
+    check_builtin_target(&row.type_id, &payload)?;
     match row.type_id.as_str() {
         TYPE_RECORD => {
             check_keys(&payload, &["schema", "props", "source"], "record")?;
@@ -3073,6 +3099,10 @@ pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 /// Validator class: dispatch to the two entries (see README “Validator classes”).
 /// Validate a keyed document after `set_keys`/`unset_keys` changed `changed`.
 pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, changed: &[String]) -> WsResult<()> {
+    if before.payload.get("source").is_some_and(|s| s["kind"] == "builtin") && data_pending(before)
+        && !has_source(e) && !p.env.internal && !p.env.import && !p.env.replay {
+        return Err(bad("a contacts table needs a successful refresh before it can be kept as a local copy"));
+    }
     validate_entity(p, Some(before), e, Some(changed))
 }
 

@@ -13,6 +13,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,15 +21,90 @@ use std::sync::Arc;
 const MAX_FETCH_BYTES: usize = 32 * 1024 * 1024;
 const FETCH_TIMEOUT_SECS: u64 = 30;
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTable {
+    parent_id: String,
+    order_key: String,
+    name: String,
+}
+
+#[derive(Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ContactsMode {
+    #[default]
+    Auto,
+    Manual,
+    Once,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindContacts {
+    workspace_id: String,
+    epoch: String,
+    entity_id: String,
+    idempotency_key: String,
+    #[serde(default)]
+    mode: ContactsMode,
+    create: Option<CreateTable>,
+    expect_content_rev: Option<u64>,
+}
+
+pub async fn bind_contacts(state: &Arc<AppState>, caller: &Caller, params: &Value) -> WsResult<Value> {
+    let req: BindContacts = serde_json::from_value(params.clone()).map_err(|e| WsError::invalid_op(e.to_string()))?;
+    aiworkspace_core::id::check_idempotency_key(&req.idempotency_key)?;
+    if req.create.is_some() == req.expect_content_rev.is_some() {
+        return Err(WsError::invalid_op("supply create for a new table or expect_content_rev for an existing one"));
+    }
+    let (st, ws_id, who) = (state.clone(), req.workspace_id.clone(), caller.clone());
+    let owner = crate::blocking(move || st.with_ws(&ws_id, |ws| {
+        ws.require_owner(&who)?;
+        ws.owner()?.ok_or_else(|| WsError::denied("workspace owner account required"))
+    })).await?;
+    let did = state.auth.contacts_owner_did(&owner).await?;
+    let (st, ws_id, who) = (state.clone(), req.workspace_id.clone(), caller.clone());
+    crate::blocking(move || st.with_ws(&ws_id, |ws| {
+        ws.require_owner(&who)?;
+        if ws.epoch != req.epoch || ws.owner()?.as_deref() != Some(&owner) {
+            return Err(WsError::new(Code::EpochMismatch, "the workspace or owner changed; resynchronize"));
+        }
+        let mut source = json!({"kind":"builtin", "provider":"contacts",
+            "def":{"meaning":"Contacts visible to the workspace owner in this Zone", "primary_key":["did"]}});
+        if req.mode == ContactsMode::Auto {
+            source["refresh"] = json!({"interval_s": aiworkspace_core::types::MIN_REFRESH_INTERVAL_S});
+        }
+        let rev = if let Some(create) = req.create {
+            let key = aiworkspace_core::canonical::sha256_hex(req.idempotency_key.as_bytes());
+            let commit = json!({
+                "protocol_version": aiworkspace_core::model::PROTOCOL_VERSION, "workspace_id": ws_id, "epoch": req.epoch,
+                "idempotency_key": format!("contacts-create/{key}"), "origin":"human",
+                "operations":[{"op":"entity.create", "entity_id":req.entity_id, "type_id":aiworkspace_core::model::TYPE_TABLE,
+                    "parent_id":create.parent_id, "order_key":create.order_key, "name":create.name, "payload":{"source":source}}]
+            });
+            let result = ws.commit(&commit, &who, &Default::default());
+            result["seq"].as_u64().ok_or_else(|| WsError::invalid_op("creating the contacts table failed").with_data(result))?
+        } else {
+            req.expect_content_rev.unwrap()
+        };
+        let run = ws.bind_contacts(&who, &req.entity_id, &did, &source, req.mode == ContactsMode::Once, rev, &req.idempotency_key)?;
+        launch_refresh(&st, &ws_id, &run, false);
+        Ok(run)
+    })).await
+}
+
+fn launch_refresh(state: &Arc<AppState>, ws_id: &str, run: &Value, run_sync: bool) {
+    if let Some(id) = run["run_id"].as_str().filter(|_| run["replayed"] != true) {
+        tokio::spawn(refresh(state.clone(), ws_id.to_owned(), id.to_owned(), run_sync));
+    }
+}
+
 /// `proc.start { program: source.refresh@1, params: { entity_id } }`: the run is created and refreshed on a worker; a
 /// Source with a sync task has its Agent run the task first.
 pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, params: &Value, idem: &str) -> WsResult<Value> {
     let entity_id = params.get("entity_id").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("entity_id required"))?.to_string();
     let run = state.with_ws(ws_id, |ws| ws.source_refresh_start(caller, &entity_id, idem))?;
-    if run["replayed"] != json!(true) {
-        let (st, w, rid) = (state.clone(), ws_id.to_string(), run["run_id"].as_str().unwrap_or("").to_string());
-        tokio::runtime::Handle::current().spawn(async move { refresh(st, w, rid, true).await });
-    }
+    launch_refresh(state, ws_id, &run, true);
     Ok(run)
 }
 
@@ -45,8 +121,15 @@ pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String, run_sy
     let principal = run["principal"].as_str().unwrap_or("").to_string();
     let consumer = run["params"]["entity_id"].as_str().unwrap_or("").to_string();
     let (st, w, r) = (state.clone(), ws_id.clone(), run_id.clone());
-    let _ = tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.source_run_set(&r, "running", None))).await;
+    if !matches!(tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.source_run_set(&r, "running", None))).await, Ok(Ok(()))) {
+        return;
+    }
     let outcome = async {
+        if source["kind"] == "builtin" {
+            return tokio::time::timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS),
+                fetch_contacts(&state, &ws_id, &run_id)).await
+                .map_err(|_| WsError::new(Code::DependencyUnavailable, "reading the contacts timed out"))?;
+        }
         if let Some(sync) = source.get("sync").filter(|s| run_sync && s.is_object()) {
             run_sync_task(&state, &ws_id, sync).await?;
         }
@@ -86,7 +169,7 @@ pub fn tick(state: &Arc<AppState>) {
         }
         let due = state.with_ws(&ws_id, |ws| {
             let owner = ws.owner()?.unwrap_or_default();
-            let mut out = Vec::new();
+            let mut out = ws.resume_contact_runs()?;
             for id in ws.due_sources()? {
                 let (_, source) = ws.source_of(&id)?;
                 if source["auth_mode"] == json!("hosted") {
@@ -156,6 +239,27 @@ struct Got {
     bytes: u64,
     root: Option<String>,
     version: Value,
+}
+
+async fn fetch_contacts(state: &Arc<AppState>, ws_id: &str, run_id: &str) -> WsResult<Got> {
+    let (st, w, r) = (state.clone(), ws_id.to_owned(), run_id.to_owned());
+    let (owner, did, previous) = crate::blocking(move || st.with_ws(&w, |ws| ws.contact_read_context(&r))).await?;
+    let verify_owner = || async {
+        let result = state.auth.contacts_owner_did(&owner).await.and_then(|current| {
+            if current == did { Ok(()) } else { Err(WsError::denied("the contacts owner changed")) }
+        });
+        if result.as_ref().is_err_and(|e| e.code == Code::PermissionDenied) {
+            let (st, w, r) = (state.clone(), ws_id.to_owned(), run_id.to_owned());
+            crate::blocking(move || st.with_ws(&w, |ws| ws.invalidate_contact_run_binding(&r))).await?;
+        }
+        result
+    };
+    verify_owner().await?;
+    let (st, w, r) = (state.clone(), ws_id.to_owned(), run_id.to_owned());
+    crate::blocking(move || st.with_ws(&w, |ws| ws.contact_run_is_current(&r))).await?;
+    let (fetched, bytes) = crate::contacts::fetch(state.contacts.as_ref(), &did, &previous, MAX_FETCH_BYTES).await?;
+    verify_owner().await?;
+    Ok(Got { fetched, bytes, root: None, version: json!({}) })
 }
 
 /// Where a Source's content comes from: another Workspace of this service (read directly as the `public`

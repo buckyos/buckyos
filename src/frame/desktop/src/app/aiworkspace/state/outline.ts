@@ -8,7 +8,7 @@
 
 import { labelConfig } from '@controls/label'
 import { isControlKind, isDataControl } from '@controls/contract'
-import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, Json, Operation, StoredPlacement } from '../api/types'
+import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, EntitySource, Json, Operation, StoredPlacement } from '../api/types'
 import { Emitter } from './emitter'
 
 const COLOR = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/
@@ -35,7 +35,7 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
   // a sourced entity (内核架构改进 D12): where it comes from; its content is read-only here
   const source = payload.source as Record<string, unknown> | undefined
   out.source = source && typeof source === 'object'
-    ? { kind: source.kind as 'url' | 'workspace', mode: (source.mode as 'live' | 'fixed' | undefined) ?? 'live', url: (source.url as string | undefined) ?? null, workspace_id: (source.workspace_id as string | undefined) ?? null,
+    ? { kind: source.kind as EntitySource['kind'], provider: source.provider as EntitySource['provider'], mode: (source.mode as 'live' | 'fixed' | undefined) ?? 'live', url: (source.url as string | undefined) ?? null, workspace_id: (source.workspace_id as string | undefined) ?? null,
         entity_id: (source.entity_id as string | undefined) ?? null, zone: (source.zone as string | undefined) ?? null, refresh: (source.refresh as { interval_s: number } | undefined) ?? null, auth_mode: (source.auth_mode as 'none' | 'hosted' | undefined) ?? 'none' }
     : null
   // the events an instance binds (扩展控件 P2): the canvas marks them, an Agent finds them without reading the Block

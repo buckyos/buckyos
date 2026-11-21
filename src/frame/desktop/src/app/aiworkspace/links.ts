@@ -12,6 +12,7 @@
  * workspace's own origin — through the Control Panel's launch when the Desktop user is signed in (launch.ts), so
  * the new origin gets its own session (hybrid SSO: the host-only cookies `/sso_callback` sets there). */
 
+import { objectUrl } from 'buckyos'
 import type { LaunchTarget } from './ui/shell/WorkspaceShell'
 
 /** The signed-in user's workspace list on the Zone host. */
@@ -72,6 +73,19 @@ export function workspaceIdOfHost(host = window.location.host): string | null {
 export function zoneOrigin(): string {
   const { protocol, host } = window.location
   return `${protocol}//${host.replace(HOST_LABEL, '')}`
+}
+
+export function contactRecordHref(fieldId: string, value: unknown): string | null {
+  if (fieldId !== 'contact_ref' || typeof value !== 'string' || !value.startsWith('obj://msg-center/owners/')) return null
+  try {
+    const url = objectUrl.parseObjectUrl(value)
+    if (url.kind !== 'obj' || Object.keys(url.query).length > 0) return null
+    const [owners, owner, contacts, did, ...rest] = objectUrl.objectSegments(url)
+    if (owners !== 'owners' || contacts !== 'contacts' || !owner?.startsWith('did:') || !did?.startsWith('did:') || rest.length) return null
+    return `${objectUrl.objectEndpoint(url, zoneOrigin())}/props/record`
+  } catch {
+    return null
+  }
 }
 
 export interface PageSurface { id: string; title: string }

@@ -240,6 +240,7 @@ p, frame,obj://msg-center/notify,read|write,allow
 # Resource services ask whether a DID is in an owner's contact group
 # (contact.check_membership, projection included).
 p, system:aiworkspace,obj://msg-center/contact_membership,read,allow
+p, system:aiworkspace,obj://msg-center/owners/{owner}/contacts,^read$,allow
 # Wish runs call AICC on behalf of the workspace owner or the triggering user.
 p, system:aiworkspace,obj://aicc/on_behalf_of,write,allow
 p, system:homestation,obj://msg-center/contact_membership,read,allow
@@ -698,6 +699,17 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
         assert!(rbac::enforce("ood1", "system:homestation", &owner, "read", None).await);
         assert!(!rbac::enforce("ood1", "system:homestation", &owner, "write", None).await);
         assert!(!rbac::enforce("ood1", "system:aiworkspace", &owner, "read", None).await);
+        for did in ["did:bns:alice", "did:bns:bob"] {
+            let mailbox = crate::MailboxAddress::new(name_lib::DID::from_str(did).unwrap(), None).unwrap();
+            assert!(rbac::enforce("ood1", "system:aiworkspace", &mailbox.contacts_resource(), "read", None).await);
+            for action in ["write", "list", "query", "delete", "read-write"] {
+                assert!(!rbac::enforce("ood1", "system:aiworkspace", &mailbox.contacts_resource(), action, None).await);
+            }
+            for suffix in ["sessions", "contacts/did:bns:carol", "nested/contacts", "contacts-extra"] {
+                let resource = format!("{}/{suffix}", mailbox.owner_resource());
+                assert!(!rbac::enforce("ood1", "system:aiworkspace", &resource, "read", None).await);
+            }
+        }
         let own_tags = format!("{}homestation", crate::CONTACT_TAGS_RBAC_RESOURCE_PREFIX);
         let other_tags = format!("{}aiworkspace", crate::CONTACT_TAGS_RBAC_RESOURCE_PREFIX);
         assert!(rbac::enforce("ood1", "system:homestation", &own_tags, "write", None).await);

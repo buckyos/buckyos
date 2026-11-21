@@ -264,9 +264,10 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         env["source"] = json!({ "kind": s["kind"], "mode": s.get("mode").cloned().unwrap_or(json!("live")), "url": s.get("url").cloned().unwrap_or(Value::Null),
                                 "workspace_id": s.get("workspace_id").cloned().unwrap_or(Value::Null), "entity_id": s.get("entity_id").cloned().unwrap_or(Value::Null),
                                 "zone": s.get("zone").cloned().unwrap_or(Value::Null), "refresh": s.get("refresh").cloned().unwrap_or(Value::Null), "auth_mode": s.get("auth_mode").cloned().unwrap_or(json!("none")) });
-        // a session feed (第四期规划 §5.3): which one
-        if let Some(f) = s.get("feed") {
-            env["source"]["feed"] = f.clone();
+        for key in ["feed", "provider"] {
+            if let Some(value) = s.get(key) {
+                env["source"][key] = value.clone();
+            }
         }
     }
     // the events an instance binds (扩展控件 P2): the canvas marks them, an Agent finds them without reading the Block

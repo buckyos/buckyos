@@ -2,6 +2,7 @@
 //! of a request body is consulted. Besides the token, the identity backend answers what grant matching needs per
 //! request: membership of `group:` / `contact:` subjects and the Zone's sign-in switches.
 
+use aiworkspace_core::{Code, WsError, WsResult};
 use aiworkspace_store::workspace::{CONTACT_PREFIX, GROUP_PREFIX};
 use aiworkspace_store::{Caller, CallerClass};
 use async_trait::async_trait;
@@ -23,6 +24,9 @@ fn unavailable() -> AccessDenial {
 #[async_trait]
 pub trait Authenticator: Send + Sync {
     async fn authenticate(&self, token: &str) -> Result<Caller, AuthError>;
+    async fn contacts_owner_did(&self, _account: &str) -> WsResult<String> {
+        Err(owner_lookup_unavailable())
+    }
     async fn availability_grant(&self, _token: &str, _did: &str) -> aiworkspace_core::WsResult<serde_json::Value> {
         Err(aiworkspace_core::WsError::denied("availability has not been shared"))
     }
@@ -126,6 +130,21 @@ pub struct StaticIdentity {
 
 #[async_trait]
 impl Authenticator for StaticTokens {
+    async fn contacts_owner_did(&self, account: &str) -> WsResult<String> {
+        let fresh: Option<Self> = self.source.as_ref().map(|path| {
+            let data = std::fs::read(path).map_err(|_| owner_lookup_unavailable())?;
+            serde_json::from_slice(&data).map_err(|_| owner_lookup_unavailable())
+        }).transpose()?;
+        let mut did = None;
+        for identity in fresh.as_ref().unwrap_or(self).tokens.values().filter(|id| id.principal == account && id.class == StaticClass::Account) {
+            let current = identity.did.as_deref().filter(|s| name_lib::DID::from_str(s).is_ok()).ok_or_else(invalid_contacts_owner)?;
+            if identity.restricted || did.is_some_and(|d| d != current) {
+                return Err(invalid_contacts_owner());
+            }
+            did = Some(current);
+        }
+        did.map(str::to_string).ok_or_else(invalid_contacts_owner)
+    }
     async fn availability_grant(&self, token:&str,did:&str)->aiworkspace_core::WsResult<serde_json::Value>{
         let refused=||aiworkspace_core::WsError::denied("availability has not been shared");
         let fresh:Option<StaticTokens>=self.source.as_ref().map(|p|std::fs::read(p).ok().and_then(|b|serde_json::from_slice(&b).ok()).ok_or_else(refused)).transpose()?;
@@ -236,8 +255,40 @@ impl Authenticator for StaticTokens {
 /// authenticate requests, so every method goes through this.
 pub struct RuntimeAuth;
 
+fn invalid_contacts_owner() -> WsError {
+    WsError::denied("the workspace owner has no active Zone account eligible to own a contacts source")
+}
+
+fn owner_lookup_unavailable() -> WsError {
+    WsError::new(Code::DependencyUnavailable, "the workspace owner's current Zone identity is unavailable")
+}
+
 #[async_trait]
 impl Authenticator for RuntimeAuth {
+    async fn contacts_owner_did(&self, account: &str) -> WsResult<String> {
+        use buckyos_api::{get_buckyos_api_runtime, user_did_from_doc_value, SystemConfigError, UserSettings, UserType};
+        if account.is_empty() || account.len() > 64 || matches!(account, "." | "..")
+            || !account.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')) {
+            return Err(invalid_contacts_owner());
+        }
+        let runtime = get_buckyos_api_runtime().map_err(|_| owner_lookup_unavailable())?;
+        let config = runtime.get_system_config_client().await.map_err(|_| owner_lookup_unavailable())?;
+        let read_error = |err: SystemConfigError| match err {
+            SystemConfigError::KeyNotFound(_) => invalid_contacts_owner(),
+            _ => owner_lookup_unavailable(),
+        };
+        let settings_key = format!("users/{account}/settings");
+        config.invalidate_cache(&settings_key).await;
+        let settings = config.get(&settings_key).await.map_err(read_error)?;
+        let user: UserSettings = serde_json::from_str(&settings.value).map_err(|_| owner_lookup_unavailable())?;
+        if user.user_id != account || !user.is_active() || !matches!(user.user_type, UserType::User | UserType::Admin) {
+            return Err(invalid_contacts_owner());
+        }
+        let doc_key = format!("users/{account}/doc");
+        config.invalidate_cache(&doc_key).await;
+        let doc = config.get(&doc_key).await.map_err(read_error)?;
+        user_did_from_doc_value(&doc_key, &doc.value).map(|did| did.to_string()).map_err(|_| owner_lookup_unavailable())
+    }
     async fn availability_grant(&self,token:&str,did:&str)->aiworkspace_core::WsResult<serde_json::Value>{
         crate::availability::grant(token,did).await
     }

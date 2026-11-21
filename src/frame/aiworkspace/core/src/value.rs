@@ -23,7 +23,7 @@ pub enum FieldType {
     ObjectRef,
     /// A money amount with its ISO 4217 currency (表格导入 TODO §6, format 1.1).
     Currency,
-    /// A JSON object replaced whole (控件机制 TODO G8): extension fields of the standard tables.
+    /// A JSON object or array replaced whole (控件机制 TODO G8): extension fields of the standard tables.
     Json,
 }
 
@@ -310,14 +310,14 @@ impl FieldDef {
         }
     }
 
-    /// An object, stored as given; a `{ "$formula" }` object is refused (a formula computes no extension fields).
+    /// An object or array, stored as given; a `{ "$formula" }` object is refused (a formula computes no extension fields).
     fn normalize_json(&self, v: &Value) -> WsResult<Value> {
         let bad = |m: &str| WsError::invalid_schema(format!("field {}: {m}", self.field_id));
         match v {
             Value::Null if self.nullable => Ok(Value::Null),
             Value::Null => Err(WsError::invalid_schema(format!("field {} is not nullable", self.field_id))),
             Value::Object(_) if is_formula(v) => Err(bad("a json field holds no formula")),
-            Value::Object(_) => {
+            Value::Object(_) | Value::Array(_) => {
                 check_json_tree(v, 1).map_err(|m| WsError::limit(format!("field {}: {m}", self.field_id)))?;
                 let len = crate::canonical::canonical_json(v).map_err(|e| bad(&e.detail))?.len();
                 if len > JSON_MAX_BYTES {
@@ -325,7 +325,7 @@ impl FieldDef {
                 }
                 Ok(v.clone())
             }
-            _ => Err(bad("expected a JSON object")),
+            _ => Err(bad("expected a JSON object or array")),
         }
     }
 
@@ -1045,7 +1045,8 @@ mod tests {
         let strict = def(json!({"field_id":"ext","name":"ext","type":"json"}));
         assert!(strict.normalize(&Value::Null).is_err());
         // an object only, never a formula
-        for bad in [json!([1]), json!("{}"), json!(3), json!(true),
+        assert_eq!(j.normalize(&json!(["team"])).unwrap(), json!(["team"]));
+        for bad in [json!("{}"), json!(3), json!(true),
             json!({"$formula":{"lang":"aiws","version":"1","expr":"1"}})] {
             assert_eq!(j.normalize(&bad).unwrap_err().code, Code::InvalidSchema, "{bad} must be refused");
         }

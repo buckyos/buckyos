@@ -8,6 +8,8 @@
 //! reference object (D21), and another Workspace inserts it as a `source{kind: workspace}`. Referrers register
 //! themselves (a weak record: it never blocks an unpublish; the consumer then reads `unavailable`).
 
+mod contacts;
+
 use crate::docdb::db_err;
 use crate::acl::{AuditItem, PUB_PREFIX};
 use crate::workspace::{random_id, Caller, CommitOpts, Workspace};
@@ -331,32 +333,62 @@ impl Workspace {
     pub fn source_refresh_start(&mut self, caller: &Caller, entity_id: &str, idem_key: &str) -> WsResult<Value> {
         check_idempotency_key(idem_key)?;
         let access = self.require_ws_any(caller)?;
-        let (e, source) = self.source_of(entity_id)?;
-        if source["kind"] == json!("session") {
-            return Err(WsError::invalid_op("a session feed is written by its session, not fetched"));
-        }
         let now = self.now();
-        if !access.entity_caps(&self.ctx(&now), &e)?.may_run() {
+        let ctx = self.ctx(&now);
+        let e = ctx.entity(entity_id)?.filter(|e| e.alive()).ok_or_else(|| WsError::not_found("source not found"))?;
+        if !access.entity_caps(&ctx, &e)?.may_run() {
             return Err(WsError::denied("refreshing a Source needs run on its entity"));
         }
-        let params = json!({ "entity_id": entity_id, "source": source });
-        let existing: Option<String> = self.local.query_row("SELECT run_id FROM runs WHERE principal = ?1 AND idem_key = ?2", params![caller.principal, idem_key], |r| r.get(0)).optional().map_err(db_err)?;
-        if let Some(run_id) = existing {
-            let mut v = self.run_json(&run_id)?;
-            v["ok"] = json!(true);
-            v["replayed"] = json!(true);
-            return Ok(v);
+        let binding = self.contact_binding(&e)?;
+        let source = binding.as_ref().map(|b| &b.source).or_else(|| e.payload.get("source")).ok_or_else(|| WsError::invalid_op("the entity has no Source"))?;
+        if source["kind"] == "session" {
+            return Err(WsError::invalid_op("a session feed is written by its session, not fetched"));
         }
-        let run_id = random_id("run_");
-        self.local
-            .execute(
-                "INSERT INTO runs (run_id, program, principal, idem_key, state, params_json, created_at, updated_at) VALUES (?1,?2,?3,?4,'queued',?5,?6,?6)",
-                params![run_id, SOURCE_PROGRAM, caller.principal, idem_key, params.to_string(), now],
-            )
-            .map_err(db_err)?;
-        let mut v = self.run_json(&run_id)?;
-        v["ok"] = json!(true);
-        Ok(v)
+        let mut params = json!({ "entity_id": entity_id, "source": source, "epoch": self.epoch, "source_rev": e.key_rev("source"), "life_rev": e.life_rev });
+        if contacts::is_contacts(source) {
+            let b = binding.ok_or_else(|| WsError::sub(Code::PermissionDenied, "CONTACTS_BINDING_REQUIRED", "the owner must bind this contacts table"))?;
+            params["binding"] = json!(b.generation);
+        }
+        let mut existing = self.source_idempotent_run(&caller.principal, idem_key)?;
+        if let Some(id) = &existing {
+            let earlier = self.run_json(id)?;
+            if earlier["program"] != SOURCE_PROGRAM || earlier["params"]["entity_id"] != entity_id {
+                return Err(WsError::new(Code::IdempotencyMismatch, "the key named a different run"));
+            }
+        } else if let Some(generation) = params["binding"].as_str() {
+            existing = self.local.query_row(
+                "SELECT run_id FROM runs WHERE program = ?1 AND state IN ('queued','running','interrupted') AND json_extract(params_json, '$.binding') = ?2 LIMIT 1",
+                params![SOURCE_PROGRAM, generation], |r| r.get(0)).optional().map_err(db_err)?;
+        }
+        if let Some(id) = existing {
+            if params.get("binding").is_some() {
+                local_set(&self.local, &source_alias_key(&caller.principal, idem_key), &id)?;
+            }
+            let mut run = self.run_json(&id)?;
+            run["ok"] = json!(true);
+            run["replayed"] = json!(true);
+            return Ok(run);
+        }
+        let id = Self::insert_source_run(&self.local, &caller.principal, idem_key, &params, &now)?;
+        let mut run = self.run_json(&id)?;
+        run["ok"] = json!(true);
+        Ok(run)
+    }
+
+    fn source_idempotent_run(&self, principal: &str, idem: &str) -> WsResult<Option<String>> {
+        let direct = self.local.query_row("SELECT run_id FROM runs WHERE principal = ?1 AND idem_key = ?2", params![principal, idem], |r| r.get(0)).optional().map_err(db_err)?;
+        match direct {
+            Some(id) => Ok(Some(id)),
+            None => local_get(&self.local, &source_alias_key(principal, idem)),
+        }
+    }
+
+    fn insert_source_run(db: &rusqlite::Connection, principal: &str, idem: &str, params: &Value, now: &str) -> WsResult<String> {
+        let id = random_id("run_");
+        db.execute("INSERT INTO runs (run_id, program, principal, idem_key, state, params_json, created_at, updated_at) VALUES (?1,?2,?3,?4,'queued',?5,?6,?6)",
+            params![id, SOURCE_PROGRAM, principal, idem, params.to_string(), now]).map_err(db_err)?;
+        local_set(db, &format!("source.latest/{}", params["entity_id"].as_str().unwrap_or("")), &id)?;
+        Ok(id)
     }
 
     pub fn source_run(&self, run_id: &str) -> WsResult<Value> {
@@ -373,6 +405,7 @@ impl Workspace {
     /// `proc.cancel` of a refresh run. A refresh that already committed says so truthfully.
     pub fn source_run_cancel(&mut self, caller: &Caller, run_id: &str) -> WsResult<Value> {
         let run = self.visible_source_run(caller, run_id)?;
+        self.require_run(caller, run["params"]["entity_id"].as_str())?;
         if run["state"] == json!("succeeded") {
             return Ok(json!({ "ok": true, "state": "succeeded", "already_applied": true, "commit_id": run["result"]["commit_id"] }));
         }
@@ -401,8 +434,8 @@ impl Workspace {
         let row: Option<(String, String, Option<String>, String)> = self
             .local
             .query_row(
-                "SELECT run_id, state, result_json, updated_at FROM runs WHERE program = ?1 AND json_extract(params_json, '$.entity_id') = ?2 ORDER BY created_at DESC, updated_at DESC LIMIT 1",
-                params![SOURCE_PROGRAM, entity_id],
+                "SELECT run_id, state, result_json, updated_at FROM runs WHERE program = ?1 AND json_extract(params_json, '$.entity_id') = ?2 ORDER BY (run_id = ?3) DESC, created_at DESC, updated_at DESC LIMIT 1",
+                params![SOURCE_PROGRAM, entity_id, local_get(&self.local, &format!("source.latest/{entity_id}"))?.unwrap_or_default()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()
@@ -457,6 +490,9 @@ impl Workspace {
     }
 
     pub fn source_run_set(&self, run_id: &str, state: &str, result: Option<&Value>) -> WsResult<()> {
+        if state == "running" && self.run_json(run_id)?["state"] != "queued" {
+            return Err(WsError::new(Code::RunRevoked, "the refresh is no longer queued"));
+        }
         self.set_run(run_id, state, result)
     }
 
@@ -475,18 +511,33 @@ impl Workspace {
         // the service writes a refresh in its own declared name for the owner (权限需求 R14, I3/I4): the trigger's
         // `update` on the entity was judged when the refresh started; the Commit is recorded as the trigger
         let caller = Caller::internal(&self.owner()?.unwrap_or_default());
+        let now = self.now();
+        let current = self.ctx(&now).entity(&entity_id)?.filter(|e| e.alive());
+        let guard = || -> WsResult<_> {
+            let e = current.as_ref().ok_or_else(|| WsError::not_found("the Source was deleted"))?;
+            if run["params"]["epoch"] != self.epoch || run["params"]["source_rev"] != e.key_rev("source") || run["params"]["life_rev"] != e.life_rev {
+                return Err(WsError::new(Code::RevisionConflict, "the source changed while it was being refreshed"));
+            }
+            if contacts::is_contacts(&run["params"]["source"]) {
+                return self.binding_for_run(&run, e).map(Some);
+            }
+            Ok(None)
+        };
+        let binding = match guard() {
+            Ok(b) => b,
+            Err(err) => { self.source_fail(run_id, &err)?; return Err(err); }
+        };
+        let current = current.unwrap();
         let (mut ops, schema_changes) = match self.source_ops(&caller, &entity_id, fetched) {
             Ok(ops) => ops,
             Err(e) => {
-                self.set_run(run_id, "failed", Some(&json!({ "error": e.to_json() })))?;
+                self.source_fail(run_id, &e)?;
                 return Err(e);
             }
         };
-        let now = self.now();
-        let current = {
-            let ctx = self.ctx(&now);
-            ctx.entity(&entity_id)?.ok_or_else(|| WsError::not_found(format!("entity {entity_id} not found")))?
-        };
+        if let Some(b) = binding.as_ref().filter(|b| b.staged_rev.is_some()) {
+            ops.insert(0, json!({ "op": "entity.set_keys", "entity_id": entity_id, "keys": [{ "key": "source", "value": b.source, "expect": { "rev": current.key_rev("source") } }] }));
+        }
         let mut data_version = Map::new();
         for k in ["business_time", "produced_at", "program", "truncated"] {
             if let Some(v) = version.get(k).filter(|v| !v.is_null()) {
@@ -509,18 +560,26 @@ impl Workspace {
             }
             old == new
         });
-        if ops.is_empty() && same_version {
+        if ops.is_empty() && same_version && !binding.as_ref().is_some_and(|b| b.once) {
             let result = json!({ "status": "unchanged", "bytes": bytes, "content_root": content_root, "at": now });
-            self.set_run(run_id, "succeeded", Some(&result))?;
-            local_set(&self.local, &format!("source_refreshed:{entity_id}"), &now)?;
+            self.source_succeeded(&run, &result, &now)?;
             return self.run_json(run_id);
         }
         data_version.insert("synced_at".into(), json!(now));
         ops.push(json!({ "op": "entity.set_keys", "entity_id": entity_id, "keys": [{ "key": "data_version", "value": data_version, "expect": { "rev": current.key_rev("data_version") } }] }));
+        if let Some(b) = binding.as_ref().filter(|b| b.once) {
+            let rev = if b.staged_rev.is_some() { self.head_seq + 1 } else { current.key_rev("source") };
+            ops.push(json!({ "op": "entity.unset_keys", "entity_id": entity_id, "keys": [{ "key": "source", "expect": { "rev": rev } }] }));
+        }
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch, "idempotency_key": format!("source/{run_id}"),
                           "origin": "program", "run_id": run_id, "message": format!("refresh from source ({} bytes)", bytes), "operations": ops });
         let opts = CommitOpts { as_source: true, as_principal: Some(principal), ..CommitOpts::default() };
         let mut result = self.commit(&req, &caller, &opts);
+        if binding.is_some() && result["status"] != "accepted" {
+            if let Some((committed, _)) = self.committed_source_run(run_id)? {
+                result = committed;
+            }
+        }
         result["bytes"] = json!(bytes);
         if let Some(r) = content_root {
             result["content_root"] = json!(r);
@@ -529,15 +588,36 @@ impl Workspace {
         if !schema_changes.is_empty() {
             result["schema_changes"] = json!(schema_changes);
         }
-        let accepted = result["status"] == json!("accepted");
-        self.set_run(run_id, if accepted { "succeeded" } else { "failed" }, Some(&result))?;
-        if accepted {
-            local_set(&self.local, &format!("source_refreshed:{entity_id}"), &now)?;
+        if result["status"] == "accepted" {
+            self.source_succeeded(&run, &result, &now)?;
+        } else {
+            self.set_run(run_id, "failed", Some(&result))?;
         }
         self.run_json(run_id)
     }
 
+    fn committed_source_run(&self, id: &str) -> WsResult<Option<(Value, String)>> {
+        let row: Option<(String, String)> = self.doc.query_row(
+            "SELECT result_json, accepted_at FROM commits WHERE origin = 'source' AND run_id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))
+        ).optional().map_err(db_err)?;
+        row.map(|(s, at)| serde_json::from_str(&s).map(|v| (v, at)).map_err(|e| WsError::io(e.to_string()))).transpose()
+    }
+
+    fn source_succeeded(&self, run: &Value, result: &Value, at: &str) -> WsResult<()> {
+        let tx = self.local.unchecked_transaction().map_err(db_err)?;
+        if let Some(seq) = result["seq"].as_u64().filter(|_| run["params"]["binding"].is_string()) {
+            self.finish_contact_binding(run, seq)?;
+        }
+        self.set_run(run["run_id"].as_str().unwrap_or(""), "succeeded", Some(result))?;
+        let key = format!("source_refreshed:{}", run["params"]["entity_id"].as_str().unwrap_or(""));
+        if local_get(&tx, &key)?.as_deref().is_none_or(|last| last <= at) {
+            local_set(&tx, &key, at)?;
+        }
+        tx.commit().map_err(db_err)
+    }
+
     pub fn source_fail(&self, run_id: &str, error: &WsError) -> WsResult<()> {
+        if self.run_json(run_id)?["state"] == "cancelled" { return Ok(()); }
         self.set_run(run_id, "failed", Some(&json!({ "error": error.to_json() })))
     }
 
@@ -551,12 +631,16 @@ impl Workspace {
             let mut records: BTreeMap<String, RecordRow> = BTreeMap::new();
             let mut last_number = 0u64;
             if e.type_id == TYPE_TABLE {
+                let keyed_ids: std::collections::BTreeSet<&str> = match fetched {
+                    Fetched::Table { records, .. } => records.iter().filter_map(|r| r["record_id"].as_str()).collect(),
+                    _ => Default::default(),
+                };
                 ctx.scan_records(entity_id, &mut |r| {
                     // an auto-increment id is never given twice, a deleted record's included
                     if let Ok(n) = r.record_id.parse::<u64>() {
                         last_number = last_number.max(n);
                     }
-                    if r.alive() {
+                    if r.alive() || keyed_ids.contains(r.record_id.as_str()) {
                         records.insert(r.record_id.clone(), r.clone());
                     }
                     Ok(true)
@@ -575,11 +659,17 @@ impl Workspace {
                     let def = FieldDef::from_value(f)?;
                     wanted.insert(def.field_id.clone(), def);
                 }
+                if let Some(title_id) = e.payload.get("title_field_id").and_then(Value::as_str) {
+                    if current.get(title_id).is_some_and(|f| wanted.get(title_id) != Some(&f.def)) {
+                        ops.push(json!({ "op": "entity.unset_keys", "entity_id": entity_id, "keys": [{ "key": "title_field_id", "expect": { "rev": e.key_rev("title_field_id") } }] }));
+                    }
+                }
                 for (id, f) in &current {
                     match wanted.get(id) {
-                        Some(def) if def.ty == f.def.ty => {}
+                        Some(def) if def == &f.def => {}
                         other => {
                             schema_changes.push(match other {
+                                Some(def) if def.ty == f.def.ty => json!({ "field_id": id, "change": "definition_changed" }),
                                 Some(def) => json!({ "field_id": id, "change": "type_changed", "from": f.def.ty.as_str(), "to": def.ty.as_str() }),
                                 None => json!({ "field_id": id, "change": "deleted", "from": f.def.ty.as_str() }),
                             });
@@ -587,13 +677,15 @@ impl Workspace {
                         }
                     }
                 }
-                for (id, def) in &wanted {
-                    if !current.get(id).is_some_and(|f| f.def.ty == def.ty) {
+                for field in new_fields {
+                    let id = field["field_id"].as_str().unwrap_or_default();
+                    let def = &wanted[id];
+                    if !current.get(id).is_some_and(|f| &f.def == def) {
                         ops.push(json!({ "op": "table.add_field", "source_id": entity_id, "field": def.to_value() }));
                     }
                 }
                 let mut seen = std::collections::BTreeSet::new();
-                let (mut inserts, mut sets, mut unsets) = (Vec::new(), Vec::new(), Vec::new());
+                let (mut inserts, mut restores, mut sets, mut unsets) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
                 // rows without a key keep the id of a current record with the same values, else take the next number
                 let content = |vals: &mut dyn Iterator<Item = (&String, &Value)>| -> String {
                     let sorted: BTreeMap<&String, &Value> = vals.filter(|(k, v)| wanted.contains_key(*k) && !v.is_null()).collect();
@@ -601,7 +693,7 @@ impl Workspace {
                 };
                 let mut same_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
                 if new_records.iter().any(|r| r["record_id"].as_str().is_none()) {
-                    for (id, r) in records.iter().rev() {
+                    for (id, r) in records.iter().rev().filter(|(_, r)| r.alive()) {
                         same_values.entry(content(&mut r.values.iter())).or_default().push(id.clone());
                     }
                 }
@@ -619,27 +711,35 @@ impl Workspace {
                             }
                         },
                     };
-                    seen.insert(rid.clone());
+                    if !seen.insert(rid.clone()) {
+                        return Err(WsError::invalid_schema("duplicate source record ID"));
+                    }
                     match records.get(&rid) {
                         None => inserts.push(json!({ "record_id": rid, "values": values })),
                         Some(cur) => {
+                            if !cur.alive() {
+                                restores.push(json!({ "record_id": rid, "expect": { "rev": cur.rev } }));
+                            }
                             for (fid, v) in &values {
-                                let same_type = current.get(fid).is_some_and(|f| f.def.ty == wanted[fid].ty);
-                                if cur.values.get(fid) != Some(v) && same_type {
+                                let same_def = current.get(fid).is_some_and(|f| f.def == wanted[fid]);
+                                if cur.values.get(fid) != Some(v) || !same_def {
                                     sets.push(json!({ "record_id": rid, "field_id": fid, "value": v, "expect": { "rev": cur.value_rev(fid) } }));
                                 }
                             }
                             for fid in cur.values.keys() {
-                                if !values.contains_key(fid) && current.get(fid).is_some_and(|f| wanted.get(fid).is_some_and(|w| w.ty == f.def.ty)) {
+                                if !values.contains_key(fid) && current.get(fid).is_some_and(|f| wanted.get(fid) == Some(&f.def)) {
                                     unsets.push(json!({ "record_id": rid, "field_id": fid, "expect": { "rev": cur.value_rev(fid) } }));
                                 }
                             }
                         }
                     }
                 }
-                let deletes: Vec<Value> = records.values().filter(|r| !seen.contains(&r.record_id)).map(|r| json!({ "record_id": r.record_id, "expect": { "rev": r.rev } })).collect();
+                let deletes: Vec<Value> = records.values().filter(|r| r.alive() && !seen.contains(&r.record_id)).map(|r| json!({ "record_id": r.record_id, "expect": { "rev": r.rev } })).collect();
                 for chunk in deletes.chunks(RECORDS_PER_OP) {
                     ops.push(json!({ "op": "table.delete_records", "source_id": entity_id, "records": chunk }));
+                }
+                for chunk in restores.chunks(RECORDS_PER_OP) {
+                    ops.push(json!({ "op": "table.restore_records", "source_id": entity_id, "records": chunk }));
                 }
                 for chunk in sets.chunks(RECORDS_PER_OP) {
                     ops.push(json!({ "op": "table.set_values", "source_id": entity_id, "values": chunk }));
@@ -711,6 +811,10 @@ impl Workspace {
         let mut due = Vec::new();
         for (id, payload) in rows {
             let p: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
+            if contacts::is_contacts(&p["source"]) {
+                let (entity, _) = self.source_of(&id)?;
+                if self.contact_binding(&entity)?.is_none() { continue; }
+            }
             let Some(secs) = p["source"]["refresh"]["interval_s"].as_u64() else { continue };
             let last = local_get(&self.local, &format!("source_refreshed:{id}"))?.and_then(|s| aiworkspace_core::value::parse_datetime_ms(&s));
             if last.map_or(true, |l| now_ms - l >= secs as i64 * 1000) {
@@ -760,6 +864,10 @@ impl Workspace {
         }
         Ok(None)
     }
+}
+
+fn source_alias_key(principal: &str, key: &str) -> String {
+    format!("source.alias/{}", sha256_hex(json!([principal, key]).to_string().as_bytes()))
 }
 
 fn local_get(conn: &rusqlite::Connection, key: &str) -> WsResult<Option<String>> {

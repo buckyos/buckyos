@@ -6,6 +6,7 @@
 pub mod auth;
 mod availability;
 pub mod buckets;
+pub mod contacts;
 pub mod control;
 pub mod ext;
 pub mod media;
@@ -91,6 +92,7 @@ pub enum Wake {
 pub struct AppState {
     pub svc: Service,
     pub auth: Arc<dyn Authenticator>,
+    pub contacts: Arc<dyn contacts::ContactsClient>,
     pub limits: Limits,
     pub wish: Arc<wish::WishRuntime>,
     /// Non-public shows (third phase §11.3): in memory, ended by a restart.
@@ -157,7 +159,7 @@ impl AppState {
             }));
         }));
         let library = aiworkspace_store::library::Library::open(&svc.data_dir.join("library.sqlite"), svc.objects.clone()).expect("the control library database opens");
-        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, acls, ndm_gateway: std::sync::OnceLock::new(), library,
+        Arc::new(AppState { svc, auth, contacts: Arc::new(contacts::RuntimeContacts), limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, acls, ndm_gateway: std::sync::OnceLock::new(), library,
                             rooms: session::Rooms::default(), media: media::Media::default(), streams: stream::Streams::default(),
                             presence: presence::Presence::default() })
     }
@@ -191,7 +193,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             // a stage left by an executor that went away (余下任务 D2)
             let st = state.clone();
             let _ = tokio::task::spawn_blocking(move || wish::release_lapsed(&st)).await;
-            if ticks % 5 == 0 {
+            if ticks % 5 == 1 {
                 // Sources on a schedule (D24)
                 let st = state.clone();
                 let _ = tokio::task::spawn_blocking(move || source::tick(&st)).await;
@@ -490,6 +492,8 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         ext::install(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if matches!(method.as_str(), "availability.describe"|"availability.free_busy") {
         availability::handle(&state,&method,&params,token.unwrap_or_default()).await
+    } else if method == "source.bind_contacts" {
+        source::bind_contacts(&state, caller.as_ref().expect("authenticated above"), &params).await
     } else if method == "ws.import" {
         import_package(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if method == "print.package" {

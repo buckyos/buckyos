@@ -595,7 +595,7 @@ impl Service {
                                 DELETE FROM acl_macro_bindings; INSERT INTO acl_macro_bindings SELECT * FROM old.acl_macro_bindings; \
                                 DELETE FROM acl_audit; INSERT INTO acl_audit SELECT * FROM old.acl_audit; \
                                 INSERT INTO share_entries SELECT * FROM old.share_entries; \
-                                INSERT OR REPLACE INTO local_meta SELECT * FROM old.local_meta; DETACH DATABASE old;")
+                                INSERT OR REPLACE INTO local_meta SELECT * FROM old.local_meta WHERE key NOT GLOB 'contacts.*' AND key NOT GLOB 'source.*' AND key NOT GLOB 'source_refreshed:*'; DETACH DATABASE old;")
                 .map_err(crate::docdb::db_err)?;
             drop(conn);
             let old_doc = self.ws_dir(&id).join("doc.sqlite");

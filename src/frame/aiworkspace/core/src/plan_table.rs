@@ -700,8 +700,9 @@ fn add_field(p: &mut Planner, op: &Value) -> OpResult {
     let sid = src.entity_id.clone();
     p.require(&sid, Cap::Structure)?;
     let def = FieldDef::from_value(op.get("field").ok_or_else(|| WsError::invalid_op("field required"))?)?;
-    if p.ov.field(&sid, &def.field_id)?.is_some() {
-        // tombstoned ids are never reused; undo is the only way to revive one
+    let previous = p.ov.field(&sid, &def.field_id)?;
+    let replace_deleted = previous.as_ref().is_some_and(|f| !f.alive() && p.env.origin == "source");
+    if previous.is_some() && !replace_deleted {
         return Err(WsError::sub(Code::InvalidOperation, "ID_CONFLICT", format!("field_id {} already exists", def.field_id)));
     }
     name_free(p, &sid, &def.name, "")?;
@@ -722,29 +723,35 @@ fn add_field(p: &mut Planner, op: &Value) -> OpResult {
     };
     let mut filled = 0usize;
     let mut rows = Vec::new();
+    let mut has_live_rows = false;
     p.ov.scan_records(&sid, &mut |r| {
-        if r.alive() {
+        has_live_rows |= r.alive();
+        if (backfill.is_some() && r.alive()) || (replace_deleted && (r.values.contains_key(&def.field_id) || r.meta.contains_key(&def.field_id))) {
             rows.push(r.clone());
         }
         Ok(true)
     })?;
-    if def.required && backfill.is_none() && !rows.is_empty() {
+    if def.required && backfill.is_none() && has_live_rows {
         return Err(WsError::invalid_op("a required field needs a backfill value for existing records"));
     }
     if def.submitter {
         check_submitter_change(p, &sid, &def.field_id)?;
     }
-    if let Some(b) = &backfill {
-        for mut r in rows {
+    for mut r in rows {
+        if replace_deleted {
+            r.values.remove(&def.field_id);
+            r.meta.remove(&def.field_id);
+        }
+        if let Some(b) = backfill.as_ref().filter(|_| r.alive()) {
             r.values.insert(def.field_id.clone(), b.clone());
             r.revs.insert(def.field_id.clone(), seq);
             r.rev = seq;
             if def.ty == FieldType::ObjectRef && b.is_object() {
                 p.ov.add_ref(value_ref_edge(&sid, &r.record_id, &def.field_id, b));
             }
-            p.ov.put_record(r);
             filled += 1;
         }
+        p.ov.put_record(r);
     }
     p.ov.put_field(FieldRow {
         source_id: sid.clone(),
@@ -764,6 +771,9 @@ fn add_field(p: &mut Planner, op: &Value) -> OpResult {
     norm["order_key"] = json!(order_key);
     if let Some(b) = backfill {
         norm["backfill"] = b;
+    }
+    if replace_deleted {
+        return Ok((norm, None));
     }
     let inv = json!({ "op": "table.delete_field", "source_id": sid, "field_id": def.field_id, "expect": { "rev": seq } });
     Ok((norm, Some(vec![inv])))

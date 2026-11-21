@@ -1329,6 +1329,9 @@ impl Workspace {
             operations.append(&mut req.operations);
             req.operations = operations;
         }
+        if opts.undoes.is_some() {
+            self.check_contacts_undo(&req.operations, access.is_owner())?;
+        }
         req.origin = origin.to_string();
         let req = &req;
         let env = PlanEnv {
