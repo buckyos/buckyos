@@ -38,7 +38,7 @@
 
 **两个层次的绑定。** 前置 TODO 管“这个别名由哪个扩展或对象处理”，按完整别名维护绑定修订（`alias_revision`）。本文的用途配置管“这个人的个人日历当前存在哪里”，按 `(zone, owner, slot)` 维护资源绑定修订。`owner.cal` 的默认本地脚本读取用途配置。将该用途从 AIWS 改为外部日历只增加资源绑定修订。将完整别名从本地脚本切到一个固定日历 URL 只改变别名绑定修订，此后按目标 Profile 操作该日历。链接到已发布的个人**用途对象**时，由该对象在服务侧读取其资源绑定。管理界面与回执应标明修订所属层次。
 
-**向他人发布时。** 已有具备所需契约和访问控制的对象可直接用作分享入口。若 BuckyOS 提供统一的 Zone 内个人目录，建议在 Control Panel 的用户模块挂载 `obj://control-panel/people/<user-did>`，由个人对象的 Profile 声明资源属性，读取时给出 `calendar`、`availability` 等当前 caller 可见的用途引用。URL 由服务生成，路径段按 DID 编码。实施此 Provider 时登记 host、挂载 `/kapi/control-panel/obj` 并验证对象路由先于通用 kRPC POST。属性与 ACL 按现有用户类型处理。M1 的提醒与 AIWS 本地脚本可以独立交付。[URL 约定](../doc/key%20url.md#L48) · [URL 构造](../src/kernel/buckyos-api/src/object_url.rs#L401) · [Control Panel 路由](../src/frame/control_panel/src/main.rs#L1440) · [Card 与 Profile](../../buckyos-base/doc/did-object-protocol.md#L137)
+**向他人发布时。** 已有具备所需契约和访问控制的对象可直接用作分享入口。若 BuckyOS 提供统一的 Zone 内个人目录，建议在 Control Panel 的用户模块挂载 `obj://control-panel/people/<user-did>`，由个人对象的 Profile 声明资源属性，读取时给出 `calendar`、`availability` 等当前 caller 可见的用途引用。URL 由服务生成，路径段按 DID 编码。实施此 Provider 时登记 host、挂载 `/kapi/control-panel/obj` 并验证对象路由先于通用 kRPC POST。属性与 ACL 按现有用户类型处理。M1 的提醒与 AIWS 本地脚本可以独立交付。首版没有实施这个用户目录，忙闲入口由 AIWS 提供，即 `obj://aiworkspace/people/<user-did>/availability`（§8），只在本 Zone 内可用。因此 `who` 与 `owner.contacts` 目前不会返回 `person_ref`。owner 2026-11-20 定：本版本不做用户目录，也不做 Zone 外访问。以后对外开放个人用途时遵循 DID Document 的惯例，开通时在 DID Document 里登记一项 `type = DIDObjectService` 的 service，写明 `serviceEndpoint`、`profile` 和 `kind`，调用方从 service 找到入口。[DIDObjectService](../../buckyos-base/doc/did-object-protocol.md#L364)[URL 约定](../doc/key%20url.md#L48) · [URL 构造](../src/kernel/buckyos-api/src/object_url.rs#L401) · [Control Panel 路由](../src/frame/control_panel/src/main.rs#L1440) · [Card 与 Profile](../../buckyos-base/doc/did-object-protocol.md#L137)
 
 **个人用途配置按用户持久化。** 建议新键 `users/<user_id>/resource_bindings/<slot>`，由用户服务提供带版本的窄接口。实现沿用用户级配置的权限约定和 system-config 的条件事务。一个用户所有 Agent 共用配置。可覆盖的首批 slot 是 `calendar`、`todo`。通讯录和系统通知先沿用各自的系统服务。绑定至少记录 schema 版本、`slot`、`mode`、适用的 Provider 引用和资源绑定修订号（本文业务回执中的 `binding_revision`）。凭据由已授权的适配器管理，接口只收可持久引用。[用户级独立配置先例](../src/kernel/buckyos-api/src/rbac_config.rs#L99) · [条件事务](../src/kernel/buckyos-api/src/system_config.rs#L740)
 
@@ -113,7 +113,7 @@ xcall owner ask --params '{"text":"周五评审是否照常？"}'
 
 **先认领写入，再派发。** 个人用途实现以 `(zone, caller, subject_did, slot, action, idempotency_key)` 认领操作，在首次派发前持久化规范化输入摘要、已选扩展或链接目标及其别名修订、相关的资源绑定修订、实际存储目标与记录 ID。并发只认领一次，同键不同输入报冲突。重启或改绑后沿原认领查回执、按原目标安全续办或报告结果未知。链接到同一已发布用途对象时，直接 URL 调用和通过别名调用要把相同业务键交给同一对象。独立的固定日历有自己的幂等范围。通用层不记录派发（前置 TODO §5）：别名在首次调用与重试之间改绑时，重试按新绑定派发，这是已知风险。别名未改绑时，领域层按原认领和原资源绑定继续。若原目标无法确认结果，返回 `WRITE_OUTCOME_UNKNOWN`，新的资源目标收到零次派发。重放回执仍检查当前权限。
 
-`agent_tool xcall` 已解析 `--idempotency-key`，Rust DID Object 客户端目前构造 `ActionInvocation` 时却把 `idempotency_key/confirm_token/trace_id` 设为 `None`。实现时沿调用链传递现有 envelope 元数据，领域脚本把原业务键交给 `doc.commit` 并复用记录 ID。模板初始化和业务写入各有稳定的提交键。现有 `ScheduleClient.commitTo` 每次独立提交都会生成新键。业务层和 Provider 须支持以原键取回结果，可用 `doc.get_submission`。Agent 若要安全重试，应在首次发送前保存该键。Provider 无法确认提交时返回 `WRITE_OUTCOME_UNKNOWN`、原键及可见的查询线索，结束自动重试。[CLI 参数](../src/frame/agent_tool_cli_dev/src/lib.rs#L779) · [动作请求](../../buckyos-base/src/name-client/src/did_obj_client.rs#L177) · [协议字段](../../buckyos-base/doc/did-object-protocol.md#L1015) · [SDK 提交](../../buckyos-websdk/src/aiws_schedule.ts#L830) · [AIWS 提交查询](../src/frame/aiworkspace/README.md#L1832)
+`agent_tool xcall` 解析 `--idempotency-key`。从 buckyos-base `e1ddc24` 起，`DIDObjectClient::invoke_request_from_resolved` 可以传入 `idempotency_key/confirm_token/trace_id`。OpenDAN 的 DID Object 适配器仍自己构造带这三项的请求，再按 Profile 的 form 发送，因为它要按每个 form 的来源和目标选择客户端：Zone 凭据只发给本 Zone 的地址，外部 Profile 不能把调用转到调用者的 Zone，目标不是 HTTPS 时只允许同源或本 Zone 地址。base 的客户端只有一个 HTTP 客户端，做不到这样的区分。[适配器构造请求](../src/frame/agent-did-object-lib/src/adapters/did_object.rs#L176) 领域脚本把原业务键交给 `doc.commit` 并复用记录 ID。模板初始化和业务写入各有稳定的提交键。现有 `ScheduleClient.commitTo` 每次独立提交都会生成新键。业务层和 Provider 须支持以原键取回结果，可用 `doc.get_submission`。Agent 若要安全重试，应在首次发送前保存该键。Provider 无法确认提交时返回 `WRITE_OUTCOME_UNKNOWN`、原键及可见的查询线索，结束自动重试。[CLI 参数](../src/frame/agent_tool_cli_dev/src/lib.rs#L779) · [动作请求](../../buckyos-base/src/name-client/src/did_obj_client.rs#L177) · [协议字段](../../buckyos-base/doc/did-object-protocol.md#L1015) · [SDK 提交](../../buckyos-websdk/src/aiws_schedule.ts#L830) · [AIWS 提交查询](../src/frame/aiworkspace/README.md#L1832)
 
 **让 Agent 能从错误决定下一步。** 保留服务的机器可读错误，补齐 CLI 解析和传输错误在 `detail` 中的原因。区分未知逻辑名、身份缺失、权限拒绝、重名、用途未配置或停用、动作不支持、别名绑定或个人用途配置的版本冲突、本地扩展不可用、Provider 失联和写入结果未知。重名只给可见候选，失联标明能否重试，明确拒绝即终止。只有实际查询成功且无记录才返回空列表。日志保留 trace ID，避免记录凭据和私人日程内容。[CLI 错误映射](../src/frame/agent_tool_cli_dev/src/lib.rs#L2551)
 
@@ -135,18 +135,18 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 | --- | --- |
 | 位置 | 启用位置源后，可通过对象 `read` 读取 `owner` 的 `location` 属性，返回位置或区域、`observed_at`、精度/来源及新鲜度。无定位源返回未配置，过期观测标记陈旧。用户资料中的文字地点只用于资料展示。源有观测事件且授权允许时再开放订阅，仅向获准会话发出变化提示。[用户资料](../../buckyos-base/src/name-lib/src/user_profile.rs#L404) · [Hints 场景](../doc/opendan/Agent元能力/Agent%20浮现Hints.md#L1517) |
 | 通话 | `xcall owner call` 指发起实时通话，仅在真人配置了能返回通话状态的 Provider 时开放。“请主人确认”走 `xcall owner ask`。区分已发起、已接通与结束。要联系其他用户，走接收方开放的消息、邀请或通话渠道。 |
-| 团队任务 | 建议从**该工作区的可分派成员**选择稳定用户身份，更新项目原 todo 的 `ext.assignee`。成员候选与项目读取权限分别核实。现有逻辑组可含联系人标签、系统组和通配项，todo 当前仅校验 assignee 是字符串。个人“分配给我”视图按权限引用原记录。若产品需要“接受后加入私人待办”，单独设计请求/接受流程。项目分派语义是本稿建议，留在本阶段核定。[工作区逻辑组](../src/frame/aiworkspace/README.md#L1515) · [assignee 字段](../src/frame/aiworkspace/schemas/standard-tables.md#L25) |
+| 团队任务 | owner 2026-11-20 定：按 AIWS 惯例，项目待办的负责人绑定工作区里的「联系人」表，从这张表里选人。联系人表由本 Zone 联系人数据源生成，主键是联系人 `did`，在[联系人数据源 TODO](aiws-zone-contacts-source-todo.md) 中规划。团队分派在它之后实施，待办如何引用联系人行随之设计。todo 当前仅校验 `ext.assignee` 是字符串。被分派者对项目的读取权限另行核实。个人“分配给我”视图按权限引用原记录。若产品需要“接受后加入私人待办”，单独设计请求/接受流程。[assignee 字段](../src/frame/aiworkspace/schemas/standard-tables.md#L25) |
 | 事件 | 对象读取与订阅接入逻辑名时复用 §4.1 的 resolver，各按 Profile 检查属性或事件。订阅回执固定订阅时的目标、订阅 ID 和 `alias_revision`，取消及续租均找到原订阅。改写别名后，已存在的订阅继续关联原目标。若原目标是稳定的个人用途 Provider，它可在资源改绑时切换内部来源并发布 `binding_changed`，用资源绑定修订标识变化。断线重连按当前权限重读。撤权即停止投递与补发。绑定变更、日程变化、答复到达等事件在投递验证后逐项发布。[对象事件桥](../src/frame/agent-did-object-lib/src/event_bridge.rs) |
 
 ## 6. CodeAgent 的工作顺序
 
-勾选表示首版实现已落地。各环境的验收结果与待完成的真实 Zone 界面验证见 §8。
+勾选表示首版实现已落地。各环境的验收结果见 §8，收尾任务与待定事项见 §9。
 
 - [x] **M0 · 修正私人日程归属。** 具名创建、ensure、重建索引都使用经验证的 `(owner_principal, name)`，沿用同一并发互斥。命中已有空间也校验真实 caller 对它的访问。为纯查询添加只读的按名查找，缺省时不建空空间。重建索引时识别已有重复项，只让冲突键报错。选定前仍可用原权限和 ID 读写各副本，使用含糊名字的写操作返回冲突。提供本人可执行的选主处理，保留原 ID、内容、历史、ACL 与旧链接，显式解除其他副本的冲突命名。处理中断可重做，禁止按目录遍历顺序选一本。复用名字测试夹具和现有日程页。[服务索引](../src/frame/aiworkspace/store/src/service.rs#L318) · [命名测试](../src/frame/aiworkspace/store/tests/names.rs)
 - [x] **M1 · 本地提醒与原生日历。** 在通用扩展机制可用后交付两个独立的本地别名。先在没有个人对象 Provider 的 Zone 用 `xcall owner notify` 生成一张通知卡，用 `xcall owner.cal add` 将一条记录写入本人的 AIWS 日历。验证同键重试、桌面可见性及无可发布用途引用时的回执。再迁移 §4.2 的日历、待办、系统通讯录、`who/resolve` 和询问。分别用人类和 Agent 会话核实实际服务身份、权限和数据归属。
 - [x] **M2 · 两种实现与资源换绑。** 接入 `owner.bindings` 的资源修订检查、外部日历和跨进程幂等。用本地用途脚本及第二个测试 Provider 验证同一动作契约，分别覆盖链接固定日历和链接个人用途对象。单独切换 `owner` 和 `owner.cal`。核对新写、旧回执、原键重试的实际目的地，别名改绑后的原键重试只记录、不判失败。外部 HTTPS Provider 按其声明的 endpoint/form 和受众调用，Zone 身份凭据只发给适用的 Zone 服务。记录测试 Provider 的能力和范围。[Rust 对象适配](../src/frame/agent-did-object-lib/src/adapters/did_object.rs) · [Zone 凭据范围](../src/frame/agent-did-object-lib/src/zone.rs#L69)
 - [x] **M3 · 让 Jarvis 实际选用它。** 新增 `src/apps/jarvis_agent/agent/cmd_skills/owner/SKILL.md`，声明已安装的 `commands: xcall` 和 `scope: ui, work`，在 `ui_core` 留短入口。让 UI/Work 通过现有机制发现手册。写明何时用逻辑名、何时复用 Hint URL 或记录回执。参数以各对象的 Profile 为准。迁移 `aiworkspace_template_dev`、控件说明、帮助和 DV 中操作个人日程的示例。分别在打包的 Agent 环境和人类登录终端执行示例。[Jarvis 配置](../src/apps/jarvis_agent/agent/agent.toml#L49) · [AIWS 手册](../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_template_dev/SKILL.md#L40)
-- [ ] **M4 · 联系人协作及其他能力。** 本 Zone 忙闲直达已实现，其余能力按 §5 后续分项交付。为需要被其他人调用的用途发布稳定对象 URL，可复用已有 Provider 或实施 §3 的用户目录。首先交付本 Zone 的忙闲授权、按名字消歧、保存可见 Hint 和一次直调。再按 §5 分项交付邀请、团队分派、位置、实时通话和订阅。复用日程与提醒已有的分工。[提醒实施边界](opendan-d4-timer-reminder-todo.md#L19)
+- [ ] **M4 · 联系人协作及其他能力。** 本 Zone 忙闲直达已实现，其余能力按 §5 后续分项交付，次序见 §9。本版本只在本 Zone 内发布用途对象，复用已有 Provider。Zone 外访问按 §3 留到以后。首先交付本 Zone 的忙闲授权、按名字消歧、保存可见 Hint 和一次直调。再按 §5 分项交付邀请、团队分派、位置、实时通话和订阅。复用日程与提醒已有的分工。[提醒实施边界](opendan-d4-timer-reminder-todo.md#L19)
 
 ## 7. 验收用例
 
@@ -170,7 +170,7 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 
 ## 8. 首版实现与验收记录
 
-默认包安装的六个独立别名为 `owner`、`owner.cal`、`owner.todo`、`owner.contacts`、`owner.bindings`、`owner.sharing`。每个会话的 `owner.context` 由 Control Panel 验证。改变个人绑定与授予忙闲访问需要本人管理会话。Jarvis 的 UI 和 Work 会话共用同一份 owner 手册。[默认扩展](../../buckyos-websdk/owner-extensions/object_extensions.toml) · [Jarvis 使用手册](../src/apps/jarvis_agent/agent/cmd_skills/owner/SKILL.md)
+首版提交为 BuckyOS `890e925de`、buckyos-websdk `f7e4d7d` 与 `8140857`，2026-11-20 已部署到本机 Zone。默认包安装的六个独立别名为 `owner`、`owner.cal`、`owner.todo`、`owner.contacts`、`owner.bindings`、`owner.sharing`。这些别名随 SDK 分发，执行器先读 `$BUCKYOS_ROOT/libexec/buckyos-tool/dist/owner-extensions`，再叠加 ext-tools 的 `tools/current.json` 快照。前置 TODO §4 规定首版只从已安装的扩展工具包登记，这里与它不同，owner 已接受（§9）。[别名来源](../src/frame/agent-did-object-lib/src/extensions.rs#L71) 每个会话的 `owner.context` 由 Control Panel 验证。改变个人绑定与授予忙闲访问需要本人管理会话。Jarvis 的 UI 和 Work 会话共用同一份 owner 手册。[默认扩展](../../buckyos-websdk/owner-extensions/object_extensions.toml) · [Jarvis 使用手册](../src/apps/jarvis_agent/agent/cmd_skills/owner/SKILL.md)
 
 个人资源 Provider 在 Profile 中声明 `x-buckyos:slot`（`calendar` 或 `todo`），或相应的 `buckyos.calendar`、`buckyos.todo` trait，并将 `list` 声明为只读（`read` 或 `pure`）。派发时重新核实当前 Profile 的类型、动作、effect 和 form。转发到另一项个人用途的对象还要声明 `x-buckyos:resource-binding`，包含 `zone_did`、`owner_did`、`slot`。同 Zone 的环检测、绑定修订及该修订的来源历史在同一事务中提交。外部记录回执保留 Provider 的原始 `provider_record_ref` 和面向人的 `open_url`。后续编辑传入完整 `record_ref`，即使两个 Provider 使用同一个原始 URL 也能定位到创建时的来源。[控制面绑定](../src/frame/control_panel/src/owner.rs) · [原目标回归](../src/frame/control_panel/src/owner_access_tests.rs)
 
@@ -185,3 +185,32 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 | 发行包与真实 Zone 的界面验收，A3、A9 | 在提取的 SDK 发行包与打包的 Deno 中执行裸 `xcall owner who` 和 `xcall owner notify`，SDK 在临时安装根使用 Alice 的 Ed25519 密钥执行 `login_by_jwt`，登录服务夹具核验签名后签发会话。通过 `who` 核对调用身份，覆盖收件人被篡改时返回错误。发行版执行旧 `buckyos aiws cal list`、`buckyos aiws todo list` 均返回 `UNKNOWN_COMMAND`，退出码为 2。已迁移 Desktop 的 Chromium 场景。真实 Zone 的这次执行停在登录夹具，缺少 `BUCKYOS_TEST_ADMIN_PASSWORD_FILE` 或 `BUCKYOS_TEST_ADMIN_PASSWORD`。真人登录、Agent App 以及从浏览器点击链接改期的联测仍待验证。[Desktop Zone DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts) |
 
 本次验证通过了 180 项 WebSDK CLI 测试、42 项日程与重复规则测试、60 项 Rust CLI 与对象路由测试。服务和路由测试可沿用 §7 的命令。控制面使用 `cargo test -p control_panel owner::`。将 `BUCKYOS_ROOT` 指向含 Deno 及 SDK `dist/owner-extensions` 的安装根，可另运行 `cargo test -p aiworkspace --test objects installed_availability -- --ignored`，用真实私有日历行验证发行版忙闲投影。
+
+## 9. 收尾 TODO
+
+M0–M3 与本 Zone 忙闲直达的代码已提交。以下各项完成后首版才算验收完毕，结果补进 §8，写明实测的 caller、命令、资源 ID 和回执。
+
+- [x] **C1 · buckyos-base 的调用元数据。** owner 已推送（buckyos-base `e1ddc24`），`DIDObjectClient::invoke_request_from_resolved` 可以传入三项调用元数据。OpenDAN 适配器不改用它，原因见 §4.4。BuckyOS 没有代码调用这个接口，不需要为它单独执行 `cargo update`。
+- [ ] **C2 · 在真实 Zone 跑桌面 DV。** 开发 Zone 的管理员密码是默认的 `bucky2025`（[make_config.ts](../src/make_config.ts#L789)），§8 记录的登录缺口设上环境变量即可补上。在 `src/frame/desktop` 下运行：
+
+  ```sh
+  BUCKYOS_TEST_ADMIN_PASSWORD=bucky2025 BUCKYOS_XCALL=/opt/buckyos/bin/xcall \
+    pnpm exec playwright test -c playwright.aiworkspace.zone.config.ts --grep 'private schedule'
+  ```
+
+  这个用例打开过待办的 `open_url`，但没有从页面给日程改期。按 A3 补一步：打开日程回执的 `open_url`，在页面上改期，再用 `xcall owner.cal list` 查到新时间。[日程 DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts#L195)
+- [ ] **C3 · 用真实的 Agent 身份写入。** DV 里“Agent 写入”的两步（[待办](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts#L257)、[日程](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts#L264)）用的是 owner 的 token，不满足 A1 里“仅用同一个用户 token 不算通过”。改为在 `buckyos-app-jarvis` 容器内，用容器里 Agent 工具实际使用的会话执行 `xcall owner who`、`xcall owner.todo add` 和 `xcall owner.cal add`。容器的 PATH 已包含 `/opt/buckyos/bin/opendan/xcall`。通过条件有三条：`who` 返回的 `owner_did` 与人类会话相同，但 caller 是 Agent App；两条记录出现在桌面上同一份具名日程里；AIWS 提交记录的 caller 是 Agent App。这一步可以并入 C2 的用例。
+- [ ] **C4 · 用真实模型验收 M3（A3）。** 在桌面 MessageHub 与 Jarvis 新开一个会话，说“把周五下午两点的设计评审加到我的日历，半小时”，再问“我周五有什么安排”。从该 Session 的工具记录核对：新增只用一条 `xcall owner.cal add` 并带幂等键；此前没有 `read` 探索，也没有列工作区或扫描通讯录；回复里给出 `open_url`；查询用 `owner.cal list`，时区正确。
+- [ ] **C5 · 补前置 TODO E4 的运行环境验证。** 在选了 host-runtime、经 Node Executor 执行的 Agent 里，以及在后台任务里，各执行一次 `xcall owner who` 和 `xcall owner.cal list`。确认读到同一份别名快照和用户覆盖、身份是该 Agent。在未安装扩展的 runtime 里执行时应报不可用。[前置 E4](opendan-object-local-extensions-todo.md#L132)
+- [x] **C6 · 让文档对齐实现。** §3 补记忙闲入口的实际位置，§4.4 改写适配器传递调用元数据的现状，§8 补提交号和内置别名的来源。
+- [ ] **C7 · `notify` 的自动键改用两小时的时间片。** owner 把前置 TODO 的 Q1 定为两小时，前置 TODO §5 与 E2 的说法已随之改过。[owner_host.rs](../src/frame/agent-did-object-lib/src/owner_host.rs#L262) 现在按小时取时间片（除以 3600），要改为 7200。补一个用例：同一时间片内两次不带键的 `xcall owner notify` 只生成一张卡，跨时间片生成两张。
+
+**owner 裁决（2026-11-20）**
+
+1. buckyos-base 的改动已推送（C1）。
+2. 接受内置别名随 SDK 分发（§8）。
+3. 前置 TODO 的 Q1 定为两小时的时间片（C7），Q2 按 review 中的取舍，都已写回前置 TODO §7。
+4. 本版本不做用户目录，也不做 Zone 外访问。以后对外开放时遵循 DID Document 的惯例，开通时登记 service（§3）。
+5. 团队分派按 AIWS 惯例绑定工作区里的「联系人」表，联系人表在[联系人数据源 TODO](aiws-zone-contacts-source-todo.md) 中规划（§5）。
+
+**首版验收之后 M4 的次序。** 第一步做本 Zone 内的 `invite`：查到忙闲后能直接约上时间，回执区分已发、已接受和拒绝。第二步做团队分派，排在联系人数据源之后。位置、实时通话和订阅依赖的 Provider 目前都不存在，放在最后。Zone 外访问不在本版本。
