@@ -897,35 +897,45 @@ async fn ui_state_without_owner_is_the_callers_own() {
     assert!(c.handle_get_ui_session_state("s-1".into(), "cursor".into(), user_ctx("alice")).await.unwrap().is_none(), "the shared namespace is not the user's");
 }
 
-#[tokio::test]
-async fn owner_notification_keys_and_answers_cross_the_message_center_http_boundary() {
+async fn owner_notification_gateway(env: &Env) -> (String, tokio::task::JoinHandle<()>) {
     use axum::body::{to_bytes, Body};
     use axum::extract::{ConnectInfo, Request};
     use buckyos_http_server::{HttpServer, StreamInfo};
     use std::net::SocketAddr;
 
-    let env = env().await;
     let sync = Arc::new(crate::ZoneSync::new(
         env.center.clone(),
         Arc::new(crate::msg_tunnel::DeliveryExecutorMgr::new()),
     ));
     let server = Arc::new(crate::MsgCenterHttpServer::new(env.center.clone(), sync));
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}/kapi/msg-center", socket.local_addr().unwrap());
-    let app = axum::Router::new().fallback(
-        move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request| async move {
-            let (parts, body) = req.into_parts();
-            let bytes = to_bytes(body, 1 << 20).await.unwrap();
-            server
-                .serve_request(
-                    buffered_request(parts, bytes),
-                    StreamInfo::new(peer.to_string()),
-                )
-                .await
-                .unwrap()
-                .map(Body::new)
-        },
-    );
+    let origin = format!("http://{}", socket.local_addr().unwrap());
+    let app = axum::Router::new()
+        .route(
+            "/kapi/control-panel",
+            axum::routing::post(|axum::Json(rpc): axum::Json<Value>| async move {
+                assert_eq!(rpc["method"], "owner.context");
+                assert_eq!(rpc["params"]["alias"], "owner");
+                axum::Json(json!({"result": {
+                    "owner_user_id": "alice", "owner_did": alice(), "caller_did": jarvis(),
+                    "zone_did": zone(), "read_only": false
+                }}))
+            }),
+        )
+        .fallback(
+            move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request| async move {
+                let (parts, body) = req.into_parts();
+                let bytes = to_bytes(body, 1 << 20).await.unwrap();
+                server
+                    .serve_request(
+                        buffered_request(parts, bytes),
+                        StreamInfo::new(peer.to_string()),
+                    )
+                    .await
+                    .unwrap()
+                    .map(Body::new)
+            },
+        );
     let task = tokio::spawn(async move {
         axum::serve(
             socket,
@@ -934,6 +944,14 @@ async fn owner_notification_keys_and_answers_cross_the_message_center_http_bound
         .await
         .unwrap()
     });
+    (origin, task)
+}
+
+#[tokio::test]
+async fn owner_notification_keys_and_answers_cross_the_message_center_http_boundary() {
+    let env = env().await;
+    let (origin, task) = owner_notification_gateway(&env).await;
+    let endpoint = format!("{origin}/kapi/msg-center");
     let agent = MsgCenterClient::new(kRPC::kRPC::new(&endpoint, agent_ctx().token));
     let alice_client = MsgCenterClient::new(kRPC::kRPC::new(&endpoint, user_ctx("alice").token));
     let bob_client = MsgCenterClient::new(kRPC::kRPC::new(&endpoint, user_ctx("bob").token));
@@ -1009,5 +1027,57 @@ async fn owner_notification_keys_and_answers_cross_the_message_center_http_bound
         answered.notify_id,
         pending.task_id.unwrap()
     );
+    task.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires faketime, built agent_tool and rootfs with packaged owner extensions and Deno"]
+async fn owner_notify_without_a_key_delivers_one_card_per_two_hour_window() {
+    let env = env().await;
+    let (origin, task) = owner_notification_gateway(&env).await;
+    let root = std::env::var_os("BUCKYOS_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rootfs"));
+    let binary = std::env::current_exe().unwrap();
+    let agent_tool = binary
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("agent_tool");
+    let agent_token = agent_ctx().token.unwrap();
+
+    let mut ids = Vec::new();
+    for (time, expected_cards) in [("00:59:59", 1), ("01:59:59", 1), ("02:00:00", 2)] {
+        let output = tokio::process::Command::new("faketime")
+            .args(["--exclude-monotonic", "-f", &format!("2026-11-20 {time}")])
+            .arg(&agent_tool)
+            .args(["xcall", "owner", "notify", "text=Review ready"])
+            .env("TZ", "UTC")
+            .env("BUCKYOS_ROOT", &root)
+            .env("BUCKYOS_TOOL_ENDPOINT", &origin)
+            .env("BUCKYOS_APPCLIENT_SESSION_TOKEN", &agent_token)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let notice: NotifyView =
+            serde_json::from_value(receipt["detail"]["result"].clone()).unwrap();
+        assert_eq!(notice.source.agent_did, Some(jarvis().to_string()));
+        let home = notice.home.unwrap();
+        let cards = session_records(&env.center, &alice(), &home.session_id).await;
+        assert!(cards.iter().any(|card| card.record_id == home.record_id));
+        assert_eq!(cards.len(), expected_cards, "{time} UTC");
+        ids.push(notice.notify_id);
+    }
+    assert_eq!(ids[0], ids[1]);
+    assert_ne!(ids[1], ids[2]);
+    eprintln!("owner notify time-window receipts: {ids:?}");
     task.abort();
 }

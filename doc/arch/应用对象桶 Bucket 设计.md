@@ -324,7 +324,7 @@ bucket.list_access_tokens { bucket_id }
 | **`documents`** 用户文档 | 用户创造、导入或明确要求保存的内容，产品承诺**永久保留** | **用户**（App 只是写入者） | Recursive，无 TTL | **保留**；桶转为用户的孤儿桶，重装同一 App 自动接回 | 必备份；跟随用户迁移 | 禁止过期规则；只允许清理非当前版本 | 用户的 `res_pool` 存储配额 | 是：出现在用户的存储空间页，并只读投影到 Files（§4.5.4） |
 | **`app_data`** 应用数据 | App 替用户生成、运行必需、重建昂贵（索引、派生资产、下载的模型） | App | Recursive，无 TTL | 默认删除，用户可选保留 | 备份；跟随用户迁移 | 允许 | App 声明的 `quota_mib` | 否；只在存储空间页按 App 聚合 |
 | **`collected`** 收集 | **别人创作**、我认真收集的内容；来源可能消失，所以本地必须有完整副本 | **用户** | Recursive，无 TTL；Binding 必带 `origin` | **保留**（同 documents） | 必备份；跟随用户迁移 | 禁止过期规则；只允许清理非当前版本 | 用户的 `res_pool` 存储配额 | 是：Files 投影在 `Collected/` 下 |
-| **`ambient`** 周边 | **别人创作**、最好能有的内容；描述必须在，内容按需从内容网络再拉 | 用户 | **Skeleton**：锁描述对象（FileObject / MsgObject 等），不级联到内容；内容若在本地则是 class 0 缓存 | 删除（描述可随备份恢复） | 只备描述；恢复后内容按需再拉 | 允许；另有软配额 LRU | 描述字节计用户配额；内容字节按 `cache` 软配额 | 否（App 内呈现） |
+| **`ambient`** 周边 | **别人创作**、最好能有的内容；描述必须在，内容按需从内容网络再拉 | 用户 | **Lease**：在绑定存续期间保留描述对象（FileObject / MsgObject 等）。仅由此桶持有的内容按缓存管理 | 删除（描述可随备份恢复） | 只备描述；恢复后内容按需再拉 | 允许；另有软配额 LRU | 描述字节计用户配额；内容字节按 `cache` 软配额 | 否（App 内呈现） |
 | **`temp`** 临时 | 处理期间的中间产物，**到期必失效** | App | Recursive + 必填 `expires_at`（缺省取桶的 `default_ttl_days`，上限 30 天） | 删除 | 不备份 | 强制过期 | App 的 `quota_mib` | 否 |
 | **`cache`** 缓存 | 能从别处重建的派生物（缩略图、转码、预取） | App | **不 pin**：内容停留在 class 0，设备压力下按 LRU 逐出 | 删除 | 不备份 | 允许 | 软配额：超出只触发本桶淘汰，不拒绝写入 | 否 |
 
@@ -356,7 +356,7 @@ bucket.list_access_tokens { bucket_id }
 
 **`ambient`**
 
-- 描述对象（FileObject、MsgObject 等）用 `Skeleton` pin 锁住，**不级联到内容**；内容若在本地就是 class 0 缓存，设备压力下可逐出，要用时按 `origin` 从内容网络再拉。这是 named store GC 设计里 Skeleton 的本意（"这一支留个壳，不要内容"）在桶层的直接用法。
+- 描述对象（FileObject、MsgObject 等）由绑定持有无到期时间的 `Lease` pin。同一对象被发布桶或其他持久引用持有时，递归保护仍会覆盖内容块。仅作缓存的内容可在设备压力下逐出，再按 `origin` 获取。
 - `GET` 命中已逐出的内容时返回 `202 + Retry-After` 并触发拉取（这是 §6.2 里 202 唯一的 v1 来源）；App 对 ambient 内容必须按"可能要等"来设计 UI。拉取失败返回 `404 origin_unavailable`，描述仍在，key 不删。
 - Binding 同样必带 `origin`；绑定时只要求描述对象在库，不要求内容在库（§6.1 持久条件的例外）。
 - 备份只带描述；恢复后内容按需再拉，所以 ambient 桶在迁移中几乎不占备份体积。
@@ -691,7 +691,7 @@ Binding 可带 `expires_at`。到期由生命周期任务解绑。S3 没有对�
 2. 根对象的 Recursive pin 已在 named store 落库（class 2）；
 3. Binding 事务已提交。
 
-三者任一不成立就返回错误，不留半成功状态。调用方因此可以在成功后删除源文件。`ambient` 桶的条件 1 只要求**描述对象**在库（内容可以不在），条件 2 是 Skeleton pin；这是它的定义使然，不是弱化。级联把 chunk 从 class 0 提升为 class 1 是毫秒级的异步收敛，这段窗口由上传时打在 chunk 上的 24h Lease 覆盖；Lease 是补偿窗口，不是保证本身。`cache` 桶是唯一例外：它不 pin，成功只表示绑定已记录。
+三者任一不成立就返回错误，不留半成功状态。调用方因此可以在成功后删除源文件。`ambient` 桶的条件 1 只要求**描述对象**在库（内容可以不在），条件 2 是与绑定同寿命的描述对象 Lease pin。级联把 chunk 从 class 0 提升为 class 1 是毫秒级的异步收敛，这段窗口由上传时打在 chunk 上的 24h Lease 覆盖；Lease 是补偿窗口，不是保证本身。`cache` 桶是唯一例外：它不 pin，成功只表示绑定已记录。
 
 **上传直达桶**（落盘方向文档 §6.6）：`Upload-Metadata` 增加 `bucket` 与 `key`，并增加 `auto_bind: true`。SDK 在 `put_object(FileObject)` 成功后，网关检查该上传会话的所有 chunk 已完成且 FileObject 引用的内容由本会话主体持有，然后在服务端执行 ②。应用只收到一个结果：`{ bucket, key, obj_id, version, etag }`。【现状】FileObject 由 websdk 在客户端组装，上传链路末尾已有一次服务端调用 `POST /ndm/v1/import/finalize`（校验持有、做 24h Recursive 保护）。`auto_bind` 的落点就是这里：finalize 请求带 `bucket`、`key` 与条件头，服务端在同一处把 24h 临时保护换成桶的长期绑定。tus 会话本身不需要知道桶。
 
@@ -735,7 +735,7 @@ owner = "bucket:" + bucket_id           # 普通绑定
 owner = "bucket-snapshot:" + snapshot_id # 快照根（§10）
 ```
 
-pin scope 由数据策略决定（§4.5.1）：`documents` / `app_data` / `collected` / `temp` 为 `Recursive`（绑定即要求内容本体在 Zone 内可用）；`ambient` 为 `Skeleton`（只锁描述对象）；`cache` 不 pin。§7.2 的状态机只对需要 pin 的档运行，cache 桶的绑定事务不写 `bucket_pins`。
+pin scope 由数据策略决定（§4.5.1）：`documents` / `app_data` / `collected` / `temp` 为 `Recursive`（绑定即要求内容本体在 Zone 内可用）；`ambient` 为 `Lease`（绑定存续期间只锁描述对象）；`cache` 不 pin。§7.2 的状态机只对需要 pin 的档运行，cache 桶的绑定事务不写 `bucket_pins`。
 
 ### 7.2 绑定与解绑的事务
 
@@ -743,7 +743,7 @@ pin scope 由数据策略决定（§4.5.1）：`documents` / `app_data` / `colle
 put(key, obj_id):
   require is_object_stored(obj_id)                 # 内容必须已在库，否则 content_not_available；ambient 只要求描述对象在库
   if ref_count(bucket_id, obj_id) == 0:
-    pin(obj_id, owner, scope_of(data_policy))      # Recursive 或 Skeleton；同进程 named store 本地事务，幂等；失败即整个 put 失败
+    pin(obj_id, owner, scope_of(data_policy))      # Recursive 或 Lease；同进程 named store 本地事务，幂等；失败即整个 put 失败
   txn(bucket index):
     upsert binding
     upsert bucket_pins(bucket_id, obj_id, state='held', ref_count += 1)
@@ -785,7 +785,7 @@ pin 在前、索引在后：崩溃只会留下"有 pin 无索引"的多余保留
 | 保留范围 | Bucket 的 Binding 集合（pin） |
 | 缓存状态 | named store 每个 bucket（分片）上的 `state` / `eviction_class` / `last_access_time`，按设备 |
 | "关键时刻要准备好" | `bucket.prefetch(prefix)`：对前缀下对象触发拉取到当前设备（P2） |
-| "内容在别处" | `ambient` 档：Skeleton pin 锁描述，内容按 `origin` 从内容网络再拉（§4.5.2） |
+| "内容在别处" | `ambient` 档：Lease pin 锁描述，内容按 `origin` 从内容网络再拉（§4.5.2） |
 
 ## 8. 配额与统计
 
@@ -1202,7 +1202,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | `last_access_time` | 没有调用方 `touch`，LRU 无效 | 读路径（§6.2）调 `touch` |
 | 按 owner 列 pin | 只有 `unpin_owner` | `list_pins_by_owner(prefix, cursor)`，供 reconcile |
 | 结构化对象的子项遍历 | 已实现（2026-10-26）：`KnownStandardObject::Msg`，`MsgObject` 的子项是 `content.refs` 里的 DataObj（附件）；其他标准对象仍待接入 | 接入其余标准对象（D1 的前提） |
-| Skeleton 硬屏障 | GC 设计 §0.3 已定义，实现状态待核实 | `ambient` 档依赖它；按 `origin` 拉取依赖 CYFS 协议 pull 路径（NDM 网关下载路径目前未实现） |
+| Lease 保留描述对象 | GC 设计 §4.4 定义了各类 pin 的级联行为 | `ambient` 使用 Lease 以保留其他持有者的递归保护；按 `origin` 拉取依赖 CYFS 协议 pull 路径（NDM 网关下载路径目前未实现） |
 | 多进程共用 SQLite | nfs-server、msg-center、homestation、control-panel、aicc、aiworkspace、repo-service、node-daemon、cyfs-gateway 各自打开同一组 `named_store.db` | 不是 Bucket 的阻塞项，但 GC 宿主唯一化后应逐步收敛为经 nfs-server 的 proxy 访问 |
 
 在这些落地前，Bucket 仍然**正确地表达**保留与释放（pin 行是对的），只是释放不会变成磁盘空间。这一点要写进 M1 的验收说明，避免把"解绑了但磁盘没变"当成 Bucket 的缺陷。
@@ -1282,8 +1282,8 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | D16 | admin 权限 | 对用户桶默认只有 `list` `read` `manage` | §4.4.3 |
 | D17 | App 池配额声明 | 声明 `app_data` / `temp` 桶时 `storage_quota_mib` 必填 | §4.3 |
 | D18 | 令牌模块 | （2026-10-26 修订）`bkt_`、`gt_` 访客令牌与群 48h 链接只共用令牌格式与校验代码 `name_lib::bearer_token`，不并表：访客令牌是浏览器自造的身份、48h 链接是 verify-hub 的登录凭据，都不是桶内容能力，并入会让内核登录依赖 nfs-server | §4.4.5 |
-| D19 | 第二、三档的落法 | 新增 `collected`（Recursive、必带 `origin`、与 documents 同级备份）与 `ambient`（Skeleton 锁描述、内容按 origin 再拉），原 `archive` 并入 ambient | §4.5 |
-| D20 | ambient 的 v1 范围 | v1 只做 Skeleton 保留与"有则用、无则 404"，按 `origin` 自动拉取放 P2（依赖 NDM 下载路径） | §17 |
+| D19 | 第二、三档的落法 | 新增 `collected`（Recursive、必带 `origin`、与 documents 同级备份）与 `ambient`（Lease 锁描述、内容按 origin 再拉），原 `archive` 并入 ambient | §4.5 |
+| D20 | ambient 的 v1 范围 | v1 只用 Lease 保留描述对象与"有则用、无则 404"，按 `origin` 自动拉取放 P2（依赖 NDM 下载路径） | §17 |
 | D21 | Public Zone 的基本规则 | 采纳不变量 Z1–Z8 与各档进入公开入口的规则，现有入口的差距按 §4.6.6 逐项修 | §4.6.3、§4.6.4 |
 | D22 | `/ndn/` 读取协议 | `/ndn/<obj_id>` 是跨 Zone 按 ObjId 读取的统一协议，只读，尚未实现。FileObject 的 URL 返回文件字节并支持单段 Range，标准 HTTP 工具（如 ffmpeg）能直接读。授权根命中 `public-objects` 或 `public-cache` 就放行，否则看 URL 参数 `hint` 里的 `bkt_` 令牌，其绑定须等于授权根；`hint` 还可带从根到目标的路径。公开缓存只收从别处匿名拉取成功的内容，私聊和群附件走令牌 | §4.6.5 |
 | D23 | External 与桶层 | 不给桶加 DID 类 grantee，External 经入口服务代读或用短期令牌，与 §20 第 5 条一致 | §4.6.1 |

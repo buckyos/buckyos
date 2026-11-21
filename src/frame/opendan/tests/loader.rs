@@ -1811,7 +1811,10 @@ async fn the_jarvis_package_loads_and_answers() {
     assert!(system.contains("Your name is jarvis"), "{system}");
     assert!(!system.contains("You are Jarvis"), "the template does not name the instance: {system}");
     assert!(system.contains("This is a one-to-one chat with your owner (bob, DID did:bns:bob)"), "{system}");
-    assert!(system.contains("## Commands\nRun these through `shell`"), "the cmd_skill is frozen: {system}");
+    let (_, commands) = system.split_once("## Commands\n").expect("the frozen cmd_skill is in the prompt");
+    for action in ["xcall owner.cal add --params", "xcall owner.cal list --params"] {
+        assert!(commands.contains(action), "missing calendar command: {action}");
+    }
     assert!(!system.contains("requires: an OpenDAN UI session"), "front matter is not part of the manual: {system}");
     assert!(!system.contains("<<"), "{system}");
     let mut tools = tools.lock().unwrap().clone();

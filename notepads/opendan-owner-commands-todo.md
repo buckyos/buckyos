@@ -182,28 +182,39 @@ xcall "$availability_ref" free_busy --params '{"from":"2026-11-20T13:00:00+08:00
 | Rust CLI、打包的 Deno 脚本、两个 HTTP 日历 Provider，A4、A5、A10 | 控制面使用夹具。以 `add-b` 新增，改绑后同键仅向 B 查询回执。以 `loss-b` 注入提交后断线，B 只写一次。B、C 的列表均返回同一个含 fragment 的记录 URL，使用 C 的回执更新时，仅 C 收到原始 URL。固定 URL 与逻辑别名传递相同业务键。控制面的持久键、条件更新、拒绝跨用户引用及互相改绑成环有独立回归。[双 Provider 联调](../test/object_url_dv/owner_provider_dv.py) · [通用路由测试](../src/frame/agent-did-object-lib/tests/owner_routing.rs) |
 | 独立 MessageCenter HTTP、SQLite 和已签名会话，A5、A7 | Agent 的同键通知只生成 `nt-b5dfbe8e9c7c4385a759c17aeb4dfc35` 一张卡，改正文返回 `IDEMPOTENCY_CONFLICT`。询问 `nt-5ced41f687ad41579400f87362dc04ba` 关联测试 TaskManager 的 `t-1`，本人答复后状态从 Open 变为 Answered。其他用户读取与改变通知收件人均被拒绝。已绑定的 Agent DID 和 Agent App 能查询、更新本人允许编辑的联系人。只读、跨人及系统通讯录写入均被拒绝。[通知测试](../src/frame/msg_center/src/test_notify.rs) · [联系人测试](../src/frame/msg_center/src/test_contact_network.rs) |
 | 独立 AIWS 服务与发行版投影脚本，A6、A11 | Alice 的 `ws_2611s8qj` 中有私有记录 `r-review`。Bob 和 Bob 的 Agent 直接调用 `obj://aiworkspace/people/did%3Abns%3Aalice/availability`，响应只有裁剪至 06:30–07:00 UTC 的区间和 `coverage=complete`。未共享者和撤权后的 Agent 均被拒绝。另一会话持有同一 URL 也不能召回私聊 Hint。外部日历如未提供本服务可用的忙闲投影，则返回来源不可用。当前用途停用则返回 `RESOURCE_DISABLED`。[共享对象测试](../src/frame/aiworkspace/server/tests/objects.rs) · [Memory 测试](../src/frame/lib_opendan/tests/memory_recall.rs) |
-| 发行包与真实 Zone 的界面验收，A3、A9 | 在提取的 SDK 发行包与打包的 Deno 中执行裸 `xcall owner who` 和 `xcall owner notify`，SDK 在临时安装根使用 Alice 的 Ed25519 密钥执行 `login_by_jwt`，登录服务夹具核验签名后签发会话。通过 `who` 核对调用身份，覆盖收件人被篡改时返回错误。发行版执行旧 `buckyos aiws cal list`、`buckyos aiws todo list` 均返回 `UNKNOWN_COMMAND`，退出码为 2。已迁移 Desktop 的 Chromium 场景。真实 Zone 的这次执行停在登录夹具，缺少 `BUCKYOS_TEST_ADMIN_PASSWORD_FILE` 或 `BUCKYOS_TEST_ADMIN_PASSWORD`。真人登录、Agent App 以及从浏览器点击链接改期的联测仍待验证。[Desktop Zone DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts) |
+| 发行包首次验证，A3、A9 | 在提取的 SDK 发行包与打包的 Deno 中执行裸 `xcall owner who` 和 `xcall owner notify`，SDK 在临时安装根使用 Alice 的 Ed25519 密钥执行 `login_by_jwt`，登录服务夹具核验签名后签发会话。通过 `who` 核对调用身份，覆盖收件人被篡改时返回错误。发行版执行旧 `buckyos aiws cal list`、`buckyos aiws todo list` 均返回 `UNKNOWN_COMMAND`，退出码为 2。首次尝试真实桌面时停在登录夹具。后续实测见下表 C2–C4。 |
 
-本次验证通过了 180 项 WebSDK CLI 测试、42 项日程与重复规则测试、60 项 Rust CLI 与对象路由测试。服务和路由测试可沿用 §7 的命令。控制面使用 `cargo test -p control_panel owner::`。将 `BUCKYOS_ROOT` 指向含 Deno 及 SDK `dist/owner-extensions` 的安装根，可另运行 `cargo test -p aiworkspace --test objects installed_availability -- --ignored`，用真实私有日历行验证发行版忙闲投影。
+首轮验证通过了 180 项 WebSDK CLI 测试、42 项日程与重复规则测试、60 项 Rust CLI 与对象路由测试。服务和路由测试可沿用 §7 的命令。控制面使用 `cargo test -p control_panel owner::`。将 `BUCKYOS_ROOT` 指向含 Deno 及 SDK `dist/owner-extensions` 的安装根，可另运行 `cargo test -p aiworkspace --test objects installed_availability -- --ignored`，用真实私有日历行验证发行版忙闲投影。
+
+### 收尾复验（2026-11-20，洛杉矶时间）
+
+| 项目和环境 | 调用与回执 |
+| --- | --- |
+| C2、C3，真实 Zone 的 Desktop、Jarvis 容器、原生 AIWS | 人类终端的 `xcall owner who` 返回 caller/owner `did:bns:devtest`；`buckyos-app-jarvis` 的工具会话 `goal-20261121-12` 返回相同 owner，caller 为 `did:web:jarvis.test.buckyos.io`。同一具名日程 `ws_2611oish` 收到 `owner.todo add` 的 `d2b29c909cfa49eab0c3a31040c2c37d` 和 `owner.cal add` 的 `0c7009807347449db75a9b355d792ec1`，两者状态均为 `created`。`doc.get_changes` 中提交 `cm_5m3dnavzcaf32e7hmu24xnqc4h`、`cm_5i4zsykuhpkvmng4e753ocdlna` 的作者均为该 Agent DID。Chromium 打开日程的 `open_url` 并保存改期，Jarvis 在另一工具会话 `goal-20261121-13` 用 `owner.cal list` 按原 `record_ref` 查到 11 月 21 日 00:00–00:30 UTC。用例结束后只清理本次记录。[桌面 DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts) |
+| C4，真实 Zone 的 MessageHub、Jarvis 与模型 `gpt-6.1-sol:reasoning-medium@codex-proxy` | 首次实测发现 Jarvis 会先读手册，模型执行裸 `xcall` 时也只收到成功摘要。默认对话手册补上日程参数，适配器向模型输出业务 JSON。在最终镜像和手册下，新会话 `ui-20261121-14` 先询问日期和时区，得到“洛杉矶时间、11 月 27 日”后仅执行 `xcall owner.cal add`（键 `ui-20261121-14-design-review-20261127-1400`）。回执为 `created`、`ws_2611oish/4875a4abe24541a4847e923293064001`，回复附原 `open_url`。追问时仅执行 `xcall owner.cal list`，以 `America/Los_Angeles` 当地午夜为窗口边界，返回同一记录的 22:00–22:30 UTC。会话 worklog 中共有这两次 shell 调用；验收后已按回执删除测试记录。[默认对话手册](../src/apps/jarvis_agent/agent/cmd_skills/ui_core/SKILL.md) · [适配器回归](../src/frame/agent-did-object-lib/tests/provider_read.rs) |
+| C5，真实 Zone，SDK 0.7.198 | 人类终端的 caller 为 `did:bns:devtest`。Agent 的 `work-20261121-4` 在节点 `did:web:ood1.test.buckyos.io` 经 Node Executor 以 uid 1000 执行；前台与后台任务 `local:shell:call_ZnwMkD0k5xbXXzhchRoNuWIj` 的 `xcall owner who` 均回传 caller `did:web:ownerdv.test.buckyos.io`、owner `did:bns:devtest`。三条路径的 owner.cal 别名修订均为 `3d20f9170b241ba03bfad8be55411beedfde558fa2a41fd679ae3e4df2c63445`。`xcall owner.cal list` 查询历史窗口返回 `initialized=true, events=[], binding_revision=0`。用户覆盖别名 `ownerdv_c5` 的修订为 1；空工具根下调用它返回 `EXTENSION_UNAVAILABLE`。后台操作 `op-18e9fe8a206c21f0111` 完成后回到该会话。 |
+| C5，真实 Loader 的 `read` | 旧 Loader 把别名当作文件。修正别名转发后，Loader 从已认证的 AppService runtime 取得网关和凭据。镜像 `0e0d5c36221b` 中，专用 Agent 的 `ui-20261121-9` 分别读取 `owner` 和用户覆盖 `ownerdv_c5`，均读到 Profile `urn:opendan:personal-tools:person:v1` 和 `actions.who`。复验后已恢复测试别名、撤回 host 授权并移除专用 Agent。[Loader 回归](../src/frame/opendan/tests/owner_alias_read.rs) |
+| C7，独立 MessageCenter HTTP、SQLite、打包的 owner 扩展与 Control Panel 夹具 | 签名 caller `jarvis.test.buckyos.io@alice` 三次执行 `xcall owner notify 'text=Review ready'`。冻结 CLI 时钟到 00:59:59、01:59:59、02:00:00 UTC，实际卡数依次为 1、1、2。前两次均返回 `nt-c10b2b9d405641ab884c9a64dd97d3be`，第三次返回 `nt-0d2b04475c6a448a827e454113c0d1d0`。默认单测也覆盖该边界。[通知键](../src/frame/agent-did-object-lib/src/owner_host.rs) · [卡片计数测试](../src/frame/msg_center/src/test_notify.rs) |
+
+最终镜像 `local/aios-test:latest-amd64` 的 ID 前缀为 `0e0d5c36221b`。该镜像与更新的宿主 CLI 通过上述桌面用例（24.3 秒）。WebSDK 的 `check:cli` 和 180 项 CLI 测试通过。按仓库约定串行运行 `cargo test -p opendan -p agent-did-object-lib -p agent_tool_cli_dev -- --test-threads=1`，196 项通过，20 项标记为忽略。另跑了 11 项 MessageCenter 通知用例（含冻结时钟的集成测试）、AIWS 的 6 项具名工作区测试和 4 项对象测试（含打包的忙闲投影）。
 
 ## 9. 收尾 TODO
 
-M0–M3 与本 Zone 忙闲直达的代码已提交。以下各项完成后首版才算验收完毕，结果补进 §8，写明实测的 caller、命令、资源 ID 和回执。
+M0–M3 与本 Zone 忙闲直达的代码已提交。首版收尾的实测 caller、命令、资源 ID 和回执见 §8。
 
 - [x] **C1 · buckyos-base 的调用元数据。** owner 已推送（buckyos-base `e1ddc24`），`DIDObjectClient::invoke_request_from_resolved` 可以传入三项调用元数据。OpenDAN 适配器不改用它，原因见 §4.4。BuckyOS 没有代码调用这个接口，不需要为它单独执行 `cargo update`。
-- [ ] **C2 · 在真实 Zone 跑桌面 DV。** 开发 Zone 的管理员密码是默认的 `bucky2025`（[make_config.ts](../src/make_config.ts#L789)），§8 记录的登录缺口设上环境变量即可补上。在 `src/frame/desktop` 下运行：
+- [x] **C2 · 在真实 Zone 跑桌面 DV。** 已从日程回执打开页面、改期，并用 `owner.cal list` 复核同一记录。开发 Zone 在 `src/frame/desktop` 下复跑（登录和运行环境见[日程 DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts)）：
 
   ```sh
   BUCKYOS_TEST_ADMIN_PASSWORD=bucky2025 BUCKYOS_XCALL=/opt/buckyos/bin/xcall \
     pnpm exec playwright test -c playwright.aiworkspace.zone.config.ts --grep 'private schedule'
   ```
 
-  这个用例打开过待办的 `open_url`，但没有从页面给日程改期。按 A3 补一步：打开日程回执的 `open_url`，在页面上改期，再用 `xcall owner.cal list` 查到新时间。[日程 DV](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts#L195)
-- [ ] **C3 · 用真实的 Agent 身份写入。** DV 里“Agent 写入”的两步（[待办](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts#L257)、[日程](../src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts#L264)）用的是 owner 的 token，不满足 A1 里“仅用同一个用户 token 不算通过”。改为在 `buckyos-app-jarvis` 容器内，用容器里 Agent 工具实际使用的会话执行 `xcall owner who`、`xcall owner.todo add` 和 `xcall owner.cal add`。容器的 PATH 已包含 `/opt/buckyos/bin/opendan/xcall`。通过条件有三条：`who` 返回的 `owner_did` 与人类会话相同，但 caller 是 Agent App；两条记录出现在桌面上同一份具名日程里；AIWS 提交记录的 caller 是 Agent App。这一步可以并入 C2 的用例。
-- [ ] **C4 · 用真实模型验收 M3（A3）。** 在桌面 MessageHub 与 Jarvis 新开一个会话，说“把周五下午两点的设计评审加到我的日历，半小时”，再问“我周五有什么安排”。从该 Session 的工具记录核对：新增只用一条 `xcall owner.cal add` 并带幂等键；此前没有 `read` 探索，也没有列工作区或扫描通讯录；回复里给出 `open_url`；查询用 `owner.cal list`，时区正确。
-- [ ] **C5 · 补前置 TODO E4 的运行环境验证。** 在选了 host-runtime、经 Node Executor 执行的 Agent 里，以及在后台任务里，各执行一次 `xcall owner who` 和 `xcall owner.cal list`。确认读到同一份别名快照和用户覆盖、身份是该 Agent。在未安装扩展的 runtime 里执行时应报不可用。[前置 E4](opendan-object-local-extensions-todo.md#L132)
+- [x] **C3 · 用真实的 Agent 身份写入。** 同一桌面 DV 在 Jarvis 自己的工具会话内执行 `who` 和两个 `add`，并核对日程页及两条 AIWS 提交的作者。
+- [x] **C4 · 用真实模型验收 M3（A3）。** 已在新的 MessageHub 会话核对两轮工具记录、回复链接及洛杉矶当地日期，详见 §8。
+- [x] **C5 · 补前置 TODO E4 的运行环境验证。** 在选了 host-runtime、经 Node Executor 执行的 Agent 里，以及在后台任务里，各执行一次 `xcall owner who` 和 `xcall owner.cal list`。确认读到同一份别名快照和用户覆盖、身份是该 Agent。在未安装扩展的 runtime 里执行时应报不可用。[前置 E4](opendan-object-local-extensions-todo.md#L132)
 - [x] **C6 · 让文档对齐实现。** §3 补记忙闲入口的实际位置，§4.4 改写适配器传递调用元数据的现状，§8 补提交号和内置别名的来源。
-- [ ] **C7 · `notify` 的自动键改用两小时的时间片。** owner 把前置 TODO 的 Q1 定为两小时，前置 TODO §5 与 E2 的说法已随之改过。[owner_host.rs](../src/frame/agent-did-object-lib/src/owner_host.rs#L262) 现在按小时取时间片（除以 3600），要改为 7200。补一个用例：同一时间片内两次不带键的 `xcall owner notify` 只生成一张卡，跨时间片生成两张。
+- [x] **C7 · `notify` 的自动键改用两小时的时间片。** 按 Unix 时间每 7200 秒取片。§8 记录了同片重试和跨片发送的通知回执。
 
 **owner 裁决（2026-11-20）**
 

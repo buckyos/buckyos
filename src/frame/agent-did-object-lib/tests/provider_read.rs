@@ -161,4 +161,6 @@ async fn an_xcall_reports_the_declared_effect() {
         .unwrap();
     assert_eq!(result.details["effect"], "read", "{:?}", result.details);
     assert_eq!(result.details["object"], "obj://msg-center/owners/did:bns:alice/sessions");
+    let observed: Value = serde_json::from_str(&result.observation_text()).unwrap();
+    assert_eq!(observed, result.details["result"]);
 }

@@ -578,7 +578,7 @@ pub fn action_response_to_adapter_response(
     if let Some(error) = response.error {
         return AdapterXCallResponse {
             status: AdapterCallStatus::Error,
-            output: None,
+            output: Some(json!(&error).to_string()),
             detail: json!({
                 "error": error,
                 "meta": response.meta,
@@ -589,11 +589,12 @@ pub fn action_response_to_adapter_response(
         };
     }
 
+    let result = response.result.unwrap_or(Value::Null);
     AdapterXCallResponse {
         status: AdapterCallStatus::Success,
-        output: None,
+        output: Some(result.to_string()),
         detail: json!({
-            "result": response.result.unwrap_or(Value::Null),
+            "result": result,
             "meta": response.meta,
         }),
         title: Some(format!("xcall `{action}` succeeded")),

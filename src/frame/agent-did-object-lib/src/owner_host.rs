@@ -245,6 +245,11 @@ async fn resource(ctx: &Value, input: &XCallInput, method: &str, params: &Value)
     Ok(json!({"result":result}))
 }
 
+fn automatic_notify_key(text: &str, now: SystemTime) -> String {
+    let two_hour_window = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / 7200;
+    format!("{two_hour_window}-{:x}", Sha256::digest(text.as_bytes()))
+}
+
 async fn notify(ctx: &Value, input: &XCallInput, params: &Value) -> Result<Value> {
     if params
         .as_object()
@@ -258,14 +263,10 @@ async fn notify(ctx: &Value, input: &XCallInput, params: &Value) -> Result<Value
     }
     let user = field(ctx, "owner_user_id")?;
     let text = field(params, "text")?;
-    let key = input.idempotency_key.clone().unwrap_or_else(|| {
-        let hour = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            / 3600;
-        format!("{hour}-{:x}", Sha256::digest(text.as_bytes()))
-    });
+    let key = input
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| automatic_notify_key(text, SystemTime::now()));
     let transport_key = format!("xcall:owner:{}:{key}", input.action);
     let mut req = match input.action.as_str() {
         "ask" => NotifySendReq::input(user, text, text, Vec::new(), true, transport_key),
@@ -440,5 +441,19 @@ pub async fn call(ctx: &Value, input: &XCallInput, method: &str, params: Value) 
             "unrecognized personal resource host call",
             Value::Null,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_notification_key_changes_at_the_two_hour_boundary() {
+        let key_at = |seconds| {
+            automatic_notify_key("Review ready", UNIX_EPOCH + Duration::from_secs(seconds))
+        };
+        assert_eq!(key_at(3599), key_at(7199));
+        assert_ne!(key_at(7199), key_at(7200));
     }
 }

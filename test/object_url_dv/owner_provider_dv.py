@@ -167,10 +167,12 @@ class OwnerProviderDV(unittest.TestCase):
         output = json.loads(run.stdout)
         if error:
             self.assertNotEqual(run.returncode, 0, output)
-            self.assertIn(error, run.stdout)
+            self.assertIn(error, output["output"])
             return output
         self.assertEqual(run.returncode, 0, (output, run.stderr))
-        return output["detail"]["result"]
+        receipt = output["detail"]["result"]
+        self.assertEqual(json.loads(output["output"]), receipt)
+        return receipt
 
     def test_rebinding_lost_reply_permissions_and_record_provenance(self):
         s = self.state

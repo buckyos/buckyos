@@ -21,11 +21,22 @@ pub trait ZoneAccess: Send + Sync {
 /// The process's BuckyOS runtime: an Agent's container, a zone service, the dev CLI run inside one.
 pub struct RuntimeZoneAccess;
 
+/// Tool processes can receive an endpoint and a scoped token from their parent.
+/// The Loader is an AppService and uses its own registered gateway and session together.
+fn tool_endpoint() -> Option<std::ffi::OsString> {
+    if buckyos_api::get_buckyos_api_runtime()
+        .is_ok_and(|r| r.runtime_type == buckyos_api::BuckyOSRuntimeType::AppService)
+    {
+        return None;
+    }
+    std::env::var_os("BUCKYOS_TOOL_ENDPOINT")
+}
+
 #[async_trait]
 impl ZoneAccess for RuntimeZoneAccess {
     fn gateway_origin(&self) -> Option<String> {
-        if let Ok(endpoint) = std::env::var("BUCKYOS_TOOL_ENDPOINT") {
-            return web_origin(&endpoint);
+        if let Some(endpoint) = tool_endpoint() {
+            return web_origin(endpoint.to_str()?);
         }
         let runtime = buckyos_api::get_buckyos_api_runtime().ok()?;
         Some(format!(
@@ -36,8 +47,8 @@ impl ZoneAccess for RuntimeZoneAccess {
     }
 
     fn zone_host(&self) -> Option<String> {
-        if let Ok(endpoint) = std::env::var("BUCKYOS_TOOL_ENDPOINT") {
-            let url = Url::parse(&endpoint).ok()?;
+        if let Some(endpoint) = tool_endpoint() {
+            let url = Url::parse(endpoint.to_str()?).ok()?;
             return (url.scheme() == "https")
                 .then(|| url.host_str().map(str::to_owned))
                 .flatten();
@@ -52,7 +63,7 @@ impl ZoneAccess for RuntimeZoneAccess {
     }
 
     async fn session_token(&self) -> Option<String> {
-        if std::env::var_os("BUCKYOS_TOOL_ENDPOINT").is_some() {
+        if tool_endpoint().is_some() {
             return std::env::var("BUCKYOS_APPCLIENT_SESSION_TOKEN")
                 .ok()
                 .filter(|token| !token.trim().is_empty());
