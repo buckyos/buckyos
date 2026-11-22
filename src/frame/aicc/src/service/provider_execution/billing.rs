@@ -1,8 +1,9 @@
 use super::*;
 use crate::execution::{ExecutionRecord, ProviderBillingEvent};
 use crate::protocol::HttpRequest;
+mod probe;
 
-const BILLING_URL: &str = "https://api.fal.ai/v1/models/billing-events";
+const BILLING_OPERATION: &str = "billing.events";
 const BILLING_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug)]
@@ -20,14 +21,22 @@ impl From<&'static str> for BillingLookupError {
     }
 }
 
-fn billing_request(record: &ExecutionRecord, now: u64) -> Result<HttpRequest, BillingLookupError> {
+fn billing_request(
+    record: &ExecutionRecord,
+    now: u64,
+    base_url: &str,
+) -> Result<HttpRequest, BillingLookupError> {
     let binding = record.binding.as_ref().ok_or("missing_binding")?;
     let request_id = binding
         .remote_task_id
         .as_deref()
         .filter(|id| !id.is_empty())
         .ok_or("missing_request_id")?;
-    let mut url = reqwest::Url::parse(BILLING_URL).map_err(|_| "invalid_billing_url")?;
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/models/billing-events",
+        base_url.trim_end_matches('/')
+    ))
+    .map_err(|_| "invalid_billing_url")?;
     let day = 86_400_000;
     let start = record.created_at_ms / day;
     let start = start.saturating_sub(1);
@@ -190,7 +199,12 @@ impl RuntimeProviderExecutionPort {
         if resume_credential_kind(credential.audit().kind) != expected.kind {
             return Err("credential_unavailable".into());
         }
-        let mut request = billing_request(record, now_ms())?;
+        let billing_base_url = provider
+            .config
+            .operation_base_urls
+            .get(BILLING_OPERATION)
+            .ok_or("billing_endpoint_unavailable")?;
+        let mut request = billing_request(record, now_ms(), billing_base_url)?;
         credential
             .apply(&mut request.headers)
             .map_err(|_| BillingLookupError::from("credential_unavailable"))?;
@@ -217,31 +231,71 @@ impl RuntimeProviderExecutionPort {
         stream::iter(records)
             .for_each_concurrent(4, |record| async move {
                 let result = async {
-                    let Some(claimed) = self.storage.claim_billing(&record, now_ms()).await? else {
+                    let Some(mut claimed) = self.storage.claim_billing(&record, now_ms()).await?
+                    else {
                         return Ok::<(), crate::error::StorageError>(());
                     };
                     if claimed.output.as_ref().is_some_and(|output| {
                         output.usage.cost_source.as_deref() == Some("provider_reported")
                     }) {
                         self.storage
-                            .finish_billing(&claimed, None, None, None, now_ms())
+                            .finish_billing(&claimed, None, None, None, None, now_ms())
                             .await?;
                         return Ok(());
                     }
-                    let (event, error, retry_after) = match self.lookup_fal_billing(&claimed).await
-                    {
-                        Ok(event) => (event, None, None),
-                        Err(error) => {
-                            log::warn!(
-                                "AICC billing lookup deferred: task_id={} reason={}",
-                                claimed.task_id,
-                                error.kind
-                            );
-                            (None, Some(error.kind), error.retry_after_ms)
+                    let local_pending = claimed
+                        .binding
+                        .as_ref()
+                        .and_then(|b| b.billing.as_ref())
+                        .is_some_and(|b| b.status == crate::execution::BillingStatus::LocalPending);
+                    let (event, error, retry_after) = if local_pending {
+                        (None, None, None)
+                    } else {
+                        match self.lookup_fal_billing(&claimed).await {
+                            Ok(event) => (event, None, None),
+                            Err(error) => {
+                                log::warn!(
+                                    "AICC billing lookup deferred: task_id={} reason={}",
+                                    claimed.task_id,
+                                    error.kind
+                                );
+                                (None, Some(error.kind), error.retry_after_ms)
+                            }
                         }
                     };
+                    if local_pending
+                        || matches!(
+                            error,
+                            Some("permission_denied" | "billing_endpoint_unavailable")
+                        )
+                    {
+                        if !local_pending {
+                            let Some(local_record) = self
+                                .storage
+                                .begin_local_billing(&claimed, error.unwrap())
+                                .await?
+                            else {
+                                return Ok(());
+                            };
+                            claimed = local_record;
+                        }
+                        let measured = tokio::time::timeout(
+                            Duration::from_secs(40),
+                            self.local_billing_usage(&claimed),
+                        )
+                        .await;
+                        let (local, error) = match measured {
+                            Ok(Ok(local)) => (Some(local), None),
+                            Ok(Err(error)) => (None, Some(error.kind)),
+                            Err(_) => (None, Some("probe_timeout")),
+                        };
+                        self.storage
+                            .finish_billing(&claimed, None, local, error, None, now_ms())
+                            .await?;
+                        return Ok(());
+                    }
                     self.storage
-                        .finish_billing(&claimed, event, error, retry_after, now_ms())
+                        .finish_billing(&claimed, event, None, error, retry_after, now_ms())
                         .await?;
                     Ok(())
                 }
@@ -331,7 +385,7 @@ mod tests {
             "usage_event_id":"usage","trace_id":null,"user_id":"owner","caller_app_id":"app","request_model":"model","body_fingerprint":"fp","task_id":"task","event_ref":"events/task","state":"succeeded","output":null,"error":null,"created_at_ms":20776u64*86400000,"expires_at_ms":20777u64*86400000,
             "binding":{"runtime_generation":1,"origin_provider":"fal","exact_model":"model@fal","provider_model_id":"fal-ai/video-upscaler","provider_instance_name":"fal-main","protocol_adapter_id":"fal-queue","operation":"queue.submit","api_type":"llm","remote_task_id":"r/one","result_artifacts":{},"cancel_supported":false,"resume":null,"pricing":null,"reported_cost_currency":null}
         })).unwrap();
-        let request = billing_request(&record, 20779 * 86400000).unwrap();
+        let request = billing_request(&record, 20779 * 86400000, "https://api.fal.ai/v1").unwrap();
         let url = reqwest::Url::parse(&request.url).unwrap();
         assert_eq!(url.host_str(), Some("api.fal.ai"));
         let query: HashMap<_, _> = url
@@ -344,11 +398,18 @@ mod tests {
         assert_eq!(query["end"], "2026-11-23");
         assert_eq!(query["source"], "billed");
         assert!(request.headers.is_empty());
+        let mock_request =
+            billing_request(&record, 20779 * 86400000, "http://127.0.0.1:18081/v1/").unwrap();
+        let mock_url = reqwest::Url::parse(&mock_request.url).unwrap();
+        assert_eq!(mock_url.host_str(), Some("127.0.0.1"));
+        assert_eq!(mock_url.path(), "/v1/models/billing-events");
         record.binding.as_mut().unwrap().provider_model_id = "fal-ai/deepfilternet3".into();
-        assert!(billing_request(&record, 20779 * 86400000)
-            .unwrap()
-            .url
-            .contains("deepfilternet3"));
+        assert!(
+            billing_request(&record, 20779 * 86400000, "https://api.fal.ai/v1")
+                .unwrap()
+                .url
+                .contains("deepfilternet3")
+        );
     }
 
     #[tokio::test]

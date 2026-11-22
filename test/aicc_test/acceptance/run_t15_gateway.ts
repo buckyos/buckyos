@@ -6,9 +6,10 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFinancialReport } from "./finance.ts";
+import { queryUsageEvents } from "./usage_audit.ts";
 import {
   type GatewaySession,
-  loginGateway,
+  loginRefreshingGateway,
   loginRefreshingSudoSystemConfig,
   openAiccArtifact,
   type RpcClient,
@@ -297,6 +298,8 @@ async function selectMock(
       contract_id: testCase.protocol_contract_id,
       api_type: testCase.api_type,
       scenario: testCase.mock_scenario,
+      billing_status: testCase.tags.includes("billing_fallback") ? 403 : undefined,
+      billing_download: testCase.tags.includes("billing_download"),
       selection_seed: `${selectionSeed ?? "t15"}:${testCase.case_id}`,
     }),
   });
@@ -709,7 +712,7 @@ async function refreshLogin(
   session: GatewaySession,
 ): Promise<GatewaySession> {
   if (!input.username || !input.password) return session;
-  return await loginGateway({
+  return await loginRefreshingGateway({
     gatewayUrl: input.gatewayUrl,
     username: input.username,
     password: input.password,
@@ -1620,6 +1623,28 @@ async function executeCase(
           }
           await downloadUrlArtifacts(resultPayload, gatewayUrl, session.sessionToken);
         }
+        if (testCase.tags.includes("billing_events") || testCase.tags.includes("billing_fallback")) {
+          const fixture = JSON.parse(await readFile(join(here, "fixtures/fal-billing-events.json"), "utf8"));
+          const fallback = testCase.tags.includes("billing_fallback");
+          const expected = fallback ? fixture.local_estimates[testCase.api_type!] : { amount: fixture.event.cost_total };
+          const deadline = Date.now() + Math.min(timeoutMs, testCase.timeout_ms);
+          for (;;) {
+            const events = await queryUsageEvents({ aicc: session.aicc, startTimeMs: started - 1000,
+              endTimeMs: Date.now() + 1000, taskIds: [taskId!], limit: 10 });
+            if (events.length > 1) throw new Error("Billing created duplicate usage events");
+            const usage = events[0]?.usage_json;
+            if (usage?.cost_source === (fallback ? "static_pricing" : "provider_billing")) {
+              const cost = usage.cost as {amount?: number;currency?: string};
+              if (typeof cost?.amount !== "number" || Math.abs(cost.amount - expected.amount) > 1e-10 || cost.currency !== "USD") {
+                throw new Error(`Billing amount differs from expected ${expected.amount} USD: ${JSON.stringify(cost)}`);
+              }
+              if (expected.megapixels !== undefined && usage.megapixels !== expected.megapixels) throw new Error("Billing did not measure actual video pixels");
+              break;
+            }
+            if (Date.now() >= deadline) throw new Error("Billing did not reconcile the completed task");
+            await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+          }
+        }
       }
     }
   } catch (error) {
@@ -2461,7 +2486,7 @@ async function main(): Promise<void> {
   let cloudActive = false;
   try {
     await waitMock(input.mockControlUrl);
-    session = await loginGateway({
+    session = await loginRefreshingGateway({
       gatewayUrl: input.gatewayUrl,
       sessionToken: input.sessionToken,
       username: input.username,
@@ -2531,7 +2556,7 @@ async function main(): Promise<void> {
       try {
       phase = `provider:${driver}:setup`;
       if (input.username && input.password) {
-        session = await loginGateway({
+        session = await loginRefreshingGateway({
           gatewayUrl: input.gatewayUrl,
           username: input.username,
           password: input.password,
@@ -2956,7 +2981,7 @@ async function main(): Promise<void> {
     for (const driver of ["openai", "claude", "google-gemini"]) {
       phase = `custom:${driver}:setup`;
       if (driver === "openai") {
-        session = await loginGateway({
+        session = await loginRefreshingGateway({
           gatewayUrl: input.gatewayUrl,
           sessionToken: input.sessionToken,
           username: input.username,
@@ -3066,7 +3091,7 @@ async function main(): Promise<void> {
   } finally {
     if (session && input.username && input.password) {
       try {
-        session = await loginGateway({
+        session = await loginRefreshingGateway({
           gatewayUrl: input.gatewayUrl,
           username: input.username,
           password: input.password,

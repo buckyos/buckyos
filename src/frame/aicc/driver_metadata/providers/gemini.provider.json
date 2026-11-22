@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 8,
+  "revision_seq": 9,
   "provider_profile_id": "gemini",
   "custom_provider_adapters": ["gemini-interactions"],
   "models": [
@@ -17,6 +17,29 @@
         "audio.asr": "interactions.create"
       },
       "capability_limits": { "max_output_tokens": 65536 },
+      "request_rules": [
+        {
+          "remove": [
+            "/temperature",
+            "/top_p",
+            "/top_k"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gemini-4-neon",
+      "operations": {
+        "llm": "interactions.create",
+        "vision.ocr": "interactions.create",
+        "vision.caption": "interactions.create",
+        "vision.detect": "interactions.create",
+        "vision.segment": "interactions.create",
+        "audio.asr": "interactions.create"
+      },
+      "capability_limits": {
+        "max_output_tokens": 65536
+      },
       "request_rules": [
         {
           "remove": [
@@ -185,6 +208,22 @@
       }
     },
     {
+      "id": "gemini-omni-1.2-flash",
+      "operations": {
+        "video.generate": "interactions.create",
+        "video.edit": "interactions.create",
+        "video.extend": "interactions.create"
+      },
+      "request_rules": [
+        {
+          "remove": [
+            "/temperature",
+            "/top_p"
+          ]
+        }
+      ]
+    },
+    {
       "id": "gemini-omni-1.1-flash",
       "operations": {
         "video.generate": "interactions.create",
@@ -269,6 +308,7 @@
           "gemini-3.8-flash",
           "gemini-4-argon",
           "gemini-4-carbon",
+          "gemini-4-neon",
           "gemini-4-hydrogen",
           "gemini-3.7-flash",
           "gemini-3.6-flash",
@@ -311,6 +351,7 @@
           "gemini-3.8-flash",
           "gemini-4-argon",
           "gemini-4-carbon",
+          "gemini-4-neon",
           "gemini-4-hydrogen"
         ],
         "variant": "reasoning-medium"
@@ -353,6 +394,7 @@
           "gemini-3.8-flash",
           "gemini-4-argon",
           "gemini-4-carbon",
+          "gemini-4-neon",
           "gemini-4-hydrogen",
           "gemini-3.7-flash",
           "gemini-3.6-flash",
@@ -380,7 +422,7 @@
       "model_driver": "gemini",
       "variant": "reasoning-xhigh",
       "match": {
-        "origin_model_id": "gemini-4-hydrogen",
+        "origin_model_id": ["gemini-4-neon", "gemini-4-hydrogen"],
         "variant": "reasoning-xhigh"
       },
       "provider_options": {
@@ -444,6 +486,30 @@
   ],
   "model_pricing": [
     {
+      "id": "gemma-4-26b-a4b-it",
+      "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing#gemma-4",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0,
+        "image_input_token": 0
+      }
+    },
+    {
+      "id": "gemma-4-31b-it",
+      "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing#gemma-4",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0,
+        "image_input_token": 0
+      }
+    },
+    {
       "id": "gemini-4-argon",
       "pricing": {
         "source_url": "https://ai.google.dev/gemini-api/docs/latest-model",
@@ -452,6 +518,17 @@
         "input_token": 0.000002,
         "output_token": 0.00001,
         "cache_input_token": 1e-7
+      }
+    },
+    {
+      "id": "gemini-4-neon",
+      "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/whats-new-gemini-4-neon",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3e-06,
+        "output_token": 1.5e-05,
+        "cache_input_token": 1.5e-07
       }
     },
     {
@@ -762,6 +839,19 @@
         "currency": "USD",
         "audio_input_token": 0.000002,
         "output_token": 0.000012
+      }
+    },
+    {
+      "id": "gemini-omni-1.2-flash",
+      "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.5e-06,
+        "output_token": 9e-06,
+        "image_input_token": 1.5e-06,
+        "video_input_token": 1.5e-06,
+        "video_output_token": 1.2e-05
       }
     },
     {

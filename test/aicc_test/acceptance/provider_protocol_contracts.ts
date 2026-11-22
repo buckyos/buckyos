@@ -102,6 +102,7 @@ export type ProviderProtocolContract = {
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
+    thinking_level_values_by_model?: Record<string, string[]>;
   };
   thinking?: {
     allowed_types: string[];
@@ -772,6 +773,10 @@ export function validateProviderProtocolCatalog(
             generationConfig.thinking_level_values,
             `${id}.generation_config.thinking_level_values`,
           );
+        }
+        if (generationConfig.thinking_level_values_by_model !== undefined) {
+          const byModel = object(generationConfig.thinking_level_values_by_model, `${id}.generation_config.thinking_level_values_by_model`);
+          for (const [model, values] of Object.entries(byModel)) stringArray(values, `${id}.generation_config.thinking_level_values_by_model.${model}`);
         }
       }
       if (contract.thinking !== undefined) {
@@ -2190,7 +2195,7 @@ function validateGeminiInteractionConfig(
     }
   }
   if (generation?.thinking_level !== undefined) {
-    const allowed = new Set(contract.generation_config?.thinking_level_values);
+    const allowed = new Set(contract.generation_config?.thinking_level_values_by_model?.[String(body.model)] ?? contract.generation_config?.thinking_level_values);
     if (!allowed.has(String(generation.thinking_level))) {
       errors.push(
         `body field generation_config.thinking_level=${generation.thinking_level}; contract ${contract.id} supports ${
@@ -2587,6 +2592,22 @@ export function buildT15Manifest(
           ),
           mock_scenario: "success",
         } as AcceptanceCase);
+        if (provider.provider_driver === "fal") {
+          cases.push({
+            ...common,
+            case_id: caseId(`t1.5.fal.${contract.id}.${apiType}.billing-events`),
+            tags: [...common.tags!, "billing_events"],
+            mock_scenario: "success",
+          } as AcceptanceCase);
+          for (const download of apiType === "video.upscale" ? [false, true] : [false]) {
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.fal.${contract.id}.${apiType}.billing-fallback${download ? "-download" : ""}`),
+              tags: [...common.tags!, "billing_fallback", ...(download ? ["billing_download"] : [])],
+              mock_scenario: "success",
+            } as AcceptanceCase);
+          }
+        }
         if (apiType === "image.txt2img") {
           const scopedModels = new Set([
             ...(provider.official_first_party_model_ids?.[apiType] ?? []),

@@ -3613,7 +3613,9 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     assert.equal(field in snVideoInput, false);
   }
   assert.deepEqual(defaults("google-gemini", "gemini-omni-*", "video.generate"), {
-    output: { duration_seconds: 4, size: { short_edge: 720 } },
+    prompt: "A paper plane moving across a desk",
+    conditions: [],
+    output: { duration_seconds: 3, size: { short_edge: 360 } },
   });
   assert.deepEqual(defaults("minimax", "MiniMax-H3", "video.generate"), {
     output: { duration_seconds: 4, size: { short_edge: 768 } },
@@ -7139,4 +7141,70 @@ test('T1.5 billing mapping fails when media quantities are lost despite successf
   const contract = { success_fixture: {}, expected_billable_usage: { 'audio.enhance': { audio_seconds: 6.9544375, compute_seconds: 0.01 } } } as any;
   assert.throws(() => assertT15ResponseMapping('audio.enhance', { audio: {}, artifacts: [], usage: { request_units: 1 } }, contract), /billable usage audio_seconds/);
   assert.doesNotThrow(() => assertT15ResponseMapping('audio.enhance', { audio: {}, usage: { audio_seconds: 6.9544375, compute_seconds: 0.01 } }, contract));
+});
+
+test('Fal Billing Events Mock validates the official query and final discounted charge', async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request,response) => void handler(request,response));
+  await new Promise<void>((resolvePromise) => server.listen(0,'127.0.0.1',resolvePromise));
+  context.after(() => new Promise<void>((resolvePromise,reject) => server.close((e) => e ? reject(e) : resolvePromise())));
+  const address = server.address();assert.ok(address && typeof address === 'object');
+  const url = new URL(`http://127.0.0.1:${address.port}/v1/models/billing-events`);
+  const headers = {authorization:'Key t15-mock-fal'};
+  for (const endpoint of ['fal-ai/esrgan','fal-ai/imageutils/rembg','fal-ai/deepfilternet3','fal-ai/video-upscaler']) {
+    url.search = new URLSearchParams({request_id:'fal_mock_1',endpoint_id:endpoint,source:'billed',limit:'100',start:'2026-11-21',end:'2026-11-23'}).toString();
+    const response = await fetch(url,{headers});assert.equal(response.status,200);
+    const body = await response.json();assert.equal(body.billing_events[0].endpoint_id,endpoint);
+    assert.equal(body.billing_events[0].cost_total,0.045);assert.equal(body.billing_events[0].quantity,null);
+    url.searchParams.set('request_id','foreign');assert.deepEqual((await (await fetch(url,{headers})).json()).billing_events,[]);
+    url.searchParams.set('unknown','1');assert.equal((await fetch(url,{headers})).status,400);
+  }
+  assert.equal((await fetch(url)).status,403);
+  const cases = buildT15Manifest(catalog).filter((c) => c.tags.includes('billing_events'));
+  assert.equal(cases.length,4);assert.equal(new Set(cases.map((c) => c.api_type)).size,4);
+  const fallbacks = buildT15Manifest(catalog).filter((c) => c.tags.includes('billing_fallback'));
+  assert.equal(fallbacks.length,5);
+  assert.equal(fallbacks.filter((c) => c.tags.includes('billing_download')).length,1);
+  const target = fallbacks.find((c) => c.tags.includes('billing_download'))!;
+  const origin = `http://127.0.0.1:${address.port}`;
+  await fetch(`${origin}/__mock/select`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_driver:'fal',contract_id:target.protocol_contract_id,api_type:target.api_type,scenario:'success',billing_status:403,billing_download:true})});
+  url.searchParams.delete('unknown');
+  assert.equal((await fetch(url,{headers})).status,403);
+  const video = Buffer.from(await (await fetch(`${origin}/artifacts/result.mp4`)).arrayBuffer());
+  assert.ok(video.length > 8 * 1024 * 1024);
+  assert.equal(video.toString('ascii',36,40),'free');
+  const original = await readFile(new URL('../../jarvis_media_dv/assets/video_fresh.mp4',import.meta.url));
+  assert.deepEqual(video.subarray(video.length-original.readUInt32BE(32)),original.subarray(32,32+original.readUInt32BE(32)));
+});
+
+test('Omni minimal T2 cells use documented text generation rather than assumed first-frame input', async () => {
+  const baseline = validateProviderBaseline(JSON.parse(await readFile(join(here,'provider_capability_baseline.json'),'utf8')));
+  const rule = baseline.providers.find((p) => p.provider_driver === 'google-gemini')!.rules.find((r) => r.model_pattern === 'gemini-omni-*')!;
+  for (const model of ['gemini-omni-1.1-flash','gemini-omni-1.2-flash']) {
+    const cell = {case_id:'minimal-omni',provider_driver:'google-gemini',provider_instance:'gemini',exact_model:`${model}@gemini`,provider_model_id:model,
+      api_type:'video.generate',method:'video.generate',baseline_status:'active' as const,input_kinds:rule.input_kinds,output_kinds:rule.output_kinds,
+      source_urls:rule.source_urls,request_defaults:rule.request_defaults?.['video.generate']};
+    const request = buildExactRequest({cell,runId:'minimal-omni',fixtures:{image:{kind:'base64',mime:'image/png',data_base64:'aW1hZ2U='}}});
+    let captured:Record<string,unknown> = {};
+    await callInference({call:async (_method,params) => {captured=params;return {task_id:'task',status:'running'};}},cell.method,request);
+    assert.deepEqual(captured.conditions,[]);
+    assert.deepEqual(captured.output,{duration_seconds:3,size:{short_edge:360}});
+    assert.equal(captured.prompt,'A paper plane moving across a desk');
+  }
+});
+
+
+test('Gemini reasoning levels follow the official per-model contract', async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, 'google-gemini', 'gemini.interactions.v1beta');
+  const validate = (model: string, level: string) => validateProviderRequest(contract, {
+    method: 'POST', pathname: '/v1beta/interactions', headers: new Headers({'x-goog-api-key':'mock', 'content-type':'application/json'}),
+    query: new URLSearchParams(), body: {model, input:'Return OK', generation_config:{thinking_level:level}},
+  });
+  for (const model of ['gemini-4-hydrogen','gemini-4-neon']) {
+    for (const level of ['low','medium','high','xhigh']) assert.deepEqual(validate(model,level),[]);
+    assert.ok(validate(model,'minimal').some((error) => error.includes('thinking_level')));
+  }
+  assert.ok(validate('gemini-3.5-flash','xhigh').some((error) => error.includes('thinking_level')));
 });

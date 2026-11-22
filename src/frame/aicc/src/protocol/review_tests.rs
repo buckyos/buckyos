@@ -571,8 +571,55 @@ async fn transcription_duration_without_usage_is_billable_and_usage_duration_win
 #[tokio::test]
 async fn fal_preserves_explicit_protocol_costs_even_without_metered_units() {
     let registry = registry();
-    let NativeTaskOutput::Status { result_usage, .. } = registry.decode_native("fal-queue","queue.submit",ApiType::ImageUpscale,NativeTaskOperation::Status,response(json!({"status":"COMPLETED","cost":{"currency":"EUR","amount":0}}))).await.unwrap() else { panic!() };
-    assert_eq!(result_usage.unwrap().cost,Some(buckyos_api::AiCost::new(0.0,"EUR")));
+    let NativeTaskOutput::Status { result_usage, .. } = registry
+        .decode_native(
+            "fal-queue",
+            "queue.submit",
+            ApiType::ImageUpscale,
+            NativeTaskOperation::Status,
+            response(json!({"status":"COMPLETED","cost":{"currency":"EUR","amount":0}})),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        result_usage.unwrap().cost,
+        Some(buckyos_api::AiCost::new(0.0, "EUR"))
+    );
     let NativeTaskOutput::Result(output) = registry.decode_native("fal-queue","queue.submit",ApiType::AudioEnhance,NativeTaskOperation::Result,response(json!({"audio_file":{"url":"https://media.example/audio.wav","content_type":"audio/wav"},"usage":{"cost":{"currency":"USD","amount":0.03}}}))).await.unwrap() else { panic!() };
-    assert_eq!(output.usage.unwrap().cost,Some(buckyos_api::AiCost::new(0.03,"USD")));
+    assert_eq!(
+        output.usage.unwrap().cost,
+        Some(buckyos_api::AiCost::new(0.03, "USD"))
+    );
+    for (api, body) in [
+        (
+            ApiType::VideoUpscale,
+            json!({"video":{"url":"https://media.example/video.mp4","content_type":"video/mp4"},"cost":{"currency":"EUR","amount":0},"usage":{"megapixels":77.76}}),
+        ),
+        (
+            ApiType::AudioSpeechRecognition,
+            json!({"text":"4827","cost":{"currency":"EUR","amount":0}}),
+        ),
+    ] {
+        let NativeTaskOutput::Result(output) = registry
+            .decode_native(
+                "fal-queue",
+                "queue.submit",
+                api,
+                NativeTaskOperation::Result,
+                response(body),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        let usage = output.usage.unwrap();
+        assert_eq!(usage.cost, Some(buckyos_api::AiCost::new(0.0, "EUR")));
+        if api == ApiType::VideoUpscale {
+            assert_eq!(usage.megapixels, Some(77.76));
+        }
+    }
 }

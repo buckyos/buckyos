@@ -45,7 +45,11 @@ Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：�
 - OpenAI Responses 图片也统计实际产物数；独立 Images 接口已有计数。转写优先使用 `usage.seconds`，只有缺失时才使用官方顶层 `duration` 后备。
 - 同步 TTS 沿用统一字符数补全；豆包使用服务端 `text_words`。Qwen、豆包、MiniMax 原有图片计数和音视频时长逻辑保持。
 - fal 的 `metrics.inference_time` 来自任务状态，作为计算秒合并到结果；DeepFilterNet 的 `audio_file.duration` 为音频秒数，不用 `timings.inference` 代替音频长度。来源：[Queue](https://fal.ai/docs/documentation/model-apis/inference/queue)、[DeepFilterNet schema](https://fal.ai/models/fal-ai/deepfilternet3/api)。
-- fal 的 `fal-ai/video-upscaler` 按 $0.0008/百万像素收费，但公开 Output Schema 只有文件 URL、类型、名称和字节数，没有帧数、分辨率或完整的计费百万像素量。当前适配器也没有下载视频探测帧数并重建计费用量；尚未用真实任务响应确认是否有额外字段。结算器已支持 `megapixels`，但该响应仍显示 `missing_usage:megapixel`，不通过单帧宽高或请求目标分辨率虚构整段视频的计费像素。来源：[Video upscaler schema](https://fal.ai/models/fal-ai/video-upscaler/api)。
+- fal 的 `fal-ai/video-upscaler` 按 $0.0008/百万像素收费，但公开 Output Schema 只有文件 URL、类型、名称和字节数，没有帧数、分辨率或完整的计费百万像素量。响应缺少 `megapixels` 时，先查询账单；权限不足则探测实际生成视频并补全累计百万像素，用冻结单价估算。测量失败保留未知成本并重试，不通过单帧宽高或请求目标分辨率虚构整段视频的计费像素。来源：[Video upscaler schema](https://fal.ai/models/fal-ai/video-upscaler/api)。
+
+Gemini API 托管的两款 Gemma 4 按官方定价明确配置免费输入、输出及缓存，避免将免费模型显示为缺价格。
+
+ESRGAN 与 rembg 的静态单价使用 2026-11-22 官方 Pricing API 返回的 $0.000575/计算秒，DeepFilterNet 为 $0.001/音频秒；这些账号查询报价作为默认估算依据，账单或协议有效费用仍优先。来源：[Pricing API](https://fal.ai/docs/platform-apis/v1/models/pricing)。
 
 ## fal 视频百万像素的核实办法
 
@@ -57,17 +61,19 @@ Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：�
 
 优先只读查询已有任务对应的 [Billing Events](https://fal.ai/docs/platform-apis/v1/models/billing-events)（request_id）、[Usage](https://fal.ai/docs/platform-apis/v1/models/usage)（billed quantity、unit price、discount、cost_total），配合 [Pricing API](https://fal.ai/docs/platform-apis/v1/models/pricing) 确认具体 endpoint。Usage 可能是时间窗口内的聚合，需隔离该任务窗口或结合 billing event，不把整个窗口费用当作单次费用。
 
-对已有输出实际探测宽、高及准确解码帧数，比较账单 quantity 与候选输入/输出累计像素量（宽 × 高 × 帧数 / 1e6）；不能只用 duration × fps 代替准确帧数。若历史样本不足，再安排受控的不同缩放倍率、帧数与 FPS 的短视频调用，检查最小计费量及取整，并向 fal 确认。目标机没有 fal 历史任务可作实账对照；此次没有新增付费调用或读取账号账单。精确像素公式仍未达到可用于静态自动结算的证据强度，但账单查询不依赖该公式。
+对已有输出实际探测宽、高及准确解码帧数，比较账单 quantity 与候选输入/输出累计像素量（宽 × 高 × 帧数 / 1e6）；不能只用 duration × fps 代替准确帧数。若历史样本不足，再安排受控的不同缩放倍率、帧数与 FPS 的短视频调用，检查最小计费量及取整，并向 fal 确认。Billing Events 权限不足时，按用户指定的备选方案，使用输出累计像素量与冻结单价作静态估算；估算来源必须明确，实际扣费与计费取整仍以 fal 账单为准。
 
 ## fal 账单费用优先与恢复
 
-所有 fal profile、fal-queue 适配器的成功模型调用均持久化待查项，不限视频放大。已有效返回协议费用的调用直接采用协议费用，后台只关闭待查标记，不请求账单 API。其余调用通过固定的 fal 官方 Billing Events，以原始 request_id 和精确 endpoint_id 查询 `cost_total`（USD，折扣后金额），不以 `cost_subtotal` 或 quantity × 公示价代替实付金额。quantity/unit 可空；实际金额有效时仍能回填，已知的计费用量才补入缺失维度。
+所有 fal profile、fal-queue 适配器的成功模型调用均持久化待查项，不限视频放大。已有效返回协议费用的调用直接采用协议费用，后台只关闭待查标记，不请求账单 API。其余调用通过连接配置 `operation_base_urls["billing.events"]` 指定的 Billing Events（fal Known Provider 默认 `https://api.fal.ai/v1`），以原始 request_id 和精确 endpoint_id 查询 `cost_total`（USD，折扣后金额），不以 `cost_subtotal` 或 quantity × 公示价代替实付金额。quantity/unit 可空；实际金额有效时仍能回填，已知的计费用量才补入缺失维度。
 
-后台对网络中断、空账单、429、暂时权限不足等持久化退避，尊重 Retry-After，不因进程退出丢失任务，不重新提交生成请求。查询窗口显式覆盖原任务日期，避免服务关机超过 24 小时后落入 API 默认窗口。凭证仅保存引用/指纹，查账时重新解析；模型从库存下线不会阻止已完成任务查账。
+后台对网络中断、空账单、429 等持久化退避，尊重 Retry-After，不因进程退出丢失任务，不重新提交生成请求。查询窗口显式覆盖原任务日期，避免服务关机超过 24 小时后落入 API 默认窗口。凭证仅保存引用/指纹，查账时重新解析；模型从库存下线不会阻止已完成任务查账。
+
+账单查询返回 401/403 或未配置账单端点时，持久化切换到本地结算；按视频像素量计费且缺少用量时，先读取制品头并调用现有 ffprobe 获取宽、高和真实帧数，头部不足时下载制品并解码计帧。下载有大小与时间上限，失败时保留待测量状态供重启恢复，不填零费用。测量证据、Usage、费用和执行缓存原子更新，详见 [延迟结算存储](deferred_billing.md)。
 
 队列领取、短租约和状态保存在现有执行 RDB JSON。用 CAS 和事务同时替换同一 event_id 的用量费用、AICC 执行缓存及完成标记；崩溃后重查可幂等应用，不重复增加请求或扣配额。TaskMgr 完成结果不可变，保留完成时标记 pending 的快照；Usage 与 AICC 幂等重放返回更新后的费用。前端当前列表存在 pending 条目时，每 30 秒在页面可见期间刷新费用与汇总。
 
-API 要求 BILLING/FULL 或对应账单读取权限；默认生成 Key 不一定具备这些权限。权限不足时保留待查及估算，修复权限后重试。没有把查询失败当成免费或自动放弃。持久结构、状态及扫描开销见 [延迟费用数据设计](deferred_billing.md)。
+API 要求 BILLING/FULL 或对应账单读取权限；默认生成 Key 不一定具备这些权限。权限不足时切换到本地估算，测量中断可恢复，不将查询失败当成免费。持久结构、状态及扫描开销见 [延迟费用数据设计](deferred_billing.md)。
 
 ## 查询与 UI
 

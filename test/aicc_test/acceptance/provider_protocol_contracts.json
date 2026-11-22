@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-16.1",
-  "checked_at": "2026-11-16",
+  "revision": "2026-11-22.1",
+  "checked_at": "2026-11-22",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -1339,6 +1339,7 @@
       "credential_type": "api_key",
       "official_first_party_model_ids": {
         "llm": [
+          "gemini-4-neon",
           "gemini-4-carbon",
           "gemini-4-argon",
           "gemini-4-hydrogen",
@@ -1359,6 +1360,7 @@
           "gemma-4-31b-it"
         ],
         "vision.ocr": [
+          "gemini-4-neon",
           "gemini-4-carbon",
           "gemini-4-argon",
           "gemini-4-hydrogen",
@@ -1372,6 +1374,7 @@
           "gemma-4-31b-it"
         ],
         "vision.caption": [
+          "gemini-4-neon",
           "gemini-4-carbon",
           "gemini-4-argon",
           "gemini-4-hydrogen",
@@ -1385,6 +1388,7 @@
           "gemma-4-31b-it"
         ],
         "vision.detect": [
+          "gemini-4-neon",
           "gemini-4-carbon",
           "gemini-4-argon",
           "gemini-4-hydrogen",
@@ -1396,6 +1400,7 @@
           "gemini-robotics-er-2-preview"
         ],
         "vision.segment": [
+          "gemini-4-neon",
           "gemini-4-carbon",
           "gemini-4-argon",
           "gemini-4-hydrogen",
@@ -1407,6 +1412,7 @@
           "gemini-robotics-er-2-preview"
         ],
         "audio.asr": [
+          "gemini-4-neon",
           "gemini-4-carbon",
           "gemini-4-argon",
           "gemini-4-hydrogen",
@@ -1449,18 +1455,23 @@
           "lyria-3.5"
         ],
         "video.generate": [
+          "gemini-omni-1.2-flash",
           "gemini-omni-1.1-flash"
         ],
         "video.edit": [
+          "gemini-omni-1.2-flash",
           "gemini-omni-1.1-flash"
         ],
         "video.extend": [
+          "gemini-omni-1.2-flash",
           "gemini-omni-1.1-flash"
         ]
       },
       "official_variant_sources": [
         "https://ai.google.dev/gemini-api/docs/thinking",
-        "https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api"
+        "https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api",
+        "https://ai.google.dev/gemini-api/docs/whats-new-gemini-4-neon",
+        "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen"
       ],
       "official_variant_rules": [
         {
@@ -1542,7 +1553,8 @@
         },
         {
           "model_ids": [
-            "gemini-4-hydrogen"
+            "gemini-4-hydrogen",
+            "gemini-4-neon"
           ],
           "variants": {
             "reasoning-low": {
@@ -1679,22 +1691,28 @@
           ],
           "conformance_test_model_ids": {
             "llm": [
-              "gemini-4-argon"
+              "gemini-4-argon",
+              "gemini-4-neon"
             ],
             "vision.ocr": [
-              "gemini-4-argon"
+              "gemini-4-argon",
+              "gemini-4-neon"
             ],
             "vision.caption": [
-              "gemini-4-argon"
+              "gemini-4-argon",
+              "gemini-4-neon"
             ],
             "vision.detect": [
-              "gemini-4-argon"
+              "gemini-4-argon",
+              "gemini-4-neon"
             ],
             "vision.segment": [
-              "gemini-4-argon"
+              "gemini-4-argon",
+              "gemini-4-neon"
             ],
             "audio.asr": [
-              "gemini-4-argon"
+              "gemini-4-argon",
+              "gemini-4-neon"
             ]
           },
           "operation": "interactions.create",
@@ -1749,7 +1767,21 @@
               "low",
               "medium",
               "high"
-            ]
+            ],
+            "thinking_level_values_by_model": {
+              "gemini-4-neon": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "gemini-4-hydrogen": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            }
           },
           "stream_protocol": "gemini_interactions",
           "success_fixture": {
@@ -1809,7 +1841,8 @@
             "https://ai.google.dev/api/interactions-api",
             "https://ai.google.dev/gemini-api/docs/function-calling",
             "https://ai.google.dev/gemini-api/docs/image-understanding",
-            "https://ai.google.dev/gemini-api/docs/api-errors"
+            "https://ai.google.dev/gemini-api/docs/api-errors",
+            "https://ai.google.dev/gemini-api/docs/whats-new-gemini-4-neon"
           ],
           "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call; detection uses a structured boxes schema with normalized box_2d and label, while segmentation additionally requires polygon mask coordinates."
         },
@@ -1873,7 +1906,21 @@
               "low",
               "medium",
               "high"
-            ]
+            ],
+            "thinking_level_values_by_model": {
+              "gemini-4-neon": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "gemini-4-hydrogen": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            }
           },
           "success_fixture": {
             "id": "interaction_mock_1",
@@ -1960,7 +2007,21 @@
               "low",
               "medium",
               "high"
-            ]
+            ],
+            "thinking_level_values_by_model": {
+              "gemini-4-neon": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "gemini-4-hydrogen": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            }
           },
           "success_fixture": {
             "id": "interaction_mock_1",
@@ -2086,7 +2147,21 @@
               "low",
               "medium",
               "high"
-            ]
+            ],
+            "thinking_level_values_by_model": {
+              "gemini-4-neon": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "gemini-4-hydrogen": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            }
           },
           "success_fixture": {
             "id": "interaction_mock_1",
@@ -2340,7 +2415,21 @@
               "low",
               "medium",
               "high"
-            ]
+            ],
+            "thinking_level_values_by_model": {
+              "gemini-4-neon": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "gemini-4-hydrogen": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            }
           },
           "success_fixture": {
             "id": "interaction_mock_1",
@@ -2369,9 +2458,21 @@
           "official_sources": [
             "https://ai.google.dev/gemini-api/docs/omni",
             "https://ai.google.dev/api/interactions-api",
-            "https://ai.google.dev/gemini-api/docs/api-errors"
+            "https://ai.google.dev/gemini-api/docs/api-errors",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-omni-flash"
           ],
-          "evidence_summary": "Gemini Omni video editing and extension use POST /v1beta/interactions with media input and generation_config.video_config."
+          "evidence_summary": "Gemini Omni 1.1/1.2 use POST /v1beta/interactions with typed media input and response_format video controls. Native audio is generated with the video; 1.1 supports 3-10 whole seconds and 1.2 supports 3-15 seconds, with 3-10 seconds per extension.",
+          "conformance_test_model_ids": {
+            "video.generate": [
+              "gemini-omni-1.2-flash"
+            ],
+            "video.edit": [
+              "gemini-omni-1.2-flash"
+            ],
+            "video.extend": [
+              "gemini-omni-1.2-flash"
+            ]
+          }
         }
       ]
     },
@@ -2478,7 +2579,8 @@
           },
           "official_sources": [
             "https://fal.ai/models/fal-ai/esrgan/api",
-            "https://fal.ai/docs/documentation/model-apis/inference/queue"
+            "https://fal.ai/docs/documentation/model-apis/inference/queue",
+            "https://fal.ai/docs/platform-apis/v1/models/billing-events"
           ],
           "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle uses the app root, with canonical result retrieval at /requests/{request_id} and a returned response_url ending in /response.",
           "aicc_error_code_by_scenario": {
@@ -2565,7 +2667,8 @@
           },
           "official_sources": [
             "https://fal.ai/docs/model-api-reference/image-generation-api/imageutils",
-            "https://fal.ai/docs/documentation/model-apis/inference/queue"
+            "https://fal.ai/docs/documentation/model-apis/inference/queue",
+            "https://fal.ai/docs/platform-apis/v1/models/billing-events"
           ],
           "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle strips the /rembg subpath to the fal-ai/imageutils app root, while returned response_url uses the /response alias.",
           "aicc_error_code_by_scenario": {
@@ -2651,7 +2754,8 @@
           },
           "official_sources": [
             "https://fal.ai/models/fal-ai/deepfilternet3/api",
-            "https://fal.ai/docs/documentation/model-apis/inference/queue"
+            "https://fal.ai/docs/documentation/model-apis/inference/queue",
+            "https://fal.ai/docs/platform-apis/v1/models/billing-events"
           ],
           "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle exposes canonical result retrieval and the returned /response alias.",
           "aicc_error_code_by_scenario": {
@@ -2735,14 +2839,18 @@
           },
           "official_sources": [
             "https://fal.ai/models/fal-ai/video-upscaler/api",
-            "https://fal.ai/docs/documentation/model-apis/inference/queue"
+            "https://fal.ai/docs/documentation/model-apis/inference/queue",
+            "https://fal.ai/docs/platform-apis/v1/models/billing-events"
           ],
           "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and accepts hosted HTTP(S) URLs or Base64 data URIs through fal Files. Queue lifecycle exposes canonical result retrieval and the returned /response alias.",
           "aicc_error_code_by_scenario": {
             "validation": "invalid_request"
           }
         }
-      ]
+      ],
+      "operation_endpoint_paths": {
+        "billing.events": "/v1"
+      }
     },
     {
       "provider_driver": "minimax",

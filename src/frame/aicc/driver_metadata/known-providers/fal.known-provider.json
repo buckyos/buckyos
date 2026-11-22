@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 1,
+  "revision_seq": 2,
   "catalog_id": "fal",
   "providers": [
     {
@@ -14,6 +14,7 @@
       "provider_rules_id": "fal",
       "credential": { "kind": "fal_key" },
       "connection": {
+        "operation_base_urls": { "billing.events": "https://api.fal.ai/v1" },
         "region": { "mode": "unsupported" },
         "workspace": { "mode": "unsupported" },
         "account": { "mode": "unsupported" }

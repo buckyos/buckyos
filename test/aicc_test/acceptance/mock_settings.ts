@@ -15,6 +15,7 @@ function provider(input: {
   discovery?: JsonObject;
   providerRulesId?: string | null;
   enabledInventoryModels?: string[];
+  operationBaseUrls?: JsonObject;
 }): JsonObject {
   return {
     provider_instance_name: input.name,
@@ -25,6 +26,7 @@ function provider(input: {
       ? {}
       : { provider_rules_id: input.providerRulesId ?? input.profile }),
     base_url: input.baseUrl,
+    ...(input.operationBaseUrls ? { operation_base_urls: input.operationBaseUrls } : {}),
     credentials: { api_token: { inline_secret: input.token } },
     enabled: true,
     timeout_ms: input.timeoutMs,
@@ -254,6 +256,7 @@ export function buildMockSettings(
       profile: "fal",
       adapter: "fal-queue",
       baseUrl,
+      operationBaseUrls: { "billing.events": `${baseUrl}/v1` },
       token: `mock-${suffix}`,
       timeoutMs,
       discovery: falDiscovery(),

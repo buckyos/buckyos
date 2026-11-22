@@ -33,6 +33,7 @@ type State = {
   errors: number;
   streamChunks: number;
   operations: Map<string, { polls: number; scenario: Scenario }>;
+  billing: { enabled: boolean; delay_ms: number; request_id?: string; request_ids: string[]; inflight: Set<string> };
 };
 
 const state: State = {
@@ -50,6 +51,7 @@ const state: State = {
   errors: 0,
   streamChunks: 0,
   operations: new Map(),
+  billing: { enabled: false, delay_ms: 0, request_ids: [], inflight: new Set() },
 };
 
 const VALID_SCENARIOS = new Set<Scenario>(MOCK_PROVIDER_SCENARIOS);
@@ -404,6 +406,20 @@ async function management(
 ): Promise<boolean> {
   const matches = (route: { method: string; path: string }) =>
     path === route.path && request.method === route.method;
+  if (path === "/v1/models/billing-events" && request.method === "GET") {
+    const query = new URL(request.url!, "http://mock.invalid").searchParams;
+    const requestId = query.get("request_id");
+    if (requestId) state.billing.request_ids.push(requestId);
+    const selected = requestId === state.billing.request_id;
+    const delay = selected ? state.billing.delay_ms : 0;
+    if (requestId) state.billing.inflight.add(requestId);
+    if (delay > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, delay));
+    if (requestId) state.billing.inflight.delete(requestId);
+    json(response, 200, { billing_events: state.billing.enabled && selected && requestId
+      ? [{ request_id: requestId, endpoint_id: query.get("endpoint_id"), cost_total: 0.123, quantity: null, unit: null }]
+      : [], has_more: false });
+    return true;
+  }
   if (path.startsWith("/__mock/fixtures/") && request.method === "GET") {
     const name = path.slice("/__mock/fixtures/".length);
     if (name.endsWith(".png")) {
@@ -438,6 +454,7 @@ async function management(
     state.errors = 0;
     state.streamChunks = 0;
     state.operations.clear();
+    state.billing = { enabled: false, delay_ms: 0, request_ids: [], inflight: new Set() };
     json(response, 200, { ok: true });
     return true;
   }
@@ -464,6 +481,9 @@ async function management(
     if (typeof input?.health === "string") state.provider.health = input.health;
     if (typeof input?.quota === "string") state.provider.quota = input.quota;
     if (typeof input?.latency_ms === "number") state.provider.latency_ms = input.latency_ms;
+    if (typeof input?.billing_enabled === "boolean") state.billing.enabled = input.billing_enabled;
+    if (typeof input?.billing_delay_ms === "number") state.billing.delay_ms = input.billing_delay_ms;
+    if (typeof input?.billing_request_id === "string") state.billing.request_id = input.billing_request_id;
     if (Array.isArray(input?.capabilities)) {
       state.provider.capabilities = input.capabilities.filter((item): item is string =>
         typeof item === "string"
@@ -481,6 +501,8 @@ async function management(
       calls: state.calls,
       errors: state.errors,
       stream_chunks: state.streamChunks,
+      billing_request_ids: state.billing.request_ids,
+      billing_inflight_ids: [...state.billing.inflight],
     });
     return true;
   }

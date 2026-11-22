@@ -13,7 +13,7 @@ impl AiccStorage {
                 format!("record_json::jsonb #>> '{{{}}}'", path.replace('.', ","))
             }
         };
-        let sql = self.sql(&format!("SELECT state,record_json FROM aicc_execution_record WHERE state='succeeded' AND {}='pending' AND CAST({} AS BIGINT)<=? ORDER BY CAST({} AS BIGINT),created_at_ms,task_id LIMIT ?",json("binding.billing.status"),json("binding.billing.next_attempt_ms"),json("binding.billing.next_attempt_ms")));
+        let sql = self.sql(&format!("SELECT state,record_json FROM aicc_execution_record WHERE state='succeeded' AND {} IN ('pending','local_pending') AND CAST({} AS BIGINT)<=? ORDER BY CAST({} AS BIGINT),created_at_ms,task_id LIMIT ?",json("binding.billing.status"),json("binding.billing.next_attempt_ms"),json("binding.billing.next_attempt_ms")));
         sqlx::query(&sql)
             .bind(to_i64(now_ms)?)
             .bind(i64::from(limit.min(100)))
@@ -38,7 +38,10 @@ impl AiccStorage {
         };
         if claimed.state != ExecutionState::Succeeded
             || billing.schema_version != 1
-            || billing.status != BillingStatus::Pending
+            || !matches!(
+                billing.status,
+                BillingStatus::Pending | BillingStatus::LocalPending
+            )
             || billing.next_attempt_ms > now_ms
             || binding.protocol_adapter_id != crate::protocol::FAL_QUEUE_ADAPTER_ID
             || binding
@@ -66,6 +69,7 @@ impl AiccStorage {
         &self,
         claimed: &ExecutionRecord,
         event: Option<ProviderBillingEvent>,
+        local: Option<(AiUsage, Option<Value>)>,
         error: Option<&str>,
         retry_after_ms: Option<u64>,
         now_ms: u64,
@@ -77,7 +81,10 @@ impl AiccStorage {
         let Some(billing) = binding.billing.as_mut() else {
             return Err(StorageError::InvalidRecord("billing has no state".into()));
         };
-        if billing.status != BillingStatus::Pending {
+        if !matches!(
+            billing.status,
+            BillingStatus::Pending | BillingStatus::LocalPending
+        ) {
             return Ok(false);
         }
         let sql = self.sql("SELECT usage_json FROM aicc_usage_event WHERE event_id=? AND tenant_id=? AND task_id=? AND provider_instance_name=? AND provider_model=?");
@@ -101,7 +108,7 @@ impl AiccStorage {
             && usage.cost.as_ref().is_some_and(|cost| {
                 cost.amount.is_finite() && cost.amount >= 0.0 && !cost.currency.trim().is_empty()
             });
-        let mut replacement = None;
+        let mut replace_usage = false;
         if protocol_cost {
             billing.status = BillingStatus::ProtocolCost;
             billing.last_error = None;
@@ -162,10 +169,29 @@ impl AiccStorage {
                 output.usage = usage.clone();
                 output.cost = Some(event.cost.clone());
             }
-            replacement = Some(event.cost.clone());
+            replace_usage = true;
             billing.event = Some(event);
             billing.status = BillingStatus::Applied;
             billing.last_error = None;
+        } else if let Some((mut local_usage, measurement)) = local {
+            let reason = local_usage.cost_unknown_reason.take();
+            local_usage.cost = binding
+                .pricing
+                .as_ref()
+                .and_then(|p| p.completion_cost(&local_usage));
+            local_usage.cost_source = Some("static_pricing".into());
+            if local_usage.cost.is_none() {
+                local_usage.cost_unknown_reason =
+                    reason.or_else(|| Some("missing_usage_or_pricing".into()));
+            }
+            usage = local_usage;
+            if let Some(output) = &mut record.output {
+                output.usage = usage.clone();
+                output.cost = usage.cost.clone();
+            }
+            billing.measurement = measurement;
+            billing.status = BillingStatus::Local;
+            replace_usage = true;
         } else {
             billing.last_error = Some(error.unwrap_or("not_ready").to_owned());
             let delay = if matches!(error, Some("permission_denied" | "credential_unavailable")) {
@@ -188,13 +214,15 @@ impl AiccStorage {
             transaction.rollback().await?;
             return Ok(false);
         }
-        if let Some(cost) = replacement {
-            let sql=self.sql("UPDATE aicc_usage_event SET usage_json=?,finance_snapshot_json=?,finance_amount=?,finance_currency=?,finance_valid=1 WHERE event_id=? AND tenant_id=? AND usage_json=?");
+        if replace_usage {
+            let cost = usage.cost.as_ref();
+            let sql=self.sql("UPDATE aicc_usage_event SET usage_json=?,finance_snapshot_json=?,finance_amount=?,finance_currency=?,finance_valid=? WHERE event_id=? AND tenant_id=? AND usage_json=?");
             if sqlx::query(&sql)
                 .bind(serde_json::to_string(&usage)?)
-                .bind(serde_json::to_string(&cost)?)
-                .bind(cost.amount)
-                .bind(&cost.currency)
+                .bind(cost.map(serde_json::to_string).transpose()?)
+                .bind(cost.map(|cost| cost.amount))
+                .bind(cost.map(|cost| cost.currency.as_str()))
+                .bind(i64::from(cost.is_some()))
                 .bind(&record.usage_event_id)
                 .bind(&record.scope.tenant_id)
                 .bind(old_usage)
@@ -210,5 +238,35 @@ impl AiccStorage {
         }
         transaction.commit().await?;
         Ok(true)
+    }
+
+    pub(crate) async fn begin_local_billing(
+        &self,
+        claimed: &ExecutionRecord,
+        reason: &str,
+    ) -> StorageResult<Option<ExecutionRecord>> {
+        let mut record = claimed.clone();
+        let Some(billing) = record
+            .binding
+            .as_mut()
+            .and_then(|binding| binding.billing.as_mut())
+        else {
+            return Ok(None);
+        };
+        if billing.status != BillingStatus::Pending {
+            return Ok(None);
+        }
+        billing.status = BillingStatus::LocalPending;
+        billing.last_error = Some(reason.into());
+        let sql = self.sql("UPDATE aicc_execution_record SET record_json=? WHERE task_id=? AND state='succeeded' AND record_json=?");
+        let changed = sqlx::query(&sql)
+            .bind(serde_json::to_string(&record)?)
+            .bind(&record.task_id)
+            .bind(serde_json::to_string(claimed)?)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            == 1;
+        Ok(changed.then_some(record))
     }
 }

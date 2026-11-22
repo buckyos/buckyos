@@ -257,6 +257,8 @@ pub(crate) struct DeferredBilling {
     pub next_attempt_ms: u64,
     pub last_error: Option<String>,
     pub event: Option<ProviderBillingEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<Value>,
 }
 
 impl Default for DeferredBilling {
@@ -268,6 +270,7 @@ impl Default for DeferredBilling {
             next_attempt_ms: 0,
             last_error: None,
             event: None,
+            measurement: None,
         }
     }
 }
@@ -276,6 +279,8 @@ impl Default for DeferredBilling {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BillingStatus {
     Pending,
+    LocalPending,
+    Local,
     Applied,
     ProtocolCost,
 }

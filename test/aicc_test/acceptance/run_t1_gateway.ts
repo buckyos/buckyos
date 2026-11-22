@@ -438,7 +438,7 @@ async function setScenario(baseUrl: string, scenario: string, pathPrefix?: strin
 
 async function setProviderState(
   baseUrl: string,
-  state: { health?: string; quota?: string; latency_ms?: number; capabilities?: string[] },
+  state: { health?: string; quota?: string; latency_ms?: number; capabilities?: string[]; billing_enabled?: boolean; billing_delay_ms?: number; billing_request_id?: string },
 ): Promise<void> {
   const response = await fetch(`${baseUrl}/__mock/provider_state`, {
     method: "POST",
@@ -2538,6 +2538,53 @@ async function runCases(
     await terminal(session, initial, input.timeoutMs);
     return `running task ${initial.task_id} recovered across AICC restart ${pids}`;
   });
+
+  await pushProbe("t1.task.billing_restart_recovery", "image.upscale", "task_lifecycle_failed", async () => {
+    if (!cancelProbeCell) throw new Error("Mock inventory has no FAL billing cell");
+    const started = Date.now();
+    await setScenario(input.mockControlUrl, "success");
+    await setProviderState(input.mockControlUrl, {billing_enabled:false,billing_delay_ms:0});
+    try {
+      const request = buildExactRequest({cell:{...cancelProbeCell,case_id:"t1.task.billing_restart_recovery"},runId,
+        fixtures:{image:{kind:"base64",mime:"image/png",data_base64:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}}});
+      const initial = await callInference(session.aicc,cancelProbeCell.method,request) as AiMethodResponse;
+      const submissions = (await mockRequests(input.mockControlUrl)).filter((r) => r.method === "POST" && r.path === `/${cancelProbeCell.provider_model_id}`);
+      const submitted = submissions.at(-1);
+      if (!submitted) throw new Error("FAL submit audit is missing");
+      const remoteId = `fal-mock-${submitted.id}`;
+      await setProviderState(input.mockControlUrl,{billing_enabled:true,billing_delay_ms:12000,billing_request_id:remoteId});
+      await terminal(session,initial,input.timeoutMs);
+      const queryDeadline = Date.now()+Math.min(input.timeoutMs,30000);
+      for (;;) {
+        const metrics = await (await fetch(`${input.mockControlUrl}/__mock/metrics`)).json() as {billing_inflight_ids:string[]};
+        if (metrics.billing_inflight_ids.includes(remoteId)) break;
+        if (Date.now()>=queryDeadline) throw new Error("Billing query was not started");
+        await new Promise((resolvePromise) => setTimeout(resolvePromise,100));
+      }
+      await setProviderState(input.mockControlUrl,{billing_delay_ms:0});
+      const pids = await restartAicc(session,input);
+      const deadline = Date.now()+input.timeoutMs;
+      for (;;) {
+        const events = await queryUsageEvents({aicc:session.aicc,startTimeMs:started-1000,endTimeMs:Date.now()+1000,taskIds:[initial.task_id]});
+        if (events.length>1) throw new Error("Billing recovery duplicated usage events");
+        const usage = events[0]?.usage_json;
+        if (usage?.cost_source === "provider_billing") {
+          const cost = usage.cost as {amount:number;currency:string};
+          if (cost?.amount!==0.123 || cost.currency!=="USD") throw new Error("Recovered billing charge differs from the Mock event");
+          break;
+        }
+        if (Date.now()>=deadline) throw new Error("Pending billing did not recover after restart");
+        await new Promise((resolvePromise) => setTimeout(resolvePromise,500));
+      }
+      const replay = await callInference(session.aicc,cancelProbeCell.method,request) as AiMethodResponse;
+      if (replay.task_id!==initial.task_id) throw new Error("Billing replay created another task");
+      const after = (await mockRequests(input.mockControlUrl)).filter((r) => r.method === "POST" && r.path === `/${cancelProbeCell.provider_model_id}`);
+      if (after.length!==submissions.length) throw new Error("Billing recovery resubmitted inference");
+      return `in-flight billing recovered across AICC restart ${pids}; one usage event, no inference resubmission`;
+    } finally {
+      await setProviderState(input.mockControlUrl,{billing_enabled:false,billing_delay_ms:0});
+    }
+  },"image.upscale");
 
   await pushProbe("t1.usage.success_once", probeCell.method, "usage_failed", async () => {
     const started = Date.now();

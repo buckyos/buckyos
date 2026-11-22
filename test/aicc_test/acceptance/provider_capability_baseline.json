@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-11-16.1",
-  "checked_at": "2026-11-16",
+  "baseline_revision": "2026-11-22.1",
+  "checked_at": "2026-11-22",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -1324,7 +1324,9 @@
         "page_size": 1000
       },
       "source_urls": [
-        "https://ai.google.dev/gemini-api/docs/models"
+        "https://ai.google.dev/gemini-api/docs/models",
+        "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon",
+        "https://ai.google.dev/gemini-api/docs/models/gemini-omni-flash"
       ],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
@@ -1340,6 +1342,24 @@
         "preview_allowlist": "Preview/experimental models can have tier or allowlist restrictions and remain explicit matrix outcomes."
       },
       "coverage_rules": [
+        {
+          "model_pattern": "genie-4",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://ai.google.dev/gemini-api/docs/genie"
+          ],
+          "evidence_summary": "The official Genie guide requires a bidirectional WebRTC/WebSocket world session and explicit completion. The current AICC Gemini adapter implements single-request or SSE interactions, not live world sessions."
+        },
+        {
+          "model_pattern": "gemini-decision-1",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-decision-1"
+          ],
+          "evidence_summary": "The 2026-11-22 official Models API reports only createDecision. Public protocol documentation was not found, and the current Gemini adapter has no createDecision binding; this protocol remains unsupported and is reported rather than called as ordinary generateContent."
+        },
         {
           "model_pattern": "gemini-2.5-computer-use-preview-10-2025",
           "action": "exclude",
@@ -1726,7 +1746,7 @@
         },
         {
           "model_pattern": "gemini-omni-*",
-          "status": "preview",
+          "status": "active",
           "api_types": [
             "video.generate",
             "video.edit",
@@ -1747,21 +1767,25 @@
           ],
           "request_defaults": {
             "video.generate": {
+              "prompt": "A paper plane moving across a desk",
+              "conditions": [],
               "output": {
-                "duration_seconds": 4,
+                "duration_seconds": 3,
                 "size": {
-                  "short_edge": 720
+                  "short_edge": 360
                 }
               }
             },
             "video.extend": {
-              "resolution": "720p"
+              "duration_seconds": 3,
+              "resolution": "360p"
             }
           },
           "source_urls": [
-            "https://ai.google.dev/gemini-api/docs/models"
+            "https://ai.google.dev/gemini-api/docs/omni",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-omni-flash"
           ],
-          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation (prompt and reference image), editing of a supplied video, and extension."
+          "evidence_summary": "Omni 1.1/1.2 are stable. The minimal generation cell uses documented text-only generation at 3 seconds/360p; it does not infer first-frame interpolation from generic image input support. Extensions use the documented 3-second minimum."
         },
         {
           "model_pattern": "gemini-*image*",

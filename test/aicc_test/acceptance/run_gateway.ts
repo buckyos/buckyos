@@ -1626,6 +1626,9 @@ async function executeAcceptance(input: {
         const started = Date.now();
         actualCalls += 1;
         try {
+          const sourceCell = matrix.cells.find((candidate) =>
+            candidate.exact_model === cell.exact_model && candidate.api_type === sourceApiType
+          );
           const prerequisiteCell = {
             ...cell,
             case_id: `${cell.case_id}.generated-artifact-source.${sourceApiType}`,
@@ -1640,8 +1643,7 @@ async function executeAcceptance(input: {
               : sourceApiType.startsWith("video.") ? ["video"]
               : cell.output_kinds,
             generated_artifact_source_api_type: undefined,
-            // The cell's defaults belong to its own api_type, not to the source call.
-            request_defaults: undefined,
+            request_defaults: sourceCell?.request_defaults,
           };
           const prerequisiteRequest = buildExactRequest({
             cell: prerequisiteCell,
@@ -1994,8 +1996,11 @@ async function executeAcceptance(input: {
           endTimeMs: Date.now() + 1_000,
           taskIds: successful.map((item) => item.task_id!),
         });
-        const deadline = Date.now() + 10_000;
-        while (usageEvents.length < successful.length && Date.now() < deadline) {
+        const deadline = Date.now() + Math.min(options.timeoutMs, 60_000);
+        const pendingBilling = () => usageEvents.some((event) =>
+          ["billing_pending", "static_pricing_pending_billing"].includes(String(event.usage_json.cost_source))
+        );
+        while ((usageEvents.length < successful.length || pendingBilling()) && Date.now() < deadline) {
           await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
           usageEvents = await queryUsageEvents({
             aicc: session.aicc,
@@ -2024,7 +2029,10 @@ async function executeAcceptance(input: {
             candidate.selected_exact_model === item.exact_model &&
             candidate.provider_instance_name === item.provider_instance
           );
-          if (durable.length !== 1 || !trace) {
+          const billingPending = durable.some((event) =>
+            ["billing_pending", "static_pricing_pending_billing"].includes(String(event.usage_json.cost_source))
+          );
+          if (durable.length !== 1 || !trace || billingPending) {
             item.status = "failed";
             item.attempts.push({
               attempt: item.attempts.length + 1,
@@ -2032,7 +2040,7 @@ async function executeAcceptance(input: {
               elapsed_ms: 0,
               status: "failed",
               failure_class: "usage_failed",
-              diagnostic: `durable attribution failed for task ${item.task_id}: usage_events=${durable.length}, matching_route_trace=${Boolean(trace)}, observed_routes=${routeTraces.map((candidate) => `${candidate.selected_exact_model ?? "[missing]"}/${candidate.provider_instance_name ?? "[missing]"}`).join("|") || "[none]"}`,
+              diagnostic: `durable attribution failed for task ${item.task_id}: usage_events=${durable.length}, billing_pending=${billingPending}, matching_route_trace=${Boolean(trace)}, observed_routes=${routeTraces.map((candidate) => `${candidate.selected_exact_model ?? "[missing]"}/${candidate.provider_instance_name ?? "[missing]"}`).join("|") || "[none]"}`,
               estimated_cost_usd: 0,
               cost_status: "not_called",
             });

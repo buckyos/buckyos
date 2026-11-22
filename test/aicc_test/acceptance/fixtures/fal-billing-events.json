@@ -1,0 +1,32 @@
+{
+  "source_url": "https://fal.ai/docs/platform-apis/v1/models/billing-events",
+  "checked_at": "2026-11-22",
+  "path": "/v1/models/billing-events",
+  "event": {
+    "request_id": "fal_mock_1",
+    "endpoint_id": "fal-ai/esrgan",
+    "timestamp": "2026-11-22T00:00:00Z",
+    "quantity": null,
+    "unit": null,
+    "cost_subtotal": 0.05,
+    "cost_discount": 0.005,
+    "cost_total": 0.045,
+    "cost_estimate_nano_usd": 45000000
+  },
+  "local_estimates": {
+    "image.upscale": {
+      "amount": 5.75e-06
+    },
+    "image.bg_remove": {
+      "amount": 5.75e-06
+    },
+    "audio.enhance": {
+      "amount": 0.0069544375
+    },
+    "video.upscale": {
+      "amount": 0.062208,
+      "megapixels": 77.76
+    }
+  },
+  "pricing_source_url": "https://fal.ai/docs/platform-apis/v1/models/pricing"
+}
