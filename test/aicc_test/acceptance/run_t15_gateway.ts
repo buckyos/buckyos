@@ -2214,7 +2214,7 @@ async function executeGeneratedArtifactCase(
         targetExactModel,
         runId,
         testCase.execution_mode,
-        `${testCase.case_id}.target-artifact`,
+        testCase.tags.includes("chat_document_audio") ? `${testCase.case_id}.audio-input` : `${testCase.case_id}.target-artifact`,
         { sourceResource },
       ),
     ) as Record<string, unknown>;

@@ -2111,6 +2111,8 @@ function validateGeminiMediaContent(value: unknown, path: string, errors: string
   const mime=typeof part.mime_type==='string' ? part.mime_type.toLowerCase().split(';')[0] : '';
   if (type==='document' && /^(image|audio|video)\//.test(mime)) errors.push(`${path}: document content cannot carry media MIME ${mime}`);
   if (['image','audio','video'].includes(type) && mime && !mime.startsWith(`${type}/`)) errors.push(`${path}: ${type} content has incompatible MIME ${mime}`);
+  if (type==='audio' && ['audio/l16','audio/pcm','audio/alaw','audio/mulaw'].includes(mime) && (!Number.isInteger(part.sample_rate) || Number(part.sample_rate)<=0)) errors.push(`${path}: raw audio requires sample_rate`);
+  if (type==='audio' && part.channels!==undefined && (!Number.isInteger(part.channels) || Number(part.channels)<=0)) errors.push(`${path}: audio channels must be positive`);
 }
 
 function validateGeminiInteractionInput(
@@ -3228,5 +3230,14 @@ export function buildT15Manifest(
       expected_wire_fixture:`gemini.interactions.v1beta.request.${media}-input`,
     });
   }
+  const tts=catalog.providers.find(p=>p.provider_driver==='google-gemini')?.contracts.find(c=>c.id==='gemini.interactions.tts.v1beta');
+  if (geminiChat && tts) cases.push({...geminiChat,
+    case_id:'t1.5.google-gemini.gemini.interactions.v1beta.llm.generated-pcm-audio',
+    tags:[...geminiChat.tags,'generated_artifact_id','same_provider_artifact_id','chat_document_audio'],
+    artifact_source_provider_driver:'google-gemini',artifact_source_contract_id:tts.id,
+    artifact_source_api_type:'audio.tts',artifact_source_model_id:String(tts.success_fixture?.model),
+    artifact_target_expect_provider_id:false,
+    expected_wire_fixture:'gemini.interactions.v1beta.request.generated-pcm-audio',
+  });
   return cases;
 }

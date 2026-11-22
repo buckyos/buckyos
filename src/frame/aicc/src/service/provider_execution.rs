@@ -848,7 +848,11 @@ impl RuntimeProviderExecutionPort {
                     ArtifactSpec {
                         name,
                         mime: mime.clone(),
-                        attributes: Map::new(),
+                        attributes: previous_metadata.as_ref().and_then(Value::as_object)
+                            .map(|metadata| metadata.iter().filter(|(key, value)|
+                                matches!(key.as_str(), "sample_rate" | "channels") && value.as_u64().is_some_and(|n| n > 0))
+                                .map(|(key, value)| (key.clone(), value.clone())).collect())
+                            .unwrap_or_default(),
                         embedding: None,
                     },
                 )

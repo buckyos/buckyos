@@ -702,7 +702,8 @@ impl RuntimeInferencePort {
                     .map_err(|error| {
                         inference_error(AiccErrorCode::ResourceInvalid, error.to_string())
                     })?
-                    .with_provider_artifact_id(provider_artifact_id),
+                    .with_provider_artifact_id(provider_artifact_id)
+                    .with_audio_format(parts.audio_sample_rate, parts.audio_channels),
                 );
                 continue;
             }
@@ -750,7 +751,8 @@ impl RuntimeInferencePort {
                     .map_err(|error| {
                         inference_error(AiccErrorCode::ResourceInvalid, error.to_string())
                     })?
-                    .with_provider_artifact_id(provider_artifact_id),
+                    .with_provider_artifact_id(provider_artifact_id)
+                    .with_audio_format(parts.audio_sample_rate, parts.audio_channels),
             );
         }
         Ok(())

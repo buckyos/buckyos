@@ -1529,7 +1529,35 @@ fn encode_document_resource(
     Ok(value)
 }
 
-fn encode_resource(
+fn encode_resource(source: &ResourceRef, kind: &str, context: &CodecContext) -> ProtocolResultValue<Value> {
+    let mut value = encode_resource_value(source, kind, context)?;
+    if kind == "audio" {
+        let mime = value.get("mime_type").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let materialized = context.materialized_resource(source).ok();
+        let rate = materialized.as_ref().and_then(|resource| resource.audio_sample_rate)
+            .or_else(|| audio_mime_parameter(&mime, "rate"));
+        let channels = materialized.as_ref().and_then(|resource| resource.audio_channels)
+            .or_else(|| audio_mime_parameter(&mime, "channels"));
+        if let Some(rate) = rate { value["sample_rate"] = json!(rate); }
+        if let Some(channels) = channels { value["channels"] = json!(channels); }
+        if raw_audio_mime(&mime) { value["mime_type"] = json!(mime.split(';').next().unwrap().trim().to_ascii_lowercase()); }
+    }
+    Ok(value)
+}
+
+fn raw_audio_mime(mime: &str) -> bool {
+    matches!(mime.split(';').next().unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "audio/l16" | "audio/pcm" | "audio/alaw" | "audio/mulaw")
+}
+
+fn audio_mime_parameter(mime: &str, name: &str) -> Option<u32> {
+    mime.split(';').skip(1).filter_map(|part| part.trim().split_once('='))
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+        .and_then(|(_, value)| value.trim().trim_matches('"').parse::<u32>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn encode_resource_value(
     source: &ResourceRef,
     kind: &str,
     context: &CodecContext,
@@ -2437,6 +2465,16 @@ fn decode_resource_with_default(
         .and_then(Value::as_str)
         .unwrap_or(default_mime)
         .to_string();
+    let mime = if raw_audio_mime(&mime) {
+        let metadata = provider_artifact_metadata(value);
+        let mut mime = mime.split(';').next().unwrap().trim().to_ascii_lowercase();
+        for (field, parameter) in [("sample_rate", "rate"), ("channels", "channels")] {
+            if let Some(value) = metadata.as_ref().and_then(|metadata| metadata.get(field)).and_then(Value::as_u64) {
+                mime.push_str(&format!(";{parameter}={value}"));
+            }
+        }
+        mime
+    } else { mime };
     if let Some(data) = value
         .get("data")
         .or_else(|| value.get("videoBytes"))
@@ -2530,18 +2568,22 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
 }
 
 fn provider_artifact_metadata(output: &Value) -> Option<Value> {
-    let artifact_ref = provider_artifact_ref(output)?;
-    let mut metadata = Map::from_iter([(
-        "aicc_provider_artifact_id".to_string(),
-        json!(artifact_ref.id),
-    )]);
-    if let Some(expires_at_ms) = artifact_ref.expires_at_ms {
-        metadata.insert(
-            "aicc_provider_artifact_expires_at_ms".to_string(),
-            json!(expires_at_ms),
-        );
+    let mut metadata = Map::new();
+    if let Some(artifact_ref) = provider_artifact_ref(output) {
+        metadata.insert("aicc_provider_artifact_id".to_owned(), json!(artifact_ref.id));
+        if let Some(expires_at_ms) = artifact_ref.expires_at_ms {
+            metadata.insert("aicc_provider_artifact_expires_at_ms".to_owned(), json!(expires_at_ms));
+        }
     }
-    Some(Value::Object(metadata))
+    if output.get("type").and_then(Value::as_str) == Some("audio") {
+        let mime = output.get("mime_type").and_then(Value::as_str).unwrap_or_default();
+        for (field, parameter) in [("sample_rate", "rate"), ("channels", "channels")] {
+            let value = output.get(field).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).filter(|v| *v > 0)
+                .or_else(|| audio_mime_parameter(mime, parameter));
+            if let Some(value) = value { metadata.insert(field.to_owned(), json!(value)); }
+        }
+    }
+    (!metadata.is_empty()).then_some(Value::Object(metadata))
 }
 
 fn provider_artifact_ref(output: &Value) -> Option<ProviderArtifactRef> {
@@ -4670,4 +4712,40 @@ mod tests {
         .unwrap();
         assert!((pinned.completion_cost(&usage).unwrap().amount - 0.000332).abs() < 1e-12);
     }
+    #[test]
+    fn raw_audio_output_retains_native_format_for_reuse() {
+        for inline in [true, false] {
+            let mut content = json!({"type":"audio","mime_type":"audio/l16","sample_rate":24000,"channels":1});
+            if inline { content["data"] = json!("AAAAAA=="); }
+            else { content["uri"] = json!("https://media.example/audio.pcm"); }
+            let output = normalize_media(&[content], None, "audio", "audio").unwrap();
+            assert_eq!(output.artifacts[0].metadata.as_ref().unwrap()["sample_rate"], 24000);
+            assert_eq!(output.artifacts[0].metadata.as_ref().unwrap()["channels"], 1);
+            let wire = encode_resource(&output.artifacts[0].resource, "audio", &context()).unwrap();
+            assert_eq!(wire["mime_type"], "audio/l16");
+            assert_eq!(wire["sample_rate"], 24000);
+            assert_eq!(wire["channels"], 1);
+        }
+        let missing = decode_resource(&json!({"type":"audio","mime_type":"audio/l16","data":"AAAAAA=="})).unwrap();
+        assert!(encode_resource(&missing, "audio", &context()).unwrap().get("sample_rate").is_none());
+    }
+
+    #[test]
+    fn named_raw_audio_uses_stored_format_in_bytes_and_url_forms() {
+        let source = ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap());
+        for url in [false, true] {
+            let mut context = context();
+            let resource = if url {
+                crate::protocol::MaterializedResource::from_url("https://media.example/audio.pcm", "audio/l16", None).unwrap()
+            } else {
+                crate::protocol::MaterializedResource::new([0u8; 4].as_slice(), "audio/l16", None).unwrap()
+            }.with_audio_format(Some(16000), Some(2));
+            context.resources.insert(crate::resource::ResourceKey::from_ref(&source).into_string(), resource);
+            let encoded = encode_resource(&source, "audio", &context).unwrap();
+            assert_eq!(encoded["sample_rate"], 16000);
+            assert_eq!(encoded["channels"], 2);
+            assert_eq!(encoded.get("uri").is_some(), url);
+        }
+    }
+
 }

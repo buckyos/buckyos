@@ -7294,3 +7294,17 @@ test('T1.5 transcription requires the quoted cost as well as token dimensions', 
   assert.throws(() => assertT15ResponseMapping('audio.asr', { ...response, cost: { amount: .000042, currency: 'USD' } }, contract), /expected cost/);
   assert.doesNotThrow(() => assertT15ResponseMapping('audio.asr', { ...response, cost: { amount: .000044, currency: 'USD' } }, contract));
 });
+
+
+test('Gemini Mock requires native PCM sampling metadata and generates a NamedObject reuse probe', async () => {
+  const catalog=await loadProviderProtocolCatalog();
+  const contract=protocolContract(catalog,'google-gemini','gemini.interactions.v1beta');
+  const errors=(part:unknown)=>validateProviderRequest(contract,{method:'POST',pathname:'/v1beta/interactions',query:new URLSearchParams(),headers:new Headers({'x-goog-api-key':'mock','content-type':'application/json'}),body:{model:'gemini-3.5-flash',input:[part]}});
+  const pcm={type:'audio',mime_type:'audio/l16',data:'AAAAAA=='};
+  assert.ok(errors(pcm).some(e=>e.includes('sample_rate')));
+  assert.deepEqual(errors({...pcm,sample_rate:24000,channels:1}),[]);
+  assert.ok(errors({...pcm,sample_rate:0}).some(e=>e.includes('sample_rate')));
+  const probe=buildT15Manifest(catalog).find(c=>c.case_id.endsWith('.llm.generated-pcm-audio'));
+  assert.equal(probe?.artifact_source_api_type,'audio.tts');
+  assert.ok(probe?.tags.includes('same_provider_artifact_id'));
+});

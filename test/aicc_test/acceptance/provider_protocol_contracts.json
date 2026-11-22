@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-22.3",
+  "revision": "2026-11-22.4",
   "checked_at": "2026-11-22",
   "providers": [
     {
@@ -2224,7 +2224,9 @@
                   {
                     "type": "audio",
                     "mime_type": "audio/l16",
-                    "data": "UklGRg=="
+                    "data": "AAAAAA==",
+                    "sample_rate": 24000,
+                    "channels": 1
                   }
                 ]
               }
