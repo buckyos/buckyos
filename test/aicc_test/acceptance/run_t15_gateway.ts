@@ -1555,7 +1555,7 @@ async function executeCase(
       const image=testCase.tags.includes('chat_document_image');
       const mime=audio ? 'audio/wav' : image ? 'image/png' : 'video/mp4';
       sourceResource=testCase.tags.includes('chat_document_url')
-        ? {kind:'url',url:`${controlUrl}/artifacts/input.${audio ? 'wav' : image ? 'png' : 'mp4'}`,mime_hint:mime}
+        ? {kind:'url',url:`https://example.test/media/input.${audio ? 'wav' : image ? 'png' : 'mp4'}`,mime_hint:mime}
         : resource(mime);
     }
     const result = await session.aicc.call(
