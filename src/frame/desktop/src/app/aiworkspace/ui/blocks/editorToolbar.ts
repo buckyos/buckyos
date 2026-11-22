@@ -74,9 +74,13 @@ export function requestIntent(key: string, value: string | CanvasCaret | TableIn
   intentEmitter.emit()
 }
 
+export function getIntent(key: string): Intent | undefined {
+  return intents.get(key)
+}
+
 /** The intent waiting for `key`; the receiver handles it once (by `seq`) and consumes it. */
 export function useIntent(key: string): Intent | undefined {
-  return useSyncExternalStore(intentEmitter.subscribe, () => (key ? intents.get(key) : undefined))
+  return useSyncExternalStore(intentEmitter.subscribe, () => (key ? getIntent(key) : undefined))
 }
 
 export function consumeIntent(key: string, intent: Intent) {

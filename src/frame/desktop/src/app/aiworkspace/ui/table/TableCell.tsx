@@ -51,7 +51,7 @@ export function TableCell({ showHandles, annotatedRecords, pager, sourceId, fiel
     if (editing) { wasEditing.current = true; return }
     if (!wasEditing.current) return
     wasEditing.current = false
-    if (document.activeElement === document.body || document.activeElement === null) valueRef.current?.focus()
+    if (document.activeElement === document.body || document.activeElement === null) valueRef.current?.focus({ preventScroll: true })
   }, [editing])
 
   const write = async (input: Input, baseRev: number) => {

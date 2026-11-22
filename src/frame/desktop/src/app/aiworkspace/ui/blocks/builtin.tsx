@@ -25,7 +25,6 @@ import { officeImports } from '../import/officeImportRequest'
 import { officeKind } from '@office/package'
 import { TableBlockContext } from '../table/TableBlockContext'
 import { StandardTableEditor } from '../table/StandardTableEditor'
-import { TableViewCell } from '../TableViewCell'
 import { sourceLabel } from './affordances'
 import { requestIntent, useOnFreeCanvas } from './editorToolbar'
 import { AssetCell, LockScope, NoteEditor, NoteReplies, RecordCell, RichTextCell } from './editors'
@@ -62,22 +61,21 @@ function useEmbedRenderer(depth: number) {
 
 // ---- table
 
-function TableStatic(context: RenderContext) {
-  const ui = useWorkspaceUi()
+function TableBlock(context: RenderContext) {
   const flow = useContext(PrintFragmentContext)
   const source = context.source
   if (!source) return null
   // a printed page has every row, laid out whole (打印 TODO T9)
   if (context.mode === 'print') return <div className="aiws-block-static"><PrintTable cellId={context.cell.entity_id} width={flow?.width ?? context.size.w} height={flow ? null : context.size.h} /></div>
+  const compact = !context.editorActive
   return (
-    <div className="aiws-block-static">
-      <TableBlockContext.Provider value={context}><TableViewCell cellId={context.cell.entity_id} readOnly compact annotations={ui.annotations} onActivateAnnotation={ui.setActiveAnnotation} /></TableBlockContext.Provider>
+    <div className={compact ? 'aiws-block-static' : undefined} style={compact ? undefined : { display: 'contents' }}>
+      <TableBlockContext.Provider value={context}>
+        <StandardTableEditor cellId={context.cell.entity_id} sourceId={source.entity_id} source={source}
+          compact={compact} readOnly={context.readOnlyReason !== null} />
+      </TableBlockContext.Provider>
     </div>
   )
-}
-
-function TableEditorView(context: RenderContext) {
-  return <TableBlockContext.Provider value={context}><StandardTableEditor cellId={context.cell.entity_id} sourceId={context.source?.entity_id ?? ''} source={context.source} readOnly={context.readOnlyReason !== null} /></TableBlockContext.Provider>
 }
 
 function TableSimplified(context: RenderContext) {
@@ -91,7 +89,7 @@ const canAppend = (context: RenderContext) => context.readOnlyReason === null &&
 const table: BlockDefinition = {
   type: 'table', version: 1, get title() { return aiwsT('aiworkspace.blocks.table.title') }, accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 640, h: 320 }, cost: { editor: true, html: false }, icon: Table,
-  Static: TableStatic, Simplified: TableSimplified, Editor: TableEditorView,
+  Static: TableBlock, Simplified: TableSimplified, Editor: TableBlock,
   catalog: {
     group: 'data', get description() { return aiwsT('aiworkspace.blocks.table.description') }, needs: 'none', standard: true, toolPicker: 4,
     variants: [

@@ -9,6 +9,7 @@
 import { createPortal } from 'react-dom'
 import { useContext, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { ClipboardCopy, Columns3, LayoutGrid, ListChecks, ListFilter, Lock, MoreHorizontal, Plus, Rows3, X } from 'lucide-react'
+import { LockScope } from '../blocks/editors'
 import { BlockTitle } from '../blocks/BlockTitle'
 import { useFlowBlock } from '../blocks/flowContext'
 import { TableBlockContext } from './TableBlockContext'
@@ -18,7 +19,7 @@ import { placeRow, rowOrderOp } from './rowOrder'
 import { insertRecordOp, missingRecordFields } from './insert'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
-import type { CellPayload, CommitOutcome, RowOrder, FilterNode, Json, KeyedContent, QueryRow, SortSpec, TableSourceContent } from '../../api/types'
+import type { CellPayload, CommitOutcome, EntityEnvelope, RowOrder, FilterNode, Json, KeyedContent, QueryRow, SortSpec, TableSourceContent } from '../../api/types'
 import type { SubmitOptions } from '../../state/store'
 import type { CapturedAnchor } from '../../anchors/registry'
 import { useEntity, useLoad, useReadOnlyReason, useStore, useUserState, useVersion, type AnnotationMark } from '../../state/hooks'
@@ -40,7 +41,7 @@ import {
 import { publishTableCurrent } from './current'
 import { TableRecordPanel, type RecordPanelState } from './RecordPanel'
 import { TableCards } from './TableCards'
-import { TableGrid, type CellRef } from './TableGrid'
+import { TableGrid, type CellRef, type TableGridProps } from './TableGrid'
 import { ConfirmPop, TableMenu, TablePop, anchorOf, usePop, type MenuItem } from './TablePop'
 import './table.css'
 
@@ -52,6 +53,7 @@ const DEFAULT_ROW_LIMIT = 100
 export interface TableEditorBodyProps {
   /** The table-view Block, or the table's synthetic view (`sourceMode`). */
   cell: CellRead
+  lockSource?: EntityEnvelope
   sourceMode?: boolean
   size: TableEditorSize
   awaitingLock?: boolean
@@ -75,7 +77,69 @@ interface TablePref extends PersonalColumns {
 
 type Panel = 'none' | 'filter' | 'fields'
 
-export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly, readOnlyReason, compact, annotations, onAnnotate, onActivateAnnotation }: TableEditorBodyProps) {
+function useTableData({ cell, sourceMode, compact }: TableEditorBodyProps) {
+  const store = useStore()
+  const cellId = cell.entity_id
+  const payload = cell.content.payload
+  const sourceId = payload.source_ref?.entity_id ?? ''
+  const sourceVersion = useVersion(`e:${sourceId}`)
+  const loadSource = useMemo(() => () => store.session.read<TableSourceContent>(sourceId), [store, sourceId])
+  const source = useLoad<SourceRead>(loadSource, sourceVersion)
+
+  // ---- personal state: a Block's `block:<id>/table`; the table itself keeps its old `tableview:<id>` entry (phase two §6.1)
+  const prefKey = sourceMode ? `tableview:${sourceId}` : `block:${cellId}/table`
+  const pref = useUserState<Json>(prefKey) as TablePref | undefined
+  const writePref = (change: Partial<TablePref>) => {
+    const next: Record<string, unknown> = { ...((store.userState.get<Json>(prefKey) as TablePref | undefined) ?? {}), ...change }
+    for (const key of Object.keys(next)) if (next[key] === null || next[key] === undefined) delete next[key]
+    store.userState.set(prefKey, Object.keys(next).length > 0 ? (next as Json) : null)
+  }
+  // session-level filter and sort (design §3.5.2): not a commit until "save view"; without a Block in the user state
+  const [localView, setLocalView] = useState<SessionView>({ filter: null, sorts: null })
+  if (compact && (localView.filter || localView.sorts)) setLocalView({ filter: null, sorts: null })
+  const sessionView: SessionView = sourceMode ? { filter: pref?.filter ?? null, sorts: pref?.sorts ?? null } : localView
+  const setSessionView = (view: SessionView) => { if (sourceMode) writePref({ filter: view.filter, sorts: view.sorts }); else setLocalView(view) }
+
+  // ---- rows
+  const rowOrder = sourceMode ? pref?.row_order : payload.row_order
+  const savedKey = JSON.stringify([payload.filter ?? null, payload.sorts ?? null, payload.fields ?? null, rowOrder ?? null])
+  const sessionKey = JSON.stringify(sessionView)
+  const { pager, viewportRef } = useMemo(() => {
+    const saved = JSON.parse(savedKey) as [FilterNode | null, SortSpec[] | null, unknown, RowOrder | null]
+    const session = JSON.parse(sessionKey) as SessionView
+    const query: PagerQuery = {
+      viewId: sourceMode ? undefined : cellId, sourceId, rowOrder: sourceMode ? saved[3] ?? undefined : undefined, filter: session.filter, sorts: session.sorts,
+      orderDependsOnData: Boolean(saved[0] || (saved[1] && saved[1].length > 0) || session.filter || (session.sorts && session.sorts.length > 0)),
+    }
+    return { pager: new TablePager(store.session, query), viewportRef: { current: { left: 0, top: 0 } } }
+  }, [store, cellId, sourceId, savedKey, sessionKey, sourceMode])
+  const rows = useSyncExternalStore(pager.subscribe, pager.snapshot)
+  // a Block may show only the first rows of its view (B7-3): a display limit, the data keeps every row
+  const savedLimit = (payload as { row_limit?: unknown }).row_limit
+  const rowLimit = !sourceMode && typeof savedLimit === 'number' ? savedLimit : null
+  const limited = rowLimit !== null && rows.total > rowLimit
+  const shown = limited ? { ...rows, rows: rows.rows.slice(0, rowLimit), total: rowLimit, done: rows.done || rows.rows.length >= rowLimit } : rows
+  // A schema change (field added, renamed, deleted, migrated) changes what a row means: read again.
+  const schemaKey = (source.data?.content.fields ?? []).map((field) => `${field.field_id}:${field.def_rev}`).join(',')
+  const lastSchema = useRef<string | null>(null)
+  useEffect(() => {
+    if (lastSchema.current !== null && lastSchema.current !== schemaKey) pager.refresh()
+    lastSchema.current = schemaKey
+  }, [schemaKey, pager])
+
+  return {
+    cellId, payload, sourceId, source, prefKey, pref, writePref, sessionView, setSessionView, sessionKey,
+    rowOrder, pager, viewportRef, rows, rowLimit, limited, shown,
+  }
+}
+
+export function TableEditorBody(props: TableEditorBodyProps) {
+  const data = useTableData(props)
+  const session = <TableEditorSession {...props} data={data} />
+  return props.compact ? session : <LockScope entity={props.lockSource} intentKey={props.cell.entity_id}>{session}</LockScope>
+}
+
+function TableEditorSession({ cell, sourceMode, size, awaitingLock, readOnly, readOnlyReason, compact, data, annotations, onAnnotate, onActivateAnnotation }: TableEditorBodyProps & { data: ReturnType<typeof useTableData> }) {
   const { t } = useAiwsText()
   const store = useStore()
   const phone = usePhone()
@@ -89,27 +153,12 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
     requestIntent(block.cell.entity_id, action)
     block.activateEditor()
   }
-  const cellId = cell.entity_id
-  const payload = cell.content.payload
-  const sourceId = payload.source_ref?.entity_id ?? ''
-  const sourceVersion = useVersion(`e:${sourceId}`)
-  const loadSource = useMemo(() => () => store.session.read<TableSourceContent>(sourceId), [store, sourceId])
-  const source = useLoad<SourceRead>(loadSource, sourceVersion)
+  const {
+    cellId, payload, sourceId, source, prefKey, pref, writePref, sessionView, setSessionView, sessionKey,
+    rowOrder, pager, viewportRef, rows, rowLimit, limited, shown,
+  } = data
   const entity = useEntity(sourceId)
   const directReason = useReadOnlyReason()
-
-  // ---- personal state: a Block's `block:<id>/table`; the table itself keeps its old `tableview:<id>` entry (phase two §6.1)
-  const prefKey = sourceMode ? `tableview:${sourceId}` : `block:${cellId}/table`
-  const pref = useUserState<Json>(prefKey) as TablePref | undefined
-  const writePref = (change: Partial<TablePref>) => {
-    const next: Record<string, unknown> = { ...((store.userState.get<Json>(prefKey) as TablePref | undefined) ?? {}), ...change }
-    for (const key of Object.keys(next)) if (next[key] === null || next[key] === undefined) delete next[key]
-    store.userState.set(prefKey, Object.keys(next).length > 0 ? (next as Json) : null)
-  }
-  // session-level filter and sort (design §3.5.2): not a commit until "save view"; without a Block in the user state
-  const [localView, setLocalView] = useState<SessionView>({ filter: null, sorts: null })
-  const sessionView: SessionView = sourceMode ? { filter: pref?.filter ?? null, sorts: pref?.sorts ?? null } : localView
-  const setSessionView = (view: SessionView) => { if (sourceMode) writePref({ filter: view.filter, sorts: view.sorts }); else setLocalView(view) }
   const device = phone ? 'phone' : 'desktop'
   const layout: TableLayout = pref?.layout?.[device] ?? (phone ? 'cards' : 'grid')
   const setLayout = (next: TableLayout) => writePref({ layout: { ...(pref?.layout ?? {}), [device]: next } })
@@ -135,33 +184,6 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
 
   // a record's link (控件机制 G12) opens its form
   useRecordFocus(intentKey, (focus) => setRecord({ kind: 'edit', recordId: focus.record }))
-
-  // ---- rows
-  const rowOrder = sourceMode ? pref?.row_order : payload.row_order
-  const savedKey = JSON.stringify([payload.filter ?? null, payload.sorts ?? null, payload.fields ?? null, rowOrder ?? null])
-  const sessionKey = JSON.stringify(sessionView)
-  const pager = useMemo(() => {
-    const saved = JSON.parse(savedKey) as [FilterNode | null, SortSpec[] | null, unknown, RowOrder | null]
-    const session = JSON.parse(sessionKey) as SessionView
-    const query: PagerQuery = {
-      viewId: sourceMode ? undefined : cellId, sourceId, rowOrder: sourceMode ? saved[3] ?? undefined : undefined, filter: session.filter, sorts: session.sorts,
-      orderDependsOnData: Boolean(saved[0] || (saved[1] && saved[1].length > 0) || session.filter || (session.sorts && session.sorts.length > 0)),
-    }
-    return new TablePager(store.session, query)
-  }, [store, cellId, sourceId, savedKey, sessionKey, sourceMode])
-  const rows = useSyncExternalStore(pager.subscribe, pager.snapshot)
-  // a Block may show only the first rows of its view (B7-3): a display limit, the data keeps every row
-  const savedLimit = (payload as { row_limit?: unknown }).row_limit
-  const rowLimit = !sourceMode && typeof savedLimit === 'number' ? savedLimit : null
-  const limited = rowLimit !== null && rows.total > rowLimit
-  const shown = limited ? { ...rows, rows: rows.rows.slice(0, rowLimit), total: rowLimit, done: rows.done || rows.rows.length >= rowLimit } : rows
-  // A schema change (field added, renamed, deleted, migrated) changes what a row means: read again.
-  const schemaKey = (source.data?.content.fields ?? []).map((field) => `${field.field_id}:${field.def_rev}`).join(',')
-  const lastSchema = useRef<string | null>(null)
-  useEffect(() => {
-    if (lastSchema.current !== null && lastSchema.current !== schemaKey) pager.refresh()
-    lastSchema.current = schemaKey
-  }, [schemaKey, pager])
 
   // ---- columns: a Block's view lists them; the table itself, this person
   const fields = source.data?.content.fields
@@ -263,7 +285,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
   const canChangeFields = canStructure || (staticWrite && caps.includes('structure'))
   const allowColumn = canChangeFields && (!payload.fields?.length || canEditView || sourceMode)
   const allowMove = (!compact && !readOnly || staticWrite) && !external && (sourceMode || canEditView) && !sorted
-  const [focusRequest, setFocusRequest] = useState<{ recordId: string; fieldId?: string; action: 'focus' | 'edit' | 'rename'; seq: number }>()
+  const [focusRequest, setFocusRequest] = useState<TableGridProps['focusRequest']>()
   const [addedOutside, setAddedOutside] = useState<string | null>(null)
   const anchor = useRef<{ id: string; side: Side; index?: number } | null>(null)
   const inserting = useRef(false)
@@ -460,7 +482,8 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
   const noEditing = !canUpdate && !canAppend
   const showReason = !compact && reason !== null && noEditing
 
-  const maxHeight = size !== 'embedded' ? null : compact ? 220 : phone ? 520 : 420
+  const canvasGrid = inNearToolbar && block?.depth === 0 && layout === 'grid'
+  const maxHeight = size !== 'embedded' || canvasGrid ? null : compact ? 220 : phone ? 520 : 420
   const filterPanel = (
     <FilterSortPanel
       key={sessionKey}
@@ -536,7 +559,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
         dispatch({ action: td.getAttribute('role') === 'columnheader' ? 'rename' : 'edit', fieldId: td.dataset.fieldId,
           recordId: td.dataset.recordId ?? row?.dataset.recordId, rowIndex: row ? Number(row.dataset.rowIndex) : undefined })
       } : undefined} className="aiws-table" data-testid={`aiws-table-${tableId}`} data-total={rows.total} data-loaded={rows.rows.length} data-compact={compact ? 'true' : 'false'}
-      data-layout={layout} data-size={size} data-phone={phone ? 'true' : undefined} data-selecting={selection ? 'true' : undefined}
+      data-layout={layout} data-size={canvasGrid ? 'canvas' : size} data-phone={phone ? 'true' : undefined} data-selecting={selection ? 'true' : undefined}
       onFocusCapture={publishes ? (event) => { const id = (event.target as HTMLElement).closest<HTMLElement>('.aiws-tr[data-record-id]')?.dataset.recordId; if (id) setFocusedRecord(id) } : undefined}>
       {flow ? flow.tableHeading && createPortal(heading, flow.tableHeading) : heading}
       {addedOutside && <div role="status">{t('aiworkspace.table.insertedElsewhere')} <button type="button" onClick={() => setRecord({ kind: 'edit', recordId: addedOutside })}>{t('aiworkspace.table.openInserted')}</button></div>}
@@ -594,7 +617,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
       ) : (
         <TableGrid tableId={tableId} sourceId={sourceId} fields={fields} columns={columns} rows={shown} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight} compact={Boolean(compact)} phone={phone}
           editable={canUpdate} resultTable={Boolean(source.data.derived)} titleField={titleField} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation}
-          showHandles={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll}
+          viewportRef={canvasGrid ? viewportRef : undefined} showHandles={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll}
           onOpen={(id) => { if (interactiveStatic) activeBlock({ action: 'openRecord', recordId: id }); else setRecord({ kind: 'edit', recordId: id }) }}
           annotatedRecords={annotatedSet} phoneCell={phoneCell} onPhoneCell={setPhoneCell} onPhoneEdit={(c) => { setPhoneCell(c); setEditBar(c) }}
           columnsEditable={(!compact || interactiveStatic) && columnsReason === null}
@@ -625,7 +648,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
           {canDelete && <button type="button" className="aiws-table-foot-btn is-danger" data-testid="aiws-table-selection-delete" disabled={selection.size === 0} onClick={(event) => pops.open('delete-selected', event.currentTarget)}>{t('aiworkspace.common.delete')}</button>}
           <button type="button" className="aiws-table-foot-btn" data-testid="aiws-table-selection-cancel" aria-label={t('aiworkspace.table.selection.cancel')} onClick={() => setSelection(null)}><X size={15} aria-hidden="true" />{t('aiworkspace.table.selection.cancel')}</button>
         </div>
-      ) : !compact && (
+      ) : (!compact || (canvasGrid && interactiveStatic)) && (
         <div className="aiws-table-foot">
           <span className="aiws-grow" />
           <span className="aiws-table-count" data-testid={`aiws-table-count-${tableId}`} data-limited={limited ? 'true' : undefined}>{pending ? '' : limited

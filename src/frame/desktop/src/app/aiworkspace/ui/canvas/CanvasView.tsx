@@ -27,7 +27,7 @@ import { RunModeContext, useRunMode } from '../../state/runMode'
 import type { WorkspaceStore } from '../../state/store'
 import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
-import { EditorToolbarContext, requestIntent, ToolbarSink, type CanvasCaret } from '../blocks/editorToolbar'
+import { EditorToolbarContext, getIntent, requestIntent, ToolbarSink, type CanvasCaret } from '../blocks/editorToolbar'
 import { blockRegistry, modePolicy, type CanvasMode, type ToolbarItem } from '../blocks/registry'
 import { RelationsPanel } from '../sources/RelationsPanel'
 import { AnnotationsPanel } from '../shell/AnnotationsPanel'
@@ -282,7 +282,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       return
     }
     if (id && caretAt) requestIntent(id, caretAt)
-    else if (l) camera.ensureVisible(l.bounds)
+    else if (l) {
+      const tableAction = getIntent(l.entity.entity_id)?.table?.action
+      if (tableAction !== 'edit' && tableAction !== 'rename') camera.ensureVisible(l.bounds)
+    }
     setEditingState(id)
     // editing is "selected + typing" (§4.4): an editor opened from an affordance selects its Block too
     // a group's backing (a swimlane's frame) is edited with its group selected

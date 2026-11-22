@@ -9,6 +9,8 @@
 /* the editor's own sizes: a data-mode tab and a phone's full screen fill their host */
 .aiws-table[data-size='tab'], .aiws-table[data-size='fullscreen'] { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .aiws-table[data-size='tab'] > .aiws-table-scroll, .aiws-table[data-size='fullscreen'] > .aiws-table-scroll { flex: 1 1 auto; min-height: 0; max-height: 100dvh; }
+.aiws-table[data-size='canvas'], .aiws-lock-scope:has(> .aiws-table[data-size='canvas']) { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.aiws-table[data-size='canvas'][data-compact='true'] > .aiws-table-foot:not(.aiws-table-selection) { visibility: hidden; }
 
 /* chips under the title row: what is filtered and sorted, the read-only reason */
 .aiws-table-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 0 0 4px; }
@@ -169,7 +171,15 @@
 }
 
 .aiws-grid-frame { position: relative; display: grid; grid-template: minmax(0,1fr) auto / minmax(0,1fr) auto; min-width: 0; min-height: 0; width: 100%; }
+/* Reserve the outside control's space on edge-to-edge surfaces before a row is selected. */
+.aiws-table:is([data-size='tab'], [data-size='fullscreen'], [data-size='embedded'][data-phone='true']) > .aiws-grid-frame:has(.aiws-track-header) {
+  margin-left: var(--row-menu-gutter, var(--row-control-size));
+  width: calc(100% - var(--row-menu-gutter, var(--row-control-size)));
+}
+/* The phone flow page already supplies 36px between the screen edge and the table. */
+.aiws-flow .aiws-table[data-size='embedded'] > .aiws-grid-frame { --row-menu-gutter: max(0px, calc(var(--row-control-size) - 36px)); }
 .aiws-table:is([data-size='tab'],[data-size='fullscreen'],[data-compact='true']) > .aiws-grid-frame { flex: 0 1 auto; margin-block-end: auto; }
+.aiws-table[data-size='canvas'] > .aiws-grid-frame { margin-block-end: 0; }
 .aiws-grid-frame > .aiws-table-scroll { grid-area: 1 / 1; min-height: 0; min-width: 0; }
 .aiws-grid-frame > .aiws-table-scroll:has(.aiws-track-header) { border-top: 0; }
 .aiws-grid-help { position: absolute; width: 1px; height: 1px; padding: 0; clip-path: inset(50%); overflow: hidden; }
@@ -198,13 +208,10 @@
 .aiws-col-track:has(> [aria-pressed='true'])::after { content: ''; position: absolute; inset-inline: 0; bottom: -1px; height: 2px; background: var(--cp-accent); pointer-events: none; }
 .aiws-row-tools { position: sticky; left: 0; z-index: 2; flex: none; width: 0; }
 .aiws-row-tools + .aiws-td { padding-inline-start: var(--row-control-size); }
-.aiws-root .aiws-row-tools > :is(button.aiws-track-grip, button.aiws-track-menu) { position: absolute; width: var(--row-control-size); height: var(--row-control-size); }
-.aiws-row-tools > button.aiws-track-grip { left: 0; top: 50%; transform: translateY(-50%); pointer-events: none; }
-.aiws-row-tools > button.aiws-track-menu {
-  left: var(--row-control-size);
-  /* On short rows the menu fits in the same vertical hit area as the grip. */
-  top: min(calc((100% - var(--row-control-size)) / 2), max(0px, calc(50% - var(--row-control-size))));
-}
+.aiws-root .aiws-row-tools > :is(button.aiws-track-grip, button.aiws-track-menu) { width: var(--row-control-size); height: var(--row-control-size); }
+.aiws-row-tools > button.aiws-track-grip { position: absolute; left: 0; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.aiws-root .aiws-row-tools > button.aiws-track-menu { position: fixed; inset: 0 auto auto 0; margin: 0; transform-origin: 0 0; transition: none; }
+.aiws-row-tools > button.aiws-track-menu[aria-expanded='true'] { opacity: 0; pointer-events: none; }
 .aiws-tr:is(:hover, :focus-within, [data-row-selected]) > .aiws-row-tools > button.aiws-track-grip,
 .aiws-grid-frame[data-pointer='touch'] .aiws-row-tools > button.aiws-track-grip { opacity: 1; pointer-events: auto; background: var(--cp-surface-opaque, var(--cp-surface)); }
 .aiws-grid-frame .aiws-td-rowhead { padding: 0; gap: 0; }
@@ -232,7 +239,7 @@
 .aiws-row-tools > .aiws-grid-resize.has-dot::after { top: auto; bottom: -3px; transform: translateX(-50%); }
 .aiws-tr[data-last-row] > .aiws-row-tools > .aiws-grid-resize.has-dot::after { bottom: 0; }
 .aiws-root .aiws-row-tools > button.aiws-track-menu { background: transparent; }
-.aiws-row-tools > button.aiws-track-menu > svg { align-self: start; width: 12px; height: 12px; background: var(--cp-surface-opaque, var(--cp-surface)); border-radius: 3px; }
+.aiws-row-tools > button.aiws-track-menu > svg { width: 12px; height: 12px; background: var(--cp-surface-opaque, var(--cp-surface)); border-radius: 3px; }
 .aiws-tr[data-row-selected] { z-index: 2; }
 .aiws-tr[data-row-selected]::after { content: ''; position: absolute; inset: 0; z-index: 1; border: 2px solid var(--cp-accent); pointer-events: none; }
 .aiws-track-drop { position: absolute; height: 100%; width: 2px; background: var(--cp-accent); top: 0; pointer-events: none; z-index: 5; }

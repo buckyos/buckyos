@@ -365,10 +365,17 @@ test('§5.5 the status bar shows the row a table is on: the current cell’s row
   await page.keyboard.press('ArrowDown')
   await expect(info).toHaveText('表 · 第 4 行 / 共 12 行')
   // the record open in its form; its next record moves the table along, and it stays the current one when closed
+  await page.getByTestId('aiws-dm-tree-hide').click()
+  await expect(page.getByTestId('aiws-dm-tree-show')).toBeVisible()
   const fifth = await grid.getByTestId('aiws-row').nth(4).getAttribute('data-record-id')
   await grid.getByTestId('aiws-row').nth(4).getByRole('gridcell').first().hover()
   await grid.getByTestId(`aiws-row-handle-${fifth}`).click()
-  await grid.getByTestId(`aiws-row-menu-${fifth}`).click()
+  const rowMenu = page.getByTestId(`aiws-row-menu-${fifth}`)
+  await expect(rowMenu).toBeInViewport({ ratio: 1 })
+  await expect(rowMenu.locator('svg')).toBeVisible()
+  const button = (await rowMenu.boundingBox())!
+  expect(button.x + button.width).toBeLessThanOrEqual((await grid.getByRole('grid').boundingBox())!.x + 1)
+  await page.mouse.click(button.x + 2, button.y + button.height / 2)
   await page.getByTestId('aiws-ctl-menu-open-record').click()
   await expect(info).toHaveText('表 · 第 5 行 / 共 12 行')
   await page.getByTestId('aiws-table-record-next').click()
@@ -381,6 +388,7 @@ test('§5.5 the status bar shows the row a table is on: the current cell’s row
   await page.keyboard.press('Escape')
   await expect(info).toHaveText('表 · 第 3 行 / 共 12 行')
   // another tab has no row; the table's tab opened again starts on none
+  await page.getByTestId('aiws-dm-tree-show').click()
   await page.getByTestId('aiws-tree-intro').dblclick()
   await expect(info).not.toContainText('第')
   await tab(page, 'sales').click()

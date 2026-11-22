@@ -32,6 +32,25 @@ const gridLayoutAtRow = (grid: Locator, recordId: string) => grid.evaluate((el, 
   }
 }, recordId)
 
+async function expectRowMenuAtLeft(page: Page, table: Locator, id: string) {
+  const menu = page.getByTestId(`aiws-row-menu-${id}`)
+  await expect(menu).toBeVisible()
+  await expect.poll(async () => {
+    const button = (await menu.boundingBox())!
+    const grip = (await table.getByTestId(`aiws-row-handle-${id}`).boundingBox())!
+    const grid = (await table.getByRole('grid').boundingBox())!
+    return Math.max(
+      button.x + button.width - Math.min(grid.x, grip.x),
+      Math.abs((button.y + button.height / 2) - (grip.y + grip.height / 2)),
+    )
+  }).toBeLessThanOrEqual(1)
+  await expect.poll(() => menu.evaluate(el => {
+    const { x, y, width, height } = el.getBoundingClientRect()
+    return el.contains(document.elementFromPoint(x + width / 2, y + height / 2))
+  })).toBe(true)
+  return menu
+}
+
 test('UI-T01 §7.3 on a computer: grid and cards per person, the record form beside the table, written field by field, prev / next, delete asked first', async ({ page, api }) => {
   const ws = await api.sample(ALICE, `table form ${Date.now()}`)
   await openWorkspace(page, ALICE, ws.workspace_id)
@@ -133,7 +152,8 @@ test('UI-T01 §7.3 on a computer: grid and cards per person, the record form bes
   await expect(all).toHaveAttribute('data-layout', 'grid')
   await all.getByTestId('aiws-cell-task-40-title').hover()
   await all.getByTestId('aiws-row-handle-task-40').click()
-  await all.getByTestId('aiws-row-menu-task-40').click()
+  const rowMenu = await expectRowMenuAtLeft(page, all, 'task-40')
+  await rowMenu.click()
   await page.getByTestId('aiws-ctl-menu-open-record').click()
   await expect(form).toHaveAttribute('data-record-id', 'task-40')
   await form.getByTestId('aiws-table-record-close').click()
@@ -183,7 +203,11 @@ test('UI-T02 §7.3 on a computer: several filter conditions as chips under the t
   const bulkLayout = await gridLayoutAtRow(grid, 'task-42')
   await rowGrip.click()
   await expect(rowGrip).toHaveAttribute('aria-pressed', 'true')
-  await expect(all.getByTestId('aiws-row-menu-task-42')).toBeVisible()
+  const rowMenu = await expectRowMenuAtLeft(page, all, 'task-42')
+  await rowGrip.press('Tab')
+  await expect(rowMenu).toBeFocused()
+  await rowMenu.press('Shift+Tab')
+  await expect(rowGrip).toBeFocused()
   expect(await gridLayoutAtRow(grid, 'task-42')).toEqual(bulkLayout)
   await expect(all.getByTestId('aiws-table-selection-count')).toHaveText('已选 2 条')
   await rowGrip.blur()
@@ -652,8 +676,19 @@ test.describe('on a phone', () => {
     await expectAllCommitted(page)
     expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-40', 'owner')).value).toBe('钱')
     // The row menu opens its full-screen form.
-    await all.getByTestId('aiws-row-handle-task-41').tap()
-    await all.getByTestId('aiws-row-menu-task-41').tap()
+    const rowGrip = all.getByTestId('aiws-row-handle-task-41')
+    await rowGrip.tap()
+    const rowMenu = page.getByTestId('aiws-row-menu-task-41')
+    await all.getByRole('grid').evaluate(el => el.scrollBy(150, 0))
+    await big(rowMenu, 'row menu')
+    await expect.poll(async () => {
+      const menu = (await rowMenu.boundingBox())!
+      const grip = (await rowGrip.boundingBox())!
+      return Math.abs(menu.y + menu.height / 2 - grip.y - grip.height / 2)
+    }).toBeLessThanOrEqual(1)
+    await expect(rowMenu).toBeInViewport({ ratio: 1 })
+    const box = (await rowMenu.boundingBox())!
+    await page.touchscreen.tap(box.x + 2, box.y + box.height / 2)
     await page.getByTestId('aiws-ctl-menu-open-record').tap()
     await expect(page.getByTestId('aiws-table-record-panel')).toHaveAttribute('data-record-id', 'task-41')
     await page.getByTestId('aiws-table-record-close').tap()
@@ -801,6 +836,117 @@ test('canvas table add buttons use only icons and the row button follows the las
   await expect(grid.getByRole('columnheader')).toHaveCount(4)
 })
 
+test('editing a tall first row keeps the partially visible table and the canvas camera in place', async ({ page, api }) => {
+  const ws = await freeGrid(api, 10)
+  const result = await api.commit(ALICE, ws, [
+    { op: 'entity.set_keys', entity_id: 'touch-table', keys: [{ key: 'config', value: { row_heights: { t0: 140, t2: 95 } }, expect: { rev: 0 } }] },
+    { op: 'table.set_values', source_id: 'touch-data', values: [{ record_id: 't0', field_id: 'label', value: '点击我', expect: { rev: 0 } }] },
+  ])
+  expect(result.status, JSON.stringify(result)).toBe('accepted')
+  await openWorkspacePage(page, ALICE, ws.workspace_id, 'board')
+  const table = page.getByTestId('aiws-table-touch-table')
+  const title = table.getByTestId('aiws-cell-title-touch-table')
+  await title.hover()
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -740)
+  await page.keyboard.up('Control')
+  const world = page.getByTestId('aiws-world')
+  await expect.poll(() => world.evaluate(el => new DOMMatrixReadOnly(getComputedStyle(el).transform).a)).toBeGreaterThan(3)
+  const camera = await world.evaluate(el => getComputedStyle(el).transform)
+  const block = (await page.getByTestId('aiws-canvas-block-touch-table').boundingBox())!
+  const canvas = (await page.getByTestId('aiws-canvas').boundingBox())!
+  expect(block.width).toBeGreaterThan(canvas.width)
+  expect(block.height).toBeGreaterThan(canvas.height)
+  const grid = table.getByRole('grid')
+  const first = grid.getByTestId('aiws-cell-t0-label')
+  const value = first.getByRole('button', { name: 'Label t0', exact: true })
+  await expect(table).toHaveAttribute('data-compact', 'true')
+  await expect(value).toBeVisible()
+  const before = await gridLayoutAtRow(grid, 't0')
+  await title.click()
+  expect(await gridLayoutAtRow(grid, 't0')).toEqual(before)
+  const paintedPositions = await world.evaluateHandle(el => {
+    const positions = new Set<string>()
+    let frame: number
+    const sample = () => {
+      const cell = document.querySelector('[data-testid="aiws-cell-t0-label"]')
+      const bounds = cell?.getBoundingClientRect()
+      positions.add(JSON.stringify([getComputedStyle(el).transform, bounds && Math.round(bounds.x), bounds && Math.round(bounds.y)]))
+      frame = requestAnimationFrame(sample)
+    }
+    sample()
+    return () => { cancelAnimationFrame(frame); return [...positions].map(position => JSON.parse(position)) }
+  })
+  await value.click()
+  const editor = first.getByRole('textbox')
+  await expect(editor).toBeFocused()
+  await page.waitForTimeout(350)
+  expect(await paintedPositions.evaluate(stop => stop())).toEqual([[camera, ...before.cells[0].slice(0, 2)]])
+  await expect(editor).toHaveValue('点击我')
+  expect(await gridLayoutAtRow(grid, 't0')).toEqual(before)
+  await editor.fill('已编辑')
+  await editor.press('Enter')
+  await expect(value).toBeFocused()
+  await expect(value).toHaveText('已编辑')
+  expect(await gridLayoutAtRow(grid, 't0')).toEqual(before)
+})
+
+test('a canvas cell keeps the scrolled viewport on click and Tab reaches the next cell', async ({ page, api }) => {
+  const ws = await freeGrid(api)
+  await openWorkspacePage(page, ALICE, ws.workspace_id, 'board')
+  const table = page.getByTestId('aiws-table-touch-table')
+  const grid = table.getByRole('grid')
+  await expect(table).toHaveAttribute('data-compact', 'true')
+  await expect(table).toHaveAttribute('data-loaded', '40')
+  const block = page.getByTestId('aiws-canvas-block-touch-table')
+  const bounds = (await block.boundingBox())!
+  const canvas = (await page.getByTestId('aiws-canvas').boundingBox())!
+  expect(bounds.width).toBeLessThan(canvas.width)
+  expect(bounds.height).toBeLessThan(canvas.height)
+  await page.mouse.move(canvas.x + canvas.width - 80, canvas.y + canvas.height / 2)
+  await page.mouse.wheel(bounds.x - canvas.x + 24, 0)
+  await expect.poll(async () => (await block.boundingBox())!.x).toBeLessThan(canvas.x)
+  const world = page.getByTestId('aiws-world')
+  const camera = await world.evaluate(el => getComputedStyle(el).transform)
+  await grid.evaluate((el) => el.scrollTo(110, 313))
+  const cell = grid.getByTestId('aiws-cell-t12-notes')
+  await expect(cell).toBeVisible()
+  const before = await gridLayoutAtRow(grid, 't12')
+  expect(before.scroll.slice(0, 2)).toEqual([110, 313])
+  const value = (await cell.locator('.aiws-cell-value').boundingBox())!
+  await page.mouse.click(value.x + 20, value.y + value.height / 2)
+  const editor = cell.getByRole('textbox')
+  await expect(editor).toBeFocused()
+  await expect(world).toHaveCSS('transform', camera)
+  expect(await gridLayoutAtRow(grid, 't12')).toEqual(before)
+  await editor.fill('saved with Tab')
+  await editor.press('Tab')
+  await expect(grid.getByRole('button', { name: 'Label t13', exact: true })).toBeFocused()
+  expect((await api.cell(ALICE, ws.workspace_id, 'touch-data', 't12', 'notes')).value).toBe('saved with Tab')
+  await page.mouse.click(canvas.x + canvas.width - 80, canvas.y + canvas.height / 2)
+  await expect(table).toHaveAttribute('data-compact', 'true')
+  const header = grid.getByTestId('aiws-th-notes')
+  const headerBounds = await header.boundingBox()
+  await header.getByRole('button', { name: 'Notes', exact: true }).click()
+  await expect(header.getByRole('textbox')).toBeFocused()
+  await expect(world).toHaveCSS('transform', camera)
+  expect(await header.boundingBox()).toEqual(headerBounds)
+})
+
+test('canvas cell activation preserves scrolling before the browser dispatches the scroll event', async ({ page, api }) => {
+  const ws = await freeGrid(api)
+  await openWorkspacePage(page, ALICE, ws.workspace_id, 'board')
+  const grid = page.getByTestId('aiws-table-touch-table').getByRole('grid')
+  const cell = grid.getByTestId('aiws-cell-t12-notes')
+  await expect(cell).toBeAttached()
+  await grid.evaluate(el => {
+    el.scrollTo(110, 313)
+    el.querySelector<HTMLButtonElement>('[data-testid="aiws-cell-t12-notes"] .aiws-cell-value')!.click()
+  })
+  await expect(cell.getByRole('textbox')).toBeFocused()
+  expect(await grid.evaluate(el => [el.scrollLeft, el.scrollTop])).toEqual([110, 313])
+})
+
 test('a resting canvas table shares its title row with the selected column controls', async ({ page, api }) => {
   const ws = await freeGrid(api)
   await openWorkspacePage(page, ALICE, ws.workspace_id, 'board')
@@ -863,6 +1009,9 @@ test('a resting canvas table shares its title row with the selected column contr
 test('a resting canvas table exposes handles and preserves a late-page anchor across editor activation', async ({ page, api }) => {
   const count = 240
   const ws = await freeGrid(api, count)
+  const resized = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'touch-table',
+    keys: [{ key: 'config', value: { row_heights: { t238: 130 } }, expect: { rev: 0 } }] }])
+  expect(resized.status, JSON.stringify(resized)).toBe('accepted')
   await openWorkspacePage(page, ALICE, ws.workspace_id, 'board')
   await fitAll(page)
   const table = page.getByTestId('aiws-table-touch-table')
@@ -900,17 +1049,19 @@ test('a resting canvas table exposes handles and preserves a late-page anchor ac
   const beforeRowSelection = await gridLayoutAtRow(grid, 't238')
   await handle.click()
   await expect(handle).toHaveAttribute('aria-pressed', 'true')
-  await expect(table.getByTestId('aiws-row-menu-t238')).toBeVisible()
+  const rowMenu = await expectRowMenuAtLeft(page, table, 't238')
   await expect(table.getByTestId(/^aiws-row-check-/)).toHaveCount(0)
   await expect(table.getByTestId('aiws-table-selection-touch-table')).toHaveCount(0)
   await expect(table).toHaveAttribute('data-compact', 'true')
   expect(await gridLayoutAtRow(grid, 't238')).toEqual(beforeRowSelection)
   await handle.blur()
   await expect(handle).toHaveAttribute('aria-pressed', 'false')
-  await expect(table.getByTestId('aiws-row-menu-t238')).toHaveCount(0)
+  await expect(rowMenu).toHaveCount(0)
   expect(await gridLayoutAtRow(grid, 't238')).toEqual(beforeRowSelection)
   await handle.click()
-  await table.getByTestId('aiws-row-menu-t238').click()
+  await grid.evaluate(el => { el.scrollBy(20, -26) })
+  await expectRowMenuAtLeft(page, table, 't238')
+  await rowMenu.click()
   await page.getByTestId('aiws-ctl-menu-insert-row-before').click()
   const read = () => api.table(ALICE, ws.workspace_id, { view_id: 'touch-table', limit: 300 })
   await expect.poll(async () => (await read()).total).toBe(count + 1)
@@ -1020,7 +1171,7 @@ test.describe('iPad grid', () => {
     await handle.tap()
     await expect(grid.locator('.aiws-grid-frame')).toHaveAttribute('data-pointer', 'touch')
     await expect(handle).toHaveAttribute('aria-pressed', 'true')
-    await expect(grid.getByTestId('aiws-row-menu-task-41')).toBeVisible()
+    const rowMenu = await expectRowMenuAtLeft(page, grid, 'task-41')
     await expect(grid.getByTestId(/^aiws-row-check-/)).toHaveCount(0)
     await expect(grid.getByTestId('aiws-table-selection-cell-all-tasks')).toHaveCount(0)
     expect(await gridLayoutAtRow(scroller, 'task-41')).toEqual(beforeRowSelection)
@@ -1034,6 +1185,7 @@ test.describe('iPad grid', () => {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...p, y: p.y + 30 }] })
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     await expect.poll(async () => (await cellPayload(api, ws.workspace_id, 'cell-all-tasks')).config?.row_heights?.['task-41']).toBe(74)
+    await expectRowMenuAtLeft(page, grid, 'task-41')
     const changed = (await resize.boundingBox())!
     const start = { x: changed.x + changed.width / 2, y: changed.y + changed.height / 2, id: 2 }
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] })
@@ -1049,6 +1201,10 @@ test.describe('iPad grid', () => {
     await expect.poll(async () => (await api.table(ALICE, ws.workspace_id, { view_id: 'cell-all-tasks' })).rows.map((r: { record_id: string }) => r.record_id))
       .toEqual(['task-40', 'task-42', 'task-41', 'task-43', 'task-44'])
     await expect(grid.locator('[data-row-index="2"]')).toHaveAttribute('data-record-id', 'task-41')
+    await handle.tap()
+    await rowMenu.tap()
+    await expect(page.getByTestId('aiws-ctl-menu-open-record')).toBeVisible()
+    await page.keyboard.press('Escape')
     const column = grid.getByTestId('aiws-col-handle-title')
     await column.tap()
     await expect(column).toHaveAttribute('aria-pressed', 'true')

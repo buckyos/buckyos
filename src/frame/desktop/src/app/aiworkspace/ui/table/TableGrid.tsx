@@ -23,6 +23,45 @@ type Track = { axis: Axis; id: string }
 
 export interface CellRef { recordId: string; fieldId: string }
 
+// Keep the button in the row's tab order, but paint it outside the grid's scroll clip.
+function positionRowMenu(button: HTMLButtonElement | null) {
+  const rail = button?.parentElement
+  const grip = rail?.querySelector<HTMLButtonElement>('.aiws-track-grip')
+  if (!button || !rail || !grip) return
+  button.showPopover()
+  let frame = 0
+  let lastTransform = ''
+  const update = () => {
+    const handle = grip.getBoundingClientRect()
+    const centerX = handle.left + handle.width / 2
+    const centerY = handle.top + handle.height / 2
+    const halfWidth = grip.offsetWidth / 2
+    const hit = document.elementFromPoint(centerX, centerY)
+    const visible = halfWidth > 0 && (grip.contains(hit) || button.contains(hit))
+    if (visible) {
+      // The zero-width rail runs through the grip's left edge. The vector to the
+      // grip's center captures both canvas zoom and rotation in viewport coordinates.
+      const bounds = rail.getBoundingClientRect()
+      const x = bounds.left + bounds.width / 2
+      const y = bounds.top + bounds.height / 2
+      const a = (centerX - x) / halfWidth
+      const b = (centerY - y) / halfWidth
+      const transform = `matrix(${a},${b},${-b},${a},${x},${y}) translate(calc(-100% - ${rail.style.left}), -50%)`
+      if (transform !== lastTransform) {
+        button.style.transform = transform
+        lastTransform = transform
+      }
+    }
+    button.style.visibility = visible ? '' : 'hidden'
+    frame = requestAnimationFrame(update)
+  }
+  update()
+  return () => {
+    cancelAnimationFrame(frame)
+    button.hidePopover()
+  }
+}
+
 export interface TableGridProps {
   tableId: string
   sourceId: string
@@ -31,6 +70,7 @@ export interface TableGridProps {
   rows: PagerSnapshot
   pager: TablePager
   scrollRef: RefObject<HTMLDivElement | null>
+  viewportRef?: RefObject<{ left: number; top: number }>
   /** A bounded box (px), or null: fill the editor's height. */
   maxHeight: number | null
   compact: boolean
@@ -71,7 +111,7 @@ export interface TableGridProps {
 export function TableGrid(props: TableGridProps) {
   const { t } = useAiwsText()
   const store = useStore()
-  const { tableId, columns, rows, pager, scrollRef, phone, showHandles, selection, rowHeights, focusRequest } = props
+  const { tableId, columns, rows, pager, scrollRef, viewportRef, phone, showHandles, selection, rowHeights, focusRequest } = props
   const helpId = useId()
   const menuId = useId()
   const trackControls = useRef<HTMLDivElement>(null)
@@ -120,7 +160,14 @@ export function TableGrid(props: TableGridProps) {
   }), [rows.rows, defaultHeight, rowHeights, rowPreview])
   // eslint-disable-next-line react-hooks/incompatible-library -- the virtualizer owns viewport measurements
   const virtualizer = useVirtualizer({ count: rows.total, getScrollElement: () => scrollRef.current, ...geometry,
-    overscan: 8, scrollMargin: headerHeight, scrollPaddingStart: headerHeight })
+    initialOffset: () => viewportRef?.current.top ?? 0, overscan: 8, scrollMargin: headerHeight, scrollPaddingStart: headerHeight })
+  useLayoutEffect(() => {
+    const root = scrollRef.current
+    if (!root || !viewportRef) return
+    root.scrollTo(viewportRef.current)
+    root.style.setProperty('--aiws-grid-scroll-y', `${root.scrollTop}px`)
+    return () => { viewportRef.current = { left: root.scrollLeft, top: root.scrollTop } }
+  }, [scrollRef, viewportRef])
   const items = virtualizer.getVirtualItems()
   const lastIndex = items.at(-1)?.index ?? 0
   useEffect(() => { pager.ensure(lastIndex) }, [pager, lastIndex])
@@ -168,7 +215,10 @@ export function TableGrid(props: TableGridProps) {
     if (!loaded[row]) { pager.ensure(row); return }
     const col = request?.fieldId ? columns.findIndex((c) => c.field.field_id === request.fieldId) : destination?.col
     const targetRow = root.querySelector<HTMLElement>(`[data-row-index="${row}"]`)
-    if (!targetRow) { virtualizer.scrollToIndex(row, { align: 'auto' }); return }
+    if (!targetRow) {
+      if (items.length) virtualizer.scrollToIndex(row, { align: 'auto' })
+      return
+    }
     const button = col === undefined
       ? targetRow.querySelector<HTMLElement>('[data-editable="true"] [data-col], [data-editable="true"] [data-ref-edit]') ?? targetRow.querySelector<HTMLElement>('[data-col]')
       : targetRow.querySelector<HTMLElement>(`[data-col="${col}"]`)
@@ -176,11 +226,13 @@ export function TableGrid(props: TableGridProps) {
     if (request) handled.current = request.seq
     if (destination) setDestination(null)
     button.focus({ preventScroll: true })
-    virtualizer.scrollToIndex(row, { align: 'auto' })
-    const rect = button.getBoundingClientRect(), bounds = root.getBoundingClientRect()
-    const scale = bounds.width / (root.offsetWidth || 1) || 1
-    if (rect.right > bounds.right) root.scrollLeft += (rect.right - bounds.right) / scale
-    else if (rect.left < bounds.left + headWidth * scale) root.scrollLeft -= (bounds.left + headWidth * scale - rect.left) / scale
+    if (request?.action !== 'edit') {
+      virtualizer.scrollToIndex(row, { align: 'auto' })
+      const rect = button.getBoundingClientRect(), bounds = root.getBoundingClientRect()
+      const scale = bounds.width / (root.offsetWidth || 1) || 1
+      if (rect.right > bounds.right) root.scrollLeft += (rect.right - bounds.right) / scale
+      else if (rect.left < bounds.left + headWidth * scale) root.scrollLeft -= (bounds.left + headWidth * scale - rect.left) / scale
+    }
     if (request?.action === 'edit') button.click()
   }, [destination, focusRequest, loaded, rows.total, columns, items, pager, scrollRef, virtualizer, props.editable, headWidth])
 
@@ -283,6 +335,7 @@ export function TableGrid(props: TableGridProps) {
   }
   const trackMenu = (target: Track, name: string) => (
     <button type="button" className="aiws-track-menu" aria-label={t('aiworkspace.table.grid.actions', { name })} aria-haspopup="menu"
+      popover={target.axis === 'row' ? 'manual' : undefined} ref={target.axis === 'row' ? positionRowMenu : undefined}
       aria-expanded={menuOpen(target)} aria-controls={menuOpen(target) ? menuId : undefined}
       data-testid={`aiws-${target.axis === 'column' ? 'col' : 'row'}-menu-${target.id}`} onClick={(e) => setMenu({ track: target, anchor: anchorOf(e.currentTarget) })}><Menu size={14} /></button>
   )
@@ -341,7 +394,11 @@ export function TableGrid(props: TableGridProps) {
       }} onPointerLeave={(e) => { delete e.currentTarget.dataset.near; setHoveredField(null) }}>
       <span className="aiws-grid-help" id={helpId}>{t('aiworkspace.table.grid.keys')}</span>
       <div ref={scrollRef} className="aiws-table-scroll" style={{ maxHeight: props.maxHeight ?? undefined, scrollPaddingInlineStart: phone ? headWidth + (columns[0] ? widthOf(columns[0], 0) : 0) : headWidth }}
-        onScroll={({ currentTarget }) => currentTarget.style.setProperty('--aiws-grid-scroll-y', `${currentTarget.scrollTop}px`)}
+        onScroll={({ currentTarget }) => {
+          const { scrollLeft, scrollTop } = currentTarget
+          if (viewportRef) viewportRef.current = { left: scrollLeft, top: scrollTop }
+          currentTarget.style.setProperty('--aiws-grid-scroll-y', `${scrollTop}px`)
+        }}
         data-testid={`aiws-table-scroll-${tableId}`} role="grid" aria-describedby={helpId}
         aria-rowcount={rows.total + (props.showHeader === false ? 0 : 1)} aria-colcount={columns.length} data-phone={phone ? 'true' : undefined}>
         <div className="aiws-grid-top" style={{ width: totalWidth }}>

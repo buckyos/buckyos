@@ -4,7 +4,7 @@
 
 import { useCallback } from 'react'
 import type { CapturedAnchor } from '../anchors/registry'
-import type { CellPayload, KeyedContent } from '../api/types'
+import type { CellPayload, EntityEnvelope, KeyedContent } from '../api/types'
 import { useLoad, useStore, useVersion, type AnnotationMark } from '../state/hooks'
 import { useAiwsText } from '../useAiwsText'
 import type { TableEditorSize } from './table/model'
@@ -16,6 +16,7 @@ interface Props {
   /** A table-view Cell; or, without one, the table itself (data-source view, phase two §6.1). */
   cellId?: string
   sourceId?: string
+  lockSource?: EntityEnvelope
   /** No editing at all (embedded rendering, missing capability, write lock not held). */
   awaitingLock?: boolean
   readOnly: boolean
@@ -30,14 +31,14 @@ interface Props {
   onActivateAnnotation?: (entityId: string | null) => void
 }
 
-export function TableViewCell({ cellId, sourceId, awaitingLock, readOnly, readOnlyReason, compact, size = 'embedded', annotations, onAnnotate, onActivateAnnotation }: Props) {
+export function TableViewCell({ cellId, sourceId, lockSource, awaitingLock, readOnly, readOnlyReason, compact, size = 'embedded', annotations, onAnnotate, onActivateAnnotation }: Props) {
   const { t } = useAiwsText()
   const store = useStore()
   const id = cellId ?? ''
   const cellVersion = useVersion(`e:${id}`)
   const loadCell = useCallback(() => (cellId ? store.session.read<KeyedContent<CellPayload>>(cellId) : Promise.resolve(null)), [store, cellId])
   const cell = useLoad<CellRead | null>(loadCell, cellVersion)
-  const common = { awaitingLock, readOnly, readOnlyReason, compact, size, annotations, onAnnotate, onActivateAnnotation }
+  const common = { lockSource, awaitingLock, readOnly, readOnlyReason, compact, size, annotations, onAnnotate, onActivateAnnotation }
   if (!cellId && sourceId) {
     // no Block: the table itself, with the sort / filter and the columns kept in the user work state (§4.4)
     const synthetic: CellRead = {
