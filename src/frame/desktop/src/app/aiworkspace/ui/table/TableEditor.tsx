@@ -260,7 +260,8 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
   const schemaId = source.data?.schema_id ?? entity?.schema_id
   const staticWrite = interactiveStatic && block?.readOnlyReason === null && !external
   const allowRow = canAppend || (staticWrite && caps.some((cap) => cap === 'append' || cap === 'update'))
-  const allowColumn = (canStructure || (staticWrite && caps.includes('structure'))) && (!payload.fields?.length || canEditView || sourceMode)
+  const canChangeFields = canStructure || (staticWrite && caps.includes('structure'))
+  const allowColumn = canChangeFields && (!payload.fields?.length || canEditView || sourceMode)
   const allowMove = (!compact && !readOnly || staticWrite) && !external && (sourceMode || canEditView) && !sorted
   const [focusRequest, setFocusRequest] = useState<{ recordId: string; fieldId?: string; action: 'focus' | 'edit' | 'rename'; seq: number }>()
   const [addedOutside, setAddedOutside] = useState<string | null>(null)
@@ -593,7 +594,7 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
       ) : (
         <TableGrid tableId={tableId} sourceId={sourceId} fields={fields} columns={columns} rows={shown} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight} compact={Boolean(compact)} phone={phone}
           editable={canUpdate} resultTable={Boolean(source.data.derived)} titleField={titleField} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation}
-          showHandles={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll} onStartSelect={(id) => setSelection(new Set([id]))}
+          showHandles={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll}
           onOpen={(id) => { if (interactiveStatic) activeBlock({ action: 'openRecord', recordId: id }); else setRecord({ kind: 'edit', recordId: id }) }}
           annotatedRecords={annotatedSet} phoneCell={phoneCell} onPhoneCell={setPhoneCell} onPhoneEdit={(c) => { setPhoneCell(c); setEditBar(c) }}
           columnsEditable={(!compact || interactiveStatic) && columnsReason === null}
@@ -610,8 +611,8 @@ export function TableEditorBody({ cell, sourceMode, size, awaitingLock, readOnly
           }}
           onInsertRow={allowRow ? insertRow : undefined} onInsertColumn={allowColumn ? insertColumn : undefined}
           activateCells={Boolean((interactiveStatic && !block?.readOnlyReason || awaitingLock) && !external && caps.includes('update'))} allowNearRow={Boolean(sourceMode || canEditView || sorted)}
-          onMoveRow={allowMove ? moveRow : undefined} onClearSelection={() => setSelection(null)} sorted={sorted} limited={limited}
-          rowHeights={appearance.rowHeights} showHeader={appearance.showHeader} canRenameField={!compact && canStructure}
+          onMoveRow={allowMove ? moveRow : undefined} sorted={sorted} limited={limited}
+          rowHeights={appearance.rowHeights} showHeader={appearance.showHeader} canRenameField={(!compact || interactiveStatic) && canChangeFields}
           onResizeRow={(canEditView || sourceMode) ? (id, px) => { void saveAppearance({}, { id, px }).catch((e) => store.notify('error', String(e))) } : undefined}
           onExitGrid={leave} focusRequest={focusRequest} />
       )}

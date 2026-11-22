@@ -169,11 +169,13 @@
 }
 
 .aiws-grid-frame { position: relative; display: grid; grid-template: minmax(0,1fr) auto / minmax(0,1fr) auto; min-width: 0; min-height: 0; width: 100%; }
-.aiws-table:is([data-size='tab'],[data-size='fullscreen'],[data-compact='true']) > .aiws-grid-frame { flex: 1 1 auto; }
+.aiws-table:is([data-size='tab'],[data-size='fullscreen'],[data-compact='true']) > .aiws-grid-frame { flex: 0 1 auto; margin-block-end: auto; }
 .aiws-grid-frame > .aiws-table-scroll { grid-area: 1 / 1; min-height: 0; min-width: 0; }
 .aiws-grid-frame > .aiws-table-scroll:has(.aiws-track-header) { border-top: 0; }
 .aiws-grid-help { position: absolute; width: 1px; height: 1px; padding: 0; clip-path: inset(50%); overflow: hidden; }
-.aiws-grid-top { position: sticky; top: 0; z-index: 3; background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-grid-top { position: sticky; top: 0; z-index: 3; }
+/* Rows scroll beneath the field names without showing through the transparent space above them. */
+.aiws-grid-rows { position: relative; clip-path: inset(var(--aiws-grid-scroll-y, 0px) -100vw -100vh); }
 .aiws-grid-top .aiws-table-head { position: static; }
 .aiws-grid-top .aiws-th { color: var(--cp-text); font-weight: normal; padding: 0 8px; overflow: visible; }
 .aiws-root button.aiws-th-name { color: inherit; font: inherit; background: none; border: 0; border-radius: 2px; padding: 3px 0; text-align: start; white-space: nowrap; text-overflow: ellipsis; }
@@ -185,39 +187,54 @@
 .aiws-track-corner, .aiws-col-track { box-sizing: border-box; display: flex; align-items: center; justify-content: center; flex: none; position: relative; }
 .aiws-track-corner { position: sticky; left: 0; background: var(--cp-surface-opaque); z-index: 2; }
 .aiws-col-track { --grip-height: 21px; flex-direction: column; justify-content: end; }
-.aiws-col-track.is-sticky { position: sticky; z-index: 2; background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-col-track.is-sticky { position: sticky; z-index: 2; }
 .aiws-grid-frame[data-pointer='touch'] .aiws-col-track { --grip-height: 44px; }
-.aiws-col-track > .aiws-track-grip[aria-pressed='true'], .aiws-col-track > .aiws-track-menu {
+.aiws-col-track > .aiws-track-grip, .aiws-col-track > .aiws-track-menu {
   position: absolute; left: 50%; z-index: 1;
 }
-.aiws-col-track > .aiws-track-grip[aria-pressed='true'] { top: 100%; transform: translate(-50%, -50%); }
+.aiws-col-track > .aiws-track-grip { bottom: 0; transform: translate(-50%, var(--idle-grip-offset, 0%)); }
+.aiws-col-track > .aiws-track-grip[aria-pressed='true'] { transform: translate(-50%, 50%); }
 .aiws-col-track > .aiws-track-menu { bottom: calc(var(--grip-height) / 2 + 2px); transform: translateX(-50%); }
 .aiws-col-track:has(> [aria-pressed='true'])::after { content: ''; position: absolute; inset-inline: 0; bottom: -1px; height: 2px; background: var(--cp-accent); pointer-events: none; }
-.aiws-row-tools { position: sticky; left: 0; z-index: 2; display: flex; align-items: center; flex: none; }
-.aiws-row-tools + .aiws-td { padding-inline-start: 24px; }
-.aiws-row-tools > button.aiws-track-grip { pointer-events: none; }
-.aiws-tr:is(:hover, :focus-within) > .aiws-row-tools > button.aiws-track-grip,
+.aiws-row-tools { position: sticky; left: 0; z-index: 2; flex: none; width: 0; }
+.aiws-row-tools + .aiws-td { padding-inline-start: var(--row-control-size); }
+.aiws-root .aiws-row-tools > :is(button.aiws-track-grip, button.aiws-track-menu) { position: absolute; width: var(--row-control-size); height: var(--row-control-size); }
+.aiws-row-tools > button.aiws-track-grip { left: 0; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.aiws-row-tools > button.aiws-track-menu {
+  left: var(--row-control-size);
+  /* On short rows the menu fits in the same vertical hit area as the grip. */
+  top: min(calc((100% - var(--row-control-size)) / 2), max(0px, calc(50% - var(--row-control-size))));
+}
+.aiws-tr:is(:hover, :focus-within, [data-row-selected]) > .aiws-row-tools > button.aiws-track-grip,
 .aiws-grid-frame[data-pointer='touch'] .aiws-row-tools > button.aiws-track-grip { opacity: 1; pointer-events: auto; background: var(--cp-surface-opaque, var(--cp-surface)); }
-.aiws-grid-frame[data-pointer='touch'] .aiws-row-tools + .aiws-td { padding-inline-start: 44px; }
 .aiws-grid-frame .aiws-td-rowhead { padding: 0; gap: 0; }
 .aiws-root :is(button.aiws-track-grip, button.aiws-track-menu) { min-width: 21px; height: 21px; display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0; border: 0; border-radius: 4px; color: var(--cp-muted); background: transparent; }
 .aiws-root button.aiws-track-grip { cursor: grab; touch-action: none; opacity: 0; }
 .aiws-root button.aiws-track-grip:active { cursor: grabbing; }
-.aiws-root :is(.is-active, .aiws-col-track:hover, .aiws-td-rowhead:hover, [data-pointer='touch']) > button.aiws-track-grip,
+.aiws-root .aiws-col-track:is(.is-active, :hover) > button.aiws-track-grip,
 .aiws-root [data-pointer='touch'] button.aiws-track-grip,
-.aiws-root button.aiws-track-grip:focus-visible, .aiws-root .aiws-tr:hover .aiws-td-rowhead button.aiws-track-grip { opacity: 1; }
+.aiws-root button.aiws-track-grip:focus-visible { opacity: 1; }
 .aiws-root button.aiws-track-menu, .aiws-root button.aiws-track-grip[aria-pressed='true'] { color: var(--cp-accent); background: var(--aiws-selected-bg); }
 .aiws-grid-resize { position: absolute; z-index: 4; touch-action: none; }
 .aiws-grid-resize.is-column { top: 0; right: -3px; bottom: 0; width: 7px; cursor: col-resize; }
 .aiws-grid-resize.is-row { bottom: -3px; height: 7px; left: 0; right: 0; cursor: row-resize; }
+.aiws-tr[data-last-row] > .aiws-grid-resize.is-row { bottom: 0; }
 .aiws-grid-resize:hover, .aiws-grid-resize:active { background: color-mix(in srgb, var(--cp-accent) 25%, transparent); }
 .aiws-grid-resize.has-dot::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 9px; height: 9px; background: var(--cp-accent); border: 2px solid var(--cp-surface-opaque); border-radius: 50%; }
 .aiws-grid-frame[data-pointer='touch'] :is(button.aiws-track-grip,button.aiws-track-menu,.aiws-row-check-hit) { width: 44px; height: 44px; }
 .aiws-grid-frame[data-pointer='touch'] .aiws-grid-resize { pointer-events: none; }
 .aiws-grid-frame[data-pointer='touch'] .aiws-grid-resize.has-dot { width: 44px; height: 44px; pointer-events: auto; }
 .aiws-grid-frame[data-pointer='touch'] .aiws-grid-resize.is-column.has-dot { right: -18px; top: 0; bottom: auto; }
-.aiws-grid-frame[data-pointer='touch'] .aiws-grid-resize.is-row.has-dot { bottom: 0; right: 0; left: auto; top: auto; }
-.aiws-grid-frame[data-pointer='touch'] .aiws-td-rowhead:has(.aiws-grid-resize.has-dot) { justify-content: start; }
+.aiws-row-tools > .aiws-grid-resize.is-row.has-dot {
+  left: calc(2 * var(--row-control-size)); right: auto; bottom: 0; width: var(--row-control-size); height: min(20px, 50%);
+}
+.aiws-grid-frame[data-pointer='touch'] .aiws-row-tools > .aiws-grid-resize.is-row.has-dot { height: var(--row-control-size); }
+.aiws-row-tools > .aiws-grid-resize.has-dot::after { top: auto; bottom: -3px; transform: translateX(-50%); }
+.aiws-tr[data-last-row] > .aiws-row-tools > .aiws-grid-resize.has-dot::after { bottom: 0; }
+.aiws-root .aiws-row-tools > button.aiws-track-menu { background: transparent; }
+.aiws-row-tools > button.aiws-track-menu > svg { align-self: start; width: 12px; height: 12px; background: var(--cp-surface-opaque, var(--cp-surface)); border-radius: 3px; }
+.aiws-tr[data-row-selected] { z-index: 2; }
+.aiws-tr[data-row-selected]::after { content: ''; position: absolute; inset: 0; z-index: 1; border: 2px solid var(--cp-accent); pointer-events: none; }
 .aiws-track-drop { position: absolute; height: 100%; width: 2px; background: var(--cp-accent); top: 0; pointer-events: none; z-index: 5; }
 .aiws-track-drop.is-before { left: 0; } .aiws-track-drop.is-after { right: 0; }
 .aiws-tr[data-drop='before'] { box-shadow: inset 0 2px var(--cp-accent); }
@@ -234,24 +251,54 @@
 .aiws-grid-frame .aiws-tr.is-selected { box-shadow: inset 0 1px var(--cp-accent), inset 0 -1px var(--cp-accent); }
 [data-grid-style='striped'] .aiws-grid-frame .aiws-tr[data-stripe='1']:not(.is-selected) { background: var(--cp-surface-2); }
 [data-grid-style='lines'] .aiws-grid-frame :is(.aiws-th,.aiws-td,.aiws-th-rowhead) { border-right-color: transparent; }
-.aiws-root button.aiws-grid-edge { border: 0; background: var(--aiws-selected-bg); color: var(--cp-accent); font-size: 11px; opacity: 0; display: inline-flex; align-items: center; justify-content: center; padding: 0; gap: 2px; border-radius: 3px; }
+.aiws-root button.aiws-grid-edge { border: 0; background: var(--aiws-selected-bg); color: var(--cp-accent); opacity: 0; display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 3px; }
 .aiws-root button.aiws-grid-edge:is(:hover,:focus-visible),
 .aiws-grid-frame[data-near='row'] > button.aiws-grid-edge.is-bottom,
 .aiws-grid-frame[data-near='column'] > button.aiws-grid-edge.is-right { opacity: 1; }
-.aiws-grid-edge.is-right { grid-area: 1 / 2; width: 20px; writing-mode: vertical-rl; }
+.aiws-grid-edge.is-right { grid-area: 1 / 2; width: 20px; }
 .aiws-grid-edge.is-bottom { grid-area: 2 / 1; height: 20px; }
-.aiws-grid-frame[data-pointer='touch'] > button.aiws-grid-edge { display: none; }
+.aiws-grid-frame[data-pointer='touch'] > button.aiws-grid-edge { visibility: hidden; }
 .aiws-ref-value { display: flex; align-items: center; min-width: 0; height: 100%; width: 100%; cursor: pointer; }
 .aiws-root .aiws-cell-value[aria-disabled='true'] { cursor: default; }
 @media print { .aiws-track-header, .aiws-grid-edge, .aiws-grid-resize, .aiws-td-rowhead, .aiws-th-rowhead, .aiws-row-tools { display: none !important; } }
 
-.aiws-table-heading { display: flex; align-items: center; flex: none; gap: 4px; width: fit-content; max-width: 100%; box-sizing: border-box; padding: 2px 6px; }
+.aiws-table-heading { display: flex; align-items: center; flex: none; gap: 2px; width: fit-content; max-width: 100%; box-sizing: border-box; padding: 2px 6px; }
 .aiws-table-heading-title { min-width: 0; }
 .aiws-table-heading-title > strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-table-heading > .aiws-table-tool { flex: none; }
+.aiws-table-heading > .aiws-table-tool > svg { width: 12px; height: 12px; }
+@media (pointer: fine) {
+  .aiws-root .aiws-table-heading > button.aiws-table-tool { width: 24px; height: 24px; }
+}
 .aiws-table-heading .aiws-fblock-title { margin: 0; }
 .aiws-table-heading .aiws-fblock-title-input { width: 100% !important; }
 .aiws-table-heading-slot { min-width: 0; }
+/* A canvas title and the column tools occupy the same space above the field names. */
+.aiws-table > .aiws-table-heading:has(+ [data-heading-rail]) { position: absolute; inset: 0 auto auto 0; z-index: 4; }
+.aiws-table > .aiws-table-heading:has(+ [data-heading-rail]) .aiws-fblock-title { padding-block: 0; }
+/* Leave the field label below the grip tappable before a column is selected. */
+.aiws-table-heading + [data-heading-rail] { --idle-grip-offset: min(50%, 11px); }
+.aiws-table:has(> [data-column-selected]) > .aiws-table-heading,
+.aiws-fblock[data-view='table']:has(> .aiws-cell-body [data-column-selected]) > :is(.aiws-blockui-titleline, .aiws-table-heading-slot) .aiws-table-heading { visibility: hidden; }
+/* On a flow page the heading is portaled into the Block's title line. Share the column rail
+   when it starts the table; filters, diagnostics and field panels retain their own space. */
+.aiws-flow .aiws-fblock[data-view='table']:has(
+  .aiws-table > [data-heading-rail]:first-child,
+  .aiws-table > .aiws-table-bar:first-child + [data-heading-rail]
+):not(:has(.aiws-lock-scope > :is(.aiws-lock-bar, .aiws-lock-lost-row))) {
+  > :is(.aiws-blockui-titleline, .aiws-table-heading-slot) {
+    position: absolute; inset: 2px 0 auto; z-index: 4; pointer-events: none;
+  }
+  .aiws-table-heading, .aiws-tool-row button { pointer-events: auto; }
+  .aiws-table-heading .aiws-fblock-title { padding-block: 0; }
+  &:has(.aiws-grid-frame[data-column-selected]) > .aiws-blockui-titleline > :is(.aiws-blockui-typeicon, .aiws-table-heading-slot) { display: none; }
+  .aiws-table .aiws-table-bar { top: 0; z-index: 4; }
+  [data-heading-rail] { --idle-grip-offset: min(50%, 11px); }
+  [data-heading-rail] .aiws-grid-top { z-index: 5; pointer-events: none; }
+  [data-heading-rail] :is(.aiws-table-head, .aiws-col-track > button),
+  [data-heading-rail][data-pointer='mouse'] .aiws-col-track > .aiws-grid-resize { pointer-events: auto; }
+  [data-heading-rail][data-pointer='mouse'] .aiws-col-track > .aiws-grid-resize:not(.has-dot) { top: auto; height: 8px; }
+}
 .aiws-table-properties { display: grid; gap: 10px; }
 .aiws-cell-reference, .aiws-ref-input { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .aiws-ref-input select { min-width: 0; }

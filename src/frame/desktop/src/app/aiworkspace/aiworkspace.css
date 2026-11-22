@@ -316,6 +316,7 @@
 .aiws-editor { display: flex; flex: 1 1 auto; min-width: 0; gap: 4px; align-items: center; }
 .aiws-editor input, .aiws-editor select { width: 100%; }
 .aiws-root .aiws-td .aiws-editor input:not([type='checkbox']), .aiws-root .aiws-td .aiws-editor select { height: 28px; border: none; border-radius: 4px; background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--cp-accent) 60%, transparent); }
+.aiws-root .aiws-td .aiws-editor > input[type='text'] { background: transparent; outline: none; box-shadow: none; padding-inline: 4px; }
 .aiws-editor-multi { flex-wrap: wrap; background: var(--cp-surface-opaque, var(--cp-surface)); position: absolute; z-index: 5; left: 0; top: 0; padding: 4px; border: 1px solid var(--cp-border); border-radius: 6px; width: max-content; }
 .aiws-conflict {
   position: absolute;

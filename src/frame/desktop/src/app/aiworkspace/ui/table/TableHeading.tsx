@@ -28,9 +28,9 @@ export function TableHeading({ title, layout, setLayout, source, fields, records
       onPointerLeave={leave}>{title}</div>
     <button type="button" className="aiws-table-tool" title={t(layout === 'grid' ? 'aiworkspace.table.layout.showCards' : 'aiworkspace.table.layout.showGrid')}
       aria-label={t(layout === 'grid' ? 'aiworkspace.table.layout.showCards' : 'aiworkspace.table.layout.showGrid')} data-testid="aiws-table-toggle-layout" onClick={() => setLayout(layout === 'grid' ? 'cards' : 'grid')}>
-      {layout === 'grid' ? <LayoutGrid size={16} /> : <Rows3 size={16} />}</button>
+      {layout === 'grid' ? <LayoutGrid aria-hidden="true" /> : <Rows3 aria-hidden="true" />}</button>
     <button type="button" className="aiws-table-tool" title={label} aria-label={label} aria-expanded={Boolean(position)} data-testid="aiws-table-properties"
-      onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) open() }} onClick={() => { cancel(); open() }}><Info size={16} /></button>
+      onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) open() }} onClick={() => { cancel(); open() }}><Info aria-hidden="true" /></button>
     {children}
     {position && <TablePop anchor={position} onClose={close} label={label} testId="aiws-table-properties-panel">
       <div className="aiws-table-properties" onPointerEnter={cancel} onPointerLeave={leave} onFocus={cancel}>
