@@ -1824,8 +1824,9 @@ export function RenderHost(props: RenderHostProps) {
         {hoverShape && hoverLaid?.connector && policy.select && !dragging && <path className="aiws-line-hover" data-testid="aiws-hover-outline" d={linePath(hoverLaid.entity.entity_id)} strokeWidth={haloWidth(hoverLaid.entity.entity_id, 4)} />}
         {showHalos && selected.filter((x) => x.line).map(({ id, locked }) => <path key={`halo:${id}`} className={`aiws-line-halo${locked ? ' is-locked' : ''}`} data-testid={`aiws-selection-${id}`} d={linePath(id)} strokeWidth={haloWidth(id, 6)} />)}
         {hoverShape && hoverLaid && !hoverLaid.connector && policy.select && !dragging && (
-          <Outline shape={hoverMeta?.shape ?? 'rect'} rect={hoverShape.rect} transform={turned(hoverShape.rect, hoverShape.rotation)} className={`aiws-hover-outline${hoverLaid.isGroup ? ' is-group' : ''}`} testId="aiws-hover-outline" />)}
-        <g ref={selectionLayerRef}>
+          <Outline shape={hoverMeta?.shape ?? 'rect'} rect={hoverShape.rect} transform={turned(hoverShape.rect, hoverShape.rotation)}
+            className={`aiws-hover-outline${hoverLaid.isGroup ? ' is-group' : ''}${hoverLaid.entity.view_type === 'table' ? ' is-table' : ''}`} testId="aiws-hover-outline" />)}
+        <g ref={selectionLayerRef} data-selected-view={selected.length === 1 ? laid.get(selected[0].id)?.entity.view_type : undefined}>
           {selected.filter((x) => !x.line).map(({ id, rect, rotation, locked }) => (
             <rect key={id} className={`aiws-selection-box${selected.length > 1 ? ' is-member' : ''}${locked ? ' is-locked' : ''}${laid.get(id)?.isGroup ? ' is-group' : ''}`} data-testid={`aiws-selection-${id}`} x={rect.x} y={rect.y} width={rect.w} height={rect.h} transform={turned(rect, rotation)} />
           ))}
