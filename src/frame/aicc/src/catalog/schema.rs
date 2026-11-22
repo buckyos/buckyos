@@ -350,8 +350,6 @@ pub(crate) struct Pricing {
     pub tiers: Option<PricingTiers>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub time_windows: Vec<PricingTimeWindow>,
-    /// Further unit prices added to `amount`, such as a per-reference-image
-    /// charge on top of a per-second video price.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addons: Vec<PricingAddon>,
 }

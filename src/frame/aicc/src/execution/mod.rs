@@ -294,6 +294,7 @@ impl PinnedProviderTask {
                 "invalid_usage".to_owned()
             }
             PinnedPricingBasis::Tokens {
+                addons,
                 audio_input_token,
                 image_input_token,
                 video_input_token,
@@ -303,6 +304,14 @@ impl PinnedProviderTask {
                 tiers,
                 ..
             } => {
+                for addon in addons {
+                    if addon.amount != 0.0 && unit_count(addon.unit, usage).is_none() {
+                        return format!(
+                            "missing_usage:{}",
+                            serde_json::to_value(addon.unit).unwrap().as_str().unwrap()
+                        );
+                    }
+                }
                 if tiers.is_none() {
                     for (name, count, rate) in [
                         (
@@ -395,6 +404,8 @@ pub(crate) enum PinnedPricingBasis {
         output_token: Option<f64>,
         #[serde(default)]
         tiers: Option<PricingTiers>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        addons: Vec<crate::catalog::PricingAddon>,
     },
     Units {
         unit: PricingUnit,
@@ -534,6 +545,13 @@ impl PinnedPricingSnapshot {
         if currency.is_empty() {
             return Err(invalid_pinned_pricing());
         }
+        if pricing
+            .addons
+            .iter()
+            .any(|addon| invalid_price(addon.amount))
+        {
+            return Err(invalid_pinned_pricing());
+        }
         let basis = if pricing.has_token_rates() {
             if pricing.unit.is_some()
                 || pricing.input_token.is_some_and(invalid_price)
@@ -555,6 +573,7 @@ impl PinnedPricingSnapshot {
                 video_output_token: pricing.video_output_token,
                 output_token: pricing.output_token,
                 tiers: pricing.tiers.clone(),
+                addons: pricing.addons.clone(),
             }
         } else if let Some(unit) = pricing.unit {
             let Some(amount) = matched_amount.or(pricing.amount) else {
@@ -596,6 +615,7 @@ impl PinnedPricingSnapshot {
                 video_output_token,
                 output_token,
                 tiers,
+                addons,
             } => {
                 let base = TokenRates {
                     input_token: *input_token,
@@ -614,7 +634,16 @@ impl PinnedPricingSnapshot {
                     Some(tiers) => tier_rates(tiers, &base, usage)?,
                     None => base,
                 };
-                resolved.apply(usage)?
+                let mut total = resolved.apply(usage)?;
+                for addon in addons {
+                    if invalid_price(addon.amount) {
+                        return None;
+                    }
+                    if addon.amount != 0.0 {
+                        total += unit_count(addon.unit, usage)? * addon.amount;
+                    }
+                }
+                total
             }
             PinnedPricingBasis::Units {
                 unit,
@@ -3747,6 +3776,7 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "CNY".into(),
             basis: PinnedPricingBasis::Tokens {
+                addons: Vec::new(),
                 cache_write_input_token: None,
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
@@ -3775,6 +3805,7 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "CNY".into(),
             basis: PinnedPricingBasis::Tokens {
+                addons: Vec::new(),
                 cache_write_input_token: None,
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
@@ -3799,6 +3830,7 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "CNY".into(),
             basis: PinnedPricingBasis::Tokens {
+                addons: Vec::new(),
                 cache_write_input_token: None,
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
@@ -3850,6 +3882,7 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "USD".into(),
             basis: PinnedPricingBasis::Tokens {
+                addons: Vec::new(),
                 cache_write_input_token: None,
                 cache_write_1h_input_token: None,
                 audio_input_token: None,
@@ -6213,6 +6246,39 @@ mod cost_dimension_tests {
         )
         .unwrap();
         binding
+    }
+
+    #[test]
+    fn token_and_duration_addons_are_pinned_and_never_partially_settled() {
+        let price = json!({"currency":"USD","input_token":1e-7,"output_token":3e-7,"audio_input_token":0,"addons":[{"unit":"audio_second","amount":0.0001},{"unit":"request","amount":0.002}]});
+        let parsed: Pricing = serde_json::from_value(price.clone()).unwrap();
+        crate::catalog::validate_pricing("mixed", &parsed).unwrap();
+        let mut task = binding(price);
+        task = serde_json::from_value(serde_json::to_value(task).unwrap()).unwrap();
+        let mut usage = AiUsage {
+            input_tokens: Some(1100),
+            audio_input_tokens: Some(1000),
+            output_tokens: Some(20),
+            audio_seconds: Some(60.0),
+            request_units: Some(1),
+            ..Default::default()
+        };
+        assert!((task.completion_cost(&usage).unwrap().amount - 0.008016).abs() < 1e-12);
+        usage.audio_seconds = None;
+        assert!(task.completion_cost(&usage).is_none());
+        assert_eq!(
+            task.cost_unknown_reason(&usage),
+            "missing_usage:audio_second"
+        );
+        usage.audio_seconds = Some(0.0);
+        assert!((task.completion_cost(&usage).unwrap().amount - 0.002016).abs() < 1e-12);
+        usage.audio_seconds = Some(-1.0);
+        assert!(task.completion_cost(&usage).is_none());
+        usage.cost = Some(AiCost::new(0.1, "EUR"));
+        assert_eq!(
+            task.completion_cost(&usage).unwrap(),
+            AiCost::new(0.1, "EUR")
+        );
     }
 
     #[test]

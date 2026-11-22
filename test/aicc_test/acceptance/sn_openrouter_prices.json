@@ -1,0 +1,1451 @@
+{
+  "source_url": "https://openrouter.ai/api/v1/models?output_modalities=all",
+  "verified_at": "2026-11-22",
+  "model_aliases": {
+    "gpt-6-astra": "openai/gpt-6-astra",
+    "gpt-6-sol": "openai/gpt-6-sol",
+    "gpt-6-luna": "openai/gpt-6-luna",
+    "gpt-5.6-sol": "openai/gpt-5.6-sol",
+    "gpt-5.6-terra": "openai/gpt-5.6-terra",
+    "gpt-5.6-luna": "openai/gpt-5.6-luna",
+    "gpt-5.5-pro": "openai/gpt-5.5-pro",
+    "gpt-5.5": "openai/gpt-5.5",
+    "gpt-5.4": "openai/gpt-5.4",
+    "gpt-5.4-pro": "openai/gpt-5.4-pro",
+    "gpt-5.4-mini": "openai/gpt-5.4-mini",
+    "gpt-5.4-nano": "openai/gpt-5.4-nano",
+    "gpt-5.3-codex": "openai/gpt-5.3-codex",
+    "gpt-image-2": "openai/gpt-image-2",
+    "text-embedding-3-large": "openai/text-embedding-3-large",
+    "text-embedding-3-small": "openai/text-embedding-3-small",
+    "gpt-4o-mini-transcribe": "openai/gpt-4o-mini-transcribe",
+    "glm-5": "z-ai/glm-5",
+    "glm-5.3": "z-ai/glm-5.3",
+    "kimi-k3": "moonshotai/kimi-k3",
+    "qwen3.6-plus": "qwen/qwen3.6-plus",
+    "qwen3.7-plus": "qwen/qwen3.7-plus",
+    "qwen3.8-max-0902": "qwen/qwen3.8-max-0902",
+    "qwen3-embedding-8b": "qwen/qwen3-embedding-8b",
+    "qwen-image-3-pro": "qwen/qwen-image-3-pro",
+    "ui-tars-1.5-7b": "bytedance/ui-tars-1.5-7b",
+    "voxtral-small-24b-2507": "mistralai/voxtral-small-24b-2507",
+    "wan-3.0": "alibaba/wan-3.0",
+    "gpt-6.1-sol": "openai/gpt-6.1-sol",
+    "gpt-image-2.5-flare": "openai/gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst": "openai/gpt-image-2.5-sunburst",
+    "gpt-6.1-terra": "openai/gpt-6.1-terra",
+    "gpt-6.1-terra-pro": "openai/gpt-6.1-terra-pro",
+    "gpt-6.1-sol-pro": "openai/gpt-6.1-sol-pro",
+    "claude-opus-5.5": "anthropic/claude-opus-5.5",
+    "claude-sonnet-5.5": "anthropic/claude-sonnet-5.5",
+    "claude-haiku-5.5": "anthropic/claude-haiku-5.5",
+    "gemini-4-argon": "google/gemini-4-argon",
+    "gemini-3.8-flash": "google/gemini-3.8-flash",
+    "grok-4.7": "x-ai/grok-4.7",
+    "qwen3.8-flash": "qwen/qwen3.8-flash",
+    "qwen3.8-omni-flash": "qwen/qwen3.8-omni-flash",
+    "qwen3.8-max-prime": "qwen/qwen3.8-max-prime",
+    "qwen3.8-27b": "qwen/qwen3.8-27b",
+    "qwen3.8-2.4t-a95b": "qwen/qwen3.8-2.4t-a95b",
+    "kimi-k3.1-pro": "moonshotai/kimi-k3.1-pro",
+    "glm-5.3-flash": "z-ai/glm-5.3-flash",
+    "glm-5.3-flashx": "z-ai/glm-5.3-flashx",
+    "glm-5.3-prime": "z-ai/glm-5.3-prime",
+    "minimax-m3.1-flash": "minimax/minimax-m3.1-flash",
+    "deepseek-v4.1-flash-1017": "deepseek/deepseek-v4.1-flash-1017",
+    "deepseek-v4-pro-0813": "deepseek/deepseek-v4-pro-0813"
+  },
+  "unlisted_models": [
+    "gpt-4o-transcribe-diarize",
+    "gpt-4o-mini-tts"
+  ],
+  "models": [
+    {
+      "id": "openai/gpt-6-astra",
+      "pricing": {
+        "prompt": "0.00001",
+        "completion": "0.00005",
+        "web_search": "0.01",
+        "input_cache_read": "0.000001",
+        "input_cache_write": "0.0000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00002",
+            "completion": "0.000075",
+            "input_cache_read": "0.000002",
+            "input_cache_write": "0.000025"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-6-sol",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.00001",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000002",
+        "input_cache_write": "0.0000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000004",
+            "completion": "0.000015",
+            "input_cache_read": "0.0000004",
+            "input_cache_write": "0.000005"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-6-luna",
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000005",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000001",
+        "input_cache_write": "0.000000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.0000002",
+            "completion": "0.00000075",
+            "input_cache_read": "0.00000002",
+            "input_cache_write": "0.00000025"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.6-sol",
+      "pricing": {
+        "prompt": "0.000004",
+        "completion": "0.00002",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000004",
+        "input_cache_write": "0.000005",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000008",
+            "completion": "0.00003",
+            "input_cache_read": "0.0000008",
+            "input_cache_write": "0.00001"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.6-terra",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000012",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000002",
+        "input_cache_write": "0.0000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000004",
+            "completion": "0.000018",
+            "input_cache_read": "0.0000004",
+            "input_cache_write": "0.000005"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.6-luna",
+      "pricing": {
+        "prompt": "0.0000002",
+        "completion": "0.0000012",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000002",
+        "input_cache_write": "0.00000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.0000004",
+            "completion": "0.0000018",
+            "input_cache_read": "0.00000004",
+            "input_cache_write": "0.0000005"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.5-pro",
+      "pricing": {
+        "prompt": "0.00003",
+        "completion": "0.00018",
+        "web_search": "0.01",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00006",
+            "completion": "0.00027"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.5",
+      "pricing": {
+        "prompt": "0.000005",
+        "completion": "0.00003",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000005",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00001",
+            "completion": "0.000045",
+            "input_cache_read": "0.000001"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.4",
+      "pricing": {
+        "prompt": "0.0000025",
+        "completion": "0.000015",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000005",
+            "completion": "0.0000225",
+            "input_cache_read": "0.0000005"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.4-pro",
+      "pricing": {
+        "prompt": "0.00003",
+        "completion": "0.00018",
+        "web_search": "0.01",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00006",
+            "completion": "0.00027"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.4-mini",
+      "pricing": {
+        "prompt": "0.00000075",
+        "completion": "0.0000045",
+        "web_search": "0.01",
+        "input_cache_read": "0.000000075"
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.4-nano",
+      "pricing": {
+        "prompt": "0.0000002",
+        "completion": "0.00000125",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000002"
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-5.3-codex",
+      "pricing": {
+        "prompt": "0.00000175",
+        "completion": "0.000014",
+        "web_search": "0.01",
+        "input_cache_read": "0.000000175"
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-image-2",
+      "pricing": {
+        "prompt": "0.000008",
+        "completion": "0.000008",
+        "image_output": "0.00003",
+        "web_search": "0.01",
+        "input_cache_read": "0.000002"
+      },
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/text-embedding-3-large",
+      "pricing": {
+        "prompt": "0.00000013",
+        "completion": "0"
+      },
+      "architecture": {
+        "modality": "text->embeddings",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "embeddings"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/text-embedding-3-small",
+      "pricing": {
+        "prompt": "0.00000002",
+        "completion": "0"
+      },
+      "architecture": {
+        "modality": "text->embeddings",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "embeddings"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-4o-mini-transcribe",
+      "pricing": {
+        "prompt": "0.00000125",
+        "completion": "0.000005"
+      },
+      "architecture": {
+        "modality": "audio->transcription",
+        "input_modalities": [
+          "audio"
+        ],
+        "output_modalities": [
+          "transcription"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "z-ai/glm-5",
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.0000032",
+        "input_cache_read": "0.0000002"
+      },
+      "architecture": {
+        "modality": "text->text",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "pricing": {
+        "prompt": "0.0000000699",
+        "completion": "0.0000014",
+        "input_cache_read": "0.0000000689"
+      },
+      "architecture": {
+        "modality": "text->text",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "moonshotai/kimi-k3",
+      "pricing": {
+        "prompt": "0.000000192",
+        "completion": "0.000016",
+        "input_cache_read": "0.000000182"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.6-plus",
+      "pricing": {
+        "prompt": "0.000000325",
+        "completion": "0.00000195",
+        "input_cache_write": "0.00000040625",
+        "overrides": [
+          {
+            "min_prompt_tokens": 256000,
+            "prompt": "0.0000013",
+            "completion": "0.0000039",
+            "input_cache_write": "0.000001625"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen3",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.7-plus",
+      "pricing": {
+        "prompt": "0.00000032",
+        "completion": "0.00000128",
+        "input_cache_read": "0.000000064",
+        "input_cache_write": "0.0000004",
+        "overrides": [
+          {
+            "min_prompt_tokens": 256000,
+            "prompt": "0.00000096",
+            "completion": "0.00000384",
+            "input_cache_read": "0.000000192",
+            "input_cache_write": "0.0000012"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image->text",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-max-0902",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000006",
+        "input_cache_read": "0.00000025"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3-embedding-8b",
+      "pricing": {
+        "prompt": "0.00000001",
+        "completion": "0"
+      },
+      "architecture": {
+        "modality": "text->embeddings",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "embeddings"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen-image-3-pro",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "image": "0.003",
+        "image_token": "0.00000958083832335329",
+        "image_output": "0.00000958083832335329"
+      },
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      },
+      "image_output_prices": {
+        "1K": "0.04",
+        "2K": "0.075"
+      },
+      "image_pricing_source": "https://openrouter.ai/qwen/qwen-image-3-pro"
+    },
+    {
+      "id": "bytedance/ui-tars-1.5-7b",
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000002",
+        "input_cache_read": "0.0000001"
+      },
+      "architecture": {
+        "modality": "text+image->text",
+        "input_modalities": [
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "mistralai/voxtral-small-24b-2507",
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000003",
+        "audio": "0.0001",
+        "input_cache_read": "0.00000001"
+      },
+      "architecture": {
+        "modality": "text+file+audio->text",
+        "input_modalities": [
+          "text",
+          "audio",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Mistral",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "alibaba/wan-3.0",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "architecture": {
+        "modality": "text+image+audio+video->video",
+        "input_modalities": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output_modalities": [
+          "video"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing_skus": {
+        "duration_seconds_480p": "0.05",
+        "duration_seconds_720p": "0.1",
+        "duration_seconds_1080p": "0.2"
+      }
+    },
+    {
+      "id": "openai/gpt-6.1-sol",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.00001",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.0000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000004",
+            "completion": "0.000015",
+            "input_cache_read": "0.0000002",
+            "input_cache_write": "0.000005"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-image-2.5-flare",
+      "pricing": {
+        "prompt": "0.000008",
+        "completion": "0.000008",
+        "image_output": "0.00003",
+        "web_search": "0.01",
+        "input_cache_read": "0.000002"
+      },
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-image-2.5-sunburst",
+      "pricing": {
+        "prompt": "0.000008",
+        "completion": "0.000008",
+        "image_output": "0.00003",
+        "web_search": "0.01",
+        "input_cache_read": "0.000002"
+      },
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-6.1-terra",
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.000005",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000005",
+        "input_cache_write": "0.00000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000002",
+            "completion": "0.0000075",
+            "input_cache_read": "0.0000001",
+            "input_cache_write": "0.0000025"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-6.1-terra-pro",
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.000005",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000005",
+        "input_cache_write": "0.00000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000002",
+            "completion": "0.0000075",
+            "input_cache_read": "0.0000001",
+            "input_cache_write": "0.0000025"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "openai/gpt-6.1-sol-pro",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.00001",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.0000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000004",
+            "completion": "0.000015",
+            "input_cache_read": "0.0000002",
+            "input_cache_write": "0.000005"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "anthropic/claude-opus-5.5",
+      "pricing": {
+        "prompt": "0.000004",
+        "completion": "0.00002",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000002",
+        "input_cache_write": "0.000005",
+        "input_cache_write_1h": "0.000008"
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Claude",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "anthropic/claude-sonnet-5.5",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.00001",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.0000025",
+        "input_cache_write_1h": "0.000004"
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Claude",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000005",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000001",
+        "input_cache_write": "0.000000125",
+        "input_cache_write_1h": "0.0000002",
+        "overrides": [
+          {
+            "min_prompt_tokens": 100000,
+            "prompt": "0.0000005",
+            "completion": "0.0000025",
+            "input_cache_read": "0.00000005",
+            "input_cache_write": "0.000000625",
+            "input_cache_write_1h": "0.000001"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Claude",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "google/gemini-4-argon",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.00001",
+        "image": "0.000002",
+        "audio": "0.000002",
+        "input_audio_cache": "0.0000001",
+        "web_search": "0.014",
+        "internal_reasoning": "0.00001",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.0000001875"
+      },
+      "architecture": {
+        "modality": "text+image+file+audio+video->text",
+        "input_modalities": [
+          "audio",
+          "file",
+          "image",
+          "text",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Gemini",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "google/gemini-3.8-flash",
+      "pricing": {
+        "prompt": "0.000000825",
+        "completion": "0.000004125",
+        "image": "0.000000825",
+        "audio": "0.000000825",
+        "input_audio_cache": "0.0000000825",
+        "web_search": "0.014",
+        "internal_reasoning": "0.000004125",
+        "input_cache_read": "0.0000000825",
+        "input_cache_write": "0.0000000416666666666667"
+      },
+      "architecture": {
+        "modality": "text+image+file+audio+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video",
+          "file",
+          "audio"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Gemini",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "x-ai/grok-4.7",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000006",
+        "web_search": "0.005",
+        "input_cache_read": "0.0000005",
+        "overrides": [
+          {
+            "min_prompt_tokens": 200000,
+            "prompt": "0.000004",
+            "completion": "0.000012",
+            "input_cache_read": "0.000001"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Grok",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-flash",
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.00000047",
+        "input_cache_read": "0.000000016"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-omni-flash",
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.00000047",
+        "input_cache_read": "0.000000016"
+      },
+      "architecture": {
+        "modality": "text+image+audio+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "audio",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-max-prime",
+      "pricing": {
+        "prompt": "0.000004",
+        "completion": "0.000012",
+        "input_cache_read": "0.0000005"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "pricing": {
+        "prompt": "0.000000035",
+        "completion": "0.0000015",
+        "input_cache_read": "0.0000000175"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-2.4t-a95b",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000006",
+        "input_cache_read": "0.00000025"
+      },
+      "architecture": {
+        "modality": "text->text",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "moonshotai/kimi-k3.1-pro",
+      "pricing": {
+        "prompt": "0.000000253",
+        "completion": "0.0000088",
+        "input_cache_read": "0.00000018"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "pricing": {
+        "prompt": "0.0000000399",
+        "completion": "0.0000000784",
+        "input_cache_read": "0.00000003"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3-flashx",
+      "pricing": {
+        "prompt": "0.00000037",
+        "completion": "0.00000125",
+        "input_cache_read": "0.000000075"
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3-prime",
+      "pricing": {
+        "prompt": "0.00000168",
+        "completion": "0.00000528",
+        "input_cache_read": "0.000000336"
+      },
+      "architecture": {
+        "modality": "text->text",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "minimax/minimax-m3.1-flash",
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.0000006",
+        "input_cache_read": "0.000000015",
+        "overrides": [
+          {
+            "utc_start": 1500,
+            "utc_end": 100,
+            "prompt": "0.000000075",
+            "completion": "0.0000003",
+            "input_cache_read": "0.0000000075"
+          },
+          {
+            "utc_start": 100,
+            "utc_end": 1500,
+            "prompt": "0.00000015",
+            "completion": "0.0000006",
+            "input_cache_read": "0.000000015"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image+video->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash-1017",
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.0000006",
+        "input_cache_read": "0.000000003",
+        "overrides": [
+          {
+            "utc_days": [
+              "saturday",
+              "sunday"
+            ],
+            "prompt": "0.00000015",
+            "completion": "0.0000006",
+            "input_cache_read": "0.000000003"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 0,
+            "utc_end": 100,
+            "prompt": "0.00000015",
+            "completion": "0.0000006",
+            "input_cache_read": "0.000000003"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 100,
+            "utc_end": 400,
+            "prompt": "0.0000003",
+            "completion": "0.0000012",
+            "input_cache_read": "0.000000006"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 400,
+            "utc_end": 600,
+            "prompt": "0.00000015",
+            "completion": "0.0000006",
+            "input_cache_read": "0.000000003"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 600,
+            "utc_end": 1000,
+            "prompt": "0.0000003",
+            "completion": "0.0000012",
+            "input_cache_read": "0.000000006"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 1000,
+            "utc_end": 0,
+            "prompt": "0.00000015",
+            "completion": "0.0000006",
+            "input_cache_read": "0.000000003"
+          }
+        ]
+      },
+      "architecture": {
+        "modality": "text+image->text",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "DeepSeek",
+        "instruct_type": null
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "pricing": {
+        "prompt": "0.00000132",
+        "completion": "0.00000396",
+        "input_cache_read": "0.000000044"
+      },
+      "architecture": {
+        "modality": "text->text",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "DeepSeek",
+        "instruct_type": null
+      }
+    }
+  ]
+}

@@ -389,3 +389,7 @@ the responsibility of the corresponding image codec.
 Cost-source diagnostics, all usage dimensions, SN USD pricing and historical repair are described in [Usage costs](usage_costs.md).
 
 `reported_cost.model_ids` optionally restricts a declared response currency to explicit provider model IDs. An empty set applies to the whole Provider; SN restricts its USD declaration to the verified Kimi offerings. A response with its own valid currency always takes precedence.
+
+### Token prices with unit add-ons
+
+`pricing.addons` also extends token pricing: the total is the resolved token charge plus each declared unit quantity times its amount. A nonzero add-on requires the actual corresponding usage field; a missing quantity leaves the whole cost unknown. Zero quantities must be explicit. Add-ons are frozen with the rates and are applied once after token tier selection. Use an `audio_second` add-on for duration-priced audio alongside text token rates, excluding separately metered audio tokens from text billing. A nonzero per-request fee uses a `request` add-on; it is not dropped when token prices exist. See [usage costs](usage_costs.md) for an example and SN's OpenRouter quote sources.

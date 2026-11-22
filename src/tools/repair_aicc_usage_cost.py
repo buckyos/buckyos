@@ -28,12 +28,12 @@ def recover(usage, record, declared_currency=None):
         return usage, None, usage['cost_unknown_reason']
     pricing = binding.get('pricing') or {}
     basis = pricing.get('basis') or {}
+    names = {'image': 'image_units', 'request': 'request_units', 'character': 'characters', 'audio_second': 'audio_seconds', 'video_second': 'video_seconds', 'reference_image': 'reference_images', 'second': 'compute_seconds', 'megapixel': 'megapixels'}
     if basis.get('kind') == 'units':
         if basis.get('unit') == 'image' and usage.get('image_units') is None:
             images = [item for item in (record.get('output') or {}).get('artifacts', []) if str(item.get('mime', '')).startswith('image/')]
             if images:
                 usage['image_units'] = len(images)
-        names = {'image': 'image_units', 'request': 'request_units', 'character': 'characters', 'audio_second': 'audio_seconds', 'video_second': 'video_seconds', 'reference_image': 'reference_images', 'second': 'compute_seconds', 'megapixel': 'megapixels'}
         amount = 0.0
         for component in [basis, *basis.get('addons', [])]:
             rate = component.get('amount')
@@ -70,6 +70,16 @@ def recover(usage, record, declared_currency=None):
             if not valid_number(basis.get(name)):
                 return usage, None, 'missing_rate:' + name
             amount += basis[name] * count
+        for addon in basis.get('addons', []):
+            rate = addon.get('amount')
+            if not valid_number(rate):
+                return usage, None, 'invalid_frozen_rate'
+            if rate == 0:
+                continue
+            count = usage.get(names.get(addon.get('unit'), ''))
+            if not valid_number(count):
+                return usage, None, 'missing_usage:' + str(addon.get('unit'))
+            amount += rate * count
     else:
         return usage, None, 'missing_frozen_pricing_or_verified_currency'
     cost = {'amount': amount, 'currency': pricing.get('currency', '').strip().upper()}

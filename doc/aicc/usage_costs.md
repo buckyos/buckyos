@@ -4,19 +4,32 @@
 
 有效的响应 `usage.cost`（金额和币种）优先，其次是 `reported_cost` 加 Provider Rules 声明的币种，最后使用调用开始时冻结的价格和实际用量。非有限值、负金额与空币种不能作为有效成本。显式零单价表示免费，缺价格或缺用量表示未知，二者不同。
 
-`usage.cost_source` 区分 `provider_reported` 与 `static_pricing`；`usage.cost_unknown_reason` 给出缺失用量、费率、未核实币种等原因。静态价格是原厂估算，不代表代理服务的实际扣款。异步结果优先采用最终结果用量，缺失字段由任务状态补充，不重复累加；视频时长后备只补服务端没有提供的字段。
+`usage.cost_source` 区分 `provider_reported` 与 `static_pricing`；`usage.cost_unknown_reason` 给出缺失用量、费率、未核实币种等原因。静态价格是配置报价下的估算，不代表代理服务的实际扣款。异步结果优先采用最终结果用量，缺失字段由任务状态补充，不重复累加；视频时长后备只补服务端没有提供的字段。
 
-SN Provider Rules 增加了 51 个当前映射模型的 USD 原厂价格及来源，沿用现有 catalog 修订发布机制。Kimi USD 依据原厂价格表及现场金额核对；SN 的 `reported_cost.model_ids` 将数值实报成本的默认 USD 声明限定到 `kimi-k3` / `kimi-k3.1-pro`，不外推至其他型号；其他 SN 型号返回无币种金额时回退静态估算，响应明确携带的其他币种优先保留。其他 Provider 不继承该声明。GPT 没有返回金额时使用冻结静态价格；缓存写入费率沿用原厂对应费率，不按输出 token 计费。
+SN 静态价格统一采用 OpenRouter USD 报价（2026-11-22），不再混用原厂直连价。`models?output_modalities=all`、embeddings 和 video models 目录覆盖非文本模型；每个 SN 别名对应精确的 OpenRouter slug，不能按相邻型号或相同权重猜价。冻结的上游字段、型号映射和日期保存在 `test/aicc_test/acceptance/sn_openrouter_prices.json`，metadata 的 `source_url` 指向对应 OpenRouter 型号页。输入、输出、缓存读写、上下文阶梯、UTC 时段/星期规则及视频分辨率 SKU 均按该快照配置。Qwen Image 3 Pro 使用同一型号页面明示的 1K $0.04/张、2K $0.075/张及输入参考图 $0.003/张，快照也保存此口径，不要求只返回图片张数的响应虚构图片 token。
 
-本次核验来源（2026-11-21）：
+54 个 SN 映射中已配置 52 个。`ui-tars-1.5-7b` 为 $0.10/$0.20 每百万输入/输出 token，`qwen3-embedding-8b` 为 $0.01/百万输入 token，二者现在均有 OpenRouter USD 配置。`gpt-4o-transcribe-diarize`、`gpt-4o-mini-tts` 未出现在此次 OpenRouter 全模态目录，不保留原厂价格冒充 OpenRouter 报价；有效响应成本仍优先，未实报时保持未知。基础价格未覆盖的搜索工具调用等额外 SKU 不能视为免费，静态金额仅是已配置维度的估算。
 
-- OpenAI、Anthropic、Gemini、DeepSeek、MiniMax 的已有原厂 USD 配置及其 `source_url`。
-- [Kimi USD](https://platform.kimi.ai/docs/pricing/chat)：K3 输入/输出/缓存命中为 $3/$15/$0.30 每百万 token；K3.1 Pro 为 $2/$10/$0.20；缓存写入按其 TTL。
-- [Z.AI](https://docs.z.ai/guides/overview/pricing)：GLM-5、5.3、Flash、FlashX 的原厂 USD 价格。
-- [Alibaba Cloud](https://www.alibabacloud.com/help/en/model-studio/model-pricing/)：所选公开区域/部署范围的 USD 价格。范围选择固定在配置中，不随 SN 实际后端地区猜测；不同地区和活动价可能不同。
-- [xAI](https://docs.x.ai/developers/pricing)：Grok 4.7 短/长上下文费率。
+来源：[OpenRouter Models API](https://openrouter.ai/docs/guides/overview/models)、[全模态报价](https://openrouter.ai/api/v1/models?output_modalities=all)、[Embeddings](https://openrouter.ai/api/v1/embeddings/models)、[Video models](https://openrouter.ai/api/v1/videos/models)。OpenRouter 的 Kimi 报价与原厂直连价可能不同；SN 的缺省 USD 声明仍只限于已从现场实报金额核实的 `kimi-k3` / `kimi-k3.1-pro`，不根据静态报价推断其他型号返回的无币种金额。
 
-三个 SN 映射尚未配置静态价格，原因不同：`ui-tars-1.5-7b`、`qwen3-embedding-8b` 未核实到与该具体原厂 offering 相对应的公开 USD 单价；不能用其他托管商价格或 `text-embedding-v4` 等不同 API 型号代替。`voxtral-small-24b-2507` 有[官方报价](https://docs.mistral.ai/models/voxtral-small-25-07)：音频 $0.004/分钟，文本输入/输出 $0.10/$0.40 每百万 token（2026-11-22 核对）。后者缺口是音频时长与文本 token 的组合计费，以及 SN 音频用量/型号映射的核实，不是原厂没有报价。当前静态结算 basis 只能选择 token 或单位，不能完整表达这一组合；仅套文本单价会漏算音频。开源权重不意味着托管推理免费，不以汇率换算、第三方价格或相邻型号补缺。上述模型仍可使用有效响应成本，后续有可核实原厂报价时更新 metadata。
+## 组合计费
+
+复用 `pricing.addons`：既能扩展单位计费，也能扩展 token 计费。所有非零费用项必须有有效用量，缺少一项则整个静态成本未知，不输出部分费用冒充完整费用；明确零数量仍可结算。addons 与基础费率一起冻结，token 阶梯和时段选择保持原有语义。
+
+SN [Voxtral Small](https://openrouter.ai/mistralai/voxtral-small-24b-2507) 使用 OpenRouter 的文本输入 $0.10/百万、输出 $0.30/百万、缓存命中 $0.01/百万，以及音频 $0.0001/秒。配置的 `audio_input_token: 0` 从总输入中排除已上报的音频 token，音频本身由秒数计价，防止重复计费；若响应包含音频 token，必须能与文本部分拆分。OpenAI Chat 用量解析保留 `prompt_tokens_details.audio_seconds` / `usage.audio_seconds`，不会把音频 token 数换算为秒。无音频的已知零秒应显式上报；未上报时保持未知。真实 SN 音频字段仍需实测，不用 mock 代替 Provider 验证。
+
+```json
+{
+  "currency": "USD",
+  "input_token": 0.0000001,
+  "output_token": 0.0000003,
+  "cache_input_token": 0.00000001,
+  "audio_input_token": 0,
+  "addons": [{ "unit": "audio_second", "amount": 0.0001 }]
+}
+```
+
+OpenRouter 的非零每请求附加费也作为 addon 保留，不再因为存在 token 价格而丢弃；历史恢复工具按同一冻结规则求和，缺数量时跳过。
 
 Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：文本、图片、视频输入 $1.50/百万，文本输出 $9/百万，视频输出 $17.50/百万。2026-12-03 后官方将其重定向至 1.2 并更换视频输出费率，需要届时更新 catalog，不能把未来费率用于历史调用。来源：[Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)。视频响应缺少模态拆分时保留未知，不能将视频输出全部按文本价格结算。
 
@@ -32,6 +45,18 @@ Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：�
 - fal 的 `metrics.inference_time` 来自任务状态，作为计算秒合并到结果；DeepFilterNet 的 `audio_file.duration` 为音频秒数，不用 `timings.inference` 代替音频长度。来源：[Queue](https://fal.ai/docs/documentation/model-apis/inference/queue)、[DeepFilterNet schema](https://fal.ai/models/fal-ai/deepfilternet3/api)。
 - fal 的 `fal-ai/video-upscaler` 按 $0.0008/百万像素收费，但公开 Output Schema 只有文件 URL、类型、名称和字节数，没有帧数、分辨率或完整的计费百万像素量。当前适配器也没有下载视频探测帧数并重建计费用量；尚未用真实任务响应确认是否有额外字段。结算器已支持 `megapixels`，但该响应仍显示 `missing_usage:megapixel`，不通过单帧宽高或请求目标分辨率虚构整段视频的计费像素。来源：[Video upscaler schema](https://fal.ai/models/fal-ai/video-upscaler/api)。
 
+## fal 视频百万像素的核实办法
+
+已确认本 endpoint 的公开单价为 $0.0008/百万像素，公开输出没有计费像素量。旁证如下，不能将其他 endpoint 的精确公式直接套过来：
+
+- [fal 总计费说明](https://fal.ai/docs/documentation/model-apis/pricing) 说明 Model API 按产出计费。
+- [fal 自己的模型比较](https://fal.ai/learn/tools/video-to-video-upscalers) 将 RealESRGAN 归为逐帧处理及按百万像素收费。
+- [FlashVSR+](https://fal.ai/models/openimaginglab/flashvsr-plus) 明确写输出宽 × 高 × 帧数；[Crystal](https://fal.ai/models/clarityai/crystal-video-upscaler) 则按百万像素 × 秒 × FPS 分档，证明同平台也有不同公式。
+
+优先只读查询已有任务对应的 [Billing Events](https://fal.ai/docs/platform-apis/v1/models/billing-events)（request_id）、[Usage](https://fal.ai/docs/platform-apis/v1/models/usage)（billed quantity、unit price、discount、cost_total），配合 [Pricing API](https://fal.ai/docs/platform-apis/v1/models/pricing) 确认具体 endpoint。Usage 可能是时间窗口内的聚合，需隔离该任务窗口或结合 billing event，不把整个窗口费用当作单次费用。
+
+对已有输出实际探测宽、高及准确解码帧数，比较账单 quantity 与候选输入/输出累计像素量（宽 × 高 × 帧数 / 1e6）；不能只用 duration × fps 代替准确帧数。若历史样本不足，再安排受控的不同缩放倍率、帧数与 FPS 的短视频调用，检查最小计费量及取整，并向 fal 确认。此次没有新增付费调用或读取账号账单；公式仍未达到可用于自动结算的证据强度。
+
 ## 查询与 UI
 
 `usage.query` 的 `total`、`grouped` 和 `buckets` 增加：
@@ -43,7 +68,7 @@ SQLite/PostgreSQL 在服务器上聚合已有 `usage_json`，无需新增持久�
 
 Usage 仍使用同一权限边界、时间窗口及筛选条件，通过一次 `summary_and_events` 查询获取完整汇总和一页记录；group_by 同时使用 Provider、模型、App、API 类型。分页游标只限制 events，总计与分组不受游标影响。对分组组合的返回量随实际分组组合数增长，未在本次验证百万级高基数结果。
 
-Usage 消费卡沿用首页卡片样式，显示当前筛选全部记录的 token 和多币种金额。总计、各分组和单条记录的 token 可展开各单位明细。隐藏未上报维度、保留明确零值，覆盖不足时展示上报记录数；不将不同单位合并。SDK `AiUsage` / `UsageAggregate` 同步扩展，Desktop 保留原始 `usage_json`。
+Usage 消费卡沿用首页卡片样式，显示当前筛选全部记录的 token 和多币种金额。首页和 Usage 页的总计、各分组、列表及近期记录的 token 可展开各单位明细。多币种金额默认展示 USD（没有 USD 时显示稳定排序的首个实际币种），点击展开各币种，绝不隐式换汇。首页分组维度与费用来自同一 30 天/身份范围的服务端汇总，不通过近期五条记录估算。隐藏未上报维度、保留明确零值，覆盖不足时展示上报记录数；不将不同单位合并。SDK `AiUsage` / `UsageAggregate` 同步扩展，Desktop 保留原始 `usage_json`。
 
 ## 历史记录
 

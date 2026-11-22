@@ -241,7 +241,7 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             models.insert(
                 model.id.clone(),
                 DiscoveredModel {
-                    provider_model_id: model.id,
+                    provider_model_id: model.id.clone(),
 
                     api_types: Some(api_types),
                     supported_features: Some(supported_features),
@@ -253,7 +253,7 @@ impl ProviderDiscovery for OpenRouterDiscovery {
                     pricing: if video {
                         None
                     } else {
-                        parse_pricing(model.pricing)?
+                        parse_model_pricing(&model.id, model.pricing)?
                     },
                     video: None,
                 },
@@ -488,6 +488,32 @@ fn parse_video_pricing(
     }))
 }
 
+fn parse_model_pricing(
+    model: &str,
+    pricing: Option<ModelPricing>,
+) -> ProviderResult<Option<Pricing>> {
+    let audio_seconds = model == "mistralai/voxtral-small-24b-2507";
+    let audio_rate = if audio_seconds {
+        parse_nonnegative_price(
+            "audio",
+            pricing.as_ref().and_then(|price| price.audio.as_deref()),
+        )?
+    } else {
+        None
+    };
+    let Some(mut parsed) = parse_pricing(pricing)? else {
+        return Ok(None);
+    };
+    if let Some(amount) = audio_rate {
+        parsed.audio_input_token = Some(0.0);
+        parsed.addons.push(crate::catalog::PricingAddon {
+            unit: crate::catalog::PricingUnit::AudioSecond,
+            amount,
+        });
+    }
+    Ok(Some(parsed))
+}
+
 fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing>> {
     let Some(pricing) = pricing else {
         return Ok(None);
@@ -520,11 +546,7 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
     {
         return Ok(None);
     }
-    let mut ratio_exception: Option<String> = None;
-    // `Pricing` cannot express a per-request fee together with token rates: catalog validation
-    // rejects that combination and `discover()` validates the whole snapshot, so keeping both
-    // would let one model block the entire provider catalog. Token rates stay authoritative and
-    // the omitted fee is recorded so the catalog snapshot still explains the discrepancy.
+    let ratio_exception = None;
     let has_token_rates = input_token.is_some()
         || output_token.is_some()
         || cache_input_token.is_some()
@@ -532,17 +554,17 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         || cache_write_1h_input_token.is_some()
         || audio_input_token.is_some()
         || audio_output_token.is_some();
-    if has_token_rates {
-        if let Some(fee) = amount {
-            let note = format!(
-                "OpenRouter also charges {fee} USD per request; AICC bills the declared token rates"
-            );
-            ratio_exception = Some(match ratio_exception {
-                Some(existing) => format!("{existing}; {note}"),
-                None => note,
-            });
-        }
-    }
+    let addons = if has_token_rates {
+        amount
+            .map(|amount| crate::catalog::PricingAddon {
+                unit: crate::catalog::PricingUnit::Request,
+                amount,
+            })
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let (unit, amount) = if has_token_rates {
         (None, None)
     } else {
@@ -571,7 +593,7 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         tiers: None,
 
         time_windows: Vec::new(),
-        addons: Vec::new(),
+        addons,
     }))
 }
 
@@ -873,11 +895,38 @@ mod tests {
         .unwrap();
         assert_eq!(pricing.unit, None);
         assert_eq!(pricing.amount, None);
-        assert!(pricing
-            .ratio_exception
-            .as_deref()
-            .is_some_and(|note| note.contains("0.002 USD per request")));
+        assert_eq!(
+            pricing.addons,
+            vec![crate::catalog::PricingAddon {
+                unit: crate::catalog::PricingUnit::Request,
+                amount: 0.002
+            }]
+        );
         crate::catalog::validate_pricing("openrouter/example", &pricing).unwrap();
+    }
+
+    #[test]
+    fn voxtral_combines_text_tokens_with_audio_seconds() {
+        let pricing = parse_model_pricing(
+            "mistralai/voxtral-small-24b-2507",
+            Some(ModelPricing {
+                prompt: Some("0.0000001".into()),
+                completion: Some("0.0000003".into()),
+                audio: Some("0.0001".into()),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        crate::catalog::validate_pricing("voxtral", &pricing).unwrap();
+        assert_eq!(pricing.audio_input_token, Some(0.0));
+        assert_eq!(
+            pricing.addons,
+            vec![crate::catalog::PricingAddon {
+                unit: crate::catalog::PricingUnit::AudioSecond,
+                amount: 0.0001
+            }]
+        );
     }
 
     #[test]

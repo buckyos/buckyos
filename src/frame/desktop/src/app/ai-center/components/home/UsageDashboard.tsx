@@ -10,8 +10,9 @@ import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
-import { UsageConsumption, UsageUnits, UsageCost } from '../usage/UsageConsumption'
-import { aggregateUsageEvents, eventUsageDimensions } from '../../datamodel/usage-units'
+import { ConsumptionValue, UsageConsumption, UsageUnits, UsageMoney, UsageCost } from '../usage/UsageConsumption'
+import { aggregateUsageEvents, eventUsageDimensions, mergeUsageTotals } from '../../datamodel/usage-units'
+import type { UsageTotals } from '../../mock/types'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageOverview, UsageScope, UsageSummary, UsageTimeRange, UserUsageSummary } from '../../../../api/aicc_mgr'
 import { formatTokens as formatQuotaTokens, type QuotaRuleDraft } from '../../datamodel/quota'
 
@@ -113,7 +114,8 @@ function formatMoney(amount: number, currency: string, locale: string): string {
 
 function formatFinanceTotals(totals: UsageSummary['finance_totals'], locale: string, expanded = false): string {
   if (totals.length === 0) return '-'
-  const visible = expanded ? totals : totals.slice(0, 1)
+  const ordered = [...totals].sort((a, b) => Number(b.currency === 'USD') - Number(a.currency === 'USD') || a.currency.localeCompare(b.currency))
+  const visible = expanded ? ordered : ordered.slice(0, 1)
   return visible.map((money) => formatMoney(money.amount, money.currency, locale)).join('\n')
 }
 
@@ -536,6 +538,15 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
       detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
   }
+  const homeBilling = (key: HomeBreakdownKey, label: string): UsageTotals | undefined => {
+    const field = { provider: 'provider_instance_name', model: 'provider_model', appAgent: 'caller_app_id', apiType: 'capability' }[key]
+    const rows = overview.breakdowns.filter((row) => {
+      if (key === 'provider' && !row.group.provider_instance_name) return row.group.provider_model?.endsWith(`@${label}`)
+      if (key === 'apiType') return row.group.capability?.split('.')[0] === label
+      return row.group[field] === label
+    })
+    return rows.length ? mergeUsageTotals(rows.map((row) => row.aggregate)) : undefined
+  }
   const homeBreakdowns = [
     {
       key: 'provider' as const,
@@ -714,7 +725,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
             <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens, locale) })} />
             <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens, locale) })} />
             <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens, locale) })} />
-            <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={formatFinanceTotals(summary.finance_totals, locale)} />
+            <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={<UsageMoney totals={summary.finance_totals} />} />
           </div>
         </section>
       </div>}
@@ -728,7 +739,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens, locale) })} />
           <Stat label={t('aiCenter.home.total', 'Total')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens, locale) })} />
           <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
-          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals, locale)} />
+          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={<UsageMoney totals={summary.finance_totals} />} />
         </div>
       </section>}
 
@@ -758,11 +769,12 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
               </label>
             )}
           </div>
-          <div className="hidden grid-cols-4 gap-4 md:grid">
+          <div className="hidden gap-4 md:grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))' }}>
             {homeBreakdowns.map((item) => (
               <Breakdown
                 key={item.key}
                 title={item.title}
+                billing={(label) => homeBilling(item.key, label)}
                 rows={item.rows}
                 total={summary.total_tokens}
                 activeLabel={item.activeLabel}
@@ -778,6 +790,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           <div className="md:hidden">
             <Breakdown
               title={activeHomeBreakdown.title}
+              billing={(label) => homeBilling(activeHomeBreakdown.key, label)}
               rows={activeHomeBreakdown.rows}
               total={summary.total_tokens}
               activeLabel={activeHomeBreakdown.activeLabel}
@@ -1431,7 +1444,7 @@ function RecentUsageRow({
       <span style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp, locale)}</span>
       <span className="truncate" title={providerDisplayName} style={{ color: 'var(--cp-text)' }}>{providerDisplayName}</span>
       <span className="truncate font-mono" title={event.exact_model} style={{ color: 'var(--cp-text)' }}>{event.exact_model}</span>
-      <span style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens, locale)}</span>
+      <UsageUnits tokens={tokens} dimensions={eventUsageDimensions(event)} count={1} />
       <span style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</span>
       <span className="break-all md:col-span-5" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.usageUser', 'User')}: {event.user_id ?? event.tenant_id}</span>
     </div>
@@ -1846,7 +1859,7 @@ function MultiSelectFilter({
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid h-full min-w-0 grid-rows-[2rem_auto] gap-1 content-start">
       <div className="text-xs leading-4" style={{ color: 'var(--cp-muted)' }}>{label}</div>
@@ -1856,6 +1869,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 function MeterRow({
+  hideValue = false,
   label,
   value,
   max,
@@ -1865,6 +1879,7 @@ function MeterRow({
 }: {
   label: string
   value: number
+  hideValue?: boolean
   max: number
   onClick?: () => void
   active?: boolean
@@ -1876,7 +1891,7 @@ function MeterRow({
     <>
       <div className="flex items-center justify-between gap-3 text-xs mb-1 min-w-0">
         <TruncatedText value={label} className="flex-1" />
-        <span className="shrink-0 tabular-nums" style={{ color: 'var(--cp-muted)' }}>{formatTokens(value, locale)}</span>
+        {!hideValue && <span className="shrink-0 tabular-nums" style={{ color: 'var(--cp-muted)' }}>{formatTokens(value, locale)}</span>}
       </div>
       <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--cp-bg)' }}>
         <div className="h-full rounded-full" style={{ width: `${percent}%`, background: 'var(--cp-accent)' }} />
@@ -1916,7 +1931,9 @@ function Breakdown({
   showLessLabel,
   filterLabel,
   emptyLabel,
+  billing,
 }: {
+  billing?: (label: string) => UsageTotals | undefined
   title: string
   rows: Array<[string, number]>
   total: number
@@ -1951,11 +1968,13 @@ function Breakdown({
                 label={label}
                 value={value}
                 max={total}
+                hideValue={Boolean(billing?.(label))}
                 active={activeLabel === label}
                 actionLabel={filterLabel}
                 onClick={onSelect ? () => onSelect(label) : undefined}
               />
             </div>
+            {billing?.(label) && <ConsumptionValue total={billing(label)!} />}
             {onSetQuota && (
               <button
                 type="button"

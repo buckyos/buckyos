@@ -2260,7 +2260,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 385);
+    assert_eq!(pricing_count, 386);
 }
 
 #[test]
@@ -2924,11 +2924,7 @@ fn sn_static_usd_prices_cover_published_offerings_and_omni_has_distinct_video_ra
     ))
     .unwrap();
     assert_eq!(sn["reported_cost"]["currency"], "USD");
-    let unavailable = [
-        "ui-tars-1.5-7b",
-        "qwen3-embedding-8b",
-        "voxtral-small-24b-2507",
-    ];
+    let unavailable = ["gpt-4o-transcribe-diarize", "gpt-4o-mini-tts"];
     for name in sn["model_driver_overrides"].as_object().unwrap().keys() {
         if unavailable.contains(&name.as_str()) {
             continue;
@@ -2943,7 +2939,7 @@ fn sn_static_usd_prices_cover_published_offerings_and_omni_has_distinct_video_ra
         assert!(price["pricing"]["source_url"]
             .as_str()
             .unwrap()
-            .starts_with("https://"));
+            .starts_with("https://openrouter.ai/"));
     }
     let gemini: serde_json::Value = serde_json::from_str(include_str!(
         "../../../driver_metadata/providers/gemini.provider.json"
@@ -2957,4 +2953,112 @@ fn sn_static_usd_prices_cover_published_offerings_and_omni_has_distinct_video_ra
         .unwrap()["pricing"];
     assert_eq!(price["image_input_token"].as_f64().unwrap(), 1.5e-6);
     assert_eq!(price["video_output_token"].as_f64().unwrap(), 17.5e-6);
+}
+
+#[test]
+fn sn_prices_match_the_recorded_openrouter_quote_and_units() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../test/aicc_test/acceptance/sn_openrouter_prices.json"
+    )))
+    .unwrap();
+    let sn: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/sn.provider.json"
+    ))
+    .unwrap();
+    let prices = sn["model_pricing"].as_array().unwrap();
+    for (alias, slug) in fixture["model_aliases"].as_object().unwrap() {
+        let quote = fixture["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == *slug)
+            .unwrap();
+        let price = &prices
+            .iter()
+            .find(|p| p["id"].as_str() == Some(alias))
+            .unwrap()["pricing"];
+        assert_eq!(
+            price["source_url"],
+            format!("https://openrouter.ai/{}", slug.as_str().unwrap())
+        );
+        if alias == "qwen-image-3-pro" {
+            assert_eq!(price["unit"],"image");
+            assert_eq!(price["amount"].as_f64().unwrap(),quote["image_output_prices"]["1K"].as_str().unwrap().parse::<f64>().unwrap());
+            assert_eq!(price["rules"][0]["amount"].as_f64().unwrap(),quote["image_output_prices"]["2K"].as_str().unwrap().parse::<f64>().unwrap());
+            assert_eq!(price["addons"][0]["amount"].as_f64().unwrap(),quote["pricing"]["image"].as_str().unwrap().parse::<f64>().unwrap());
+            let pricing = serde_json::from_value(price.clone()).unwrap();
+            let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(&pricing,None,std::time::SystemTime::now()).unwrap().unwrap();
+            let cost = pinned.completion_cost(&buckyos_api::AiUsage {image_units:Some(2),reference_images:Some(1),..Default::default()}).unwrap();
+            assert!((cost.amount-0.083).abs()<1e-12);
+            continue;
+        }
+        if alias == "wan-3.0" {
+            for (sku, rate) in quote["pricing_skus"].as_object().unwrap() {
+                let rule = price["rules"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|rule| {
+                        rule["when"]["/video/resolution"]
+                            == sku.trim_start_matches("duration_seconds_")
+                    })
+                    .unwrap();
+                assert_eq!(
+                    rule["amount"].as_f64().unwrap(),
+                    rate.as_str().unwrap().parse::<f64>().unwrap()
+                );
+            }
+            continue;
+        }
+        for (upstream, local) in [
+            ("prompt", "input_token"),
+            ("completion", "output_token"),
+            ("input_cache_read", "cache_input_token"),
+            ("input_cache_write", "cache_write_input_token"),
+            ("input_cache_write_1h", "cache_write_1h_input_token"),
+            ("image_output", "image_output_token"),
+        ] {
+            if let Some(rate) = quote["pricing"][upstream].as_str() {
+                assert_eq!(
+                    price[local].as_f64().unwrap(),
+                    rate.parse::<f64>().unwrap(),
+                    "{alias}:{local}"
+                );
+            }
+        }
+        if alias == "voxtral-small-24b-2507" {
+            assert_eq!(price["addons"][0]["unit"], "audio_second");
+            assert_eq!(
+                price["addons"][0]["amount"].as_f64().unwrap(),
+                quote["pricing"]["audio"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap()
+            );
+            assert_eq!(price["audio_input_token"].as_f64().unwrap(), 0.0);
+        }
+        for (i, tier) in quote["pricing"]["overrides"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| t["min_prompt_tokens"].is_number())
+            .enumerate()
+        {
+            assert_eq!(
+                price["tiers"]["steps"][i]["up_to"],
+                tier["min_prompt_tokens"]
+            );
+        }
+    }
+    assert_eq!(
+        prices.len(),
+        fixture["model_aliases"].as_object().unwrap().len()
+    );
+    let gpt = &prices.iter().find(|p|p["id"] == "gpt-6-astra").unwrap()["pricing"];
+    assert_eq!(gpt["tiers"]["steps"][1]["image_input_token"],gpt["tiers"]["steps"][1]["input_token"]);
+    let asr = &prices.iter().find(|p|p["id"] == "gpt-4o-mini-transcribe").unwrap()["pricing"];
+    assert_eq!(asr["audio_input_token"],asr["input_token"]);
+
 }

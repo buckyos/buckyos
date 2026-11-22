@@ -61,7 +61,7 @@ export function SummaryCard({
           {title}
         </span>
       </div>
-      <div className="min-h-7 whitespace-pre-line break-words text-lg font-semibold leading-7" style={{ color: valueColor }}>
+      <div className={`min-h-7 whitespace-pre-line break-words text-lg font-semibold leading-7 ${onClick ? 'underline decoration-dotted underline-offset-4' : ''}`} style={{ color: valueColor }}>
         {value}
       </div>
       {subtitle && (

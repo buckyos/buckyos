@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 17,
+  "revision_seq": 18,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -2366,880 +2366,1107 @@
       }
     }
   ],
-  "reported_cost": {"currency": "USD", "semantics": "total_request_cost", "model_ids": ["kimi-k3", "kimi-k3.1-pro"]},
+  "reported_cost": {
+    "currency": "USD",
+    "semantics": "total_request_cost",
+    "model_ids": [
+      "kimi-k3",
+      "kimi-k3.1-pro"
+    ]
+  },
   "model_pricing": [
-  {
-    "id": "gpt-6-astra",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 1e-05,
-      "output_token": 5e-05,
-      "cache_input_token": 1e-06,
-      "cache_write_input_token": 1.25e-05,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 272001
-          },
-          {
-            "input_token": 2e-05,
-            "output_token": 7.5e-05,
-            "cache_input_token": 2e-06,
-            "cache_write_input_token": 2.5e-05,
-            "cache_write_1h_input_token": 2e-05
-          }
-        ]
-      },
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
-      "verified_at": "2026-09-25",
-      "cache_write_1h_input_token": 1e-05
-    }
-  },
-  {
-    "id": "gpt-6-sol",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 2e-06,
-      "output_token": 1e-05,
-      "cache_input_token": 2e-07,
-      "cache_write_input_token": 2.5e-06,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 272001
-          },
-          {
-            "input_token": 4e-06,
-            "output_token": 1.5e-05,
-            "cache_input_token": 4e-07,
-            "cache_write_input_token": 5e-06,
-            "cache_write_1h_input_token": 4e-06
-          }
-        ]
-      },
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-11-16",
-      "cache_write_1h_input_token": 2e-06
-    }
-  },
-  {
-    "id": "gpt-6-luna",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 1e-07,
-      "output_token": 5e-07,
-      "cache_input_token": 1e-08,
-      "cache_write_input_token": 1.25e-07,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 272001
-          },
-          {
-            "input_token": 2e-07,
-            "output_token": 7.5e-07,
-            "cache_input_token": 2e-08,
-            "cache_write_input_token": 2.5e-07,
-            "cache_write_1h_input_token": 2e-07
-          }
-        ]
-      },
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-11-16",
-      "cache_write_1h_input_token": 1e-07
-    }
-  },
-  {
-    "id": "gpt-5.6-sol",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 4e-06,
-      "output_token": 2e-05,
-      "cache_input_token": 4e-07,
-      "cache_write_input_token": 5e-06,
-      "cache_write_1h_input_token": 4e-06
-    }
-  },
-  {
-    "id": "gpt-5.6-terra",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 2e-06,
-      "output_token": 1.2e-05,
-      "cache_input_token": 2e-07,
-      "cache_write_input_token": 2.5e-06,
-      "cache_write_1h_input_token": 2e-06
-    }
-  },
-  {
-    "id": "gpt-5.6-luna",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 2e-07,
-      "output_token": 1.2e-06,
-      "cache_input_token": 2e-08,
-      "cache_write_input_token": 2.5e-07,
-      "cache_write_1h_input_token": 2e-07
-    }
-  },
-  {
-    "id": "gpt-5.5-pro",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 3e-05,
-      "output_token": 0.00018,
-      "cache_write_input_token": 3e-05,
-      "cache_write_1h_input_token": 3e-05
-    }
-  },
-  {
-    "id": "gpt-5.5",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 5e-06,
-      "output_token": 3e-05,
-      "cache_input_token": 5e-07,
-      "cache_write_input_token": 5e-06,
-      "cache_write_1h_input_token": 5e-06
-    }
-  },
-  {
-    "id": "gpt-5.4",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 2.5e-06,
-      "output_token": 1.5e-05,
-      "cache_input_token": 2.5e-07,
-      "cache_write_input_token": 2.5e-06,
-      "cache_write_1h_input_token": 2.5e-06
-    }
-  },
-  {
-    "id": "gpt-5.4-pro",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 3e-05,
-      "output_token": 0.00018,
-      "cache_write_input_token": 3e-05,
-      "cache_write_1h_input_token": 3e-05
-    }
-  },
-  {
-    "id": "gpt-5.4-mini",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 7.5e-07,
-      "output_token": 4.5e-06,
-      "cache_input_token": 7.5e-08,
-      "cache_write_input_token": 7.5e-07,
-      "cache_write_1h_input_token": 7.5e-07
-    }
-  },
-  {
-    "id": "gpt-5.4-nano",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 2e-07,
-      "output_token": 1.25e-06,
-      "cache_input_token": 2e-08,
-      "cache_write_input_token": 2e-07,
-      "cache_write_1h_input_token": 2e-07
-    }
-  },
-  {
-    "id": "gpt-5.3-codex",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 1.75e-06,
-      "output_token": 1.4e-05,
-      "cache_input_token": 1.75e-07,
-      "cache_write_input_token": 1.75e-06,
-      "cache_write_1h_input_token": 1.75e-06
-    }
-  },
-  {
-    "id": "gpt-image-2",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 5e-06,
-      "image_input_token": 8e-06,
-      "image_output_token": 3e-05,
-      "cache_input_token": 1.25e-06,
-      "cache_write_input_token": 5e-06,
-      "cache_write_1h_input_token": 5e-06
-    }
-  },
-  {
-    "id": "text-embedding-3-large",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 1.3e-07
-    }
-  },
-  {
-    "id": "text-embedding-3-small",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 2e-08
-    }
-  },
-  {
-    "id": "gpt-4o-mini-transcribe",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 1.25e-06,
-      "output_token": 5e-06,
-      "cache_write_input_token": 1.25e-06,
-      "cache_write_1h_input_token": 1.25e-06
-    }
-  },
-  {
-    "id": "gpt-4o-mini-tts",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 6e-07,
-      "audio_output_token": 1.2e-05,
-      "cache_write_input_token": 6e-07,
-      "cache_write_1h_input_token": 6e-07
-    }
-  },
-  {
-    "id": "gpt-6.1-sol",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 2e-06,
-      "output_token": 1e-05,
-      "cache_input_token": 1e-07,
-      "cache_write_input_token": 2.5e-06,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 272001
-          },
-          {
-            "input_token": 4e-06,
-            "output_token": 1.5e-05,
-            "cache_input_token": 2e-07,
-            "cache_write_input_token": 5e-06,
-            "cache_write_1h_input_token": 4e-06
-          }
-        ]
-      },
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-      "verified_at": "2026-10-26",
-      "cache_write_1h_input_token": 2e-06
-    }
-  },
-  {
-    "id": "gpt-image-2.5-flare",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
-      "verified_at": "2026-10-30",
-      "currency": "USD",
-      "input_token": 5e-06,
-      "image_input_token": 8e-06,
-      "image_output_token": 3e-05,
-      "cache_input_token": 1.25e-06,
-      "cache_write_input_token": 5e-06,
-      "cache_write_1h_input_token": 5e-06
-    }
-  },
-  {
-    "id": "gpt-image-2.5-sunburst",
-    "pricing": {
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
-      "verified_at": "2026-10-30",
-      "currency": "USD",
-      "input_token": 5e-06,
-      "image_input_token": 8e-06,
-      "image_output_token": 3e-05,
-      "cache_input_token": 1.25e-06,
-      "cache_write_input_token": 5e-06,
-      "cache_write_1h_input_token": 5e-06
-    }
-  },
-  {
-    "id": "gpt-6.1-terra",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 1e-06,
-      "output_token": 5e-06,
-      "cache_input_token": 5e-08,
-      "cache_write_input_token": 1.25e-06,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 272001
-          },
-          {
-            "input_token": 2e-06,
-            "output_token": 7.5e-06,
-            "cache_input_token": 1e-07,
-            "cache_write_input_token": 2.5e-06,
-            "cache_write_1h_input_token": 2e-06
-          }
-        ]
-      },
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-      "verified_at": "2026-10-26",
-      "cache_write_1h_input_token": 1e-06
-    }
-  },
-  {
-    "id": "gpt-6.1-terra-pro",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 1e-06,
-      "output_token": 5e-06,
-      "cache_input_token": 5e-08,
-      "cache_write_input_token": 1.25e-06,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 272001
-          },
-          {
-            "input_token": 2e-06,
-            "output_token": 7.5e-06,
-            "cache_input_token": 1e-07,
-            "cache_write_input_token": 2.5e-06,
-            "cache_write_1h_input_token": 2e-06
-          }
-        ]
-      },
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-      "verified_at": "2026-10-26",
-      "cache_write_1h_input_token": 1e-06
-    }
-  },
-  {
-    "id": "gpt-6.1-sol-pro",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 2e-06,
-      "output_token": 1e-05,
-      "cache_input_token": 1e-07,
-      "cache_write_input_token": 2.5e-06,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 272001
-          },
-          {
-            "input_token": 4e-06,
-            "output_token": 1.5e-05,
-            "cache_input_token": 2e-07,
-            "cache_write_input_token": 5e-06,
-            "cache_write_1h_input_token": 4e-06
-          }
-        ]
-      },
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-      "verified_at": "2026-10-26",
-      "cache_write_1h_input_token": 2e-06
-    }
-  },
-  {
-    "id": "claude-opus-5.5",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 4e-06,
-      "output_token": 2e-05,
-      "cache_write_1h_input_token": 8e-06,
-      "cache_input_token": 2e-07,
-      "cache_write_input_token": 5e-06,
-      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
-      "verified_at": "2026-09-25"
-    }
-  },
-  {
-    "id": "claude-sonnet-5.5",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 2e-06,
-      "output_token": 1e-05,
-      "cache_write_1h_input_token": 4e-06,
-      "cache_input_token": 1e-07,
-      "cache_write_input_token": 2.5e-06,
-      "source_url": "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
-      "verified_at": "2026-10-14"
-    }
-  },
-  {
-    "id": "claude-haiku-5.5",
-    "pricing": {
-      "currency": "USD",
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
-          {
-            "up_to": 100001,
-            "input_token": 1e-07,
-            "output_token": 5e-07,
-            "cache_write_1h_input_token": 2e-07,
-            "cache_input_token": 1e-08,
-            "cache_write_input_token": 1.25e-07
-          },
-          {
-            "input_token": 5e-07,
-            "output_token": 2.5e-06,
-            "cache_write_1h_input_token": 1e-06,
-            "cache_input_token": 5e-08,
-            "cache_write_input_token": 6.25e-07
-          }
-        ]
-      },
-      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
-      "verified_at": "2026-10-17"
-    }
-  },
-  {
-    "id": "gemini-4-argon",
-    "pricing": {
-      "source_url": "https://ai.google.dev/gemini-api/docs/latest-model",
-      "verified_at": "2026-11-16",
-      "currency": "USD",
-      "input_token": 2e-06,
-      "output_token": 1e-05,
-      "cache_input_token": 1e-07
-    }
-  },
-  {
-    "id": "gemini-3.8-flash",
-    "pricing": {
-      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "verified_at": "2026-09-26",
-      "currency": "USD",
-      "input_token": 7.5e-07,
-      "output_token": 3.75e-06,
-      "cache_input_token": 7.5e-08
-    }
-  },
-  {
-    "id": "deepseek-v4.1-flash-1017",
-    "pricing": {
-      "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
-      "verified_at": "2026-11-16",
-      "currency": "USD",
-      "input_token": 1.5e-07,
-      "output_token": 6e-07,
-      "cache_input_token": 3e-09,
-      "time_windows": [
-        {
-          "from": "09:00",
-          "to": "12:00",
-          "days": [
-            "mon",
-            "tue",
-            "wed",
-            "thu",
-            "fri"
-          ],
-          "utc_offset_minutes": 480,
-          "input_token": 3e-07,
-          "output_token": 1.2e-06,
-          "cache_input_token": 6e-09
-        },
-        {
-          "from": "14:00",
-          "to": "18:00",
-          "days": [
-            "mon",
-            "tue",
-            "wed",
-            "thu",
-            "fri"
-          ],
-          "utc_offset_minutes": 480,
-          "input_token": 3e-07,
-          "output_token": 1.2e-06,
-          "cache_input_token": 6e-09
-        }
-      ]
-    }
-  },
-  {
-    "id": "deepseek-v4-pro-0813",
-    "pricing": {
-      "currency": "USD",
-      "input_token": 6.6e-07,
-      "output_token": 1.98e-06,
-      "cache_input_token": 2.2e-08,
-      "time_windows": [
-        {
-          "from": "01:00",
-          "to": "04:00",
-          "utc_offset_minutes": 0,
-          "input_token": 1.32e-06,
-          "cache_input_token": 4.4e-08,
-          "output_token": 3.96e-06,
-          "days": [
-            "mon",
-            "tue",
-            "wed",
-            "thu",
-            "fri"
-          ]
-        },
-        {
-          "from": "06:00",
-          "to": "10:00",
-          "utc_offset_minutes": 0,
-          "input_token": 1.32e-06,
-          "cache_input_token": 4.4e-08,
-          "output_token": 3.96e-06,
-          "days": [
-            "mon",
-            "tue",
-            "wed",
-            "thu",
-            "fri"
+    {
+      "id": "gpt-6-astra",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-6-astra",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-05,
+        "output_token": 5e-05,
+        "cache_input_token": 1e-06,
+        "cache_write_input_token": 1.25e-05,
+        "image_input_token": 1e-05,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 2e-05,
+              "output_token": 7.5e-05,
+              "cache_input_token": 2e-06,
+              "cache_write_input_token": 2.5e-05,
+              "image_input_token": 2e-05
+            }
           ]
         }
-      ],
-      "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
-      "verified_at": "2026-11-16"
-    }
-  },
-  {
-    "id": "kimi-k3",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://platform.kimi.ai/docs/pricing/chat",
-      "verified_at": "2026-11-21",
-      "input_token": 3e-06,
-      "output_token": 1.5e-05,
-      "cache_write_input_token": 3e-06,
-      "cache_write_1h_input_token": 6e-06,
-      "cache_input_token": 3e-07
-    }
-  },
-  {
-    "id": "kimi-k3.1-pro",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://platform.kimi.ai/docs/pricing/chat",
-      "verified_at": "2026-11-21",
-      "input_token": 2e-06,
-      "output_token": 1e-05,
-      "cache_write_input_token": 2e-06,
-      "cache_write_1h_input_token": 4e-06,
-      "cache_input_token": 2.0000000000000002e-07
-    }
-  },
-  {
-    "id": "glm-5",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://docs.z.ai/guides/overview/pricing",
-      "verified_at": "2026-11-21",
-      "input_token": 1e-06,
-      "output_token": 3.2000000000000003e-06,
-      "cache_input_token": 2.0000000000000002e-07
-    }
-  },
-  {
-    "id": "glm-5.3",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://docs.z.ai/guides/overview/pricing",
-      "verified_at": "2026-11-21",
-      "input_token": 1.4e-06,
-      "output_token": 4.4e-06,
-      "cache_input_token": 2.6e-07
-    }
-  },
-  {
-    "id": "glm-5.3-prime",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://docs.z.ai/guides/overview/pricing",
-      "verified_at": "2026-11-21",
-      "input_token": 1.4e-06,
-      "output_token": 4.4e-06,
-      "cache_input_token": 2.6e-07
-    }
-  },
-  {
-    "id": "glm-5.3-flash",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://docs.z.ai/guides/overview/pricing",
-      "verified_at": "2026-11-21",
-      "input_token": 1.5e-07,
-      "output_token": 5e-07,
-      "cache_input_token": 3e-08
-    }
-  },
-  {
-    "id": "glm-5.3-flashx",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://docs.z.ai/guides/overview/pricing",
-      "verified_at": "2026-11-21",
-      "input_token": 3.7e-07,
-      "output_token": 1.25e-06,
-      "cache_input_token": 7.5e-08
-    }
-  },
-  {
-    "id": "qwen3.8-max-0902",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "input_token": 2e-06,
-      "output_token": 6e-06
-    }
-  },
-  {
-    "id": "qwen3.8-max-prime",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "input_token": 2e-06,
-      "output_token": 6e-06
-    }
-  },
-  {
-    "id": "qwen3.8-2.4t-a95b",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "input_token": 2e-06,
-      "output_token": 6e-06
-    }
-  },
-  {
-    "id": "qwen3.8-27b",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "input_token": 5e-07,
-      "output_token": 3e-06
-    }
-  },
-  {
-    "id": "qwen3.8-flash",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "input_token": 1.13e-07,
-      "output_token": 3.82e-07,
-      "cache_input_token": 1.4e-08
-    }
-  },
-  {
-    "id": "qwen3.8-omni-flash",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "input_token": 1.13e-07,
-      "output_token": 3.82e-07,
-      "cache_input_token": 1.4e-08
-    }
-  },
-  {
-    "id": "qwen3.6-plus",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
+      }
+    },
+    {
+      "id": "gpt-6-sol",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-6-sol",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 1e-05,
+        "cache_input_token": 2e-07,
+        "cache_write_input_token": 2.5e-06,
+        "image_input_token": 2e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 4e-06,
+              "output_token": 1.5e-05,
+              "cache_input_token": 4e-07,
+              "cache_write_input_token": 5e-06,
+              "image_input_token": 4e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-6-luna",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-07,
+        "output_token": 5e-07,
+        "cache_input_token": 1e-08,
+        "cache_write_input_token": 1.25e-07,
+        "image_input_token": 1e-07,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 2e-07,
+              "output_token": 7.5e-07,
+              "cache_input_token": 2e-08,
+              "cache_write_input_token": 2.5e-07,
+              "image_input_token": 2e-07
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.6-sol",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 4e-06,
+        "output_token": 2e-05,
+        "cache_input_token": 4e-07,
+        "cache_write_input_token": 5e-06,
+        "image_input_token": 4e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 8e-06,
+              "output_token": 3e-05,
+              "cache_input_token": 8e-07,
+              "cache_write_input_token": 1e-05,
+              "image_input_token": 8e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.6-terra",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 1.2e-05,
+        "cache_input_token": 2e-07,
+        "cache_write_input_token": 2.5e-06,
+        "image_input_token": 2e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 4e-06,
+              "output_token": 1.8e-05,
+              "cache_input_token": 4e-07,
+              "cache_write_input_token": 5e-06,
+              "image_input_token": 4e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.6-luna",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-07,
+        "output_token": 1.2e-06,
+        "cache_input_token": 2e-08,
+        "cache_write_input_token": 2.5e-07,
+        "image_input_token": 2e-07,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 4e-07,
+              "output_token": 1.8e-06,
+              "cache_input_token": 4e-08,
+              "cache_write_input_token": 5e-07,
+              "image_input_token": 4e-07
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.5-pro",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3e-05,
+        "output_token": 0.00018,
+        "image_input_token": 3e-05,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 6e-05,
+              "output_token": 0.00027,
+              "image_input_token": 6e-05
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.5",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 5e-06,
+        "output_token": 3e-05,
+        "cache_input_token": 5e-07,
+        "image_input_token": 5e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 1e-05,
+              "output_token": 4.5e-05,
+              "cache_input_token": 1e-06,
+              "image_input_token": 1e-05
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.4",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.4",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2.5e-06,
+        "output_token": 1.5e-05,
+        "cache_input_token": 2.5e-07,
+        "image_input_token": 2.5e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 5e-06,
+              "output_token": 2.25e-05,
+              "cache_input_token": 5e-07,
+              "image_input_token": 5e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.4-pro",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.4-pro",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3e-05,
+        "output_token": 0.00018,
+        "image_input_token": 3e-05,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 6e-05,
+              "output_token": 0.00027,
+              "image_input_token": 6e-05
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.4-mini",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 7.5e-07,
+        "output_token": 4.5e-06,
+        "cache_input_token": 7.5e-08,
+        "image_input_token": 7.5e-07
+      }
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.4-nano",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-07,
+        "output_token": 1.25e-06,
+        "cache_input_token": 2e-08,
+        "image_input_token": 2e-07
+      }
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-5.3-codex",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.75e-06,
+        "output_token": 1.4e-05,
+        "cache_input_token": 1.75e-07,
+        "image_input_token": 1.75e-06
+      }
+    },
+    {
+      "id": "gpt-image-2",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-image-2",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 8e-06,
+        "output_token": 8e-06,
+        "cache_input_token": 2e-06,
+        "image_output_token": 3e-05,
+        "image_input_token": 8e-06
+      }
+    },
+    {
+      "id": "text-embedding-3-large",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/text-embedding-3-large",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.3e-07,
+        "output_token": 0.0
+      }
+    },
+    {
+      "id": "text-embedding-3-small",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/text-embedding-3-small",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-08,
+        "output_token": 0.0
+      }
+    },
+    {
+      "id": "gpt-4o-mini-transcribe",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-4o-mini-transcribe",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.25e-06,
+        "output_token": 5e-06,
+        "audio_input_token": 1.25e-06
+      }
+    },
+    {
+      "id": "glm-5",
+      "pricing": {
+        "source_url": "https://openrouter.ai/z-ai/glm-5",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-06,
+        "output_token": 3.2e-06,
+        "cache_input_token": 2e-07
+      }
+    },
+    {
+      "id": "glm-5.3",
+      "pricing": {
+        "source_url": "https://openrouter.ai/z-ai/glm-5.3",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 6.99e-08,
+        "output_token": 1.4e-06,
+        "cache_input_token": 6.89e-08
+      }
+    },
+    {
+      "id": "kimi-k3",
+      "pricing": {
+        "source_url": "https://openrouter.ai/moonshotai/kimi-k3",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.92e-07,
+        "output_token": 1.6e-05,
+        "cache_input_token": 1.82e-07,
+        "image_input_token": 1.92e-07,
+        "video_input_token": 1.92e-07
+      }
+    },
+    {
+      "id": "qwen3.6-plus",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.6-plus",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3.25e-07,
+        "output_token": 1.95e-06,
+        "cache_write_input_token": 4.0625e-07,
+        "image_input_token": 3.25e-07,
+        "video_input_token": 3.25e-07,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 256000
+            },
+            {
+              "input_token": 1.3e-06,
+              "output_token": 3.9e-06,
+              "cache_write_input_token": 1.625e-06,
+              "image_input_token": 1.3e-06,
+              "video_input_token": 1.3e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen3.7-plus",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.7-plus",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3.2e-07,
+        "output_token": 1.28e-06,
+        "cache_input_token": 6.4e-08,
+        "cache_write_input_token": 4e-07,
+        "image_input_token": 3.2e-07,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 256000
+            },
+            {
+              "input_token": 9.6e-07,
+              "output_token": 3.84e-06,
+              "cache_input_token": 1.92e-07,
+              "cache_write_input_token": 1.2e-06,
+              "image_input_token": 9.6e-07
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen3.8-max-0902",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.8-max-0902",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 6e-06,
+        "cache_input_token": 2.5e-07,
+        "image_input_token": 2e-06,
+        "video_input_token": 2e-06
+      }
+    },
+    {
+      "id": "qwen3-embedding-8b",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3-embedding-8b",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-08,
+        "output_token": 0.0
+      }
+    },
+    {
+      "id": "qwen-image-3-pro",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen-image-3-pro",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "unit": "image",
+        "amount": 0.04,
+        "addons": [
           {
-            "up_to": 256001,
-            "input_token": 2.7600000000000004e-07,
-            "output_token": 1.651e-06
-          },
+            "unit": "reference_image",
+            "amount": 0.003
+          }
+        ],
+        "rules": [
           {
-            "input_token": 1.101e-06,
-            "output_token": 6.6020000000000005e-06
+            "when": {
+              "/resolution": [
+                "2K",
+                "2k"
+              ]
+            },
+            "unit": "image",
+            "amount": 0.075
           }
         ]
       }
-    }
-  },
-  {
-    "id": "qwen3.7-plus",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
+    },
+    {
+      "id": "ui-tars-1.5-7b",
+      "pricing": {
+        "source_url": "https://openrouter.ai/bytedance/ui-tars-1.5-7b",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-07,
+        "output_token": 2e-07,
+        "cache_input_token": 1e-07,
+        "image_input_token": 1e-07
+      }
+    },
+    {
+      "id": "voxtral-small-24b-2507",
+      "pricing": {
+        "source_url": "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-07,
+        "output_token": 3e-07,
+        "cache_input_token": 1e-08,
+        "audio_input_token": 0,
+        "addons": [
           {
-            "up_to": 256001,
-            "input_token": 2.7600000000000004e-07,
-            "output_token": 1.101e-06
-          },
-          {
-            "input_token": 8.259999999999999e-07,
-            "output_token": 3.3010000000000002e-06
+            "unit": "audio_second",
+            "amount": 0.0001
           }
         ]
       }
-    }
-  },
-  {
-    "id": "qwen-image-3-pro",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "unit": "image",
-      "amount": 0.03438,
-      "addons": [
-        {
-          "unit": "reference_image",
-          "amount": 0.00275
+    },
+    {
+      "id": "wan-3.0",
+      "pricing": {
+        "source_url": "https://openrouter.ai/alibaba/wan-3.0",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "unit": "video_second",
+        "rules": [
+          {
+            "when": {
+              "/video/resolution": "480p"
+            },
+            "amount": 0.05,
+            "unit": "video_second"
+          },
+          {
+            "when": {
+              "/video/resolution": "720p"
+            },
+            "amount": 0.1,
+            "unit": "video_second"
+          },
+          {
+            "when": {
+              "/video/resolution": "1080p"
+            },
+            "amount": 0.2,
+            "unit": "video_second"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-6.1-sol",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 1e-05,
+        "cache_input_token": 1e-07,
+        "cache_write_input_token": 2.5e-06,
+        "image_input_token": 2e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 4e-06,
+              "output_token": 1.5e-05,
+              "cache_input_token": 2e-07,
+              "cache_write_input_token": 5e-06,
+              "image_input_token": 4e-06
+            }
+          ]
         }
-      ],
-      "rules": [
-        {
-          "when": {
-            "/resolution": [
-              "2K",
-              "2k"
+      }
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-image-2.5-flare",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 8e-06,
+        "output_token": 8e-06,
+        "cache_input_token": 2e-06,
+        "image_output_token": 3e-05,
+        "image_input_token": 8e-06
+      }
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-image-2.5-sunburst",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 8e-06,
+        "output_token": 8e-06,
+        "cache_input_token": 2e-06,
+        "image_output_token": 3e-05,
+        "image_input_token": 8e-06
+      }
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-6.1-terra",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-06,
+        "output_token": 5e-06,
+        "cache_input_token": 5e-08,
+        "cache_write_input_token": 1.25e-06,
+        "image_input_token": 1e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 2e-06,
+              "output_token": 7.5e-06,
+              "cache_input_token": 1e-07,
+              "cache_write_input_token": 2.5e-06,
+              "image_input_token": 2e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-6.1-terra-pro",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-6.1-terra-pro",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-06,
+        "output_token": 5e-06,
+        "cache_input_token": 5e-08,
+        "cache_write_input_token": 1.25e-06,
+        "image_input_token": 1e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 2e-06,
+              "output_token": 7.5e-06,
+              "cache_input_token": 1e-07,
+              "cache_write_input_token": 2.5e-06,
+              "image_input_token": 2e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gpt-6.1-sol-pro",
+      "pricing": {
+        "source_url": "https://openrouter.ai/openai/gpt-6.1-sol-pro",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 1e-05,
+        "cache_input_token": 1e-07,
+        "cache_write_input_token": 2.5e-06,
+        "image_input_token": 2e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 272000
+            },
+            {
+              "input_token": 4e-06,
+              "output_token": 1.5e-05,
+              "cache_input_token": 2e-07,
+              "cache_write_input_token": 5e-06,
+              "image_input_token": 4e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "claude-opus-5.5",
+      "pricing": {
+        "source_url": "https://openrouter.ai/anthropic/claude-opus-5.5",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 4e-06,
+        "output_token": 2e-05,
+        "cache_input_token": 2e-07,
+        "cache_write_input_token": 5e-06,
+        "cache_write_1h_input_token": 8e-06,
+        "image_input_token": 4e-06
+      }
+    },
+    {
+      "id": "claude-sonnet-5.5",
+      "pricing": {
+        "source_url": "https://openrouter.ai/anthropic/claude-sonnet-5.5",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 1e-05,
+        "cache_input_token": 1e-07,
+        "cache_write_input_token": 2.5e-06,
+        "cache_write_1h_input_token": 4e-06,
+        "image_input_token": 2e-06
+      }
+    },
+    {
+      "id": "claude-haiku-5.5",
+      "pricing": {
+        "source_url": "https://openrouter.ai/anthropic/claude-haiku-5.5",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-07,
+        "output_token": 5e-07,
+        "cache_input_token": 1e-08,
+        "cache_write_input_token": 1.25e-07,
+        "cache_write_1h_input_token": 2e-07,
+        "image_input_token": 1e-07,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 100000
+            },
+            {
+              "input_token": 5e-07,
+              "output_token": 2.5e-06,
+              "cache_input_token": 5e-08,
+              "cache_write_input_token": 6.25e-07,
+              "cache_write_1h_input_token": 1e-06,
+              "image_input_token": 5e-07
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gemini-4-argon",
+      "pricing": {
+        "source_url": "https://openrouter.ai/google/gemini-4-argon",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 1e-05,
+        "cache_input_token": 1e-07,
+        "cache_write_input_token": 1.875e-07,
+        "image_input_token": 2e-06,
+        "audio_input_token": 2e-06,
+        "video_input_token": 2e-06
+      }
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "pricing": {
+        "source_url": "https://openrouter.ai/google/gemini-3.8-flash",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 8.25e-07,
+        "output_token": 4.125e-06,
+        "cache_input_token": 8.25e-08,
+        "cache_write_input_token": 4.16666666666667e-08,
+        "image_input_token": 8.25e-07,
+        "audio_input_token": 8.25e-07,
+        "video_input_token": 8.25e-07
+      }
+    },
+    {
+      "id": "grok-4.7",
+      "pricing": {
+        "source_url": "https://openrouter.ai/x-ai/grok-4.7",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 6e-06,
+        "cache_input_token": 5e-07,
+        "image_input_token": 2e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 200000
+            },
+            {
+              "input_token": 4e-06,
+              "output_token": 1.2e-05,
+              "cache_input_token": 1e-06,
+              "image_input_token": 4e-06
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen3.8-flash",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.8-flash",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.5e-07,
+        "output_token": 4.7e-07,
+        "cache_input_token": 1.6e-08,
+        "image_input_token": 1.5e-07,
+        "video_input_token": 1.5e-07
+      }
+    },
+    {
+      "id": "qwen3.8-omni-flash",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.8-omni-flash",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.5e-07,
+        "output_token": 4.7e-07,
+        "cache_input_token": 1.6e-08,
+        "image_input_token": 1.5e-07,
+        "audio_input_token": 1.5e-07,
+        "video_input_token": 1.5e-07
+      }
+    },
+    {
+      "id": "qwen3.8-max-prime",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.8-max-prime",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 4e-06,
+        "output_token": 1.2e-05,
+        "cache_input_token": 5e-07,
+        "image_input_token": 4e-06,
+        "video_input_token": 4e-06
+      }
+    },
+    {
+      "id": "qwen3.8-27b",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.8-27b",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3.5e-08,
+        "output_token": 1.5e-06,
+        "cache_input_token": 1.75e-08,
+        "image_input_token": 3.5e-08,
+        "video_input_token": 3.5e-08
+      }
+    },
+    {
+      "id": "qwen3.8-2.4t-a95b",
+      "pricing": {
+        "source_url": "https://openrouter.ai/qwen/qwen3.8-2.4t-a95b",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 6e-06,
+        "cache_input_token": 2.5e-07
+      }
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "pricing": {
+        "source_url": "https://openrouter.ai/moonshotai/kimi-k3.1-pro",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 2.53e-07,
+        "output_token": 8.8e-06,
+        "cache_input_token": 1.8e-07,
+        "image_input_token": 2.53e-07,
+        "video_input_token": 2.53e-07
+      }
+    },
+    {
+      "id": "glm-5.3-flash",
+      "pricing": {
+        "source_url": "https://openrouter.ai/z-ai/glm-5.3-flash",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3.99e-08,
+        "output_token": 7.84e-08,
+        "cache_input_token": 3e-08,
+        "image_input_token": 3.99e-08,
+        "video_input_token": 3.99e-08
+      }
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "pricing": {
+        "source_url": "https://openrouter.ai/z-ai/glm-5.3-flashx",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 3.7e-07,
+        "output_token": 1.25e-06,
+        "cache_input_token": 7.5e-08,
+        "image_input_token": 3.7e-07,
+        "video_input_token": 3.7e-07
+      }
+    },
+    {
+      "id": "glm-5.3-prime",
+      "pricing": {
+        "source_url": "https://openrouter.ai/z-ai/glm-5.3-prime",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.68e-06,
+        "output_token": 5.28e-06,
+        "cache_input_token": 3.36e-07
+      }
+    },
+    {
+      "id": "minimax-m3.1-flash",
+      "pricing": {
+        "source_url": "https://openrouter.ai/minimax/minimax-m3.1-flash",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.5e-07,
+        "output_token": 6e-07,
+        "cache_input_token": 1.5e-08,
+        "image_input_token": 1.5e-07,
+        "video_input_token": 1.5e-07,
+        "time_windows": [
+          {
+            "from": "15:00",
+            "to": "01:00",
+            "input_token": 7.5e-08,
+            "output_token": 3e-07,
+            "cache_input_token": 7.5e-09,
+            "image_input_token": 7.5e-08,
+            "video_input_token": 7.5e-08
+          },
+          {
+            "from": "01:00",
+            "to": "15:00",
+            "input_token": 1.5e-07,
+            "output_token": 6e-07,
+            "cache_input_token": 1.5e-08,
+            "image_input_token": 1.5e-07,
+            "video_input_token": 1.5e-07
+          }
+        ]
+      }
+    },
+    {
+      "id": "deepseek-v4.1-flash-1017",
+      "pricing": {
+        "source_url": "https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.5e-07,
+        "output_token": 6e-07,
+        "cache_input_token": 3e-09,
+        "image_input_token": 1.5e-07,
+        "time_windows": [
+          {
+            "from": "00:00",
+            "to": "12:00",
+            "input_token": 1.5e-07,
+            "output_token": 6e-07,
+            "cache_input_token": 3e-09,
+            "image_input_token": 1.5e-07,
+            "days": [
+              "sat",
+              "sun"
             ]
           },
-          "unit": "image",
-          "amount": 0.068761
-        }
-      ]
-    }
-  },
-  {
-    "id": "wan-3.0",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing/",
-      "verified_at": "2026-11-21",
-      "unit": "video_second",
-      "amount": 0.041256,
-      "rules": [
-        {
-          "when": {
-            "/video/resolution": "720P"
-          },
-          "unit": "video_second",
-          "amount": 0.082513
-        },
-        {
-          "when": {
-            "/video/resolution": "1080P"
-          },
-          "unit": "video_second",
-          "amount": 0.165025
-        }
-      ]
-    }
-  },
-  {
-    "id": "grok-4.7",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://docs.x.ai/developers/pricing",
-      "verified_at": "2026-11-21",
-      "input_token": 2e-06,
-      "output_token": 6e-06,
-      "tiers": {
-        "dimension": "input_tokens",
-        "mode": "volume",
-        "steps": [
           {
-            "up_to": 200000,
-            "input_token": 2e-06,
-            "output_token": 6e-06,
-            "cache_input_token": 5e-07
+            "from": "12:00",
+            "to": "00:00",
+            "input_token": 1.5e-07,
+            "output_token": 6e-07,
+            "cache_input_token": 3e-09,
+            "image_input_token": 1.5e-07,
+            "days": [
+              "sat",
+              "sun"
+            ]
           },
           {
-            "input_token": 4e-06,
-            "output_token": 1.2e-05,
-            "cache_input_token": 1e-06
+            "from": "00:00",
+            "to": "01:00",
+            "input_token": 1.5e-07,
+            "output_token": 6e-07,
+            "cache_input_token": 3e-09,
+            "image_input_token": 1.5e-07,
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ]
+          },
+          {
+            "from": "01:00",
+            "to": "04:00",
+            "input_token": 3e-07,
+            "output_token": 1.2e-06,
+            "cache_input_token": 6e-09,
+            "image_input_token": 3e-07,
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ]
+          },
+          {
+            "from": "04:00",
+            "to": "06:00",
+            "input_token": 1.5e-07,
+            "output_token": 6e-07,
+            "cache_input_token": 3e-09,
+            "image_input_token": 1.5e-07,
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ]
+          },
+          {
+            "from": "06:00",
+            "to": "10:00",
+            "input_token": 3e-07,
+            "output_token": 1.2e-06,
+            "cache_input_token": 6e-09,
+            "image_input_token": 3e-07,
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ]
+          },
+          {
+            "from": "10:00",
+            "to": "00:00",
+            "input_token": 1.5e-07,
+            "output_token": 6e-07,
+            "cache_input_token": 3e-09,
+            "image_input_token": 1.5e-07,
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ]
           }
         ]
-      },
-      "cache_input_token": 5e-07
+      }
+    },
+    {
+      "id": "deepseek-v4-pro-0813",
+      "pricing": {
+        "source_url": "https://openrouter.ai/deepseek/deepseek-v4-pro-0813",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1.32e-06,
+        "output_token": 3.96e-06,
+        "cache_input_token": 4.4e-08
+      }
     }
-  },
-  {
-    "id": "gpt-4o-transcribe-diarize",
-    "pricing": {
-      "currency": "USD",
-      "source_url": "https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize",
-      "verified_at": "2026-11-21",
-      "input_token": 2.5e-06,
-      "output_token": 1e-05,
-      "audio_input_token": 2.5e-06,
-      "cache_write_input_token": 2.5e-06,
-      "cache_write_1h_input_token": 2.5e-06
-    }
-  },
-  {
-    "id": "minimax-m3.1-flash",
-    "pricing": {
-      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
-      "verified_at": "2026-11-16",
-      "currency": "USD",
-      "input_token": 1.5e-07,
-      "output_token": 6e-07,
-      "cache_input_token": 1.5e-08
-    }
-  }
-]
+  ]
 }

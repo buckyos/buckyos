@@ -3023,6 +3023,7 @@ mod tests {
             pricing: Some(PinnedPricingSnapshot {
                 currency: "USD".into(),
                 basis: PinnedPricingBasis::Tokens {
+                    addons: Vec::new(),
                     cache_write_input_token: None,
                     cache_write_1h_input_token: None,
                     audio_input_token: None,

@@ -512,6 +512,7 @@ export interface UsageOverview {
   summary: UsageSummary
   trend: UsageTrendPoint[]
   users: UserUsageSummary[]
+  breakdowns: UsageBreakdown[]
 }
 
 export interface UsageEventsQuery {
@@ -887,6 +888,7 @@ class MockAiccProvider implements AiccDataProvider {
     }
     return {
       summary,
+      breakdowns: groupUsageEvents(events),
       trend: this.store.getUsageTrend(events),
       users: Array.from(users, ([user_id, userEvents]) => {
         const usage = this.store.getUsageSummary(userEvents)
@@ -1190,6 +1192,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     ])
     return {
       summary: toUsageSummary({ byModel, byCapability, byApp, today, thisMonth }),
+      breakdowns: [byModel, byCapability, byApp].flatMap((raw) => groupedRows(raw).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([key,value]) => [key,asNonEmptyString(value, key === 'caller_app_id' ? 'system' : '')])), aggregate: toUsageTotals(row.aggregate) }))),
       trend: toUsageTrend(trend),
       users: groupedRows(byUser).map((row) => ({
         user_id: asNonEmptyString(row.group?.user_id, ''),

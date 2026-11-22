@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useI18n } from '../../../../i18n/provider'
-import type { UsageDimension, UsageTotals } from '../../mock/types'
+import type { Money, UsageDimension, UsageTotals } from '../../mock/types'
 import type { UsageEventsPage } from '../../../../api/aicc_mgr'
 import { mergeUsageTotals, usageUnits } from '../../datamodel/usage-units'
 
@@ -23,12 +23,26 @@ export function UsageUnits({ tokens, dimensions, count }: { tokens: number; dime
   </details>
 }
 
-function ConsumptionValue({ total }: { total: UsageTotals }) {
+export function UsageMoney({ totals, empty = '—' }: { totals: Money[]; empty?: string }) {
+  const { locale } = useI18n()
+  const en = locale === 'en'
+  const ordered = [...totals].sort((a, b) => Number(b.currency === 'USD') - Number(a.currency === 'USD') || a.currency.localeCompare(b.currency))
+  const format = (money: Money) => `${money.currency} ${money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}`
+  if (ordered.length < 2) return <span className="whitespace-nowrap tabular-nums">{ordered.length ? format(ordered[0]) : empty}</span>
+  return <details className="relative" data-testid="usage-currencies" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
+    <summary className="cursor-pointer whitespace-nowrap underline decoration-dotted underline-offset-4 tabular-nums" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Cost by currency' : '各币种费用'}>{format(ordered[0])}</summary>
+    <dl className="absolute right-0 z-30 mt-2 min-w-44 rounded-lg p-3 text-xs shadow-xl" style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}>
+      {ordered.map((money) => <div key={money.currency} className="flex justify-between gap-4 py-1"><dt>{money.currency}</dt><dd className="tabular-nums">{money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}</dd></div>)}
+    </dl>
+  </details>
+}
+
+export function ConsumptionValue({ total }: { total: UsageTotals }) {
   const { locale } = useI18n()
   const en = locale === 'en'
   return <div className="flex shrink-0 flex-col items-end gap-1">
     <UsageUnits tokens={total.total_tokens} dimensions={total.dimensions} count={total.total_requests} />
-    <span className="whitespace-pre text-xs tabular-nums">{total.finance_totals.map((cost) => `${cost.currency} ${cost.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}`).join('\n') || (total.total_requests === 0 ? '—' : (en ? 'Unknown cost' : '费用未知'))}</span>
+    <div className="text-xs"><UsageMoney totals={total.finance_totals} empty={total.total_requests === 0 ? '—' : (en ? 'Unknown cost' : '费用未知')} /></div>
     {!total.finance_complete && <span className="text-[10px]" style={{ color: 'var(--cp-warning)' }}>{en ? 'Known cost subtotal · unpriced' : '已知费用小计 · 未计价'} {total.unpriced_requests}</span>}
   </div>
 }

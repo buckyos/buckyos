@@ -31,6 +31,13 @@ class RepairCostTests(unittest.TestCase):
         self.assertIsNone(repair.recover({'input_tokens': 3053, 'output_tokens': 46903, 'image_input_tokens': 1100}, record)[1])
         self.assertIsNone(repair.recover({'input_tokens': 3, 'output_tokens': 2, 'cache_read_input_tokens': 5}, record)[1])
 
+    def test_frozen_token_and_duration_prices_require_all_dimensions(self):
+        record = {'binding': {'pricing': {'currency': 'USD', 'basis': {'kind': 'tokens', 'input_token': 1e-7, 'output_token': 3e-7, 'audio_input_token': 0, 'addons': [{'unit': 'audio_second', 'amount': 0.0001}]}}}}
+        usage = {'input_tokens': 1100, 'audio_input_tokens': 1000, 'output_tokens': 20, 'audio_seconds': 60}
+        self.assertAlmostEqual(repair.recover(usage, record)[1]['amount'], 0.006016)
+        del usage['audio_seconds']
+        self.assertEqual(repair.recover(usage, record)[2], 'missing_usage:audio_second')
+
     def test_dry_run_apply_backup_audit_and_idempotence(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'usage.db'

@@ -27,7 +27,7 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
       const key = (params.group_by as string[] | undefined)?.[0]
       return {
         total: aggregate,
-        grouped: key ? [{ group: { [key]: key === 'user_id' ? 'bob' : 'model@provider' }, aggregate }] : [],
+        grouped: key ? [{ group: { [key]: key === 'user_id' ? 'bob' : key === 'caller_app_id' ? null : 'model@provider' }, aggregate }] : [],
         buckets: params.time_bucket ? [{ bucket_start_ms: 1_700_000_000_000, aggregate }] : [],
         events: params.output_mode === 'summary_and_events' ? [{
           event_id: 'event-bob', tenant_id: 'tenant-bob', user_id: 'bob', created_at_ms: 1_700_000_000_000,
@@ -49,6 +49,8 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
       assert(overview.users[0].finance_totals.length === 2, 'per-user costs preserve separate currencies')
       assert(!overview.users[0].finance_complete, 'incomplete per-user costs remain marked incomplete')
       assert(overview.trend[0].tokens === 120, 'trend carries scoped aggregates')
+      assert(overview.breakdowns.some((row) => row.group.caller_app_id === 'system'), 'missing caller app uses the same system group as the home summary')
+      assert(overview.breakdowns.length === 3 && overview.breakdowns[0].aggregate.finance_totals.length === 2, 'home breakdowns preserve scoped aggregate currencies instead of estimating from recent rows')
       const page = await manager.queryUsageEvents({
         scope, timeRange: { startTimeMs: 0, endTimeMs: Date.now() }, limit: 10,
         filters: { providerInstanceNames: ['provider'] },

@@ -582,7 +582,7 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
         });
     }
     if !pricing.addons.is_empty()
-        && (pricing.unit.is_none()
+        && ((pricing.unit.is_none() && !pricing.has_token_rates())
             || pricing
                 .addons
                 .iter()
@@ -591,7 +591,7 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
         return Err(CatalogBuildError::InvalidValue {
             owner: owner.to_owned(),
             field: "pricing.addons",
-            reason: "add-ons extend unit billing with finite non-negative amounts".into(),
+            reason: "add-ons extend token or unit billing with finite non-negative amounts".into(),
         });
     }
     let ratio_ok = |input: Option<f64>,
