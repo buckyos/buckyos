@@ -1243,6 +1243,7 @@ impl MessageCenter {
                 .as_ref()
                 .map(|r| (r.rel.clone(), r.target.clone(), r.key.clone())),
             redacted: false,
+            standard_text: is_standard_text(msg),
         };
         tx.object(msg, jwt).await?;
         tx.state.messages.insert(id.to_string(), meta.clone());

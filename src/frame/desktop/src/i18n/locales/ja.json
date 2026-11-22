@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "すべてのユーザーに対して「{{name}}」を削除します。そのユーザーはもうそのグループのメッセージを読んだり送ったりすることはできません。これを元に戻すことはできません。",
   "messagehub.group.deleted": "このグループは削除されました。",
   "messagehub.group.editProfile": "グループ情報の編集",
+  "messagehub.group.historyBeforeJoin": "新メンバーに表示する参加前のメッセージ",
+  "messagehub.group.historyBeforeJoinHint": "参加前の最新のテキストメッセージを何件表示するか（0〜{{max}}）。0 にすると参加後のメッセージだけが表示されます。",
   "messagehub.group.expiresAt": "有効期限：{{time}}",
   "messagehub.group.hasGuests": "ゲストがいます",
   "messagehub.group.invitationExpired": "この招待はもはや有効ではありません。",

@@ -401,6 +401,9 @@ export interface GroupPanelDecl {
 }
 
 export interface GroupSessionRules {
+  history?: 'all' | 'from_join'
+  /** With `from_join`, how many messages from before joining a new participant sees. */
+  history_before_join?: number
   receipts?: string
   edit?: { edit_window_ms?: number | null; recall_window_ms?: number | null }
   allow_guests?: boolean

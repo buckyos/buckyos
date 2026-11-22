@@ -22,14 +22,14 @@ import {
   acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupMemberRecord, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
-import { createGroupSchema, groupSessionId } from '../groupModel'
+import { createGroupSchema, DEFAULT_HISTORY_BEFORE_JOIN, groupSessionId, MAX_HISTORY_BEFORE_JOIN } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../../../components/conversation/history/relations'
 import { messageVoice, type MessageObject } from '../../../components/conversation/model/msgobj'
 import { isActionMessage } from '../../../components/conversation/model/activity'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupProfileInput, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import type { ConnectionChoice, ManageAction, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
 import type { OutgoingPayload, OutgoingUpload } from '../../../components/conversation/model/outgoing'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
@@ -1505,6 +1505,7 @@ export class MessageHubApiStore implements MessageHubStore {
           sessions: sessionInfos,
           can,
           messageRules: { editWindowMs: defaultRules?.edit?.edit_window_ms ?? undefined, recallWindowMs: defaultRules?.edit?.recall_window_ms ?? undefined },
+          historyBeforeJoin: config && defaultRules?.history !== 'all' ? defaultRules?.history_before_join ?? DEFAULT_HISTORY_BEFORE_JOIN : undefined,
           pendingTransfer: transfer ? { memberDid: transfer.member_did, transferId: transfer.transfer_id, expiresAt: transfer.expires_at_ms } : previous?.pendingTransfer && previous.ownerDid === entry.ownerDid ? previous.pendingTransfer : undefined,
         },
       })
@@ -1552,11 +1553,14 @@ export class MessageHubApiStore implements MessageHubStore {
     return result.group_did
   }
 
-  async updateGroupProfile(context: MessageHubContext, groupDid: string, profile: { name: string; description: string }) {
-    const name = profile.name.trim(), description = profile.description.trim()
+  async updateGroupProfile(context: MessageHubContext, groupDid: string, profile: GroupProfileInput) {
+    const name = profile.name.trim(), description = profile.description.trim(), history = profile.historyBeforeJoin
     if (!name) throw new Error('invalid-group-name')
-    const revision = this.groupInfoOf(context, groupDid).revision
-    await this.groupOperation(context, groupDid, () => applyGroupConfig(groupDid, revision, { profile: { name, description } }, crypto.randomUUID()))
+    if (history !== undefined && !(Number.isInteger(history) && history >= 0 && history <= MAX_HISTORY_BEFORE_JOIN)) throw new Error('invalid-session-rules')
+    const info = this.groupInfoOf(context, groupDid)
+    const patch: Record<string, unknown> = { profile: { name, description } }
+    if (history !== undefined && history !== info.historyBeforeJoin) patch.default_session = { history_before_join: history }
+    await this.groupOperation(context, groupDid, () => applyGroupConfig(groupDid, info.revision, patch, crypto.randomUUID()))
     const data = this.owner(context.ownerDid)
     if (data.groups[groupDid]) data.groups[groupDid] = { ...data.groups[groupDid], name, description }
     this.bump(data)

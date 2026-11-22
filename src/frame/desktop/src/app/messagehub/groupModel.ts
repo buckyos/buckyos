@@ -2,6 +2,10 @@ import { z } from 'zod'
 import type { GroupMember, GroupRole, GroupSessionParticipant } from './types'
 
 export const GROUP_MEMBER_LIMIT = 100
+/** `SessionRules.history_before_join` when the stored configuration predates it (the host's default). */
+export const DEFAULT_HISTORY_BEFORE_JOIN = 32
+/** Largest value the group editor offers; beyond that the whole history (`history: all`) is the better rule. */
+export const MAX_HISTORY_BEFORE_JOIN = 10_000
 /** A group holds single native identities: people and Agents, never another group or an external account. */
 export const GROUP_MEMBER_KINDS: Array<'user' | 'agent'> = ['user', 'agent']
 

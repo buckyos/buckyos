@@ -562,6 +562,24 @@ async fn projected(center: &MessageCenter, who: &DID) -> Vec<MsgObject> {
 }
 
 #[tokio::test]
+async fn a_remote_member_first_syncs_the_configured_earlier_messages() {
+    let zones = two_zones().await;
+    rpc(&zones.host, &alice(), "group.create", json!({
+        "idempotency_key":"create", "configuration":{"default_session":{"history_before_join":1}}
+    }))
+    .await
+    .unwrap();
+    let older = host_message(&zones.host, "older", 1).await;
+    let latest = host_message(&zones.host, "latest", 2).await;
+    let invitation = invite(&zones, &alice(), &bob()).await;
+    pump_one(&zones.host).await;
+    assert_eq!(accept(&zones.local, &bob(), &invitation).await.unwrap()["sync_pending"], false);
+    let seen = projected(&zones.local, &bob()).await;
+    assert!(seen.contains(&latest));
+    assert!(!seen.contains(&older));
+}
+
+#[tokio::test]
 async fn cross_zone_invitation_delivers_joins_syncs_sends_and_survives_restart() {
     let mut zones = two_zones().await;
     create(&zones).await;

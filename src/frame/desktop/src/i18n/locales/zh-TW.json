@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "為所有人解散 {{name}}？成員將無法再閱讀或傳送群訊息，此操作無法撤銷。",
   "messagehub.group.deleted": "此群已解散。",
   "messagehub.group.editProfile": "編輯群資料",
+  "messagehub.group.historyBeforeJoin": "新成員可見的入群前訊息",
+  "messagehub.group.historyBeforeJoinHint": "入群前最近多少則文字訊息（0–{{max}}）；0 表示只能看到入群之後的訊息。",
   "messagehub.group.expiresAt": "{{time}} 過期",
   "messagehub.group.hasGuests": "含外部成員",
   "messagehub.group.invitationExpired": "此邀請已失效。",

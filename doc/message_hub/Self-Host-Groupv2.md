@@ -295,6 +295,7 @@ host 为群内每个被接受的变化分配 `group_seq`，包括消息写入，
 - `Roles` 型 Session 的成员随角色变化自动更新。
 - 重新入群的成员开始新周期，上一周期在 Session 中留下的 `Left` / `Removed` 记录不再生效。
 - 每个参与者在每个 Session 有一组**可见区间** `[from_group_seq, to_group_seq)`，即他作为有效成员的各段时期。`history = FromJoin` 时，一条消息对读者可见，当且仅当它的 `group_seq` 落在读者的某个可见区间内。因此重新入群的成员能看到自己以前在群时的消息，看不到不在群期间的消息。
+- 区间的起点向前延伸到 Session 规则 `history_before_join` 条消息（缺省 32；0 表示严格从成为有效成员时起）：host 在成为有效成员的 `group_seq = n` 处，取 n 之前该 Session 中最近的第 `history_before_join` 条未撤回的标准文本消息的 `group_seq` 作为 `from_group_seq`，不足这么多条时从头开始。标准文本消息是参与者发的普通消息或回复，内容是纯文本或 Markdown，不带附件、卡片（`content.machine`）或语音；其他消息（群自己的事件、文件、图片、语音、卡片、回应、编辑、撤回）落在区间内时照常可见，但不占条数。起点在区间打开时一次算定，之后修改该规则只影响以后成为有效成员的参与者。每次成为有效成员都重新计算，所以重新入群的成员也能看到离开期间最近的这些消息。(2026-11-21)
 
 host 物化并保存每个参与者的可见区间，并保留产生这些区间的成员变化记录（来自 GroupEvent / Action Log）。
 
@@ -480,6 +481,7 @@ pub struct SessionRules {
     pub post: PostRule,                            // AllParticipants | Only(Vec<ParticipantKind>) | Nobody
     pub react: PostRule,                           // 回应权限，缺省 AllParticipants
     pub history: HistoryVisibility,                // FromJoin | All
+    pub history_before_join: u32,                  // FromJoin 时新参与者还能看到加入前最近多少条消息，缺省 32（§2.3.5）
     pub allow_guests: bool,                        // 缺省 false，默认 Session 恒为 false；为 true 时成员列表不能是 Inherit
     pub edit: EditRule,                            // 编辑与撤回窗口
     pub receipts: ReceiptVisibility,               // Hidden | Count | Readers，缺省 Hidden（§5.6）

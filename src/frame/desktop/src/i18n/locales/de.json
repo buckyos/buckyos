@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "{{name}} für alle löschen? Mitglieder können keine Nachrichten mehr lesen oder senden. Dies kann nicht rückgängig gemacht werden.",
   "messagehub.group.deleted": "Diese Gruppe wurde gelöscht.",
   "messagehub.group.editProfile": "Bearbeiten von Gruppeninformationen.",
+  "messagehub.group.historyBeforeJoin": "Frühere Nachrichten für neue Mitglieder",
+  "messagehub.group.historyBeforeJoinHint": "Wie viele der letzten Textnachrichten vor dem Beitritt sichtbar sind (0–{{max}}). Bei 0 sehen sie nur Nachrichten ab ihrem Beitritt.",
   "messagehub.group.expiresAt": "Verfallszeit: {{time}}",
   "messagehub.group.hasGuests": "Hat Gäste",
   "messagehub.group.invitationExpired": "Diese Einladung ist nicht mehr gültig.",

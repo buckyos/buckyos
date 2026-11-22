@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { Crown, Link2, LogOut, MoreHorizontal, Pencil, Shield, Trash2, UserMinus, UserPlus } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { confirmGroupAction } from '../../components/conversation/confirmDialog'
 import { friendlyDidName } from './api/projection'
 import { InviteFailures } from './GroupDialogs'
-import { formatInviteLink, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT, inviteBlocked, participating, sortGroupMembers } from './groupModel'
+import { formatInviteLink, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT, inviteBlocked, MAX_HISTORY_BEFORE_JOIN, participating, sortGroupMembers } from './groupModel'
 import { groupErrorText } from '../../components/conversation/model/groupNotice'
 import { useNetworkDialogs } from '../../components/network/dialogs'
 import { hubButtonClass, hubInputClass, hubPrimaryButtonClass } from '../../components/conversation/DialogFocus'
@@ -19,24 +19,34 @@ import { groupHooks, mockPanelOrigins } from './extensions/model'
 
 const MUTE_MS = 3600_000
 
-/** Name and description of the group (`group.apply_config` on `profile`). */
+/**
+ * Name, description and how many earlier messages new members see
+ * (`group.apply_config` on `profile` and `default_session.history_before_join`).
+ */
 function ProfileEditor({ group, context, onDone }: { group: GroupInfo; context: MessageHubContext; onDone: () => void }) {
-  const { t } = useI18n(), store = useMessageHubStore()
+  const { t } = useI18n(), store = useMessageHubStore(), hintId = useId()
   const [name, setName] = useState(group.name), [description, setDescription] = useState(group.description)
+  const [history, setHistory] = useState(group.historyBeforeJoin === undefined ? '' : String(group.historyBeforeJoin))
   const [pending, setPending] = useState(false), [error, setError] = useState('')
+  const historyBeforeJoin = group.historyBeforeJoin === undefined ? undefined : /^\d+$/.test(history.trim()) ? Number(history.trim()) : Number.NaN
+  const historyValid = historyBeforeJoin === undefined || historyBeforeJoin <= MAX_HISTORY_BEFORE_JOIN
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (pending || !name.trim()) return
+    if (pending || !name.trim() || !historyValid) return
     setPending(true); setError('')
-    try { await store.updateGroupProfile(context, group.did, { name, description }); onDone() } catch (failure) { setError(groupErrorText(t, failure)) } finally { setPending(false) }
+    try { await store.updateGroupProfile(context, group.did, { name, description, historyBeforeJoin }); onDone() } catch (failure) { setError(groupErrorText(t, failure)) } finally { setPending(false) }
   }
   return <form onSubmit={event => void submit(event)} className="mt-2 space-y-2" data-testid="group-profile-form">
     <label className="block text-sm">{t('messagehub.group.name')}<input data-autofocus className={hubInputClass} value={name} maxLength={64} onChange={event => setName(event.target.value)} /></label>
     <label className="block text-sm">{t('messagehub.description')}<textarea className={hubInputClass} value={description} maxLength={500} rows={2} onChange={event => setDescription(event.target.value)} /></label>
+    {group.historyBeforeJoin !== undefined && <label className="block text-sm">{t('messagehub.group.historyBeforeJoin')}
+      <input type="number" inputMode="numeric" min={0} max={MAX_HISTORY_BEFORE_JOIN} step={1} className={hubInputClass} value={history} aria-invalid={!historyValid} aria-describedby={hintId} data-testid="group-history-before-join" onChange={event => setHistory(event.target.value)} />
+      <span id={hintId} className="mt-1 block text-xs text-[color:var(--cp-muted)]">{t('messagehub.group.historyBeforeJoinHint', undefined, { max: MAX_HISTORY_BEFORE_JOIN })}</span>
+    </label>}
     {error && <p role="alert" className="text-xs text-[color:var(--cp-danger)]">{error}</p>}
     <div className="flex justify-end gap-2">
       <button type="button" className={hubButtonClass} disabled={pending} onClick={onDone}>{t('messagehub.cancel')}</button>
-      <button type="submit" className={hubPrimaryButtonClass} disabled={pending || !name.trim()}>{t(pending ? 'messagehub.saving' : 'messagehub.save')}</button>
+      <button type="submit" className={hubPrimaryButtonClass} disabled={pending || !name.trim() || !historyValid}>{t(pending ? 'messagehub.saving' : 'messagehub.save')}</button>
     </div>
   </form>
 }

@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "¿Eliminar {{name}} para todos? Los miembros ya no pueden leer o enviar mensajes en él. Esto no se puede deshacer.",
   "messagehub.group.deleted": "Este grupo ha sido eliminado.",
   "messagehub.group.editProfile": "Editar la información del grupo",
+  "messagehub.group.historyBeforeJoin": "Mensajes anteriores que ven los nuevos miembros",
+  "messagehub.group.historyBeforeJoinHint": "Cuántos de los últimos mensajes de texto anteriores a su incorporación pueden ver (0–{{max}}). Con 0 solo ven los mensajes posteriores.",
   "messagehub.group.expiresAt": "Caduca {{time}}",
   "messagehub.group.hasGuests": "Tiene invitados",
   "messagehub.group.invitationExpired": "Esta invitación ya no es válida.",

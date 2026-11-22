@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "Supprimer {{name}} pour tout le monde? Les membres ne peuvent plus lire ou envoyer des messages. Cela ne peut pas être annulé.",
   "messagehub.group.deleted": "Ce groupe a été supprimé.",
   "messagehub.group.editProfile": "Modifier les informations du groupe",
+  "messagehub.group.historyBeforeJoin": "Messages antérieurs visibles par les nouveaux membres",
+  "messagehub.group.historyBeforeJoinHint": "Nombre des derniers messages texte précédant leur arrivée qu’ils peuvent voir (0–{{max}}). Avec 0, ils ne voient que les messages postérieurs.",
   "messagehub.group.expiresAt": "Expire {{time}}",
   "messagehub.group.hasGuests": "A des invités",
   "messagehub.group.invitationExpired": "Cette invitation n'est plus valide.",

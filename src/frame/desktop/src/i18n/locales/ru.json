@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "Удалите {{name}} для всех? Члены группы больше не смогут читать или отправлять сообщения в этой группе. Это нельзя отменить.",
   "messagehub.group.deleted": "Эта группа была удалена.",
   "messagehub.group.editProfile": "Редактирование информации группы",
+  "messagehub.group.historyBeforeJoin": "Предыдущие сообщения для новых участников",
+  "messagehub.group.historyBeforeJoinHint": "Сколько последних текстовых сообщений до вступления будет видно (0–{{max}}). При 0 видны только сообщения после вступления.",
   "messagehub.group.expiresAt": "Срок действия истекает: {{time}}",
   "messagehub.group.hasGuests": "У нас гости",
   "messagehub.group.invitationExpired": "Это приглашение больше не действительно.",

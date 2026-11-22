@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "هل تريد حذف “{{name}}” من قبل الجميع؟ لن يتمكن الأعضاء من قراءة أو إرسال الرسائل في هذه المجموعة. لا يمكن إلغاء هذا الإجراء.",
   "messagehub.group.deleted": "تم حذف هذه المجموعة.",
   "messagehub.group.editProfile": "تحرير معلومات المجموعة",
+  "messagehub.group.historyBeforeJoin": "الرسائل السابقة التي يراها الأعضاء الجدد",
+  "messagehub.group.historyBeforeJoinHint": "عدد آخر الرسائل النصية قبل انضمامهم التي يمكنهم رؤيتها (0–{{max}}). عند 0 يرون الرسائل اللاحقة لانضمامهم فقط.",
   "messagehub.group.expiresAt": "تنتهي {{time}}",
   "messagehub.group.hasGuests": "لديه ضيوف",
   "messagehub.group.invitationExpired": "هذه الدعوة لم تعد صالحة.",

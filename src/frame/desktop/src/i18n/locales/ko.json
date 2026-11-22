@@ -3320,6 +3320,8 @@
   "messagehub.group.deleteConfirm": "모든 사람을 위해 {{name}} 를 삭제하시겠습니까? 이제 회원들은 이 메시지를 읽거나 보낼 수 없습니다. 실행 취소할 수 없습니다.",
   "messagehub.group.deleted": "이 그룹이 삭제되었습니다.",
   "messagehub.group.editProfile": "그룹 정보 편집",
+  "messagehub.group.historyBeforeJoin": "새 멤버에게 보이는 가입 전 메시지",
+  "messagehub.group.historyBeforeJoinHint": "가입 전 최근 텍스트 메시지를 몇 개까지 보여 줄지 정합니다(0~{{max}}). 0이면 가입 후 메시지만 보입니다.",
   "messagehub.group.expiresAt": "만료 시각: {{time}}",
   "messagehub.group.hasGuests": "손님이 있습니다",
   "messagehub.group.invitationExpired": "이 초대는 더 이상 유효하지 않습니다.",
