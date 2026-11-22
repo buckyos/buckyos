@@ -5508,6 +5508,7 @@
   "sso.share.level": "Invitaciones de recursos",
   "sso.share.local": "Usar una cuenta local",
   "sso.share.mismatch": "Esta invitación es para otra identidad. Cambia de cuenta o cancela.",
+  "sso.share.identityConflict": "Este navegador tiene la sesión iniciada con otra cuenta. Cambia de cuenta y luego inicia sesión con la identidad invitada.",
   "sso.share.open": "Invitaciones dirigidas y abiertas",
   "sso.share.recipient": "Destinatario: {{did}}",
   "sso.share.retry": "La entrega falló. Inténtalo de nuevo.",

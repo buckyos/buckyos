@@ -5508,6 +5508,7 @@
   "sso.share.level": "資源邀請",
   "sso.share.local": "使用本機帳號",
   "sso.share.mismatch": "此邀請適用於另一個身分。請切換帳號或取消。",
+  "sso.share.identityConflict": "此瀏覽器已登入其他帳號。請先切換帳號，再以受邀身分登入。",
   "sso.share.open": "指定對象與公開邀請",
   "sso.share.recipient": "收件人：{{did}}",
   "sso.share.retry": "暫時無法進入資源，請重試。",

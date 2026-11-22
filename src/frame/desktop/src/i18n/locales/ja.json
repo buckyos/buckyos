@@ -5508,6 +5508,7 @@
   "sso.share.level": "リソース招待の処理",
   "sso.share.local": "ローカルアカウントを使用",
   "sso.share.mismatch": "この招待は別の ID 宛てです。アカウントを切り替えるかキャンセルしてください。",
+  "sso.share.identityConflict": "このブラウザーでは別のアカウントがログインしています。アカウントを切り替えてから、招待された ID でログインしてください。",
   "sso.share.open": "指定した相手への招待と公開招待",
   "sso.share.recipient": "受信者: {{did}}",
   "sso.share.retry": "配布に失敗しました。再試行してください。",

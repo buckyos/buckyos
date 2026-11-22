@@ -5508,6 +5508,7 @@
   "sso.share.level": "리소스 초대장",
   "sso.share.local": "로컬 계정 사용",
   "sso.share.mismatch": "이 초대는 다른 신원에 발급되었습니다. 계정을 전환하거나 취소하세요.",
+  "sso.share.identityConflict": "이 브라우저에 다른 계정으로 로그인되어 있습니다. 계정을 전환한 다음 초대받은 신원으로 로그인하세요.",
   "sso.share.open": "지정 초대 및 공개 초대",
   "sso.share.recipient": "받는 사람: {{did}}",
   "sso.share.retry": "배달 실패. 다시 시도해 주세요.",

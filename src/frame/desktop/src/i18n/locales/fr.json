@@ -5508,6 +5508,7 @@
   "sso.share.level": "Invitations aux ressources",
   "sso.share.local": "Utiliser un compte local",
   "sso.share.mismatch": "Cette invitation est destinée à une autre identité. Changez de compte ou annulez.",
+  "sso.share.identityConflict": "Ce navigateur est connecté avec un autre compte. Changez de compte, puis connectez-vous avec l’identité invitée.",
   "sso.share.open": "Invitations nominatives et ouvertes",
   "sso.share.recipient": "Destinataire: {{did}}",
   "sso.share.retry": "La livraison a échoué. Réessayez.",
