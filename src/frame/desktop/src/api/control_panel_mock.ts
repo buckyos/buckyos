@@ -1229,6 +1229,26 @@ function handleAppLogin(state: MockState, method: string, params: Record<string,
   }
 }
 
+/** The one resource invitation the mock serves: Alice invites did:bns:bob to edit a Workspace. */
+const MOCK_SHARE_ID = 'inv-MockDirectedShareForBob000000000'
+
+function mockShare(state: MockState, inviteId: string, method: string) {
+  if (inviteId !== MOCK_SHARE_ID) deny('entry_unavailable', method)
+  return {
+    invite_id: MOCK_SHARE_ID,
+    issuer: `did:bns:${state.zone}`,
+    target: { kind: 'system' as const, service_id: 'aiworkspace' },
+    target_url: `https://aiws-ws1.${zoneHostOf(state)}/`,
+    resource_id: 'ws1',
+    sharer: 'Alice',
+    title: 'Team notes',
+    operations: ['read', 'update'],
+    audience: { kind: 'directed' as const, did: 'did:bns:bob' },
+    methods: { guest: false, password: true, self_register: false, did_login: true, oauth: false },
+    unavailable_reason: null,
+  }
+}
+
 function handleSso(state: MockState, method: string, params: Record<string, unknown>): unknown {
   const sso = ssoOf(state)
   const now = nowSecs()
@@ -1348,6 +1368,19 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       url.searchParams.set('code_challenge', 'mock-challenge')
       url.searchParams.set('app_context','mock-system-context')
       return { status: 'redirect', url: url.toString() }
+    }
+    case 'auth.share.describe':
+    case 'auth.share.identity': {
+      const share = mockShare(state, stringParam(params, 'invite_id'), method)
+      if (method === 'auth.share.describe') return share
+      const session = sessionOf(state)
+      if (session.kind === 'external') deny('session_kind_not_allowed', method)
+      const held = session.kind === 'account' ? state.account.did : null
+      const recipient = share.audience.kind === 'directed' ? share.audience.did : null
+      return {
+        session: held, native: null, oauth: null, required_source: null,
+        mismatches: held && recipient && held !== recipient ? ['session'] : [],
+      }
     }
     case 'auth.federation.consents':
     case 'auth.federation.forget': {

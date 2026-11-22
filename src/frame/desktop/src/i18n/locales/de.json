@@ -5508,6 +5508,7 @@
   "sso.share.level": "Einladungen zu Ressourcen",
   "sso.share.local": "Lokales Konto verwenden",
   "sso.share.mismatch": "Diese Einladung gilt für eine andere Identität. Wechseln Sie das Konto oder brechen Sie ab.",
+  "sso.share.identityConflict": "Dieser Browser ist mit einem anderen Konto angemeldet. Wechseln Sie das Konto und melden Sie sich dann mit der eingeladenen Identität an.",
   "sso.share.open": "Gezielte und offene Einladungen",
   "sso.share.recipient": "Empfänger: {{did}}",
   "sso.share.retry": "Die Zustellung ist fehlgeschlagen. Versuchen Sie es erneut.",
