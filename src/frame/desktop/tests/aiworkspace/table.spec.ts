@@ -59,6 +59,13 @@ test('UI-T01 §7.3 on a computer: grid and cards per person, the record form bes
   // a computer starts with the grid
   await expect(all).toHaveAttribute('data-layout', 'grid')
   await expect(all.getByTestId('aiws-row')).toHaveCount(5)
+  const headers = all.getByRole('columnheader')
+  const divider = await headers.first().evaluate(el => getComputedStyle(el).borderRight)
+  expect(divider).toMatch(/^1px solid /)
+  for (const cells of [headers, all.getByTestId('aiws-row').first().getByRole('gridcell'), all.getByTestId('aiws-row').last().getByRole('gridcell')]) {
+    await expect(cells.first()).toHaveCSS('border-left', divider)
+    await expect(cells.last()).toHaveCSS('border-right', divider)
+  }
 
   // cards: the title and at most three more fields; the choice is this person's, for this Block only, and no commit
   const head = await api.headSeq(ALICE, ws.workspace_id)

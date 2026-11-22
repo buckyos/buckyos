@@ -246,6 +246,48 @@ fn workspaces_require_current_explicit_versions_for_both_databases() {
     assert!(probe().unwrap_err().unsupported);
     local.pragma_update(None, "user_version", 1).unwrap();
     assert!(probe().unwrap().is_empty());
+    local
+        .execute_batch(aiworkspace_store::entries::REGISTERED_ENTRIES_DDL)
+        .unwrap();
+    local
+        .execute_batch("INSERT INTO entry_acceptances VALUES ('share', 'member', 0, 1)")
+        .unwrap();
+    assert!(probe().unwrap().is_empty());
+    doc.execute_batch(aiworkspace_store::schema::RECORD_ORDER_INDEX)
+        .unwrap();
+    assert!(probe().unwrap().is_empty());
+    doc.execute_batch("DROP INDEX table_records_created; CREATE INDEX table_records_created ON table_records(source_id)").unwrap();
+    assert!(probe().unwrap_err().unsupported);
+    doc.execute_batch("DROP INDEX table_records_created")
+        .unwrap();
+
+    local
+        .execute_batch("DROP TABLE registered_entries")
+        .unwrap();
+    assert!(probe().unwrap_err().unsupported);
+    local
+        .execute_batch(aiworkspace_store::entries::REGISTERED_ENTRIES_DDL)
+        .unwrap();
+    local
+        .execute_batch("ALTER TABLE entry_acceptances ADD COLUMN extra TEXT")
+        .unwrap();
+    assert!(probe().unwrap_err().unsupported);
+    assert_eq!(
+        local
+            .query_row(
+                "SELECT committed FROM entry_acceptances WHERE member='member'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    local.execute_batch("DROP TABLE entry_acceptances").unwrap();
+    assert!(probe().unwrap_err().unsupported);
+    local
+        .execute_batch(aiworkspace_store::entries::REGISTERED_ENTRIES_DDL)
+        .unwrap();
+    assert!(probe().unwrap().is_empty());
     for old in ["5", "6", "8"] {
         doc.execute(
             "UPDATE workspace_meta SET value=? WHERE key='storage_schema_version'",
