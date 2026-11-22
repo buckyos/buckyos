@@ -42,9 +42,3 @@ buckyos log query --service <id> --since <RFC3339> --limit 100
 - Logs, diagnostic bundles, expired sessions, Agent recovery, node upgrades or tracing a fault into the running source: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/diagnosis.md`.
 
 For App development or release use `buckyos_app_dev` or `buckyos_dev_release`; for model calls use `xllm` or the relevant `aigc_*` skill.
-
-## 用量与成本核对
-
-AICenter 的 Usage 消费卡统计当前筛选条件下的全部记录，不限当前分页；金额按币种分开显示。点击 token 数值可以查看已上报的缓存、模态 token、图片张数、音视频秒数、字符和请求单位等明细，不把这些不同单位相加。不存在的维度不会显示；部分上报只代表已知小计。
-
-调用结果的 `usage.cost_source` 区分 Provider 实报和静态价格估算；`usage.cost_unknown_reason` 说明缺失用量、费率或币种。费用未知不表示免费。媒体任务已成功但费用未知时，先核对结果与计费用量，不为获取费用重复生成。历史记录不会随新价格自动改写。

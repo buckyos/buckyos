@@ -16,7 +16,7 @@ SN Provider Rules 增加了 51 个当前映射模型的 USD 原厂价格及来�
 - [Alibaba Cloud](https://www.alibabacloud.com/help/en/model-studio/model-pricing/)：所选公开区域/部署范围的 USD 价格。范围选择固定在配置中，不随 SN 实际后端地区猜测；不同地区和活动价可能不同。
 - [xAI](https://docs.x.ai/developers/pricing)：Grok 4.7 短/长上下文费率。
 
-三个 SN 映射保留未知：`ui-tars-1.5-7b`、`qwen3-embedding-8b` 未核实到与该具体原厂 offering 相对应的公开 USD 单价；`voxtral-small-24b-2507` 的 SN 音频 Chat 别名不能直接套用原厂仅按分钟的转写价格或只含文本的费率。开源权重不意味着托管推理免费，不以汇率换算、第三方价格或相邻型号补缺。上述模型仍可使用有效响应成本，后续有可核实原厂报价时更新 metadata。
+三个 SN 映射尚未配置静态价格，原因不同：`ui-tars-1.5-7b`、`qwen3-embedding-8b` 未核实到与该具体原厂 offering 相对应的公开 USD 单价；不能用其他托管商价格或 `text-embedding-v4` 等不同 API 型号代替。`voxtral-small-24b-2507` 有[官方报价](https://docs.mistral.ai/models/voxtral-small-25-07)：音频 $0.004/分钟，文本输入/输出 $0.10/$0.40 每百万 token（2026-11-22 核对）。后者缺口是音频时长与文本 token 的组合计费，以及 SN 音频用量/型号映射的核实，不是原厂没有报价。当前静态结算 basis 只能选择 token 或单位，不能完整表达这一组合；仅套文本单价会漏算音频。开源权重不意味着托管推理免费，不以汇率换算、第三方价格或相邻型号补缺。上述模型仍可使用有效响应成本，后续有可核实原厂报价时更新 metadata。
 
 Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：文本、图片、视频输入 $1.50/百万，文本输出 $9/百万，视频输出 $17.50/百万。2026-12-03 后官方将其重定向至 1.2 并更换视频输出费率，需要届时更新 catalog，不能把未来费率用于历史调用。来源：[Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)。视频响应缺少模态拆分时保留未知，不能将视频输出全部按文本价格结算。
 
@@ -30,7 +30,7 @@ Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：�
 - OpenAI Responses 图片也统计实际产物数；独立 Images 接口已有计数。转写优先使用 `usage.seconds`，只有缺失时才使用官方顶层 `duration` 后备。
 - 同步 TTS 沿用统一字符数补全；豆包使用服务端 `text_words`。Qwen、豆包、MiniMax 原有图片计数和音视频时长逻辑保持。
 - fal 的 `metrics.inference_time` 来自任务状态，作为计算秒合并到结果；DeepFilterNet 的 `audio_file.duration` 为音频秒数，不用 `timings.inference` 代替音频长度。来源：[Queue](https://fal.ai/docs/documentation/model-apis/inference/queue)、[DeepFilterNet schema](https://fal.ai/models/fal-ai/deepfilternet3/api)。
-- fal 视频放大公开结果只有视频文件引用，没有完整的计费百万像素量。结算器已支持 `megapixels`，但该响应仍显示 `missing_usage:megapixel`，不通过单帧宽高或请求目标分辨率虚构整段视频的计费像素。来源：[Video upscaler schema](https://fal.ai/models/fal-ai/video-upscaler/api)。
+- fal 的 `fal-ai/video-upscaler` 按 $0.0008/百万像素收费，但公开 Output Schema 只有文件 URL、类型、名称和字节数，没有帧数、分辨率或完整的计费百万像素量。当前适配器也没有下载视频探测帧数并重建计费用量；尚未用真实任务响应确认是否有额外字段。结算器已支持 `megapixels`，但该响应仍显示 `missing_usage:megapixel`，不通过单帧宽高或请求目标分辨率虚构整段视频的计费像素。来源：[Video upscaler schema](https://fal.ai/models/fal-ai/video-upscaler/api)。
 
 ## 查询与 UI
 
@@ -68,4 +68,4 @@ uv run python src/tools/repair_aicc_usage_cost.py --database /path/to/aicc-usage
 
 本地协议/结算测试覆盖图片数、音乐请求、音频秒、计算秒、显式免费、币种优先级、Omni 视频费率；存储测试覆盖跨页相同筛选总计、多币种、0/null 和覆盖数。T1.5 fixture 同步补充 fal duration，且对媒体计费用量增加明确断言；真实 Provider 与 Zone Gateway 的 T1.5/T2 验证须另行安排，不能由本地测试代替。
 
-内置手册 `aigc_image`、`aigc_audio`、`aigc_video`、`buckyos_admin` 同步说明用量核对及未知成本；本次没有修改 AgentRoot、Session/Behavior、skill 安装协议、工具挂载或发布命令，其他运行时/发布手册不需修改。没有新增服务、第三方依赖或通用组件，workspace、安装映射和 scheduler 不需新增接入。
+按用户要求，内置手册 `aigc_image`、`aigc_audio`、`aigc_video`、`buckyos_admin` 不作修改，用量与成本说明集中在本文。没有修改 AgentRoot、Session/Behavior、skill 安装协议、工具挂载或发布命令。没有新增服务、第三方依赖或通用组件，workspace、安装映射和 scheduler 不需新增接入。

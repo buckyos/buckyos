@@ -31,9 +31,3 @@ Keep the AICC `t-…` from `__BUCKYOS_AGENT_PROGRESS__` on stderr or `detail.tas
 Check `status` and `detail.files[]` in the JSON result. The delivered `url` and `obj_id` are durable. `path` gives the optional local copy. Check its existence and size if requested, or use `materialize_resource 'obj://bucket/…' out/shot.mp4` to fetch it. Compare `detail.video.measured_metadata` and `deviations` to the request. Distinguish measured values from `provider_metadata`. Verify the scene/motion with `llm_understand_media out/wave.mp4 --goal "Does the wave move as requested?"` (system frame sampling needs no local ffmpeg).
 
 Require a successful AICC task and a playable output. Report the generation method, task ids, measured duration/size, shots, cost and checks performed. Name the actual model only if the task identifies it. Include `detail.files[].url` in the Work report's `artifacts`. For an assembled film, include its path relative to the session directory to store the finished bytes; include the storyboard and reusable assets when appropriate. Use reported bucket URLs or typed ids across sessions.
-
-## 用量与成本核对
-
-AICenter 的 Usage 消费卡统计当前筛选条件下的全部记录，不限当前分页；金额按币种分开显示。点击 token 数值可以查看已上报的缓存、模态 token、图片张数、音视频秒数、字符和请求单位等明细，不把这些不同单位相加。不存在的维度不会显示；部分上报只代表已知小计。
-
-调用结果的 `usage.cost_source` 区分 Provider 实报和静态价格估算；`usage.cost_unknown_reason` 说明缺失用量、费率或币种。费用未知不表示免费。媒体任务已成功但费用未知时，先核对结果与计费用量，不为获取费用重复生成。历史记录不会随新价格自动改写。
