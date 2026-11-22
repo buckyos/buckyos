@@ -139,6 +139,7 @@ export type ProviderProtocolContract = {
   success_content_type?: string;
   success_fixture?: Record<string, unknown>;
   expected_billable_usage?: Record<string, Record<string, number>>;
+  expected_cost_usd?: Record<string, number>;
   inline_artifact_success_fixture?: Record<string, unknown>;
   inline_artifact_payload_paths?: string[];
   success_chunk_fixtures?: Array<Record<string, unknown>>;

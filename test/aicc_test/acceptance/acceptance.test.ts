@@ -7284,3 +7284,13 @@ test('Judge invocation failures remain Judge failures without inventing a task',
     return true;
   });
 });
+
+
+test('T1.5 transcription requires the quoted cost as well as token dimensions', async () => {
+  const { assertT15ResponseMapping } = await import('./run_t15_gateway.ts');
+  const contract = { success_fixture: {}, expected_cost_usd: { 'audio.asr': .000044 } } as any;
+  const response = { text: 'marker', segments: [], usage: { input_tokens: 4, audio_input_tokens: 3, output_tokens: 3 } };
+  assert.throws(() => assertT15ResponseMapping('audio.asr', response, contract), /expected cost/);
+  assert.throws(() => assertT15ResponseMapping('audio.asr', { ...response, cost: { amount: .000042, currency: 'USD' } }, contract), /expected cost/);
+  assert.doesNotThrow(() => assertT15ResponseMapping('audio.asr', { ...response, cost: { amount: .000044, currency: 'USD' } }, contract));
+});

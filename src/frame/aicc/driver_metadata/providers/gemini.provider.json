@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 11,
+  "revision_seq": 12,
   "provider_profile_id": "gemini",
   "custom_provider_adapters": ["gemini-interactions"],
   "models": [
@@ -880,8 +880,9 @@
       "id": "gemini-3.5-transcribe",
       "pricing": {
         "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-        "verified_at": "2026-09-26",
+        "verified_at": "2026-11-22",
         "currency": "USD",
+        "input_token": 0.000002,
         "audio_input_token": 0.000002,
         "output_token": 0.000012
       }

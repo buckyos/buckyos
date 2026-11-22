@@ -633,9 +633,10 @@ fn gemini_builtin_quotes_settle_multimodal_and_combined_image_usage() {
     let quotes = catalog["model_pricing"].as_array().unwrap();
     for quote in quotes {
         let price = &quote["pricing"];
-        if let (Some(input), Some(output)) = (
+        if let (Some(input), Some(output), Some(_)) = (
             price["input_token"].as_f64(),
             price["output_token"].as_f64(),
+            price["image_input_token"].as_f64(),
         ) {
             let usage = AiUsage {
                 input_tokens: Some(4),

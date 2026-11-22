@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-22.2",
+  "revision": "2026-11-22.3",
   "checked_at": "2026-11-22",
   "providers": [
     {
@@ -1982,8 +1982,13 @@
           "evidence_summary": "Gemini transcription uses POST /v1beta/interactions with an audio input and generation_config.transcription_config.",
           "expected_billable_usage": {
             "audio.asr": {
-              "audio_input_tokens": 3
+              "audio_input_tokens": 3,
+              "input_tokens": 4,
+              "output_tokens": 3
             }
+          },
+          "expected_cost_usd": {
+            "audio.asr": 4.4e-05
           }
         },
         {

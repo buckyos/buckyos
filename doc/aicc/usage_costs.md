@@ -37,6 +37,8 @@ Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：�
 
 Gemini 的视觉输入费率显式配置为图片/视频输入 token，音频采用对应原厂费率，分档价格也保留各模态费率。生图按输入 token、文本/思考输出 token 与实际图片输出 token 组合结算，不再仅用按张折算值忽略其他费用。Embedding 2 保留官方 `usageMetadata.promptTokenDetails` 的模态计数；响应完全未返回 token 用量时维持未知。报价来源：[Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)、[Embeddings API](https://ai.google.dev/api/embeddings)。
 
+Gemini 3.5 Transcribe 仅接收音频，官方输入价为 $2/百万 token、文本输出 $12/百万 token。输入总量与音频分项可能不完全相等；配置通用输入和音频输入使用相同单价，保留协议各项计数，避免剩余输入 token 导致整笔结算未知。来源：[模型输入类型](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-transcribe)、[官方报价](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-transcribe)。
+
 ## 计费用量
 
 `AiUsage` 记录总/输入/输出 token、缓存命中/写入/1h 写入、推理 token、图片/音频/视频输入与输出 token、生成图片和参考图片张数、音频/视频秒数、字符数、请求单位，以及 `compute_seconds`、`megapixels`。

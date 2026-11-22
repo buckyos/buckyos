@@ -1435,6 +1435,18 @@ export function assertT15ResponseMapping(
       `typed ${apiType} response is missing mapped Provider usage`,
     );
   }
+  const expectedCost = contract.expected_cost_usd?.[apiType];
+  if (expectedCost !== undefined) {
+    const costs = (node: unknown): Record<string, unknown>[] => {
+      if (!node || typeof node !== "object") return [];
+      const object = node as Record<string, unknown>;
+      const direct = object.cost && typeof object.cost === "object" ? [object.cost as Record<string, unknown>] : [];
+      return [...direct, ...Object.values(object).flatMap(costs)];
+    };
+    if (!costs(value).some(cost => cost.currency === "USD" && typeof cost.amount === "number" && Math.abs(cost.amount-expectedCost)<1e-10)) {
+      throw new Error(`typed ${apiType} is missing expected cost ${expectedCost} USD`);
+    }
+  }
   const expectedUsage = contract.expected_billable_usage?.[apiType];
   if (expectedUsage) {
     const usageObjects = (node: unknown): Record<string, unknown>[] => {

@@ -3250,3 +3250,23 @@ fn sn_prices_match_the_recorded_openrouter_quote_and_units() {
         }
     }
 }
+
+#[test]
+fn gemini_transcribe_prices_total_input_with_a_modality_remainder() {
+    let provider: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/gemini.provider.json"
+    )).unwrap();
+    let quote = provider["model_pricing"].as_array().unwrap().iter()
+        .find(|entry| entry["id"] == "gemini-3.5-transcribe").unwrap();
+    let pricing = serde_json::from_value(quote["pricing"].clone()).unwrap();
+    let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+        &pricing, None, std::time::SystemTime::now()
+    ).unwrap().unwrap();
+    let cost = pinned.completion_cost(&buckyos_api::AiUsage {
+        input_tokens: Some(90), audio_input_tokens: Some(89),
+        output_tokens: Some(9), total_tokens: Some(99),
+        ..Default::default()
+    }).unwrap();
+    assert_eq!(cost.currency, "USD");
+    assert!((cost.amount - 0.000288).abs() < 1e-12);
+}
