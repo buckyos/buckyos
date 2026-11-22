@@ -4,13 +4,13 @@ import type { Money, UsageDimension, UsageTotals } from '../../mock/types'
 import type { UsageEventsPage } from '../../../../api/aicc_mgr'
 import { mergeUsageTotals, usageUnits } from '../../datamodel/usage-units'
 
-export function UsageUnits({ tokens, dimensions, count }: { tokens: number; dimensions: Record<string, UsageDimension>; count: number }) {
+export function UsageUnits({ tokens, dimensions, count, alignStart = false }: { tokens: number; dimensions: Record<string, UsageDimension>; count: number; alignStart?: boolean }) {
   const { locale } = useI18n()
   const en = locale === 'en'
   const format = (value: number) => value.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })
   return <details className="relative" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
     <summary className="cursor-pointer whitespace-nowrap text-xs underline decoration-dotted underline-offset-4" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Usage details' : '用量明细'}>{format(tokens)} tokens</summary>
-    <div className="absolute right-0 z-30 mt-2 w-72 max-w-[85vw] rounded-lg p-3 shadow-xl text-left" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}>
+    <div className={`absolute ${alignStart ? 'left-0 md:left-auto md:right-0' : 'right-0'} z-30 mt-2 w-72 max-w-[85vw] rounded-lg p-3 shadow-xl text-left`} style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}>
       <p className="mb-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{en ? 'Subsets overlap; do not add them to the total.' : '缓存、多模态、推理为细分子项，不重复累加至总量。'}</p>
       <dl className="max-h-72 overflow-y-auto text-xs">
         {Object.entries(usageUnits).filter(([key]) => dimensions[key]?.reported_events > 0).map(([key, labels]) => {
@@ -72,6 +72,7 @@ export function UsageCost({ event }: { event: import('../../mock/types').UsageEv
   const cost = event.finance_snapshot
   const source = event.usage?.cost_source
   const reason = String(event.usage?.cost_unknown_reason ?? '')
+  const pending = String(source ?? '').includes('pending_billing') || source === 'billing_pending'
   let explanation = en ? 'Cost was not reported or could not be calculated.' : '未上报费用或暂时无法计算。'
   if (reason.startsWith('missing_usage:')) {
     const key = reason.split(':')[1]
@@ -83,8 +84,8 @@ export function UsageCost({ event }: { event: import('../../mock/types').UsageEv
   else if (reason === 'unverified_reported_currency') explanation = en ? 'Reported amount has no verified currency.' : '返回金额的币种尚未核实。'
   else if (reason === 'missing_token_usage') explanation = en ? 'Token usage was not reported.' : '未上报所需 token 用量。'
   if (cost?.currency && cost.amount !== undefined) {
-    const label = String(source ?? '').includes('provider_reported') ? (en ? 'Provider-reported cost' : 'Provider 实报费用') : String(source ?? '').includes('pric') ? (en ? 'Estimated from frozen prices' : '根据调用时价格估算') : (en ? 'Recorded cost' : '已记录费用')
-    return <span title={label}>{cost.currency} {cost.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}</span>
+    const label = source === 'provider_billing' ? (en ? 'Provider billing event · actual charge' : 'Provider 账单实报费用') : String(source ?? '').includes('provider_reported') ? (en ? 'Provider-reported cost' : 'Provider 实报费用') : String(source ?? '').includes('pric') ? (en ? 'Estimated from frozen prices' : '根据调用时价格估算') : (en ? 'Recorded cost' : '已记录费用')
+    return <span title={label}>{cost.currency} {cost.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}{pending && <span className="block text-[10px]" style={{ color: 'var(--cp-muted)' }}>{en ? 'Awaiting billing' : '待账单核对'}</span>}</span>
   }
-  return <span title={explanation} className="inline-flex flex-col"><span>{en ? 'Unknown cost' : '费用未知'}</span><span className="text-[10px]" style={{ color: 'var(--cp-muted)' }}>{explanation}</span></span>
+  return <span title={explanation} className="inline-flex flex-col"><span>{pending ? (en ? 'Awaiting billing' : '待账单费用') : (en ? 'Unknown cost' : '费用未知')}</span><span className="text-[10px]" style={{ color: 'var(--cp-muted)' }}>{explanation}</span></span>
 }

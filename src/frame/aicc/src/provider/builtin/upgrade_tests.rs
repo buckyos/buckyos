@@ -2260,7 +2260,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 386);
+    assert_eq!(pricing_count, 388);
 }
 
 #[test]
@@ -2926,9 +2926,6 @@ fn sn_static_usd_prices_cover_published_offerings_and_omni_has_distinct_video_ra
     assert_eq!(sn["reported_cost"]["currency"], "USD");
     let unavailable = ["gpt-4o-transcribe-diarize", "gpt-4o-mini-tts"];
     for name in sn["model_driver_overrides"].as_object().unwrap().keys() {
-        if unavailable.contains(&name.as_str()) {
-            continue;
-        }
         let price = sn["model_pricing"]
             .as_array()
             .unwrap()
@@ -2939,7 +2936,11 @@ fn sn_static_usd_prices_cover_published_offerings_and_omni_has_distinct_video_ra
         assert!(price["pricing"]["source_url"]
             .as_str()
             .unwrap()
-            .starts_with("https://openrouter.ai/"));
+            .starts_with(if unavailable.contains(&name.as_str()) {
+                "https://developers.openai.com/"
+            } else {
+                "https://openrouter.ai/"
+            }));
     }
     let gemini: serde_json::Value = serde_json::from_str(include_str!(
         "../../../driver_metadata/providers/gemini.provider.json"
@@ -3055,10 +3056,20 @@ fn sn_prices_match_the_recorded_openrouter_quote_and_units() {
     assert_eq!(
         prices.len(),
         fixture["model_aliases"].as_object().unwrap().len()
+            + fixture["official_fallbacks"].as_object().unwrap().len()
     );
     let gpt = &prices.iter().find(|p|p["id"] == "gpt-6-astra").unwrap()["pricing"];
     assert_eq!(gpt["tiers"]["steps"][1]["image_input_token"],gpt["tiers"]["steps"][1]["input_token"]);
     let asr = &prices.iter().find(|p|p["id"] == "gpt-4o-mini-transcribe").unwrap()["pricing"];
     assert_eq!(asr["audio_input_token"],asr["input_token"]);
 
+    for (name, quote) in fixture["official_fallbacks"].as_object().unwrap() {
+        let price = &prices
+            .iter()
+            .find(|p| p["id"].as_str() == Some(name))
+            .unwrap()["pricing"];
+        for (field, value) in quote.as_object().unwrap() {
+            assert_eq!(price[field], *value, "{name}:{field}");
+        }
+    }
 }

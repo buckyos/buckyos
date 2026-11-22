@@ -381,14 +381,23 @@ fn decode_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput
         }
     };
     Ok(NativeTaskOutput::Status {
-        result_usage: value
-            .pointer("/metrics/inference_time")
-            .and_then(Value::as_f64)
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .map(|seconds| AiUsage {
-                compute_seconds: Some(seconds),
-                ..AiUsage::default()
-            }),
+        result_usage: {
+            let compute_seconds = value
+                .pointer("/metrics/inference_time")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v >= 0.0);
+            let cost = super::openai_chat_completions::decode_reported_cost(
+                value.get("usage").unwrap_or(&value),
+            )?
+            .or(super::openai_chat_completions::decode_reported_cost(
+                &value,
+            )?);
+            (compute_seconds.is_some() || cost.is_some()).then_some(AiUsage {
+                compute_seconds,
+                cost,
+                ..Default::default()
+            })
+        },
         state,
         retry_after,
         result_ref: None,
@@ -486,6 +495,12 @@ fn decode_result(
         value: normalized,
         usage: Some(AiUsage {
             image_units,
+            cost: super::openai_chat_completions::decode_reported_cost(
+                value.get("usage").unwrap_or(&value),
+            )?
+            .or(super::openai_chat_completions::decode_reported_cost(
+                &value,
+            )?),
             audio_seconds: value
                 .pointer("/audio_file/duration")
                 .or_else(|| value.pointer("/audio/duration"))

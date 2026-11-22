@@ -532,6 +532,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         storage.clone(),
         model_health.clone(),
     ));
+    provider_execution.spawn_billing_reconciler();
     let directory: Arc<dyn UserDirectory> = Arc::new(SystemConfigUserDirectory::default());
     let quota_service = Arc::new(QuotaService::new(storage.clone(), directory.clone()));
     quota_service.spawn_reconciler();

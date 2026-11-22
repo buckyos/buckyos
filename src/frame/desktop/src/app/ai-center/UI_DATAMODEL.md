@@ -178,3 +178,5 @@ The file audit round-trips every original top-level field of all 15 builtin prov
 The consumption card groups the returned combinations by Provider/model/App/API; token controls open non-additive cache/modality/reasoning and media-unit details. Filtering shows loading/error state rather than stale totals. Pure media requests are never converted into token equivalents. The response size grows with distinct grouping combinations; high-cardinality million-event performance remains unverified.
 
 首页 `queryUsageOverview` 保留各分组的完整 `UsageTotals`（`breakdowns`），用于消费分布中的用量与费用明细；范围与首页 30 天汇总一致。首页近期记录与 Usage 列表复用 `UsageUnits`，只有实际上报的维度可展开。消费卡和汇总中的多币种金额默认展示 USD，点击展开各币种；无 USD 时显示实际存在的首个稳定排序币种，不换汇。
+
+`UsageOverview.periods` 保留 today / thisMonth / trailingDays 的完整 UsageTotals，使首页三个 token 总计分别展开正确时间段的明细。Fal 的 pending 费用来源标记显示待账单核对，当前页有 pending 记录时每 30 秒刷新列表及汇总（隐藏页面暂停）。最终 Provider billing 显示实报费用来源。

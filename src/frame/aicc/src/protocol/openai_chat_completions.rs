@@ -1120,7 +1120,9 @@ mod duration_usage_tests {
     }
 }
 
-fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
+pub(super) fn decode_reported_cost(
+    value: &Value,
+) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
     let Some(cost) = value.get("cost") else {
         return Ok(None);
     };

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, Gauge, HelpCircle, Route, Wallet } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
@@ -233,6 +233,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
   const [result, setResult] = useState<{ key: string; overview: UsageOverview } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
+  const refreshBillingOverview = useCallback(() => setRetry((value) => value + 1), [])
 
   useEffect(() => {
     if (!isAdmin) return
@@ -292,6 +293,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
             mode={mode}
             scope={scope}
             overview={result.overview}
+            onBillingRefresh={refreshBillingOverview}
             onSelectUser={isAdmin && scopeKey === 'system' ? (user) => setSelection(`user:${user}`) : undefined}
             onSetQuota={scopeKey === 'mine' ? onSetQuota : undefined}
           />
@@ -301,9 +303,10 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
   )
 }
 
-function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSelectUser }: UsageDashboardProps & {
+function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSelectUser, onBillingRefresh }: UsageDashboardProps & {
   scope: UsageScope
   overview: UsageOverview
+  onBillingRefresh: () => void
   onSelectUser?: (user: string) => void
 }) {
   const { t, locale } = useI18n()
@@ -329,6 +332,16 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [usageRetryKey, setUsageRetryKey] = useState(0)
+  const billingPending = usagePage.events.some((event) => String(event.usage?.cost_source ?? '').includes('pending'))
+  useEffect(() => {
+    if (!billingPending) return
+    const timer = window.setInterval(() => {
+      if (document.hidden) return
+      setUsageRetryKey((value) => value + 1)
+      onBillingRefresh()
+    }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [billingPending, onBillingRefresh])
   const [linkedTraceTaskId, setLinkedTraceTaskId] = useState<string | null>(null)
   const [linkedTraces, setLinkedTraces] = useState<RouteTrace[]>([])
   const [linkedTraceCursor, setLinkedTraceCursor] = useState<string | undefined>()
@@ -717,14 +730,14 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           </div>
         </section>
 
-        <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+        <section data-testid="home-usage-summary" className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--cp-text)' }}>
             {t('aiCenter.home.usageSummary', 'Usage Summary')}
           </h3>
           <div className="grid grid-cols-2 gap-4 items-stretch">
-            <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens, locale) })} />
-            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens, locale) })} />
-            <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens, locale) })} />
+            <Stat label={t('aiCenter.home.today', 'Today')} value={<UsageUnits alignStart tokens={overview.periods.today.total_tokens} dimensions={overview.periods.today.dimensions} count={overview.periods.today.total_requests} />} />
+            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={<UsageUnits tokens={overview.periods.thisMonth.total_tokens} dimensions={overview.periods.thisMonth.dimensions} count={overview.periods.thisMonth.total_requests} />} />
+            <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={<UsageUnits alignStart tokens={overview.periods.trailingDays.total_tokens} dimensions={overview.periods.trailingDays.dimensions} count={overview.periods.trailingDays.total_requests} />} />
             <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={<UsageMoney totals={summary.finance_totals} />} />
           </div>
         </section>
@@ -735,9 +748,9 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           {t('aiCenter.home.usageSummary', 'Usage Summary')}
         </h3>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 items-stretch">
-          <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens, locale) })} />
-          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens, locale) })} />
-          <Stat label={t('aiCenter.home.total', 'Total')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens, locale) })} />
+          <Stat label={t('aiCenter.home.today', 'Today')} value={<UsageUnits alignStart tokens={overview.periods.today.total_tokens} dimensions={overview.periods.today.dimensions} count={overview.periods.today.total_requests} />} />
+          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={<UsageUnits tokens={overview.periods.thisMonth.total_tokens} dimensions={overview.periods.thisMonth.dimensions} count={overview.periods.thisMonth.total_requests} />} />
+          <Stat label={t('aiCenter.home.total', 'Total')} value={<UsageUnits alignStart tokens={overview.periods.trailingDays.total_tokens} dimensions={overview.periods.trailingDays.dimensions} count={overview.periods.trailingDays.total_requests} />} />
           <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
           <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={<UsageMoney totals={summary.finance_totals} />} />
         </div>

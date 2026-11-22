@@ -513,6 +513,7 @@ export interface UsageOverview {
   trend: UsageTrendPoint[]
   users: UserUsageSummary[]
   breakdowns: UsageBreakdown[]
+  periods: { today: UsageTotals; thisMonth: UsageTotals; trailingDays: UsageTotals }
 }
 
 export interface UsageEventsQuery {
@@ -888,6 +889,11 @@ class MockAiccProvider implements AiccDataProvider {
     }
     return {
       summary,
+      periods: {
+        today: aggregateUsageEvents(scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange: localTodayRange(), limit: 0 }))),
+        thisMonth: aggregateUsageEvents(scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange: localCurrentMonthRange(), limit: 0 }))),
+        trailingDays: aggregateUsageEvents(events),
+      },
       breakdowns: groupUsageEvents(events),
       trend: this.store.getUsageTrend(events),
       users: Array.from(users, ([user_id, userEvents]) => {
@@ -1192,6 +1198,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     ])
     return {
       summary: toUsageSummary({ byModel, byCapability, byApp, today, thisMonth }),
+      periods: { today: toUsageTotals(today.total), thisMonth: toUsageTotals(thisMonth.total), trailingDays: toUsageTotals(byModel.total) },
       breakdowns: [byModel, byCapability, byApp].flatMap((raw) => groupedRows(raw).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([key,value]) => [key,asNonEmptyString(value, key === 'caller_app_id' ? 'system' : '')])), aggregate: toUsageTotals(row.aggregate) }))),
       trend: toUsageTrend(trend),
       users: groupedRows(byUser).map((row) => ({

@@ -1447,5 +1447,19 @@
         "instruct_type": null
       }
     }
-  ]
+  ],
+  "official_fallbacks": {
+    "gpt-4o-mini-tts": {
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts",
+      "input_token": 6e-07,
+      "output_token": 1.2e-05,
+      "audio_output_token": 1.2e-05
+    },
+    "gpt-4o-transcribe-diarize": {
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize",
+      "input_token": 2.5e-06,
+      "audio_input_token": 2.5e-06,
+      "output_token": 1e-05
+    }
+  }
 }

@@ -18,6 +18,7 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
     total_tokens: 120,
     finance_totals: [{ currency: 'usd', amount: 0.25 }, { currency: 'EUR', amount: 0.5 }],
     finance_complete: false,
+    dimensions: { input_tokens: { amount: 100, reported_events: 3 }, image_units: { amount: 1, reported_events: 1 } },
   }
   sdk.getAccountInfo = async () => ({ session_token: 'test-session' })
   sdk.getServiceRpcClient = () => ({
@@ -49,6 +50,7 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
       assert(overview.users[0].finance_totals.length === 2, 'per-user costs preserve separate currencies')
       assert(!overview.users[0].finance_complete, 'incomplete per-user costs remain marked incomplete')
       assert(overview.trend[0].tokens === 120, 'trend carries scoped aggregates')
+      for (const period of Object.values(overview.periods)) assert(period.total_tokens === 120 && period.dimensions.image_units.amount === 1 && period.dimensions.input_tokens.reported_events === 3, 'every home period preserves its own full usage dimensions and coverage')
       assert(overview.breakdowns.some((row) => row.group.caller_app_id === 'system'), 'missing caller app uses the same system group as the home summary')
       assert(overview.breakdowns.length === 3 && overview.breakdowns[0].aggregate.finance_totals.length === 2, 'home breakdowns preserve scoped aggregate currencies instead of estimating from recent rows')
       const page = await manager.queryUsageEvents({

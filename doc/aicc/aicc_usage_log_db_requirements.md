@@ -25,7 +25,7 @@ This database is not a financial ledger. Provider or server financial data may b
 
 `aicc_usage_event`
 
-Append-only records for successful AICC provider completions. This data must survive service restart, completed task cleanup, overlay install, and upgrade.
+One immutable completion identity per provider call. Validated late provider billing may enrich its financial snapshot and missing usage dimensions in place, atomically with its durable reconciliation state; this does not insert another completion. This data must survive service restart, completed task cleanup, overlay install, and upgrade.
 
 ### Disposable Data
 
@@ -212,3 +212,7 @@ The exact cleanup policy should be configurable later.
 - A query for `last_7d` can return usage grouped by provider.
 - Provider financial snapshot is stored when present but is not required for success.
 - Missing usage in a successful provider final result is treated as provider protocol error.
+
+## Deferred billing enrichment
+
+Fal billing reconciliation reuses `aicc_execution_record.record_json.binding.billing` for pending/applied state, retry schedule and a CAS lease. It may revise only the matching usage event's finance and missing metering fields, preserving event identity, owner, provider and token/request totals. Explicit protocol cost wins. See [the durable schema and recovery rules](deferred_billing.md); there are no new tables or schema migrations. The completed TaskMgr result is a historical snapshot and is not rewritten by this process.

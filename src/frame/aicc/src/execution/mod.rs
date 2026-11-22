@@ -242,13 +242,55 @@ pub(crate) struct PinnedProviderTask {
     pub resume: Option<NativeTaskResumeDescriptor>,
     pub pricing: Option<PinnedPricingSnapshot>,
     pub reported_cost_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<DeferredBilling>,
     /// Token quota reservation of the attempt this binding was started by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_attempt_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DeferredBilling {
+    pub schema_version: u32,
+    pub status: BillingStatus,
+    pub attempts: u32,
+    pub next_attempt_ms: u64,
+    pub last_error: Option<String>,
+    pub event: Option<ProviderBillingEvent>,
+}
+
+impl Default for DeferredBilling {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            status: BillingStatus::Pending,
+            attempts: 0,
+            next_attempt_ms: 0,
+            last_error: None,
+            event: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BillingStatus {
+    Pending,
+    Applied,
+    ProtocolCost,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ProviderBillingEvent {
+    pub request_id: String,
+    pub endpoint_id: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub cost: AiCost,
+}
+
 impl PinnedProviderTask {
-    fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
+    fn reported_cost(&self, usage: &AiUsage) -> Option<AiCost> {
         if let Some(cost) = &usage.cost {
             if !invalid_price(cost.amount) && !cost.currency.trim().is_empty() {
                 return Some(cost.clone());
@@ -256,12 +298,16 @@ impl PinnedProviderTask {
         }
         if let (Some(currency), Some(amount)) = (&self.reported_cost_currency, usage.reported_cost)
         {
-            if !invalid_price(amount) {
-                return Some(AiCost {
-                    currency: currency.clone(),
-                    amount,
-                });
+            if !invalid_price(amount) && !currency.trim().is_empty() {
+                return Some(AiCost::new(amount, currency.clone()));
             }
+        }
+        None
+    }
+
+    fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
+        if let Some(cost) = self.reported_cost(usage) {
+            return Some(cost);
         }
         if usage.cost_unknown_reason.is_some() {
             return None;
@@ -376,6 +422,9 @@ impl PinnedProviderTask {
             resume: None,
             pricing: PinnedPricingSnapshot::from_call(call)?,
             reported_cost_currency: call.reported_cost_currency.clone(),
+            billing: (call.protocol_adapter_id == crate::protocol::FAL_QUEUE_ADAPTER_ID
+                && call.context.state_coordinate.provider_profile_id == "fal")
+                .then(DeferredBilling::default),
             quota_attempt_id: None,
         })
     }
@@ -2575,12 +2624,12 @@ impl ExecutionEngine {
         if let Err(error) = output.validate_canonical_type(binding.api_type) {
             return self.finish_failure(task_id, error.into()).await;
         }
-        let finance_snapshot = match self
-            .providers
-            .completion_cost(&binding, &output)
-            .map(validate_completion_cost)
-            .transpose()
-        {
+        let completion_cost = output
+            .usage
+            .as_ref()
+            .and_then(|usage| binding.reported_cost(usage))
+            .or_else(|| self.providers.completion_cost(&binding, &output));
+        let finance_snapshot = match completion_cost.map(validate_completion_cost).transpose() {
             Ok(cost) => cost,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
@@ -2588,21 +2637,24 @@ impl ExecutionEngine {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
-        output.usage.cost_source =
-            finance_snapshot.as_ref().map(|_| {
-                if output.usage.cost.as_ref().is_some_and(|cost| {
-                    !invalid_price(cost.amount) && !cost.currency.trim().is_empty()
-                }) || (binding.reported_cost_currency.is_some()
-                    && output
-                        .usage
-                        .reported_cost
-                        .is_some_and(|amount| !invalid_price(amount)))
-                {
-                    "provider_reported".to_owned()
+        let reported = binding.reported_cost(&output.usage).is_some();
+        let billing_pending = binding.billing.is_some() && !reported;
+        output.usage.cost_source = if finance_snapshot.is_some() {
+            Some(
+                if reported {
+                    "provider_reported"
+                } else if billing_pending {
+                    "static_pricing_pending_billing"
                 } else {
-                    "static_pricing".to_owned()
+                    "static_pricing"
                 }
-            });
+                .to_owned(),
+            )
+        } else if billing_pending {
+            Some("billing_pending".to_owned())
+        } else {
+            None
+        };
         output.usage.cost_unknown_reason = if finance_snapshot.is_some() {
             None
         } else {
@@ -2646,9 +2698,7 @@ impl ExecutionEngine {
             .is_none()
             .then(|| binding.cost_unknown_reason(&usage));
         usage.cost_source = finance_snapshot.as_ref().map(|_| {
-            if usage.cost.is_some()
-                || (binding.reported_cost_currency.is_some() && usage.reported_cost.is_some())
-            {
+            if binding.reported_cost(&usage).is_some() {
                 "provider_reported"
             } else {
                 "static_pricing"
@@ -4392,6 +4442,60 @@ mod tests {
         assert!(
             (completion.finance_snapshot.as_ref().unwrap().amount - 318.0 * 4.2e-8).abs() < 1e-12
         );
+    }
+
+    #[test]
+    fn deferred_billing_is_enabled_for_all_fal_models_and_no_other_profile() {
+        let mut resolved = call("fal-main");
+        resolved.protocol_adapter_id = crate::protocol::FAL_QUEUE_ADAPTER_ID.into();
+        resolved.context.state_coordinate.provider_profile_id = "fal".into();
+        for api_type in [
+            ApiType::ImageUpscale,
+            ApiType::AudioEnhance,
+            ApiType::VideoUpscale,
+        ] {
+            resolved.api_type = api_type;
+            let binding = PinnedProviderTask::from_call(1, &resolved).unwrap();
+            assert_eq!(binding.billing.unwrap().status, BillingStatus::Pending);
+        }
+        resolved.context.state_coordinate.provider_profile_id = "custom".into();
+        assert!(PinnedProviderTask::from_call(1, &resolved)
+            .unwrap()
+            .billing
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn engine_prioritizes_valid_protocol_cost_over_any_provider_estimator() {
+        for (cost, reported, expected) in [
+            (Some(AiCost::new(0.0, "EUR")), None, AiCost::new(0.0, "EUR")),
+            (None, Some(0.02), AiCost::new(0.02, "USD")),
+        ] {
+            let providers = Arc::new(FakeProviders::default());
+            *providers.completion_cost.lock().unwrap() = Some(AiCost::new(99.0, "USD"));
+            let mut output = output("ok");
+            let usage = output.usage.as_mut().unwrap();
+            usage.cost = cost;
+            usage.reported_cost = reported;
+            usage.cost_unknown_reason = Some("missing_usage:audio_second".into());
+            providers
+                .plans
+                .lock()
+                .unwrap()
+                .push_back(StartPlan::Success(ProviderExecution::Immediate(output)));
+            let (engine, _, _, usage) = make_engine(providers);
+            let mut resolved = call("primary");
+            resolved.reported_cost_currency = Some("USD".into());
+            engine.execute(request(resolved)).await.unwrap();
+            let writes = usage.writes.lock().unwrap();
+            let event = writes.values().next().unwrap();
+            assert_eq!(event.finance_snapshot, Some(expected));
+            assert_eq!(
+                event.usage.cost_source.as_deref(),
+                Some("provider_reported")
+            );
+            assert_eq!(event.usage.cost_unknown_reason, None);
+        }
     }
 
     #[tokio::test]

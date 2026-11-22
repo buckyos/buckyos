@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 use std::time::Duration;
 
+mod billing;
 mod quota;
 pub(crate) use quota::{AdmitOutcome, AttemptAdmission, QuotaWriteError, SettleOutcome};
 
@@ -2979,6 +2980,7 @@ mod tests {
         let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
         PinnedProviderTask {
             reported_cost_currency: None,
+            billing: None,
             quota_attempt_id: None,
             runtime_generation: 7,
             origin_provider: "openai".into(),
@@ -3784,5 +3786,202 @@ mod tests {
     #[test]
     fn postgres_placeholders_are_numbered() {
         assert_eq!(placeholders("a=? AND b=?"), "a=$1 AND b=$2")
+    }
+    async fn completed_fal_billing(
+        db: &AiccStorage,
+        task: &str,
+        protocol_cost: bool,
+    ) -> ExecutionRecord {
+        let initial = execution_record(task, task);
+        db.claim(initial.clone()).await.unwrap();
+        let mut binding = provider_binding();
+        binding.protocol_adapter_id = crate::protocol::FAL_QUEUE_ADAPTER_ID.into();
+        binding.provider_instance_name = "fal-main".into();
+        binding.provider_model_id = "fal-ai/video-upscaler".into();
+        binding.exact_model = "fal-ai/video-upscaler@fal-main".into();
+        binding.billing = Some(crate::execution::DeferredBilling::default());
+        db.set_running(task, ExecutionState::Running, binding.clone())
+            .await
+            .unwrap();
+        let mut event = completion(&initial.usage_event_id, task, task, 20_000);
+        event.provider_instance_name = binding.provider_instance_name.clone();
+        event.provider_model = binding.exact_model.clone();
+        let usage = event.usage.as_mut().unwrap();
+        usage.cost_source = Some(
+            if protocol_cost {
+                "provider_reported"
+            } else {
+                "static_pricing_pending_billing"
+            }
+            .into(),
+        );
+        usage.cost = Some(buckyos_api::AiCost::new(0.25, "USD"));
+        let output = ExecutionOutput {
+            value: json!({}),
+            usage: usage.clone(),
+            cost: usage.cost.clone(),
+            artifacts: vec![],
+        };
+        db.write_provider_completion(event).await.unwrap();
+        db.stage_output(task, output.clone()).await.unwrap();
+        assert!(db.pending_billings(30_000, 10).await.unwrap().is_empty());
+        db.try_complete(task, output).await.unwrap();
+        db.get_task(task).await.unwrap().unwrap()
+    }
+
+    fn fal_billing_event(amount: f64) -> crate::execution::ProviderBillingEvent {
+        crate::execution::ProviderBillingEvent {
+            request_id: "remote-1".into(),
+            endpoint_id: "fal-ai/video-upscaler".into(),
+            quantity: Some(7.5),
+            unit: Some("megapixel".into()),
+            cost: buckyos_api::AiCost::new(amount, "USD"),
+        }
+    }
+
+    #[tokio::test]
+    async fn billing_survives_shutdown_claim_loss_and_applies_once_to_usage_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("billing.db").display()
+        );
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        let record = completed_fal_billing(&db, "bill-task", false).await;
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        assert!(db.claim_billing(&record, 30_000).await.unwrap().is_none());
+        db.pool.close().await;
+        drop(db);
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        assert!(db.pending_billings(89_999, 10).await.unwrap().is_empty());
+        let due = db
+            .pending_billings(90_000, 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            due.binding
+                .as_ref()
+                .unwrap()
+                .billing
+                .as_ref()
+                .unwrap()
+                .attempts,
+            1
+        );
+        let resumed = db.claim_billing(&due, 90_000).await.unwrap().unwrap();
+        assert!(!db
+            .finish_billing(&claimed, Some(fal_billing_event(9.0)), None, None, 90_000)
+            .await
+            .unwrap());
+        assert!(db
+            .finish_billing(&resumed, Some(fal_billing_event(0.006)), None, None, 90_000)
+            .await
+            .unwrap());
+        assert!(!db
+            .finish_billing(&resumed, Some(fal_billing_event(0.006)), None, None, 90_001)
+            .await
+            .unwrap());
+        assert!(db
+            .pending_billings(200_000_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let row=sqlx::query("SELECT finance_amount,usage_json FROM aicc_usage_event WHERE event_id='usage-bill-task'").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(row.get::<f64, _>("finance_amount"), 0.006);
+        let usage: AiUsage = serde_json::from_str(&row.get::<String, _>("usage_json")).unwrap();
+        assert_eq!(usage.megapixels, Some(7.5));
+        assert_eq!(usage.cost_source.as_deref(), Some("provider_billing"));
+        let replay = db.get_task("bill-task").await.unwrap().unwrap();
+        assert_eq!(replay.output.as_ref().unwrap().usage, usage);
+        assert_eq!(replay.output.unwrap().cost.unwrap().amount, 0.006);
+        assert_eq!(
+            replay.binding.unwrap().billing.unwrap().status,
+            crate::execution::BillingStatus::Applied
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM aicc_usage_event")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn billing_keeps_protocol_cost_and_retries_errors_without_losing_the_job() {
+        let db = db().await;
+        let record = completed_fal_billing(&db, "protocol", true).await;
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        db.finish_billing(&claimed, Some(fal_billing_event(5.0)), None, None, 30_000)
+            .await
+            .unwrap();
+        let saved = db.get_task("protocol").await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            crate::execution::BillingStatus::ProtocolCost
+        );
+        assert_eq!(saved.output.unwrap().cost.unwrap().amount, 0.25);
+        let record = completed_fal_billing(&db, "retry", false).await;
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        db.finish_billing(&claimed, None, Some("rate_limited"), Some(180_000), 30_000)
+            .await
+            .unwrap();
+        assert!(db.pending_billings(209_999, 10).await.unwrap().is_empty());
+        let due = db
+            .pending_billings(210_000, 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            due.binding
+                .as_ref()
+                .unwrap()
+                .billing
+                .as_ref()
+                .unwrap()
+                .last_error
+                .as_deref(),
+            Some("rate_limited")
+        );
+        let claimed = db.claim_billing(&due, 210_000).await.unwrap().unwrap();
+        let mut wrong = fal_billing_event(4.0);
+        wrong.request_id = "other-task".into();
+        assert!(db
+            .finish_billing(&claimed, Some(wrong), None, None, 210_000)
+            .await
+            .is_err());
+        let mut free = fal_billing_event(0.0);
+        free.quantity = None;
+        free.unit = None;
+        db.finish_billing(&claimed, Some(free), None, None, 210_001)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_task("retry")
+                .await
+                .unwrap()
+                .unwrap()
+                .output
+                .unwrap()
+                .cost
+                .unwrap()
+                .amount,
+            0.0
+        );
+        let record=completed_fal_billing(&db,"seconds",false).await;
+        let claimed=db.claim_billing(&record,30_000).await.unwrap().unwrap();
+        let mut event=fal_billing_event(0.02);event.unit=Some("second".into());event.quantity=Some(2.0);
+        db.finish_billing(&claimed,Some(event),None,None,30_000).await.unwrap();
+        let saved=db.get_task("seconds").await.unwrap().unwrap();
+        assert_eq!(saved.output.unwrap().usage.compute_seconds,None);
+        assert_eq!(saved.binding.unwrap().billing.unwrap().event.unwrap().quantity,Some(2.0));
+
     }
 }

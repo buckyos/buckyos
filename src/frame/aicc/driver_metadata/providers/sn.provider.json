@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 18,
+  "revision_seq": 19,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -3466,6 +3466,28 @@
         "input_token": 1.32e-06,
         "output_token": 3.96e-06,
         "cache_input_token": 4.4e-08
+      }
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "pricing": {
+        "currency": "USD",
+        "source_url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts",
+        "verified_at": "2026-11-22",
+        "input_token": 6e-07,
+        "output_token": 1.2e-05,
+        "audio_output_token": 1.2e-05
+      }
+    },
+    {
+      "id": "gpt-4o-transcribe-diarize",
+      "pricing": {
+        "currency": "USD",
+        "source_url": "https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize",
+        "verified_at": "2026-11-22",
+        "input_token": 2.5e-06,
+        "audio_input_token": 2.5e-06,
+        "output_token": 1e-05
       }
     }
   ]

@@ -567,3 +567,12 @@ async fn transcription_duration_without_usage_is_billable_and_usage_duration_win
         assert_eq!(output.usage.unwrap().audio_seconds, Some(expected));
     }
 }
+
+#[tokio::test]
+async fn fal_preserves_explicit_protocol_costs_even_without_metered_units() {
+    let registry = registry();
+    let NativeTaskOutput::Status { result_usage, .. } = registry.decode_native("fal-queue","queue.submit",ApiType::ImageUpscale,NativeTaskOperation::Status,response(json!({"status":"COMPLETED","cost":{"currency":"EUR","amount":0}}))).await.unwrap() else { panic!() };
+    assert_eq!(result_usage.unwrap().cost,Some(buckyos_api::AiCost::new(0.0,"EUR")));
+    let NativeTaskOutput::Result(output) = registry.decode_native("fal-queue","queue.submit",ApiType::AudioEnhance,NativeTaskOperation::Result,response(json!({"audio_file":{"url":"https://media.example/audio.wav","content_type":"audio/wav"},"usage":{"cost":{"currency":"USD","amount":0.03}}}))).await.unwrap() else { panic!() };
+    assert_eq!(output.usage.unwrap().cost,Some(buckyos_api::AiCost::new(0.03,"USD")));
+}
