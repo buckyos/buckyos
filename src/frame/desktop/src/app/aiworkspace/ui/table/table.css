@@ -226,6 +226,13 @@
 .aiws-root [data-pointer='touch'] button.aiws-track-grip,
 .aiws-root button.aiws-track-grip:focus-visible { opacity: 1; }
 .aiws-root button.aiws-track-menu, .aiws-root button.aiws-track-grip[aria-pressed='true'] { color: var(--aiws-table-selection-line); background: var(--aiws-table-selection-bg); }
+/* Keep the flow grid's outer edges on the cells so they scroll with their columns. */
+.aiws-flow :where([data-grid-style='grid'], [data-grid-style='striped']) {
+  :is(.aiws-table-head > :first-child, .aiws-tr > :nth-child(1 of .aiws-td)):not(.is-selected-column) { border-left: 1px solid var(--cp-border); }
+  :is(.aiws-th, .aiws-td):last-child:not(.is-selected-column) { border-right: 1px solid var(--cp-border); }
+  /* Let the left border show through the grip while preserving its full hit area. */
+  .aiws-row-tools:first-child > button.aiws-track-grip { border-left: 1px solid transparent; background-clip: padding-box; }
+}
 .aiws-grid-resize { position: absolute; z-index: 4; touch-action: none; }
 .aiws-grid-resize.is-column { top: 0; right: -3px; bottom: 0; width: 7px; cursor: col-resize; }
 .aiws-grid-resize.is-row { bottom: -3px; height: 7px; left: 0; right: 0; cursor: row-resize; }

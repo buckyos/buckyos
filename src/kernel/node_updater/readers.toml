@@ -248,7 +248,7 @@ rust = "sql::workspaces"
 owner = "aiworkspace"
 areas = ["file/data/aiworkspace/workspaces/*", "file/data/aiworkspace/sessions.sqlite", "file/data/aiworkspace/users.sqlite", "file/data/aiworkspace/library.sqlite"]
 schema = "format 1.0, doc 7, local/library/users/sessions 1"
-audit = ["kernel/sqlite_schema/src/lib.rs", "frame/aiworkspace/store/src/users.rs", "frame/aiworkspace/store/src/session/registry.rs", "frame/aiworkspace/store/src/workspace.rs", "frame/aiworkspace/store/src/schema.rs", "frame/aiworkspace/store/src/acl.rs", "frame/aiworkspace/store/src/users.sql", "frame/aiworkspace/store/src/library.rs", "frame/aiworkspace/store/src/session/mod.rs", "frame/aiworkspace/store/src/session/sessions.sql"]
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/aiworkspace/store/src/users.rs", "frame/aiworkspace/store/src/session/registry.rs", "frame/aiworkspace/store/src/workspace.rs", "frame/aiworkspace/store/src/schema.rs", "frame/aiworkspace/store/src/entries.rs", "frame/aiworkspace/store/src/acl.rs", "frame/aiworkspace/store/src/users.sql", "frame/aiworkspace/store/src/library.rs", "frame/aiworkspace/store/src/session/mod.rs", "frame/aiworkspace/store/src/session/sessions.sql"]
 depends = []
 
 [[reader]]
