@@ -239,7 +239,7 @@ mod tests {
         );
 
         let rules = fal_provider_rules(7);
-        assert_eq!(rules.revision_seq, 3);
+        assert_eq!(rules.revision_seq, 4);
         assert_eq!(
             rules.patterns[0].operations["video.upscale"],
             FAL_QUEUE_OPERATION_ID

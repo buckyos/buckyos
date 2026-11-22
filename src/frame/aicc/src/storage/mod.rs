@@ -3972,6 +3972,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn billing_concurrent_reconciliation_serializes_sqlite_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("concurrent-billing.db").display()
+        );
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        let mut claimed = Vec::new();
+        for index in 0..8 {
+            let record = completed_fal_billing(&db, &format!("parallel-{index}"), false).await;
+            claimed.push(db.claim_billing(&record, 30_000).await.unwrap().unwrap());
+        }
+        let barrier = tokio::sync::Barrier::new(claimed.len());
+        let results = futures_util::future::join_all(claimed.iter().map(|record| async {
+            barrier.wait().await;
+            db.finish_billing(
+                record,
+                Some(fal_billing_event(0.006)),
+                None,
+                None,
+                None,
+                30_001,
+            )
+            .await
+        }))
+        .await;
+        for result in results {
+            assert!(result.unwrap());
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM aicc_usage_event WHERE finance_amount=0.006"
+            )
+            .fetch_one(&db.pool)
+            .await
+            .unwrap(),
+            8
+        );
+        assert!(db
+            .pending_billings(200_000_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn billing_local_fallback_survives_restart_and_updates_finance_and_replay_once() {
         use crate::execution::{BillingStatus, PinnedPricingBasis, PinnedPricingSnapshot};
         let dir = tempfile::tempdir().unwrap();

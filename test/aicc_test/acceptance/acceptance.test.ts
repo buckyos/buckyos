@@ -7208,3 +7208,16 @@ test('Gemini reasoning levels follow the official per-model contract', async () 
   }
   assert.ok(validate('gemini-3.5-flash','xhigh').some((error) => error.includes('thinking_level')));
 });
+
+
+test('Gemini physical models in the official T1.5 catalog have explicit USD quotes', async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const gemini = catalog.providers.find((provider) => provider.provider_driver === 'google-gemini')!;
+  const models = new Set(Object.values(gemini.official_first_party_model_ids!).flat());
+  const metadata = JSON.parse(await readFile(new URL('../../../src/frame/aicc/driver_metadata/providers/gemini.provider.json',import.meta.url),'utf8'));
+  for (const id of models) {
+    const quote = metadata.model_pricing.find((entry: {id:string}) => entry.id === id);
+    assert.ok(quote,`Missing official Gemini quote: ${id}`);
+    assert.equal(quote.pricing.currency,'USD');
+  }
+});

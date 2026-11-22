@@ -47,6 +47,8 @@ Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：�
 - fal 的 `metrics.inference_time` 来自任务状态，作为计算秒合并到结果；DeepFilterNet 的 `audio_file.duration` 为音频秒数，不用 `timings.inference` 代替音频长度。来源：[Queue](https://fal.ai/docs/documentation/model-apis/inference/queue)、[DeepFilterNet schema](https://fal.ai/models/fal-ai/deepfilternet3/api)。
 - fal 的 `fal-ai/video-upscaler` 按 $0.0008/百万像素收费，但公开 Output Schema 只有文件 URL、类型、名称和字节数，没有帧数、分辨率或完整的计费百万像素量。响应缺少 `megapixels` 时，先查询账单；权限不足则探测实际生成视频并补全累计百万像素，用冻结单价估算。测量失败保留未知成本并重试，不通过单帧宽高或请求目标分辨率虚构整段视频的计费像素。来源：[Video upscaler schema](https://fal.ai/models/fal-ai/video-upscaler/api)。
 
+Robotics ER 2 Preview 补充当前公布的输入 $1/百万 token、输出 $5/百万 token、缓存命中 $0.10/百万 token。来源：[官方定价](https://ai.google.dev/gemini-api/docs/pricing#gemini-robotics-er-2)。
+
 Gemini API 托管的两款 Gemma 4 按官方定价明确配置免费输入、输出及缓存，避免将免费模型显示为缺价格。
 
 ESRGAN 与 rembg 的静态单价使用 2026-11-22 官方 Pricing API 返回的 $0.000575/计算秒，DeepFilterNet 为 $0.001/音频秒；这些账号查询报价作为默认估算依据，账单或协议有效费用仍优先。来源：[Pricing API](https://fal.ai/docs/platform-apis/v1/models/pricing)。

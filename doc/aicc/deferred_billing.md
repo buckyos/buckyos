@@ -10,7 +10,7 @@ AICC 在 fal 成功任务完成后，按原始 request_id 查询 Billing Events�
 
 ## 3. Storage Strategy
 
-复用 `aicc_execution_record.record_json`，不新增表或数据库列。`aicc_usage_event` 保持 event_id 唯一，费用补全是对同一条记录的修订，不新增调用或叠加金额。适用于 SQLite/PostgreSQL。
+复用 `aicc_execution_record.record_json`，不新增表或数据库列。`aicc_usage_event` 保持 event_id 唯一，费用补全是对同一条记录的修订，不新增调用或叠加金额。适用于 SQLite/PostgreSQL。SQLite 的核账写事务在读取前以 BEGIN IMMEDIATE 取得写锁，避免并发核账将读事务升级为写事务时产生 BUSY_SNAPSHOT；PostgreSQL 使用普通事务。依据：[SQLite 事务隔离](https://www.sqlite.org/isolation.html)。
 
 ## 4. Schema Definitions
 
@@ -20,7 +20,7 @@ AICC 在 fal 成功任务完成后，按原始 request_id 查询 Billing Events�
 |---|---|---|
 | schema_version | u32 | 当前为 1 |
 | status | pending / local_pending / applied / local / protocol_cost | 待查账、待本地测量、已采用账单、已本地结算、已采用协议费用 |
-| attempts | u32 | 已持久化的查询尝试次数 |
+| attempts | u32 | 已持久化的核对或测量尝试次数 |
 | next_attempt_ms | u64 | 下一次可领取时间；领取时同时作为短期租约截止时间 |
 | last_error | string? | 固定错误类别；不保存响应正文、令牌或密钥 |
 | event | object? | request_id、endpoint_id、可空 quantity/unit、USD amount/currency |

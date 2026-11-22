@@ -3274,6 +3274,7 @@ async function main(): Promise<void> {
     provider_driver: result.provider_driver ?? undefined,
     provider_instance: result.provider_instance,
     exact_model: result.exact_model,
+    task_id: result.task_id,
     api_type: result.api_type,
     method: result.method,
     outbound_message_ids: [],

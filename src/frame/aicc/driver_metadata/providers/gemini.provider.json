@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 9,
+  "revision_seq": 10,
   "provider_profile_id": "gemini",
   "custom_provider_adapters": ["gemini-interactions"],
   "models": [
@@ -485,6 +485,17 @@
     }
   ],
   "model_pricing": [
+    {
+      "id": "gemini-robotics-er-2-preview",
+      "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing#gemini-robotics-er-2",
+        "verified_at": "2026-11-22",
+        "currency": "USD",
+        "input_token": 1e-06,
+        "output_token": 5e-06,
+        "cache_input_token": 1e-07
+      }
+    },
     {
       "id": "gemma-4-26b-a4b-it",
       "pricing": {

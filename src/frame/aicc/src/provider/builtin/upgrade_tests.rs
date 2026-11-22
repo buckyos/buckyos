@@ -2303,7 +2303,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("doubao", 18),
         ("doubao-agent-plan", 0),
         ("fal", 4),
-        ("gemini", 38),
+        ("gemini", 39),
         ("glm", 101),
         ("kimi", 6),
         ("minimax", 17),
@@ -2374,7 +2374,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 392);
+    assert_eq!(pricing_count, 393);
 }
 
 #[test]
@@ -2502,6 +2502,15 @@ fn corrected_provider_prices_match_official_billing_dimensions() {
     }
 
     let gemini = catalog.provider_rules("gemini").unwrap();
+    let robotics = &gemini
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("gemini-robotics-er-2-preview"))
+        .unwrap()
+        .pricing;
+    assert_eq!(robotics.input_token, Some(0.000001));
+    assert_eq!(robotics.output_token, Some(0.000005));
+    assert_eq!(robotics.cache_input_token, Some(0.0000001));
     for id in ["gemma-4-26b-a4b-it", "gemma-4-31b-it"] {
         let pricing = &gemini
             .model_pricing

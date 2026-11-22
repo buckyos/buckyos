@@ -88,7 +88,10 @@ impl AiccStorage {
             return Ok(false);
         }
         let sql = self.sql("SELECT usage_json FROM aicc_usage_event WHERE event_id=? AND tenant_id=? AND task_id=? AND provider_instance_name=? AND provider_model=?");
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = match self.backend {
+            RdbBackend::Sqlite => self.pool.begin_with("BEGIN IMMEDIATE").await?,
+            RdbBackend::Postgres => self.pool.begin().await?,
+        };
         let Some(row) = sqlx::query(&sql)
             .bind(&record.usage_event_id)
             .bind(&record.scope.tenant_id)
