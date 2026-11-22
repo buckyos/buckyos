@@ -12,13 +12,13 @@ SN 静态价格优先采用 OpenRouter USD 报价（2026-11-22），仅对其未
 
 [OpenAI Diarize 官方模型页](https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize)、[OpenAI Mini TTS 官方模型页](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts)（2026-11-22）。
 
-来源：[OpenRouter Models API](https://openrouter.ai/docs/guides/overview/models)、[全模态报价](https://openrouter.ai/api/v1/models?output_modalities=all)、[Embeddings](https://openrouter.ai/api/v1/embeddings/models)、[Video models](https://openrouter.ai/api/v1/videos/models)。OpenRouter 的 Kimi 报价与原厂直连价可能不同；SN 的缺省 USD 声明仍只限于已从现场实报金额核实的 `kimi-k3` / `kimi-k3.1-pro`，不根据静态报价推断其他型号返回的无币种金额。
+来源：[OpenRouter Models API](https://openrouter.ai/docs/guides/overview/models)、[全模态报价](https://openrouter.ai/api/v1/models?output_modalities=all)、[Embeddings](https://openrouter.ai/api/v1/embeddings/models)、[Video models](https://openrouter.ai/api/v1/videos/models)。OpenRouter 的 Kimi 报价与原厂直连价可能不同；SN 的缺省 USD 声明限于已核实的 `kimi-k3` / `kimi-k3.1-pro` 与 `voxtral-small-24b-2507`。Voxtral 在 [SN 发布配置](https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/cluster_config.json) 指向 OpenRouter，SN Chat 入口原样透传响应，结合 [OpenRouter 的 USD 结算说明](https://openrouter.ai/support) 和真实响应确认币种；不根据静态报价为其他型号的无币种金额猜测币种。
 
 ## 组合计费
 
 复用 `pricing.addons`：既能扩展单位计费，也能扩展 token 计费。所有非零费用项必须有有效用量，缺少一项则整个静态成本未知，不输出部分费用冒充完整费用；明确零数量仍可结算。addons 与基础费率一起冻结，token 阶梯和时段选择保持原有语义。
 
-SN [Voxtral Small](https://openrouter.ai/mistralai/voxtral-small-24b-2507) 使用 OpenRouter 的文本输入 $0.10/百万、输出 $0.30/百万、缓存命中 $0.01/百万，以及音频 $0.0001/秒。配置的 `audio_input_token: 0` 从总输入中排除已上报的音频 token，音频本身由秒数计价，防止重复计费；若响应包含音频 token，必须能与文本部分拆分。OpenAI Chat 用量解析保留 `prompt_tokens_details.audio_seconds` / `usage.audio_seconds`，不会把音频 token 数换算为秒。无音频的已知零秒应显式上报；未上报时保持未知。真实 SN 音频字段仍需实测，不用 mock 代替 Provider 验证。
+SN [Voxtral Small](https://openrouter.ai/mistralai/voxtral-small-24b-2507) 使用 OpenRouter 的文本输入 $0.10/百万、输出 $0.30/百万、缓存命中 $0.01/百万，以及音频 $0.0001/秒。配置的 `audio_input_token: 0` 从总输入中排除已上报的音频 token，音频本身由秒数计价，防止重复计费；若响应包含音频 token，必须能与文本部分拆分。OpenAI Chat 用量解析保留 `prompt_tokens_details.audio_seconds` / `usage.audio_seconds`，不会把音频 token 数换算为秒。真实 SN 响应返回音频 token 与无币种成本，但没有音频秒数。有效协议金额仍优先；需要本地结算时，复用已物化的 ASR 输入媒体信息测量时长，保留协议已有时长。按音频秒组合计价的纯文本/图片 LLM 请求明确记录零音频秒数。测量失败仍为未知，不将音频 token 换算为秒。
 
 ```json
 {
@@ -34,6 +34,8 @@ SN [Voxtral Small](https://openrouter.ai/mistralai/voxtral-small-24b-2507) 使�
 OpenRouter 的非零每请求附加费也作为 addon 保留，不再因为存在 token 价格而丢弃；历史恢复工具按同一冻结规则求和，缺数量时跳过。
 
 Gemini Omni 1.1 明确区分图片/视频输入 token 与视频输出 token：文本、图片、视频输入 $1.50/百万，文本输出 $9/百万，视频输出 $17.50/百万。2026-12-03 后官方将其重定向至 1.2 并更换视频输出费率，需要届时更新 catalog，不能把未来费率用于历史调用。来源：[Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)。视频响应缺少模态拆分时保留未知，不能将视频输出全部按文本价格结算。
+
+Gemini 的视觉输入费率显式配置为图片/视频输入 token，音频采用对应原厂费率，分档价格也保留各模态费率。生图按输入 token、文本/思考输出 token 与实际图片输出 token 组合结算，不再仅用按张折算值忽略其他费用。Embedding 2 保留官方 `usageMetadata.promptTokenDetails` 的模态计数；响应完全未返回 token 用量时维持未知。报价来源：[Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)、[Embeddings API](https://ai.google.dev/api/embeddings)。
 
 ## 计费用量
 

@@ -161,6 +161,7 @@ import {
   assertJudgeModelAvailable,
   judgeProviderDriver,
   outputResources,
+  JudgeError,
   parseJudgeVerdict,
   parseJudgeVerdictTexts,
   responseText,
@@ -873,7 +874,6 @@ test("Judge resource extraction includes request resources and output artifacts"
       source: {
         kind: "named_object",
         obj_id: "chunk:test",
-        mime_hint: "audio/mpeg",
       },
     }],
   );
@@ -7220,4 +7220,67 @@ test('Gemini physical models in the official T1.5 catalog have explicit USD quot
     assert.ok(quote,`Missing official Gemini quote: ${id}`);
     assert.equal(quote.pricing.currency,'USD');
   }
+});
+
+
+test('Judge receives canonical structured results rather than an empty text summary', async () => {
+  let prompt='';
+  await runJudge({aicc:{} as never,taskManager:{} as never,model:'judge@provider',runId:'structured',caseId:'detect',rubricVersion:'v1',rubric:['Identify visible objects'],testedModel:'tested@provider',testedProviderInstance:'provider',preferDifferentProvider:false,threshold:0.7,testedRequest:{},terminalResponse:{status:'succeeded',detections:[{label:'flower',bbox:{x:0.2,y:0.3,width:0.4,height:0.5}}],provider_io:{private:'opaque-provider-payload'}},timeoutMs:1000,invoke:async(request)=>{
+    const payload=request.payload as {input_json:{messages:Array<{content:Array<{text?:string}>}>}};
+    prompt=payload.input_json.messages[0].content[0].text??'';
+    return {task_id:'judge',status:'succeeded',result:{message:{content:'{"pass":true,"score":1,"reason":"ok"}'}}};
+  }});
+  assert.match(prompt,/"detections"/);assert.match(prompt,/"flower"/);
+  assert.ok(!prompt.includes('opaque-provider-payload'));
+});
+
+
+test('Gemini Mock rejects media mislabeled as document in every content location', async () => {
+  const catalog=await loadProviderProtocolCatalog();
+  const contract=protocolContract(catalog,'google-gemini','gemini.interactions.v1beta');
+  const errors=(input:unknown[])=>validateProviderRequest(contract,{method:'POST',pathname:'/v1beta/interactions',query:new URLSearchParams(),headers:new Headers({'x-goog-api-key':'mock','content-type':'application/json'}),body:{model:'gemini-3.5-flash',input}});
+  for (const media of ['image','audio','video']) {
+    const mime=media==='audio'?'audio/wav':media==='image'?'image/png':'video/mp4';
+    const good={type:media,mime_type:mime,data:'bWVkaWE='};
+    assert.deepEqual(errors([good]),[]);
+    assert.deepEqual(errors([{type:'user_input',content:[good]}]),[]);
+    assert.ok(errors([{...good,type:'document'}]).some(e=>e.includes('cannot carry media MIME')));
+    assert.ok(errors([{type:'user_input',content:[{...good,type:'document'}]}]).some(e=>e.includes('cannot carry media MIME')));
+  }
+  const cases=buildT15Manifest(catalog).filter(c=>c.tags.includes('chat_document'));
+  assert.equal(cases.length,6);
+});
+
+
+test('Invalid Judge verdicts retain the charged task and finance without relaxing JSON validation', async () => {
+  await assert.rejects(runJudge({aicc:{} as never,taskManager:{} as never,model:'judge@provider',runId:'invalid-verdict',caseId:'caption',rubricVersion:'v1',rubric:['Match the image'],testedModel:'tested@provider',testedProviderInstance:'provider',preferDifferentProvider:false,threshold:0.7,testedRequest:{},terminalResponse:{},timeoutMs:1000,invoke:async()=>({task_id:'charged-judge',status:'succeeded',result:{message:{content:'[{"pass":true,"score":1,"reason":"ok"}]'},usage:{input_tokens:10,output_tokens:5,total_tokens:15},cost:{amount:0.001,currency:'USD'}}})}), (error:unknown)=>{
+    assert.ok(error instanceof JudgeError);
+    assert.equal(error.taskId,'charged-judge');
+    assert.match(error.message,/invalid schema/);
+    assert.equal(extractFinance(error.terminalResponse).actualCostUsd,0.001);
+    return true;
+  });
+});
+
+test('Judge deduplicates artifact references and retains their media type', () => {
+  const ref={kind:'named_object',obj_id:'chunk:image'};
+  assert.deepEqual(outputResources({result:{output:{value:{images:[ref]},artifacts:[{mime:'image/png',resource:ref}]}}}),
+    [{type:'image',source:ref}]);
+  assert.deepEqual(outputResources({messages:[{role:'user',content:[{type:'image',source:ref}]}]}),
+    [{type:'image',source:ref}]);
+});
+
+
+test('Judge constructs canonical NamedObject references from artifact metadata', () => {
+  const resources=outputResources({artifacts:[{mime:'image/png',obj_id:'chunk:image',bucket_ref:'bucket:opaque',name:'image',extra:{diagnostic:true}}]});
+  assert.deepEqual(resources,[{type:'image',source:{kind:'named_object',obj_id:'chunk:image'}}]);
+});
+
+test('Judge invocation failures remain Judge failures without inventing a task', async () => {
+  await assert.rejects(runJudge({aicc:{} as never,taskManager:{} as never,model:'judge@provider',runId:'invoke-failed',caseId:'caption',rubricVersion:'v1',rubric:['Match the image'],testedModel:'tested@provider',testedProviderInstance:'provider',preferDifferentProvider:false,threshold:0.7,testedRequest:{},terminalResponse:{},timeoutMs:1000,invoke:async()=>{throw new Error('no permitted model is available');}}), (error:unknown)=>{
+    assert.ok(error instanceof JudgeError);
+    assert.equal(error.taskId,undefined);
+    assert.match(error.message,/no permitted model/);
+    return true;
+  });
 });

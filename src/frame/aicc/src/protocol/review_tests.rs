@@ -623,3 +623,72 @@ async fn fal_preserves_explicit_protocol_costs_even_without_metered_units() {
         }
     }
 }
+
+#[test]
+fn gemini_builtin_quotes_settle_multimodal_and_combined_image_usage() {
+    let catalog: Value = serde_json::from_str(include_str!(
+        "../../driver_metadata/providers/gemini.provider.json"
+    ))
+    .unwrap();
+    let quotes = catalog["model_pricing"].as_array().unwrap();
+    for quote in quotes {
+        let price = &quote["pricing"];
+        if let (Some(input), Some(output)) = (
+            price["input_token"].as_f64(),
+            price["output_token"].as_f64(),
+        ) {
+            let usage = AiUsage {
+                input_tokens: Some(4),
+                output_tokens: Some(3),
+                total_tokens: Some(7),
+                image_input_tokens: Some(3),
+                ..Default::default()
+            };
+            assert!(
+                (cost(price.clone(), &usage) - (input * 4.0 + output * 3.0)).abs() < 1e-12,
+                "{}",
+                quote["id"]
+            );
+        }
+    }
+    for (id, input, output) in [
+        ("gemini-3.1-pro-preview", 4e-6, 18e-6),
+        ("gemini-2.5-pro", 2.5e-6, 15e-6),
+    ] {
+        let price = &quotes.iter().find(|quote| quote["id"] == id).unwrap()["pricing"];
+        let usage = AiUsage {
+            input_tokens: Some(200001),
+            image_input_tokens: Some(200000),
+            output_tokens: Some(1),
+            total_tokens: Some(200002),
+            ..Default::default()
+        };
+        assert!(
+            (cost(price.clone(), &usage) - (200001.0 * input + output)).abs() < 1e-12,
+            "{id}"
+        );
+    }
+    for (id, input, text_output, image_output) in [
+        ("gemini-2.5-flash-image", 0.3e-6, 2.5e-6, 30e-6),
+        ("gemini-3-pro-image", 2e-6, 12e-6, 120e-6),
+        ("gemini-3.1-flash-image", 0.5e-6, 3e-6, 60e-6),
+        ("gemini-3.1-flash-lite-image", 0.25e-6, 1.5e-6, 30e-6),
+        ("gemini-nano-banana-2.1", 1.5e-6, 7.5e-6, 30e-6),
+    ] {
+        let price = &quotes.iter().find(|quote| quote["id"] == id).unwrap()["pricing"];
+        let usage = AiUsage {
+            input_tokens: Some(257),
+            image_input_tokens: Some(256),
+            output_tokens: Some(1292),
+            image_output_tokens: Some(1290),
+            total_tokens: Some(1549),
+            image_units: Some(1),
+            ..Default::default()
+        };
+        let expected = 257.0 * input + 2.0 * text_output + 1290.0 * image_output;
+        assert!(
+            (cost(price.clone(), &usage) - expected).abs() < 1e-12,
+            "{id}"
+        );
+    }
+}

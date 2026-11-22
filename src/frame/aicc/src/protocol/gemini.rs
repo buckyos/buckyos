@@ -736,11 +736,7 @@ fn encode_interaction_content(
             AiContent::Text { text } => Ok(json!({"type":"text", "text":text})),
             AiContent::Image { source } => encode_resource(source, "image", call.context),
             AiContent::Document { source, title } => {
-                let mut value = encode_resource(source, "document", call.context)?;
-                if let (Some(title), Some(object)) = (title, value.as_object_mut()) {
-                    object.insert("display_name".to_string(), Value::String(title.clone()));
-                }
-                Ok(value)
+                encode_document_resource(source, title.as_deref(), call.context)
             }
             AiContent::ToolUse { .. } | AiContent::Thinking { .. } => {
                 Err(ProtocolError::invalid_request(
@@ -810,11 +806,7 @@ fn encode_assistant_steps(
                 model_content.push(encode_resource(source, "image", call.context)?);
             }
             AiContent::Document { source, title } => {
-                let mut value = encode_resource(source, "document", call.context)?;
-                if let (Some(title), Some(object)) = (title, value.as_object_mut()) {
-                    object.insert("display_name".to_string(), Value::String(title.clone()));
-                }
-                model_content.push(value);
+                model_content.push(encode_document_resource(source, title.as_deref(), call.context)?);
             }
             AiContent::ToolUse {
                 call_id,
@@ -896,11 +888,7 @@ fn encode_tool_result(
             AiToolResultContent::Text { text } => Ok(json!({"type":"text", "text":text})),
             AiToolResultContent::Image { source } => encode_resource(source, "image", call.context),
             AiToolResultContent::Document { source, title } => {
-                let mut value = encode_resource(source, "document", call.context)?;
-                if let (Some(title), Some(object)) = (title, value.as_object_mut()) {
-                    object.insert("display_name".to_string(), Value::String(title.clone()));
-                }
-                Ok(value)
+                encode_document_resource(source, title.as_deref(), call.context)
             }
         })
         .collect()
@@ -957,7 +945,7 @@ fn encode_vision_ocr(
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::Array(vec![
         json!({"type":"text", "text":"Extract all text from this document and return structured OCR JSON."}),
-        encode_resource(&request.document, resource_kind(&request.document, "document"), call.context)?,
+        encode_resource(&request.document, resource_kind(&request.document, "document", call.context), call.context)?,
     ]));
     body.insert(
         "response_format".to_string(),
@@ -1526,6 +1514,21 @@ fn validate_response_format(format: &Map<String, Value>) -> ProtocolResultValue<
     Ok(())
 }
 
+fn encode_document_resource(
+    source: &ResourceRef,
+    title: Option<&str>,
+    context: &CodecContext,
+) -> ProtocolResultValue<Value> {
+    let kind = resource_kind(source, "document", context);
+    let mut value = encode_resource(source, kind, context)?;
+    if kind == "document" {
+        if let Some(title) = title {
+            value["display_name"] = json!(title);
+        }
+    }
+    Ok(value)
+}
+
 fn encode_resource(
     source: &ResourceRef,
     kind: &str,
@@ -1576,12 +1579,12 @@ fn provider_artifact_resource(kind: &str, artifact_id: &str) -> Value {
     Value::Object(resource)
 }
 
-fn resource_kind<'a>(source: &ResourceRef, fallback: &'a str) -> &'a str {
+fn resource_kind<'a>(source: &ResourceRef, fallback: &'a str, context: &CodecContext) -> &'a str {
     let mime = match source {
         ResourceRef::Url { mime_hint, .. } => mime_hint.as_deref(),
         ResourceRef::Base64 { mime, .. } => Some(mime.as_str()),
         ResourceRef::NamedObject { .. } => None,
-    };
+    }.or_else(|| context.materialized_resource(source).ok().map(|resource| resource.mime.as_str()));
     match mime.and_then(|mime| mime.split('/').next()) {
         Some("image") => "image",
         Some("audio") => "audio",
@@ -1831,6 +1834,17 @@ fn apply_embedding_parameters(
     Ok(())
 }
 
+fn embedding_modality_tokens(usage: &Value, modality: &str) -> Option<u64> {
+    usage
+        .get("promptTokenDetails")?
+        .as_array()?
+        .iter()
+        .filter(|entry| entry.get("modality").and_then(Value::as_str) == Some(modality))
+        .try_fold(0u64, |total, entry| {
+            total.checked_add(entry.get("tokenCount")?.as_u64()?)
+        })
+}
+
 fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>> {
     let Some(usage) = value.get("usageMetadata") else {
         return Ok(None);
@@ -1861,9 +1875,9 @@ fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>>
         megapixels: None,
         cost_source: None,
         cost_unknown_reason: None,
-        audio_input_tokens: None,
-        image_input_tokens: None,
-        video_input_tokens: None,
+        audio_input_tokens: embedding_modality_tokens(usage, "AUDIO"),
+        image_input_tokens: embedding_modality_tokens(usage, "IMAGE"),
+        video_input_tokens: embedding_modality_tokens(usage, "VIDEO"),
         audio_output_tokens: None,
         image_output_tokens: None,
         video_output_tokens: None,
@@ -4204,6 +4218,99 @@ mod tests {
     fn interaction_video_duration_uses_official_string_format() {
         let format = video_response_format(Some(7.0), None, None).unwrap();
         assert_eq!(format["duration"], "7s");
+    }
+
+    #[test]
+    fn embedding_usage_preserves_official_modality_token_counts() {
+        let usage = decode_embedding_usage(&json!({"usageMetadata":{
+        "promptTokenCount":14,"promptTokenDetails":[
+            {"modality":"TEXT","tokenCount":2},
+            {"modality":"IMAGE","tokenCount":3},
+            {"modality":"IMAGE","tokenCount":4},
+            {"modality":"AUDIO","tokenCount":2},
+            {"modality":"VIDEO","tokenCount":3}
+        ]}}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(usage.input_tokens, Some(14));
+        assert_eq!(usage.image_input_tokens, Some(7));
+        assert_eq!(usage.audio_input_tokens, Some(2));
+        assert_eq!(usage.video_input_tokens, Some(3));
+        assert_eq!(usage.output_tokens, Some(0));
+        assert!(
+            decode_embedding_usage(&json!({"embedding":{"values":[0.1]}}))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn interaction_documents_select_native_media_types_from_mime() {
+        for (mime, kind) in [
+            ("audio/wav", "audio"),
+            ("video/mp4", "video"),
+            ("image/png", "image"),
+            ("application/pdf", "document"),
+        ] {
+            for form in 0..4 {
+                let mut context = context();
+                let source = match form {
+                    0 => ResourceRef::Base64 {
+                        mime: mime.into(),
+                        data_base64: STANDARD.encode(b"media"),
+                    },
+                    1 => ResourceRef::url(
+                        "https://media.example/asset".to_string(),
+                        Some(mime.into()),
+                    ),
+                    _ => ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap()),
+                };
+                if form >= 2 {
+                    let mut resource =
+                        crate::protocol::MaterializedResource::new(b"media".as_slice(), mime, None)
+                            .unwrap();
+                    if form == 3 {
+                        resource.url = Some("https://media.example/materialized".into());
+                    }
+                    context.resources.insert(
+                        crate::resource::ResourceKey::from_ref(&source).into_string(),
+                        resource,
+                    );
+                }
+                let input = CodecInput {
+                    canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                        "test@google",
+                        vec![AiMessage::text(AiRole::User, "inspect")],
+                    )),
+                    resolved_parameters: BTreeMap::new(),
+                };
+                let call = CodecCall {
+                    api_type: ApiType::Llm,
+                    input: &input,
+                    context: &context,
+                };
+                let content = vec![AiContent::Document {
+                    source: source.clone(),
+                    title: Some("attachment".into()),
+                }];
+                let encoded = encode_interaction_content(&content, &call).unwrap();
+                assert_eq!(
+                    encoded[0]["type"], kind,
+                    "MIME {mime}, resource form {form}"
+                );
+                assert_eq!(encoded[0].get("display_name").is_some(), kind == "document");
+                let tool = encode_tool_result(
+                    &[AiToolResultContent::Document {
+                        source,
+                        title: Some("attachment".into()),
+                    }],
+                    &call,
+                )
+                .unwrap();
+                assert_eq!(tool[0]["type"], kind);
+                assert_eq!(tool[0].get("display_name").is_some(), kind == "document");
+            }
+        }
     }
 
     #[test]

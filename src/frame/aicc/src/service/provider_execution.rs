@@ -1376,6 +1376,8 @@ impl RuntimeProviderExecutionPort {
                 match decoded {
                     crate::protocol::ProtocolExecution::Immediate(output) => {
                         let mut output = output;
+                        fill_input_audio_usage(&call.input.canonical_request, &call.context,
+                            call.pricing.pricing.as_ref(), &mut output);
                         if let Some(usage) = continuation_usage {
                             merge_continuation_usage(output.usage.get_or_insert_with(Default::default), usage)
                                 .map_err(ProviderStartFailure::after_accept)?;
@@ -2027,6 +2029,73 @@ fn observed_protocol_stream(
     }
 }
 
+fn fill_input_audio_usage(
+    request: &AiccCall,
+    context: &CodecContext,
+    pricing: Option<&crate::catalog::Pricing>,
+    output: &mut ProtocolOutput,
+) {
+    if output
+        .usage
+        .as_ref()
+        .is_some_and(|usage| usage.audio_seconds.is_some())
+    {
+        return;
+    }
+    let seconds = match request {
+        AiccCall::AudioSpeechRecognition(request) => context
+            .materialized_resource(&request.audio)
+            .ok()
+            .and_then(|resource| crate::media::probe(&resource.bytes).ok())
+            .filter(|facts| facts.has_audio)
+            .and_then(|facts| facts.duration_seconds),
+        AiccCall::ChatCompletionsCreate(request)
+            if pricing.is_some_and(|price| {
+                price.unit == Some(crate::catalog::PricingUnit::AudioSecond)
+                    || price
+                        .addons
+                        .iter()
+                        .any(|addon| addon.unit == crate::catalog::PricingUnit::AudioSecond)
+            }) && request.messages.iter().all(|message| {
+                message.content.iter().all(|content| {
+                    matches!(
+                        content,
+                        buckyos_api::AiContent::Text { .. }
+                            | buckyos_api::AiContent::Image { .. }
+                            | buckyos_api::AiContent::Thinking { .. }
+                    )
+                })
+            }) && output
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.audio_input_tokens)
+                .unwrap_or(0)
+                == 0
+                && output
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.audio_output_tokens)
+                    .unwrap_or(0)
+                    == 0
+                && output.artifacts.iter().all(|artifact| {
+                    !artifact
+                        .mime
+                        .as_deref()
+                        .is_some_and(|mime| mime.starts_with("audio/"))
+                }) =>
+        {
+            Some(0.0)
+        }
+        _ => None,
+    };
+    if let Some(seconds) = seconds.filter(|seconds| seconds.is_finite() && *seconds >= 0.0) {
+        output
+            .usage
+            .get_or_insert_with(Default::default)
+            .audio_seconds = Some(seconds);
+    }
+}
+
 fn merge_native_result_usage(
     output: &mut ProtocolOutput,
     status_usage: Option<buckyos_api::AiUsage>,
@@ -2158,6 +2227,88 @@ fn credential_fingerprint(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_asr_duration_preserves_protocol_usage_and_distinguishes_absent_audio() {
+        let bytes = include_bytes!("../../../../../test/aicc_test/fixtures/speech_8khz_stereo.wav");
+        let pricing: crate::catalog::Pricing = serde_json::from_value(json!({"currency":"USD","input_token":0.0000001,"output_token":0.0000003,"addons":[{"unit":"audio_second","amount":0.0001}]})).unwrap();
+        for source in [
+            buckyos_api::ResourceRef::base64(
+                "audio/wav".into(),
+                "ignored-in-favor-of-materialized-resource".into(),
+            ),
+            buckyos_api::ResourceRef::url(
+                "https://example.test/input.wav".into(),
+                Some("audio/wav".into()),
+            ),
+            buckyos_api::ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap()),
+        ] {
+            let mut context = CodecContext {
+                base_url: "https://example.test".into(),
+                state_coordinate: buckyos_api::ProviderStateCoordinate {
+                    provider_profile_id: "test".into(),
+                    adapter_type: "test".into(),
+                    origin_provider: "test".into(),
+                    origin_model: "test".into(),
+                },
+                credential: None,
+                resources: BTreeMap::new(),
+                limits: crate::protocol::CodecLimits {
+                    request_timeout: std::time::Duration::from_secs(10),
+                    max_request_bytes: 1048576,
+                    max_response_bytes: 1048576,
+                },
+            };
+            context.resources.insert(
+                crate::resource::ResourceKey::from_ref(&source).into_string(),
+                crate::protocol::MaterializedResource::new(bytes.as_slice(), "audio/wav", None)
+                    .unwrap(),
+            );
+            let request = AiccCall::AudioSpeechRecognition(
+                buckyos_api::AudioSpeechRecognitionRequest::new("test", source),
+            );
+            let mut output = ProtocolOutput {
+                value: json!({"text":"marker"}),
+                usage: Some(buckyos_api::AiUsage {
+                    input_tokens: Some(2),
+                    output_tokens: Some(3),
+                    ..Default::default()
+                }),
+                artifacts: vec![],
+            };
+            fill_input_audio_usage(&request, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(1.0));
+            let cost = crate::execution::PinnedPricingSnapshot::from_pricing(
+                &pricing,
+                None,
+                std::time::SystemTime::now(),
+            )
+            .unwrap()
+            .unwrap()
+            .completion_cost(output.usage.as_ref().unwrap())
+            .unwrap();
+            assert!((cost.amount - 0.0001011).abs() < 1e-12);
+            output.usage.as_mut().unwrap().audio_seconds = Some(2.5);
+            fill_input_audio_usage(&request, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(2.5));
+            let text = AiccCall::ChatCompletionsCreate(buckyos_api::LlmChatInvokeRequest::new(
+                "test",
+                vec![buckyos_api::AiMessage::text(
+                    buckyos_api::AiRole::User,
+                    "marker",
+                )],
+            ));
+            output.usage.as_mut().unwrap().audio_seconds = None;
+            fill_input_audio_usage(&text, &context, None, &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, None);
+            fill_input_audio_usage(&text, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(0.0));
+            output.usage.as_mut().unwrap().audio_seconds = None;
+            output.usage.as_mut().unwrap().audio_output_tokens = Some(3);
+            fill_input_audio_usage(&text, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, None);
+        }
+    }
 
     #[test]
     fn continuation_media_counters_are_added_exactly_once() {

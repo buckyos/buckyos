@@ -1778,6 +1778,18 @@ export function createT15MockHandler(
         contract.id === "gemini.interactions.v1beta" &&
         Array.isArray(rawFixture.steps)
       ) {
+        if (selection.api_type === "audio.asr") {
+          rawFixture.usage = {...rawFixture.usage as Record<string,unknown>,
+            input_tokens_by_modality:[{modality:"text",tokens:1},{modality:"audio",tokens:3}]};
+        }
+        if (selection.api_type?.startsWith("image.")) {
+          rawFixture.usage = {...rawFixture.usage as Record<string,unknown>,
+            output_tokens_by_modality:[{modality:"image",tokens:3}]};
+        }
+        if (selection.api_type?.startsWith("vision.")) {
+          rawFixture.usage = {...rawFixture.usage as Record<string,unknown>,
+            input_tokens_by_modality:[{modality:"text",tokens:1},{modality:"image",tokens:3}]};
+        }
         const structuredText: Record<string, string> = {
           "vision.ocr": JSON.stringify({
             text: "BUCKYOS-AICC-4827",

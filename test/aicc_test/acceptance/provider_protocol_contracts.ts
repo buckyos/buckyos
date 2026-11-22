@@ -2103,6 +2103,15 @@ function validateClaudeMessages(
   }
 }
 
+function validateGeminiMediaContent(value: unknown, path: string, errors: string[]): void {
+  const part=recordValue(value);
+  if (!part) return;
+  const type=String(part.type??'');
+  const mime=typeof part.mime_type==='string' ? part.mime_type.toLowerCase().split(';')[0] : '';
+  if (type==='document' && /^(image|audio|video)\//.test(mime)) errors.push(`${path}: document content cannot carry media MIME ${mime}`);
+  if (['image','audio','video'].includes(type) && mime && !mime.startsWith(`${type}/`)) errors.push(`${path}: ${type} content has incompatible MIME ${mime}`);
+}
+
 function validateGeminiInteractionInput(
   input: unknown[],
   errors: string[],
@@ -2112,6 +2121,9 @@ function validateGeminiInteractionInput(
     const step = recordValue(value);
     if (!step || typeof step.type !== "string") return;
     const path = `body field input[${index}]`;
+    validateGeminiMediaContent(step,path,errors);
+    if (Array.isArray(step.content)) step.content.forEach((part,partIndex) => validateGeminiMediaContent(part,`${path}.content[${partIndex}]`,errors));
+    if (step.type==='function_result' && Array.isArray(step.result)) step.result.forEach((part,partIndex) => validateGeminiMediaContent(part,`${path}.result[${partIndex}]`,errors));
     if (step.type === "user_input" || step.type === "model_output") {
       if (
         !Array.isArray(step.content) || step.content.length === 0 ||
@@ -3206,6 +3218,14 @@ export function buildT15Manifest(
         tags: [...success.tags, "task_result_artifact"],
       });
     }
+  }
+  const geminiChat=cases.find((item) => item.provider_driver==='google-gemini' && item.protocol_contract_id==='gemini.interactions.v1beta' && item.api_type==='llm' && item.mock_scenario==='success');
+  if (geminiChat) for (const media of ['image','audio','video']) for (const form of ['base64','url']) {
+    cases.push({...geminiChat,
+      case_id:`t1.5.google-gemini.gemini.interactions.v1beta.llm.${form}.${media}-input`,
+      tags:[...geminiChat.tags,'chat_document',`chat_document_${media}`,`chat_document_${form}`],
+      expected_wire_fixture:`gemini.interactions.v1beta.request.${media}-input`,
+    });
   }
   return cases;
 }

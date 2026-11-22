@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-22.1",
+  "revision": "2026-11-22.2",
   "checked_at": "2026-11-22",
   "providers": [
     {
@@ -1842,9 +1842,34 @@
             "https://ai.google.dev/gemini-api/docs/function-calling",
             "https://ai.google.dev/gemini-api/docs/image-understanding",
             "https://ai.google.dev/gemini-api/docs/api-errors",
-            "https://ai.google.dev/gemini-api/docs/whats-new-gemini-4-neon"
+            "https://ai.google.dev/gemini-api/docs/whats-new-gemini-4-neon",
+            "https://ai.google.dev/gemini-api/docs/audio",
+            "https://ai.google.dev/gemini-api/docs/video-understanding",
+            "https://ai.google.dev/gemini-api/docs/pricing"
           ],
-          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call; detection uses a structured boxes schema with normalized box_2d and label, while segmentation additionally requires polygon mask coordinates."
+          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call; detection uses a structured boxes schema with normalized box_2d and label, while segmentation additionally requires polygon mask coordinates. Audio/video input uses the native audio/video content type with matching MIME, rather than document content. Vision success usage includes native input_tokens_by_modality for image/text billing.",
+          "expected_billable_usage": {
+            "vision.ocr": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "image_input_tokens": 3
+            },
+            "vision.caption": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "image_input_tokens": 3
+            },
+            "vision.detect": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "image_input_tokens": 3
+            },
+            "vision.segment": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "image_input_tokens": 3
+            }
+          }
         },
         {
           "id": "gemini.interactions.transcription.v1beta",
@@ -1941,14 +1966,25 @@
             "usage": {
               "total_input_tokens": 4,
               "total_output_tokens": 3,
-              "total_tokens": 7
+              "total_tokens": 7,
+              "input_tokens_by_modality": [
+                {
+                  "modality": "audio",
+                  "tokens": 3
+                }
+              ]
             }
           },
           "official_sources": [
             "https://ai.google.dev/gemini-api/docs/transcribe",
             "https://ai.google.dev/gemini-api/docs/api-errors"
           ],
-          "evidence_summary": "Gemini transcription uses POST /v1beta/interactions with an audio input and generation_config.transcription_config."
+          "evidence_summary": "Gemini transcription uses POST /v1beta/interactions with an audio input and generation_config.transcription_config.",
+          "expected_billable_usage": {
+            "audio.asr": {
+              "audio_input_tokens": 3
+            }
+          }
         },
         {
           "id": "gemini.interactions.image.v1beta",
@@ -2044,7 +2080,13 @@
             "usage": {
               "total_input_tokens": 4,
               "total_output_tokens": 3,
-              "total_tokens": 7
+              "total_tokens": 7,
+              "output_tokens_by_modality": [
+                {
+                  "modality": "image",
+                  "tokens": 3
+                }
+              ]
             }
           },
           "provider_artifact_identity": {
@@ -2072,11 +2114,13 @@
           "expected_billable_usage": {
             "image.txt2img": {
               "image_units": 1,
-              "request_units": 1
+              "request_units": 1,
+              "image_output_tokens": 3
             },
             "image.img2img": {
               "image_units": 1,
-              "request_units": 1
+              "request_units": 1,
+              "image_output_tokens": 3
             },
             "audio.music": {
               "request_units": 1
@@ -2183,14 +2227,25 @@
             "usage": {
               "total_input_tokens": 4,
               "total_output_tokens": 3,
-              "total_tokens": 7
+              "total_tokens": 7,
+              "output_tokens_by_modality": [
+                {
+                  "modality": "audio",
+                  "tokens": 3
+                }
+              ]
             }
           },
           "official_sources": [
             "https://ai.google.dev/gemini-api/docs/speech-generation",
             "https://ai.google.dev/gemini-api/docs/api-errors"
           ],
-          "evidence_summary": "Gemini TTS uses POST /v1beta/interactions with audio response_format and generation_config.speech_config."
+          "evidence_summary": "Gemini TTS uses POST /v1beta/interactions with audio response_format and generation_config.speech_config.",
+          "expected_billable_usage": {
+            "audio.tts": {
+              "audio_output_tokens": 3
+            }
+          }
         },
         {
           "id": "gemini.interactions.music.v1beta",
@@ -2294,13 +2349,33 @@
                 0.2,
                 0.3
               ]
+            },
+            "usageMetadata": {
+              "promptTokenCount": 4,
+              "promptTokenDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 1
+                },
+                {
+                  "modality": "IMAGE",
+                  "tokenCount": 3
+                }
+              ]
             }
           },
           "official_sources": [
             "https://ai.google.dev/api/embeddings",
             "https://ai.google.dev/gemini-api/docs/api-errors"
           ],
-          "evidence_summary": "EmbedContent puts the model in the v1beta path, accepts Content, and returns an embedding values array."
+          "evidence_summary": "EmbedContent puts the model in the v1beta path, accepts Content, and returns an embedding values array. Optional EmbeddingUsageMetadata exposes promptTokenCount and promptTokenDetails (modality/tokenCount); preserve image/audio/video counts for modality pricing.",
+          "expected_billable_usage": {
+            "embedding.multimodal": {
+              "input_tokens": 4,
+              "output_tokens": 0,
+              "image_input_tokens": 3
+            }
+          }
         },
         {
           "id": "gemini.batch-embed-contents.v1beta",
@@ -2452,7 +2527,13 @@
             "usage": {
               "total_input_tokens": 4,
               "total_output_tokens": 3,
-              "total_tokens": 7
+              "total_tokens": 7,
+              "output_tokens_by_modality": [
+                {
+                  "modality": "video",
+                  "tokens": 3
+                }
+              ]
             }
           },
           "official_sources": [
@@ -2472,6 +2553,17 @@
             "video.extend": [
               "gemini-omni-1.2-flash"
             ]
+          },
+          "expected_billable_usage": {
+            "video.generate": {
+              "video_output_tokens": 3
+            },
+            "video.edit": {
+              "video_output_tokens": 3
+            },
+            "video.extend": {
+              "video_output_tokens": 3
+            }
           }
         }
       ]
@@ -11121,13 +11213,18 @@
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
             "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
           ],
-          "evidence_summary": "The Voxtral chat alias accepts base64 input_audio on Chat Completions. OpenRouter lists the dedicated transcription endpoint under a different -stt model ID; SN publishes the chat alias, so canonical ASR uses audio chat and returns the transcript text. Gemini audio Chat Completions accepts the documented optional reasoning object; reasoning presets are forwarded unchanged.",
+          "evidence_summary": "The Voxtral chat alias accepts base64 input_audio on Chat Completions. OpenRouter lists the dedicated transcription endpoint under a different -stt model ID; SN publishes the chat alias, so canonical ASR uses audio chat and returns the transcript text. Gemini audio Chat Completions accepts the documented optional reasoning object; reasoning presets are forwarded unchanged. The fixed input WAV is one second of actual PCM audio; when the response omits duration, retain measured input duration for the published audio-second tariff.",
           "conformance_test_model_ids": {
             "audio.asr": [
               "voxtral-small-24b-2507",
               "gemini-4-argon",
               "gemini-3.8-flash"
             ]
+          },
+          "expected_billable_usage": {
+            "audio.asr": {
+              "audio_seconds": 1
+            }
           }
         },
         {

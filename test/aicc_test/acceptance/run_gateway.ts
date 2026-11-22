@@ -1879,8 +1879,10 @@ async function executeAcceptance(input: {
               if (!verdict.passed) finalStatus = "review";
               diagnostic = [diagnostic, `Judge score ${verdict.score}: ${verdict.reason}`].filter(Boolean).join("; ");
             } catch (error) {
+              if (error instanceof JudgeError && error.taskId) taskManagerTaskIds.add(error.taskId);
               if (judgeReservation && !judgeSettled) {
-                costBudget.settle(judgeReservation);
+                const failedFinance = extractFinance(error instanceof JudgeError ? error.terminalResponse : undefined);
+                costBudget.settle(judgeReservation, failedFinance.actualCostUsd);
                 financialEntries.push({
                   case_id: `${cell.case_id}.judge`,
                   attempt: 1,
@@ -1892,7 +1894,11 @@ async function executeAcceptance(input: {
                   started_at: new Date(judgeStarted).toISOString(),
                   status: "failed",
                   estimated_cost_usd: judgeEstimate,
-                  cost_status: "unknown",
+                  usage: failedFinance.usage,
+                  actual_cost_usd: failedFinance.actualCostUsd,
+                  raw_cost_usd: failedFinance.rawCostUsd,
+                  credit_applied_usd: failedFinance.creditAppliedUsd,
+                  cost_status: failedFinance.actualCostUsd === undefined ? "unknown" : "actual",
                 });
               }
               throw error;

@@ -3,6 +3,7 @@ import { T15_PROVIDER_DISCOVERY_CONTRACTS } from "./t15_mock_provider.ts";
 import {firstReusableResource} from "./payloads.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFinancialReport } from "./finance.ts";
@@ -775,7 +776,9 @@ function resource(mime: string): Record<string, unknown> {
   return {
     kind: "base64",
     mime,
-    data_base64: Buffer.from("t15-fixture").toString("base64"),
+    data_base64: (mime === "audio/wav"
+      ? readFileSync(new URL("../fixtures/speech_8khz_stereo.wav", import.meta.url))
+      : Buffer.from("t15-fixture")).toString("base64"),
   };
 }
 
@@ -807,6 +810,8 @@ export function buildT15TypedParams(
         requestKey.endsWith(".sampling-forwarded");
       const providerSwitch = requestKey.endsWith(".provider-switch");
       const videoInput = requestKey.endsWith(".video-input");
+      const imageInput = requestKey.endsWith(".image-input");
+      const audioInput = requestKey.endsWith(".audio-input");
       const providerState = typedOptions.foreignProviderState;
       return {
         ...common,
@@ -946,18 +951,19 @@ export function buildT15TypedParams(
               content: [{ type: "text", text: "Return the marker now." }],
             },
           ]
-          : videoInput
+          : videoInput || audioInput || imageInput
           ? [{
             role: "user",
             content: [
-              { type: "text", text: "Describe the video." },
+              { type: "text", text: audioInput ? "Describe the audio." : imageInput ? "Describe the image." : "Describe the video." },
               {
                 type: "document",
-                source: {
+                source: typedOptions.sourceResource ?? {
                   kind: "url",
                   url: "https://example.test/media?id=4827",
-                  mime_hint: "video/mp4",
+                  mime_hint: audioInput ? "audio/wav" : imageInput ? "image/png" : "video/mp4",
                 },
+                ...(typedOptions.sourceResource ? {title:audioInput ? "audio.wav" : imageInput ? "image.png" : "video.mp4"} : {}),
               },
             ],
           }]
@@ -1543,6 +1549,15 @@ async function executeCase(
       }
       await selectMock(controlUrl, testCase, `${runId}:replay`);
     }
+    let sourceResource: Record<string,unknown> | undefined;
+    if (testCase.tags.includes('chat_document')) {
+      const audio=testCase.tags.includes('chat_document_audio');
+      const image=testCase.tags.includes('chat_document_image');
+      const mime=audio ? 'audio/wav' : image ? 'image/png' : 'video/mp4';
+      sourceResource=testCase.tags.includes('chat_document_url')
+        ? {kind:'url',url:`${controlUrl}/artifacts/input.${audio ? 'wav' : image ? 'png' : 'mp4'}`,mime_hint:mime}
+        : resource(mime);
+    }
     const result = await session.aicc.call(
       testCase.method,
       {
@@ -1552,7 +1567,7 @@ async function executeCase(
           runId,
           testCase.execution_mode,
           testCase.case_id,
-          { historyMessage },
+          { historyMessage, sourceResource },
         ),
         ...(contract.canonical_request_overrides ?? {}),
         ...(testCase.tags.includes("image_count_rejected") ? {n:4} : {}),

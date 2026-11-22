@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 19,
+  "revision_seq": 20,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -2371,7 +2371,8 @@
     "semantics": "total_request_cost",
     "model_ids": [
       "kimi-k3",
-      "kimi-k3.1-pro"
+      "kimi-k3.1-pro",
+      "voxtral-small-24b-2507"
     ]
   },
   "model_pricing": [
