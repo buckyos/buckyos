@@ -285,6 +285,8 @@ pub enum UsageQueryOutputMode {
     #[default]
     Summary,
     Events,
+    Page,
+    Groups,
     SummaryAndEvents,
 }
 
@@ -297,6 +299,10 @@ pub struct QueryUsageRequest {
     pub filters: UsageQueryFilters,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_by: Vec<UsageQueryGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_offset: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_bucket: Option<UsageQueryBucket>,
     #[serde(default)]
@@ -320,6 +326,8 @@ impl QueryUsageRequest {
             time_range,
             filters: UsageQueryFilters::default(),
             group_by: Vec::new(),
+            group_limit: None,
+            group_offset: None,
             time_bucket: None,
             output_mode: UsageQueryOutputMode::default(),
             limit: None,

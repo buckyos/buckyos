@@ -129,8 +129,11 @@ Array filter fields use exact multi-value matching. Empty arrays mean no filter 
   - no bucket
 - optional output mode
   - `summary`: aggregated rows only
-  - `events`: raw usage events
+  - `events`: raw usage events with full aggregates
+  - `page`: raw event cursor page and `total.total_requests` only; other aggregate fields are empty placeholders
+  - `groups`: grouped aggregates only; `total` is an empty placeholder and no buckets are computed
   - `summary_and_events`: both, for debugging
+- optional `group_limit` (1–1000) and `group_offset` page complete groups by total tokens descending, request count descending and group keys ascending; currencies and dimensions within a selected group are never truncated
 - pagination for raw events
   - `limit`
   - `cursor`

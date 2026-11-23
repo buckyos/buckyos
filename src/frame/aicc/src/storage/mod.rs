@@ -1159,33 +1159,66 @@ impl AiccStorage {
         now_ms: i64,
     ) -> StorageResult<QueryUsageResponse> {
         let (start, end) = time_range(&req.time_range, now_ms)?;
-        let total = self
-            .usage_aggregates(start, end, &req.filters, &[], None)
-            .await?
-            .into_iter()
-            .next()
-            .map(|row| row.aggregate)
-            .unwrap_or_default();
-        let grouped = if req.group_by.is_empty() {
-            Vec::new()
+        let page_only = req.output_mode == UsageQueryOutputMode::Page;
+        let groups_only = req.output_mode == UsageQueryOutputMode::Groups;
+        let total = if groups_only {
+            UsageAggregate::default()
+        } else if page_only {
+            let mut query = usage_query(
+                "SELECT COUNT(*) AS count FROM aicc_usage_event WHERE created_at_ms>=".into(),
+                start,
+                end,
+                &req.filters,
+                None,
+            );
+            let count: i64 = query
+                .build()
+                .fetch_one(&self.pool)
+                .await?
+                .try_get("count")?;
+            UsageAggregate {
+                total_requests: count as u64,
+                finance_complete: count == 0,
+                ..Default::default()
+            }
         } else {
-            self.usage_aggregates(start, end, &req.filters, &req.group_by, None)
+            self.usage_aggregates(start, end, &req.filters, &[], None, None, None)
                 .await?
                 .into_iter()
-                .map(|row| UsageGroupedRow {
-                    group: row.group,
-                    aggregate: row.aggregate,
-                })
-                .collect()
+                .next()
+                .map(|row| row.aggregate)
+                .unwrap_or_default()
+        };
+        let grouped = if page_only || req.group_by.is_empty() {
+            Vec::new()
+        } else {
+            self.usage_aggregates(
+                start,
+                end,
+                &req.filters,
+                &req.group_by,
+                None,
+                req.group_limit,
+                req.group_offset,
+            )
+            .await?
+            .into_iter()
+            .map(|row| UsageGroupedRow {
+                group: row.group,
+                aggregate: row.aggregate,
+            })
+            .collect()
         };
         let buckets = match req.time_bucket {
-            Some(bucket) => self
+            Some(bucket) if !page_only && !groups_only => self
                 .usage_aggregates(
                     start,
                     end,
                     &req.filters,
                     &req.group_by,
                     Some(bucket.span_ms()),
+                    None,
+                    None,
                 )
                 .await?
                 .into_iter()
@@ -1195,13 +1228,15 @@ impl AiccStorage {
                     aggregate: row.aggregate,
                 })
                 .collect(),
-            None => Vec::new(),
+            _ => Vec::new(),
         };
         let mut raw = Vec::new();
         let mut next_cursor = None;
         if matches!(
             req.output_mode,
-            UsageQueryOutputMode::Events | UsageQueryOutputMode::SummaryAndEvents
+            UsageQueryOutputMode::Events
+                | UsageQueryOutputMode::Page
+                | UsageQueryOutputMode::SummaryAndEvents
         ) {
             let cursor = req.cursor.as_deref().map(decode_cursor).transpose()?;
             let page_limit = limit(req.limit);
@@ -1246,7 +1281,30 @@ impl AiccStorage {
         filters: &UsageQueryFilters,
         groups: &[UsageQueryGroup],
         bucket_span_ms: Option<i64>,
+        group_limit: Option<u32>,
+        group_offset: Option<u32>,
     ) -> StorageResult<Vec<SqlUsageAggregateRow>> {
+        let selected_groups = if let Some(cap) = group_limit.filter(|_| !groups.is_empty()) {
+            let columns = groups
+                .iter()
+                .map(|group| group.as_key())
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut query = usage_query(
+                format!("SELECT {columns} FROM aicc_usage_event WHERE created_at_ms>="),
+                start,
+                end,
+                filters,
+                None,
+            );
+            query.push(format!(" GROUP BY {columns} ORDER BY SUM(COALESCE(total_tokens,COALESCE(input_tokens,0)+COALESCE(output_tokens,0))) DESC,COUNT(*) DESC,{columns} LIMIT ")).push_bind(limit(Some(cap)) as i64).push(" OFFSET ").push_bind(group_offset.unwrap_or_default() as i64);
+            Some(query.build().fetch_all(&self.pool).await?)
+        } else {
+            None
+        };
+        if selected_groups.as_ref().is_some_and(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
         let mut select = String::from("SELECT ");
         if let Some(span) = bucket_span_ms {
             select.push_str(&format!(
@@ -1282,6 +1340,32 @@ impl AiccStorage {
         }
         select.push_str(" FROM aicc_usage_event WHERE created_at_ms>=");
         let mut query = usage_query(select, start, end, filters, None);
+        if let Some(selected) = selected_groups {
+            query.push(" AND (");
+            for (index, row) in selected.iter().enumerate() {
+                if index > 0 {
+                    query.push(" OR ");
+                }
+                query.push("(");
+                for (index, group) in groups.iter().enumerate() {
+                    if index > 0 {
+                        query.push(" AND ");
+                    }
+                    let column = group.as_key();
+                    query.push(column);
+                    match row.try_get::<Option<String>, _>(column)? {
+                        Some(value) => {
+                            query.push("=").push_bind(value);
+                        }
+                        None => {
+                            query.push(" IS NULL");
+                        }
+                    }
+                }
+                query.push(")");
+            }
+            query.push(")");
+        }
         query.push(" GROUP BY ");
         if let Some(span) = bucket_span_ms {
             query.push(format!("(created_at_ms / {span}) * {span},"));
@@ -3296,6 +3380,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_page_skips_dimensions_and_group_pages_preserve_currencies() {
+        let db = db().await;
+        for (id, provider, currency, tokens) in [
+            ("a", "top", "USD", 20),
+            ("b", "top", "CNY", 10),
+            ("c", "second", "USD", 15),
+        ] {
+            let mut event =
+                usage_event(id, Some(json!({"currency":currency,"amount":0.2})), Some(1));
+            event.provider_instance_name = provider.into();
+            event.total_tokens = Some(tokens);
+            event.usage_json.image_units = Some(1);
+            db.write_usage(&event).await.unwrap();
+        }
+        let mut req = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+            start_time_ms: 1,
+            end_time_ms: 20_000,
+        });
+        req.group_by = vec![UsageQueryGroup::ProviderInstanceName];
+        req.output_mode = UsageQueryOutputMode::Page;
+        req.limit = Some(1);
+        let page = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.total.total_requests, 3);
+        assert!(page.total.dimensions.is_empty());
+        assert!(page.grouped.is_empty());
+        req.cursor = page.next_cursor;
+        let next = db.query_usage(&req, 20_000).await.unwrap();
+        assert_ne!(page.events[0].event_id, next.events[0].event_id);
+        req.output_mode = UsageQueryOutputMode::Summary;
+        req.group_limit = Some(1);
+        let first = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(first.total.total_requests, 3);
+        assert_eq!(first.grouped.len(), 1);
+        assert_eq!(first.grouped[0].group["provider_instance_name"], "top");
+        assert_eq!(first.grouped[0].aggregate.finance_totals.len(), 2);
+        assert_eq!(
+            first.grouped[0].aggregate.dimensions["image_units"].amount,
+            2.0
+        );
+        req.output_mode = UsageQueryOutputMode::Groups;
+        let groups = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(groups.total.total_requests, 0);
+        assert_eq!(groups.grouped[0].aggregate, first.grouped[0].aggregate);
+        req.output_mode = UsageQueryOutputMode::Summary;
+        req.group_offset = Some(1);
+        let second = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(second.total, first.total);
+        assert_eq!(second.grouped.len(), 1);
+        assert_eq!(second.grouped[0].group["provider_instance_name"], "second");
+        req.group_offset = Some(2);
+        assert!(db
+            .query_usage(&req, 20_000)
+            .await
+            .unwrap()
+            .grouped
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn usage_dimensions_aggregate_all_filtered_pages_without_filling_missing_values() {
         let db = db().await;
         for (id, currency, amount, units) in [
@@ -3326,6 +3470,8 @@ mod tests {
                 provider_instance_names: vec!["openai-primary".into()],
                 ..Default::default()
             },
+            group_limit: None,
+            group_offset: None,
             group_by: vec![UsageQueryGroup::ProviderInstanceName],
             output_mode: UsageQueryOutputMode::SummaryAndEvents,
             limit: Some(1),
@@ -3386,6 +3532,8 @@ mod tests {
                 end_time_ms: 20_000,
             },
             filters: UsageQueryFilters::default(),
+            group_limit: None,
+            group_offset: None,
             group_by: vec![
                 UsageQueryGroup::ProviderInstanceName,
                 UsageQueryGroup::Method,
@@ -3611,6 +3759,8 @@ mod tests {
                 provider_instance_names: vec!["openai-primary".into()],
                 ..UsageQueryFilters::default()
             },
+            group_limit: None,
+            group_offset: None,
             group_by: vec![],
             time_bucket: None,
             output_mode: UsageQueryOutputMode::Events,
@@ -3663,6 +3813,8 @@ mod tests {
                             end_time_ms: 20_000,
                         },
                         filters,
+                        group_limit: None,
+                        group_offset: None,
                         group_by: vec![],
                         time_bucket: None,
                         output_mode: UsageQueryOutputMode::Events,

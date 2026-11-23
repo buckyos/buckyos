@@ -123,3 +123,26 @@ Deno.test('mock usage scopes separate personal, system and per-user totals and e
     else Reflect.deleteProperty(globalThis, 'location')
   }
 })
+
+Deno.test('usage pages omit aggregates while independent breakdowns keep scope and bounded groups', async () => {
+  const sdk = buckyos as unknown as { getServiceRpcClient: (service: string) => unknown }
+  const original = sdk.getServiceRpcClient
+  const sent: Record<string, unknown>[] = []
+  sdk.getServiceRpcClient = () => ({ call: (_method: string, params: Record<string, unknown>) => {
+    sent.push(params)
+    return Promise.resolve({ total: { total_requests: 30 }, events: [], grouped: [], next_cursor: 'next' })
+  } })
+  try {
+    const manager = createAICCMgr({ useMock: false })
+    const query = { scope: { zoneWide: true, userId: 'owner' }, timeRange: { startTimeMs: 1, endTimeMs: 5000 }, filters: { providerModels: ['model'] }, limit: 10 }
+    await manager.queryUsageEvents({ ...query, pageOnly: true, cursor: 'page-two' })
+    await manager.queryUsageEvents({ ...query, summaryOnly: true, groupBy: 'provider_model', groupLimit: 20, groupOffset: 20 })
+    assert(sent[0].output_mode === 'page', 'pages use the aggregate-free backend path')
+    assert(JSON.stringify(sent[0].group_by) === '[]', 'paging does not request grouped summaries')
+    assert(sent[0].cursor === 'page-two' && sent[0].limit === 10, 'the server receives page cursor and limit')
+    assert(sent[1].output_mode === 'groups' && JSON.stringify(sent[1].group_by) === '["provider_model"]', 'breakdowns group one dimension at a time')
+    assert(sent[1].group_limit === 20 && sent[1].group_offset === 20, 'breakdown expansion is bounded and paginated')
+    assert(JSON.stringify(sent[0].filters) === JSON.stringify(sent[1].filters), 'pages and summaries share exact filters')
+    assert(sent.every((params) => params.zone_wide === true), 'both requests preserve the permission boundary')
+  } finally { sdk.getServiceRpcClient = original }
+})

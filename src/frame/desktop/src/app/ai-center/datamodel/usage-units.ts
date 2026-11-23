@@ -79,10 +79,11 @@ export function aggregateUsageEvents(events: UsageEvent[]): UsageTotals {
   }))
 }
 
-export function groupUsageEvents(events: UsageEvent[]): UsageBreakdown[] {
+export function groupUsageEvents(events: UsageEvent[], dimension?: string): UsageBreakdown[] {
   const grouped = new Map<string, UsageEvent[]>()
   for (const event of events) {
-    const key = JSON.stringify({ provider_instance_name: event.provider_instance_name, provider_model: event.exact_model, caller_app_id: event.app_id ?? 'system', capability: event.api_type })
+    const group: Record<string, string> = { provider_instance_name: event.provider_instance_name, provider_model: event.exact_model, caller_app_id: event.app_id ?? 'system', capability: event.api_type }
+    const key = JSON.stringify(dimension ? { [dimension]: group[dimension] } : group)
     grouped.set(key, [...(grouped.get(key) ?? []), event])
   }
   return Array.from(grouped, ([key, events]) => ({ group: JSON.parse(key), aggregate: aggregateUsageEvents(events) }))

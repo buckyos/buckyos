@@ -245,7 +245,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
   }, [isAdmin])
 
   useEffect(() => {
-    if (isAdmin === null) return
+    if (isAdmin === null || mode === 'usage') return
     let live = true
     void store.queryUsageOverview(scope).then((overview) => {
       if (!live) return
@@ -256,9 +256,10 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
       if (live) setError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.'))
     })
     return () => { live = false }
-  }, [isAdmin, retry, scope, scopeKey, store, t, version])
+  }, [isAdmin, mode, retry, scope, scopeKey, store, t, version])
 
-  const ready = isAdmin !== null && result?.key === scopeKey
+  const emptyOverview = useMemo<UsageOverview>(() => ({ summary: store.getUsageSummary(), trend: [], periods: { today: aggregateUsageEvents([]), thisMonth: aggregateUsageEvents([]), trailingDays: aggregateUsageEvents([]) }, breakdowns: [], users: [] }), [store])
+  const ready = isAdmin !== null && (mode === 'usage' || result?.key === scopeKey)
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -292,7 +293,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
             key={scopeKey}
             mode={mode}
             scope={scope}
-            overview={result.overview}
+            overview={mode === 'usage' ? emptyOverview : result!.overview}
             onBillingRefresh={refreshBillingOverview}
             onSelectUser={isAdmin && scopeKey === 'system' ? (user) => setSelection(`user:${user}`) : undefined}
             onSetQuota={scopeKey === 'mine' ? onSetQuota : undefined}
@@ -329,6 +330,12 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [pageCursors, setPageCursors] = useState<Record<number, string | undefined>>({ 1: undefined })
   const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
+  const [consumptionPage, setConsumptionPage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
+  const [consumptionLoading, setConsumptionLoading] = useState(false)
+  const [consumptionError, setConsumptionError] = useState<string | null>(null)
+  const [groupHasMore, setGroupHasMore] = useState<Record<string, boolean>>({})
+  const [groupLoading, setGroupLoading] = useState<string | null>(null)
+  const consumptionGeneration = useRef(0)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [usageRetryKey, setUsageRetryKey] = useState(0)
@@ -386,9 +393,9 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
     }
     return names
   }, [providers])
-  const providerOptions = useMemo(() => uniqueSorted(Object.keys(summary.by_provider)), [summary.by_provider])
-  const modelOptions = useMemo(() => uniqueSorted(Object.keys(summary.by_model)), [summary.by_model])
-  const appAgentOptions = useMemo(() => uniqueSorted(Object.keys(summary.by_app)), [summary.by_app])
+  const providerOptions = useMemo(() => uniqueSorted([...Object.keys(summary.by_provider), ...consumptionPage.grouped.flatMap((row) => row.group.provider_instance_name ? [row.group.provider_instance_name] : []), ...usagePage.events.map((event) => event.provider_instance_name)]), [summary.by_provider, consumptionPage.grouped, usagePage.events])
+  const modelOptions = useMemo(() => uniqueSorted([...Object.keys(summary.by_model), ...consumptionPage.grouped.flatMap((row) => row.group.provider_model ? [row.group.provider_model] : []), ...usagePage.events.map((event) => event.exact_model)]), [summary.by_model, consumptionPage.grouped, usagePage.events])
+  const appAgentOptions = useMemo(() => uniqueSorted([...Object.keys(summary.by_app), ...consumptionPage.grouped.flatMap((row) => row.group.caller_app_id ? [row.group.caller_app_id] : []), ...usagePage.events.map((event) => event.app_id ?? 'system')]), [summary.by_app, consumptionPage.grouped, usagePage.events])
   const usageQueryRange = useMemo(
     () => timeRangeToQuery(timeRange, customStartDate, customEndDate, nowMs),
     [customEndDate, customStartDate, nowMs, timeRange],
@@ -435,6 +442,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           filters: usageQueryFilters,
           cursor: currentCursor,
           limit: pageLimit,
+          pageOnly: true,
         })
         if (cancelled) return
         setUsagePage((current) => {
@@ -469,6 +477,44 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
       cancelled = true
     }
   }, [currentCursor, detailPage, isMobile, isUsagePage, pageLimit, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
+
+  useEffect(() => {
+    if (!isUsagePage) return
+    let cancelled = false
+    const generation = ++consumptionGeneration.current
+    setGroupLoading(null)
+    setConsumptionLoading(true)
+    setConsumptionError(null)
+    void Promise.all([undefined, 'provider_instance_name', 'provider_model', 'caller_app_id', 'capability'].map((groupBy) => store.queryUsageEvents({
+      scope, timeRange: usageQueryRange, filters: usageQueryFilters, limit: 1,
+      summaryOnly: true, groupBy, groupLimit: 20,
+    }))).then((pages) => {
+      if (!cancelled) {
+        setConsumptionPage({ ...pages[0], grouped: pages.flatMap((page) => page.grouped) })
+        setGroupHasMore(Object.fromEntries(pages.slice(1).map((page, index) => [['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'][index], page.grouped.length === 20])))
+      }
+    }).catch(() => {
+      if (!cancelled) setConsumptionError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.'))
+    }).finally(() => { if (!cancelled) setConsumptionLoading(false) })
+    return () => { cancelled = true; if (consumptionGeneration.current === generation) consumptionGeneration.current++ }
+  }, [isUsagePage, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
+
+  const loadMoreConsumption = async (groupBy: string) => {
+    if (groupLoading) return
+    const generation = consumptionGeneration.current
+    setGroupLoading(groupBy)
+    setConsumptionError(null)
+    try {
+      const page = await store.queryUsageEvents({ scope, timeRange: usageQueryRange, filters: usageQueryFilters, limit: 1, summaryOnly: true, groupBy, groupLimit: 20, groupOffset: consumptionPage.grouped.filter((row) => groupBy in row.group).length })
+      if (generation !== consumptionGeneration.current) return
+      setConsumptionPage((current) => ({ ...current, grouped: [...current.grouped, ...page.grouped] }))
+      setGroupHasMore((current) => ({ ...current, [groupBy]: page.grouped.length === 20 }))
+    } catch {
+      if (generation === consumptionGeneration.current) setConsumptionError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.'))
+    } finally {
+      if (generation === consumptionGeneration.current) setGroupLoading(null)
+    }
+  }
 
   const resetUsagePaging = () => {
     setDetailPage(1)
@@ -756,7 +802,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
         </div>
       </section>}
 
-      {isUsagePage && usageTab === 'usage' && <UsageConsumption page={usagePage} loading={usageLoading} error={usageError} />}
+      {isUsagePage && usageTab === 'usage' && <UsageConsumption page={consumptionPage} loading={consumptionLoading} error={consumptionError} groupHasMore={groupHasMore} groupLoading={groupLoading} onLoadMore={loadMoreConsumption} />}
 
       {!isUsagePage && onSelectUser && <UserUsageTable users={overview.users} onSelect={onSelectUser} />}
 

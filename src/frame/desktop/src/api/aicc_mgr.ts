@@ -517,6 +517,11 @@ export interface UsageOverview {
 }
 
 export interface UsageEventsQuery {
+  pageOnly?: boolean
+  summaryOnly?: boolean
+  groupBy?: string
+  groupLimit?: number
+  groupOffset?: number
   timeRange: UsageTimeRange
   scope?: UsageScope
   filters?: {
@@ -913,9 +918,9 @@ class MockAiccProvider implements AiccDataProvider {
     const page = filtered.slice(offset, offset + params.limit)
     const nextOffset = offset + page.length
     return {
-      events: page,
+      events: params.summaryOnly ? [] : page,
       total: aggregateUsageEvents(filtered),
-      grouped: groupUsageEvents(filtered),
+      grouped: params.summaryOnly && !params.groupBy ? [] : params.summaryOnly ? groupUsageEvents(filtered, params.groupBy).sort((a,b) => b.aggregate.total_tokens - a.aggregate.total_tokens || b.aggregate.total_requests - a.aggregate.total_requests).slice(params.groupOffset ?? 0, (params.groupOffset ?? 0) + (params.groupLimit ?? Number.MAX_SAFE_INTEGER)) : groupUsageEvents(filtered),
       totalRequests: filtered.length,
       nextCursor: nextOffset < filtered.length ? nextOffset.toString() : undefined,
     }
@@ -985,57 +990,14 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   private settingsRevision = 0
 
   async fetchSnapshot(): Promise<StoreSnapshot> {
-    const dashboardRange = localTrailingDaysRange(30)
-    const todayRange = localTodayRange()
-    const monthRange = localCurrentMonthRange()
-    const [directory, providerList, routing, usageByModel, usageByCapability, usageByApp, usageTrend, usageToday, usageThisMonth, traceQuery] = await Promise.all([
+    const [directory, providerList, routing, usageByApp, traceQuery] = await Promise.all([
       this.call<RawModelDirectory>('models.list', {}),
       this.call<RawProviderListResponse>('provider.list', {}),
       this.call<Record<string, unknown>>('routing.get', {}),
-      this.queryUsage({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        group_by: ['provider_model'],
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        group_by: ['capability'],
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        group_by: ['caller_app_id'],
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        time_bucket: 'day',
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(todayRange),
-        filters: {},
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(monthRange),
-        filters: {},
-        output_mode: 'summary',
-      }),
+      this.queryUsageOrEmpty({ time_range: toRawTimeRange(localTrailingDaysRange(30)), filters: {}, group_by: ['caller_app_id'], output_mode: 'summary' }),
       this.queryRouteTracesOrEmpty({ limit: 20 }),
     ])
-    this.usageSummary = toUsageSummary({
-      byModel: usageByModel,
-      byCapability: usageByCapability,
-      byApp: usageByApp,
-      today: usageToday,
-      thisMonth: usageThisMonth,
-    })
-    this.usageTrend = toUsageTrend(usageTrend)
+    this.usageSummary = toUsageSummary({ byModel: usageByApp, byCapability: {}, byApp: usageByApp, today: {}, thisMonth: {} })
     this.settingsRevision = asNumber(providerList.settings_revision, 0)
     directory.routing_settings = asRecord(routing.routing) as RawRoutingSettings
     return toStoreSnapshot(directory, providerList, [], traceQuery.traces)
@@ -1219,8 +1181,10 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         ...toRawUsageFilters(params.filters),
         ...(params.scope?.userId ? { user_ids: [params.scope.userId] } : {}),
       },
-      output_mode: 'summary_and_events',
-      group_by: ['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'],
+      output_mode: params.summaryOnly ? (params.groupBy ? 'groups' : 'summary') : params.pageOnly ? 'page' : 'summary_and_events',
+      group_by: params.summaryOnly ? (params.groupBy ? [params.groupBy] : []) : params.pageOnly ? [] : ['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'],
+      group_limit: params.groupLimit,
+      group_offset: params.groupOffset,
       limit: params.limit,
       cursor: params.cursor,
     })

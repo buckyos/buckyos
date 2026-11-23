@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import ClickAwayListener from '@mui/material/ClickAwayListener'
 import { useI18n } from '../../../../i18n/provider'
 import type { Money, UsageDimension, UsageTotals } from '../../mock/types'
 import type { UsageEventsPage } from '../../../../api/aicc_mgr'
@@ -7,8 +8,9 @@ import { mergeUsageTotals, usageUnits } from '../../datamodel/usage-units'
 export function UsageUnits({ tokens, dimensions, count, alignStart = false }: { tokens: number; dimensions: Record<string, UsageDimension>; count: number; alignStart?: boolean }) {
   const { locale } = useI18n()
   const en = locale === 'en'
+  const detailsRef = useRef<HTMLDetailsElement>(null)
   const format = (value: number) => value.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })
-  return <details className="relative" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
+  return <ClickAwayListener mouseEvent="onPointerDown" touchEvent={false} onClickAway={() => { if (detailsRef.current) detailsRef.current.open = false }}><details ref={detailsRef} className="relative" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
     <summary className="cursor-pointer whitespace-nowrap text-xs underline decoration-dotted underline-offset-4" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Usage details' : '用量明细'}>{format(tokens)} tokens</summary>
     <div className={`absolute ${alignStart ? 'left-0 md:left-auto md:right-0' : 'right-0'} z-30 mt-2 w-72 max-w-[85vw] rounded-lg p-3 shadow-xl text-left`} style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}>
       <p className="mb-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{en ? 'Subsets overlap; do not add them to the total.' : '缓存、多模态、推理为细分子项，不重复累加至总量。'}</p>
@@ -20,21 +22,22 @@ export function UsageUnits({ tokens, dimensions, count, alignStart = false }: { 
         {Object.keys(dimensions).length === 0 && <div>{en ? 'Usage was not reported.' : '未上报用量。'}</div>}
       </dl>
     </div>
-  </details>
+  </details></ClickAwayListener>
 }
 
 export function UsageMoney({ totals, empty = '—' }: { totals: Money[]; empty?: string }) {
   const { locale } = useI18n()
   const en = locale === 'en'
+  const detailsRef = useRef<HTMLDetailsElement>(null)
   const ordered = [...totals].sort((a, b) => Number(b.currency === 'USD') - Number(a.currency === 'USD') || a.currency.localeCompare(b.currency))
   const format = (money: Money) => `${money.currency} ${money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}`
   if (ordered.length < 2) return <span className="whitespace-nowrap tabular-nums">{ordered.length ? format(ordered[0]) : empty}</span>
-  return <details className="relative" data-testid="usage-currencies" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
+  return <ClickAwayListener mouseEvent="onPointerDown" touchEvent={false} onClickAway={() => { if (detailsRef.current) detailsRef.current.open = false }}><details ref={detailsRef} className="relative" data-testid="usage-currencies" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
     <summary className="cursor-pointer whitespace-nowrap underline decoration-dotted underline-offset-4 tabular-nums" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Cost by currency' : '各币种费用'}>{format(ordered[0])}</summary>
     <dl className="absolute right-0 z-30 mt-2 min-w-44 rounded-lg p-3 text-xs shadow-xl" style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}>
       {ordered.map((money) => <div key={money.currency} className="flex justify-between gap-4 py-1"><dt>{money.currency}</dt><dd className="tabular-nums">{money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}</dd></div>)}
     </dl>
-  </details>
+  </details></ClickAwayListener>
 }
 
 export function ConsumptionValue({ total }: { total: UsageTotals }) {
@@ -47,7 +50,7 @@ export function ConsumptionValue({ total }: { total: UsageTotals }) {
   </div>
 }
 
-export function UsageConsumption({ page, loading, error }: { page: UsageEventsPage; loading: boolean; error: string | null }) {
+export function UsageConsumption({ page, loading, error, groupHasMore, groupLoading, onLoadMore }: { page: UsageEventsPage; loading: boolean; error: string | null; groupHasMore?: Record<string, boolean>; groupLoading?: string | null; onLoadMore?: (groupBy: string) => void }) {
   const { locale } = useI18n()
   const en = locale === 'en'
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -57,11 +60,12 @@ export function UsageConsumption({ page, loading, error }: { page: UsageEventsPa
     {!loading && !error && <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))' }}>{groups.map(([key, english, chinese]) => {
       const map = new Map<string, UsageTotals[]>()
       for (const row of page.grouped) {
+        if (!(key in row.group)) continue
         const label = row.group[key] || (key === 'caller_app_id' ? 'system' : '—')
         map.set(label, [...(map.get(label) ?? []), row.aggregate])
       }
       const rows = Array.from(map, ([label, totals]) => ({ label, total: mergeUsageTotals(totals) })).sort((a,b) => b.total.total_tokens - a.total.total_tokens || b.total.total_requests - a.total.total_requests)
-      return <section key={key} className="min-w-0 rounded-lg p-3" style={{ border: '1px solid var(--cp-border)' }}><h4 className="mb-3 text-xs font-medium">{en ? english : chinese} · {rows.length}</h4>{(expanded[key] ? rows : rows.slice(0,4)).map(({label,total}) => <div key={label} className="mb-3"><div className="flex justify-between gap-2"><span className="min-w-0 truncate text-xs" title={label}>{label}</span><ConsumptionValue total={total} /></div><div className="mt-1 h-1 rounded" style={{ background: 'var(--cp-bg)' }}><div className="h-1 rounded" style={{ background: 'var(--cp-accent)', width: `${page.total.total_tokens ? total.total_tokens / page.total.total_tokens * 100 : 0}%` }} /></div></div>)}{rows.length > 4 && <button type="button" className="text-xs" style={{ color: 'var(--cp-accent)' }} onClick={() => setExpanded({ ...expanded, [key]: !expanded[key] })}>{expanded[key] ? (en ? 'Show less' : '收起') : (en ? 'View all' : '查看全部')}</button>}</section>
+      return <section key={key} className="min-w-0 rounded-lg p-3" style={{ border: '1px solid var(--cp-border)' }}><h4 className="mb-3 text-xs font-medium">{en ? english : chinese} · {rows.length}{groupHasMore?.[key] ? '+' : ''}</h4>{(expanded[key] ? rows : rows.slice(0,4)).map(({label,total}) => <div key={label} className="mb-3"><div className="flex justify-between gap-2"><span className="min-w-0 truncate text-xs" title={label}>{label}</span><ConsumptionValue total={total} /></div><div className="mt-1 h-1 rounded" style={{ background: 'var(--cp-bg)' }}><div className="h-1 rounded" style={{ background: 'var(--cp-accent)', width: `${page.total.total_tokens ? total.total_tokens / page.total.total_tokens * 100 : 0}%` }} /></div></div>)}{expanded[key] && groupHasMore?.[key] && onLoadMore && <button type="button" className="mr-3 text-xs" style={{ color: 'var(--cp-accent)' }} disabled={Boolean(groupLoading)} onClick={() => onLoadMore(key)}>{en ? 'Load more' : '加载更多'}</button>}{rows.length > 4 && <button type="button" className="text-xs" style={{ color: 'var(--cp-accent)' }} onClick={() => setExpanded({ ...expanded, [key]: !expanded[key] })}>{expanded[key] ? (en ? 'Show less' : '收起') : (en ? 'Show more' : '展开')}</button>}</section>
     })}</div>}
   </section>
 }

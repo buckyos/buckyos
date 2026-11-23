@@ -90,7 +90,9 @@ API 要求 BILLING/FULL 或对应账单读取权限；默认生成 Key 不一定
 
 SQLite/PostgreSQL 在服务器上聚合已有 `usage_json`，无需新增持久列、迁移或为前端逐页取数据。成本按币种分别求和，未知成本不能作为零；空结果 `dimensions={}`、`unpriced_requests=0`。计费 JSON 数字与现有 top-level token 列须保持同源。
 
-Usage 仍使用同一权限边界、时间窗口及筛选条件，通过一次 `summary_and_events` 查询获取完整汇总和一页记录；group_by 同时使用 Provider、模型、App、API 类型。分页游标只限制 events，总计与分组不受游标影响。对分组组合的返回量随实际分组组合数增长，未在本次验证百万级高基数结果。
+Usage 列表、筛选总计和分类汇总分别加载，使用相同权限边界、半开时间窗口和筛选条件。列表使用 `output_mode=page` 与 `limit/cursor`，只返回一页事件及匹配记录数，不执行计费维度聚合。筛选总计使用 `summary`，每个分类使用 `groups`，分别按 Provider、模型、App、API 类型聚合；分类通过 `group_limit/group_offset` 按需加载，不生成四维组合。翻页复用当前筛选汇总，筛选变化和刷新才重新查询。Usage 页面无需等待首页概览即可加载列表。
+
+`groups` 不计算总计或时间桶，只返回分组；`summary` 保留完整总计。设置 `group_limit` 时，服务端先按总 token 降序、请求数降序、分组键升序选择分组，再聚合所选分组的所有币种和计费维度，避免在截断分组时丢失币种。`group_limit` 范围为 1–1000，`group_offset` 为跳过的完整分组数。筛选总计始终覆盖全部匹配记录，不受分组分页影响。
 
 Usage 消费卡沿用首页卡片样式，显示当前筛选全部记录的 token 和多币种金额。首页今天、本月、近 30 天分别采用对应时间窗口的完整服务端聚合；首页和 Usage 页的总计、各分组、列表及近期记录的 token 可展开各单位明细。多币种金额默认展示 USD（没有 USD 时显示稳定排序的首个实际币种），点击展开各币种，绝不隐式换汇。首页分组维度与费用来自同一 30 天/身份范围的服务端汇总，不通过近期五条记录估算。隐藏未上报维度、保留明确零值，覆盖不足时展示上报记录数；不将不同单位合并。SDK `AiUsage` / `UsageAggregate` 同步扩展，Desktop 保留原始 `usage_json`。
 

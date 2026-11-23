@@ -408,7 +408,7 @@ Response：
 
 ### 4.7 `usage.query`
 
-用途：补齐 `getUsageSummary()` / `getUsageTrend()` 的真实数据来源。
+用途：补齐 `getUsageSummary()` / `getUsageTrend()` 的真实数据来源。`page` 模式只查询事件页和记录数；`groups` 模式仅查询分组，使用 `group_limit/group_offset` 按需加载。完整总计使用独立的 `summary` 查询。
 
 Request 直接复用 `buckyos_api::QueryUsageRequest`：
 
