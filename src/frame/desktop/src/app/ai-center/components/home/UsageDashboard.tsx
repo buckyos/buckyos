@@ -873,7 +873,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
       {!isUsagePage && onSelectUser && (overviewStates.users === 'ready' ? <UserUsageTable users={overview.users} onSelect={onSelectUser} /> : <section role="status" className="rounded-xl p-4 text-xs">{homeMessage('users')}</section>)}
 
       {!isUsagePage && (
-        <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+        <section className="aicc-spend-breakdown rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
               {t('aiCenter.home.secondaryBreakdowns', 'AI Spend Breakdown')}
@@ -894,7 +894,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
               </label>
             )}
           </div>
-          <div className="hidden gap-4 md:grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))' }}>
+          <div className="aicc-spend-grid hidden md:grid">
             {homeBreakdowns.map((item) => (
               <Breakdown
                 key={item.key}
@@ -2092,21 +2092,21 @@ function Breakdown({
   const visibleRows = expanded ? rows : rows.slice(0, 4)
 
   return (
-    <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="min-w-0 truncate text-sm font-medium" title={title} style={{ color: 'var(--cp-text)' }}>
+    <section className="flex min-w-0 flex-col rounded-xl p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <div className="mb-3 flex min-h-10 items-start justify-between gap-2">
+        <h3 className="min-w-0 break-words text-sm font-medium" title={title} style={{ color: 'var(--cp-text)' }}>
           {title}
         </h3>
         <span className="shrink-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
           {loading ? '…' : `${rows.length}${hasMore ? '+' : ''}`}
         </span>
       </div>
-      <div className={`flex flex-col gap-1 ${expanded ? 'max-h-80 overflow-y-auto pr-1' : ''}`}>
+      <div className={`flex flex-1 flex-col gap-2 ${expanded ? 'max-h-80 overflow-y-auto pr-1' : ''}`}>
         {loading && <p role="status" className="text-xs">{t('common.loading', 'Loading...')}</p>}
         {error && <p role="alert" className="text-xs">{t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.')} <button type="button" className="underline" onClick={onLoadMore}>{t('common.retry', 'Retry')}</button></p>}
         {visibleRows.map(([label, value]) => (
-          <div key={label} className="flex min-w-0 items-center gap-1">
-            <div className="min-w-0 flex-1">
+          <div key={label} className="flex min-w-0 flex-col gap-1">
+            <div className="flex min-h-11 min-w-0 items-center gap-1"><div className="min-w-0 flex-1">
               <MeterRow
                 label={label}
                 value={value}
@@ -2117,7 +2117,6 @@ function Breakdown({
                 onClick={onSelect ? () => onSelect(label) : undefined}
               />
             </div>
-            {billing?.(label) && <ConsumptionValue total={billing(label)!} />}
             {onSetQuota && (
               <button
                 type="button"
@@ -2130,7 +2129,8 @@ function Breakdown({
               >
                 <Gauge size={14} />
               </button>
-            )}
+            )}</div>
+            {billing?.(label) && <div className="min-h-14 self-end"><ConsumptionValue total={billing(label)!} /></div>}
           </div>
         ))}
         {!loading && !error && rows.length === 0 && (
