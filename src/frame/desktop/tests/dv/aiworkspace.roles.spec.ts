@@ -70,20 +70,23 @@ async function read<T = EntityEnvelope>(actor: Actor, ws: Workspace, entity_id: 
 async function createReviewWorkspace(owner: Actor): Promise<Workspace> {
   const ws = await owner.client.ok<Workspace>('ws.create', { title: owner.client.prefix })
   owner.client.owned.add(ws.workspace_id)
-  const entities = new Set(['surface-main-content', 'surface-main', 'tasks', 'task-42-details', 'cell-all-tasks', 'notes'])
+  const entities = new Set(['surface-main-content', 'surface-main', 'tasks', 'task-42-details', 'cell-all-tasks'])
   const fixture = JSON.parse(readFileSync(new URL('../../src/app/aiworkspace/fixtures/project-workspace.commits.json', import.meta.url), 'utf8')) as { commits: { message: string; operations: Operation[] }[] }
   for (const commit of fixture.commits) {
     const operations = commit.operations.filter(op => (
       op.op === 'table.insert_records' ? op.source_id === 'tasks'
-        : op.op === 'entity.create' && entities.has(op.entity_id)
-    )).map(op => op.op === 'entity.create' && op.entity_id === 'notes'
-      ? { ...op, payload: { ...op.payload, content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: 'review-source' }, content: [{ type: 'text', text: 'Synthetic project notes' }] }] } } }
-      : op)
+        : op.op === 'entity.create' && typeof op.entity_id === 'string' && entities.has(op.entity_id)
+    ))
     if (operations.length) {
       const result = await owner.client.commit(ws, operations)
       expect(result.status, commit.message + ': ' + JSON.stringify(result)).toBe('accepted')
     }
   }
+  const notes = await owner.client.commit(ws, [{
+    op: 'entity.create', entity_id: 'notes', type_id: 'buckyos.richtext', parent_id: 'data', order_key: 'e', name: '项目说明',
+    payload: { content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: 'review-source' }, content: [{ type: 'text', text: 'Synthetic project notes' }] }] } },
+  }])
+  expect(notes.status).toBe('accepted')
   return ws
 }
 
