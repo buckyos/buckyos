@@ -182,3 +182,5 @@ The consumption card groups the returned combinations by Provider/model/App/API;
 `UsageOverview.periods` 保留 today / thisMonth / trailingDays 的完整 UsageTotals，使首页三个 token 总计分别展开正确时间段的明细。Fal 的 pending 费用来源标记显示待账单核对，当前页有 pending 记录时每 30 秒刷新列表及汇总（隐藏页面暂停）。最终 Provider billing 显示实报费用来源。
 
 Usage 列表通过 `page` 模式游标分页，每页 10 条，移动端按需追加；筛选总计和各分类异步独立查询。分类使用 `groups` 模式及 `group_limit/group_offset` 分批加载，各币种和计费维度完整保留。翻页不重算汇总，Usage 列表不等待首页概览。
+
+筛选总计与 Provider、模型、App、API 类型卡片各自维护加载、错误和重试状态，各响应到达后独立展示；某卡片慢或失败不阻塞其他卡片。分组加载更多的并发状态按卡片隔离，筛选变化后丢弃旧请求结果。总计尚未就绪时不展示分组比例，避免以部分分组代替完整分母。

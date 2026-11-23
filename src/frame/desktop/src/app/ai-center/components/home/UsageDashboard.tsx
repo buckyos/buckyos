@@ -331,10 +331,12 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
   const [pageCursors, setPageCursors] = useState<Record<number, string | undefined>>({ 1: undefined })
   const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
   const [consumptionPage, setConsumptionPage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
-  const [consumptionLoading, setConsumptionLoading] = useState(false)
+  const [consumptionLoading, setConsumptionLoading] = useState(true)
   const [consumptionError, setConsumptionError] = useState<string | null>(null)
   const [groupHasMore, setGroupHasMore] = useState<Record<string, boolean>>({})
-  const [groupLoading, setGroupLoading] = useState<string | null>(null)
+  const [groupLoading, setGroupLoading] = useState<Record<string, boolean>>({ provider_instance_name: true, provider_model: true, caller_app_id: true, capability: true })
+  const [groupErrors, setGroupErrors] = useState<Record<string, string | null>>({})
+  const consumptionPending = useRef(new Set<string>())
   const consumptionGeneration = useRef(0)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
@@ -478,43 +480,55 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
     }
   }, [currentCursor, detailPage, isMobile, isUsagePage, pageLimit, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
 
-  useEffect(() => {
-    if (!isUsagePage) return
-    let cancelled = false
-    const generation = ++consumptionGeneration.current
-    setGroupLoading(null)
-    setConsumptionLoading(true)
-    setConsumptionError(null)
-    void Promise.all([undefined, 'provider_instance_name', 'provider_model', 'caller_app_id', 'capability'].map((groupBy) => store.queryUsageEvents({
-      scope, timeRange: usageQueryRange, filters: usageQueryFilters, limit: 1,
-      summaryOnly: true, groupBy, groupLimit: 20,
-    }))).then((pages) => {
-      if (!cancelled) {
-        setConsumptionPage({ ...pages[0], grouped: pages.flatMap((page) => page.grouped) })
-        setGroupHasMore(Object.fromEntries(pages.slice(1).map((page, index) => [['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'][index], page.grouped.length === 20])))
-      }
-    }).catch(() => {
-      if (!cancelled) setConsumptionError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.'))
-    }).finally(() => { if (!cancelled) setConsumptionLoading(false) })
-    return () => { cancelled = true; if (consumptionGeneration.current === generation) consumptionGeneration.current++ }
-  }, [isUsagePage, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
-
-  const loadMoreConsumption = async (groupBy: string) => {
-    if (groupLoading) return
+  const loadConsumption = async (groupBy?: string, append = false) => {
+    const key = groupBy ?? 'total'
+    if (consumptionPending.current.has(key)) return
     const generation = consumptionGeneration.current
-    setGroupLoading(groupBy)
-    setConsumptionError(null)
+    consumptionPending.current.add(key)
+    if (groupBy) {
+      setGroupLoading((current) => ({ ...current, [groupBy]: true }))
+      setGroupErrors((current) => ({ ...current, [groupBy]: null }))
+    } else {
+      setConsumptionLoading(true)
+      setConsumptionError(null)
+    }
     try {
-      const page = await store.queryUsageEvents({ scope, timeRange: usageQueryRange, filters: usageQueryFilters, limit: 1, summaryOnly: true, groupBy, groupLimit: 20, groupOffset: consumptionPage.grouped.filter((row) => groupBy in row.group).length })
+      const page = await store.queryUsageEvents({
+        scope, timeRange: usageQueryRange, filters: usageQueryFilters, limit: 1,
+        summaryOnly: true, groupBy, groupLimit: 20,
+        groupOffset: append && groupBy ? consumptionPage.grouped.filter((row) => groupBy in row.group).length : 0,
+      })
       if (generation !== consumptionGeneration.current) return
-      setConsumptionPage((current) => ({ ...current, grouped: [...current.grouped, ...page.grouped] }))
-      setGroupHasMore((current) => ({ ...current, [groupBy]: page.grouped.length === 20 }))
+      if (groupBy) {
+        setConsumptionPage((current) => ({ ...current, grouped: [...(append ? current.grouped : current.grouped.filter((row) => !(groupBy in row.group))), ...page.grouped] }))
+        setGroupHasMore((current) => ({ ...current, [groupBy]: page.grouped.length === 20 }))
+      } else {
+        setConsumptionPage((current) => ({ ...current, total: page.total, totalRequests: page.totalRequests }))
+      }
     } catch {
-      if (generation === consumptionGeneration.current) setConsumptionError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.'))
+      if (generation !== consumptionGeneration.current) return
+      const message = t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.')
+      if (groupBy) setGroupErrors((current) => ({ ...current, [groupBy]: message }))
+      else setConsumptionError(message)
     } finally {
-      if (generation === consumptionGeneration.current) setGroupLoading(null)
+      if (generation === consumptionGeneration.current) {
+        consumptionPending.current.delete(key)
+        if (groupBy) setGroupLoading((current) => ({ ...current, [groupBy]: false }))
+        else setConsumptionLoading(false)
+      }
     }
   }
+
+  useEffect(() => {
+    if (!isUsagePage) return
+    const generation = ++consumptionGeneration.current
+    consumptionPending.current = new Set()
+    setConsumptionPage({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
+    setGroupHasMore({})
+    setGroupErrors({})
+    for (const groupBy of [undefined, 'provider_instance_name', 'provider_model', 'caller_app_id', 'capability']) void loadConsumption(groupBy)
+    return () => { if (consumptionGeneration.current === generation) consumptionGeneration.current++ }
+  }, [isUsagePage, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
 
   const resetUsagePaging = () => {
     setDetailPage(1)
@@ -802,7 +816,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
         </div>
       </section>}
 
-      {isUsagePage && usageTab === 'usage' && <UsageConsumption page={consumptionPage} loading={consumptionLoading} error={consumptionError} groupHasMore={groupHasMore} groupLoading={groupLoading} onLoadMore={loadMoreConsumption} />}
+      {isUsagePage && usageTab === 'usage' && <UsageConsumption page={consumptionPage} loading={consumptionLoading} error={consumptionError} groupHasMore={groupHasMore} groupLoading={groupLoading} groupErrors={groupErrors} onRetryTotal={() => void loadConsumption()} onRetryGroup={(key) => void loadConsumption(key, consumptionPage.grouped.some((row) => key in row.group))} onLoadMore={(key) => void loadConsumption(key, true)} />}
 
       {!isUsagePage && onSelectUser && <UserUsageTable users={overview.users} onSelect={onSelectUser} />}
 
