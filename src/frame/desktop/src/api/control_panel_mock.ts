@@ -1868,6 +1868,10 @@ export function mockCurrentAccount() {
   return { user_id: account.user_id, user_name: account.user_name, user_type: account.user_type }
 }
 
+export function mockZoneOwner(): string {
+  return loadState().zone_owner
+}
+
 export function mockCurrentIdentity(): CurrentIdentity {
   return identityOf(loadState())
 }

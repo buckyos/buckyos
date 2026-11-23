@@ -1,0 +1,201 @@
+{
+  "fields": {
+    "cloudflare": {
+      "api_token": "API Token"
+    },
+    "godaddy": {
+      "access_token": "Personal Access Token"
+    },
+    "route53": {
+      "access_key_id": "アクセスキー ID",
+      "secret_access_key": "シークレットアクセスキー",
+      "hosted_zone_id": "ホストゾーン ID"
+    },
+    "porkbun": {
+      "api_key": "API Key",
+      "secret_api_key": "Secret Key"
+    },
+    "ionos": {
+      "api_key": "API Key（prefix.secret）"
+    },
+    "ovh": {
+      "region": "リージョン",
+      "application_key": "Application key",
+      "application_secret": "Application secret",
+      "consumer_key": "Consumer key"
+    },
+    "hetzner": {
+      "api_token": "API token"
+    },
+    "gandi": {
+      "personal_access_token": "Personal Access Token"
+    },
+    "digitalocean": {
+      "api_token": "Personal access token"
+    },
+    "google_cloud": {
+      "service_account_json": "サービス アカウント キー（JSON）",
+      "project_id": "プロジェクト ID"
+    },
+    "azure": {
+      "tenant_id": "ディレクトリ (テナント) ID",
+      "client_id": "アプリケーション (クライアント) ID",
+      "client_secret": "クライアント シークレットの値",
+      "subscription_id": "サブスクリプション ID",
+      "resource_group": "リソース グループ"
+    },
+    "namecom": {
+      "username": "ユーザー名",
+      "api_token": "API token"
+    },
+    "hostinger": {
+      "api_token": "API token"
+    },
+    "desec": {
+      "api_token": "Token"
+    },
+    "inwx": {
+      "username": "ユーザー名",
+      "password": "パスワード",
+      "shared_secret": "Shared secret（Mobile-TAN）"
+    },
+    "netcup": {
+      "customer_number": "顧客番号（Legacy API のみ）",
+      "api_key": "API Key",
+      "api_password": "Legacy API Password（Legacy API のみ）"
+    },
+    "transip": {
+      "login": "アカウント名",
+      "private_key": "秘密鍵（Private Key）"
+    },
+    "alidns": {
+      "access_key_id": "AccessKey ID",
+      "access_key_secret": "AccessKey Secret"
+    },
+    "dnspod": {
+      "secret_id": "SecretId",
+      "secret_key": "SecretKey"
+    },
+    "sakura": {
+      "access_token": "アクセストークン",
+      "access_token_secret": "アクセストークンシークレット"
+    }
+  },
+  "steps": {
+    "cloudflare": [
+      "ここのリンクからトークンのページを開くと、Zone > DNS > Edit と Zone > Zone > Read の 2 つの権限が入力されます。入っていなければ自分で追加します。",
+      "対象は、ここで使う 1 つのゾーンだけに限定し、すべてのゾーンにはしないでください。",
+      "「Token expiration」と「Client IP Address Filtering」は設定しないでください。ノードはこのトークンを使い続け、アドレスも変わることがあります。",
+      "「Continue to summary」、「Create Token」の順に進み、一度だけ表示されるトークンをコピーします。"
+    ],
+    "godaddy": [
+      "developer.godaddy.com/personal-access-token にサインインし、「Generate Token」を選びます。",
+      "「Permissions」で「Domains & DNS」を開き、domains.domain:read と domains.dns:update だけを選びます。",
+      "「Expires After」は最長の 1 year にし、期限までに新しいトークンに替えてください。",
+      "「Create Token」、「Copy Token」の順に選びます。表示は一度だけです。"
+    ],
+    "route53": [
+      "Route 53 でホストゾーンを開き、ホストゾーン ID をコピーします。",
+      "IAM の「Policies」>「Create policy」>「JSON」に、BuckyOS リポジトリの doc/user/dns-providers/route53.md にあるポリシーを貼り付けます。このゾーンと BuckyOS が書くレコード名だけを許可します。",
+      "コンソールにログインできない IAM ユーザーを作成し、そのポリシーを付けます。",
+      "ユーザーの「Security credentials」>「Create access key」>「Other」で作成し、2 つの値をコピーします。シークレットアクセスキーの表示は一度だけです。"
+    ],
+    "porkbun": [
+      "「ACCOUNT」>「API Access」を開き、タイトルを入力し、権限に「Manage, but no purchases」を選びます。",
+      "キーを自分のドメインに限定し、IP アドレスは空のままにします。ノードのアドレスは変わることがあります。",
+      "「Create API Key」を選び、API Key と Secret Key をコピーします。Secret Key の表示は一度だけです。",
+      "「ACCOUNT」>「Domain Management」でドメインの「Details」を開き、「API Access」を有効にします。"
+    ],
+    "ionos": [
+      "初回は my.ionos.com/shop/product/ionos-api（お住まいの国の IONOS サイト）で API を申し込みます。",
+      "developer.hosting.ionos.com/keys を開き、「Create New Key」を選びます。",
+      "Public Prefix と Secret をコピーし、ピリオドでつないで入力します（prefix.secret）。Secret の表示は一度だけです。"
+    ],
+    "ovh": [
+      "リージョンのページを開いてサインインします。ヨーロッパは auth.eu.ovhcloud.com/api/createToken、カナダとアジア太平洋は auth.ca.ovhcloud.com/api/createToken、米国は auth.us.ovhcloud.com/api/createToken です。",
+      "「Validity」を「Unlimited」にし、IP アドレスは制限しません。",
+      "「Rights」で /domain/zone/example.com/* に GET、POST、PUT、DELETE を追加します。example.com は自分のドメインに替えてください。",
+      "「Create keys」を選び、application key、application secret、consumer key をコピーします。"
+    ],
+    "hetzner": [
+      "console.hetzner.com で、ドメインの DNS ゾーンがあるプロジェクトを開きます。旧 DNS Console のトークンは使えません。",
+      "「Security」>「API tokens」>「Generate API token」で「Read & Write」を選びます。",
+      "トークンをコピーします。後から表示できず、プロジェクト全体を操作できます。"
+    ],
+    "gandi": [
+      "ユーザー名の設定から「View my personal access tokens」を開き、「Create a token」を選びます。",
+      "「Expires in」は最長の 1 year にし、期限までに新しいトークンに替えてください。",
+      "「Restrict to selected products」で自分のドメインを選び、「Manage domain name technical configurations」を許可します。",
+      "「Create」を選び、一度だけ表示されるトークンをコピーします。"
+    ],
+    "digitalocean": [
+      "「API」>「Tokens」を開き、「Generate New Token」を選びます。",
+      "「Expiration」は最長を選び、期限までに新しいトークンに替えてください。",
+      "「Custom Scopes」で domain の create、read、update、delete を選びます。1 つのドメインには限定できません。",
+      "「Generate Token」を選び、一度だけ表示されるトークンをコピーします。"
+    ],
+    "google_cloud": [
+      "DNS ゾーンがあるプロジェクトで「IAM と管理」>「サービス アカウント」を開き、サービス アカウントを作成します。",
+      "「DNS Administrator」ロール（roles/dns.admin）を付与します。",
+      "サービス アカウントの「キー」>「鍵を追加」>「新しい鍵を作成」で JSON を選びます。",
+      "ダウンロードしたファイルの内容をすべて貼り付けます。プロジェクト ID はファイルにあるので空のままで構いません。"
+    ],
+    "azure": [
+      "「Entra ID」>「アプリの登録」で「新規登録」を選び、ディレクトリ (テナント) ID とアプリケーション (クライアント) ID をコピーします。",
+      "「証明書とシークレット」>「新しいクライアント シークレット」で最長の有効期限（最大 24 か月）を選び、シークレット ID ではなく「値」をコピーします。",
+      "Azure portal で DNS ゾーンの「アクセス制御 (IAM)」>「ロールの割り当ての追加」を開き、アプリに「DNS Zone Contributor」ロールを付けます。",
+      "DNS ゾーンの概要からサブスクリプション ID とリソース グループをコピーします。",
+      "クライアント シークレットは期限までに新しいものに替えてください。"
+    ],
+    "namecom": [
+      "「Account Settings」>「Security」>「API Tokens」を開き、Production トークンを作成します。",
+      "IP のホワイトリストは追加しないでください。ノードのアドレスは変わることがあります。",
+      "二段階認証を使っている場合は、「Security」ページの一番下で「name.com API Access」を有効にします。",
+      "name.com のユーザー名とトークンを入力します。"
+    ],
+    "hostinger": [
+      "hpanel.hostinger.com/profile/api を開き、「New」を選びます。",
+      "名前を入力し、最長の有効期限を選び、期限までに新しいトークンに替えてください。",
+      "「Generate」を選び、トークンをコピーします。表示は一度だけで、権限はあなたのユーザーと同じです。"
+    ],
+    "desec": [
+      "desec.io にログインし、「Token Management」を開きます。",
+      "新しいトークンを作成し、「Can create domains」と「Can delete domains」はオフのままにします。",
+      "詳細設定の「Maximum age」、「Maximum unused period」、クライアントのサブネットは空のままにします。",
+      "一度だけ表示されるトークンをコピーします。"
+    ],
+    "inwx": [
+      "できれば、DNS だけを管理でき、Mobile-TAN を使わないサブアカウントを用意します。",
+      "そのアカウントのユーザー名とパスワードを入力します。",
+      "Mobile-TAN を使う場合は Shared secret も入力します。Mobile-TAN を有効にしたときだけ表示されます。"
+    ],
+    "netcup": [
+      "Customer Control Panel でドメインを開き、「CloudDNS」タブか「DNS」タブかを確認してから、「Master Data」>「API」を開きます。",
+      "「CloudDNS」タブの場合は、「API Keys」で「Creating an API Key」を選び、ここには API Key だけを入力します。",
+      "「DNS」タブの場合は、「Legacy API Keys」で「Creating an API Key」、続けて「Regenerating API Password」を選びます。パスワードの表示は一度だけで、ほかのプログラムが使う古いパスワードは無効になります。",
+      "「DNS」タブの場合は、顧客番号、Legacy API Key、Legacy API Password を入力します。"
+    ],
+    "transip": [
+      "プロフィールアイコン>「My account」>「API」を開き、「Status」をオンにします。",
+      "Key Pair を追加し、「Whitelisted IP」をオフにします。ノードのアドレスは変わることがあります。",
+      "BEGIN と END の行を含む秘密鍵全体をコピーします。表示は一度だけです。",
+      "TransIP のアカウント名を入力します。"
+    ],
+    "alidns": [
+      "RAM コンソールで「Identities」>「Users」>「Create User」を開き、永続的な AccessKey によるアクセスを選びます。",
+      "BuckyOS リポジトリの doc/user/dns-providers/alidns.md にあるカスタムポリシーをユーザーに付けます。自分のドメインだけを許可します。",
+      "AccessKey ID と AccessKey Secret をコピーします。Secret の表示は一度だけです。",
+      "ネットワークアクセスの制限ポリシーは設定しないでください。ノードのアドレスは変わることがあります。"
+    ],
+    "dnspod": [
+      "Tencent Cloud の CAM で「User List」を開き、プログラムからアクセスできるサブユーザーを作成します。",
+      "DNSPod コンソールでドメインの「Permission Management」>「CAM permission management」>「add sub-account」を開き、サブユーザーに「Full Read/Write」を与えます。",
+      "「User List」でサブユーザーの「API Key」を開いてキーを作成し、SecretId と SecretKey をコピーします。SecretKey の表示は一度だけです。"
+    ],
+    "sakura": [
+      "コントロールパネルの左側のメニューから「APIキー」を開き、「APIキーの作成」で種類に「リソース操作」を選びます。",
+      "「アクセスレベル」に「設定編集」を選びます。",
+      "「作成」を選び、アクセストークンとアクセストークンシークレットを控えます。シークレットの表示は一度だけです。"
+    ]
+  }
+}

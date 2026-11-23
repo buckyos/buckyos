@@ -1,0 +1,14 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/1.0/identifiers/did:web:test.buckyos.io",
+      "host": "127.0.0.1",
+      "url": "http://127.0.0.1/1.0/identifiers/did:web:test.buckyos.io"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

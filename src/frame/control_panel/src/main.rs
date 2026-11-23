@@ -43,6 +43,7 @@ mod task_ops;
 mod ui_session_mgr;
 mod user_group_mgr;
 mod user_mgr;
+mod zone_domain;
 mod zone_mgr;
 
 use diagnostic_mgr::DiagnosticBundleEntry;
@@ -1457,6 +1458,9 @@ impl ControlPanelServer {
             "zone.certificates.list" => Box::pin(self.handle_zone_certificates_list(req)),
             "zone.presentation.get" => Box::pin(self.handle_zone_presentation_get(req)),
             "zone.presentation.set" => Box::pin(self.handle_zone_presentation_set(req, principal)),
+            method if method.starts_with(zone_domain::ZONE_DOMAIN_PREFIX) => {
+                Box::pin(self.handle_zone_domain(req, principal))
+            }
             "gateway.overview" => Box::pin(self.handle_gateway_overview(req)),
             "gateway.file.get" => Box::pin(self.handle_gateway_file_get(req)),
             "container.overview" => Box::pin(self.handle_container_overview(req)),

@@ -44,6 +44,10 @@ export const settingsSearchTerms: Record<SettingsPage, ReadonlyArray<readonly [s
     ["settings.zone.identity", "Identity"],
     ["settings.zone.did", "Zone DID"],
     ["settings.zone.domain", "Domain"],
+    ["settings.domain.title", "Domain and certificate"],
+    ["settings.domain.dns", "DNS records"],
+    ["settings.domain.certificate", "Certificate"],
+    ["settings.domain.provider", "DNS provider"],
   ],
   'ext-tools': [
     ["settings.extTools.title", "Extension tools"],

@@ -18,6 +18,7 @@ import { iconCandidates, presentZone, textValue } from '../../../presentation/mo
 import { ObjectAvatar } from '../../../presentation/ObjectIcon'
 import { ObjectTitle } from '../../../presentation/ObjectTitle'
 import { currentZoneHost, publishZonePresentation } from '../../../presentation/zone'
+import { ZoneDomainSection } from '../components/domain/ZoneDomainSection'
 import { InfoRow, Section } from '../components/shared/Section'
 
 interface Draft {
@@ -226,6 +227,8 @@ export function ZonePage() {
           <InfoRow label={t('settings.zone.domain', 'Domain')} value={<span className="break-all font-mono text-xs">{source?.hostname ?? currentZoneHost()}</span>} />
         </div>
       </Section>
+
+      <ZoneDomainSection />
     </div>
   )
 }

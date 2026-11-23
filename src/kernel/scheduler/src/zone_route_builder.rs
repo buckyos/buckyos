@@ -273,6 +273,10 @@ fn has_signed_wan_ip(device_info: &DeviceInfo) -> bool {
     is_wan_net_id(device_info.device_doc.net_id.as_ref()) && !device_info.device_doc.ips.is_empty()
 }
 
+fn is_fixed_wan(device_info: &DeviceInfo) -> bool {
+    device_info.device_doc.net_id.as_deref() == Some("wan")
+}
+
 fn same_trusted_lan(
     source: &DeviceInfo,
     target: &DeviceInfo,
@@ -722,7 +726,10 @@ pub(crate) fn build_forward_plan(
             ));
         }
 
-        if let Some(sn_host) = zone_config.sn.as_ref() {
+        // A `wan` device neither keeps a tunnel to the SN relay nor goes through it, whether or
+        // not the Zone has an SN account.
+        let uses_sn_relay = !is_fixed_wan(source_device) && !is_fixed_wan(target_device);
+        if let Some(sn_host) = zone_config.sn.as_ref().filter(|_| uses_sn_relay) {
             let relay_is_backup = !candidates.is_empty();
             candidates.push(NodeGatewayRouteCandidate {
                 id: "via-sn".to_string(),
@@ -943,8 +950,8 @@ mod tests {
         let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
         let ood2_routes = plan.routes.get("ood2").unwrap();
 
-        // routes 收敛到 direct + via-sn 两条；URL 始终是 DID hostname 形态。
-        assert_eq!(ood2_routes.len(), 2);
+        // 固定公网 IP 的 target 只有 direct，Zone 有 SN 也不走 relay；URL 始终是 DID hostname 形态。
+        assert_eq!(ood2_routes.len(), 1);
         assert_eq!(ood2_routes[0].id, "direct");
         assert_eq!(ood2_routes[0].kind, "rtcp_direct");
         assert_eq!(ood2_routes[0].priority, DIRECT_PRIORITY);
@@ -955,15 +962,9 @@ mod tests {
             "signed_wan_ip"
         );
 
-        let via_sn = ood2_routes
-            .iter()
-            .find(|c| c.id == "via-sn")
-            .expect("signed wan IP target should still get SN relay backup");
-        assert!(via_sn.backup);
-        assert!(
-            !via_sn.keep_tunnel,
-            "stable wan target should not need SN keep_tunnel"
-        );
+        // 反方向：固定公网 IP 的 source 复用对端维持的直连隧道，也不经 SN。
+        let reverse = build_forward_plan("ood2", &zone_config, &zone_host, &device_list);
+        assert!(!reverse.routes.contains_key("ood1"));
 
         // 签名 IP 进 did_ip_hints；互斥规则下没有其它来源混入。
         let target_did = format!("ood2.{}", zone_host);
@@ -972,6 +973,38 @@ mod tests {
         assert_eq!(hints[0].ip, "203.0.113.10".parse::<IpAddr>().unwrap());
         assert_eq!(hints[0].source, DidIpHintSource::SignedDeviceDoc);
         assert_eq!(hints[0].confidence, "high");
+    }
+
+    #[test]
+    fn test_sn_relay_depends_on_net_id_not_on_zone_sn() {
+        let relays = |net_id: &str, sn: Option<&str>| {
+            let mut zone_config = create_test_zone_config();
+            zone_config.sn = sn.map(str::to_string);
+            let zone_host = zone_config.id.to_host_name();
+            let mut gateway = create_test_device_info_with_net_id("ood1", Some(net_id));
+            // DeviceInfo carries the discovered addresses in `device_doc.ips` too.
+            gateway.device_doc.ips.push("203.0.113.10".parse().unwrap());
+            let device_list = HashMap::from([
+                ("ood1".to_string(), gateway),
+                (
+                    "node1".to_string(),
+                    create_test_device_info_with_net_id("node1", Some("lan2")),
+                ),
+            ]);
+            [("ood1", "node1"), ("node1", "ood1")].map(|(source, target)| {
+                build_forward_plan(source, &zone_config, &zone_host, &device_list)
+                    .routes
+                    .get(target)
+                    .is_some_and(|routes| routes.iter().any(|route| route.id == "via-sn"))
+            })
+        };
+        for net_id in ["nat", "portmap", "wan_dyn"] {
+            assert_eq!(relays(net_id, Some("sn.test.buckyos.io")), [true, true], "{net_id}");
+        }
+        assert_eq!(relays("wan", Some("sn.test.buckyos.io")), [false, false]);
+        for net_id in ["nat", "portmap", "wan_dyn", "wan"] {
+            assert_eq!(relays(net_id, None), [false, false], "{net_id}");
+        }
     }
 
     #[test]

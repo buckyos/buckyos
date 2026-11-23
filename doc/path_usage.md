@@ -30,6 +30,11 @@ Docker App 和 Agent/Script Worker 默认将宿主 `$BUCKYOS_ROOT/etc/` 只读�
 身份和启动凭据仍由应用环境变量提供。缺少 `machine.json` 时 runtime 使用默认机器策略。
 `security/` 不挂载。启动配置 `start_config.json`、开发 CA 私钥 `ca_key.pem` 和包含私钥或 API 凭据的
 开发模板 `scheduler/boot.template.toml` 放在 security 根目录，默认 `$BUCKYOS_ROOT/security/`。
+自有域名的 DNS 服务商 token 在 `$BUCKYOS_ROOT/security/dns_credentials/<credential_id>.json`（0600，目录 0700，只在本节点），
+Zone 域名的证书公开部分在 `$BUCKYOS_ROOT/local/identity/<域名>/` 与 `_.<域名>/`（`server.fullchain.pem`、`server.meta.json`），
+私钥在 `$BUCKYOS_ROOT/security/` 的同名目录（`server.private.pem`，0600）；
+`server.meta.json` 的 `renewal.manager` 为 `manual` 时是用户上传的，系统不续期、不覆盖。
+托管信息 `domain_hosting` 在 `start_config.json` 里，首次启动后以 system-config 的 `system/domain_hosting` 为准，见 [关键数据](key%20data.md)。
 Rust 服务和备份脚本支持 `BUCKYOS_SECURITY_ROOT`；显式目标目录的配置生成器使用目标下的 `security/`。
 公开基础模板仍在 `etc/scheduler/`，scheduler 优先读取 security 中的私有模板。
 已有安装在开放 `etc/` 前须迁走敏感文件，并恢复公开基础模板；node-daemon 检测到 `etc/start_config.json`

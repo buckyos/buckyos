@@ -21,10 +21,10 @@ use crate::zone_route_builder::{
 };
 use buckyos_api::{
     app_availability_policy_key, get_buckyos_api_runtime, zone_document_hostname, AppAvailabilityPolicy, AppId, AppInstanceId, AppRegistry,
-    AppServiceSpec, AvailabilityEffect, KernelServiceSpec, NodeConfig,
+    AppServiceSpec, AvailabilityEffect, DomainHosting, DomainHostingMode, KernelServiceSpec, NodeConfig,
     SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
     UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
-    validate_user_group_id, USER_GROUPS_CONFIG_PREFIX, USER_GROUP_REF_PREFIX, APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT, NFS_SERVER_SERVICE_NAME,
+    validate_user_group_id, USER_GROUPS_CONFIG_PREFIX, USER_GROUP_REF_PREFIX, APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT, DOMAIN_HOSTING_KEY, NFS_SERVER_SERVICE_NAME,
 };
 use buckyos_kit::*;
 use name_lib::{get_x_from_jwk, DeviceInfo, ZoneDocument};
@@ -1401,12 +1401,160 @@ pub(crate) async fn update_node_gateway_infos(
     Ok(result)
 }
 
-/// The SN a node obtains its zone certificates through (DNS-01): the Zone's relay SN,
-/// else the SN the device publishes its address to (`wan_dyn`: DDNS without relay).
+/// The SN API of a Zone that has an SN account, whatever its access mode: DNS-01 through the
+/// SN and the self-cert report go there. Whether traffic is relayed is decided by the net_id.
 fn node_sn_api_url(zone_sn: Option<&str>, ddns_sn_url: Option<&str>) -> Option<String> {
     zone_sn
         .map(|sn_host| format!("https://{}/kapi/sn", sn_host))
         .or_else(|| ddns_sn_url.map(str::to_string))
+}
+
+fn get_domain_hosting(
+    input_system_config: &HashMap<String, String>,
+    zone_config: &ZoneDocument,
+) -> Result<Option<DomainHosting>> {
+    let Some(raw) = input_system_config.get(DOMAIN_HOSTING_KEY) else {
+        return Ok(None);
+    };
+    let hosting: DomainHosting = serde_json::from_str(raw)?;
+    hosting.validate().map_err(anyhow::Error::msg)?;
+    let zone_hostname = zone_document_hostname(zone_config);
+    if hosting.domain != zone_hostname {
+        return Err(anyhow::anyhow!(
+            "it is for {}, the Zone is {}",
+            hosting.domain,
+            zone_hostname
+        ));
+    }
+    Ok(Some(hosting))
+}
+
+/// Sections of `nodes/<id>/gateway_config` that follow the Zone's domain hosting.
+const DOMAIN_GATEWAY_SECTIONS: [&str; 3] = ["acme", "stacks", "self_cert_report"];
+
+fn build_domain_gateway_config(
+    node_id: &str,
+    zone_config: &ZoneDocument,
+    hosting: Option<&DomainHosting>,
+    device_info: Option<&DeviceInfo>,
+) -> Result<Value> {
+    let ddns_sn_url = device_info.and_then(|d| d.device_doc.ddns_sn_url.as_deref());
+    let sn_url = node_sn_api_url(zone_config.sn.as_deref(), ddns_sn_url);
+    if sn_url.is_none() && hosting.is_none() {
+        return Ok(json!({}));
+    }
+    let device_info =
+        device_info.ok_or_else(|| anyhow::anyhow!("device info {} not found", node_id))?;
+    let identity_paths = buckyos_api::device_identity_paths(&device_info.device_doc.id)
+        .map_err(|err| anyhow::anyhow!("build device identity paths failed: {}", err))?;
+    let key_path = identity_paths.authentication_private_key.display().to_string();
+    let device_config_path = identity_paths.did_json.display().to_string();
+    let zone_hostname = zone_document_hostname(zone_config);
+    let hosts = [format!("*.{}", zone_hostname), zone_hostname];
+
+    let mut config = json!({
+        "stacks": {
+            "zone_tls": {
+                "bind": "[::]:443",
+                "protocol": "tls",
+                "hosts": hosts,
+                // node_gateway speaks HTTP/2 too: browsers then share one connection
+                // instead of running out of their 6 HTTP/1.1 connections per host.
+                "alpn_protocols": ["h2", "http/1.1"],
+                "hook_point": {
+                    "main": {
+                        "blocks": {
+                            "default": {
+                                "block": "return \"server node_gateway\";\n"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let dns_provider = match hosting {
+        Some(hosting) if !hosting.uses_acme() => None,
+        Some(DomainHosting {
+            mode: DomainHostingMode::DnsApi,
+            credential_id: Some(credential_id),
+            ..
+        }) => {
+            let credential_path = buckyos_api::identity_roots()
+                .map_err(anyhow::Error::msg)?
+                .security_root
+                .join("dns_credentials")
+                .join(format!("{credential_id}.json"));
+            Some((
+                "dns-api",
+                json!({ "credential_path": credential_path.display().to_string() }),
+            ))
+        }
+        _ => sn_url.as_ref().map(|sn_url| {
+            (
+                "sn-dns",
+                json!({
+                    "sn": sn_url,
+                    "key_path": key_path,
+                    "device_config_path": device_config_path
+                }),
+            )
+        }),
+    };
+    if let Some((name, params)) = dns_provider {
+        let acme_hosts = hosts.each_ref().map(|host| {
+            json!({ "host": host, "challenge_type": "dns-01", "dns_provider": name })
+        });
+        config["acme"] = json!({ "dns_providers": { name: params }, "hosts": acme_hosts });
+        if let Some(issuer) = hosting.and_then(|hosting| hosting.acme_issuer.as_deref()) {
+            config["acme"]["issuer"] = json!(issuer);
+        }
+    }
+    if let Some(sn_url) = sn_url {
+        config["self_cert_report"] = json!({
+            "sn": sn_url,
+            "key_path": key_path,
+            "device_config_path": device_config_path,
+            "hosts": hosts
+        });
+    }
+    Ok(config)
+}
+
+/// Nodes whose gateway_config no longer matches the Zone's domain hosting.
+fn nodes_with_stale_domain_config<'a>(
+    node_ids: impl Iterator<Item = &'a String>,
+    input_system_config: &HashMap<String, String>,
+) -> Result<HashSet<String>> {
+    let zone_config = get_zone_config(input_system_config)?;
+    let hosting = match get_domain_hosting(input_system_config, &zone_config) {
+        Ok(hosting) => hosting,
+        Err(err) => {
+            error!("keep the gateway configs, {DOMAIN_HOSTING_KEY} is invalid: {err}");
+            return Ok(HashSet::new());
+        }
+    };
+    let device_list = get_device_list(input_system_config)?;
+    let mut stale = HashSet::new();
+    for node_id in node_ids {
+        let (Some(device_info), Some(current)) = (
+            device_list.get(node_id),
+            input_system_config.get(&format!("nodes/{node_id}/gateway_config")),
+        ) else {
+            continue;
+        };
+        let expected =
+            build_domain_gateway_config(node_id, &zone_config, hosting.as_ref(), Some(device_info))?;
+        let current: Value = serde_json::from_str(current).unwrap_or_default();
+        if DOMAIN_GATEWAY_SECTIONS
+            .iter()
+            .any(|section| current.get(section) != expected.get(section))
+        {
+            stale.insert(node_id.clone());
+        }
+    }
+    Ok(stale)
 }
 
 pub(crate) async fn update_node_gateway_config(
@@ -1414,69 +1562,24 @@ pub(crate) async fn update_node_gateway_config(
     input_system_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
     let zone_config = get_zone_config(input_system_config)?;
+    let mut result = HashMap::new();
+    let hosting = match get_domain_hosting(input_system_config, &zone_config) {
+        Ok(hosting) => hosting,
+        Err(err) => {
+            error!("keep the gateway configs, {DOMAIN_HOSTING_KEY} is invalid: {err}");
+            return Ok(result);
+        }
+    };
     let web_app_servers = build_web_app_servers(input_system_config)?;
     let device_list = get_device_list(input_system_config)?;
-    let mut result = HashMap::new();
 
     for node_id in need_update_gateway_node_list.iter() {
-        let mut node_gateway_json = json!({});
-
-        let device_info = device_list.get(node_id);
-        let ddns_sn_url = device_info.and_then(|d| d.device_doc.ddns_sn_url.as_deref());
-        if let Some(sn_url) = node_sn_api_url(zone_config.sn.as_deref(), ddns_sn_url) {
-            info!("SN enabled, add acme/tls stack for node {}", node_id);
-            let device_info =
-                device_info.ok_or_else(|| anyhow::anyhow!("device info {} not found", node_id))?;
-            let identity_paths = buckyos_api::device_identity_paths(&device_info.device_doc.id)
-                .map_err(|err| anyhow::anyhow!("build device identity paths failed: {}", err))?;
-            let zone_hostname = zone_document_hostname(&zone_config);
-            let wildcard_zone_domain = format!("*.{}", zone_hostname);
-            node_gateway_json = json!({
-                "acme": {
-                    "dns_providers": {
-                        "sn-dns": {
-                            "sn": sn_url,
-                            "key_path": identity_paths.authentication_private_key.display().to_string(),
-                            "device_config_path": identity_paths.did_json.display().to_string()
-                        }
-                    },
-                    "hosts": [
-                        {
-                            "host": wildcard_zone_domain.clone(),
-                            "challenge_type": "dns-01",
-                            "dns_provider": "sn-dns"
-                        },
-                        {
-                            "host": zone_hostname.clone(),
-                            "challenge_type": "dns-01",
-                            "dns_provider": "sn-dns"
-                        }
-                    ]
-                },
-                "stacks": {
-                    "zone_tls": {
-                        "bind": "[::]:443",
-                        "protocol": "tls",
-                        "hosts": [
-                            wildcard_zone_domain,
-                            zone_hostname
-                        ],
-                        // node_gateway speaks HTTP/2 too: browsers then share one connection
-                        // instead of running out of their 6 HTTP/1.1 connections per host.
-                        "alpn_protocols": ["h2", "http/1.1"],
-                        "hook_point": {
-                            "main": {
-                                "blocks": {
-                                    "default": {
-                                        "block": "return \"server node_gateway\";\n"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
+        let mut node_gateway_json = build_domain_gateway_config(
+            node_id,
+            &zone_config,
+            hosting.as_ref(),
+            device_list.get(node_id),
+        )?;
 
         if !web_app_servers.is_empty() {
             node_gateway_json["servers"] = json!({});
@@ -1778,15 +1881,259 @@ pub(crate) async fn update_rbac_for_test(
 mod node_gateway_tests {
     use super::*;
 
-    #[test]
-    fn a_zone_without_relay_gets_certificates_through_its_ddns_sn() {
-        let ddns = Some("https://sn.devtests.org/kapi/sn");
-        assert_eq!(
-            node_sn_api_url(Some("sn.devtests.org"), None).as_deref(),
-            Some("https://sn.devtests.org/kapi/sn")
+    const DOMAIN: &str = "home.example.com";
+    const SN_API: &str = "https://sn.devtests.org/kapi/sn";
+    const ACCESS_MODES: [&str; 4] = ["nat", "portmap", "wan_dyn", "wan"];
+
+    fn zone_document(sn: Option<&str>) -> ZoneDocument {
+        let owner_key = serde_json::from_value(json!({
+            "kty": "OKP", "crv": "Ed25519", "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }))
+        .unwrap();
+        let mut zone = ZoneDocument::new(
+            name_lib::DID::new("web", DOMAIN),
+            name_lib::DID::new("bns", "alice"),
+            owner_key,
         );
-        assert_eq!(node_sn_api_url(None, ddns).as_deref(), ddns);
-        assert_eq!(node_sn_api_url(None, None), None);
+        zone.hostname = DOMAIN.to_string();
+        zone.sn = sn.map(str::to_string);
+        zone
+    }
+
+    fn device_info(net_id: &str, ddns_sn_url: Option<&str>) -> DeviceInfo {
+        let mut device = name_lib::DeviceDocument::new(
+            "ood1",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+        );
+        device.id = name_lib::DID::new("web", &format!("ood1.{DOMAIN}"));
+        device.net_id = Some(net_id.to_string());
+        device.ddns_sn_url = ddns_sn_url.map(str::to_string);
+        if net_id == "wan" {
+            device.ips = vec!["203.0.113.7".parse().unwrap()];
+        }
+        DeviceInfo::from_device_doc(&device)
+    }
+
+    fn input(
+        sn: Option<&str>,
+        ddns_sn_url: Option<&str>,
+        net_id: &str,
+        hosting: Option<&Value>,
+    ) -> HashMap<String, String> {
+        let zone = serde_json::to_string(&zone_document(sn)).unwrap();
+        let mut input = HashMap::from([
+            ("boot/config".to_string(), serde_json::to_string(&ZoneConfig::new(zone)).unwrap()),
+            (
+                "devices/ood1/info".to_string(),
+                serde_json::to_string(&device_info(net_id, ddns_sn_url)).unwrap(),
+            ),
+            ("nodes/ood1/gateway_config".to_string(), "{}".to_string()),
+        ]);
+        if let Some(hosting) = hosting {
+            input.insert(DOMAIN_HOSTING_KEY.to_string(), hosting.to_string());
+        }
+        input
+    }
+
+    async fn gateway_config(input: &HashMap<String, String>) -> Option<Value> {
+        let nodes = HashSet::from(["ood1".to_string()]);
+        let actions = update_node_gateway_config(&nodes, input).await.unwrap();
+        actions.get("nodes/ood1/gateway_config").map(|action| match action {
+            KVAction::Update(value) => serde_json::from_str(value).unwrap(),
+            _ => panic!("unexpected action"),
+        })
+    }
+
+    fn hosting(mode: &str, certificate: &str) -> Value {
+        let mut hosting = json!({"mode": mode, "certificate": certificate, "domain": DOMAIN});
+        if mode == "dns_api" {
+            hosting["provider"] = json!("cloudflare");
+            hosting["credential_id"] = json!("home-example-com-1a2b3c4d");
+        }
+        hosting
+    }
+
+    fn assert_tls_and_report(config: &Value, case: &str) {
+        let hosts = json!([format!("*.{DOMAIN}"), DOMAIN]);
+        assert_eq!(config["stacks"]["zone_tls"]["bind"], "[::]:443", "{case}");
+        assert_eq!(config["stacks"]["zone_tls"]["hosts"], hosts, "{case}");
+        let paths = buckyos_api::device_identity_paths(&name_lib::DID::new(
+            "web",
+            &format!("ood1.{DOMAIN}"),
+        ))
+        .unwrap();
+        assert_eq!(
+            config["self_cert_report"],
+            json!({
+                "sn": SN_API,
+                "key_path": paths.authentication_private_key.display().to_string(),
+                "device_config_path": paths.did_json.display().to_string(),
+                "hosts": hosts
+            }),
+            "{case}"
+        );
+    }
+
+    fn assert_acme(config: &Value, provider: &str, case: &str) {
+        let hosts = [format!("*.{DOMAIN}"), DOMAIN.to_string()].map(|host| {
+            json!({"host": host, "challenge_type": "dns-01", "dns_provider": provider})
+        });
+        assert_eq!(config["acme"]["hosts"], json!(hosts), "{case}");
+        let params = &config["acme"]["dns_providers"][provider];
+        if provider == "sn-dns" {
+            for key in ["sn", "key_path", "device_config_path"] {
+                assert_eq!(params[key], config["self_cert_report"][key], "{case}");
+            }
+        } else {
+            let path = buckyos_api::identity_roots()
+                .unwrap()
+                .security_root
+                .join("dns_credentials/home-example-com-1a2b3c4d.json");
+            assert_eq!(params, &json!({"credential_path": path.display().to_string()}), "{case}");
+            assert!(path.is_absolute());
+        }
+        assert_eq!(config["acme"]["dns_providers"].as_object().unwrap().len(), 1, "{case}");
+    }
+
+    #[tokio::test]
+    async fn gateway_config_follows_domain_hosting_in_every_access_mode() {
+        for net_id in ACCESS_MODES {
+            let sn = Some("sn.devtests.org");
+            let config = |hosting: Option<Value>| async move {
+                gateway_config(&input(sn, Some(SN_API), net_id, hosting.as_ref())).await.unwrap()
+            };
+
+            let default_hostname = config(None).await;
+            assert_tls_and_report(&default_hostname, net_id);
+            assert_acme(&default_hostname, "sn-dns", net_id);
+            assert!(default_hostname["acme"].get("issuer").is_none());
+
+            for (mode, certificate, provider) in [
+                ("sn", "acme", Some("sn-dns")),
+                ("sn", "upload", None),
+                ("dns_api", "acme", Some("dns-api")),
+                ("dns_api", "upload", None),
+                ("manual", "upload", None),
+            ] {
+                let case = format!("{mode} {certificate} {net_id}");
+                let generated = config(Some(hosting(mode, certificate))).await;
+                assert_tls_and_report(&generated, &case);
+                match provider {
+                    Some(provider) => assert_acme(&generated, provider, &case),
+                    None => assert!(generated.get("acme").is_none(), "{case}"),
+                }
+
+                let staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
+                let mut with_issuer = hosting(mode, certificate);
+                with_issuer["acme_issuer"] = json!(staging);
+                let generated = config(Some(with_issuer)).await;
+                match provider {
+                    Some(_) => assert_eq!(generated["acme"]["issuer"], staging, "{case}"),
+                    None => assert!(generated.get("acme").is_none(), "{case}"),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_zone_without_sn_has_tls_only_with_its_own_domain_hosting() {
+        let none = gateway_config(&input(None, None, "wan", None)).await.unwrap();
+        assert_eq!(none, json!({}));
+
+        let dns_api = hosting("dns_api", "acme");
+        let generated = gateway_config(&input(None, None, "wan", Some(&dns_api))).await.unwrap();
+        assert!(generated["acme"]["dns_providers"].get("dns-api").is_some());
+        assert!(generated["stacks"].get("zone_tls").is_some());
+        assert!(generated.get("self_cert_report").is_none());
+
+        let upload = hosting("manual", "upload");
+        let generated = gateway_config(&input(None, None, "wan", Some(&upload))).await.unwrap();
+        assert!(generated.get("acme").is_none());
+        assert!(generated["stacks"].get("zone_tls").is_some());
+        assert!(generated.get("self_cert_report").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_sn_api_comes_from_the_zone_or_the_device() {
+        for (sn, ddns) in [
+            (Some("sn.devtests.org"), None),
+            (None, Some(SN_API)),
+            (Some("sn.devtests.org"), Some("https://other.example/kapi/sn")),
+        ] {
+            let config = gateway_config(&input(sn, ddns, "wan_dyn", None)).await.unwrap();
+            assert_tls_and_report(&config, "sn api");
+            assert_acme(&config, "sn-dns", "sn api");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_node_writes_domain_hosting_and_users_do_not() {
+        let config = buckyos_api::build_current_rbac_config(Some(
+            "g, ood1, ood\ng, alice, admin\ng, su_alice, su_admin\ng, bob, users\n\
+             g, carol, limited\ng, app:notes.example.com, app\n\
+             g, app:writer.example.com, agent_read_write",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy).await.unwrap();
+        let resource = format!("obj://config/{DOMAIN_HOSTING_KEY}");
+        for (user, app, readable, writable) in [
+            ("ood1", "system:node-daemon", true, true),
+            ("ood1", "system:scheduler", true, true),
+            ("ood1", "system:control-panel", true, true),
+            ("alice", "system:control-panel", true, false),
+            ("alice", "app:notes.example.com", false, false),
+            ("bob", "system:control-panel", false, false),
+            ("bob", "app:writer.example.com", false, false),
+            ("carol", "system:control-panel", false, false),
+        ] {
+            for (action, expected) in
+                [("read", readable), ("write", writable), ("create", writable), ("delete", writable)]
+            {
+                assert_eq!(
+                    rbac::enforce(user, app, &resource, action, None).await,
+                    expected,
+                    "{user} {app} {action}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn changing_the_domain_hosting_makes_the_gateway_config_stale() {
+        let nodes = ["ood1".to_string()];
+        let sn = Some("sn.devtests.org");
+        let mut current = input(sn, Some(SN_API), "nat", None);
+        let stale = |input: &HashMap<String, String>| {
+            !nodes_with_stale_domain_config(nodes.iter(), input).unwrap().is_empty()
+        };
+        for next in [
+            None,
+            Some(hosting("sn", "acme")),
+            Some(hosting("dns_api", "acme")),
+            Some(hosting("dns_api", "upload")),
+        ] {
+            current.remove(DOMAIN_HOSTING_KEY);
+            if let Some(next) = &next {
+                current.insert(DOMAIN_HOSTING_KEY.to_string(), next.to_string());
+            }
+            // SN hosting generates what the default hostname has.
+            assert_eq!(stale(&current), next != Some(hosting("sn", "acme")), "{next:?}");
+            let mut generated = gateway_config(&current).await.unwrap();
+            generated["servers"] = json!({"web_app": {"type": "dir"}});
+            current.insert("nodes/ood1/gateway_config".to_string(), generated.to_string());
+            assert!(!stale(&current), "{next:?}");
+        }
+
+        let mut other_domain = hosting("dns_api", "acme");
+        other_domain["domain"] = json!("other.example.com");
+        for invalid in [json!({}), other_domain] {
+            current.insert(DOMAIN_HOSTING_KEY.to_string(), invalid.to_string());
+            assert!(!stale(&current));
+            assert!(gateway_config(&current).await.is_none());
+        }
+
+        current.remove(DOMAIN_HOSTING_KEY);
+        current.remove("nodes/ood1/gateway_config");
+        assert!(!stale(&current));
     }
 }
 
@@ -2915,6 +3262,10 @@ pub(crate) async fn build_schedule_plan(
     }
 
     if !is_boot {
+        need_update_gateway_node_list.extend(nodes_with_stale_domain_config(
+            scheduler_ctx.nodes.keys(),
+            input_system_config,
+        )?);
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)

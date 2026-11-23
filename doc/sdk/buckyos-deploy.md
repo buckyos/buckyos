@@ -211,7 +211,7 @@ sudo systemctl enable --now buckyos.service
 ssh -N -L 3182:127.0.0.1:3182 "${TARGET_SSH_USER}@${TARGET_SERVER_IP}"
 ```
 
-开发机浏览器打开 `http://127.0.0.1:3182`，按激活向导设置企业 Zone 和 owner。完成后配置企业域名的 DNS、网关路由和 HTTPS 证书，确认能够通过目标域名登录，再为授权人员配置 Zone 运维身份。生产环境不使用 `dev` 预设或开发测试账号。
+开发机浏览器打开 `http://127.0.0.1:3182`，按激活向导设置企业 Zone 和 owner。使用企业自己的域名时，DNS 和证书在向导的域名步骤里配置（SN 托管、手工或 DNS API），全部检测通过才能激活。向导要求 SN 账号；完全不用 SN 的企业部署用 `src/active.ts`，DNS、网关路由和 HTTPS 证书自行配置。确认能够通过目标域名登录，再为授权人员配置 Zone 运维身份。生产环境不使用 `dev` 预设或开发测试账号。
 
 ### 已有环境启动与就绪检查
 

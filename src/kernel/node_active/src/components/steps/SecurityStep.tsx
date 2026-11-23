@@ -13,81 +13,31 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   WEB3_BASE_HOST,
-  SN_API_URL,
   buildWebOwnerDocument,
   check_bucky_username,
   check_sn_active_code,
   generateWebOwnerMaterial,
+  get_net_id_by_gateway_type,
   registerWebOwner,
   resolveEnabledFeatures,
-  waitForRegionProbe,
 } from "../../../active_lib";
-import { RegionProbeStatus, WebOwnerMaterial, WizardData } from "../../types";
-import RegionProbePanel from "../RegionProbePanel";
-import { Lead, StepActions, mono } from "../ui";
+import { errorText, type ErrorText } from "../../errors";
+import { WebOwnerMaterial, WizardData } from "../../types";
+import type { RegionProbe } from "../useRegionProbe";
+import { ErrorAlert, Lead, StepActions, mono } from "../ui";
+import RestoreIdentity from "./RestoreIdentity";
 
 type Props = {
   wizardData: WizardData;
   onUpdate: (data: Partial<WizardData>) => void;
   onNext: () => void;
+  onBack: () => void;
+  region: RegionProbe;
 };
 
 type NameStatus = "idle" | "checking" | "ok" | "taken" | "invalid";
 type ActiveCodeStatus = "idle" | "checking" | "valid" | "invalid";
-type Phase = "generate" | "backup" | "registering" | "complete";
-const REGION_PREFERENCE_STORAGE_KEY = "buckyos.node_active.region_preference";
-
-function unavailableRegionProbeStatus(): RegionProbeStatus {
-  return {
-    phase: "unavailable",
-    region: null,
-    source: "none",
-    config_version: null,
-    confidence: "none",
-    measured_at: null,
-    expires_at: null,
-    available_regions: [],
-    regions: [],
-  };
-}
-
-function loadSavedRegionPreference(): string {
-  try {
-    const value = JSON.parse(localStorage.getItem(REGION_PREFERENCE_STORAGE_KEY) || "null") as {
-      sn_url?: unknown;
-      region?: unknown;
-    } | null;
-    if (
-      value?.sn_url === SN_API_URL &&
-      typeof value.region === "string" &&
-      /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.region)
-    ) {
-      return value.region;
-    }
-  } catch {
-    return "auto";
-  }
-  return "auto";
-}
-
-function saveRegionPreference(region: string, configVersion: string | null) {
-  try {
-    if (region === "auto") {
-      localStorage.removeItem(REGION_PREFERENCE_STORAGE_KEY);
-      return;
-    }
-    localStorage.setItem(
-      REGION_PREFERENCE_STORAGE_KEY,
-      JSON.stringify({
-        sn_url: SN_API_URL,
-        region,
-        config_version: configVersion,
-      }),
-    );
-  } catch {
-    return;
-  }
-}
+type Phase = "generate" | "backup" | "registering" | "restore" | "complete";
 
 function confirmationPositions(): [number, number] {
   const bytes = new Uint8Array(2);
@@ -98,7 +48,7 @@ function confirmationPositions(): [number, number] {
   return first < second ? [first, second] : [second, first];
 }
 
-const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
+const SecurityStep = ({ wizardData, onUpdate, onNext, onBack, region }: Props) => {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>(
     wizardData.owner_document ? "complete" : wizardData.web_owner_material ? "backup" : "generate",
@@ -115,58 +65,9 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
   const [activeCodeStatus, setActiveCodeStatus] = useState<ActiveCodeStatus>("idle");
-  const [error, setError] = useState("");
-  const [regionPreference, setRegionPreference] = useState(
-    wizardData.region_preference === "auto"
-      ? loadSavedRegionPreference()
-      : wizardData.region_preference,
-  );
-  const [regionProbeStatus, setRegionProbeStatus] = useState<RegionProbeStatus | null>(
-    wizardData.region_probe_status,
-  );
-  const mountedRef = useRef(true);
-  const probePromiseRef = useRef<Promise<RegionProbeStatus> | null>(null);
+  const [error, setError] = useState<ErrorText | null>(null);
   const registrationRegionRef = useRef<{ name: string; region: string | null } | null>(null);
-
-  const runRegionProbe = (force = false): Promise<RegionProbeStatus> => {
-    if (!force && probePromiseRef.current) return probePromiseRef.current;
-    const promise = waitForRegionProbe(force)
-      .catch(() => unavailableRegionProbeStatus())
-      .then((status) => {
-        if (mountedRef.current) {
-          setRegionProbeStatus(status);
-          onUpdate({ region_probe_status: status });
-        }
-        return status;
-      })
-      .finally(() => {
-        if (probePromiseRef.current === promise) probePromiseRef.current = null;
-      });
-    probePromiseRef.current = promise;
-    return promise;
-  };
-
-  useEffect(() => {
-    mountedRef.current = true;
-    void runRegionProbe();
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (
-      regionPreference !== "auto" &&
-      regionProbeStatus?.config_version &&
-      !regionProbeStatus.available_regions.some(
-        (region) => region.region_id === regionPreference,
-      )
-    ) {
-      setRegionPreference("auto");
-      saveRegionPreference("auto", null);
-      onUpdate({ region_preference: "auto" });
-    }
-  }, [regionPreference, regionProbeStatus]);
+  const fail = (message: string) => setError({ message });
 
   useEffect(() => {
     const name = username.trim().toLowerCase();
@@ -214,16 +115,8 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
     };
   }, [activeCode]);
 
-  useEffect(
-    () => () => {
-      setMaterial(null);
-      setConfirmWords(["", ""]);
-    },
-    [],
-  );
-
   const generateMaterial = async () => {
-    setError("");
+    setError(null);
     try {
       const next = await generateWebOwnerMaterial();
       const nextPositions = confirmationPositions();
@@ -235,62 +128,36 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
         web_owner_material: next,
         evm_address: next.evm_address,
         owner_document: null,
-        prepared_documents: null,
-        signed_documents: null,
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorText(t, cause));
     }
   };
 
   const register = async () => {
-    setError("");
-    if (!material) return setError(t("error_activation_failed", "Identity material is missing"));
+    setError(null);
+    if (!material) return;
     const normalizedName = username.trim().toLowerCase();
-    if (nameStatus === "taken") {
-      return setError(
-        t(
-          "existing_owner_requires_wallet",
-          "This name already exists. Use the BuckyOS App wallet that owns it.",
-        ),
-      );
-    }
-    if (nameStatus !== "ok") return setError(t("error_name_invalid", "Invalid username"));
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      return setError(t("error_email_invalid", "Enter a valid email address"));
-    }
-    if (!activeCode.trim()) {
-      return setError(t("invite_code_placeholder", "Please enter invitation code"));
-    }
-    if (activeCodeStatus === "checking") {
-      return setError(t("invite_checking", "Checking invitation code…"));
-    }
-    if (activeCodeStatus !== "valid") {
-      return setError(t("error_invite_code_invalid", "Invitation code is incorrect"));
-    }
-    if (!password || password !== passwordConfirm) {
-      return setError(t("error_password_mismatch", "Passwords do not match"));
-    }
+    if (nameStatus === "taken") return fail(t("error_name_registered"));
+    if (nameStatus !== "ok") return fail(t("error_name_invalid"));
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return fail(t("error_email_invalid"));
+    if (!activeCode.trim()) return fail(t("invite_code_placeholder"));
+    if (activeCodeStatus === "checking") return fail(t("invite_checking"));
+    if (activeCodeStatus !== "valid") return fail(t("error_invite_code_invalid"));
+    if (!password || password !== passwordConfirm) return fail(t("error_password_mismatch"));
     const wordsConfirmed = positions.every(
       (position, index) =>
         confirmWords[index].trim().toLowerCase() === material.mnemonic_words[position],
     );
-    if (!wordsConfirmed) {
-      return setError(t("mnemonic_confirmation_failed", "Mnemonic confirmation is incorrect"));
-    }
+    if (!wordsConfirmed) return fail(t("mnemonic_confirmation_failed"));
 
     setPhase("registering");
     try {
-      let selectedRegion: string | null;
-      let effectiveProbeStatus = regionProbeStatus;
-      if (registrationRegionRef.current?.name === normalizedName) {
-        selectedRegion = registrationRegionRef.current.region;
-      } else if (regionPreference !== "auto") {
-        selectedRegion = regionPreference;
-      } else {
-        effectiveProbeStatus = await runRegionProbe();
-        selectedRegion = effectiveProbeStatus.region;
-      }
+      const netId = get_net_id_by_gateway_type(wizardData.gatewy_type, wizardData.port_mapping_mode);
+      const selectedRegion =
+        registrationRegionRef.current?.name === normalizedName
+          ? registrationRegionRef.current.region
+          : await region.resolve(netId);
       const pwdHash = await buckyos.hashPassword(normalizedName, password);
       const ownerDocument = buildWebOwnerDocument(normalizedName, material);
       registrationRegionRef.current = { name: normalizedName, region: selectedRegion };
@@ -307,14 +174,13 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
         sn_user_name: normalizedName,
         sn_active_code: activeCode.trim(),
         sn_access_token: result.access_token,
+        sn_access_token_at: Date.now(),
         sn_refresh_token: result.refresh_token,
         admin_password_hash: pwdHash,
         owner_document: ownerDocument,
         evm_address: material.evm_address,
         web_owner_material: material,
         enabled_features: resolveEnabledFeatures(activeCode, wizardData.enabled_features),
-        region_preference: regionPreference,
-        region_probe_status: effectiveProbeStatus,
         selected_region: selectedRegion,
       });
       setPassword("");
@@ -323,30 +189,63 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
       setPhase("complete");
     } catch (cause) {
       setPhase("backup");
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorText(t, cause));
     }
   };
+
+  const backButton = (
+    <Button variant="text" onClick={onBack}>
+      {t("back_button")}
+    </Button>
+  );
+
+  if (phase === "restore") {
+    return (
+      <RestoreIdentity
+        initialName={username.trim().toLowerCase()}
+        onCancel={() => {
+          setError(null);
+          setPhase(material ? "backup" : "generate");
+        }}
+        onRestored={(restored) => {
+          onUpdate({
+            sn_user_name: restored.ownerDocument.name,
+            sn_active_code: "",
+            sn_access_token: restored.accessToken,
+            sn_access_token_at: Date.now(),
+            sn_refresh_token: restored.refreshToken,
+            admin_password_hash: restored.pwdHash,
+            owner_document: restored.ownerDocument,
+            evm_address: restored.material.evm_address,
+            web_owner_material: restored.material,
+            enabled_features: { llm_router: true },
+            selected_region: null,
+          });
+          onNext();
+        }}
+      />
+    );
+  }
 
   if (phase === "generate") {
     return (
       <Stack spacing={3}>
-        <Lead>
-          {t(
-            "mnemonic_generate_intro",
-            "Generate one recovery phrase for both your Owner identity and BNS asset-owner wallet.",
-          )}
-        </Lead>
-        {error && <Alert severity="error">{error}</Alert>}
-        <StepActions>
+        <Lead>{t("mnemonic_generate_intro")}</Lead>
+        {error && <ErrorAlert {...error} />}
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
           <Button
             variant="contained"
             size="large"
             startIcon={<KeyRound size={18} strokeWidth={1.75} />}
             onClick={generateMaterial}
           >
-            {t("generate_identity_material", "Generate identity material")}
+            {t("generate_identity_material")}
           </Button>
-        </StepActions>
+          <Button variant="outlined" size="large" onClick={() => setPhase("restore")}>
+            {t("already_registered")}
+          </Button>
+        </Stack>
+        <StepActions back={backButton} />
       </Stack>
     );
   }
@@ -354,17 +253,8 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
   if (phase === "complete") {
     return (
       <Stack spacing={3}>
-        <RegionProbePanel
-          preference={regionPreference}
-          status={regionProbeStatus}
-          locked
-          onPreferenceChange={() => undefined}
-          onRetry={() => undefined}
-        />
-        <Alert severity="success">
-          {t("owner_registration_complete", "OwnerDocument and BNS name are registered.")}
-        </Alert>
-        <StepActions>
+        <Alert severity="success">{t("owner_registration_complete")}</Alert>
+        <StepActions back={backButton}>
           <Button variant="contained" size="large" onClick={onNext} sx={{ minWidth: 120 }}>
             {t("next_button")}
           </Button>
@@ -381,27 +271,9 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
 
   return (
     <Stack spacing={4}>
-      <RegionProbePanel
-        preference={regionPreference}
-        status={regionProbeStatus}
-        locked={
-          phase === "registering" ||
-          registrationRegionRef.current?.name === username.trim().toLowerCase()
-        }
-        onPreferenceChange={(preference) => {
-          setRegionPreference(preference);
-          saveRegionPreference(preference, regionProbeStatus?.config_version || null);
-          onUpdate({ region_preference: preference });
-        }}
-        onRetry={() => void runRegionProbe(true)}
-      />
-
       <Stack spacing={2}>
         <Alert severity="warning">
-          {t(
-            "mnemonic_backup_warning",
-            "Write these 12 words down in order. They are the only recovery method for this identity.",
-          )}
+          {t("mnemonic_backup_warning")}
         </Alert>
         <Box
           sx={{
@@ -454,10 +326,7 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
               {material?.evm_address || ""}
             </Typography>
             <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.5 }}>
-              {t(
-                "evm_asset_owner_hint",
-                "This recoverable EVM address is the asset_owner of your BNS name.",
-              )}
+              {t("evm_asset_owner_hint")}
             </Typography>
           </Box>
         </Box>
@@ -465,7 +334,7 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
           {positions.map((position, index) => (
             <TextField
               key={position}
-              label={t("mnemonic_word_position", "Word #{{position}}", { position: position + 1 })}
+              label={t("mnemonic_word_position", { position: position + 1 })}
               value={confirmWords[index]}
               autoComplete="off"
               inputProps={{ autoCapitalize: "none", spellCheck: false }}
@@ -501,7 +370,7 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
           required
           type="email"
           autoComplete="email"
-          label={t("email_placeholder", "Email")}
+          label={t("email_placeholder")}
           value={email}
           onChange={(event) => setEmail(event.target.value)}
         />
@@ -554,12 +423,27 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
         </Stack>
       </Stack>
 
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && <ErrorAlert {...error} />}
+      {nameStatus === "taken" && (
+        <Button
+          variant="outlined"
+          sx={{ alignSelf: "flex-start" }}
+          onClick={() => setPhase("restore")}
+          disabled={phase === "registering"}
+        >
+          {t("already_registered")}
+        </Button>
+      )}
       <StepActions
         back={
-          <Button variant="text" onClick={generateMaterial} disabled={phase === "registering"}>
-            {t("regenerate_identity", "Regenerate")}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button variant="text" onClick={onBack} disabled={phase === "registering"}>
+              {t("back_button")}
+            </Button>
+            <Button variant="text" onClick={generateMaterial} disabled={phase === "registering"}>
+              {t("regenerate_identity")}
+            </Button>
+          </Stack>
         }
       >
         <Button
@@ -570,7 +454,7 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
           startIcon={phase === "registering" ? <CircularProgress size={16} thickness={5} color="inherit" /> : undefined}
           sx={{ minWidth: 120 }}
         >
-          {phase === "registering" ? t("registering", "Registering…") : t("register_button", "Register")}
+          {phase === "registering" ? t("registering") : t("register_button")}
         </Button>
       </StepActions>
     </Stack>

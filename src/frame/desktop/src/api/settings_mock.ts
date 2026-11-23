@@ -208,7 +208,7 @@ const GATEWAY_FILES: Record<string, string> = {
 function gatewayOverview(): GatewayOverviewResponse {
   const modifiedAt = new Date(Date.now() - 86_400_000).toISOString()
   return {
-    mode: 'sn',
+    mode: 'default',
     etcDir: '/opt/buckyos/etc',
     files: Object.entries(GATEWAY_FILES).map(([name, content]) => ({
       name,

@@ -73,18 +73,30 @@ Device -> SN -> OOD1 -> Target Node
 
 这条路径对应的 Tunnel URL 形如 `rtcp://<SN-did>/rtcp://<OOD1-did>/rtcp://<Target-did>/`，其中"经过 SN"是配置事实，不是兜底动作。
 
-### 是否需要 SN：以 net_id 为锚点
+### 对 SN 的依赖：三件独立的事
 
-SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决定。判定逻辑实现在 [node_daemon.rs:864](src/kernel/node_daemon/src/node_daemon.rs:864)：**仅当配置了 SN 且 `net_id` 不以 `wan` 开头时才会 `keep_tunnel` 到 SN**。
+走不走 SN 中转、SN 应不应答地址、SN 应不应答其它记录，由不同的东西决定，不能合成一个“需不需要 SN”：
 
-| net_id | 是否 keep_tunnel 到 SN | SN 必备能力 |
+| 事情 | 由什么决定 | 规则 |
 | --- | --- | --- |
-| `nat` | 是 | DDNS + TXT + 证书 + HTTPS/RTCP relay + keep-tunnel target |
-| `portmap` | 是（443 不可达时） | DDNS + HTTPS relay + keep-tunnel target |
-| `wan_dyn` | 否 | DDNS + TXT 引导（IP 会变动） |
-| `wan` | 否 | 可选；最多承担命名/证书便利 |
+| 流量经 SN 中转 | 只看接入方式（`net_id`） | `nat` 全部；`portmap` 只有 HTTP(S)，RTCP 直连；`wan_dyn` 平时直连，保留后备隧道；`wan` 不用 |
+| SN 应答地址（A / AAAA） | 名字是否由 SN 解析：默认域名、自有域名 NS 委派给 SN（SN 托管），或记录 CNAME 到 `<用户名>.web3.<SN>` | `nat`、`portmap` 应答 relay；`wan_dyn` 应答上报的公网 IP；`wan` 应答签名文档里的固定 IP |
+| SN 应答其它记录（证书挑战等 TXT） | 域名的 NS 是否在 SN：默认域名和 SN 托管 | 自有域名的手工和 DNS API 托管不用这一项 |
 
-`ddns_sn_url` 只在 `net_id` 为 `wan_dyn` 或 `portmap` 时由激活流程自动写入（见 [active_server.rs:507](src/kernel/node_daemon/src/active_server.rs:507)），用于运行期持续上报地址变化。
+隧道的判定在 [sn_zone_info.rs](../../../src/kernel/node_daemon/src/sn_zone_info.rs) 的 `device_requires_sn_keep_tunnel`：`net_id` 不是 `wan` 就连 relay。地址上报和 `self_cert` 上报对所有接入方式都做。
+
+SN 的应答规则没有改，由激活发布的文档决定：
+
+| net_id | keep_tunnel 到 SN | 激活发布的文档 | SN 应答的地址 |
+| --- | --- | --- | --- |
+| `nat` | 是 | mini 设备文档不写 `net_id` | relay |
+| `portmap` | 是 | mini 设备文档不写 `net_id` | relay |
+| `wan_dyn` | 是，作后备 | mini 设备文档写 `net_id = wan_dyn` | 设备上报的公网 IP |
+| `wan` | 否 | `DeviceDocument.ips` 和 `ZoneDocument` 的 `gateway_ips` 写固定 IP | `gateway_ips` |
+
+走激活页面的 Zone 都有 SN 账号，`ZoneDocument.sn`、`BootDocument.sn` 和 `DeviceDocument.ddns_sn_url` 一律写入，不代表要中转。没有 SN 的 Zone 用 `src/active.ts` 激活。
+
+自有域名的三种 DNS 托管（SN 托管、手工、DNS API）见 [zone-boot-config与zone-gateway.md](zone-boot-config与zone-gateway.md) 的 B1 和 C 节。
 
 ### 集群演进中 SN 角色的弱化
 
@@ -93,7 +105,7 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 - **单 OOD + 无公网入口 + SN**：最常见家庭形态，SN 兜底所有公网相关能力；
 - **单 OOD + 公网 ZoneGatewayNode**：用一台廉价 VPS 充当 ZoneGateway，DDNS/TXT/keep-tunnel/relay 大部分迁到 ZoneGateway，SN 可降级为引导兜底；
 - **2n+1 OOD（多 LAN）**：OOD 间的 keep-tunnel 主要靠 ZoneGateway 或公网 OOD，SN 仍然是最坏情况下的 relay 候选；
-- **wan + 自有域名**：唯一可以完全不需要 SN 的形态。
+- **wan + 自有域名 + `src/active.ts` 命令行激活**：唯一完全不需要 SN 的形态。走激活页面的 `wan` + 自有域名（手工或 DNS API 托管）不用 SN 应答地址、签证书和中转，但仍有 SN 账号。
 
 也就是说，SN 是"用户可达性能力还不完整时的合成器"，而不是 Zone 永久依赖的中心点。从 ZoneBootConfig 移除 SN 配置只会减少候选路径，不会破坏 Zone 内的真相源（system-config 仍由 OOD quorum 决定）。
 
@@ -126,7 +138,7 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 - OOD/ZoneGateway 周期性上报当前 WAN 地址、设备状态；
 - SN 用最新地址刷新 A/AAAA 与 TXT；
 - 对应实现：`sn_update_device_online()`、`report_ood_info_to_sn()`（[node_daemon.rs](../../../src/kernel/node_daemon/src/node_daemon.rs)）；
-- 触发条件：`net_id` 为 `wan_dyn` 或 `portmap` 时由激活流程自动写入 `ddns_sn_url`。
+- 触发条件：激活流程对所有接入方式写入 `ddns_sn_url`；SN 应答什么地址由激活发布的文档决定（见“对 SN 的依赖”）。
 
 ### 3. 设备登记与查询 —— 给同 Zone 设备提供发现兜底
 
@@ -138,8 +150,9 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 ### 4. TLS 证书协助
 
 - SN 持有自己 hostname 的 TLS 证书。HTTPS 流量先到 SN，再以 SNI/RTCP 方式 relay 到 ZoneGateway；
-- 对于使用 SN 二级域名的 Zone，SN 侧可代为完成 ACME 挑战（HTTP-01 / DNS-01）；
-- 对于使用自有域名的 Zone，SN 也可以在 SN 侧绑定该 hostname 来承担 relay。
+- 对于使用 SN 二级域名的 Zone，以及 NS 委派给 SN 的自有域名（SN 托管），节点把 ACME DNS-01 的挑战写到 SN（`sn-dns`）；
+- 自有域名的 DNS API 托管由节点把挑战写到 DNS 服务商（`dns-api`），手工托管由用户上传证书，SN 都不参与；
+- relay 只按绑定关系路由，自有域名不要求 NS 委派给 SN；HTTPS 转发还要 `self_cert = true`，由网关按 TLS 栈实际加载到 `<域名>` 和 `*.<域名>` 的证书上报，与证书来源无关。
 - 注意：Zone 自己的 TLS 证书（`$zonehostname` 与 `*.$zonehostname`）由 ZoneGateway/OOD 持有，SN 永远拿不到 Zone 私钥。SN 拥有命名解析权意味着它可以在用户不知情的情况下重新申请证书，这一点是 SN 信任模型的核心边界（参见 `zone-boot-config与zone-gateway.md`"伪造 TLS 证书风险"一节）。
 
 ### 5. HTTPS Relay —— 443 不可达时的公网入口
@@ -167,7 +180,8 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 | `ZoneBootConfig.sn` | SN 主机名/地址，Zone 在 Zone 外可信发布 | `buckyos-base/src/name-lib/src/zone.rs` |
 | `sn_zone_info.json` | `zone.get_info` 的本机缓存；非空 `relay_sn` 是 keep-tunnel 目标，为 `null` 时回退到 `ZoneBootConfig.sn` | `$BUCKYOS_ROOT/etc/` |
 | `ZoneConfig.sn_url` | SN API URL，由 BootConfig 生成或激活流程写入 | `system_config_builder.rs add_boot_config` |
-| `DeviceConfig.ddns_sn_url` | 仅 `wan_dyn`/`portmap` 入口节点设置，运行期 DDNS 上报 | `active_server.rs:507` |
+| `DeviceConfig.ddns_sn_url` | 激活时一律写入，运行期地址和 `self_cert` 上报 | `active_server.rs` |
+| `system/domain_hosting` | 自有域名的托管方式和证书来源（`DomainHosting`），默认域名没有 | `src/kernel/buckyos-api/src/domain_hosting.rs` |
 | `sn_username` / `sn_device_proof` | 激活期 SN deviceinfo 上报的账号名与设备私钥证明 | `active_server.rs` |
 | SN API 根路径 | `/kapi/sn/auth` 与 `/kapi/sn/deviceinfo`（kRPC over HTTPS） | `cyfs-gateway-api/sn_client.rs` |
 | BNS API 根路径 | `/kapi/bns`，用于 BNS 匿名读与 EVM TX 写入 | `bns-client` |
@@ -178,7 +192,7 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 
 ```text
 if zone_document.sn.is_some() {
-    if ood1.device_config.net_id 不以 "wan" 开头 {
+    if ood1.device_config.net_id 不是 "wan" {
         zone_info = load_or_refresh_sn_zone_info()
         keep_tunnel_to(zone_info.relay_sn.unwrap_or(zone_document.sn))
     }
@@ -186,7 +200,7 @@ if zone_document.sn.is_some() {
 }
 ```
 
-未设置 `sn_url`、且 `net_id` 不以 `wan` 开头的 OOD 不会触发任何 SN 逻辑（这种 Zone 实际上只能在局域网内使用）。
+未设置 SN 的 OOD 不会触发任何 SN 逻辑。这种 Zone 只有 `wan` 能从外网访问，其它接入方式只能在局域网内使用。
 
 ## 一句话总结
 

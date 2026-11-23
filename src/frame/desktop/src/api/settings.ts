@@ -150,7 +150,7 @@ export interface ZoneDevicesResponse {
   zone_did: string
   hostname?: string | null
   owner_did?: string | null
-  /** SN host when the Zone is reached through an SN. */
+  /** The SN host named by the Zone document, whether or not traffic goes through it. */
   sn?: string | null
   local_device: string
   online_window_secs: number
@@ -317,7 +317,8 @@ export interface ConfigFileSummary {
 }
 
 export interface GatewayOverviewResponse {
-  mode: string
+  /** `default` hostname, or how the Zone's own domain is hosted; null when that could not be read. */
+  mode: 'default' | 'sn' | 'manual' | 'dns_api' | null
   etcDir: string
   files: ConfigFileSummary[]
   tlsDomains: string[]

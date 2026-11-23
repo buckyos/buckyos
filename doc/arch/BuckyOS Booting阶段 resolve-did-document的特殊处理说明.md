@@ -233,7 +233,9 @@ Boot Resolve 的处理结果取决于当前节点是否曾经成功启动过。
 
 ### 8.1 首次启动 / 初始化启动
 
-首次启动时，节点没有可用的历史运行态。
+首次启动指节点没有可用的 Last Known Good State。
+
+经激活页面激活的节点不会走到这里：激活已经写入了 Last Known Good State（§14.1），首次启动按 §8.2 的 Warm Restart 走。以下情况仍是首次启动：激活时没能写入，状态文件被删或损坏，以及不经激活页面的激活（`src/active.ts`、开发配置）。后者用 `{zone host}.zone.json` 旁路文件或网络发现取得 Zone Document。
 
 此时如果无法获得一个可接受的 Zone Document，系统无法继续初始化。
 
@@ -262,7 +264,7 @@ Resolve Zone Document
 
 ### 8.2 正常重启 / Warm Restart
 
-如果节点曾经成功运行过，那么本地已经存在一个可用的历史运行态。
+如果节点曾经成功运行过，或刚由激活写入，那么本地已经存在一个可用的历史运行态。
 
 这个状态包括但不限于：
 
@@ -447,6 +449,7 @@ Activation 阶段可以执行：
 - Resolve Owner Document；
 - 验证 Owner 身份；
 - 写入 `node_identity`；
+- 写入 Last Known Good State（见下）；
 - 建立本地 Root Trust；
 - 初始化节点身份；
 - 将节点加入某个 Zone。
@@ -454,6 +457,24 @@ Activation 阶段可以执行：
 Activation 的职责是：
 
 > 建立信任。
+
+#### 激活写入 Last Known Good State
+
+`commit_active` 成功时，把本次签出的 Zone Document 写成 Last Known Good State（`$BUCKYOS_ROOT/etc/<zone host>.zone_lkgs.json`），首次启动就按 Warm Restart 走（§16.2）。
+
+**为什么。** 首次启动的发现步骤会先请求自己的 `https://<域名>/.well-known/zone.json` 和 `did.json`。这时 Zone 还没起来：
+
+- 路由器不支持回环时（`wan_dyn` 在家里访问自己的公网 IP），连接被丢包，每次要等连接超时；整步只有 10 秒，超时后不会再用激活时存到本机的 Zone Document，改查 BOOT TXT。
+- 自有域名不写 BOOT TXT，查不到就是 Boot Failed。
+
+激活刚刚建立了信任，本机这份文档是 owner 签的、已经发布到 BNS 并读回确认的，不需要再经网络发现一次才能启动。
+
+**覆盖规则。**
+
+- 只写本次激活的 Zone。同一个 Zone 已有的状态直接覆盖，不经过 §7 的平滑升级判断：重新激活是 owner 的显式操作，旧状态对应的是上一次激活。
+- 写不成时删除旧状态。旧状态可能与新的 `node_identity` 不一致，留着会让节点用旧文档启动；删除后退回首次启动，激活本身不因此失败。
+- 其它 Zone 的状态文件不动。读取时按 `node_identity` 的 Zone DID 和 owner 公钥校验，对不上的当作没有。
+- 之后启动仍会做网络发现：发现到的文档 `iat` 更新且能平滑演进就接受并写入，否则忽略，规则不变（§8.2、§11）。
 
 ---
 
@@ -541,7 +562,7 @@ Load Last Known Good State
   │      ▼
   │   First Boot Path
   │
-  └── Exists
+  └── Exists（含激活刚写入的）
          ▼
       Warm Restart Path
 ```

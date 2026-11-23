@@ -1,0 +1,201 @@
+{
+  "fields": {
+    "cloudflare": {
+      "api_token": "API Token"
+    },
+    "godaddy": {
+      "access_token": "Personal Access Token"
+    },
+    "route53": {
+      "access_key_id": "存取金鑰 ID（Access key ID）",
+      "secret_access_key": "私密存取金鑰（Secret access key）",
+      "hosted_zone_id": "託管區域 ID（Hosted zone ID）"
+    },
+    "porkbun": {
+      "api_key": "API Key",
+      "secret_api_key": "Secret Key"
+    },
+    "ionos": {
+      "api_key": "API Key（前綴.Secret）"
+    },
+    "ovh": {
+      "region": "區域",
+      "application_key": "Application key",
+      "application_secret": "Application secret",
+      "consumer_key": "Consumer key"
+    },
+    "hetzner": {
+      "api_token": "API token"
+    },
+    "gandi": {
+      "personal_access_token": "Personal Access Token"
+    },
+    "digitalocean": {
+      "api_token": "Personal access token"
+    },
+    "google_cloud": {
+      "service_account_json": "服務帳戶金鑰（JSON）",
+      "project_id": "專案 ID"
+    },
+    "azure": {
+      "tenant_id": "目錄 (租用戶) ID",
+      "client_id": "應用程式 (用戶端) ID",
+      "client_secret": "用戶端密碼的值",
+      "subscription_id": "訂用帳戶 ID",
+      "resource_group": "資源群組"
+    },
+    "namecom": {
+      "username": "使用者名稱",
+      "api_token": "API Token"
+    },
+    "hostinger": {
+      "api_token": "API token"
+    },
+    "desec": {
+      "api_token": "Token"
+    },
+    "inwx": {
+      "username": "使用者名稱",
+      "password": "密碼",
+      "shared_secret": "Shared secret（Mobile-TAN）"
+    },
+    "netcup": {
+      "customer_number": "客戶編號（只用於 Legacy API）",
+      "api_key": "API Key",
+      "api_password": "Legacy API Password（只用於 Legacy API）"
+    },
+    "transip": {
+      "login": "帳戶名稱",
+      "private_key": "私密金鑰（Private Key）"
+    },
+    "alidns": {
+      "access_key_id": "AccessKey ID",
+      "access_key_secret": "AccessKey Secret"
+    },
+    "dnspod": {
+      "secret_id": "SecretId",
+      "secret_key": "SecretKey"
+    },
+    "sakura": {
+      "access_token": "アクセストークン（Access token）",
+      "access_token_secret": "アクセストークンシークレット（Access token secret）"
+    }
+  },
+  "steps": {
+    "cloudflare": [
+      "用這裡的連結開啟 Token 頁面，會自動填好兩個權限：Zone > DNS > Edit 和 Zone > Zone > Read，沒有填好的自己加上。",
+      "資源只選這裡要用的那一個網域（zone），不要選全部網域。",
+      "不要設定「Token expiration」和「Client IP Address Filtering」：節點會長期使用這個 Token，公網位址也可能變動。",
+      "按「Continue to summary」再按「Create Token」，複製 Token，它只顯示一次。"
+    ],
+    "godaddy": [
+      "登入 developer.godaddy.com/personal-access-token，按「Generate Token」。",
+      "在「Permissions」展開「Domains & DNS」，只選 domains.domain:read 和 domains.dns:update。",
+      "「Expires After」選最長的 1 year，並在到期前更換。",
+      "按「Create Token」，再按「Copy Token」，它只顯示一次。"
+    ],
+    "route53": [
+      "在 Route 53 開啟你的託管區域，複製託管區域 ID。",
+      "在 IAM 按「Policies」>「Create policy」>「JSON」，貼上 BuckyOS 儲存庫 doc/user/dns-providers/route53.md 裡的政策，它只允許這個託管區域和 BuckyOS 要寫的記錄名稱。",
+      "建立一個不能登入主控台的 IAM 使用者，附加這個政策。",
+      "開啟這個使用者的「Security credentials」>「Create access key」>「Other」，複製兩個值，私密存取金鑰只顯示一次。"
+    ],
+    "porkbun": [
+      "開啟「ACCOUNT」>「API Access」，填標題，權限選「Manage, but no purchases」。",
+      "把網域限定為你的網域，IP 位址留空，因為節點的公網位址可能變動。",
+      "按「Create API Key」，複製 API Key 和 Secret Key，Secret Key 只顯示一次。",
+      "開啟「ACCOUNT」>「Domain Management」，在網域右側按「Details」，開啟「API Access」。"
+    ],
+    "ionos": [
+      "第一次使用時，先在 my.ionos.com/shop/product/ionos-api（換成你所在國家的 IONOS 網站）開通 API。",
+      "開啟 developer.hosting.ionos.com/keys，按「Create New Key」。",
+      "複製 Public Prefix 和 Secret，用英文句點連起來填寫（前綴.Secret），Secret 只顯示一次。"
+    ],
+    "ovh": [
+      "開啟你所在區域的頁面並登入：歐洲 auth.eu.ovhcloud.com/api/createToken，加拿大和亞太 auth.ca.ovhcloud.com/api/createToken，美國 auth.us.ovhcloud.com/api/createToken。",
+      "「Validity」選「Unlimited」，不要限制 IP。",
+      "在「Rights」為 /domain/zone/example.com/* 新增 GET、POST、PUT、DELETE，把 example.com 換成你的網域。",
+      "按「Create keys」，複製 application key、application secret 和 consumer key。"
+    ],
+    "hetzner": [
+      "開啟 console.hetzner.com，進入這個網域的 DNS zone 所在的專案；舊 DNS Console 的 token 已經不能用。",
+      "開啟「Security」>「API tokens」>「Generate API token」，權限選「Read & Write」。",
+      "複製 token，關閉視窗後不能再看；它能操作整個專案裡的資源。"
+    ],
+    "gandi": [
+      "開啟你的使用者名稱的設定，按「View my personal access tokens」，再按「Create a token」。",
+      "「Expires in」選最長的 1 year，並在到期前更換。",
+      "選「Restrict to selected products」並選中你的網域，權限勾選「Manage domain name technical configurations」。",
+      "按「Create」並複製 token，它只顯示一次。"
+    ],
+    "digitalocean": [
+      "開啟「API」>「Tokens」，按「Generate New Token」。",
+      "「Expiration」選最長的期限，並在到期前更換。",
+      "選「Custom Scopes」，勾選 domain 的 create、read、update、delete；這裡不能只限定一個網域。",
+      "按「Generate Token」並複製，它只顯示一次。"
+    ],
+    "google_cloud": [
+      "在 DNS 區域所在的專案裡，開啟「IAM & Admin」>「Service Accounts」（服務帳戶），建立一個服務帳戶。",
+      "給它「DNS Administrator」角色（roles/dns.admin）。",
+      "開啟這個服務帳戶的「Keys」（金鑰）>「Add key」（新增金鑰）>「Create new key」，選 JSON。",
+      "把下載的檔案內容全部貼進來；檔案裡有專案 ID，專案 ID 可以不填。"
+    ],
+    "azure": [
+      "在「Entra ID」>「應用程式註冊」按「新增註冊」，然後複製目錄 (租用戶) ID 和應用程式 (用戶端) ID。",
+      "開啟「憑證和祕密」>「新增用戶端密碼」，選最長的期限（最多 24 個月），複製「值」（Value），不是「祕密識別碼」（Secret ID）。",
+      "在 Azure 入口網站開啟你的 DNS 區域>「存取控制 (IAM)」>「新增角色指派」，把「DNS Zone Contributor」角色給這個應用程式。",
+      "在 DNS 區域的概觀頁複製訂用帳戶 ID 和資源群組。",
+      "在用戶端密碼到期前更換。"
+    ],
+    "namecom": [
+      "開啟「Account Settings」>「Security」>「API Tokens」，建立 Production token。",
+      "不要加 IP 白名單，因為節點的公網位址可能變動。",
+      "如果開了兩步驟驗證，在「Security」頁底部開啟「name.com API Access」。",
+      "填寫你的 name.com 使用者名稱和 token。"
+    ],
+    "hostinger": [
+      "開啟 hpanel.hostinger.com/profile/api，按「New」。",
+      "填名稱，有效期選最長的，並在到期前更換。",
+      "按「Generate」並複製 token，它只顯示一次，權限與你的使用者相同。"
+    ],
+    "desec": [
+      "登入 desec.io，開啟「Token Management」。",
+      "新增一個 token，「Can create domains」和「Can delete domains」保持關閉。",
+      "進階設定裡的「Maximum age」「Maximum unused period」和用戶端子網路都留空。",
+      "複製 token，它只顯示一次。"
+    ],
+    "inwx": [
+      "建議使用一個只能管理 DNS、沒有開 Mobile-TAN 的子帳戶。",
+      "填寫這個帳戶的使用者名稱和密碼。",
+      "如果帳戶開了 Mobile-TAN，再填寫 Shared secret，它只在開啟 Mobile-TAN 時顯示。"
+    ],
+    "netcup": [
+      "在 Customer Control Panel 開啟網域，看它有「CloudDNS」還是「DNS」分頁，再開啟「Master Data」>「API」。",
+      "有「CloudDNS」分頁：在「API Keys」按「Creating an API Key」，這裡只填 API Key。",
+      "有「DNS」分頁：在「Legacy API Keys」按「Creating an API Key」，再按「Regenerating API Password」，密碼只顯示一次，其它程式在用的舊密碼會失效。",
+      "有「DNS」分頁：填寫客戶編號、Legacy API Key 和 Legacy API Password。"
+    ],
+    "transip": [
+      "按頭像>「My account」>「API」，把「Status」開啟。",
+      "新增 Key Pair，關掉「Whitelisted IP」，因為節點的公網位址可能變動。",
+      "複製整段私密金鑰，包括 BEGIN 和 END 兩行，它只顯示一次。",
+      "填寫你的 TransIP 帳戶名稱。"
+    ],
+    "alidns": [
+      "在 RAM 控制台開啟「身份管理」>「用户」>「创建用户」，存取方式選永久 AccessKey。",
+      "給這個使用者授權 BuckyOS 儲存庫 doc/user/dns-providers/alidns.md 裡的自訂政策，它只允許你的網域。",
+      "複製 AccessKey ID 和 AccessKey Secret，Secret 只顯示一次。",
+      "不要設定網路存取限制政策，因為節點的公網位址可能變動。"
+    ],
+    "dnspod": [
+      "在騰訊雲「访问管理」>「用户列表」新增一個可以用程式存取的子使用者。",
+      "在 DNSPod 控制台開啟這個網域的「权限管理」>「CAM 权限管理」，加入該子帳號，權限選「完全读写」。",
+      "回到「用户列表」開啟這個子使用者的「API 密钥」，按「新建密钥」，複製 SecretId 和 SecretKey，SecretKey 只顯示一次。"
+    ],
+    "sakura": [
+      "在控制面板左側開啟「APIキー」，按「APIキーの作成」，種類選「リソース操作」。",
+      "「アクセスレベル」選「設定編集」。",
+      "按「作成」，複製アクセストークン和アクセストークンシークレット，後者只顯示一次。"
+    ]
+  }
+}

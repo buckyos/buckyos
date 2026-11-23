@@ -83,15 +83,17 @@ OwnerDocument 不是四份激活签名文档之一。传统 Web 注册时，Owne
 - 发布 `zone` document 的内容是签名后的 ZoneDocument JWT 原文，不能退化为当前 `active_server.rs::bns_zone_document()` 拼出的无签名 JSON。
 - 发布完 `zone` 后，使用 `doc_type=<device_name>` 另行发布 DeviceDocument JWT 原文；`device_mini_doc` 不能占用这个文档槽位。
 
-### 1.4 user domain 改成 TXT proof 在前、NS 委派在后
+### 1.4 user domain 改成 TXT proof 在前、NS 委派在后，都在激活前完成
 
-自有域名只走 SN 的 `domain.bind`：
+> 2026-11-22 修订：原来冻结的“NS 在激活后提示”作废（owner 裁决 Q18）。自有域名的 DNS、归属和证书都在激活前检测通过才能下一步，分 SN 托管、手工、DNS API 三种。现行设计见 `notepads/node-active-custom-domain-todo.md` §3.1、§3.3.1，本节只保留 SN 托管的顺序。
 
-1. 用户输入 domain 后，客户端用 SN access token 调用 `domain.bind({domain})`。
-2. TXT 未配置时，SN 返回 `domain_proof_failed`；客户端从结构化错误中展示服务端返回的 `pkx_record_name` 和 `pkx`，不得自行猜测或让用户提交 TXT 内容给 SN。
-3. 用户在当前 DNS 服务商配置该 TXT；点击“验证”后重复调用同一个 `domain.bind`。
-4. SN 从外部 DNS/DoH 验证成功并原子激活绑定后，页面才允许继续。
-5. ZoneDocument 发布、设备登记和本地激活全部成功后，Success 页面再提示用户把域名 NS 委派到 SN。
+自有域名的归属都由 SN 的 `domain.bind` 确认：
+
+1. 用户输入 domain 后，节点按 BNS 上的 OwnerDocument 算出记录名 `_pkx.<域名>` 和值 `PKX(<owner 公钥 x>)`，向导展示给用户（原来是先调一次 `domain.bind`，从 `domain_proof_failed` 里取；那会让公共解析器缓存“没有这条记录”）。
+2. 用户在当前 DNS 服务商配置该 TXT。节点每 10 秒查一次权威 NS，看到之后调用 `domain.bind({domain})`；`user.get_profile` 的 `user_domain` 已经是这个域名时不再调。
+3. 归属通过后，用户把域名的 NS 委派到 `dns.<SN>`。先 TXT 后 NS 的顺序不能变：NS 委派后 SN 只应答显式写入的 `_pkx`，查不到归属记录；只看 NS 又会让别人抢先绑定一个已经委派过来的域名。
+4. 父域的委派只有 `dns.<SN>`，并且公共递归解析器能经 SN 查到这个域名的 SOA，页面才允许继续。
+5. `commit_active` 重新检查一遍，`device.register` 之后再写一次试挑战，通过才写本机身份。Success 页面不再提示 NS。
 
 当前版本(Desktop版)删除当前 `WAN + self domain` 的 BOOT/DEV/PKX 手工 TXT 发布路径。新的 TXT 只用于证明传统域名所有权，BOOT/DEV 不再要求用户手工粘贴到 DNS。
 该路径在VPS模式下（无SN模式下成立），但产品上可能会设计成另一条激活路径。
@@ -104,7 +106,7 @@ OwnerDocument 不是四份激活签名文档之一。传统 Web 注册时，Owne
 |---|---|
 | `needs_sn_control_plane` | `auth.register/login/refresh`、`domain.bind`、`bns.publish_document`；本需求的两条路径恒为 true |
 | `needs_sn_device_online` | SN DNS/运行态需要设备当前地址时登记 `device.register`；自有域名也需要 |
-| `uses_sn_relay` | NAT/动态公网/portmap 需要 SN relay 时，才把 `sn`/`ddns_sn_url` 写入文档 |
+| 流量是否中转 | 只看接入方式（`net_id`），不写进激活请求；`sn`/`ddns_sn_url` 一律写入文档（2026-11-22 起 `uses_sn_relay` 已删除，见 `notepads/node-active-custom-domain-todo.md` §3.1.1） |
 
 WAN 不使用 relay，不代表可以跳过 SN 账号控制面、domain proof 或 publish document。
 
@@ -386,12 +388,12 @@ type DomainBindingState =
 - [x] 自有域名输入通过本地格式校验后，必须取得新鲜 SN access token再调用 `SnClient.bindDomain(domain)`。
 - [x] Web 路径使用 Security 保存的 refresh/access token。
 - [x] 钱包路径若尚无 SN session，使用现有 `walletSignWithActiveDid` 对带 domain、owner DID、iat、随机 nonce 的 `buckyos.node_active.domain_bind` intent 做一次明确授权；使用返回的 `pwd_hash` 调 `auth.login`，签名结果不作为 SN proof，SN 仍只信外部 DNS。该 intent 仅用于让钱包弹出密码授权并取得当前既有 bridge 能力中的 pwd_hash。
-- [x] 捕获 `SnClientError` 且 `isSnError("domain_proof_failed")` 时，只用 `domainProofInfo()` 取得 challenge；不得解析 message 字符串。
+- [x] 捕获 `SnClientError` 且 `isSnError("domain_proof_failed")` 时，只用 `domainProofInfo()` 取得 challenge；不得解析 message 字符串。（2026-11-22 起由节点自己算 challenge，见 §1.4）
 - [x] challenge UI 展示：record name、完整 PKX value、复制按钮、DNS 传播提示、重新验证按钮。
 - [x] 只有 `domain.bind` 成功响应中的 domain 与当前输入一致时写入 `DomainBindingState.verified` 并允许 Next。
 - [ ] domain 被其它用户占用、owner PKX 无法解析、DoH 不可用等非 retryable 错误要区分展示，不得误报“TXT 尚未生效”。
 - [x] 删除 Domain/Review 中提前展示的 NS 委派提示，以及 Review 中 BOOT/DEV/PKX 手工生成和 `dnsReady` 逻辑。
-- [x] Success 在自有域名激活完成后展示最终 NS 记录；此提示不影响系统已激活状态，但需明确“完成 NS 后域名才会对外解析”。
+- [x] ~~Success 在自有域名激活完成后展示最终 NS 记录~~。2026-11-22 作废：NS 在域名步骤委派，检测到生效才能激活（§1.4）。
 
 ## 8. P4：构造、签名并严格验证四份 Document
 
@@ -494,8 +496,8 @@ type DomainBindingState =
 | `zone_document_jwt` | 四文档签名阶段 | `bns.publish_document(doc_type=zone)`、本地 cache | BNS 原文必须保留 |
 | `device_document_jwt` | 四文档签名阶段 | `bns.publish_document(doc_type=<device_name>)`、`device_doc.jwt`、system-config | 各解析路径必须保留同一 JWT 原文 |
 | `sn_access_token` | register/login/refresh | domain bind、publish、device register | Wizard 内存；不落盘/日志 |
-| `domain PKX challenge` | `domainProofInfo()` | 只展示给用户配置外部 TXT | 不提交回 SN |
-| `NS record` | active config/SN 部署信息 | Success 页面 | 只在激活成功后展示 |
+| `domain PKX challenge` | 节点按 OwnerDocument 计算（原为 `domainProofInfo()`） | 只展示给用户配置外部 TXT | 不提交回 SN |
+| `NS record` | SN 部署信息（`dns.<SN>`） | 域名步骤（SN 托管） | 归属通过后展示，激活前必须生效（§1.4） |
 
 ## 11. 测试与验证
 
@@ -556,7 +558,7 @@ pnpm build
 | 场景 | 预期 |
 |---|---|
 | Web + 默认 BNS 域名 + SN relay | 快速注册 OwnerDocument；四文档签名；只 publish zone；成功启动 |
-| Web + 自有域名 | 先 PKX TXT challenge；验证成功后 owner+zone publish；Success 才展示 NS |
+| Web + 自有域名 | 先 PKX TXT challenge；SN 托管再委派 NS；域名步骤全部通过后 owner+zone publish |
 | Wallet + 默认 BNS 域名 | 从 bridge 取得 OwnerDocument；两阶段钱包签名；只 publish zone |
 | Wallet + 自有域名 | 钱包授权取得 SN session；PKX challenge；owner+zone publish |
 | TXT 未传播 | 停在 Domain challenge，可重试，不 publish |
@@ -598,7 +600,7 @@ cargo test
 - [x] Boot、Device、DeviceMini、Zone 四份 JWT 均真实签名并在服务端严格互验。
 - [x] BNS `zone` document 保存的是签名 ZoneDocument JWT 原文，不是无签名聚合 JSON。
 - [x] 默认同名 Zone 只 publish zone；自有域名完成 PKX proof 并发布 owner binding + zone。
-- [x] TXT proof 在 NS 委派之前；NS 只在激活成功后提示。
+- [x] TXT proof 在 NS 委派之前。（原文“NS 只在激活成功后提示”于 2026-11-22 作废：NS 在激活前委派并检测生效。）
 - [x] SN 返回 submitted 后等待 BNS 最终投影，未确认前不落盘、不退出。
 - [x] 真实 OwnerDocument 进入本地 system-config，owner root key 仍由 `node_identity` pin 住。
 - [x] 不再需要用户 EVM 私钥或 `bns_evm_private_key` 完成 Node Active。

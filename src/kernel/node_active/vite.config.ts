@@ -14,7 +14,9 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: "index.html",
-      }
+      },
+      // One script: nothing may be left to load after activation closes the port.
+      output: { inlineDynamicImports: true },
     }
 
   },

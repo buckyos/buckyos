@@ -375,6 +375,17 @@ def request_header_absent(name):
     return _check
 
 
+def response_header_equals(name, expected_value):
+    def _check(result):
+        response = result.get("output", {}).get("RESP", {})
+        actual = response.get(name)
+        if actual != expected_value:
+            return False, f"expected response header {name}={expected_value!r}, got {actual!r}"
+        return True, ""
+
+    return _check
+
+
 def assertions_for_case(case_name: str):
     if case_name in {"req_service_not_ready_root", "req_service_not_ready_app"}:
         return [control_matches({"return"}, exact_value="error 503 service_not_ready:aiworkspace")]
@@ -420,11 +431,22 @@ def assertions_for_case(case_name: str):
         ]
     if case_name == "req_reflow_sso_callback_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
+    if case_name == "req_public_host_ok":
+        return [control_matches({"return"}, exact_value="server buckyos_public_web")]
+    if case_name == "req_public_web_dir_ok":
+        return [control_matches({"return"}, exact_value="server buckyos_public")]
+    if case_name == "req_public_web_cors_ok":
+        return [
+            response_header_equals("access-control-allow-origin", "*"),
+            response_header_equals("content-type", "text/plain"),
+        ]
     if case_name == "req_ndm_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:4110")]
     if case_name == "req_dfs_obj_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:4110")]
-    if case_name == "req_service_system_config_identifiers_ok":
+    if case_name in {
+        "req_service_system_config_identifiers_ok", "req_service_system_config_identifiers_ip_host_ok",
+    }:
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3200")]
     if case_name == "req_service_system_config_well_known_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3200")]

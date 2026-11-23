@@ -215,12 +215,6 @@ fn zone_boot_document_to_zone_document(
 
 // -------------------- Last Known Good State --------------------
 
-pub fn load_last_known_zone_state(
-    node_identity: &LocalNodeIdentityConfig,
-) -> Option<LastKnownZoneState> {
-    load_last_known_zone_state_in(get_buckyos_system_etc_dir().as_path(), node_identity)
-}
-
 fn load_last_known_zone_state_in(
     etc_dir: &Path,
     node_identity: &LocalNodeIdentityConfig,
@@ -278,10 +272,6 @@ fn load_last_known_zone_state_in(
     }
 }
 
-pub fn persist_last_known_zone_state(zone_document: &ZoneDocument) -> std::io::Result<()> {
-    persist_last_known_zone_state_in(get_buckyos_system_etc_dir().as_path(), zone_document)
-}
-
 fn persist_last_known_zone_state_in(
     etc_dir: &Path,
     zone_document: &ZoneDocument,
@@ -300,6 +290,16 @@ fn persist_last_known_zone_state_in(
     std::fs::rename(&tmp_path, &path)?;
     info!("persist last known zone state -> {}", path.display());
     Ok(())
+}
+
+// 激活把自己签出的 Zone Document 写成 Last Known Good State：首次启动即按
+// Warm Restart 走，不依赖自己的域名可达。写不成时旧状态不再适用，一并删除，
+// 启动退回 First Boot。
+pub(crate) fn replace_last_known_zone_state_in(etc_dir: &Path, zone_document: &ZoneDocument) {
+    if let Err(err) = persist_last_known_zone_state_in(etc_dir, zone_document) {
+        warn!("persist activated zone state failed: {}", err);
+        let _ = std::fs::remove_file(zone_lkgs_file_path(etc_dir, &zone_document.id));
+    }
 }
 
 // -------------------- Smooth Upgrade 检查（§7 / §17.2） --------------------
@@ -499,7 +499,8 @@ pub async fn boot_resolve_zone_document(
         return Ok(zone_document);
     }
 
-    let last_known = load_last_known_zone_state(node_identity);
+    let etc_dir = get_buckyos_system_etc_dir();
+    let last_known = load_last_known_zone_state_in(etc_dir.as_path(), node_identity);
     let boot_mode = if last_known.is_some() {
         BootMode::WarmRestart
     } else {
@@ -512,7 +513,20 @@ pub async fn boot_resolve_zone_document(
     );
 
     let candidate = discover_zone_document(node_identity, &owner_public_key).await;
+    let accepted = accept_zone_document(etc_dir.as_path(), node_identity, last_known, candidate)?;
 
+    // Accept 之后写入 did cache：让本进程（及 runtime 各组件）后续 resolve
+    // 当前 zone 的 did 时有确定回答。cache 只是投影，Accept 决策不依赖它。
+    update_zone_document_cache(&accepted).await;
+    Ok(accepted)
+}
+
+fn accept_zone_document(
+    etc_dir: &Path,
+    node_identity: &LocalNodeIdentityConfig,
+    last_known: Option<LastKnownZoneState>,
+    candidate: Result<ZoneDocument, String>,
+) -> Result<ZoneDocument, String> {
     let accepted = match (last_known, candidate) {
         (None, Ok(candidate)) => {
             // First Boot：Success + Acceptable => Persist As Known Good State（§16.1）
@@ -521,7 +535,7 @@ pub async fn boot_resolve_zone_document(
                 candidate.iat,
                 candidate.oods.len()
             );
-            if let Err(err) = persist_last_known_zone_state(&candidate) {
+            if let Err(err) = persist_last_known_zone_state_in(etc_dir, &candidate) {
                 warn!("persist last known zone state failed: {}", err);
             }
             candidate
@@ -552,7 +566,7 @@ pub async fn boot_resolve_zone_document(
                             state.zone_document.iat,
                             candidate.iat
                         );
-                        if let Err(err) = persist_last_known_zone_state(&candidate) {
+                        if let Err(err) = persist_last_known_zone_state_in(etc_dir, &candidate) {
                             warn!("persist last known zone state failed: {}", err);
                         }
                         candidate
@@ -582,10 +596,6 @@ pub async fn boot_resolve_zone_document(
             state.zone_document
         }
     };
-
-    // Accept 之后写入 did cache：让本进程（及 runtime 各组件）后续 resolve
-    // 当前 zone 的 did 时有确定回答。cache 只是投影，Accept 决策不依赖它。
-    update_zone_document_cache(&accepted).await;
     Ok(accepted)
 }
 
@@ -679,6 +689,20 @@ pub async fn register_zone_resolver_cache(zone_did: &DID) {
         "registered zone locker for {} -> http://127.0.0.1:3180",
         zone_did.to_string()
     );
+}
+
+/// The decision of a boot whose discovery finds nothing.
+#[cfg(test)]
+pub(crate) fn boot_without_network(
+    etc_dir: &Path,
+    node_identity: &LocalNodeIdentityConfig,
+) -> Result<ZoneDocument, String> {
+    accept_zone_document(
+        etc_dir,
+        node_identity,
+        load_last_known_zone_state_in(etc_dir, node_identity),
+        Err("no network".to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -884,5 +908,45 @@ MC4CAQAwBQYDK2VwBCIEIBwApVoYjauZFuKMBRe02wKlKm2B6a1F0/WIPMqDaw5F
             0,
         );
         assert!(load_last_known_zone_state_in(etc_dir, &other_identity).is_none());
+    }
+
+    #[test]
+    fn a_failed_discovery_boots_from_the_activated_state_only() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let etc_dir = tmp_dir.path();
+        let node_identity = LocalNodeIdentityConfig::new(
+            DID::new("web", "test.buckyos.io"),
+            DID::new("bns", "testowner"),
+            test_jwk(),
+            "ood1".to_string(),
+            DID::new("web", "ood1.test.buckyos.io"),
+            0,
+        );
+        assert!(boot_without_network(etc_dir, &node_identity).is_err());
+
+        replace_last_known_zone_state_in(etc_dir, &make_zone_document(200, &["ood1"]));
+        replace_last_known_zone_state_in(etc_dir, &make_zone_document(100, &["ood1@wan_dyn"]));
+        let booted = boot_without_network(etc_dir, &node_identity).unwrap();
+        assert_eq!(booted, make_zone_document(100, &["ood1@wan_dyn"]));
+
+        // A newer published document still replaces it, an older one does not.
+        let accept = |candidate| {
+            accept_zone_document(
+                etc_dir,
+                &node_identity,
+                load_last_known_zone_state_in(etc_dir, &node_identity),
+                Ok(candidate),
+            )
+            .unwrap()
+        };
+        assert_eq!(accept(make_zone_document(50, &["ood1"])).iat, 100);
+        assert_eq!(accept(make_zone_document(300, &["ood1"])).iat, 300);
+        assert_eq!(boot_without_network(etc_dir, &node_identity).unwrap().iat, 300);
+
+        // When the state cannot be written, the one of the old Zone is gone too.
+        let path = zone_lkgs_file_path(etc_dir, &node_identity.zone_did);
+        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        replace_last_known_zone_state_in(etc_dir, &make_zone_document(400, &["ood1"]));
+        assert!(!path.exists());
     }
 }

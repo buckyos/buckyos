@@ -1,6 +1,6 @@
 # Node Active 激活流程 TODO：自定义域名与流程简化
 
-日期：2026-11-22。状态：立项，尚未实施。owner 已 Review 两轮，Q1–Q20 全部已定（§6），没有待裁决项，可以按 §9 开工。本期范围是**不动服务器的客户端流程优化**：SN、BNS Server、sn-business 不改（R9、§3.9）。
+日期：2026-11-22。状态：代码已实施，未提交、未部署；真实域名和真实 Zone 的 DV 没有跑。实施记录和新的待定项在 §10。owner 已 Review 两轮，Q1–Q20 全部已定（§6）。本期范围是**不动服务器的客户端流程优化**：SN、BNS Server、sn-business 不改（R9、§3.9）。
 
 目标：激活时用户选“使用自己拥有的域名”后，按域名由谁托管分成三条清楚的流程：SN 托管、手工管理、DNS API 自动管理。SN 托管和 DNS API 的证书由系统自动签发和续期，手工管理由用户上传。每条流程都能走到“浏览器打开 `https://<域名>` 可用”。同时简化激活向导，并用真实可用性代替倒计时。
 
@@ -475,96 +475,96 @@ Cloudflare 没找到沙箱。GoDaddy 的[快速入门](https://developer.godaddy
 
 ### T0 先验证（决定方案是否成立）
 
-- [ ] T0-1 `dns-update` 放进 cyfs-gateway 编译：TLS provider 冲突、包体积、三平台构建。Cloudflare 实测三个操作。
+- [ ] T0-1 `dns-update` 放进 cyfs-gateway 编译：TLS provider 冲突、包体积、三平台构建。Cloudflare 实测三个操作。（编译已通过：`ring` feature，三平台只验了 Linux gnu / musl；Cloudflare 没有真实账号，没测）
 - [ ] T0-2 用一个真实子域名走 SN 托管，Let's Encrypt staging 能签 `<域名>` 和 `*.<域名>`。
 - [ ] T0-3 用一个真实域名验证 CNAME 到 `<用户名>.web3.<SN>`：不委派 NS，经 relay 打开 HTTPS（先手动设 `self_cert`）。同时验证 Cloudflare 根域名 CNAME 展开，且记录没有开代理（Q7）；以及注册后、激活前 `<用户名>.web3.<SN>` 已应答 relay 的 A（§3.3.1）。
-- [ ] T0-4 首次启动时让 `https://<域名>` 分别丢包、拒绝连接、返回 404，看 node_daemon 能否用激活时的本机 Zone 文档起来；重新激活同一域名再测一次（Q20）。
+- [ ] T0-4 首次启动时让 `https://<域名>` 分别丢包、拒绝连接、返回 404，看 node_daemon 能否用激活时的本机 Zone 文档起来；重新激活同一域名再测一次（Q20）。（没有真实丢包环境；单元测试和端到端测试确认：有 LKGS 时发现失败也能启动）
 - [ ] T0-5 用页面激活一个 `wan_dyn`，查 `dns.<SN>` 应答的 A 是设备地址还是 relay（§2“SN 应答的地址”）。`wan` 现状复核：SN 自带 AI 开启时首次调度是否报错；`ZoneDocument.sn`、`gateway_ips` 写入、设备文档带公网 IP 之后，SN 应答固定 IP，节点不连 relay、能上报、能写 `_acme-challenge`（§3.1.1）。
 - [ ] T0-6 实测激活成功到 `public.<域名>/readme` 返回 200、到登录页可用的时间：默认域名和自定义域名、`nat` 和 `wan_dyn`，每种至少 5 次。据此确认 2 分钟 / 5 分钟是否合适。
 
 ### T1 拿掉 `did.json`（buckyos + cyfs-gateway）
 
-- [ ] T1-1 `active_server.rs`：`did:web` 设备的两次检查都删除；`did:bns` 保留发布后的检查。
-- [ ] T1-2 `active_lib.ts`、`ReviewStep.tsx`：删除 `customDomainPublication`、`prepareSignedActivation` 的单独入口和三个按钮，两种域名走同一条激活路径。
-- [ ] T1-3 删除 9 种语言里 `device_publication_*`、`prepare_device_publication`、`download_device_publication`、`verify_publication_and_activate`；`test/active-publication.test.cjs` 改写为新流程。
-- [ ] T1-4 改 `cyfs-gateway/doc/BNS/BNS-API.md` 中自有 `did:web` 的段落（§3.2）；`node_active_authority.py` 回归只保留 `did:bns`。只改文档和测试，不改 BNS Server。
-- [ ] T1-5 boot 之后 `https://ood1.<域名>/.well-known/did.json` 返回设备文档 JWT 原文，另一个 Zone 能解析 `did:web:ood1.<域名>` 并通过 owner 验签。现有代码应已满足，补回归。
-- [ ] T1-6（按 Q20）`commit_active` 写入 Last Known Good State，覆盖同一 Zone 的旧状态；Booting 文档同步。
+- [x] T1-1 `active_server.rs`：`did:web` 设备的两次检查都删除；`did:bns` 保留发布后的检查。
+- [x] T1-2 `active_lib.ts`、`ReviewStep.tsx`：删除 `customDomainPublication`、`prepareSignedActivation` 的单独入口和三个按钮，两种域名走同一条激活路径。
+- [x] T1-3 删除 9 种语言里 `device_publication_*`、`prepare_device_publication`、`download_device_publication`、`verify_publication_and_activate`；`test/active-publication.test.cjs` 改写为新流程。
+- [x] T1-4 改 `cyfs-gateway/doc/BNS/BNS-API.md` 中自有 `did:web` 的段落（§3.2）；`node_active_authority.py` 回归只保留 `did:bns`。只改文档和测试，不改 BNS Server。
+- [x] T1-5 boot 之后 `https://ood1.<域名>/.well-known/did.json` 返回设备文档 JWT 原文，另一个 Zone 能解析 `did:web:ood1.<域名>` 并通过 owner 验签。现有代码应已满足，补回归。
+- [x] T1-6（按 Q20）`commit_active` 写入 Last Known Good State，覆盖同一 Zone 的旧状态；Booting 文档同步。
 
 ### T2 域名绑定（buckyos，SN 不改）
 
-- [ ] T2-1 节点自己算 `_pkx` 的记录名和值，与 SN 现有算法做对照测试；权威 NS 上看到之后才调 `domain.bind`。
-- [ ] T2-2 `commit_active` 和域名步骤先查 `user.get_profile`，`user_domain` 已是目标域名就不调 `domain.bind`。解决 NS 委派后重新激活卡死和第二次绑定。
-- [ ] T2-3 向导按现有错误码显示说明，不显示原始报文。
-- [ ] T2-4 SN 托管的试挑战：`commit_active` 在 `device.register` 之后写、查、删，失败不写本机身份，可重试。
-- [ ] T2-5 回归：新节点对接未改动的 SN（cyfs-sn 的 SQLite 和 sn-business 的 Postgres）走完三种托管。
+- [x] T2-1 节点自己算 `_pkx` 的记录名和值，与 SN 现有算法做对照测试；权威 NS 上看到之后才调 `domain.bind`。
+- [x] T2-2 `commit_active` 和域名步骤先查 `user.get_profile`，`user_domain` 已是目标域名就不调 `domain.bind`。解决 NS 委派后重新激活卡死和第二次绑定。
+- [x] T2-3 向导按现有错误码显示说明，不显示原始报文。
+- [x] T2-4 SN 托管的试挑战：`commit_active` 在 `device.register` 之后写、查、删，失败不写本机身份，可重试。
+- [ ] T2-5 回归：新节点对接未改动的 SN（cyfs-sn 的 SQLite 和 sn-business 的 Postgres）走完三种托管。（cyfs-sn 的 SQLite 已走完三种托管 × 四种接入方式；sn-business 的 Postgres 没跑）
 
 ### T3 DNS provider 与 ACME（cyfs-gateway）
 
-- [ ] T3-1 `cyfs-dns-provider`：trait、`dns-update` 包装、SOA 主域名识别、20 家的服务商表、凭据文件读取。
-- [ ] T3-2 GoDaddy 的 PAT 实现。
-- [ ] T3-3 cyfs-acme 通用 factory；按值增删；轮询权威 NS 等待生效。
-- [ ] T3-4 さくらのクラウド的实现：先读后整体写回、同一域名串行、写后读回核对。
-- [ ] T3-5 `self_cert` 上报移出 `sn-dns`，以 TLS 栈实际加载的证书为准，仍用 `user.set_self_cert`。
-- [ ] T3-6 证书状态接口：每个主机名的签发状态、到期时间、最近一次错误。
-- [ ] T3-7 删除 aliyun JS 插件；`cyfs_gateway.yaml` 示例更新。
-- [ ] T3-8 把 cyfs-acme 里校验证书、写入身份路径的代码抽成共用 crate，补齐 §3.7 的检查（PFX、链整理与公共根校验、字面通配名、用途、算法、自签与私有 CA），供 cyfs-acme 和 node_daemon 使用。
-- [ ] T3-9 cyfs-acme 不处理 `renewal.manager = manual` 的证书：不下单、不覆盖、不因它续期失败而重试。
-- [ ] T3-10 贡献者自测工具：指定服务商、凭据文件和域名，写入、读回、删除临时的 TXT 和 CNAME，输出不含 token 的报告，支持官方测试环境地址；服务商表据此改成“已实测”。
+- [x] T3-1 `cyfs-dns-provider`：trait、`dns-update` 包装、SOA 主域名识别、20 家的服务商表、凭据文件读取。
+- [x] T3-2 GoDaddy 的 PAT 实现。
+- [x] T3-3 cyfs-acme 通用 factory；按值增删；轮询权威 NS 等待生效。
+- [x] T3-4 さくらのクラウド的实现：先读后整体写回、同一域名串行、写后读回核对。
+- [x] T3-5 `self_cert` 上报移出 `sn-dns`，以 TLS 栈实际加载的证书为准，仍用 `user.set_self_cert`。
+- [x] T3-6 证书状态接口：每个主机名的签发状态、到期时间、最近一次错误。
+- [x] T3-7 删除 aliyun JS 插件；`cyfs_gateway.yaml` 示例更新。
+- [x] T3-8 把 cyfs-acme 里校验证书、写入身份路径的代码抽成共用 crate，补齐 §3.7 的检查（PFX、链整理与公共根校验、字面通配名、用途、算法、自签与私有 CA），供 cyfs-acme 和 node_daemon 使用。
+- [x] T3-9 cyfs-acme 不处理 `renewal.manager = manual` 的证书：不下单、不覆盖、不因它续期失败而重试。
+- [x] T3-10 贡献者自测工具：指定服务商、凭据文件和域名，写入、读回、删除临时的 TXT 和 CNAME，输出不含 token 的报告，支持官方测试环境地址；服务商表据此改成“已实测”。
 
 ### T4 记录计划与激活服务（buckyos）
 
-- [ ] T4-1 记录计划纯函数和冲突检测，覆盖三种模式 × 四种接入方式 × 根域名 / 子域名。
-- [ ] T4-2 §3.6 中域名相关的五个 RPC；`apply_domain_records` 可重复执行，写一半失败后重试不产生重复记录。
-- [ ] T4-3 `commit_active` 写 `domain_hosting` 和凭据文件；凭据不出现在日志和 `start_config.json`。
-- [ ] T4-4 scheduler 按 `domain_hosting` 生成 ACME 配置，`wan` 也生成；支持覆盖 ACME issuer，供 DV 用 staging。
-- [ ] T4-5 `active.ts` 和 `make_config.ts` 不受影响的回归。
-- [ ] T4-6 `inspect_certificate` RPC；`commit_active` 写入上传的证书，失败时不留下半套文件；私钥不进日志和 `start_config.json`；请求体大小上限。
-- [ ] T4-7 激活后替换证书、切换证书来源由 node_daemon 执行；control_panel 只转发，仅限 owner。
-- [ ] T4-8 `backup.py` 备份和恢复 `<域名>`、`_.<域名>` 的证书和私钥。
-- [ ] T4-9 §3.3.1 的检测：权威 NS 查询、NS 与 SOA、通配与 `ood1` / `sys` / `public`、DNS API 的试挑战、CAA；`commit_active` 提交前复查。
-- [ ] T4-10 删除 `uses_sn_relay`，按 §3.1.1 拆开：`ZoneDocument.sn`、`ddns_sn_url` 一律写入，`wan` 写 `DeviceDocument.ips`，隧道、上报、ACME、路由的判断同步；`active.ts` / `make_config.ts` 的无 SN 激活不变。
+- [x] T4-1 记录计划纯函数和冲突检测，覆盖三种模式 × 四种接入方式 × 根域名 / 子域名。
+- [x] T4-2 §3.6 中域名相关的五个 RPC；`apply_domain_records` 可重复执行，写一半失败后重试不产生重复记录。
+- [x] T4-3 `commit_active` 写 `domain_hosting` 和凭据文件；凭据不出现在日志和 `start_config.json`。
+- [x] T4-4 scheduler 按 `domain_hosting` 生成 ACME 配置，`wan` 也生成；支持覆盖 ACME issuer，供 DV 用 staging。
+- [x] T4-5 `active.ts` 和 `make_config.ts` 不受影响的回归。
+- [x] T4-6 `inspect_certificate` RPC；`commit_active` 写入上传的证书，失败时不留下半套文件；私钥不进日志和 `start_config.json`；请求体大小上限。
+- [x] T4-7 激活后替换证书、切换证书来源由 node_daemon 执行；control_panel 只转发，仅限 owner。
+- [x] T4-8 `backup.py` 备份和恢复 `<域名>`、`_.<域名>` 的证书和私钥。
+- [x] T4-9 §3.3.1 的检测：权威 NS 查询、NS 与 SOA、通配与 `ood1` / `sys` / `public`、DNS API 的试挑战、CAA；`commit_active` 提交前复查。
+- [x] T4-10 删除 `uses_sn_relay`，按 §3.1.1 拆开：`ZoneDocument.sn`、`ddns_sn_url` 一律写入，`wan` 写 `DeviceDocument.ips`，隧道、上报、ACME、路由的判断同步；`active.ts` / `make_config.ts` 的无 SN 激活不变。
 
 ### T5 地址发布（buckyos，SN 不改）
 
-- [ ] T5-1 SN 托管时确认 `ood1.<域名>`、`*.<域名>` 的应答与 `<域名>` 一致。
-- [ ] T5-2 `portmap` 的 mini 设备文档不写 `net_id`，SN 应答 relay（Q12）；RTCP 直连地址仍由完整设备文档提供。
-- [ ] T5-3 `wan` 在签名的 Zone 文档写 `gateway_ips`；`wan_dyn` 在 mini 设备文档写 `net_id`，修好动态解析。对照 SN 现有解析代码写测试，确认四种接入方式的应答。
+- [x] T5-1 SN 托管时确认 `ood1.<域名>`、`*.<域名>` 的应答与 `<域名>` 一致。
+- [x] T5-2 `portmap` 的 mini 设备文档不写 `net_id`，SN 应答 relay（Q12）；RTCP 直连地址仍由完整设备文档提供。
+- [x] T5-3 `wan` 在签名的 Zone 文档写 `gateway_ips`；`wan_dyn` 在 mini 设备文档写 `net_id`，修好动态解析。对照 SN 现有解析代码写测试，确认四种接入方式的应答。
 
 ### T6 界面（buckyos）
 
-- [ ] T6-1 域名步骤：输入 → 检测 → 三选一 → 对应面板 → 全部通过后放行。
-- [ ] T6-2 手工面板：记录卡片、复制、逐条状态、冲突说明。
-- [ ] T6-3 DNS API 面板：服务商列表、教程、token 表单、将要改动的记录、写入结果。
-- [ ] T6-4 检测面板：自动轮询、逐项状态与期望值 / 实际值、未通过不能下一步；删除成功页的 NS 提示。
-- [ ] T6-5 Desktop 设置 Zone 页：状态、重新检查、换 token、切换模式；control_panel 接口和权限（只限 owner）。
-- [ ] T6-6 token 失效、自动续期失败的通知。
-- [ ] T6-7 9 种语言。现有 TXT 挑战的 7 个键（`domain_txt_challenge`、`dns_record_name`、`dns_record_value`、`dns_propagation_hint`、`domain_verified`、`verify_again`、`verify_domain`）在所有语言里都没有，仍用到的一并补；`ns_after_activation_hint` 删除。
-- [ ] T6-8 在接入步骤点“下一步”但没有改动时，不清空已完成的域名状态。
-- [ ] T6-9 证书上传面板（激活页和设置页共用）：选文件、粘贴、PFX 密码、逐项检查结果、常见错误说明、到期日、自签与私有 CA 的确认。手机上能从系统文件选择器选文件，也能粘贴。
-- [ ] T6-10（按 Q10）身份步骤“我已经注册过”：用户名、密码、助记词恢复后回到域名步骤，归属和 NS 的进度由检测重新得到。
+- [x] T6-1 域名步骤：输入 → 检测 → 三选一 → 对应面板 → 全部通过后放行。
+- [x] T6-2 手工面板：记录卡片、复制、逐条状态、冲突说明。
+- [x] T6-3 DNS API 面板：服务商列表、教程、token 表单、将要改动的记录、写入结果。
+- [x] T6-4 检测面板：自动轮询、逐项状态与期望值 / 实际值、未通过不能下一步；删除成功页的 NS 提示。
+- [x] T6-5 Desktop 设置 Zone 页：状态、重新检查、换 token、切换模式；control_panel 接口和权限（只限 owner）。
+- [x] T6-6 token 失效、自动续期失败的通知。
+- [x] T6-7 9 种语言。现有 TXT 挑战的 7 个键（`domain_txt_challenge`、`dns_record_name`、`dns_record_value`、`dns_propagation_hint`、`domain_verified`、`verify_again`、`verify_domain`）在所有语言里都没有，仍用到的一并补；`ns_after_activation_hint` 删除。
+- [x] T6-8 在接入步骤点“下一步”但没有改动时，不清空已完成的域名状态。
+- [x] T6-9 证书上传面板（激活页和设置页共用）：选文件、粘贴、PFX 密码、逐项检查结果、常见错误说明、到期日、自签与私有 CA 的确认。手机上能从系统文件选择器选文件，也能粘贴。
+- [x] T6-10（按 Q10）身份步骤“我已经注册过”：用户名、密码、助记词恢复后回到域名步骤，归属和 NS 的进度由检测重新得到。
 
 ### T7 文档
 
-- [ ] T7-1 `doc/arch/gateway/zone-boot-config与zone-gateway.md` 的 B1 和 C 节改为三种托管，写清中转、应答地址、应答其它记录是三件事；`doc/arch/gateway/SN.md` 同步。
-- [ ] T7-2 `doc/key data.md`、`doc/path_usage.md` 登记 `domain_hosting` 和凭据文件。
-- [ ] T7-4 用户文档：20 家服务商各一页申请教程，可在手机上照做。
-- [ ] T7-5 用户文档：向商用 CA 购买时该选哪种证书（OV / DV 通配，SAN 同时含 `<域名>` 和 `*.<域名>`），拿到后怎么上传。
-- [ ] T7-6 `product/node_active/Node_Active_新流程实现TODO.md` §1.4 等处的“NS 在激活后提示”改为激活前。
-- [ ] T7-7 贡献者说明：怎么用 T3-10 的工具测一家服务商、怎么提交结果。
+- [x] T7-1 `doc/arch/gateway/zone-boot-config与zone-gateway.md` 的 B1 和 C 节改为三种托管，写清中转、应答地址、应答其它记录是三件事；`doc/arch/gateway/SN.md` 同步。
+- [x] T7-2 `doc/key data.md`、`doc/path_usage.md` 登记 `domain_hosting` 和凭据文件。
+- [x] T7-4 用户文档：20 家服务商各一页申请教程，可在手机上照做。
+- [x] T7-5 用户文档：向商用 CA 购买时该选哪种证书（OV / DV 通配，SAN 同时含 `<域名>` 和 `*.<域名>`），拿到后怎么上传。
+- [x] T7-6 `product/node_active/Node_Active_新流程实现TODO.md` §1.4 等处的“NS 在激活后提示”改为激活前。
+- [x] T7-7 贡献者说明：怎么用 T3-10 的工具测一家服务商、怎么提交结果。
 
 ### T8 向导简化、分区与启动结果
 
-- [ ] T8-1 网页路径步骤改为接入方式在前、身份在后；所选分区作为 `auth.register` 的 `region`。
-- [ ] T8-2 分区面板移到接入方式步骤：新注册可选，显示每个分区的延迟；已有账号用 `zone.get_info` 只读显示。
-- [ ] T8-3 分区名前端 i18n。
-- [ ] T8-4 删除 AI 和 Telegram 步骤（§3.8.2 的整条链路）；`stepOrder` 和步骤标题重排；`title_step_*` 去掉数字前缀。
-- [ ] T8-5 `boot_gateway.yaml` 给 `public.<域名>` 加跨域头，网关 process chain 的调试用例同步；节点启动时补写缺失的 readme。
-- [ ] T8-6 启动结果页状态机：启动中 / 检查中 / 成功 / 失败 / 无法自动检测（证书不是公共信任）；用假时钟做单元测试。
-- [ ] T8-7 失败三层判断与文案，含局域网回环和 SSH 隧道的说明。
-- [ ] T8-8 二维码（Q19）：宽屏显示、窄屏隐藏、深色模式。
-- [ ] T8-9 确认启动结果页没有按需加载的代码和文案；9 种语言，删除 `refresh_note` 等旧键。
-- [ ] T8-10 文档：`product/users_and_agents/BuckyOS Agent的初始化流程PRD.md` 里激活收集 Telegram 账号的段落；检查 `buckyos_admin` 等手册是否提到被删的激活步骤。
+- [x] T8-1 网页路径步骤改为接入方式在前、身份在后；所选分区作为 `auth.register` 的 `region`。
+- [x] T8-2 分区面板移到接入方式步骤：新注册可选，显示每个分区的延迟；已有账号用 `zone.get_info` 只读显示。
+- [x] T8-3 分区名前端 i18n。
+- [x] T8-4 删除 AI 和 Telegram 步骤（§3.8.2 的整条链路）；`stepOrder` 和步骤标题重排；`title_step_*` 去掉数字前缀。
+- [x] T8-5 `boot_gateway.yaml` 给 `public.<域名>` 加跨域头，网关 process chain 的调试用例同步；节点启动时补写缺失的 readme。
+- [x] T8-6 启动结果页状态机：启动中 / 检查中 / 成功 / 失败 / 无法自动检测（证书不是公共信任）；用假时钟做单元测试。
+- [x] T8-7 失败三层判断与文案，含局域网回环和 SSH 隧道的说明。
+- [x] T8-8 二维码（Q19）：宽屏显示、窄屏隐藏、深色模式。
+- [x] T8-9 确认启动结果页没有按需加载的代码和文案；9 种语言，删除 `refresh_note` 等旧键。
+- [x] T8-10 文档：`product/users_and_agents/BuckyOS Agent的初始化流程PRD.md` 里激活收集 Telegram 账号的段落；检查 `buckyos_admin` 等手册是否提到被删的激活步骤。
 
 ## 8. 验收
 
@@ -620,3 +620,67 @@ Cloudflare 没找到沙箱。GoDaddy 的[快速入门](https://developer.godaddy
 5. T6 + T7，贡献者逐家实测。
 
 没有部署先后要求：SN 不改，新节点直接对接线上的 SN。
+
+## 10. 实施记录（2026-11-22）
+
+代码在三个仓库的工作树里，没有提交：buckyos、cyfs-gateway、buckyos-websdk（只删 `provision_activate.ts` 的两个字段，`dist/` 要重新 build）。
+
+### 10.1 提交与发布顺序
+
+1. 先推 cyfs-gateway（`node_daemon` 依赖里面新增的 `cyfs-dns-provider`、`cyfs-identity-cert`）。
+2. 删掉本机的 `buckyos/src/.cargo/config.toml`（没有入库，把 cyfs-gateway 依赖指到同级目录），再 `cargo update -p cyfs-gateway-api -p bns-client -p cyfs-dns-provider -p cyfs-identity-cert`，然后提交 buckyos。
+3. 部署时网关和 scheduler 一起换：scheduler 会生成 `self_cert_report` 和 `dns-api`，旧网关会忽略前者，不认识后者。
+4. 新增依赖后 `src/frame/desktop` 的开源软件清单要由维护者跑 `pnpm run licenses:generate` 并核对，没有跑。
+
+### 10.2 落点
+
+| 内容 | 位置 |
+| --- | --- |
+| DNS 服务商、DNS 查询、服务商表、自测工具 | `cyfs-gateway/src/components/cyfs-dns-provider`（`examples/selftest.rs`） |
+| 证书检查与安装 | `cyfs-gateway/src/components/cyfs-identity-cert` |
+| ACME `dns-api`、`self_cert_report`、`get_cert_status` | `cyfs-gateway-modules`、`cyfs-gateway-app-lib/src/cert_status.rs` |
+| 记录计划、检测、激活 RPC、激活后 RPC 与周期检测 | `src/kernel/node_daemon/src/domain/`、`active_server.rs` |
+| 托管信息类型 | `src/kernel/buckyos-api/src/domain_hosting.rs` |
+| gateway_config 生成 | `src/kernel/scheduler/src/system_config_agent.rs` |
+| 激活页 | `src/kernel/node_active`（域名状态 `src/domain.ts`，启动检测 `src/startup.ts`） |
+| 设置页与转发 | `src/frame/desktop/src/app/settings/components/domain/`、`control_panel/src/zone_domain.rs` |
+| 教程 | `src/kernel/node_active/res/dns_providers/`、`doc/user/` |
+
+### 10.3 测试
+
+- `cargo test`：node_daemon 246、control_panel 235、scheduler 92 + 21、system_config 4 + 49；cyfs-dns-provider 33 + 22、cyfs-identity-cert 38、cyfs-acme 20、cyfs-gateway-modules 17、cyfs-gateway-app-lib 80、cyfs-gateway-lib 496、cyfs-sn 241，均 0 失败。`web3_gateway` 的 `test_sn_bns_integration` 有 1 条失败，改动前就失败。
+- `commit_active` 端到端（假 SN / BNS）：`active_commit_tests.rs`，进常规测试。
+- 对接未改动的 cyfs-sn：在 cyfs-gateway 根目录跑 `python3 src/components/cyfs-sn/tests/node_active_commit.py`。
+- pebble 真实签发两个主机名通过（DNS 侧是测试 provider）。
+- 激活页 `pnpm test` 52 条，Playwright 31 个场景；设置页 e2e 13 条。
+- 真实 node_daemon（临时目录、未激活）加真实页面：分区探测、`inspect_domain`、证书检查、拒绝未知字段和超大请求。
+
+### 10.4 与正文不同的地方
+
+1. `dns-update` 只用于 6 家（Porkbun、IONOS、Azure、deSEC、阿里云、DNSPod）。逐家核对发现它有 12 家会丢值、删错或写错 zone，改为自己实现，加上 GoDaddy、さくら共 14 家。
+2. netcup 有两套 DNS，字段改为 `customer_number?`、`api_key`、`api_password?`；Cloudflare 的 token 要加 Zone Read。
+3. 失败原因第 1 层请求 `/1.0/identifiers/self`，不是 `<Zone DID>`：网关会替别的 Zone 解析 DID，在一台跑着 BuckyOS 的电脑上经 SSH 隧道激活时会误判。
+4. `wan` 节点之间不再有经 SN 的备用路由（原来固定公网 IP 的目标会保留）。
+5. `clear_manual_mark` 会让 ACME 立即重签，否则切回自动签发后长效的自签证书一直不会被换掉。
+6. 设置页换 token、换证书时不做无关的检测；改托管方式或证书来源才完整检测。
+7. 激活后的检测没有账号会话，归属用 SN 的 `resolve_ood_by_hostname` 判断，只看不绑。
+8. cyfs-acme 顺带修了三个既有问题：缺 User-Agent、授权里有 `dns-persist-01` 时解析失败、finalize 返回 `processing` 就当失败。
+9. `dns-api` 在 cargo feature 后面，只有 cyfs_gateway 打开，SN 单独构建时不含 `dns-update`。
+10. 恢复身份（Q10）后 SN 自带 AI 按默认开启处理，与网页注册一致。
+
+### 10.5 待 owner 定
+
+| 编号 | 事项 | 建议 |
+| --- | --- | --- |
+| Q21 | 是否去掉 `dns-update`。只为 6 家，最小二进制对比约多 7.9 MB（`node_daemon` 的 musl release 连同全部新代码从 25.4 MB 到 30.9 MB），多编译 reqwest 0.13 / hickory 0.26 | 去掉，剩下 6 家自己实现约 500–600 行，测试不用改 |
+| Q22 | 节点连不到权威 DNS 的 53 端口时，域名步骤一直停在“查询失败”。退回公共 DoH 会留下“没有记录”的缓存 | 先不退回，文案已说明 |
+| Q23 | commit 约 15 秒耗在等 BNS（bns-client 读取缓存 5 秒，三份文档各等一次），改动前就如此 | 每次读用新 client，几行改动 |
+| Q24 | 分区名只写了 jp、us、us-west、eu-central，其余显示 id | 给出线上分区清单后补 |
+| Q25 | 多节点 Zone 里每个节点都会生成 ACME 和 TLS 配置，但 DNS token 和上传的证书只在激活节点上 | 只给 ZoneGateway 节点生成，另立项 |
+
+### 10.6 没有做、没有验证
+
+- §8 的真实环境 DV 一条都没跑；T0-2、T0-3、T0-5、T0-6 需要真实域名和真实激活。2 分钟 / 5 分钟是否合适要等 T0-6。
+- 20 家服务商没有任何一家真实写入过；官方沙箱（Porkbun、Name.com、Gandi、INWX）要注册账号，没做；TransIP demo token 验过读和新增的请求格式。
+- sn-business（Postgres）、Windows / macOS 编译、BuckyOS App 钱包路径、真机、通知送达、设置页经 sudo 弹窗到 node_daemon 的真实链路。
+- de / fr / es / ru / ja / ko / zh-TW / ar 的翻译没有母语者校对；Gandi 权限名、INWX 子账户位置、DNSPod 单域名授权没有核对到官方说明。

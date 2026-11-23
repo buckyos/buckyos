@@ -21,7 +21,7 @@
 | `network_observation.endpoints[scope=global, ip 为 IPv6]` | 系统接口枚举 | 进 `did_ip_hints` 标 `GlobalIpv6`（target v6.state=unavailable 时不进） |
 | `network_observation.ipv6.state` | source / target 自己探测 | source `egress_ok`/`rtcp_direct_ok` + target 非 `unavailable` + target 有 global v6 → direct evidence = `ipv6_global_endpoint`；source `rtcp_direct_ok` 时 v6 hint confidence=high，否则 medium |
 | `probe.last_probe` + `probe.last_success` + `freshness_ttl_secs` | 同上 | `last_probe - last_success > ttl` → probe 视为 stale，丢弃 |
-| `zone_config.sn` / `get_default_zone_gateway()` | ZoneConfig | 决定是否写 `via-sn` / `via-zone-gateway` relay |
+| `zone_config.sn` / `get_default_zone_gateway()` | ZoneConfig | 决定是否写 `via-sn` / `via-zone-gateway` relay；source 或 target 的 `net_id` 是 `wan` 时没有 `via-sn` |
 
 ## 3. node-node 物理链路场景矩阵
 
@@ -88,7 +88,7 @@ did_ip_hints 是给 cyfs-gateway resolve_ips 的 IP 事实清单，建议作为 
    这是有意的安全边界，不要把 LanEndpoint / GlobalIpv6 缺失误报为 bug。
 8. **target 缺数据但 source 有**：source 有 IPv6 egress_ok 但 target 没有 `network_observation` → 没有 `ipv6_global_endpoint` direct，hints 也无 GlobalIpv6 项。反过来同理。两侧观测都需要齐备才生成。
 9. **routes 完全为空的 target**：当 direct evidence 不成立、zone_config 既无 sn 又无 zone_gateway 时，`routes` 不会包含该 target 的 key。但 `did_ip_hints[target.zone]` 仍可能写入（事实层独立）。调用方不应假定每个 device_list 中的 target 都在 routes 里。
-10. **`keep_tunnel` 归属**：`direct` candidate 的 `keep_tunnel` 恒为 `true`，**不再因签名 IP 改变**。`via-sn` candidate 的 `keep_tunnel` 在 target 是 wan + 有签名 IP 时为 `false`（稳定 wan target 不消耗 SN 资源），其它情况为 `true`。`via-zone-gateway` 恒为 `false`。
+10. **`keep_tunnel` 归属**：`direct` candidate 的 `keep_tunnel` 恒为 `true`，**不再因签名 IP 改变**。`via-sn` candidate 的 `keep_tunnel` 在 target 是 wan 系 + `ips` 非空时为 `false`（不消耗 SN 资源），其它情况为 `true`；source 或 target 的 `net_id` 是 `wan` 时不生成 `via-sn`，Zone 有没有 `sn` 都一样（走不走 relay 只看接入方式）。`via-zone-gateway` 恒为 `false`。
 11. **URL 形态**：所有 candidate 的 URL **都是 DID hostname**，**不会**出现 `rtcp://203.0.113.10/` 这类 IP 字面 URL。如果发现 IP 形态 URL 进入了 candidate，是回归 bug。
 
 ## 6. 测试入口

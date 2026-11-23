@@ -1,0 +1,201 @@
+{
+  "fields": {
+    "cloudflare": {
+      "api_token": "API Token"
+    },
+    "godaddy": {
+      "access_token": "Personal Access Token"
+    },
+    "route53": {
+      "access_key_id": "Zugriffsschlüssel-ID",
+      "secret_access_key": "Geheimer Zugriffsschlüssel",
+      "hosted_zone_id": "ID der gehosteten Zone"
+    },
+    "porkbun": {
+      "api_key": "API Key",
+      "secret_api_key": "Secret Key"
+    },
+    "ionos": {
+      "api_key": "API-Schlüssel (Präfix.Verschlüsselung)"
+    },
+    "ovh": {
+      "region": "Region",
+      "application_key": "Application key",
+      "application_secret": "Application secret",
+      "consumer_key": "Consumer key"
+    },
+    "hetzner": {
+      "api_token": "API-Token"
+    },
+    "gandi": {
+      "personal_access_token": "Personal Access Token"
+    },
+    "digitalocean": {
+      "api_token": "Personal access token"
+    },
+    "google_cloud": {
+      "service_account_json": "Dienstkontoschlüssel (JSON)",
+      "project_id": "Projekt-ID"
+    },
+    "azure": {
+      "tenant_id": "Verzeichnis-ID (Mandant)",
+      "client_id": "Anwendungs-ID (Client)",
+      "client_secret": "Wert des Clientgeheimnisses",
+      "subscription_id": "Abonnement-ID",
+      "resource_group": "Ressourcengruppe"
+    },
+    "namecom": {
+      "username": "Benutzername",
+      "api_token": "API token"
+    },
+    "hostinger": {
+      "api_token": "API-Token"
+    },
+    "desec": {
+      "api_token": "Token"
+    },
+    "inwx": {
+      "username": "Benutzername",
+      "password": "Passwort",
+      "shared_secret": "Shared Secret (Mobile-TAN)"
+    },
+    "netcup": {
+      "customer_number": "Kundennummer (nur Legacy API)",
+      "api_key": "API-Key",
+      "api_password": "Legacy-API-Passwort (nur Legacy API)"
+    },
+    "transip": {
+      "login": "Kontoname",
+      "private_key": "Privater Schlüssel (Private Key)"
+    },
+    "alidns": {
+      "access_key_id": "AccessKey ID",
+      "access_key_secret": "AccessKey Secret"
+    },
+    "dnspod": {
+      "secret_id": "SecretId",
+      "secret_key": "SecretKey"
+    },
+    "sakura": {
+      "access_token": "アクセストークン (Access token)",
+      "access_token_secret": "アクセストークンシークレット (Access token secret)"
+    }
+  },
+  "steps": {
+    "cloudflare": [
+      "Öffnen Sie die Token-Seite über den Link hier; die Berechtigungen Zone > DNS > Edit und Zone > Zone > Read sind dann ausgefüllt, sonst fügen Sie sie selbst hinzu.",
+      "Beschränken Sie das Token auf die eine Zone, die Sie hier verwenden, nicht auf alle Zonen.",
+      "Setzen Sie weder „Token expiration“ noch „Client IP Address Filtering“: Der Knoten nutzt das Token dauerhaft, und seine Adresse kann sich ändern.",
+      "Wählen Sie „Continue to summary“ und „Create Token“ und kopieren Sie das Token; es wird nur einmal angezeigt."
+    ],
+    "godaddy": [
+      "Melden Sie sich bei developer.godaddy.com/personal-access-token an und wählen Sie „Generate Token“.",
+      "Klappen Sie unter „Permissions“ den Punkt „Domains & DNS“ auf und wählen Sie nur domains.domain:read und domains.dns:update.",
+      "Setzen Sie „Expires After“ auf das Maximum von 1 year und ersetzen Sie das Token vor diesem Datum.",
+      "Wählen Sie „Create Token“ und „Copy Token“; es wird nur einmal angezeigt."
+    ],
+    "route53": [
+      "Öffnen Sie in Route 53 Ihre gehostete Zone und kopieren Sie deren ID.",
+      "Wählen Sie in IAM „Policies“ > „Create policy“ > „JSON“ und fügen Sie die Richtlinie aus doc/user/dns-providers/route53.md im BuckyOS-Repository ein; sie erlaubt nur diese Zone und die Namen, die BuckyOS schreibt.",
+      "Legen Sie einen IAM-Benutzer ohne Konsolenzugriff an und hängen Sie diese Richtlinie an.",
+      "Öffnen Sie beim Benutzer „Security credentials“ > „Create access key“ > „Other“ und kopieren Sie beide Werte; der geheime Zugriffsschlüssel wird nur einmal angezeigt."
+    ],
+    "porkbun": [
+      "Öffnen Sie „ACCOUNT“ > „API Access“, geben Sie einen Titel ein und wählen Sie die Berechtigung „Manage, but no purchases“.",
+      "Beschränken Sie den Schlüssel auf Ihre Domain und lassen Sie die IP-Adressen leer, weil sich die Adresse des Knotens ändern kann.",
+      "Wählen Sie „Create API Key“ und kopieren Sie API Key und Secret Key; der Secret Key wird nur einmal angezeigt.",
+      "Öffnen Sie „ACCOUNT“ > „Domain Management“, wählen Sie bei der Domain „Details“ und schalten Sie „API Access“ ein."
+    ],
+    "ionos": [
+      "Melden Sie sich beim ersten Mal unter my.ionos.com/shop/product/ionos-api (IONOS-Seite Ihres Landes) für die API an.",
+      "Öffnen Sie developer.hosting.ionos.de/keys und wählen Sie „Erstellen Sie einen neuen Schlüssel“.",
+      "Kopieren Sie „Öffentlicher Präfix“ und „Verschlüsselung“ und geben Sie beide mit einem Punkt verbunden ein; die Verschlüsselung wird nur einmal angezeigt."
+    ],
+    "ovh": [
+      "Öffnen Sie die Seite Ihrer Region und melden Sie sich an: auth.eu.ovhcloud.com/api/createToken (Europa), auth.ca.ovhcloud.com/api/createToken (Kanada und Asien-Pazifik) oder auth.us.ovhcloud.com/api/createToken (USA).",
+      "Setzen Sie „Validity“ auf „Unlimited“ und beschränken Sie keine IP-Adressen.",
+      "Fügen Sie unter „Rights“ GET, POST, PUT und DELETE für /domain/zone/example.com/* hinzu, mit Ihrer Domain statt example.com.",
+      "Wählen Sie „Create keys“ und kopieren Sie Application key, Application secret und Consumer key."
+    ],
+    "hetzner": [
+      "Öffnen Sie console.hetzner.com und das Projekt mit der DNS-Zone der Domain; Tokens der alten DNS Console funktionieren nicht mehr.",
+      "Öffnen Sie „Security“ > „API tokens“ > „Generate API token“ und wählen Sie „Read & Write“.",
+      "Kopieren Sie das Token; es kann nicht erneut angezeigt werden und gilt für das ganze Projekt."
+    ],
+    "gandi": [
+      "Öffnen Sie die Einstellungen Ihres Benutzernamens, dann „View my personal access tokens“, und wählen Sie „Create a token“.",
+      "Setzen Sie „Expires in“ auf das Maximum von 1 year und ersetzen Sie das Token vor diesem Datum.",
+      "Wählen Sie „Restrict to selected products“ und Ihre Domain und erlauben Sie „Manage domain name technical configurations“.",
+      "Wählen Sie „Create“ und kopieren Sie das Token; es wird nur einmal angezeigt."
+    ],
+    "digitalocean": [
+      "Öffnen Sie „API“ > „Tokens“ und wählen Sie „Generate New Token“.",
+      "Wählen Sie unter „Expiration“ den längsten Zeitraum und ersetzen Sie das Token vor dem Ablauf.",
+      "Wählen Sie „Custom Scopes“ und für „domain“ create, read, update und delete; eine Beschränkung auf eine Domain ist nicht möglich.",
+      "Wählen Sie „Generate Token“ und kopieren Sie es; es wird nur einmal angezeigt."
+    ],
+    "google_cloud": [
+      "Öffnen Sie im Projekt mit der DNS-Zone „IAM & Verwaltung“ > „Dienstkonten“ und legen Sie ein Dienstkonto an.",
+      "Geben Sie ihm die Rolle „DNS Administrator“ (roles/dns.admin).",
+      "Öffnen Sie beim Dienstkonto „Schlüssel“ > „Schlüssel hinzufügen“ > „Neuen Schlüssel erstellen“ und wählen Sie JSON.",
+      "Fügen Sie den gesamten Inhalt der heruntergeladenen Datei ein; die Projekt-ID steht darin und kann leer bleiben."
+    ],
+    "azure": [
+      "Wählen Sie unter „Entra ID“ > „App-Registrierungen“ die Option „Neue Registrierung“ und kopieren Sie Verzeichnis-ID (Mandant) und Anwendungs-ID (Client).",
+      "Öffnen Sie „Zertifikate & Geheimnisse“ > „Neuer geheimer Clientschlüssel“, wählen Sie die längste Dauer (höchstens 24 Monate) und kopieren Sie den Wert, nicht die Geheimnis-ID.",
+      "Öffnen Sie im Azure-Portal Ihre DNS-Zone > „Zugriffssteuerung (IAM)“ > „Rollenzuweisung hinzufügen“ und geben Sie der App die Rolle „DNS Zone Contributor“.",
+      "Kopieren Sie Abonnement-ID und Ressourcengruppe aus der Übersicht der DNS-Zone.",
+      "Ersetzen Sie das Clientgeheimnis, bevor es abläuft."
+    ],
+    "namecom": [
+      "Öffnen Sie „Account Settings“ > „Security“ > „API Tokens“ und erstellen Sie ein Production-Token.",
+      "Tragen Sie keine IP-Whitelist ein, weil sich die Adresse des Knotens ändern kann.",
+      "Wenn die Zwei-Schritt-Verifizierung aktiv ist, schalten Sie unten auf der Seite „Security“ den „name.com API Access“ ein.",
+      "Geben Sie Ihren name.com-Benutzernamen und das Token ein."
+    ],
+    "hostinger": [
+      "Öffnen Sie hpanel.hostinger.com/profile/api und wählen Sie „New“.",
+      "Geben Sie einen Namen ein, wählen Sie das längste Ablaufdatum und ersetzen Sie das Token davor.",
+      "Wählen Sie „Generate“ und kopieren Sie das Token; es wird nur einmal angezeigt und hat die Rechte Ihres Benutzers."
+    ],
+    "desec": [
+      "Melden Sie sich bei desec.io an und öffnen Sie „Token Management“.",
+      "Erstellen Sie ein neues Token und lassen Sie „Can create domains“ und „Can delete domains“ ausgeschaltet.",
+      "Lassen Sie in den erweiterten Einstellungen „Maximum age“, „Maximum unused period“ und die Client-Subnetze leer.",
+      "Kopieren Sie das Token; es wird nur einmal angezeigt."
+    ],
+    "inwx": [
+      "Verwenden Sie möglichst ein Unterkonto, das nur DNS verwalten darf und kein Mobile-TAN nutzt.",
+      "Geben Sie Benutzername und Passwort dieses Kontos ein.",
+      "Wenn das Konto Mobile-TAN nutzt, geben Sie auch das Shared Secret ein; es wird nur beim Einschalten von Mobile-TAN angezeigt."
+    ],
+    "netcup": [
+      "Öffnen Sie die Domain im Customer Control Panel, um zu sehen, ob sie einen Reiter „CloudDNS“ oder „DNS“ hat, und öffnen Sie dann „Master Data“ > „API“.",
+      "Reiter „CloudDNS“: Wählen Sie bei „API Keys“ „Creating an API Key“ und geben Sie hier nur diesen API-Key ein.",
+      "Reiter „DNS“: Wählen Sie bei „Legacy API Keys“ „Creating an API Key“ und dann „Regenerating API Password“; das Passwort wird nur einmal angezeigt und ersetzt das, das andere Programme nutzen.",
+      "Reiter „DNS“: Geben Sie Kundennummer, Legacy-API-Key und Legacy-API-Passwort ein."
+    ],
+    "transip": [
+      "Öffnen Sie das Profilsymbol > „My account“ > „API“ und schalten Sie „Status“ ein.",
+      "Fügen Sie ein Key Pair hinzu und schalten Sie „Whitelisted IP“ aus, weil sich die Adresse des Knotens ändern kann.",
+      "Kopieren Sie den ganzen privaten Schlüssel mit den Zeilen BEGIN und END; er wird nur einmal angezeigt.",
+      "Geben Sie den Namen Ihres TransIP-Kontos ein."
+    ],
+    "alidns": [
+      "Öffnen Sie in der RAM-Konsole „Identities“ > „Users“ > „Create User“ und wählen Sie den Zugriff mit permanentem AccessKey.",
+      "Geben Sie dem Benutzer die benutzerdefinierte Richtlinie aus doc/user/dns-providers/alidns.md im BuckyOS-Repository; sie erlaubt nur Ihre Domain.",
+      "Kopieren Sie AccessKey ID und AccessKey Secret; das Secret wird nur einmal angezeigt.",
+      "Legen Sie keine Netzwerkzugriffsrichtlinie fest, weil sich die Adresse des Knotens ändern kann."
+    ],
+    "dnspod": [
+      "Öffnen Sie in Tencent Cloud CAM die „User List“ und legen Sie einen Unterbenutzer mit programmatischem Zugriff an.",
+      "Öffnen Sie in der DNSPod-Konsole die Domain > „Permission Management“ > „CAM permission management“ > „add sub-account“ und geben Sie dem Unterbenutzer „Full Read/Write“.",
+      "Öffnen Sie den Unterbenutzer in der „User List“, dann „API Key“, erstellen Sie einen Schlüssel und kopieren Sie SecretId und SecretKey; der SecretKey wird nur einmal angezeigt."
+    ],
+    "sakura": [
+      "Öffnen Sie im Control Panel links „APIキー“, wählen Sie „APIキーの作成“ und den Typ „リソース操作“ (Ressourcen bedienen).",
+      "Wählen Sie als „アクセスレベル“ (Zugriffsstufe) „設定編集“ (Einstellungen bearbeiten).",
+      "Wählen Sie „作成“ und kopieren Sie アクセストークン und アクセストークンシークレット; das Secret wird nur einmal angezeigt."
+    ]
+  }
+}

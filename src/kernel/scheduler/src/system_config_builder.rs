@@ -7,11 +7,12 @@ use buckyos_api::{
     generate_homestation_doc, generate_msg_center_service_doc, generate_nfs_server_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_task_manager_service_doc, generate_verify_hub_service_doc,
     generate_workflow_service_doc, AppDoc, AppRegistry, BuckyOSDevConfig, BuckyOSInfo,
-    GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState,
+    DomainHosting, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState,
     ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteConfig, ServiceProtocol,
-    ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings, UserPrivateProfile,
-    UserProfile, UserSettings, UserState, UserTunnelBinding, UserType, ZoneConfig, APP_REGISTRY_KEY, BUCKYOS_DEV_CONFIG_KEY, BUCKYOS_INFO_KEY, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
-    ZONE_OWNER_USER_ID_KEY,
+    ServiceSpecConfig, ServiceState, SubPkgDesc, UserPrivateProfile, UserProfile, UserSettings,
+    UserState, UserType, ZoneConfig, APP_REGISTRY_KEY, BUCKYOS_DEV_CONFIG_KEY, BUCKYOS_INFO_KEY,
+    DOMAIN_HOSTING_KEY, SCHEDULER_SERVICE_UNIQUE_ID, START_CONFIG_DOMAIN_HOSTING,
+    VERIFY_HUB_UNIQUE_ID, ZONE_OWNER_USER_ID_KEY,
 };
 use buckyos_api::{
     AiWorkspaceSettings, HomeStationSettings, NfsServerSettings, AICC_SERVICE_SERVICE_PORT,
@@ -35,7 +36,6 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use url::Url;
 
-const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
 const MANAGED_SN_PROVIDER_INSTANCE_NAME: &str = "sn-ai-provider-default";
 const MANAGED_SN_DEVICE_TOKEN_REF: &str = "runtime://device-jwt";
@@ -192,20 +192,6 @@ fn managed_sn_ai_provider_instance(endpoints: &SnAiProviderEndpoints, user_name:
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct AIProviderConfigSummary {
-    #[serde(default)]
-    pub openai_api_token: String,
-    #[serde(default)]
-    pub claude_api_token: String,
-    #[serde(default)]
-    pub google_api_token: String,
-    #[serde(default)]
-    pub openrouter_api_token: String,
-    #[serde(default)]
-    pub glm_api_token: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct EnabledFeaturesSummary {
     #[serde(default)]
     pub llm_router: bool,
@@ -220,9 +206,7 @@ pub struct StartConfigSummary {
     #[serde(default)]
     pub enabled_features: EnabledFeaturesSummary,
     #[serde(default)]
-    pub ai_provider_config: AIProviderConfigSummary,
-    #[serde(default)]
-    pub owner_telegram_account_id: String,
+    pub domain_hosting: Option<DomainHosting>,
 }
 
 pub struct SystemConfigBuilder {
@@ -281,7 +265,7 @@ impl SystemConfigBuilder {
         let key = format!("users/{}/doc", config.user_name);
         self.insert_json(&key, &owner_config)?;
 
-        let mut profile = UserPrivateProfile::from(UserProfile {
+        let profile = UserPrivateProfile::from(UserProfile {
             did: owner_config.id.clone(),
             name: Some(owner_config.name.clone()),
             display_name: Some(owner_config.display_name.clone()),
@@ -299,12 +283,6 @@ impl SystemConfigBuilder {
             public_contacts: HashMap::new(),
             extra: owner_config.extra_info.clone(),
         });
-        if let Some(contact) = build_zone_user_contact_settings(config) {
-            profile.private_extra.insert(
-                PROFILE_SYSTEM_CONTACT_KEY.to_string(),
-                serde_json::to_value(contact)?,
-            );
-        }
         let profile_key = format!("users/{}/profile", config.user_name);
         self.insert_json_if_absent(&profile_key, &profile)?;
         Ok(self)
@@ -336,6 +314,13 @@ impl SystemConfigBuilder {
         self.insert_json(BUCKYOS_DEV_CONFIG_KEY, &BuckyOSDevConfig::default())?;
         self.insert_json("system/system_pkgs", &json!({}))?;
         self.insert_json_if_absent(APP_REGISTRY_KEY, &AppRegistry::default())?;
+        Ok(self)
+    }
+
+    pub fn add_domain_hosting(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+        if let Some(hosting) = &config.domain_hosting {
+            self.insert_json(DOMAIN_HOSTING_KEY, hosting)?;
+        }
         Ok(self)
     }
 
@@ -748,101 +733,11 @@ fn resolve_telegram_transport_did(config: &StartConfigSummary) -> String {
 /// short logical id, never the transport DID.
 const TELEGRAM_TUNNEL_INSTANCE_ID: &str = "tg-main-tunnel";
 
-fn normalize_telegram_contact_account_id(raw: &str) -> String {
-    let trimmed = raw.trim();
-    trimmed
-        .strip_prefix("user:")
-        .map(str::trim)
-        .unwrap_or(trimmed)
-        .to_string()
-}
-
-fn build_zone_user_contact_settings(config: &StartConfigSummary) -> Option<UserContactSettings> {
-    let account_id = normalize_telegram_contact_account_id(&config.owner_telegram_account_id);
-    if account_id.is_empty() {
-        return None;
-    }
-
-    Some(UserContactSettings {
-        did: Some(config.owner_document.id.to_string()),
-        note: None,
-        tags: vec!["zone_user".to_string()],
-        bindings: vec![UserTunnelBinding {
-            platform: "telegram".to_string(),
-            account_id: account_id.clone(),
-            display_id: Some(account_id),
-            tunnel_instance_id: Some(TELEGRAM_TUNNEL_INSTANCE_ID.to_string()),
-            status: None,
-            last_sync_at: None,
-            meta: HashMap::new(),
-        }],
-    })
-}
-
 fn build_aicc_settings_with_endpoints(
     config: &StartConfigSummary,
     sn_ai_provider_endpoints: Option<&SnAiProviderEndpoints>,
 ) -> Value {
     let mut providers = Vec::new();
-    let configured = [
-        (
-            "openai-default",
-            "openai",
-            "openai-responses",
-            "https://api.openai.com/v1",
-            config.ai_provider_config.openai_api_token.as_str(),
-        ),
-        (
-            "claude-default",
-            "claude",
-            "claude-messages",
-            "https://api.anthropic.com/v1",
-            config.ai_provider_config.claude_api_token.as_str(),
-        ),
-        (
-            "gemini-default",
-            "gemini",
-            "gemini-interactions",
-            "https://generativelanguage.googleapis.com/v1beta",
-            config.ai_provider_config.google_api_token.as_str(),
-        ),
-        (
-            "openrouter-default",
-            "openrouter",
-            "openrouter-responses",
-            "https://openrouter.ai/api/v1",
-            config.ai_provider_config.openrouter_api_token.as_str(),
-        ),
-        (
-            "glm-default",
-            "glm",
-            "glm-chat",
-            "https://api.z.ai/api/paas/v4",
-            config.ai_provider_config.glm_api_token.as_str(),
-        ),
-    ];
-    for (instance_name, profile_id, adapter_id, base_url, token) in configured {
-        let Some(token) = trim_to_option(token) else {
-            continue;
-        };
-        providers.push(json!({
-            "provider_instance_name": instance_name,
-            "provider_type": "cloud_api",
-            "provider_profile_id": profile_id,
-            "protocol_adapter_id": adapter_id,
-            "provider_rules_id": profile_id,
-            "base_url": base_url,
-            "credentials": {
-                "api_token": {
-                    "inline_secret": token
-                }
-            },
-            "enabled": true,
-            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
-            "auto_sync_models": true
-        }));
-    }
-
     if config.llm_router_enabled() {
         let endpoints = sn_ai_provider_endpoints
             .expect("SN AI endpoints are validated before building enabled provider settings");
@@ -1008,20 +903,29 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .ok_or_else(|| anyhow!("start_config.json missing zone_name"))?
                 .to_string(),
             enabled_features,
-            ai_provider_config: serde_json::from_value(
-                value
-                    .get("ai_provider_config")
-                    .cloned()
-                    .unwrap_or_else(|| json!({})),
-            )
-            .map_err(|e| anyhow!("Failed to parse ai_provider_config: {}", e))?,
-            owner_telegram_account_id: value
-                .get("owner_telegram_account_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            domain_hosting: parse_domain_hosting(value)?,
         })
     }
+}
+
+fn parse_domain_hosting(start_config: &Value) -> Result<Option<DomainHosting>> {
+    let Some(value) = start_config.get(START_CONFIG_DOMAIN_HOSTING) else {
+        return Ok(None);
+    };
+    let hosting: DomainHosting = serde_json::from_value(value.clone())
+        .map_err(|err| anyhow!("invalid domain_hosting in start_config.json: {err}"))?;
+    hosting
+        .validate()
+        .map_err(|err| anyhow!("invalid domain_hosting in start_config.json: {err}"))?;
+    let access_hostname = start_config.get("access_hostname").and_then(Value::as_str);
+    if access_hostname != Some(hosting.domain.as_str()) {
+        return Err(anyhow!(
+            "domain_hosting in start_config.json is for {}, access_hostname is {:?}",
+            hosting.domain,
+            access_hostname
+        ));
+    }
+    Ok(Some(hosting))
 }
 
 impl StartConfigSummary {
@@ -1089,8 +993,8 @@ mod beta22_tests {
         }
     }
 
-    fn start_config() -> StartConfigSummary {
-        StartConfigSummary::from_value(&json!({
+    fn start_config_value() -> Value {
+        json!({
             "schema": buckyos_api::START_CONFIG_SCHEMA,
             "user_name": "alice",
             "admin_password_hash": "hashed",
@@ -1118,9 +1022,13 @@ mod beta22_tests {
                 "name": "alice",
                 "display_name": "Alice"
             },
-            "zone_name": "did:web:alice.example.com"
-        }))
-        .unwrap()
+            "zone_name": "did:web:alice.example.com",
+            "access_hostname": "alice.example.com"
+        })
+    }
+
+    fn start_config() -> StartConfigSummary {
+        StartConfigSummary::from_value(&start_config_value()).unwrap()
     }
 
     #[tokio::test]
@@ -1197,47 +1105,68 @@ mod beta22_tests {
     }
 
     #[test]
-    fn owner_telegram_account_is_bound_to_owner_profile_as_bare_id() {
-        let profile_key = "users/alice/profile";
-        for (raw, expected) in [(" 10001 ", "10001"), ("user:10001", "10001")] {
-            let mut config = start_config();
-            config.owner_telegram_account_id = raw.to_string();
+    fn domain_hosting_of_the_start_config_becomes_the_zone_setting() {
+        let mut builder = SystemConfigBuilder::new(HashMap::new());
+        builder.add_domain_hosting(&start_config()).unwrap();
+        assert!(!builder.entries.contains_key(DOMAIN_HOSTING_KEY));
+
+        for hosting in [
+            json!({"mode": "sn", "certificate": "acme", "domain": "alice.example.com"}),
+            json!({"mode": "manual", "certificate": "upload", "domain": "alice.example.com"}),
+            json!({
+                "mode": "dns_api", "certificate": "acme", "domain": "alice.example.com",
+                "provider": "cloudflare", "credential_id": "alice-example-com",
+                "acme_issuer": "https://acme-staging-v02.api.letsencrypt.org/directory"
+            }),
+        ] {
+            let mut value = start_config_value();
+            value["domain_hosting"] = hosting.clone();
+            let config = StartConfigSummary::from_value(&value).unwrap();
             let mut builder = SystemConfigBuilder::new(HashMap::new());
-            builder.add_user_doc(&config).unwrap();
-            let profile: Value =
-                serde_json::from_str(builder.entries.get(profile_key).unwrap()).unwrap();
-            let contact = &profile["private_extra"][PROFILE_SYSTEM_CONTACT_KEY];
-            assert_eq!(contact["did"], "did:bns:alice");
-            assert_eq!(contact["bindings"][0]["platform"], "telegram");
-            assert_eq!(contact["bindings"][0]["account_id"], expected);
-            assert_eq!(contact["bindings"][0]["display_id"], expected);
-            assert_eq!(
-                contact["bindings"][0]["tunnel_instance_id"],
-                TELEGRAM_TUNNEL_INSTANCE_ID
-            );
+            builder.add_domain_hosting(&config).unwrap();
+            let stored: Value =
+                serde_json::from_str(&builder.entries[DOMAIN_HOSTING_KEY]).unwrap();
+            assert_eq!(stored, hosting);
         }
 
-        let mut builder = SystemConfigBuilder::new(HashMap::new());
-        builder.add_user_doc(&start_config()).unwrap();
-        let profile: Value =
-            serde_json::from_str(builder.entries.get(profile_key).unwrap()).unwrap();
-        assert!(profile["private_extra"]
-            .get(PROFILE_SYSTEM_CONTACT_KEY)
-            .is_none());
+        for hosting in [
+            json!({"mode": "manual", "certificate": "acme", "domain": "alice.example.com"}),
+            json!({"mode": "sn", "certificate": "acme", "domain": "other.example.com"}),
+            json!({"mode": "sn", "certificate": "acme", "domain": "alice.example.com", "token": "x"}),
+        ] {
+            let mut value = start_config_value();
+            value["domain_hosting"] = hosting;
+            let error = StartConfigSummary::from_value(&value).unwrap_err().to_string();
+            assert!(error.contains("domain_hosting"), "{error}");
+        }
+        let mut value = start_config_value();
+        value["domain_hosting"] =
+            json!({"mode": "sn", "certificate": "acme", "domain": "alice.example.com"});
+        value.as_object_mut().unwrap().remove("access_hostname");
+        assert!(StartConfigSummary::from_value(&value).is_err());
     }
 
-    #[test]
-    fn start_config_reads_owner_telegram_account_id() {
-        let config = StartConfigSummary::from_value(&json!({
-            "schema": buckyos_api::START_CONFIG_SCHEMA,
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": start_config().owner_document,
-            "zone_name": "did:web:alice.example.com",
-            "owner_telegram_account_id": "10001"
-        }))
-        .unwrap();
-        assert_eq!(config.owner_telegram_account_id, "10001");
+    #[tokio::test]
+    async fn llm_router_adds_the_sn_provider_from_the_zone_sn() {
+        for (extra, expected) in [
+            (json!({}), 0),
+            (json!({"enabled_features": {"llm_router": true}}), 1),
+            (json!({"sn_active_code": "invite"}), 1),
+        ] {
+            let mut value = start_config_value();
+            value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let config = StartConfigSummary::from_value(&value).unwrap();
+            let mut builder = SystemConfigBuilder::new(HashMap::new());
+            builder.add_aicc(&config, Some("sn.buckyos.ai")).await.unwrap();
+            let buckyos_api::StoredAiccSettings::V1(settings) =
+                serde_json::from_str::<buckyos_api::StoredAiccSettings<Value>>(
+                    &builder.entries["services/aicc/settings"],
+                )
+                .unwrap();
+            let providers = settings["providers"].as_array().unwrap();
+            assert_eq!(providers.len(), expected, "{value}");
+            assert!(providers.iter().all(|provider| provider["provider_profile_id"] == "sn"));
+        }
     }
 
     #[test]
@@ -1290,33 +1219,6 @@ mod beta22_tests {
             .expect("rootfs boot sample must contain AICC settings");
         let buckyos_api::StoredAiccSettings::V1(settings) = serde_json::from_str(raw)
             .expect("rootfs AICC settings must match the persisted schema");
-        assert_canonical_aicc_settings(&settings);
-    }
-
-    #[test]
-    fn aicc_settings_wrap_configured_provider_credentials_as_inline_secrets() {
-        let mut config = start_config();
-        config.ai_provider_config = AIProviderConfigSummary {
-            openai_api_token: "openai-secret".to_string(),
-            claude_api_token: "claude-secret".to_string(),
-            google_api_token: "gemini-secret".to_string(),
-            openrouter_api_token: "openrouter-secret".to_string(),
-            glm_api_token: "glm-secret".to_string(),
-        };
-
-        let settings = build_aicc_settings_with_endpoints(&config, None);
-        let providers = settings["providers"].as_array().unwrap();
-
-        assert_eq!(providers.len(), 5);
-        assert_eq!(providers[0]["provider_profile_id"], "openai");
-        assert_eq!(providers[1]["protocol_adapter_id"], "claude-messages");
-        assert_eq!(providers[2]["provider_profile_id"], "gemini");
-        assert_eq!(providers[3]["provider_profile_id"], "openrouter");
-        assert_eq!(providers[4]["protocol_adapter_id"], "glm-chat");
-        assert_eq!(
-            providers[0]["credentials"]["api_token"]["inline_secret"],
-            "openai-secret"
-        );
         assert_canonical_aicc_settings(&settings);
     }
 

@@ -1,123 +1,112 @@
-import { Download } from "lucide-react";
 import { Alert, Box, Button, CircularProgress, MenuItem, Stack, TextField, Typography } from "@mui/material";
-import { ReactNode, useState } from "react";
+import { MutableRefObject, ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { activateNode, customDomainPublication, deriveActiveNames, deriveGatewayTopology, prepareSignedActivation } from "../../../active_lib";
-import { GatewayType, WizardData } from "../../types";
-import { Lead, Note, StepActions, mono, plainLabel } from "../ui";
+import {
+  activateNode,
+  deriveActiveNames,
+  deriveDomainSetup,
+  deriveGatewayTopology,
+  type SignedActivation,
+} from "../../../active_lib";
+import { activeErrorOf, certificateUntrusted, checkItemsOf } from "../../domain";
+import { errorText, type ErrorText } from "../../errors";
+import { CheckItem, GatewayType, WizardData } from "../../types";
+import type { UpdateWizard } from "../ActiveWizard";
+import { UntrustedImpact } from "../domain/CertificatePanel";
+import CheckList from "../domain/CheckList";
+import { ErrorAlert, Lead, StatusLine, StepActions, mono } from "../ui";
+
+export type Activated = { accessHostname: string; zoneDid: string; activatedAt: number };
 
 type Props = {
   wizardData: WizardData;
-  onUpdate: (data: Partial<WizardData>) => void;
-  onActivated: (targetUrl: string) => void;
+  onUpdate: UpdateWizard;
+  onActivated: (activated: Activated) => void;
   onBack: () => void;
   isWalletRuntime: boolean;
+  /** Survives going back to another step, so a wallet is not asked to sign the same documents again. */
+  signed: MutableRefObject<SignedActivation | null>;
 };
 
-const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime }: Props) => {
+const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime, signed }: Props) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<ErrorText | null>(null);
+  const [failedItems, setFailedItems] = useState<CheckItem[]>([]);
   const names = wizardData.owner_document ? deriveActiveNames(wizardData) : null;
   const topology = deriveGatewayTopology(wizardData);
-
-  const preparePublication = async () => {
-    setError("");
-    setLoading(true);
-    try {
-      const result = await prepareSignedActivation(wizardData);
-      onUpdate({
-        prepared_documents: result.prepared,
-        signed_documents: result.signed,
-        admin_password_hash: result.adminPasswordHash,
-      });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const downloadPublication = () => {
-    try {
-      const publication = customDomainPublication(wizardData);
-      const url = URL.createObjectURL(new Blob([publication.content], { type: "application/jwt" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "did.json";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
+  const setup = deriveDomainSetup(wizardData);
 
   const activate = async () => {
-    setError("");
+    setError(null);
+    setFailedItems([]);
     setLoading(true);
     try {
-      const result = await activateNode(wizardData);
+      const result = await activateNode(wizardData, signed);
       onUpdate({
-        prepared_documents: result.prepared,
-        signed_documents: result.signed,
         sn_access_token: null,
+        sn_access_token_at: null,
         sn_refresh_token: null,
         admin_password_hash: "",
         device_private_key: "",
         web_owner_material: null,
       });
-      onActivated(`https://${result.accessHostname}`);
+      onActivated({ ...result, activatedAt: Date.now() });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setFailedItems(
+        checkItemsOf(activeErrorOf(cause)?.detail ?? "").filter(
+          (item) => item.status === "fail" || item.status === "waiting",
+        ),
+      );
+      setError(errorText(t, cause));
     } finally {
       setLoading(false);
     }
   };
 
   if (!names || !wizardData.owner_document) {
-    return <Alert severity="error">{t("wallet_info_incomplete", "OwnerDocument is missing")}</Alert>;
+    return <Alert severity="error">{t("wallet_info_incomplete")}</Alert>;
   }
 
   const gatewayTitle =
     wizardData.gatewy_type === GatewayType.WAN
-      ? t("gateway_public_ip_title", "Fixed public IP")
+      ? t("gateway_public_ip_title")
       : wizardData.gatewy_type === GatewayType.PortForward
-        ? t("gateway_direct_title", "Direct connection")
-        : t("gateway_sn_relay_title", "SN relay");
+        ? t("gateway_direct_title")
+        : t("gateway_sn_relay_title");
   const gatewayDetail =
-    topology.net_id === "portmap" ? `${topology.net_id} · RTCP ${topology.rtcp_port}` : topology.net_id;
+    topology.net_id === "portmap"
+      ? `RTCP ${topology.rtcp_port}`
+      : topology.public_ips.length > 0
+        ? topology.public_ips.join(", ")
+        : "";
 
-  // Identifiers (DIDs, host names, region ids) are set in mono; words stay in the interface font.
+  // Identifiers (DIDs, host names) are set in mono; words stay in the interface font.
   const rows: Array<{ label: ReactNode; value: ReactNode; detail?: ReactNode; mono?: boolean }> = [
-    { label: t("review_owner_did", "Owner DID"), value: names.owner_did, mono: true },
-    { label: t("review_zone_did", "Zone DID"), value: names.zone_did, mono: true },
-    { label: plainLabel(t("access_domain", "Access domain")), value: names.access_hostname, mono: true },
-    { label: t("review_gateway", "Access route"), value: gatewayTitle, detail: gatewayDetail },
-    ...(!isWalletRuntime
+    { label: t("review_owner_did"), value: names.owner_did, mono: true },
+    { label: t("review_zone_did"), value: names.zone_did, mono: true },
+    { label: t("access_domain"), value: names.access_hostname, mono: true },
+    ...(setup
+      ? [
+          { label: t("domain_mode_title"), value: t(`mode_${setup.mode}`) },
+          { label: t("cert_source_title"), value: t(`cert_source_${setup.certificate}`) },
+        ]
+      : []),
+    { label: t("review_gateway"), value: gatewayTitle, detail: gatewayDetail },
+    ...(wizardData.selected_region
       ? [
           {
-            label: t("region_probe_title", "Network Region"),
-            value: wizardData.selected_region || t("region_server_fallback", "Automatic server fallback"),
-            mono: Boolean(wizardData.selected_region),
+            label: t("region_probe_title"),
+            value: t(`region_name_${wizardData.selected_region}`, { defaultValue: wizardData.selected_region }),
           },
         ]
       : []),
-    { label: t("review_bns_name", "BNS name"), value: names.bns_publish_name, mono: true },
+    { label: t("review_bns_name"), value: names.bns_publish_name, mono: true },
   ];
 
   return (
     <Stack spacing={3}>
-      <Lead>
-        {isWalletRuntime
-          ? t(
-              "wallet_signing_review",
-              "The wallet will ask twice: first for Boot, Device and DeviceMini, then for ZoneDocument.",
-            )
-          : t(
-              "web_signing_review",
-              "The recovery phrase will be used once in local memory to sign four activation documents.",
-            )}
-      </Lead>
+      <Lead>{t(isWalletRuntime ? "wallet_signing_review" : "web_signing_review")}</Lead>
       <Box component="dl" sx={{ m: 0, borderRadius: "12px", border: "1px solid var(--cp-border)", overflow: "hidden" }}>
         {rows.map((row, index) => (
           <Box
@@ -152,70 +141,41 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
           </Box>
         ))}
       </Box>
+      {certificateUntrusted(wizardData) && (
+        <Alert severity="warning">
+          {t("cert_untrusted_title")}
+          <UntrustedImpact />
+        </Alert>
+      )}
       {wizardData.host_accounts.length > 0 && (
         <Stack spacing={1.5}>
           <TextField
             select
-            label={t("host_account_label", "Host account for your Agents")}
-            helperText={t(
-              "host_account_hint",
-              "Agents you enable for the host run commands on this machine as this account. Other Agents are not affected. A normal account cannot use sudo from an Agent.",
-            )}
+            label={t("host_account_label")}
+            helperText={t("host_account_hint")}
             value={wizardData.host_account}
             disabled={loading}
             onChange={(event) => onUpdate({ host_account: event.target.value })}
             SelectProps={{ displayEmpty: true }}
             InputLabelProps={{ shrink: true }}
           >
-            <MenuItem value="">{t("host_account_none", "None (Agents cannot run commands on this machine)")}</MenuItem>
+            <MenuItem value="">{t("host_account_none")}</MenuItem>
             {wizardData.host_accounts.map((account) => (
               <MenuItem key={account} value={account} sx={{ fontFamily: "var(--cp-font-mono)", fontSize: 13 }}>
                 {account}
               </MenuItem>
             ))}
           </TextField>
-          {wizardData.host_account === "root" && (
-            <Alert severity="warning">
-              {t(
-                "host_account_root_warning",
-                "Agents you enable for the host will have full control of this machine, and anyone who takes over your owner account gets the same control. Choose root only to let an Agent maintain this machine.",
-              )}
-            </Alert>
-          )}
+          {wizardData.host_account === "root" && <Alert severity="warning">{t("host_account_root_warning")}</Alert>}
         </Stack>
       )}
-      {wizardData.use_self_domain && (
-        <Note>
-          <Stack spacing={1.5}>
-            <Box component="span" sx={{ color: "text.primary" }}>
-              {t("device_publication_intro", "Before activation, host the signed device identity document at the HTTPS address below. This address must remain available while this node is offline; it cannot depend on this node's relay tunnel.")}
-            </Box>
-            <Box
-              component="span"
-              sx={{ ...mono, fontSize: 13, color: "text.primary", overflowWrap: "anywhere", userSelect: "all" }}
-            >
-              {`https://ood1.${names.access_hostname}/.well-known/did.json`}
-            </Box>
-            <Box component="span">
-              {t("device_publication_content", "Publish this HTTPS document path through an independent host or proxy, and serve the file unchanged as application/jwt. Preserve RTCP routing for the device hostname and port. Activation will verify the exact signed document.")}
-            </Box>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-              <Button variant="outlined" onClick={preparePublication} disabled={loading || Boolean(wizardData.signed_documents)}>
-                {t("prepare_device_publication", "Prepare signed document")}
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={downloadPublication}
-                disabled={loading || !wizardData.signed_documents}
-                startIcon={<Download size={16} strokeWidth={1.75} />}
-              >
-                {t("download_device_publication", "Download did.json")}
-              </Button>
-            </Stack>
-          </Stack>
-        </Note>
+      {loading && (
+        <StatusLine tone="accent" live>
+          {t(setup?.certificate === "acme" ? "activating_hint_challenge" : "activating_hint")}
+        </StatusLine>
       )}
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && <ErrorAlert {...error} />}
+      {failedItems.length > 0 && <CheckList items={failedItems} />}
       <StepActions
         back={
           <Button variant="text" onClick={onBack} disabled={loading}>
@@ -227,15 +187,11 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
           variant="contained"
           size="large"
           onClick={activate}
-          disabled={loading || (wizardData.use_self_domain && !wizardData.signed_documents)}
+          disabled={loading}
           startIcon={loading ? <CircularProgress size={16} thickness={5} color="inherit" /> : undefined}
           sx={{ minWidth: 120 }}
         >
-          {loading
-            ? t("activating", "Activating…")
-            : wizardData.use_self_domain
-              ? t("verify_publication_and_activate", "Verify publication and activate")
-              : t("activate_button", "Activate")}
+          {loading ? t("activating") : t("activate_button")}
         </Button>
       </StepActions>
     </Stack>

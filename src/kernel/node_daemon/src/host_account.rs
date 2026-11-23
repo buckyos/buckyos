@@ -3,7 +3,7 @@ use buckyos_api::node_control::{lookup_os_user, OsUser};
 use buckyos_api::{atomic_write, ComputerAccess, ExecutorRunAs, OwnerAgentsPolicy};
 use buckyos_kit::get_buckyos_system_etc_dir;
 use log::error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn node_daemon_is_linux_root() -> bool {
     #[cfg(target_os = "linux")]
@@ -45,8 +45,8 @@ pub(crate) fn available_accounts() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(crate) fn save(account: &str) -> Result<(), String> {
-    let path = host_account_path();
+pub(crate) fn save_in(etc_dir: &Path, account: &str) -> Result<(), String> {
+    let path = etc_dir.join(HOST_ACCOUNT_FILE);
     if account.is_empty() {
         return match std::fs::remove_file(&path) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {

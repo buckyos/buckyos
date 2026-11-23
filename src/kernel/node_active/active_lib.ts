@@ -9,16 +9,23 @@ import {
   ActiveConfig,
   ActiveNameMapping,
   ActiveWizzardData,
-  DomainBindingState,
+  CertificateInspection,
+  DnsProviderInfo,
+  DomainCheck,
+  DomainInspection,
+  DomainSetup,
   EnabledFeatures,
   GatewayTopology,
   GatewayType,
-  JsonValue,
+  NetId,
   PreparedActiveDocuments,
+  RecordApplyResult,
+  RecordPlan,
   RegionProbeStatus,
   SignedActiveDocuments,
   WebOwnerMaterial,
 } from "./src/types";
+import { emptyDomainState, buildDomainSetup, domainReady } from "./src/domain";
 
 export let SN_BASE_HOST = "buckyos.ai";
 export let SN_HOST = `sn.${SN_BASE_HOST}`;
@@ -27,8 +34,6 @@ export let SN_AUTH_API_URL = `${SN_API_URL}/auth`;
 export let SN_DEVICEINFO_API_URL = `${SN_API_URL}/deviceinfo`;
 export let SN_BNS_API_URL = `https://bns.${SN_BASE_HOST}/kapi/bns`;
 export let WEB3_BASE_HOST = `web3.${SN_BASE_HOST}`;
-export let AI_PROVIDER_TUTORIAL_URL = "https://buckyos.ai";
-export let TELEGRAM_ACCOUNT_ID_TUTORIAL_URL = "https://core.telegram.org/api/bots/ids";
 
 export async function init_active_lib(config: ActiveConfig) {
   SN_BASE_HOST = config.sn_base_host;
@@ -38,9 +43,6 @@ export async function init_active_lib(config: ActiveConfig) {
   SN_DEVICEINFO_API_URL = `${SN_API_URL}/deviceinfo`;
   SN_BNS_API_URL = `${config.http_schema}://bns.${SN_BASE_HOST}/kapi/bns`;
   WEB3_BASE_HOST = `web3.${SN_BASE_HOST}`;
-  AI_PROVIDER_TUTORIAL_URL = config.ai_provider_tutorial_url || AI_PROVIDER_TUTORIAL_URL;
-  TELEGRAM_ACCOUNT_ID_TUTORIAL_URL =
-    config.telegram_account_id_tutorial_url || TELEGRAM_ACCOUNT_ID_TUTORIAL_URL;
 }
 
 export function resolveEnabledFeatures(
@@ -82,16 +84,16 @@ export async function createInitialWizardData(
     gatewy_type: GatewayType.BuckyForward,
     port_mapping_mode: "full",
     rtcp_port: 2980,
+    public_ips: [],
     use_self_domain: false,
     self_domain: "",
-    domain_binding: { state: "unused" },
+    domain: emptyDomainState(),
     sn_active_code: "",
     sn_user_name: "",
     sn_access_token: null,
+    sn_access_token_at: null,
     sn_refresh_token: null,
     enabled_features: resolveEnabledFeatures(initial?.sn_active_code, initial?.enabled_features),
-    region_preference: "auto",
-    region_probe_status: null,
     selected_region: null,
     admin_password_hash: "",
     friend_passcode: "",
@@ -101,17 +103,7 @@ export async function createInitialWizardData(
     web_owner_material: null,
     device_public_key: device.public_key,
     device_private_key: device.private_key,
-    prepared_documents: null,
-    signed_documents: null,
     is_wallet_runtime: false,
-    ai_provider_config: {
-      openai_api_token: "",
-      claude_api_token: "",
-      google_api_token: "",
-      openrouter_api_token: "",
-      glm_api_token: "",
-    },
-    owner_telegram_account_id: "",
     ...initial,
   };
 }
@@ -192,6 +184,41 @@ export function validateOwnerDocument(
 
 export async function generateWebOwnerMaterial(): Promise<WebOwnerMaterial> {
   return (await activeRpc().call("generate_web_owner_material", {})) as WebOwnerMaterial;
+}
+
+export async function deriveWebOwnerMaterial(mnemonicWords: string[]): Promise<WebOwnerMaterial> {
+  return (await activeRpc().call("derive_web_owner_material", {
+    mnemonic_words: mnemonicWords,
+  })) as WebOwnerMaterial;
+}
+
+async function loadOwnerDocument(ownerName: string): Promise<BuckyOSOwnerDocument> {
+  const result = (await activeRpc().call("load_owner_document", { owner_name: ownerName })) as {
+    owner_document: BuckyOSOwnerDocument;
+  };
+  return result.owner_document;
+}
+
+/** "I already registered": the password proves the SN account, the recovery phrase the owner key on BNS. */
+export async function restoreWebOwner(params: {
+  name: string;
+  password: string;
+  mnemonicWords: string[];
+}) {
+  const material = await deriveWebOwnerMaterial(params.mnemonicWords);
+  const pwdHash = await buckyos.hashPassword(params.name, params.password);
+  const session = await loginForSession(params.name, pwdHash);
+  const ownerDocument = await loadOwnerDocument(params.name);
+  if (!sameJwk(ownerDocument.verificationMethod?.[0]?.publicKeyJwk, material.owner_public_jwk)) {
+    throw new ActiveError("mnemonic_owner_mismatch");
+  }
+  return {
+    material,
+    pwdHash,
+    ownerDocument: validateOwnerDocument(ownerDocument, params.name, material.owner_public_jwk),
+    accessToken: session.access_token,
+    refreshToken: session.refresh_token,
+  };
 }
 
 export function buildWebOwnerDocument(
@@ -288,7 +315,7 @@ export function isValidDomain(domain: string): boolean {
 export function get_net_id_by_gateway_type(
   gatewayType: GatewayType,
   portMappingMode: string,
-): GatewayTopology["net_id"] {
+): NetId {
   if (gatewayType === GatewayType.WAN) return "wan";
   if (gatewayType === GatewayType.PortForward) {
     return portMappingMode === "rtcp_only" ? "portmap" : "wan_dyn";
@@ -313,12 +340,81 @@ export function deriveActiveNames(data: ActiveWizzardData): ActiveNameMapping {
 }
 
 export function deriveGatewayTopology(data: ActiveWizzardData): GatewayTopology {
+  const netId = get_net_id_by_gateway_type(data.gatewy_type, data.port_mapping_mode);
   return {
-    net_id: get_net_id_by_gateway_type(data.gatewy_type, data.port_mapping_mode),
+    net_id: netId,
     rtcp_port: data.rtcp_port,
     support_container: data.support_container,
-    uses_sn_relay: data.gatewy_type !== GatewayType.WAN,
     sn_url: SN_API_URL,
+    public_ips: netId === "wan" ? data.public_ips : [],
+  };
+}
+
+export function deriveDomainSetup(data: ActiveWizzardData): DomainSetup | null {
+  return buildDomainSetup(data, deriveGatewayTopology(data));
+}
+
+export function customDomainReady(data: ActiveWizzardData): boolean {
+  return domainReady(data, deriveDomainSetup(data));
+}
+
+/** Carries an `[active:<code>]` the page translates. */
+export class ActiveError extends Error {
+  readonly code: string;
+  constructor(code: string) {
+    super(`[active:${code}]`);
+    this.code = code;
+  }
+}
+
+export async function listPublicAddresses(): Promise<string[]> {
+  const result = (await activeRpc().call("list_public_addresses", {})) as { addresses: string[] };
+  return result.addresses;
+}
+
+export async function inspectDomain(params: {
+  domain: string;
+  net_id: NetId;
+  owner_name: string;
+  access_token?: string;
+}): Promise<DomainInspection> {
+  return (await activeRpc().call("inspect_domain", params)) as DomainInspection;
+}
+
+export async function listDnsProviders(): Promise<DnsProviderInfo[]> {
+  const result = (await activeRpc().call("list_dns_providers", {})) as { providers: DnsProviderInfo[] };
+  return result.providers;
+}
+
+export async function planDomainRecords(setup: DomainSetup): Promise<RecordPlan> {
+  return (await activeRpc().call("plan_domain_records", { setup })) as RecordPlan;
+}
+
+export async function applyDomainRecords(
+  params:
+    | { setup: DomainSetup; provider: string; fields: Record<string, string>; confirm: string[] }
+    | { setup: DomainSetup; credential_id: string; confirm: string[] },
+): Promise<RecordApplyResult> {
+  return (await activeRpc().call("apply_domain_records", params)) as RecordApplyResult;
+}
+
+export async function checkDomainRecords(params: {
+  setup: DomainSetup;
+  access_token?: string;
+  credential_id?: string;
+  certificate_id?: string;
+}): Promise<DomainCheck> {
+  return (await activeRpc().call("check_domain_records", params)) as DomainCheck;
+}
+
+export async function inspectCertificate(params: {
+  domain: string;
+  files: string[];
+  pfx_password?: string;
+}): Promise<{ certificate_id: string | null; inspection: CertificateInspection }> {
+  return (await activeRpc().call("inspect_certificate", params)) as {
+    certificate_id: string | null;
+    inspection: CertificateInspection;
   };
 }
 
@@ -387,7 +483,7 @@ function randomNonce(): string {
 export async function authorizeWalletDomainSession(
   data: ActiveWizzardData,
   domain: string,
-) {
+): Promise<SnSession> {
   if (!data.owner_document || !data.sn_user_name) throw new Error("Wallet owner is incomplete");
   const authorization = await walletSign([
     {
@@ -401,61 +497,59 @@ export async function authorizeWalletDomainSession(
   if (authorization.signatures.length !== 1 || !authorization.pwdHash) {
     throw new Error("Wallet did not authorize the SN session");
   }
-  return loginForSession(data.sn_user_name, authorization.pwdHash);
+  const session = await loginForSession(data.sn_user_name, authorization.pwdHash);
+  return {
+    sn_access_token: session.access_token,
+    sn_access_token_at: Date.now(),
+    sn_refresh_token: session.refresh_token,
+  };
 }
 
-export async function bindUserDomain(
-  data: ActiveWizzardData,
-  domain: string,
-): Promise<{
-  binding: DomainBindingState;
-  accessToken: string;
-  refreshToken: string | null;
-}> {
-  let accessToken = await refreshAccessToken(data.sn_refresh_token);
-  let refreshToken = data.sn_refresh_token;
-  if (!accessToken && data.is_wallet_runtime) {
-    const session = await authorizeWalletDomainSession(data, domain);
-    accessToken = session.access_token;
-    refreshToken = session.refresh_token;
-  }
-  if (!accessToken) {
-    accessToken = await acquireSnAccessToken(data, data.admin_password_hash);
-  }
-  const client = new sn.SnClient(SN_API_URL, accessToken);
-  try {
-    const result = await client.bindDomain(domain);
-    if (result.domain.trim().toLowerCase() !== domain) {
-      throw new Error("SN verified a different domain");
-    }
+export type SnSession = {
+  sn_access_token: string;
+  sn_access_token_at: number;
+  sn_refresh_token: string | null;
+};
+
+const ACCESS_TOKEN_REUSE_MS = 50 * 60 * 1000;
+
+/**
+ * The SN session the domain checks run with. Never opens the wallet: a wallet signs once, in
+ * `authorizeWalletDomainSession`, and its refresh token covers the polling after that.
+ */
+export async function ensureSnSession(data: ActiveWizzardData): Promise<SnSession | null> {
+  if (
+    data.sn_access_token &&
+    data.sn_access_token_at &&
+    Date.now() - data.sn_access_token_at < ACCESS_TOKEN_REUSE_MS
+  ) {
     return {
-      binding: {
-        state: "verified",
-        domain,
-        verified_at: result.verified_at,
-      },
-      accessToken,
-      refreshToken,
+      sn_access_token: data.sn_access_token,
+      sn_access_token_at: data.sn_access_token_at,
+      sn_refresh_token: data.sn_refresh_token,
     };
-  } catch (error) {
-    if (error instanceof sn.SnClientError && error.isSnError("domain_proof_failed")) {
-      const proof = error.domainProofInfo();
-      if (proof) {
-        return {
-          binding: {
-            state: "challenge",
-            domain,
-            record_name: proof.pkx_record_name,
-            value: proof.pkx,
-            reason: proof.reason,
-          },
-          accessToken,
-          refreshToken,
-        };
-      }
-    }
-    throw error;
   }
+  const refreshed = await refreshAccessToken(data.sn_refresh_token);
+  if (refreshed) {
+    return {
+      sn_access_token: refreshed,
+      sn_access_token_at: Date.now(),
+      sn_refresh_token: data.sn_refresh_token,
+    };
+  }
+  if (data.is_wallet_runtime || !data.sn_user_name || !data.admin_password_hash) return null;
+  const session = await loginForSession(data.sn_user_name, data.admin_password_hash).catch(() => null);
+  return session
+    ? {
+        sn_access_token: session.access_token,
+        sn_access_token_at: Date.now(),
+        sn_refresh_token: session.refresh_token,
+      }
+    : null;
+}
+
+export async function loadCurrentRelay(accessToken: string): Promise<string | null> {
+  return (await new sn.SnClient(SN_API_URL, accessToken).getZoneInfo()).relay_sn;
 }
 
 async function prepareDocuments(data: ActiveWizzardData): Promise<PreparedActiveDocuments> {
@@ -508,74 +602,53 @@ async function signWalletDocuments(prepared: PreparedActiveDocuments): Promise<{
   };
 }
 
-export async function prepareSignedActivation(data: ActiveWizzardData): Promise<{
+export type SignedActivation = {
+  key: string;
   prepared: PreparedActiveDocuments;
   signed: SignedActiveDocuments;
   adminPasswordHash: string;
-}> {
-  if (!data.owner_document) throw new Error("OwnerDocument is missing");
-  if (data.use_self_domain && data.domain_binding.state !== "verified") {
-    throw new Error("Custom domain has not been verified");
-  }
+};
+
+async function signActivation(data: ActiveWizzardData, key: string): Promise<SignedActivation> {
   const prepared = await prepareDocuments(data);
-  let signed: SignedActiveDocuments;
-  let walletPwdHash: string | null = null;
   if (data.is_wallet_runtime) {
-    const walletResult = await signWalletDocuments(prepared);
-    signed = walletResult.signed;
-    walletPwdHash = walletResult.pwdHash;
-  } else {
-    if (!data.web_owner_material) throw new Error("Web owner mnemonic is unavailable");
-    signed = (await activeRpc().call("sign_web_active_documents", {
-      mnemonic_words: data.web_owner_material.mnemonic_words,
-      prepared,
-    })) as SignedActiveDocuments;
+    const { signed, pwdHash } = await signWalletDocuments(prepared);
+    return { key, prepared, signed, adminPasswordHash: pwdHash };
   }
-  const adminPasswordHash = data.is_wallet_runtime
-    ? walletPwdHash || ""
-    : data.admin_password_hash;
-  return { prepared, signed, adminPasswordHash };
-}
-
-export function customDomainPublication(data: ActiveWizzardData) {
-  const prepared = data.prepared_documents;
-  const signed = data.signed_documents;
-  if (!data.use_self_domain || !prepared || !signed) {
-    throw new Error("Prepare and publish the custom-domain device document first");
-  }
-  const names = deriveActiveNames(data);
-  const topology = deriveGatewayTopology(data);
-  if (
-    !Object.entries(names).every(([key, value]) => prepared.names[key as keyof ActiveNameMapping] === value) ||
-    !Object.entries(topology).every(([key, value]) => prepared.topology[key as keyof GatewayTopology] === value) ||
-    !sameJwk(prepared.device_document.verificationMethod?.[0]?.publicKeyJwk, data.device_public_key) ||
-    prepared.owner_document.id !== data.owner_document?.id ||
-    !sameJwk(prepared.owner_document.verificationMethod?.[0]?.publicKeyJwk, data.owner_document?.verificationMethod?.[0]?.publicKeyJwk)
-  ) {
-    throw new Error("Activation settings changed; prepare and publish the device document again");
-  }
-  return {
+  if (!data.web_owner_material) throw new Error("Web owner mnemonic is unavailable");
+  const signed = (await activeRpc().call("sign_web_active_documents", {
+    mnemonic_words: data.web_owner_material.mnemonic_words,
     prepared,
-    signed,
-    adminPasswordHash: data.admin_password_hash,
-    url: `https://${prepared.device_document.id.slice("did:web:".length)}/.well-known/did.json`,
-    content: signed.device_document_jwt,
-  };
+  })) as SignedActiveDocuments;
+  return { key, prepared, signed, adminPasswordHash: data.admin_password_hash };
 }
 
-export async function activateNode(data: ActiveWizzardData): Promise<{
-  accessHostname: string;
-  prepared: PreparedActiveDocuments;
-  signed: SignedActiveDocuments;
-}> {
+/**
+ * Signs and commits. `memo` keeps the signed documents across a failed commit, so a retry with
+ * unchanged settings sends the same bytes and does not ask the wallet again.
+ */
+export async function activateNode(
+  data: ActiveWizzardData,
+  memo: { current: SignedActivation | null },
+): Promise<{ accessHostname: string; zoneDid: string }> {
   if (!data.owner_document) throw new Error("OwnerDocument is missing");
-  if (data.use_self_domain && data.domain_binding.state !== "verified") {
-    throw new Error("Custom domain has not been verified");
+  if (data.use_self_domain && !customDomainReady(data)) {
+    throw new ActiveError("domain_not_ready");
   }
-  const { prepared, signed, adminPasswordHash } = data.use_self_domain
-    ? customDomainPublication(data)
-    : await prepareSignedActivation(data);
+  const key = JSON.stringify([
+    deriveActiveNames(data),
+    deriveGatewayTopology(data),
+    data.owner_document,
+    data.device_public_key,
+  ]);
+  if (memo.current?.key !== key) {
+    memo.current = null;
+    memo.current = await signActivation(data, key);
+  }
+  const { prepared, signed, adminPasswordHash } = memo.current;
   const accessToken = await acquireSnAccessToken(data, adminPasswordHash);
+  const setup = deriveDomainSetup(data);
+  const { credential_id, certificate_id, accept_warnings } = data.domain;
   const result = (await activeRpc().call("commit_active", {
     owner_document: data.owner_document,
     prepared,
@@ -586,8 +659,6 @@ export async function activateNode(data: ActiveWizzardData): Promise<{
       guest_access: data.enable_guest_access,
       friend_passcode: data.friend_passcode,
       enabled_features: resolveEnabledFeatures(data.sn_active_code, data.enabled_features),
-      ai_provider_config: data.ai_provider_config,
-      owner_telegram_account_id: data.owner_telegram_account_id,
       host_account: data.host_account,
     },
     sn: {
@@ -595,11 +666,16 @@ export async function activateNode(data: ActiveWizzardData): Promise<{
       bns_url: SN_BNS_API_URL,
       access_token: accessToken,
     },
+    domain: setup
+      ? {
+          setup,
+          ...(setup.mode === "dns_api" && credential_id ? { credential_id } : {}),
+          ...(setup.certificate === "upload" && certificate_id ? { certificate_id } : {}),
+          accept_warnings: setup.certificate === "upload" && accept_warnings,
+        }
+      : null,
   })) as { status: string; access_hostname: string };
   if (result.status !== "completed") throw new Error("Activation did not complete");
-  return {
-    accessHostname: result.access_hostname,
-    prepared,
-    signed,
-  };
+  memo.current = null;
+  return { accessHostname: result.access_hostname, zoneDid: prepared.names.zone_did };
 }

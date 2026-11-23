@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { StepKey, WalletUser, WizardData, ActiveWizzardData } from "../types";
-import { createInitialWizardData, WEB3_BASE_HOST } from "../../active_lib";
+import { createInitialWizardData, type SignedActivation } from "../../active_lib";
 import GatewayStep from "./steps/GatewayStep";
 import DomainStep from "./steps/DomainStep";
 import SecurityStep from "./steps/SecurityStep";
-import AIProviderStep from "./steps/AIProviderStep";
-import OwnerTelegramStep from "./steps/OwnerTelegramStep";
-import ReviewStep from "./steps/ReviewStep";
-import SuccessStep from "./steps/SuccessStep";
+import ReviewStep, { type Activated } from "./steps/ReviewStep";
+import ResultStep from "./steps/ResultStep";
+import { useRegionProbe } from "./useRegionProbe";
 import { mono } from "./ui";
+
+export type UpdateWizard = (
+  partial: Partial<WizardData> | ((previous: WizardData) => Partial<WizardData>),
+) => void;
 
 type Props = {
   isWalletRuntime: boolean;
@@ -30,19 +33,21 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const { t } = useTranslation();
   const [wizardData, setWizardData] = useState<ActiveWizzardData | null>(null);
   const [activeStep, setActiveStep] = useState(0);
-  const [completedUrl, setCompletedUrl] = useState("");
+  const [activated, setActivated] = useState<Activated | null>(null);
+  const region = useRegionProbe(!isWalletRuntime);
+  const signed = useRef<SignedActivation | null>(null);
   const walletInfoReady =
     !isWalletRuntime ||
     (!!walletUser?.sn_username && !!walletUser?.owner_document);
   const stepOrder = useMemo<StepKey[]>(
     () =>
       isWalletRuntime
-        ? ["gateway", "domain", "ai_provider", "owner_telegram", "review", "success"]
-        : ["security", "gateway", "domain", "ai_provider", "owner_telegram", "review", "success"],
+        ? ["gateway", "domain", "review", "result"]
+        : ["gateway", "security", "domain", "review", "result"],
     [isWalletRuntime]
   );
   const visibleSteps = useMemo(
-    () => stepOrder.filter((step) => step !== "success"),
+    () => stepOrder.filter((step) => step !== "result"),
     [stepOrder]
   );
 
@@ -53,7 +58,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
       try {
         setWizardData(null);
         setActiveStep(0);
-        setCompletedUrl("");
+        setActivated(null);
 
         if (isWalletRuntime) {
           // Wallet runtime requires wallet user.
@@ -88,57 +93,20 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     };
   }, [isWalletRuntime, walletUser]);
 
-  const stepTitles = useMemo(
-    () => ({
-      security: t("title_step_1"),
-      gateway: t("title_step_2"),
-      domain: t("title_step_3"),
-      ai_provider: t("title_step_4"),
-      owner_telegram: t("title_step_5"),
-      review: t("title_step_6"),
-      success: t("activation_success"),
-    }),
-    [t]
-  );
-
-  const handleUpdate = (partial: Partial<WizardData>) =>
-    setWizardData((prev) => {
-      if (!prev) return null;
-      const invalidatesDocuments = [
-        "gatewy_type",
-        "port_mapping_mode",
-        "rtcp_port",
-        "use_self_domain",
-        "self_domain",
-        "owner_document",
-        "device_public_key",
-      ].some((key) => key in partial);
-      return {
-        ...prev,
-        ...partial,
-        ...(invalidatesDocuments && !("prepared_documents" in partial)
-          ? { prepared_documents: null, signed_documents: null }
-          : {}),
-      };
-    });
+  const handleUpdate: UpdateWizard = (partial) =>
+    setWizardData((prev) =>
+      prev ? { ...prev, ...(typeof partial === "function" ? partial(prev) : partial) } : null,
+    );
 
   const goNext = () => setActiveStep((prev) => Math.min(prev + 1, stepOrder.length - 1));
   const goBack = () => setActiveStep((prev) => Math.max(prev - 1, 0));
 
-  const handleActivationDone = (url: string) => {
-    setCompletedUrl(url);
-    setActiveStep(stepOrder.indexOf("success"));
+  const handleActivationDone = (result: Activated) => {
+    setActivated(result);
+    setActiveStep(stepOrder.indexOf("result"));
   };
 
   const currentStepKey = stepOrder[activeStep];
-  const fallbackUrl = wizardData?.use_self_domain
-    ? wizardData.self_domain
-      ? `https://${wizardData.self_domain}`
-      : ""
-    : wizardData?.sn_user_name 
-    ? `https://${wizardData.sn_user_name}.${WEB3_BASE_HOST}`
-    : "";
-  const successUrl = completedUrl || fallbackUrl;
 
   const renderStep = () => {
     if (isWalletRuntime && !walletUser) {
@@ -147,9 +115,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     if (isWalletRuntime && !walletInfoReady) {
       return (
         <Alert severity="error">
-          {t("wallet_info_incomplete", {
-            defaultValue: "Wallet user info is incomplete. Missing SN username or owner key.",
-          })}
+          {t("wallet_info_incomplete")}
         </Alert>
       );
     }
@@ -158,44 +124,28 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     }
     
     switch (currentStepKey) {
-      case "security":
-        return (
-          <SecurityStep
-            wizardData={wizardData}
-            onUpdate={handleUpdate}
-            onNext={goNext}
-          />
-        );
       case "gateway":
         return (
           <GatewayStep
             wizardData={wizardData}
             onUpdate={handleUpdate}
             onNext={goNext}
-            isWalletRuntime={isWalletRuntime}
+            region={region}
+          />
+        );
+      case "security":
+        return (
+          <SecurityStep
+            wizardData={wizardData}
+            onUpdate={handleUpdate}
+            onNext={goNext}
+            onBack={goBack}
+            region={region}
           />
         );
       case "domain":
         return (
           <DomainStep
-            wizardData={wizardData}
-            onUpdate={handleUpdate}
-            onNext={goNext}
-            onBack={goBack}
-          />
-        );
-      case "ai_provider":
-        return (
-          <AIProviderStep
-            wizardData={wizardData}
-            onUpdate={handleUpdate}
-            onNext={goNext}
-            onBack={goBack}
-          />
-        );
-      case "owner_telegram":
-        return (
-          <OwnerTelegramStep
             wizardData={wizardData}
             onUpdate={handleUpdate}
             onNext={goNext}
@@ -210,29 +160,27 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
             onBack={goBack}
             onActivated={handleActivationDone}
             isWalletRuntime={isWalletRuntime}
+            signed={signed}
           />
         );
-      case "success":
-        return <SuccessStep wizardData={wizardData} targetUrl={successUrl} />;
+      case "result":
+        return activated ? <ResultStep wizardData={wizardData} activated={activated} /> : null;
       default:
         return null;
     }
   };
 
   const totalSteps = visibleSteps.length;
-  const isSuccess = currentStepKey === "success";
-  const stepNumber = isSuccess ? totalSteps : activeStep + 1;
-  // Titles in the language files carry a number ("2. …"); the counter beside them already says where we are,
-  // and in the wallet runtime (no security step) the built-in numbers would be off by one.
-  const displayStepTitle = stepTitles[currentStepKey].replace(/^\d+\.\s*/, "");
+  const isResult = currentStepKey === "result";
+  const stepNumber = isResult ? totalSteps : activeStep + 1;
 
   return (
     <Box>
-      {!isSuccess && (
+      {!isResult && (
         <Box sx={{ mb: 4 }}>
           <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2} sx={{ mb: 1.5 }}>
             <Typography variant="h5" component="h2">
-              {displayStepTitle}
+              {t(`title_step_${currentStepKey}`)}
             </Typography>
             <Typography
               variant="body2"

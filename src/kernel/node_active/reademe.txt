@@ -4,15 +4,27 @@ Node Active 同时支持浏览器快速注册和 BuckyOS App 钱包激活。两�
 OwnerDocument 为身份输入，并通过 typed kRPC 构造、签名和提交 Boot、Device、
 DeviceMini、Zone 四份文档。
 
-浏览器路径使用同一份 12 词助记词派生 Owner Ed25519 与 BNS EVM asset_owner，
-完成备份确认后注册 SN。钱包路径只接受 bridge 返回并校验通过的 OwnerDocument，
-再分两阶段请求钱包签名。
+步骤：网页 接入方式 → 身份 → 域名 → 确认 → 启动结果；钱包没有身份这一步。
 
-浏览器注册前通过 `/kapi/active` 的 `start_region_probe` 启动 Region 探测，并用
+浏览器路径使用同一份 12 词助记词派生 Owner Ed25519 与 BNS EVM asset_owner，
+完成备份确认后注册 SN；刷新丢了身份时用“我已经注册过”恢复（用户名、密码、助记词，
+助记词由 node_daemon 的 `derive_web_owner_material` 导出公钥，再与 BNS 上的
+OwnerDocument 核对）。钱包路径只接受 bridge 返回并校验通过的 OwnerDocument，
+再分两阶段请求钱包签名；域名检测只请求一次授权，之后用 refresh token。
+
+接入步骤通过 `/kapi/active` 的 `start_region_probe` 启动 Region 探测，并用
 `get_region_probe_status` 读取结果。SN 配置获取、DNS 安全过滤和并行 TCP connect
 均由 node_daemon 执行；网页只展示自动/手工选择与状态，并将最终可选 Region 固定到
-本次 `auth.register` 请求。探测不可用或全部失败时省略 Region，继续注册。
+本次 `auth.register` 请求。探测不可用或全部失败时省略 Region，继续注册。已有账号只显示
+`zone.get_info` 的当前 relay。
 
-默认 BNS 域名只发布签名 ZoneDocument JWT。自有域名必须先完成 PKX TXT challenge，
-随后按 owner publish、zone publish、device.register 的顺序提交。SN 返回 submitted 后，
-激活服务等待 BNS 投影与提交原文一致，最后原子写入本地身份文件并启动系统。
+自有域名分 SN 托管、DNS API、手工三种，域名步骤每 10 秒调用 `check_domain_records`，
+全部通过才能下一步；激活时两种域名走同一条路径：签名四份文档，`commit_active` 带
+`domain`。提交失败后重试用同一批签名文档。
+
+`commit_active` 成功 2 秒后激活服务退出，启动结果页只用已经加载的代码、文案和图标：
+构建产物只有一个脚本，9 种语言在页面打开后全部预加载。2 分钟后开始请求
+`https://public.<域名>/readme`，满 5 分钟不成功按节点、DNS、证书与转发三层给出原因。
+
+服务商教程在 res/dns_providers/<语言>.json，说明文案按错误码在 res/<语言>.json 的
+`code_*`；`pnpm test` 检查 9 种语言的键一致、代码里的键都存在。

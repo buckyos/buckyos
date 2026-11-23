@@ -139,23 +139,22 @@ pub fn build_boot_node_gateway_info(
     discovered_oods: &HashMap<String, DiscoveredNode>,
     sn_host_name: Option<&str>,
 ) -> Value {
-    let oods_in_zone: Vec<&str> = zone_document
+    let oods_in_zone = zone_document
         .oods
         .iter()
-        .filter(|ood| ood.node_type.is_ood() && ood.name != this_node_id)
-        .map(|ood| ood.name.as_str())
-        .collect();
+        .filter(|ood| ood.node_type.is_ood() && ood.name != this_node_id);
 
     let mut node_route_map: HashMap<String, String> = HashMap::new();
     let mut routes: HashMap<String, Vec<Value>> = HashMap::new();
 
-    for ood_name in oods_in_zone.iter() {
+    for ood in oods_in_zone {
+        let ood_name = ood.name.as_str();
         let port = discovered_oods
-            .get(*ood_name)
+            .get(ood_name)
             .map(|node| node.rtcp_port as u32)
             .unwrap_or(DEFAULT_RTCP_PORT);
         let direct_url = format_rtcp_did_url(ood_name, zone_host, port);
-        node_route_map.insert((*ood_name).to_string(), direct_url.clone());
+        node_route_map.insert(ood_name.to_string(), direct_url.clone());
 
         let mut candidates = vec![build_route_candidate(
             "direct",
@@ -166,10 +165,12 @@ pub fn build_boot_node_gateway_info(
             &direct_url,
             "zone_document",
             None,
-            evidence_for_direct(discovered_oods.get(*ood_name)),
+            evidence_for_direct(discovered_oods.get(ood_name)),
         )];
 
-        if let Some(sn) = sn_host_name {
+        // 固定公网 IP 的目标不连 relay；本机是固定公网 IP 时 sn_host_name 为空。
+        let target_has_relay = ood.net_id.as_deref() != Some("wan");
+        if let Some(sn) = sn_host_name.filter(|_| target_has_relay) {
             let relay_url = format_relay_rtcp_url(sn, ood_name, zone_host, port);
             candidates.push(build_route_candidate(
                 "via-sn",
@@ -184,7 +185,7 @@ pub fn build_boot_node_gateway_info(
             ));
         }
 
-        routes.insert((*ood_name).to_string(), candidates);
+        routes.insert(ood_name.to_string(), candidates);
     }
 
     // 非 OOD ZoneGateway 也是 boot 阶段需要 keep_tunnel 的目标之一
@@ -337,7 +338,7 @@ fn format_relay_rtcp_url(
 }
 
 // 启动 cyfs-gateway 前写入 node_rtcp.keep_tunnel 的目标。
-// SN：本机非 wan 系时，需要它 keep tunnel 解决"被动可达"。
+// SN：本机不是固定公网 IP（wan）时，需要它 keep tunnel 解决"被动可达"。
 // 其它 OOD：作为 RTCP direct 的 keep_tunnel 目标。
 pub fn build_keep_tunnel_targets(
     role: NodeRole,
@@ -783,6 +784,29 @@ mod tests {
         assert_eq!(bootstrap.path(), "/ood2.test-zone.example:2980");
     }
 
+    #[test]
+    fn a_fixed_wan_target_has_no_relay_route() {
+        let (_, mut zone) = address_test_device_and_zone();
+        zone.oods = vec!["ood1".parse().unwrap(), "ood2@wan".parse().unwrap(), "ood3@wan_dyn".parse().unwrap()];
+        let info = build_boot_node_gateway_info(
+            "ood1",
+            "test-zone.example",
+            &zone,
+            &HashMap::new(),
+            Some("sn.example.com"),
+        );
+        let ids = |node: &str| {
+            info["routes"][node]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|route| route["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("ood2"), vec!["direct"]);
+        assert_eq!(ids("ood3"), vec!["direct", "via-sn"]);
+    }
+
     // P1-9: nodes other than the default Zone gateway leave the Zone through it.
     #[test]
     fn cross_zone_relay_points_at_the_default_zone_gateway() {
@@ -864,7 +888,7 @@ mod tests {
     #[test]
     fn fixed_wan_bootstrap_does_not_add_sn() {
         let (mut device, zone) = address_test_device_and_zone();
-        device.ips = vec!["203.0.113.10".parse().unwrap()];
+        device.net_id = Some("wan".to_string());
         for role in [NodeRole::Ood, NodeRole::ZoneGateway, NodeRole::Node] {
             assert!(build_keep_tunnel_targets(
                 role,

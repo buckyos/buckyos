@@ -29,9 +29,12 @@ time = { workspace = true }
 sysinfo = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 if-addrs = { workspace = true }
+base64 = { workspace = true }
 buckyos-http-server = { workspace = true }
 cyfs-gateway-api = { workspace = true }
 bns-client = { workspace = true }
+cyfs-dns-provider = { workspace = true }
+cyfs-identity-cert = { workspace = true }
 kRPC = { workspace = true }
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
