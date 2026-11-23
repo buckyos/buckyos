@@ -592,7 +592,7 @@ mod test {
 
         let start_config_path = temp_root.path().join("security/start_config.json");
         let domain_hosting = json!({
-            "mode": "sn", "certificate": "acme", "domain": TEST_HOSTNAME
+            "schema_version": 1, "mode": "sn", "certificate": "acme", "domain": TEST_HOSTNAME
         });
         let mut hosted_start_config = start_config_value.clone();
         hosted_start_config["access_hostname"] = json!(TEST_HOSTNAME);

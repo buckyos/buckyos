@@ -20,6 +20,7 @@ rbac.workspace = true
 package-lib.workspace = true
 buckyos-api = { path = "../buckyos-api" }
 buckyos-kit.workspace = true
+cyfs-dns-provider.workspace = true
 clap = { workspace = true, features = ["derive"] }
 fs2.workspace = true
 fs_meta = { git = "https://github.com/buckyos/cyfs-ndn.git", branch = "main" }

@@ -5,11 +5,11 @@ use crate::sso_settings::load_sso_settings;
 use crate::ControlPanelServer;
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-pub(crate) use buckyos_api::external_source_for_did;
+pub(crate) use buckyos_api::{external_source_for_did, OAuthSubject, VerifiedOAuth};
 use buckyos_api::{
     get_buckyos_api_runtime, oauth_account_label, oauth_binding_key, oauth_subject_key,
     user_did_from_doc_value, valid_oauth_id, AuthTarget, OAuthAccountLogin, OAuthSource,
-    OAuthSourceKind, SsoSettings, CONTROL_PANEL_SERVICE_UNIQUE_ID,
+    OAuthSourceKind, SsoSettings, CONTROL_PANEL_SERVICE_UNIQUE_ID, OAUTH_SUBJECTS_PREFIX,
 };
 use buckyos_http_server::{ServerError, ServerResult};
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
@@ -25,7 +25,6 @@ use std::{collections::HashMap, time::Duration};
 type Result<T> = std::result::Result<T, RPCErrors>;
 type HttpReq = http::Request<BoxBody<Bytes, ServerError>>;
 type HttpRes = http::Response<BoxBody<Bytes, ServerError>>;
-const PREFIX: &str = "services/control_panel/oauth";
 const TTL: u64 = 600;
 
 fn invalid(msg: &str) -> RPCErrors {
@@ -48,26 +47,8 @@ fn enabled_source<'a>(settings: &'a SsoSettings, id: &str) -> Result<&'a OAuthSo
         .ok_or_else(|| refused("oauth_source_disabled"))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct VerifiedOAuth {
-    pub source_id: String,
-    pub issuer: String,
-    pub sub: String,
-    pub email: String,
-    pub label: String,
-    pub did: String,
-    pub webhost: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct OAuthSubject {
-    pub identity: VerifiedOAuth,
-    pub did: String,
-    pub email: String,
-    #[serde(skip)]
-    pub bound_user: Option<String>,
-}
 fn subject_key(key: &str) -> String {
-    format!("{PREFIX}/subjects/{key}")
+    format!("{OAUTH_SUBJECTS_PREFIX}/{key}")
 }
 async fn read_subject(kv: &dyn AgentKv, key: &str) -> Result<Option<OAuthSubject>> {
     let Some((raw, _)) = kv.get(&subject_key(key)).await? else {

@@ -1111,10 +1111,10 @@ mod beta22_tests {
         assert!(!builder.entries.contains_key(DOMAIN_HOSTING_KEY));
 
         for hosting in [
-            json!({"mode": "sn", "certificate": "acme", "domain": "alice.example.com"}),
-            json!({"mode": "manual", "certificate": "upload", "domain": "alice.example.com"}),
+            json!({"schema_version": 1, "mode": "sn", "certificate": "acme", "domain": "alice.example.com"}),
+            json!({"schema_version": 1, "mode": "manual", "certificate": "upload", "domain": "alice.example.com"}),
             json!({
-                "mode": "dns_api", "certificate": "acme", "domain": "alice.example.com",
+                "schema_version": 1, "mode": "dns_api", "certificate": "acme", "domain": "alice.example.com",
                 "provider": "cloudflare", "credential_id": "alice-example-com",
                 "acme_issuer": "https://acme-staging-v02.api.letsencrypt.org/directory"
             }),
@@ -1130,9 +1130,10 @@ mod beta22_tests {
         }
 
         for hosting in [
-            json!({"mode": "manual", "certificate": "acme", "domain": "alice.example.com"}),
-            json!({"mode": "sn", "certificate": "acme", "domain": "other.example.com"}),
-            json!({"mode": "sn", "certificate": "acme", "domain": "alice.example.com", "token": "x"}),
+            json!({"schema_version": 1, "mode": "manual", "certificate": "acme", "domain": "alice.example.com"}),
+            json!({"schema_version": 1, "mode": "sn", "certificate": "acme", "domain": "other.example.com"}),
+            json!({"schema_version": 1, "mode": "sn", "certificate": "acme", "domain": "alice.example.com", "token": "x"}),
+            json!({"mode": "sn", "certificate": "acme", "domain": "alice.example.com"}),
         ] {
             let mut value = start_config_value();
             value["domain_hosting"] = hosting;
@@ -1141,7 +1142,7 @@ mod beta22_tests {
         }
         let mut value = start_config_value();
         value["domain_hosting"] =
-            json!({"mode": "sn", "certificate": "acme", "domain": "alice.example.com"});
+            json!({"schema_version": 1, "mode": "sn", "certificate": "acme", "domain": "alice.example.com"});
         value.as_object_mut().unwrap().remove("access_hostname");
         assert!(StartConfigSummary::from_value(&value).is_err());
     }

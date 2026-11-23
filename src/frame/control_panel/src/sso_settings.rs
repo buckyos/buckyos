@@ -7,43 +7,13 @@ use crate::user_mgr::require_control_panel_admin;
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    oauth_binding_key, OAuthSource, OAuthSourceKind, SsoSettings, UserSettings, UserState,
-    SSO_SETTINGS_KEY,
+    oauth_binding_key, OAuthSource, RetiredOAuthSource, SsoSettings, UserSettings, UserState,
+    OAUTH_SUBJECTS_PREFIX, RETIRED_OAUTH_SOURCES_KEY, SSO_SETTINGS_KEY,
 };
 use buckyos_kit::KVAction;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-
-/// Deleted login sources. Sessions, grants and account bindings name a source by
-/// its ID, identity domain and issuer, so a deleted source's namespace stays
-/// reserved: only the same source can be added again, and then its existing
-/// bindings sign in again.
-const RETIRED_OAUTH_SOURCES_KEY: &str = "services/control_panel/oauth/retired_sources";
-const OAUTH_SUBJECTS_PREFIX: &str = "services/control_panel/oauth/subjects";
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct RetiredOAuthSource {
-    id: String,
-    kind: OAuthSourceKind,
-    webhost: String,
-    issuer: String,
-}
-
-impl RetiredOAuthSource {
-    fn of(source: &OAuthSource) -> Self {
-        Self {
-            id: source.id.clone(),
-            kind: source.kind,
-            webhost: source.webhost.clone(),
-            issuer: source.issuer.clone(),
-        }
-    }
-
-    fn claims(&self, source: &OAuthSource) -> bool {
-        self.id == source.id || self.webhost == source.webhost || self.issuer == source.issuer
-    }
-}
 
 /// Checks validated `new` sources against the stored `old` ones: a kept source keeps
 /// its namespace, a removed one is retired, and an added one may only take a

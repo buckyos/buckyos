@@ -982,7 +982,7 @@ impl ZoneAccess for RuntimeZone {
             .await
             .map_err(|error| error.to_string())?;
         match client.get(DOMAIN_HOSTING_KEY).await {
-            Ok(value) => serde_json::from_str(&value.value)
+            Ok(value) => DomainHosting::parse(&value.value)
                 .map(Some)
                 .map_err(|error| format!("invalid {DOMAIN_HOSTING_KEY}: {error}")),
             Err(SystemConfigError::KeyNotFound(_)) => Ok(None),
@@ -1213,7 +1213,7 @@ mod tests {
 
     fn dns_api_node() -> Node {
         let node = node(Some(json!({
-            "mode": "dns_api", "certificate": "acme", "domain": DOMAIN,
+            "schema_version": 1, "mode": "dns_api", "certificate": "acme", "domain": DOMAIN,
             "provider": "cloudflare", "credential_id": "old-1",
             "acme_issuer": "https://acme-staging-v02.api.letsencrypt.org/directory"
         })));
@@ -1488,7 +1488,7 @@ mod tests {
     async fn an_uploaded_certificate_is_replaced_whatever_the_records_say() {
         use cyfs_identity_cert::CheckLevel;
         let node = node(Some(
-            json!({"mode": "manual", "certificate": "upload", "domain": DOMAIN}),
+            json!({"schema_version": 1, "mode": "manual", "certificate": "upload", "domain": DOMAIN}),
         ));
         let inspected = node
             .call("domain.inspect_certificate", json!({"files": ["cGVt"]}))
@@ -1514,7 +1514,7 @@ mod tests {
     #[tokio::test]
     async fn a_token_that_only_keeps_records_is_tried_on_the_proof_record() {
         let node = node(Some(json!({
-            "mode": "dns_api", "certificate": "upload", "domain": DOMAIN,
+            "schema_version": 1, "mode": "dns_api", "certificate": "upload", "domain": DOMAIN,
             "provider": "cloudflare", "credential_id": "old-1"
         })));
         let id = new_token(&node, "upload", "another-secret-token").await;
@@ -1771,7 +1771,7 @@ mod tests {
     #[tokio::test]
     async fn an_uploaded_certificate_is_never_told_about() {
         let node = node(Some(
-            json!({"mode": "manual", "certificate": "upload", "domain": DOMAIN}),
+            json!({"schema_version": 1, "mode": "manual", "certificate": "upload", "domain": DOMAIN}),
         ));
         let mut status = cert(DOMAIN, Some("x"), 1);
         status["acme"]["state"] = json!("manual");

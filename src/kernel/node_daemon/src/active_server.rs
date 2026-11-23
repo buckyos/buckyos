@@ -3248,7 +3248,7 @@ mod tests {
         });
         DomainCommit {
             hosting: serde_json::from_value(json!({
-                "mode": mode, "certificate": certificate, "domain": "home.example.org",
+                "schema_version": 1, "mode": mode, "certificate": certificate, "domain": "home.example.org",
                 "provider": credential.as_ref().map(|c| c.provider.clone()),
                 "credential_id": credential_id
             }))

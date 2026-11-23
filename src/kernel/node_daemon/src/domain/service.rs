@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use base64::Engine;
-use buckyos_api::{DomainCertificateSource, DomainHosting, DomainHostingMode};
+use buckyos_api::{
+    DomainCertificateSource, DomainHosting, DomainHostingMode, DOMAIN_HOSTING_SCHEMA_VERSION,
+};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use cyfs_dns_provider::{
     create_provider, credential_path, detect_provider, load_credential, provider_table,
@@ -1221,6 +1223,7 @@ fn finish_commit(
     acme_issuer: Option<String>,
 ) -> DomainResult<DomainCommit> {
     let hosting = DomainHosting {
+        schema_version: DOMAIN_HOSTING_SCHEMA_VERSION,
         mode: req.setup.mode,
         certificate: req.setup.certificate,
         domain: req.setup.domain.clone(),
@@ -2561,6 +2564,7 @@ mod tests {
         }
         let commit = DomainCommit {
             hosting: DomainHosting {
+                schema_version: DOMAIN_HOSTING_SCHEMA_VERSION,
                 mode: DomainHostingMode::Sn,
                 certificate: DomainCertificateSource::Acme,
                 domain: DOMAIN.to_string(),

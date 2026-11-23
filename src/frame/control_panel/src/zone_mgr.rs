@@ -84,7 +84,7 @@ fn gateway_mode(hosting: Option<&str>) -> Result<Value, RPCErrors> {
     let Some(raw) = hosting else {
         return Ok(json!("default"));
     };
-    let hosting: DomainHosting = serde_json::from_str(raw).map_err(|error| {
+    let hosting = DomainHosting::parse(raw).map_err(|error| {
         RPCErrors::ReasonError(format!("failed to parse {DOMAIN_HOSTING_KEY}: {error}"))
     })?;
     Ok(json!(hosting.mode))
@@ -1067,7 +1067,7 @@ mod tests {
             ),
         ] {
             let mut hosting =
-                json!({"mode": mode, "certificate": "acme", "domain": "home.example.com"});
+                json!({"schema_version": 1, "mode": mode, "certificate": "acme", "domain": "home.example.com"});
             hosting
                 .as_object_mut()
                 .unwrap()

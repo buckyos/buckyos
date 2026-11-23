@@ -206,6 +206,204 @@ fn service_settings_require_the_owners_schema() {
     }
 }
 
+fn set_config(root: &Path, key: &str, value: &[u8]) {
+    let db = current_system_config(&root.join("local/system_config"));
+    db.insert(key, value).unwrap();
+    db.flush().unwrap();
+}
+
+#[test]
+fn domain_hosting_requires_its_schema_version() {
+    let hosting = |version: serde_json::Value, mode: &str| {
+        serde_json::json!({
+            "schema_version": version, "mode": mode, "certificate": "upload",
+            "domain": "home.example.com",
+        })
+    };
+    let mut unversioned = hosting(1.into(), "sn");
+    unversioned.as_object_mut().unwrap().remove("schema_version");
+    let mut extended = hosting(1.into(), "sn");
+    extended["token"] = "x".into();
+    for (value, accepted) in [
+        (hosting(1.into(), "sn"), true),
+        (hosting(1.into(), "manual"), true),
+        (unversioned, false),
+        (hosting(0.into(), "sn"), false),
+        (hosting(2.into(), "sn"), false),
+        (hosting(1.into(), "dns_api"), false),
+        (hosting(1.into(), "future"), false),
+        (extended, false),
+    ] {
+        let root = tempdir().unwrap();
+        set_config(root.path(), DOMAIN_HOSTING_KEY, value.to_string().as_bytes());
+        match run(root.path(), tempdir().unwrap().path()) {
+            Ok(changes) => assert!(accepted && changes.is_empty(), "{value}"),
+            Err(e) => assert!(
+                !accepted
+                    && e.unsupported
+                    && e.module == "kernel-config"
+                    && e.area == DOMAIN_HOSTING_KEY,
+                "{value}: {e}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn only_the_dns_credential_in_use_is_read_and_its_secret_is_not_reported() {
+    const TOKEN: &str = "top-secret-token";
+    let root = tempdir().unwrap();
+    let hosting = |credential: &str| {
+        serde_json::json!({
+            "schema_version": 1, "mode": "dns_api", "certificate": "acme",
+            "domain": "home.example.com", "provider": "cloudflare", "credential_id": credential,
+        })
+        .to_string()
+    };
+    let probe = || run(root.path(), tempdir().unwrap().path());
+    let security = root.path().join("security");
+    let path = cyfs_dns_provider::credential_path(&security, "home-1").unwrap();
+
+    let unused = cyfs_dns_provider::credential_path(&security, "unused").unwrap();
+    fs::create_dir_all(unused.parent().unwrap()).unwrap();
+    fs::write(&unused, "not a credential").unwrap();
+    assert!(probe().unwrap().is_empty());
+
+    set_config(root.path(), DOMAIN_HOSTING_KEY, hosting("home-1").as_bytes());
+    assert!(probe().unwrap().is_empty());
+
+    cyfs_dns_provider::save_credential(
+        &path,
+        &cyfs_dns_provider::DnsCredential {
+            provider: "cloudflare".into(),
+            fields: BTreeMap::from([("api_token".into(), TOKEN.into())]),
+            endpoint: None,
+        },
+    )
+    .unwrap();
+    let current = fs::read_to_string(&path).unwrap();
+    assert!(probe().unwrap().is_empty());
+    assert_eq!(fs::read_to_string(&path).unwrap(), current);
+
+    for invalid in [
+        current.replace("buckyos.dns_credential.v1", "buckyos.dns_credential.v2"),
+        current.replace("\"schema\"", "\"other\""),
+        current.replace("\"cloudflare\"", "\"retired-service\""),
+        current.replace("\"api_token\"", "\"renamed_field\""),
+        current[..current.len() - 2].to_string(),
+    ] {
+        fs::write(&path, &invalid).unwrap();
+        let failure = probe().unwrap_err();
+        assert!(
+            failure.unsupported
+                && failure.module == "dns-credential"
+                && failure.area == path.display().to_string(),
+            "{failure}"
+        );
+        assert!(!failure.to_string().contains(TOKEN), "{failure}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+    }
+
+    #[cfg(unix)]
+    {
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&unused, &path).unwrap();
+        assert!(probe().unwrap_err().reason.contains("symbolic link"));
+    }
+    set_config(root.path(), DOMAIN_HOSTING_KEY, hosting("../home-1").as_bytes());
+    let failure = probe().unwrap_err();
+    assert!(failure.unsupported && failure.area == DOMAIN_HOSTING_KEY, "{failure}");
+}
+
+#[test]
+fn login_sources_and_account_bindings_are_verified_without_reporting_them() {
+    use serde_json::json;
+    const ISSUER: &str = "https://accounts.google.com";
+    let did = "did:web:alice.google.com";
+    let subject_key = oauth_subject_key(ISSUER, "stable-alice");
+    let subject = |sub: &str| {
+        json!({
+            "identity": {
+                "source_id": "google", "issuer": ISSUER, "sub": sub, "email": "alice@gmail.com",
+                "label": "alice", "did": did, "webhost": "google.com",
+            },
+            "did": did, "email": "alice@gmail.com",
+        })
+        .to_string()
+    };
+    let source = json!({
+        "id": "google", "display_name": "Google", "enabled": true, "kind": "google",
+        "client_id": "client", "secret_ref": "google-demo",
+    });
+    let mut future_source = source.clone();
+    future_source["future"] = json!(true);
+    let subject_path = format!("{OAUTH_SUBJECTS_PREFIX}/{subject_key}");
+    let label_path = oauth_label_key(did);
+    let binding_path = oauth_binding_key(ISSUER, "stable-alice");
+    let native_path = native_login_binding_key(did);
+    let source_path = "services/control_panel/user_login_sources/alice/google";
+    let retired = json!([{
+        "id": "acme", "kind": "oidc", "webhost": "acme.example", "issuer": "https://acme.example",
+    }]);
+    for (key, valid, invalid) in [
+        (
+            SSO_SETTINGS_KEY,
+            json!({"oauth_sources": [source], "did_login_enabled": false}).to_string(),
+            vec![
+                json!({"oauth_sources": [future_source]}).to_string(),
+                json!({"did_login_enabled": "alice@gmail.com"}).to_string(),
+            ],
+        ),
+        (
+            RETIRED_OAUTH_SOURCES_KEY,
+            retired.to_string(),
+            vec!["{}".into(), json!([{"id": "acme"}]).to_string()],
+        ),
+        (
+            &subject_path,
+            subject("stable-alice"),
+            vec![subject("another"), json!({"did": did}).to_string()],
+        ),
+        (
+            &label_path,
+            subject_key.clone(),
+            vec![String::new(), json!(subject_key).to_string()],
+        ),
+        (
+            &binding_path,
+            "alice".into(),
+            vec![String::new(), "../alice".into()],
+        ),
+        (
+            &native_path,
+            json!("alice").to_string(),
+            vec!["alice".into(), json!("").to_string()],
+        ),
+        (
+            source_path,
+            json!(did).to_string(),
+            vec![did.into(), json!("alice@gmail.com").to_string()],
+        ),
+    ] {
+        let root = tempdir().unwrap();
+        for invalid in invalid {
+            set_config(root.path(), key, invalid.as_bytes());
+            let failure = run(root.path(), tempdir().unwrap().path()).unwrap_err();
+            assert!(
+                failure.unsupported && failure.module == "sso-config" && failure.area == key,
+                "{key} {invalid}: {failure}"
+            );
+            assert!(!failure.reason.contains("alice"), "{failure}");
+        }
+        set_config(root.path(), key, valid.as_bytes());
+        assert!(run(root.path(), tempdir().unwrap().path())
+            .unwrap()
+            .is_empty());
+        let db = sled::open(root.path().join("local/system_config")).unwrap();
+        assert_eq!(db.get(key).unwrap().as_deref(), Some(valid.as_bytes()));
+    }
+}
+
 #[test]
 fn non_sqlite_declaration_fails_even_if_instance_was_never_created() {
     let root = tempdir().unwrap();

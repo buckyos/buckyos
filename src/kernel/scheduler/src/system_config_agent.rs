@@ -1416,8 +1416,7 @@ fn get_domain_hosting(
     let Some(raw) = input_system_config.get(DOMAIN_HOSTING_KEY) else {
         return Ok(None);
     };
-    let hosting: DomainHosting = serde_json::from_str(raw)?;
-    hosting.validate().map_err(anyhow::Error::msg)?;
+    let hosting = DomainHosting::parse(raw).map_err(anyhow::Error::msg)?;
     let zone_hostname = zone_document_hostname(zone_config);
     if hosting.domain != zone_hostname {
         return Err(anyhow::anyhow!(
@@ -1945,7 +1944,7 @@ mod node_gateway_tests {
     }
 
     fn hosting(mode: &str, certificate: &str) -> Value {
-        let mut hosting = json!({"mode": mode, "certificate": certificate, "domain": DOMAIN});
+        let mut hosting = json!({"schema_version": 1, "mode": mode, "certificate": certificate, "domain": DOMAIN});
         if mode == "dns_api" {
             hosting["provider"] = json!("cloudflare");
             hosting["credential_id"] = json!("home-example-com-1a2b3c4d");

@@ -747,7 +747,7 @@ async fn sn_hosting_with_acme() {
     rig.assert_activated(
         "sn hosting",
         &request,
-        Some(json!({"mode": "sn", "certificate": "acme", "domain": DOMAIN})),
+        Some(json!({"schema_version": 1, "mode": "sn", "certificate": "acme", "domain": DOMAIN})),
     );
     let events = rig.backend.events();
     assert_eq!(
@@ -792,7 +792,7 @@ async fn sn_hosting_again() {
     rig.assert_activated(
         "sn hosting again",
         &again,
-        Some(json!({"mode": "sn", "certificate": "acme", "domain": DOMAIN})),
+        Some(json!({"schema_version": 1, "mode": "sn", "certificate": "acme", "domain": DOMAIN})),
     );
 }
 
@@ -806,7 +806,7 @@ async fn manual_with_an_uploaded_certificate() {
     rig.assert_activated(
         "manual",
         &request,
-        Some(json!({"mode": "manual", "certificate": "upload", "domain": DOMAIN})),
+        Some(json!({"schema_version": 1, "mode": "manual", "certificate": "upload", "domain": DOMAIN})),
     );
     for host in [DOMAIN.to_string(), format!("*.{DOMAIN}")] {
         assert_eq!(rig.certificates.manager(&host), Some(CertManager::Manual));
@@ -828,7 +828,7 @@ async fn dns_api_with_acme() {
         "dns api",
         &request,
         Some(
-            json!({"mode": "dns_api", "certificate": "acme", "domain": DOMAIN,
+            json!({"schema_version": 1, "mode": "dns_api", "certificate": "acme", "domain": DOMAIN,
                     "provider": "cloudflare", "credential_id": id}),
         ),
     );
@@ -849,7 +849,7 @@ async fn access_method(net_id: &'static str, ips: &'static [&'static str]) {
     rig.assert_activated(
         net_id,
         &request,
-        Some(json!({"mode": "manual", "certificate": "upload", "domain": DOMAIN})),
+        Some(json!({"schema_version": 1, "mode": "manual", "certificate": "upload", "domain": DOMAIN})),
     );
     let payload = |jwt: String| EncodedDocument::Jwt(jwt).to_json_value().unwrap();
     let zone = payload(rig.backend.document_text("zone"));
@@ -957,7 +957,7 @@ async fn a_refused_sn_challenge_can_be_retried() {
     rig.assert_activated(
         "retried",
         &request,
-        Some(json!({"mode": "sn", "certificate": "acme", "domain": DOMAIN})),
+        Some(json!({"schema_version": 1, "mode": "sn", "certificate": "acme", "domain": DOMAIN})),
     );
     for published in PUBLISHED {
         assert_eq!(rig.backend.count(published), 1, "{published}");

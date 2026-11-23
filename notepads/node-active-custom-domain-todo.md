@@ -218,7 +218,7 @@ trait DnsRecordProvider {
 **托管信息：** `start_config.json` 增加 `domain_hosting`，由 scheduler 写入 system_config，供生成 ACME 配置和设置页使用：
 
 ```json
-{ "mode": "sn | manual | dns_api", "certificate": "acme | upload",
+{ "schema_version": 1, "mode": "sn | manual | dns_api", "certificate": "acme | upload",
   "domain": "home.example.com", "provider": "cloudflare", "credential_id": "..." }
 ```
 
