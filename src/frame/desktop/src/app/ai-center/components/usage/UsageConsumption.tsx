@@ -10,30 +10,31 @@ export function UsageUnits({ tokens, dimensions, count, alignStart = false, comp
   const en = locale === 'en'
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const format = (value: number) => value.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })
+  const visibleUnits = Object.entries(usageUnits).filter(([key]) => dimensions[key]?.reported_events > 0 && dimensions[key].amount > 0)
   return <ClickAwayListener mouseEvent="onPointerDown" touchEvent={false} onClickAway={() => { if (detailsRef.current) detailsRef.current.open = false }}><details ref={detailsRef} className="relative" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
     <summary className="cursor-pointer truncate text-xs underline decoration-dotted underline-offset-4" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Usage details' : '用量明细'} title={`${format(tokens)} tokens`}>{compact ? tokens.toLocaleString(en ? 'en-US' : 'zh-CN', { notation: 'compact', maximumFractionDigits: 1 }) : `${format(tokens)} tokens`}</summary>
     <div className={`absolute ${alignStart ? 'left-0 md:left-auto md:right-0' : 'right-0'} z-30 mt-2 w-72 max-w-[85vw] rounded-lg p-3 shadow-xl text-left`} style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}>
       <p className="mb-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{en ? 'Subsets overlap; do not add them to the total.' : '缓存、多模态、推理为细分子项，不重复累加至总量。'}</p>
       <dl className="max-h-72 overflow-y-auto text-xs">
-        {Object.entries(usageUnits).filter(([key]) => dimensions[key]?.reported_events > 0).map(([key, labels]) => {
+        {visibleUnits.map(([key, labels]) => {
           const value = dimensions[key]
           return <div key={key} className="flex justify-between gap-3 py-1"><dt>{labels[en ? 0 : 1]}{value.reported_events < count && <span className="block text-[10px]" style={{ color: 'var(--cp-warning)' }}>{en ? 'Known subtotal' : '已知小计'} · {value.reported_events}/{count}</span>}</dt><dd className="text-right tabular-nums">{format(value.amount)} {en ? labels[2] : ({ images: '张', s: '秒', chars: '字符', requests: '请求单位', MP: '百万像素', tokens: 'tokens' }[labels[2]])}</dd></div>
         })}
-        {Object.keys(dimensions).length === 0 && <div>{en ? 'Usage was not reported.' : '未上报用量。'}</div>}
+        {visibleUnits.length === 0 && <div>{Object.keys(dimensions).length === 0 ? (en ? 'Usage was not reported.' : '未上报用量。') : (en ? 'No non-zero usage.' : '暂无非零用量。')}</div>}
       </dl>
     </div>
   </details></ClickAwayListener>
 }
 
-export function UsageMoney({ totals, empty = '—', compact = false }: { totals: Money[]; empty?: string; compact?: boolean }) {
+export function UsageMoney({ totals, empty = '--', compact = false, hint }: { totals: Money[]; empty?: string; compact?: boolean; hint?: string }) {
   const { locale } = useI18n()
   const en = locale === 'en'
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const ordered = [...totals].sort((a, b) => Number(b.currency === 'USD') - Number(a.currency === 'USD') || a.currency.localeCompare(b.currency))
   const format = (money: Money) => `${money.currency} ${money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}`
-  if (!ordered.length || (!compact && ordered.length < 2)) return <span className="whitespace-nowrap tabular-nums">{ordered.length ? format(ordered[0]) : empty}</span>
+  if (!ordered.length || (!compact && ordered.length < 2)) return <span className="whitespace-nowrap tabular-nums" title={hint}>{ordered.length ? format(ordered[0]) : empty}</span>
   return <ClickAwayListener mouseEvent="onPointerDown" touchEvent={false} onClickAway={() => { if (detailsRef.current) detailsRef.current.open = false }}><details ref={detailsRef} className="relative" data-testid="usage-currencies" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
-    <summary className="cursor-pointer truncate underline decoration-dotted underline-offset-4 tabular-nums" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Cost by currency' : '各币种费用'} title={format(ordered[0])}>{compact && /^[A-Z]{3}$/.test(ordered[0].currency) ? ordered[0].amount.toLocaleString(en ? 'en-US' : 'zh-CN', { style: 'currency', currency: ordered[0].currency, currencyDisplay: 'narrowSymbol', notation: 'compact', maximumSignificantDigits: 3 }) : format(ordered[0])}</summary>
+    <summary className="cursor-pointer truncate underline decoration-dotted underline-offset-4 tabular-nums" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Cost by currency' : '各币种费用'} title={[format(ordered[0]), hint].filter(Boolean).join('\n')}>{compact && /^[A-Z]{3}$/.test(ordered[0].currency) ? ordered[0].amount.toLocaleString(en ? 'en-US' : 'zh-CN', { style: 'currency', currency: ordered[0].currency, currencyDisplay: 'narrowSymbol', notation: 'compact', maximumSignificantDigits: 3 }) : format(ordered[0])}</summary>
     <dl className="absolute right-0 z-30 mt-2 min-w-44 rounded-lg p-3 text-xs shadow-xl" style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}>
       {ordered.map((money) => <div key={money.currency} className="flex justify-between gap-4 py-1"><dt>{money.currency}</dt><dd className="tabular-nums">{money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}</dd></div>)}
     </dl>
@@ -45,8 +46,7 @@ export function ConsumptionValue({ total, compact = false }: { total: UsageTotal
   const en = locale === 'en'
   return <div className={compact ? "flex min-w-0 flex-col items-end gap-1" : "flex shrink-0 flex-col items-end gap-1"}>
     <UsageUnits tokens={total.total_tokens} dimensions={total.dimensions} count={total.total_requests} compact={compact} />
-    <div className="min-w-0 max-w-full text-xs"><UsageMoney compact={compact} totals={total.finance_totals} empty={total.total_requests === 0 ? '—' : (en ? 'Unknown cost' : '费用未知')} /></div>
-    {!total.finance_complete && <span className={`max-w-full text-[10px] ${compact ? 'text-right' : ''}`} style={{ color: 'var(--cp-warning)' }}>{en ? 'Known cost subtotal · unpriced' : '已知费用小计 · 未计价'} {total.unpriced_requests}</span>}
+    <div className="min-w-0 max-w-full text-xs"><UsageMoney compact={compact} totals={total.finance_totals} empty="--" hint={total.finance_complete ? undefined : `${en ? 'Known cost subtotal · unpriced' : '已知费用小计 · 未计价'} ${total.unpriced_requests}`} /></div>
   </div>
 }
 
@@ -91,5 +91,5 @@ export function UsageCost({ event }: { event: import('../../mock/types').UsageEv
     const label = source === 'provider_billing' ? (en ? 'Provider billing event · actual charge' : 'Provider 账单实报费用') : String(source ?? '').includes('provider_reported') ? (en ? 'Provider-reported cost' : 'Provider 实报费用') : String(source ?? '').includes('pric') ? (en ? 'Estimated from frozen prices' : '根据调用时价格估算') : (en ? 'Recorded cost' : '已记录费用')
     return <span title={label}>{cost.currency} {cost.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}{pending && <span className="block text-[10px]" style={{ color: 'var(--cp-muted)' }}>{en ? 'Awaiting billing' : '待账单核对'}</span>}</span>
   }
-  return <span title={explanation} className="inline-flex flex-col"><span>{pending ? (en ? 'Awaiting billing' : '待账单费用') : (en ? 'Unknown cost' : '费用未知')}</span><span className="text-[10px]" style={{ color: 'var(--cp-muted)' }}>{explanation}</span></span>
+  return <span title={pending ? `${en ? 'Awaiting billing' : '待账单费用'} · ${explanation}` : explanation}>--</span>
 }
