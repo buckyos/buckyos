@@ -79,7 +79,7 @@ pub struct ValidatedTokenClaims {
 }
 
 const SYSTEM_LOGIN_TARGETS: &[&str] =
-    &["control-panel", "kernel", "system-config", "aiworkspace", "nfs-server"];
+    &["control-panel", "kernel", "system-config", "aiworkspace", "nfs-server", "msg-center"];
 /// System services a Control Panel user session may be delegated to without a password (the Desktop opening a
 /// page on the service's own origin): AI Workspace pages live on `aiws-<id>.<zone>` (内核架构改进 D21), the
 /// reflow pages of the Agent Browser on nfs-server's `reflow.<zone>` (Agent Browser Protocol §5.4).

@@ -246,7 +246,7 @@ pub struct Library {
     objects: Arc<ObjectStore>,
 }
 
-const DDL: &str = "
+pub const DDL: &str = "
 CREATE TABLE IF NOT EXISTS library_packages (
   owner TEXT NOT NULL, pkg_id TEXT NOT NULL, version TEXT NOT NULL, title TEXT NOT NULL, author TEXT NOT NULL,
   mode TEXT NOT NULL, digest TEXT NOT NULL, manifest_json TEXT NOT NULL, installed_at INTEGER NOT NULL,
@@ -263,9 +263,9 @@ CREATE TABLE IF NOT EXISTS library_controls (
 impl Library {
     pub fn open(path: &Path, objects: Arc<ObjectStore>) -> WsResult<Library> {
         let conn = Connection::open(path).map_err(db_err)?;
+        buckyos_sqlite_schema::initialize(&conn, 1, &[DDL]).map_err(db_err)?;
         conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
         conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
-        conn.execute_batch(DDL).map_err(db_err)?;
         Ok(Library { conn: Mutex::new(conn), objects })
     }
 

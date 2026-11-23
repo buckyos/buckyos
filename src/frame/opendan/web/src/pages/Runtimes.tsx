@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import clsx from 'clsx'
 import { ChevronRight, Plus, Server } from 'lucide-react'
-import { ago, t, type TextKey } from '../i18n'
+import { lang, ago, t, type TextKey } from '../i18n'
 import { sessionHref, useQuery } from '../lib'
 import {
   dataModel,
@@ -280,7 +280,7 @@ function RuntimeDetail({ runtime, settings, refresh }: { runtime: KnownRuntime; 
           {caps.desktop && <span>{t('runtimeDesktop')}</span>}
           {!mayHoldWorkspaces(runtime) && <span>{t('runtimeNoWorkspaces')}</span>}
           {isReadOnly(runtime) && <span>{t('runtimeReadOnly')}</span>}
-          {grant.expires_at_ms != null && <span className="text-warn">{isExpired(runtime) ? t('runtimeExpired') : t('runtimeExpires', { time: new Date(grant.expires_at_ms).toLocaleString() })}</span>}
+          {grant.expires_at_ms != null && <span className="text-warn">{isExpired(runtime) ? t('runtimeExpired') : t('runtimeExpires', { time: new Date(grant.expires_at_ms).toLocaleString(lang) })}</span>}
         </div>
         {grant.roots.length > 0 && <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
           <dt className="text-mute">{t('runtimeRoots')}</dt>

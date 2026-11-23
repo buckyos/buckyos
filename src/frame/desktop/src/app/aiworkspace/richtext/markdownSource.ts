@@ -17,6 +17,7 @@
 import { Node as PMNode, type Schema } from 'prosemirror-model'
 import type { EditorView } from 'prosemirror-view'
 import { randomId } from '../api/ids'
+import type { AstNode } from '../api/types'
 import type { AiwsCore } from '../api/wasm'
 import { aiwsT } from '../i18n'
 import { newBlockId } from './blockId'
@@ -40,6 +41,34 @@ export interface MdCodec {
 
 const EMBED_LINE = /^!\[[^\]]*\]\(embed:([a-z0-9][a-z0-9_-]{0,63})\)$/
 
+// CommonMark treats underscores inside words (including identifiers such as chat_route) literally.
+const INLINE_SYNTAX = /[\\`*[\]~<]|&(?=(?:#\w+|[a-zA-Z]\w*);)|(?<![\p{L}\p{N}])_|_(?![\p{L}\p{N}])/gu
+const whitespaceEntity = (char: string) => `&#x${char.charCodeAt(0).toString(16)};`
+
+/** The core's readable Markdown export writes text literally. The editable source must also parse
+ * back to the same text, including a list marker or significant indentation after a hard break. */
+function prepareSource(node: AstNode) {
+  if (node.type === 'code_block' || !node.content) return
+  let lineStart = true
+  for (const [i, child] of node.content.entries()) {
+    const lineEnd = i + 1 === node.content.length || node.content[i + 1].type === 'hard_break'
+    if (child.type === 'text' && child.text && !child.marks?.some((mark) => mark.type === 'code')) {
+      let text = child.text.replace(INLINE_SYNTAX, '\\$&')
+      if (lineStart) {
+        text = text.replace(/^([#>+=-])/, '\\$1').replace(/^(\d{1,9})([.)])(?=\s|$)/, '$1\\$2')
+      }
+      if (lineStart || child.marks?.length) text = text.replace(/^\s/u, whitespaceEntity)
+      if (lineEnd || child.marks?.length) text = text.replace(/\s$/u, whitespaceEntity)
+      child.text = text.replace(/[\r\n]/g, whitespaceEntity)
+    } else if (child.type === 'hard_break' && node.type !== 'table_cell') {
+      // A backslash also works on a completely empty line. At the end of a paragraph an empty
+      // link emits no text but keeps CommonMark from discarding the terminal line break.
+      node.content[i] = { type: 'text', text: i + 1 === node.content.length ? '\\\n[]()' : '\\\n' }
+    } else prepareSource(child)
+    lineStart = child.type === 'hard_break'
+  }
+}
+
 export function markdownCodec(core: AiwsCore, nameOf: (entityId: string) => string): MdCodec {
   return {
     toMd: (node) => {
@@ -47,7 +76,9 @@ export function markdownCodec(core: AiwsCore, nameOf: (entityId: string) => stri
         const id = String((node.attrs.ref as { entity_id?: string } | null)?.entity_id ?? '')
         return `![${aiwsT('aiworkspace.richtext.markdown.embed', { name: nameOf(id).replace(/[[\]]/g, '') })}](embed:${id})`
       }
-      return core.richtext_to_markdown(JSON.stringify({ type: 'doc', content: [node.toJSON()] })).replace(/\s+$/, '')
+      const block = node.toJSON() as AstNode
+      prepareSource(block)
+      return core.richtext_to_markdown(JSON.stringify({ type: 'doc', content: [block] })).replace(/\s+$/, '')
     },
     parse: (markdown) => {
       const prefix = `m${randomId().slice(0, 8)}`
@@ -155,9 +186,9 @@ export function changedRange(before: string, after: string): { from: number; old
   return { from, oldTo: before.length - tail, newTo: after.length - tail }
 }
 
-/** Apply the edit `base → next` of the source to the editor; returns the new source (whose text is `next`),
- * or null when the new text could not be turned into blocks (nothing was changed then). */
-export function applyEdit(view: EditorView, source: MdSource, base: string, next: string, codec: MdCodec): MdSource | null {
+/** Apply `base → next` to the editor. Markdown edits keep the spelling the user typed. Saving as plain
+ * text regenerates editable Markdown for the affected blocks. A failed conversion leaves the document intact. */
+export function applyEdit(view: EditorView, source: MdSource, base: string, next: string, codec: MdCodec, parseMode: 'markdown' | 'plain' = 'markdown'): MdSource | null {
   if (base === next) return source
   const schema: Schema = view.state.schema
   const { from: p, oldTo, newTo } = changedRange(base, next)
@@ -187,7 +218,16 @@ export function applyEdit(view: EditorView, source: MdSource, base: string, next
   void newTo
 
   let parsed: JsonNode[]
-  try { parsed = codec.parse(regionText) } catch { return null }
+  if (parseMode === 'plain') {
+    const content: JsonNode[] = []
+    for (const [index, line] of regionText.split('\n').entries()) {
+      if (index) content.push({ type: 'hard_break' })
+      if (line) content.push({ type: 'text', text: line })
+    }
+    parsed = [{ type: 'paragraph', attrs: { block_id: newBlockId() }, content }]
+  } else {
+    try { parsed = codec.parse(regionText) } catch { return null }
+  }
 
   // where the touched blocks are now (some may have been removed or moved by someone else meanwhile)
   const doc = view.state.doc
@@ -219,7 +259,9 @@ export function applyEdit(view: EditorView, source: MdSource, base: string, next
   // the blocks as the editor now has them (the id plugin may have renamed a clash)
   const after = topLevel(view.state.doc)
   const kept = ids.map((id) => after.get(id)).filter((b): b is { node: PMNode; pos: number; index: number } => Boolean(b))
-  const seg: MdSeg = { text: regionText, ids: kept.map((b) => idOf(b.node) as string), snap: snapOf(kept.map((b) => b.node)) }
+  const keptNodes = kept.map((b) => b.node)
+  const text = parseMode === 'plain' ? keptNodes.map(codec.toMd).join('\n\n') : regionText
+  const seg: MdSeg = { text, ids: kept.map((b) => idOf(b.node) as string), snap: snapOf(keptNodes) }
   if (!hasSegs) return { gaps: ['', ''], segs: [seg] }
   const gapStart = starts[first] - source.gaps[first].length
   const gapBefore = regionStart < starts[first] ? base.slice(gapStart, regionStart) : source.gaps[first]

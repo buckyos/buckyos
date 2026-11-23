@@ -1,4 +1,4 @@
-/* Text of the desktop's own menu, its "Add…" dialog and widget resizing. */
+/* Text of the desktop's own menu, its "Add…" dialog, widget resizing and the music player widget. */
 
 export const desktopEditEn: Record<string, string> = {
   'desktop.menu.appearance': 'Appearance settings',
@@ -18,6 +18,25 @@ export const desktopEditEn: Record<string, string> = {
   'desktop.add.widget.systemInfo': 'The system version, signed-in account and Zone.',
 
   'desktop.resize.noRoom': 'There is no room on this page for that size.',
+
+  'widgets.musicPlayer': 'Music Player',
+  'desktop.add.widget.musicPlayer': 'Plays a folder of music, in order or shuffled.',
+  'music.chooseFolder': 'Choose a music folder',
+  'music.chooseFolderShort': 'Choose folder',
+  'music.otherFolder': 'Choose another folder',
+  'music.empty': 'Play a folder of music from your Zone.',
+  'music.loading': 'Looking for music…',
+  'music.unavailable': 'This folder cannot be opened.',
+  'music.noTracks': 'There is no music in this folder.',
+  'music.failed': 'The music in this folder cannot be played.',
+  'music.play': 'Play',
+  'music.pause': 'Pause',
+  'music.next': 'Next',
+  'music.previous': 'Previous',
+  'music.position': 'Position',
+  'music.shuffle': 'Shuffle',
+  'music.shuffleOn': 'Shuffle: on',
+  'music.shuffleOff': 'Shuffle: off, playing in order',
 }
 
 export const desktopEditZh: Record<string, string> = {
@@ -38,4 +57,23 @@ export const desktopEditZh: Record<string, string> = {
   'desktop.add.widget.systemInfo': '系统版本、当前账号和 Zone。',
 
   'desktop.resize.noRoom': '这一屏没有足够的空间放下这个大小。',
+
+  'widgets.musicPlayer': '音乐播放器',
+  'desktop.add.widget.musicPlayer': '播放一个文件夹里的音乐，顺序或随机。',
+  'music.chooseFolder': '选择音乐文件夹',
+  'music.chooseFolderShort': '选择文件夹',
+  'music.otherFolder': '换一个文件夹',
+  'music.empty': '播放 Zone 里一个文件夹的音乐。',
+  'music.loading': '正在查找音乐…',
+  'music.unavailable': '这个文件夹打不开。',
+  'music.noTracks': '这个文件夹里没有音乐。',
+  'music.failed': '这个文件夹里的音乐无法播放。',
+  'music.play': '播放',
+  'music.pause': '暂停',
+  'music.next': '下一首',
+  'music.previous': '上一首',
+  'music.position': '播放进度',
+  'music.shuffle': '随机播放',
+  'music.shuffleOn': '随机播放：开',
+  'music.shuffleOff': '随机播放：关，按顺序播放',
 }

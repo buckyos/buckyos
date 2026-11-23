@@ -4,6 +4,7 @@ import { useRef, useState } from 'react'
 import { Alert, Chip, Button, CircularProgress } from '@mui/material'
 import { Link, ShieldAlert, Trash2 } from 'lucide-react'
 import type { LocalUserEntity } from '../../datamodel/types'
+import { AccountInviteForm } from '../invites/AccountInviteForm'
 import { HeaderSection } from '../sections/HeaderSection'
 import { SocialAccountsSection } from '../sections/SocialAccountsSection'
 import { InfoFieldsSection } from '../sections/InfoFieldsSection'
@@ -36,7 +37,8 @@ const statusColor = {
 
 export function LocalUserDetailPage({ user, onRemoved, onNotice }: LocalUserDetailPageProps) {
   const store = useUsersAgentsStore()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const [binding, setBinding] = useState(false)
   const isAdmin = useViewerIsAdmin()
   const requestSudo = useSudoByPassword()
   const pending = useRef(false)
@@ -182,7 +184,7 @@ export function LocalUserDetailPage({ user, onRemoved, onNotice }: LocalUserDeta
               [t('usersAgents.localUser.inviteUrl'), user.invitation.inviteUrl],
               [t('usersAgents.localUser.targetZone'), user.invitation.targetZone],
               [t('usersAgents.localUser.requestedDid'), user.invitation.requestedDid],
-              [t('usersAgents.localUser.expires'), new Date(user.invitation.expiresAt).toLocaleString()],
+              [t('usersAgents.localUser.expires'), new Date(user.invitation.expiresAt).toLocaleString(locale)],
             ].map(([label, value]) => (
               <div key={label} className="flex items-baseline gap-3">
                 <span className="w-28 shrink-0 text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }}>
@@ -258,7 +260,7 @@ export function LocalUserDetailPage({ user, onRemoved, onNotice }: LocalUserDeta
             <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
               {user.status === 'pending-invitation'
                 ? t('usersAgents.localUser.notActivated')
-                : new Date(user.lastActive).toLocaleString()}
+                : new Date(user.lastActive).toLocaleString(locale)}
             </span>
           </div>
           <div className="flex items-baseline gap-3">
@@ -288,6 +290,7 @@ export function LocalUserDetailPage({ user, onRemoved, onNotice }: LocalUserDeta
         </div>
 
         {isAdmin && <div className="mt-4 pt-3" style={{ borderTop: '1px solid color-mix(in srgb, var(--cp-border) 40%, transparent)' }}>
+          {user.status === 'active' && (user.role === 'admin' || user.role === 'user') && (binding ? <AccountInviteForm existingUser={user.id} onClose={() => setBinding(false)} /> : <Button onClick={() => setBinding(true)}>{t('sso.userInvite.bindGoogle','Bind Google to this account')}</Button>)}
           {error ? <Alert severity={committed || uncertain ? 'warning' : 'error'} className="mb-3">{error}</Alert> : null}
           <Button
             size="small"

@@ -49,16 +49,22 @@ POST /sdk/appservice/selftest/xllm
 | 步骤 | 谁的身份 | 做了什么 |
 | --- | --- | --- |
 | 创建客服群 | 页面上登录用户在本 App 子域的会话 | `user.list` 取两位成员的 DID → msg-center `group.create`：模板 `support`（`allow_guests`、`post=all_participants`）、具名 Session `support`、群级 `display.announcement`，并把本 App 的 `GET /support/panel` 声明为面板 `tickets`（D-2：面板 host 必须是群主 Zone 的 App 子域） |
-| 生成客户链接 | 页面把自己的会话以 `Authorization: Bearer` 交给后台；后台先问 CP `auth.current_identity` 确认是本 App 实例的安装账号，再用 **App 服务会话**调 `user.app_login.issue {kind:"link", resource:{group_session}, return_path:"/messagehub/guest?group=&session="}` | 得到 `https://<zone>/sso/invite/<id>#s=<secret>`，有效 48 小时；CP 同时以 App 身份预置该账号的 Session 邀请。同一外部标识再次生成复用同一 Limited 账号 |
+| 生成客户链接 | 页面把自己的会话以 `Authorization: Bearer` 交给后台；后台先问 CP `auth.current_identity` 确认是本 App 实例的安装账号，再用 **App 服务会话**调 `user.app_login.issue {kind:"link", resource:{group_session}, return_path:"/support/ticket?group=&session="}` | 得到 `https://<zone>/sso/invite/<id>#s=<secret>`，有效 48 小时；CP 同时以 App 身份预置该账号的 Session 邀请。同一外部标识再次生成复用同一 Limited 账号 |
 | 清理 | 页面用户会话 | `group.delete`。客户账号与链接记录保留，链接到期自动失效 |
 
-客户点链接：未设密码时直接以自己的受限账号进入 `/messagehub/guest`，顶部出现非阻塞的“设置密码”提示（不点即跳过），点“加入”后聊天，侧栏显示“客服工单”面板。设置密码后再点同一链接会要求先输密码，密码登录后回到同一会话。面板内容来自后台 `GET /sdk/appservice/support/summary`（App 服务会话读 `group.list_messages`，只给条数、参与者数和时间，不给正文）。
+客户点链接后，系统将短期会话交接给签发链接的 App 子域，进入 `/support/ticket?group=…&session=…`。客户可以加入工单、读写这一个会话的消息，并可选择设置密码。设置密码后再点同一链接会要求先输密码，密码登录后回到同一会话。面板内容来自后台 `GET /sdk/appservice/support/summary`（App 服务会话读 `group.list_messages`，只给条数、参与者数和时间，不给正文）。
 
 前置：App 实例 owner 在 App Service 的应用详情页打开“本应用为外部客户代登录”开关（`apps.app_login.set`），成员账号（缺省 alice、bob）存在。限制：只有 App 实例的安装账号能生成链接；客户是 Session Only Member，不进群成员表；面板摘要接口对持有群 DID 的任何人可读（只有计数）；`/support/panel` 由 `www` 端点的 `allow_guest: true` 放行，所以 iframe 内无 App 会话也能加载。
 
 该开关默认关闭，创建客服群不会自动打开。关闭时 `user.app_login.issue` 返回 `access_denied`，结构化 `data.reason=zone_method_disabled`、`data.detail=app_login_disabled`；页面据此提示安装账号开启开关。这是应用实例的授权前置条件，Desktop Lite 同样适用。
 
 验收脚本：后端 `test/test_sys_test/support_group_dv.ts`（见文件头）；浏览器 `src/frame/desktop/tests/dv/support-group-link.spec.ts`。
+
+## 普通 App 的文档分享
+
+安装账号在首页点击“打开可编辑的示例文档并邀请协作者”，进入 `/docs/42?mode=edit#comments`，选择定向 DID、Google 邮箱或开放邀请，授予读取或编辑权，然后复制系统返回的 URL。实例安装权限须包含相应的定向或开放分享。文档内容和接受记录保存在应用数据目录的 SQLite 数据库，包含安装实例标识。每次读取、保存和签发都会验证当前会话的安装实例及资源授权。首次以安装者身份打开某一文档编号时会创建该文档。
+
+`resource_share.ts` 实现已登记的单邀请回调、恢复、关闭及撤销。关闭后已接受者保留原授权，撤销指定 DID 会阻止其继续读写。`resource_share_test.ts` 覆盖两个安装实例、相邻文档、访客编辑和所有者读回。真实 Zone 验收见 Desktop 的 `tests/dv/resource-share-targets.spec.ts`。
 
 ## 构建检查
 

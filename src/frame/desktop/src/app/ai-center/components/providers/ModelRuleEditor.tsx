@@ -83,7 +83,7 @@ export function ModelRuleEditor({ id, row, options, resolved, adapterId, editing
           <h3 className="text-sm font-semibold">{t('aiCenter.rules.aliases', 'Alias mappings')}</h3>
           <Autocomplete freeSolo size="small" disabled={controlsDisabled} options={options.models.map((model) => model.target)}
             inputValue={row.alias} onInputChange={(_, value) => onChange('alias', value)}
-            renderInput={(params) => <TextField {...params} label={t('aiCenter.rules.builtinModel', 'Mapped built-in model')} placeholder={metadata?.target ?? 'manufacturer/model'} />} />
+            renderInput={(params) => <TextField {...params} label={t('aiCenter.rules.builtinModel', 'Mapped built-in model')} placeholder={metadata?.target ?? t('aiCenter.rules.modelPlaceholder')} />} />
           {!metadata && <p className="text-xs" style={{ color: 'var(--cp-warning)' }}>{t('aiCenter.rules.mapFirst', 'Select a recognized built-in model before configuring tasks, API types and thinking efforts.')}</p>}
         </section>
         <section className={section} style={{ borderColor: 'var(--cp-border)' }}>
@@ -139,7 +139,7 @@ export function ModelRuleEditor({ id, row, options, resolved, adapterId, editing
           })}
           {apiTypes.length === 0 && <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.wizard.emptyRules', 'No entries configured.')}</p>}
           <details><summary className="cursor-pointer text-xs">{t('aiCenter.rules.allRequestRules', 'All model request rules (JSON)')}</summary>
-            <div className="mt-3"><JsonRuleInput label="Model request_rules" value={row.request_rules} kind="array" disabled={controlsDisabled}
+            <div className="mt-3"><JsonRuleInput label={t('aiCenter.rules.modelRequestRules')} value={row.request_rules} kind="array" disabled={controlsDisabled}
               onChange={(value) => { onChange('request_rules', value); onChange('scoped_request_rules', {}) }} /></div>
           </details>
         </section>

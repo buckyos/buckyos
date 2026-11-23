@@ -4,7 +4,7 @@
 
 import type { CapturedAnchor } from '../../anchors/registry'
 import type { FieldDef, FilterNode, Json, Operation, QueryRow, SortSpec } from '../../api/types'
-import { UNSET, editText, formatValue, operatorsFor, parseInput, type Input, type ValueDef } from '../values'
+import { UNSET, editText, emptyInput, formatValue, operatorsFor, parseInput, type Input, type ValueDef } from '../values'
 
 export type TableLayout = 'grid' | 'cards'
 /** Where the editor sits (§7.1): a Block's box, a data-mode tab, a phone's whole screen. */
@@ -26,9 +26,10 @@ export function cellEditId(sourceId: string, recordId: string, fieldId: string) 
 }
 
 export function writeOperation(sourceId: string, field: FieldDef, recordId: string, value: Input, rev: number): Operation {
-  return value === UNSET
+  const input = value === UNSET ? emptyInput(field) : value
+  return input === UNSET
     ? { op: 'table.unset_values', source_id: sourceId, values: [{ record_id: recordId, field_id: field.field_id, expect: { rev } }] }
-    : { op: 'table.set_values', source_id: sourceId, field_type_revs: { [field.field_id]: field.type_rev }, values: [{ record_id: recordId, field_id: field.field_id, value, expect: { rev } }] }
+    : { op: 'table.set_values', source_id: sourceId, field_type_revs: { [field.field_id]: field.type_rev }, values: [{ record_id: recordId, field_id: field.field_id, value: input, expect: { rev } }] }
 }
 
 /** The field a record is called by: the table's title field, else its first text field, else its first field. */
@@ -140,6 +141,7 @@ export type Raw = string | string[]
 export function rawOf(def: ValueDef, value: Json | undefined): Raw {
   if (def.type === 'multi_select') return Array.isArray(value) ? value.map(String) : []
   if (def.type === 'boolean') return value === true ? 'true' : value === false ? 'false' : ''
+  if (def.type === 'object_ref') return value == null ? '' : JSON.stringify(value)
   if (def.type === 'select') return typeof value === 'string' ? value : ''
   return editText(def, value)
 }
@@ -151,7 +153,9 @@ export function sameRaw(a: Raw, b: Raw): boolean {
 
 /** Control → wire value (shape only, the core validates), or the text of an input that cannot even be shaped. */
 export function inputOf(def: ValueDef, raw: Raw): { ok: true; value: Input } | { ok: false; error: string } {
-  if (Array.isArray(raw)) return { ok: true, value: raw.length === 0 ? UNSET : raw }
+  if (raw.length === 0) return { ok: true, value: emptyInput(def) }
+  if (Array.isArray(raw)) return { ok: true, value: raw }
+  if (def.type === 'object_ref') return { ok: true, value: JSON.parse(raw) as Json }
   if (def.type === 'boolean') return { ok: true, value: raw === '' ? UNSET : raw === 'true' }
   if (def.type === 'select') return { ok: true, value: raw === '' ? UNSET : raw }
   return parseInput(def, raw)

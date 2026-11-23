@@ -394,6 +394,83 @@ async fn budget_exhaustion_compacts_without_gap() {
     assert_eq!(wl.iter().filter(|e| e.body.kind() == "compaction").count(), 1);
 }
 
+/// Summary model that is down.
+struct DownSummarizer;
+
+#[async_trait]
+impl llm_context::deps::LlmClient for DownSummarizer {
+    async fn infer(
+        &self,
+        _req: llm_context::deps::LlmInferenceRequest,
+    ) -> Result<buckyos_api::AiResponse, llm_context::error::LLMComputeError> {
+        Err(llm_context::error::LLMComputeError::OutputParse(
+            "compress: summarizer returned empty text".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn failed_summary_clips_older_tool_results_without_a_summary() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("x")).await;
+    let lease = match sd.acquire(holder("w")).unwrap() {
+        Acquire::Acquired(l) => l,
+        _ => panic!(),
+    };
+    let mut s = sd.load(&lease).unwrap();
+    let mut entries = vec![WorklogBody::UserMessage {
+        run_id: "r".into(),
+        turn: 1,
+        content: "find the group".into(),
+        brief: None,
+    }];
+    for i in 0..6 {
+        let call_id = format!("c{i}");
+        entries.push(WorklogBody::AssistantMessage {
+            run_id: "r".into(),
+            turn: 1,
+            assistant: String::new(),
+            tool_calls: vec![ActionEntry {
+                call_id: call_id.clone(),
+                tool: "shell".into(),
+                args: json!({ "command": format!("step {i}") }),
+                effect: "unknown".into(),
+                intent: None,
+            }],
+        });
+        entries.push(WorklogBody::ActionResult {
+            run_id: "r".into(),
+            turn: 1,
+            call_id,
+            status: "ok".into(),
+            // A binary file read as text.
+            result: if i == 2 { "\u{fffd}".repeat(60_000) } else { format!("out {i}") },
+        });
+    }
+    entries.push(WorklogBody::AssistantMessage {
+        run_id: "r".into(),
+        turn: 1,
+        assistant: "found it".into(),
+        tool_calls: Vec::new(),
+    });
+    s.append_worklog(&lease, entries).unwrap();
+    s.commit_state(&lease).unwrap();
+    let summarizer = Summarizer {
+        llm: Arc::new(DownSummarizer),
+        model: "llm.summarize".into(),
+    };
+    let budget = 6_000;
+    let history = build_history(&mut s, &lease, Some(&summarizer), HistoryShape::Native, budget)
+        .await
+        .unwrap();
+    assert!(libopendan::runner::history::estimate(&history) <= u64::from(budget));
+    let all = serde_json::to_string(&history).unwrap();
+    assert!(all.contains("more characters omitted"), "{all}");
+    assert!(all.contains("out 5") && all.contains("found it"), "{all}");
+    assert!(sd.summary_opt().unwrap().is_none(), "nothing kept");
+    assert!(read_worklog(&sd).iter().all(|e| e.body.kind() != "compaction"));
+}
+
 async fn kmsg_rules(client: Arc<buckyos_api::msg_queue::MsgQueueClient>) {
     use libopendan::channel::kmsg::*;
     // create / subscribe twice: "already exists" is success.

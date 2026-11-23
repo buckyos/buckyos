@@ -34,7 +34,7 @@ const MAX_RENDERER_FILES: usize = 1000;
 const MAX_RENDERER_BYTES: u64 = 96 << 20;
 /// References whose targets a printed page shows: the data a Block binds or created, what a rich text embeds, object
 /// references, record bodies, Block definitions and what they build on, child directories.
-const SHOWN: &[&str] = &["bind", "owns", "embed", "value", "body", "def", "def_dep", "member"];
+const SHOWN: &[&str] = &["bind", "owns", "embed", "value", "value_link", "body", "def", "def_dep", "member"];
 
 fn io(e: std::io::Error) -> WsError {
     let code = if e.raw_os_error() == Some(28) { Code::StorageFull } else { Code::StorageIoError };

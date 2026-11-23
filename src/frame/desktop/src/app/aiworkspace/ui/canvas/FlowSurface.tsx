@@ -11,7 +11,7 @@
  * canvas), as do ⋮⋮, a right click and Shift+F10. Whether a type has a heading line and whether ＋ offers it is the
  * type's own declaration (`traits`). */
 
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { GripVertical, Plus } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { EntityEnvelope } from '../../api/types'
@@ -20,6 +20,7 @@ import { aiwsT } from '../../i18n'
 import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hooks'
 import { RunModeContext } from '../../state/runMode'
 import { useAiwsText } from '../../useAiwsText'
+import { BlockTitle } from '../blocks/BlockTitle'
 import { BlockHost } from '../blocks/BlockHost'
 import { requestIntent } from '../blocks/editorToolbar'
 import { FlowBlockContext, type FlowBlockApi } from '../blocks/flowContext'
@@ -298,6 +299,9 @@ function Gutter({ entity, kind, ...props }: ItemProps & { entity: EntityEnvelope
 
 /** Inside an editor or a field a right click is the browser's (spelling, paste); elsewhere on a Block it is the Block's menu. */
 const OWN_CONTEXT_MENU = 'input, textarea, select, iframe, [contenteditable="true"], [contenteditable="plaintext-only"], .aiws-popover, .aiws-menu'
+/** A right click the Block does not take: one inside an editor or a field, or one a control in the Block already
+ * answered with its own menu (a to-do row, a directory row: they prevent the default and keep the event). */
+const ownContextMenu = (event: ReactMouseEvent) => event.defaultPrevented || Boolean((event.target as HTMLElement).closest(OWN_CONTEXT_MENU))
 
 function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: EntityEnvelope; siblings: EntityEnvelope[]; index: number }) {
   const store = useStore()
@@ -314,7 +318,7 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
   return (
     <section className={`aiws-group aiws-fgroup${isSelected ? ' is-selected' : ''}${props.dragging === group.entity_id ? ' is-dragged' : ''}`} data-testid={`aiws-group-${group.entity_id}`}
       data-cell-id={group.entity_id} data-parent-id={group.parent_id ?? undefined} data-flow-item="group" data-kind={group.kind ?? undefined} tabIndex={-1}
-      onContextMenu={composite ? (event) => { if (!policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU) || (event.target as HTMLElement).closest('[data-flow-item]') !== event.currentTarget) return; event.preventDefault(); props.onBlockMenu(group.entity_id, contextPoint(event)) } : undefined}>
+      onContextMenu={composite ? (event) => { if (!policy.select || ownContextMenu(event) || (event.target as HTMLElement).closest('[data-flow-item]') !== event.currentTarget) return; event.preventDefault(); props.onBlockMenu(group.entity_id, contextPoint(event)) } : undefined}>
       <Gutter entity={group} siblings={siblings} index={index} kind="group" {...props} />
       {composite && policy.select
         ? <FlowRowTools cellId={group.entity_id} mode={props.mode} editorActive={policy.editContent} selected={isSelected} untitled={false} title={title}
@@ -344,7 +348,7 @@ function FlowControl({ control, siblings, index, ...props }: ItemProps & { contr
   return (
     <section className={`aiws-cell aiws-fblock aiws-fcontrol${isSelected ? ' is-selected' : ''}${props.dragging === control.entity_id ? ' is-dragged' : ''}`} tabIndex={-1}
       data-testid={`aiws-flow-control-${control.entity_id}`} data-cell-id={control.entity_id} data-parent-id={control.parent_id ?? undefined} data-flow-item="block" data-kind={control.kind}
-      onContextMenu={(event) => { if (!props.policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU)) return; event.preventDefault(); props.onBlockMenu(control.entity_id, contextPoint(event)) }}>
+      onContextMenu={(event) => { if (!props.policy.select || ownContextMenu(event)) return; event.preventDefault(); props.onBlockMenu(control.entity_id, contextPoint(event)) }}>
       <Gutter entity={control} siblings={siblings} index={index} kind="block" {...props} />
       {props.policy.select
         ? <FlowRowTools cellId={control.entity_id} mode={props.mode} editorActive={props.policy.editContent} selected={isSelected} untitled={false} title={title}
@@ -381,6 +385,10 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
   const title = cell.title ?? (source ? source.title ?? source.name ?? '' : '')
   // a type whose content carries its own heading (text, pictures, notes) says so (`traits.flowUntitled`)
   const showTitle = !blockRegistry.get(cell.view_type ?? '')?.traits?.flowUntitled
+  const [tableHeading, setTableHeading] = useState<HTMLDivElement | null>(null)
+  api.tableHeading = tableHeading
+  const heading = cell.view_type === 'table' ? <div className="aiws-table-heading-slot" ref={setTableHeading} /> :
+    <BlockTitle cell={cell} title={title} canRename={policy.writes && mode === 'edit' && cell.capabilities.includes('update')} />
   const openMenu = (anchor: HTMLElement) => props.onBlockMenu(cell.entity_id, menuPoint(anchor))
   // Esc in a field hands the selection to the page (Notion): the next Esc clears it. Rich text does the same
   // through FlowBlockContext (ProseMirror swallows Esc); a field that used Esc itself (cancel) prevents it.
@@ -399,13 +407,13 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
         data-testid={`aiws-cell-frame-${cell.entity_id}`} data-cell-id={cell.entity_id} data-cell-source={cell.source_id ?? undefined} data-view={cell.view_type ?? undefined}
         data-mode={mode} data-parent-id={cell.parent_id ?? undefined} data-flow-item="block"
         onKeyDown={onKeyDown} onPointerDown={() => { if (props.selected.size > 0) props.onSelect(new Set()) }}
-        onContextMenu={(event) => { if (!policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU)) return; event.preventDefault(); props.onBlockMenu(cell.entity_id, contextPoint(event)) }}>
+        onContextMenu={(event) => { if (!policy.select || ownContextMenu(event)) return; event.preventDefault(); props.onBlockMenu(cell.entity_id, contextPoint(event)) }}>
         <Gutter entity={cell} siblings={siblings} index={index} kind="block" {...props} />
         {policy.select && (
           <FlowRowTools cellId={cell.entity_id} mode={mode} editorActive={html ? running : policy.editContent} selected={isSelected} untitled={!showTitle} onMore={openMenu}
-            title={showTitle ? <BlockTitle cell={cell} title={title} canRename={policy.writes && mode === 'edit' && cell.capabilities.includes('update')} /> : undefined} />
+            title={showTitle ? heading : undefined} />
         )}
-        {showTitle && !policy.select && <BlockTitle cell={cell} title={title} canRename={false} />}
+        {showTitle && !policy.select && heading}
         <div className="aiws-cell-body">
           {html && !running && !runMode.interactive && policy.editContent && !phone && <button type="button" className="aiws-link" data-testid={`aiws-flow-run-${cell.entity_id}`} onClick={() => setRunning(true)}>{t('aiworkspace.extension.html.run')}</button>}
           {/* every other editor of a page in edit mode is live (phase two §8.1): no activation step */}
@@ -417,37 +425,5 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
         </div>
       </section>
     </FlowBlockContext.Provider>
-  )
-}
-
-/** The heading line of a table, record or wish on a page: the Block's title, renamed in place (an empty one clears it). */
-function BlockTitle({ cell, title, canRename }: { cell: EntityEnvelope; title: string; canRename: boolean }) {
-  const store = useStore()
-  const { t } = useAiwsText()
-  const [text, setText] = useState<string | null>(null)
-  const save = async (next: string) => {
-    setText(null)
-    if (next === (cell.title ?? title)) return
-    const read = await store.session.read<{ key_revs: Record<string, number> }>(cell.entity_id)
-    const rev = read.content.key_revs.title ?? 0
-    void store.submit({
-      editId: `key:${cell.entity_id}:title`, label: next ? aiwsT('aiworkspace.canvas.blockTitleLabel', { title: next }) : aiwsT('aiworkspace.canvas.blockTitleClearedLabel'), mine: next, hasMine: true,
-      operations: [next === ''
-        ? { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev } }] }
-        : { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: next, expect: { rev } }] }],
-    })
-  }
-  if (text !== null) {
-    return (
-      <input className="aiws-fblock-title aiws-fblock-title-input" aria-label={t('aiworkspace.canvas.blockTitle')} data-row-title="" data-testid={`aiws-cell-title-input-${cell.entity_id}`} autoFocus value={text} placeholder={t('aiworkspace.canvas.noTitle')}
-        onChange={(event) => setText(event.target.value)} onBlur={() => { void save(text.trim()) }}
-        onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void save(text.trim()) } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setText(null) } }} />
-    )
-  }
-  return (
-    <div className={`aiws-fblock-title${canRename ? ' is-editable' : ''}${title ? '' : ' is-empty'}`} data-row-title="" data-testid={`aiws-cell-title-${cell.entity_id}`}
-      title={canRename ? t('aiworkspace.canvas.clickToRename') : undefined} onClick={() => { if (canRename) setText(title) }}>
-      {title || t('aiworkspace.canvas.noTitle')}
-    </div>
   )
 }

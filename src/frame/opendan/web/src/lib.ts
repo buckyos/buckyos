@@ -1,3 +1,4 @@
+import { ago, lang } from './i18n'
 import useSWR, { type SWRResponse } from 'swr'
 import type { AgentProfile, GoalDefinition, GoalSchedule, OpendanGoalExtension, RegistryEntry, UiBinding } from './model'
 
@@ -11,24 +12,14 @@ export const useQuery = <T>(key: unknown[] | null, fetcher: () => Promise<T>, po
     shouldRetryOnError: false,
   })
 
-const pad = (n: number) => String(n).padStart(2, '0')
-
 export const fmtTime = (ms?: number | null): string => {
   if (!ms) return '–'
-  const d = new Date(ms)
-  const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  return new Date().toDateString() === d.toDateString() ? time : `${day} ${time}`
+  const date = new Date(ms)
+  const sameDay = new Date().toDateString() === date.toDateString()
+  return date.toLocaleString(lang, { dateStyle: sameDay ? undefined : 'short', timeStyle: 'medium' })
 }
 
-export const fmtAgo = (ms?: number | null): string => {
-  if (!ms) return '–'
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
-  if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
-}
+export const fmtAgo = (ms?: number | null): string => ms ? ago(ms) : '–'
 
 export const toText = (value: unknown): string =>
   typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? ''

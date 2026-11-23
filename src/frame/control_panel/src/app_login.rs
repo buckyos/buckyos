@@ -267,6 +267,9 @@ pub(crate) async fn issue_app_login(
         }
         None => "/".to_string(),
     };
+    if matches!(params.kind,IssueKind::Link) && !matches!(&params.resource,Some(InviteResource::GroupSession{group_did,session_id,..}) if !group_did.is_empty() && !session_id.is_empty()) {
+        return Err(RPCErrors::ParseRequestError("Customer links require a group and ticket session".into()));
+    }
     let app = app_instance_id.to_string();
     let digest = app_identity_digest(&app, external);
     let binding_key = app_identity_key(&app, &digest);
@@ -454,7 +457,7 @@ fn require_app_principal(principal: &RpcAuthPrincipal) -> Result<AppInstanceId, 
 /// The gateway host label of an App instance (`<label>.<zone>`): the `app_info` key of
 /// `node_gateway_info.json` that names this instance. Apps choose their own sub-hostname,
 /// so it is not derivable from the AppId.
-fn app_host_label(app_instance_id: &AppInstanceId) -> Result<String, RPCErrors> {
+pub(crate) fn app_host_label(app_instance_id: &AppInstanceId) -> Result<String, RPCErrors> {
     let path = crate::gateway_etc_dir().join("node_gateway_info.json");
     let content = std::fs::read_to_string(&path)
         .map_err(|error| RPCErrors::ReasonError(format!("read node_gateway_info.json: {error}")))?;
@@ -901,7 +904,7 @@ mod tests {
         let link = issue(
             &kv,
             &crm,
-            json!({"external_account_id": "crm:9", "kind": "link", "return_path": "/messagehub/guest?group=did%3Abns%3Ag&session=t"}),
+            json!({"external_account_id": "crm:9", "kind": "link","resource":{"kind":"group_session","group_did":"did:bns:g","session_id":"t"}, "return_path": "/support/ticket?group=did%3Abns%3Ag&session=t"}),
             20,
         )
         .await
@@ -921,7 +924,7 @@ mod tests {
         assert_eq!(code.credential_field("https://test.buckyos.io"), ("code", code.code()));
         let stored: ExclusiveInvite = kv.read(&exclusive_invite_key(&link.invite.invite_id));
         assert_eq!(stored.credential.kind, InviteCredentialKind::Link);
-        assert_eq!(stored.return_path, "/messagehub/guest?group=did%3Abns%3Ag&session=t");
+        assert_eq!(stored.return_path, "/support/ticket?group=did%3Abns%3Ag&session=t");
         assert!(serde_json::from_value::<IssueParams>(json!({"external_account_id": "crm:9", "kind": "ticket"})).is_err());
     }
 

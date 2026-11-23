@@ -4,9 +4,12 @@
   /* state colours derived from the Desktop theme the way its own apps do: accent-soft only as a light tint
      over the surface, the accent for borders, icons and links, body text on selected rows. Derived again under a
      subtree with its own theme (the stage), since a derived variable is computed where it is declared. */
+  --aiws-table-selection-line: color-mix(in srgb, var(--cp-success) 72%, var(--cp-text));
   --aiws-selected-bg: color-mix(in srgb, var(--cp-accent-soft) 20%, var(--cp-surface));
   --aiws-selected-border: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
   --aiws-pressed-bg: color-mix(in srgb, var(--cp-accent) 14%, transparent);
+  --aiws-toolbar-filter: blur(36px) saturate(135%);
+  --aiws-toolbar-muted: color-mix(in srgb, var(--cp-muted) 55%, var(--cp-text));
   --aiws-ai: color-mix(in srgb, var(--cp-accent-soft) 55%, var(--cp-text));
   --aiws-on-accent: var(--cp-surface-opaque);
   --aiws-primary-bg: var(--cp-accent);
@@ -251,7 +254,7 @@
 .aiws-td { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 4px; box-sizing: border-box; min-width: 0; position: relative; border-right: 1px solid var(--cp-border); }
 .aiws-td:last-child, .aiws-td.aiws-td-pad { border-right: none; }
 .aiws-td.aiws-td-actions { border-right: none; justify-content: center; }
-.aiws-td:focus-within:not(.aiws-td-actions) { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cp-accent) 55%, transparent); border-radius: 2px; }
+.aiws-td:focus-within:not(.aiws-td-actions) { box-shadow: inset 0 0 0 2px var(--aiws-table-selection-line); border-radius: 2px; }
 .aiws-td:focus-within :focus-visible { outline: none; box-shadow: none; }
 .aiws-tr:has(.aiws-conflict) { z-index: 4; }
 .aiws-td[data-state='needs_attention'] { box-shadow: inset 0 0 0 2px var(--cp-danger); overflow: visible; z-index: 3; }
@@ -313,7 +316,8 @@
 .aiws-flow .aiws-fblock[data-view='table']:hover .aiws-table-foot .aiws-table-count { opacity: 1; }
 .aiws-editor { display: flex; flex: 1 1 auto; min-width: 0; gap: 4px; align-items: center; }
 .aiws-editor input, .aiws-editor select { width: 100%; }
-.aiws-root .aiws-td .aiws-editor input:not([type='checkbox']), .aiws-root .aiws-td .aiws-editor select { height: 28px; border: none; border-radius: 4px; background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--cp-accent) 60%, transparent); }
+.aiws-root .aiws-td .aiws-editor input:not([type='checkbox']), .aiws-root .aiws-td .aiws-editor select { height: 28px; border: none; border-radius: 4px; background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--aiws-table-selection-line) 60%, transparent); }
+.aiws-root .aiws-td .aiws-editor > input[type='text'] { background: transparent; outline: none; box-shadow: none; padding-inline: 4px; }
 .aiws-editor-multi { flex-wrap: wrap; background: var(--cp-surface-opaque, var(--cp-surface)); position: absolute; z-index: 5; left: 0; top: 0; padding: 4px; border: 1px solid var(--cp-border); border-radius: 6px; width: max-content; }
 .aiws-conflict {
   position: absolute;
@@ -352,6 +356,9 @@
 .aiws-toolbar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--cp-border); margin-bottom: 6px; }
 .aiws-toolbar-sep { width: 1px; height: 16px; background: var(--cp-border); margin: 0 2px; }
 .aiws-prose { outline: none; min-height: 24px; white-space: pre-wrap; word-wrap: break-word; }
+.aiws-prose-static :is(p, h1, h2, h3)[data-block-id]::after,
+.aiws-prose-static pre[data-block-id] > code::after,
+.aiws-prose-static .aiws-rt-table > tbody > tr > :is(td, th)::after { content: '\a'; }
 .aiws-prose p { margin: 0 0 6px; }
 .aiws-prose h1 { font-size: 20px; font-weight: 600; margin: 8px 0 6px; }
 .aiws-prose h2 { font-size: 17px; font-weight: 600; margin: 8px 0 6px; }
@@ -506,6 +513,8 @@
 .aiws-selection-group { fill: none; stroke: var(--cp-accent); stroke-width: 1.5; }
 .aiws-hover-outline { fill: none; stroke: var(--cp-accent); stroke-width: 1; opacity: 0.55; }
 .aiws-hover-outline.is-group { stroke-dasharray: 5 4; opacity: 0.8; }
+.aiws-hover-outline.is-table,
+.aiws-overlay [data-selected-view='table'] :is(.aiws-selection-box:not(.is-locked), .aiws-handle) { stroke: var(--aiws-table-selection-line); }
 .aiws-cut-outline { fill: none; stroke: var(--cp-muted); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.6; }
 .aiws-overlay-html { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .aiws-overlay-html > * { position: absolute; }
@@ -682,6 +691,39 @@
 .aiws-panel { background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 12px; box-shadow: 0 2px 10px rgb(0 0 0 / 0.08); }
 
 /* toolbars */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  @media not (prefers-reduced-transparency: reduce) {
+    .aiws-panel[role='toolbar'],
+    .aiws-near:not(.aiws-tool-row),
+    .aiws-root :is(.aiws-bubble, .aiws-blockui-thinrow),
+    .aiws-status-row:not(.is-bar) :is(.aiws-status-bubble, .aiws-status-chat) {
+      --cp-muted: var(--aiws-toolbar-muted);
+      background-color: color-mix(in srgb, var(--cp-surface-opaque) 78%, transparent);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 14%), 0 3px 14px color-mix(in srgb, var(--cp-shadow) 14%, transparent);
+      -webkit-backdrop-filter: var(--aiws-toolbar-filter);
+      backdrop-filter: var(--aiws-toolbar-filter);
+    }
+
+    .aiws-chrome-top [role='toolbar'],
+    .aiws-context-zone > .aiws-session-bar {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+    .aiws-chrome-top [role='toolbar'] { position: relative; }
+    .aiws-chrome-top [role='toolbar']::before,
+    .aiws-context-zone:has(> .aiws-session-bar)::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      border-radius: 12px;
+      pointer-events: none;
+      -webkit-backdrop-filter: var(--aiws-toolbar-filter);
+      backdrop-filter: var(--aiws-toolbar-filter);
+    }
+  }
+}
+
 .aiws-chrome-top { position: absolute; top: 12px; left: 12px; right: 12px; z-index: 25; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; }
 .aiws-chrome-top > *, .aiws-main-area > * { pointer-events: auto; }
 .aiws-main-area { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; pointer-events: none; }
@@ -704,9 +746,6 @@
 .aiws-surface-name-edit input { width: 220px; height: 32px; font-weight: 600; }
 .aiws-inline-error { white-space: normal; width: 280px; color: var(--cp-danger); padding: 8px 10px; }
 .aiws-mode-chip { border-color: var(--cp-warning); color: var(--cp-warning); }
-.aiws-root button.aiws-status { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; min-height: 28px; border-radius: 999px; font-size: 12px; max-width: 100%; }
-.aiws-status.is-attention { border-color: var(--cp-danger); }
-.aiws-status .aiws-state { margin-left: 0; }
 .aiws-conn { display: inline-flex; align-items: center; gap: 4px; border: none; padding: 0; }
 .aiws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cp-muted); flex: none; }
 .aiws-conn-live .aiws-dot { background: var(--cp-success); }
@@ -728,7 +767,6 @@
 .aiws-root .aiws-zoom-custom button { white-space: nowrap; flex: none; }
 .aiws-side .aiws-grants { font-size: 12px; width: 100%; }
 .aiws-side .aiws-grants td, .aiws-side .aiws-grants th { word-break: keep-all; }
-.aiws-status .aiws-state-committed { background: none; color: var(--cp-muted); }
 .aiws-share-dialog-layout { display: flex; flex-direction: column; min-height: 0; outline: none; }
 .aiws-share-dialog-head { display: flex; align-items: flex-start; gap: 16px; padding: 24px 24px 16px; }
 .aiws-share-heading { flex: 1; min-width: 0; }
@@ -865,8 +903,10 @@
 .aiws-root details[open] > summary::before { transform: rotate(45deg); }
 
 /* the status area, bottom right of the work area: alerts and notices above the status summary */
-.aiws-status-dock { position: absolute; right: 12px; bottom: 12px; z-index: 50; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: min(440px, calc(100% - 24px)); max-height: calc(100% - 84px); pointer-events: none; }
-.aiws-status-dock > .aiws-status { pointer-events: auto; flex: none; }
+.aiws-status-dock { --aiws-dock-width: min(440px, calc(100% - 24px)); position: absolute; right: 12px; bottom: 12px; z-index: 50; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: max-content; max-height: calc(100% - 84px); pointer-events: none; }
+.aiws-status-dock:not(.is-bar) { max-width: var(--aiws-dock-width); }
+.aiws-status-dock:not(.is-bar):has(> .aiws-status-panel, > .aiws-alerts:not(:empty)) { width: var(--aiws-dock-width); }
+.aiws-alerts:empty { display: none; }
 .aiws-alerts { display: flex; flex-direction: column; gap: 6px; width: 100%; min-height: 0; overflow-y: auto; pointer-events: none; }
 .aiws-alerts > .aiws-alert { pointer-events: auto; margin: 0; border-radius: 8px; box-shadow: var(--cp-shadow); }
 .aiws-sources-work { position: relative; display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
@@ -1028,7 +1068,6 @@
 .aiws-workspace[data-phone='true'] .aiws-view-toolbar { flex: 1 1 auto; min-width: 0; margin-left: 0; }
 .aiws-workspace[data-phone='true'] .aiws-flow-host { padding: 64px 8px 56px; }
 .aiws-workspace[data-phone='true'] .aiws-hint { top: calc(64px + env(safe-area-inset-top)); max-width: calc(100% - 24px); white-space: normal; text-align: center; }
-.aiws-workspace[data-phone='true'] .aiws-status-dock { right: calc(8px + env(safe-area-inset-right)); bottom: calc(8px + env(safe-area-inset-bottom)); }
 .aiws-workspace[data-phone='true'] .aiws-surface-list { width: min(320px, calc(100vw - 32px)); }
 .aiws-surface-anchor { flex: 1 1 auto; min-width: 0; }
 .aiws-root button.aiws-surface-trigger { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 8px; border: none; border-radius: 8px; background: none; font-weight: 600; font-size: 14px; }
@@ -1248,15 +1287,15 @@
 .aiws-define-slots th, .aiws-define-slots td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--cp-border); }
 .aiws-define-slots input { width: 100%; box-sizing: border-box; }
 .aiws-plain-fieldset { border: none; margin: 0; padding: 0; min-width: 0; }
-.aiws-mindnode { box-sizing: border-box; width: 100%; height: 100%; border-radius: 8px; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque); color: var(--cp-text);
+.aiws-label.aiws-mindnode { --aiws-node-border: 1px; box-sizing: border-box; width: 100%; height: 100%; border-radius: 8px; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque); color: var(--cp-text);
   white-space: pre; overflow: visible; }
-.aiws-mindnode.is-depth-0 { border: none; border-radius: 10px; background: var(--cp-text); color: var(--cp-surface-opaque); }
-.aiws-mindnode.is-depth-1 { border: 2px solid var(--aiws-branch, var(--cp-accent)); }
-.aiws-mindnode-line { white-space: pre; }
+.aiws-mindnode.is-depth-0 { --aiws-node-border: 0px; border: none; border-radius: 10px; background: var(--cp-text); color: var(--cp-surface-opaque); }
+.aiws-mindnode.is-depth-1 { --aiws-node-border: 2px; border: 2px solid var(--aiws-branch, var(--cp-accent)); }
+.aiws-mindnode-line { display: block; min-height: 1lh; white-space: pre; }
 .aiws-mindnode-line > .is-code { background: color-mix(in srgb, var(--cp-text) 8%, transparent); border-radius: 4px; }
 .aiws-mindnode-line > a { color: inherit; }
 .aiws-mindnode-empty { color: var(--cp-muted); }
-.aiws-mindnode-edit { outline: none; white-space: pre-wrap; min-width: 1em; cursor: text; user-select: text; -webkit-user-select: text; }
+.aiws-mindnode-edit { display: block; outline: none; white-space: pre-wrap; min-width: 1em; cursor: text; user-select: text; -webkit-user-select: text; }
 .aiws-mindnode-edit:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
 .aiws-frame-block.is-node.is-editing { overflow: visible; }
 .aiws-frame-block.is-node.is-editing .aiws-mindnode { flex: none; width: max-content; min-width: 100%; max-width: var(--aiws-node-max-w, none); height: auto; min-height: 100%; }
@@ -1274,24 +1313,27 @@
 
 /* ---- label Block (控件机制 TODO G1) */
 .aiws-label-block { width: 100%; height: 100%; display: flex; }
-.aiws-label { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; width: 100%; height: 100%; box-sizing: border-box;
-  color: var(--cp-text); line-height: 1.35; min-width: 0; }
-.aiws-label:not(.is-wrap) { display: flex; flex-direction: column; }
-.aiws-label:not(.is-wrap) > .aiws-label-text { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
-.aiws-label.is-wrap > .aiws-label-text { overflow-wrap: anywhere; }
+.aiws-label { display: flex; gap: 4px; overflow: hidden; width: 100%; height: 100%; min-width: 0; box-sizing: border-box;
+  color: var(--cp-text); line-height: 1.35; }
+.aiws-label-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.aiws-label.is-wrap > .aiws-label-text { display: -webkit-box; -webkit-box-orient: vertical; overflow-wrap: anywhere; white-space: pre-wrap; }
+.aiws-label-icon { flex: 0 0 1em; width: 1em; height: 1em; line-height: 1; text-align: center; font-family: system-ui, sans-serif; font-style: normal; font-weight: normal; }
 .aiws-label.is-empty { color: var(--cp-muted); font-style: italic; }
-.aiws-label.is-editing { outline: none; cursor: text; display: block; overflow: visible; }
-.aiws-label.is-editing:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
+.aiws-label.is-editing, .aiws-label.is-editing > .aiws-label-text { overflow: visible; }
+.aiws-label.is-editing > .aiws-label-text { display: block; }
+.aiws-label-input { display: block; min-width: 1ch; outline: none; cursor: text; white-space: pre-wrap; overflow-wrap: anywhere; }
+.aiws-label-input:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
 
 /* ---- data controls: their body in the frame, projected Blocks, gestures (控件机制 TODO G2–G7) */
 .aiws-frame-block.is-control > .aiws-data-body { position: absolute; inset: 0; pointer-events: none; }
 .aiws-frame-block.is-control > .aiws-data-body[data-active='true'] { pointer-events: auto; }
 .aiws-data-flow { position: relative; width: 100%; border: 1px solid var(--cp-border); border-radius: 12px; overflow: hidden; background: var(--cp-surface-opaque, var(--cp-surface)); }
-.aiws-data-flow.is-page { height: 100%; border: none; border-radius: 0; }
+.aiws-data-flow.is-page { flex: 1; min-height: 0; border: none; border-radius: 0; }
 .aiws-dc { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border);
   border-radius: 12px; overflow: hidden; color: var(--cp-text); font-size: 14px; box-sizing: border-box; outline: none; user-select: none; -webkit-user-select: none; }
 .aiws-data-flow > .aiws-dc { border: none; border-radius: 0; }
 .aiws-dc.is-active { box-shadow: 0 1px 2px rgb(0 0 0 / 4%); }
+.aiws-root .aiws-dc [data-awaiting-selection]:disabled { opacity: 1; }
 .aiws-dc:focus-visible { box-shadow: 0 0 0 2px var(--cp-accent); }
 .aiws-dc-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; min-height: 24px; }
 .aiws-dc-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

@@ -860,7 +860,9 @@ pub fn diff_blocks(base: &Ast, target: &Ast) -> Vec<BlockOp>;              // �
 `BlockIndex` 是 `block_id → { parent, node_type, hash, struct_rev }`：
 
 - `hash = sha256(JCS(该块节点的 AST，含子节点))` 的十六进制前 32 位，是块**内容**的版本令牌。
-- `struct_rev` 是块**位置**的版本令牌：最后一次改变该块位置的 Commit 的 `seq`。后台在接受每个富文本 Commit 时比较前后两个 `BlockIndex` 来更新它：新出现的块取本次 `seq`；`parent` 变了的块取本次 `seq`；`parent` 未变时，对该父节点的子块序列（只看前后都存在的子块）求最长公共子序列，不在其中的块视为被移动，取本次 `seq`；其余块保持原值。因此在某块旁边插入或删除别的块不会改变它的 `struct_rev`，只有它自己被移动才会。这个比较对 `apply_update`（编辑器里拖动块）和块级操作一视同仁，是 `core` 中的确定性函数（并列时取字典序最小的公共子序列下标组合），前后端结果一致。
+- `struct_rev` 是块**位置**的版本令牌，记录创建该块或最后一次移动它的 Commit 的 `seq`。同一 Commit 中按操作顺序更新索引。
+  - 对显式的 `richtext.move_block`，按操作中的 `block_id` 更新。目标块的父节点或在兄弟中的位置发生变化时，只有目标块取本次 `seq`。目标块已经在请求的位置时，保留原令牌。例如，把 `[A, B]` 中的 B 移到 A 前面，只有 B 的令牌更新。
+  - 对需要从前后 AST 推断移动目标的变更（如 `richtext.apply_update`），新块和更换父节点的块取本次 `seq`。对每个父节点，比较前后均属于该父节点的子块序列。最长公共子序列中的块保留原令牌，其余块取本次 `seq`。重建子序列时，若两个不同子块对应的后续解等长，则先跳过旧序列当前的子块。`core` 的这一规则使后台和副本在同一输入下得到相同索引。
 - `struct_rev` 是工作状态令牌，保存在 `richtext_states.block_index_json`，不进入内容对象；导入和 Fork 后全部取导入提交的 `seq`。
 
 二者共同构成块级 OCC 的令牌（§3.3.5）。
@@ -925,7 +927,8 @@ pub fn diff_blocks(base: &Ast, target: &Ast) -> Vec<BlockOp>;              // �
   不等 → `REVISION_CONFLICT`，响应中给出当前令牌与（有读权限时）当前块 AST 及其当前位置。块不存在 → `TARGET_DELETED`。
 - `replace_block` 的 `node.attrs.block_id` 必须等于被替换块的 ID；节点类型可以改变（段落改标题）。
 - 后台执行方式：在 `candidate` 分叉上调用 `apply_block_ops`，使用后台保留的 peer 身份。执行产生的 CRDT 更新从分叉导出，作为 `PutRichTextUpdate` 落盘，并放入响应的 `server_ops` 和变化流事件的 `ops`，客户端把它导入自己的确认文档。后续校验与 §3.3.4 相同。
-- 逆操作（设原 Commit 的顺序号为 `S`）：`insert_blocks` ↔ `delete_blocks`（期望插入后的 hash 与 `struct_rev = S`）；`replace_block` ↔ 以旧节点为内容的 `replace_block`（期望替换后的 hash）；`move_block` ↔ 移回原位置的 `move_block`（期望 `struct_rev = S`，原位置用移动前的前一个兄弟或父节点表示）；`delete_blocks` ↔ 在原位置的 `insert_blocks`（锚点取删除前的前一个兄弟，不存在则父的 `first_child_of`）。逆操作引用的锚点块已不存在 → `REFERENCE_BROKEN`，按 §2.7 作为该撤销的冲突项报告。于是“撤销我的移动”在别人又移动过该块之后会报告冲突，而不是把块拉回去。
+- 逆操作（设原 Commit 的顺序号为 `S`）：`insert_blocks` ↔ `delete_blocks`（期望插入后的 hash 与 `struct_rev = S`）；`replace_block` ↔ 以旧节点为内容的 `replace_block`（期望替换后的 hash）；实际改变位置的 `move_block` ↔ 移回原位置的 `move_block`（`expect.struct_rev` 取正向操作完成后索引中目标块的实际令牌，原位置用移动前的前一个兄弟或父节点表示）；`delete_blocks` ↔ 在原位置的 `insert_blocks`（锚点取删除前的前一个兄弟，不存在则父的 `first_child_of`）。逆操作引用的锚点块已不存在 → `REFERENCE_BROKEN`，按 §2.7 作为该撤销的冲突项报告。若别人又移动了该块，撤销会报告冲突。
+- 目标块已在请求位置的 `move_block` 产生空逆操作列表。整笔 Commit 只有这次操作时，`doc.undo` 返回 `NOT_UNDOABLE`（`nothing to undo`）。同批还有其他可撤销操作时，`doc.undo` 仍可撤销那些操作。
 
 **显式草稿提交。** 客户端在私有分叉上编辑（草稿的 CRDT 历史永不离开客户端）。提交时：`ops = diff_blocks(基准 AST, 草稿 AST)`，每个被替换或删除的块带上基准时的 `hash`，形成一个 Commit。对端只看到块级结果，看不到草稿的四次中间修改（V14）。代价是显式模式下同一块的并发修改表现为冲突而不是字符级合并；这是有意的取舍，第一期文档 §4.2 要求的正是“共享分支重新应用，冲突时保留草稿”。提交被接受后，客户端丢弃草稿分叉，从确认文档重新分叉。
 
@@ -1193,17 +1196,17 @@ Cell 是版面上的一个展现实例：它引用一个内容实体，并保存
   "filter": { "op": "cmp", "field_id": "status", "operator": "ne", "value": "option-done" },
   "sorts": [ { "field_id": "due", "direction": "asc" } ],
   "group": null,
-  "manual_order": null
+  "row_order": null
 }
 ```
 
-顶层键即并发单位：`source_ref`、`view`、`title`、`fields`、`filter`、`sorts`、`group`、`manual_order`、`options`。两人同时一个改筛选一个调列宽不冲突；同时调列宽则后者冲突（列宽是低价值冲突，UI 的处理是静默以最新状态重试一次，这是 UI 策略，不是后台放宽检查）。
+顶层键即并发单位：`source_ref`、`view`、`title`、`fields`、`filter`、`sorts`、`group`、`row_order`、`options`。两人同时一个改筛选一个调列宽不冲突；同时调列宽则后者冲突（列宽是低价值冲突，UI 的处理是静默以最新状态重试一次，这是 UI 策略，不是后台放宽检查）。
 
 `view.type` 与允许的源类型：
 
 | `view.type` | 源 `type_id` | 专有键 |
 | --- | --- | --- |
-| `table` | `buckyos.table-source` | `fields`、`filter`、`sorts`、`group`、`manual_order` |
+| `table` | `buckyos.table-source` | `fields`、`filter`、`sorts`、`group`、`row_order` |
 | `richtext` | `buckyos.richtext` | 无（`options` 可含 `readonly`） |
 | `record` | `buckyos.record` | `fields`（属性 `key` 的显示顺序） |
 | `asset` | `buckyos.asset-ref` | `options.fit`: `contain` \| `cover` |
@@ -1249,7 +1252,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 
 分组：`group: { "field_id": ... }`，仅支持 select、boolean、date；分组是展现行为，查询接口返回的仍是带排序的平面行，另附每组计数。
 
-手工顺序：`manual_order: { <record_id>: <order_key> }`，仅在 `sorts` 为空时生效；不在表中的记录按 `record_id` 排在其后。它是视图的键，不改变记录本身。整键一个版本格，两人同时手工排序同一视图会冲突；第一期接受这一点。
+手工顺序保存在 `row_order: { <record_id>: "<16位十六进制创建序号>!<锚点记录ID>!<局部顺序键>" }`。无显式排序时按创建序号、记录 ID 排列；移动记录只写其在锚点旁的局部顺序键，锚点自身的键是 `h`。它是视图的键，不改变记录本身。整键一个版本格，两人同时手工排序同一视图会冲突；第一期接受这一点。
 
 查询请求既可以引用一个已保存的 TableView（`view_id`，使用其 `filter`/`sorts`），也可以直接给出 `source_id` + 过滤排序；还可以在 `view_id` 之上叠加会话级的额外过滤（`and` 组合）。
 
@@ -1324,7 +1327,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 
 **锚点适配器。** 每个内容类型提供一个 `AnchorAdapter`（`core/src/anchor.rs`）：它认识哪些选择器与内置范围种类、它们的结构校验、以及“现在在哪里”的解析。新增类型只需新增适配器，不修改公共的解析与降级逻辑。前端对应地有 `AnchorRegistry`（`anchors/registry.ts`）：适配器拥有一个范围种类，负责把视图的选区变成锚点（`capture`）和把范围在视图里找回来（`locate`）；内置种类与应用种类注册方式完全相同，应用的适配器优先认领选区。
 
-**解析与降级。** `read`（及 `doc.list_annotations`）对每个注释返回 `anchor`：
+**解析与降级。** `doc.read` 和 `doc.list_annotations` 按调用者对目标的读取权限决定是否返回引文和解析后的锚点。目标不可读时，批注正文可见，响应省略整个 `context` 和 `anchor`，因为标签也可能摘录目标文字。无目标的自由便签没有引文，锚点层级为 `none`。目标可读时，`anchor` 的结构如下。
 
 ```json
 { "state": "resolved | degraded | target_deleted | unsupported",
@@ -1360,7 +1363,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 - 引用种类 `anchor`：边只记录目标实体，不阻止目标删除。
 - 排序、过滤、改列名、插入其他行、移动块都不使锚点挂到别的对象上，因为锚点的身份部分只含稳定 ID（V08）。
 
-**查询。** `doc.list_annotations { target_ids?, parent_id? }`：锚定在任一 `target_ids` 上（经 `refs` 的 `anchor` 边）或结构上位于 `parent_id` 下的注释，按创建顺序，每条与 `read` 的结果相同（含 `anchor`），个人注释只对其所有者出现。界面按页面取：页面下的实体及其单元的数据源作为 `target_ids`，页面本身作为 `parent_id`（因此目标已删除的注释仍然列出）。
+**查询。** `doc.list_annotations { target_ids?, parent_id? }`：锚定在任一 `target_ids` 上（经 `refs` 的 `anchor` 边）或结构上位于 `parent_id` 下的注释，按创建顺序，每条与 `doc.read` 的结果相同，个人注释只对其所有者出现。界面按页面取：页面下的实体及其单元的数据源作为 `target_ids`，页面本身作为 `parent_id`（因此目标已删除的注释仍然列出）。
 
 **显示（Desktop）。** 富文本编辑器中，`range` 级的注释高亮所选文字，`target` 级的注释在块左侧加色条，卡片排在正文右侧与锚点同高（窄时排在正文下方）；`entity` 级的卡片排在最前并注明“原位置已不存在”。适配器返回节点命中时，节点装饰的 spec 携带 `{ annotations: [{ id, detail }] }`，应用的 NodeView 可据此在自己的块内画出范围。表格单元格上的注释仍以标记显示。
 

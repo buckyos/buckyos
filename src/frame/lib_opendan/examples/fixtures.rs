@@ -97,6 +97,7 @@ impl LlmClient for Script {
                     "report": "Delivered the verified answer.",
                     "artifacts": ["answer.txt"],
                     "result": { "answer": 42 },
+                    "outcome": "succeeded",
                     "is_end": true
                 }),
             ),

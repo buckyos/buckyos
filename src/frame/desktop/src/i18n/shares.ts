@@ -276,7 +276,7 @@ export const sharesZh: Record<string, string> = {
   'myContent.tab.all': '全部',
   'myContent.tab.links': '分享链接',
   'myContent.tab.apps': '应用发出',
-  'myContent.tab.public': 'Public',
+  'myContent.tab.public': '公开',
   'myContent.tab.sites': '网站与服务',
   'myContent.search': '按名称或路径搜索',
   'myContent.showHidden': '显示已隐藏',

@@ -1,7 +1,7 @@
 use crate::{
     agent_settings_key, agent_spec_key, user_app_spec_key, AccessDenial, AgentId,
     AgentPermissionMode, AgentSettings, AgentSpec, AppInstanceId, AppServiceSpec, AppType,
-    DenyReason, PermissionItem, ServiceState, SystemConfigClient, SystemConfigError, UserSettings,
+    DenyReason, PermissionItem, SystemConfigClient, SystemConfigError, UserSettings,
     APP_PERMISSION_USER_HOME,
 };
 use ::kRPC::{RPCErrors, Result};
@@ -71,13 +71,7 @@ fn validate_app_runtime_session(
             "app_runtime_identity_mismatch",
         ));
     }
-    if !spec.enable
-        || spec.expected_instance_count == 0
-        || matches!(
-            spec.state,
-            ServiceState::Stopped | ServiceState::Stopping | ServiceState::Deleted
-        )
-    {
+    if !spec.is_runtime_enabled() {
         return Err(app_runtime_denied(
             DenyReason::EntryUnavailable,
             "app_runtime_unavailable",
@@ -267,6 +261,7 @@ fn merge_permission_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ServiceState;
 
     fn runtime_fixture() -> (UserSettings, AppServiceSpec) {
         let owner = serde_json::from_value(serde_json::json!({

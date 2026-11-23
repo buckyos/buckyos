@@ -53,6 +53,23 @@ test('anonymous visitors verify the target DID and return with the complete invi
   expect(page.url()).toBe(returnUrl)
 })
 
+test('retry keeps the invitation query and fragment and clears the preceding error', async ({ page }) => {
+  await seed(page, { kind: 'anonymous' })
+  await page.route('https://bob.other.web3.buckyos.ai/**', route => route.fulfill({
+    status: 200, contentType: 'text/html', body: '<p>Home Zone sign-in</p>',
+  }))
+  const returnPath = INVITE_PATH.replace('#details', '&note=a%20b&flag#details')
+  await page.goto(returnPath.replace('#details', '&did_error=access_denied#details'))
+  const expected = new URL(returnPath, page.url()).href
+  await expect(page.getByRole('alert')).toBeVisible()
+  await page.getByTestId('sso-did-submit').click()
+  await page.waitForURL(url => url.hostname === 'bob.other.web3.buckyos.ai')
+  const state = new URL(page.url()).searchParams.get('state')!
+  await page.goto(expected)
+  const retry = await page.evaluate(({key, state}) => JSON.parse(localStorage.getItem(key)!).sso.did_logins[state], {key:STORAGE_KEY, state})
+  expect(retry.redirect_url).toBe(expected)
+})
+
 test('a password session for the same DID must sign out and verify through federation', async ({ page }) => {
   await seed(page, { kind: 'account', auth_method: 'password' })
   await page.goto(INVITE_PATH)
@@ -70,19 +87,9 @@ test('a different federated DID cannot accept the invitation', async ({ page }) 
   await expect(page.getByTestId('user-invite-form')).toHaveCount(0)
 })
 
-test('the verified DID accepts explicitly after providing its matching document', async ({ page }) => {
+test('the verified DID explicitly accepts the reserved account', async ({ page }) => {
   await seed(page, { kind: 'external', did: TARGET_DID, show_name: 'Bob' })
   await page.goto(INVITE_PATH)
-  const input = page.getByLabel('OwnerDocument JSON')
-  await expect(input).toBeEmpty()
-  await expect(page.getByTestId('user-invite-accept')).toBeDisabled()
-  await input.fill(JSON.stringify({ id: 'did:bns:mallory', name: 'mallory' }))
-  await page.getByTestId('user-invite-accept').click()
-  await expect(page.getByTestId('user-invite-error')).toHaveText('The document DID must match the DID you used to sign in.')
-  await input.fill('[]')
-  await page.getByTestId('user-invite-accept').click()
-  await expect(page.getByTestId('user-invite-error')).toHaveText('Enter a valid OwnerDocument JSON object.')
-  await input.fill(JSON.stringify({ id: TARGET_DID, name: 'bob', binded_zone_list: ['did:bns:alice'] }))
   await page.getByTestId('user-invite-accept').click()
   await expect(page.getByTestId('user-invite-accepted')).toBeVisible()
   const invitation = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).user_invites['invite-bob'], STORAGE_KEY)
@@ -92,7 +99,7 @@ test('the verified DID accepts explicitly after providing its matching document'
 test('a session changed after loading is rejected when accepting', async ({ page }) => {
   await seed(page, { kind: 'external', did: TARGET_DID, show_name: 'Bob' })
   await page.goto(INVITE_PATH)
-  await page.getByLabel('OwnerDocument JSON').fill(JSON.stringify({ id: TARGET_DID, name: 'bob' }))
+  await expect(page.getByTestId('user-invite-accept')).toBeVisible()
   await page.evaluate(key => {
     const state = JSON.parse(localStorage.getItem(key)!)
     state.session = { kind: 'anonymous' }

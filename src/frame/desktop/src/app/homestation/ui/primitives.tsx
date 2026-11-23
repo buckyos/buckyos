@@ -103,11 +103,13 @@ export function PageHeader({ title, subtitle, onBack, actions, backLabel, leadin
   )
 }
 
-/** The reading column under a header: a card on the page on desktop, the whole screen on a phone. It is the scroll container. */
+/** Keep scrolling on the available viewport and the reading surface at its own width. */
 export const ColumnBody = forwardRef<HTMLDivElement, { children: ReactNode; className?: string; style?: CSSProperties; testId?: string }>(function ColumnBody({ children, className, style, testId }, ref) {
   return (
-    <div ref={ref} className={clsx('hs-column-body desktop-scrollbar relative min-h-0 flex-1 overflow-y-auto', className)} style={style} data-testid={testId}>
-      {children}
+    <div ref={ref} className="desktop-scrollbar relative min-h-0 flex-1 overflow-y-auto" data-testid={testId}>
+      <div className={clsx('hs-column-body relative min-h-full', className)} style={style}>
+        {children}
+      </div>
     </div>
   )
 })

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import clsx from 'clsx'
 import { ChevronRight, Folder, Plus } from 'lucide-react'
-import { ago, t, type TextKey } from '../i18n'
+import { lang, ago, t, type TextKey } from '../i18n'
 import { sessionHref, useQuery } from '../lib'
 import {
   dataModel,
@@ -296,7 +296,7 @@ function WorkspaceCard({ workspace, entries, artifacts, runtimes, refresh }: {
         </dd>
         <dt className="text-mute">{t('workspaceDirectory')}</dt><dd className="break-all font-mono">{workspace.location.directory}</dd>
       </dl>
-      <p className="mt-2 text-xs text-mute" title={workspace.checked_at_ms ? new Date(workspace.checked_at_ms).toLocaleString() : undefined}>
+      <p className="mt-2 text-xs text-mute" title={workspace.checked_at_ms ? new Date(workspace.checked_at_ms).toLocaleString(lang) : undefined}>
         {workspace.checked_at_ms ? t('workspaceChecked', { time: ago(workspace.checked_at_ms) }) : t('workspaceUnchecked')}
       </p>
       {workspace.last_error && <p className="mt-2 break-words text-xs text-warn">{workspace.last_error}</p>}

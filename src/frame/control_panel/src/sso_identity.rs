@@ -44,6 +44,7 @@ pub(crate) fn account_identity(
         show_name,
         zone_host: zone_host.to_string(),
         auth_method: token_auth_method(token),
+        oauth_source_id: buckyos_api::token_oauth_source_id(token).map(str::to_owned),
         restricted: ceiling.restricted,
         scopes: ceiling.scopes.into_iter().collect(),
         password_set: settings.password_state.is_set(),
@@ -68,6 +69,7 @@ pub(crate) fn external_identity(
         show_name,
         zone_host: zone_host.to_string(),
         auth_method: token_auth_method(token),
+        oauth_source_id: buckyos_api::token_oauth_source_id(token).map(str::to_owned),
         restricted: ceiling.restricted,
         scopes: ceiling.scopes.into_iter().collect(),
     })

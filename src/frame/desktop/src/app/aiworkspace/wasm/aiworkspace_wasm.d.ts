@@ -106,6 +106,8 @@ export function file_object_id(data: Uint8Array | number[]): string;
  */
 export function markdown_to_richtext(markdown: string, prefix: string, links_json?: string | null): string;
 
+export function missing_record_fields(fields_json: string, schema_id: string | null | undefined, draft_json: string): string;
+
 /**
  * Normalize a value for a field definition (same rules as a write).
  */
@@ -157,7 +159,7 @@ export function verify_object(id: string, canonical_text: string): void;
  * A table view compiled to SQL over the logical table named `table` (a path or an alias, quoted here) — core
  * `sqlview::compile_view`, the one compiler the service uses too (核心 API 调整 §3.5). For sessions without a replica,
  * which read a view with `doc.query { sql }`. `fields_json`: the table's live fields as `doc.read` gives them;
- * `view_json`: `{ filter?, sorts?, fields?, group?, manual_order? }`; `projection`: `records` (`_record`, the native
+ * `view_json`: `{ filter?, sorts?, fields?, group?, row_order? }`; `projection`: `records` (`_record`, the native
  * rows) or `display` (`_id` and the display columns). → `{ sql, count_sql, group_sql?, diagnostics }`.
  */
 export function view_sql(table: string, fields_json: string, view_json: string, projection: string): string;
@@ -187,6 +189,7 @@ export interface InitOutput {
     readonly core_version: (a: number) => void;
     readonly file_object_id: (a: number, b: number, c: number) => void;
     readonly markdown_to_richtext: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly missing_record_fields: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly normalize_value: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly object_id: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly order_key_between: (a: number, b: number, c: number, d: number, e: number) => void;

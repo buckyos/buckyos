@@ -55,10 +55,11 @@ function StatusLogoButton({
 }
 
 function MobileBackButton({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n()
   return (
     <button
       type="button"
-      aria-label="Back"
+      aria-label={t('common.back')}
       onClick={onClick}
       className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] text-[color:var(--cp-text)] shadow-[0_1px_2px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-smooth)] active:scale-[0.96]"
     >

@@ -184,7 +184,7 @@ function VendorSection({ vendor, showModel, quotaRules }: {
 }
 
 function ModelCard({ model, quotaRules, onClick }: { model: ModelCardView; quotaRules: QuotaRuleView[]; onClick: () => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const context = model.metadata.capabilities?.max_context_tokens
   const quotaStatus = modelQuotaStatus(quotaRules, model.providers.flatMap((provider) => provider.exact_models))
   return <button type="button" onClick={onClick} data-testid="model-card" data-model={model.id} data-available={model.available} data-local={model.local}
@@ -200,7 +200,7 @@ function ModelCard({ model, quotaRules, onClick }: { model: ModelCardView; quota
     <div className="flex flex-wrap items-center gap-2 text-[11px]" style={muted}>
       {(model.metadata.api_types ?? []).map((api) => <span key={api} className="rounded px-2 py-1" style={{ background: 'var(--cp-bg)' }}>{api}</span>)}
       {model.metadata.parameter_scale && <span>{model.metadata.parameter_scale}</span>}
-      {typeof context === 'number' && <span>{t('aiCenter.models.context', undefined, { count: context.toLocaleString() })}</span>}
+      {typeof context === 'number' && <span>{t('aiCenter.models.context', undefined, { count: context.toLocaleString(locale) })}</span>}
     </div>
     <div className="mt-auto flex w-full flex-wrap items-center justify-between gap-2 text-xs">
       <span className="flex items-center gap-1.5" style={{ color: model.available ? success : 'var(--cp-muted)' }}>

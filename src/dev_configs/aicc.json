@@ -1,4 +1,5 @@
 {
+  "schema": "buckyos.aicc.settings.v1",
   "providers": [
     {
       "provider_instance_name": "openai-default",

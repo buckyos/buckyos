@@ -7,6 +7,7 @@ import { isNarrowerAudience, type Translate } from './datamodel/format'
 import { audienceSchema, commentInputSchema, type AudienceInput } from './datamodel/inputs'
 import type { AudienceSpec } from './datamodel/types'
 import { AudiencePicker } from './publish/AudiencePicker'
+import { EmojiPickerButton } from './ui/EmojiPickerButton'
 
 function DialogButtons({ onCancel, confirmLabel, onConfirm, danger, disabled, testId }: { onCancel: () => void; confirmLabel: string; onConfirm?: () => void; danger?: boolean; disabled?: boolean; testId?: string }) {
   const { t } = useI18n()
@@ -38,17 +39,19 @@ export function QuoteBody({ controls, defaultAudience }: { controls: WindowDialo
   const { t } = useI18n()
   const schema = useMemo(() => commentInputSchema.extend({ audience: audienceSchema }), [])
   const form = useForm<{ text: string; audience: AudienceInput }>({ resolver: zodResolver(schema), defaultValues: { text: '', audience: defaultAudience } })
+  const textField = form.register('text')
   const error = form.formState.errors.text?.message
   return (
     <form className="hs-root" onSubmit={form.handleSubmit(values => controls.close(values))}>
       <textarea
-        {...form.register('text')}
+        {...textField}
         autoFocus
         rows={4}
         className="hs-input resize-none"
         aria-label={t('homestation.quote.placeholder', 'Add your thoughts…')}
         placeholder={t('homestation.quote.placeholder', 'Add your thoughts…')}
       />
+      <EmojiPickerButton field={textField} testId="hs-quote-emoji" />
       {error ? <p className="mt-2 text-[13px]" role="alert" style={{ color: 'var(--hs-danger-ink)' }}>{t(error, 'Write something first.')}</p> : null}
       <div className="mt-3">
         <Controller control={form.control} name="audience" render={({ field }) => <AudiencePicker idPrefix="hs-quote" value={field.value} onChange={field.onChange} />} />
@@ -64,10 +67,12 @@ export function QuoteBody({ controls, defaultAudience }: { controls: WindowDialo
 export function EditBody({ controls, initialText }: { controls: WindowDialogControls<string>; initialText: string }) {
   const { t } = useI18n()
   const form = useForm<{ text: string }>({ resolver: zodResolver(commentInputSchema), defaultValues: { text: initialText } })
+  const textField = form.register('text')
   const error = form.formState.errors.text?.message
   return (
     <form className="hs-root" onSubmit={form.handleSubmit(values => controls.close(values.text))}>
-      <textarea {...form.register('text')} autoFocus rows={5} className="hs-input resize-none" aria-label={t('homestation.edit.label', 'Post text')} />
+      <textarea {...textField} autoFocus rows={5} className="hs-input resize-none" aria-label={t('homestation.edit.label', 'Post text')} />
+      <EmojiPickerButton field={textField} testId="hs-edit-emoji" />
       {error ? <p className="mt-2 text-[13px]" role="alert" style={{ color: 'var(--hs-danger-ink)' }}>{t(error, 'Write something first.')}</p> : null}
       <p className="mt-3 text-[13px] leading-5" style={{ color: 'var(--cp-muted)' }}>
         {t('homestation.edit.note', 'Saving publishes a new version with a new object ID and moves your entry to it. Comments and likes stay on the version they were made on, and copies of the old version that others already have can’t be recalled.')}

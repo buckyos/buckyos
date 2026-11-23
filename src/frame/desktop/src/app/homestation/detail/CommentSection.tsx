@@ -12,6 +12,7 @@ import type { CardView, CommentView, StatsViewKey } from '../datamodel/types'
 import type { CommentTypeFilter, HomeStationStore } from '../store/types'
 import { useHsNav } from '../navContext'
 import { useHomeStationStore, useNow, useStoreRevalidate, useStoreSelector } from '../store/context'
+import { EmojiPickerButton } from '../ui/EmojiPickerButton'
 import { Avatar, EmptyState, ErrorState, ListSkeleton } from '../ui/primitives'
 import { useToast } from '../ui/toastContext'
 
@@ -75,6 +76,7 @@ function CommentComposer({ view }: { view: CardView }) {
   const toast = useToast()
   const nav = useHsNav()
   const form = useForm<CommentInput>({ resolver: zodResolver(commentInputSchema), defaultValues: { text: '' } })
+  const textField = form.register('text')
   const restricted = view.item.audience.restricted
   const error = form.formState.errors.text?.message
   const submit = form.handleSubmit(async values => {
@@ -98,13 +100,18 @@ function CommentComposer({ view }: { view: CardView }) {
       ) : null}
       <div className="flex items-start gap-3">
         <Avatar identity={owner} size={36} />
-        <textarea
-          {...form.register('text')}
-          rows={2}
-          className="min-w-0 flex-1 resize-none bg-transparent py-[7px] text-[15px] leading-[22px] outline-none placeholder:text-[color:var(--cp-muted)]"
-          placeholder={t('homestation.comments.placeholder', 'Write a comment — it’s published as your own post')}
-          aria-label={t('homestation.comments.placeholder', 'Write a comment — it’s published as your own post')}
-        />
+        <div className="min-w-0 flex-1">
+          <textarea
+            {...textField}
+            rows={2}
+            className="block w-full resize-none bg-transparent py-[7px] text-[15px] leading-[22px] outline-none placeholder:text-[color:var(--cp-muted)]"
+            placeholder={t('homestation.comments.placeholder', 'Write a comment — it’s published as your own post')}
+            aria-label={t('homestation.comments.placeholder', 'Write a comment — it’s published as your own post')}
+          />
+          <div className="-ml-2">
+            <EmojiPickerButton field={textField} disabled={form.formState.isSubmitting} testId="hs-comment-emoji" />
+          </div>
+        </div>
         <button type="submit" className="hs-btn is-primary is-small mt-0.5" disabled={form.formState.isSubmitting} data-testid="hs-comment-submit">
           {t('homestation.comments.submit', 'Comment')}
         </button>

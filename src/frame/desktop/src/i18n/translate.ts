@@ -1,11 +1,7 @@
 import { dictionaries } from './dictionaries'
+import { currentTextLocale } from './language'
 
-const LOCALE_STORAGE_KEY = 'buckyos.prototype.locale.v1'
-
-/** Text outside React: in the locale the I18nProvider persisted, English as the fallback. */
+/** Text outside React follows the dictionary this document is displaying. */
 export function translateNow(key: string, fallback?: string): string {
-  let locale = 'en'
-  try { locale = window.localStorage.getItem(LOCALE_STORAGE_KEY) ?? 'en' } catch { /* no storage */ }
-  const table = (dictionaries as Record<string, Record<string, string>>)[locale] ?? dictionaries.en
-  return table[key] ?? dictionaries.en[key] ?? fallback ?? key
+  return dictionaries[currentTextLocale()][key] ?? dictionaries.en[key] ?? fallback ?? key
 }

@@ -1,6 +1,12 @@
 /* Text of the Settings app (the Zone Config page keeps its own in presentation.ts). */
 
 export const settingsEn: Record<string, string> = {
+  'settings.privacy.action.read': "read",
+  'settings.privacy.action.write': "write",
+  'settings.cluster.ipv6.address_only': "Address only",
+  'settings.cluster.ipv6.available': "Available",
+  'settings.cluster.ipv6.egress_ok': "Outbound connection available",
+  'settings.cluster.ipv6.unavailable': "Unavailable",
   'settings.appearance.desktop': 'Desktop',
   'settings.appearance.iconSize': 'Desktop icon size',
   'settings.appearance.iconSize.large': 'Large',
@@ -536,6 +542,12 @@ export const settingsEn: Record<string, string> = {
 }
 
 export const settingsZh: Record<string, string> = {
+  'settings.privacy.action.read': "读取",
+  'settings.privacy.action.write': "写入",
+  'settings.cluster.ipv6.address_only': "仅有地址",
+  'settings.cluster.ipv6.available': "可用",
+  'settings.cluster.ipv6.egress_ok': "可对外连接",
+  'settings.cluster.ipv6.unavailable': "不可用",
   'settings.appearance.desktop': '桌面',
   'settings.appearance.iconSize': '桌面图标大小',
   'settings.appearance.iconSize.large': '大',
@@ -600,7 +612,7 @@ export const settingsZh: Record<string, string> = {
   'settings.cluster.offline': '离线',
   'settings.cluster.online': '在线',
   'settings.cluster.overview': '集群概览',
-  'settings.cluster.ownerDID': 'Owner DID',
+  'settings.cluster.ownerDID': '所有者 DID',
   'settings.cluster.publicAddresses': '公网地址',
   'settings.cluster.role.device': '设备',
   'settings.cluster.role.gateway': '网关',
@@ -821,7 +833,7 @@ export const settingsZh: Record<string, string> = {
 
   'settings.runtimes.addDescription': '在 Linux 或 macOS 设备上用生成的 URL 启动 daemon。设备以当前系统用户身份运行，只有 daemon 运行时可用。它允许什么在这里确定后不再改变；到期或撤销后连接断开。',
   'settings.runtimes.adminOnly': '只有 Zone 管理员可以添加或撤销设备。',
-  'settings.runtimes.agent': 'Agent',
+  'settings.runtimes.agent': '智能体',
   'settings.runtimes.allows': '允许：{{allows}}',
   'settings.runtimes.assign': '分配给 Agent',
   'settings.runtimes.assignAction': '分配',
@@ -910,7 +922,7 @@ export const settingsZh: Record<string, string> = {
   'settings.privacy.access.readAppend': '读取和追加',
   'settings.privacy.access.readOnly': '只读',
   'settings.privacy.access.readWrite': '读写',
-  'settings.privacy.agent': 'Agent',
+  'settings.privacy.agent': '智能体',
   'settings.privacy.agentData': '数据保存在其应用的数据目录中',
   'settings.privacy.agentDisabled': '已停用',
   'settings.privacy.agentEnabled': '已启用',

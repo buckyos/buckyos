@@ -4,7 +4,7 @@ import { buckyos } from 'buckyos'
 import { SelectEmbedHost, originInZone, type SelectEmbedInit } from 'buckyos/app-frame'
 import { I18nProvider, useI18n } from '../../i18n/provider'
 import { PrototypeThemeProvider } from '../../theme/provider'
-import { supportedLocales, type SupportedLocale } from '../../models/ui'
+import { matchSupportedLocale, type SupportedLocale } from '../../models/ui'
 import { isMockRuntime } from '../../runtime'
 import { SelectDialog } from './SelectDialog'
 import { parseSelectDialogParams, type SelectDialogInput } from './schemas'
@@ -16,8 +16,7 @@ function acceptEmbedder(origin: string): boolean {
 }
 
 function toLocale(locale: string): SupportedLocale {
-  const exact = supportedLocales.find(l => l.toLowerCase() === locale.toLowerCase())
-  return exact ?? supportedLocales.find(l => l.split('-')[0] === locale.split('-')[0].toLowerCase()) ?? 'en'
+  return matchSupportedLocale(locale) ?? 'en'
 }
 
 // One request per document: the App creates the page for a single pick and removes it afterwards.
@@ -64,11 +63,16 @@ function Panel({ input, caller }: { input: SelectDialogInput; caller: string }) 
  * The system file picker alone, for a standalone App tab to frame over itself (`buckyos.sysdlg-embed`): no Desktop
  * shell. It browses with this origin's own session; the App only receives what the user confirmed.
  */
+function EmbedOnlyNotice() {
+  const { t } = useI18n()
+  return <p role="alert" className="p-6 text-sm">{t('sysdlg.select.embedOnly')}</p>
+}
+
 export function SelectEmbedApp() {
   const current = useSyncExternalStore(subscribe, () => view)
   // The App's page shows through around the dialog.
   useEffect(() => { document.documentElement.style.background = 'transparent'; document.body.style.background = 'transparent' }, [])
-  if (!host.parentOrigin) return <p role="alert" className="p-6 text-sm">This page only works inside an App.</p>
+  if (!host.parentOrigin) return <I18nProvider><EmbedOnlyNotice /></I18nProvider>
   if (!current) return null
   return (
     <PrototypeThemeProvider mode={current.init.theme}>

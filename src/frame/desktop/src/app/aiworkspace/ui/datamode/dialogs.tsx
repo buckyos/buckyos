@@ -6,6 +6,7 @@
 import { createElement, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { randomId } from '../../api/ids'
 import { describeError } from '../../api/session'
 import { DATA_ID, type EntityEnvelope, type Json } from '../../api/types'
 import { useStore, useUserState } from '../../state/hooks'
@@ -13,10 +14,11 @@ import { useAiwsText } from '../../useAiwsText'
 import { surfacesOf } from '../canvas/surfaceOps'
 import { useOverlayMounted } from '../shell/popover'
 import { usePhone, useShell } from '../shell/shellContext'
+import { bindContacts, CONTACT_MODE_LABEL, watchSourceRun, type ContactSyncMode } from '../sources/contacts'
 import { entityLabel, type NewDataKind } from '../sources/dataOps'
 import type { DataDialog } from './actions'
-import { FILTER_KEY, iconOf, nameOf, parseFilter, treeView, typeName } from './model'
-import { accepted, createData, createLinked, deleteData, moveTargets, moveToPlace, placeAmong, placeOnCanvas, rename, type MovePlace } from './ops'
+import { FILTER_KEY, iconOf, nameOf, parseFilter, pathText, treeView, typeName } from './model'
+import { accepted, createData, createLinked, deleteData, keysAt, moveTargets, moveToPlace, placeAmong, placeOnCanvas, rename, type MovePlace, type Place } from './ops'
 
 function Dialog({ label, testId, onClose, children, actions }: { label: string; testId: string; onClose: () => void; children: ReactNode; actions: ReactNode }) {
   const { t } = useAiwsText()
@@ -53,12 +55,74 @@ const KIND_LABEL: Record<NewDataKind, string> = {
 
 export function DataDialogs({ request, onClose, onCreated }: { request: DataDialog; onClose: () => void; onCreated: (id: string) => void }) {
   switch (request.kind) {
+    case 'contacts': return <ContactsDialog place={request.place} onClose={onClose} onCreated={onCreated} />
     case 'new': return <NewData request={request} onClose={onClose} onCreated={onCreated} />
     case 'rename': return <Rename entityId={request.entityId} onClose={onClose} />
     case 'move': return <MoveTo entityId={request.entityId} onClose={onClose} />
     case 'place': return <PlaceOnCanvas entityId={request.entityId} onClose={onClose} />
     case 'delete': return <DeleteData request={request} onClose={onClose} />
   }
+}
+
+export function ContactsDialog({ place, existing, onClose, onCreated }: { place?: Place; existing?: EntityEnvelope; onClose: () => void; onCreated?: (id: string) => void }) {
+  const { t } = useAiwsText()
+  const store = useStore()
+  const info = store.session.info()
+  const title = t('aiworkspace.datasource.contacts.title')
+  const [entityId] = useState(() => existing?.entity_id ?? randomId('s'))
+  const [requestKey, setRequestKey] = useState(() => randomId())
+  const [target] = useState(() => existing ? { expect_content_rev: existing.content_rev } : {
+    create: { parent_id: place!.parentId, order_key: keysAt(store, place!, 1)[0], name: title },
+  })
+  const [mode, setMode] = useState<ContactSyncMode>('auto')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const allowed = info.owner === true && store.session.status().kind === 'live' && (!place || store.outline.get(place.parentId)?.capabilities.includes('structure')) && (!existing || existing.capabilities.includes('update'))
+  const submit = async () => {
+    if (!allowed || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const reply = await bindContacts(store, entityId, mode, `${requestKey}-${mode}`, target)
+      const finished = reply.run_id ? watchSourceRun(store, reply.run_id, (run) => {
+        if (existing && (run.state === 'failed' || run.state === 'cancelled')) setRequestKey(randomId())
+      }) : Promise.resolve()
+      if (existing) {
+        await finished
+      } else {
+        void finished.catch((cause: unknown) => store.notify('error', t('aiworkspace.data.source.failed', { error: describeError(cause) }))).finally(() => store.versions.bump([`e:${entityId}`]))
+      }
+      await store.outline.reload()
+      store.versions.bump(['outline', `e:${entityId}`])
+      onCreated?.(entityId)
+      onClose()
+    } catch (cause) {
+      setError(describeError(cause))
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog label={existing ? t('aiworkspace.datasource.contacts.rebind') : title} testId="aiws-contacts-dialog" onClose={() => { if (!busy) onClose() }} actions={<>
+      <button type="button" disabled={busy} onClick={onClose}>{t('aiworkspace.common.cancel')}</button>
+      <button type="button" className="is-primary" disabled={busy || !allowed} onClick={() => void submit()} data-testid="aiws-contacts-submit">
+        {existing ? t('aiworkspace.datasource.contacts.rebind') : t('aiworkspace.data.tree.create')}
+      </button>
+    </>}>
+      <div className="aiws-dm-form">
+        <div>{t('aiworkspace.datasource.contacts.account', { owner: info.judged_as ?? info.principal ?? '—' })}</div>
+        <div>{t('aiworkspace.datasource.contacts.target', { workspace: info.title, path: pathText(store, existing?.entity_id ?? place!.parentId) })}</div>
+        <div>{t('aiworkspace.datasource.contacts.fields')}</div>
+        <p>{t('aiworkspace.datasource.contacts.sharing')}</p>
+        {existing && <p className="aiws-warning">{t('aiworkspace.datasource.contacts.replace')}</p>}
+        <label className="aiws-dm-field">{t('aiworkspace.datasource.contacts.mode')}
+          <select data-testid="aiws-contacts-mode" value={mode} disabled={busy} onChange={(event) => setMode(event.target.value as ContactSyncMode)}>
+            {(existing ? ['auto', 'manual'] as const : ['auto', 'manual', 'once'] as const).map((choice) => <option key={choice} value={choice}>{t(CONTACT_MODE_LABEL[choice])}</option>)}
+          </select>
+        </label>
+        {error && <div className="aiws-error" role="alert">{error}</div>}
+      </div>
+    </Dialog>
+  )
 }
 
 function NewData({ request, onClose, onCreated }: { request: Extract<DataDialog, { kind: 'new' }>; onClose: () => void; onCreated: (id: string) => void }) {
@@ -276,7 +340,7 @@ function PlaceOnCanvas({ entityId, onClose }: { entityId: string; onClose: () =>
   )
 }
 
-function DeleteData({ request, onClose }: { request: Extract<DataDialog, { kind: 'delete' }>; onClose: () => void }) {
+export function DeleteData({ request, onClose }: { request: Extract<DataDialog, { kind: 'delete' }>; onClose: () => void }) {
   const { t, list } = useAiwsText()
   const store = useStore()
   const entity = store.outline.get(request.entityId)

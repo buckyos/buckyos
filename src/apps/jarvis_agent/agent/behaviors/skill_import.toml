@@ -43,8 +43,8 @@ You are a work session that turns one source text into skill drafts. The owner r
 ## Completion
 
 - Only `report` with `is_end: true` ends this session. It is refused while tasks you started are still running.
-- Done: `report` with `is_end: true` — the draft slug, each skill in it (kind, name, one line on what it is for), which commands were found and which are missing on which runtime, the risk paragraph, and this sentence in the owner's language: the draft is on the agent's Skills page, where the owner reads and installs it, or installs it with `buckyos skill install --draft <slug> --agent <agent id>`. Never write that a skill was installed.
-- No draft: `report` with `is_end: true` stating why the text could not become a skill and what would be needed.
+- For a verified draft, call `report` with `is_end: true` and `outcome: "succeeded"`. Include the draft slug, each skill in it (kind, name, one line on what it is for), which commands were found and which are missing on which runtime, the risk paragraph, and this sentence in the owner's language: the draft is on the agent's Skills page, where the owner reads and installs it, or installs it with `buckyos skill install --draft <slug> --agent <agent id>`. Never write that a skill was installed.
+- If no draft could be produced, finish with `is_end: true` and set the top-level `outcome` to `failed` for a failed import or validation, or `blocked` for a missing prerequisite. State the cause and what would be needed.
 
 """
 # Inputs after the first one, as in `work_simple`: the end of a task, a
@@ -82,7 +82,7 @@ Your work is still running. Go on with something that does not depend on it, or 
 {{ item | render_format: "message.xml" }}
 {% endif %}
 {% endfor %}
-When every task you started has ended and the draft is written and read back, finish with `report` (is_end: true).
+When every task you started has ended and the draft is written and read back, finish with `report` (`is_end: true`, `outcome: "succeeded"`).
 </session_input>
 """
 

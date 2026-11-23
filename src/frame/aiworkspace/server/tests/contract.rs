@@ -156,7 +156,7 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     let entry_id = entry["entry"]["entry_id"].as_str().unwrap().to_string();
     s.call(None, "entry.describe", json!({ "entry_id": entry_id })).await;
     s.rpc("ws.list_entries", wsp(json!({}))).await;
-    s.call(Some("tok-bob"), "ws.join_entry", json!({ "entry_id": entry_id })).await;
+    s.call(Some("gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM"), "ws.join_entry", json!({ "entry_id": entry_id })).await;
     s.rpc("ws.close_entry", json!({ "entry_id": entry_id, "remove_members": true })).await;
     s.rpc("acl.delete_group", wsp(json!({ "group_id": "visitors" }))).await;
     let lock = s.rpc("lock.acquire", wsp(json!({ "entity_ids": ["t1"], "session_id": "s1" }))).await;
@@ -218,7 +218,10 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     let other = s.rpc("proc.start", wsp(json!({ "program": "wish.xllm@1", "idempotency_key": "w-c", "params": { "wish_id": "w1", "stage": "analyze", "execution": { "mode": "local" } } }))).await;
     s.rpc("proc.cancel", wsp(json!({ "run_id": other["run_id"] }))).await;
     // named Workspaces (控件机制 TODO G9) and the service clock (G16)
+    s.rpc("ws.lookup", json!({ "name": "contract" })).await;
     let named = s.rpc("ws.ensure", json!({ "name": "contract", "title": "契约" })).await;
+    s.rpc("ws.lookup", json!({ "name": "contract" })).await;
+    s.rpc("ws.select_name", json!({ "name": "contract", "workspace_id": named["workspace_id"] })).await;
     let again = s.rpc("ws.ensure", json!({ "name": "contract" })).await;
     assert_eq!((&named["created"], &again["created"], &again["workspace_id"]), (&json!(true), &json!(false), &named["workspace_id"]));
     s.rpc("ws.create", json!({ "title": "命名", "name": "contract-2" })).await;

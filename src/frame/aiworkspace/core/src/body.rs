@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// Version of the text projections: raised whenever a projection changes.
-pub const BODY_FORMAT_VERSION: u32 = 1;
+pub const BODY_FORMAT_VERSION: u32 = 2;
 pub const DEFAULT_MAX_BYTES: usize = 32 * 1024;
 pub const MAX_MAX_BYTES: usize = 256 * 1024;
 /// Text assets up to this size have their content as body.
@@ -320,7 +320,7 @@ impl<'a> Builder<'a> {
         self.dep(table);
         self.table_header(table)?;
         for r in self.ctx.refs_from(&table.entity_id)? {
-            if matches!(r.kind.as_str(), "value" | "body") && r.dst_workspace_id.is_empty() {
+            if matches!(r.kind.as_str(), "value" | "value_link" | "body") && r.dst_workspace_id.is_empty() {
                 if let Some(t) = self.ctx.entity(&r.dst_entity_id)? {
                     self.dep(&t);
                 }
@@ -346,6 +346,17 @@ impl<'a> Builder<'a> {
     }
 
     fn parts(&mut self, e: &EntityRow, d: &Desc, depth: usize) -> WsResult<Vec<Part>> {
+        let mut redacted;
+        let e = if e.type_id == TYPE_ANNOTATION && e.payload.contains_key("context")
+            && !crate::read::annotation_target_readable(self.ctx, self.access, &e.payload)?
+        {
+            self.deps.push(format!("{}:hidden-context", e.entity_id));
+            redacted = e.clone();
+            redacted.payload.remove("context");
+            &redacted
+        } else {
+            e
+        };
         if d.state == "fallback" {
             return Ok(Self::fallback(e));
         }
@@ -461,7 +472,9 @@ impl<'a> Builder<'a> {
             None => "Note".to_string(),
         };
         let mut out = vec![Part::text(head)];
-        if let Some(q) = e.payload.get("context").and_then(|c| c.get("quote")).and_then(Value::as_str) {
+        if let Some(q) = e.payload.get("context").and_then(|c| c.get("quote"))
+            .and_then(|q| q.get("exact").and_then(Value::as_str).or_else(|| q.as_str()))
+        {
             out.push(Part::text(format!("> {q}")));
         }
         out.push(Part::sel(json!({ "kind": "doc_key", "key": "body" }), e.payload.get("body").and_then(Value::as_str).unwrap_or("").to_string()));
@@ -697,7 +710,12 @@ impl<'a> Builder<'a> {
                     };
                     lines.push(format!("columns: {}", shown.join(", ")));
                     match crate::sqlview::cell_view(self.ctx, self.access, e, crate::sqlview::Projection::Display) {
-                        Ok(Some(v)) => lines.push(format!("sql: {}", v.sql)),
+                        Ok(Some(v)) => {
+                            lines.push(format!("sql: {}", v.sql));
+                            if !v.params.is_empty() {
+                                lines.push(format!("params: {}", Value::Array(v.params)));
+                            }
+                        }
                         Ok(None) => {}
                         Err(err) => lines.push(format!("view broken: {}", err.detail)),
                     }

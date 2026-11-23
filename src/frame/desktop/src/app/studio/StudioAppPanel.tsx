@@ -7,7 +7,7 @@ export function StudioAppPanel() {
   return (
     <div className="space-y-4">
       <PanelIntro
-        kicker="Manifest"
+        kicker={t('studio.manifest')}
         title={t('studio.title')}
         body={t('studio.body')}
       />
@@ -23,7 +23,7 @@ export function StudioAppPanel() {
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_16%,var(--cp-surface))] font-display text-sm font-semibold text-[color:var(--cp-accent)]">
                 {index + 1}
               </span>
-              <span className="shell-kicker">Rule</span>
+              <span className="shell-kicker">{t('studio.rule')}</span>
             </div>
             {t(key)}
           </div>

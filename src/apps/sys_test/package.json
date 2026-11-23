@@ -9,8 +9,11 @@
   "scripts": {
     "update:sdk": "pnpm --recursive --include-workspace-root update --no-save buckyos",
     "check": "deno check main.ts && pnpm --filter ./web exec tsc --noEmit",
-    "test": "node --test prepare.test.mjs && deno test --allow-env --allow-read --allow-write --allow-net=127.0.0.1 --allow-run=/bin/bash,deno xllm_selftest_test.ts static_web_test.ts bootstrap_test.ts",
+    "test": "node --test prepare.test.mjs && deno test --allow-env --allow-read --allow-write --allow-net=127.0.0.1 --allow-run=/bin/bash,deno xllm_selftest_test.ts static_web_test.ts bootstrap_test.ts resource_share_test.ts",
     "build:web": "pnpm --filter ./web run build",
     "build": "pnpm run update:sdk && pnpm run check && pnpm --filter ./web run build:bundle && node prepare.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5"
   }
 }

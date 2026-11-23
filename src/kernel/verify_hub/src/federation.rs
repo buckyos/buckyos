@@ -118,15 +118,17 @@ fn resolve_error(step: &str, error: impl std::fmt::Display) -> RPCErrors {
 #[async_trait]
 impl FederationPeer for NameFederationPeer {
     async fn canonical_host(&self, did: &DID) -> Result<String> {
-        let owner = name_client::resolve_owner_document(did)
+        let owner = buckyos_api::resolve_federation_owner(did)
             .await
             .map_err(|error| resolve_error("resolve OwnerDocument", error))?;
+        if &owner.id != did { return Err(resolve_error("OwnerDocument","DID mismatch")); }
         let zone_did = owner_canonical_zone(&owner);
         let encoded = name_client::resolve_did(&zone_did, Some(DidDocType::Zone))
             .await
             .map_err(|error| resolve_error("resolve ZoneDocument", error))?;
         let zone_document = ZoneDocument::decode(&encoded, None)
             .map_err(|error| resolve_error("decode ZoneDocument", error))?;
+        if zone_document.id != zone_did { return Err(resolve_error("ZoneDocument","DID mismatch")); }
         let host = zone_document_hostname(&zone_document)
             .trim_end_matches('.')
             .to_ascii_lowercase();

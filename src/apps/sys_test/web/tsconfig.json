@@ -4,6 +4,7 @@
   "compilerOptions": {
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "types": ["vite/client", "node"],
     "esModuleInterop": true,
     "target": "ESNext",
     "forceConsistentCasingInFileNames": true,

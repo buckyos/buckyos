@@ -18,11 +18,6 @@ export function guestPagePath(groupDid: string, sessionId?: string | null): stri
   return `${GUEST_PAGE_PATH}?${query}`
 }
 
-/** Where a visitor without a session signs in for this group: its Message Hub entry (contract §8.4). */
-export function guestEntryPath(groupDid: string): string {
-  return `/sso/entry?${new URLSearchParams({ service: 'msg-center', entry: groupDid })}`
-}
-
 export function isGroupDid(value: string | null | undefined): value is string {
   return !!value && /^did:[a-z0-9]+:[^\s/?#]+$/i.test(value)
 }
@@ -61,7 +56,9 @@ export function guestSessions(groupDid: string, items: readonly GroupSessionItem
  */
 export function guestEntryAllows(methods: EntryMethods | null, authMethod: AuthMethod | undefined): boolean {
   if (!methods) return false
-  return authMethod === 'did_federation' ? methods.did_login : methods.password || methods.self_register
+  if (authMethod === 'oauth') return methods.oauth === true
+  if (authMethod === 'did_federation' || authMethod === 'cross_zone_assertion') return methods.did_login
+  return ['password','exclusive_invite','app_access_token'].includes(authMethod ?? '') && (methods.password || methods.self_register)
 }
 
 /** `context_path` of the objects a Session message carries (msg-center `authorize_group_attachment`). */

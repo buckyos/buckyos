@@ -227,3 +227,42 @@ fn a_zone_source_may_name_the_sync_task_that_writes_it() {
     let unset = MemWorkspace::request(json!([{ "op": "entity.set_keys", "entity_id": "quotes", "keys": [{ "key": "source", "value": synced(out, json!({ "agent_id": "bot.example", "task_id": "quotes2" })), "expect": "any" }] }]));
     assert_eq!(ws.commit_with(&editor, &env, &unset).unwrap_err().to_json()["errors"][0]["code"], "PERMISSION_DENIED");
 }
+
+#[test]
+fn builtin_contacts_has_a_closed_descriptor_on_local_tables() {
+    let source = json!({"kind":"builtin","provider":"contacts","refresh":{"interval_s":900},
+        "def":{"meaning":"Owner contacts","primary_key":["did"]}});
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!([create("people","a",json!({"source":source}))]));
+    let e = ws.store.entity("people").unwrap().unwrap();
+    let data = &meta::meta(&ws.store, &full(), &e, None).unwrap()["data"];
+    assert_eq!(data["source"]["provider"], "contacts");
+    let mut outline = json!({});
+    aiworkspace_core::read::outline_extras(&mut outline, &e);
+    assert_eq!(outline["source"]["provider"], "contacts");
+    assert_eq!(data["state"], "pending");
+    assert_eq!(data["write"], "refresh");
+    let detach = json!([{"op":"entity.unset_keys","entity_id":"people","keys":[{"key":"source","expect":{"rev":e.key_rev("source")}}]}]);
+    assert!(detail(&ws.fail(detach)).contains("needs a successful refresh"));
+    let mut manual = source.clone();
+    manual.as_object_mut().unwrap().remove("refresh");
+    aiworkspace_core::types::check_source(&manual).unwrap();
+    for (key, value) in [("owner",json!("bob")), ("url",json!("https://example.com")), ("query",json!({})),
+        ("sync",json!({})), ("provider",json!("mail")), ("token",json!("ignored"))] {
+        let mut invalid = source.clone();
+        invalid[key] = value;
+        assert!(aiworkspace_core::types::check_source(&invalid).is_err());
+    }
+    for def in [json!({"meaning":"m","primary_key":["name"]}),json!({"meaning":"m","primary_key":["did"],"limit":1})] {
+        let mut invalid = source.clone();
+        invalid["def"] = def;
+        assert!(aiworkspace_core::types::check_source(&invalid).is_err());
+    }
+    for ty in [TYPE_RICHTEXT, TYPE_ASSET, TYPE_RECORD, TYPE_DIR] {
+        let mut op = create("invalid","b",json!({"source":source}));
+        op["type_id"] = json!(ty);
+        assert!(detail(&ws.fail(json!([op]))).contains("requires a local table"));
+    }
+    let invalid = create("remote","c",json!({"source":source,"data_mode":"url_query"}));
+    assert!(detail(&ws.fail(json!([invalid]))).contains("requires a local table"));
+}

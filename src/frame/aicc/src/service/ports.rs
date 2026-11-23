@@ -36,7 +36,8 @@ impl SettingsStore for SystemConfigSettingsStore {
         settings: &AiccSettings,
     ) -> Result<u64, RPCErrors> {
         let client = self.client(token);
-        let serialized = serde_json::to_string(settings).map_err(to_rpc_error)?;
+        let serialized = serde_json::to_string(&buckyos_api::StoredAiccSettings::V1(settings))
+            .map_err(to_rpc_error)?;
         let mut actions = HashMap::new();
         actions.insert(
             crate::settings::AICC_SETTINGS_KEY.to_string(),

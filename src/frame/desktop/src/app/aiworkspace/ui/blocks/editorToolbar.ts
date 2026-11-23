@@ -51,23 +51,36 @@ export function useEditorToolbar(owner: string, items: ToolbarItem[] | null): bo
   return sink !== null
 }
 
+export interface CanvasCaret { left: number; top: number; scrollLeft: number; scrollTop: number }
+
 /** An intent waiting for an Editor; `seq` tells a new request from one already handled. */
-export interface Intent { value: string; seq: number }
+export interface TableIntent {
+  action: 'edit' | 'rename' | 'insertRow' | 'insertColumn' | 'openRecord'
+  recordId?: string
+  rowIndex?: number
+  fieldId?: string
+  side?: 'before' | 'after'
+}
+export interface Intent { table?: TableIntent; value: string; seq: number; caretAt?: CanvasCaret }
 
 const intents = new Map<string, Intent>()
 const intentEmitter = new Emitter()
 let intentSeq = 0
 
 /** Ask the Editor of `key` (a Block id) to do `value` when it mounts, or now if it is mounted. */
-export function requestIntent(key: string, value: string) {
+export function requestIntent(key: string, value: string | CanvasCaret | TableIntent) {
   intentSeq += 1
-  intents.set(key, { value, seq: intentSeq })
+  intents.set(key, typeof value === 'string' ? { value, seq: intentSeq } : 'action' in value ? { value: 'table', table: value, seq: intentSeq } : { value: 'caret', caretAt: value, seq: intentSeq })
   intentEmitter.emit()
+}
+
+export function getIntent(key: string): Intent | undefined {
+  return intents.get(key)
 }
 
 /** The intent waiting for `key`; the receiver handles it once (by `seq`) and consumes it. */
 export function useIntent(key: string): Intent | undefined {
-  return useSyncExternalStore(intentEmitter.subscribe, () => (key ? intents.get(key) : undefined))
+  return useSyncExternalStore(intentEmitter.subscribe, () => (key ? getIntent(key) : undefined))
 }
 
 export function consumeIntent(key: string, intent: Intent) {
@@ -82,6 +95,7 @@ export class BlockMetaSink {
   private readonly metas = new Map<string, BlockMeta>()
   private readonly emitter = new Emitter()
   private version = 0
+  editorSize: { id: string; w: number; h: number } | null = null
   readonly subscribe = this.emitter.subscribe
   snapshot = () => this.version
   get(id: string): BlockMeta | undefined { return this.metas.get(id) }
@@ -89,6 +103,24 @@ export class BlockMetaSink {
     if (!meta && !this.metas.has(id)) return
     if (meta) this.metas.set(id, meta)
     else this.metas.delete(id)
+    this.changed()
+  }
+  observeEditorSize(id: string, element: HTMLElement) {
+    const observer = new ResizeObserver(([entry]) => {
+      const { inlineSize, blockSize } = entry.borderBoxSize[0]
+      this.editorSize = { id, w: inlineSize, h: blockSize }
+      this.changed()
+    })
+    observer.observe(element, { box: 'border-box' })
+    return () => {
+      observer.disconnect()
+      if (this.editorSize?.id === id) {
+        this.editorSize = null
+        this.changed()
+      }
+    }
+  }
+  private changed() {
     this.version += 1
     this.emitter.emit()
   }

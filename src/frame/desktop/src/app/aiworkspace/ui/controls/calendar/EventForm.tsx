@@ -8,7 +8,7 @@
 import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { describeRRule, formatRRule, parseRRule, recurrencePresets, type RRule } from 'buckyos'
-import { aiwsText } from '../../../i18n'
+import { aiwsText, sdkLocale } from '../../../i18n'
 import { useAiwsText } from '../../../useAiwsText'
 import { CALENDAR_COLORS, dateOfDay, dayOfDate, localDayOf, localInstant, minuteOf } from './model'
 
@@ -31,7 +31,8 @@ const pad = (n: number) => String(n).padStart(2, '0')
 export const hhmm = (min: number) => `${pad(Math.floor(min / 60) % 24)}:${pad(min % 60)}`
 const parseHHMM = (s: string) => { const m = /^(\d{1,2}):(\d{2})$/.exec(s); return m ? Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]) : null }
 
-export const locale = (): 'zh' | 'en' => (aiwsText().locale === 'zh-CN' ? 'zh' : 'en')
+/** The language dates are formatted in (the text's, for Intl). */
+export const locale = (): string => aiwsText().intl
 
 /** A draft's times as instants (timed) or dates (all-day). */
 export function draftTimes(d: EventDraft): { allDay: true; startDate: string; endDate: string } | { allDay: false; start: string; end: string } {
@@ -57,9 +58,9 @@ const REMINDER_CHOICES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080]
 export function reminderLabel(min: number): string {
   const { t } = aiwsText()
   if (min === 0) return t('aiworkspace.calendar.reminder.atStart')
-  if (min % 10080 === 0) return t('aiworkspace.calendar.reminder.weeks', { n: min / 10080 })
-  if (min % 1440 === 0) return t('aiworkspace.calendar.reminder.days', { n: min / 1440 })
-  if (min % 60 === 0) return t('aiworkspace.calendar.reminder.hours', { n: min / 60 })
+  if (min % 10080 === 0) return t('aiworkspace.calendar.reminder.weeks', { count: min / 10080 })
+  if (min % 1440 === 0) return t('aiworkspace.calendar.reminder.days', { count: min / 1440 })
+  if (min % 60 === 0) return t('aiworkspace.calendar.reminder.hours', { count: min / 60 })
   return t('aiworkspace.calendar.reminder.minutes', { n: min })
 }
 
@@ -68,13 +69,13 @@ export function EventForm({ initial, calendars, isNew, disabled, onSave, onCance
   initial: EventDraft; calendars: { id: string; label: string; color: string }[]; isNew: boolean; disabled: string | null
   onSave: (draft: EventDraft) => void; onCancel: () => void
 }) {
-  const { t } = useAiwsText()
+  const { intl, t } = useAiwsText()
   const [d, setD] = useState(initial)
   const set = (patch: Partial<EventDraft>) => setD((x) => ({ ...x, ...patch }))
   const [custom, setCustom] = useState(false)
-  const presets = useMemo(() => recurrencePresets(d.startDate, locale()), [d.startDate])
+  const presets = useMemo(() => recurrencePresets(d.startDate, sdkLocale(intl)), [d.startDate, intl])
   const preset = presets.find((p) => p.rrule === d.rrule)
-  const ruleText = useMemo(() => { try { return d.rrule ? describeRRule(parseRRule(d.rrule), locale()) : null } catch { return null } }, [d.rrule])
+  const ruleText = useMemo(() => { try { return d.rrule ? describeRRule(parseRRule(d.rrule), sdkLocale(intl)) : null } catch { return null } }, [d.rrule, intl])
   const valid = d.title.trim() !== '' && (d.allDay ? d.endDate >= d.startDate : `${d.endDate}${hhmm(d.endMin)}` >= `${d.startDate}${hhmm(d.startMin)}`)
   return (
     <form className="aiws-ctl-form" data-testid="aiws-cal-form" onSubmit={(e) => { e.preventDefault(); if (valid && !disabled) onSave(d) }}>
@@ -285,7 +286,7 @@ export function MiniMonth({ value, today, weekStart, onPick }: { value: string; 
   const y = +month.slice(0, 4), m = +month.slice(5, 7)
   const first = Math.floor(Date.UTC(y, m - 1, 1) / 86_400_000)
   const start = first - ((((first + 3) % 7) + 7) % 7 - weekStart + 7) % 7
-  const title = new Intl.DateTimeFormat(locale() === 'zh' ? 'zh-CN' : 'en', { year: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(first * 86_400_000))
+  const title = new Intl.DateTimeFormat(locale(), { year: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(first * 86_400_000))
   const shift = (n: number) => { const d = new Date(Date.UTC(y, m - 1 + n, 1)); setMonth(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`) }
   return (
     <div className="aiws-cal-mini" data-testid="aiws-cal-mini">

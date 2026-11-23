@@ -2,13 +2,14 @@ import { attachmentKindOfFile } from '../api/fileKind'
 import { releaseAttachmentImport } from '../api/transport'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { CircleAlert, FileUp, FolderUp, Image, Link2, Loader2, Mic, RotateCw, Video, X } from 'lucide-react'
-import { useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { type FormEvent, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
 import { linkCardSchema, publishInputSchema, type AttachmentInput, type PublishInput } from '../datamodel/inputs'
 import type { HomeStationStore } from '../store/types'
 import { useHsNav } from '../navContext'
 import { useHomeStationStore, useStoreSelector } from '../store/context'
+import { EmojiPickerButton } from '../ui/EmojiPickerButton'
 import { useToast } from '../ui/toastContext'
 import { Avatar } from '../ui/primitives'
 import { AudiencePicker } from './AudiencePicker'
@@ -59,6 +60,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
     },
   })
   const [sharedId, setSharedId] = useState(prefill?.shareId ?? null)
+  const textField = form.register('text')
   const attachments = useWatch({ control: form.control, name: 'attachments' })
   const link = useWatch({ control: form.control, name: 'link' })
   const text = useWatch({ control: form.control, name: 'text' })
@@ -117,14 +119,15 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
     onPublished?.()
   }
 
-  const submit = form.handleSubmit(async values => {
+  const publish = async (values: PublishInput) => {
     const task = await store.publish({ ...values, zoneFeed: values.audience.kind === 'public' && !!values.zoneFeed }, publishKey)
     if (task.stage === 'failed') {
       setFailed(true)
       return
     }
     finish(task)
-  })
+  }
+  const submit = (event: FormEvent<HTMLFormElement>) => form.handleSubmit(publish)(event)
 
   const retry = async () => {
     const task = await store.retryPublish(publishKey)
@@ -156,7 +159,8 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
   )
 
   const tools = (
-    <div className="-ml-2 flex items-center gap-1">
+    <div className="-ml-2 flex flex-wrap items-center gap-1">
+      <EmojiPickerButton field={textField} disabled={busy} testId={`${idPrefix}-emoji`} />
       <button type="button" className="hs-icon-btn" title={t('homestation.publish.addMedia', 'Add photos or video')} aria-label={t('homestation.publish.addMedia', 'Add photos or video')} onClick={() => fileRef.current?.click()}>
         <Image size={18} />
       </button>
@@ -259,7 +263,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
       <form onSubmit={submit} data-testid={`${idPrefix}-form`}>
         <div className="rounded-xl px-3 pt-2" style={{ border: '1px solid var(--hs-line-strong)' }}>
           <textarea
-            {...form.register('text')}
+            {...textField}
             rows={3}
             className="w-full resize-none bg-transparent py-1 text-[15px] leading-[22px] outline-none placeholder:text-[color:var(--cp-muted)]"
             placeholder={t('homestation.publish.placeholder', 'What’s new?')}
@@ -268,9 +272,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
           />
           {extras}
           {fileInputs}
-          <div className="flex items-center gap-2 py-2">
-            <div className="min-w-0 flex-1 overflow-hidden">{tools}</div>
-          </div>
+          <div className="py-2">{tools}</div>
         </div>
         <div className="mt-3">{audienceBlock}</div>
         <div className="mt-3 flex items-center justify-end gap-3">
@@ -289,7 +291,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
         <div className="min-w-0 flex-1">
           <p className="text-[15px] font-semibold leading-[22px]">{owner.name}</p>
           <textarea
-            {...form.register('text')}
+            {...textField}
             rows={5}
             className="w-full resize-none bg-transparent text-[15px] leading-[22px] outline-none placeholder:text-[color:var(--cp-muted)]"
             style={{ minHeight: 110 }}

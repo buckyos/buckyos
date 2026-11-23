@@ -2,7 +2,7 @@
 //! and the compiler that turns a saved table view (filter, sorts, group, manual order, fields) into one SELECT on it.
 //!
 //! The logical table is a temporary view over the shared `table_records` (one JSON of values per record), built per
-//! query connection for the tables a caller may read: system columns `_id` (record id), `_rev`, `_body` (the path of
+//! query connection for the tables a caller may read: system columns `_id` (record id), `_created_seq`, `_rev`, `_body` (the path of
 //! the record's body), `_record` (the record as `doc.read` gives it: `{ record_id, rev, values, revs, meta, body_ref? }`,
 //! live fields only), and per live field a display column `"<name>"` (what `body` shows: a select's label, a
 //! reference's path, a currency's amount) and the stored value `"<name>#raw"` (option ids, the reference object, the
@@ -24,7 +24,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 /// System columns of every logical table.
-pub const SYSTEM_COLUMNS: &[&str] = &["_id", "_rev", "_body", "_record"];
+pub const SYSTEM_COLUMNS: &[&str] = &["_id", "_rev", "_created_seq", "_body", "_record"];
 
 /// `"…"`: an SQL identifier.
 pub fn ident(name: &str) -> String {
@@ -95,17 +95,17 @@ fn display_expr(def: &FieldDef, refs: &str) -> String {
         }
         FieldType::Json => {
             let f = lit(&format!("{}.\"$formula\"", json_path(&def.field_id)));
-            format!("CASE WHEN {t} = 'object' AND json_type(values_json, {f}) IS NULL THEN {x} END")
+            format!("CASE WHEN {t} IN ('object','array') AND json_type(values_json, {f}) IS NULL THEN {x} END")
         }
     }
 }
 
 /// `entity_id → text` of what the records of `table` point at (`value` references for display, `body` references for
 /// `_body`): readable targets by their path, the rest as `~<id>`.
-fn target_labels(ctx: &dyn ReadCtx, access: &Access, table: &str, kind: &str) -> WsResult<String> {
+fn target_labels(ctx: &dyn ReadCtx, access: &Access, table: &str, kinds: &[&str]) -> WsResult<String> {
     let mut m = Map::new();
     for r in ctx.refs_from(table)? {
-        if r.kind != kind || !r.dst_workspace_id.is_empty() || r.dst_entity_id.is_empty() || m.contains_key(&r.dst_entity_id) {
+        if !kinds.contains(&r.kind.as_str()) || !r.dst_workspace_id.is_empty() || r.dst_entity_id.is_empty() || m.contains_key(&r.dst_entity_id) {
             continue;
         }
         let label = match ctx.entity(&r.dst_entity_id)? {
@@ -121,12 +121,13 @@ fn target_labels(ctx: &dyn ReadCtx, access: &Access, table: &str, kind: &str) ->
 fn logical_select(ctx: &dyn ReadCtx, access: &Access, table: &EntityRow) -> WsResult<String> {
     let fields = live_fields(ctx, &table.entity_id)?;
     let cols = field_columns(&fields);
-    let refs = if cols.iter().any(|c| c.def.ty == FieldType::ObjectRef) { target_labels(ctx, access, &table.entity_id, "value")? } else { "{}".into() };
-    let bodies = target_labels(ctx, access, &table.entity_id, "body")?;
+    let refs = if cols.iter().any(|c| c.def.ty == FieldType::ObjectRef) { target_labels(ctx, access, &table.entity_id, &["value", "value_link"])? } else { "{}".into() };
+    let bodies = target_labels(ctx, access, &table.entity_id, &["body"])?;
     let ids = lit(&Value::Array(cols.iter().map(|c| json!(c.def.field_id)).collect()).to_string());
     let mut select = vec![
         "record_id AS \"_id\"".to_string(),
         "rev AS \"_rev\"".to_string(),
+        "created_seq AS \"_created_seq\"".to_string(),
         format!("CASE WHEN body_entity_id IS NOT NULL THEN aiws_label(body_entity_id, {}) END AS \"_body\"", lit(&bodies)),
     ];
     for c in &cols {
@@ -139,7 +140,7 @@ fn logical_select(ctx: &dyn ReadCtx, access: &Access, table: &EntityRow) -> WsRe
         }
     }
     select.push(format!(
-        "json_object('record_id', record_id, 'rev', rev, 'values', json(aiws_pick(values_json, {ids})), 'revs', json(aiws_pick(revs_json, {ids})), \
+        "json_object('record_id', record_id, 'created_seq', created_seq, 'rev', rev, 'values', json(aiws_pick(values_json, {ids})), 'revs', json(aiws_pick(revs_json, {ids})), \
          'meta', json(aiws_pick(meta_json, {ids})), 'body_ref', CASE WHEN body_entity_id IS NOT NULL THEN json_object('entity_id', body_entity_id, 'version', json_object('mode', 'live_head')) END) AS \"_record\""
     ));
     Ok(format!("SELECT {} FROM main.table_records WHERE source_id = {} AND deleted_seq IS NULL", select.join(", "), lit(&table.entity_id)))
@@ -182,7 +183,7 @@ pub struct ViewDef {
     pub sorts: Vec<Value>,
     pub fields: Option<Vec<String>>,
     pub group: Option<String>,
-    pub manual_order: Option<JsonMap>,
+    pub row_order: Option<JsonMap>,
 }
 
 impl ViewDef {
@@ -193,18 +194,18 @@ impl ViewDef {
             sorts: cell.payload.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default(),
             fields: cell.payload.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(|f| f["field_id"].as_str()).map(str::to_string).collect()),
             group: cell.payload.get("group").and_then(|g| g["field_id"].as_str()).map(str::to_string),
-            manual_order: cell.payload.get("manual_order").and_then(Value::as_object).cloned(),
+            row_order: cell.payload.get("row_order").and_then(Value::as_object).cloned(),
         }
     }
 
-    /// The view parameters of a request (`filter`, `sorts`, `fields`, `group`, `manual_order`).
+    /// The view parameters of a request (`filter`, `sorts`, `fields`, `group`, `row_order`).
     pub fn of_params(p: &Value) -> ViewDef {
         ViewDef {
             filter: p.get("filter").filter(|f| !f.is_null()).cloned(),
             sorts: p.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default(),
             fields: p.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
             group: p.get("group").and_then(Value::as_str).map(str::to_string),
-            manual_order: p.get("manual_order").and_then(Value::as_object).cloned(),
+            row_order: p.get("row_order").and_then(Value::as_object).cloned(),
         }
     }
 }
@@ -225,6 +226,7 @@ pub struct CompiledView {
     pub sql: String,
     /// `SELECT count(*)` of the rows.
     pub count_sql: String,
+    pub params: Vec<Value>,
     /// `SELECT key, count` per value of the group field, in the evaluator's group order (`key` ascending).
     pub group_sql: Option<String>,
     /// Dangling `fields` / `sorts` / `group` entries left out (as `run_query` reports them).
@@ -397,14 +399,22 @@ pub fn compile_view(table: &str, fields: &[FieldRow], view: &ViewDef, projection
             None => diagnostics.push(json!({ "key": "sorts", "code": "FIELD_DELETED", "field_id": fid })),
         }
     }
+    let mut params = Vec::new();
+    let mut positions = String::new();
     if order.is_empty() {
-        if let Some(m) = view.manual_order.as_ref().filter(|m| !m.is_empty()) {
-            let cases: Vec<String> = m.iter().filter_map(|(id, k)| k.as_str().map(|k| format!("WHEN {} THEN {}", lit(id), lit(k)))).collect();
-            if !cases.is_empty() {
-                let key = format!("CASE \"_id\" {} END", cases.join(" "));
-                order.push(format!("({key} IS NULL)"));
-                order.push(key);
-            }
+        if let Some(m) = view.row_order.as_ref().filter(|m| !m.is_empty()) {
+            params.push(json!(m));
+            positions = format!(
+                r#"WITH "@row_positions" AS MATERIALIZED (
+                    SELECT j.key AS rid, CASE WHEN a._created_seq IS NULL THEN j.value
+                        ELSE printf('%016x', a._created_seq) || substr(j.value, 17) END AS position
+                    FROM json_each(?) j LEFT JOIN {table} a ON substr(j.value, 1, 16) != '0000000000000000'
+                        AND a._id = substr(j.value, 18, instr(substr(j.value, 18), '!') - 1)
+                ) "#
+            );
+            order.push(r#"COALESCE((SELECT position FROM "@row_positions" p WHERE p.rid = v._id), printf('%016x!%s!h', v._created_seq, v._id))"#.into());
+        } else {
+            order.push("\"_created_seq\"".into());
         }
     }
     order.push("\"_id\"".into());
@@ -432,7 +442,7 @@ pub fn compile_view(table: &str, fields: &[FieldRow], view: &ViewDef, projection
         (Projection::Display, None) => std::iter::once("\"_id\"".to_string()).chain(cols.iter().map(|c| ident(&c.display))).collect::<Vec<_>>().join(", "),
     };
     let where_clause = filter.as_ref().map(|f| format!(" WHERE {}", where_sql(f, &by_id))).unwrap_or_default();
-    let sql = format!("SELECT {select} FROM {table}{where_clause} ORDER BY {}", order.join(", "));
+    let sql = format!("{positions}SELECT {select} FROM {table} AS v{where_clause} ORDER BY {}", order.join(", "));
     let count_sql = format!("SELECT count(*) FROM {table}{where_clause}");
     let group_sql = match &view.group {
         Some(g) => match by_id.get(g) {
@@ -457,7 +467,7 @@ pub fn compile_view(table: &str, fields: &[FieldRow], view: &ViewDef, projection
         },
         None => None,
     };
-    Ok(CompiledView { sql, count_sql, group_sql, diagnostics })
+    Ok(CompiledView { sql, params, count_sql, group_sql, diagnostics })
 }
 
 /// A table view Block compiled over its table's path (`meta.shows.view_sql`): what the Block shows, as an Agent may
@@ -483,6 +493,9 @@ pub fn describe_cell_view(ctx: &dyn ReadCtx, access: &Access, cell: &EntityRow, 
     match cell_view(ctx, access, cell, Projection::Display) {
         Ok(Some(v)) => {
             into["view_sql"] = json!(v.sql);
+            if !v.params.is_empty() {
+                into["view_params"] = json!(v.params);
+            }
             into["view_count_sql"] = json!(v.count_sql);
             // the Block shows the first `row_limit` rows of what the SQL gives (B7-3)
             if let Some(n) = cell.payload.get("row_limit").filter(|n| n.is_u64()) {

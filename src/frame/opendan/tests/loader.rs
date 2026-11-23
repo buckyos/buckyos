@@ -602,7 +602,7 @@ async fn registered_sessions_are_hosted_and_recovered() {
     assert_eq!(before.state().unwrap().run_state, RunState::Created);
 
     // A work session ends with its explicit final report.
-    let llm = Llm::new(|_, _| r#"CALL:report {"report": "done", "is_end": true}"#.into());
+    let llm = Llm::new(|_, _| r#"CALL:report {"report": "done", "is_end": true, "outcome": "succeeded"}"#.into());
     let loader = w.start(llm.clone()).await;
     until("the work left unfinished is interrupted", || {
         before.state().is_ok_and(|s| s.paused.as_ref().is_some_and(|p| p.source == PauseSource::Interrupted))
@@ -1630,7 +1630,7 @@ async fn a_sub_session_reports_through_its_ui_parent() {
         if u.contains("there are 3 files") {
             "the work session says: 3 files".to_string()
         } else if u.contains("count the files") {
-            r#"CALL:report {"report": "there are 3 files", "is_end": true}"#.to_string()
+            r#"CALL:report {"report": "there are 3 files", "is_end": true, "outcome": "succeeded"}"#.to_string()
         } else {
             "on it".to_string()
         }
@@ -1811,7 +1811,10 @@ async fn the_jarvis_package_loads_and_answers() {
     assert!(system.contains("Your name is jarvis"), "{system}");
     assert!(!system.contains("You are Jarvis"), "the template does not name the instance: {system}");
     assert!(system.contains("This is a one-to-one chat with your owner (bob, DID did:bns:bob)"), "{system}");
-    assert!(system.contains("## Commands\nRun these through `shell`"), "the cmd_skill is frozen: {system}");
+    let (_, commands) = system.split_once("## Commands\n").expect("the frozen cmd_skill is in the prompt");
+    for action in ["xcall owner.cal add --params", "xcall owner.cal list --params"] {
+        assert!(commands.contains(action), "missing calendar command: {action}");
+    }
     assert!(!system.contains("requires: an OpenDAN UI session"), "front matter is not part of the manual: {system}");
     assert!(!system.contains("<<"), "{system}");
     let mut tools = tools.lock().unwrap().clone();
@@ -1925,7 +1928,7 @@ async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
     let captured = requests.clone();
     let llm = Llm::new(move |req, _| {
         if system_text(req).contains("You are a work session for one bounded task") {
-            return r#"REPORT:{"report":"已完成 PR #667 的审查，发现 1 项 P2（中等）问题：创建响应丢失时清理逻辑会遗留临时账户。","is_end":true}"#
+            return r#"REPORT:{"report":"已完成 PR #667 的审查，发现 1 项 P2（中等）问题：创建响应丢失时清理逻辑会遗留临时账户。","is_end":true,"outcome":"succeeded"}"#
                 .to_string();
         }
         let mut all = captured.lock().unwrap();
@@ -2419,7 +2422,7 @@ async fn sub_sessions_are_child_tasks_of_the_turn_that_created_them() {
             }
             "two workers started".to_string()
         } else if u.contains("part ") {
-            r#"CALL:report {"report": "part done", "is_end": true}"#.to_string()
+            r#"CALL:report {"report": "part done", "is_end": true, "outcome": "succeeded"}"#.to_string()
         } else {
             "noted".to_string()
         }
@@ -2894,7 +2897,7 @@ async fn the_agents_browser_is_served_over_krpc() {
         0 => "TOOL:echo \"rpc=$OPENDAN_BROWSER_RPC session=$OPENDAN_SESSION_ID\"".to_string(),
         _ => {
             *told.lock().unwrap() = format!("{:?}", req.messages);
-            r#"CALL:report {"report": "done", "is_end": true}"#.to_string()
+            r#"CALL:report {"report": "done", "is_end": true, "outcome": "succeeded"}"#.to_string()
         }
     });
     let loader = Loader::start(w.env(llm, port).await).await.unwrap();

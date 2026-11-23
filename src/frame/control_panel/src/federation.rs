@@ -50,6 +50,9 @@ pub(crate) struct PendingDidLogin {
     redirect_uri: String,
     target: ResolvedSsoAuthTarget,
     created_at: u64,
+    invitation: Option<(String,String)>,
+    outbound: Option<String>,
+    browser: String,
 }
 
 /// The name-service facts DID login relies on.
@@ -63,7 +66,7 @@ pub(crate) trait ZoneDirectory: Send + Sync {
 
 pub(crate) struct NameServiceDirectory;
 
-async fn resolve(did: &DID, doc_type: DidDocType) -> Result<name_lib::EncodedDocument, RPCErrors> {
+pub(super) async fn resolve(did: &DID, doc_type: DidDocType) -> Result<name_lib::EncodedDocument, RPCErrors> {
     tokio::time::timeout(
         RESOLVE_TIMEOUT,
         name_client::resolve_did(did, Some(doc_type)),
@@ -76,11 +79,8 @@ async fn resolve(did: &DID, doc_type: DidDocType) -> Result<name_lib::EncodedDoc
 #[async_trait]
 impl ZoneDirectory for NameServiceDirectory {
     async fn canonical_host(&self, did: &DID) -> Result<String, RPCErrors> {
-        let owner = OwnerDocument::decode(&resolve(did, DidDocType::Owner).await?, None).map_err(
-            |error| {
-                RPCErrors::ReasonError(format!("owner document of {}: {error}", did.to_string()))
-            },
-        )?;
+        let owner = buckyos_api::resolve_federation_owner(did).await
+            .map_err(|err| RPCErrors::ReasonError(format!("resolve {did:?}: {err}")))?;
         self.zone_host(&owner_canonical_zone(&owner)).await
     }
 
@@ -89,6 +89,11 @@ impl ZoneDirectory for NameServiceDirectory {
             .map_err(|error| {
                 RPCErrors::ReasonError(format!("zone document {}: {error}", zone_did.to_string()))
             })?;
+        if &zone.id != zone_did {
+            return Err(RPCErrors::InvalidToken(
+                "ZoneDocument does not match requested Zone".into(),
+            ));
+        }
         let host = zone_document_hostname(&zone)
             .trim()
             .trim_end_matches('.')
@@ -138,7 +143,7 @@ fn plan_did_login(
         nonce,
         redirect_uri,
         target,
-        created_at: now,
+        created_at: now, invitation: None, outbound: None, browser: random_token(32),
     };
     Ok((state, pending, url.to_string()))
 }
@@ -157,13 +162,31 @@ fn conflicting_subject(held: &[String], issued: &str) -> bool {
 /// known. A stale state, a missing code or a callback on another origin read
 /// `authorization_unavailable`; a browser signed in as someone else reads
 /// `identity_conflict`. No cookie is set.
-fn did_error_location(reason: &str, redirect_url: Option<&str>) -> String {
+pub(crate) fn did_error_location(reason: &str, redirect_url: Option<&str>) -> String {
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     query.append_pair("did_error", reason);
     if let Some(redirect_url) = redirect_url {
         query.append_pair("redirect_url", redirect_url);
     }
     format!("/login?{}", query.finish())
+}
+
+/// Keep a verified invitation attempt on its own page so retry starts the same purpose.
+pub(crate) fn callback_error_location(reason: &str, redirect_url: &str, invitation: bool) -> String {
+    if invitation {
+        if let Ok(mut url) = url::Url::parse(redirect_url) {
+            let error = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("did_error", reason)
+                .finish();
+            let mut query: Vec<_> = url.query().into_iter().flat_map(|raw| raw.split('&'))
+                .filter(|pair| !url::form_urlencoded::parse(pair.as_bytes()).any(|(key, _)| key == "did_error"))
+                .collect();
+            query.push(&error);
+            url.set_query(Some(&query.join("&")));
+            return url.into();
+        }
+    }
+    did_error_location(reason, Some(redirect_url))
 }
 
 /// `redirect_uri` must be the DID callback on the host `client_zone` publishes;
@@ -210,7 +233,7 @@ struct FederationConsent {
 type FederationConsents = BTreeMap<String, FederationConsent>;
 
 fn consents_key(user_id: &str) -> String {
-    format!("users/{user_id}/federation_consents")
+    format!("users/{user_id}/federation_app_consents")
 }
 
 /// The canonical account as the consent checks see it.
@@ -300,18 +323,20 @@ fn federation_check(
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
-struct FederationParams {
+pub(super) struct FederationParams {
     #[serde(default)]
-    did: String,
-    client_zone: String,
-    redirect_uri: String,
-    state: String,
+    pub(super) did: String,
+    pub(super) client_zone: String,
+    pub(super) redirect_uri: String,
+    pub(super) state: String,
     #[serde(default)]
-    nonce: String,
+    pub(super) nonce: String,
     #[serde(default)]
-    code_challenge: String,
+    pub(super) code_challenge: String,
     #[serde(default)]
-    remember: bool,
+    pub(super) remember: bool,
+    #[serde(default)]
+    pub(super) app_context: String,
 }
 
 impl FederationParams {
@@ -344,6 +369,7 @@ enum FederationResult {
     Consent {
         client_zone: String,
         client_host: String,
+        app_host: String,
         profile: FederationProfile,
         already_granted: bool,
     },
@@ -358,6 +384,8 @@ enum FederationResult {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DidBeginParams {
+    purpose: Option<String>,
+    invite_id: Option<String>,
     did: String,
     redirect_url: String,
 }
@@ -374,6 +402,8 @@ fn success(value: impl Serialize, seq: u64) -> Result<RPCResponse, RPCErrors> {
 /// for describe / approve only.
 struct FederationContext {
     account: Option<FederationAccount>,
+    app: AuthTarget,
+    app_host: String,
     client_zone: DID,
     client_host: String,
     redirect_uri: url::Url,
@@ -411,11 +441,6 @@ impl ControlPanelServer {
         store_pending(&mut cache, state, pending, buckyos_get_unix_timestamp())
     }
 
-    async fn take_pending_did_login(&self, state: &str) -> Option<PendingDidLogin> {
-        let mut cache = self.pending_did_logins.lock().await;
-        take_pending(&mut cache, state, buckyos_get_unix_timestamp())
-    }
-
     /// `auth.did.begin {did, redirect_url}` (public) → `{status:"redirect", url}` |
     /// `{status:"denied", denial}` | `{status:"canonical_unavailable"}`. `redirect_url`
     /// is the page on this Zone's root to return to after the login.
@@ -433,6 +458,11 @@ impl ControlPanelServer {
                 },
                 req.seq,
             );
+        }
+        if buckyos_api::external_source_for_did(&settings, params.did.trim()).is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "Choose the enabled OAuth source for this identity".into(),
+            ));
         }
         let did = DID::from_str(params.did.trim())
             .map_err(|error| RPCErrors::ParseRequestError(format!("invalid did: {error}")))?;
@@ -461,7 +491,7 @@ impl ControlPanelServer {
                 return success(DidBeginResult::CanonicalUnavailable, req.seq);
             }
         };
-        let (state, pending, url) = plan_did_login(
+        let (state, mut pending, url) = plan_did_login(
             &did,
             &canonical_host,
             &runtime.zone_id,
@@ -470,6 +500,78 @@ impl ControlPanelServer {
             settings.dev_federation_http,
             buckyos_get_unix_timestamp(),
         )?;
+        let return_url = url::Url::parse(&pending.target.canonical_redirect_url)
+            .map_err(|_| RPCErrors::ParseRequestError("invalid return URL".into()))?;
+        let (app, app_host) = match (params.purpose.as_deref(), params.invite_id.as_deref()) {
+            (Some("share"), Some(id)) if return_url.path() == format!("/sso/share/{id}") => {
+                let share =
+                    crate::resource_share::load_share(&ZoneKv::connect().await?, id).await?;
+                if matches!(&share.audience, buckyos_api::ShareAudience::Directed { did: recipient } if recipient != &pending.did)
+                {
+                    return Err(
+                        AccessDenial::new(DenyReason::ResourceGrantMissing).into_rpc_error()
+                    );
+                }
+                let resolved = Self::resolve_sso_auth_target(
+                    &share.target_url,
+                    &zone_host,
+                    !runtime.force_https,
+                    runtime.node_gateway_port,
+                )?;
+                if resolved.auth_target != share.target {
+                    return Err(AccessDenial::new(DenyReason::EntryUnavailable).into_rpc_error());
+                }
+                let host = url::Url::parse(&resolved.canonical_origin)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .ok_or_else(|| RPCErrors::ReasonError("missing share host".into()))?;
+                pending.invitation = Some(("share".into(), id.into()));
+                (share.target, host)
+            }
+            (Some("user_invite"), Some(id))
+                if return_url.path() == format!("/users/invite/{id}") =>
+            {
+                pending.invitation = Some(("user_invite".into(), id.into()));
+                (pending.target.auth_target.clone(), zone_host.clone())
+            }
+            (None | Some("login"), None) => (pending.target.auth_target.clone(), zone_host.clone()),
+            _ => {
+                return Err(RPCErrors::ParseRequestError(
+                    "invitation purpose and return page must match".into(),
+                ))
+            }
+        };
+        let signer = runtime
+            .device_signer()
+            .ok_or_else(|| RPCErrors::ReasonError("federation signing key unavailable".into()))?;
+        let fields = FederationParams {
+            did: pending.did.clone(),
+            client_zone: runtime.zone_id.to_string(),
+            redirect_uri: pending.redirect_uri.clone(),
+            state: state.clone(),
+            nonce: pending.nonce.clone(),
+            code_challenge: code_challenge(&pending.code_verifier),
+            remember: false,
+            app_context: String::new(),
+        };
+        let signed = crate::federation_context::sign(
+            &signer,
+            &fields,
+            app,
+            app_host,
+            buckyos_get_unix_timestamp(),
+        )?;
+        let mut outbound =
+            url::Url::parse(&url).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        outbound
+            .query_pairs_mut()
+            .append_pair("app_context", &signed);
+        pending.outbound = Some(outbound.to_string());
+        let url = format!(
+            "{}/sso/did_start?state={}",
+            Self::zone_root_origin(&req, &zone_host),
+            state
+        );
         if !self.store_pending_did_login(state, pending).await {
             warn!("DID login refused: too many pending DID logins");
             return success(
@@ -485,13 +587,45 @@ impl ControlPanelServer {
         success(DidBeginResult::Redirect { url }, req.seq)
     }
 
-    fn did_redirect(
+    pub(crate) async fn serve_did_start(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let state = Self::http_query_param(&req, "state").unwrap_or_default();
+        let mut logins = self.pending_did_logins.lock().await;
+        let runtime = get_buckyos_api_runtime().map_err(Self::rpc_to_server_error)?;
+        let origin = Self::request_origin(&req, !runtime.force_https, runtime.node_gateway_port)
+            .map_err(Self::rpc_to_server_error)?;
+        if let Some(p) = logins.get_mut(&state).filter(|p| {
+            p.target.canonical_origin == origin
+                && buckyos_get_unix_timestamp().saturating_sub(p.created_at)
+                    < PENDING_DID_LOGIN_TTL_SECS
+        }) {
+            if let Some(url) = p.outbound.take() {
+                let secure = if origin.starts_with("https://") {
+                    "; Secure"
+                } else {
+                    ""
+                };
+                let name = did_browser_cookie(&state, &origin);
+                let cookie = format!("{name}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={PENDING_DID_LOGIN_TTL_SECS}{secure}",p.browser);
+                return Self::did_redirect(&url, vec![cookie]);
+            }
+        }
+        Self::did_redirect(
+            &did_error_location("authorization_unavailable", None),
+            vec![],
+        )
+    }
+
+    pub(crate) fn did_redirect(
         location: &str,
         cookies: Vec<String>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         let mut response = http::Response::builder()
             .status(http::StatusCode::FOUND)
             .header(CACHE_CONTROL, "no-store")
+            .header(http::header::REFERRER_POLICY, "no-referrer")
             .header(LOCATION, location);
         for cookie in cookies {
             response = response.header(SET_COOKIE, cookie);
@@ -515,9 +649,17 @@ impl ControlPanelServer {
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let pending = match Self::http_query_param(&req, "state") {
-            Some(state) => self.take_pending_did_login(&state).await,
-            None => None,
+        let state = Self::http_query_param(&req, "state").unwrap_or_default();
+        let pending = {
+            let mut cache = self.pending_did_logins.lock().await;
+            if cache
+                .get(&state)
+                .is_some_and(|p| p.outbound.is_none() && Self::extract_http_cookie(&req, &did_browser_cookie(&state, &p.target.canonical_origin)).as_deref() == Some(&p.browser))
+            {
+                take_pending(&mut cache, &state, buckyos_get_unix_timestamp())
+            } else {
+                None
+            }
         };
         let Some(pending) = pending else {
             return Self::did_redirect(
@@ -527,7 +669,7 @@ impl ControlPanelServer {
         };
         let fail = |reason: &str| {
             Self::did_redirect(
-                &did_error_location(reason, Some(&pending.target.canonical_redirect_url)),
+                &callback_error_location(reason, &pending.target.canonical_redirect_url, pending.invitation.is_some()),
                 Vec::new(),
             )
         };
@@ -550,6 +692,7 @@ impl ControlPanelServer {
             .map_err(Self::rpc_to_server_error)?;
         let result = verify_hub
             .login_by_remote_verify_hub(LoginByRemoteVerifyHubRequest {
+                proof_only: pending.invitation.is_some(),
                 did: pending.did.clone(),
                 code,
                 code_verifier: pending.code_verifier.clone(),
@@ -559,6 +702,29 @@ impl ControlPanelServer {
             })
             .await;
         let (user_id, token_pair, profile) = match result {
+            Ok(LoginByRemoteVerifyHubResult::Verified {
+                did,
+                user_id,
+                profile,
+            }) => {
+                let Some((purpose, id)) = pending.invitation.as_ref() else {
+                    return fail("authorization_unavailable");
+                };
+                if did != pending.did
+                    || conflicting_subject(
+                        &Self::sso_cookie_subjects(&req),
+                        user_id.as_deref().unwrap_or(&did),
+                    )
+                {
+                    return fail(IDENTITY_CONFLICT);
+                }
+                self.remember_external_profile(&did, profile);
+                let cookie = self
+                    .save_native_invite_identity(purpose, id, did, &pending.target.canonical_origin)
+                    .await
+                    .map_err(Self::rpc_to_server_error)?;
+                return Self::did_redirect(&pending.target.canonical_redirect_url, vec![cookie]);
+            }
             Ok(LoginByRemoteVerifyHubResult::Issued {
                 user_id,
                 token_pair,
@@ -630,6 +796,9 @@ impl ControlPanelServer {
         let runtime = get_buckyos_api_runtime()?;
         let kv = ZoneKv::connect().await?;
         let settings = load_sso_settings(&kv).await?;
+        if buckyos_api::external_source_for_did(&settings, &params.did).is_some() {
+            return Ok(Err(AccessDenial::new(DenyReason::SessionKindNotAllowed)));
+        }
         let account = if login {
             if principal.is_restricted() {
                 return Ok(Err(AccessDenial::new(DenyReason::SessionKindNotAllowed)));
@@ -644,16 +813,19 @@ impl ControlPanelServer {
         } else {
             None
         };
-        let client_host = match NameServiceDirectory.zone_host(&client_zone).await {
-            Ok(host) => host,
-            Err(error) => {
-                warn!(
-                    "consent cannot resolve client zone {}: {error}",
-                    client_zone.to_string()
-                );
-                return Ok(Err(AccessDenial::new(DenyReason::AuthorizationUnavailable)));
-            }
-        };
+        let encoded = resolve(&client_zone, DidDocType::Zone).await?;
+        let mut doc = ZoneDocument::decode(&encoded, None)
+            .map_err(|e| RPCErrors::InvalidToken(e.to_string()))?;
+        let client_host = zone_document_hostname(&doc)
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        crate::federation_context::load_signing_ood(params, &mut doc).await?;
+        let (app, app_host) = crate::federation_context::verify(
+            params,
+            &doc,
+            &client_host,
+            buckyos_get_unix_timestamp(),
+        )?;
         let redirect_uri = validate_redirect_uri(
             &params.redirect_uri,
             &client_host,
@@ -661,11 +833,47 @@ impl ControlPanelServer {
         )?;
         Ok(Ok(FederationContext {
             account,
+            app,
+            app_host,
             client_zone,
             client_host,
             redirect_uri,
             settings,
         }))
+    }
+
+    pub(crate) async fn handle_federation_consents(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        if !principal.is_user_session
+            || !principal.is_control_panel_session
+            || principal.is_restricted()
+        {
+            return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed).into_rpc_error());
+        }
+        let kv = ZoneKv::connect().await?;
+        let (mut consents, version) = load_consents(&kv, &principal.username).await?;
+        if req.method == "auth.federation.forget" {
+            let id = Self::require_param_str(&req, "id")?;
+            if consents.remove(&id).is_some() {
+                let key = consents_key(&principal.username);
+                let raw = serde_json::to_string(&consents)
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                kv.exec_tx(
+                    HashMap::from([(key.clone(), KVAction::Update(raw))]),
+                    version.map(|n| (key, n)),
+                )
+                .await?;
+            }
+        }
+        let items = consents.into_iter().filter_map(|(id, consent)| {
+            let (zone, target) = id.split_once('|')?;
+            Some(json!({"id": id, "client_zone": zone, "target":target, "granted_at":consent.granted_at}))
+        }).collect::<Vec<_>>();
+        success(json!({"consents":items}), req.seq)
     }
 
     /// `auth.federation.describe {did, client_zone, redirect_uri, state, nonce,
@@ -694,12 +902,13 @@ impl ControlPanelServer {
         let consents = load_consents(&ZoneKv::connect().await?, &principal.username).await?;
         let already_granted = consents
             .0
-            .get(&context.client_zone.to_string())
+            .get(&consent_id(&context.client_zone, &context.app))
             .is_some_and(|consent| consent.profile_scope >= PROFILE_SCOPE);
         success(
             FederationResult::Consent {
                 client_zone: context.client_zone.to_string(),
                 client_host: context.client_host,
+                app_host: context.app_host,
                 profile: account.profile(),
                 already_granted,
             },
@@ -734,6 +943,7 @@ impl ControlPanelServer {
                 &ZoneKv::connect().await?,
                 &principal.username,
                 &context.client_zone,
+                &context.app,
                 buckyos_get_unix_timestamp(),
             )
             .await?;
@@ -815,15 +1025,25 @@ async fn load_consents(
     }
 }
 
+fn did_browser_cookie(state: &str, origin: &str) -> String {
+    let prefix = if origin.starts_with("https://") { "__Host-" } else { "" };
+    format!("{prefix}buckyos_did_{state}")
+}
+
+fn consent_id(zone: &DID, app: &AuthTarget) -> String {
+    format!("{}|{}", zone.to_string(), app.canonical_key())
+}
+
 async fn save_consent(
     kv: &dyn AgentKv,
     user_id: &str,
     client_zone: &DID,
+    app: &AuthTarget,
     now: u64,
 ) -> Result<(), RPCErrors> {
     let (mut consents, version) = load_consents(kv, user_id).await?;
     consents.insert(
-        client_zone.to_string(),
+        consent_id(client_zone,app),
         FederationConsent {
             granted_at: now,
             profile_scope: PROFILE_SCOPE,
@@ -1101,17 +1321,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn consent_is_kept_per_client_zone() {
+    async fn consent_is_kept_per_client_zone_and_app() {
         let kv = MemKv::default();
         let b = DID::from_str("did:bns:b").unwrap();
         let c = DID::from_str("did:bns:c").unwrap();
-        save_consent(&kv, "alice", &b, 10).await.unwrap();
-        save_consent(&kv, "alice", &c, 20).await.unwrap();
-        save_consent(&kv, "alice", &b, 30).await.unwrap();
+        save_consent(&kv, "alice", &b, &root_target().auth_target, 10)
+            .await
+            .unwrap();
+        save_consent(&kv, "alice", &c, &root_target().auth_target, 20)
+            .await
+            .unwrap();
+        save_consent(&kv, "alice", &b, &root_target().auth_target, 30)
+            .await
+            .unwrap();
+        let workspace = AuthTarget::from_canonical_key("system:aiworkspace").unwrap();
+        save_consent(&kv, "alice", &b, &workspace, 40)
+            .await
+            .unwrap();
         let (consents, _) = load_consents(&kv, "alice").await.unwrap();
-        assert_eq!(consents.len(), 2);
+        assert!(consents.contains_key(&consent_id(&b, &workspace)));
+        assert!(!consents.contains_key(&consent_id(&c, &workspace)));
+        assert_eq!(consents.len(), 3);
         assert_eq!(
-            consents["did:bns:b"],
+            consents[&consent_id(&b, &root_target().auth_target)],
             FederationConsent {
                 granted_at: 30,
                 profile_scope: 1

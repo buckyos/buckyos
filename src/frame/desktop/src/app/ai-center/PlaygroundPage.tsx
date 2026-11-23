@@ -126,12 +126,12 @@ export function PlaygroundPage({ active = true }: { active?: boolean }) {
       <form className="space-y-4 min-w-0" onSubmit={(event) => { event.preventDefault(); void start() }}>
         <fieldset disabled={running} className="space-y-4 rounded-xl p-4 min-w-0" style={panelStyle}>
           <legend className="font-semibold px-1">{t('aiCenter.playground.request')}</legend>
-          <label className="block text-sm space-y-2"><span>API Type</span><select aria-label="API Type" className={controlClass} style={controlStyle} value={api} onChange={(event) => {
+          <label className="block text-sm space-y-2"><span>{t('aiCenter.providers.apiType')}</span><select aria-label={t('aiCenter.providers.apiType')} className={controlClass} style={controlStyle} value={api} onChange={(event) => {
             const next = event.target.value as ApiType
             setApi(next); setParams(defaultRequest(next)); setIssues([]); setImportNotice(''); setImportError(''); setFormVersion((value) => value + 1)
           }}>{(Object.keys(PLAYGROUND_APIS) as ApiType[]).map((key) => <option key={key} value={key}>{key} · {t(`aiCenter.playground.api.${key}`)}</option>)}</select></label>
           <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))' }}>
-            <label className="block text-sm space-y-2"><span>Provider</span><select aria-label="Provider" className={controlClass} style={controlStyle} value={provider} onChange={(event) => { setProvider(event.target.value); updateParams({ ...params, exact_model: '' }) }}>
+            <label className="block text-sm space-y-2"><span>{t('aiCenter.playground.field.provider')}</span><select aria-label={t('aiCenter.playground.field.provider')} className={controlClass} style={controlStyle} value={provider} onChange={(event) => { setProvider(event.target.value); updateParams({ ...params, exact_model: '' }) }}>
               <option value="">{t('aiCenter.playground.allProviders')}</option>{[...new Set((models ?? []).map((model) => model.provider))].sort().map((name) => <option key={name}>{name}</option>)}
             </select></label>
             <label className="block text-sm space-y-2"><span>{t('aiCenter.playground.model')}</span><select aria-label={t('aiCenter.playground.model')} className={controlClass} style={controlStyle} value={exactModel} onChange={(event) => updateParams({ ...params, exact_model: event.target.value })}>

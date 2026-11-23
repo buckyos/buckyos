@@ -21,9 +21,23 @@ pub trait ZoneAccess: Send + Sync {
 /// The process's BuckyOS runtime: an Agent's container, a zone service, the dev CLI run inside one.
 pub struct RuntimeZoneAccess;
 
+/// Tool processes can receive an endpoint and a scoped token from their parent.
+/// The Loader is an AppService and uses its own registered gateway and session together.
+fn tool_endpoint() -> Option<std::ffi::OsString> {
+    if buckyos_api::get_buckyos_api_runtime()
+        .is_ok_and(|r| r.runtime_type == buckyos_api::BuckyOSRuntimeType::AppService)
+    {
+        return None;
+    }
+    std::env::var_os("BUCKYOS_TOOL_ENDPOINT")
+}
+
 #[async_trait]
 impl ZoneAccess for RuntimeZoneAccess {
     fn gateway_origin(&self) -> Option<String> {
+        if let Some(endpoint) = tool_endpoint() {
+            return web_origin(endpoint.to_str()?);
+        }
         let runtime = buckyos_api::get_buckyos_api_runtime().ok()?;
         Some(format!(
             "http://{}:{}",
@@ -33,6 +47,12 @@ impl ZoneAccess for RuntimeZoneAccess {
     }
 
     fn zone_host(&self) -> Option<String> {
+        if let Some(endpoint) = tool_endpoint() {
+            let url = Url::parse(endpoint.to_str()?).ok()?;
+            return (url.scheme() == "https")
+                .then(|| url.host_str().map(str::to_owned))
+                .flatten();
+        }
         let runtime = buckyos_api::get_buckyos_api_runtime().ok()?;
         let document = runtime.get_zone_config()?.zone_document().ok()?;
         Some(buckyos_api::zone_document_hostname(&document).to_ascii_lowercase())
@@ -43,10 +63,27 @@ impl ZoneAccess for RuntimeZoneAccess {
     }
 
     async fn session_token(&self) -> Option<String> {
+        if tool_endpoint().is_some() {
+            return std::env::var("BUCKYOS_APPCLIENT_SESSION_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty());
+        }
         let runtime = buckyos_api::get_buckyos_api_runtime().ok()?;
         let _ = runtime.renew_token_from_verify_hub().await;
         Some(runtime.get_session_token().await).filter(|token| !token.is_empty())
     }
+}
+
+fn web_origin(endpoint: &str) -> Option<String> {
+    let url = Url::parse(endpoint).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+    {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
 }
 
 /// An origin of this Zone: the gateway origin, the Zone host or one of its subdomains.
@@ -54,6 +91,9 @@ pub fn is_zone_url(zone: &dyn ZoneAccess, url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return false;
     };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return false;
+    }
     if let Some(origin) = zone.gateway_origin() {
         if Url::parse(&origin).is_ok_and(|o| o.origin() == parsed.origin()) {
             return true;
@@ -63,7 +103,9 @@ pub fn is_zone_url(zone: &dyn ZoneAccess, url: &str) -> bool {
         return false;
     };
     let host = host.to_ascii_lowercase();
-    parsed.scheme() == "https" && (host == zone_host || host.ends_with(&format!(".{zone_host}")))
+    parsed.scheme() == "https"
+        && parsed.port().is_none()
+        && (host == zone_host || host.ends_with(&format!(".{zone_host}")))
 }
 
 /// An HTTP client that presents the caller's session to `url` when it is one of the Zone's origins.
@@ -77,6 +119,7 @@ pub async fn client_for(zone: &dyn ZoneAccess, url: &str) -> reqwest::Client {
         }
     }
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .default_headers(headers)
         .build()
         .unwrap_or_default()
@@ -113,11 +156,33 @@ pub(crate) mod tests {
             origin: Some("http://host.docker.internal:3180".to_string()),
             data_root: PathBuf::from("/opt/buckyos/data"),
         };
-        assert!(is_zone_url(&zone, "http://host.docker.internal:3180/kapi/msg-center/obj"));
-        assert!(is_zone_url(&zone, "https://test.buckyos.io/home/alice/feed"));
+        assert!(is_zone_url(
+            &zone,
+            "http://host.docker.internal:3180/kapi/msg-center/obj"
+        ));
+        assert!(is_zone_url(
+            &zone,
+            "https://test.buckyos.io/home/alice/feed"
+        ));
         assert!(is_zone_url(&zone, "https://aiws-1.test.buckyos.io/x"));
         assert!(!is_zone_url(&zone, "http://test.buckyos.io/x"));
         assert!(!is_zone_url(&zone, "https://eviltest.buckyos.io/x"));
+        assert!(is_zone_url(&zone, "https://test.buckyos.io:443/x"));
+        assert!(!is_zone_url(&zone, "https://test.buckyos.io:8443/x"));
+        assert!(!is_zone_url(&zone, "https://aiws-1.test.buckyos.io:8443/x"));
+        assert!(!is_zone_url(&zone, "https://other@test.buckyos.io/x"));
+        let secure_gateway = TestZone {
+            origin: Some("https://gateway.test.buckyos.io:8443".into()),
+            data_root: Default::default(),
+        };
+        assert!(is_zone_url(
+            &secure_gateway,
+            "https://gateway.test.buckyos.io:8443/path"
+        ));
+        assert!(!is_zone_url(
+            &secure_gateway,
+            "https://gateway.test.buckyos.io:8444/path"
+        ));
         assert!(!is_zone_url(&zone, "https://example.com/x"));
         assert!(!is_zone_url(&zone, "http://host.docker.internal:8080/x"));
     }

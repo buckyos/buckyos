@@ -74,6 +74,7 @@ pub enum ObjectUrl {
     },
     /// `https://` / `http://`，原样保留。
     Web { url: String },
+    ExtObject { id: String },
     /// `buckyos://`，原样保留。
     BuckyOS { url: String },
 }
@@ -81,6 +82,7 @@ pub enum ObjectUrl {
 impl ObjectUrl {
     pub fn scheme(&self) -> &'static str {
         match self {
+            ObjectUrl::ExtObject { .. } => "ext-object",
             ObjectUrl::File { .. } => "file",
             ObjectUrl::CyfsPath { .. } | ObjectUrl::CyfsObject { .. } => "cyfs",
             ObjectUrl::Obj { .. } => "obj",
@@ -206,6 +208,7 @@ impl fmt::Display for ObjectUrl {
                 }
                 Ok(())
             }
+            ObjectUrl::ExtObject { id } => write!(f, "ext-object://{id}"),
             ObjectUrl::Web { url } | ObjectUrl::BuckyOS { url } => f.write_str(url),
         }
     }
@@ -228,6 +231,18 @@ pub fn parse_object_url(input: &str) -> Result<ObjectUrl, ObjectUrlError> {
                 .map_err(|e| ObjectUrlError(format!("invalid web url '{input}': {e}")))?
                 .to_string(),
         }),
+        "ext-object" => {
+            let Some((package, object)) = rest.split_once('/') else {
+                return err("expected extension package/object");
+            };
+            if package.is_empty()
+                || !package.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                || !crate::object_extensions::object_alias_name(object)
+            {
+                return err("invalid extension object id");
+            }
+            Ok(ObjectUrl::ExtObject { id: rest.to_string() })
+        }
         "buckyos" => Ok(ObjectUrl::BuckyOS {
             url: input.to_string(),
         }),
@@ -758,6 +773,7 @@ mod tests {
 
     fn kind_of(url: &ObjectUrl) -> &'static str {
         match url {
+            ObjectUrl::ExtObject { .. } => "ext-object",
             ObjectUrl::File { .. } => "file",
             ObjectUrl::CyfsPath { .. } => "cyfs_path",
             ObjectUrl::CyfsObject { .. } => "cyfs_object",

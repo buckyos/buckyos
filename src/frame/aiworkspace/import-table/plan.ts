@@ -6,7 +6,7 @@
 import { ImportReport } from '../import-drawio/convert.ts'
 import { columnLetter, type Cell, type Grid } from './grid.ts'
 import { INVALID, inferColumn, labelsOf, nonEmpty, shapeCell, TEXT_MAX, type ColumnGuess, type DateOrder, type ImportType, type Json, type ShapeSpec } from './infer.ts'
-import { resolveAmbiguous } from './currency.ts'
+import { languageCurrency, resolveAmbiguous } from './currency.ts'
 
 /** Rows the wizard infers types from; more are checked when the import runs (§7). */
 export const INFER_ROWS = 5000
@@ -146,7 +146,7 @@ export function retype(grid: Grid, header: boolean, index: number, choice: Colum
   const next: ColumnChoice = { include: choice.include, name: choice.name, type, invalid: choice.invalid, guess: choice.guess }
   if (type === choice.guess.type) return { ...choiceOf(choice.guess, choice.name, locale), include: choice.include, invalid: choice.invalid }
   if (type === 'decimal') next.scale = 2
-  if (type === 'currency') { next.scale = 2; next.currency = choice.currency ?? (locale.startsWith('zh') ? 'CNY' : 'USD'); next.dollar = resolveAmbiguous('$', next.currency, locale); next.yen = resolveAmbiguous('¥', next.currency, locale) }
+  if (type === 'currency') { next.scale = 2; next.currency = choice.currency ?? languageCurrency(locale); next.dollar = resolveAmbiguous('$', next.currency, locale); next.yen = resolveAmbiguous('¥', next.currency, locale) }
   if (type === 'select' || type === 'multi_select') next.options = labelsOf(columnOf(bodyOf(grid, header), index), type === 'multi_select', grid.columns[index]?.options)
   return next
 }

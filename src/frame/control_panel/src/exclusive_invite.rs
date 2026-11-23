@@ -155,7 +155,7 @@ fn to_json<T: Serialize>(value: &T) -> Result<String, RPCErrors> {
         .map_err(|error| RPCErrors::ReasonError(format!("serialize failed: {error}")))
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(
+pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(
     kv: &dyn AgentKv,
     key: &str,
 ) -> Result<Option<(T, u64)>, RPCErrors> {
@@ -608,6 +608,8 @@ enum InviteDescribeResult {
         show_name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         resource_title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        app_instance_id: Option<String>,
         return_path: String,
     },
     /// `user_id` / `return_path` only for the holder of the current secret, so the
@@ -634,6 +636,7 @@ fn describe_outcome(
             user_id: invite.user_id.clone(),
             show_name: show_name.unwrap_or_else(|| invite.user_id.clone()),
             resource_title: resource_title(invite.resource.as_ref()),
+            app_instance_id: match &invite.issuer { InviteIssuer::App{app_instance_id}=>Some(app_instance_id.clone()), _=>None},
             return_path: invite.return_path.clone(),
         },
         (result, invite) => {
@@ -643,7 +646,7 @@ fn describe_outcome(
             InviteDescribeResult::Denied {
                 denial: result.err().unwrap_or(InviteLoginRefusal::Revoked).denial(),
                 user_id: holder.map(|invite| invite.user_id.clone()),
-                return_path: holder.map(|invite| invite.return_path.clone()),
+                return_path: holder.map(|invite| match &invite.issuer { InviteIssuer::App{..} => default_return_path(invite.resource.as_ref()), _ => invite.return_path.clone() }),
             }
         }
     }
@@ -947,10 +950,22 @@ impl ControlPanelServer {
             );
         }
         let runtime = get_buckyos_api_runtime()?;
-        let target = AuthTarget::system(
-            SystemServiceId::parse(CONTROL_PANEL_SERVICE_UNIQUE_ID)
-                .map_err(RPCErrors::ReasonError)?,
-        );
+        let kv = ZoneKv::connect().await?;
+        let Some((invite,_)) = load_invite(&kv,&params.invite_id).await? else {
+            return success(InviteLoginResult::Denied{denial:InviteLoginRefusal::Revoked.denial()},req.seq);
+        };
+        let zone_host = Self::sso_zone_host(runtime)?;
+        let mut origin = url::Url::parse(&Self::zone_root_origin(&req,&zone_host))
+            .map_err(|e| RPCErrors::ReasonError(format!("Zone origin: {e}")))?;
+        let target = match &invite.issuer {
+            InviteIssuer::App {app_instance_id} => {
+                let id = app_instance_id.parse().map_err(RPCErrors::ReasonError)?;
+                origin.set_host(Some(&format!("{}.{}",crate::app_login::app_host_label(&id)?,zone_host)))
+                    .map_err(|e|RPCErrors::ReasonError(format!("App origin: {e}")))?;
+                AuthTarget::app(id)
+            }
+            InviteIssuer::User{..} => AuthTarget::system(SystemServiceId::parse(CONTROL_PANEL_SERVICE_UNIQUE_ID).map_err(RPCErrors::ReasonError)?),
+        };
         let verify_hub = runtime.get_verify_hub_client().await?;
         let token_pair = match verify_hub
             .login_by_exclusive_invite(ExclusiveInviteLoginRequest {
@@ -978,16 +993,7 @@ impl ControlPanelServer {
             }
         };
         let prepared = async {
-            let kv = ZoneKv::connect().await?;
-            let (invite, _) = load_invite(&kv, &params.invite_id)
-                .await?
-                .ok_or_else(|| RPCErrors::ReasonError("invite record vanished".to_string()))?;
-            let zone_host = Self::sso_zone_host(runtime)?;
-            let redirect_url = format!(
-                "{}{}",
-                Self::zone_root_origin(&req, &zone_host),
-                invite.return_path
-            );
+            let redirect_url = format!("{}{}", origin.as_str().trim_end_matches('/'),invite.return_path);
             let resolved = Self::resolve_sso_auth_target(
                 &redirect_url,
                 &zone_host,
@@ -996,7 +1002,7 @@ impl ControlPanelServer {
             )?;
             if resolved.auth_target != target {
                 return Err(RPCErrors::ParseRequestError(
-                    "return_path does not lead to the Zone root".to_string(),
+                    "return_path does not lead to the registered target".to_string(),
                 ));
             }
             Self::validate_sso_token_pair(

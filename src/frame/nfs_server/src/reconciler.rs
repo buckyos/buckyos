@@ -22,14 +22,16 @@ use crate::state::{AppState, SharedState};
 use crate::watch::ContainerKey;
 use serde_json::json;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 
 /// Per-dir content fingerprints from the previous scan, keyed by (root, rel).
 #[derive(Default)]
 pub struct ScanState {
     fingerprints: HashMap<(String, String), u64>,
-    baseline_done: bool,
+    baselined: HashSet<String>,
+    next_due: HashMap<String, Instant>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -45,6 +47,9 @@ pub struct ReconcileReport {
 /// Dirs changed in one scan beyond this emit a single resync instead of events.
 const RESYNC_THRESHOLD: usize = 50;
 
+/// The background loop rescans a root only after this many times its last walk took.
+const SCAN_DUTY_DIVISOR: u32 = 10;
+
 struct ScannedEntry {
     ino: u64,
     dev: u64,
@@ -56,19 +61,47 @@ struct ScannedEntry {
 impl AppState {
     /// Runs one full reconcile pass over every export root.
     pub fn reconcile_now(&self) -> NfsResult<ReconcileReport> {
+        self.reconcile(true)
+    }
+
+    /// Background pass: roots whose last walk was slow wait out their duty cycle.
+    pub fn reconcile_due(&self) -> NfsResult<ReconcileReport> {
+        self.reconcile(false)
+    }
+
+    fn reconcile(&self, all: bool) -> NfsResult<ReconcileReport> {
         let mut report = ReconcileReport::default();
         let mut new_fps: HashMap<(String, String), u64> = HashMap::new();
+        let mut scanned: HashSet<String> = HashSet::new();
         let mut changed_dirs: Vec<(String, String, u64)> = Vec::new(); // root, rel, ino
 
         for export in &self.config.exports {
-            let (entries, fps, dir_inos) = scan_root(&export.path)?;
+            let started = Instant::now();
+            if !all && self.scan_state.lock().unwrap().next_due.get(&export.id).is_some_and(|due| *due > started) {
+                continue;
+            }
+            let result = scan_root(&export.path);
+            let took = started.elapsed();
+            self.scan_state.lock().unwrap().next_due.insert(export.id.clone(), started + took * SCAN_DUTY_DIVISOR);
+            if took >= Duration::from_secs(1) {
+                log::info!("reconcile: scanning '{}' took {:.1}s, next in {}s", export.id, took.as_secs_f64(), (took * SCAN_DUTY_DIVISOR).as_secs());
+            }
+            let (entries, fps, dir_inos) = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!("reconcile: scanning '{}' failed: {}", export.id, e);
+                    continue;
+                }
+            };
+            scanned.insert(export.id.clone());
             self.reconcile_anchors(&export.id, &entries, &mut report)?;
             // Fingerprint diff → bypass changes to dir contents.
             {
                 let st = self.scan_state.lock().unwrap();
+                let baselined = st.baselined.contains(&export.id);
                 for ((rel, fp), ino) in fps.iter().zip(dir_inos.iter()) {
                     let key = (export.id.clone(), rel.clone());
-                    if st.baseline_done {
+                    if baselined {
                         match st.fingerprints.get(&key) {
                             Some(old) if old == fp => {}
                             _ => changed_dirs.push((export.id.clone(), rel.clone(), *ino)),
@@ -113,8 +146,9 @@ impl AppState {
 
         let mut st = self.scan_state.lock().unwrap();
         // Keep fingerprints of other roots (only replace scanned keys wholesale).
-        st.fingerprints = new_fps;
-        st.baseline_done = true;
+        st.fingerprints.retain(|(root, _), _| !scanned.contains(root));
+        st.fingerprints.extend(new_fps);
+        st.baselined.extend(scanned);
         Ok(report)
     }
 
@@ -269,7 +303,7 @@ pub async fn reconcile_loop(state: SharedState, interval_secs: u64) {
     loop {
         ticker.tick().await;
         let st = state.clone();
-        let result = tokio::task::spawn_blocking(move || st.reconcile_now()).await;
+        let result = tokio::task::spawn_blocking(move || st.reconcile_due()).await;
         match result {
             Ok(Ok(report)) => {
                 if report.dirs_changed > 0
@@ -285,5 +319,37 @@ pub async fn reconcile_loop(state: SharedState, interval_secs: u64) {
             Ok(Err(e)) => log::warn!("reconcile failed: {}", e),
             Err(e) => log::warn!("reconcile task panicked: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ExportRoot, ServerConfig};
+
+    #[tokio::test]
+    async fn slow_or_failing_roots_do_not_hold_up_the_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let exports = vec![ExportRoot { id: "a".into(), path: a.clone() }, ExportRoot { id: "b".into(), path: b.clone() }];
+        let state = AppState::new(ServerConfig::new(tmp.path().join(".fsdb"), exports)).unwrap();
+        std::fs::remove_dir(&b).unwrap();
+        assert_eq!(state.reconcile_now().unwrap().dirs_changed, 0);
+
+        std::fs::create_dir(a.join("x")).unwrap();
+        assert_eq!(state.reconcile_now().unwrap().dirs_changed, 2);
+
+        state.scan_state.lock().unwrap().next_due.insert("a".into(), Instant::now() + Duration::from_secs(3600));
+        std::fs::create_dir(a.join("y")).unwrap();
+        assert_eq!(state.reconcile_due().unwrap().dirs_changed, 0);
+        state.scan_state.lock().unwrap().next_due.insert("a".into(), Instant::now());
+        assert_eq!(state.reconcile_due().unwrap().dirs_changed, 2);
+
+        std::fs::create_dir_all(b.join("s")).unwrap();
+        assert_eq!(state.reconcile_now().unwrap().dirs_changed, 0);
+        std::fs::create_dir(b.join("t")).unwrap();
+        assert_eq!(state.reconcile_now().unwrap().dirs_changed, 2);
     }
 }

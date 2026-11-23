@@ -252,7 +252,7 @@ export const networkZh: Record<string, string> = {
   'network.section.resolved': '查找结果',
 
   'network.kind.user': '个人',
-  'network.kind.agent': 'Agent',
+  'network.kind.agent': '智能体',
   'network.kind.group': '群',
   'network.kind.zone': 'Zone',
   'network.kind.device': '设备',

@@ -64,7 +64,7 @@ import type {
   UserTunnelBinding,
   UserInviteRecord,
 } from './user_mgr.ts'
-import type { ExclusiveInvite, InviteResource } from './sso.ts'
+import type { ExclusiveInvite, InviteResource, OAuthSource, SsoSettings } from './sso.ts'
 
 export const MOCK_CONTROL_PANEL_STORAGE_KEY = 'buckyos.mock.control-panel.v1'
 
@@ -178,13 +178,15 @@ interface MockEntry {
 type MockInvite = ExclusiveInvite & { secret: string }
 
 interface MockSso {
-  settings: { self_register_enabled: boolean; did_login_enabled: boolean; jump_base_url?: string }
+  settings: SsoSettings
   entries: MockEntry[]
   accounts: Record<string, MockSsoAccount>
   invites: MockInvite[]
   /** Target Zones the signed-in account agreed to (canonical side). */
   consents: string[]
   did_logins?: Record<string, { did: string; redirect_url: string }>
+  /** `sso.oauth_source.accounts`: local accounts bound to each login source, by source ID. */
+  oauth_accounts?: Record<string, { user_id: string; show_name: string; email: string; state: string }[]>
 }
 
 const RESERVED_NAMES = new Set(['root', 'system', 'admin', 'guest', '_', 'www', 'sys', 'homestation'])
@@ -1229,6 +1231,26 @@ function handleAppLogin(state: MockState, method: string, params: Record<string,
   }
 }
 
+/** The one resource invitation the mock serves: Alice invites did:bns:bob to edit a Workspace. */
+const MOCK_SHARE_ID = 'inv-MockDirectedShareForBob000000000'
+
+function mockShare(state: MockState, inviteId: string, method: string) {
+  if (inviteId !== MOCK_SHARE_ID) deny('entry_unavailable', method)
+  return {
+    invite_id: MOCK_SHARE_ID,
+    issuer: `did:bns:${state.zone}`,
+    target: { kind: 'system' as const, service_id: 'aiworkspace' },
+    target_url: `https://aiws-ws1.${zoneHostOf(state)}/`,
+    resource_id: 'ws1',
+    sharer: 'Alice',
+    title: 'Team notes',
+    operations: ['read', 'update'],
+    audience: { kind: 'directed' as const, did: 'did:bns:bob' },
+    methods: { guest: false, password: true, self_register: false, did_login: true, oauth: false },
+    unavailable_reason: null,
+  }
+}
+
 function handleSso(state: MockState, method: string, params: Record<string, unknown>): unknown {
   const sso = ssoOf(state)
   const now = nowSecs()
@@ -1237,9 +1259,11 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       return { target: { kind: 'system', service_id: 'control-panel' }, display_name: 'Desktop' }
     case 'auth.sso_config':
       return {
+        oauth_sources: (sso.settings.oauth_sources ?? []).filter((source) => source.enabled).map(({ id, display_name }) => ({ id, display_name })),
         self_register_enabled: sso.settings.self_register_enabled,
         did_login_enabled: sso.settings.did_login_enabled,
         jump_base_url: sso.settings.jump_base_url || DEFAULT_JUMP_BASE_URL,
+        zone_origin: `https://${zoneHostOf(state)}`,
       }
     case 'auth.current_identity':
       requireSignedIn(state, method)
@@ -1333,6 +1357,7 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       const redirectUrl = stringParam(params, 'redirect_url')
       if (!sso.settings.did_login_enabled) return { status: 'denied', denial: denialFor('zone_method_disabled', undefined, method) }
       if (!did.startsWith('did:')) throw new MockRpcError('invalid did')
+      if (new URL(redirectUrl).origin !== window.location.origin) throw new MockRpcError('DID login returns to a page on the Zone root')
       if (did.includes('offline')) return { status: 'canonical_unavailable' }
       const canonicalHost = `${did.split(':').pop()}.web3.buckyos.ai`
       const url = new URL(`https://${canonicalHost}/sso/federate`)
@@ -1345,14 +1370,33 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       url.searchParams.set('state', flowState)
       url.searchParams.set('nonce', 'mock-nonce')
       url.searchParams.set('code_challenge', 'mock-challenge')
+      url.searchParams.set('app_context','mock-system-context')
       return { status: 'redirect', url: url.toString() }
+    }
+    case 'auth.share.describe':
+    case 'auth.share.identity': {
+      const share = mockShare(state, stringParam(params, 'invite_id'), method)
+      if (method === 'auth.share.describe') return share
+      const session = sessionOf(state)
+      if (session.kind === 'external') deny('session_kind_not_allowed', method)
+      const held = session.kind === 'account' ? state.account.did : null
+      const recipient = share.audience.kind === 'directed' ? share.audience.did : null
+      return {
+        session: held, native: null, oauth: null, required_source: null,
+        mismatches: held && recipient && held !== recipient ? ['session'] : [],
+      }
+    }
+    case 'auth.federation.consents':
+    case 'auth.federation.forget': {
+      if (method === 'auth.federation.forget') sso.consents = sso.consents.filter(id => id !== params.id)
+      return {consents: sso.consents.map(id => ({ id, client_zone: id, target: 'system:control-panel' }))}
     }
     case 'auth.federation.describe': {
       const { clientZone, clientHost } = federationChecks(state, method, params)
       return {
         status: 'consent',
         client_zone: clientZone,
-        client_host: clientHost,
+        client_host: clientHost, app_host: clientHost,
         profile: { show_name: state.account.user_name, avatar: state.account.profile?.avatar ?? null },
         already_granted: sso.consents.includes(clientZone),
       }
@@ -1376,18 +1420,36 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       requireSsoAdmin(state, method)
       return { ...sso.settings }
     case 'sso.settings.set': {
+      // Fields left out keep their value, as on the real service.
       requireSsoAdmin(state, method)
-      if (typeof params.self_register_enabled !== 'boolean' || typeof params.did_login_enabled !== 'boolean') {
-        throw new MockRpcError('self_register_enabled and did_login_enabled must be booleans')
+      for (const key of ['self_register_enabled', 'did_login_enabled'] as const) {
+        if (params[key] !== undefined && typeof params[key] !== 'boolean') throw new MockRpcError(`${key} must be a boolean`)
       }
-      const jump = typeof params.jump_base_url === 'string' ? params.jump_base_url.trim() : ''
-      if (jump && !/^https:\/\/[^/?#]+\/?$/.test(jump)) throw new MockRpcError('jump_base_url must be an https origin')
-      sso.settings = {
-        self_register_enabled: params.self_register_enabled,
-        did_login_enabled: params.did_login_enabled,
-        ...(jump ? { jump_base_url: jump } : {}),
+      const next: SsoSettings = { ...sso.settings }
+      if (typeof params.self_register_enabled === 'boolean') next.self_register_enabled = params.self_register_enabled
+      if (typeof params.did_login_enabled === 'boolean') next.did_login_enabled = params.did_login_enabled
+      if (params.jump_base_url !== undefined) {
+        const jump = typeof params.jump_base_url === 'string' ? params.jump_base_url.trim() : ''
+        if (jump && !/^https:\/\/[^/?#]+\/?$/.test(jump)) throw new MockRpcError('jump_base_url must be an https origin')
+        if (jump) next.jump_base_url = jump
+        else delete next.jump_base_url
       }
-      return { ...sso.settings }
+      if (Array.isArray(params.oauth_sources)) {
+        const sources = params.oauth_sources as OAuthSource[]
+        const ids = new Set(sources.map((source) => source.id))
+        if (ids.size !== sources.length || sources.some((source) => !source.id || !source.display_name?.trim() || !source.client_id?.trim())) {
+          throw new MockRpcError('invalid or duplicate OAuth source ID, display name, client ID or secret reference')
+        }
+        next.oauth_sources = sources
+      }
+      sso.settings = next
+      return { oauth_sources: [], ...sso.settings }
+    }
+    case 'sso.oauth_source.accounts': {
+      requireSsoAdmin(state, method)
+      const id = String(params.source_id ?? '')
+      if (!sso.settings.oauth_sources?.some((source) => source.id === id)) throw new MockRpcError(`unknown login source \`${id}\``)
+      return { accounts: sso.oauth_accounts?.[id] ?? [] }
     }
     case 'user.exclusive_invite.create': {
       requireSsoAdmin(state, method)
@@ -1471,6 +1533,30 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
 
 function handle(state: MockState, method: string, params: Record<string, unknown>): unknown {
   switch (method) {
+    case 'user.invite.directory': {
+      requireAdmin(state)
+      const rows = Object.values(state.user_invites ?? {}).map(invite => ({
+        did:invite.target_did, email:invite.oauth_email, user_id:invite.target_user_id,
+        account_state:invite.state === 'pending' ? 'pending' : 'active',
+        sources:[{invite_id:invite.invite_id, target:'system:control-panel', issuer:invite.created_by, title:'Zone login',state:invite.state}],
+      }))
+      return {users:rows}
+    }
+    case 'user.invite.create': {
+      requireAdmin(state)
+      const userId = stringParam(params, 'user_id')
+      const targetDid = stringParam(params, 'target_did')
+      if (!userId || !targetDid) throw new MockRpcError('A user and target DID are required')
+      if (state.zone_users[userId]) throw new MockRpcError('Account already exists')
+      const id = crypto.randomUUID()
+      const invite: UserInviteRecord = {invite_id:id, target_user_id:userId, target_did:targetDid, created_at:nowSecs(),
+        created_by:state.account.user_id, state:'pending', default_user_type: stringParam(params,'user_type') || 'user',
+        groups: Array.isArray(params.groups) ? params.groups.map(String) : [],
+        expires_at: nowSecs() + Number(params.ttl_secs || 604800)}
+      ;(state.user_invites ??= {})[id] = invite
+      state.zone_users[userId] = {user_type:invite.default_user_type, state:'pending'}
+      return {ok:true,invite,invite_url:new URL(`/users/invite/${id}`,location.origin).href}
+    }
     case 'user.invite.get':
     case 'user.invite.accept': {
       const invite = state.user_invites?.[stringParam(params, 'invite_id')]
@@ -1481,14 +1567,11 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       }
       const identity = identityOf(state)
       if (identity.kind === 'anonymous' || identity.auth_method !== 'did_federation') deny('session_kind_not_allowed', method)
-      const document = typeof params.owner_config === 'string' ? JSON.parse(params.owner_config) : params.owner_config
-      if (!document || typeof document !== 'object' || Array.isArray(document)) throw new MockRpcError('Invalid owner_config')
-      const owner = document as Record<string, unknown>
-      if (owner.id !== identity.did || (invite.target_did && invite.target_did !== identity.did)) {
+      if (invite.target_did !== identity.did) {
         deny('session_ceiling_exceeded', method)
       }
       if (expired || invite.state !== 'pending') throw new MockRpcError('Invitation is no longer pending')
-      const userId = invite.target_user_id || String(owner.name || '').trim().toLowerCase()
+      const userId = invite.target_user_id
       if (!userId) throw new MockRpcError('Account name is required')
       invite.state = 'accepted'
       invite.accepted_at = nowSecs()

@@ -1,116 +1,103 @@
-import { useRef, useState } from 'react'
-import type { Json } from '../api/types'
+import { useRef, useState, type KeyboardEvent } from 'react'
+import type { FieldDef, Json } from '../api/types'
 import { useAiwsText } from '../useAiwsText'
-import { UNSET, editText, parseInput, type Input, type ValueDef } from './values'
+import { ReferenceInput } from './table/TableReference'
+import { UNSET, editText, parseInput, type Input } from './values'
 
 interface Props {
-  def: ValueDef
+  def: FieldDef
   value: Json | undefined
-  /** Text to start from instead of the stored value (my kept input after a conflict). */
   initialText?: string
   ariaLabel: string
-  onCommit: (value: Input) => void
+  onCommit: (value: Input) => Promise<boolean>
   onCancel: () => void
-  /** Tab / Shift+Tab: commit, then move to the next / previous cell. */
-  onTab?: (back: boolean) => void
+  onTab: (back: boolean) => void
 }
 
-/** Inline editor for one value. Enter / blur commits, Escape cancels; nothing is committed when the text is unchanged. */
+function focusInput(editor: HTMLSpanElement | null) {
+  editor?.querySelector<HTMLElement>('input, select, textarea')?.focus({ preventScroll: true })
+}
+
 export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCancel, onTab }: Props) {
   const { t } = useAiwsText()
-  const startText = initialText ?? editText(def, value)
-  const [text, setText] = useState(startText)
+  const [startText] = useState(() => editText(def, value))
+  const [text, setText] = useState(initialText ?? startText)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[]>(Array.isArray(value) ? value.map(String) : [])
-  // Enter commits and the host then removes the input; a late blur must not commit a second time.
   const settled = useRef(false)
 
-  if (def.type === 'boolean') {
-    return (
-      <span className="aiws-editor">
-        <select aria-label={ariaLabel} autoFocus defaultValue={value === true ? 'true' : value === false ? 'false' : ''} onBlur={onCancel}
-          onChange={(event) => onCommit(event.target.value === '' ? UNSET : event.target.value === 'true')}
-          onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}>
-          <option value="">{t('aiworkspace.data.value.notSet')}</option><option value="true">{t('aiworkspace.common.yes')}</option><option value="false">{t('aiworkspace.common.no')}</option>
-        </select>
-      </span>
-    )
-  }
-  if (def.type === 'select') {
-    return (
-      <span className="aiws-editor">
-        <select aria-label={ariaLabel} autoFocus defaultValue={typeof value === 'string' ? value : ''} onBlur={onCancel}
-          onChange={(event) => onCommit(event.target.value === '' ? UNSET : event.target.value)}
-          onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}>
-          <option value="">{t('aiworkspace.data.value.notSet')}</option>
-          {(def.options ?? []).map((option) => <option key={option.option_id} value={option.option_id}>{option.label}</option>)}
-        </select>
-      </span>
-    )
-  }
-  if (def.type === 'multi_select') {
-    return (
-      <span className="aiws-editor aiws-editor-multi" role="group" aria-label={ariaLabel}>
-        {(def.options ?? []).map((option) => (
-          <label key={option.option_id}>
-            <input type="checkbox" checked={selected.includes(option.option_id)}
-              onChange={(event) => setSelected(event.target.checked ? [...selected, option.option_id] : selected.filter((id) => id !== option.option_id))} />
-            {option.label}
-          </label>
-        ))}
-        <button type="button" onClick={() => onCommit(selected.length === 0 ? UNSET : selected)}>{t('aiworkspace.common.ok')}</button>
-        <button type="button" onClick={onCancel}>{t('aiworkspace.common.cancel')}</button>
-      </span>
-    )
-  }
-  if (def.type === 'object_ref') {
-    return <span className="aiws-editor aiws-muted">{t('aiworkspace.data.value.objectRefNotEditable')} <button type="button" onClick={onCancel}>{t('aiworkspace.common.close')}</button></span>
-  }
   const cancel = () => {
     if (settled.current) return
     settled.current = true
     onCancel()
   }
-  const commit = () => {
+  const finish = async (next: Input, back?: boolean) => {
     if (settled.current) return
-    if (text === startText && initialText === undefined) { cancel(); return }
+    if (next === UNSET && def.required && !def.nullable) {
+      setError(t('aiworkspace.data.record.required', { name: def.name }))
+      return
+    }
+    settled.current = true
+    const input = next === UNSET && def.required && def.nullable ? null : next
+    const unchanged = (input === UNSET && value === undefined) || input === value || (Array.isArray(input) && JSON.stringify(input) === JSON.stringify(value))
+    if (unchanged) onCancel()
+    else if (!await onCommit(input)) return
+    if (back !== undefined) onTab(back)
+  }
+  const commit = (back?: boolean) => {
+    if (settled.current) return
+    if (def.type === 'multi_select') { void finish(selected.length ? selected : UNSET, back); return }
+    if (text === startText) {
+      cancel()
+      if (back !== undefined) onTab(back)
+      return
+    }
     const parsed = parseInput(def, text)
     if (!parsed.ok) { setError(parsed.error); return }
-    settled.current = true
-    onCommit(parsed.value)
+    void finish(parsed.value, back)
   }
-  if (def.type === 'json') {
-    // an object written as JSON: Ctrl+Enter or leaving saves, Esc keeps the old value
-    return (
-      <span className="aiws-editor aiws-editor-json">
-        <textarea aria-label={ariaLabel} autoFocus rows={Math.min(12, Math.max(3, text.split('\n').length))} value={text} spellCheck={false}
-          onChange={(event) => { setText(event.target.value); setError(null) }}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); commit() }
-            if (event.key === 'Escape') { event.preventDefault(); cancel() }
-          }} />
-        {error && <span className="aiws-error" role="alert">{error}</span>}
-      </span>
-    )
+  const keyDown = (event: KeyboardEvent) => {
+    if (event.nativeEvent.isComposing || event.key === 'Process') return
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancel() }
+    if (event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); if (!event.repeat) commit(event.shiftKey) }
+    if (event.key === 'Enter' && (def.type !== 'json' || event.ctrlKey || event.metaKey) && def.type !== 'multi_select' && def.type !== 'select' && def.type !== 'object_ref') {
+      event.preventDefault(); event.stopPropagation(); commit()
+    }
+  }
+  if (def.type === 'object_ref' && def.ref_purpose) {
+    return <span ref={focusInput} onKeyDown={keyDown}><ReferenceInput field={def} value={value} ariaLabel={ariaLabel} onChange={(v) => { void finish(v ?? UNSET) }} onCancel={cancel} /></span>
   }
   return (
-    <span className="aiws-editor">
-      <input
-        aria-label={ariaLabel}
-        autoFocus
-        type={def.type === 'date' ? 'date' : def.type === 'datetime' ? 'datetime-local' : 'text'}
-        inputMode={def.type === 'number' || def.type === 'decimal' ? 'decimal' : undefined}
-        placeholder={def.type === 'currency' && def.currency ? def.currency : undefined}
-        value={text}
-        onChange={(event) => { setText(event.target.value); setError(null) }}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') { event.preventDefault(); commit() }
-          if (event.key === 'Escape') { event.preventDefault(); cancel() }
-          if (event.key === 'Tab' && onTab) { event.preventDefault(); commit(); if (settled.current) onTab(event.shiftKey) }
-        }}
-      />
+    <span ref={focusInput} className={`aiws-editor${def.type === 'json' ? ' aiws-editor-json' : def.type === 'multi_select' ? ' aiws-editor-multi' : ''}`} onKeyDown={keyDown}
+      role={def.type === 'multi_select' ? 'group' : undefined} aria-label={def.type === 'multi_select' ? ariaLabel : undefined}>
+      {def.type === 'select' || def.type === 'boolean' ? (
+        <select aria-label={ariaLabel} defaultValue={value === undefined || value === null ? '' : String(value)} onBlur={cancel}
+          onChange={(event) => { const v = event.target.value; void finish(v === '' ? UNSET : def.type === 'boolean' ? v === 'true' : v) }}>
+          <option value="">{t('aiworkspace.data.value.notSet')}</option>
+          {def.type === 'boolean' ? <><option value="true">{t('aiworkspace.common.yes')}</option><option value="false">{t('aiworkspace.common.no')}</option></>
+            : def.options?.map((option) => <option key={option.option_id} value={option.option_id}>{option.label}</option>)}
+        </select>
+      ) : def.type === 'multi_select' ? (
+        <>
+          {def.options?.map((option) => (
+            <label key={option.option_id}>
+              <input type="checkbox" checked={selected.includes(option.option_id)}
+                onChange={(event) => setSelected(event.target.checked ? [...selected, option.option_id] : selected.filter((id) => id !== option.option_id))} />
+              {option.label}
+            </label>
+          ))}
+          <button type="button" onClick={() => commit()}>{t('aiworkspace.common.ok')}</button>
+          <button type="button" onClick={cancel}>{t('aiworkspace.common.cancel')}</button>
+        </>
+      ) : def.type === 'json' ? (
+        <textarea aria-label={ariaLabel} rows={Math.min(12, Math.max(3, text.split('\n').length))} value={text} spellCheck={false}
+          onChange={(event) => { setText(event.target.value); setError(null) }} onBlur={() => commit()} />
+      ) : (
+        <input aria-label={ariaLabel} type={def.type === 'date' ? 'date' : def.type === 'datetime' ? 'datetime-local' : 'text'}
+          inputMode={def.type === 'number' || def.type === 'decimal' ? 'decimal' : undefined}
+          placeholder={def.type === 'currency' && def.currency ? def.currency : undefined}
+          value={text} onChange={(event) => { setText(event.target.value); setError(null) }} onBlur={() => commit()} />
+      )}
       {error && <span className="aiws-error" role="alert">{error}</span>}
     </span>
   )

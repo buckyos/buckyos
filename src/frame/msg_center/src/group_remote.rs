@@ -15,14 +15,29 @@ pub(crate) struct JoinedGroupBinding {
     schema_version: u32,
     owner_did: DID,
     group_did: DID,
-    host: String,
+    pub(crate) host: String,
     pending_invitation_id: Option<String>,
     member: Option<Value>,
     doc_cache: Option<Value>,
 }
 
 impl JoinedGroupBinding {
-    fn route(&self, center: &MessageCenter) -> JoinedGroupRoute {
+    pub(crate) fn active(&self) -> bool {
+        self.member
+            .as_ref()
+            .is_some_and(|member| member["state"] == "active")
+    }
+
+    pub(crate) fn epoch(&self) -> Option<u32> {
+        self.member
+            .as_ref()?
+            .get("epoch")?
+            .as_u64()?
+            .try_into()
+            .ok()
+    }
+
+    pub(crate) fn route(&self, center: &MessageCenter) -> JoinedGroupRoute {
         JoinedGroupRoute {
             owner_did: self.owner_did.clone(),
             group_did: self.group_did.clone(),
@@ -99,7 +114,7 @@ impl MessageCenter {
         Ok(route)
     }
 
-    async fn load_group_binding(
+    pub(crate) async fn load_group_binding(
         &self,
         owner: &DID,
         group: &DID,
@@ -121,7 +136,11 @@ impl MessageCenter {
     }
 
     async fn save_group_binding(&self, binding: &JoinedGroupBinding, reset: bool) -> Result<()> {
-        let _guard = self.groups.sync_lock.lock().await;
+        let _guard = self
+            .groups
+            .sync_locks
+            .lock(&binding.owner_did, &binding.group_did)
+            .await;
         let mut tx = self.msg_box_db.pool().begin().await.map_err(db_error)?;
         let sql = self.msg_box_db.render_sql("INSERT INTO group_joined_bindings(owner,group_did,binding_json) VALUES(?,?,?) ON CONFLICT(owner,group_did) DO UPDATE SET binding_json=excluded.binding_json");
         sqlx::query(&sql)
@@ -147,17 +166,10 @@ impl MessageCenter {
                     serde_json::from_str(&raw).map_err(db_error)?;
                 state.stopped = false;
                 state.changes_token = None;
+                state.recent_push_tokens.clear();
+                state.member_epoch = binding.epoch();
                 state.session_cache.clear();
-                let sql = self.msg_box_db.render_sql(
-                    "UPDATE joined_groups SET state_json=? WHERE owner=? AND group_did=?",
-                );
-                sqlx::query(&sql)
-                    .bind(serde_json::to_string(&state).map_err(db_error)?)
-                    .bind(binding.owner_did.to_string())
-                    .bind(binding.group_did.to_string())
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(db_error)?;
+                self.store_joined_state(&mut tx, &state, Some(&raw)).await?;
             }
         }
         tx.commit().await.map_err(db_error)?;
@@ -193,16 +205,11 @@ impl MessageCenter {
         group: &DID,
     ) -> Result<Option<JoinedGroupRoute>> {
         if let Some(binding) = self.load_group_binding(owner, group).await? {
-            if binding
-                .member
-                .as_ref()
-                .is_some_and(|member| member["state"] == "active")
-            {
+            if binding.active() {
                 if self
-                    .joined_groups(owner)
+                    .joined_state(owner, group)
                     .await?
-                    .iter()
-                    .any(|state| state.group_did == *group && state.stopped)
+                    .is_some_and(|state| state.stopped)
                 {
                     return Err(denied("group-membership-ended"));
                 }
@@ -210,14 +217,21 @@ impl MessageCenter {
             }
             return Err(denied("member-not-active"));
         }
-        Ok(self
-            .cyfs_dispatch
+        Ok(self.configured_group_route(owner, group))
+    }
+
+    pub(crate) fn configured_group_route(
+        &self,
+        owner: &DID,
+        group: &DID,
+    ) -> Option<JoinedGroupRoute> {
+        self.cyfs_dispatch
             .read()
             .unwrap()
             .joined_groups
             .iter()
             .find(|route| route.owner_did == *owner && route.group_did == *group)
-            .cloned())
+            .cloned()
     }
 
     /// The group itself telling `owner` about their place in it (`msg.from` is proven by the
@@ -252,6 +266,32 @@ impl MessageCenter {
             return Err(invalid("invalid-group-response"));
         }
         Ok(value)
+    }
+
+    /// The member list (`session: None`) or one Session's participants of a joined group, as
+    /// its host shows them to `owner`.
+    pub(crate) async fn remote_group_members(
+        &self,
+        owner: &DID,
+        group: &DID,
+        session: Option<Option<&str>>,
+    ) -> Result<Value> {
+        let route = self
+            .joined_group_route(owner, group)
+            .await?
+            .ok_or_else(missing)?;
+        let path = match session {
+            None => format!("{}/members", route.base_path()),
+            Some(None) => format!("{}/participants", route.base_path()),
+            Some(Some(sid)) => {
+                let key = session_key(group, Some(sid))?;
+                let (_, encoded) = key
+                    .split_once('/')
+                    .ok_or_else(|| invalid("invalid-session-id"))?;
+                format!("{}/sessions/{}/participants", route.base_path(), encoded)
+            }
+        };
+        route.fetch(self, &path, &[]).await
     }
 
     pub(crate) async fn accept_remote_group_invitation(
@@ -296,7 +336,7 @@ impl MessageCenter {
         if !self.is_hosted_identity(&member) {
             return Err(denied("remote-group-auth-failed"));
         }
-        let _guard = self.groups.join_lock.lock().await;
+        let _guard = self.groups.join_locks.lock(&member, group).await;
         let route = self.resolve_group_route(&member, group, true).await?;
         let mut saved = self.load_group_binding(&member, group).await?;
         if saved.as_ref().is_some_and(|binding| {
@@ -325,9 +365,14 @@ impl MessageCenter {
             member: None,
             doc_cache: None,
         });
+        let host_changed = !binding.host.eq_ignore_ascii_case(&route.host);
+        if host_changed {
+            binding.member = None;
+            binding.doc_cache = None;
+        }
         binding.host = route.host;
         binding.pending_invitation_id = Some(invitation.into());
-        self.save_group_binding(&binding, false).await?;
+        self.save_group_binding(&binding, host_changed).await?;
         self.resume_group_binding(binding).await
     }
 
@@ -429,24 +474,66 @@ impl MessageCenter {
         owner: &DID,
         group: &DID,
     ) -> Result<Option<Value>> {
-        let _guard = self.groups.join_lock.lock().await;
+        let _guard = self.groups.join_locks.lock(owner, group).await;
         let Some(binding) = self.load_group_binding(owner, group).await? else {
             return Ok(None);
         };
         self.resume_group_binding(binding).await.map(Some)
     }
 
-    pub(crate) async fn sync_remote_groups(&self) -> Result<()> {
+    pub(crate) async fn scheduled_group_routes(&self) -> Result<Vec<JoinedGroupRoute>> {
+        let mut routes = std::collections::BTreeMap::new();
+        for route in self.cyfs_dispatch.read().unwrap().joined_groups.iter() {
+            routes.insert(
+                (route.owner_did.to_string(), route.group_did.to_string()),
+                route.clone(),
+            );
+        }
         for binding in self.group_bindings(None).await? {
-            if let Err(error) = self
-                .sync_remote_group(&binding.owner_did, &binding.group_did)
-                .await
+            let key = (binding.owner_did.to_string(), binding.group_did.to_string());
+            if binding.active() {
+                routes.insert(key, binding.route(self));
+            } else {
+                routes.remove(&key);
+            }
+        }
+        Ok(routes.into_values().collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn sync_remote_groups(&self) -> Result<()> {
+        self.recover_remote_joins(true).await
+    }
+
+    pub(crate) async fn recover_remote_joins(&self, include_initial_sync: bool) -> Result<()> {
+        let mut recovery = tokio::task::JoinSet::new();
+        for binding in self.group_bindings(None).await? {
+            if binding.pending_invitation_id.is_none()
+                && binding.active()
+                && (!include_initial_sync
+                    || self
+                        .joined_state(&binding.owner_did, &binding.group_did)
+                        .await?
+                        .is_some())
             {
-                log::warn!(
-                    "joined group {} recovery failed: {}",
-                    binding.group_did.to_string(),
-                    error
-                );
+                continue;
+            }
+            let center = self.clone();
+            recovery.spawn(async move {
+                if let Err(error) = center
+                    .sync_remote_group(&binding.owner_did, &binding.group_did)
+                    .await
+                {
+                    log::warn!(
+                        "joined group {} recovery failed: {error}",
+                        binding.group_did.to_string()
+                    );
+                }
+            });
+        }
+        while let Some(result) = recovery.join_next().await {
+            if let Err(error) = result {
+                log::warn!("joined group recovery task failed: {error}");
             }
         }
         Ok(())

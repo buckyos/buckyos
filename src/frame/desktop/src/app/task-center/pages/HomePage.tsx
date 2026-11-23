@@ -1,214 +1,35 @@
-/* ── TaskCenter Home Page ── */
+/* ── TaskCenter Home page ── */
 
 import { useState } from 'react'
-import {
-  Play,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  Clock,
-  ChevronRight,
-  Shield,
-  Download,
-  Pause,
-} from 'lucide-react'
-import { useI18n } from '../../../i18n/provider'
+import { Download } from 'lucide-react'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
 import { NewDownloadDialog } from '../components/NewDownloadDialog'
-import type { Task, SystemNotification } from '../../../api/task_mgr'
+import { TaskRow } from '../components/TaskTree'
+import { StatusDot } from '../components/taskView'
+import { useTaskText, type Tone } from '../components/taskModel'
+import type { SystemNotification, Task } from '../../../api/task_mgr'
 import type { TaskCenterNav } from '../components/layout/navigation'
 
-function statusIcon(status: Task['status']) {
-  switch (status) {
-    case 'running':
-      return <Play size={14} />
-    case 'paused':
-      return <Pause size={14} />
-    case 'completed':
-      return <CheckCircle2 size={14} />
-    case 'failed':
-      return <XCircle size={14} />
-    case 'cancelled':
-      return <Clock size={14} />
-    default:
-      return <Clock size={14} />
-  }
-}
-
-function statusColor(status: Task['status']) {
-  switch (status) {
-    case 'running':
-      return 'var(--cp-accent)'
-    case 'paused':
-      return 'var(--cp-warning)'
-    case 'completed':
-      return 'var(--cp-success)'
-    case 'failed':
-      return 'var(--cp-danger)'
-    case 'cancelled':
-      return 'var(--cp-muted)'
-    default:
-      return 'var(--cp-muted)'
-  }
-}
-
-function severityColor(severity: SystemNotification['severity']) {
+function severityTone(severity: SystemNotification['severity']): Tone {
   switch (severity) {
     case 'critical':
-      return 'var(--cp-danger)'
+      return 'failed'
     case 'warning':
-      return 'var(--cp-warning)'
+      return 'waiting'
     default:
-      return 'var(--cp-accent)'
+      return 'running'
   }
-}
-
-function formatTime(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
-function TaskCard({
-  task,
-  onOpen,
-}: {
-  task: Task
-  onOpen: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="w-full rounded-2xl p-4 text-left transition-colors"
-      style={{
-        background: 'var(--cp-surface)',
-        border: '1px solid var(--cp-border)',
-      }}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span style={{ color: statusColor(task.status) }}>{statusIcon(task.status)}</span>
-            <span
-              className="text-xs font-medium uppercase tracking-wide"
-              style={{ color: statusColor(task.status) }}
-            >
-              {task.status}
-            </span>
-            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-              · {task.source}
-            </span>
-          </div>
-          <div className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>
-            {task.title}
-          </div>
-          <div className="text-xs mt-0.5 truncate" style={{ color: 'var(--cp-muted)' }}>
-            {task.summary}
-          </div>
-          {task.progress != null && (
-            <div className="mt-2.5">
-              <div
-                className="h-1.5 w-full rounded-full overflow-hidden"
-                style={{ background: 'var(--cp-border)' }}
-              >
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{
-                    width: `${task.progress}%`,
-                    background: statusColor(task.status),
-                  }}
-                />
-              </div>
-              <div className="text-xs mt-1" style={{ color: 'var(--cp-muted)' }}>
-                {task.progress}%
-              </div>
-            </div>
-          )}
-        </div>
-        <ChevronRight size={16} style={{ color: 'var(--cp-muted)', marginTop: 2 }} />
-      </div>
-      <div className="text-xs mt-2" style={{ color: 'var(--cp-muted)' }}>
-        Updated {formatTime(task.updatedAt)}
-      </div>
-    </button>
-  )
-}
-
-function NotificationCard({
-  notification,
-  onAction,
-}: {
-  notification: SystemNotification
-  onAction: (action: string) => void
-}) {
-  return (
-    <div
-      className="rounded-2xl p-4"
-      style={{
-        background: 'var(--cp-surface)',
-        border: '1px solid var(--cp-border)',
-      }}
-    >
-      <div className="flex items-start gap-3">
-        <div
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl"
-          style={{
-            background: `color-mix(in srgb, ${severityColor(notification.severity)} 14%, transparent)`,
-            color: severityColor(notification.severity),
-          }}
-        >
-          {notification.severity === 'critical' ? (
-            <Shield size={16} />
-          ) : (
-            <AlertTriangle size={16} />
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-            {notification.title}
-          </div>
-          <div className="text-xs mt-0.5" style={{ color: 'var(--cp-muted)' }}>
-            {notification.summary}
-          </div>
-          <div className="flex gap-2 mt-3">
-            {notification.actions.map((action) => (
-              <button
-                key={action}
-                type="button"
-                onClick={() => onAction(action)}
-                className="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors"
-                style={{
-                  background:
-                    action === 'approve' || action === 'confirm'
-                      ? 'var(--cp-accent)'
-                      : 'var(--cp-surface-2)',
-                  color:
-                    action === 'approve' || action === 'confirm'
-                      ? 'white'
-                      : 'var(--cp-text)',
-                  border: '1px solid var(--cp-border)',
-                }}
-              >
-                {action.charAt(0).toUpperCase() + action.slice(1)}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="text-xs mt-2" style={{ color: 'var(--cp-muted)' }}>
-        {formatTime(notification.createdAt)}
-      </div>
-    </div>
-  )
 }
 
 interface HomePageProps {
   onNavigate: (nav: TaskCenterNav) => void
+  selectedId?: string
 }
 
-export function HomePage({ onNavigate }: HomePageProps) {
+export function HomePage({ onNavigate, selectedId }: HomePageProps) {
   const store = useTaskCenterStore()
-  const { t } = useI18n()
+  const text = useTaskText()
+  const { t } = text
   const [, setTick] = useState(0)
   const [downloadOpen, setDownloadOpen] = useState(false)
 
@@ -221,86 +42,90 @@ export function HomePage({ onNavigate }: HomePageProps) {
     setTick((n) => n + 1)
   }
 
+  const taskList = (tasks: Task[]) => (
+    <div className="tc-list">
+      {tasks.map((task) => (
+        <TaskRow
+          key={task.taskId}
+          task={task}
+          text={text}
+          selected={task.taskId === selectedId}
+          onSelect={() => onNavigate({ page: 'home', taskId: task.taskId })}
+        />
+      ))}
+    </div>
+  )
+
   return (
-    <div className="space-y-6">
-      {/* Running Tasks */}
+    <div className="space-y-8">
       {runningTasks.length > 0 && (
         <section>
-          <h2
-            className="text-xs font-semibold uppercase tracking-wide mb-3"
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            {t('taskCenter.home.running', 'Running Tasks')} ({runningTasks.length})
+          <h2 className="tc-heading mb-2 px-1">
+            {t('taskCenter.home.running', 'Running')}
+            <span className="tc-num">{runningTasks.length}</span>
           </h2>
-          <div className="space-y-2">
-            {runningTasks.map((task) => (
-              <TaskCard
-                key={task.taskId}
-                task={task}
-                onOpen={() => onNavigate({ page: 'tasks', taskId: task.taskId })}
-              />
-            ))}
-          </div>
+          {taskList(runningTasks)}
         </section>
       )}
 
-      {/* Recent Finished */}
       {recentFinished.length > 0 && (
         <section>
-          <h2
-            className="text-xs font-semibold uppercase tracking-wide mb-3"
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            {t('taskCenter.home.recent', 'Recently Finished')}
-          </h2>
-          <div className="space-y-2">
-            {recentFinished.map((task) => (
-              <TaskCard
-                key={task.taskId}
-                task={task}
-                onOpen={() => onNavigate({ page: 'tasks', taskId: task.taskId })}
-              />
-            ))}
-          </div>
+          <h2 className="tc-heading mb-2 px-1">{t('taskCenter.home.recent', 'Recently finished')}</h2>
+          {taskList(recentFinished)}
         </section>
       )}
 
-      {/* System Notifications */}
       {pendingNotifications.length > 0 && (
         <section>
-          <h2
-            className="text-xs font-semibold uppercase tracking-wide mb-3"
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            {t('taskCenter.home.notifications', 'System Notifications')} ({pendingNotifications.length})
+          <h2 className="tc-heading mb-2 px-1">
+            {t('taskCenter.home.notifications', 'System notifications')}
+            <span className="tc-num">{pendingNotifications.length}</span>
           </h2>
-          <div className="space-y-2">
-            {pendingNotifications.map((notif) => (
-              <NotificationCard
-                key={notif.id}
-                notification={notif}
-                onAction={(action) => handleNotificationAction(notif.id, action)}
-              />
+          <div className="tc-surface">
+            {pendingNotifications.map((notification, index) => (
+              <article
+                key={notification.id}
+                className="flex gap-2 p-3"
+                style={index > 0 ? { borderTop: '1px solid var(--tc-line)' } : undefined}
+              >
+                <span className="tc-row-dot">
+                  <StatusDot tone={severityTone(notification.severity)} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <h3 className="text-sm font-medium leading-5">{notification.title}</h3>
+                    <span className="tc-num tc-muted shrink-0 text-xs">{text.listTime(notification.createdAt)}</span>
+                  </div>
+                  <p className="tc-muted mt-0.5 text-[13px] leading-5">{notification.summary}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {notification.actions.map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        onClick={() => handleNotificationAction(notification.id, action)}
+                        className="tc-btn"
+                        data-variant={action === 'approve' || action === 'confirm' ? 'primary' : undefined}
+                      >
+                        {t(`taskCenter.action.${action}`, action)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </article>
             ))}
           </div>
         </section>
       )}
 
-      {/* New download */}
       <section>
         <button
           type="button"
           onClick={() => setDownloadOpen(true)}
-          className="flex items-center gap-2 rounded-2xl px-4 py-3 text-sm font-medium transition-colors"
-          style={{
-            background: 'var(--cp-surface)',
-            color: 'var(--cp-accent)',
-            border: '1px solid var(--cp-border)',
-          }}
+          className="tc-btn h-9"
           data-testid="task-center-new-download"
         >
-          <Download size={16} />
-          {t('taskCenter.download.new', 'New Download')}
+          <Download size={16} strokeWidth={1.75} />
+          {t('taskCenter.download.new', 'New download')}
         </button>
       </section>
       <NewDownloadDialog
@@ -312,14 +137,8 @@ export function HomePage({ onNavigate }: HomePageProps) {
         }}
       />
 
-      {/* Empty state */}
       {runningTasks.length === 0 && recentFinished.length === 0 && pendingNotifications.length === 0 && (
-        <div
-          className="text-center py-12 text-sm"
-          style={{ color: 'var(--cp-muted)' }}
-        >
-          {t('taskCenter.home.empty', 'No active tasks or pending notifications.')}
-        </div>
+        <p className="tc-empty">{t('taskCenter.home.empty', 'No running tasks or pending notifications')}</p>
       )}
     </div>
   )

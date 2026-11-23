@@ -1888,8 +1888,9 @@ impl BuckyOSRuntime {
         validate_verify_hub_token_claims(&rpc_token, TokenUse::Session)?;
         // A token signed for another Zone never passes here, whatever key it verifies with.
         if let Some(zone) = crate::token_zone(&rpc_token) {
-            let issued_here = DID::from_str(zone)
-                .is_ok_and(|zone| self.zone_id.is_valid() && crate::same_zone(&zone, &self.zone_id));
+            let issued_here = DID::from_str(zone).is_ok_and(|zone| {
+                self.zone_id.is_valid() && crate::same_zone(&zone, &self.zone_id)
+            });
             if !issued_here {
                 return Err(RPCErrors::InvalidToken(
                     "session token was issued for another Zone".to_string(),
@@ -1897,6 +1898,20 @@ impl BuckyOSRuntime {
             }
         }
 
+        if rpc_token.extra.contains_key("resource_share") {
+            let target = crate::token_auth_target(&rpc_token)?;
+            if !self
+                .get_verify_hub_client()
+                .await?
+                .verify_token(token_str, Some(target))
+                .await?
+            {
+                return Err(
+                    crate::AccessDenial::new(crate::DenyReason::ResourceGrantMissing)
+                        .into_rpc_error(),
+                );
+            }
+        }
         Ok(rpc_token)
     }
 

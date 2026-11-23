@@ -104,7 +104,7 @@ TodoList 是 plan session 的**持久决策依据**：要做什么、按什么�
 
 崩溃恢复：drive 开头与每个批次边界对账——有 sid 对应的 work session → 绑定；没有 → 撤回为 `pending`，下一个调度点用同一个 key 重派，不重复建。
 
-work session 是独立的 Work Session：自己的 sid、目录、历史、预算、报告；不读不写 plan 的列表。它的结果由 plan 的宿主依据登记表的已提交状态回写：`succeeded → completed`；`failed → failed`（Turn 预算耗尽时 `timeout`）；`stopped → stopped`。它需要回答时 attempt 仍是 `running`，plan 从输入里得知。
+work session 是独立的 Work Session：自己的 sid、目录、历史、预算、报告；不读不写 plan 的列表。它的结果由 plan 的宿主依据登记表的已提交状态回写：`succeeded → completed`；`failed → failed`（Turn 预算耗尽时 `timeout`）；`stopped → stopped`。新提交的最终报告必须填写 `outcome`。只有成功的 attempt 满足依赖，包括显式报告 `succeeded` 和恢复已接受的旧成功报告。报告 `failed`（执行或验收失败）或 `blocked`（缺少前置条件）时，本次 attempt 和 Todo 均为 `failed`，依赖它的 Todo 进入 `blocked`。plan 可通过 `todo show <id> --report` 查看原因，补齐前置条件后用 `todo retry` 开始新 attempt。运行中等待回答时，attempt 仍是 `running`，plan 从输入里得知。
 
 ## 6. 运行中的 Todo：update / pause / resume / stop
 
@@ -135,7 +135,7 @@ plan session 是多 Turn 的 Work Session，每个输入打开一个 Turn：
 
 - 只有 `report(is_end=true)` 结束 plan session；宿主不检查列表是否收敛，也不要求“听取”每个子 session——它们的结束本来就是输入。
 - plan 结束时仍在跑的 attempt 记为 `stopped`（原因“the plan session ended / was stopped”），它们的 work session 被停掉（有队列的收到 `stop`；结束的父 session 的报告子 session 由宿主的 ChildDriver 停止）。
-- `report(is_end=false)` 只记进度。
+- plan 提交最终报告时，按整个目标的验收结果选择 `outcome`。目标达成用 `succeeded`，执行或验收失败用 `failed`，缺少必要前提且无法继续用 `blocked`。阶段报告 `report(is_end=false)` 只记进度。
 
 ## 9. 命令
 

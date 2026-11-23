@@ -1,119 +1,15 @@
-/* ── TaskCenter Task Detail Page ── */
+/* ── TaskCenter task detail: the side panel on a desktop, its own page on a phone ── */
 
 import { useEffect, useMemo, useState } from 'react'
-import {
-  ArrowLeft,
-  Play,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  Pause,
-  AlertTriangle,
-  MessageSquare,
-  CircleStop,
-} from 'lucide-react'
+import { ArrowLeft, CircleStop, MessageSquare, X } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
 import { notifyCardPath, type Task } from '../../../api/task_mgr'
 import { ContentPreview } from '../../../components/ContentPreview'
 import { formatBytes } from '../../../sysdlg/shareFormat'
-import type { TaskCenterNav, TaskCenterPage } from '../components/layout/navigation'
-
-function statusIcon(status: Task['status'], size = 16) {
-  switch (status) {
-    case 'running':
-      return <Play size={size} />
-    case 'paused':
-      return <Pause size={size} />
-    case 'completed':
-      return <CheckCircle2 size={size} />
-    case 'failed':
-      return <XCircle size={size} />
-    default:
-      return <Clock size={size} />
-  }
-}
-
-function statusColor(status: Task['status']) {
-  switch (status) {
-    case 'running':
-      return 'var(--cp-accent)'
-    case 'paused':
-      return 'var(--cp-warning)'
-    case 'completed':
-      return 'var(--cp-success)'
-    case 'failed':
-      return 'var(--cp-danger)'
-    default:
-      return 'var(--cp-muted)'
-  }
-}
-
-function formatTime(iso: string | null) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return d.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
-function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-start gap-3 py-2">
-      <span className="text-xs font-medium w-28 shrink-0 pt-0.5" style={{ color: 'var(--cp-muted)' }}>
-        {label}
-      </span>
-      <span className="min-w-0 flex-1 break-all text-sm" style={{ color: 'var(--cp-text)' }}>
-        {value}
-      </span>
-    </div>
-  )
-}
-
-function SubTaskRow({ task }: { task: Task }) {
-  return (
-    <div
-      className="flex items-center gap-3 rounded-xl p-3"
-      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-    >
-      <div
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
-        style={{
-          background: `color-mix(in srgb, ${statusColor(task.status)} 14%, transparent)`,
-          color: statusColor(task.status),
-        }}
-      >
-        {statusIcon(task.status, 12)}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm truncate" style={{ color: 'var(--cp-text)' }}>
-          {task.title}
-        </div>
-        {task.summary && (
-          <div className="text-xs mt-0.5 truncate" style={{ color: 'var(--cp-muted)' }}>
-            {task.summary}
-          </div>
-        )}
-      </div>
-      <span
-        className="text-xs font-medium uppercase shrink-0"
-        style={{ color: statusColor(task.status) }}
-      >
-        {task.status}
-      </span>
-      {task.progress != null && (
-        <span className="text-xs shrink-0" style={{ color: 'var(--cp-muted)' }}>
-          {task.progress}%
-        </span>
-      )}
-    </div>
-  )
-}
+import { NAV_LABELS, type TaskCenterNav, type TaskCenterPage } from '../components/layout/navigation'
+import { Meter, StatusDot } from '../components/taskView'
+import { taskTone, useTaskText, type TaskText } from '../components/taskModel'
 
 function TaskResults({ task }: { task: Task }) {
   const { t } = useI18n()
@@ -141,36 +37,31 @@ function TaskResults({ task }: { task: Task }) {
   if (!artifacts.length) return null
 
   return (
-    <section
-      className="min-w-0 space-y-3 rounded-2xl p-4"
-      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-      data-testid="task-results"
-    >
-      <h2 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-        {t('taskCenter.detail.results', 'Results')}
-      </h2>
-      {artifacts.map((artifact, index) => (
-        <div key={`${artifact.source.objectId}:${index}`} className="flex min-w-0 flex-wrap items-center gap-3">
-          <div className="min-w-0 flex-1 basis-40">
-            <p className="break-all text-sm" style={{ color: 'var(--cp-text)' }}>{artifact.name}</p>
-            <p className="break-all text-xs" style={{ color: 'var(--cp-muted)' }}>
-              {[artifact.mime, artifact.size === undefined ? undefined : formatBytes(artifact.size)].filter(Boolean).join(' · ')}
-            </p>
+    <section className="tc-section min-w-0" data-testid="task-results">
+      <h3 className="tc-heading">{t('taskCenter.detail.results', 'Results')}</h3>
+      <div className="space-y-2">
+        {artifacts.map((artifact, index) => (
+          <div key={`${artifact.source.objectId}:${index}`} className="flex min-w-0 items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="break-all text-sm">{artifact.name}</p>
+              <p className="tc-muted break-all text-xs">
+                {[artifact.mime, artifact.size === undefined ? undefined : formatBytes(artifact.size)].filter(Boolean).join(' · ')}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="tc-btn"
+              aria-pressed={activeObjectId === artifact.source.objectId}
+              onClick={() => setActiveObjectId(artifact.source.objectId)}
+              data-testid="task-result-preview"
+            >
+              {t('taskCenter.detail.previewResult', 'Preview')}
+            </button>
           </div>
-          <button
-            type="button"
-            className="rounded-lg px-3 py-2 text-sm font-medium"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-            aria-pressed={activeObjectId === artifact.source.objectId}
-            onClick={() => setActiveObjectId(artifact.source.objectId)}
-            data-testid="task-result-preview"
-          >
-            {t('taskCenter.detail.previewResult', 'Preview')}
-          </button>
-        </div>
-      ))}
+        ))}
+      </div>
       {active && (
-        <div className="overflow-hidden rounded-xl" style={{ height: 'clamp(280px, 55vh, 560px)' }}>
+        <div className="mt-3 overflow-hidden rounded-lg" style={{ height: 'clamp(280px, 55vh, 560px)' }}>
           <ContentPreview
             key={active.source.objectId}
             source={active.source}
@@ -185,51 +76,142 @@ function TaskResults({ task }: { task: Task }) {
   )
 }
 
-interface TaskDetailPageProps {
-  taskId: string
-  backPage?: TaskCenterPage
-  onNavigate: (nav: TaskCenterNav) => void
+/** The run: one progress readout above the subtasks, drawn as dots on a line. */
+function TaskRun({ task, text, onOpen }: { task: Task; text: TaskText; onOpen: (taskId: string) => void }) {
+  const total = task.children.length
+  if (task.progress == null && total === 0) return null
+  const done = task.children.filter((child) => child.status === 'completed').length
+  const tone = taskTone(task)
+
+  return (
+    <section className="tc-section" data-testid="task-run">
+      {task.progress != null && (
+        <div className={total > 0 ? 'mb-4' : undefined}>
+          <div className="mb-2 flex items-baseline justify-between gap-3">
+            <span className="tc-num text-[28px] font-medium leading-8">
+              {task.progress}
+              <span className="tc-muted text-base">%</span>
+            </span>
+            {total > 0 && (
+              <span className="tc-muted text-xs">
+                {text.t('taskCenter.detail.subtasksDone', '{{done}} of {{total}} subtasks done', { done, total })}
+              </span>
+            )}
+          </div>
+          <Meter value={task.progress} tone={tone} size="lg" />
+        </div>
+      )}
+      {total > 0 && (
+        <>
+          <h3 className="tc-heading mb-1">
+            {text.t('taskCenter.detail.subtasks', 'Subtasks')}
+            <span className="tc-num">{total}</span>
+          </h3>
+          <div className="-mx-2">
+            {task.children.map((child) => (
+              <button
+                key={child.taskId}
+                type="button"
+                className="tc-step"
+                onClick={() => onOpen(child.taskId)}
+                data-testid="task-step"
+              >
+                <span className="tc-row-dot">
+                  <StatusDot tone={taskTone(child)} />
+                </span>
+                <span className="tc-row-body">
+                  <span className="tc-row-title">{child.title}</span>
+                  <span className="tc-row-meta">{text.meta(child)}</span>
+                </span>
+                <span className="tc-row-aside">
+                  <span>
+                    {child.progress != null ? `${child.progress}%` : text.listTime(child.updatedAt)}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  )
 }
 
-export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskDetailPageProps) {
+interface TaskDetailPageProps {
+  taskId: string
+  /** The page the task was opened from. */
+  page: TaskCenterPage
+  variant: 'panel' | 'page'
+  onNavigate: (nav: TaskCenterNav) => void
+  onClose: () => void
+}
+
+export function TaskDetailPage({ taskId, page, variant, onNavigate, onClose }: TaskDetailPageProps) {
   const store = useTaskCenterStore()
-  const { t } = useI18n()
+  const text = useTaskText()
+  const { t } = text
   const [copyState, setCopyState] = useState('')
   const [canceling, setCanceling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
+  const [checkedId, setCheckedId] = useState<string | null>(null)
   // Lists carry metadata only; the payload/progress of a finished task is
-  // fetched when its detail page opens.
+  // fetched when its detail opens.
   useEffect(() => {
-    void store.loadTaskDetail(taskId)
+    let open = true
+    void store.loadTaskDetail(taskId).then(() => { if (open) setCheckedId(taskId) })
+    return () => { open = false }
   }, [store, taskId])
   const task = store.getTaskById(taskId)
-  const backLabel =
-    backPage === 'schedules'
-      ? t('taskCenter.detail.backSchedules', 'Back to Scheduled Tasks')
-      : t('taskCenter.detail.back', 'Back to Tasks')
+  const parent = task?.parentTaskId ? store.getTaskById(task.parentTaskId) : null
+  const open = (id: string) => onNavigate({ page, taskId: id })
+
+  const head = variant === 'panel' ? (
+    <div className="tc-panel-head">
+      {task && <StatusDot tone={taskTone(task)} />}
+      <span className="tc-muted min-w-0 flex-1 truncate text-[13px]">{task ? text.status(task) : ''}</span>
+      <button
+        type="button"
+        className="tc-icon-btn"
+        data-size="sm"
+        onClick={onClose}
+        aria-label={t('taskCenter.detail.close', 'Close details')}
+        title={t('taskCenter.detail.close', 'Close details')}
+      >
+        <X size={16} strokeWidth={1.75} />
+      </button>
+    </div>
+  ) : (
+    <button
+      type="button"
+      onClick={onClose}
+      className="-ml-2 mb-3 inline-flex h-9 items-center gap-2 rounded-lg px-2 text-sm"
+    >
+      <ArrowLeft size={16} strokeWidth={1.75} />
+      {t(NAV_LABELS[page].key, NAV_LABELS[page].fallback)}
+    </button>
+  )
+
+  const frame = (body: React.ReactNode) =>
+    variant === 'panel' ? (
+      <>
+        {head}
+        <div className="desktop-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-8 pt-4" data-testid="task-detail">
+          {body}
+        </div>
+      </>
+    ) : (
+      <div data-testid="task-detail">
+        {head}
+        {body}
+      </div>
+    )
 
   if (!task) {
-    return (
-      <div className="space-y-4">
-        <button
-          type="button"
-          onClick={() => onNavigate({ page: backPage })}
-          className="flex items-center gap-1.5 text-sm transition-colors"
-          style={{ color: 'var(--cp-accent)' }}
-        >
-          <ArrowLeft size={16} />
-          {backLabel}
-        </button>
-        <div
-          className="flex flex-col items-center justify-center gap-3 py-16"
-          style={{ color: 'var(--cp-muted)' }}
-        >
-          <AlertTriangle size={32} />
-          <div className="text-sm">
-            {t('taskCenter.detail.notFound', 'Task not found')}: {taskId}
-          </div>
-        </div>
-      </div>
+    return frame(
+      <div className="tc-empty">
+        <p>{checkedId === taskId && store.listState !== 'loading' ? t('taskCenter.detail.notFound', 'Task not found') : t('taskCenter.tasks.loading', 'Loading tasks…')}</p>
+        <p className="tc-mono mt-1 text-xs">{taskId}</p>
+      </div>,
     )
   }
 
@@ -250,251 +232,159 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
     }
   }
 
-  return (
-    <div className="space-y-5">
-      {/* Back link */}
-      <button
-        type="button"
-        onClick={() => onNavigate({ page: backPage })}
-        className="flex items-center gap-1.5 text-sm transition-colors"
-        style={{ color: 'var(--cp-accent)' }}
-      >
-        <ArrowLeft size={16} />
-        {backLabel}
-      </button>
-
-      {/* Header */}
-      <div>
-        <div className="flex items-center gap-2.5 mb-2">
-          <div
-            className="flex h-10 w-10 items-center justify-center rounded-xl"
-            style={{
-              background: `color-mix(in srgb, ${statusColor(task.status)} 14%, transparent)`,
-              color: statusColor(task.status),
-            }}
+  return frame(
+    <>
+      <header className="tc-section">
+        {parent && (
+          <button
+            type="button"
+            onClick={() => open(parent.taskId)}
+            className="tc-muted mb-1 flex max-w-full items-baseline gap-1 text-xs hover:text-[color:var(--cp-text)]"
+            data-testid="task-parent"
           >
-            {statusIcon(task.status, 20)}
-          </div>
-          <div>
-            <h1 className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {task.title}
-            </h1>
-            <span
-              className="text-xs font-medium uppercase"
-              style={{ color: statusColor(task.status) }}
-            >
-              {task.status}
-            </span>
-          </div>
-        </div>
-        {task.summary && (
-          <p className="text-sm" style={{ color: 'var(--cp-muted)' }}>
-            {task.summary}
+            <span className="shrink-0">{t('taskCenter.detail.partOf', 'Part of')}</span>
+            <span className="truncate underline decoration-[color:var(--cp-border)] underline-offset-2">{parent.title}</span>
+          </button>
+        )}
+        <h2 className="break-words text-[17px] font-medium leading-6">{task.title}</h2>
+        {variant === 'page' && (
+          <p className="tc-muted mt-1 flex items-center gap-2 text-[13px]">
+            <StatusDot tone={taskTone(task)} />
+            {text.status(task)}
           </p>
         )}
+        {task.summary && <p className="tc-muted mt-1 text-sm">{task.summary}</p>}
         {task.cancellable && (
           <button
             type="button"
             onClick={() => void cancel()}
             disabled={canceling}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-60"
-            style={{
-              background: 'var(--cp-surface)',
-              color: 'var(--cp-danger)',
-              border: '1px solid color-mix(in srgb, var(--cp-danger) 30%, var(--cp-border))',
-            }}
+            className="tc-btn mt-3"
+            data-variant="danger"
             data-testid="task-cancel"
           >
-            <CircleStop size={14} />
-            {t('taskCenter.detail.cancel', 'Cancel Task')}
+            <CircleStop size={14} strokeWidth={1.75} />
+            {t('taskCenter.detail.cancel', 'Cancel task')}
           </button>
         )}
         {task.pendingControlAction === 'Cancel' && task.status !== 'cancelled' && (
-          <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {t('taskCenter.detail.canceling', 'Canceling…')}
-          </p>
+          <p className="tc-muted mt-2 text-xs">{t('taskCenter.detail.canceling', 'Canceling…')}</p>
         )}
-        {cancelError && (
-          <p className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>
-            {cancelError}
-          </p>
-        )}
-      </div>
+        {cancelError && <p className="tc-danger mt-2 text-xs">{cancelError}</p>}
+      </header>
 
-      {/* Progress bar */}
-      {task.progress != null && (
-        <div>
-          <div
-            className="h-2 w-full rounded-full overflow-hidden"
-            style={{ background: 'var(--cp-border)' }}
-          >
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${task.progress}%`,
-                background: statusColor(task.status),
-              }}
-            />
-          </div>
-          <div className="text-xs mt-1" style={{ color: 'var(--cp-muted)' }}>
-            {task.progress}% complete
-          </div>
-        </div>
-      )}
+      <TaskRun task={task} text={text} onOpen={open} />
 
       <TaskResults key={task.taskId} task={task} />
 
-      {/* A URL download: where from and where it was saved */}
       {task.download && (
-        <section
-          className="rounded-2xl p-4"
-          style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-          data-testid="task-download-info"
-        >
-          <h2
-            className="text-xs font-semibold uppercase tracking-wide mb-2"
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            {t('taskCenter.download.section', 'Download')}
-          </h2>
-          <InfoRow label={t('taskCenter.download.url', 'Link')} value={<span className="break-all">{task.download.url}</span>} />
-          {task.download.localPath && (
-            <InfoRow
-              label={t('taskCenter.download.savedTo', 'Saved to')}
-              value={<span className="break-all font-mono text-xs" data-testid="task-download-path">{task.download.localPath}</span>}
-            />
-          )}
+        <section className="tc-section" data-testid="task-download-info">
+          <h3 className="tc-heading">{t('taskCenter.download.section', 'Download')}</h3>
+          <dl className="tc-dl">
+            <dt>{t('taskCenter.download.url', 'Link')}</dt>
+            <dd>{task.download.url}</dd>
+            {task.download.localPath && (
+              <>
+                <dt>{t('taskCenter.download.savedTo', 'Saved to')}</dt>
+                <dd className="tc-mono" data-testid="task-download-path">{task.download.localPath}</dd>
+              </>
+            )}
+          </dl>
         </section>
       )}
 
       {/* The task of a System Notify is answered on its MessageHub card */}
       {task.notifyId && (
-        <div
-          className="flex flex-wrap items-center gap-3 rounded-xl p-3 text-sm"
-          style={{
-            background: 'color-mix(in srgb, var(--cp-accent-soft) 14%, var(--cp-surface))',
-            border: '1px solid color-mix(in srgb, var(--cp-accent) 22%, var(--cp-border))',
-            color: 'var(--cp-text)',
-          }}
-          data-testid="task-notify"
-        >
-          <span className="min-w-0 flex-1">{t('taskCenter.notify.hint', 'This task is the answer to a notification. Handle it on its card in MessageHub.')}</span>
-          <a
-            href={notifyCardPath(task.notifyId)}
-            className="inline-flex items-center gap-1.5 font-medium"
-            style={{ color: 'var(--cp-accent)' }}
-            data-testid="task-notify-link"
-          >
-            <MessageSquare size={15} />
+        <div className="tc-section tc-note" data-testid="task-notify">
+          <p>{t('taskCenter.notify.hint', 'This task answers a notification. Handle it on its card in MessageHub.')}</p>
+          <a href={notifyCardPath(task.notifyId)} className="tc-link mt-2 text-[13px]" data-testid="task-notify-link">
+            <MessageSquare size={14} strokeWidth={1.75} />
             {t('taskCenter.notify.open', 'Handle in MessageHub')}
           </a>
         </div>
       )}
 
-      {/* Error message */}
       {errorMsg && (
-        <div
-          className="rounded-xl p-3 text-sm"
-          style={{
-            background: 'color-mix(in srgb, var(--cp-danger) 8%, var(--cp-surface))',
-            border: '1px solid color-mix(in srgb, var(--cp-danger) 30%, var(--cp-border))',
-            color: 'var(--cp-danger)',
-          }}
-        >
+        <div className="tc-section tc-note" data-tone="failed">
           {errorMsg}
         </div>
       )}
 
-      {/* Info section */}
-      <section
-        className="rounded-2xl p-4"
-        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-      >
-        <h2
-          className="text-xs font-semibold uppercase tracking-wide mb-2"
-          style={{ color: 'var(--cp-muted)' }}
-        >
-          {t('taskCenter.detail.info', 'Task Information')}
-        </h2>
-        <div className="divide-y" style={{ borderColor: 'var(--cp-border)' }}>
-          <InfoRow label="Task ID" value={task.taskId} />
-          <InfoRow label="Root Task ID" value={task.rootTaskId} />
-          <InfoRow label="Type" value={task.type} />
-          <InfoRow label="Source" value={task.source} />
-          <InfoRow label="Created" value={formatTime(task.createdAt)} />
-          <InfoRow label="Started" value={formatTime(task.startedAt)} />
-          <InfoRow label="Ended" value={formatTime(task.endedAt)} />
-          <InfoRow label="Updated" value={formatTime(task.updatedAt)} />
-          {task.schemaType && <InfoRow label="Schema" value={task.schemaType} />}
-        </div>
+      <section className="tc-section">
+        <h3 className="tc-heading">{t('taskCenter.detail.info', 'Details')}</h3>
+        <dl className="tc-dl">
+          <dt>{t('taskCenter.detail.taskId', 'Task ID')}</dt>
+          <dd className="tc-mono">{task.taskId}</dd>
+          {task.rootTaskId !== task.taskId && (
+            <>
+              <dt>{t('taskCenter.detail.rootTaskId', 'Root task')}</dt>
+              <dd className="tc-mono">{task.rootTaskId}</dd>
+            </>
+          )}
+          <dt>{t('taskCenter.detail.type', 'Type')}</dt>
+          <dd>{text.type(task.type)}</dd>
+          <dt>{t('taskCenter.detail.source', 'Source')}</dt>
+          <dd>{text.source(task.source)}</dd>
+          <dt>{t('taskCenter.detail.created', 'Created')}</dt>
+          <dd className="tc-num">{text.fullTime(task.createdAt)}</dd>
+          <dt>{t('taskCenter.detail.started', 'Started')}</dt>
+          <dd className="tc-num">{text.fullTime(task.startedAt)}</dd>
+          <dt>{t('taskCenter.detail.ended', 'Ended')}</dt>
+          <dd className="tc-num">{text.fullTime(task.endedAt)}</dd>
+          <dt>{t('taskCenter.detail.updated', 'Updated')}</dt>
+          <dd className="tc-num">{text.fullTime(task.updatedAt)}</dd>
+          {task.schemaType && (
+            <>
+              <dt>{t('taskCenter.detail.schema', 'Schema')}</dt>
+              <dd className="tc-mono">{task.schemaType}</dd>
+            </>
+          )}
+        </dl>
       </section>
 
-      {/* Sub-tasks */}
-      {task.children.length > 0 && (
-        <section>
-          <h2
-            className="text-xs font-semibold uppercase tracking-wide mb-3"
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            {t('taskCenter.detail.subtasks', 'Sub-tasks')} ({task.children.length})
-          </h2>
-          <div className="space-y-1.5">
-            {task.children.map((child) => (
-              <SubTaskRow key={child.taskId} task={child} />
-            ))}
+      {task.aiccRequest && Object.keys(task.aiccRequest.params).length > 0 && (
+        <section className="tc-section min-w-0">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="tc-heading">{t('aiCenter.playground.taskRequest')}</h3>
+            <button
+              type="button"
+              className="tc-link text-[13px]"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(JSON.stringify(task.aiccRequest, null, 2))
+                  setCopyState('common.copied')
+                } catch {
+                  setCopyState('aiCenter.playground.copyFailed')
+                }
+              }}
+            >
+              {t(copyState || 'aiCenter.playground.copyRequest')}
+            </button>
           </div>
+          <p className="tc-muted mb-2 text-xs">{t('aiCenter.playground.taskRequestHint')}</p>
+          <pre className="tc-code">{JSON.stringify(task.aiccRequest, null, 2)}</pre>
         </section>
       )}
 
-      {task.aiccRequest && Object.keys(task.aiccRequest.params).length > 0 && <section
-        className="rounded-2xl p-4 min-w-0"
-        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-      >
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.playground.taskRequest')}</h2>
-          <button type="button" className="text-sm" style={{ color: 'var(--cp-accent)' }} onClick={async () => {
-            try { await navigator.clipboard.writeText(JSON.stringify(task.aiccRequest, null, 2)); setCopyState('common.copied') }
-            catch { setCopyState('aiCenter.playground.copyFailed') }
-          }}>{t(copyState || 'aiCenter.playground.copyRequest')}</button>
-        </div>
-        <p className="text-xs mb-3" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.playground.taskRequestHint')}</p>
-        <pre className="text-xs overflow-auto max-h-96 whitespace-pre-wrap break-all" style={{ color: 'var(--cp-text)' }}>{JSON.stringify(task.aiccRequest, null, 2)}</pre>
-      </section>}
+      {!task.aiccRequest && task.aiccRequestSummary && (
+        <section className="tc-section min-w-0">
+          <h3 className="tc-heading">{t('aiCenter.playground.taskRequestSummary')}</h3>
+          <p className="tc-muted mb-2 text-xs">
+            {t('aiCenter.playground.taskRequestTooLarge', undefined, {
+              size: formatBytes(task.aiccRequestSummary.bytes),
+              traceId: task.aiccRequestSummary.traceId ?? '-',
+            })}
+          </p>
+          <pre className="tc-code">{JSON.stringify(task.aiccRequestSummary, null, 2)}</pre>
+        </section>
+      )}
 
-      {!task.aiccRequest && task.aiccRequestSummary && <section
-        className="rounded-2xl p-4 min-w-0"
-        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-      >
-        <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.playground.taskRequestSummary')}</h2>
-        <p className="text-xs mb-3" style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.playground.taskRequestTooLarge', undefined, {
-            size: formatBytes(task.aiccRequestSummary.bytes),
-            traceId: task.aiccRequestSummary.traceId ?? '-',
-          })}
-        </p>
-        <pre className="text-xs overflow-auto max-h-96 whitespace-pre-wrap break-all" style={{ color: 'var(--cp-text)' }}>{JSON.stringify(task.aiccRequestSummary, null, 2)}</pre>
-      </section>}
-
-      {/* Raw payload */}
       {Object.keys(task.payload).length > 0 && (
-        <section
-          className="rounded-2xl p-4"
-          style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-        >
-          <h2
-            className="text-xs font-semibold uppercase tracking-wide mb-2"
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            {t('taskCenter.detail.payload', 'Extended Data')}
-          </h2>
-          <pre
-            className="text-xs overflow-x-auto whitespace-pre-wrap break-all"
-            style={{ color: 'var(--cp-text)' }}
-          >
-            {JSON.stringify(task.payload, null, 2)}
-          </pre>
+        <section className="tc-section min-w-0">
+          <h3 className="tc-heading">{t('taskCenter.detail.payload', 'Extended data')}</h3>
+          <pre className="tc-code">{JSON.stringify(task.payload, null, 2)}</pre>
         </section>
       )}
-    </div>
+    </>,
   )
 }

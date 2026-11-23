@@ -62,7 +62,7 @@ function LogValue({ label, value }: { label: string; value: string }) {
 }
 
 function TimelineRow({ row, target, navigate, complete }: { row: WorklogRow; target: WorklogTarget; navigate: (next: Destination) => void; complete: boolean }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const label = row.kind === 'tool' && row.label !== 'result' ? row.label : t(`messagehub.worklog.${row.label}`, row.label)
   const status = row.status === 'pending' && complete ? 'unresolved' : row.status
   return <li className="mh-worklog-row" data-testid="worklog-row" data-kind={row.kind} data-status={status}>
@@ -71,11 +71,11 @@ function TimelineRow({ row, target, navigate, complete }: { row: WorklogRow; tar
       <span className="font-semibold">{label}</span>
       {row.kind === 'tool' && row.text ? <span className="min-w-0 break-words text-[color:var(--cp-muted)]">{row.text}</span> : null}
       {status ? <span className="text-xs text-[color:var(--cp-muted)]">{t(`messagehub.worklog.status.${status}`, status)}</span> : null}
-      {row.at ? <time className="text-xs text-[color:var(--cp-muted)]">{new Date(row.at).toLocaleTimeString()}</time> : null}
+      {row.at ? <time className="text-xs text-[color:var(--cp-muted)]">{new Date(row.at).toLocaleTimeString(locale)}</time> : null}
     </div>
     {row.kind === 'tool' ? <div className="mh-worklog-io">
-      {row.input !== undefined ? <LogValue label="IN" value={row.input} /> : <p className="p-3 text-xs text-[color:var(--cp-muted)]">{t('messagehub.worklog.earlierInput')}</p>}
-      {row.output !== undefined ? <LogValue label="OUT" value={row.output} /> : <p className="p-3 text-xs text-[color:var(--cp-muted)]">{t(complete ? 'messagehub.worklog.noOutput' : 'messagehub.worklog.waitingOutput')}</p>}
+      {row.input !== undefined ? <LogValue label={t('messagehub.worklog.inputLabel')} value={row.input} /> : <p className="p-3 text-xs text-[color:var(--cp-muted)]">{t('messagehub.worklog.earlierInput')}</p>}
+      {row.output !== undefined ? <LogValue label={t('messagehub.worklog.outputLabel')} value={row.output} /> : <p className="p-3 text-xs text-[color:var(--cp-muted)]">{t(complete ? 'messagehub.worklog.noOutput' : 'messagehub.worklog.waitingOutput')}</p>}
     </div> : row.text ? <div className="break-words text-[13px] leading-relaxed"><MessageMarkdown text={row.text} /></div> : null}
     {row.child ? <button className="mh-worklog-link" onClick={() => navigate({ target: { agentDid: target.agentDid, sessionId: row.child!.session_id }, title: row.child!.name })} data-testid="worklog-child"><ArrowUpRight size={14} /><span>{row.child.name || t('messagehub.worklog.openTask')}</span></button>
       : row.taskId ? <button className="mh-worklog-link" onClick={() => navigate({ taskId: row.taskId! })} data-testid="worklog-task"><ArrowUpRight size={14} />{t('messagehub.worklog.openTask')}</button> : null}

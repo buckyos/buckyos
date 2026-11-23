@@ -23,7 +23,7 @@ import type { Camera } from './camera'
 export interface Point { x: number; y: number }
 
 /** What a one-finger drag does, decided when the finger comes down. */
-export type OneFingerDrag = { kind: 'pan' } | { kind: 'scroll'; element: HTMLElement } | { kind: 'delegate' } | { kind: 'none' }
+export type OneFingerDrag = { kind: 'pan' } | { kind: 'scroll'; element: HTMLElement; nativeTap?: boolean; scale?: number } | { kind: 'delegate' } | { kind: 'none' }
 
 /** Writing: whether a writing tool is on, touch is locked, and a stroke is under way. */
 export interface TouchInk { on: boolean; locked: boolean; busy: () => boolean }
@@ -147,7 +147,7 @@ export class TouchGestures {
       this.points.set(event.pointerId, client)
       const target = event.target instanceof Element ? event.target : null
       this.gesture = { kind: 'one', id: event.pointerId, drag, start: p, last: p, at: performance.now(), moved: false, pressed: false, target, samples: [{ ...p, t: performance.now() }], twoTap: null }
-      if (drag.kind !== 'delegate') this.pressTimer = window.setTimeout(() => this.press(), LONG_PRESS_MS)
+      if (drag.kind !== 'delegate' && !(drag.kind === 'scroll' && drag.nativeTap)) this.pressTimer = window.setTimeout(() => this.press(), LONG_PRESS_MS)
       return
     }
     // a third finger is ignored; a second one turns any one-finger gesture into a pinch
@@ -206,7 +206,7 @@ export class TouchGestures {
     this.clearPress()
     if (g.drag.kind === 'none') { this.end(); return }
     if (g.drag.kind === 'delegate') { this.gesture = null; this.points.clear(); actions.delegateEnd(cancel); return }
-    if (cancel || g.pressed) { this.end(); return }
+    if (cancel || g.pressed || (g.drag.kind === 'scroll' && g.drag.nativeTap)) { this.end(); return }
     if (g.moved) {
       if (g.drag.kind === 'pan') this.flick(g.samples)
       this.end()
@@ -289,7 +289,7 @@ export class TouchGestures {
       const now = performance.now()
       g.samples.push({ ...p, t: now })
       while (g.samples.length > 2 && now - g.samples[0].t > VELOCITY_WINDOW_MS) g.samples.shift()
-      if (g.drag.kind === 'scroll') { g.drag.element.scrollLeft -= dx; g.drag.element.scrollTop -= dy } else this.camera.panBy(dx, dy)
+      if (g.drag.kind === 'scroll') { g.drag.element.scrollLeft -= dx / (g.drag.scale ?? 1); g.drag.element.scrollTop -= dy / (g.drag.scale ?? 1) } else this.camera.panBy(dx, dy)
       return
     }
     const a = this.localOf(g.ids[0])

@@ -283,7 +283,7 @@ export default defineConfig(() => {
       alias: ALIASES,
     },
     server: {
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, TABLE_DIR, OFFICE_DIR, CONTROLS_DIR, PRINT_DIR] },
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), resolve(import.meta.dirname, '../../apps/shared'), DRAWIO_DIR, PDF_DIR, TABLE_DIR, OFFICE_DIR, CONTROLS_DIR, PRINT_DIR] },
       host: '0.0.0.0',
       port: 5174,
       proxy: {

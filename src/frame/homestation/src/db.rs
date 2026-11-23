@@ -72,21 +72,30 @@ impl Db {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| HsError::Internal(format!("create {}: {e}", parent.display())))?;
         }
-        let conn = Connection::open(path).map_err(HsError::from)?;
+        let mut conn = Connection::open(path).map_err(HsError::from)?;
+        {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let populated: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema)",
+                [],
+                |row| row.get(0),
+            )?;
+            let current = SCHEMA_VERSION.to_string();
+            if populated {
+                let version = get_meta(&tx, "schema_version")?;
+                if version != Some(current) {
+                    return Err(HsError::Internal(format!("unsupported HomeStation schema {version:?}")));
+                }
+            } else {
+                tx.execute_batch(buckyos_api::HOMESTATION_RDB_SCHEMA_SQLITE)?;
+                tx.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?1)", [current])?;
+            }
+            tx.commit()?;
+        }
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(buckyos_api::HOMESTATION_RDB_SCHEMA_SQLITE)?;
-        let version: Option<String> =
-            conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).optional()?;
-        match version {
-            None => {
-                conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?1)", [SCHEMA_VERSION.to_string()])?;
-            }
-            Some(v) if v == SCHEMA_VERSION.to_string() => {}
-            Some(v) => return Err(HsError::Internal(format!("unsupported schema version {v}"))),
-        }
         Ok(Self { conn: Arc::new(Mutex::new(conn)), owner: Arc::from("") })
     }
 
@@ -147,6 +156,17 @@ mod tests {
         assert_eq!(version, Some(SCHEMA_VERSION.to_string()));
         drop(db);
         Db::open(&path).unwrap();
+    }
+
+    #[test]
+    fn owner_schema_rejects_an_existing_database_without_its_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("homestation-main.db");
+        drop(Db::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("DELETE FROM meta WHERE key='schema_version'", []).unwrap();
+        assert!(Db::open(&path).is_err());
+        assert_eq!(get_meta(&conn, "schema_version").unwrap(), None);
     }
 
     #[test]

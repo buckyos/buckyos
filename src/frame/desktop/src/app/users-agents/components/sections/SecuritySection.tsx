@@ -10,7 +10,7 @@ interface SecuritySectionProps {
 }
 
 export function SecuritySection({ twoFactorEnabled, lastLogin }: SecuritySectionProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   return (
     <div
       className="rounded-[22px] px-5 py-4"
@@ -56,7 +56,7 @@ export function SecuritySection({ twoFactorEnabled, lastLogin }: SecuritySection
             {t('usersAgents.security.lastLogin')}
           </span>
           <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
-            {new Date(lastLogin).toLocaleString()}
+            {new Date(lastLogin).toLocaleString(locale)}
           </span>
         </div>
       </div>

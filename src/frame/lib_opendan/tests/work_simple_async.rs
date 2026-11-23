@@ -163,7 +163,7 @@ fn calls(list: &[(&str, &str, Value)]) -> AiResponse {
 }
 
 fn report_end(text_: &str) -> AiResponse {
-    tool_call("rep", "report", json!({ "report": text_, "is_end": true }))
+    tool_call("rep", "report", json!({ "report": text_, "outcome": "succeeded", "is_end": true }))
 }
 
 /// User messages after the last assistant message: what this inference got.
@@ -400,11 +400,12 @@ async fn a_failed_task_is_reported_as_failed() {
             let input = new_inputs(req);
             assert!(input.contains("call_id=\"c1\" status=\"failed\">>"), "{input}");
             assert!(input.contains("exit=3") && input.contains("oops"), "{input}");
-            report_end("the check failed with exit 3")
+            tool_call("rep", "report", json!({ "report": "the check failed with exit 3", "outcome": "failed", "is_end": true }))
         }
         _ => panic!("unexpected inference {n}"),
     });
     assert!(drive_to_end(&s, &llm, &sd).await.is_finished());
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Failed));
     assert_eq!(llm.count(), 3);
 }
 
@@ -453,7 +454,7 @@ async fn a_final_report_waits_for_running_tasks_or_their_cancel() {
         3 => {
             let r = has_tool_result(req, "cx").unwrap();
             assert!(r.contains("cancelled"), "{r}");
-            tool_call("rep2", "report", json!({ "report": "stopped it", "is_end": true }))
+            tool_call("rep2", "report", json!({ "report": "stopped it", "outcome": "succeeded", "is_end": true }))
         }
         _ => panic!("unexpected inference {n}: {}", new_inputs(req)),
     });
@@ -493,6 +494,44 @@ async fn a_waiting_session_resumes_in_a_new_drive() {
     assert!(r.is_finished(), "{r:?}");
     assert_eq!(sd.state().unwrap().turns_completed, 2);
     assert_eq!(llm.count(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_work_can_report_failure_with_an_older_saved_tool_schema() {
+    let s = setup();
+    let sd = create(&s, "verify the input", 0).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => shell("check", "for i in $(seq 1 600); do test -f release-check && exit 3; sleep 0.1; done; exit 124", None),
+        1 => text("The check is running."),
+        2 => {
+            assert!(new_inputs(req).contains("exit=3"));
+            let report = req.tool_specs.iter().find(|t| t.name == "report").unwrap();
+            let outcomes = report.args_schema["properties"]["outcome"]["enum"].as_array().unwrap();
+            assert!(outcomes.contains(&json!("failed")), "{outcomes:?}");
+            tool_call("end", "report", json!({ "report": "The check exited with 3.", "outcome": "failed", "is_end": true }))
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let deps = deps(&s, llm);
+    let r = drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(r, DriveResult::TurnClosed { .. }), "{r:?}");
+
+    let run_id = sd.state().unwrap().live_run.unwrap().run_id;
+    {
+        let runs = sd.runs();
+        let _lock = runs.try_lock(&run_id).unwrap().unwrap();
+        let mut record = runs.record(&run_id).unwrap();
+        let report = record.config.tools.native.iter_mut().find(|t| t.name == "report").unwrap();
+        report.description = "Submit a report and set is_end to finish.".into();
+        assert_eq!(report.args_schema["additionalProperties"], false);
+        assert!(report.args_schema["properties"].as_object_mut().unwrap().remove("outcome").is_some());
+        runs.store().write_record(&record).unwrap();
+    }
+    std::fs::write(sd.path().join("release-check"), "").unwrap();
+
+    let r = drive(&sd, &deps, StopWhen::Finished).await;
+    assert!(matches!(r, DriveResult::Finished { outcome: Some(Outcome::Failed), .. }), "{r:?}");
+    assert_eq!(sd.state().unwrap().final_report.unwrap().report, "The check exited with 3.");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -913,13 +952,15 @@ async fn a_command_past_the_deadline_wraps_up_the_run() {
             let input = new_inputs(req);
             assert!(input.contains("<<budget>> This run has used its time budget"), "{input}");
             assert_eq!(tool_names(req), vec!["report".to_string()]);
-            report_end("the command did not finish within the time budget")
+            tool_call("rep", "report", json!({
+                "report": "the command did not finish within the time budget", "outcome": "failed", "is_end": true
+            }))
         }
         _ => panic!("unexpected inference {n}"),
     });
     let r = drive_to_end(&s, &llm, &sd).await;
     assert!(r.is_finished(), "{r:?}");
-    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Failed));
     assert_eq!(llm.count(), 2);
     let wraps = wrap_ups(&sd);
     assert_eq!(wraps.len(), 1, "{wraps:?}");

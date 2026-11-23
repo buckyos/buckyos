@@ -15,10 +15,10 @@
 当前写入的关键文件（两条激活路径 `handle_active_by_wallet()` 与 `handle_do_active()` 都会写）：
 - `security/<device host>/authentication.private.pem`：本设备 Ed25519 私钥（路径见 `src/kernel/buckyos-api/src/device_identity.rs`）。
 - `node_identity.json`：设备与 Zone/Owner 的绑定信息（见下方 `NodeIdentityConfig` 最小字段视图）。
-- `security/start_config.json`：后续 boot.template 渲染所需的启动参数，含管理员密码哈希和 provider 配置；激活会把 `ood_jwt` 写入其中（`src/kernel/node_daemon/src/active_server.rs`）。
+- `security/start_config.json` 的必填 `schema` 为 `buckyos.start_config.v1`。激活时写入 `ood_jwt`、管理员密码哈希和 provider 配置，供后续 boot.template 渲染使用（`src/kernel/node_daemon/src/active_server.rs`）。
 - `sn_zone_info.json`：激活完成后通过 `SnClient::get_zone_info()` 获取的 SN 运行态；下一次 node-daemon 启动生成首份 cyfs-gateway keep-tunnel 配置时优先使用非空 `relay_sn`，为 `null` 时使用 `ZoneBootConfig.sn`。
 - `node_device_config.json`：DeviceConfig 的 JSON 形式，供启动阶段读取（`src/kernel/node_daemon/src/active_server.rs`）。
-- `host_account.json`：可选，owner 在激活时为 Agent 指定的 OS 账号（仅 Linux root node_daemon 提供），未指定时不写；含义见 `doc/arch/node_exector.md` §4.2。
+- `host_account.json` 保存 owner 在激活时为 Agent 指定的 OS 账号，仅 Linux root node_daemon 提供。文件格式为 `{"schema":"buckyos.host_account.v1","account":"alice"}`，未指定账号时省略该文件。账号权限见 `doc/arch/node_exector.md` §4.2。
 
 注意：激活阶段不会写入 `boot/config`；`boot/config` 由首次启动时的 scheduler `--boot` 路径生成（`src/kernel/scheduler/src/main.rs`）。
 

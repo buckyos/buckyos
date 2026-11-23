@@ -1,0 +1,21 @@
+# Buckets and previews
+
+- `buckyos system status` shows CP host resource warnings. `buckyos bucket ls [--appid <app_id>]` lists buckets visible to the identity (all for host device, owner's for Agent). `bucket stat <bucket_id>` returns key/version counts, bytes, `orphaned_at`, `issues`. Read bindings with `bucket get obj://bucket/<bucket_id>/<key>`.
+- Named-store GC frees unretained objects/chunks if `services/nfs-server/settings.named_store_gc_evict` (default true). Unretained chunk bytes survive at least 24 h after last read/write. Batches run every 30 s. Admin: Settings → Storage → Clean up now or `bucket.collect_garbage`. Inspect pool/bucket quota with `bucket.get_pool_quota|set_pool_quota|get_quota|set_quota` and `bucket.usage_report` (admin RPCs); see per-App usage in Settings → Storage.
+- Missing attachment: inspect bucket stat/get and `buckyos log query --service nfs-server --keyword "<key>"` for bind/unbind, ObjId and version; correlate caller's log. A delete marker/missing key suggests unbound; `evicted` means the binding points at missing content. Remote message attachments bind on first read. Before that, `no_such_key` is expected. Read outcomes: 403 `attachment-awaiting-acceptance`, 503/Retry-After fetching or source unreachable, 404 source refused/missing, 413 over 64 MiB, 415 directory, 502 verification. Query `msg-center` logs by ObjId.
+- NFSP `POST /nfs/v1/hello` → `repr` lists preview converter path/version/source, `profiles` and `missing`. Groups: ffmpeg/ffprobe (media), LibreOffice soffice (Office/ODF/RTF/iWork/Visio to PDF, old spreadsheets to xlsx), ImageMagick magick (RAW/stills), poppler pdftoppm/pdfinfo (thumbnails), pandoc (EPUB/ipynb/Markdown to HTML). Search order: `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/`, PATH, LibreOffice install, `$BUCKYOS_ROOT/tools/bin/`. ext-core includes these plus CJK fonts. Inspect `components` (writer/calc/impress/draw), `filters` (VSD/VSDX need Draw+visio), `soffice_missing_components`, `soffice_missing_filters`, `soffice_unresolved` across installations; launchers resolve to actual installs. The first compatible install handles the file; unresolved installs are skipped. `unsupported/no-pipeline` with none capable is a deployment issue; check nfs-server logs. Cache: `zone/nfs-server/_/preview-cache`, limit `services/nfs-server/settings.preview_cache_mib` (20480 default).
+- `buckyos obj resolve <url>` canonicalizes obj://, cyfs://, file://<device_id>, https, //config/... and absolute paths. It reports RBAC key, event pattern and provider without testing access. `buckyos obj read <url> [--property a,b]` follows the DID Object Card with current session, including `/kapi/<service>/obj/...`, `/kapi/<agent_id>/obj/...`, DFS `/kapi/dfs/obj/...`. Events follow `/obj/<host>/<path>/<event>`; a 403/404 may reflect object ACL. In Agent session use read tool or `agent_tool read <url> [property=<name>]`. See `doc/key url.md`.
+
+## Extension tools
+
+The administrator chooses Zone-wide packages; each node reconciles them. Prefix these verbs with `buckyos`:
+
+| Command | Use |
+| --- | --- |
+| `ext-tools list`, `ext-tools status` | Inspect available packages/commands, requested versions, per-node stages, errors and online items. |
+| `ext-tools enable <id> [--version v] [--dry-run]`, `ext-tools disable <id>` | Enable with dependencies, upgrade/rollback or disable when no enabled dependent remains. |
+| `ext-tools import <file.pikg>` | Import unmodified official release (R2 manifest `pikg.path`); an installer seed with no `latest` needs import before upgrade. |
+| `ext-tools download <id> <item> [--node n]` | Retry an online item, e.g. `ext-core chromium`. |
+| `skill status --agent <agent_id> [--runtime id]` | Identify missing commands and their providing package. |
+
+On package failure, inspect per-node `error` and `node_daemon` logs (`ext_tools`). Package retries back off; failed upgrades preserve old version. Online items instead report `nodes.<node>.online.<item>` state missing/downloading/ready/failed, byte counts and error; `targets.<root>.waiting` lists dependent commands. A failed download needs upstream reachability and an explicit download retry even after restart. Workflow probes tools at startup and every 30 s. Resubmit failed `tools_missing` work after readiness.

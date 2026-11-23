@@ -88,7 +88,7 @@ pub fn meta(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, assets: Option<As
         let mut data = json!({ "mode": mode, "write": write });
         if let Some(s) = e.payload.get("source").filter(|s| s.is_object()) {
             let mut src = serde_json::Map::new();
-            for k in ["kind", "mode", "url", "workspace_id", "entity_id", "path", "refresh"] {
+            for k in ["kind", "provider", "mode", "url", "workspace_id", "entity_id", "path", "refresh"] {
                 if let Some(x) = s.get(k) {
                     src.insert(k.into(), x.clone());
                 }

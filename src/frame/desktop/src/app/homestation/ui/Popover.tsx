@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 
 interface PopoverProps {
   anchor: HTMLElement | null
+  boundary?: Element | null
   open: boolean
   onClose: () => void
   children: ReactNode
@@ -13,9 +14,11 @@ interface PopoverProps {
   label?: string
   className?: string
   testId?: string
+  autoFocus?: boolean
+  returnFocusTo?: HTMLElement | null
 }
 
-export function Popover({ anchor, open, onClose, children, align = 'end', width, role = 'dialog', label, className, testId }: PopoverProps) {
+export function Popover({ anchor, boundary, open, onClose, children, align = 'end', width, role = 'dialog', label, className, testId, autoFocus = true, returnFocusTo }: PopoverProps) {
   const panelRef = useRef<HTMLDivElement>(null)
 
   useLayoutEffect(() => {
@@ -23,12 +26,23 @@ export function Popover({ anchor, open, onClose, children, align = 'end', width,
     if (!open || !anchor || !panel) return
     const place = () => {
       const rect = anchor.getBoundingClientRect()
-      const panelRect = panel.getBoundingClientRect()
       const margin = 8
+      const bounds = boundary?.getBoundingClientRect()
+      const minLeft = Math.max(0, bounds?.left ?? 0) + margin
+      const minTop = Math.max(0, bounds?.top ?? 0) + margin
+      const right = Math.min(window.innerWidth, bounds?.right ?? window.innerWidth) - margin
+      const bottom = Math.min(window.innerHeight, bounds?.bottom ?? window.innerHeight) - margin
+      const gap = 6
+      const spaceAbove = rect.top - gap - minTop
+      const spaceBelow = bottom - rect.bottom - gap
+      if (bounds) {
+        panel.style.maxWidth = `${Math.max(0, right - minLeft)}px`
+        panel.style.maxHeight = `${Math.max(0, spaceAbove, spaceBelow)}px`
+      }
+      const panelRect = panel.getBoundingClientRect()
       let left = align === 'end' ? rect.right - panelRect.width : rect.left
-      left = Math.max(margin, Math.min(left, window.innerWidth - panelRect.width - margin))
-      let top = rect.bottom + 6
-      if (top + panelRect.height > window.innerHeight - margin) top = Math.max(margin, rect.top - panelRect.height - 6)
+      left = Math.max(minLeft, Math.min(left, right - panelRect.width))
+      const top = panelRect.height <= spaceBelow ? rect.bottom + gap : Math.max(minTop, rect.top - gap - panelRect.height)
       panel.style.left = `${left}px`
       panel.style.top = `${top}px`
       panel.style.visibility = 'visible'
@@ -36,7 +50,7 @@ export function Popover({ anchor, open, onClose, children, align = 'end', width,
     place()
     window.addEventListener('resize', place)
     return () => window.removeEventListener('resize', place)
-  }, [anchor, open, align])
+  }, [anchor, boundary, open, align])
 
   useEffect(() => {
     if (!open) return
@@ -49,7 +63,8 @@ export function Popover({ anchor, open, onClose, children, align = 'end', width,
       if (event.key === 'Escape') {
         event.stopPropagation()
         onClose()
-        anchor?.focus()
+        const focusTarget = returnFocusTo ?? anchor
+        focusTarget?.focus()
       }
     }
     const onScroll = (event: Event) => {
@@ -64,13 +79,13 @@ export function Popover({ anchor, open, onClose, children, align = 'end', width,
       document.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('scroll', onScroll, true)
     }
-  }, [anchor, open, onClose])
+  }, [anchor, open, onClose, returnFocusTo])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || !autoFocus) return
     const first = panelRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled), button:not(:disabled), input, textarea')
     first?.focus({ preventScroll: true })
-  }, [open])
+  }, [open, autoFocus])
 
   if (!open || !anchor) return null
   return createPortal(

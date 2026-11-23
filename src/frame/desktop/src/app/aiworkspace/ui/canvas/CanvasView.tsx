@@ -27,7 +27,7 @@ import { RunModeContext, useRunMode } from '../../state/runMode'
 import type { WorkspaceStore } from '../../state/store'
 import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
-import { EditorToolbarContext, requestIntent, ToolbarSink } from '../blocks/editorToolbar'
+import { EditorToolbarContext, getIntent, requestIntent, ToolbarSink, type CanvasCaret } from '../blocks/editorToolbar'
 import { blockRegistry, modePolicy, type CanvasMode, type ToolbarItem } from '../blocks/registry'
 import { RelationsPanel } from '../sources/RelationsPanel'
 import { AnnotationsPanel } from '../shell/AnnotationsPanel'
@@ -267,9 +267,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   // selection survives mode switches when the policy still allows it (§10.2); editors are released
   const setSelection = (next: Set<string>) => { const whole = wholeStrokes(next); setSelectionState(whole); pickForAnnotation(whole) }
-  // activating an editor brings its Block into view (§8.2: the active Block is never half off-screen)
   const { setSide } = shell
-  const setEditing = useCallback((id: string | null) => {
+  const setEditing = useCallback((id: string | null, caretAt?: CanvasCaret) => {
     typeAhead.delete('typed')
     // a flow page has no editing state (流式页交互改进 §2.1): every editor is live, the caret goes where an intent puts it,
     // and the Block being typed in is not shown as selected
@@ -282,12 +281,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       setSelectionState(new Set([id]))
       return
     }
+    if (id && caretAt) requestIntent(id, caretAt)
+    else if (l) {
+      const tableAction = getIntent(l.entity.entity_id)?.table?.action
+      if (tableAction !== 'edit' && tableAction !== 'rename') camera.ensureVisible(l.bounds)
+    }
     setEditingState(id)
     // editing is "selected + typing" (§4.4): an editor opened from an affordance selects its Block too
     // a group's backing (a swimlane's frame) is edited with its group selected
     const owner = l?.backing ? l.parentId : id
     if (id && owner) setSelectionState((current) => (current.size === 1 && (current.has(id) || current.has(owner)) ? current : new Set([owner])))
-    if (l) camera.ensureVisible(l.bounds)
   }, [laid, camera, isFree, store, typeAhead])
   const policyKey = `${policy.select}:${policy.editContent}:${policy.insert}`
   const [policySeen, setPolicySeen] = useState(policyKey)

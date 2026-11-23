@@ -4,7 +4,7 @@
  * another client (an Agent) seen at once, read-only members, and the kernel's standard-table rules. */
 
 import type { Page } from '@playwright/test'
-import { asUser, fitAll, openCanvas, test, expect, workspacePage, type Api } from './fixtures'
+import { asUser, expectAllCommitted, fitAll, hooks, openCanvas, test, expect, workspacePage, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -61,7 +61,12 @@ test('TD01 list: projected items, quick add keeps adding, tick to complete, comp
   await openCanvas(page, ALICE, ws.workspace_id)
   await expect(item(page, 'a')).toContainText('Write the report')
   await expect(page.getByTestId('aiws-todo-count-tl')).toContainText('3')
+  const doneHead = page.getByTestId('aiws-todo-donehead-tl')
+  const outline = page.getByTestId('aiws-selection-tl')
+  await expect(doneHead).toHaveCSS('opacity', '1')
   await activate(page)
+  await expect(outline).toBeVisible()
+  await expect(doneHead).toHaveCSS('opacity', '1')
   // quick add: Enter adds and keeps the field for the next one
   const add = page.getByTestId('aiws-todo-add-tl')
   await add.click()
@@ -77,12 +82,121 @@ test('TD01 list: projected items, quick add keeps adding, tick to complete, comp
   await expect.poll(() => cell(api, ws.workspace_id, 'a', 'status')).toBe('done')
   expect(await cell(api, ws.workspace_id, 'a', 'done_at')).toBeTruthy()
   // the completed section folds and unfolds
-  await page.getByTestId('aiws-todo-donehead-tl').click()
+  await doneHead.click()
   await expect(item(page, 'd')).toHaveCount(0)
-  await page.getByTestId('aiws-todo-donehead-tl').click()
+  await doneHead.click()
   await expect(item(page, 'd')).toBeVisible()
   await page.getByTestId('aiws-canvas-view').screenshot({ path: `${SHOTS}/td01-list.png` })
+  await page.getByTestId('aiws-canvas').click({ position: { x: 600, y: 750 } })
+  await expect(outline).toBeHidden()
+  await expect(doneHead).toHaveCSS('opacity', '1')
 })
+
+test('TD07 a newly added title saves once on Enter and Escape discards the next edit', async ({ page, api }) => {
+  const ws = await todoWorkspace(api, 'Rename a new to-do')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await activate(page)
+  await expect(item(page, 'a')).toHaveText('Write the report')
+  // Keep the real table refresh in flight until the new row has been renamed.
+  let release!: () => void
+  const refresh = new Promise<void>((resolve) => { release = resolve })
+  let blockedQueries = 0
+  await page.route('**/kapi/aiworkspace', async (route) => {
+    const request = route.request()
+    const rpc = request.method() === 'POST' ? request.postDataJSON() : null
+    if (rpc?.method === 'doc.query' && rpc.params.tables?.t === 'tasks') {
+      blockedQueries++
+      await refresh
+    }
+    await route.continue()
+  })
+  const add = page.getByTestId('aiws-todo-add-tl')
+  const editor = page.getByTestId('aiws-todo-edit-tl')
+  let id: string
+  let before: number
+  try {
+    await add.fill('New task')
+    await add.press('Enter')
+    await expect.poll(() => blockedQueries).toBeGreaterThan(0)
+    const title = page.locator('[data-proj^="tl~title~"]', { hasText: 'New task' })
+    await expect(title).toBeVisible()
+    const recordId = await title.getAttribute('data-item')
+    if (!recordId) throw new Error('New task has no record id')
+    id = recordId
+    await title.dblclick()
+    await editor.fill('Renamed task')
+    before = (await hooks(page)).commits
+    await editor.press('Enter')
+    await expect.poll(() => cell(api, ws.workspace_id, id, 'title')).toBe('Renamed task')
+  } finally {
+    release()
+  }
+  await expectAllCommitted(page)
+  expect((await hooks(page)).commits).toBe(before + 1)
+
+  await item(page, id).dblclick()
+  await editor.fill('Discarded draft')
+  await editor.press('Escape')
+  await expect(editor).toHaveCount(0)
+  expect((await hooks(page)).commits).toBe(before + 1)
+  await expect(item(page, id)).toHaveText('Renamed task')
+  expect(await cell(api, ws.workspace_id, id, 'title')).toBe('Renamed task')
+})
+
+for (const mode of ['inline', 'detail'] as const) {
+  test(`TD08 concurrent rename in the ${mode} editor keeps the other writer’s title`, async ({ page, api }) => {
+    const ws = await todoWorkspace(api, 'Concurrent rename')
+    await openCanvas(page, ALICE, ws.workspace_id)
+    await activate(page)
+    const title = item(page, 'a')
+    if (mode === 'detail') {
+      await title.click({ button: 'right' })
+      await page.getByTestId('aiws-ctl-menu-detail').click()
+    } else {
+      await title.dblclick()
+    }
+    const editor = mode === 'detail'
+      ? page.getByTestId('aiws-todo-form-a').getByRole('textbox').first()
+      : page.getByTestId('aiws-todo-edit-tl')
+    await editor.fill('Alice draft')
+    const { rev } = await api.cell(BOB, ws.workspace_id, 'tasks', 'a', 'title')
+    const committed = await api.commit(BOB, ws, [{ op: 'table.set_values', source_id: 'tasks',
+      values: [{ record_id: 'a', field_id: 'title', value: 'Bob title', expect: { rev } }] }])
+    expect(committed.status, JSON.stringify(committed)).toBe('accepted')
+    await expect(title).toHaveText('Bob title')
+    await expect(editor).toHaveValue('Alice draft')
+    await editor.press('Tab')
+    await expect(page.getByTestId('aiws-save-summary')).toHaveAttribute('data-attention', '1')
+    await expect(page.getByTestId('aiws-edit-entry')).toHaveAttribute('data-code', 'REVISION_CONFLICT')
+    expect(await cell(api, ws.workspace_id, 'a', 'title')).toBe('Bob title')
+  })
+}
+
+for (const mode of ['list', 'board'] as const) {
+  test(`TD09 open details for a to-do with existing notes in the ${mode}`, async ({ page, api }) => {
+    const ws = await todoWorkspace(api, 'To-do with notes')
+    const record = await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks', selector: { kind: 'table_record', record_id: 'a' } })
+    const text = 'Include the budget figures.'
+    const made = await api.commit(ALICE, ws, [
+      { op: 'entity.create', entity_id: 'report-notes', type_id: 'buckyos.richtext', parent_id: 'tasks', order_key: 'n',
+        payload: { content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: 'first' }, content: [{ type: 'text', text }] }] } } },
+      { op: 'table.set_body', source_id: 'tasks', record_id: 'a', body_ref: { entity_id: 'report-notes' }, expect: { rev: record.content.rev } },
+    ])
+    expect(made.status, JSON.stringify(made)).toBe('accepted')
+    await openCanvas(page, ALICE, ws.workspace_id)
+    await activate(page)
+    if (mode === 'board') await page.getByTestId('aiws-todo-mode-board').click()
+    await item(page, 'a').click({ button: 'right' })
+    await page.getByTestId('aiws-ctl-menu-detail').click()
+    const detail = page.getByTestId('aiws-todo-detail-tl')
+    const notes = detail.getByTestId('aiws-richtext-report-notes')
+    await expect(notes).toBeVisible()
+    await expect(notes).toHaveText(text)
+    await detail.getByTestId('aiws-ctl-panel-close').click()
+    await expect(detail).toHaveCount(0)
+    await expect(item(page, 'a')).toBeVisible()
+  })
+}
 
 test('TD02 list: drag to reorder with an insertion line, keyboard, undo', async ({ page, api }) => {
   const ws = await todoWorkspace(api, `todo-drag ${Date.now()}`)
@@ -161,6 +275,13 @@ test('TD05 read-only members cannot change; the kernel refuses a bad status', as
   await openCanvas(page, BOB, ws.workspace_id)
   await expect(item(page, 'a')).toBeVisible()
   await expect(page.getByTestId('aiws-todo-add-tl')).toBeDisabled()
+  await activate(page)
+  await page.getByTestId('aiws-todo-mode-board').click()
+  const addCard = page.getByTestId('aiws-board-add-todo')
+  await expect(addCard).toBeDisabled()
+  await expect(addCard).toHaveCSS('opacity', '0.6')
+  await page.getByTestId('aiws-canvas').click({ position: { x: 600, y: 750 } })
+  await expect(addCard).toHaveCSS('opacity', '0.6')
   const a = await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks', selector: { kind: 'table_record', record_id: 'a' } }) as { content: { revs: Record<string, number> } }
   const bad = await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'tasks', values: [{ record_id: 'a', field_id: 'order', value: 'Not a key!', expect: { rev: a.content.revs.order ?? 0 } }] }])
   expect(bad.status, JSON.stringify(bad)).toBe('rejected')

@@ -7,7 +7,7 @@ import type { ConversationMessageReader } from '../../../components/conversation
 import type { MessageObject } from '../../../components/conversation/model/msgobj'
 import type { createSessionSchema } from '../sessionModel'
 import type { createGroupSchema } from '../groupModel'
-import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
+import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupProfileInput, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 
 export interface ConnectionChoice {
   id: string
@@ -124,8 +124,8 @@ export interface MessageHubStore {
   ensureGroup(context: MessageHubContext, groupDid: string, refresh?: boolean): Promise<void>
   /** Creates the group and invites the members; resolves to the group DID (its entity id). */
   createGroup(context: MessageHubContext, input: z.infer<typeof createGroupSchema>): Promise<string>
-  /** `group.apply_config` on `profile` with the group's current revision. */
-  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: { name: string; description: string }): Promise<void>
+  /** `group.apply_config` on `profile` (and `default_session.history_before_join` when given) with the group's current revision. */
+  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: GroupProfileInput): Promise<void>
   /** Invites each DID; resolves to the DIDs whose invitation failed, with the reason. */
   inviteGroupMembers(context: MessageHubContext, groupDid: string, memberDids: string[]): Promise<Array<{ did: string; reason: string }>>
   removeGroupMember(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>

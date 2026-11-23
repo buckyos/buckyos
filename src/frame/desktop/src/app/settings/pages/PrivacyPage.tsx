@@ -1,6 +1,7 @@
 import { Bot, FolderLock, Globe, Inbox, LayoutGrid, Lock, MessageCircle, RefreshCw, ShieldBan, Users } from 'lucide-react'
 import { IconButton, Tooltip } from '@mui/material'
 import type { ReactNode } from 'react'
+import { workspaceLinkForLocale } from '../../aiworkspace/links'
 import { useI18n } from '../../../i18n/provider'
 import { pickLocalized } from '../../../presentation/model'
 import type { LocalizedText } from '../../../presentation/model'
@@ -79,7 +80,7 @@ function SectionState<T>({ value, children, empty }: { value: DataSection<T> | n
   return <>{children(value.data)}</>
 }
 
-function ExposureRow({ icon, title, detail, url, badge }: { icon: ReactNode; title: string; detail: ReactNode; url?: string; badge?: ReactNode }) {
+function ExposureRow({ icon, title, detail, url, href = url, badge }: { icon: ReactNode; title: string; detail: ReactNode; url?: string; href?: string; badge?: ReactNode }) {
   return (
     <ListCard>
       <div className="flex items-start gap-3">
@@ -90,7 +91,7 @@ function ExposureRow({ icon, title, detail, url, badge }: { icon: ReactNode; tit
             {badge}
           </div>
           {url ? (
-            <a className="mt-1 block break-all font-mono text-xs underline-offset-2 hover:underline" style={{ color: 'var(--cp-accent)' }} href={url} target="_blank" rel="noreferrer">
+            <a className="mt-1 block break-all font-mono text-xs underline-offset-2 hover:underline" style={{ color: 'var(--cp-accent)' }} href={href} target="_blank" rel="noreferrer">
               {url}
             </a>
           ) : null}
@@ -161,6 +162,7 @@ function PublicAccessSection({ data, actions }: { data: PrivacyOverview; actions
                   icon={<LayoutGrid size={16} />}
                   title={workspace.title || workspace.workspaceId}
                   url={workspace.url}
+                  href={workspaceLinkForLocale(workspace.url, locale)}
                   badge={publicBadge}
                   detail={t('settings.privacy.publicWorkspaceDesc', 'AI Workspace with a public link: anyone with the link can open it.')}
                 />
@@ -336,7 +338,7 @@ function AppRow({ app, userId }: { app: AppAccessEntry; userId: string }) {
                   title={permission.scope}
                 >
                   {permissionLabel(permission.scope, t)}
-                  {permission.actions.length > 0 ? ` · ${permission.actions.join('/')}` : ''}
+                  {permission.actions.length > 0 ? ` · ${permission.actions.map((action) => t(`settings.privacy.action.${action}`, action)).join('/')}` : ''}
                 </span>
               ))}
             </div>

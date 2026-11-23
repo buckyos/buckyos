@@ -172,6 +172,8 @@ export interface UserInviteRecord {
   state: 'pending' | 'accepted' | string
   target_user_id?: string | null
   target_did?: string | null
+  oauth_email?: string | null
+  bind_existing?: boolean
   show_name?: string | null
   default_user_type: UserType | string
   groups?: string[]
@@ -184,6 +186,9 @@ export interface UserInviteResponse {
   expired?: boolean
   zone_did?: string
   zone_host?: string
+  verified_did?: string | null
+  oauth_source?: string | null
+  source_enabled?: boolean
   invite_url?: string
   ok?: boolean
   user_id?: string
@@ -642,6 +647,8 @@ export const removeUserMsgTunnel = async (input: {
 export const createUserInvite = async (input: {
   inviteId?: string
   userId?: string
+  googleEmail?: string
+  bindExisting?: boolean
   targetDid?: string
   showName?: string
   userType?: AssignableUserType
@@ -653,13 +660,15 @@ export const createUserInvite = async (input: {
   const params: Record<string, unknown> = {}
   if (input.inviteId !== undefined) params.invite_id = input.inviteId
   if (input.userId !== undefined) params.user_id = input.userId
+  if (input.googleEmail !== undefined) params.google_email = input.googleEmail
+  if (input.bindExisting) params.bind_existing = true
   if (input.targetDid !== undefined) params.target_did = input.targetDid
   if (input.showName !== undefined) params.show_name = input.showName
   if (input.userType !== undefined) params.user_type = input.userType
   if (input.expiresAt !== undefined) params.expires_at = input.expiresAt
   if (input.ttlSecs !== undefined) params.ttl_secs = input.ttlSecs
   if (input.groups !== undefined) params.groups = input.groups
-  return callRpc<UserInviteResponse>('user.invite.create', params)
+  return callControlPanel<UserInviteResponse>('user.invite.create', params)
 }
 
 export const fetchUserInvite = async (
@@ -669,12 +678,10 @@ export const fetchUserInvite = async (
 
 export const acceptUserInvite = async (input: {
   inviteId: string
-  ownerConfig: Record<string, unknown> | string
   passwordHash?: string
 }): Promise<{ data: UserInviteResponse | null; error: unknown }> => {
   const params: Record<string, unknown> = {
     invite_id: input.inviteId,
-    owner_config: input.ownerConfig,
   }
   if (input.passwordHash !== undefined) params.password_hash = input.passwordHash
   return callControlPanel<UserInviteResponse>('user.invite.accept', params)

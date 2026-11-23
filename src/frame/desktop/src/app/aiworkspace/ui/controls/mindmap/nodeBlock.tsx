@@ -4,14 +4,17 @@
  * Typed in place like a shape (Enter or leaving saves, Shift+Enter breaks the line, Esc keeps the old text); Tab saves
  * and adds a child. Outside a control it draws like a root. Its look follows its depth and branch colour. */
 
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useContext, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from 'react'
 import { ChevronsDownUp, CornerDownRight, ListPlus, LocateFixed, Palette, SquarePlus } from 'lucide-react'
-import { MAX_TEXT_WIDTH, NODE_PAD, runFont, typography } from '@controls/measure'
+import { labelFontFamily, readLabelLook, type LabelLook } from '@controls/label'
+import { MAX_TEXT_WIDTH, NODE_FONT_FAMILY, NODE_PAD, runFont, typography } from '@controls/measure'
 import { isAuto, num } from '@controls/placement'
 import { aiwsT } from '../../../i18n'
 import { useStore } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
-import { consumeIntent, useIntent } from '../../blocks/editorToolbar'
+import { BlockMetaContext, consumeIntent, useIntent } from '../../blocks/editorToolbar'
+import { LabelArt } from '../../blocks/labelBlock'
+import { labelAppearanceFields } from '../../blocks/labelFields'
 import type { BlockDefinition, RenderContext } from '../../blocks/registry'
 import type { WorkspaceStore } from '../../../state/store'
 import { controlCommands } from '../commands'
@@ -26,37 +29,41 @@ function useNodeLook(context: RenderContext) {
   const depth = info?.depth ?? 0
   const width = num(context.cell.placement?.w)
   const maxText = width !== undefined ? Math.max(1, width - NODE_PAD.x * 2) : MAX_TEXT_WIDTH
-  return { info, depth, maxText }
+  return { info, depth, maxText, look: readLabelLook(context.payload.config) }
 }
 
-function NodeFrame({ context, children }: { context: RenderContext; children?: ReactNode }) {
-  const { info, depth, maxText } = useNodeLook(context)
-  const t = typography(depth)
+function NodeFrame({ context, children, ref }: { context: RenderContext; children?: ReactNode; ref?: Ref<HTMLSpanElement> }) {
+  const { info, depth, maxText, look } = useNodeLook(context)
+  const t = typography(depth, look)
   // while editing the node grows with its text up to the width the layout wraps at, so typing does not wrap early
-  const style = { '--aiws-branch': info?.color ?? undefined, '--aiws-node-max-w': `${maxText + NODE_PAD.x * 2}px`, padding: `${NODE_PAD.y}px ${NODE_PAD.x}px`, lineHeight: `${t.lineHeight}px`, fontSize: t.size, fontWeight: t.weight } as CSSProperties
+  const style = {
+    '--aiws-branch': info?.color ?? undefined,
+    '--aiws-node-max-w': `${maxText + NODE_PAD.x * 2}px`,
+    padding: `calc(${NODE_PAD.y}px - var(--aiws-node-border)) calc(${NODE_PAD.x}px - var(--aiws-node-border))`,
+    lineHeight: `${t.lineHeight}px`, fontSize: t.size, fontWeight: t.weight, fontFamily: labelFontFamily(look) ?? NODE_FONT_FAMILY,
+  } as CSSProperties
   return (
-    <div className={`aiws-mindnode is-depth-${Math.min(depth, 2)}`} style={style} data-testid={`aiws-mindnode-${context.cell.entity_id}`} data-depth={depth}>
-      {children ?? <NodeLines title={context.payload.title ?? ''} depth={depth} maxText={maxText} />}
-    </div>
+    <LabelArt ref={ref} className={`aiws-mindnode is-depth-${Math.min(depth, 2)}`} style={style} testId={`aiws-mindnode-${context.cell.entity_id}`} data-depth={depth}
+      look={{ ...look, wrap: true, max_lines: undefined }} text={children ?? <NodeLines title={context.payload.title ?? ''} depth={depth} maxText={maxText} look={look} />} />
   )
 }
 
 /** The measured lines with their inline formatting. */
-function NodeLines({ title, depth, maxText }: { title: string; depth: number; maxText: number }) {
+function NodeLines({ title, depth, maxText, look }: { title: string; depth: number; maxText: number; look: LabelLook }) {
   const { t } = useAiwsText()
   if (!title) return <span className="aiws-mindnode-empty">{t('aiworkspace.mindmap.emptyNode')}</span>
-  const measured = nodeMeasurer.measure(title, depth, maxText)
+  const measured = nodeMeasurer.measure(title, depth, maxText, look)
   return (
     <>
       {measured.lines.map((line, i) => (
-        <div key={i} className="aiws-mindnode-line">
+        <span key={i} className="aiws-mindnode-line">
           {line.runs.map((r, j) => {
-            const style: CSSProperties = { font: runFont(r, depth), textDecoration: [r.strike ? 'line-through' : '', r.href ? 'underline' : ''].filter(Boolean).join(' ') || undefined }
+            const style: CSSProperties = { font: runFont(r, depth, look), textDecoration: [r.strike ? 'line-through' : '', r.href ? 'underline' : ''].filter(Boolean).join(' ') || undefined }
             return r.href
               ? <a key={j} href={r.href} target="_blank" rel="noreferrer noopener" style={style} onPointerDown={(e) => e.stopPropagation()}>{r.text}</a>
               : <span key={j} className={r.code ? 'is-code' : undefined} style={style}>{r.text}</span>
           })}
-        </div>
+        </span>
       ))}
     </>
   )
@@ -81,7 +88,12 @@ function saveTitle(context: RenderContext, store: ReturnType<typeof useStore>, n
 function NodeEditor(context: RenderContext) {
   const { t } = useAiwsText()
   const store = useStore()
-  const ref = useRef<HTMLDivElement>(null)
+  const ref = useRef<HTMLSpanElement>(null)
+  const metaSink = useContext(BlockMetaContext)
+  const id = context.cell.entity_id
+  const observeFrame = useCallback((frame: HTMLSpanElement | null) => {
+    if (frame) return metaSink?.observeEditorSize(id, frame)
+  }, [metaSink, id])
   const closed = useRef(false)
   const intent = useIntent(context.cell.entity_id)
   const [started] = useState(() => (intent?.value.startsWith('type:') ? intent.value.slice(5) : null))
@@ -108,8 +120,8 @@ function NodeEditor(context: RenderContext) {
     if (then) controlCommands.send({ kind: then, nodeId: context.cell.entity_id })
   }
   return (
-    <NodeFrame context={context}>
-      <div ref={ref} className="aiws-mindnode-edit" contentEditable="plaintext-only" suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={t('aiworkspace.mindmap.text')}
+    <NodeFrame context={context} ref={observeFrame}>
+      <span ref={ref} className="aiws-mindnode-edit" contentEditable="plaintext-only" suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={t('aiworkspace.mindmap.text')}
         data-role="editor" data-testid={`aiws-mindnode-edit-${context.cell.entity_id}`} data-placeholder={t('aiworkspace.mindmap.emptyNode')}
         onBlur={() => done(true)}
         onKeyDown={(event) => {
@@ -169,5 +181,7 @@ export const mindnodeDefinition: BlockDefinition = {
   // a node's look is its depth and branch: no hover label, the text is already there
   hover: () => [],
   actions: nodeActions,
-  configFields: nodeFields,
+  get configFields() {
+    return [...labelAppearanceFields((context, store) => typography(info(context, store)?.depth ?? 0)), ...nodeFields]
+  },
 }

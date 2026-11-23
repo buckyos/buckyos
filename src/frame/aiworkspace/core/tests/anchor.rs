@@ -1,7 +1,7 @@
 //! Annotation anchors (design doc §3.7): graded resolution, rich text ranges that follow edits
 //! and fall back to their quote, application ranges, replay of newer anchors, re-anchoring.
 
-use aiworkspace_core::access::{Access, Cap, CapSet};
+use aiworkspace_core::access::{Access, Applied, Cap, CapSet, Tier};
 use aiworkspace_core::model::*;
 use aiworkspace_core::read;
 use aiworkspace_core::richtext;
@@ -299,4 +299,38 @@ fn list_annotations_by_target_and_page() {
     assert_eq!(all[2]["scope"], "personal");
     assert_eq!(all[0]["content"]["anchor"]["state"], "resolved");
     assert_eq!(code(&read::list_annotations(&ws.store, &carol, &[], Some("ghost")).unwrap_err().to_json()), "NOT_FOUND");
+}
+
+#[test]
+fn annotation_reads_follow_target_permissions() {
+    let mut ws = setup(json!([para("p1", "before selected after")]));
+    let client = Client::open(&ws);
+    let quote = json!({ "prefix": "before ", "exact": "selected", "suffix": " after" });
+    ws.ok(json!([note("n1", json!({ "target": block("p1"), "range": client.range(("p1", 7), ("p1", 15)),
+        "context": { "quote": quote, "label": "selected" } }))]));
+    let entry = |allow, deny| Applied { subject: "peer".into(), tier: Tier::Single, creator: false, allow, deny };
+    let read_cap = CapSet(Cap::Read as u16);
+    let peer = Access::from_layers("peer", true, [
+        (String::new(), vec![entry(read_cap, CapSet::NONE)]),
+        ("notes".into(), vec![entry(CapSet::NONE, read_cap)]),
+    ].into());
+    let key = json!({ "kind": "doc_key", "key": "context" });
+    let check = |ws: &MemWorkspace| {
+        let item = read::read(&ws.store, &peer, "n1", None).unwrap();
+        assert!(item["content"]["payload"].get("context").is_none());
+        assert_eq!(item["content"]["payload"]["body"], "body of n1");
+        assert!(item["content"].get("anchor").is_none());
+        assert!(!item.to_string().contains("selected"));
+        assert_eq!(read::list_annotations(&ws.store, &peer, &["notes".into()], None).unwrap(), [item.clone()]);
+        assert_eq!(read::list_annotations(&ws.store, &peer, &[], Some("data")).unwrap(), [item]);
+        let context = read::read(&ws.store, &peer, "n1", Some(&key)).unwrap();
+        assert_eq!(context["content"]["value"], Value::Null);
+    };
+    check(&ws);
+    let owner = read::read(&ws.store, &Access::full("alice"), "n1", None).unwrap();
+    assert_eq!(owner["content"]["payload"]["context"]["quote"], quote);
+    assert_eq!(owner["content"]["anchor"]["position"]["text"], "selected");
+
+    ws.store.entities.get_mut("n1").unwrap().schema_version += 1;
+    check(&ws);
 }

@@ -547,6 +547,10 @@ impl AppLoader {
     }
 
     pub async fn start(&self) -> Result<()> {
+        if let Some(doc) = self.local_app_doc() {
+            buckyos_api::check_app_sdk(doc.sdk_version.as_deref(), buckyos_api::MINIMUM_APP_SDK)
+                .map_err(ControlRuntItemErrors::NotSupport)?;
+        }
         let runtime = self.resolve_runtime()?;
         info!(
             "app_loader start app={} user={} runtime={:?}",

@@ -5,17 +5,19 @@
  * rest is the table's schema. */
 
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { ChevronLeft, ChevronRight, GripVertical, Plus, Trash2, Type } from 'lucide-react'
+import { ChevronLeft, ChevronRight, GripVertical, Plus, Trash2 } from 'lucide-react'
 import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type { CellPayload, FieldDef, FieldType, Json, KeyedContent, Operation, PrepareResult, TableSourceContent } from '../api/types'
 import { useStore } from '../state/hooks'
+import { languageCurrency } from '@table/currency'
+import { aiwsT } from '../i18n'
 import { useAiwsText } from '../useAiwsText'
-import { addFieldOps, CREATABLE_FIELD_TYPES } from './fieldOps'
+import { addFieldOps, CREATABLE_FIELD_TYPES, type CreatableField } from './fieldOps'
 import { DEFAULT_WIDTH, WIDTHS, inputOf, moveEntry, rawOf, sameRaw, widthPreset, type ColumnEntry, type Raw, type WidthPreset } from './table/model'
-import { FIELD_ICONS } from './table/fieldIcons'
+import { fieldIcon } from './table/fieldIcons'
 import { ValueControl } from './table/RecordForm'
-import { COMMON_CURRENCIES, FIELD_TYPE_LABEL, UNSET, formatValue, moneyParts, type ValueDef } from './values'
+import { COMMON_CURRENCIES, FIELD_TYPE_LABEL, UNSET, referenceTypeLabels, formatValue, moneyParts, type ValueDef } from './values'
 
 /** Conversions the backend implements (anything else answers MIGRATION_UNSUPPORTED). */
 const MIGRATIONS: Partial<Record<FieldType, FieldType[]>> = { text: ['date', 'number', 'decimal'], number: ['decimal', 'currency'], decimal: ['decimal', 'currency'], select: ['text'], currency: ['decimal', 'text', 'currency'] }
@@ -77,6 +79,7 @@ export function FieldManager(props: FieldManagerProps) {
 }
 
 function typeText(field: FieldDef): string {
+  if (field.ref_purpose) return aiwsT(referenceTypeLabels[field.ref_purpose])
   return `${FIELD_TYPE_LABEL[field.type]}${field.type === 'decimal' ? `(${field.scale ?? 0})` : field.type === 'currency' ? `(${field.currency ?? ''})` : ''}`
 }
 
@@ -85,9 +88,9 @@ function FieldList({ source, cell, entries, columnsReason, onColumns, structureR
   const store = useStore()
   const sourceId = source.entity_id
   const [newName, setNewName] = useState('')
-  const [newType, setNewType] = useState<FieldType>('text')
+  const [newType, setNewType] = useState<CreatableField>('text')
   const [newScale, setNewScale] = useState('2')
-  const [newCurrency, setNewCurrency] = useState(() => (locale.startsWith('zh') ? 'CNY' : 'USD'))
+  const [newCurrency, setNewCurrency] = useState(() => languageCurrency(locale))
   const [drag, setDrag] = useState<{ id: string; to: number } | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
 
@@ -132,7 +135,7 @@ function FieldList({ source, cell, entries, columnsReason, onColumns, structureR
       <ul ref={listRef} className="aiws-field-list" aria-label={t('aiworkspace.data.table.fields')}>
         {entries.map((entry, index) => {
           const { field } = entry
-          const Icon = FIELD_ICONS[field.type] ?? Type
+          const Icon = fieldIcon(field)
           return (
             <li key={field.field_id} className={`aiws-field-item${drag?.id === field.field_id ? ' is-dragged' : ''}${drag && drag.to === index && drag.id !== field.field_id ? ' is-drop-before' : ''}`} data-field-row="" data-testid={`aiws-field-row-${field.field_id}`}>
               <span className={`aiws-field-grip${columnsReason ? ' is-disabled' : ''}`} role="button" tabIndex={-1} aria-label={t('aiworkspace.table.fields.drag', { name: field.name })} title={columnsReason ?? t('aiworkspace.table.fields.drag', { name: field.name })}
@@ -155,8 +158,8 @@ function FieldList({ source, cell, entries, columnsReason, onColumns, structureR
       {structureReason ? <div className="aiws-muted">{structureReason}</div> : (
         <form className="aiws-inline-form aiws-field-add" onSubmit={(event) => { event.preventDefault(); addField() }}>
           <input aria-label={t('aiworkspace.data.field.newName')} placeholder={t('aiworkspace.data.field.newName')} value={newName} onChange={(event) => setNewName(event.target.value)} />
-          <select aria-label={t('aiworkspace.data.field.newType')} value={newType} onChange={(event) => setNewType(event.target.value as FieldType)}>
-            {CREATABLE_FIELD_TYPES.map((type) => <option key={type} value={type}>{FIELD_TYPE_LABEL[type]}</option>)}
+          <select aria-label={t('aiworkspace.data.field.newType')} value={newType} onChange={(event) => setNewType(event.target.value as CreatableField)}>
+            {CREATABLE_FIELD_TYPES.map((type) => <option key={type} value={type}>{type === 'image' || type === 'canvas' ? t(referenceTypeLabels[type]) : FIELD_TYPE_LABEL[type]}</option>)}
           </select>
           {newType === 'decimal' && <input aria-label={t('aiworkspace.data.field.scale')} inputMode="numeric" style={{ width: 56 }} value={newScale} onChange={(event) => setNewScale(event.target.value)} />}
           {newType === 'currency' && <CurrencyInput label={t('aiworkspace.data.field.currency')} value={newCurrency} onChange={setNewCurrency} />}

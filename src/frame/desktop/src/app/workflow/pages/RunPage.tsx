@@ -1,5 +1,6 @@
 /* ── Run detail page: per-step state / source / structured error, run output, TaskMgr link ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, ExternalLink, OctagonX, RefreshCw } from 'lucide-react'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
@@ -24,18 +25,12 @@ const stateColor: Record<NodeRunState, string> = {
   cancelled: 'var(--cp-muted)',
 }
 
-const sourceLabel: Record<string, string> = {
-  cache: 'cache hit',
-  executed: 'executed',
-  direct: 'direct adapter',
-  submitted: 'agent submitted',
-}
-
 function taskCenterHref(runId: string): string {
   return `/taskcenter?taskid=${encodeURIComponent(runId)}`
 }
 
 export function RunPage({ runId, onSelect }: Props) {
+  const { t, locale } = useI18n()
   const store = useWorkflowStore()
   const [cancelError, setCancelError] = useState<string | null>(null)
   useEffect(() => {
@@ -47,7 +42,7 @@ export function RunPage({ runId, onSelect }: Props) {
   if (!run) {
     return (
       <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--cp-muted)' }}>
-        {store.error ?? 'Loading run…'}
+        {store.error ?? t('workflow.loadingRun')}
       </div>
     )
   }
@@ -63,13 +58,13 @@ export function RunPage({ runId, onSelect }: Props) {
           onClick={() => onSelect({ kind: 'definition', definitionId: run.definitionId })}
           className="flex h-7 w-7 items-center justify-center rounded-lg"
           style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-          title="Back to definition"
+          title={t('workflow.backToDefinition')}
         >
           <ArrowLeft size={14} />
         </button>
         <div className="min-w-0 flex-1">
           <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--cp-muted)' }}>
-            Run · {definition?.name ?? run.definitionName}
+            {t('workflow.runTitle', undefined, { name: definition?.name ?? run.definitionName })}
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
             <span className="truncate font-mono text-sm">{run.runId}</span>
@@ -78,18 +73,17 @@ export function RunPage({ runId, onSelect }: Props) {
               style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)', color: sty.color }}
             >
               <span className="h-1.5 w-1.5 rounded-full" style={{ background: sty.color }} />
-              {sty.label}
+              {t(`workflow.status.${run.status}`, run.status)}
             </span>
             {interrupted && (
               <span className="rounded-full px-2 py-0.5 text-[10px] uppercase" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)', color: 'var(--cp-warning)' }}>
-                interrupted
+                {t('workflow.status.interrupted')}
               </span>
             )}
           </div>
           <div className="mt-0.5 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-            requested by {run.requestedBy ?? '—'} · executor {run.executor} · revision{' '}
-            <span className="font-mono" title={run.revision}>{run.revision.slice(0, 12)}</span> · epoch {run.executionEpoch}
-            {' · '}created {formatTime(run.createdAt)} · updated {formatTime(run.updatedAt)}
+            {t('workflow.runMetadata', undefined, { who: run.requestedBy ?? '—', executor: run.executor })}{' '}
+            <span className="font-mono" title={run.revision}>{run.revision.slice(0, 12)}</span> · {t('workflow.runTimestamps', undefined, { epoch: run.executionEpoch, created: formatTime(run.createdAt, locale), updated: formatTime(run.updatedAt, locale) })}
           </div>
         </div>
         <button
@@ -98,28 +92,28 @@ export function RunPage({ runId, onSelect }: Props) {
           className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px]"
           style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
         >
-          <RefreshCw size={12} /> Refresh
+          <RefreshCw size={12} /> {t('workflow.refresh')}
         </button>
         <a
           href={taskCenterHref(run.runId)}
-          title={`TaskMgr task ${run.runId}`}
+          title={t('workflow.taskMgrTask', undefined, { id: run.runId })}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px]"
           style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
         >
-          TaskMgr tree <ExternalLink size={12} />
+          {t('workflow.taskMgrTree')} <ExternalLink size={12} />
         </a>
         {!run.terminal && (
           <button
             type="button"
             onClick={() => {
-              void store.cancelRun(run.runId, 'cancelled from Workflow WebUI').then(setCancelError)
+              void store.cancelRun(run.runId, t('workflow.cancelReason')).then(setCancelError)
             }}
             className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px]"
             style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-danger)', border: '1px solid var(--cp-border)' }}
           >
-            <OctagonX size={12} /> Cancel run
+            <OctagonX size={12} /> {t('workflow.cancelRun')}
           </button>
         )}
       </div>
@@ -130,20 +124,20 @@ export function RunPage({ runId, onSelect }: Props) {
           <Notice tone={run.runError.code === 'cancelled' ? 'muted' : 'danger'} text={`${run.runError.code}: ${run.runError.message}`} />
         )}
         {run.humanWaitingNodes.length > 0 && (
-          <Notice tone="warning" text={`Waiting for a human decision on: ${run.humanWaitingNodes.join(', ')} (act in TaskMgr).`} />
+          <Notice tone="warning" text={t('workflow.waitingNodes', undefined, { nodes: run.humanWaitingNodes.join(', ') })} />
         )}
 
-        <SectionLabel text="Steps" />
+        <SectionLabel text={t('workflow.steps')} />
         <div className="overflow-hidden rounded-lg" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           {run.steps.map((step, i) => (
             <StepRow key={step.nodeId} step={step} first={i === 0} />
           ))}
         </div>
 
-        <SectionLabel text="Run output (terminal nodes)" />
+        <SectionLabel text={t('workflow.runOutput')} />
         {Object.keys(run.output).length === 0 ? (
           <div className="rounded-lg p-3 text-xs" style={{ background: 'var(--cp-surface)', border: '1px dashed var(--cp-border)', color: 'var(--cp-muted)' }}>
-            {run.terminal ? 'No output recorded.' : 'Run has not completed; output is not final.'}
+            {run.terminal ? t('workflow.noOutput') : t('workflow.pendingOutput')}
           </div>
         ) : (
           Object.entries(run.output).map(([node, value]) => (
@@ -156,6 +150,7 @@ export function RunPage({ runId, onSelect }: Props) {
 }
 
 function StepRow({ step, first }: { step: RunStepView; first: boolean }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const color = stateColor[step.state]
   const summary = step.output ? summarizeOutput(step.output) : null
@@ -166,7 +161,7 @@ function StepRow({ step, first }: { step: RunStepView; first: boolean }) {
         <span className="font-semibold">{step.name}</span>
         <span className="font-mono text-[10px]" style={{ color: 'var(--cp-muted)' }}>{step.nodeId}</span>
         <span className="rounded px-1 text-[9px] uppercase" style={{ color, background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-          {step.state}
+          {t(`workflow.status.${step.state}`, step.state)}
         </span>
         {step.source && (
           <span
@@ -177,15 +172,15 @@ function StepRow({ step, first }: { step: RunStepView; first: boolean }) {
               border: '1px solid var(--cp-border)',
             }}
           >
-            {sourceLabel[step.source] ?? step.source}
+            {t(`workflow.source.${step.source}`, step.source)}
           </span>
         )}
         {step.attempt > 1 && (
-          <span className="text-[10px]" style={{ color: 'var(--cp-warning)' }}>attempt {step.attempt}</span>
+          <span className="text-[10px]" style={{ color: 'var(--cp-warning)' }}>{t('workflow.attempt', undefined, { count: step.attempt })}</span>
         )}
         {step.pendingExecutionIds.length > 0 && (
           <span className="truncate font-mono text-[10px]" style={{ color: 'var(--cp-muted)' }} title={step.pendingExecutionIds.join(', ')}>
-            exec {step.pendingExecutionIds[0]}
+            {t('workflow.execution', undefined, { id: step.pendingExecutionIds[0] })}
           </span>
         )}
         {(summary || step.error) && (
@@ -195,7 +190,7 @@ function StepRow({ step, first }: { step: RunStepView; first: boolean }) {
             className="ml-auto text-[10px]"
             style={{ color: 'var(--cp-accent)' }}
           >
-            {open ? 'hide' : 'details'}
+            {open ? t('workflow.hide') : t('workflow.details')}
           </button>
         )}
       </div>
@@ -213,6 +208,7 @@ function StepRow({ step, first }: { step: RunStepView; first: boolean }) {
 }
 
 function ErrorBlock({ error }: { error: StepError }) {
+  const { t } = useI18n()
   const details = error.details
   return (
     <div
@@ -224,7 +220,7 @@ function ErrorBlock({ error }: { error: StepError }) {
       }}
     >
       <span className="font-mono font-semibold" style={{ color: 'var(--cp-danger)' }}>{error.code}</span>
-      {error.retryable && <span className="ml-2 text-[10px]" style={{ color: 'var(--cp-warning)' }}>retryable</span>}
+      {error.retryable && <span className="ml-2 text-[10px]" style={{ color: 'var(--cp-warning)' }}>{t('workflow.retryable')}</span>}
       <span className="ml-2">{error.message}</span>
       {details !== undefined && details !== null && (
         <pre className="mt-1 max-h-40 overflow-auto font-mono text-[10px]" style={{ color: 'var(--cp-muted)' }}>
@@ -236,6 +232,7 @@ function ErrorBlock({ error }: { error: StepError }) {
 }
 
 function OutputBlock({ node, value }: { node: string; value: unknown }) {
+  const { t } = useI18n()
   const manifest = value && typeof value === 'object' ? (value as { summary?: Record<string, unknown>; complete?: boolean; manifest_obj_id?: string }) : null
   return (
     <div className="mb-2 rounded-lg p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -243,7 +240,7 @@ function OutputBlock({ node, value }: { node: string; value: unknown }) {
         <span className="font-mono">{node}</span>
         {manifest?.complete === false && (
           <span className="rounded px-1 text-[9px] uppercase" style={{ color: 'var(--cp-warning)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-            partial
+            {t('workflow.partial')}
           </span>
         )}
       </div>

@@ -9,7 +9,7 @@
   width: min(880px, 100%); height: min(640px, 100%); max-height: 100%;
   padding: 0; gap: 0; overflow: hidden;
 }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop) > .aiws-dialog:not(.aiws-members-sheet):not(.aiws-bind-dialog).aiws-ext-manager {
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop) > .aiws-dialog:not(.aiws-bind-dialog).aiws-ext-manager {
   padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
 }
 

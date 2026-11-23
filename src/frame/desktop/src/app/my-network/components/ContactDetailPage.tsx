@@ -130,7 +130,7 @@ function Header({ person, contact, candidate, relation }: { person: { did: strin
 }
 
 export function ContactDetailPage({ did, collectionTag, onRemoved }: { did: string; collectionTag?: string; onRemoved?: () => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const contacts = useNetworkResource('contacts')
   const friendRequests = useNetworkResource('friendRequests')
   const lookup = useLookup(did, { debounceMs: 0 })
@@ -203,8 +203,8 @@ export function ContactDetailPage({ did, collectionTag, onRemoved }: { did: stri
       {contact ? (
         <Card title={t('myNetwork.detail.source')}>
           <Fact label={t('myNetwork.detail.sourceLabel')}>{t(`myNetwork.source.${contact.source}`, contact.source)}</Fact>
-          {created ? <Fact label={t('myNetwork.detail.created')}>{new Date(created).toLocaleString()}</Fact> : null}
-          {updated ? <Fact label={t('myNetwork.detail.updated')}>{new Date(updated).toLocaleString()}</Fact> : null}
+          {created ? <Fact label={t('myNetwork.detail.created')}>{new Date(created).toLocaleString(locale)}</Fact> : null}
+          {updated ? <Fact label={t('myNetwork.detail.updated')}>{new Date(updated).toLocaleString(locale)}</Fact> : null}
         </Card>
       ) : null}
 

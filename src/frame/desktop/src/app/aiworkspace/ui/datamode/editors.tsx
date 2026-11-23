@@ -7,7 +7,7 @@
 import { createElement, useCallback, type ReactNode } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { ReadOk } from '../../api/session'
-import type { BlockDefRead, EntityEnvelope, Reference, ShowPathPayload, ViewportPayload, WishPayloadRead } from '../../api/types'
+import { DATA_ID, type BlockDefRead, type EntityEnvelope, type Reference, type ShowPathPayload, type ViewportPayload, type WishPayloadRead } from '../../api/types'
 import { useDirectReadOnly, useLoad, useReadOnlyReason, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { AssetCell, NoteEditor, RecordCell, RichTextCell } from '../blocks/editors'
@@ -20,7 +20,7 @@ import { StandardTableEditor } from '../table/StandardTableEditor'
 import { ProgramView } from '../wish/ProgramView'
 import { WishCard } from '../wish/WishCard'
 import { WishRecords } from '../wish/WishRecords'
-import { iconOf, nameOf, readOnlyReason, SESSION_TYPES, typeName } from './model'
+import { acceptsData, iconOf, nameOf, readOnlyReason, SESSION_TYPES, typeName } from './model'
 import { PERMISSIONS_TAB, type MacroPage } from './tabs'
 
 /** The editor of one tab; `onPage` turns a macro's page. */
@@ -87,9 +87,13 @@ export function DataDetail({ entity, page, onPage, onOpen }: { entity: EntityEnv
 function DataContent({ entity, reason, readOnly, page, onPage, onOpen }: { entity: EntityEnvelope; reason: string | null; readOnly: boolean; page: MacroPage | undefined; onPage: (page: MacroPage) => void; onOpen: (id: string) => void }) {
   const ui = useWorkspaceUi()
   const renderEmbed = useCallback((reference: Reference) => ui.renderCell(reference.entity_id, 1), [ui])
+  const store = useStore()
   if (entity.degraded) return <RawDetail entity={entity} />
   switch (entity.type_id) {
-    case 'buckyos.table-source': return <StandardTableEditor sourceId={entity.entity_id} source={entity} size="tab" readOnly={readOnly || Boolean(entity.source)} readOnlyReason={reason} />
+    case 'buckyos.table-source': {
+      const annotationParentId = entity.parent_id && acceptsData(store.outline.get(entity.parent_id)) ? entity.parent_id : DATA_ID
+      return <StandardTableEditor sourceId={entity.entity_id} source={entity} size="tab" readOnly={readOnly || Boolean(entity.source)} readOnlyReason={reason} annotationParentId={annotationParentId} />
+    }
     case 'buckyos.dir': return <DirectoryEditor key={entity.entity_id} entityId={entity.entity_id} size="tab" readOnlyReason={readOnly ? reason : null} />
     case 'buckyos.richtext': return <RichTextCell entity={entity} entityId={entity.entity_id} renderEmbed={renderEmbed} />
     case 'buckyos.record': return <RecordCell entityId={entity.entity_id} entity={entity} readOnly={readOnly} />

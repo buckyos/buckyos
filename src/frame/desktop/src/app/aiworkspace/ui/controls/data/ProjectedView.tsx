@@ -6,6 +6,7 @@
 
 import { memo, type CSSProperties, type ReactNode } from 'react'
 import { readLook } from '@drawio/shapes'
+import { readLabelLook } from '@controls/label'
 import type { ProjectedNode } from '@controls/projection'
 import type { Json } from '../../../api/types'
 import { AssetBlobImage } from '../../extensions/AssetBlobImage'
@@ -46,9 +47,12 @@ function ProjectedShape({ config, w, h }: { config: Record<string, unknown>; w: 
 }
 
 function lookOf(config: Record<string, unknown>): LabelLook {
-  const look = config as LabelLook
-  const color = paint(config.font_color)
-  return color ? { ...look, font_color: color } : look
+  const look = readLabelLook(config)
+  return {
+    ...look,
+    font_color: paint(look.font_color) ?? look.font_color,
+    background_color: paint(look.background_color) ?? look.background_color,
+  }
 }
 
 export interface ProjectedViewProps {

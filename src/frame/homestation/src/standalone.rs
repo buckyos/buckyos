@@ -200,7 +200,7 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
             identity.devices.push(signer.signer_did.clone());
         }
     }
-    directory.zones.entry(zone.clone()).or_insert_with(|| format!("http://{listen}"));
+    let local_origin = directory.zones.entry(zone.clone()).or_insert_with(|| format!("http://{listen}")).clone();
     let directory = Arc::new(directory);
     // This zone signs other zones' readers in (`standalone_hub.rs`); its stations sign in at theirs.
     let public_x = crate::sign::public_x_from_pem(&pem).map_err(HsError::BadRequest)?;
@@ -209,6 +209,7 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
         buckyos_api::CrossZoneClient::new(signer.device_signer().map_err(HsError::BadRequest)?, None)
             .map_err(|e| HsError::Internal(e.to_string()))?
             .with_resolver(directory.clone())
+            .with_local_zone(&zone, local_origin)
             .with_origins(directory.zones.clone()),
     );
 

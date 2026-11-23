@@ -7,7 +7,7 @@ import { useI18n } from '../../i18n/provider'
 import { NOTE_MAX_LENGTH, noteInputSchema, type NoteInput } from '../../models/ui'
 import type { DesktopWidgetProps } from './types'
 
-export function NotepadWidget({ item, onSaveNote }: DesktopWidgetProps) {
+export function NotepadWidget({ item, onUpdateConfig }: DesktopWidgetProps) {
   const { t } = useI18n()
   const [isEditing, setIsEditing] = useState(false)
   const contentId = useId()
@@ -74,7 +74,7 @@ export function NotepadWidget({ item, onSaveNote }: DesktopWidgetProps) {
     <form
       onSubmit={form.handleSubmit((values) => {
         if (values.content !== value) {
-          onSaveNote(item.id, values.content)
+          onUpdateConfig(item.id, { text: values.content })
         }
         form.reset({ content: values.content })
         setIsEditing(false)

@@ -87,32 +87,8 @@ impl WorkflowDb {
     }
 
     fn init(conn: Connection) -> WorkflowResult<Arc<Self>> {
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             CREATE TABLE IF NOT EXISTS cache_index (
-                 cache_key TEXT PRIMARY KEY,
-                 result_obj_id TEXT NOT NULL,
-                 artifact_refs TEXT NOT NULL,
-                 fingerprint TEXT NOT NULL,
-                 expires_at INTEGER,
-                 created_at INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS service_epoch (
-                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                 epoch INTEGER NOT NULL,
-                 started_at INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS active_executions (
-                 execution_id TEXT PRIMARY KEY,
-                 run_id TEXT NOT NULL,
-                 node_id TEXT NOT NULL,
-                 epoch INTEGER NOT NULL,
-                 temp_dir TEXT NOT NULL,
-                 task_id TEXT,
-                 started_at INTEGER NOT NULL
-             );",
-        )
-        .map_err(db_err)?;
+        buckyos_sqlite_schema::initialize(&conn, 1, &[include_str!("workflow.sql")]).map_err(db_err)?;
+        conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
         Ok(Arc::new(Self {
             conn: Mutex::new(conn),
         }))
@@ -278,6 +254,26 @@ impl ExecutionLedger for WorkflowDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_schema_requires_versioned_workflow_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workflow.db");
+        drop(WorkflowDb::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        assert!(WorkflowDb::open(&path).is_err());
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
 
     #[tokio::test]
     async fn cache_index_round_trips_and_epoch_advances() {

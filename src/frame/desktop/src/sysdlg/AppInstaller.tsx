@@ -281,11 +281,11 @@ function CheckStep({
           {t('app22.check.identity')}
         </summary>
         <dl>
-          <Row label="AppDID">{app.did}</Row>
-          <Row label="AppDoc Object ID">{app.object_id}</Row>
+          <Row label={t('app22.identity.appDid')}>{app.did}</Row>
+          <Row label={t('app22.identity.appDocId')}>{app.object_id}</Row>
           <Row label={t('app22.check.objectOwner')}>{app.owner}</Row>
-          <Row label="controller">{app.controller}</Row>
-          <Row label="author">{app.author}</Row>
+          <Row label={t('app22.identity.controller')}>{app.controller}</Row>
+          <Row label={t('app22.identity.author')}>{app.author}</Row>
           {draft.source.referrer && (
             <Row label={t('app22.referrer')}>{draft.source.referrer}</Row>
           )}
@@ -640,7 +640,21 @@ function PlanStep({
           )}
           <section data-testid="app-installer-permissions">
             <h3 className="text-sm font-semibold">{t('app22.permissions')}</h3>
-            {draft.app.permissions.map((permission) => (
+            {draft.app.permissions.some(item => item.scope_path === 'sso/share/directed') && <label className="block text-sm">
+              {t('sso.share.level', 'Resource invitations')}
+              <select className="ml-2" value={p.permissions.some(item => item.scope_path === 'sso/share/open') ? 'open' : p.permissions.some(item => item.scope_path === 'sso/share/directed') ? 'directed' : 'disabled'}
+                onChange={e => {
+                  const level=e.target.value
+                  const selected=draft.app.permissions.filter(item => item.scope_path === 'sso/share/directed' && level !== 'disabled' || item.scope_path === 'sso/share/open' && level === 'open')
+                  form.setValue('install_params.permissions',[...p.permissions.filter(item=>!['sso/share/directed','sso/share/open'].includes(item.scope_path)),...selected])
+                  update()
+                }}>
+                <option value="disabled">{t('sso.share.disabled','Disabled')}</option>
+                <option value="directed">{t('sso.share.directed','Directed only')}</option>
+                {draft.app.permissions.some(item => item.scope_path === 'sso/share/open') && <option value="open">{t('sso.share.open','Directed and open')}</option>}
+              </select>
+            </label>}
+            {draft.app.permissions.filter(item=>!['sso/share/directed','sso/share/open'].includes(item.scope_path)).map((permission) => (
               <label
                 key={permission.scope_path}
                 className="flex min-h-14 items-center gap-3 text-sm"
@@ -1149,7 +1163,7 @@ function TaskStep({
           <dl>
             <Row label={t('app22.version')}>{task.result.version}</Row>
             <Row label={t('app22.owner')}>{task.owner_user_id}</Row>
-            <Row label="AppInstanceId">{task.app_instance_id}</Row>
+            <Row label={t('app22.identity.instanceId')}>{task.app_instance_id}</Row>
             <Row label={t('app22.address')}>
               {task.result.address ?? t('app22.assigned')}
             </Row>
@@ -1159,13 +1173,13 @@ function TaskStep({
               {t('app22.diagnostics')}
             </summary>
             <dl>
-              <Row label="AppName">
+              <Row label={t('app22.identity.name')}>
                 {task.result.app_name ?? t('app22.assigned')}
               </Row>
-              <Row label="AppHostName">
+              <Row label={t('app22.identity.hostname')}>
                 {task.result.app_host_name ?? t('app22.assigned')}
               </Row>
-              <Row label="AppIndex">
+              <Row label={t('app22.identity.index')}>
                 {task.result.app_index ?? t('app22.assigned')}
               </Row>
             </dl>
@@ -1185,8 +1199,8 @@ function TaskStep({
           <Row label={t('app22.components')}>
             {task.plan.input.install_params.selected_components.join(', ')}
           </Row>
-          <Row label="AppDID">{task.app.did}</Row>
-          <Row label="AppDoc Object ID">{task.app.object_id}</Row>
+          <Row label={t('app22.identity.appDid')}>{task.app.did}</Row>
+          <Row label={t('app22.identity.appDocId')}>{task.app.object_id}</Row>
         </dl>
       </details>
       <footer className="flex flex-wrap gap-2 border-t border-[var(--cp-border)] pt-4">

@@ -19,7 +19,7 @@ You are an exploration of a plan session: the plan gave you one Todo and runs ot
 ## Completion
 
 - Only `report` with `is_end: true` ends this session; a reply without it does not. Call it with: the Todo id, each acceptance criterion and the evidence for it, the verified findings, the unverified suspicions, the open leads outside the scope, and the files you produced. List the reproduction scripts and their output files in `artifacts`.
-- Never report success you did not verify.
+- Set the final report's top-level `outcome` to `succeeded` when the evidence answers the assigned question, including a negative finding that meets the Todo's criteria. Use `failed` when the investigation or a required acceptance check fails, and `blocked` when a missing prerequisite prevents the check. Give the evidence and name any missing input or access.
 
 """
 

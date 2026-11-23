@@ -81,7 +81,7 @@ async fn the_plan_simple_class_and_its_function_contract() {
             ),
             Some(r) => {
                 assert!(!ws.join("x.txt").exists(), "{r}");
-                tool_call("r", "report", json!({ "intent": "nothing to plan: finish", "report": "nothing to do", "is_end": true }))
+                tool_call("r", "report", json!({ "intent": "nothing to plan: finish", "report": "nothing to do", "outcome": "succeeded", "is_end": true }))
             }
         }
     });
@@ -117,7 +117,7 @@ fn crash_script(path: PathBuf) -> Arc<ScriptedLlm> {
             if has_tool_result(req, "w1").is_none() {
                 return tool_call("w1", "shell", json!({ "command": "sleep 0.3; echo run >> ran.txt" }));
             }
-            tool_call("w2", "report", json!({ "report": "T01: ran", "is_end": true }))
+            tool_call("w2", "report", json!({ "report": "T01: ran", "outcome": "succeeded", "is_end": true }))
         }
         Role::Plan => {
             if has_tool_result(req, "q1").is_none() {
@@ -141,7 +141,7 @@ fn crash_script(path: PathBuf) -> Arc<ScriptedLlm> {
                 !texts.iter().any(|t| t.contains("<todo id=")),
                 "a Todo has no background line of its own: {texts:?}"
             );
-            tool_call("q3", "report", json!({ "intent": "Deliver.", "report": "ran once", "is_end": true }))
+            tool_call("q3", "report", json!({ "intent": "Deliver.", "report": "ran once", "outcome": "succeeded", "is_end": true }))
         }
     })
 }

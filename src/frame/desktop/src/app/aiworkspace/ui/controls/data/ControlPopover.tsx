@@ -13,6 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { useAiwsText } from '../../../useAiwsText'
+import { EditorToolbarContext } from '../../blocks/editorToolbar'
 import { Sheet, useOverlayMounted, usePhoneSheets } from '../../shell/popover'
 import './controlPanel.css'
 
@@ -89,7 +90,8 @@ function useDismiss(ref: RefObject<HTMLDivElement | null>, onClose: () => void) 
 /** A data control's or an editor's details, forms and menus in the framework's panel: beside the anchor on a computer, the
  * bottom sheet on a phone. */
 export function ControlPanel(props: ControlPanelProps) {
-  return usePhoneSheets() ? <SheetPanel {...props} /> : <FloatingPanel {...props} />
+  const Panel = usePhoneSheets() ? SheetPanel : FloatingPanel
+  return <EditorToolbarContext.Provider value={null}><Panel {...props} /></EditorToolbarContext.Provider>
 }
 
 function FloatingPanel({ anchor, onClose, label, children, width = 340, testId, side = 'right' }: ControlPanelProps) {
@@ -132,7 +134,7 @@ function SheetPanel({ onClose, label, children, testId }: ControlPanelProps) {
 export interface MenuItem { id: string; label: string; icon?: ReactNode; danger?: boolean; disabled?: string | false; checked?: boolean; run: () => void }
 
 /** A small action menu in a pop-over (a card's "Move to…", a day's actions). */
-export function ControlMenu({ items, onClose, label }: { items: (MenuItem | 'separator')[]; onClose: () => void; label: string }) {
+export function ControlMenu({ items, onClose, label, id }: { items: (MenuItem | 'separator')[]; onClose: () => void; label: string; id?: string }) {
   const ref = useRef<HTMLDivElement>(null)
   // the first entry takes the keyboard once the panel is in place (a phone's sheet draws its content a render later)
   useEffect(() => {
@@ -140,7 +142,7 @@ export function ControlMenu({ items, onClose, label }: { items: (MenuItem | 'sep
     return () => cancelAnimationFrame(frame)
   }, [])
   return (
-    <div ref={ref} className="aiws-ctl-menu" role="menu" aria-label={label}
+    <div ref={ref} id={id} className="aiws-ctl-menu" role="menu" aria-label={label}
       onKeyDown={(event) => {
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
         event.preventDefault()

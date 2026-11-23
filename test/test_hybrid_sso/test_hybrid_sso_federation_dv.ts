@@ -421,8 +421,7 @@ step("mapped-account", async () => {
   if (!existing) {
     const invite = await rpc(A, "control-panel", "user.invite.create", { target_did: B.ownerDid, user_id: userId, user_type: "user" }, su);
     const inviteId = String(invite.invite_id ?? (invite.invite as Json | undefined)?.invite_id);
-    const owner = JSON.parse(readFileSync(`${homedir()}/buckycli/bob.bns.did/user_config.json`, "utf8")) as Json;
-    const params = { invite_id: inviteId, owner_config: { ...owner, binded_zone_list: [A.zoneDid] } };
+    const params = { invite_id: inviteId };
     const charlieLogin = await callback(await approve(C, await begin(A, C.ownerDid)));
     const charlieToken = charlieLogin.cookies.buckyos_session_token;
     assert(charlieToken, "Charlie must have a verified session for the mismatched-DID test");

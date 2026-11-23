@@ -58,6 +58,7 @@ export interface RenderContext {
   interactive: boolean
   /** Explicit activation ("edit content" / double-click in edit mode); the host mounts the Editor. */
   activateEditor: () => void
+  selectBlock?: () => void
   deactivateEditor: () => void
   /** Open another entity (data-source detail or canvas focus). */
   openEntity: (entityId: string) => void
@@ -276,7 +277,7 @@ export interface ConfigField {
   when?: (context: RenderContext, store: WorkspaceStore) => boolean
   get?: (context: RenderContext, store: WorkspaceStore) => Json | undefined
   /** The Cell's `config` keys to write for `value` (null removes one). */
-  patch?: (context: RenderContext, value: Json | null) => Record<string, Json | null>
+  patch?: (context: RenderContext, value: Json | null, store: WorkspaceStore) => Record<string, Json | null>
   /** The operations that write `value` (other keys, the data, another entity); none: nothing to change. */
   ops?: (context: RenderContext, store: WorkspaceStore, value: Json | null) => Promise<Operation[]>
   /** The edit history's label of a change (default "<label> → <value>"). */

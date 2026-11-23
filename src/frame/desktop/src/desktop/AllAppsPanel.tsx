@@ -227,7 +227,7 @@ export function AllAppsPanel({
                     height: fullscreen ? 40 : 32,
                     borderRadius: fullscreen ? 11 : 9,
                     '--icon-size': `${fullscreen ? 40 : 32}px`,
-                    ...appIconSurfaceStyle(app.accent),
+                    ...appIconSurfaceStyle(app.accent, app.iconKey),
                   } as CSSProperties}
                 >
                   <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />

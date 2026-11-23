@@ -1,5 +1,5 @@
 const messages: Record<string, [string, string]> = {
-  title: ['Playground', 'Playground'],
+  title: ['Playground', '测试台'],
   subtitle: ['Choose an API type and exact model to test a Provider, then inspect the full response.', '选择 API 类型和精确模型，测试 Provider 并检查完整调用结果。'],
   request: ['Request parameters', '请求参数'],
   result: ['Call result', '调用结果'],
@@ -98,7 +98,7 @@ const fields: Record<string, [string, string]> = {
   provider_profile_id: ['Provider profile', 'Provider 配置类型'], adapter_type: ['Adapter type', '适配器类型'], origin_provider: ['Origin Provider', '原始 Provider'], origin_model: ['Origin model', '原始模型'], args_json_schema: ['Arguments JSON schema', '参数 JSON Schema'], output_schema: ['Output schema', '输出 Schema'],
   messages: ['Messages', '消息'], role: ['Role', '角色'], content: ['Content', '内容'], text: ['Text', '文本'], summary: ['Summary', '摘要'], source: ['Source', '资源'], title: ['Title', '标题'],
   temperature: ['Temperature', '温度'], top_p: ['Top P', '核采样概率'], max_output_tokens: ['Maximum output tokens', '最大输出 Token'], seed: ['Seed', '随机种子'], stop: ['Stop sequences', '停止序列'], response_format: ['Response format', '响应格式'], type: ['Type', '类型'], json_schema: ['JSON schema', 'JSON Schema'], tools: ['Tools', '工具'],
-  call_id: ['Call ID', '调用 ID'], name: ['Name', '名称'], args: ['Arguments', '参数'], is_error: ['Is error', '是否错误'], provider: ['Provider', 'Provider'], value: ['Value', '值'],
+  call_id: ['Call ID', '调用 ID'], name: ['Name', '名称'], args: ['Arguments', '参数'], is_error: ['Is error', '是否错误'], provider: ['Provider', '提供商'], value: ['Value', '值'],
   items: ['Items', '输入项'], resource: ['Resource', '资源'], id: ['ID', '标识'], image: ['Image', '图片'], dimensions: ['Dimensions', '向量维数'], normalize: ['Normalize', '归一化'], embedding_space_id: ['Embedding space ID', '向量空间 ID'], chunking: ['Chunking', '分块'], strategy: ['Strategy', '策略'], max_tokens: ['Maximum tokens', '最大 Token 数'], overlap_tokens: ['Overlap tokens', '重叠 Token 数'],
   state: ['State to evaluate', '待评估状态'], questions: ['Questions', '问题'], instructions: ['Instructions', '指令'], criteria: ['Criteria', '判定标准'], true: ['True criteria', '真值标准'], false: ['False criteria', '假值标准'], options: ['Options', '选项'], description: ['Description', '描述'], levels: ['Score levels (ordered)', '评分等级（按顺序）'],
   query: ['Query', '查询'], documents: ['Documents', '文档'], metadata: ['Metadata', '元数据'], n: ['Number of results', '结果数量'], return_documents: ['Return documents', '返回文档'],

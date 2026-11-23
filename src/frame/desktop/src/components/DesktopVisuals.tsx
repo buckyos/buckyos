@@ -78,6 +78,7 @@ export function AppIcon({
   iconKey,
   iconUrl,
   fill = false,
+  monochrome = false,
   className,
   style,
 }: {
@@ -86,15 +87,35 @@ export function AppIcon({
   iconUrl?: string
   /** The image covers the whole icon tile instead of the glyph area. */
   fill?: boolean
+  monochrome?: boolean
   className?: string
   style?: React.CSSProperties
 }) {
   const Icon = iconMap[iconKey as keyof typeof iconMap] ?? LayoutGrid
+  const workspaceIcon = iconKey === 'aiworkspace'
+  if (workspaceIcon && monochrome) {
+    const size = fill ? '70%' : '100%'
+    return (
+      <img
+        src="/aiworkspace/icon-white.svg"
+        alt=""
+        draggable={false}
+        className={clsx('relative z-10 shrink-0 object-contain', className)}
+        style={{
+          width: size,
+          height: size,
+          filter: fill ? undefined : 'drop-shadow(0 0 0.5px #17191cee) drop-shadow(0 1px 0.6px #12151b99)',
+          ...style,
+        }}
+      />
+    )
+  }
+
   const size = fill ? 'var(--icon-size)' : 'calc(var(--icon-size) * 0.5)'
   return (
     <ObjectImage
-      icons={[iconUrl]}
-      className={clsx('relative z-10 shrink-0 object-cover', fill ? '' : 'rounded-full', className)}
+      icons={workspaceIcon ? [iconUrl, '/aiworkspace/icon.svg'] : [iconUrl]}
+      className={clsx('relative z-10 shrink-0', workspaceIcon ? 'object-contain' : 'object-cover', !workspaceIcon && !fill && 'rounded-full', className)}
       style={{ width: size, height: size, ...style }}
       fallback={
         <Icon

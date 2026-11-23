@@ -2,8 +2,7 @@
  * full screen after "展开" — the write lock, the read-only state and the comments come with it. */
 
 import type { EntityEnvelope } from '../../api/types'
-import { useDirectReadOnly, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
-import { LockScope } from '../blocks/editors'
+import { useDirectReadOnly, useEntity, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
 import { TableViewCell } from '../TableViewCell'
 import type { TableEditorSize } from './model'
 
@@ -16,21 +15,28 @@ export interface StandardTableEditorProps {
   source: EntityEnvelope | undefined
   /** 'embedded' (a bounded box, default), 'tab' or 'fullscreen' (fill the host, which must give the editor a height). */
   size?: TableEditorSize
+  compact?: boolean
   /** Nothing is edited (a view mode, a sourced table…). */
   readOnly?: boolean
   /** Why, for the title row; worked out from the capability, the source and the connection when absent. */
   readOnlyReason?: string | null
+  annotationParentId: string | null
+  onStartAnnotation?: () => void
 }
 
-export function StandardTableEditor({ cellId, sourceId, source, size = 'embedded', readOnly = false, readOnlyReason }: StandardTableEditorProps) {
+export function StandardTableEditor({ cellId, sourceId, source, size = 'embedded', compact = false, readOnly = false, readOnlyReason, annotationParentId, onStartAnnotation }: StandardTableEditorProps) {
   const ui = useWorkspaceUi()
-  const access = useWriteAccess(source)
+  const lockSource = compact || readOnly ? undefined : source
+  const access = useWriteAccess(lockSource)
   const readOnlyNow = useDirectReadOnly()
+  const folder = useEntity(annotationParentId ?? '')
+  const annotateAt = ui.annotateAt
   const lockBlocks = (access.required && !access.held) || readOnlyNow
   return (
-    <LockScope entity={readOnly ? undefined : source}>
-      <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} readOnly={readOnly || lockBlocks} readOnlyReason={readOnlyReason} size={size} annotations={ui.annotations}
-        onAnnotate={ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
-    </LockScope>
+    <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} lockSource={lockSource}
+      awaitingLock={Boolean(lockSource && !readOnlyNow && lockBlocks)} readOnly={compact || readOnly || lockBlocks}
+      readOnlyReason={readOnlyReason} compact={compact} size={size} annotations={ui.annotations}
+      onAnnotate={annotationParentId && annotateAt && !readOnlyNow && folder?.capabilities.includes('comment')
+        ? (anchor) => { onStartAnnotation?.(); annotateAt(anchor, annotationParentId) } : undefined} onActivateAnnotation={ui.setActiveAnnotation} />
   )
 }

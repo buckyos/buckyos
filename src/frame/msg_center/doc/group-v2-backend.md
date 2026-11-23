@@ -4,7 +4,7 @@
 
 ## 入口与认证
 
-`main.rs` 在 `/kapi/msg-center` 将 `group.*` 请求交给 `group_service.rs`，群 CYFS 路径由 `group_http.rs` 处理。kRPC 业务主体取自经过验证的 token，跨 Zone HTTP 请求也可使用下文的短时 G3 请求签名；禁止参数 `actor_did`、`host_owner`。App 自己的服务会话（`principal_kind=app`，`sub` 为 owner）在 `group.*` 中以其 owner 的 DID 行事，`appid` 作为 `allowed_clients` 判定的客户端（2026-10-24，App 代登录预置邀请用）。群创建还检查 Zone RBAC 的 `obj://msg-center/group` / `create`；默认策略对 `users` 和 `admin` 都授予该权限（2026-10-01），群内操作不再经过 RBAC，由成员资格、角色与能力控制。
+`main.rs` 在 `/kapi/msg-center` 将 `group.*` 请求交给 `group_service.rs`，群 CYFS 路径由 `group_http.rs` 处理。kRPC 业务主体取自经过验证的 token，跨 Zone HTTP 请求使用目标 Zone 会话；禁止参数 `actor_did`、`host_owner`。App 自己的服务会话（`principal_kind=app`，`sub` 为 owner）在 `group.*` 中以其 owner 的 DID 行事，`appid` 作为 `allowed_clients` 判定的客户端（2026-10-24，App 代登录预置邀请用）。群创建还检查 Zone RBAC 的 `obj://msg-center/group` / `create`；默认策略对 `users` 和 `admin` 都授予该权限（2026-10-01），群内操作不再经过 RBAC，由成员资格、角色与能力控制。
 
 RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；除 create/list_by_member 外必须含 `group_did`。默认 Session 的 `session_id` 省略或为 null；具名 Session 使用未编码的原始字符串。对外的 `session` 和 `state_ref.session_key` 始终是规范 MailboxAddress。
 
@@ -80,12 +80,9 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 
 群路径支持 `/<group_did>/...` 和 `/kapi/msg-center/groups/<group_did>/...`；自动跨 Zone 请求使用后者，经过现有 Gateway 的 service 转发，不要求另外配置根路径路由。前缀内合法群 DID 不存在时返回 404 / remote-group-not-found。
 
-请求有两种认证方式，均要求 `cyfs-original-user` 与验证得到的主体一致：
+自动跨 Zone 请求通过 `CrossZoneClient` 使用设备签名断言向目标 verify-hub 登录，再携带目标 msg-center 的 Bearer 会话。拉取使用成员 DID，推送使用群宿主 Zone DID。显式配置的拉取路由也可使用宿主签发的 Bearer。身份取自已验证的会话。
 
-- host 能验证的 Bearer token。
-- 本 Zone msg-center 生成的 `cyfs-group-request`：带签名的 Operation MsgObject，intent 为 `buckyos.group_request`，from 为本 Zone 托管成员，to 仅含目标群。复用原生消息的 DID authentication / G3 Zone custody 校验；machine.data 绑定规范化 host、GET/PUT 方法、完整原始路径与查询串、请求体 SHA-256。请求有效期为 60 秒，最多允许 30 秒时钟超前；每次同步、读取和发送都重新签名。不能把本 Zone 登录 token 当成远端用户 token 转发，不能同时携带两种凭据，也不接受 msgtunnel 主体。
-
-签名请求只证明调用者，权限仍由群成员/Guest 记录和当前规则决定；不恢复旧的成员 `cyfs-proofs` 协议。远端 actor 不携带可信客户端身份，因此 `allowed_clients=Only` 默认拒绝远端访问；只有群配置显式开启 allow_unverified_remote 才放行。`join[?invite=]` 的 body 可带 invitation_id、member_did、idempotency_key；显式 invitation_id 接受该邀请，否则存在本人待接受邀请时按其处理，再否则按 group.request_join。`sessions/<sid>/join` 对应 group.accept_session_invitation；`guest_requests` 带 request_id。删除群后曾参与者按 DID（tombstone_readers）读到删除通知。
+远端 actor 不携带可信客户端身份，因此 `allowed_clients=Only` 默认拒绝远端访问；只有群配置显式开启 allow_unverified_remote 才放行。`join[?invite=]` 的 body 可带 invitation_id、member_did、idempotency_key；显式 invitation_id 接受该邀请，否则存在本人待接受邀请时按其处理，再否则按 group.request_join。`sessions/<sid>/join` 对应 group.accept_session_invitation；`guest_requests` 带 request_id。删除群后曾参与者按 DID（tombstone_readers）读到删除通知。
 
 inbox PUT 的 body 为 canonical MsgObject JSON 或 `application/cyfs-named-object+jwt`，携带 cyfs-obj-id；JWT 必须验证成功，委托签名按 from 的 DID Document authentication 或 G3 Zone custody 授权校验。成功返回标准 CYFS accepted 状态和 cyfs-session-seq，终局拒绝可查询和幂等重试。JWT 对象读取原样返回签名原文，不降级 JSON。
 
@@ -99,7 +96,7 @@ read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "la
 
 用户接受跨 Zone 邀请时，本地 msg-center 从群 DID Document 的 host 解析宿主。来源须为本 Zone 非 External、非 restricted 的已认证主体；代表 Agent 接受时还校验本 Zone 的 owner 关系及 allow_group。请求发出前持久化 owner/group/host/待确认 invitation_id，成功后保存宿主成员记录并同步；网络失败、成功响应丢失或进程重启后，后台从该登记恢复同一次接受。宿主进入 pending_admin_approval 时保留待审批展示，获批后再登记可读 Session；active 成员首次同步失败时返回 sync_pending=true，后台继续恢复。
 
-自动登记保存在 `group_joined_bindings`，不存用户 token 或 OOD 私钥；每次请求使用当前 Zone signer 生成短时签名。`upstream` 来自现有 Zone origin 解析，默认 HTTPS；测试或专用网络可用服务 Settings 的 zone_origins 映射。已有部署也可以显式配置 Joined Group：
+自动登记保存在 `group_joined_bindings`，不存用户 token 或 OOD 私钥；跨 Zone 客户端使用当前 Zone signer 登录并复用有时限的目标会话。`upstream` 来自现有 Zone origin 解析，默认 HTTPS；测试或专用网络可用服务 Settings 的 zone_origins 映射。已有部署也可以显式配置 Joined Group：
 
 ```json
 {
@@ -116,9 +113,42 @@ read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "la
 }
 ```
 
-显式 Settings 的主机/凭据要与已建立的成员关系一致；有 authorization 时使用配置的 Bearer 凭据和根路径，省略时使用 G3 签名和 kapi 前缀。显式 Bearer 凭据更新后用现有 reload_settings 刷新。后台每 30 秒处理自动登记恢复和同步，也可调用 group.sync_joined。同步 Session 列表、变更流和必要正文后，在一个 RDB 事务中保存本地 INBOX、副本、Session 登记和水位。未知 token 按各 Session 的 session_seq 补同步。同步跳过本人发出的消息；已获取的副本继续保留。
+显式 Settings 的主机/凭据要与已建立的成员关系一致；有 authorization 时使用配置的 Bearer 凭据和根路径，省略时使用跨 Zone 会话和 kapi 前缀。显式 Bearer 凭据更新后用现有 reload_settings 刷新。补偿调度独立于入群恢复、DID 发布、清理和待上报的已读水位。已登记和显式配置的绑定均有独立的补偿调度，正常周期按绑定稳定错开在 13.5 至 15 分钟之间，首次建立基线可以立即同步。每个绑定分别退避；分页和投影按 `(owner_did, group_did)` 协调，可手动调用 `group.sync_joined`。满 100 项继续取下一页，未知或过期 token 另按各 Session 的 `session_seq` 补历史。
 
-`post_send` 根据该发送者的 Joined Group binding 建立命名 Session 投递快照，Message Hub 携带当前请求签名或显式 Bearer 凭据及 original-user 投递。自动登记须为 active，收到移除、退出或删除变更后停止同步和发送；新邀请接受后按新 epoch 恢复。host 本地成员直接投影（发送者本人不投影到自己的 INBOX，只有 SENT 记录），外部原生成员通过 pull 获取；tunnel 成员复用既有 DELIVERY_QUEUE。
+### 宿主向成员推送
+
+宿主根据读者 DID 的公开托管关系解析目标 Zone，再读取 Zone 文档的主机名。实际发送前重新核对。读者在宿主上的联邦登录别名可以保留本地 INBOX，同时其托管 OOD 也应收到推送。
+
+宿主提交后，先用 80 毫秒合并短时间内的群变更，再按群和目标 Zone 排队。群发现队列和目标队列各保留最多 256 个键，每个目标键最多积累 1024 个读者。全局最多 4 个发送任务，同一 Zone 跨群串行发送，单次请求含登录、重试及回执的时限为 15 秒。对端接收入口为 `POST /kapi/msg-center/groups/<group_did>/updates`，Content-Type 为 `application/json`。每个请求最多 32 个读者、256 KiB；单个消息原文上限 64 KiB。接收端校验请求目标为本 Zone，断言会话的主体为本地 Joined Group 绑定的宿主，并逐个匹配本地读者。无正文提示可省略 `delta`。
+
+```json
+{
+  "entries": [
+    {
+      "reader_did": "did:web:alice.member.example",
+      "member_epoch": 2,
+      "delta": {
+        "previous_token": "<此读者已拉取或确认的 token>",
+        "next_token": "<可直接用于 changes 的 token>",
+        "change": {
+          "kind": "message",
+          "session": "did:web:team.host.example",
+          "session_id": null,
+          "message": {"seq": 17, "obj_id": "<ObjId>", "redacted": false, "accepted_at_ms": 1795000000000}
+        },
+        "content_type": "application/cyfs-named-object+json",
+        "object": "<原始 MsgObject JSON 字符串>"
+      }
+    }
+  ]
+}
+```
+
+前驱和后继 token 各为 1 至 256 字节，值必须不同。两者包围该读者整条变更流中唯一可直接投影的消息。积压多项、基线未知、Guest 缺少群成员周期或无法判定正文权限时使用提示。跨 Zone 登录成功后才构建正文，每次更换传输方式或刷新登录后重试都重新按该读者实际权限检查 Session、历史区间、客户端策略、read Hook 和撤回。签名对象的 `content_type` 为 `application/cyfs-named-object+jwt`，`object` 保存 JWT 原文。
+
+成员 OOD 在本地已提交游标等于前驱时校验对象并直接投影，保留宿主排序和本人仅写 SENT 的语义。对象、副本、INBOX 和新游标在同一事务提交，随后发出 `box_changed`。响应示例为 `{"committed":[{"reader_did":"did:web:alice.member.example","next_token":"<已入库 token>"}]}`。当前后继可重复确认，最近 32 个已提交的推送游标可直接识别重复投递。更早的重放按读者、群、成员周期、Session、序号和 ObjId 核对已提交投影，匹配后保留当前水位和已读状态。缺正文或遇到未知前驱时唤醒补拉。绑定、周期或对象校验失败的条目不确认。
+
+`post_send` 根据该发送者的 Joined Group binding 建立命名 Session 投递快照，Message Hub 使用跨 Zone 会话或显式 Bearer 凭据投递。自动登记须为 active，收到移除、退出或删除变更后停止同步和发送；新邀请接受后按新 epoch 恢复。host 本地成员直接投影（发送者本人不投影到自己的 INBOX，只有 SENT 记录），外部原生成员通过推送或增量拉取入库；tunnel 成员复用既有 DELIVERY_QUEUE。
 
 远端暂时不可达或签名公钥解析暂时失败返回 remote-group-unavailable；身份验证失败返回 remote-group-auth-failed；群不存在返回 remote-group-not-found。邀请过期、撤销、标识不匹配和权限拒绝保留宿主的明确原因，不统一解释为群不存在。
 
@@ -132,4 +162,4 @@ RBAC 默认策略已把 `obj://msg-center/group` 的 `create` 授予 `users` 和
 
 群事务提交后，为每条成员 INBOX 投影记录发出常规 `box_changed` kevent（与普通投递相同），前端无需订阅群事件；发送者本人的群消息不再投影到本人 INBOX，只有 SENT 记录（session_id 为群的规范 MailboxAddress）。
 
-群基础状态、权限、序号、幂等、Guest、关系消息、签名原文、HTTP pull/发送、DID 发布重试、重启恢复和 Hook 故障策略均有模块测试。跨 Zone 测试使用独立 MessageCenter、签名设备及 HTTP 服务，覆盖自动接受、恢复、同步和发送；请求认证测试覆盖身份、群、host、路径/查询、方法、正文、签名和时间边界。真实 Gateway/Zone resolver、生产 OOD DID 文档、PostgreSQL、多副本、Telegram 平台关系消息映射和满容量性能仍需部署联调；变更提示目前是本 Zone 不含内容的 kevent（群变更事件与成员投影的 box_changed），远端依赖轮询。
+群基础状态、权限、序号、幂等、Guest、关系消息、签名原文、HTTP pull/发送、DID 发布重试、重启恢复和 Hook 故障策略均有模块测试。跨 Zone 测试使用独立 MessageCenter、签名设备及 HTTP 服务，覆盖自动接受、恢复、同步和发送；请求认证测试覆盖身份、群、host、路径/查询、方法、正文、签名和时间边界。真实 Gateway/Zone resolver、生产 OOD DID 文档、PostgreSQL、多副本、Telegram 平台关系消息映射和满容量性能仍需部署联调。

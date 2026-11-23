@@ -80,13 +80,6 @@ export class RecordSet {
       for (const [k, v] of Object.entries(overlay.values)) if (v === undefined) delete values[k]; else values[k] = v
       rows.push({ ...row, values })
     }
-    // records added locally and not yet read back
-    for (const [id, overlay] of this.overlays) {
-      if (this.rows.has(id) || overlay.values.__new === undefined) continue
-      const values = { ...overlay.values }
-      delete values.__new
-      rows.push({ record_id: id, rev: 0, revs: {}, values: values as Record<string, Json> })
-    }
     const entity = this.store.outline.get(this.sourceId)
     return { fields: this.fields, titleField: this.titleField, rows, schemaId: (entity as { schema_id?: string } | undefined)?.schema_id ?? null, loading: this.loading, error: this.error, version: this.version }
   }
@@ -167,16 +160,24 @@ export class RecordSet {
     const now = Date.now()
     for (const [id, overlay] of this.overlays) {
       const row = this.rows.get(id)
-      const agrees = row ? Object.entries(overlay.values).every(([k, v]) => k === '__new' || JSON.stringify(row.values[k]) === JSON.stringify(v)) : false
-      const gone = !row && overlay.values.__new === undefined
-      if (agrees || gone || now - overlay.at > 15_000) this.overlays.delete(id)
+      if (!row || Object.entries(overlay.values).every(([k, v]) => JSON.stringify(row.values[k]) === JSON.stringify(v)) || now - overlay.at > 15_000) this.overlays.delete(id)
     }
   }
 
-  /** Show `values` on a record at once (undefined: unset); `create` for a record not stored yet. */
-  overlay(recordId: string, values: Record<string, Json | undefined>, create = false) {
+  /** Show `values` on a record at once (undefined: unset). */
+  overlay(recordId: string, values: Record<string, Json | undefined>) {
     const prev = this.overlays.get(recordId)
-    this.overlays.set(recordId, { values: { ...(prev?.values ?? {}), ...values, ...(create ? { __new: true } : {}) }, at: Date.now() })
+    this.overlays.set(recordId, { values: { ...prev?.values, ...values }, at: Date.now() })
+    this.publish()
+  }
+
+  inserted(recordId: string, values: Record<string, Json>, rev: number) {
+    if (this.rows.has(recordId)) return
+    const revs = Object.fromEntries(Object.keys(values).map((field) => [field, rev]))
+    this.rows.set(recordId, { record_id: recordId, rev, revs, values })
+    this.order.push(recordId)
+    this.generation += 1
+    if (this.listeners) this.scheduleReload()
     this.publish()
   }
 

@@ -1178,6 +1178,11 @@ async fn dispatch_db_reopen_keeps_current_store() {
     let path = tmp.path().join("dispatch.db");
     drop(open_dispatch_db(&path).await.unwrap());
     let pool = dispatch_db_pool(&path).await;
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, TASK_DISPATCHER_RDB_SCHEMA_VERSION as i64);
     sqlx::query(
         "INSERT INTO operation_route (schema_id, default_target_id, revision, enabled, updated_at)
          VALUES ('schema-a', 'target-a', 1, 1, 1)",
@@ -1218,7 +1223,7 @@ async fn dispatch_db_rejects_old_layout_without_dropping_tables() {
         .await
         .err()
         .expect("old dispatcher layout must be rejected");
-    assert!(err.contains("does not match schema v4"), "{err}");
+    assert!(err.contains("unsupported SQLite schema 0") && err.contains("expected 4"), "{err}");
     assert_eq!(
         single_text(
             &path,

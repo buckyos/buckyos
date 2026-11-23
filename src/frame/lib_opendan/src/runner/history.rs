@@ -6,6 +6,9 @@
 //! over its budget is compressed by `agent_tool::llm_compress` — the only
 //! compression — into `head + [summary] + keep_exact + raw tail`; summary.json
 //! keeps the summary block and where the head ends and the raw records start.
+//! When the summarizer fails, a history that fits once the older tool
+//! results are clipped (`llm_compress::trim_tool_results`) is used for this
+//! context only; summary.json is not touched.
 //!
 //! A rebuild reads the head (`[0, head_end_offset)`), the summary block, then
 //! the worklog **backwards** from the committed end down to `start_offset`,
@@ -716,6 +719,23 @@ async fn compact(
             event["error"] = json!(error.to_string());
             event["elapsed_ms"] = json!(started.elapsed().as_millis());
             log::warn!("opendan.context.compaction.failed {}", event);
+            // The turn goes on with older tool results clipped; summary.json
+            // is left as it was, so the next build summarizes again.
+            let trimmed = llm_compress::trim_tool_results(&full.messages, &deps, target);
+            if trimmed.report.reached_target {
+                log::warn!(
+                    "opendan.context.compaction.fallback {}",
+                    json!({
+                        "session_id": session.sid(),
+                        "reason": made_by,
+                        "target_tokens": target,
+                        "history_tokens_before": trimmed.report.tokens_before,
+                        "history_tokens_after": trimmed.report.tokens_after,
+                        "trimmed_results": trimmed.report.trimmed_results,
+                    })
+                );
+                return Ok((trimmed.messages, trimmed.report));
+            }
             return Err(OpenDanError::Llm(format!("compress history: {error}")));
         }
     };

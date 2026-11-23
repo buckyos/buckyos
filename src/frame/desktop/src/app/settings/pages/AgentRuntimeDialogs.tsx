@@ -66,7 +66,7 @@ export function AddDeviceDialog({ open, agents, onClose, onIssued }: {
   /** The device exists; `assignError` when assigning it to the chosen Agent failed. */
   onIssued: (issued: ExecutorDeviceIssued, assignError: string | null) => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [name, setName] = useState('')
   const [agent, setAgent] = useState('')
   const [roots, setRoots] = useState('')
@@ -126,9 +126,9 @@ export function AddDeviceDialog({ open, agents, onClose, onIssued }: {
         <ComputerSelect value={computer} onChange={setComputer} readOnly={mode === 'read_only'} t={t} />
         <BaselineSelect value={baseline} onChange={setBaseline} t={t} />
         <TextField select fullWidth label={t('settings.runtimes.validFor', 'URL valid for')} value={hours} onChange={(event) => setHours(Number(event.target.value))}>
-          <MenuItem value={1}>1 h</MenuItem>
-          <MenuItem value={24}>24 h</MenuItem>
-          <MenuItem value={168}>7 d</MenuItem>
+          {([['hour', 1, 1], ['hour', 24, 24], ['day', 7, 168]] as const).map(([unit, count, value]) => (
+            <MenuItem key={value} value={value}>{new Intl.NumberFormat(locale, { style: 'unit', unit, unitDisplay: 'short' }).format(count)}</MenuItem>
+          ))}
           <MenuItem value={0}>{t('settings.runtimes.noExpiry', 'No expiry')}</MenuItem>
         </TextField>
         <TextField select fullWidth label={t('settings.runtimes.assignOptional', 'Assign to Agent (optional)')} value={agent} onChange={(event) => setAgent(event.target.value)} helperText={t('settings.runtimes.assignOptionalHint', 'Without an Agent the device is only issued; assign it later from this page.')}>

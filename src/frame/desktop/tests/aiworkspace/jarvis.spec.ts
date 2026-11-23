@@ -50,11 +50,28 @@ async function open(page: Page, token: string, workspaceId: string) {
 
 const composer = (page: Page) => page.getByTestId('aiws-jarvis-conversation').getByTestId('message-composer').getByRole('textbox')
 
+async function agentButton(page: Page) {
+  const row = page.getByTestId('aiws-status-row')
+  const chat = row.getByRole('button', { name: '与 Agent 对话' })
+  await expect(chat).toHaveText('')
+  await expect(chat.locator('svg')).toBeVisible()
+  const button = (await chat.boundingBox())!
+  const bubble = (await row.locator('.aiws-status-bubble').boundingBox())!
+  expect(button.x + button.width).toBeLessThanOrEqual(bubble.x)
+  return chat
+}
+
 test('C2-1 the Agent panel opens beside the canvas in its own conversation and hands the selection over once', async ({ page, api }) => {
   const ws = await canvasWithWish(api, `jarvis ${Date.now()}`)
+  const savedToolbar = { zones: { collab: { relation: 'override', items: [{ action: 'collab.share' }, { action: 'collab.jarvis' }] } } }
+  const configured = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'free', keys: [{ key: 'config', value: { toolbar: savedToolbar }, expect: { rev: 0 } }] }])
+  expect(configured.status).toBe('accepted')
   await open(page, ALICE, ws.workspace_id)
   await wishCard(page, 'wish-j').getByTestId('aiws-wish-title').click()
-  await page.getByTestId('aiws-view-toolbar').getByTestId('aiws-collab-jarvis').click()
+  const chat = await agentButton(page)
+  await expect(page.getByTestId('aiws-view-toolbar').getByTestId('aiws-share')).toBeVisible()
+  await expect(page.getByTestId('aiws-view-toolbar').locator('[data-action="collab.jarvis"]')).toHaveCount(0)
+  await chat.click()
 
   const panel = page.getByTestId('aiws-jarvis')
   await expect(panel).toHaveAttribute('data-layout', 'side')
@@ -156,10 +173,8 @@ test.describe('on a phone', () => {
     const ws = await canvasWithWish(api, `jarvis phone ${Date.now()}`)
     await open(page, ALICE, ws.workspace_id)
     await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-phone', 'true')
-    await page.getByTestId('aiws-main-menu').tap()
-    const menu = page.getByTestId('aiws-main-menu-list')
-    await menu.getByTestId('aiws-menu-collab').tap()
-    await menu.getByTestId('aiws-menu-jarvis').tap()
+    const chat = await agentButton(page)
+    await chat.tap()
     const panel = page.getByTestId('aiws-jarvis')
     await expect(panel).toHaveAttribute('data-layout', 'sheet')
     await expect(panel.getByTestId('aiws-jarvis-conversation')).toBeVisible({ timeout: 20_000 })
@@ -177,6 +192,7 @@ test.describe('on a phone', () => {
     await expect(panel).toHaveCount(0)
 
     await page.getByTestId('aiws-main-menu').tap()
+    const menu = page.getByTestId('aiws-main-menu-list')
     await menu.getByTestId('aiws-menu-collab').tap()
     await menu.getByTestId('aiws-menu-request-data').tap()
     const dialog = page.locator('.aiws-modal-backdrop > .aiws-dialog').first()

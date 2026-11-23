@@ -374,3 +374,14 @@ this follows the vendor recommendation to omit them and rely on fixed defaults.
 The strict mock accepts the documented fixed values if supplied and rejects other
 values, so omission does not become an invented vendor prohibition. Source review
 and remaining validation scope: [2026-11-02 review](driver_metadata_review_20261102.md).
+
+### Image count capacity
+
+`capabilities.max_images` declares the vendor maximum image count per
+`images.generate` request. Lowering rejects an explicit `n` above the effective
+model/channel limit before canonical field mappings can remove or transform it.
+Provider `capability_limits.max_images` can narrow this integer like other
+numeric capacities. Omitted limits leave existing model behavior unchanged.
+A single-image model declares `max_images: 1`; it must not erase a multi-image
+request with an `omit` canonical mapping. Protocol-specific wire fields remain
+the responsibility of the corresponding image codec.

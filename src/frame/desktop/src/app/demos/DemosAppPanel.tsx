@@ -49,13 +49,14 @@ export function DemosAppPanel({
   const windowDialog = useWindowDialog()
   const requestSudo = useSudoByPassword()
   const isCompact = useMediaQuery('(max-width: 900px)')
-  const [query, setQuery] = useState('Window controls')
-  const [owner, setOwner] = useState('Prototype team')
+  const [queryDraft, setQuery] = useState<string | null>(null)
+  const query = queryDraft ?? t('demos.sample.query')
+  const [ownerDraft, setOwner] = useState<string | null>(null)
+  const owner = ownerDraft ?? t('demos.sample.owner')
   const [density, setDensity] = useState<'compact' | 'balanced' | 'comfortable'>('balanced')
   const [releaseState, setReleaseState] = useState<'draft' | 'review' | 'ready'>('review')
-  const [notes, setNotes] = useState(
-    'Validate spacing rhythm, focus rings, disabled states, and mobile fit.',
-  )
+  const [notesDraft, setNotes] = useState<string | null>(null)
+  const notes = notesDraft ?? t('demos.sample.notes')
   const [notifications, setNotifications] = useState(true)
   const [offlineCache, setOfflineCache] = useState(false)
   const [autoArrange, setAutoArrange] = useState(true)
@@ -227,7 +228,7 @@ export function DemosAppPanel({
   return (
     <div className="space-y-4">
       <PanelIntro
-        kicker="Controls"
+        kicker={t('demos.controls')}
         title={t('demos.title')}
         body={t('demos.body')}
         aside={

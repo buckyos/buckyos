@@ -12,3 +12,11 @@ pub struct SmbItem {
     pub path: String,
     pub allow_users: Vec<String>,
 }
+
+/// The persisted user preference at `users/<uid>/samba/settings`.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "schema", deny_unknown_fields)]
+pub enum UserSambaInfo {
+    #[serde(rename = "buckyos.samba.settings.v1")]
+    V1 { password: String, is_enable: bool },
+}

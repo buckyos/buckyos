@@ -621,7 +621,7 @@ pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
             {
                 return Err(WsError::invalid_op(format!("{cell_id} is not a table view of {entity_id}")));
             }
-            let mut parts: Vec<String> = ["filter", "sorts", "group", "fields", "manual_order", "source_ref"].iter().map(|k| format!("{k}={}", c.key_rev(k))).collect();
+            let mut parts: Vec<String> = ["filter", "sorts", "group", "fields", "row_order", "source_ref"].iter().map(|k| format!("{k}={}", c.key_rev(k))).collect();
             table_token(ctx, &e, None, &mut parts)?;
             token(&parts)
         }
@@ -1313,7 +1313,7 @@ pub fn plan_commit<'a>(
         if name != "entity.create" {
             p.sibling_cache.clear();
         }
-        let result = if is_internal_op(name) && !env.internal {
+        let result = if is_internal_op(name) && !env.internal && !(env.origin == "source" && name == "table.restore_records") {
             Err(WsError::invalid_op(format!("{name} is an internal operation")))
         } else {
             dispatch(&mut p, name, op)
@@ -1361,6 +1361,15 @@ pub fn plan_commit<'a>(
 /// Import defers reference checks; every local blocking reference staged by
 /// the batch must end up pointing at a live entity.
 fn check_deferred_refs(p: &Planner) -> WsResult<()> {
+    for ((source_id, _), record) in &p.ov.records {
+        for (id, value) in &record.values {
+            if let Some(field) = p.ov.field(source_id, id)? {
+                if field.def.ref_purpose.is_some() && !value.is_null() {
+                    crate::plan_table::check_field_reference(p, &field.def, value)?;
+                }
+            }
+        }
+    }
     for r in &p.ov.ref_add {
         if r.blocks_delete() && r.dst_workspace_id.is_empty() && !r.dst_entity_id.is_empty() {
             if !p.ov.entity(&r.dst_entity_id)?.is_some_and(|e| e.alive()) {

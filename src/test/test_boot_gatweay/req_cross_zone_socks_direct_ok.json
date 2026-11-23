@@ -3,7 +3,7 @@
     "REQ": {
       "target": {
         "type": "domain",
-        "host": "bob.example",
+        "host": "othertest.buckyos.io",
         "port": "80"
       }
     }

@@ -120,6 +120,7 @@ import {
   variantWireDiagnostics,
   channelDisablesCase,
   scopeProtocolModels,
+  buildHealthRecoveryCase,
   protocolModelIds,
   TaskWaitTimeout,
   terminal as waitT15Task,
@@ -1092,19 +1093,19 @@ test("Doubao official catalog preserves lifecycle and task evidence without cros
             {
               id: "doubao-seed-current",
               object: "model",
-              task_type: ["TextGeneration"],
+              task_type: ["text_generation"],
             },
             {
               id: "doubao-seed-retiring",
               object: "model",
               status: "Retiring",
-              task_type: ["TextGeneration"],
+              task_type: ["text_generation"],
             },
             {
               id: "doubao-seed-shutdown",
               object: "model",
               status: "Shutdown",
-              task_type: ["TextGeneration"],
+              task_type: ["text_generation"],
             },
           ],
         }),
@@ -1115,7 +1116,7 @@ test("Doubao official catalog preserves lifecycle and task evidence without cros
     inventory.models.map((model) => model.provider_model_id),
     ["doubao-seed-current", "doubao-seed-retiring", "doubao-seed-shutdown"],
   );
-  assert.deepEqual(inventory.models[0].official_task_types, ["TextGeneration"]);
+  assert.deepEqual(inventory.models[0].official_task_types, ["text_generation"]);
   assert.equal(inventory.models[1].official_lifecycle_status, "Retiring");
   assert.equal(inventory.models[2].official_lifecycle_status, "Shutdown");
 
@@ -1145,9 +1146,9 @@ test("Doubao T2 derives canonical cells from configured official task types", as
       api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
       official_task_types: [
-        "TextGeneration",
-        "VisualQuestionAnswering",
-        "SpeechToText",
+        "text_generation",
+        "visual_question_answering",
+        "speech_to_text",
       ],
     }],
   };
@@ -1180,12 +1181,11 @@ test("frozen official inventory is explicit and does not make a network request"
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     "deepseek-v4.1-flash",
+    "deepseek-v4.1-flash-economy",
     "doubao-embedding-vision",
-    "doubao-seed-2.0-lite",
     "doubao-seed-2.0-mini",
     "doubao-seed-2.1-lite",
     "doubao-seed-2.1-pro",
-    "doubao-seed-2.1-turbo",
     "doubao-seed-evolving",
     "doubao-seed-tts-2.0",
     "doubao-seedance-2.0",
@@ -1193,16 +1193,15 @@ test("frozen official inventory is explicit and does not make a network request"
     "doubao-seedance-2.0-mini",
     "doubao-seedance-2.5",
     "doubao-seedream-5-0-pro",
-    "doubao-seedream-5.0-lite",
+    "doubao-seedream-5.0-flash",
     "glm-5.3",
     "glm-5.3-flash",
-    "kimi-k2.7-code",
     "kimi-k2.8-preview",
     "kimi-k3",
-    "minimax-m3",
+    "kimi-k3.1-pro",
   ]);
   assert.equal(requests, 0);
-  assert.equal(profile.official_catalog.checked_at, "2026-09-24");
+  assert.equal(profile.official_catalog.checked_at, "2026-11-16");
   assert.match(
     profile.official_catalog.risk ?? "",
     /not revalidated at run time/,
@@ -1271,8 +1270,8 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
       logical_mounts: [],
     },
     {
-      exact_model: `kimi-k2.7-code@${instance}`,
-      provider_model_id: "kimi-k2.7-code",
+      exact_model: `kimi-k3.1-pro@${instance}`,
+      provider_model_id: "kimi-k3.1-pro",
       api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
     },
@@ -1289,8 +1288,8 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
       logical_mounts: [],
     },
     {
-      exact_model: `minimax-m3@${instance}`,
-      provider_model_id: "minimax-m3",
+      exact_model: `deepseek-v4.1-flash-economy@${instance}`,
+      provider_model_id: "deepseek-v4.1-flash-economy",
       api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
     },
@@ -1328,10 +1327,10 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
   for (
     const model of [
       "glm-5.3-flash",
-      "kimi-k2.7-code",
+      "kimi-k3.1-pro",
       "kimi-k2.8-preview",
       "kimi-k3",
-      "minimax-m3",
+      "deepseek-v4.1-flash-economy",
     ]
   ) {
     assert.deepEqual(
@@ -5167,6 +5166,10 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
       if (provider.provider_driver === "doubao") {
         const models = fixture.data as Array<Record<string, unknown>>;
         assert.ok(models.every((model) => Array.isArray(model.task_type)));
+        const official = JSON.parse(await readFile(new URL("./fixtures/doubao-models.json", import.meta.url), "utf8"));
+        for (const officialModel of official.data) {
+          assert.deepEqual(models.find(model => model.id === officialModel.id)?.task_type, officialModel.task_type, officialModel.id);
+        }
         assert.ok(models.every((model) => model.id !== "doubao-seed-tts-2.0"));
       }
       if (provider.provider_driver === "qwen") {
@@ -6896,6 +6899,16 @@ test("targeted T1.5 model inventory keeps only the selected official preset cont
   assert.deepEqual(provider.official_variant_rules!.flatMap((rule) => rule.model_ids), [id]);
   assert.ok(Object.values(provider.official_first_party_model_ids!).flat().every((model) => model === id));
   assert.ok(source.providers.find((provider) => provider.provider_driver === "openrouter")!.official_variant_rules!.length > 1);
+  const imageId = "doubao-seedream-5-5-261028";
+  const imageScope = scopeProtocolModels(source, ["doubao"], [imageId]);
+  const imageCases = buildT15Manifest(imageScope).filter((testCase) =>
+    testCase.provider_driver === "doubao" && testCase.tags.includes("model_api_conformance")
+  );
+  assert.equal(imageCases.length, 4);
+  assert.ok(imageCases.every((testCase) => testCase.model_selector?.value === imageId));
+  assert.ok(source.providers.find((provider) => provider.provider_driver === "doubao")!.contracts.some((contract) =>
+    Object.values(contract.conformance_test_model_ids ?? {}).flat().includes("doubao-seedream-5-0-flash-260915")
+  ));
   assert.throws(() => scopeProtocolModels(source, ["openrouter"], ["unknown-model"]), /unknown model/);
 });
 
@@ -6930,6 +6943,28 @@ test("Kimi K3.1 Pro wire accepts fixed sampling values and rejects incompatible 
       assert.ok(validateProviderRequest(contract, captured, "llm").some((error) => error.includes(field)), `${driver} must reject ${field}`);
       delete body[field];
     }
+  }
+});
+
+test("Seedream single-image models reject sequential generation even when explicitly disabled", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [driver, contractId, model] of [
+    ["doubao-agent-plan", "doubao-agent-plan.images.plan-v3", "doubao-seedream-5.0-flash"],
+    ["doubao", "doubao.images.v3", "doubao-seedream-5-0-flash-260915"],
+    ["doubao", "doubao.images.v3", "doubao-seedream-5-5-261028"],
+    ["doubao", "doubao.images.v3", "doubao-seedream-5-0-pro-260628"],
+    ["doubao-agent-plan", "doubao-agent-plan.images.plan-v3", "doubao-seedream-5-0-pro"],
+  ]) {
+    const contract = protocolContract(catalog, driver, contractId);
+    const request = t15ProviderRequest("https://mock.invalid", contract, model, {}, "image.txt2img");
+    const body = JSON.parse(request.init.body as string);
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+    assert.deepEqual(validateProviderRequest(contract, captured, "image.txt2img"), []);
+    body.sequential_image_generation = "disabled";
+    assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("sequential_image_generation")));
+    delete body.sequential_image_generation;
+    body.sequential_image_generation_options = { max_images: 1 };
+    assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("sequential_image_generation_options")));
   }
 });
 
@@ -7034,6 +7069,66 @@ test("added OpenRouter presets are supported by the frozen official reasoning me
         const effort = variant.replace(/^reasoning-/, "");
         assert.ok(metadata.supported_efforts.includes(effort), `${model}/${effort}`);
         assert.deepEqual(options, {reasoning:{effort}});
+      }
+    }
+  }
+});
+
+
+test("single-image contracts reject multi-image requests before Provider dispatch", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog).filter(c => c.tags.includes("image_count_rejected"));
+  for (const [driver, models] of [
+    ["doubao", ["doubao-seedream-5-0-flash-260915", "doubao-seedream-5-5-261028", "doubao-seedream-5-0-pro-260628"]],
+    ["doubao-agent-plan", ["doubao-seedream-5.0-flash", "doubao-seedream-5-0-pro"]],
+  ] as const) {
+    assert.deepEqual(cases.filter(c => c.provider_driver === driver).map(c => c.model_selector?.value).sort(), [...models].sort());
+  }
+  assert.ok(cases.every(c => c.tags.includes("canonical_rejection") && c.expected_aicc_error_code === "invalid_request"));
+  const scope = scopeProtocolModels(catalog,["doubao"],["doubao-seedream-5-5-261028"]);
+  assert.equal(buildT15Manifest(scope).filter(c => c.provider_driver === "doubao" && c.tags.includes("image_count_rejected")).length, 1);
+});
+
+
+test("health recovery after canonical image rejection uses a valid success request", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const rejected = buildT15Manifest(catalog).find(c => c.tags.includes("image_count_rejected"))!;
+  const recovery = buildHealthRecoveryCase(rejected);
+  assert.equal(recovery.expected_task_status, "succeeded");
+  assert.equal(recovery.expected_error_class, null);
+  assert.equal(recovery.expected_aicc_error_code, undefined);
+  assert.equal(recovery.model_selector?.value, rejected.model_selector?.value);
+  assert.ok(!recovery.tags.includes("canonical_rejection"));
+  assert.ok(!recovery.tags.includes("image_count_rejected"));
+  const params = buildT15TypedParams(recovery.api_type!, "image@temporary", "recovery", recovery.execution_mode, recovery.case_id);
+  assert.equal(params.n, 1);
+});
+
+
+test("Doubao vision Mock accepts official reasoning levels and rejects unknown values", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  for (const [provider, id, model] of [
+    ["doubao", "doubao.responses.v3", "doubao-seed-2-1-pro-260915"],
+    ["doubao-agent-plan", "doubao-agent-plan.responses.plan-v3", "doubao-seed-2.1-pro"],
+  ]) {
+    const contract = protocolContract(catalog, provider, id);
+    for (const apiType of ["vision.ocr", "vision.caption"]) {
+      await fetch(`${baseUrl}/__mock/select`, {method: "POST", headers: {"content-type": "application/json"},
+        body: JSON.stringify({provider_driver: provider, contract_id: id, api_type: apiType, scenario: "success"})});
+      for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "invalid"]) {
+        const request = t15ProviderRequest(baseUrl, contract, model,
+          {max_output_tokens: 2048, reasoning: {effort}}, apiType);
+        const response = await fetch(request.url, request.init);
+        assert.equal(response.status, effort === "invalid" ? 400 : 200,
+          `${provider}/${apiType}/${effort}: ${await response.text()}`);
       }
     }
   }

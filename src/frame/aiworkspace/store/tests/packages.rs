@@ -2,6 +2,7 @@
 //! (V04, V05, V14, V20, V22, V24).
 
 mod common;
+use aiworkspace_core::{access::CapSet, Code};
 use aiworkspace_store::urlsource::GeneratedSource;
 use aiworkspace_store::workspace::Caller;
 use aiworkspace_store::Service;
@@ -29,6 +30,127 @@ fn unzip_all(path: &std::path::Path) -> Vec<u8> {
         zip.by_index(i).unwrap().read_to_end(&mut all).unwrap();
     }
     all
+}
+
+#[test]
+fn replica_bootstrap_includes_only_readable_entities_and_their_data() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "Example", None).unwrap()["workspace_id"].as_str().unwrap().to_owned();
+    let handle = env.svc.workspace(&id).unwrap();
+    let mut ws = handle.lock().unwrap();
+    let [public_asset, restricted_asset] = ["public", "restricted"].map(|label| {
+        let source = format!("{label}-table");
+        let body = format!("{label}-body");
+        let asset = ws.stage_asset(&alice(), label.as_bytes()).unwrap()["object_id"].as_str().unwrap().to_owned();
+        ok(&mut ws, &alice(), json!([
+            { "op": "entity.create", "entity_id": source, "type_id": "buckyos.table-source", "parent_id": "data", "order_key": label,
+              "payload": { "fields": [{ "field_id": "title", "name": format!("{label} field"), "type": "text" },
+                                     { "field_id": "extra", "name": "Extra", "type": "text" }] } },
+            { "op": "entity.create", "entity_id": body, "type_id": "buckyos.richtext", "parent_id": source, "order_key": "a",
+              "payload": { "content": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "p1" },
+                           "content": [{ "type": "text", "text": format!("{label} paragraph") }] }] } } },
+            { "op": "table.insert_records", "source_id": source, "records": [
+                { "record_id": "r1", "values": { "title": format!("{label} cell") }, "body_ref": { "entity_id": body } }] },
+            { "op": "entity.create", "entity_id": format!("{label}-attachment"), "type_id": "buckyos.asset-ref",
+              "parent_id": "data", "order_key": label, "payload": { "object_id": asset } }
+        ]));
+        asset
+    });
+    ws.acl_set(&alice(), &json!([
+        { "subject": "bob", "allow": ["read"] },
+        { "subject": "bob", "resource": "restricted-table", "deny": ["read"] },
+        { "subject": "bob", "resource": "restricted-attachment", "deny": ["read"] }
+    ])).unwrap();
+
+    for (caller, can_read_restricted) in [(bob(), false), (alice(), true)] {
+        let replica = ws.replica_bootstrap(&caller).unwrap();
+        let file = fetched(&ws.objects, &replica);
+        let bytes = std::fs::read(&file).unwrap();
+        for marker in ["restricted-table", "restricted-body", "restricted field", "restricted cell", "restricted paragraph",
+                       "restricted-attachment", &restricted_asset] {
+            assert_eq!(contains(&bytes, marker), can_read_restricted, "{marker}");
+        }
+        let db = rusqlite::Connection::open(&file).unwrap();
+        for (table, predicate) in [
+            ("entities", "entity_id = 'public-table'"),
+            ("tree_edges", "parent_id = 'public-table' AND child_id = 'public-body'"),
+            ("table_fields", "source_id = 'public-table' AND field_id = 'title'"),
+            ("table_records", "source_id = 'public-table' AND body_entity_id = 'public-body' AND json_extract(values_json, '$.title') = 'public cell'"),
+            ("richtext_states", "entity_id = 'public-body'"),
+            ("refs", "src_entity_id = 'public-attachment' AND kind = 'asset'"),
+        ] {
+            let query = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {predicate})");
+            assert!(db.query_row(&query, [], |r| r.get::<_, bool>(0)).unwrap(), "{table}");
+        }
+        assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE object_id = ?1)", [&public_asset], |r| r.get::<_, bool>(0)).unwrap());
+    }
+
+    let field = ws.read(&alice(), "restricted-table", Some(&json!({ "kind": "table_field", "field_id": "extra" }))).unwrap();
+    ok(&mut ws, &alice(), json!([{ "op": "table.delete_field", "source_id": "restricted-table", "field_id": "extra",
+                                  "expect": { "rev": field["content"]["def_rev"] } }]));
+    ws.acl_set(&alice(), &json!([{ "subject": "bob", "resource": "public-body", "deny": ["read"] }])).unwrap();
+    let replica = ws.replica_bootstrap(&bob()).unwrap();
+    let file = fetched(&ws.objects, &replica);
+    let bytes = std::fs::read(&file).unwrap();
+    for marker in ["restricted-table", "restricted cell", "public-body", "public paragraph"] {
+        assert!(!contains(&bytes, marker), "{marker}");
+    }
+    let db = rusqlite::Connection::open(&file).unwrap();
+    let body: Option<String> = db.query_row("SELECT body_entity_id FROM table_records WHERE source_id = 'public-table' AND record_id = 'r1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(body, None);
+}
+
+#[test]
+fn annotation_quotes_follow_target_access_in_packages() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "Example", None).unwrap()["workspace_id"].as_str().unwrap().to_owned();
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    ws.grant(&alice(), "bob", None, &caps(&["read", "comment", "export"])).unwrap();
+    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "source", "type_id": "buckyos.annotation", "parent_id": "data",
+        "order_key": "z", "payload": { "kind": "note", "body": "The quoted passage ends here." } }]));
+    let note = |id: &str, scope: &str| json!({ "op": "entity.create", "entity_id": id, "type_id": "buckyos.annotation",
+        "parent_id": "data", "order_key": "a", "scope": scope, "payload": { "kind": "note", "body": id, "target": { "entity_id": "source" },
+        "context": { "label": "Review", "quote": { "prefix": "The ", "exact": "quoted passage", "suffix": " ends here." } } } });
+    let mut label_only = note("label-only", "shared");
+    label_only["payload"]["context"] = json!({ "label": "Copied selection" });
+    ok(&mut ws, &bob(), json!([note("shared-note", "shared"), label_only, note("personal-note", "personal")]));
+    let full = ws.checkpoint(&alice()).unwrap().objects["shared-note"].clone();
+    ws.acl_set(&alice(), &json!([{ "subject": "bob", "resource": "source", "deny": ["read"] }])).unwrap();
+    let restricted = ws.checkpoint(&bob()).unwrap();
+    assert_ne!(restricted.objects["shared-note"], full);
+    assert_eq!(ws.checkpoint(&alice()).unwrap().objects["shared-note"], full);
+    let replica = ws.replica_bootstrap(&bob()).unwrap();
+    let db = fetched(&ws.objects, &replica);
+    assert!(!contains(&std::fs::read(&db).unwrap(), "Copied selection"));
+    let db = rusqlite::Connection::open(&db).unwrap();
+    let note: String = db.query_row("SELECT payload_json FROM entities WHERE entity_id = 'shared-note'", [], |r| r.get(0)).unwrap();
+    let note: Value = serde_json::from_str(&note).unwrap();
+    assert_eq!(note["body"], "shared-note");
+    assert!(note.get("context").is_none());
+
+    let manager = Caller::user("manager");
+    ws.grant(&alice(), "manager", None, &caps(&CapSet::ALL.names())).unwrap();
+    for caller in [bob(), manager] {
+        for mode in ["share", "personal_backup"] {
+            let err = ws.export(&caller, mode, true, None).unwrap_err();
+            assert_eq!((err.code, err.sub.as_deref()), (Code::PermissionDenied, Some("OWNER_ONLY")), "{mode}, {}", caller.principal);
+        }
+    }
+    let doc = rusqlite::Connection::open(ws.dir.join("doc.sqlite")).unwrap();
+    let recorded: bool = doc.query_row("SELECT EXISTS(SELECT 1 FROM snapshots WHERE kind = 'export')", [], |row| row.get(0)).unwrap();
+    assert!(!recorded, "a refused export must not materialize a snapshot");
+
+    let rev = ws.read(&alice(), "source", None).unwrap()["life_rev"].clone();
+    ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "source", "expect": { "rev": rev } }]));
+    drop(ws);
+    let (pkg, manifest) = export(&env, &id, &alice(), "share", true);
+    assert!(contains(&unzip_all(&pkg), "quoted passage"));
+    let other = common::env();
+    let imported = other.svc.import(&alice(), &pkg, "restore", false).unwrap();
+    assert_eq!(imported["content_root"], manifest["content_root"]);
+    let (new_pkg, _) = export(&other, &id, &alice(), "share", true);
+    assert!(!contains(&unzip_all(&new_pkg), "quoted passage"));
 }
 
 /// V04: export at an explicit checkpoint → import elsewhere → same ContentRoot; damaged packages change nothing.
@@ -322,16 +444,21 @@ fn v20_unknown_content_is_preserved() {
     assert_eq!(ws2.read(&alice(), "chart-1", None).unwrap()["content"]["payload"], json!({ "series": [1, 2, 3], "future": { "x": null } }));
     assert_eq!(ws2.read(&alice(), "rec-v9", None).unwrap()["schema_version"], 9);
     drop(ws2);
-    // an unknown storage version is refused and the file is left exactly as it was
+    // A workspace must already carry the current versions in both databases.
     env.svc.close(&id);
-    {
-        let conn = rusqlite::Connection::open(dir.join("doc.sqlite")).unwrap();
-        conn.execute("UPDATE workspace_meta SET value = '99' WHERE key = 'storage_schema_version'", []).unwrap();
-        conn.pragma_update(None, "wal_checkpoint", "TRUNCATE").ok();
+    let doc = dir.join("doc.sqlite");
+    let local = dir.join("local.sqlite");
+    for (storage, local_version) in [("5", 1), ("6", 1), ("99", 1), ("7", 0), ("7", 2)] {
+        {
+            let conn = rusqlite::Connection::open(&doc).unwrap();
+            conn.execute("UPDATE workspace_meta SET value = ?1 WHERE key = 'storage_schema_version'", [storage]).unwrap();
+            let conn = rusqlite::Connection::open(&local).unwrap();
+            conn.pragma_update(None, "user_version", local_version).unwrap();
+        }
+        let before = (std::fs::read(&doc).unwrap(), std::fs::read(&local).unwrap());
+        assert_eq!(env.svc.workspace(&id).err().unwrap().code.as_str(), "UNSUPPORTED_VERSION");
+        assert_eq!((std::fs::read(&doc).unwrap(), std::fs::read(&local).unwrap()), before);
     }
-    let before = std::fs::read(dir.join("doc.sqlite")).unwrap();
-    assert_eq!(env.svc.workspace(&id).err().unwrap().code.as_str(), "UNSUPPORTED_VERSION");
-    assert_eq!(std::fs::read(dir.join("doc.sqlite")).unwrap(), before);
 }
 
 /// V22: no dangling asset references; history keeps old assets retained; damage is explained.
@@ -628,4 +755,32 @@ fn canvas_folders_travel_in_packages_and_clones() {
     let f = env.svc.clone_workspace(&alice(), &id).unwrap();
     let cid = f["workspace_id"].as_str().unwrap().to_string();
     assert_eq!(path_in(&env.svc.workspace(&cid).unwrap().lock().unwrap()), "/surfaces/归档/2026/深处");
+}
+
+#[test]
+fn a_deleted_canvas_link_roundtrips_through_a_workspace_package() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "Links", None).unwrap()["workspace_id"].as_str().unwrap().to_owned();
+    let handle = env.svc.workspace(&id).unwrap();
+    {
+        let mut ws = handle.lock().unwrap();
+        ok(&mut ws, &alice(), json!([
+            { "op": "entity.create", "entity_id": "s-data", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "s",
+              "payload": { "kind": "folder", "system": "surface_content", "surface_id": "s", "title": "Sketch" } },
+            { "op": "entity.create", "entity_id": "s", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "s",
+              "payload": { "kind": "surface", "layout": { "mode": "free" }, "title": "Sketch", "content_folder_id": "s-data" } },
+            { "op": "entity.create", "entity_id": "links", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "a",
+              "payload": { "fields": [{ "field_id": "canvas", "name": "Canvas", "type": "object_ref", "ref_purpose": "canvas" }] } },
+            { "op": "table.insert_records", "source_id": "links", "records": [{ "record_id": "r1", "values": { "canvas": { "entity_id": "s" } } }] }
+        ]));
+        let rev = ws.read(&alice(), "s", None).unwrap()["life_rev"].clone();
+        ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "s", "expect": { "rev": rev } }]));
+    }
+    let (pkg, _) = export(&env, &id, &alice(), "share", true);
+    let imported = env.svc.import(&alice(), &pkg, "new", false).unwrap();
+    let handle = env.svc.workspace(imported["workspace_id"].as_str().unwrap()).unwrap();
+    let ws = handle.lock().unwrap();
+    let row = ws.read(&alice(), "links", Some(&json!({ "kind": "table_record", "record_id": "r1" }))).unwrap();
+    assert_eq!(row["content"]["values"]["canvas"]["entity_id"], "s");
+    assert_eq!(ws.verify_refs().unwrap()["ok"], true);
 }

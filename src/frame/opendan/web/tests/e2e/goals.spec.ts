@@ -129,7 +129,7 @@ test('activate appends a manual activation that the detail and the home list sho
   await expect(latest).toContainText('No action')
   await expect(page.getByTestId('goal-summary')).toContainText('No action')
 
-  await page.getByRole('link', { name: '← Goals' }).click()
+  await page.getByRole('link', { name: 'Goals', exact: true }).click()
   await expect(page.getByTestId(`goal-${TIDY}`).getByTestId('goal-last-activation')).toContainText('just now · No action')
 })
 

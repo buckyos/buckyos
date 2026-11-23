@@ -2,6 +2,7 @@ import type { TransferableContentRef } from 'buckyos/content'
 import { MAX_FILE_SIZE, type TextFormat } from './codec.ts'
 import type { BufferHeader } from './bufferStore.ts'
 import { isMissingObject, type AppData } from './appData.ts'
+import { translate } from '../i18n/index.ts'
 export interface RecoveryEntry extends Omit<TextFormat, 'mixedEol'> {
   format: 'buckyos.text-editor.recovery/1'
   reason: 'conflict-reload' | 'conflict-overwrite' | 'deleted-close' | 'discarded' | 'taken-over'
@@ -77,5 +78,5 @@ export function conflictCopyName(name: string, date: Date, language: string, seq
   const dot = name.lastIndexOf('.'); const stem = dot > 0 ? name.slice(0, dot) : name; const ext = dot > 0 ? name.slice(dot) : ''
   const pad = (n: number) => String(n).padStart(2, '0')
   const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
-  return `${stem} (${language.startsWith('zh') ? '冲突副本' : 'conflict copy'} ${stamp})${sequence > 1 ? ` ${sequence}` : ''}${ext}`
+  return `${stem} (${translate(language, 'conflictCopy')} ${stamp})${sequence > 1 ? ` ${sequence}` : ''}${ext}`
 }

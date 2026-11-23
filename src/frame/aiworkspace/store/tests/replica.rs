@@ -334,3 +334,54 @@ fn an_asset_uploaded_after_the_replica_was_made_is_noted_and_then_plans_locally(
     assert_eq!(send_all(&mut ws, &alice(), &mut rep), vec![("dir/1".to_string(), "accepted".to_string()), ("dir/3".to_string(), "accepted".to_string())]);
     assert_eq!(root_of(&rep.confirmed), ws.checkpoint_ro());
 }
+
+#[test]
+fn sparse_order_pages_over_a_thousand_records_match_the_replica() {
+    use aiworkspace_core::filter::{run_query, QuerySpec};
+    use aiworkspace_core::model::ReadCtx;
+    use aiworkspace_core::sqlview::{compile_view, Projection, ViewDef};
+
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "Row order", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
+    let handle = env.svc.workspace(&id).unwrap();
+    let mut ws = handle.lock().unwrap();
+    let rows: Vec<_> = (0..1000).rev().map(|i| json!({ "record_id": format!("r{i:04}"), "values": {} })).collect();
+    ok(&mut ws, &alice(), json!([
+        { "op": "entity.create", "entity_id": "rows", "parent_id": "data", "type_id": "buckyos.table-source", "order_key": "a",
+          "payload": { "fields": [{ "field_id": "title", "name": "Title", "type": "text" }] } },
+        { "op": "table.insert_records", "source_id": "rows", "records": rows }
+    ]));
+    ok(&mut ws, &alice(), json!([{ "op": "table.insert_records", "source_id": "rows", "records": [{ "record_id": "a_new", "values": {} }] }]));
+    let rep = bootstrap(&mut ws, &alice(), 51);
+    let table = rep.working.entity("rows").unwrap().unwrap();
+    let fields = rep.working.fields("rows").unwrap();
+    let mut expected: Vec<String> = (0..1000).map(|i| format!("r{i:04}")).chain(std::iter::once("a_new".to_string())).collect();
+    for view in [
+        json!({}),
+        json!({ "row_order": { "r0999": "0000000000000001!r0499!p" } }),
+        json!({ "row_order": { "r0999": "00000000000000ff!r0499!p" } }),
+        json!({ "row_order": (0..1000).map(|i| (format!("r{i:04}"), json!(format!("0000000000000000!wish!{:04x}x", 999-i)))).collect::<Map<_, _>>() }),
+    ] {
+        let def = ViewDef::of_params(&view);
+        match def.row_order.as_ref().map(Map::len) {
+            Some(1) if expected[499] == "r0499" && expected[500] != "r0999" => { let moved = expected.remove(999); expected.insert(500, moved); }
+            Some(1000) => { expected = (0..1000).rev().map(|i| format!("r{i:04}")).chain(std::iter::once("a_new".to_string())).collect(); }
+            _ => {}
+        }
+        let c = compile_view("t", &fields, &def, Projection::Display).unwrap();
+        assert!(c.sql.len() < 1024, "{}", c.sql);
+        let mut spec = QuerySpec { limit: 137, row_order: def.row_order, ..Default::default() };
+        for (page, chunk) in expected.chunks(spec.limit).enumerate() {
+            let mut params = c.params.clone();
+            params.extend([json!(spec.limit), json!(page * spec.limit)]);
+            let q = ws.query(&alice(), &json!({ "sql": format!("{} LIMIT ? OFFSET ?", c.sql), "tables": { "t": "rows" }, "params": params })).unwrap();
+            let online: Vec<_> = q["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap()).collect();
+            let q = run_query(&rep.working, &table, &spec).unwrap();
+            let offline: Vec<_> = q["rows"].as_array().unwrap().iter().map(|r| r["record_id"].as_str().unwrap()).collect();
+            assert_eq!(online, chunk);
+            assert_eq!(offline, chunk);
+            spec.cursor = q["next_cursor"].as_str().map(str::to_owned);
+        }
+        assert!(spec.cursor.is_none());
+    }
+}

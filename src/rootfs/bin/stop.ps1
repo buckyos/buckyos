@@ -19,7 +19,8 @@ function Stop-BuckyProcess {
 
 function Stop-BuckyContainers {
   # BuckyOS Desktop Lite (etc/product.json) never calls docker.
-  $product = Join-Path (Split-Path $PSScriptRoot -Parent) 'etc\product.json'
+  $root = if ($env:BUCKYOS_ROOT) { $env:BUCKYOS_ROOT } else { Split-Path $PSScriptRoot -Parent }
+  $product = Join-Path $root 'etc\product.json'
   if ((Test-Path $product) -and -not ((Get-Content $product -Raw | ConvertFrom-Json).capabilities.container)) {
     Write-Host "This product edition runs no containers"
     return

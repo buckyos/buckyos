@@ -50,6 +50,22 @@
 }
 
 /* Columns: a header on the page, then the reading column itself. */
+.hs-workspace {
+  container-type: inline-size;
+  --hs-reading-space: calc(100cqw - 24px - var(--hs-context-space));
+  --hs-reading-width: min(var(--hs-column-max), var(--hs-reading-space));
+  --hs-reading-start: max(0px, calc((var(--hs-reading-space) - var(--hs-column-max)) / 2));
+}
+
+.hs-workspace main :is(.hs-column-head, .hs-column-body) {
+  width: var(--hs-reading-width);
+  margin-inline-start: var(--hs-reading-start);
+}
+
+.hs-docked-context {
+  inset-inline-start: calc(var(--hs-reading-start) + var(--hs-reading-width));
+}
+
 .hs-column-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -82,6 +98,7 @@
   border: 1px solid var(--hs-line);
   border-bottom: 0;
   border-radius: 24px 24px 0 0;
+  overflow: clip;
 }
 
 /* Navigation */

@@ -23,7 +23,7 @@ export interface TestCase {
 export interface TestGroup {
   id: string
   title: string
-  description: string
+  titleKey?: string
   cases: TestCase[]
   backendOnly?: boolean
 }
@@ -97,15 +97,15 @@ async function publishKEvent(sdk: Sdk, eventid: string, data: Record<string, unk
 export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'xllm',
-    title: 'xllm 子进程身份（#640）',
-    description: '后台通过 bash 启动 xllm，继承 OOD 与网关环境，发起一次真实模型请求，并从 AICC 用量记录核对应用及实例身份。支持 OOD 上的应用容器和 Desktop Lite 原生应用，会消耗少量模型额度。',
+    title: 'xllm subprocess identity (#640)',
+    titleKey: 'tests.xllm.title',
     backendOnly: true,
     cases: [],
   },
   {
     id: 'runtime',
-    title: 'SDK Runtime',
-    description: '运行时检测：确认 WebSDK 初始化后的 runtime、appId、Zone 与服务地址均可用。',
+    title: 'SDK runtime',
+    titleKey: 'tests.runtime.title',
     cases: [
       {
         name: 'Runtime identity and service URL resolution',
@@ -128,8 +128,6 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'system_config',
     title: 'SystemConfigClient',
-    description:
-      '系统配置读写检测：读取 boot/config，并在 users/${userId}/apps/${appId}/info 下完成一次写入与回读。',
     cases: [
       {
         name: 'SystemConfigClient.get(boot/config)',
@@ -163,8 +161,6 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'app_settings',
     title: 'AppSettings',
-    description:
-      '应用设置读写检测：页面通过 SystemConfigClient 访问用户应用设置；后台通过 getAppSetting / setAppSetting 完成往返。',
     cases: [
       {
         name: 'SystemConfigClient round trip on user app settings',
@@ -197,7 +193,6 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'task_manager',
     title: 'TaskManagerClient',
-    description: '任务管理器生命周期检测：创建 → 更新进度/状态 → 查询 → 归档。',
     cases: [
       {
         name: 'TaskManagerClient creates/runs/queries/archives a namespaced task',
@@ -246,8 +241,8 @@ export const TEST_GROUPS: TestGroup[] = [
   },
   {
     id: 'verify_hub',
-    title: 'VerifyHub / Session',
-    description: '会话身份检测：读取当前 accountInfo，并解析 session token 中的 claims。',
+    title: 'VerifyHub session',
+    titleKey: 'tests.verify_hub.title',
     cases: [
       {
         name: 'getAccountInfo + parseSessionTokenClaims',
@@ -273,7 +268,6 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'kevent',
     title: 'KEvent',
-    description: '事件检测：通过 WebSDK createEventReader 订阅唯一事件，再通过 publish 发布并确认页面端收到回环事件。',
     cases: [
       {
         name: 'KEvent stream/publish round trip on a unique eventid',
@@ -324,8 +318,8 @@ export const TEST_GROUPS: TestGroup[] = [
   },
   {
     id: 'service_clients',
-    title: 'Service Clients',
-    description: 'Workflow、AICC、Repo 执行只读调用，MsgQueue 执行带清理的生命周期调用；MsgCenter 验证未授予收件箱权限时的拒绝行为。',
+    title: 'Service clients',
+    titleKey: 'tests.service_clients.title',
     cases: [
       {
         name: 'WorkflowClient.listDefinitions',
@@ -406,8 +400,8 @@ export const TEST_GROUPS: TestGroup[] = [
   },
   {
     id: 'sdk_utilities',
-    title: 'BNS / SN Utilities',
-    description: '无副作用的工具 API 检测：BNS DID 往返与 SN URL/region 标准化。',
+    title: 'BNS and SN utilities',
+    titleKey: 'tests.sdk_utilities.title',
     cases: [
       {
         name: 'BNS name/DID canonical round trip',
@@ -436,8 +430,8 @@ export const TEST_GROUPS: TestGroup[] = [
   },
   {
     id: 'bucket',
-    title: '应用对象桶（DV 冒烟）',
-    description: '本 App 声明的 user 桶 smoke（data / temp，1 天）：小对象 putBytes 直传与 NDM 上传 finalize 时 auto_bind 直达桶，objectUrl 只带 Cookie 读回，bucket.delete 后读取得到 no_such_key。后台用 AppService 会话走 putBytes / fetchObject / delete。',
+    title: 'App object bucket smoke test',
+    titleKey: 'tests.bucket.title',
     cases: [
       {
         name: 'putBytes → objectUrl → bucket.delete',
@@ -483,8 +477,8 @@ export const TEST_GROUPS: TestGroup[] = [
   },
   {
     id: 'ndm_proxy',
-    title: 'NDM Proxy',
-    description: 'Browser 验证受信运行时保护；AppService 查询不存在的对象，并验证网关拒绝受限 outboxCount 管理调用。',
+    title: 'NDM proxy',
+    titleKey: 'tests.ndm_proxy.title',
     cases: [
       {
         name: 'ndm_proxy.outboxCount',

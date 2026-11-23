@@ -10,6 +10,7 @@ import { placeControl, solveControl, type ControlSource, type SolvedControl } fr
 import { branchColors, edgeStrokes } from './edges.ts'
 import { layoutTree, mindmapConfig, type LaidNode, type TreeNode } from './tree.ts'
 import { replay } from './testing.ts'
+import { controlSvg } from './svg.ts'
 
 const here = new URL('.', import.meta.url).pathname
 const FIXTURE = `${here}../fixtures/mindmap/commits.json`
@@ -146,4 +147,29 @@ Deno.test('a thousand nodes lay out quickly', () => {
   const ms = performance.now() - t0
   assert(l.nodes.size > 800, `${l.nodes.size} nodes`)
   assert(ms < 50, `layout took ${ms.toFixed(1)} ms`)
+})
+
+Deno.test('label appearance changes node geometry and flow previews together', () => {
+  const title = '范围 **边界**'
+  const config = { font_size: 26, font_family: 'serif', icon: 'star', icon_position: 'right', font_color: '#123456', background_color: '#abcdef', background_image: 'https://example.org/grid.png?a=1&b=2' }
+  const tree = replay([{ operations: [
+    { op: 'entity.create', entity_id: 'map', type_id: 'buckyos.container', payload: { kind: 'mindmap' } },
+    { op: 'entity.create', entity_id: 'node', parent_id: 'map', type_id: 'buckyos.cell', payload: { title, view: { type: 'mindnode' }, config } },
+  ] }])
+  const layout = solveControl(tree, 'map', { measurer })
+  const node = layout.layout.nodes.get('node')!
+  const textOnly = measurer.measure(title, 0, undefined, { font_size: 26, font_family: 'serif' })
+  assertEquals(node.w, textOnly.w + 26 + 4)
+  assertEquals(node.h, textOnly.h)
+  assert(node.h > measurer.measure(title, 0).h)
+  const right = controlSvg(tree, layout, { measurer })
+  assert(right.includes('fill="#abcdef"') && right.includes('fill="#123456"'))
+  assert(right.includes('href="https://example.org/grid.png?a=1&amp;b=2"') && right.includes('26px Georgia'))
+  const position = (svg: string) => Number(/<text x="([^"]+)"[^>]+aria-hidden="true">★/.exec(svg)?.[1])
+  tree.get('node')!.config = { ...config, icon_position: 'left' }
+  const left = controlSvg(tree, layout, { measurer })
+  assert(position(right) > position(left), 'the icon moves across the text')
+  tree.get('node')!.config = { background_image: 'not an image URL', icon: 'unknown' }
+  const plain = controlSvg(tree, solveControl(tree, 'map', { measurer }), { measurer })
+  assert(!plain.includes('<image') && !plain.includes('aria-hidden="true"'))
 })

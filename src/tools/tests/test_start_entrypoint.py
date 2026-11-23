@@ -60,6 +60,7 @@ class BuckyosStartLinuxRootTests(unittest.TestCase):
         with (
             patch.object(stop, "system", "Linux"),
             patch.object(stop, "_buckyos_root", return_value=root),
+            patch.object(Path, "home", return_value=root),
             patch.object(os, "geteuid", return_value=1000),
             patch.object(module, "resolve_buckyos_root", return_value=root),
             patch.object(module, "_prepare_ext_tools"),
@@ -123,6 +124,49 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
         euid = patch.object(os, "geteuid", return_value=0, create=True)
         euid.start()
         self.addCleanup(euid.stop)
+        self.home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(Path, "home", return_value=self.home))
+
+    def test_invalid_dev_override_stops_before_stopping_existing_services(self) -> None:
+        module = _load_start_script()
+        path = self.home / ".buckycli" / "buckyos_boot.toml"
+        path.parent.mkdir()
+        key = "services/aicc/settings"
+        for args in (["--all"], ["--reinstall", "devtest_ood1"]):
+            for marker in (None, "buckyos.aicc.settings.v0", 1):
+                with self.subTest(args=args, marker=marker):
+                    settings = {"providers": [], "test_secret": "secret-never-log"}
+                    if marker is not None:
+                        settings["schema"] = marker
+                    path.write_text(f'"{key}" = """\n{json.dumps(settings)}\n"""\n', encoding="utf-8")
+                    with (
+                        patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
+                        patch.object(module, "kill_all_processes") as stop_services,
+                        patch.object(module, "update_files") as update_files,
+                        contextlib.redirect_stderr(io.StringIO()) as errors,
+                    ):
+                        self.assertEqual(module.main(args), 2)
+                    stop_services.assert_not_called()
+                    update_files.assert_not_called()
+                    message = errors.getvalue()
+                    for detail in (str(path), key, "buckyos.aicc.settings.v1"):
+                        self.assertIn(detail, message)
+                    self.assertNotIn("secret-never-log", message)
+
+    def test_dev_override_checks_the_effective_static_value(self) -> None:
+        module = _load_start_script()
+        path = self.home / ".buckycli" / "buckyos_boot.toml"
+        path.parent.mkdir()
+        key = "services/aicc/settings"
+        module._check_dev_boot_override("dev")
+        path.write_text(f'"{key}" = """\n{{}}\n"""\n', encoding="utf-8")
+        for group in ("release", None):
+            module._check_dev_boot_override(group)
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(f'"{key}" = """\n{{"schema":"buckyos.aicc.settings.v1","providers":[]}}\n"""\n')
+        module._check_dev_boot_override("dev")
+        path.write_text(f'"{key}" = """\n{{{{ generated_settings }}}}\n"""\n', encoding="utf-8")
+        module._check_dev_boot_override("dev")
 
     def test_invalid_arguments_stop_before_any_side_effects(self) -> None:
         for args in (

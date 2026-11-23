@@ -12,12 +12,12 @@ import { useAiwsText } from '../../useAiwsText'
 import type { RenderContext } from '../blocks/registry'
 import { useInvalidation } from './confirm'
 import { setWishKey, useWish } from './useWish'
+import { EXECUTION_LABEL } from './WishService'
 import './wish.css'
 
 const PROBLEM_LABEL: Record<string, string> = {
   missing: 'aiworkspace.wish.inputProblem.missing', view_missing: 'aiworkspace.wish.inputProblem.viewMissing', unreadable: 'aiworkspace.wish.inputProblem.unreadable',
 }
-const EXECUTION_LABEL: Record<WishExecutionMode, string> = { local: 'aiworkspace.wish.execution.local', hosted: 'aiworkspace.wish.execution.hosted' }
 
 /** What of an input is read: all of it, through a saved table view, or a query (with how many columns, filtered). */
 function scopeText(input: WishInput, title: (id: string) => string, t: (key: string, vars?: Record<string, string | number>) => string): string {

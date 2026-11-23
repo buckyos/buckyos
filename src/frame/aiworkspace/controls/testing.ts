@@ -1,6 +1,7 @@
 /* Test support: a commit sequence (fixtures/mindmap/commits.json) replayed into an outline a control reads. Only the
  * operations the fixtures use (entity.create, tree.place, tree.move) and the outline fields the core projects. */
 
+import { labelConfig } from './label.ts'
 import type { ControlEntity, ControlSource } from './solve.ts'
 
 interface Entity extends ControlEntity { parent_id: string; order_key: string }
@@ -12,12 +13,13 @@ export function replay(commits: { operations: Record<string, unknown>[] }[]): Co
     if (op.op === 'entity.create') {
       const p = (op.payload ?? {}) as Record<string, unknown>
       const config = p.config as Record<string, unknown> | undefined
+      const view = (p.view as { type?: string } | undefined)?.type
       by.set(id, {
         entity_id: id, type_id: op.type_id as string, parent_id: op.parent_id as string, order_key: op.order_key as string,
-        kind: (p.kind as string) ?? null, view_type: (p.view as { type?: string } | undefined)?.type ?? null, title: (p.title as string) ?? null,
+        kind: (p.kind as string) ?? null, view_type: view ?? null, title: (p.title as string) ?? null,
         placement: (op.placement as ControlEntity['placement']) ?? null,
         side: typeof config?.side === 'string' ? config.side : null, branch_color: typeof config?.branch_color === 'string' ? config.branch_color : null,
-        config: op.type_id === 'buckyos.container' ? config : undefined,
+        config: op.type_id === 'buckyos.container' ? config : view === 'label' || view === 'mindnode' ? labelConfig(config) : undefined,
       })
     } else if (op.op === 'tree.place' || op.op === 'tree.move') {
       const e = by.get(id)

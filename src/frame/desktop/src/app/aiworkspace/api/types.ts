@@ -30,6 +30,8 @@ export interface WorkspaceSummary {
   epoch: string
   head_seq: number
   capabilities: Capability[]
+  /** The caller has the Workspace owner's effective access. */
+  owner?: boolean
 }
 
 export interface ClonedFrom {
@@ -97,8 +99,6 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   anonymous?: boolean
   /** Who the caller is judged as (an Agent nobody configured here: its owner, R16). */
   judged_as?: string
-  /** The caller is the Workspace's owner. */
-  owner?: boolean
   /** The Workspace's shared settings (the root's `config`, K4) and the version a conditional write expects. */
   settings?: WorkspaceSettings
   settings_rev?: number
@@ -106,7 +106,8 @@ export interface WorkspaceInfo extends WorkspaceSummary {
 
 /** Where a sourced entity's content comes from (内核架构改进 D12); such an entity is read-only for people and Blocks. */
 export interface EntitySource {
-  kind: 'url' | 'workspace' | 'session'
+  kind: 'url' | 'workspace' | 'session' | 'zone' | 'builtin'
+  provider?: 'contacts' | null
   mode: 'live' | 'fixed'
   /** A session feed (第四期规划 §5.3): which of the seven. */
   feed?: SessionFeed | null
@@ -213,7 +214,7 @@ export interface EntityEnvelope {
   title?: string | null
   kind?: ContainerKind | string
   layout?: { mode: 'flow' | 'free' | 'tree' } | null
-  /** A control's attributes (outline only; a Surface's `config` is not projected). */
+  /** A control's attributes, or the appearance used to lay out and draw a label or mindnode. */
   config?: Record<string, Json> | null
   /** A data control's or a composite's bound data, by binding name: one id, or a list for a `many` binding (控件机制 TODO
    * G2; 控件 on_bind TODO Q2). */
@@ -332,7 +333,11 @@ export type FieldType = 'text' | 'number' | 'decimal' | 'date' | 'datetime' | 'b
 
 export interface OptionDef { option_id: string; label: string }
 
+export type ReferencePurpose = 'image' | 'canvas'
+
 export interface FieldDef {
+  ref_purpose?: ReferencePurpose
+  target_types?: string[]
   field_id: string
   name: string
   type: FieldType
@@ -387,11 +392,14 @@ export interface ConnectorProjection {
 }
 export interface ConnectorEnd { entity_id: string; anchor: { kind: 'named'; id: string } }
 
+export type RowOrder = Record<string, string>
+
 export interface CellPayload {
   /** Absent on a pure UI Block (frame, shape…). */
   source_ref?: Reference
   /** Renderer id and version (D6: the backend checks the format only; the registry decides support). */
   view: { type: string; version?: number }
+  row_order?: RowOrder
   title?: string
   fields?: { field_id: string; width?: number }[]
   filter?: FilterNode | null
@@ -878,7 +886,7 @@ export interface AnchorInfo {
   range_status?: 'exact' | 'relocated' | 'lost' | 'unchecked'
   position?: { block_id?: string; end_block_id?: string; text?: string }
 }
-export interface AnnotationContent extends KeyedContent<AnnotationPayload> { anchor: AnchorInfo }
+export interface AnnotationContent extends KeyedContent<AnnotationPayload> { anchor?: AnchorInfo }
 export type AnnotationRead = EntityEnvelope & { content: AnnotationContent }
 export interface ListAnnotationsParams { target_ids?: string[]; parent_id?: string }
 
@@ -891,6 +899,7 @@ export interface CellMeta { derived?: { run_id?: string; program?: string; input
 
 export interface QueryRow {
   record_id: string
+  created_seq?: number
   rev: number
   revs: Record<string, number>
   values: Record<string, Json>
@@ -899,6 +908,7 @@ export interface QueryRow {
 }
 
 export interface QueryParams {
+  row_order?: RowOrder
   view_id?: string
   source_id?: string
   filter?: FilterNode | null
@@ -1030,7 +1040,7 @@ export interface LockInfo { entity_id: string; lock_id?: string; principal: stri
 export interface RunView {
   run_id: string
   program: string
-  state: 'planning' | 'running' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'cancelled'
+  state: 'queued' | 'planning' | 'running' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
   params: Record<string, Json>
   candidate: CommitRequest | null
   prepare: PrepareResult | null
@@ -1051,10 +1061,11 @@ export interface ExportResult { export_id: string; download: BucketDownload; man
 /** A share entry (hybrid SSO contract §8.3, 权限需求 R8): its id names the workspace (`<workspace_id>~se_…`); a visitor
  * joins `group_id`; times are unix seconds. `joined`: how many came in through it (`ws.list_entries`). */
 export interface ShareEntry {
+  share_url?: string | null
   entry_id: string
   workspace_id: string
   group_id: string
-  methods: { guest: boolean; password: boolean; self_register: boolean; did_login: boolean }
+  methods: { guest: boolean; password: boolean; self_register: boolean; did_login: boolean; oauth?: boolean }
   state: 'active' | 'closed' | 'expired'
   expires_at: number | null
   max_joins: number | null

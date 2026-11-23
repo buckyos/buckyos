@@ -172,6 +172,7 @@ pub struct ObjectKind {
     /// The service publishes the object at `https://<zone>/<same path>` too: that URL
     /// is its default Object URL across zones (doc/key url.md §6).
     pub same_path_https: bool,
+    pub require_profile_access: bool,
 }
 
 impl ObjectKind {
@@ -192,7 +193,13 @@ impl ObjectKind {
             access: None,
             summary: Vec::new(),
             same_path_https: false,
+            require_profile_access: false,
         }
+    }
+
+    pub fn private_profile(mut self) -> Self {
+        self.require_profile_access = true;
+        self
     }
 
     pub fn same_path_https(mut self) -> Self {
@@ -528,9 +535,12 @@ impl DIDObjectServer for KrpcObjectProvider {
 
     async fn object_profile_for(&self, ctx: DIDObjectRequestContext) -> DIDObjectServerResult<Value> {
         let (kind, captures, url) = self.locate(&ctx)?;
-        let access = match kind.actions.iter().any(|a| a.applies.is_some()) {
-            true => self.access_value(kind, &captures, &ctx).await.ok().flatten(),
-            false => None,
+        let access = if kind.require_profile_access {
+            self.access_value(kind, &captures, &ctx).await?
+        } else if kind.actions.iter().any(|a| a.applies.is_some()) {
+            self.access_value(kind, &captures, &ctx).await.ok().flatten()
+        } else {
+            None
         };
         Ok(self.profile(kind, &request_endpoint(&ctx), &url, access.as_ref()))
     }
@@ -583,11 +593,22 @@ fn property_affordance(description: &str, schema: Value, name: &str) -> Value {
     value
 }
 
-fn action_affordance(description: &str, input: Value, risk: ActionRisk, resource: &str, rbac_action: &str, name: &str) -> Value {
+fn action_affordance(
+    description: &str,
+    input: Value,
+    risk: ActionRisk,
+    resource: &str,
+    rbac_action: &str,
+    name: &str,
+) -> Value {
     json!({
         "description": description,
         "input": input,
         "x-buckyos:risk": risk.as_str(),
+        "x-buckyos:action": { "effect": match risk {
+            ActionRisk::ReadOnly => "read", ActionRisk::Destructive => "destructive",
+            ActionRisk::Write | ActionRisk::IdempotentWrite | ActionRisk::Admin => "write",
+        } },
         "x-buckyos:rbac": { "resource": resource, "action": rbac_action },
         "forms": [{ "href": format!("methods/{name}"), "op": "invokeaction", "contentType": "application/json" }],
     })

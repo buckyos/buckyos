@@ -52,6 +52,24 @@ pub fn generate_service_login_assertion(
     Ok((jwt, login_token))
 }
 
+pub fn generate_node_daemon_login_token(
+    device_doc: &name_lib::DeviceDocument,
+    device_private_key: &EncodingKey,
+) -> std::result::Result<String, String> {
+    let (_, mut assertion) = generate_service_login_assertion(
+        device_doc.name.as_str(),
+        "node-daemon",
+        device_doc.name.as_str(),
+        device_private_key,
+    )
+    .map_err(|err| err.to_string())?;
+    assertion.aud = Some(crate::SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string());
+    assertion.token = None;
+    assertion
+        .generate_jwt(Some(device_doc.name.clone()), device_private_key)
+        .map_err(|err| err.to_string())
+}
+
 pub fn generate_user_login_assertion(
     user_id: &str,
     target_appid: &str,
@@ -89,6 +107,15 @@ pub fn generate_user_login_assertion(
 pub struct TokenPair {
     pub session_token: String,
     pub refresh_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthAccountLogin {
+    pub source_id: String,
+    pub issuer: String,
+    pub sub: String,
+    pub user_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,12 +493,16 @@ pub struct LoginByRemoteVerifyHubRequest {
     pub code_verifier: String,
     pub nonce: String,
     pub redirect_uri: String,
+    /// Verify the assertion without creating any session family.
+    #[serde(default)]
+    pub proof_only: bool,
     pub target: AuthTarget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum LoginByRemoteVerifyHubResult {
+    Verified { did: String, user_id: Option<String>, profile: FederationProfile },
     Issued {
         /// The local account the DID maps to; `None` for an External session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -484,6 +515,18 @@ pub enum LoginByRemoteVerifyHubResult {
     },
     /// Resolution of the canonical zone or the exchange call failed; retryable.
     CanonicalUnavailable,
+}
+
+/// Control Panel has verified the visitor and completed a resource acceptance.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceSessionRequest {
+    pub invite_id: String,
+    pub did: String,
+    pub target: AuthTarget,
+    pub auth_method: AuthMethod,
+    pub oauth_source_id: Option<String>,
+    pub parent_session: Option<String>,
 }
 
 /// `login_by_cross_zone_assertion` (doc/arch/verify-hub/跨Zone登录断言契约.md §4): public;
@@ -684,6 +727,13 @@ impl VerifyHubClient {
         }
     }
 
+    pub async fn login_by_oauth_account(&self, request: OAuthAccountLogin) -> Result<TokenPair> {
+        match self {
+            Self::InProcess(handler) => handler.handle_login_by_oauth_account(None, request).await,
+            Self::KRPC(client) => Self::call_typed(client, "login_by_oauth_account", request).await,
+        }
+    }
+
     pub async fn login_by_app_access_token(
         &self,
         request: AppAccessTokenLoginRequest,
@@ -746,6 +796,13 @@ impl VerifyHubClient {
             Self::KRPC(client) => {
                 Self::call_typed(client, "login_by_remote_verify_hub", request).await
             }
+        }
+    }
+
+    pub async fn issue_resource_share_session(&self, request: ResourceSessionRequest) -> Result<TokenPair> {
+        match self {
+            Self::InProcess(handler) => handler.handle_issue_resource_share_session(None, request).await,
+            Self::KRPC(client) => Self::call_typed(client, "issue_resource_share_session", request).await,
         }
     }
 
@@ -834,6 +891,14 @@ pub trait VerifyHubApiHandler: Send + Sync {
         ))
     }
 
+    async fn handle_login_by_oauth_account(
+        &self,
+        _: Option<&str>,
+        _: OAuthAccountLogin,
+    ) -> Result<TokenPair> {
+        Err(RPCErrors::UnknownMethod("login_by_oauth_account".into()))
+    }
+
     async fn handle_login_by_app_access_token(
         &self,
         _caller_token: Option<&str>,
@@ -879,6 +944,10 @@ pub trait VerifyHubApiHandler: Send + Sync {
         Err(RPCErrors::UnknownMethod(
             "login_by_remote_verify_hub".to_string(),
         ))
+    }
+
+    async fn handle_issue_resource_share_session(&self, _caller: Option<&str>, _request: ResourceSessionRequest) -> Result<TokenPair> {
+        Err(RPCErrors::UnknownMethod("issue_resource_share_session".into()))
     }
 
     async fn handle_login_by_cross_zone_assertion(
@@ -1017,6 +1086,7 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                     )
                     .await?,
             )?,
+            "login_by_oauth_account" => success_value(self.0.handle_login_by_oauth_account(req.token.as_deref(),parse_request("login_by_oauth_account",req.params)?).await?)?,
             "login_by_app_access_token" => success_value(
                 self.0
                     .handle_login_by_app_access_token(
@@ -1057,6 +1127,9 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                     )
                     .await?,
             )?,
+            "issue_resource_share_session" => success_value(self.0.handle_issue_resource_share_session(
+                req.token.as_deref(), parse_request("issue_resource_share_session", req.params)?
+            ).await?)?,
             crate::CROSS_ZONE_LOGIN_METHOD => success_value(
                 self.0
                     .handle_login_by_cross_zone_assertion(parse_request(

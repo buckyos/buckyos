@@ -300,7 +300,14 @@ impl ToolManager for SessionToolManager {
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
-        let specs = self.inner.list_tool_specs();
+        let mut specs = self.inner.list_tool_specs();
+        if let Some(report) = specs.iter_mut().find(|spec| {
+            spec.name == TOOL_REPORT && spec.args_schema.pointer("/properties/outcome").is_none()
+        }) {
+            let current = super::reports::ReportTool.spec();
+            report.args_schema["properties"]["outcome"] = current.args_schema["properties"]["outcome"].clone();
+            report.description = current.description;
+        }
         if !self.call_intent {
             return specs;
         }

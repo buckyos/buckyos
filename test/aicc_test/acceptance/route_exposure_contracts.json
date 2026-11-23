@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "contract_revision": "2026-11-09.1",
-  "capability_baseline_revision": "2026-11-09.1",
-  "capability_cells_sha256": "1bf98f43a887646667c1f236211158228e3ee8fcac1701100d0646d398076f31",
+  "contract_revision": "2026-11-16.1",
+  "capability_baseline_revision": "2026-11-16.1",
+  "capability_cells_sha256": "885bab9c8c2ed8268e56ce68dd28e355e684c4c9ef10ccd3bdcb0c69cf1d2c03",
   "logical_entrypoint_baseline_revision": "2026-10-26.1",
   "profiles": [
     {
@@ -361,6 +361,7 @@
         "glm-5.3-flash",
         "kimi-k2.7-code",
         "kimi-k3",
+        "kimi-k3.1-pro",
         "kimi-k2.8-preview",
         "minimax-m3",
         "doubao-seed-*"
@@ -377,7 +378,8 @@
       "covered_model_patterns": [
         "doubao-seed-tts-2.0",
         "doubao-seed-asr-2.0",
-        "doubao-seed-asr-2.0-fast"
+        "doubao-seed-asr-2.0-fast",
+        "doubao-seed-asr-2.0-idle"
       ],
       "default_exposure": {
         "mode": "logical_routable",
@@ -398,6 +400,10 @@
         "doubao-seedance-2-0-fast-260128",
         "doubao-seedance-2-0-mini-260615",
         "doubao-seedance-2-5-260628",
+        "doubao-seedance-2-5-flash-261115",
+        "kimi-k3-1-pro-261024",
+        "deepseek-v4-1-flash-261017",
+        "deepseek-v4-1-flash-economy-261017",
         "doubao-seed-2-0-lite-260428",
         "doubao-seed-2-1-turbo-260628"
       ],

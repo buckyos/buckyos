@@ -36,7 +36,7 @@ pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// The capabilities a presenter who is not the owner holds on the run Workspace (everything but `manage`).
 const PRESENTER_CAPS: u16 = CapSet::ALL.0 & !(Cap::Manage as u16);
 
-const EVENTS_DDL: &str = r#"
+pub const EVENTS_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS session_events (
   seq          INTEGER PRIMARY KEY AUTOINCREMENT,
   t_rel_ms     INTEGER NOT NULL,
@@ -2283,7 +2283,9 @@ impl Workspace {
             readable.insert(id.to_string(), ok);
             Ok(ok)
         };
-        crate::workspace::filter_rows(&mut rows, &mut can_read)?;
+        crate::workspace::filter_rows(&mut rows, &mut can_read, &|target| {
+            aiworkspace_core::anchor::target_visible(&ctx, target, &|e| access.can_read(&ctx, e))
+        })?;
         Ok(rows)
     }
 }

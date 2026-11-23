@@ -118,6 +118,7 @@ fn the_workspace_list_carries_the_home_page_fields() {
         list["workspaces"].as_array().unwrap().iter().find(|w| w["workspace_id"] == json!(id)).cloned().unwrap_or(Value::Null)
     };
     let first = item(&alice());
+    assert_eq!(first["owner"], true);
     assert_eq!((&first["owner_principal"], &first["opened_at"], &first["public"], &first["cover"], &first["live_sessions"]), (&json!("alice"), &Value::Null, &json!(false), &Value::Null, &json!(0)));
     assert!(first["updated_at"].is_string(), "{first}");
     // a Commit moves the modification time; opening records the caller's own time only
@@ -133,6 +134,7 @@ fn the_workspace_list_carries_the_home_page_fields() {
     assert!(after["updated_at"].as_str().unwrap() > first["updated_at"].as_str().unwrap(), "{after}");
     assert_eq!(after["opened_at"], "2026-10-04T08:01:30.000Z");
     let for_bob = item(&bob());
+    assert!(for_bob.get("owner").is_none());
     assert_eq!((&for_bob["opened_at"], &for_bob["owner_principal"], &for_bob["capabilities"]), (&Value::Null, &json!("alice"), &json!(["read"])));
     // anonymous access with something granted to `@guest` makes it public
     env.svc.workspace(&id).unwrap().lock().unwrap().acl_set_anonymous(&alice(), true).unwrap();

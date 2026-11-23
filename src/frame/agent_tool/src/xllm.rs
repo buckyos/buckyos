@@ -2809,6 +2809,7 @@ pub fn build_runtime_protocol_for(
             s.push_str("- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n");
             s.push_str("- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n");
             if matches!(flavor, HostProtocolFlavor::Session { .. }) {
+                s.push_str("- When the session requires a work outcome, include outcome=\"succeeded\", outcome=\"failed\" or outcome=\"blocked\" on the final <report end=\"true\">. Only a final report can carry an outcome.\n");
                 s.push_str("- A report may include sibling <artifacts> containing a JSON array of relative file paths and <result> containing any JSON value. These require a report in the same response. The host validates and persists the submission; completion applies to the current context, with child reports returned to their caller.\n");
                 s.push_str("- Yielding is how you wait for work this session started (tasks, sub sessions): the session wakes you with its result. When nothing it started is running, the session ends the Turn instead.\n");
             }
@@ -3637,24 +3638,23 @@ impl LLMResultParser for XllmActionParser {
             return Err("a decision must contain at most one report".into());
         }
         let self_report = reports.first().map(|e| e.text());
-        let report_end = match reports.first() {
-            Some(report) => {
-                let attrs: Vec<_> = report
-                    .attrs
-                    .iter()
-                    .filter(|(key, _)| key == "end")
-                    .collect();
-                if attrs.len() > 1 {
-                    return Err("report has duplicate end attributes".into());
-                }
-                match attrs.first().map(|(_, value)| value.as_str()) {
-                    None | Some("false") => false,
-                    Some("true") => true,
-                    Some(_) => return Err("report end must be true or false".into()),
-                }
+        let report_attr = |name: &str| -> Result<Option<&str>, String> {
+            let Some(report) = reports.first() else {
+                return Ok(None);
+            };
+            let mut attrs = report.attrs.iter().filter(|(key, _)| key == name);
+            let value = attrs.next().map(|(_, value)| value.as_str());
+            if attrs.next().is_some() {
+                return Err(format!("report has duplicate {name} attributes"));
             }
-            None => false,
+            Ok(value)
         };
+        let report_end = match report_attr("end")? {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(_) => return Err("report end must be true or false".into()),
+        };
+        let report_outcome = report_attr("outcome")?.map(str::to_owned);
         let report_payload = |name: &str| -> Result<Option<Value>, String> {
             let elements: Vec<_> = region_children
                 .iter()
@@ -3708,6 +3708,7 @@ impl LLMResultParser for XllmActionParser {
             thought,
             self_report,
             report_end,
+            report_outcome,
             report_result,
         };
         result.validate()?;

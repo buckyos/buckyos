@@ -476,6 +476,8 @@ impl ControlPanelServer {
 
         if let Ok(content) = std::fs::read_to_string(&start_config_path) {
             if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                buckyos_api::validate_start_config_schema(&value)
+                    .map_err(RPCErrors::ReasonError)?;
                 zone_domain = value
                     .get("zone_name")
                     .and_then(|item| item.as_str())

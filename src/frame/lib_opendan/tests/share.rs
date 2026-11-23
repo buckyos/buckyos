@@ -50,7 +50,7 @@ fn final_report(report: &str) -> buckyos_api::AiResponse {
     tool_call(
         "final",
         "report",
-        json!({ "report": report, "artifacts": ["answer.txt"], "is_end": true }),
+        json!({ "report": report, "artifacts": ["answer.txt"], "outcome": "succeeded", "is_end": true }),
     )
 }
 

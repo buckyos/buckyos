@@ -378,6 +378,15 @@ impl AppServiceSpec {
         self.state != ServiceState::Deleted
     }
 
+    pub fn is_runtime_enabled(&self) -> bool {
+        self.enable
+            && self.expected_instance_count > 0
+            && !matches!(
+                self.state,
+                ServiceState::Stopped | ServiceState::Stopping | ServiceState::Deleted
+            )
+    }
+
     pub fn app_id(&self) -> &AppId {
         self.app_instance_id.app_id()
     }

@@ -9,10 +9,10 @@ import { getMessageStableId, messageAgentTaskId, messageNotify, messageVoice, ty
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../../../components/conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, sharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { isMessageActivity } from '../../../components/conversation/model/activity'
-import { createGroupSchema, groupSessionId, groupSessionKey, inviteBlocked, participating } from '../groupModel'
+import { createGroupSchema, DEFAULT_HISTORY_BEFORE_JOIN, groupSessionId, groupSessionKey, inviteBlocked, MAX_HISTORY_BEFORE_JOIN, participating } from '../groupModel'
 import { GROUP_INVITATION_INTENT, withinWindow } from '../../../components/conversation/model/groupNotice'
 import { ensureDefaultSession } from '../store/defaultSession'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupProfileInput, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
 import { MOCK_SELF_DID } from '../../../components/conversation/mock/ids'
 import { isHiddenAccount } from '../api/projection'
@@ -69,6 +69,8 @@ interface MockGroup {
   sessions: Record<string, MockGroupSession>
   inviteLinks: Record<string, { requireApproval: boolean; revoked: boolean }>
   pendingTransfer?: { memberDid: string; transferId: string; expiresAt: number }
+  /** `default_session.history_before_join`; absent means the host's default. */
+  historyBeforeJoin?: number
   panels?: MockPanelDecl[]
   display?: GroupDisplayInfo
   /** `default_session.hooks`. */
@@ -883,6 +885,7 @@ export class MessageHubMockStore implements MessageHubStore {
       did: group.did, name: group.name, description: group.description, ownerDid: group.ownerDid, hostDid: group.hostDid, hosted: true, lifecycle: group.lifecycle, revision: group.revision, myRole, members, sessions: this.groupSessions(group),
       can: { ...noGroupCapabilities, invite: active, remove: active, createSession: active, approve: active, updateRole: myRole === 'owner' && group.lifecycle === 'active', moderate: active, updateConfig: active, manageSession: active, inviteGuest: active, updateSharedState: active, redactAny: active, mentionAll: active, transferOwner: myRole === 'owner' && group.lifecycle === 'active' },
       messageRules: { editWindowMs: EDIT_WINDOW_MS, recallWindowMs: RECALL_WINDOW_MS },
+      historyBeforeJoin: group.historyBeforeJoin ?? DEFAULT_HISTORY_BEFORE_JOIN,
       pendingTransfer: group.pendingTransfer,
     }
   }
@@ -977,14 +980,16 @@ export class MessageHubMockStore implements MessageHubStore {
       return did
     })
   }
-  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: { name: string; description: string }) {
+  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: GroupProfileInput) {
     return this.mutate(next => {
       const group = this.requireGroup(next, context, groupDid)
       this.requireCapability(group, context.ownerDid, 'updateConfig')
       const name = profile.name.trim(), description = profile.description.trim()
+      const history = profile.historyBeforeJoin ?? group.historyBeforeJoin ?? DEFAULT_HISTORY_BEFORE_JOIN
       if (!name || name.length > 64) throw Error('invalid-group-name')
-      if (group.name === name && group.description === description) return
-      group.name = name; group.description = description; group.revision = crypto.randomUUID()
+      if (!Number.isInteger(history) || history < 0 || history > MAX_HISTORY_BEFORE_JOIN) throw Error('invalid-session-rules')
+      if (group.name === name && group.description === description && history === (group.historyBeforeJoin ?? DEFAULT_HISTORY_BEFORE_JOIN)) return
+      group.name = name; group.description = description; group.historyBeforeJoin = history; group.revision = crypto.randomUUID()
       this.groupLog(next, group, 'entity.config_changed', context.ownerDid)
     })
   }

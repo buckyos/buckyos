@@ -29,7 +29,7 @@ interface SessionSidebarProps {
 }
 
 export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onClose, onCreate, onManage, onToggleArchived, archived = false, archivedCount = 0, archivedUnread = 0, canManage = false, creationReason, titleFor = session => session.title, statusFor, descriptionFor, badgeFor, showHeader = true }: SessionSidebarProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const now = useMessageHubClock()
   return <div className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="session-sidebar">
     {showHeader && <div className="flex items-center justify-between px-4 py-2">
@@ -50,7 +50,7 @@ export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onC
           {(session.requestCount ?? 0) > 0 && <span className="shrink-0 rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_16%,transparent)] px-1.5 text-[11px] leading-[18px] text-[color:color-mix(in_srgb,var(--cp-warning)_70%,var(--cp-text))]" title={t('messagehub.requests')}>{t('messagehub.requestShort')}</span>}
           {session.unreadCount > 0 && <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[color:var(--cp-accent)] px-1.5 text-[11px] font-semibold tabular-nums text-[color:var(--cp-surface-opaque)]">{session.unreadCount}</span>}
         </button>
-        <time className="w-8 shrink-0 text-right text-[11px] tabular-nums text-[color:var(--cp-muted)]" title={session.lastActiveAt ? new Date(session.lastActiveAt).toLocaleString() : undefined}>{relativeActivity(session.lastActiveAt, now, t('messagehub.now'))}</time>
+        <time className="w-8 shrink-0 text-right text-[11px] tabular-nums text-[color:var(--cp-muted)]" title={session.lastActiveAt ? new Date(session.lastActiveAt).toLocaleString(locale) : undefined}>{relativeActivity(session.lastActiveAt, now, t('messagehub.now'), locale)}</time>
         <button type="button" disabled={!canManage} aria-label={`${t('messagehub.manageSession')}: ${titleFor(session)}`} title={t('messagehub.manageSession')} onClick={() => onManage?.(session)} className="flex min-h-11 w-11 shrink-0 items-center justify-center text-[color:var(--cp-muted)] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 max-md:opacity-100 disabled:invisible"><MoreHorizontal size={16} /></button>
       </div>)}
     </div>

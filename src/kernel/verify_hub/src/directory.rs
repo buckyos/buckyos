@@ -33,9 +33,23 @@ pub trait ZoneDirectory: Send + Sync {
     async fn user_settings(&self, user_id: &str) -> Result<Option<UserSettings>>;
     /// `None` when the account has no usable OwnerDocument.
     async fn user_doc(&self, user_id: &str) -> Result<Option<UserDoc>>;
+    async fn native_login_binding(&self, _did: &DID) -> Result<Option<String>> {
+        Ok(None)
+    }
+    async fn oauth_binding(&self, issuer: &str, sub: &str) -> Result<Option<String>> {
+        read_optional(&buckyos_api::oauth_binding_key(issuer,sub)).await
+    }
     async fn list_users(&self) -> Result<Vec<String>>;
     async fn exclusive_invite(&self, invite_id: &str) -> Result<Option<ExclusiveInvite>>;
     async fn sso_settings(&self) -> Result<SsoSettings>;
+    async fn has_share_acceptance(
+        &self,
+        _invite_id: &str,
+        _did: &str,
+        _target: &buckyos_api::AuthTarget,
+    ) -> Result<bool> {
+        Ok(false)
+    }
     async fn app_availability(
         &self,
         user_id: &str,
@@ -117,6 +131,10 @@ impl ZoneDirectory for SystemConfigDirectory {
         Ok(Some(UserDoc { did, default_zone }))
     }
 
+    async fn native_login_binding(&self, did: &DID) -> Result<Option<String>> {
+        read_json(&buckyos_api::native_login_binding_key(&did.to_string())).await
+    }
+
     async fn list_users(&self) -> Result<Vec<String>> {
         let client = crate::get_system_config_client().await?;
         match client.list("users").await {
@@ -128,6 +146,50 @@ impl ZoneDirectory for SystemConfigDirectory {
 
     async fn exclusive_invite(&self, invite_id: &str) -> Result<Option<ExclusiveInvite>> {
         read_json(&exclusive_invite_key(invite_id)).await
+    }
+
+    async fn has_share_acceptance(
+        &self,
+        invite_id: &str,
+        did: &str,
+        target: &buckyos_api::AuthTarget,
+    ) -> Result<bool> {
+        use buckyos_api::{
+            resource_share_acceptance_key, valid_resource_share_id, AuthTarget,
+            ResourceShareAcceptance,
+        };
+        if !valid_resource_share_id(invite_id) {
+            return Ok(false);
+        }
+        let accepted =
+            read_json::<ResourceShareAcceptance>(&resource_share_acceptance_key(invite_id, did))
+                .await?;
+        if !accepted
+            .is_some_and(|a| a.invite_id == invite_id && a.did == did && &a.target == target)
+        {
+            return Ok(false);
+        }
+        if let AuthTarget::App { app_instance_id } = target {
+            let client = crate::get_system_config_client().await?;
+            check_app_runtime_session(&client, app_instance_id).await?;
+        }
+        // The resource service owns the live ACL. A lost connection must remain retryable.
+        let token = crate::get_my_krpc_token().await?.to_string();
+        let endpoint = format!(
+            "http://127.0.0.1:{}/kapi/control-panel",
+            buckyos_api::DEFAULT_NODE_GATEWAY_PORT
+        );
+        let client = ::kRPC::kRPC::new_with_timeout_secs(&endpoint, Some(token), 10);
+        let result = client
+            .call(
+                "resource.share.verify_grant",
+                serde_json::json!({"invite_id": invite_id,"did":did}),
+            )
+            .await?;
+        result
+            .get("ok")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| RPCErrors::ReasonError("invalid resource grant response".into()))
     }
 
     async fn sso_settings(&self) -> Result<SsoSettings> {

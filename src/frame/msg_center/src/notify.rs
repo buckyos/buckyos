@@ -21,7 +21,7 @@ use crate::msg_center::MessageCenter;
 use crate::owner_session::is_in_process_call;
 use async_trait::async_trait;
 use buckyos_api::*;
-use kRPC::{RPCContext, RPCErrors};
+use kRPC::{RPCContext, RPCErrorDetail, RPCErrors};
 use log::{info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject, ObjId};
@@ -257,14 +257,6 @@ pub struct NotifyStore {
 
 impl NotifyStore {
     pub async fn open(db: MsgBoxDbMgr) -> Result<Self> {
-        for ddl in [
-            "CREATE TABLE IF NOT EXISTS notifies (notify_id TEXT PRIMARY KEY, owner_did TEXT NOT NULL, requester TEXT NOT NULL, idempotency_key TEXT NOT NULL, state TEXT NOT NULL, created_at_ms BIGINT NOT NULL, row_json TEXT NOT NULL)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifies_requester_key ON notifies(requester, idempotency_key)",
-            "CREATE INDEX IF NOT EXISTS idx_notifies_owner_created ON notifies(owner_did, created_at_ms)",
-            "CREATE INDEX IF NOT EXISTS idx_notifies_state ON notifies(state)",
-        ] {
-            sqlx::query(ddl).execute(db.pool()).await.map_err(db_error)?;
-        }
         Ok(Self { db })
     }
 
@@ -652,6 +644,8 @@ impl MessageCenter {
             );
         }
 
+        let owner_action = key.starts_with("xcall:owner:");
+        let requested = owner_action.then(|| (to_user.clone(), req.kind, prompt.clone()));
         let _guard = self.notify_lock.lock().await;
         let row = match self.notifies.by_key(&caller.requester, &key).await? {
             Some(row) => row,
@@ -694,6 +688,15 @@ impl MessageCenter {
                 self.notifies.insert(&row).await?
             }
         };
+        if requested.is_some_and(|(user, kind, prompt)| {
+            user != row.to_user || kind != row.kind || prompt != row.prompt
+        }) {
+            return Err(RPCErrors::Detailed(RPCErrorDetail::new(
+                "IDEMPOTENCY_CONFLICT",
+                "Different notification for this idempotency key",
+                None,
+            )));
+        }
         let row = self.continue_send(row).await?;
         drop(_guard);
         self.notify_view(&row).await

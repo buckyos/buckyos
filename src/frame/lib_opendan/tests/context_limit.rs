@@ -685,7 +685,7 @@ async fn a_multi_turn_work_compacts_at_the_window_line_and_goes_on() {
     let probe_env = Env::new();
     let probe = multi_turn_work(&probe_env, multi_turn_context(None)).await;
     let first = ScriptedLlm::new(|_, _| {
-        tool_call("rep", "report", json!({ "report": "probe", "is_end": true }))
+        tool_call("rep", "report", json!({ "report": "probe", "outcome": "succeeded", "is_end": true }))
     });
     let r = drive(&probe, &probe_env.deps(first.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
@@ -715,7 +715,7 @@ async fn a_multi_turn_work_compacts_at_the_window_line_and_goes_on() {
         2 => text("The later step is still running."),
         3 => {
             assert!(last_user_text(req).contains("later"), "{}", last_user_text(req));
-            tool_call("rep", "report", json!({ "report": "researched", "is_end": true }))
+            tool_call("rep", "report", json!({ "report": "researched", "outcome": "succeeded", "is_end": true }))
         }
         _ => panic!("unexpected inference {n}"),
     });

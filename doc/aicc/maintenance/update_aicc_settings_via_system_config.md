@@ -18,6 +18,7 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
 
 ```json
 {
+  "schema": "buckyos.aicc.settings.v1",
   "providers": [
     {
       "provider_instance_name": "openai-primary",
@@ -115,7 +116,7 @@ POST /kapi/system_config
   "method": "sys_config_set",
   "params": {
     "key": "services/aicc/settings",
-    "value": "{\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"base_url\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"inline_secret\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
+    "value": "{\"schema\":\"buckyos.aicc.settings.v1\",\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"base_url\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"inline_secret\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
   },
   "sys": [3002, "<session_token>", "trace-aicc-cfg-set"]
 }

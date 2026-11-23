@@ -17,6 +17,7 @@ import {
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../i18n/provider'
 import { useServiceText } from '../useServiceText'
+import { callRpc } from '../../../api/rpc'
 import { AppIcon } from '../../../components/DesktopVisuals'
 import { fetchAppLoginState, setAppLoginEnabled, type AppLoginState } from '../../../api/sso'
 import { useCurrentUser } from '../../../presentation/currentUser'
@@ -135,6 +136,35 @@ function DefinitionRows({ values }: { values: Record<string, string> }) {
  * The owner's "customer sign-in by this App" switch (`apps.app_login.get/set`, EXT-09 /
  * EXT-11). Only the installing account sees it; the Control Panel refuses anyone else.
  */
+type SharePolicy = {level:'disabled' | 'directed' | 'open'; maximum:'disabled' | 'directed' | 'open'}
+
+function SharePolicySetting({appInstanceId}:{appInstanceId:string}) {
+  const {t}=useI18n()
+  const [policy,setPolicy]=useState<SharePolicy|null>(null)
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState(false)
+  useEffect(()=>{
+    let active=true
+    void callRpc<SharePolicy>('apps.share.get',{app_instance_id:appInstanceId}).then(({data})=>{if (active) setPolicy(data)})
+    return ()=>{active=false}
+  },[appInstanceId])
+  if (!policy || policy.maximum === 'disabled') return null
+  return <label className="block text-sm">{t('sso.share.level','Resource invitations')}
+    <select className="ml-2" disabled={busy} value={policy.level} onChange={async e=>{
+      setBusy(true)
+      const result=await callRpc<SharePolicy>('apps.share.set',{app_instance_id:appInstanceId,level:e.target.value})
+      if (result.data) setPolicy(result.data)
+      setError(!result.data)
+      setBusy(false)
+    }}>
+      <option value="disabled">{t('sso.share.disabled','Disabled')}</option>
+      <option value="directed">{t('sso.share.directed','Directed only')}</option>
+      {policy.maximum === 'open' && <option value="open">{t('sso.share.open','Directed and open')}</option>}
+    </select>
+    {error && <span role="alert">{t('sso.share.saveFailed','Could not update invitation permissions.')}</span>}
+  </label>
+}
+
 function AppLoginSwitch({ appInstanceId }: { appInstanceId: string }) {
   const { t } = useI18n()
   const [state, setState] = useState<AppLoginState | null>(null)
@@ -418,6 +448,7 @@ export function DetailPage({ serviceId, onNavigate }: DetailPageProps) {
         </section>
       )}
 
+      {(ownsInstance || currentUser?.userType === 'admin') && service.app_instance_id && <SharePolicySetting appInstanceId={service.app_instance_id} />}
       {ownsInstance && service.app_instance_id && <AppLoginSwitch appInstanceId={service.app_instance_id} />}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,0.85fr)]">

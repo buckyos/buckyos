@@ -4,7 +4,8 @@
  * one finger, two fingers navigating; documents imported and the workspace exported from the menu, the Zone first.
  * Touch input goes through CDP (real multi-touch), not synthetic DOM events. */
 
-import { devices, type CDPSession, type Locator, type Page } from '@playwright/test'
+import { devices, type Locator, type Page } from '@playwright/test'
+import { Fingers } from './touchFingers'
 import { readFileSync } from 'node:fs'
 import { chooseFromZone, expect, expectAllCommitted, openedPicker, openWorkspacePage, test, zoneGoto, type Api } from './fixtures'
 
@@ -15,31 +16,10 @@ test.use(pixel)
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any
-interface Point { x: number; y: number }
 
 const SHOTS = 'test-results/aiworkspace-phone'
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const OFFICE = new URL('../../../aiworkspace/fixtures/office/', import.meta.url).pathname
-
-/** Fingers on the screen, in page coordinates (one touch event per call, like a real digitizer). */
-class Fingers {
-  private readonly cdp: CDPSession
-  constructor(cdp: CDPSession) { this.cdp = cdp }
-  static async of(page: Page) { return new Fingers(await page.context().newCDPSession(page)) }
-  down(...points: Point[]) { return this.cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points.map((p, id) => ({ x: p.x, y: p.y, id })) }) }
-  move(...points: Point[]) { return this.cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points.map((p, id) => ({ x: p.x, y: p.y, id })) }) }
-  up() { return this.cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }) }
-  async tap(p: Point) { await this.down(p); await this.up() }
-  async drag(page: Page, from: Point[], to: Point[], steps = 10) {
-    await this.down(...from)
-    for (let i = 1; i <= steps; i += 1) {
-      await this.move(...from.map((f, n) => ({ x: f.x + ((to[n].x - f.x) * i) / steps, y: f.y + ((to[n].y - f.y) * i) / steps })))
-      await page.waitForTimeout(16)
-    }
-    await page.waitForTimeout(150)
-    await this.up()
-  }
-}
 
 /** ⋯ of the title zone, then the entries by test id, each a tap (a group goes one level in). */
 async function phoneMenu(page: Page, ...testIds: string[]) {
@@ -98,11 +78,19 @@ test('UI-PH16 §15 #16 the phone keeps the title zone and the status bar; its ma
   for (const gone of ['aiws-view-toolbar', 'aiws-main-toolbar', 'aiws-object-toolbar', 'aiws-zoom-menu', 'aiws-share', 'aiws-collab-play']) await expect(page.getByTestId(gone), gone).toHaveCount(0)
   const title = page.getByTestId('aiws-phone-title')
   await expect(title.getByTestId('aiws-surface-switch')).toContainText('看板')
-  // the status bar runs along the bottom
-  const status = (await page.getByTestId('aiws-status-row').boundingBox())!
-  expect(status.x).toBeLessThanOrEqual(1)
-  expect(status.width).toBeGreaterThanOrEqual(viewport.width - 2)
-  expect(status.y + status.height).toBeGreaterThanOrEqual(viewport.height - 2)
+  // At rest, the status and Agent controls occupy one corner. The rest of the bottom row accepts canvas taps.
+  const row = page.getByTestId('aiws-status-row')
+  const bubble = row.locator('.aiws-status-bubble')
+  await expect(bubble.getByTestId('aiws-status-online')).toHaveText('在线 1')
+  await expect(bubble.getByText('没有未提交的修改')).toBeHidden()
+  await expect(row.getByTestId('aiws-collab-jarvis')).toBeVisible()
+  const status = (await row.boundingBox())!
+  expect(status.width).toBeLessThan(viewport.width / 2)
+  expect(status.y + status.height).toBeGreaterThanOrEqual(viewport.height - 24)
+  const canvas = page.getByTestId('aiws-canvas')
+  const canvasBox = (await canvas.boundingBox())!
+  const tapX = status.x > canvasBox.x + 12 ? 12 : canvasBox.width - 12
+  await canvas.tap({ position: { x: tapX, y: status.y + status.height / 2 - canvasBox.y } })
 
   // the main menu: a sheet from the bottom, its groups one level at a time
   await page.getByTestId('aiws-main-menu').tap()
@@ -228,7 +216,8 @@ test('UI-PH18 §15 #18 a tap on a table of a phone\'s free canvas opens its cont
   await page.screenshot({ path: `${SHOTS}/ph18-expanded.png` })
 
   // a new record
-  await full.getByTestId('aiws-add-record-source:tasks').tap()
+  await full.getByTestId('aiws-table-menu-source:tasks').tap()
+  await page.getByTestId('aiws-ctl-menu-table-add').tap()
   const form = page.getByTestId('aiws-table-record-panel')
   await expect(form).toHaveAttribute('data-mode', 'new')
   await form.getByLabel('新记录 任务').fill('手机上展开新建')
@@ -309,7 +298,8 @@ test('UI-PH20 §15 #20 through "expand": the table — a new record, a field\'s 
   const full = page.getByTestId('aiws-phone-expand')
   const table = full.getByTestId('aiws-table-source:tasks')
   const rows = async () => (await api.table(ALICE, ws.workspace_id, { source_id: 'tasks' })).rows as { record_id: string; values: Record<string, unknown> }[]
-  await full.getByTestId('aiws-add-record-source:tasks').tap()
+  await full.getByTestId('aiws-table-menu-source:tasks').tap()
+  await page.getByTestId('aiws-ctl-menu-table-add').tap()
   const form = page.getByTestId('aiws-table-record-panel')
   await form.getByLabel('新记录 任务').fill('展开后新建')
   await form.getByTestId('aiws-table-record-add').tap()
@@ -535,10 +525,20 @@ test('UI-PH45 §4.5 the phone\'s status bar opens its panel from the bottom; the
   const panel = page.getByTestId('aiws-status-detail')
   await expect(panel).toBeVisible()
   const box = (await panel.boundingBox())!
-  expect(box.width).toBeGreaterThanOrEqual(viewport.width - 2)
+  expect(box.width).toBeGreaterThanOrEqual(viewport.width - 20)
+  expect(box.x).toBeGreaterThanOrEqual(0)
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1)
   const row = (await page.getByTestId('aiws-status-row').boundingBox())!
   expect(box.y + box.height).toBeLessThanOrEqual(row.y + 1)
+  await page.getByTestId('aiws-status-online').tap()
+  const members = page.getByTestId('aiws-members-sheet')
+  await expect(members).toBeVisible()
+  await expect(panel).toHaveCount(0)
+  await members.getByTestId('aiws-members-sheet-close').tap()
+  await expect(members).toHaveCount(0)
+  await expect(panel).toHaveCount(0)
   await page.getByTestId('aiws-status').tap()
+  await panel.getByRole('button', { name: '收起工作区状态' }).tap()
   await expect(panel).toHaveCount(0)
   // a comment on a Block from its context window: the comments come up from the bottom
   const fingers = await Fingers.of(page)

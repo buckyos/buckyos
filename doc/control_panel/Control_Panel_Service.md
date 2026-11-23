@@ -219,9 +219,9 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 
 * `auth.login`：取 `username` + `password` + 结构化 `target`；SSO 模式以 Gateway/redirect 为真相源解析 `AuthTarget::App(AppInstanceId)` 或 `AuthTarget::System(SystemServiceId)`，前端 `appid` 只做一致性检查。根域 `_` 固定解析为 `System(control-panel)`，不创建 `control-panel@system`。若带 `redirect_url`，pending nonce 同时绑定 target、canonical origin 和完整 redirect。
 * `auth.refresh` / `auth.verify` / `auth.logout`：刷新 / 校验 / 注销。
-* `auth.prepare_app_launch`：桌面免密打开 App。参数只有 `app_instance_id` 和 `redirect_url`（最终 App URL），不接受 `username`、`target` 等自报身份的字段。要求普通（非 sudo）Control Panel 用户会话，不在公开白名单内；通用认证对本方法返回 `InvalidToken` 时（缺 token、验签或有效期失败、用户 inactive、读 user settings 失败）映射为 `source_session_inactive` 结果。`redirect_url` 按与 SSO 相同的 Gateway route 规则解析，必须是与 `app_instance_id` 完全一致的 App target，否则返回 `invalid_target`（读 gateway info 失败等仍是 RPC error）。随后以本服务的服务会话调用 verify-hub `delegate_user_session`（verify-hub 只接受 Control Panel 服务会话调用），并把原始桌面 token 作为来源证明；`source_inactive` / `access_denied` 映射为 `source_session_inactive` / `access_denied`。返回的 token pair 必须是同一用户、目标实例的普通 User session/refresh 且未过期，才和密码登录一样存进 60 秒一次性 pending，响应 `{ "status": "ready", "callback_url": "<app origin>/sso_callback?nonce=…&redirect_url=…" }`，不含 token。所有 `auth.*` 响应带 `Cache-Control: no-store`。结果状态、桌面处理和已知取舍见 [SSO.md](../sdk/SSO.md)“从桌面打开 App”。
+* `auth.prepare_app_launch`：桌面免密打开 App 或系统服务页面。参数为 `app_instance_id` 或 `service_id`，以及最终页面的 `redirect_url`，不接受 `username`、`target` 等自报身份的字段。要求普通（非 sudo）Control Panel 用户会话，不在公开白名单内；通用认证对本方法返回 `InvalidToken` 时（缺 token、验签或有效期失败、用户 inactive、读 user settings 失败）映射为 `source_session_inactive` 结果。`redirect_url` 按与 SSO 相同的 Gateway route 规则解析，必须与请求的 App 实例或可委托系统服务完全一致，否则返回 `invalid_target`（读 gateway info 失败等仍是 RPC error）。随后以本服务的服务会话调用 verify-hub `delegate_user_session`（verify-hub 只接受 Control Panel 服务会话调用），并把原始桌面 token 作为来源证明；`source_inactive` / `access_denied` 映射为 `source_session_inactive` / `access_denied`。返回的 token pair 必须是同一用户、目标实例的普通 User session/refresh 且未过期，才和密码登录一样存进 60 秒一次性 pending，响应 `{ "status": "ready", "callback_url": "<app origin>/sso_callback?nonce=…&redirect_url=…" }`，不含 token。所有 `auth.*` 响应带 `Cache-Control: no-store`。结果状态、桌面处理和已知取舍见 [SSO.md](../sdk/SSO.md)“从桌面打开 App”。
 * HTTP 侧：`/sso_callback` 只有在 pending/callback/实际 request 的 origin、redirect 和 Gateway route target 全部一致，且 token pair 的 target/use 合法后才写两枚 host-only cookie（响应 `Cache-Control: no-store`）；失败会尽力吊销 pending refresh。nonce、token 和含 nonce 的 URL 不写入日志。`/sso_refresh` 在调用 Verify Hub 前后都校验当前 origin/route 和 target，任何失败都清 cookie；`/sso_logout` 尽力吊销后始终清 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散。
-* **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），token 带 `external: true` 标记（本 Zone 无账号记录的 DID）时直接拒绝，v1 不向 External 开放任何 Control Panel 方法；其余从 `sub` 解出 username，加载 `users/{username}/settings` 校验为 Active 且非 Root，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。
+* **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），对于带 `external: true` 的会话（本 Zone 无账号记录的 DID），以 DID 为主体，按 §6.2 的受限方法清单检查访问；其余从 `sub` 解出 username，加载 `users/{username}/settings` 校验为 Active 且非 Root，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。
 
 **(b) 桌面 UI Session 状态层**（`ui_session_mgr`）—— 持久化每个用户的桌面会话（外观/窗口布局/图标布局/小组件布局）：
 
@@ -329,7 +329,8 @@ identifier / staging handle
 | 公开 RPC 方法 | 用途 |
 |---|---|
 | `auth.login` | 用户名/密码登录（返回中带 `identity`） |
-| `auth.sso_config` | Zone 自助注册 / DID 登录开关与 jump 入口 |
+| `auth.sso_config` | 返回 Zone 登录开关、jump 入口和启用的 `oauth_sources`，公开来源仅含 `id`、`display_name` |
+| `auth.oauth.begin` | 传入 `source_id`、`redirect_url` 与 `purpose`（`login`、`share`、`user_invite`），后两项用途须提供 `invite_id`。成功返回 `{status:"redirect",url}` |
 | `auth.entry.describe` | 分享入口描述（资源方允许的方式 ∩ Zone 开关） |
 | `auth.register` | 在允许自助注册的入口建 Limited 账号 |
 | `auth.invite.describe` / `auth.invite.login` / `auth.invite.request_resend` | 专属邀请：凭 secret 读取、免密登录、申请重发 |
@@ -337,19 +338,23 @@ identifier / staging handle
 | `user.invite.get` | 凭邀请链接读邀请详情 |
 | `zone.presentation.get` | 登录页等读取 Zone 名称、描述、图标（只含展示字段，不开放 `zone.overview`） |
 
+管理员以 `sso.settings.get/set` 管理 `oauth_sources`。Google 使用固定的 `id=google`、`kind=google`、`webhost=google.com` 及官方端点。填写 `display_name`、`enabled`、`client_id` 和 `secret_ref`。凭据引用是 `$BUCKYOS_ROOT/security/oauth/<secret_ref>` 里的文件名。精确 HTTPS 回调是 `https://<zone>/sso/oauth/<id>/callback`，可显式登记或采用此默认值。自定义 OIDC 还须登记 `webhost`、`issuer`、`authorization_endpoint`、`token_endpoint`、`jwks_uri`。纯 OAuth 使用 `kind=oauth2`、受保护的 `account_endpoint` 及其 `id_field`、`email_field`、`email_verified_field`。停用来源用 `enabled=false`，保留命名空间和绑定。已保存来源的 `id`、`kind`、`webhost`、`issuer` 不能修改（纯 OAuth 的 `issuer` 就是 `account_endpoint`）。`oauth_sources` 里省略某个来源即删除它：外部主体记录与账号绑定保留，这四项记入 `services/control_panel/oauth/retired_sources`，此后只有四项都相同的来源能占用其中任一个 `id`、`webhost` 或 `issuer`，重新添加后原绑定恢复可用。删除前用 `sso.oauth_source.accounts {source_id}`（管理员）列出绑定到该来源 issuer 的未删除本地账号 `{accounts:[{user_id,show_name,email,state}]}`。[来源配置类型](../../src/kernel/buckyos-api/src/oauth.rs) · [来源的保存与删除](../../src/frame/control_panel/src/sso_settings.rs)
+
 ### 6.2 后端：公开 HTTP 路由
 
-`user.invite.accept` 不在公开白名单中。External 可以用其已验证的 DID 会话调用该方法，密码、专属免密邀请、App/设备会话以及其他 DID 的会话均不能代为接受。`/users/invite/:inviteId` 页面保留完整邀请地址完成 DID 登录，再提交 OwnerDocument；后端在任何账号、口令或邀请状态写入之前验证 DID 会话。
+用户从 `/users/invite/:inviteId` 开始，以绑定本邀请的原生证明或 Google 证明调用 `user.invite.accept`。CP 从身份的权威来源核对已发布的 OwnerDocument、根公钥和 Zone 绑定。Google 路径核对已验证邮箱和上游主体。凭据、账号、邀请和绑定的更新使用同一事务。邀请用途的证明不给浏览器创建根域系统会话。
 
 | 路由 | 方法 | 用途 |
 |---|---|---|
+| `/sso/oauth/:id/authorize` | GET | 建立本次浏览器绑定，再带 S256 PKCE 跳往来源 |
+| `/sso/oauth/:id/callback` | GET | 校验 state、来源、浏览器、有效期、上游账号与已验证邮箱，按请求用途恢复 |
 | `/sso_callback` | GET | SSO 回调（内部校验 nonce 与 redirect_url） |
 | `/sso_refresh` | POST | 凭 refresh cookie 刷新会话 |
 | `/sso_logout` | POST | 注销并清会话 Cookie |
 | `/sso/did_callback` | GET | DID 登录回调：取 pending、调 verify-hub `login_by_remote_verify_hub`、写 Cookie；浏览器已登录另一主体时拒绝 |
 | `/`（静态 UI 回退） | GET | 提供登录页等前端静态资源 |
 
-> `POST /api/desktop`（桌面 UI 状态）与 `POST /kapi/control-panel`（除上述公开方法外）**均需登录**。受限会话（Limited、External）只能调用开放清单：Limited 为 `account_self` 范围内的本人方法（`auth.current_identity`、`auth.invite.set_password`、`auth.prepare_app_launch`、`ui.locale.get`、本人 `user.get|update|profile.*|change_password`、`zone.presentation.get`、`apps.list`、`apps.availability.check`、本人桌面状态），External 只有 `auth.current_identity`；其余返回 `access_denied` / `session_kind_not_allowed`。混合 SSO 的完整方法与 wire 见 [混合 SSO 技术契约](../arch/verify-hub/混合SSO技术契约.md)。
+> `POST /api/desktop`（桌面 UI 状态）与 `POST /kapi/control-panel`（除上述公开方法外）**均需登录**。受限会话（Limited、External）只能调用开放清单：Limited 为 `account_self` 范围内的本人方法（`auth.current_identity`、`auth.invite.set_password`、`auth.prepare_app_launch`、`ui.locale.get`、本人 `user.get|update|profile.*|change_password`、`zone.presentation.get`、`apps.list`、`apps.availability.check`、本人桌面状态），External 根域会话可查询 `auth.current_identity`、接受匹配其 DID 的 `user.invite.accept`，有 `aiworkspace` scope 时还可通过 `auth.prepare_app_launch` 打开 `System(aiworkspace)` 工作区页面；其余返回 `access_denied` / `session_kind_not_allowed`。混合 SSO 的完整方法与 wire 见 [混合 SSO 技术契约](../arch/verify-hub/混合SSO技术契约.md)。
 
 ### 6.3 前端：登录可选路由
 
@@ -366,6 +371,18 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 | `/userprofile` | 可分享的公开用户资料页（渲染某用户的公开信息，登出态可见） |
 
 ---
+
+## 资源邀请
+
+安装者在安装计划或 App 详情中选择允许的资源邀请范围。包的可选权限 `sso/share/directed` 允许定向邀请，另声明 `sso/share/open` 才能选择开放邀请。CP 按安装实例保存选项。`apps.share.get` 和 `apps.share.set` 接受 `app_instance_id`，后者另传 `level`（`disabled`、`directed` 或 `open`）。调用者须为实例安装者或管理员。
+
+资源服务以自己的服务会话调用 `resource.share.issue`，传入稳定的 `request_id`、`resource_id`、`return_path`、随机的单邀请 `callback_secret` 以及明确的 `audience`。定向指定完整 DID，也可提交 `{"kind":"directed"}` 与 `recipient_email: {source_id,email}`。CP 校验安装授权和目标路由，向资源服务确认创建者当前的分享权、资源标题、可执行操作、登录方式和过期时间。只有登记成功才返回 `{invite_id,url}`。调用方重试时使用相同的请求标识和参数。
+
+普通 App 在其注册主机的 `POST /sdk/appservice/resource-share/callback` 验证邀请凭据。AI Workspace 和 Message Hub 通过各自服务的 `share.callback` 接受同样的请求。`inspect` 提供用途页元数据。`prepare` 验证本次主体的资格并可保留名额。`commit` 再检查并落实资源授权，重复交付应返回相同结果。`resume` 核实此主体仍持有已接受的资源授权。资源服务应该支持重复调用；CP 仅在资源授权落地后登记最终接受记录。
+
+verify-hub 通过 `resource.share.verify_grant {invite_id,did}` 核对已接受记录并复查实时业务授权。正常返回的 `ok` 表示允许或已撤权，传输错误允许稍后重试。签发、续期及使用受邀身份调用服务时均执行该检查。
+
+`/sso/share/<invite_id>` 展示 `auth.share.describe` 的用途，`auth.share.accept` 根据已验证的主体交付指定主机的会话。完整返回路径包含查询和片段。权限关闭后，既有接受者还能否重开由其当前业务授权决定。邀请记录在 `services/control_panel/resource_shares/<invite_id>`，接受记录在 `resource_share_acceptances/<invite_id>/<did_digest>`（同一 CP 前缀），回调凭据与定向邮箱分别保存在受保护的键下。
 
 ## 7. 数据存储与配置树 (Storage Layout)
 

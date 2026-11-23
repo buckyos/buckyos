@@ -7,7 +7,7 @@ use buckyos_api::{
     AuthTarget, BuckyOSRuntime, ControlPanelClient, CurrentIdentity, DelegateUserSessionResult,
     DenyReason, LoginByPasswordResponse, SessionCeiling, SessionScope, SystemServiceId, TokenPair,
     TokenPrincipalKind, TokenUse, UserSettings, UserState, UserType,
-    AIWORKSPACE_GATEWAY_APP_KEY, CONTROL_PANEL_SERVICE_UNIQUE_ID,
+    AIWORKSPACE_GATEWAY_APP_KEY, AIWORKSPACE_UNIQUE_ID, CONTROL_PANEL_SERVICE_UNIQUE_ID,
 };
 use buckyos_http_server::{server_err, ServerError, ServerErrorCode, ServerResult, StreamInfo};
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -53,7 +53,7 @@ const ACCOUNT_SELF_METHODS: [&str; 12] = [
 ];
 
 /// Methods every verified user session reaches, External included.
-const ANY_SESSION_METHODS: [&str; 2] = ["auth.current_identity", "user.invite.accept"];
+const ANY_SESSION_METHODS: [&str; 4] = ["auth.current_identity", "user.invite.accept", "auth.share.accept", "auth.share.identity"];
 
 /// Expected outcomes of `auth.prepare_app_launch`. kRPC errors reach the browser as plain
 /// text, so everything the desktop branches on travels as this status instead.
@@ -263,6 +263,14 @@ impl ControlPanelServer {
             ));
         }
         let params: PrepareAppLaunchParams = Self::typed_params(&req)?;
+        if principal.session.is_external
+            && (params.service_id.as_deref() != Some(AIWORKSPACE_UNIQUE_ID)
+                || params.app_instance_id.is_some())
+        {
+            return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed)
+                .at(CONTROL_PANEL_SERVICE_UNIQUE_ID, PREPARE_APP_LAUNCH_METHOD)
+                .into_rpc_error());
+        }
         let result = self
             .prepare_app_launch(principal.username.as_str(), &source_token, &params)
             .await?;
@@ -876,7 +884,7 @@ impl ControlPanelServer {
             .collect()
     }
 
-    fn extract_http_cookie(
+    pub(crate) fn extract_http_cookie(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         cookie_name: &str,
     ) -> Option<String> {
@@ -1152,6 +1160,7 @@ impl ControlPanelServer {
             "auth.login"
                 | "auth.sso_config"
                 | "auth.describe_target"
+                | "auth.share.describe"
                 | "auth.entry.describe"
                 | "auth.register"
                 | "auth.invite.describe"
@@ -1159,6 +1168,7 @@ impl ControlPanelServer {
                 | "auth.invite.request_resend"
                 | "auth.app_login.exchange"
                 | "auth.did.begin"
+                | "auth.oauth.begin"
                 | "user.invite.get"
                 | "zone.presentation.get"
         )
@@ -1473,7 +1483,7 @@ impl ControlPanelServer {
         method: &str,
         token: Option<String>,
     ) -> Result<Option<RpcAuthPrincipal>, RPCErrors> {
-        if Self::is_public_rpc_method(method) {
+        if Self::is_public_rpc_method(method) || (matches!(method, "user.invite.accept" | "auth.share.accept" | "auth.share.identity") && token.is_none()) {
             return Ok(None);
         }
 
@@ -1487,6 +1497,13 @@ impl ControlPanelServer {
         let is_control_panel_session = is_control_panel_user_session(&parsed)?;
         // An App-signed customer session (EXT-09) lives on the App's origin and targets that App;
         // it reaches the same own-account methods a Control Panel restricted session does.
+        let is_app_ticket = parsed.extra.contains_key(buckyos_api::TOKEN_SUPPORT_TICKET)
+            && token_auth_method(&parsed) == Some(buckyos_api::AuthMethod::ExclusiveInvite)
+            && matches!(claims.target, AuthTarget::App { .. })
+            && claims.principal_kind == TokenPrincipalKind::User;
+        if is_app_ticket && !matches!(method,"auth.current_identity"|"auth.invite.set_password") {
+            return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed).into_rpc_error());
+        }
         let is_app_login_session = token_auth_method(&parsed)
             == Some(buckyos_api::AuthMethod::AppAccessToken)
             && matches!(claims.target, AuthTarget::App { .. })
@@ -1495,7 +1512,7 @@ impl ControlPanelServer {
             method,
             &ceiling,
             is_external,
-            is_control_panel_session || is_app_login_session,
+            is_control_panel_session || is_app_login_session || is_app_ticket,
         )
         .map_err(
             |denial| {
@@ -1518,6 +1535,17 @@ impl ControlPanelServer {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
+        if matches!(method, "resource.share.issue" | "resource.share.verify_grant" | "user.invite.create")
+            && matches!(claims.principal_kind, TokenPrincipalKind::System | TokenPrincipalKind::Device)
+            && matches!(&claims.target, AuthTarget::System { .. })
+            && !session.is_sudo
+        {
+            return Ok(Some(RpcAuthPrincipal {
+                owner_user_id: username.clone(), username, authenticated_app_id,
+                user_type: UserType::Limited, owner_did: String::new(), is_user_session: false,
+                is_control_panel_session: false, principal_kind: claims.principal_kind, agent_permission_mode: None, session,
+            }));
+        }
         if is_external {
             // No account record: the DID is the principal. Only methods that need no
             // account reach here, so the type is the least privileged placeholder.
@@ -1564,7 +1592,31 @@ impl ControlPanelServer {
                 session,
             }));
         }
-        let agent_permission_mode = if claims.principal_kind == TokenPrincipalKind::App {
+        let mut owner_user = username.clone();
+        let owner_agent = claims.principal_kind == TokenPrincipalKind::Agent && method.starts_with("owner.");
+        let agent_permission_mode = if owner_agent {
+            let did = name_lib::DID::from_str(&username)
+                .map_err(|_| RPCErrors::InvalidToken("invalid Agent DID".into()))?;
+            let id = buckyos_api::AgentId::from_agent_did(&did).map_err(RPCErrors::InvalidToken)?;
+            let kv = crate::agent_mgr::ZoneKv::connect().await?;
+            let unavailable = || RPCErrors::NoPermission("Agent owner binding unavailable".into());
+            let key = format!("services/control_panel/agent_names/{id}");
+            let reservation = crate::agent_mgr::get_value::<Value>(&kv, &key)
+                .await
+                .ok_or_else(unavailable)?;
+            owner_user = reservation["owner_user_id"].as_str().ok_or_else(unavailable)?.to_owned();
+            let key = buckyos_api::agent_spec_key(&owner_user, &id);
+            let spec = crate::agent_mgr::get_value::<buckyos_api::AgentSpec>(&kv, &key)
+                .await
+                .ok_or_else(unavailable)?;
+            if spec.validate().is_err()
+                || spec.agent_did != did
+                || spec.binding.target_app_instance_id.owner_user_id() != owner_user
+            {
+                return Err(unavailable());
+            }
+            Some(spec.permission_mode)
+        } else if claims.principal_kind == TokenPrincipalKind::App {
             match &claims.target {
                 AuthTarget::App { app_instance_id } => {
                     buckyos_api::load_agent_permission_mode(
@@ -1578,7 +1630,7 @@ impl ControlPanelServer {
         } else {
             None
         };
-        let settings_path = format!("users/{}/settings", username);
+        let settings_path = format!("users/{}/settings", owner_user);
         let settings_val = system_config_client
             .get(&settings_path)
             .await
@@ -1596,7 +1648,7 @@ impl ControlPanelServer {
             )));
         }
         let owner_did = match ControlPanelClient::from_shared(system_config_client)
-            .get_user_did(&username)
+            .get_user_did(&owner_user)
             .await
         {
             Ok(did) => did.to_string(),
@@ -1607,7 +1659,7 @@ impl ControlPanelServer {
         };
 
         Ok(Some(RpcAuthPrincipal {
-            owner_user_id: username.clone(),
+            owner_user_id: owner_user,
             username,
             authenticated_app_id,
             user_type: user_settings.user_type,
@@ -1652,7 +1704,7 @@ async fn verify_session_any_ceiling(
 }
 
 /// D-4 default deny for restricted sessions (SSO-04): a Limited session reaches
-/// its own-account methods, an External one its identity and invitation acceptance, and
+/// its own-account methods, an External one its identity, invitation acceptance and workspace handoff, and
 /// either only as a Control Panel (Zone root) session or an App-signed customer session
 /// (`self_service_session`).
 fn restricted_method_access(
@@ -1670,10 +1722,15 @@ fn restricted_method_access(
     if ANY_SESSION_METHODS.contains(&method) {
         return Ok(());
     }
-    if is_external || !ACCOUNT_SELF_METHODS.contains(&method) {
+    let required_scope = if is_external && method == PREPARE_APP_LAUNCH_METHOD {
+        // The launch handler also checks the root session, requested service and gateway route.
+        SessionScope::AiWorkspace
+    } else if !is_external && ACCOUNT_SELF_METHODS.contains(&method) {
+        SessionScope::AccountSelf
+    } else {
         return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed));
-    }
-    if !ceiling.allows(SessionScope::AccountSelf) {
+    };
+    if !ceiling.scopes.contains(&required_scope) {
         return Err(AccessDenial::new(DenyReason::SessionCeilingExceeded));
     }
     Ok(())
@@ -1743,18 +1800,22 @@ mod tests {
             deny("user.profile.get", &narrowed, false, true),
             Some(DenyReason::SessionCeilingExceeded)
         );
-        // External: current identity and authenticated invitation acceptance.
+        // External: current identity, authenticated invitation acceptance and scoped Workspace handoff.
         assert_eq!(deny("auth.current_identity", &external, true, true), None);
         assert_eq!(deny("user.invite.accept", &external, true, true), None);
         assert!(!ControlPanelServer::is_public_rpc_method(
             "user.invite.accept"
         ));
-        for method in [
-            "user.get",
-            PREPARE_APP_LAUNCH_METHOD,
-            "desktop.api",
-            "apps.list",
-        ] {
+        assert_eq!(deny(PREPARE_APP_LAUNCH_METHOD, &external, true, true), None);
+        assert_eq!(
+            deny(PREPARE_APP_LAUNCH_METHOD, &narrowed, true, true),
+            Some(DenyReason::SessionCeilingExceeded)
+        );
+        assert_eq!(
+            deny(PREPARE_APP_LAUNCH_METHOD, &external, true, false),
+            Some(DenyReason::SessionKindNotAllowed)
+        );
+        for method in ["user.get", "desktop.api", "apps.list"] {
             assert_eq!(
                 deny(method, &external, true, true),
                 Some(DenyReason::SessionKindNotAllowed),

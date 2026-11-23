@@ -81,6 +81,21 @@ fn validate_at(schema: &Value, value: &Value, path: &str) -> Result<(), String> 
         }
     }
 
+    if let Some(text) = value.as_str() {
+        let length = text.chars().count() as u64;
+        if schema_obj
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|min| length < min)
+            || schema_obj
+                .get("maxLength")
+                .and_then(Value::as_u64)
+                .is_some_and(|max| length > max)
+        {
+            return Err(format!("{path}: string length outside permitted range"));
+        }
+    }
+
     if let Some(number) = value.as_f64() {
         if let Some(min) = schema_obj.get("minimum").and_then(Value::as_f64) {
             if number < min {
@@ -93,9 +108,16 @@ fn validate_at(schema: &Value, value: &Value, path: &str) -> Result<(), String> 
             }
         }
     }
-    if let (Value::Array(items), Some(max)) = (value, schema_obj.get("maxItems").and_then(Value::as_u64)) {
+    if let (Value::Array(items), Some(max)) =
+        (value, schema_obj.get("maxItems").and_then(Value::as_u64))
+    {
         if items.len() as u64 > max {
-            return Err(format!("{}: {} items exceed maxItems {}", path, items.len(), max));
+            return Err(format!(
+                "{}: {} items exceed maxItems {}",
+                path,
+                items.len(),
+                max
+            ));
         }
     }
 

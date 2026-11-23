@@ -1,0 +1,23 @@
+#### Analyze a wish
+`stage.user` gives handles such as `@T1`, named inputs, output types, keys, views and checks, `today` and `timezone`. `ws_query` takes a single SELECT over a handle, path or ID. Use displayed field names, `"<field>#raw"` for stored values, and `WITH d AS MATERIALIZED (SELECT …)` for the smaller side of a large join. `ws_read` on a table view returns its rows and SQL. Forward any accompanying positional `params` to `ws_query` when reading a manually ordered view.
+Submit the `wish.analysis.v3` shape from `stage.system`, without `approach` in contract results. `needs_input` with blockers fails as `NEEDS_INPUT`. Ask the user to bind the missing input and analyze again. For external data, check `run-get` → `context.trigger`. If the starter owns the workspace, build the source with `aiworkspace_sync`, bind it and continue. Otherwise submit `{code:"external_data",message,wanted:{meaning,origin?,freshness?,fields?}}` as a blocker. The card reports `NEEDS_EXTERNAL_DATA` and lets the starter ask the owner. A pending source can be analyzed and coded against, but must sync before running.
+
+#### Write or trial a macro
+`run-files` materializes `context/`, `request.json`, the catalog, `lib/` with the stage budget, and any stored `program/main.js`. Start with `export default async function main(aiws) { … }`. `aiws.declare` your inputs, accesses and AI calls. The program host runs Deno with snapshot reads, writes under `work/output/`, no environment or token. Keep claim credentials outside `work/`. `run-exec` debugs locally; `run-program` also submits the source, outputs and manifest. Never use `deno run -A` for a macro.
+
+Read with `aiws.input(name)` and `aiws.sql`. Use `aiws.ai.complete` with facts, `aiws.llm.map` for item judgments, `aiws.ai.image` / `aiws.ai.video` and `aiws.result.file(name, media)` for generated media. The host budgets and caches calls on the executor's AI resources. `aiws.zone.fetch` permits only GET/HEAD to paths in `aiws.declare({zone:[…]})` (`ZONE_READ_ONLY` / `ZONE_NOT_DECLARED`). Write results through `aiws.result.*`, `aiws.facts` and `aiws.check`. For AI errors, declare `ai: { complete: { max_calls, max_tokens } }` or reduce calls. Report `AI_QUOTA_*` without retrying in a loop.
+
+- Mind map: `aiws.result.control("plan", {kind:"mindmap", children:"- Launch\n  - Market\n"})`. The service lays it out. Use `under:"<input name>"` to grow an existing branch.
+- Composite: choose a definition already listed in `WORKSPACE.md` and read its slots. `aiws.result.control("board", {def:"<author_did>#<name>",config:{title:"Today"},slots:{cards:["result:summary","input:card"],header:[{view:"richtext",markdown:"# Today"}]}})`. Results move into slots, inputs are copied or shown, inline items create text. `under:{input,slot}` extends a composite. Import missing definitions first.
+- HTML: `aiws.result.html` binds `result:<name>` or `input:<name>`, read via `aiws.input("<name>")` in the page. Keep HTML/CSS/JS fixed between code and run, pass changing values through bindings. For editing or cloning Blocks outside a wish, read `$OPENDAN_AGENT_ROOT/cmd_skills/aiworkspace_template_dev/references/content.md`.
+
+Each `run-tool` / `run-program` returns `{status,text}`. Correct `status:"error"` and retry inside an active stage. Finish requires a successful trial, manifest, all contract results and passing error-level checks. A failed `warning` check is recorded with usable results. An `error` check that fails validation gives `CHECKS_FAILED` and no stage output.
+
+#### Diagnose the final record
+`run-get` moves through `validating` and `applying`. On success inspect `applied` and the record's checks, warnings, reads, writes and usage. On failure inspect `error.code`, `sub_code`, `detail` and `record`. A changed wish, missing output destination, type conflict, over-limit Commit or `DELEGATION_STALE` during apply records a failure only. Have the user start a fresh run. Cancelled and interrupted runs have no record.
+
+- `access_denied` at claim: check token and `context.executor`. `MACRO_CANNOT_WRITE`: check the starter/executor's wish/destination writes, bounded by its `intersection` group. `DEPENDENCY_UNAVAILABLE`: unreadable input.
+- `NEEDS_ANALYSIS` after input/request changes: analyze first. `NEEDS_CODING`, `PROGRAM_FAILED` or `MACRO_CODE_CHANGED` on a stored macro: request a code run. If the check itself is wrong, analyze again.
+- `subprocess is not allowed`: use `run-exec` or `run-program`.
+
+Contracts: `src/frame/aiworkspace/aiws/README.md` (also embedded in `stage.system`), `src/frame/aiworkspace/README.md` (`proc.*`), `server/src/wish/{exec,stages}.rs` under that service, and `buckyos-websdk/cli/modules/aiws.ts`.

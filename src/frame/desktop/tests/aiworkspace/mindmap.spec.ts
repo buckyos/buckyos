@@ -146,9 +146,14 @@ test('MM03 a map is built with the keyboard: insert, Tab for a child, Enter for 
   await shot(page, 'mm03-keyboard')
 })
 
-test('MM11 a node being typed grows with its text and wraps only at the layout width', async ({ page, api }) => {
+test('MM11 the node and its selection follow the text while typing, deleting and wrapping', async ({ page, api }) => {
   const ws = await mindWorkspace(api, `mm-grow ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-zoom-150').click()
+  await page.keyboard.press('Escape')
+  const zoom = 1.5
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-zoom', zoom.toFixed(2))
   await page.getByTestId('aiws-tool-insert-mindmap').click()
   const view = await page.getByTestId('aiws-canvas').boundingBox()
   await page.mouse.click(view!.x + view!.width - 300, view!.y + 200)
@@ -158,22 +163,50 @@ test('MM11 a node being typed grows with its text and wraps only at the layout w
   await page.keyboard.type('Root')
   await page.keyboard.press('Tab')
   await expect(edit).toBeVisible()
-  // the fresh child is the minimum width; a sentence typed into it stays on one line while it fits the wrap width
-  const node = edit.locator('xpath=..')
+  const id = (await edit.getAttribute('data-testid'))!.slice('aiws-mindnode-edit-'.length)
+  const node = page.getByTestId(`aiws-mindnode-${id}`)
+  const selection = page.getByTestId(`aiws-selection-${id}`)
+  const edges = (el: Element) => {
+    const { left, top, right, bottom } = el.getBoundingClientRect()
+    return { left, top, right, bottom }
+  }
+  const expectSelectionToFit = async () => {
+    await expect(async () => {
+      const [frame, outline] = await Promise.all([node.evaluate(edges), selection.evaluate(edges)])
+      for (const side of ['left', 'top', 'right', 'bottom'] as const) {
+        expect(outline[side], `selection ${side} should match the node`).toBeCloseTo(frame[side], 0)
+      }
+    }).toPass({ timeout: 3000 })
+  }
   const empty = (await node.boundingBox())!
+  const cdp = await page.context().newCDPSession(page)
+  const composing = 'jingxidegouzao'
+  await cdp.send('Input.imeSetComposition', { text: composing, selectionStart: composing.length, selectionEnd: composing.length })
+  await expectSelectionToFit()
+  await cdp.send('Input.insertText', { text: '精细的构造' })
+  await cdp.detach()
+  const chinese = (await node.boundingBox())!
+  expect(chinese.width).toBeGreaterThan(empty.width)
+  await expectSelectionToFit()
+  await page.keyboard.press('Backspace')
+  expect((await node.boundingBox())!.width).toBeLessThan(chinese.width)
+  await expectSelectionToFit()
+  // the sentence stays on one line while it fits the wrap width
+  await page.keyboard.press('Control+a')
   await page.keyboard.type('if it is a rather long sentence')
   const lineHeight = await edit.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight))
   const typed = (await node.boundingBox())!
-  expect(typed.width).toBeGreaterThan(empty.width + 100)
-  expect(typed.height).toBeLessThan(lineHeight * 2)
+  expect((typed.width - empty.width) / zoom).toBeGreaterThan(100)
+  expect(typed.height / zoom).toBeLessThan(lineHeight * 2)
   // past the wrap width (300px of text) it wraps instead of growing further
   await page.keyboard.type(' that goes on and on until the node must break the line somewhere')
   const long = (await node.boundingBox())!
-  const zoom = Number(await page.getByTestId('aiws-canvas-view').getAttribute('data-zoom')) || 1
   expect(long.width / zoom).toBeLessThanOrEqual(300 + 28 + 4)
   expect(long.height).toBeGreaterThan(typed.height)
+  await expectSelectionToFit()
   await page.keyboard.press('Enter')
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => (e.title as string | undefined)?.startsWith('if it is a rather')).length).toBe(1)
+  await expectSelectionToFit()
   await shot(page, 'mm11-grow')
 })
 

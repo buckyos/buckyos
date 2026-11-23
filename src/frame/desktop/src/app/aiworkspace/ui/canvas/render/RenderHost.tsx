@@ -64,7 +64,7 @@ import { testHooks } from '../../../api/testHooks'
 import { useStore } from '../../../state/hooks'
 import { BlockHost, type Lod } from '../../blocks/BlockHost'
 import { BudgetContext } from '../../blocks/budget'
-import { BlockMetaContext, BlockMetaSink, requestIntent, type BlockMeta } from '../../blocks/editorToolbar'
+import { BlockMetaContext, BlockMetaSink, requestIntent, type BlockMeta, type CanvasCaret } from '../../blocks/editorToolbar'
 import { blockRegistry, modePolicy, type CanvasMode, type HoverAffordance } from '../../blocks/registry'
 import { usePointerType } from '../../blocks/useBlockContext'
 import { FreshnessBadge } from '../../sources/FreshnessBadge'
@@ -137,7 +137,7 @@ export interface RenderHostProps {
   selection: ReadonlySet<string>
   onSelectionChange: (next: Set<string>) => void
   editing: string | null
-  onEditingChange: (id: string | null) => void
+  onEditingChange: (id: string | null, caretAt?: CanvasCaret) => void
   /** Can this user move, resize and rotate the Block (the canvas's editors: all; a commenter: its own notes)? */
   canLayout: (id: string) => boolean
   onCommitLayout: (changes: LayoutChange[]) => void
@@ -326,6 +326,8 @@ export function RenderHost(props: RenderHostProps) {
   const [, forceOverlay] = useState(0)
   const [settled, setSettled] = useState(0)
   const pointerTypeRef = useRef('mouse')
+  const tableTouch = useRef(false)
+  const ignoreTableClick = useRef(false)
   const pointer = usePointerType()
   const shellPhone = useContext(ShellContext)?.phone ?? false
   const sizes = HANDLES[pointer]
@@ -701,6 +703,12 @@ export function RenderHost(props: RenderHostProps) {
   const selectionLayerRef = useRef<SVGGElement>(null)
   // per-Block props that must keep their identity so a memoised BlockHost skips pans (§9.3)
   const { onEditingChange } = props
+  const selectionHandler = useRef(props.onSelectionChange)
+  useLayoutEffect(() => { selectionHandler.current = props.onSelectionChange }, [props.onSelectionChange])
+  const selectTable = useCallback((id: string) => {
+    selectionHandler.current(new Set([id]))
+    frames.current.get(id)?.focus({ preventScroll: true })
+  }, [])
   const [blockHandlers] = useState(() => new Map<string, { key: typeof onEditingChange; onActivate: () => void; onDeactivate: () => void }>())
   const handlersFor = (id: string) => {
     let h = blockHandlers.get(id)
@@ -855,7 +863,13 @@ export function RenderHost(props: RenderHostProps) {
 
   // ---- writing: the writing area takes every press first — Blocks, editors and handles get none
   const onPointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!inkOn) return
+    if (!inkOn) {
+      if (!touch.fingers()) {
+        ignoreTableClick.current = false
+        tableTouch.current = event.pointerType === 'touch' && Boolean((event.target as Element).closest('[data-table-interactive] .aiws-table-scroll'))
+      }
+      return
+    }
     event.stopPropagation()
     pointerTypeRef.current = event.pointerType
     if (event.pointerType === 'touch') {
@@ -876,6 +890,10 @@ export function RenderHost(props: RenderHostProps) {
   // ---- pointer gestures
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     pointerTypeRef.current = event.pointerType
+    const target = event.target as Element
+    const tableControl = target.closest('[data-table-interactive] :is([role="gridcell"], [role="columnheader"], button, select, input, [data-row-title])')
+    if (tableControl && event.button === 0 && !spaceHeld.current && (!props.tool || props.tool === 'select') && !props.placing &&
+      (event.pointerType !== 'touch' || !tableControl.closest('.aiws-table-scroll'))) return
     if (event.pointerType === 'touch') { touch.down(event.nativeEvent); return }
     if (props.gesturesPaused || dragRef.current) return
     if (insideEditor(event.target)) return
@@ -1322,7 +1340,12 @@ export function RenderHost(props: RenderHostProps) {
   // ---- touch (UI improvement §16): what a touch gesture means here; touch.ts recognises the gestures
   const beginTouch = (event: PointerEvent, p: Point): OneFingerDrag | null => {
     const target = event.target instanceof Element ? event.target : null
-    if (props.gesturesPaused || dragRef.current || target?.closest(TOUCH_EXEMPT)) return null
+    if (props.gesturesPaused || dragRef.current) return null
+    const tableScroll = target?.closest<HTMLElement>('[data-table-interactive] .aiws-table-scroll')
+    if (!props.placing && (!props.tool || props.tool === 'select') && tableScroll && !target?.closest('textarea, select, input:not([type=checkbox]), [contenteditable=true]')) {
+      return { kind: 'scroll', element: tableScroll, nativeTap: true, scale: camera.zoom }
+    }
+    if (target?.closest(TOUCH_EXEMPT)) return null
     const w = camera.toWorld(p.x, p.y)
     if (props.placing && !spaceHeld.current) { event.preventDefault(); props.onPlace?.(w); return null }
     const tappable = Boolean(target?.closest(TAPPABLE))
@@ -1342,11 +1365,23 @@ export function RenderHost(props: RenderHostProps) {
     if (hit) props.onSelectionChange(new Set([hit.id]))
     else if (selection.size > 0) props.onSelectionChange(new Set())
   }
+  const editBlockAt = (block: Laid, p: Point) => {
+    const id = block.entity.entity_id
+    const canvas = rootRef.current?.getBoundingClientRect()
+    let caretAt: CanvasCaret | undefined
+    if (block.entity.view_type === 'richtext' && canvas) {
+      const body = frames.current.get(id)?.querySelector<HTMLElement>(':scope > .aiws-block-body')
+      caretAt = { left: canvas.left + p.x, top: canvas.top + p.y, scrollLeft: body?.scrollLeft ?? 0, scrollTop: body?.scrollTop ?? 0 }
+    }
+    props.onEditingChange(id, caretAt)
+    // Editing a group's backing keeps the group selected.
+    props.onSelectionChange(new Set([block.backing ? block.parentId : id]))
+  }
   const doubleTapAt = (p: Point) => {
     const w = camera.toWorld(p.x, p.y)
     const hit = policy.select && props.tool !== 'hand' ? hitAt(w.x, w.y) : null
     const l = hit ? laid.get(hit.id) : undefined
-    if (hit && l && !l.isGroup && !l.connector && policy.editContent) { props.onEditingChange(hit.id); props.onSelectionChange(new Set([l.backing ? l.parentId : hit.id])); return }
+    if (l && !l.isGroup && !l.connector && policy.editContent) { editBlockAt(l, p); return }
     camera.animateTo(l ? camera.fitted(l.bounds, 24) : camera.zoomedAt(p.x, p.y, 2))
   }
   useLayoutEffect(() => {
@@ -1357,6 +1392,7 @@ export function RenderHost(props: RenderHostProps) {
       delegateEnd: finishDrag,
       moving: (on) => {
         // a second finger on a phone's writing: the stroke of the first is dropped, the two pan and zoom
+        if (on && tableTouch.current) ignoreTableClick.current = true
         if (on && input.busy() && input.byTouch()) input.cancel()
         setDragging(on); worldRef.current?.classList.toggle('is-moving', on)
       },
@@ -1577,6 +1613,7 @@ export function RenderHost(props: RenderHostProps) {
         key={id}
         ref={(el) => { if (el) frames.current.set(id, el); else frames.current.delete(id) }}
         className={`aiws-frame-block${l.isGroup ? ' is-group' : ''}${l.control ? ' is-control' : ''}${l.node ? ' is-node' : ''}${selection.has(id) ? ' is-selected' : ''}${hover === id ? ' is-hovered' : ''}${editing === id ? ' is-editing' : ''}`}
+        tabIndex={l.entity.view_type === 'table' ? -1 : undefined}
         data-block-id={id}
         data-testid={`aiws-canvas-block-${id}`}
         data-lod={lod}
@@ -1597,6 +1634,7 @@ export function RenderHost(props: RenderHostProps) {
           <div className="aiws-block-placeholder" data-testid={`aiws-placeholder-${id}`}>{l.entity.title ?? l.entity.view_type ?? ''}</div>
         ) : (
           <BlockHost cellId={id} mode={mode} view="canvas" selected={selection.has(id)} hovered={hover === id} editorActive={editing === id}
+            onSelect={l.entity.view_type === 'table' ? selectTable : undefined}
             onActivate={handlersFor(id).onActivate} onDeactivate={handlersFor(id).onDeactivate} size={sizeFor(id, l.rect.w, l.rect.h)} zoom={zoom} lod={lod} />
         )}
         {/* a free topic (placed by hand) is marked in its corner, over the node */}
@@ -1611,7 +1649,9 @@ export function RenderHost(props: RenderHostProps) {
     if (!l) return null
     // a line is shown by its path; its box is the path's bounds
     if (l.connector) return { rect: camera.rectToScreen(linePreview?.id === id ? linePreview.geom.bounds : l.bounds), rotation: 0 }
-    const rect = camera.rectToScreen(resizePreview?.id === id ? resizePreview.rect : l.rect)
+    const size = metaSink.editorSize
+    const bounds = id === editing && size?.id === id ? { ...l.rect, w: size.w, h: size.h } : l.rect
+    const rect = camera.rectToScreen(resizePreview?.id === id ? resizePreview.rect : bounds)
     return { rect, rotation: rotatePreview?.id === id ? rotatePreview.rotation : l.rotation }
   }
   const turned = (rect: Rect, rotation: number) => (rotation ? `rotate(${rotation} ${rect.x + rect.w / 2} ${rect.y + rect.h / 2})` : undefined)
@@ -1720,7 +1760,7 @@ export function RenderHost(props: RenderHostProps) {
     const n = l.node
     const id = l.entity.entity_id
     if (!n?.hasChildren || !(n.collapsed || hover === id || selection.has(id))) return []
-    const r = camera.rectToScreen(l.rect)
+    const r = shapeFor(id)!.rect
     const gap = sizes.edge / 2 + 3
     const at = n.grow === 'down' ? { left: r.x + r.w / 2 - 9, top: r.y + r.h + gap } : n.grow === 'left' && n.parent !== null ? { left: r.x - gap - 18, top: r.y + r.h / 2 - 9 } : { left: r.x + r.w + gap, top: r.y + r.h / 2 - 9 }
     return [{ id, control: n.control, collapsed: n.collapsed, color: n.color, at }]
@@ -1748,7 +1788,7 @@ export function RenderHost(props: RenderHostProps) {
         if (event.pointerType !== 'touch') finishDrag(true)
       }}
       onLostPointerCapture={(event) => input.lost(event.pointerId)}
-      onClickCapture={(event) => { if (inkOn) { event.stopPropagation(); event.preventDefault() } }}
+      onClickCapture={(event) => { if (inkOn || (event.detail && ignoreTableClick.current)) { event.stopPropagation(); event.preventDefault() } }}
       onDragStart={(event) => { if (inkOn || !insideEditor(event.target)) event.preventDefault() }}
       onContextMenu={onContextMenu}
       onPointerLeave={() => {
@@ -1769,11 +1809,7 @@ export function RenderHost(props: RenderHostProps) {
         if (!policy.editContent) { if (l.entity.view_type === 'asset') requestIntent(hit.id, 'open'); return }
         // a line's label is typed in place (标准对象的交互改进 §4.4)
         if (l.connector && !lineEditable(hit.id)) return
-        // rich text opens with the caret where the double-click was (§4.4)
-        if (l.entity.view_type === 'richtext') requestIntent(hit.id, `caret:${event.clientX},${event.clientY}`)
-        props.onEditingChange(hit.id)
-        // a group's backing is edited (its title) with the group still selected
-        props.onSelectionChange(new Set([l.backing ? l.parentId : hit.id]))
+        editBlockAt(l, p)
       }}
     >
       <BlockMetaContext.Provider value={metaSink}>
@@ -1788,8 +1824,9 @@ export function RenderHost(props: RenderHostProps) {
         {hoverShape && hoverLaid?.connector && policy.select && !dragging && <path className="aiws-line-hover" data-testid="aiws-hover-outline" d={linePath(hoverLaid.entity.entity_id)} strokeWidth={haloWidth(hoverLaid.entity.entity_id, 4)} />}
         {showHalos && selected.filter((x) => x.line).map(({ id, locked }) => <path key={`halo:${id}`} className={`aiws-line-halo${locked ? ' is-locked' : ''}`} data-testid={`aiws-selection-${id}`} d={linePath(id)} strokeWidth={haloWidth(id, 6)} />)}
         {hoverShape && hoverLaid && !hoverLaid.connector && policy.select && !dragging && (
-          <Outline shape={hoverMeta?.shape ?? 'rect'} rect={hoverShape.rect} transform={turned(hoverShape.rect, hoverShape.rotation)} className={`aiws-hover-outline${hoverLaid.isGroup ? ' is-group' : ''}`} testId="aiws-hover-outline" />)}
-        <g ref={selectionLayerRef}>
+          <Outline shape={hoverMeta?.shape ?? 'rect'} rect={hoverShape.rect} transform={turned(hoverShape.rect, hoverShape.rotation)}
+            className={`aiws-hover-outline${hoverLaid.isGroup ? ' is-group' : ''}${hoverLaid.entity.view_type === 'table' ? ' is-table' : ''}`} testId="aiws-hover-outline" />)}
+        <g ref={selectionLayerRef} data-selected-view={selected.length === 1 ? laid.get(selected[0].id)?.entity.view_type : undefined}>
           {selected.filter((x) => !x.line).map(({ id, rect, rotation, locked }) => (
             <rect key={id} className={`aiws-selection-box${selected.length > 1 ? ' is-member' : ''}${locked ? ' is-locked' : ''}${laid.get(id)?.isGroup ? ' is-group' : ''}`} data-testid={`aiws-selection-${id}`} x={rect.x} y={rect.y} width={rect.w} height={rect.h} transform={turned(rect, rotation)} />
           ))}

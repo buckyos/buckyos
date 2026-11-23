@@ -796,9 +796,13 @@ fn render_inherited_step_record(step: &StepRecord, timestamps: bool) -> String {
         .map(str::trim)
         .filter(|r| !r.is_empty())
         .map(|r| {
+            let outcome = step.report_outcome.as_deref()
+                .map(|value| format!(" outcome=\"{}\"", crate::prompt_engine::escape_xml_attr(value)))
+                .unwrap_or_default();
             format!(
-                "<report end=\"{}\">{}</report>\n",
+                "<report end=\"{}\"{}>{}</report>\n",
                 step.report_end,
+                outcome,
                 crate::prompt_engine::escape_xml_text(r)
             )
         })
@@ -1111,6 +1115,11 @@ mod tests {
         let mut step = StepRecord::default();
         step.meta.behavior_name = "plan".into();
         step.self_report = Some("checkpoint <T01>".into());
+        let mut final_step = step.clone();
+        final_step.report_end = true;
+        final_step.report_outcome = Some("failed".into());
+        let final_messages = renderer.render_history(vec![final_step], "do", Vec::new());
+        assert!(plain_text(&final_messages[0]).contains("<report end=\"true\" outcome=\"failed\">"));
 
         let msgs = renderer.render_history(vec![step], "do", Vec::new());
         assert_eq!(msgs.len(), 1);

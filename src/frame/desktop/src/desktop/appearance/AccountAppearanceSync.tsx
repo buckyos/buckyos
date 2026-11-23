@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { globalSettingsStore } from '../../app/settings/data/store'
 import { useI18n } from '../../i18n/provider'
 import { useDesktopUIStore } from '../../models/DesktopUIDataModel'
-import type { SupportedLocale } from '../../models/ui'
 import { useThemeMode } from '../../theme/provider'
 import { useWallpaperSnapshot, wallpaperStore } from '../wallpaper/store'
 import type { AccountAppearance } from './model'
@@ -14,7 +13,7 @@ import { AppearanceSync, desktopStateIo } from './sync'
  */
 export function AccountAppearanceSync({ userId }: { userId: string }) {
   const { themeMode, setThemeMode } = useThemeMode()
-  const { locale, setLocale } = useI18n()
+  const { preferredLocale, setLocale } = useI18n()
   const desktopStore = useDesktopUIStore()
   const windowAppearance = useSyncExternalStore(
     desktopStore.subscribe,
@@ -27,8 +26,8 @@ export function AccountAppearanceSync({ userId }: { userId: string }) {
   const wallpaper = useWallpaperSnapshot().account
 
   const local = useMemo<AccountAppearance>(
-    () => ({ theme: themeMode, locale: locale as SupportedLocale, iconSize, window: windowAppearance, wallpaper }),
-    [themeMode, locale, iconSize, windowAppearance, wallpaper],
+    () => ({ theme: themeMode, locale: preferredLocale, iconSize, window: windowAppearance, wallpaper }),
+    [themeMode, preferredLocale, iconSize, windowAppearance, wallpaper],
   )
 
   const localRef = useRef(local)

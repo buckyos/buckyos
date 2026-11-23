@@ -23,6 +23,10 @@ mod diagnostic_mgr;
 mod download_mgr;
 mod exclusive_invite;
 mod federation;
+mod federation_context;
+mod share_session;
+mod oauth;
+mod owner;
 mod image_data_url;
 mod ndn_download;
 use buckyos_api::pikg;
@@ -30,6 +34,7 @@ mod pre_install_reconciler;
 mod product;
 mod redaction;
 mod sso_entry;
+mod resource_share;
 mod sso_identity;
 mod sso_settings;
 mod sys_auth_backend;
@@ -149,6 +154,11 @@ impl RpcAuthPrincipal {
                 method,
                 "executor.online.list"
                     | "executor.stream.open"
+                    | "owner.context"
+                    | "owner.resolve"
+                    | "owner.prepare"
+                    | "owner.sharing.discover"
+                    | "owner.sharing.check"
                     | "ui.locale.get"
                     | "ui.dashboard"
                     | "user.list"
@@ -486,6 +496,7 @@ struct ControlPanelServer {
     running_download_tasks: Arc<Mutex<HashSet<String>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
     pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
+    native_invite_proofs: Arc<Mutex<HashMap<String, share_session::NativeProof>>>,
     pending_did_logins: Arc<Mutex<HashMap<String, federation::PendingDidLogin>>>,
     external_profiles: Arc<std::sync::Mutex<HashMap<String, buckyos_api::FederationProfile>>>,
     registration_limiter: Arc<std::sync::Mutex<sso_entry::RegistrationLimiter>>,
@@ -526,6 +537,7 @@ impl ControlPanelServer {
             running_download_tasks: Arc::new(Mutex::new(HashSet::new())),
             metrics_snapshot,
             pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
+            native_invite_proofs: Arc::default(),
             pending_did_logins: Arc::new(Mutex::new(HashMap::new())),
             external_profiles: Arc::new(std::sync::Mutex::new(HashMap::new())),
             registration_limiter: Arc::new(std::sync::Mutex::new(
@@ -777,6 +789,8 @@ impl ControlPanelServer {
     fn typed_params<T: serde::de::DeserializeOwned>(req: &RPCRequest) -> Result<T, RPCErrors> {
         let mut params = req.params.clone();
         if let Some(object) = params.as_object_mut() {
+            object.remove("__native_proof");
+            object.remove("__oauth_proof");
             object.remove(REQ_HOST_PARAM);
             object.remove(REQ_ORIGIN_PARAM);
             object.remove("session_token");
@@ -1048,6 +1062,10 @@ impl ControlPanelServer {
         let req_origin = get_buckyos_api_runtime().ok().and_then(|runtime| {
             Self::request_origin(&req, !runtime.force_https, runtime.node_gateway_port).ok()
         });
+        // A sibling App must never be able to spend a browser proof on the Zone root.
+        let proof_cookies = req.headers().get(http::header::ORIGIN).and_then(|h| h.to_str().ok())
+            .filter(|origin| Some(*origin) == req_origin.as_deref())
+            .and_then(|_| req.headers().get(http::header::COOKIE)?.to_str().ok()).map(str::to_owned);
         let client_ip = match info.src_addr.as_ref() {
             Some(addr) => match addr.parse::<SocketAddr>() {
                 Ok(socket_addr) => socket_addr.ip(),
@@ -1150,6 +1168,7 @@ impl ControlPanelServer {
             }
         }
 
+        share_session::attach_proofs(&mut rpc_request,proof_cookies.as_deref());
         let req_seq = rpc_request.seq;
         let req_trace_id = rpc_request.trace_id.clone();
         let carries_credentials = rpc_request.method.starts_with("auth.");
@@ -1239,6 +1258,7 @@ impl ControlPanelServer {
     ) -> Result<futures::future::BoxFuture<'a, Result<RPCResponse, RPCErrors>>, RPCErrors> {
         Ok(match req.method.as_str() {
             method if method.starts_with("executor.") => Box::pin(self.handle_agent_daemon_rpc(req, principal)),
+            method if method.starts_with("owner.") => Box::pin(self.handle_owner(req, principal)),
             // UI bootstrap
             "ui.locale.get" => Box::pin(self.handle_ui_locale_get(req)),
             "ui.locale.set" => Box::pin(self.handle_ui_locale_set(req)),
@@ -1250,6 +1270,10 @@ impl ControlPanelServer {
             }
             "auth.current_identity" => Box::pin(self.handle_auth_current_identity(req, principal)),
             "auth.sso_config" => Box::pin(self.handle_auth_sso_config(req)),
+            "resource.share.verify_grant" => Box::pin(self.handle_share_verify_grant(req, principal)),
+            "resource.share.issue" => Box::pin(self.handle_share_issue(req, principal)),
+            "auth.share.describe" => Box::pin(self.handle_share_describe(req)),
+            "apps.share.get" | "apps.share.set" => Box::pin(self.handle_share_policy(req, principal)),
             "auth.entry.describe" => Box::pin(self.handle_auth_entry_describe(req)),
             "auth.register" => Box::pin(self.handle_auth_register(req, ip_from)),
             "auth.invite.describe" => Box::pin(self.handle_auth_invite_describe(req)),
@@ -1261,7 +1285,10 @@ impl ControlPanelServer {
             "auth.invite.set_password" => {
                 Box::pin(self.handle_auth_invite_set_password(req, principal))
             }
+            "auth.oauth.begin" => Box::pin(self.handle_oauth_begin(req)),
+            "auth.share.accept" | "auth.share.identity" => Box::pin(self.handle_share_session(req,principal)),
             "auth.did.begin" => Box::pin(self.handle_auth_did_begin(req)),
+            "auth.federation.consents" | "auth.federation.forget" => Box::pin(self.handle_federation_consents(req, principal)),
             "auth.federation.describe" => {
                 Box::pin(self.handle_auth_federation_describe(req, principal))
             }
@@ -1271,6 +1298,9 @@ impl ControlPanelServer {
             "auth.federation.deny" => Box::pin(self.handle_auth_federation_deny(req, principal)),
             "sso.settings.get" => Box::pin(self.handle_sso_settings_get(req, principal)),
             "sso.settings.set" => Box::pin(self.handle_sso_settings_set(req, principal)),
+            "sso.oauth_source.accounts" => {
+                Box::pin(self.handle_sso_oauth_source_accounts(req, principal))
+            }
 
             // User Mgr
             "user.list" => Box::pin(self.handle_user_list(req, principal)),
@@ -1284,6 +1314,7 @@ impl ControlPanelServer {
             "user.remove_msg_tunnel" => {
                 Box::pin(self.handle_user_remove_msg_tunnel(req, principal))
             }
+            "user.invite.directory" => Box::pin(self.handle_user_invite_directory(req, principal)),
             "user.invite.create" => Box::pin(self.handle_user_invite_create(req, principal)),
             "user.invite.get" => Box::pin(self.handle_user_invite_get(req, principal)),
             "user.invite.accept" => Box::pin(self.handle_user_invite_accept(req, principal)),
@@ -1453,6 +1484,10 @@ impl HttpServer for ControlPanelServer {
         if method == Method::GET && path == "/sso_callback" {
             return self.serve_sso_callback(req, info).await;
         }
+        if method == Method::GET && path.starts_with("/sso/oauth/") {
+            return self.serve_oauth(req).await;
+        }
+        if method == Method::GET && path == "/sso/did_start" { return self.serve_did_start(req).await; }
         if method == Method::GET && path == federation::DID_CALLBACK_PATH {
             return self.serve_did_callback(req).await;
         }
@@ -1511,6 +1546,9 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         BuckyOSRuntimeType::KernelService,
     )
     .await?;
+    if let Err(error) = runtime.load_device_private_key() {
+        log::warn!("federation app_context signing unavailable: {error}");
+    }
     let login_result = runtime.login().await;
     if login_result.is_err() {
         log::error!(
@@ -1560,6 +1598,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         "/kapi/control-panel".to_string(),
         control_panel_server.clone(),
     );
+    let _ = runner.add_http_server("/sso/did_start".into(),control_panel_server.clone());
     let _ = runner.add_http_server("/sso_callback".to_string(), control_panel_server.clone());
     let _ = runner.add_http_server("/sso_refresh".to_string(), control_panel_server.clone());
     let _ = runner.add_http_server("/sso_logout".to_string(), control_panel_server.clone());
@@ -1567,6 +1606,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         federation::DID_CALLBACK_PATH.to_string(),
         control_panel_server.clone(),
     );
+    let _ = runner.add_http_server("/sso/oauth".to_string(), control_panel_server.clone());
     // Control-panel desktop API endpoints.
     let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
 
@@ -1638,7 +1678,7 @@ mod rpc_stack_tests {
                 let accept = server
                     .handle_rpc_call(RPCRequest::new("user.invite.accept", json!({})), ip)
                     .await;
-                assert!(matches!(accept, Err(RPCErrors::InvalidToken(_))));
+                assert!(matches!(accept, Err(RPCErrors::ParseRequestError(_))));
             })
             .await
             .unwrap();

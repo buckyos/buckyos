@@ -1,6 +1,6 @@
 import { useMediaQuery } from '@mui/material'
 import { ExternalLink, Link2, PanelRight, Waypoints } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useMemo, useRef, useState } from 'react'
 import { WindowDialogProvider } from '../../desktop/windows/dialogs'
 import { useI18n } from '../../i18n/provider'
 import './homestation.css'
@@ -243,10 +243,13 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
               {isDesktop ? (
                 <>
                   <NavRail searchOpen={searchOpen} onSearch={toggleSearch} />
-                  <div className="flex h-full min-w-0 flex-1 justify-center pr-6">
-                    <main className="flex h-full min-w-0 flex-col" style={{ flex: `0 1 ${COLUMN_MAX_WIDTH}px` }}>{content}</main>
+                  <div className="hs-workspace relative h-full min-w-0 flex-1" style={{
+                    '--hs-column-max': `${COLUMN_MAX_WIDTH}px`,
+                    '--hs-context-space': `${infoOpen && docked ? COLUMN_GAP + infoWidth : 0}px`,
+                  } as CSSProperties}>
+                    <main className="flex h-full min-w-0 flex-col">{content}</main>
                     {infoOpen && docked ? (
-                      <>
+                      <div className="hs-docked-context absolute inset-y-0 flex">
                         <button
                           type="button"
                           className="group relative h-full flex-shrink-0"
@@ -260,7 +263,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
                           <span className="pointer-events-none absolute left-1/2 top-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-0 transition-opacity group-hover:opacity-100" style={{ background: 'var(--hs-line-strong)', opacity: resizing ? 1 : undefined }} />
                         </button>
                         <aside className="flex h-full flex-shrink-0 flex-col" style={{ width: infoWidth }} aria-label={t('homestation.info.title', 'Context')}>{infoColumn}</aside>
-                      </>
+                      </div>
                     ) : null}
                   </div>
                   {infoOpen && !docked ? (

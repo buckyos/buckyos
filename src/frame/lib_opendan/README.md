@@ -46,7 +46,7 @@ RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runti
 
 宿主已注册 BuckyOS runtime 时，Session 环境与每次 native 命令执行前都会续期并读取当前 session token，注入 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，覆盖父进程、Session 配置或单次调用中的旧值。续期失败或 token 为空时阻止执行；工具沿用宿主身份，不需要 owner 私钥。run 的环境核验记录只保存凭据变量名，不保存 token 值。未注册 runtime 的独立开发形态仍可显式传入该环境变量。
 
-Session 的宿主 `report` 工具提交阶段报告或以 `is_end=true` 请求完成；Behavior XML 用 `<report end="true">`，结束与动作/切换互斥。`session.policy.completion = explicit_report` 可要求显式完成（默认 natural）；无输入队列时漏报会失败，有输入队列的普通 Done 关闭 Turn 并等待。报告、显式稳定产物和可选 JSON result 统一持久化，恢复不重执行报告、不新增推理；子 context 的结束只交回调用方。持久身份、提交窗口与历史投影见 [Session Directory Protocol §7.1](<../../../doc/opendan/protocol/Session Directory Protocol.md>)。
+Session 的宿主 `report` 工具提交阶段报告或以 `is_end=true` 请求完成；Behavior XML 用 `<report end="true">`，结束与动作/切换互斥。`session.policy.completion = explicit_report` 可要求显式完成（默认 natural）。采用该策略的顶层 Work 必须在最终报告的原生工具参数或 XML 属性中填写 `outcome`，取 `succeeded`、`failed` 或 `blocked`。无输入队列时漏报会失败，有输入队列的普通 Done 关闭 Turn 并等待。报告、显式稳定产物和可选 JSON result 统一持久化，恢复不重执行报告、不新增推理；子 context 的结束只交回调用方。持久身份、提交窗口与历史投影见 [Session Directory Protocol §7.1](<../../../doc/opendan/protocol/Session Directory Protocol.md>)。
 
 UI Session 的结构化回复只交付 `reply` 正文，`topic` 和 `artifacts` 分别更新话题和附件；空正文不回退到 JSON 原文。格式或附件校验纠正一次后仍失败时，Turn 以 `output_format` 错误结束，由宿主发送失败提示，原文保留在 run / worklog 中供诊断。恢复已结束的 run 时执行相同的校验和交付规则。
 

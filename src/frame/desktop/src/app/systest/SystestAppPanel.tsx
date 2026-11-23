@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+import { AppFrameHost } from 'buckyos/app-frame'
 import { buckyos } from 'buckyos'
 import { useI18n } from '../../i18n/provider'
 import { useAppText } from '../../presentation/appText'
@@ -49,11 +51,33 @@ function buildAppWebUrl(app: AppContentLoaderProps['app']) {
   return `${window.location.protocol}//${appHost}.${zoneHost}${port}/`
 }
 
-export function SystestAppPanel({ app }: AppContentLoaderProps) {
-  const { t } = useI18n()
+export function SystestAppPanel({ app, windowId, themeMode }: AppContentLoaderProps) {
+  const { locale, t } = useI18n()
   const appText = useAppText()
-  const src = buildAppWebUrl(app)
+  const isSystest = desktopCatalogIdForLogicalApp(app.logicalAppId ?? app.id) === 'systest'
+  const [nonce] = useState(() => crypto.randomUUID())
+  const [initialLocale] = useState(locale)
+  const iframe = useRef<HTMLIFrameElement>(null)
+  const host = useRef<AppFrameHost | null>(null)
+  const base = buildAppWebUrl(app)
+  const src = isSystest && base ? `${base}?locale=${initialLocale}#bfp=${nonce}` : base
   const launch = useAppLaunch(app.appInstanceId ?? app.id, src ?? undefined)
+
+  useEffect(() => {
+    if (!base || !isSystest) return
+    const frame = new AppFrameHost({
+      target: () => iframe.current?.contentWindow ?? null,
+      origin: new URL(base).origin,
+      init: { nonce, windowId: windowId ?? app.id, locale: initialLocale, theme: { mode: 'light' },
+        formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', shellCapabilities: [] },
+    })
+    host.current = frame
+    return () => { frame.dispose(); host.current = null }
+  }, [app.id, base, initialLocale, isSystest, nonce, windowId])
+  useEffect(() => {
+    host.current?.update({ locale, theme: { mode: themeMode } })
+    host.current?.send('frame.localeChanged', { locale })
+  }, [base, isSystest, locale, themeMode])
 
   if (!src) {
     return (
@@ -63,13 +87,13 @@ export function SystestAppPanel({ app }: AppContentLoaderProps) {
     )
   }
 
-  const isSystest = desktopCatalogIdForLogicalApp(app.logicalAppId ?? app.id) === 'systest'
   if (launch.outcome?.kind !== 'ready') {
     return <AppLaunchStatus outcome={launch.outcome} title={appText(app).title} onRetry={launch.retry} />
   }
 
   return (
     <iframe
+      ref={iframe}
       className="block h-full w-full border-0 bg-white"
       data-testid={isSystest ? 'systest-frame' : 'web-app-frame'}
       src={launch.outcome.url}

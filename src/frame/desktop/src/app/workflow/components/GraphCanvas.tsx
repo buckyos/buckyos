@@ -1,5 +1,6 @@
 /* ── Workflow graph canvas (React Flow + dagre layout) ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useEffect, useMemo } from 'react'
 import {
   Background,
@@ -91,6 +92,7 @@ function InnerGraphCanvas({
   selectedNodeId,
   onSelectNode,
 }: GraphCanvasProps) {
+  const { t } = useI18n()
   // Dagre layout only re-runs when the definition (or its analysis) changes.
   const { nodes: laidOut, edges } = useMemo(
     () => buildGraph(graph, issuesByNode),
@@ -121,6 +123,17 @@ function InnerGraphCanvas({
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
+      ariaLabelConfig={{
+        'controls.ariaLabel': t('workflow.graph.controls'),
+        'controls.zoomIn.ariaLabel': t('workflow.graph.zoomIn'),
+        'controls.zoomOut.ariaLabel': t('workflow.graph.zoomOut'),
+        'controls.fitView.ariaLabel': t('workflow.graph.fit'),
+        'minimap.ariaLabel': t('workflow.graph.minimap'),
+        'node.a11yDescription.default': t('workflow.graph.node'),
+        'node.a11yDescription.keyboardDisabled': t('workflow.graph.node'),
+        'edge.a11yDescription.default': t('workflow.graph.edge'),
+        'handle.ariaLabel': t('workflow.graph.handle'),
+      }}
       edgeTypes={edgeTypes}
       fitView
       fitViewOptions={{ padding: 0.15 }}

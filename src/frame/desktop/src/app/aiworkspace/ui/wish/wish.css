@@ -38,9 +38,22 @@
 .aiws-root button.aiws-wc-tab:disabled { color: var(--cp-muted); opacity: 0.5; }
 .aiws-root button.aiws-wc-tab.has-results::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--aiws-out); }
 .aiws-wc-stale-dot { display: inline-block; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; background: var(--cp-warning); vertical-align: middle; }
+/* the order of the stages between the tabs: done, next, after that */
+.aiws-wc-step { flex: none; align-self: center; display: inline-flex; color: color-mix(in srgb, var(--cp-muted) 55%, transparent); }
+.aiws-wc-step.is-done { color: #60a5fa; }
+.aiws-wc-step.is-next { color: #fb923c; }
 .aiws-wc-next-wrap { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .aiws-wc-reason { min-width: 0; max-width: 180px; font-size: 11px; color: var(--cp-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-root button.aiws-wc-next { flex: none; white-space: nowrap; min-height: 28px; padding: 0 12px; border-radius: 8px; }
+/* the next step and where it executes, one split button */
+.aiws-wc-split { flex: none; display: flex; align-items: stretch; }
+.aiws-root .aiws-wc-split > button.aiws-wc-next:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.aiws-root button.aiws-wc-exec { flex: none; display: inline-flex; align-items: center; gap: 2px; min-height: 28px; margin-left: -1px; padding: 0 6px 0 7px;
+  border-radius: 0 8px 8px 0; color: var(--cp-muted); }
+.aiws-root button.aiws-wc-exec:hover:not(:disabled), .aiws-root button.aiws-wc-exec[aria-expanded='true'] { color: var(--cp-text); background: var(--cp-surface-2); }
+.aiws-root button.aiws-wc-exec.is-primary { color: var(--aiws-on-primary); border-left-color: color-mix(in srgb, var(--aiws-on-primary) 35%, var(--aiws-primary-bg)); }
+.aiws-root button.aiws-wc-exec.is-primary:hover:not(:disabled), .aiws-root button.aiws-wc-exec.is-primary[aria-expanded='true'] {
+  color: var(--aiws-on-primary); background: var(--aiws-primary-hover); border-left-color: color-mix(in srgb, var(--aiws-on-primary) 35%, var(--aiws-primary-hover)); }
 
 /* small on screen: the title, the line of state, the run button (§3.1) */
 .aiws-wc.is-compact { min-height: 0; justify-content: flex-start; }
@@ -78,7 +91,8 @@
 .aiws-wr-name.is-gone { color: var(--cp-muted); cursor: help; }
 /* touch: names and controls big enough to hit (§3.11) */
 @media (pointer: coarse) {
-  .aiws-root button.aiws-wr-name, .aiws-root button.aiws-wr-toggle, .aiws-root button.aiws-wr-rollback, .aiws-root button.aiws-wc-tab, .aiws-root button.aiws-wc-next { min-height: 36px; }
+  .aiws-root button.aiws-wr-name, .aiws-root button.aiws-wr-toggle, .aiws-root button.aiws-wr-rollback, .aiws-root button.aiws-wc-tab, .aiws-root button.aiws-wc-next, .aiws-root button.aiws-wc-exec { min-height: 36px; }
+  .aiws-root button.aiws-wc-exec { padding: 0 10px; }
   .aiws-root button.aiws-wr-name { padding: 6px 4px; }
   .aiws-root button.aiws-wc-run { width: 36px; height: 36px; }
 }

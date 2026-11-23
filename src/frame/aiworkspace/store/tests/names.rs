@@ -51,8 +51,20 @@ fn ensure_creates_once_and_names_are_per_owner() {
 fn concurrent_ensure_makes_one_workspace() {
     let env = env();
     let ids: Vec<String> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..8).map(|_| s.spawn(|| env.svc.ensure_workspace(&alice(), "schedule", None).unwrap())).collect();
-        handles.into_iter().map(|h| h.join().unwrap()["workspace_id"].as_str().unwrap().to_string()).collect()
+        let svc = &env.svc;
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let callers = [alice(), aiworkspace_store::Caller::agent_of("did:agent:one", "alice"),
+                                aiworkspace_store::Caller::agent_of("did:agent:two", "alice")];
+        let handles: Vec<_> = callers.into_iter().map(|caller| {
+            let ready = ready.clone();
+            s.spawn(move || {
+                ready.wait();
+                svc.ensure_workspace(&caller, "schedule", None).unwrap()
+            })
+        }).collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r["created"] == true).count(), 1);
+        results.into_iter().map(|r| r["workspace_id"].as_str().unwrap().to_string()).collect()
     });
     assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
     assert_eq!(env.svc.list_workspaces(&alice()).unwrap()["workspaces"].as_array().unwrap().len(), 1);
@@ -101,4 +113,84 @@ fn packages_carry_no_name() {
     env.svc.import(&alice(), &pkg, "restore", false).unwrap();
     assert_eq!(name(&env, &id), None);
     assert_ne!(env.svc.ensure_workspace(&alice(), "schedule", None).unwrap()["workspace_id"], json!(id));
+}
+
+#[test]
+fn lookup_preserves_agent_acl_and_rejects_unbound_owners() {
+    use aiworkspace_store::Caller;
+    let env = env();
+    let agent = Caller::agent_of("did:agent:reviewer", "alice");
+    assert_eq!(env.svc.lookup_workspace(&agent, "schedule").unwrap(), json!({"ok": true, "found": false}));
+    assert!(env.svc.all_workspace_ids().unwrap().is_empty());
+    let id = env.svc.ensure_workspace(&agent, "schedule", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
+    let handle = env.svc.workspace(&id).unwrap();
+    let mut ws = handle.lock().unwrap();
+    ws.acl_set(&alice(), &json!([{ "subject": agent.principal, "resource": "/", "allow": ["read"] }])).unwrap();
+    let info = ws.info(&agent).unwrap();
+    assert_eq!(info["owned_by_caller_user"], true);
+    assert!(info.get("owner").is_none());
+    drop(ws);
+    assert_eq!(env.svc.lookup_workspace(&agent, "schedule").unwrap()["workspace_id"], id);
+    handle.lock().unwrap().acl_set(&alice(), &json!([{ "subject": agent.principal, "resource": "/", "deny": ["read"] }])).unwrap();
+    for e in [env.svc.lookup_workspace(&agent, "schedule"), env.svc.ensure_workspace(&agent, "schedule", None),
+              env.svc.create_workspace_with(&agent, "x", None, Some("schedule"))] {
+        let e = e.unwrap_err().to_json();
+        assert_eq!(code(&e), "PERMISSION_DENIED", "{e}");
+        assert!(!e.to_string().contains(&id));
+    }
+    let mut limited = agent.clone();
+    limited.acting_for = Some(Box::new(Caller::account("guestaccount", true)));
+    for restricted in [limited, Caller::agent("did:agent:unbound"), Caller::account("guestaccount", true)] {
+        assert_eq!(code(&env.svc.lookup_workspace(&restricted, "schedule").unwrap_err().to_json()), "PERMISSION_DENIED");
+    }
+}
+
+#[test]
+fn legacy_conflicts_are_local_and_only_the_owner_can_select_a_copy() {
+    use aiworkspace_store::Caller;
+    let env = env();
+    let mut ids = Vec::new();
+    for name in ["schedule", "another", "third"] {
+        let info = env.svc.ensure_workspace(&alice(), name, Some(name)).unwrap();
+        let id = info["workspace_id"].as_str().unwrap().to_string();
+        let h = env.svc.workspace(&id).unwrap();
+        let mut ws = h.lock().unwrap();
+        ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "marker", "type_id": "buckyos.container",
+                                      "parent_id": "data", "order_key": "a", "name": name, "payload": { "kind": "folder" } }]));
+        // Legacy releases could put the same persisted name on all three folders.
+        rusqlite::Connection::open(env.dir.path().join("workspaces").join(&id).join("local.sqlite")).unwrap()
+            .execute("UPDATE local_meta SET value = 'schedule' WHERE key = 'name'", []).unwrap();
+        ids.push(id);
+    }
+    let env = env.reopen();
+    assert_eq!(env.svc.lookup_workspace(&bob(), "schedule").unwrap()["found"], false);
+    assert!(env.svc.ensure_workspace(&alice(), "unrelated", None).is_ok());
+    for result in [env.svc.lookup_workspace(&alice(), "schedule"), env.svc.ensure_workspace(&alice(), "schedule", None),
+                   env.svc.create_workspace_with(&alice(), "new", None, Some("schedule"))] {
+        let e = result.unwrap_err().to_json();
+        assert_eq!(e["sub_code"], "NAME_CONFLICT");
+        assert_eq!(e["data"]["workspace_ids"].as_array().unwrap().len(), 3);
+    }
+    let agent = Caller::agent_of("did:agent:x", "alice");
+    assert!(env.svc.lookup_workspace(&agent, "schedule").unwrap_err().to_json().get("data").is_none());
+    assert!(env.svc.select_workspace_name(&agent, "schedule", &ids[0]).is_err());
+    assert!(env.svc.select_workspace_name(&bob(), "schedule", &ids[0]).is_err());
+    // A crash after clearing one of the copies: retry still resolves the remaining ones.
+    rusqlite::Connection::open(env.dir.path().join("workspaces").join(&ids[1]).join("local.sqlite")).unwrap()
+        .execute("UPDATE local_meta SET key = 'former_name' WHERE key = 'name'", []).unwrap();
+    let env = env.reopen();
+    for _ in 0..2 {
+        assert_eq!(env.svc.select_workspace_name(&alice(), "schedule", &ids[2]).unwrap()["workspace_id"], ids[2]);
+    }
+    let env = env.reopen();
+    assert_eq!(env.svc.lookup_workspace(&agent, "schedule").unwrap()["workspace_id"], ids[2]);
+    for (i, id) in ids.iter().enumerate() {
+        let h = env.svc.workspace(id).unwrap();
+        let ws = h.lock().unwrap();
+        assert_eq!(ws.name().unwrap().as_deref(), (i == 2).then_some("schedule"));
+        let info = ws.info(&alice()).unwrap();
+        assert_eq!(info["former_name"].as_str(), (i != 2).then_some("schedule"));
+        assert_eq!(info["head_seq"], 1);
+        assert!(ws.read(&alice(), "marker", None).is_ok());
+    }
 }

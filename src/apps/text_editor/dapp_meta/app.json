@@ -104,5 +104,24 @@
         }
       }
     }
-  ]
+  ],
+  "presentation": {
+    "title": {
+      "fr": "Éditeur de texte",
+      "de": "Texteditor",
+      "es": "Editor de texto",
+      "ru": "Текстовый редактор",
+      "ja": "テキストエディター",
+      "ko": "텍스트 편집기",
+      "ar": "محرر النصوص",
+      "zh-TW": "文字編輯器",
+      "zh-CN": "文本编辑器",
+      "en": "Text Editor"
+    },
+    "summary": {},
+    "description": {},
+    "icons": {},
+    "links": {},
+    "license": "AGPL-3.0-only"
+  }
 }

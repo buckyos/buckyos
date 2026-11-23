@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import type { BrowserContext, Page } from '@playwright/test'
+import { devices, type BrowserContext, type Page } from '@playwright/test'
 import type { ReadOk } from '../../src/app/aiworkspace/api/session'
 import type { AnnotationPayload, CommitEvent, EntityEnvelope, ExportResult, KeyedContent, Operation, Result, WorkspaceInfo } from '../../src/app/aiworkspace/api/types'
 import { setCanvasMode } from '../aiworkspace/fixtures'
@@ -16,8 +16,9 @@ function hash(user: string, password: string, nonce?: number) {
   return nonce === undefined ? stored : createHash('sha256').update(stored + nonce).digest('base64')
 }
 
-const test = base.extend<{ participants: Participants }>({
-  participants: async ({ owner, browser, baseURL }, use) => {
+const test = base.extend<{ participants: Participants; roleDevice: 'desktop' | 'phone' }>({
+  roleDevice: ['desktop', { option: true }],
+  participants: async ({ owner, browser, baseURL, roleDevice }, use) => {
     const passwordPath = process.env.BUCKYOS_TEST_ADMIN_PASSWORD_FILE
     const password = passwordPath ? readFileSync(passwordPath, 'utf8').trimEnd() : process.env.BUCKYOS_TEST_ADMIN_PASSWORD!
     const sudo = async () => {
@@ -40,7 +41,9 @@ const test = base.extend<{ participants: Participants }>({
         }, await sudo())
         if (created.created) users.push(userId)
         expect(created.created).toBe(true)
-        const context = await browser.newContext({ baseURL, ignoreHTTPSErrors: false, viewport: { width: 1600, height: 1000 } })
+        const descriptor = roleDevice === 'phone' ? devices['Pixel 7'] : devices['Desktop Chrome']
+        const { viewport, deviceScaleFactor, isMobile, hasTouch, userAgent } = descriptor
+        const context = await browser.newContext({ baseURL, ignoreHTTPSErrors: false, viewport, deviceScaleFactor, isMobile, hasTouch, userAgent })
         contexts.push(context)
         await context.addInitScript(() => localStorage.setItem('buckyos.prototype.locale.v1', 'zh-CN'))
         actors[role] = await login(await context.newPage(), userId, value)
@@ -56,8 +59,8 @@ const test = base.extend<{ participants: Participants }>({
   },
 })
 
-async function grant(owner: Actor, ws: Workspace, actor: Actor, capabilities: string[]) {
-  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: actor.userId, resource: '/', allow: capabilities }] })
+async function grant(owner: Actor, ws: Workspace, actor: Actor, capabilities: string[], resource = '/') {
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: actor.userId, resource, allow: capabilities }] })
 }
 
 async function read<T = EntityEnvelope>(actor: Actor, ws: Workspace, entity_id: string) {
@@ -99,6 +102,27 @@ test('real accounts cannot read another private workspace through data, annotati
   await editor.page.reload()
   await expect(editor.page.getByTestId('aiws-workspace')).toHaveCount(0)
   await screenshot(commenter.page, info, 'commenter-can-read-private-workspace')
+})
+
+test('real history readers see private source content only with access to it', async ({ owner, participants }) => {
+  const { outsider } = participants
+  const ws = await createSample(owner)
+  await grant(owner, ws, outsider, ['read'])
+  await owner.client.ok('acl.set', {
+    workspace_id: ws.workspace_id,
+    changes: [{ subject: outsider.userId, resource: '/data/项目说明', deny: ['read'] }],
+  })
+  const after_seq = (await owner.client.info(ws)).head_seq
+  const marker = 'private-synthetic-source'
+  expect(await owner.client.commit(ws, [{
+    op: 'richtext.insert_blocks', entity_id: 'notes', position: { end: true },
+    blocks: [{ type: 'paragraph', attrs: { block_id: 'synthetic-history' }, content: [{ type: 'text', text: marker }] }],
+  }])).toMatchObject({ status: 'accepted' })
+  const params = { workspace_id: ws.workspace_id, epoch: ws.epoch, after_seq }
+  const ownerHistory = await owner.client.ok<{ changes: CommitEvent[] }>('doc.get_changes', params)
+  const restrictedHistory = await outsider.client.ok<{ changes: CommitEvent[] }>('doc.get_changes', params)
+  expect(JSON.stringify(ownerHistory)).toContain(marker)
+  expect(JSON.stringify(restrictedHistory)).not.toContain(marker)
 })
 
 test('real accounts keep private subtrees out of batch reads, indexes, SQL, annotations and change history', async ({ owner, participants }) => {
@@ -146,6 +170,9 @@ test('real accounts keep private subtrees out of batch reads, indexes, SQL, anno
   const annotations = await outsider.client.ok<{ annotations: EntityEnvelope[] }>('doc.list_annotations', { workspace_id: ws.workspace_id, target_ids: ['notes'] })
   expect(JSON.stringify(annotations)).not.toContain('private-synthetic-comment')
   const history = await outsider.client.ok<{ changes: CommitEvent[] }>('doc.get_changes', { workspace_id: ws.workspace_id, epoch: ws.epoch, after_seq: 0 })
+  const ownerHistory = await owner.client.ok<{ changes: CommitEvent[] }>('doc.get_changes', { workspace_id: ws.workspace_id, epoch: ws.epoch, after_seq: 0 })
+  expect(JSON.stringify(ownerHistory)).toContain('private-synthetic-source')
+  expect(JSON.stringify(history)).not.toContain('private-synthetic-source')
   expect(JSON.stringify(history)).not.toContain('private-synthetic-comment')
   const exported = await outsider.client.ok<ExportResult>('doc.export', { workspace_id: ws.workspace_id, mode: 'share' })
   expect(exported.manifest.excluded_entities).toBeGreaterThan(0)
@@ -278,3 +305,80 @@ test('two real editor accounts retain independent edits and both inputs at a sam
   expect((await first.client.cell(ws, 'task-41', 'title')).value).toBe('first-title')
   await screenshot(second.page, info, 'two-real-accounts-conflict')
 })
+
+
+for (const roleDevice of ['desktop', 'phone'] as const) {
+  test.describe(roleDevice + ' scoped table comments', () => {
+    test.use({ roleDevice })
+
+    test('a real teacher comments in the permitted folder, except during a student’s show', async ({ owner, participants }, info) => {
+      const { commenter: teacher, editor: student } = participants
+      const ws = await createSample(owner)
+      await grant(owner, ws, teacher, ['read'])
+      await grant(owner, ws, student, ['read', 'update'])
+      const outline = await owner.client.ok<{ entities: EntityEnvelope[] }>('doc.outline', { workspace_id: ws.workspace_id })
+      const folder = outline.entities.find(entity => entity.entity_id === 'surface-main')?.content_folder_id
+      expect(folder).toBeTruthy()
+      const parentId = roleDevice === 'phone' ? 'data' : folder!
+      await grant(owner, ws, teacher, ['comment'], parentId)
+      expect((await teacher.client.info(ws)).capabilities).not.toContain('comment')
+      expect((await read(owner, ws, 'tasks')).parent_id).toBe('data')
+      const path = await owner.client.commit(ws, [{
+        op: 'entity.create', entity_id: 'review-show', type_id: 'buckyos.show-path', parent_id: 'shows', order_key: 'z',
+        payload: { title: 'Scoped comment review', purpose: 'presentation', stage: { w: 1280, h: 720 }, steps: [] },
+      }])
+      expect(path.status).toBe('accepted')
+      await openWorkspace(teacher, ws)
+      if (roleDevice === 'phone') {
+        await teacher.page.getByTestId('aiws-main-menu').tap()
+        await teacher.page.getByTestId('aiws-menu-data-mode').tap()
+        await teacher.page.getByTestId('aiws-tree-tasks').tap()
+        await expect(teacher.page.getByTestId('aiws-dm')).toHaveAttribute('data-layout', 'phone')
+      } else {
+        await setCanvasMode(teacher.page, 'view')
+      }
+      const cell = teacher.page.getByTestId('aiws-cell-task-41-owner').first()
+      await expect(cell).toHaveAttribute('data-editable', 'false')
+      const comment = cell.getByRole('button', { name: '评论 负责人 task-41', exact: true })
+      const baseline = await owner.client.cell(ws, 'task-41', 'owner')
+      const show = await student.client.ok<{ show_id: string; locked: boolean }>('show.start', { workspace_id: ws.workspace_id, path_id: 'review-show', live: false })
+      expect(show.locked).toBe(true)
+      try {
+        await expect(teacher.page.getByTestId('aiws-show-locked')).toHaveAttribute('data-presenter', student.userId)
+        if (roleDevice === 'phone') {
+          await expect(cell.getByRole('button').first()).toBeDisabled()
+          await expect(teacher.page.getByTestId('aiws-table-edit-bar-comment')).toHaveCount(0)
+        } else {
+          await cell.hover()
+          await expect(comment).toHaveCount(0)
+        }
+        await expect(teacher.page.getByTestId('aiws-annotation-draft-target')).toHaveCount(0)
+      } finally {
+        await student.client.ok('show.end', { workspace_id: ws.workspace_id, show_id: show.show_id })
+      }
+      await expect(teacher.page.getByTestId('aiws-show-locked')).toHaveCount(0)
+      if (roleDevice === 'phone') {
+        await cell.getByRole('button').first().tap()
+        await expect(teacher.page.getByTestId('aiws-table-edit-bar-field')).toHaveCount(0)
+        await teacher.page.getByTestId('aiws-table-edit-bar-comment').tap()
+      } else {
+        await cell.hover()
+        await comment.click()
+      }
+      const body = 'synthetic scoped table feedback on ' + roleDevice
+      await teacher.page.getByLabel('评论内容').fill(body)
+      await teacher.page.getByTestId('aiws-annotation-save').click()
+      await expectAllCommitted(teacher.page)
+      const saved = await owner.client.ok<{ annotations: AnnotationRead[] }>('doc.list_annotations', {
+        workspace_id: ws.workspace_id, target_ids: ['tasks'], parent_id: parentId,
+      })
+      const annotation = saved.annotations.find(item => item.content.payload.body === body)
+      expect(annotation).toBeTruthy()
+      expect((await read(owner, ws, annotation!.entity_id)).parent_id).toBe(parentId)
+      expect(annotation!.content.payload.author).toBe(teacher.userId)
+      expect(annotation!.content.payload.target).toMatchObject({ entity_id: 'tasks', selector: { kind: 'table_cell', record_id: 'task-41', field_id: 'owner' } })
+      expect(await owner.client.cell(ws, 'task-41', 'owner')).toEqual(baseline)
+      await screenshot(teacher.page, info, roleDevice + '-scoped-cell-comment')
+    })
+  })
+}

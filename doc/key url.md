@@ -260,3 +260,5 @@ https://$appid-$userid.$zonehost/
 
 
 ## 钱包相关协议
+
+内部 URL `ext-object://<package>/<object>` 指向当前运行时已安装的本地扩展。对外分享使用 Provider 发布的对象 URL。

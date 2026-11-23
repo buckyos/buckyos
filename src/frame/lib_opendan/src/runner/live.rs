@@ -113,17 +113,18 @@ async fn xllm_deps_for(
             intro: SESSION_PROTOCOL_INTRO.to_string(),
         };
     }
-    let (behaviors, max_depth, ui) = {
+    let (behaviors, max_depth, kind, completion) = {
         let s = sh.session.lock().await;
         (
             s.config
                 .behaviors()
                 .map_err(OpenDanError::InvalidArgument)?,
             s.config.session.policy.max_process_depth as usize,
-            s.config.session.kind == SessionKind::Ui,
+            s.config.session.kind,
+            s.config.session.policy.completion,
         )
     };
-    if ui && function_call {
+    if kind == SessionKind::Ui && function_call {
         // A conversation states its constraints, commands and reply
         // contract itself: xllm's capability list, command manual and loop
         // rules stay out of its system text (they are still recorded in
@@ -160,10 +161,12 @@ async fn xllm_deps_for(
             Arc::new(super::consolidation::CommitTool),
         );
     }
-    if sh.session.lock().await.config.session.policy.completion == CompletionPolicy::ExplicitReport
-    {
+    if completion == CompletionPolicy::ExplicitReport {
         if let agent_tool::xllm::HostProtocolFlavor::Session { intro } = &mut x.host_protocol {
             intro.push_str(" This session requires an explicit final report: call report with is_end=true (function call loop), or use <report end=\"true\"> (behavior loop). Plain assistant completion does not successfully finish this session.");
+            if kind == SessionKind::Work && depth == 0 {
+                intro.push_str(" The final Work report requires an outcome: succeeded, failed or blocked. Use the outcome argument or the XML report's outcome attribute.");
+            }
         }
     }
     Ok(x)

@@ -394,7 +394,7 @@ async fn progress_report_resumes_and_final_snapshot_returns_without_inference() 
     let snapshot: LLMContextSnapshot =
         serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
     let mut resumed = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, make_deps(Arc::new(ScriptedLlm::new(vec![
-        text_response(r#"<response><report end="true">final report</report><result>{"ok":true}</result></response>"#),
+        text_response(r#"<response><report end="true" outcome="blocked">final report</report><result>{"ok":true}</result></response>"#),
     ])))).unwrap();
     assert!(matches!(
         resumed.run().await,
@@ -402,6 +402,7 @@ async fn progress_report_resumes_and_final_snapshot_returns_without_inference() 
     ));
     let final_snapshot = resumed.snapshot();
     assert!(final_snapshot.state.report_end);
+    let final_snapshot = serde_json::from_value(serde_json::to_value(final_snapshot).unwrap()).unwrap();
     let mut recovered = LLMContext::resume(
         final_snapshot,
         ResumeFill::ResumeFromMidRun,
@@ -416,6 +417,7 @@ async fn progress_report_resumes_and_final_snapshot_returns_without_inference() 
     };
     let result = behavior_result.unwrap();
     assert_eq!(result.self_report.as_deref(), Some("final report"));
+    assert_eq!(result.report_outcome.as_deref(), Some("blocked"));
     assert!(result.report_end);
     assert!(result.next_behavior.is_none());
     assert_eq!(result.report_result, Some(serde_json::json!({"ok":true})));

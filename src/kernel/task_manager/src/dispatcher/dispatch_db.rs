@@ -63,7 +63,7 @@ impl DispatchDb {
             8
         });
         if backend == RdbBackend::Sqlite {
-            opts = opts.after_connect(|conn, _meta| {
+            opts = opts.max_lifetime(None).idle_timeout(None).after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
                     conn.execute("PRAGMA busy_timeout = 5000;").await?;
@@ -110,6 +110,17 @@ impl DispatchDb {
                     RdbBackend::Sqlite => TASK_DISPATCHER_RDB_SCHEMA_SQLITE,
                     RdbBackend::Postgres => TASK_DISPATCHER_RDB_SCHEMA_POSTGRES,
                 });
+        if self.backend == RdbBackend::Sqlite {
+            buckyos_sqlite_schema::initialize_pool(
+                &self.pool,
+                TASK_DISPATCHER_RDB_SCHEMA_VERSION as u32,
+                &[ddl],
+                &[],
+            )
+            .await?;
+            let tables = existing_tables(&self.pool, self.backend, &DISPATCH_TABLES).await?;
+            return self.check_current_layout(&tables).await;
+        }
         let existing = existing_tables(&self.pool, self.backend, &DISPATCH_TABLES).await?;
         if existing.is_empty() {
             let mut tx = self.pool.begin().await?;
@@ -126,8 +137,7 @@ impl DispatchDb {
         Ok(())
     }
 
-    /// The dispatcher store keeps no version row, so an existing store must
-    /// have exactly the tables and columns of the current schema.
+    /// Verify the required tables and columns of the current schema.
     async fn check_current_layout(
         &self,
         existing: &[String],

@@ -1,4 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
+import { useI18n } from '../../i18n/provider'
 import clsx from 'clsx'
 import { X } from 'lucide-react'
 import {
@@ -144,6 +145,7 @@ function WindowDialogOverlay({
   onClose: (result?: unknown) => void
   surface: WindowDialogSurface
 }) {
+  const { t } = useI18n()
   const presentation = resolvePresentation(
     surface,
     dialog.options.presentation ?? 'auto',
@@ -205,7 +207,7 @@ function WindowDialogOverlay({
           {dismissible ? (
             <button
               type="button"
-              aria-label="Close dialog"
+              aria-label={t('shell.closeDialog')}
               className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_82%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] text-[color:var(--cp-muted)] transition-colors duration-150 hover:text-[color:var(--cp-text)]"
               onClick={() => controls.dismiss()}
             >

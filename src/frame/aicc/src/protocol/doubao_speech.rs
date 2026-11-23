@@ -27,6 +27,7 @@ pub(crate) const DOUBAO_TTS_OPERATION_ID: &str = "tts.unidirectional";
 pub(crate) const DOUBAO_ASR_FLASH_OPERATION_ID: &str = "asr.recognize.flash";
 /// 录音文件识别标准版：`submit` + `query` 异步任务，音频只能以 URL 提交。
 pub(crate) const DOUBAO_ASR_TASK_OPERATION_ID: &str = "asr.recognize.submit";
+pub(crate) const DOUBAO_ASR_IDLE_OPERATION_ID: &str = "asr.recognize.idle.submit";
 
 /// `X-Api-Resource-Id` 默认值。标准版对应豆包录音文件识别模型 2.0。
 const DOUBAO_ASR_FLASH_RESOURCE_ID: &str = "volc.bigasr.auc_turbo";
@@ -105,6 +106,10 @@ pub(super) fn doubao_speech_registration() -> (Vec<OperationDescriptor>, CodecRe
         max_request_bytes: MAX_REQUEST_BYTES,
         max_response_bytes: MAX_RESPONSE_BYTES,
     };
+    let asr_idle = OperationDescriptor {
+        operation_id: DOUBAO_ASR_IDLE_OPERATION_ID.to_owned(),
+        ..asr_task.clone()
+    };
     let operation_codecs = vec![
         Arc::new(DoubaoTtsCodec {
             descriptor: tts.clone(),
@@ -113,11 +118,16 @@ pub(super) fn doubao_speech_registration() -> (Vec<OperationDescriptor>, CodecRe
             descriptor: asr_flash.clone(),
         }) as Arc<dyn OperationCodec>,
     ];
-    let native_task_codecs = vec![Arc::new(DoubaoAsrTaskCodec {
-        descriptor: asr_task.clone(),
-    }) as Arc<dyn NativeTaskCodec>];
+    let native_task_codecs = vec![
+        Arc::new(DoubaoAsrTaskCodec {
+            descriptor: asr_task.clone(),
+        }) as Arc<dyn NativeTaskCodec>,
+        Arc::new(DoubaoAsrTaskCodec {
+            descriptor: asr_idle.clone(),
+        }) as Arc<dyn NativeTaskCodec>,
+    ];
     (
-        vec![tts, asr_flash, asr_task],
+        vec![tts, asr_flash, asr_task, asr_idle],
         CodecRegistration {
             operation_codecs,
             native_task_codecs,
@@ -1626,6 +1636,51 @@ mod tests {
         assert_eq!(output.value["segments"][0]["speaker"], "1");
         assert_eq!(output.value["segments"][0]["id"], "0");
         assert_eq!(output.usage.unwrap().audio_seconds, Some(2.663));
+    }
+
+    #[test]
+    fn idle_asr_uses_configured_endpoint_and_resource_for_submit_and_query() {
+        let registry = speech_registry();
+        let mut request = asr_input(
+            json!({
+                "exact_model": "doubao-seed-asr-2.0-idle@doubao-speech",
+                "audio": ResourceRef::url("https://example.com/speech.wav".to_owned(), Some("audio/wav".to_owned()))
+            }),
+            "doubao-seed-asr-2.0-idle",
+        );
+        request.resolved_parameters.insert(
+            "doubao_asr_resource_id".into(),
+            json!("volc.bigasr.auc_idle"),
+        );
+        for (operation, path) in [
+            (NativeTaskOperation::Submit, "submit"),
+            (NativeTaskOperation::Status, "query"),
+            (NativeTaskOperation::Result, "query"),
+        ] {
+            let wire = registry
+                .encode_native(
+                    DOUBAO_SPEECH_ADAPTER_ID,
+                    DOUBAO_ASR_IDLE_OPERATION_ID,
+                    ApiType::AudioSpeechRecognition,
+                    &NativeTaskInput {
+                        operation,
+                        remote_task_id: Some("idle-task-1"),
+                        codec_input: Some(&request),
+                        resolved_parameters: &request.resolved_parameters,
+                        context: &context(&format!("{ASR_BASE_URL}/idle")),
+                    },
+                )
+                .unwrap();
+            assert_eq!(wire.url, format!("{ASR_BASE_URL}/idle/{path}"));
+            assert_eq!(wire.headers["x-api-resource-id"], "volc.bigasr.auc_idle");
+            if operation != NativeTaskOperation::Submit {
+                assert_eq!(wire.headers["x-api-request-id"], "idle-task-1");
+                let HttpBody::Json(body) = wire.body else {
+                    panic!("expected JSON");
+                };
+                assert_eq!(body, json!({}));
+            }
+        }
     }
 
     #[tokio::test]

@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+/// Protected, unique binding of a verified native credential to an invited local account.
+pub fn native_login_binding_key(did: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("services/control_panel/native_login_bindings/{}", hex::encode(Sha256::digest(did)))
+}
+
 pub const TOKEN_AUTH_METHOD_CLAIM: &str = "auth_method";
 pub const TOKEN_RESTRICTED_CLAIM: &str = "restricted";
 pub const TOKEN_SCOPES_CLAIM: &str = "scopes";
@@ -17,6 +23,8 @@ pub const TOKEN_SCOPES_CLAIM: &str = "scopes";
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
     Password,
+    #[serde(rename = "oauth")]
+    OAuth,
     ExclusiveInvite,
     DidFederation,
     Assertion,
@@ -31,6 +39,7 @@ pub enum AuthMethod {
 impl AuthMethod {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::OAuth => "oauth",
             Self::Password => "password",
             Self::ExclusiveInvite => "exclusive_invite",
             Self::DidFederation => "did_federation",
@@ -42,6 +51,7 @@ impl AuthMethod {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "oauth" => Some(Self::OAuth),
             "password" => Some(Self::Password),
             "exclusive_invite" => Some(Self::ExclusiveInvite),
             "did_federation" => Some(Self::DidFederation),
@@ -235,6 +245,13 @@ pub fn token_auth_method(token: &RPCSessionToken) -> Option<AuthMethod> {
         .and_then(AuthMethod::parse)
 }
 
+pub fn token_oauth_source_id(token: &RPCSessionToken) -> Option<&str> {
+    if token_auth_method(token) != Some(AuthMethod::OAuth) {
+        return None;
+    }
+    token.extra.get("oauth_source_id")?.as_str().filter(|s| crate::valid_oauth_id(s))
+}
+
 // ─── D-4 denial codes ───────────────────────────────────────────────────────
 
 pub const ACCESS_DENIED_ERROR_CODE: &str = "access_denied";
@@ -391,6 +408,8 @@ pub enum CurrentIdentity {
         zone_host: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth_method: Option<AuthMethod>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth_source_id: Option<String>,
         restricted: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         scopes: Vec<SessionScope>,
@@ -402,6 +421,8 @@ pub enum CurrentIdentity {
         zone_host: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth_method: Option<AuthMethod>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth_source_id: Option<String>,
         restricted: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         scopes: Vec<SessionScope>,
@@ -421,6 +442,8 @@ fn default_true() -> bool {
 /// `system/sso/settings`; a missing key means every default (D-8a: both on).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SsoSettings {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub oauth_sources: Vec<crate::OAuthSource>,
     #[serde(default = "default_true")]
     pub self_register_enabled: bool,
     #[serde(default = "default_true")]
@@ -435,6 +458,7 @@ pub struct SsoSettings {
 impl Default for SsoSettings {
     fn default() -> Self {
         Self {
+            oauth_sources: Vec::new(),
             self_register_enabled: true,
             did_login_enabled: true,
             jump_base_url: None,
@@ -454,6 +478,7 @@ impl SsoSettings {
 
     pub fn public_config(&self) -> SsoPublicConfig {
         SsoPublicConfig {
+            oauth_sources: self.oauth_sources.iter().filter(|s| s.enabled).map(|s|crate::PublicOAuthSource{id:s.id.clone(),display_name:s.display_name.clone()}).collect(),
             self_register_enabled: self.self_register_enabled,
             did_login_enabled: self.did_login_enabled,
             jump_base_url: self.effective_jump_base_url().to_string(),
@@ -463,6 +488,8 @@ impl SsoSettings {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SsoPublicConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub oauth_sources: Vec<crate::PublicOAuthSource>,
     pub self_register_enabled: bool,
     pub did_login_enabled: bool,
     pub jump_base_url: String,
@@ -473,6 +500,8 @@ pub struct SsoPublicConfig {
 /// Authentication methods an entry offers (contract §8.2).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct EntryMethods {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub oauth: bool,
     #[serde(default)]
     pub guest: bool,
     /// An existing local account of this Zone may sign in.
@@ -489,6 +518,10 @@ impl EntryMethods {
     pub fn effective(self, settings: &SsoSettings) -> (Self, Vec<EntryMethod>) {
         let mut closed = Vec::new();
         let mut effective = self;
+        if self.oauth && !settings.oauth_sources.iter().any(|s|s.enabled) {
+            effective.oauth = false;
+            closed.push(EntryMethod::OAuth);
+        }
         if self.self_register && !settings.self_register_enabled {
             effective.self_register = false;
             closed.push(EntryMethod::SelfRegister);
@@ -507,6 +540,7 @@ impl EntryMethods {
 
     pub fn allows(&self, method: EntryMethod) -> bool {
         match method {
+            EntryMethod::OAuth => self.oauth,
             EntryMethod::Guest => self.guest,
             EntryMethod::Password => self.password || self.self_register,
             EntryMethod::SelfRegister => self.self_register,
@@ -518,6 +552,8 @@ impl EntryMethods {
     pub fn allows_session(&self, auth_method: Option<AuthMethod>) -> bool {
         match auth_method {
             Some(AuthMethod::DidFederation) => self.did_login,
+            Some(AuthMethod::OAuth) => self.oauth,
+            Some(AuthMethod::CrossZoneAssertion) => false,
             _ => self.password || self.self_register,
         }
     }
@@ -526,6 +562,8 @@ impl EntryMethods {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryMethod {
+    #[serde(rename = "oauth")]
+    OAuth,
     Guest,
     Password,
     SelfRegister,
@@ -808,6 +846,7 @@ impl ExclusiveInvite {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionSource {
+    ResourceShare { invite_id: String, did: String },
     ExclusiveInvite { invite_id: String, version: u32 },
     DidFederation { canonical_host: String },
     /// Signed in through a credential an App issued (`user.app_login.issue`): a one-time
@@ -882,6 +921,30 @@ pub struct AppIdentityBinding {
 
 /// Scopes of a session an App signed in (contract §3.4: the App backend keeps its own
 /// service identity; the customer session reaches its groups and own account only).
+pub const TOKEN_SUPPORT_TICKET: &str = "support_ticket";
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SupportTicket {
+    pub group_did: String,
+    pub session_id: String,
+}
+
+impl SupportTicket {
+    pub fn allows_method(method: &str) -> bool {
+        matches!(method, "group.accept_session_invitation" | "group.list_messages" | "msg.post_send")
+    }
+
+    pub fn allows_request(&self, method: &str, params: &serde_json::Value) -> bool {
+        if method == "msg.post_send" {
+            let msg = &params["msg"];
+            return msg["to"].as_array().is_some_and(|to| to.len() == 1 && to[0] == self.group_did)
+                && msg["kind"] == "group_msg" && msg["to_session"] == self.session_id;
+        }
+        Self::allows_method(method) && params["group_did"] == self.group_did && params["session_id"] == self.session_id
+    }
+}
+
 pub fn app_login_scopes() -> [SessionScope; 2] {
     [SessionScope::MsgGroup, SessionScope::AccountSelf]
 }
@@ -1003,6 +1066,7 @@ mod tests {
     #[test]
     fn entry_methods_intersect_zone_switches() {
         let methods = EntryMethods {
+            oauth: false,
             guest: true,
             password: false,
             self_register: true,

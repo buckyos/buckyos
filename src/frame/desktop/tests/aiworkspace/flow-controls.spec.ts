@@ -133,6 +133,16 @@ test('FC-01 §6.2 §10.4 (computer) a flow page\'s controls carry their tools in
   await menu.getByTestId('aiws-menu-control-hide-done').click()
   await expect(page.locator('[data-proj="tl~title~d"]')).toHaveCount(0)
   await expect(page.locator('[data-proj="tl~title~a"]')).toBeVisible()
+  // a right click on an item is the item's menu alone, not the Block's on top of it; beside the items it is the Block's
+  await page.locator('[data-proj="tl~title~a"]').click({ button: 'right' })
+  await expect(page.getByTestId('aiws-todo-itemmenu-tl')).toBeVisible()
+  await expect(menu).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('aiws-todo-itemmenu-tl')).toHaveCount(0)
+  await page.getByTestId('aiws-todo-count-tl').click({ button: 'right' })
+  await expect(menu).toBeVisible()
+  await expect(page.getByTestId('aiws-todo-itemmenu-tl')).toHaveCount(0)
+  await page.keyboard.press('Escape')
 
   // the HTML control: its manifest's actions, two of them on the row, the rest in ⋯; one runs without running the control
   const listen = page.getByTestId('aiws-cell-frame-listen')
@@ -170,6 +180,34 @@ test('FC-01 §6.2 §10.4 (computer) a flow page\'s controls carry their tools in
   await page.getByTestId('aiws-flow-control-mm').hover({ position: { x: 300, y: 20 } })
   await expect(row('mm').getByTestId('aiws-near-mindmap-direction')).toHaveCount(0)
   await expect(row('mm').getByTestId('aiws-flow-more-mm')).toBeVisible()
+})
+
+test('FC-03 expanding a to-do on a flow canvas fills the available height and scrolls to the last item', async ({ page, api }) => {
+  await page.setViewportSize({ width: 1162, height: 520 })
+  const ws = await flowWorkspace(api, 'Expanded to-do list')
+  const records = Array.from({ length: 15 }, (_, i) => ({
+    record_id: `task-${i}`, values: { title: `Task ${i + 1}`, status: 'todo', order: `e${String.fromCharCode(97 + i)}` },
+  }))
+  const made = await api.commit(ALICE, ws, [{ op: 'table.insert_records', source_id: 'tasks', records }])
+  expect(made.status, JSON.stringify(made)).toBe('accepted')
+  await openPage(page, ws)
+  await page.getByTestId('aiws-flow-row-tl').hover()
+  await page.getByTestId('aiws-flow-more-tl').click()
+  await page.getByTestId('aiws-flow-block-menu').getByTestId('aiws-menu-expand').click()
+
+  const expanded = page.getByTestId('aiws-control-page-tl')
+  const body = expanded.getByTestId('aiws-data-flow-tl')
+  const stage = page.locator('.aiws-stage')
+  await expect(body).toBeVisible()
+  const stageBounds = (await stage.boundingBox())!
+  const bodyBounds = (await body.boundingBox())!
+  expect(bodyBounds.y + bodyBounds.height).toBeCloseTo(stageBounds.y + stageBounds.height, 0)
+  await expect(expanded.locator('[data-proj="tl~title~a"]')).toBeInViewport({ ratio: 1 })
+  await expanded.getByTestId('aiws-todo-scroll-tl').hover()
+  await page.mouse.wheel(0, 1000)
+  await expect(expanded.locator('[data-proj="tl~title~d"]')).toBeInViewport({ ratio: 1 })
+  await expanded.getByTestId('aiws-control-page-back').click()
+  await expect(page.getByTestId('aiws-flow-control-tl')).toBeVisible()
 })
 
 test.describe('on a phone', () => {

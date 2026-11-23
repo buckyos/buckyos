@@ -18,28 +18,7 @@ use std::sync::Mutex;
 /// so pages of one host refreshing over the same cookie at once do not revoke their family.
 pub const REFRESH_GRACE_SECONDS: u64 = 10;
 
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS families (
-  family_key TEXT PRIMARY KEY,
-  subject TEXT NOT NULL,
-  principal_kind TEXT NOT NULL,
-  target TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  claims TEXT NOT NULL,
-  source TEXT,
-  parent_key TEXT,
-  absolute_exp INTEGER,
-  created_at INTEGER NOT NULL,
-  refresh_jti TEXT NOT NULL,
-  refresh_exp INTEGER NOT NULL,
-  session_jti TEXT NOT NULL,
-  session_exp INTEGER NOT NULL,
-  prev_refresh_jti TEXT,
-  prev_rotated_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS families_subject ON families(subject);
-CREATE INDEX IF NOT EXISTS families_parent ON families(parent_key);
-";
+const SCHEMA: &str = include_str!("families.sql");
 
 const COLUMNS: &str = "family_key, subject, principal_kind, target, session_id, claims, source, \
      parent_key, absolute_exp, created_at, refresh_jti, refresh_exp, session_jti, session_exp, \
@@ -49,7 +28,15 @@ const COLUMNS: &str = "family_key, subject, principal_kind, target, session_id, 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct FamilyClaims {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_share: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_share_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<AuthMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_ticket: Option<buckyos_api::SupportTicket>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub external: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -101,6 +88,10 @@ impl FamilyClaims {
     fn with_ceiling(auth_method: AuthMethod, external: bool, ceiling: &SessionCeiling) -> Self {
         Self {
             auth_method: Some(auth_method),
+            oauth_source_id: None,
+            resource_share: None,
+            resource_share_did: None,
+            support_ticket: None,
             external,
             restricted: ceiling.restricted,
             scopes: ceiling.scopes.iter().copied().collect(),
@@ -121,6 +112,10 @@ impl FamilyClaims {
         let ceiling = self.ceiling().intersect(ceiling);
         Self {
             auth_method: self.auth_method,
+            oauth_source_id: self.oauth_source_id.clone(),
+            resource_share: self.resource_share.clone(),
+            resource_share_did:self.resource_share_did.clone(),
+            support_ticket: self.support_ticket.clone(),
             external: self.external,
             restricted: ceiling.restricted,
             scopes: ceiling.scopes.into_iter().collect(),
@@ -130,6 +125,9 @@ impl FamilyClaims {
     }
 
     pub fn bind(&self, token: &mut RPCSessionToken) {
+        if let Some(ticket) = &self.support_ticket {
+            token.extra.insert(buckyos_api::TOKEN_SUPPORT_TICKET.into(),serde_json::json!(ticket));
+        }
         if let Some(auth_method) = self.auth_method {
             bind_token_auth_method(token, auth_method);
         }
@@ -138,6 +136,9 @@ impl FamilyClaims {
         }
         bind_token_ceiling(token, &self.ceiling());
         for (claim, value) in [
+            ("oauth_source_id", &self.oauth_source_id),
+            ("resource_share", &self.resource_share),
+            ("resource_share_did", &self.resource_share_did),
             (TOKEN_SRC_DEVICE_CLAIM, &self.src_device),
             (TOKEN_SRC_APP_CLAIM, &self.src_app),
         ] {
@@ -402,8 +403,6 @@ impl FamilyStore {
             })?;
         }
         let conn = Connection::open(path).map_err(db_error)?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(db_error)?;
         Self::init(conn)
     }
 
@@ -415,7 +414,8 @@ impl FamilyStore {
     fn init(conn: Connection) -> Result<Self, RPCErrors> {
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(db_error)?;
-        conn.execute_batch(SCHEMA).map_err(db_error)?;
+        buckyos_sqlite_schema::initialize(&conn, 1, &[SCHEMA]).map_err(db_error)?;
+        conn.pragma_update(None, "journal_mode", "WAL").map_err(db_error)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -684,6 +684,27 @@ mod tests {
         assert_eq!(store.remove(&family.key()).unwrap(), 1);
         assert_eq!(store.get(&family.key()).unwrap(), None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn owner_schema_requires_versioned_family_store() {
+        let path = temp_db("schema");
+        drop(FamilyStore::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        assert!(FamilyStore::open(&path).is_err());
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(conn);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

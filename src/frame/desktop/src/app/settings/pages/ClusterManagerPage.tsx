@@ -49,7 +49,7 @@ function cpuText(device: ZoneDevice, t: Translate): string {
 
 function ipv6Status(state: string | null | undefined): 'pass' | 'warn' | 'neutral' {
   if (!state) return 'neutral'
-  return state === 'available' ? 'pass' : 'warn'
+  return state === 'available' || state === 'egress_ok' ? 'pass' : 'warn'
 }
 
 function certificateStatus(cert: ZoneCertificate): 'pass' | 'warn' | 'fail' {
@@ -167,7 +167,7 @@ function DeviceRow({ device }: { device: ZoneDevice }) {
               value={device.ips.length ? <span className="font-mono text-xs">{device.ips.join(', ')}</span> : '—'}
             />
             {device.ipv6_state ? (
-              <InfoRow label={t('settings.cluster.ipv6', 'IPv6')} value={<StatusBadge status={ipv6Status(device.ipv6_state)} label={device.ipv6_state} />} />
+              <InfoRow label={t('settings.cluster.ipv6', 'IPv6')} value={<StatusBadge status={ipv6Status(device.ipv6_state)} label={t(`settings.cluster.ipv6.${device.ipv6_state}`, device.ipv6_state)} />} />
             ) : null}
             <InfoRow
               label={t('settings.cluster.lastSeen', 'Last Report')}
@@ -248,7 +248,7 @@ function ConnectivitySection({ localDevice }: { localDevice: ZoneDevice | null }
               <InfoRow label={t('settings.cluster.nodeNetwork', 'Network of {{node}}', { node: localDevice.name })} value={localDevice.net_id || '—'} />
               <InfoRow
                 label={t('settings.cluster.ipv6', 'IPv6')}
-                value={localDevice.ipv6_state ? <StatusBadge status={ipv6Status(localDevice.ipv6_state)} label={localDevice.ipv6_state} /> : '—'}
+                value={localDevice.ipv6_state ? <StatusBadge status={ipv6Status(localDevice.ipv6_state)} label={t(`settings.cluster.ipv6.${localDevice.ipv6_state}`, localDevice.ipv6_state)} /> : '—'}
               />
               <InfoRow
                 label={t('settings.cluster.publicAddresses', 'Public Addresses')}

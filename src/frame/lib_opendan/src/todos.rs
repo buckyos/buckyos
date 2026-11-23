@@ -374,6 +374,8 @@ pub fn artifact_refs(r: &ReportSubmission) -> Vec<String> {
 pub struct ReportView {
     pub report_ref: ReportRef,
     pub report: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ReportOutcome>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ReportArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -395,6 +397,7 @@ pub async fn read_report(agent: &dyn AgentStateClient, attempt: &TodoAttempt) ->
     Ok(st.final_report.filter(|s| s.id == r.report_id).map(|s| ReportView {
         report_ref: r,
         report: s.report,
+        outcome: s.outcome,
         artifacts: s.artifacts,
         result: s.result,
         session_dir: child.path().to_path_buf(),

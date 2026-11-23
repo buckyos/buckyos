@@ -262,6 +262,15 @@ fn text_at(v: &Value, key: &str, max: usize, what: &str) -> WsResult<()> {
     }
 }
 
+pub fn target_visible(ctx: &dyn ReadCtx, target: Option<&Value>, visible: &dyn Fn(&EntityRow) -> WsResult<bool>) -> WsResult<bool> {
+    let Some(target) = target else { return Ok(true) };
+    let Some(id) = reference_entity_id(target).filter(|_| crate::value::reference_is_local(target)) else { return Ok(false) };
+    match ctx.entity(id)? {
+        Some(e) => visible(&e),
+        None => Ok(false),
+    }
+}
+
 /// Where the annotation in `payload` can be shown now.
 pub fn resolve(ctx: &dyn ReadCtx, payload: &JsonMap) -> WsResult<Anchor> {
     let mut a = Anchor { state: State::TargetDeleted, level: Level::None, range: None, position: None, target_found: false };

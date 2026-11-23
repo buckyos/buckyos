@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { devices, type Page } from '@playwright/test'
 import { selectRow } from '../e2e/fixtures/selectDialog'
-import { asUser, cardMenu, chooseFromZone, closeWorkspace, expect, openedPicker, test, workspaceOrigin, zoneGoto, type Api } from './fixtures'
+import { asUser, cardMenu, chooseFromZone, closeWorkspace, expect, mainMenu, openedPicker, test, workspaceOrigin, zoneGoto, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -310,6 +310,22 @@ test('§9.2 Q37 covers on the cards: the picture chosen in the settings fills th
   await tab(page, 'sessions').click()
   await expect(sessionCard(page, lecture).getByTestId('aiws-home-cover')).toHaveAttribute('data-cover', 'shown')
   await expect(sessionCard(page, lecture).getByTestId('aiws-home-cover-picture')).toBeVisible()
+})
+
+test('workspace package export is unavailable to a collaborator with export and manage permissions', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `${tagOf(93)} 共享`)
+  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id,
+    changes: [{ subject: 'bob', allow: ['read', 'export', 'manage'] }] })).ok).toBe(true)
+  await openHome(page, BOB)
+  await tab(page, 'all').click()
+  const shared = card(page, ws.workspace_id)
+  await shared.getByTestId('aiws-home-card-more').click()
+  await expect(shared.getByTestId('aiws-home-details')).toBeVisible()
+  await expect(shared.getByTestId('aiws-home-export')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await shared.getByTestId('aiws-open').click()
+  await mainMenu(page, 'aiws-menu-workspace')
+  await expect(page.getByTestId('aiws-menu-export')).toBeDisabled()
 })
 
 test('§9.3 export saves the package into the Zone by default (the system file picker), or downloads it; Import takes it from the Zone', async ({ page, api }) => {

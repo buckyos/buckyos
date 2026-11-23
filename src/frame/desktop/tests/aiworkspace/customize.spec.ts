@@ -95,7 +95,7 @@ test('§15-9 画布配置隐藏并锁定工具选择区：所有打开的人都�
     await expect(p.getByTestId('aiws-view-toolbar')).toHaveCount(0)
     await expect(p.getByTestId('aiws-object-toolbar')).toHaveCount(0)
     await expect(p.getByTestId('aiws-status')).toBeVisible()
-    await expect(p.getByTestId('aiws-save-summary')).toBeVisible()
+    await expect(p.getByTestId('aiws-conn')).toBeVisible()
   }
   // nothing to change it with for bob: no ⋯; the status bar and the alert stay
   await expect(bob.page.getByTestId('aiws-app-mode-entry')).toHaveCount(0)

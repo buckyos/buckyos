@@ -230,6 +230,58 @@ fn para(id: &str, text: &str) -> Value {
     json!({ "type": "paragraph", "attrs": { "block_id": id }, "content": [{ "type": "text", "text": text }] })
 }
 
+fn notes_with_two_blocks() -> MemWorkspace {
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!([{ "op": "entity.create", "entity_id": "notes", "type_id": TYPE_RICHTEXT, "parent_id": "data", "order_key": "a",
+        "payload": { "content": { "type": "doc", "content": [para("p1", "first")] } } }]));
+    ws.ok(json!([{ "op": "richtext.insert_blocks", "entity_id": "notes", "position": { "end": true },
+        "blocks": [para("p2", "second")] }]));
+    ws
+}
+
+#[test]
+fn richtext_move_of_either_adjacent_block_tracks_the_target_and_undoes() {
+    for (target, sibling, position) in [("p2", "p1", json!({ "before": "p1" })), ("p1", "p2", json!({ "after": "p2" }))] {
+        let mut ws = notes_with_two_blocks();
+        let before = ws.store.richtexts["notes"].meta.clone();
+        let op = json!([{ "op": "richtext.move_block", "entity_id": "notes", "block_id": target, "position": position,
+            "expect": { "struct_rev": before.block_index[target].struct_rev } }]);
+        let moved = ws.ok(op.clone());
+        let after = &ws.store.richtexts["notes"].meta;
+        assert_eq!(after.ast["content"], json!([before.ast["content"][1], before.ast["content"][0]]));
+        assert_eq!(after.block_index[target].struct_rev, moved);
+        assert_eq!(after.block_index[sibling].struct_rev, before.block_index[sibling].struct_rev);
+        let stale = ws.fail(op);
+        assert_eq!(code(&stale), "REVISION_CONFLICT");
+        assert_eq!(stale["conflicts"][0]["current_rev"]["struct_rev"], moved);
+
+        let undone = ws.undo(moved).unwrap_or_else(|f| panic!("undo adjacent move: {}", f.to_json()));
+        let restored = &ws.store.richtexts["notes"].meta;
+        assert_eq!(restored.ast, before.ast);
+        assert_eq!(restored.block_index[target].struct_rev, undone);
+        assert_eq!(restored.block_index[sibling].struct_rev, before.block_index[sibling].struct_rev);
+    }
+}
+
+#[test]
+fn richtext_move_to_current_position_leaves_later_inserts_in_place_on_undo() {
+    let mut ws = notes_with_two_blocks();
+    let before = ws.store.richtexts["notes"].meta.clone();
+    let edit = ws.ok(json!([
+        { "op": "richtext.move_block", "entity_id": "notes", "block_id": "p2",
+          "position": { "end": true }, "expect": { "struct_rev": before.block_index["p2"].struct_rev } },
+        { "op": "richtext.replace_block", "entity_id": "notes", "block_id": "p1",
+          "node": para("p1", "edited"), "expect": { "hash": before.block_index["p1"].hash } }
+    ]));
+    assert_eq!(ws.store.richtexts["notes"].meta.block_index["p2"], before.block_index["p2"]);
+    let inserted = para("p3", "later");
+    ws.ok(json!([{ "op": "richtext.insert_blocks", "entity_id": "notes", "position": { "after": "p1" }, "blocks": [inserted] }]));
+    ws.undo(edit).unwrap_or_else(|f| panic!("undo edit with move to current position: {}", f.to_json()));
+    let restored = &ws.store.richtexts["notes"].meta;
+    assert_eq!(restored.ast["content"], json!([before.ast["content"][0], inserted, before.ast["content"][1]]));
+    assert_eq!(restored.block_index["p2"], before.block_index["p2"]);
+}
+
 #[test]
 fn mixed_batch_is_atomic_and_richtext_blocks_use_tokens() {
     let mut ws = MemWorkspace::new();
@@ -374,4 +426,58 @@ fn permissions_append_only_and_personal_scope() {
     let a = aiworkspace_core::anchor::resolve(&ws.store, note).unwrap();
     assert_eq!((a.state, a.level), (aiworkspace_core::anchor::State::Degraded, aiworkspace_core::anchor::Level::Entity));
     assert_eq!(note["target"]["selector"]["record_id"], "task-42");
+}
+
+#[test]
+fn image_and_canvas_fields_require_a_readable_matching_target() {
+    use aiworkspace_core::canonical::{chunk_id, file_object};
+    let mut ws = MemWorkspace::new();
+    page(&mut ws);
+    for (id, mime) in [("photo", "image/png"), ("file", "text/plain")] {
+        let (object, _) = file_object(id.len() as u64, &chunk_id(id.as_bytes())).unwrap();
+        ws.store.assets.insert(object.clone(), AssetInfo { object_id: object.clone(), media_type: mime.into(), size: id.len() as u64 });
+        ws.ok(json!([{ "op": "entity.create", "entity_id": id, "type_id": TYPE_ASSET, "parent_id": "data", "order_key": "a",
+                       "payload": { "object_id": object, "media_type": "image/png" } }]));
+    }
+    ws.ok(json!([{ "op": "entity.create", "entity_id": "refs", "type_id": TYPE_TABLE, "parent_id": "data", "order_key": "b",
+                   "payload": { "fields": [
+                      { "field_id": "image", "name": "Image", "type": "object_ref", "ref_purpose": "image", "target_types": [TYPE_ASSET] },
+                      { "field_id": "canvas", "name": "Canvas", "type": "object_ref", "ref_purpose": "canvas", "target_types": [TYPE_CONTAINER] }
+                   ] } }]));
+    let insert = |id: &str, values: Value| json!([{ "op": "table.insert_records", "source_id": "refs", "records": [{ "record_id": id, "values": values }] }]);
+    let image = json!({ "entity_id": "photo" });
+    let canvas = json!({ "entity_id": "surface-main" });
+    let seq = ws.ok(insert("r1", json!({ "image": image, "canvas": canvas })));
+    for (field, target) in [("image", "file"), ("canvas", "surface-main-content")] {
+        let failure = ws.fail(json!([{ "op": "table.set_values", "source_id": "refs", "values": [{
+            "record_id": "r1", "field_id": field, "value": { "entity_id": target }, "expect": { "rev": seq }
+        }] }]));
+        assert_eq!(code(&failure), "INVALID_SCHEMA", "{failure}");
+        assert_eq!(failure["errors"][0]["data"]["field_id"], field, "{failure}");
+    }
+    let values = &ws.store.records[&("refs".into(), "r1".into())].values;
+    assert_eq!(values["image"]["entity_id"], "photo");
+    assert_eq!(values["canvas"]["entity_id"], "surface-main");
+    for target in [json!({ "workspace_id": "elsewhere", "entity_id": "photo" }), json!({ "entity_id": "photo", "version": { "mode": "fixed_revision", "source_revision": "v1" } })] {
+        assert_eq!(code(&ws.fail(insert("external", json!({ "image": target })))), "INVALID_SCHEMA");
+    }
+    let append = CapSet(Cap::Read as u16 | Cap::Append as u16);
+    let bob = Access::granted("bob", CapSet::NONE, [("refs".into(), append), ("surface-main".into(), CapSet(Cap::Read as u16))]);
+    let req = MemWorkspace::request(insert("hidden", json!({ "image": image, "canvas": canvas })));
+    let denied = ws.commit_with(&bob, &ws.env("bob", "human", None, false), &req).unwrap_err().to_json();
+    assert_eq!(code(&denied), "REFERENCE_BROKEN", "{denied}");
+    let req = MemWorkspace::request(insert("allowed", json!({ "canvas": canvas })));
+    ws.commit_with(&bob, &ws.env("bob", "human", None, false), &req).unwrap_or_else(|failure| panic!("{}", failure.to_json()));
+    let edge = ws.store.refs.iter().find(|r| r.dst_entity_id == "photo").unwrap();
+    assert_eq!((edge.kind.as_str(), edge.integrity()), ("value_link", "weak"));
+    let deleted = ws.ok(json!([{ "op": "entity.delete", "entity_id": "photo", "expect": { "rev": ws.store.entities["photo"].life_rev } }]));
+    assert!(!ws.store.entities["photo"].alive());
+    assert_eq!(ws.store.records[&("refs".into(), "r1".into())].values["image"]["entity_id"], "photo");
+    let removed_row = ws.ok(json!([{ "op": "table.delete_records", "source_id": "refs", "records": [{ "record_id": "r1", "expect": { "rev": seq } }] }]));
+    ws.undo(removed_row).unwrap_or_else(|failure| panic!("{}", failure.to_json()));
+    ws.undo(deleted).unwrap_or_else(|failure| panic!("{}", failure.to_json()));
+    assert!(ws.store.entities["photo"].alive());
+    let entities = ws.store.entities.keys().cloned().collect::<Vec<_>>();
+    assert_eq!(aiworkspace_core::materialize::rebuild_refs(&ws.store, &entities).unwrap(), ws.store.refs);
+
 }

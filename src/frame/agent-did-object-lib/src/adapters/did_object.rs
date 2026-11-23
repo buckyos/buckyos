@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::ObjectUrl;
 use name_client::{DIDObjectClient, ResolvedDIDObject};
-use name_lib::{ActionResponse, EventSubscribeRequest, DEFAULT_EXPIRE_TIME};
+use name_lib::{ActionInvocation, ActionObserved, ActionResponse, EventSubscribeRequest, DEFAULT_EXPIRE_TIME};
 use serde_json::{json, Value};
 
 use super::{
@@ -56,12 +56,19 @@ impl DidObjectProtocolAdapter {
     fn zone_web_endpoint(&self, web: &str) -> Option<String> {
         let parsed = url::Url::parse(web).ok()?;
         let zone_host = self.zone.zone_host()?;
-        if parsed.scheme() != "https" || !parsed.host_str()?.eq_ignore_ascii_case(&zone_host) {
+        if parsed.scheme() != "https"
+            || !parsed.host_str()?.eq_ignore_ascii_case(&zone_host)
+            || !crate::zone::is_zone_url(self.zone.as_ref(), web)
+        {
             return None;
         }
         let origin = self.zone.gateway_origin()?;
         let query = parsed.query().map(|q| format!("?{q}")).unwrap_or_default();
-        Some(format!("{}{}{query}", origin.trim_end_matches('/'), parsed.path()))
+        Some(format!(
+            "{}{}{query}",
+            origin.trim_end_matches('/'),
+            parsed.path()
+        ))
     }
 
     /// The client for `endpoint` (with the caller's session on the Zone's own origins) and the object it resolves.
@@ -69,14 +76,257 @@ impl DidObjectProtocolAdapter {
         &self,
         url: &ObjectUrl,
         endpoint: &str,
-    ) -> Result<(DIDObjectClient, reqwest::Client, ResolvedDIDObject), (reqwest::Client, AgentDIDObjectError)> {
+    ) -> Result<
+        (DIDObjectClient, reqwest::Client, ResolvedDIDObject),
+        (reqwest::Client, AgentDIDObjectError),
+    > {
         let http = client_for(self.zone.as_ref(), endpoint).await;
         let client = DIDObjectClient::with_http_client(http.clone());
-        match client.resolve(endpoint).await {
+        let discovery_error = |err: name_lib::NSError| match err {
+            name_lib::NSError::Forbid => {
+                crate::extensions::failure("PERMISSION_DENIED", "provider denied discovery")
+            }
+            name_lib::NSError::Failed(message) if message.contains("request returned HTTP 401") => {
+                crate::extensions::failure("PERMISSION_DENIED", "provider rejected the session")
+            }
+            name_lib::NSError::Disabled(_) => {
+                crate::extensions::failure("RESOURCE_DISABLED", "provider object is disabled")
+            }
+            _ => AgentDIDObjectError::ResolveError(format!("{url}: provider discovery failed")),
+        };
+        let result = async {
+            let card = client
+                .resolve_card(endpoint)
+                .await
+                .map_err(|err| match err {
+                    name_lib::NSError::NotFound(_) => crate::extensions::failure(
+                        "OBJECT_NOT_FOUND",
+                        format!("{url}: no DID Object Card"),
+                    ),
+                    other => discovery_error(other),
+                })?;
+            let profile_endpoint = name_lib::resolve_href(
+                card.service_endpoint().map_err(discovery_error)?,
+                card.profile().map_err(discovery_error)?,
+            );
+            let profile_http = self.form_client(endpoint, &profile_endpoint).await?;
+            let profile = DIDObjectClient::with_http_client(profile_http)
+                .resolve_profile_from_card(&card)
+                .await
+                .map_err(discovery_error)?;
+            Ok(ResolvedDIDObject {
+                object_url: endpoint.into(),
+                object_card: card,
+                object_profile: profile,
+            })
+        }
+        .await;
+        match result {
             Ok(resolved) => Ok((client, http, resolved)),
-            Err(err) => Err((http, AgentDIDObjectError::ResolveError(format!("{url}: {err}")))),
+            Err(err) => Err((http, err)),
         }
     }
+
+    async fn form_client(
+        &self,
+        source: &str,
+        target: &str,
+    ) -> Result<reqwest::Client, AgentDIDObjectError> {
+        let parse = |value: &str| {
+            url::Url::parse(value)
+                .map_err(|_| AgentDIDObjectError::ProtocolError("invalid object form URL".into()))
+        };
+        let source_url = parse(source)?;
+        let target_url = parse(target)?;
+        let zone = self.zone.as_ref();
+        let target_in_zone = crate::zone::is_zone_url(zone, target);
+        if !crate::zone::is_zone_url(zone, source) && target_in_zone {
+            return Err(crate::extensions::failure(
+                "PERMISSION_DENIED",
+                "external profile cannot delegate to the caller's Zone",
+            ));
+        }
+        let same_origin = source_url.origin() == target_url.origin();
+        if !target_url.username().is_empty()
+            || target_url.password().is_some()
+            || !(target_url.scheme() == "https"
+                || (target_url.scheme() == "http" && (same_origin || target_in_zone)))
+        {
+            return Err(crate::extensions::failure(
+                "PERMISSION_DENIED",
+                "object form requires a secure origin",
+            ));
+        }
+        Ok(client_for(zone, target).await)
+    }
+
+    async fn invoke_declared(
+        &self,
+        endpoint: &str,
+        resolved: &ResolvedDIDObject,
+        input: &crate::XCallInput,
+        effect: Option<&str>,
+    ) -> Result<ActionResponse, AgentDIDObjectError> {
+        let form = DIDObjectClient::action_endpoint(
+            &resolved.object_card,
+            &resolved.object_profile,
+            &input.action,
+        )
+        .map_err(|e| AgentDIDObjectError::ProtocolError(e.to_string()))?;
+        let invocation = ActionInvocation {
+            method: input.action.clone(),
+            params: input.params.clone(),
+            obj: resolved.object_card.object_url().map(str::to_owned),
+            obj_did: Some(resolved.object_card.id.clone()),
+            observed: Some(ActionObserved {
+                profile: resolved.object_card.profile().ok().map(str::to_owned),
+                ..Default::default()
+            }),
+            idempotency_key: input.idempotency_key.clone(),
+            confirm_token: input.confirm_token.clone(),
+            trace_id: input.trace_id.clone(),
+        };
+        let http = self.form_client(endpoint, &form).await?;
+        let unknown = || crate::AgentDIDObjectError::Business {
+            code: "WRITE_OUTCOME_UNKNOWN".into(),
+            message: "the provider did not confirm this action".into(),
+            detail: json!({"idempotency_key":input.idempotency_key,"trace_id":input.trace_id}),
+        };
+        let response = http
+            .post(&form)
+            .json(&invocation)
+            .send()
+            .await
+            .map_err(|_| {
+                if matches!(effect, Some("read" | "pure")) {
+                    crate::extensions::failure("PROVIDER_UNAVAILABLE", "cannot reach provider")
+                } else {
+                    unknown()
+                }
+            })?;
+        let status = response.status();
+        let response: ActionResponse = match response.json().await {
+            Ok(response) => response,
+            Err(_) if status.as_u16() == 403 || status.as_u16() == 401 => {
+                return Err(crate::extensions::failure(
+                    "PERMISSION_DENIED",
+                    "provider rejected the caller",
+                ))
+            }
+            Err(_) if matches!(effect, Some("read" | "pure")) => {
+                return Err(crate::extensions::failure(
+                    "PROVIDER_UNAVAILABLE",
+                    "invalid provider response",
+                ))
+            }
+            Err(_) => return Err(unknown()),
+        };
+        if !status.is_success() && response.error.is_none() || response.validate().is_err() {
+            return Err(if matches!(effect, Some("read" | "pure")) {
+                crate::extensions::failure("PROTOCOL_ERROR", "invalid provider receipt")
+            } else {
+                unknown()
+            });
+        }
+        Ok(response)
+    }
+
+    /// Discover once under the caller's credentials, then use that exact profile's action form.
+    pub(crate) async fn invoke_resource(
+        &self,
+        slot: &str,
+        input: &crate::XCallInput,
+    ) -> Result<ActionResponse, AgentDIDObjectError> {
+        let target = crate::ObjectRef::parse(&input.object)?;
+        let (url, endpoint) = self.locate(&target)?;
+        let (_, _, resolved) = self.resolve(&url, &endpoint).await.map_err(|(_, e)| e)?;
+        if !buckyos_api::owner_resource::matches_slot(&resolved.object_profile, slot) {
+            return Err(crate::extensions::failure("PROVIDER_TYPE_MISMATCH", "current provider profile does not declare this personal resource with a read-only list"));
+        }
+        let effect = buckyos_api::owner_resource::action_effect(
+            &resolved.object_profile,
+            &input.action,
+        )
+        .ok_or_else(|| {
+            crate::extensions::failure(
+                "UNSUPPORTED_ACTION",
+                "current provider profile does not declare this action with the required effect",
+            )
+        })?;
+        self.invoke_declared(&endpoint, &resolved, input, Some(effect))
+            .await
+    }
+
+    pub(crate) async fn recover_write(
+        &self,
+        slot: &str,
+        input: &crate::XCallInput,
+    ) -> Result<Value, AgentDIDObjectError> {
+        let unknown = || AgentDIDObjectError::Business {
+            code: "WRITE_OUTCOME_UNKNOWN".into(),
+            message: "the original provider could not confirm this operation".into(),
+            detail: json!({"idempotency_key":input.idempotency_key}),
+        };
+        let target = crate::ObjectRef::parse(&input.object)?;
+        let (url, endpoint) = self.locate(&target)?;
+        let (_, _, resolved) =
+            self.resolve(&url, &endpoint)
+                .await
+                .map_err(|(_, err)| match err {
+                    AgentDIDObjectError::Business { ref code, .. }
+                        if code == "PERMISSION_DENIED" || code == "IDENTITY_UNAVAILABLE" => err,
+                    _ => unknown(),
+                })?;
+        if !buckyos_api::owner_resource::matches_slot(&resolved.object_profile, slot)
+            || buckyos_api::owner_resource::action_effect(
+                &resolved.object_profile,
+                "get_submission",
+            )
+            .is_none()
+        {
+            return Err(unknown());
+        }
+        let mut query = input.clone();
+        query.action = "get_submission".into();
+        query.params = json!({"action":input.action,"idempotency_key":input.idempotency_key});
+        let receipt = self
+            .invoke_declared(&endpoint, &resolved, &query, Some("read"))
+            .await
+            .map_err(|e| match e {
+                AgentDIDObjectError::Business {
+                    code,
+                    message,
+                    detail,
+                } if code == "PERMISSION_DENIED" => AgentDIDObjectError::Business {
+                    code,
+                    message,
+                    detail,
+                },
+                _ => unknown(),
+            })?;
+        if let Some(e) = receipt.error {
+            if matches!(
+                e.code.to_ascii_lowercase().as_str(),
+                "permission_denied" | "access_denied" | "unauthorized"
+            ) {
+                return Err(crate::extensions::failure(
+                    "PERMISSION_DENIED",
+                    "provider refused the submission query",
+                ));
+            }
+            return Err(unknown());
+        }
+        let status = receipt.result.ok_or_else(unknown)?;
+        if status["status"] != "accepted" {
+            return Err(unknown());
+        }
+        status
+            .get("result")
+            .filter(|v| v.is_object())
+            .cloned()
+            .ok_or_else(unknown)
+    }
+
 }
 
 #[async_trait]
@@ -90,10 +340,10 @@ impl AgentObjectAdapter for DidObjectProtocolAdapter {
         req: AdapterReadRequest,
     ) -> Result<AdapterReadResponse, AgentDIDObjectError> {
         let (url, endpoint) = self.locate(&req.object_ref)?;
-        let (client, resolved) = match self.resolve(&url, &endpoint).await {
+        let (_client, resolved) = match self.resolve(&url, &endpoint).await {
             Ok((client, _, resolved)) => (client, resolved),
             // An https page that is no DID Object: read it as web content.
-            Err((http, _)) if matches!(url, ObjectUrl::Web { .. }) => {
+            Err((http, AgentDIDObjectError::Business {code,..})) if code=="OBJECT_NOT_FOUND" && matches!(url, ObjectUrl::Web { .. }) && !buckyos_api::object_extensions::object_alias_name(&req.input.object) => {
                 let canonical = url.to_string();
                 let mut web_req = req;
                 web_req.object_ref = crate::types::ObjectRef::parse(&endpoint)?;
@@ -129,6 +379,11 @@ impl AgentObjectAdapter for DidObjectProtocolAdapter {
                 });
                 continue;
             }
+            let property_endpoint = DIDObjectClient::property_endpoint(card, profile, property)
+                .map_err(|e| AgentDIDObjectError::ProtocolError(e.to_string()))?;
+            let client = DIDObjectClient::with_http_client(
+                self.form_client(&endpoint, &property_endpoint).await?,
+            );
             match client.read_property_from_resolved(&resolved, property).await {
                 Ok(value) => {
                     property_values.insert(property.clone(), value);
@@ -203,26 +458,53 @@ impl AgentObjectAdapter for DidObjectProtocolAdapter {
         req: AdapterXCallRequest,
     ) -> Result<AdapterXCallResponse, AgentDIDObjectError> {
         let (url, endpoint) = self.locate(&req.object_ref)?;
-        let (client, _, resolved) = self.resolve(&url, &endpoint).await.map_err(|(_, err)| err)?;
+        let (_, _, resolved) = self
+            .resolve(&url, &endpoint)
+            .await
+            .map_err(|(_, err)| err)?;
         if !DIDObjectClient::has_action(&resolved.object_profile, &req.input.action) {
             return Err(AgentDIDObjectError::DeclaredCapabilityNotFound(format!(
                 "action {} is not declared by {}",
                 req.input.action, resolved.object_url
             )));
         }
-        // The side effect the Profile declares (`x-buckyos:risk`) goes with the result: the Provider authorizes the
-        // caller, the record shows what kind of call it was (TODO A7 / G2).
-        let risk = serde_json::to_value(&resolved.object_profile)
-            .ok()
-            .and_then(|p| p["actions"][&req.input.action]["x-buckyos:risk"].as_str().map(str::to_string));
-        let response = client
-            .invoke_action_from_resolved(&resolved, &req.input.action, req.input.params.clone())
-            .await
-            .map_err(|err| AgentDIDObjectError::ProtocolError(err.to_string()))?;
-        let mut response = action_response_to_adapter_response(&req.input.action, response, req.route_trace);
+        let declaration = &resolved.object_profile.actions[&req.input.action];
+        let policy = declaration.buckyos_action.as_ref();
+        let effect = policy.and_then(|p| p.effect.as_deref());
+        if let Some(context) = &req.alias_context {
+            if context["read_only"] == true && !matches!(effect, Some("read" | "pure")) {
+                return Err(crate::extensions::failure(
+                    "PERMISSION_DENIED",
+                    "this action requires a writable session",
+                ));
+            }
+            if req.input.object == "owner" {
+                let owner = context["owner_did"].as_str().unwrap_or("");
+                let published =
+                    context["person_ref"].as_str() == Some(req.object_ref.normalized.as_str());
+                let card_did = &resolved.object_card.id;
+                let verified = card_did.to_string() == owner
+                    && url::Url::parse(&req.object_ref.normalized).is_ok_and(|url| {
+                        (url.scheme() == "obj" || (url.scheme() == "https" && url.port().is_none()))
+                            && url.host_str().is_some_and(|host| {
+                                host.eq_ignore_ascii_case(&card_did.to_raw_host_name())
+                                    || host.eq_ignore_ascii_case(&card_did.to_host_name())
+                            })
+                    });
+                if owner.is_empty() || !(published || verified) {
+                    return Err(crate::extensions::failure(
+                        "OWNER_IDENTITY_UNVERIFIED",
+                        "the linked personal object does not verify the current owner",
+                    ));
+                }
+            }
+        }
+        let response = self.invoke_declared(&endpoint, &resolved, &req.input, effect).await?;
+        let mut response =
+            action_response_to_adapter_response(&req.input.action, response, req.route_trace);
         if let Value::Object(detail) = &mut response.detail {
             detail.insert("object".into(), json!(url.to_string()));
-            detail.insert("risk".into(), json!(risk));
+            detail.insert("effect".into(), json!(effect));
         }
         Ok(response)
     }
@@ -257,6 +539,7 @@ impl AgentObjectAdapter for DidObjectProtocolAdapter {
         };
         Ok(AdapterEventSubscription {
             subscription: crate::types::EventBridgeSubscription {
+                alias_revision: None,
                 subscription_id: "pending_remote_subscription".to_string(),
                 object: resolved.object_url.clone(),
                 object_did: Some(did_to_string(&resolved.object_card.id)),
@@ -295,7 +578,7 @@ pub fn action_response_to_adapter_response(
     if let Some(error) = response.error {
         return AdapterXCallResponse {
             status: AdapterCallStatus::Error,
-            output: None,
+            output: Some(json!(&error).to_string()),
             detail: json!({
                 "error": error,
                 "meta": response.meta,
@@ -306,11 +589,12 @@ pub fn action_response_to_adapter_response(
         };
     }
 
+    let result = response.result.unwrap_or(Value::Null);
     AdapterXCallResponse {
         status: AdapterCallStatus::Success,
-        output: None,
+        output: Some(result.to_string()),
         detail: json!({
-            "result": response.result.unwrap_or(Value::Null),
+            "result": result,
             "meta": response.meta,
         }),
         title: Some(format!("xcall `{action}` succeeded")),
@@ -373,9 +657,9 @@ fn render_object_document(
             if !description.is_empty() {
                 line.push_str(&format!(": {description}"));
             }
-            let risk = text(entry, "x-buckyos:risk");
+            let risk = text(&entry["x-buckyos:action"], "effect");
             if !risk.is_empty() {
-                line.push_str(&format!(" (risk: {risk})"));
+                line.push_str(&format!(" (effect: {risk})"));
             }
             lines.push(line);
         }
@@ -408,6 +692,58 @@ mod tests {
             route_id: "r".to_string(),
             adapter: "did-object".to_string(),
             method: RouteMethod::XCall,
+        }
+    }
+
+    #[tokio::test]
+    async fn forms_and_zone_rewrites_check_the_full_origin() {
+        let zone = crate::zone::tests::TestZone {
+            origin: Some("http://local-gateway:3180".into()),
+            data_root: Default::default(),
+        };
+        let adapter = DidObjectProtocolAdapter::with_zone("object".into(), Arc::new(zone));
+        assert_eq!(
+            adapter
+                .zone_web_endpoint("https://test.buckyos.io:443/card")
+                .as_deref(),
+            Some("http://local-gateway:3180/card")
+        );
+        assert!(adapter
+            .zone_web_endpoint("https://test.buckyos.io:8443/card")
+            .is_none());
+        for (source, target, allowed) in [
+            (
+                "https://provider.test/card",
+                "https://forms.test/call",
+                true,
+            ),
+            (
+                "https://provider.test/card",
+                "http://forms.test/call",
+                false,
+            ),
+            (
+                "https://provider.test/card",
+                "http://local-gateway:3180/secret",
+                false,
+            ),
+            (
+                "http://local-gateway:3180/card",
+                "http://local-gateway:3180/call",
+                true,
+            ),
+            (
+                "http://localhost:7000/card",
+                "http://localhost:7000/call",
+                true,
+            ),
+            (
+                "http://localhost:7000/card",
+                "http://localhost:7001/call",
+                false,
+            ),
+        ] {
+            assert_eq!(adapter.form_client(source, target).await.is_ok(), allowed);
         }
     }
 

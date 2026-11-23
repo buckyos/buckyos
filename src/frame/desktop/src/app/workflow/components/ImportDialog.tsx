@@ -1,5 +1,6 @@
 /* ── Workflow Import dialog (file / URL / text): dry_run then submit_definition ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useState } from 'react'
 import { CheckCircle2, FileUp, Link2, Sparkles, X, XCircle } from 'lucide-react'
 import type { WorkflowDefinition as DslDefinition } from 'buckyos'
@@ -12,6 +13,7 @@ type Mode = 'text' | 'file' | 'url'
 interface DryRunResult {
   ok: boolean
   issues: AnalysisIssue[]
+  inputError?: string
   message?: string
   revision?: string
   definition?: DslDefinition
@@ -40,6 +42,7 @@ function parseDefinition(text: string): { definition?: DslDefinition; issue?: An
 }
 
 export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDialogProps) {
+  const { t } = useI18n()
   const store = useWorkflowStore()
   const [mode, setMode] = useState<Mode>('text')
   const [text, setText] = useState('')
@@ -66,7 +69,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
   async function sourceText(): Promise<string> {
     if (mode !== 'url') return text
     const resp = await fetch(url)
-    if (!resp.ok) throw new Error(`fetch ${url}: HTTP ${resp.status}`)
+    if (!resp.ok) throw new Error(t('workflow.fetchFailed', undefined, { url, status: resp.status }))
     return await resp.text()
   }
 
@@ -76,7 +79,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
       const payload = await sourceText()
       const parsed = parseDefinition(payload)
       if (!parsed.definition) {
-        setResult({ ok: false, issues: parsed.issue ? [parsed.issue] : [] })
+        setResult({ ok: false, issues: parsed.issue ? [parsed.issue] : [], inputError: parsed.issue?.code })
         return
       }
       const outcome = await store.dryRun(parsed.definition)
@@ -129,7 +132,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
           style={{ borderBottom: '1px solid var(--cp-border)' }}
         >
           <div className="flex-1 text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-            Import Workflow Definition
+            {t('workflow.importTitle')}
           </div>
           <button
             type="button"
@@ -141,10 +144,11 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
               border: '1px solid var(--cp-border)',
             }}
           >
-            <Sparkles size={12} /> AI prompt
+            <Sparkles size={12} /> {t('workflow.aiPrompt')}
           </button>
           <button
             type="button"
+            aria-label={t('common.close')}
             onClick={onClose}
             className="flex h-6 w-6 items-center justify-center"
             style={{ color: 'var(--cp-muted)' }}
@@ -157,8 +161,8 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
           <div className="mb-3 flex gap-1">
             {(
               [
-                { k: 'text', icon: <FileUp size={12} />, label: 'Paste text' },
-                { k: 'file', icon: <FileUp size={12} />, label: 'File' },
+                { k: 'text', icon: <FileUp size={12} />, label: t('workflow.pasteText') },
+                { k: 'file', icon: <FileUp size={12} />, label: t('workflow.file') },
                 { k: 'url', icon: <Link2 size={12} />, label: 'URL' },
               ] as { k: Mode; icon: React.ReactNode; label: string }[]
             ).map((opt) => (
@@ -212,10 +216,10 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
             >
               <FileUp size={20} />
               {fileError
-                ? `Could not read the file: ${fileError}`
+                ? t('workflow.readError', undefined, { detail: fileError })
                 : text && fileName
-                  ? `Loaded ${fileName} (${text.length} chars). Click to choose another.`
-                  : 'Click to choose a JSON file.'}
+                  ? t('workflow.loadedFile', undefined, { name: fileName, count: text.length })
+                  : t('workflow.chooseJson')}
             </button>
           )}
 
@@ -252,10 +256,10 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
                 }}
               >
                 {result.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                {result.ok ? 'dry_run passed' : 'dry_run failed'}
+                {result.ok ? t('workflow.dryRunPassed') : t('workflow.dryRunFailed')}
                 {result.revision && (
                   <span className="ml-2 font-mono normal-case" style={{ color: 'var(--cp-muted)' }}>
-                    revision {result.revision.slice(0, 12)}
+                    {t('workflow.revisionValue', undefined, { revision: result.revision.slice(0, 12) })}
                   </span>
                 )}
               </div>
@@ -263,7 +267,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
                 <div className="mb-1" style={{ color: 'var(--cp-danger)' }}>{result.message}</div>
               )}
               {result.issues.length === 0 ? (
-                <div style={{ color: 'var(--cp-muted)' }}>No issues reported.</div>
+                <div style={{ color: 'var(--cp-muted)' }}>{t('workflow.noIssues')}</div>
               ) : (
                 <ul className="space-y-1">
                   {result.issues.map((iss, i) => (
@@ -279,12 +283,12 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
                                 : 'var(--cp-muted)',
                         }}
                       >
-                        {iss.severity}
+                        {t(`workflow.severity.${iss.severity}`, iss.severity)}
                       </span>
                       <span className="font-mono text-[10px]" style={{ color: 'var(--cp-muted)' }}>
                         {iss.code}
                       </span>
-                      <span>{iss.message}</span>
+                      <span>{result.inputError ? t(`workflow.error.${result.inputError}`, iss.message) : iss.message}</span>
                     </li>
                   ))}
                 </ul>
@@ -303,7 +307,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
                 border: '1px solid var(--cp-border)',
               }}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
             <button
               type="button"
@@ -316,7 +320,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
                 border: '1px solid var(--cp-border)',
               }}
             >
-              Run dry_run
+              {t('workflow.dryRun')}
             </button>
             <button
               type="button"
@@ -330,7 +334,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
                 opacity: result?.ok ? 1 : 0.6,
               }}
             >
-              Submit definition
+              {t('workflow.submit')}
             </button>
           </div>
         </div>

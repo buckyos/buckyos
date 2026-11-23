@@ -50,7 +50,7 @@ function errorText(error: unknown): string {
 }
 
 export function RuleEditor({ api, isAdmin, viewerId, inventory, users, apps, initial, editing, onClose, onSaved }: EditorProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const periodLabel = usePeriodLabel()
   const objectLabel = useObjectLabel()
   const prefillObject = initial?.object
@@ -240,8 +240,8 @@ export function RuleEditor({ api, isAdmin, viewerId, inventory, users, apps, ini
                 </select>
                 <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
                   {editing && editing.rule.period && period !== editing.rule.period
-                    ? t('aiCenter.quota.periodSwitch', 'Takes effect when the current window ends ({{time}})', { time: formatLocal(quotaWindow(editing.rule.period, now).endMs) })
-                    : t('aiCenter.quota.windowNow', 'Current window {{start}} – {{end}}; fixed UTC boundaries, unused tokens do not carry over', { start: formatLocal(window.startMs), end: formatLocal(window.endMs) })}
+                    ? t('aiCenter.quota.periodSwitch', 'Takes effect when the current window ends ({{time}})', { time: formatLocal(quotaWindow(editing.rule.period, now).endMs, locale) })
+                    : t('aiCenter.quota.windowNow', 'Current window {{start}} – {{end}}; fixed UTC boundaries, unused tokens do not carry over', { start: formatLocal(window.startMs, locale), end: formatLocal(window.endMs, locale) })}
                 </span>
               </label>
             </>
@@ -284,7 +284,7 @@ export function RuleEditor({ api, isAdmin, viewerId, inventory, users, apps, ini
                 )}
                 {preview.existing_account && (
                   <p className="text-xs" style={{ color: 'var(--cp-warning)' }}>
-                    {t('aiCenter.quota.accountRestored', 'This scope already has a total account (granted {{granted}}); saving restores it without a new initial grant. Add tokens by recharge.', { granted: preview.existing_account.granted_tokens.toLocaleString('en-US') })}
+                    {t('aiCenter.quota.accountRestored', 'This scope already has a total account (granted {{granted}}); saving restores it without a new initial grant. Add tokens by recharge.', { granted: preview.existing_account.granted_tokens.toLocaleString(locale) })}
                   </p>
                 )}
                 {preview.other_constraints.length > 0 && (

@@ -7,7 +7,7 @@ import type { ContentRef } from '../../../components/preview/types'
 import { I18nProvider, useI18n } from '../../../i18n/provider'
 import type { ShareDialogParams } from '../../../sysdlg/ShareDialog'
 import { PrototypeThemeProvider } from '../../../theme/provider'
-import { supportedLocales, type SupportedLocale } from '../../../models/ui'
+import { matchSupportedLocale, type SupportedLocale } from '../../../models/ui'
 import { isMockRuntime } from '../../../runtime'
 import { shareParamsOf } from '../../content/share'
 
@@ -20,8 +20,7 @@ function acceptEmbedder(origin: string): boolean {
 }
 
 function toLocale(locale: string): SupportedLocale {
-  const exact = supportedLocales.find(l => l.toLowerCase() === locale.toLowerCase())
-  return exact ?? supportedLocales.find(l => l.split('-')[0] === locale.split('-')[0].toLowerCase()) ?? 'en'
+  return matchSupportedLocale(locale) ?? 'en'
 }
 
 // One embed per document: the page is created by the App for a single content reference.
@@ -35,6 +34,11 @@ const host = new PreviewEmbedHost({
 })
 const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn) } }
 
+function StandaloneNotice() {
+  const { t } = useI18n()
+  return <p role="alert" className="p-6 text-sm">{t('previewApp.embedOnly')}</p>
+}
+
 /**
  * The system Preview component alone, for an App to show inside its own UI (`buckyos.preview-embed`): no
  * Desktop shell, no Preview App window. The content is read with this origin's own session; the App only ever
@@ -44,7 +48,7 @@ const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listen
  */
 export function PreviewEmbedApp() {
   const { init, theme, locale } = useSyncExternalStore(subscribe, () => view)
-  if (!host.parentOrigin) return <p role="alert" className="p-6 text-sm">This page only shows content inside an App.</p>
+  if (!host.parentOrigin) return <I18nProvider><StandaloneNotice /></I18nProvider>
   if (!init) return null
   return (
     <PrototypeThemeProvider mode={theme}>

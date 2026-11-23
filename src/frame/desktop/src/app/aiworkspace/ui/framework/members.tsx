@@ -16,8 +16,7 @@ import { guestLabel, readGuestName, writeGuestName } from '../../state/guest'
 import { useOutlineVersion, useStore } from '../../state/hooks'
 import { presenceGroupLabel, presenceName, presenceOf, usePresence } from '../../state/presence'
 import { useAiwsText } from '../../useAiwsText'
-import { Modal } from '../shell/dialogs'
-import { PopoverPanel, usePopover } from '../shell/popover'
+import { PopoverPanel, Sheet, usePopover } from '../shell/popover'
 import { useShell } from '../shell/shellContext'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
@@ -109,20 +108,28 @@ export function AvatarStack() {
 
 /** The online count of the status bar (only while the service answers): it opens the online members — the way in on a
  * phone, which has no collaboration zone (§6.1). */
-export function OnlineCount() {
+export function OnlineCount({ statusExpanded, onCollapseStatus }: { statusExpanded: boolean; onCollapseStatus: () => void }) {
   const shell = useShell()
   const { t } = useAiwsText()
   const presence = usePresence()
-  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  const { open, setOpen, close, bindAnchor, bindTrigger } = usePopover()
+  const membersOpen = open && !statusExpanded
+  useEffect(() => {
+    if (statusExpanded || !presence.live) setOpen(false)
+  }, [statusExpanded, presence.live, setOpen])
   if (!presence.live) return null
   const label = t('aiworkspace.activity.online', { count: presence.online })
+  const toggleMembers = () => {
+    if (statusExpanded) onCollapseStatus()
+    setOpen(!membersOpen)
+  }
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-panel aiws-status-online" aria-haspopup="dialog" aria-expanded={open} aria-label={t('aiworkspace.members.openList', { label })}
-        title={t('aiworkspace.framework.members.panel')} data-testid="aiws-status-online" data-count={presence.online} onClick={toggle}>
-        <Users size={14} aria-hidden="true" /><span>{label}</span>
+      <button ref={bindTrigger} type="button" className="aiws-status-online" aria-haspopup="dialog" aria-expanded={membersOpen} aria-label={t('aiworkspace.members.openList', { label })}
+        title={t('aiworkspace.framework.members.panel')} data-testid="aiws-status-online" data-count={presence.online} onClick={toggleMembers}>
+        {label}
       </button>
-      {open && (shell.phone
+      {membersOpen && (shell.phone
         ? <MembersSheet onClose={close} />
         : (
           <PopoverPanel align="end" label={t('aiworkspace.framework.members.panel')} testId="aiws-members-popover" className="aiws-popover-up aiws-members-panel">
@@ -136,14 +143,15 @@ export function OnlineCount() {
 /** The panel from the bottom (a phone). */
 function MembersSheet({ onClose }: { onClose: () => void }) {
   const { t } = useAiwsText()
+  const label = t('aiworkspace.framework.members.panel')
   return (
-    <Modal label={t('aiworkspace.framework.members.panel')} testId="aiws-members-sheet" className="aiws-members-sheet" onClose={onClose}>
-      <div className="aiws-dialog-head">
-        <b>{t('aiworkspace.framework.members.panel')}</b><span className="aiws-grow" />
-        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} data-testid="aiws-members-sheet-close" onClick={onClose}><X size={18} /></button>
-      </div>
-      <MembersList onDone={onClose} headless />
-    </Modal>
+    <Sheet label={label} testId="aiws-members-sheet" onClose={onClose}
+      title={<div className="aiws-sheet-head">
+        <b>{label}</b><span className="aiws-grow" />
+        <button type="button" autoFocus className="aiws-tool" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} data-testid="aiws-members-sheet-close" onClick={onClose}><X size={20} aria-hidden="true" /></button>
+      </div>}>
+      <div className="aiws-sheet-body"><MembersList onDone={onClose} headless /></div>
+    </Sheet>
   )
 }
 

@@ -119,7 +119,7 @@ async fn an_obj_url_reads_as_its_object_document_with_the_callers_session() {
         "Object: obj://msg-center/owners/did:bns:alice/sessions",
         "Description: Every session of one mailbox owner.",
         "- recent: The newest sessions",
-        "- query: List the owner's sessions (risk: read_only)",
+        "- query: List the owner's sessions (effect: read)",
         "Summary:",
         "hello",
     ] {
@@ -140,7 +140,7 @@ async fn an_obj_url_reads_as_its_object_document_with_the_callers_session() {
 }
 
 #[tokio::test]
-async fn an_xcall_reports_the_declared_risk() {
+async fn an_xcall_reports_the_declared_effect() {
     let backend = Arc::new(Sessions { tokens: Mutex::new(Vec::new()) });
     let origin = spawn_provider(backend).await;
     let zone: Arc<dyn ZoneAccess> = Arc::new(Zone { origin });
@@ -159,6 +159,8 @@ async fn an_xcall_reports_the_declared_risk() {
         })
         .await
         .unwrap();
-    assert_eq!(result.details["risk"], "read_only", "{:?}", result.details);
+    assert_eq!(result.details["effect"], "read", "{:?}", result.details);
     assert_eq!(result.details["object"], "obj://msg-center/owners/did:bns:alice/sessions");
+    let observed: Value = serde_json::from_str(&result.observation_text()).unwrap();
+    assert_eq!(observed, result.details["result"]);
 }

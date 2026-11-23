@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
+import subprocess
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -53,6 +55,27 @@ def create(project, component, version, platform, root):
             "modules": modules, "data_paths": data_paths, "clean_paths": clean_paths}
 
 
+def record_updater_release(root, version, platform):
+    directory = root / "bin/node-updater"
+    exe = directory / ("node_updater.exe" if platform.endswith("-windows") else "node_updater")
+    if not exe.is_file() or not exe.resolve().is_relative_to(root.resolve()):
+        raise ValueError("Missing target node_updater in service payload")
+    raw = subprocess.run([str(exe.resolve()), "--identity"], check=True, capture_output=True,
+                         text=True, timeout=30).stdout
+    identity = json.loads(raw)
+    if identity["target_build"] != version or identity["platform"] != platform:
+        raise ValueError(f"Staged updater {identity['target_build']}/{identity['platform']} "
+                         f"does not match payload {version}/{platform}")
+    if not isinstance(identity["schemas"], dict) or not identity["schemas"]:
+        raise ValueError("Missing linked node_updater schema registry")
+    with exe.open("rb") as stream:
+        identity["sha256"] = hashlib.sha256(stream.read()).hexdigest()
+    record = directory / "release.json"
+    if record.is_symlink():
+        raise ValueError("Unsafe updater release record")
+    record.write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Add an installation description to an existing staged root")
     parser.add_argument("--project", type=Path, required=True)
@@ -62,6 +85,8 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
     descriptor = create(yaml.safe_load(args.project.read_text()), args.component, args.version, args.platform, args.root)
+    if args.component == "buckyos":
+        record_updater_release(args.root, args.version, args.platform)
     destination = args.root / (".install-" + args.component + ".json")
     if destination.is_symlink():
         raise ValueError("Installation descriptor destination must not be a symlink")

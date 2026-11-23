@@ -126,7 +126,7 @@ function MethodButton({
   )
 }
 
-function RegisterForm({ service, entryId, onCancel }: { service: EntryService; entryId: string; onCancel: () => void }) {
+export function RegisterForm({ service, entryId, redirectUrl, onCancel }: { service: EntryService; entryId: string; redirectUrl?: string; onCancel: () => void }) {
   const { t } = useI18n()
   const [userId, setUserId] = useState('')
   const [showName, setShowName] = useState('')
@@ -164,7 +164,7 @@ function RegisterForm({ service, entryId, onCancel }: { service: EntryService; e
     })
     if (data?.status === 'created') {
       try {
-        window.location.assign(await loginWithPassword(data.user_id, password, joinUrl()))
+        window.location.assign(await loginWithPassword(data.user_id, password, redirectUrl ?? joinUrl()))
       } catch (loginError) {
         setFailure(failureOf(loginError))
         setBusy(false)
@@ -309,7 +309,7 @@ export function EntryPage() {
     reload()
   }
 
-  const methodLabels: Record<EntryMethod, string> = useMemo(() => ({
+  const methodLabels: Record<Exclude<EntryMethod, 'oauth'>, string> = useMemo(() => ({
     guest: t('sso.entry.method.guest', 'Continue as a guest'),
     password: t('sso.entry.method.password', 'Sign in with an account of this Zone'),
     self_register: t('sso.entry.method.selfRegister', 'Create an account here'),
@@ -396,7 +396,7 @@ export function EntryPage() {
       else if (method === 'self_register') setPanel('register')
       else setPanel('did')
     }
-    const icons: Record<EntryMethod, ReactNode> = {
+    const icons: Record<Exclude<EntryMethod, 'oauth'>, ReactNode> = {
       guest: <UserRound size={16} />,
       password: <LogIn size={16} />,
       self_register: <UserPlus size={16} />,

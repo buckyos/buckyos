@@ -8,6 +8,7 @@ import { useMemo } from 'react'
 import { Bell, CalendarClock, Copy, Link2, MapPin, MessageSquarePlus, Pencil, Repeat, SkipForward, Trash2, TriangleAlert, Wrench } from 'lucide-react'
 import { describeRRule, parseRRule } from 'buckyos'
 import { randomId } from '../../../api/ids'
+import { sdkLocale } from '../../../i18n'
 import { useEntity, useStore } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
 import { RichTextCell } from '../../blocks/editors'
@@ -15,7 +16,7 @@ import { locale, reminderLabel } from './EventForm'
 import type { Placed } from './model'
 
 export function whenText(p: Placed): string {
-  const loc = locale() === 'zh' ? 'zh-CN' : 'en'
+  const loc = locale()
   const day = new Intl.DateTimeFormat(loc, { month: 'short', day: 'numeric', weekday: 'short' })
   const time = new Intl.DateTimeFormat(loc, { hour: '2-digit', minute: '2-digit' })
   const o = p.occ
@@ -31,13 +32,13 @@ export function EventDetail({ p, sourceId, canWrite, noWrite, onEdit, onDelete, 
   p: Placed; sourceId: string; canWrite: boolean; noWrite: string
   onEdit: () => void; onDelete: () => void; onSkip: (() => void) | null; onDuplicate: () => void; onCopyLink: () => void; onAnnotate: (() => void) | null
 }) {
-  const { t, dateTime, list } = useAiwsText()
+  const { intl, t, dateTime, list } = useAiwsText()
   const store = useStore()
   const o = p.occ
   const master = o.master ?? o.row
   const ext = (master.values.ext && typeof master.values.ext === 'object' ? master.values.ext : {}) as Record<string, unknown>
   const own = o.ext as Record<string, unknown>
-  const rule = useMemo(() => { try { return typeof ext.rrule === 'string' ? describeRRule(parseRRule(ext.rrule), locale()) : null } catch { return null } }, [ext.rrule])
+  const rule = useMemo(() => { try { return typeof ext.rrule === 'string' ? describeRRule(parseRRule(ext.rrule), sdkLocale(intl)) : null } catch { return null } }, [ext.rrule, intl])
   const exdates = Array.isArray(ext.exdate) ? ext.exdate.length : 0
   const location = typeof own.location === 'string' ? own.location : null
   const reminders = Array.isArray(own.reminders) ? own.reminders.map((r) => Number((r as { before_min?: unknown })?.before_min)).filter((n) => Number.isFinite(n)) : []

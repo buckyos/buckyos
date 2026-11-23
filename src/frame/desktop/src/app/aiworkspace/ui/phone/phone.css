@@ -8,24 +8,20 @@
 .aiws-phone-title > .aiws-surface-anchor { flex: 1 1 auto; min-width: 0; }
 .aiws-phone-title > .aiws-anchor:has(> button[hidden]:only-of-type) { display: none; }
 
-/* ---- status bar (§4.5): a bar along the bottom; its panel opens above it, from the bottom */
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock { left: 0; right: 0; bottom: 0; width: auto; max-height: calc(100% - 72px); align-items: stretch; gap: 0; }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock > .aiws-alerts { padding: 0 8px 6px; box-sizing: border-box; }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock > .aiws-status-row {
-  justify-content: flex-start; gap: 8px; padding: 4px 12px calc(4px + env(safe-area-inset-bottom)); box-sizing: border-box;
-  background: var(--cp-surface-opaque, var(--cp-surface)); border-top: 1px solid var(--cp-border);
+.aiws-workspace[data-phone='true'] .aiws-status-dock:not(.is-bar) {
+  --aiws-dock-width: min(440px, calc(100% - 16px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  right: calc(8px + env(safe-area-inset-right)); bottom: calc(8px + env(safe-area-inset-bottom));
+  max-height: calc(100% - 72px);
 }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-row > button.aiws-status { flex: 1 1 auto; justify-content: flex-start; min-height: 40px; border: none; background: none; box-shadow: none; border-radius: 8px; }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-row button.aiws-status-online { min-height: 40px; }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock > .aiws-status-panel { border-radius: 16px 16px 0 0; border-bottom: none; box-shadow: var(--cp-shadow); padding-bottom: 12px; }
+.aiws-workspace[data-phone='true'] .aiws-status-dock > .aiws-status-row { --aiws-status-height: 36px; }
 
 /* ---- the side drawer (comments, references) and the dialogs */
 .aiws-root .aiws-workspace[data-phone='true'] .aiws-side.is-drawer {
   top: auto; left: 0; right: 0; bottom: 0; width: auto; height: min(75%, 640px); z-index: 72;
   border-left: none; border-top: 1px solid var(--cp-border); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom);
 }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop):not(:has(> .aiws-members-sheet, > .aiws-bind-dialog)) { padding: 0; align-items: stretch; }
-.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop) > .aiws-dialog:not(.aiws-members-sheet):not(.aiws-bind-dialog) {
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop):not(:has(> .aiws-bind-dialog)) { padding: 0; align-items: stretch; }
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop) > .aiws-dialog:not(.aiws-bind-dialog) {
   width: 100%; max-width: none; height: 100%; max-height: none; border: none; border-radius: 0;
   padding: calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom));
 }

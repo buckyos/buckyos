@@ -169,7 +169,7 @@ async fn a_remote_report_uploads_the_file_and_the_ui_forwards_its_object_id() {
     let objects = Arc::new(Objects::default());
     let mut deps = env.deps(ScriptedLlm::new(|_, n| {
         assert_eq!(n, 0);
-        tool_call("video", "report", json!({"report":"Video ready", "artifacts":["cat_halloween.mp4"], "is_end":true}))
+        tool_call("video", "report", json!({"report":"Video ready", "artifacts":["cat_halloween.mp4"], "outcome":"succeeded", "is_end":true}))
     }));
     deps.runtime = Arc::new(RemoteNodeRuntime::new(config, node.clone()));
     deps.xllm.node_executor = Some(node.clone());

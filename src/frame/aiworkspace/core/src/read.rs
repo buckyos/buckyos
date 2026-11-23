@@ -121,7 +121,7 @@ fn record_json(r: &RecordRow, live: &BTreeMap<String, FieldDef>) -> Value {
     let values: JsonMap = r.values.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
     let revs: JsonMap = r.revs.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), json!(v))).collect();
     let meta: JsonMap = r.meta.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
-    let mut out = json!({ "record_id": r.record_id, "rev": r.rev, "values": values, "revs": revs, "meta": meta });
+    let mut out = json!({ "record_id": r.record_id, "created_seq": r.created_seq, "rev": r.rev, "values": values, "revs": revs, "meta": meta });
     if let Some(b) = &r.body_entity_id {
         out["body_ref"] = json!({ "entity_id": b, "version": { "mode": "live_head" } });
     }
@@ -134,12 +134,31 @@ pub fn read(ctx: &dyn ReadCtx, access: &Access, entity_id: &str, selector: Optio
     if !e.alive() {
         return Err(WsError::deleted(format!("entity {entity_id} is deleted")));
     }
+    read_row(ctx, access, e, selector)
+}
+
+pub fn annotation_target_readable(ctx: &dyn ReadCtx, access: &Access, payload: &JsonMap) -> WsResult<bool> {
+    anchor::target_visible(ctx, payload.get("target"), &|target| access.can_read(ctx, target))
+}
+
+fn read_row(ctx: &dyn ReadCtx, access: &Access, mut e: EntityRow, selector: Option<&Value>) -> WsResult<Value> {
+    let entity_id = &e.entity_id;
     let mut out = envelope(ctx, access, &e)?;
+    let show_anchor = e.type_id == TYPE_ANNOTATION && annotation_target_readable(ctx, access, &e.payload)?;
+    if e.type_id == TYPE_ANNOTATION && !show_anchor {
+        e.payload.remove("context");
+    }
     let kind = selector.and_then(|s| s.get("kind")).and_then(Value::as_str).unwrap_or("entity");
     let s = selector.cloned().unwrap_or(Value::Null);
     let need = |key: &str| s.get(key).and_then(Value::as_str).ok_or_else(|| WsError::invalid_op(format!("selector.{key} required")));
     let content = match kind {
-        "entity" => entity_content(ctx, &e)?,
+        "entity" => {
+            let mut content = entity_content(ctx, &e)?;
+            if show_anchor && e.degraded().is_none() {
+                content["anchor"] = anchor::resolve(ctx, &e.payload)?.to_json();
+            }
+            content
+        }
         "doc_key" => {
             let key = need("key")?;
             json!({ "key": key, "value": e.payload.get(key), "rev": e.key_rev(key) })
@@ -199,7 +218,6 @@ fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<Value> {
             v
         }
         TYPE_CELL => json!({ "payload": e.payload, "key_revs": revs, "diagnostics": cell_diagnostics(ctx, e)? }),
-        TYPE_ANNOTATION => json!({ "payload": e.payload, "key_revs": revs, "anchor": anchor::resolve(ctx, &e.payload)?.to_json() }),
         TYPE_TABLE => json!({ "payload": e.payload, "key_revs": revs,
                               "fields": live_fields(ctx, &e.entity_id)?.iter().map(field_json).collect::<Vec<_>>(),
                               "record_count": ctx.record_count(&e.entity_id)?, "members_rev": e.key_rev(MEMBERS_KEY) }),
@@ -233,13 +251,7 @@ pub fn list_annotations(ctx: &dyn ReadCtx, access: &Access, targets: &[String], 
         }
     }
     rows.sort_by(|a, b| (a.created_seq, &a.entity_id).cmp(&(b.created_seq, &b.entity_id)));
-    rows.iter()
-        .map(|e| {
-            let mut v = envelope(ctx, access, e)?;
-            v["content"] = entity_content(ctx, e)?;
-            Ok(v)
-        })
-        .collect()
+    rows.into_iter().map(|e| read_row(ctx, access, e, None)).collect()
 }
 
 /// Outline decoration shared by the service and the replica: enough of the content to draw the two
@@ -252,9 +264,10 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         env["source"] = json!({ "kind": s["kind"], "mode": s.get("mode").cloned().unwrap_or(json!("live")), "url": s.get("url").cloned().unwrap_or(Value::Null),
                                 "workspace_id": s.get("workspace_id").cloned().unwrap_or(Value::Null), "entity_id": s.get("entity_id").cloned().unwrap_or(Value::Null),
                                 "zone": s.get("zone").cloned().unwrap_or(Value::Null), "refresh": s.get("refresh").cloned().unwrap_or(Value::Null), "auth_mode": s.get("auth_mode").cloned().unwrap_or(json!("none")) });
-        // a session feed (第四期规划 §5.3): which one
-        if let Some(f) = s.get("feed") {
-            env["source"]["feed"] = f.clone();
+        for key in ["feed", "provider"] {
+            if let Some(value) = s.get(key) {
+                env["source"][key] = value.clone();
+            }
         }
     }
     // the events an instance binds (扩展控件 P2): the canvas marks them, an Agent finds them without reading the Block
@@ -312,6 +325,17 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
                 env["slot"] = v.clone();
             }
             let config = e.payload.get("config");
+            if matches!(env["view_type"].as_str(), Some("mindnode" | "label")) {
+                if let Some(config) = config.and_then(Value::as_object) {
+                    let appearance: serde_json::Map<_, _> = types::label_appearance_keys().iter().filter_map(|key| {
+                        let value = config.get(key)?;
+                        (value.is_string() || value.is_number() || value.is_boolean()).then(|| (key.clone(), value.clone()))
+                    }).collect();
+                    if !appearance.is_empty() {
+                        env["config"] = Value::Object(appearance);
+                    }
+                }
+            }
             if let Some(side) = config.and_then(|c| c.get("side")).filter(|s| matches!(s.as_str(), Some("left" | "right"))) {
                 env["side"] = side.clone();
             }

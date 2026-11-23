@@ -1,138 +1,109 @@
-/* ── TaskCenter Tasks Page (full task list with filters) ── */
+/* ── TaskCenter Tasks page: every task as one tree ── */
 
 import { useState } from 'react'
-import {
-  Search,
-  Play,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  ChevronRight,
-  Filter,
-  Pause,
-  MessageSquare,
-  Download,
-} from 'lucide-react'
-import { useI18n } from '../../../i18n/provider'
+import { Download, Search, SlidersHorizontal } from 'lucide-react'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
 import { NewDownloadDialog } from '../components/NewDownloadDialog'
-import { notifyCardPath, type Task, type TaskStatus, type TaskType, type TaskSource } from '../../../api/task_mgr'
+import { TaskTree } from '../components/TaskTree'
+import { StatusDot } from '../components/taskView'
+import { ancestorsOf, pruneTree, useTaskText } from '../components/taskModel'
+import {
+  matchesTaskFilter,
+  type TaskCenterFilter,
+  type TaskSource,
+  type TaskStatus,
+  type TaskType,
+} from '../../../api/task_mgr'
 import type { TaskCenterNav } from '../components/layout/navigation'
 
-function statusIcon(status: Task['status']) {
-  switch (status) {
-    case 'running':
-      return <Play size={14} />
-    case 'paused':
-      return <Pause size={14} />
-    case 'completed':
-      return <CheckCircle2 size={14} />
-    case 'failed':
-      return <XCircle size={14} />
-    default:
-      return <Clock size={14} />
-  }
-}
-
-function statusColor(status: Task['status']) {
-  switch (status) {
-    case 'running':
-      return 'var(--cp-accent)'
-    case 'paused':
-      return 'var(--cp-warning)'
-    case 'completed':
-      return 'var(--cp-success)'
-    case 'failed':
-      return 'var(--cp-danger)'
-    default:
-      return 'var(--cp-muted)'
-  }
-}
-
-function formatTime(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
-const statusOptions: (TaskStatus | '')[] = ['', 'running', 'paused', 'pending', 'completed', 'failed', 'cancelled']
-const typeOptions: (TaskType | '')[] = ['', 'one-time', 'scheduled', 'download', 'sync', 'install', 'workflow']
-const sourceOptions: (TaskSource | '')[] = ['', 'system', 'user', 'agent', 'app']
+const statusOptions: TaskStatus[] = ['running', 'paused', 'pending', 'completed', 'failed', 'cancelled']
+const typeOptions: TaskType[] = ['one-time', 'scheduled', 'download', 'sync', 'install', 'workflow']
+const sourceOptions: TaskSource[] = ['system', 'user', 'agent', 'app']
 
 interface TasksPageProps {
   onNavigate: (nav: TaskCenterNav) => void
+  selectedId?: string
+  followFocus?: boolean
 }
 
-export function TasksPage({ onNavigate }: TasksPageProps) {
+export function TasksPage({ onNavigate, selectedId, followFocus }: TasksPageProps) {
   const store = useTaskCenterStore()
-  const { t } = useI18n()
+  const text = useTaskText()
+  const { t } = text
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState<TaskStatus | ''>('')
   const [filterType, setFilterType] = useState<TaskType | ''>('')
   const [filterSource, setFilterSource] = useState<TaskSource | ''>('')
   const [showFilters, setShowFilters] = useState(false)
   const [downloadOpen, setDownloadOpen] = useState(false)
+  /** Nodes the user opened or closed, with the selection they did it under. */
+  const [toggled, setToggled] = useState(new Map<string, { open: boolean; selection?: string }>())
 
   // Not memoized: the store keeps its identity and notifies through
   // useSyncExternalStore, so a memo keyed on it would never recompute.
-  const tasks = store.filterTasks({
+  const all = [...store.getAllTasks()].sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+  )
+  const filter: TaskCenterFilter = {
     status: filterStatus || undefined,
     type: filterType || undefined,
     source: filterSource || undefined,
-    search: search || undefined,
-  })
+    search: search.trim() || undefined,
+  }
+  const filtering = Object.values(filter).some(Boolean)
+  const filtersSet = Boolean(filterStatus || filterType || filterSource)
+  const { roots, open: matchPath } = filtering
+    ? pruneTree(all, (task) => matchesTaskFilter(task, filter))
+    : { roots: all, open: new Set<string>() }
+  const selectionPath = new Set(ancestorsOf(roots, selectedId))
 
-  // Sort by updatedAt descending
-  const sorted = [...tasks].sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-  )
+  // Collapsed by default; the path to the selected task and to search hits
+  // opens by itself, unless the user closed it while that task was selected.
+  const isOpen = (taskId: string) => {
+    const entry = toggled.get(taskId)
+    if (selectionPath.has(taskId) && entry?.selection !== selectedId) return true
+    if (entry) return entry.open
+    return matchPath.has(taskId)
+  }
+  const toggle = (taskId: string) => {
+    const next = new Map(toggled)
+    next.set(taskId, { open: !isOpen(taskId), selection: selectedId })
+    setToggled(next)
+  }
+
+  const clearFilters = () => {
+    setFilterStatus('')
+    setFilterType('')
+    setFilterSource('')
+  }
 
   return (
-    <div className="space-y-4">
-      {/* Search & filter bar */}
+    <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <label
-          className="flex flex-1 items-center gap-2.5 rounded-xl px-3 py-2.5"
-          style={{
-            background: 'var(--cp-surface)',
-            border: '1px solid var(--cp-border)',
-            color: 'var(--cp-muted)',
-          }}
-        >
-          <Search size={16} />
+        <label className="tc-search">
+          <Search size={16} strokeWidth={1.75} className="shrink-0" />
           <input
             type="search"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('taskCenter.tasks.search', 'Search tasks...')}
-            className="w-full bg-transparent text-sm outline-none placeholder:text-[color:var(--cp-muted)]"
-            style={{ color: 'var(--cp-text)' }}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t('taskCenter.tasks.search', 'Search tasks')}
+            aria-label={t('taskCenter.tasks.search', 'Search tasks')}
           />
         </label>
         <button
           type="button"
           onClick={() => setShowFilters(!showFilters)}
-          className="flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-sm transition-colors"
-          style={{
-            background: showFilters ? 'color-mix(in srgb, var(--cp-accent) 12%, var(--cp-surface))' : 'var(--cp-surface)',
-            color: showFilters ? 'var(--cp-accent)' : 'var(--cp-muted)',
-            border: '1px solid var(--cp-border)',
-          }}
+          className="tc-icon-btn"
+          aria-pressed={showFilters}
+          aria-label={t('taskCenter.tasks.filters', 'Filters')}
+          title={t('taskCenter.tasks.filters', 'Filters')}
         >
-          <Filter size={14} />
+          <SlidersHorizontal size={16} strokeWidth={1.75} />
+          {filtersSet && <StatusDot tone="running" />}
         </button>
-        <button
-          type="button"
-          onClick={() => setDownloadOpen(true)}
-          aria-label={t('taskCenter.download.new', 'New Download')}
-          title={t('taskCenter.download.new', 'New Download')}
-          className="flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-sm transition-colors"
-          style={{
-            background: 'var(--cp-surface)',
-            color: 'var(--cp-accent)',
-            border: '1px solid var(--cp-border)',
-          }}
-        >
-          <Download size={14} />
+        <button type="button" onClick={() => setDownloadOpen(true)} className="tc-btn h-9">
+          <Download size={16} strokeWidth={1.75} />
+          {t('taskCenter.download.new', 'New download')}
         </button>
       </div>
       <NewDownloadDialog
@@ -144,145 +115,66 @@ export function TasksPage({ onNavigate }: TasksPageProps) {
         }}
       />
 
-      {/* Filters */}
       {showFilters && (
-        <div
-          className="flex flex-wrap gap-2 rounded-xl p-3"
-          style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-        >
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value as TaskStatus | '')}
-            className="rounded-lg px-2.5 py-1.5 text-xs"
-            style={{
-              background: 'var(--cp-surface-2)',
-              color: 'var(--cp-text)',
-              border: '1px solid var(--cp-border)',
-            }}
+            onChange={(event) => setFilterStatus(event.target.value as TaskStatus | '')}
+            className="tc-select"
+            aria-label={t('taskCenter.detail.status', 'Status')}
           >
-            <option value="">{t('taskCenter.tasks.allStatuses', 'All Statuses')}</option>
-            {statusOptions.filter(Boolean).map((s) => (
-              <option key={s} value={s}>{s}</option>
+            <option value="">{t('taskCenter.tasks.allStatuses', 'All statuses')}</option>
+            {statusOptions.map((status) => (
+              <option key={status} value={status}>{text.status({ status })}</option>
             ))}
           </select>
           <select
             value={filterType}
-            onChange={(e) => setFilterType(e.target.value as TaskType | '')}
-            className="rounded-lg px-2.5 py-1.5 text-xs"
-            style={{
-              background: 'var(--cp-surface-2)',
-              color: 'var(--cp-text)',
-              border: '1px solid var(--cp-border)',
-            }}
+            onChange={(event) => setFilterType(event.target.value as TaskType | '')}
+            className="tc-select"
+            aria-label={t('taskCenter.detail.type', 'Type')}
           >
-            <option value="">{t('taskCenter.tasks.allTypes', 'All Types')}</option>
-            {typeOptions.filter(Boolean).map((tp) => (
-              <option key={tp} value={tp}>{tp}</option>
+            <option value="">{t('taskCenter.tasks.allTypes', 'All types')}</option>
+            {typeOptions.map((type) => (
+              <option key={type} value={type}>{text.type(type)}</option>
             ))}
           </select>
           <select
             value={filterSource}
-            onChange={(e) => setFilterSource(e.target.value as TaskSource | '')}
-            className="rounded-lg px-2.5 py-1.5 text-xs"
-            style={{
-              background: 'var(--cp-surface-2)',
-              color: 'var(--cp-text)',
-              border: '1px solid var(--cp-border)',
-            }}
+            onChange={(event) => setFilterSource(event.target.value as TaskSource | '')}
+            className="tc-select"
+            aria-label={t('taskCenter.detail.source', 'Source')}
           >
-            <option value="">{t('taskCenter.tasks.allSources', 'All Sources')}</option>
-            {sourceOptions.filter(Boolean).map((src) => (
-              <option key={src} value={src}>{src}</option>
+            <option value="">{t('taskCenter.tasks.allSources', 'All sources')}</option>
+            {sourceOptions.map((source) => (
+              <option key={source} value={source}>{text.source(source)}</option>
             ))}
           </select>
+          {filtersSet && (
+            <button type="button" onClick={clearFilters} className="tc-link px-2 text-[13px]">
+              {t('taskCenter.tasks.clearFilters', 'Clear')}
+            </button>
+          )}
         </div>
       )}
 
-      {/* Task count */}
-      <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-        {sorted.length} {t('taskCenter.tasks.count', 'tasks')}
-      </div>
-
-      {/* Task list */}
-      <div className="space-y-1.5">
-        {sorted.map((task) => (
-          <div key={task.taskId}>
-          <button
-            type="button"
-            onClick={() => onNavigate({ page: 'tasks', taskId: task.taskId })}
-            className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors"
-            style={{
-              background: 'var(--cp-surface)',
-              border: '1px solid var(--cp-border)',
-            }}
-          >
-            <div
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-              style={{
-                background: `color-mix(in srgb, ${statusColor(task.status)} 14%, transparent)`,
-                color: statusColor(task.status),
-              }}
-            >
-              {statusIcon(task.status)}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>
-                {task.title}
-              </div>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span
-                  className="text-xs font-medium uppercase"
-                  style={{ color: statusColor(task.status) }}
-                >
-                  {task.status}
-                </span>
-                <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                  · {task.type} · {task.source}
-                </span>
-              </div>
-              {task.progress != null && (task.status === 'running' || task.status === 'paused') && (
-                <div className="mt-1.5">
-                  <div
-                    className="h-1 w-full max-w-[200px] rounded-full overflow-hidden"
-                    style={{ background: 'var(--cp-border)' }}
-                  >
-                    <div
-                      className="h-full rounded-full"
-                      style={{
-                        width: `${task.progress}%`,
-                        background: statusColor(task.status),
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="shrink-0 text-right">
-              <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                {formatTime(task.updatedAt)}
-              </div>
-            </div>
-            <ChevronRight size={14} style={{ color: 'var(--cp-muted)' }} />
-          </button>
-          {task.notifyId && (
-            <a
-              href={notifyCardPath(task.notifyId)}
-              className="ml-14 mt-1 inline-flex items-center gap-1.5 text-xs font-medium"
-              style={{ color: 'var(--cp-accent)' }}
-              data-testid="task-notify-link"
-            >
-              <MessageSquare size={13} />
-              {t('taskCenter.notify.open', 'Handle in MessageHub')}
-            </a>
-          )}
-          </div>
-        ))}
-      </div>
-
-      {sorted.length === 0 && (
-        <div className="text-center py-12 text-sm" style={{ color: 'var(--cp-muted)' }}>
-          {t('taskCenter.tasks.empty', 'No tasks match your filters.')}
-        </div>
+      {roots.length > 0 ? (
+        <>
+          <p className="tc-muted px-1 text-xs">
+            {t('taskCenter.tasks.count', '{{count}} tasks', { count: roots.length })}
+          </p>
+          <TaskTree
+            roots={roots}
+            text={text}
+            isOpen={isOpen}
+            onToggle={toggle}
+            selectedId={selectedId}
+            onSelect={(taskId) => onNavigate({ page: 'tasks', taskId })}
+            followFocus={followFocus}
+          />
+        </>
+      ) : (
+        <p className="tc-empty">{t('taskCenter.tasks.empty', 'No tasks match your filters')}</p>
       )}
     </div>
   )

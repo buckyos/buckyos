@@ -19,6 +19,7 @@ import type { NewZoneUserInput } from '../../datamodel/types'
 import { newZoneUserInputSchema } from '../../datamodel/types'
 import { useUserGroups, useUsersAgentsStore } from '../../hooks/use-users-agents-store'
 import { useI18n } from '../../../../i18n/provider'
+import { AccountInviteForm } from '../invites/AccountInviteForm'
 import { systemGroupName } from './userGroupLabels'
 
 interface NewUserWizardProps {
@@ -87,6 +88,7 @@ function isUncertainCreateError(error: unknown): boolean {
 
 export function NewUserWizard({ onClose, onCreated, onOpenDeletedUsers }: NewUserWizardProps) {
   const { t } = useI18n()
+  const [inviting, setInviting] = useState(false)
   const [step, setStep] = useState(0)
   const [phase, setPhase] = useState<SubmitPhase>('idle')
   const [deletedConflict, setDeletedConflict] = useState(false)
@@ -241,6 +243,8 @@ export function NewUserWizard({ onClose, onCreated, onOpenDeletedUsers }: NewUse
     if (await form.trigger()) setStep(1)
   }
 
+  if (inviting) return <AccountInviteForm onClose={() => setInviting(false)} />
+
   return (
     <form
       className="rounded-[22px] px-5 py-4"
@@ -271,6 +275,7 @@ export function NewUserWizard({ onClose, onCreated, onOpenDeletedUsers }: NewUse
         </IconButton>
       </div>
 
+      {step === 0 && <Button type="button" onClick={() => setInviting(true)}>{t('sso.userInvite.issue','Invite a user to this Zone')}</Button>}
       <div className="mb-4 flex items-center gap-1">
         {stepLabelKeys.map((labelKey, index) => (
           <div key={labelKey} className="flex items-center gap-1">

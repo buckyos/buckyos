@@ -7,10 +7,11 @@
  * button inside a Block is not a canvas gesture, RenderHost `insideEditor`). A press on the rest of the card — and on a
  * greyed tab, which is no control — selects and moves the Block as on any other. */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { CircleStop, Play, Sparkles } from 'lucide-react'
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+import { AppWindow, Bot, Check, ChevronDown, ChevronRight, CircleStop, Play, Sparkles } from 'lucide-react'
 import { externalDataWanted, needsCodingReasonText, runErrorText } from '../../api/session'
 import type { ExternalDataWanted, FreshnessInfo, Json, NeedsCodingReason, WishMainStatus, WishRunView, WishStage } from '../../api/types'
+import { ControlMenu, ControlPanel, anchorOf, type AnchorRect } from '../controls/data/ControlPopover'
 import type { AiwsText } from '../../i18n'
 import { useEntity, useReadOnlyReason, useStore, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
@@ -22,7 +23,7 @@ import { useInvalidation } from './confirm'
 import { holdsMacro, macroUsesAi } from './macro'
 import { failureText, latestRecord, stageRecords } from './records'
 import { WishRecords } from './WishRecords'
-import { isCodingFailure } from './WishService'
+import { EXECUTION_LABEL, isCodingFailure } from './WishService'
 import { setWishKey, useWish, type WishState } from './useWish'
 import './wish.css'
 
@@ -33,7 +34,8 @@ const STAGE_TAB: Record<WishStage, WishTab> = { analyze: 'analysis', code: 'macr
 const TAB_LABEL: Record<WishTab, string> = {
   prompt: 'aiworkspace.wishcard.tab.prompt', analysis: 'aiworkspace.wishcard.tab.analysis', macro: 'aiworkspace.wishcard.tab.macro', results: 'aiworkspace.wishcard.tab.results',
 }
-const STAGE_RUNNING: Record<WishStage, string> = { analyze: 'aiworkspace.wishcard.running.analyze', code: 'aiworkspace.wishcard.running.code', run: 'aiworkspace.wishcard.running.run' }
+const STAGE_NAME: Record<WishStage, string> = { analyze: 'aiworkspace.runlog.stage.analyze', code: 'aiworkspace.runlog.stage.code', run: 'aiworkspace.runlog.stage.run' }
+const STAGE_RUNNING: Record<WishStage, string> ={ analyze: 'aiworkspace.wishcard.running.analyze', code: 'aiworkspace.wishcard.running.code', run: 'aiworkspace.wishcard.running.run' }
 const STAGE_FAILED: Record<WishStage, string> = { analyze: 'aiworkspace.wishcard.status.failedAnalyze', code: 'aiworkspace.wishcard.status.failedCode', run: 'aiworkspace.wishcard.status.failedRun' }
 const MAIN_LABEL: Record<WishMainStatus['main'], string> = {
   needs_analysis: 'aiworkspace.wish.main.needsAnalysis', needs_coding: 'aiworkspace.wish.main.needsCoding', waiting_data: 'aiworkspace.wish.main.waitingData',
@@ -161,6 +163,68 @@ function defaultTab(w: WishState, f: Facts, enabled: Record<WishTab, boolean>): 
   }
   for (let i = TABS.indexOf(tab); i > 0; i--) if (enabled[TABS[i]]) return TABS[i]
   return 'prompt'
+}
+
+type StepState = 'done' | 'next' | 'later'
+const STEP_LABEL: Record<StepState, string> = { done: 'aiworkspace.wishcard.step.done', next: 'aiworkspace.wishcard.step.next', later: 'aiworkspace.wishcard.step.later' }
+
+/** The stages between the tabs, in order: done while its product is current and the ones before it are, the first that
+ * is not (or the one under way) next, the rest later. */
+function stepStates(w: WishState, f: Facts, stale: Record<WishTab, boolean>): Record<WishStage, StepState> {
+  const current: Record<WishStage, boolean> = { analyze: f.hasAnalysis && !f.needsAnalysis, code: f.hasMacro && !stale.macro, run: f.results > 0 && !stale.results }
+  const out = {} as Record<WishStage, StepState>
+  let reached = false
+  for (const tab of TABS.slice(1)) {
+    const stage = TAB_STAGE[tab as Exclude<WishTab, 'prompt'>]
+    if (!reached && current[stage] && w.runningStage !== stage) out[stage] = 'done'
+    else { out[stage] = reached ? 'later' : 'next'; reached = true }
+  }
+  return out
+}
+
+/** Where this viewer's stages execute (this browser or its own Agent), beside the next step; a sheet on a phone. */
+function ExecutorPick({ store, primary }: { store: WorkspaceStore; primary: boolean }) {
+  const { t } = useAiwsText()
+  const [anchor, setAnchor] = useState<AnchorRect | null>(null)
+  const button = useRef<HTMLButtonElement>(null)
+  // a press on the button while the menu is open closes it as an outside press: its click must not open it again. Seen
+  // before the panel's own outside-press listener, which it registers a tick after opening.
+  const closingPress = useRef<Event | null>(null)
+  const lastPress = useRef<Event | null>(null)
+  const open = anchor !== null
+  useEffect(() => {
+    if (!open) return
+    const onDown = (event: PointerEvent) => { if (button.current?.contains(event.target as Node)) closingPress.current = event }
+    window.addEventListener('pointerdown', onDown, true)
+    return () => window.removeEventListener('pointerdown', onDown, true)
+  }, [open])
+  const mode = store.wish.executionMode()
+  const label = t('aiworkspace.wishcard.executor', { where: t(EXECUTION_LABEL[mode]) })
+  const title = t('aiworkspace.wish.execution')
+  const close = () => setAnchor(null)
+  return (
+    <>
+      <button ref={button} type="button" className={`aiws-wc-exec${primary ? ' is-primary' : ''}`} data-testid="aiws-wish-executor" data-mode={mode}
+        aria-haspopup="menu" aria-expanded={open} aria-label={label} title={label}
+        onPointerDown={(event) => { lastPress.current = event.nativeEvent }}
+        onClick={(event) => {
+          const closed = lastPress.current !== null && lastPress.current === closingPress.current
+          lastPress.current = null
+          closingPress.current = null
+          if (!closed) setAnchor(open ? null : anchorOf(event.currentTarget))
+        }}>
+        {mode === 'hosted' ? <Bot size={14} aria-hidden="true" /> : <AppWindow size={14} aria-hidden="true" />}
+        <ChevronDown size={12} aria-hidden="true" />
+      </button>
+      {anchor && (
+        <ControlPanel anchor={anchor} onClose={close} label={title} width={220} side="below" testId="aiws-wish-executor-menu">
+          <ControlMenu label={title} onClose={close} items={store.wish.executionModes().map((m) => ({
+            id: `exec-${m}`, label: t(EXECUTION_LABEL[m]), checked: m === mode, icon: m === mode ? <Check size={14} /> : null, run: () => store.wish.setExecutionMode(m),
+          }))} />
+        </ControlPanel>
+      )}
+    </>
+  )
 }
 
 interface NextStep { kind: 'analyze' | 'code' | 'repair' | 'run' | 'cancel' | 'resume'; label: string; primary: boolean; reason: string | null; go: () => void }
@@ -364,6 +428,8 @@ export function WishCard({ wishId, cellId, mode, readOnly, compact = false }: Wi
     macro: f.hasMacro && (f.needsAnalysis || Boolean(f.needsCoding)),
     results: f.results > 0 && Boolean(w.main?.stale),
   }
+  const steps = stepStates(w, f, stale)
+  const pickExecutor = next !== null && next.kind !== 'cancel' && next.kind !== 'resume' && store.wish.executionModes().length > 1
   let body: ReactNode
   if (tab === 'prompt') body = <PromptTab wishId={wishId} w={w} canEdit={canEdit} cellId={cellId} />
   else {
@@ -383,20 +449,34 @@ export function WishCard({ wishId, cellId, mode, readOnly, compact = false }: Wi
       <div className="aiws-wc-body" data-testid="aiws-wish-body" role="tabpanel" aria-label={t(TAB_LABEL[tab])}>{body}</div>
       <div className="aiws-wc-foot">
         <div className="aiws-wc-tabs" role="tablist" aria-label={t('aiworkspace.wishcard.tabs')}>
-          {TABS.map((item) => (
-            <button key={item} type="button" role="tab" className={`aiws-wc-tab${stale[item] ? ' is-stale' : ''}${item === 'results' && f.results > 0 ? ' has-results' : ''}`} aria-selected={tab === item} disabled={!enabled[item]}
-              data-testid={`aiws-wish-tab-${item}`} data-stale={stale[item] ? 'true' : 'false'} title={stale[item] ? t('aiworkspace.wishcard.tab.stale') : undefined}
-              onClick={() => setChosen(item)}>
-              {item === 'results' ? t('aiworkspace.wishcard.tab.resultsCount', { count: f.results }) : t(TAB_LABEL[item])}
-              {stale[item] && <span className="aiws-wc-stale-dot" aria-hidden="true" />}
-            </button>
-          ))}
+          {TABS.map((item) => {
+            const stage = item === 'prompt' ? null : TAB_STAGE[item]
+            return (
+              <Fragment key={item}>
+                {stage && (
+                  <span className={`aiws-wc-step is-${steps[stage]}`} data-testid={`aiws-wish-step-${stage}`} data-state={steps[stage]} aria-hidden="true"
+                    title={w.runningStage === stage ? t(STAGE_RUNNING[stage]) : t(STEP_LABEL[steps[stage]], { stage: t(STAGE_NAME[stage]) })}>
+                    <ChevronRight size={14} strokeWidth={2.25} />
+                  </span>
+                )}
+                <button type="button" role="tab" className={`aiws-wc-tab${stale[item] ? ' is-stale' : ''}${item === 'results' && f.results > 0 ? ' has-results' : ''}`} aria-selected={tab === item} disabled={!enabled[item]}
+                  data-testid={`aiws-wish-tab-${item}`} data-stale={stale[item] ? 'true' : 'false'} title={stale[item] ? t('aiworkspace.wishcard.tab.stale') : undefined}
+                  onClick={() => setChosen(item)}>
+                  {item === 'results' ? t('aiworkspace.wishcard.tab.resultsCount', { count: f.results }) : t(TAB_LABEL[item])}
+                  {stale[item] && <span className="aiws-wc-stale-dot" aria-hidden="true" />}
+                </button>
+              </Fragment>
+            )
+          })}
         </div>
         {next && (
           <div className="aiws-wc-next-wrap">
             {next.reason && next.kind !== 'cancel' && <span className="aiws-wc-reason" data-testid="aiws-wish-next-reason" title={next.reason}>{next.reason}</span>}
-            <button type="button" className={`aiws-wc-next${next.primary ? ' is-primary' : ''}`} data-testid="aiws-wish-next" data-action={next.kind} data-primary={next.primary ? 'true' : 'false'}
-              disabled={next.reason !== null} title={next.reason ?? undefined} onClick={next.go}>{next.label}</button>
+            <div className="aiws-wc-split">
+              <button type="button" className={`aiws-wc-next${next.primary ? ' is-primary' : ''}`} data-testid="aiws-wish-next" data-action={next.kind} data-primary={next.primary ? 'true' : 'false'}
+                disabled={next.reason !== null} title={next.reason ?? undefined} onClick={next.go}>{next.label}</button>
+              {pickExecutor && <ExecutorPick store={store} primary={next.primary && next.reason === null} />}
+            </div>
           </div>
         )}
       </div>

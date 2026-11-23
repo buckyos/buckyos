@@ -22,7 +22,7 @@ function errorText(error: unknown): string {
 }
 
 export function RechargeDialog({ api, detail, onClose, onDone }: { api: QuotaApi; detail: QuotaRuleDetail; onClose: () => void; onDone: () => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const account = detail.account!
   const [rechargeId] = useState(newRechargeId)
   const [amount, setAmount] = useState<number | null>(null)
@@ -71,7 +71,7 @@ export function RechargeDialog({ api, detail, onClose, onDone }: { api: QuotaApi
             </label>
             {amount !== null && (
               <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                {t('aiCenter.quota.rechargePreview', 'Granted becomes {{granted}}, available about {{available}}. Debt is paid first; other limits may still block.', { granted: formatTokensExact(afterGranted), available: formatTokensExact(afterAvailable) })}
+                {t('aiCenter.quota.rechargePreview', 'Granted becomes {{granted}}, available about {{available}}. Debt is paid first; other limits may still block.', { granted: formatTokensExact(afterGranted, locale), available: formatTokensExact(afterAvailable, locale) })}
               </p>
             )}
           </div>
@@ -102,7 +102,7 @@ interface DetailProps {
 }
 
 export function RuleDetailPanel({ api, view, isAdmin, onClose, onEdit, onChanged }: DetailProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const objectLabel = useObjectLabel()
   const [detail, setDetail] = useState<QuotaRuleDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -160,10 +160,10 @@ export function RuleDetailPanel({ api, view, isAdmin, onClose, onEdit, onChanged
             {state.debt_tokens > 0 && <Field label={t('aiCenter.quota.debt', 'Over by')}><Tokens value={state.debt_tokens} /></Field>}
           </div>
           {rule.kind === 'periodic' && state.window_start_ms !== undefined && state.window_end_ms !== undefined && (
-            <Field label={t('aiCenter.quota.window', 'Current window')}>{formatLocal(state.window_start_ms)} – {formatLocal(state.window_end_ms)}</Field>
+            <Field label={t('aiCenter.quota.window', 'Current window')}>{formatLocal(state.window_start_ms, locale)} – {formatLocal(state.window_end_ms, locale)}</Field>
           )}
           {rule.kind === 'total' && state.account_start_ms !== undefined && (
-            <Field label={t('aiCenter.quota.accountStart', 'Counting since')}>{formatLocal(state.account_start_ms)}</Field>
+            <Field label={t('aiCenter.quota.accountStart', 'Counting since')}>{formatLocal(state.account_start_ms, locale)}</Field>
           )}
           <span className="text-xs"><ResetLabel state={state} /></span>
           {state.status === 'exhausted' && rule.kind === 'total' && (
@@ -197,7 +197,7 @@ export function RuleDetailPanel({ api, view, isAdmin, onClose, onEdit, onChanged
               <div key={grant.grant_id} className="flex items-center gap-2 text-xs" style={{ color: 'var(--cp-text)' }}>
                 <span>{grant.kind === 'initial' ? t('aiCenter.quota.initialGrant', 'Initial grant') : t('aiCenter.quota.recharge', 'Recharge')}</span>
                 <span>+<Tokens value={grant.amount_tokens} /></span>
-                <span style={{ color: 'var(--cp-muted)' }}>{grant.operator} · {formatLocal(grant.created_at_ms)}</span>
+                <span style={{ color: 'var(--cp-muted)' }}>{grant.operator} · {formatLocal(grant.created_at_ms, locale)}</span>
                 {grant.note && <span className="truncate" style={{ color: 'var(--cp-muted)' }}>{grant.note}</span>}
               </div>
             ))}
@@ -209,7 +209,7 @@ export function RuleDetailPanel({ api, view, isAdmin, onClose, onEdit, onChanged
             <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.quota.history', 'Changes')}</h3>
             {detail.audit.slice(0, 20).map((item) => (
               <div key={item.audit_id} className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                {formatLocal(item.created_at_ms)} · {item.operator} · {item.action}
+                {formatLocal(item.created_at_ms, locale)} · {item.operator} · {item.action}
               </div>
             ))}
           </section>

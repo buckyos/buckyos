@@ -8,6 +8,7 @@ export const clone_id: (a: number, b: number, c: number, d: number, e: number) =
 export const core_version: (a: number) => void;
 export const file_object_id: (a: number, b: number, c: number) => void;
 export const markdown_to_richtext: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+export const missing_record_fields: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
 export const normalize_value: (a: number, b: number, c: number, d: number, e: number) => void;
 export const object_id: (a: number, b: number, c: number, d: number, e: number) => void;
 export const order_key_between: (a: number, b: number, c: number, d: number, e: number) => void;

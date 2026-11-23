@@ -649,6 +649,15 @@ async fn guest_entry_is_described_publicly_and_admits_only_allowed_methods() {
     // A local account signed in by password or exclusive invite opens a
     // ticket; a DID login needs `did_login` on the entry.
     let alice = limited(ALICE, AuthMethod::Password);
+    assert!(call(&c,&alice,"group.submit_guest_request",json!({"request_id":"before-system-share"})).await.is_err());
+    let mut tx=c.groups.begin(&group()).await.unwrap();
+    tx.state.resource_shares.insert("inv-test".into(),crate::group_types::GroupResourceShare {
+        creator:tx.state.owner.clone(), request:json!({"audience":{"kind":"open"}}),
+        secret:"example-resource-only-credential".into(),url:None,admitted:Default::default()
+    });
+    tx.commit().await.unwrap();
+    let callback=json!({"operation":"commit","resource_id":format!("{}~inv-test",group().to_string()),"callback_secret":"example-resource-only-credential","did":account(ALICE),"auth_method":"password"});
+    assert_eq!(c.resource_share_callback(&callback).await.unwrap()["ok"],true);
     let ticket = call(&c, &alice, "group.submit_guest_request", json!({"request_id":"r1"}))
         .await
         .unwrap();
@@ -678,6 +687,8 @@ async fn guest_entry_is_described_publicly_and_admits_only_allowed_methods() {
     assert_eq!(denial(unknown).reason, DenyReason::AuthorizationUnavailable);
     verifier.unavailable.store(false, Ordering::SeqCst);
     verifier.sso.lock().unwrap().did_login_enabled = true;
+    let callback=json!({"operation":"commit","resource_id":format!("{}~inv-test",group().to_string()),"callback_secret":"example-resource-only-credential","did":external_did(),"auth_method":"did_federation"});
+    assert_eq!(c.resource_share_callback(&callback).await.unwrap()["ok"],true);
     let opened = call(&c, &bob, "group.submit_guest_request", json!({"request_id":"r2"}))
         .await
         .unwrap();

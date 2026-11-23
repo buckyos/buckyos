@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Car, Clock, Coffee, Flag, Heart, Lightbulb, Loader2, PawPrint, Search, Smile, Trophy } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { loadEmojiGroups, recentEmoji, rememberEmoji, searchEmoji, type EmojiGroup, type EmojiGroupId, type EmojiItem } from './emoji'
+import './emojiPanel.css'
 
 const GROUP_ICONS: Record<EmojiGroupId, typeof Smile> = {
   recent: Clock,

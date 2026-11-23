@@ -1,6 +1,7 @@
 import {
   filterRules,
   formatTokens,
+  formatTokensExact,
   fromGroupDraft,
   modelQuotaStatus,
   parseTokens,
@@ -64,6 +65,8 @@ Deno.test('token amounts accept K/M shorthand and reject anything else', () => {
   assert(parseTokens('0') === 0, 'zero is a valid limit (forbidden)')
   for (const bad of ['', 'abc', '-5', '1e3', '5KK']) assert(parseTokens(bad) === null, `rejects ${JSON.stringify(bad)}`)
   assert(formatTokens(172_000) === '172K' && formatTokens(1_500_000) === '1.5M' && formatTokens(999) === '999', 'abbreviation')
+  assert(formatTokens(10_000, 'ja') === '1万', 'Japanese compact amounts use ten-thousands')
+  assert(formatTokensExact(1_234_567, 'fr') === (1_234_567).toLocaleString('fr'), 'exact counts use the chosen grouping')
 })
 
 Deno.test('usage ratio counts reserved tokens and treats a zero limit as exhausted', () => {

@@ -3419,7 +3419,7 @@ impl ControlPanelServer {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use buckyos_api::{
         AppAllocation, AppInstanceAllocation, DeploymentIdentity, ServiceEndpointConfig,
@@ -3434,7 +3434,7 @@ mod tests {
     const OWNER: &str = "devtest";
 
     #[derive(Default)]
-    struct MemoryKv {
+    pub(crate) struct MemoryKv {
         data: Mutex<HashMap<String, (String, u64)>>,
         revision: AtomicU64,
     }

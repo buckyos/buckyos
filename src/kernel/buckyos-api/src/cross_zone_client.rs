@@ -1,7 +1,7 @@
 //! Calls into another Zone's system services (doc/arch/verify-hub/跨Zone登录断言契约.md §7):
 //! log in at the Target verify-hub with a signed assertion, keep the Target's token pair per
 //! (Zone, service, principal), and carry requests over RTCP (the local gateway's SOCKS entry)
-//! or, when RTCP does not connect, plain HTTPS.
+//! or, when RTCP does not connect, plain HTTPS. Calls within the local Zone use its gateway.
 
 use crate::{
     cross_zone_auth::{sign_cross_zone_assertion, zone_hostname, CustodyResolver, DeviceSigner, ResolveFailure},
@@ -14,6 +14,7 @@ use name_lib::{decode_jwt_claim_without_verify, DID};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::{ready, Future};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -96,7 +97,7 @@ impl std::error::Error for CrossZoneError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportState {
-    /// Nothing known yet: RTCP first.
+    /// No recorded link state. Remote Zones with a SOCKS entry try RTCP first.
     Probing,
     RtcpOk,
     /// RTCP did not connect; HTTPS until the next probe.
@@ -191,6 +192,7 @@ pub struct CrossZoneClient {
     resolver: Arc<dyn CustodyResolver>,
     rtcp: Option<reqwest::Client>,
     https: reqwest::Client,
+    local_zone: Option<(String, String)>,
     /// Zone host → origin for the HTTPS transport (`https://<host>` otherwise).
     origins: HashMap<String, String>,
     links: Mutex<HashMap<String, ZoneLink>>,
@@ -225,6 +227,7 @@ impl CrossZoneClient {
             resolver: Arc::new(NameServiceResolver),
             rtcp,
             https: build(None)?,
+            local_zone: None,
             origins: HashMap::new(),
             links: Mutex::default(),
             hosts: Mutex::default(),
@@ -243,7 +246,14 @@ impl CrossZoneClient {
         if socks.is_none() {
             log::warn!("no cross-zone RTCP entry on this node; other Zones are reached over HTTPS only");
         }
-        Self::new(signer, socks)
+        let host = runtime
+            .get_zone_config()
+            .and_then(|config| config.zone_document().ok())
+            .map(|doc| crate::zone_document_hostname(&doc))
+            .filter(|host| !host.is_empty())
+            .unwrap_or_else(|| runtime.zone_id.to_host_name());
+        let origin = format!("http://{}:{}", runtime.get_local_gateway_host(), runtime.node_gateway_port);
+        Ok(Self::new(signer, socks)?.with_local_zone(host, origin))
     }
 
     pub fn with_resolver(mut self, resolver: Arc<dyn CustodyResolver>) -> Self {
@@ -251,11 +261,19 @@ impl CrossZoneClient {
         self
     }
 
-    /// Declared origins for the HTTPS transport (Zones not served at `https://<host>`).
+    /// Route login and service requests for this Zone hostname directly to its origin.
+    pub fn with_local_zone(mut self, host: impl AsRef<str>, origin: impl Into<String>) -> Self {
+        let host = normalize_host(host.as_ref());
+        self.links.get_mut().unwrap().remove(&host);
+        self.local_zone = Some((host, origin.into()));
+        self
+    }
+
+    /// Declared origins for the HTTPS transport to remote Zones not served at `https://<host>`.
     pub fn with_origins(mut self, origins: HashMap<String, String>) -> Self {
         self.origins = origins
             .into_iter()
-            .map(|(host, origin)| (host.trim_end_matches('.').to_ascii_lowercase(), origin))
+            .map(|(host, origin)| (normalize_host(&host), origin))
             .collect();
         self
     }
@@ -268,7 +286,7 @@ impl CrossZoneClient {
         self.links
             .lock()
             .unwrap()
-            .get(zone_host)
+            .get(&normalize_host(zone_host))
             .map_or(TransportState::Probing, |link| link.state)
     }
 
@@ -311,8 +329,23 @@ impl CrossZoneClient {
         principal: &Principal,
         request: CrossZoneRequest,
     ) -> Result<reqwest::Response, CrossZoneError> {
-        let host = host.trim_end_matches('.').to_ascii_lowercase();
-        self.request_to(&DID::new("web", &host), &host, service, principal, request).await
+        self.request_host_with(host, service, principal, || ready(Ok(request.clone()))).await
+    }
+
+    /// Build immediately before each transport attempt, after login. Use for content whose
+    /// read authorization can change while logging in or retrying on another transport.
+    pub async fn request_host_with<F>(
+        &self,
+        host: &str,
+        service: &str,
+        principal: &Principal,
+        build: impl Fn() -> F,
+    ) -> Result<reqwest::Response, CrossZoneError>
+    where
+        F: Future<Output = Result<CrossZoneRequest, CrossZoneError>>,
+    {
+        let host = normalize_host(host);
+        self.request_to_with(&DID::new("web", &host), &host, service, principal, build).await
     }
 
     /// [`Self::request`] when the Target Zone's hostname is already known.
@@ -324,18 +357,31 @@ impl CrossZoneClient {
         principal: &Principal,
         request: CrossZoneRequest,
     ) -> Result<reqwest::Response, CrossZoneError> {
-        let host = host.to_string();
-        let key = token_key(&host, service, principal);
-        let mut token = self.bearer(zone, &host, service, principal, &key).await?;
+        let host = normalize_host(host);
+        self.request_to_with(zone, &host, service, principal, || ready(Ok(request.clone()))).await
+    }
+
+    async fn request_to_with<F>(
+        &self,
+        zone: &DID,
+        host: &str,
+        service: &str,
+        principal: &Principal,
+        build: impl Fn() -> F,
+    ) -> Result<reqwest::Response, CrossZoneError>
+    where
+        F: Future<Output = Result<CrossZoneRequest, CrossZoneError>>,
+    {
+        let key = token_key(host, service, principal);
+        let mut token = self.bearer(zone, host, service, principal, &key).await?;
         for attempt in 0..2 {
-            let authorized = request.clone().header("authorization", format!("Bearer {token}"));
-            let response = self.send(&host, || Ok(authorized.clone())).await?;
+            let response = self.send_with(host, Some(&token), &build).await?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED {
                 return Ok(response);
             }
             self.tokens.lock().unwrap().remove(&key);
             if attempt == 0 {
-                token = self.bearer(zone, &host, service, principal, &key).await?;
+                token = self.bearer(zone, host, service, principal, &key).await?;
             }
         }
         Err(CrossZoneError::Auth { code: None, detail: format!("{service} of {host} refused a fresh token") })
@@ -363,7 +409,7 @@ impl CrossZoneClient {
         method: &str,
         params: Value,
     ) -> Result<Value, CrossZoneError> {
-        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let host = normalize_host(host);
         self.call_to(&DID::new("web", &host), &host, service, principal, method, params).await
     }
 
@@ -480,23 +526,41 @@ impl CrossZoneClient {
         krpc_answer(response).await
     }
 
-    /// Send over RTCP first unless it failed recently, then HTTPS. Only a failure to connect
+    /// For remote Zones, try RTCP first unless it failed recently. Only a failure to connect
     /// (or of a replayable request) moves on to the next transport; an answer never does.
     async fn send(
         &self,
         host: &str,
         build: impl Fn() -> Result<CrossZoneRequest, CrossZoneError>,
     ) -> Result<reqwest::Response, CrossZoneError> {
+        self.send_with(host, None, || ready(build())).await
+    }
+
+    async fn send_with<F>(
+        &self,
+        host: &str,
+        bearer: Option<&str>,
+        build: impl Fn() -> F,
+    ) -> Result<reqwest::Response, CrossZoneError>
+    where
+        F: Future<Output = Result<CrossZoneRequest, CrossZoneError>>,
+    {
         let order = self.transport_order(host);
         let mut last_error = String::new();
         for (index, transport) in order.iter().enumerate() {
-            let request = build()?;
+            let mut request = build().await?;
+            if let Some(token) = bearer {
+                request = request.header("authorization", format!("Bearer {token}"));
+            }
             let replayable = request.replayable();
             let (client, base) = match transport {
                 Transport::Rtcp => (self.rtcp.as_ref().expect("rtcp transport configured"), format!("http://{host}")),
                 Transport::Https => (
                     &self.https,
-                    self.origins.get(host).cloned().unwrap_or_else(|| format!("https://{host}")),
+                    self.local_origin(host)
+                        .or_else(|| self.origins.get(host))
+                        .cloned()
+                        .unwrap_or_else(|| format!("https://{host}")),
                 ),
             };
             let url = format!("{}{}", base.trim_end_matches('/'), request.path_and_query);
@@ -507,15 +571,18 @@ impl CrossZoneClient {
             if let Some(body) = request.body {
                 builder = builder.body(body);
             }
+            let path = request.path_and_query.split('?').next().unwrap_or_default();
             match builder.send().await {
                 Ok(response) => {
+                    log::debug!("cross-zone {transport:?} {host} {} {path}: {}", request.method, response.status());
                     self.record(host, *transport, true);
                     return Ok(response);
                 }
                 Err(error) => {
-                    log::info!("cross-zone {transport:?} to {host} failed: {error}");
+                    let error = error.without_url();
+                    log::info!("cross-zone {transport:?} to {host} {path} failed: {error}");
                     self.record(host, *transport, false);
-                    last_error = format!("{transport:?} {url}: {error}");
+                    last_error = format!("{transport:?} {host} {path}: {error}");
                     // A request that may have arrived is not sent again (the caller retries
                     // by its own idempotency key).
                     if !(error.is_connect() || replayable) || index + 1 == order.len() {
@@ -527,8 +594,15 @@ impl CrossZoneClient {
         Err(CrossZoneError::Transport(last_error))
     }
 
+    fn local_origin(&self, host: &str) -> Option<&String> {
+        self.local_zone
+            .as_ref()
+            .filter(|(local, _)| local == host)
+            .map(|(_, origin)| origin)
+    }
+
     fn transport_order(&self, host: &str) -> Vec<Transport> {
-        if self.rtcp.is_none() {
+        if self.rtcp.is_none() || self.local_origin(host).is_some() {
             return vec![Transport::Https];
         }
         let links = self.links.lock().unwrap();
@@ -543,6 +617,9 @@ impl CrossZoneClient {
     }
 
     fn record(&self, host: &str, transport: Transport, connected: bool) {
+        if self.local_origin(host).is_some() {
+            return;
+        }
         let mut links = self.links.lock().unwrap();
         let link = links
             .entry(host.to_string())
@@ -560,6 +637,10 @@ impl CrossZoneClient {
             (Transport::Https, false) => TransportState::Unreachable,
         };
     }
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn token_key(host: &str, service: &str, principal: &Principal) -> TokenKey {
@@ -608,7 +689,7 @@ async fn krpc_answer(response: reqwest::Response) -> Result<Value, CrossZoneErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cross_zone_auth::tests::{fixture, signer, DEVICE_KEY};
+    use crate::cross_zone_auth::tests::{fixture, signer, DEVICE_KEY, DEVICE_X};
     use crate::StaticCustodyResolver;
     use name_lib::DidDocType;
     use serde_json::json;
@@ -786,7 +867,12 @@ mod tests {
         client.request(&zone, "msg-center", &bob, get()).await.unwrap();
         assert_eq!(fake.logins.load(Ordering::SeqCst), 1);
         *fake.current.lock().unwrap() = "rotated".into();
-        let response = client.request(&zone, "msg-center", &bob, get()).await.unwrap();
+        let built_after_login = Mutex::new(Vec::new());
+        let response = client.request_host_with("target.example", "msg-center", &bob, || async {
+            built_after_login.lock().unwrap().push(fake.logins.load(Ordering::SeqCst));
+            Ok(get())
+        }).await.unwrap();
+        assert_eq!(built_after_login.into_inner().unwrap(), vec![1, 2]);
         assert_eq!(response.status(), 200);
         assert_eq!(fake.logins.load(Ordering::SeqCst), 2);
         // Another service or principal never reuses the token.
@@ -810,12 +896,15 @@ mod tests {
 
     /// A SOCKS5 entry that takes the credentials, then refuses every target the way the gateway
     /// does when RTCP cannot reach (or admit) it: `reply` is the SOCKS reply code.
-    async fn refusing_socks(reply: u8) -> String {
+    async fn refusing_socks(reply: u8) -> (String, Arc<AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accepted = connections.clone();
         tokio::spawn(async move {
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
+                accepted.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
                     let mut buf = [0u8; 512];
                     let _ = socket.read(&mut buf).await; // greeting
@@ -827,7 +916,63 @@ mod tests {
                 });
             }
         });
-        addr
+        (addr, connections)
+    }
+
+    #[tokio::test]
+    async fn runtime_routes_the_published_hostname_to_its_node_gateway() {
+        let mut runtime = crate::BuckyOSRuntime::new("homestation", None, crate::BuckyOSRuntimeType::KernelService);
+        let device = name_lib::DeviceDocument::new("ood1", DEVICE_X.into());
+        runtime.zone_id = DID::new("bns", "alice");
+        let mut zone = name_lib::ZoneDocument::new(
+            runtime.zone_id.clone(), DID::new("bns", "alice"), device.get_default_key().unwrap(),
+        );
+        zone.hostname = "alice.custom.example".into();
+        runtime.zone_config = Some(crate::ZoneConfig::from_zone_document(&zone, None).unwrap());
+        runtime.device_config = Some(device);
+        runtime.device_private_key = Some(jsonwebtoken::EncodingKey::from_ed_pem(DEVICE_KEY.as_bytes()).unwrap());
+        let local = target(3600, None);
+        let origin = serve(local.clone()).await;
+        runtime.node_gateway_port = reqwest::Url::parse(&origin).unwrap().port().unwrap();
+
+        let client = CrossZoneClient::from_runtime(&runtime).unwrap();
+        assert_eq!(client.local_origin(&zone.hostname), Some(&origin));
+        let bob = Principal::new(DID::from_str("did:web:bob.example").unwrap());
+        let feed = CrossZoneRequest::new(http::Method::GET, "/home/alice/feed");
+        let response = client.request_host(&zone.hostname, "homestation", &bob, feed).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(local.served.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn local_zone_bypasses_socks_while_remote_origin_uses_rtcp_first() {
+        let (socks, connections) = refusing_socks(4).await;
+        let local = target(3600, None);
+        let remote = target(3600, None);
+        let local_origin = serve(local.clone()).await;
+        let remote_origin = serve(remote.clone()).await;
+        let client = client(&remote_origin, Some(socks))
+            .with_local_zone("LOCAL.example.", local_origin)
+            .with_origins(HashMap::from([
+                ("local.example".into(), remote_origin.clone()),
+                ("target.example".into(), remote_origin),
+            ]));
+        let bob = Principal::new(DID::from_str("did:web:bob.example").unwrap());
+
+        let response = client.request_host("Local.Example.", "msg-center", &bob, get()).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(local.logins.load(Ordering::SeqCst), 1);
+        assert_eq!(local.served.load(Ordering::SeqCst), 1);
+        assert_eq!(connections.load(Ordering::SeqCst), 0);
+        assert_eq!(client.transport_state("local.example"), TransportState::Probing);
+        assert!(!client.links.lock().unwrap().contains_key("local.example"));
+
+        let response = client.request_host("target.example", "msg-center", &bob, get()).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(connections.load(Ordering::SeqCst) > 0);
+        assert_eq!(remote.logins.load(Ordering::SeqCst), 1);
+        assert_eq!(remote.served.load(Ordering::SeqCst), 1);
+        assert_eq!(client.transport_state("target.example"), TransportState::HttpsFallback);
     }
 
     #[tokio::test]
@@ -837,7 +982,8 @@ mod tests {
         for reply in [1u8, 4] {
             let fake = target(3600, None);
             let origin = serve(fake.clone()).await;
-            let client = client(&origin, Some(refusing_socks(reply).await));
+            let (socks, _) = refusing_socks(reply).await;
+            let client = client(&origin, Some(socks));
             let response = client.request(&zone, "msg-center", &bob, get()).await.unwrap();
             assert_eq!(response.status(), 200, "reply {reply}");
             assert_eq!(client.transport_state("target.example"), TransportState::HttpsFallback);

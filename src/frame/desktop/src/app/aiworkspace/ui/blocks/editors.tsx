@@ -14,8 +14,7 @@ import type { RichTextCollab } from '../../richtext/collab'
 import { RichTextEditor } from '../../richtext/RichTextEditor'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { authorLabel } from '../../state/guest'
-import { useDirectReadOnly, useEdit, useLoad, useLocksVersion, useStore, useVersion, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
-import { TableViewCell } from '../TableViewCell'
+import { useEdit, useLoad, useLocksVersion, useStore, useVersion, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
 import { RecordForm, type FormField } from '../table/RecordForm'
 import { UNSET, type Input } from '../values'
 import { consumeIntent, useEditorToolbar, useIntent } from './editorToolbar'
@@ -29,7 +28,7 @@ import type { ToolbarItem } from './registry'
 // ---- write locks (design §2.11)
 
 /** Lock bar + focus scope: the lock is released a moment after focus leaves the cell, and on close. */
-export function LockScope({ entity, onAcquired, children }: { entity: EntityEnvelope | undefined; onAcquired?: () => void; children: ReactNode }) {
+export function LockScope({ entity, onAcquired, intentKey, children }: { entity: EntityEnvelope | undefined; intentKey?: string; onAcquired?: () => void; children: ReactNode }) {
   const { t, time } = useAiwsText()
   const store = useStore()
   useLocksVersion()
@@ -61,6 +60,13 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
       }
     }
   }
+  const intent = useIntent(intentKey ?? '')
+  const attempted = useRef(0)
+  useEffect(() => {
+    if (!intent || (!intent.table && intent.value !== 'add') || !required || held || !canWrite || attempted.current === intent.seq) return
+    attempted.current = intent.seq
+    void acquire()
+  })
   const release = () => { if (entityId) void store.locks.release(entityId).then(() => store.versions.bump(['outline'])) }
   // on a canvas the lock is one control of the near toolbar: take it, or see who has it and give it back
   const lockItems: ToolbarItem[] | null = !entity || !required ? null : held
@@ -122,20 +128,6 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
 }
 
 // ---- table (the editor of a TableSource, with or without a Block)
-
-/** The table editor: through a table-view Cell (saved view configuration) or the source itself (data-source view). */
-export function TableEditor({ cellId, sourceId, source, readOnly, compact }: { cellId?: string; sourceId: string; source: EntityEnvelope | undefined; readOnly: boolean; compact?: boolean }) {
-  const ui = useWorkspaceUi()
-  const access = useWriteAccess(source)
-  const readOnlyNow = useDirectReadOnly()
-  const lockBlocks = (access.required && !access.held) || readOnlyNow
-  return (
-    <LockScope entity={readOnly ? undefined : source}>
-      <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} readOnly={readOnly || lockBlocks} compact={compact} annotations={ui.annotations}
-        onAnnotate={ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
-    </LockScope>
-  )
-}
 
 // ---- rich text
 

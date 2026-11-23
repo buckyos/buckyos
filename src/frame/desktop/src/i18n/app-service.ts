@@ -1,4 +1,12 @@
 export const appServiceEn: Record<string, string> = {
+  'app22.identity.index': 'AppIndex',
+  'app22.identity.hostname': 'AppHostName',
+  'app22.identity.name': 'AppName',
+  'app22.identity.instanceId': 'AppInstanceId',
+  'app22.identity.author': 'author',
+  'app22.identity.controller': 'controller',
+  'app22.identity.appDocId': 'AppDoc Object ID',
+  'app22.identity.appDid': 'AppDID',
   'app22.referrer': 'Referred by',
   'app22.error.TASK_TYPE_UNSUPPORTED':
     'This task is not an installation or upgrade task.',
@@ -361,6 +369,14 @@ export const appServiceEn: Record<string, string> = {
 }
 
 export const appServiceZh: Record<string, string> = {
+  'app22.identity.index': '应用索引',
+  'app22.identity.hostname': '应用主机名',
+  'app22.identity.name': '应用名称',
+  'app22.identity.instanceId': '应用实例 ID',
+  'app22.identity.author': '作者',
+  'app22.identity.controller': '控制者',
+  'app22.identity.appDocId': 'AppDoc 对象 ID',
+  'app22.identity.appDid': '应用 DID',
   'app22.referrer': '推荐来源',
   'app22.error.TASK_TYPE_UNSUPPORTED': '此任务不是应用安装或升级任务。',
   'sudo.account': '账号',

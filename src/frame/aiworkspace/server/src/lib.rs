@@ -4,7 +4,9 @@
 //! through the zone's NDM and application object buckets (Durable Data Schema §3).
 
 pub mod auth;
+mod availability;
 pub mod buckets;
+pub mod contacts;
 pub mod control;
 pub mod ext;
 pub mod media;
@@ -15,6 +17,7 @@ pub mod pages;
 pub mod presence;
 pub mod print;
 pub mod session;
+mod share;
 pub mod show;
 pub mod source;
 pub mod stream;
@@ -89,6 +92,7 @@ pub enum Wake {
 pub struct AppState {
     pub svc: Service,
     pub auth: Arc<dyn Authenticator>,
+    pub contacts: Arc<dyn contacts::ContactsClient>,
     pub limits: Limits,
     pub wish: Arc<wish::WishRuntime>,
     /// Non-public shows (third phase §11.3): in memory, ended by a restart.
@@ -125,13 +129,13 @@ impl AppState {
                 .lock()
                 .unwrap()
                 .entry(ws.workspace_id.clone())
-                .or_insert_with(|| watch::channel(ws.head_seq).0)
+                .or_insert_with(|| watch::Sender::new(ws.head_seq))
                 .clone();
-            let _ = tx.send(ws.head_seq);
+            tx.send_replace(ws.head_seq);
             let (id, epoch, wake_head) = (ws.workspace_id.clone(), ws.epoch.clone(), wake.clone());
             // called only after the commit is durable and published in memory
             ws.on_commit = Some(Box::new(move |seq| {
-                let _ = tx.send(seq);
+                tx.send_replace(seq);
                 if let Some(w) = &wake_head {
                     let _ = w.send(Wake::Head { workspace_id: id.clone(), epoch: epoch.clone(), head_seq: seq });
                 }
@@ -144,18 +148,18 @@ impl AppState {
                     let _ = w.send(Wake::Locks { workspace_id: id.clone(), counter: n });
                 }
             }));
-            let acl_tx = hook_acls.lock().unwrap().entry(ws.workspace_id.clone()).or_insert_with(|| watch::channel(ws.acl_rev()).0).clone();
-            let _ = acl_tx.send(ws.acl_rev());
+            let acl_tx = hook_acls.lock().unwrap().entry(ws.workspace_id.clone()).or_insert_with(|| watch::Sender::new(ws.acl_rev())).clone();
+            acl_tx.send_replace(ws.acl_rev());
             let (id, wake_acl) = (ws.workspace_id.clone(), wake.clone());
             ws.on_acl_change = Some(Box::new(move |rev| {
-                let _ = acl_tx.send(rev);
+                acl_tx.send_replace(rev);
                 if let Some(w) = &wake_acl {
                     let _ = w.send(Wake::Acl { workspace_id: id.clone(), acl_rev: rev });
                 }
             }));
         }));
         let library = aiworkspace_store::library::Library::open(&svc.data_dir.join("library.sqlite"), svc.objects.clone()).expect("the control library database opens");
-        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, acls, ndm_gateway: std::sync::OnceLock::new(), library,
+        Arc::new(AppState { svc, auth, contacts: Arc::new(contacts::RuntimeContacts), limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, acls, ndm_gateway: std::sync::OnceLock::new(), library,
                             rooms: session::Rooms::default(), media: media::Media::default(), streams: stream::Streams::default(),
                             presence: presence::Presence::default() })
     }
@@ -189,7 +193,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             // a stage left by an executor that went away (余下任务 D2)
             let st = state.clone();
             let _ = tokio::task::spawn_blocking(move || wish::release_lapsed(&st)).await;
-            if ticks % 5 == 0 {
+            if ticks % 5 == 1 {
                 // Sources on a schedule (D24)
                 let st = state.clone();
                 let _ = tokio::task::spawn_blocking(move || source::tick(&st)).await;
@@ -375,6 +379,12 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
     let Some(method) = req["method"].as_str().map(str::to_string) else { return rpc_error(seq, "method required") };
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     // public: the entry page describes a link before anyone signs in
+    if method == "share.callback" {
+        return match share::callback(&state,&params).await {
+            Ok(result) => Json(json!({"result": result, "sys":[seq]})).into_response(),
+            Err(e) => Json(json!({"result":{"ok":false,"error":failure_json(&e,None,&method)},"sys":[seq]})).into_response(),
+        };
+    }
     if method == "entry.describe" {
         return match describe_entry(&state, &params).await {
             Ok(v) => Json(json!({ "result": v, "sys": [seq] })).into_response(),
@@ -470,6 +480,8 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         }
     } else if method == "doc.wait_changes" {
         wait_changes(&state, &params, caller.as_ref().expect("authenticated above")).await
+    } else if method == "ws.issue_share" {
+        share::issue(&state,&params,caller.as_ref().expect("authenticated above")).await
     } else if method == "ws.join_entry" {
         join_entry(&state, &params, caller.as_ref().expect("authenticated above")).await
     } else if method == "asset.import_object" {
@@ -478,6 +490,10 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         ext::build(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if method == "ext.install" {
         ext::install(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
+    } else if matches!(method.as_str(), "availability.describe"|"availability.free_busy") {
+        availability::handle(&state,&method,&params,token.unwrap_or_default()).await
+    } else if method == "source.bind_contacts" {
+        source::bind_contacts(&state, caller.as_ref().expect("authenticated above"), &params).await
     } else if method == "ws.import" {
         import_package(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if method == "print.package" {
@@ -578,6 +594,8 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
     let ws_id = || s(p, "workspace_id");
     Ok(okv(match method {
         "ws.create" => svc.create_workspace_with(caller, p.get("title").and_then(Value::as_str).unwrap_or(""), p.get("workspace_id").and_then(Value::as_str), p.get("name").and_then(Value::as_str))?,
+        "ws.lookup" => svc.lookup_workspace(caller, s(p, "name")?)?,
+        "ws.select_name" => svc.select_workspace_name(caller, s(p, "name")?, ws_id()?)?,
         "ws.ensure" => svc.ensure_workspace(caller, s(p, "name")?, p.get("title").and_then(Value::as_str))?,
         // the service's clock for the clients' calibration (控件机制 TODO G16, Q10): any session, no Workspace
         "ws.time" => json!({ "ok": true, "server_ms": (svc.clock)() }),
@@ -638,6 +656,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
                     Some(v) => Ok(Some(v.as_i64().ok_or_else(|| WsError::invalid_op(format!("{k} must be an integer")))?)),
                 }
             };
+            if methods != ENTRY_GUEST { return Err(WsError::invalid_op("an authenticated entry requires ws.issue_share")); }
             ws.create_entry(caller, s(p, "group_id")?, methods, int("expires_at")?, int("max_joins")?)
         })?,
         "ws.list_entries" => state.with_ws(ws_id()?, |ws| ws.list_entries(caller))?,
@@ -700,7 +719,10 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
         "doc.prepare" => state.with_ws(ws_id()?, |ws| Ok(ws.prepare(p, caller)))?,
         "doc.commit" => state.with_ws(ws_id()?, |ws| Ok(ws.commit(p, caller, &CommitOpts::default())))?,
         "doc.stage" => state.with_ws(ws_id()?, |ws| ws.stage_commit(caller, p))?,
-        "doc.get_submission" => state.with_ws(ws_id()?, |ws| ws.get_submission(caller, s(p, "epoch")?, s(p, "idempotency_key")?))?,
+        "doc.get_submission" => state.with_ws(ws_id()?, |ws| match p.get("source_id").and_then(Value::as_str) {
+            Some(table) => ws.table_submission(caller, s(p, "epoch")?, s(p, "idempotency_key")?, table),
+            None => ws.get_submission(caller, s(p, "epoch")?, s(p, "idempotency_key")?),
+        })?,
         "doc.undo" => state.with_ws(ws_id()?, |ws| Ok(ws.undo(caller, p)))?,
         "doc.get_changes" => state.with_ws(ws_id()?, |ws| {
             let with_ops = p.get("filter").and_then(|f| f.get("detail")).and_then(Value::as_str) != Some("touched");
@@ -829,6 +851,7 @@ fn entry_of(p: &Value) -> WsResult<(&str, &str)> {
 
 fn entry_methods(bits: u8) -> EntryMethods {
     EntryMethods {
+        oauth: bits & aiworkspace_store::entries::ENTRY_OAUTH != 0,
         guest: bits & ENTRY_GUEST != 0,
         password: bits & ENTRY_PASSWORD != 0,
         self_register: bits & ENTRY_SELF_REGISTER != 0,
@@ -886,14 +909,23 @@ async fn join_entry(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResu
     let unavailable = || WsError::refused(Code::NotFound, Deny::EntryUnavailable, "the entry is closed, expired or does not exist");
     let entry_id = s(p, "entry_id")?.to_string();
     let (ws_id, local) = split_entry_id(&entry_id).map(|(w, l)| (w.to_string(), l.to_string())).ok_or_else(unavailable)?;
+    if !matches!(caller.class,CallerClass::Guest) {
+        return Err(WsError::refused(Code::PermissionDenied,Deny::EntryUnavailable,"sign in through the system invitation"));
+    }
     let settings = state.auth.sso_settings().await.map_err(|_| {
         WsError::refused(Code::PermissionDenied, Deny::AuthorizationUnavailable, "the Zone's sign-in settings could not be read; retry later")
     })?;
     let method = match caller.class {
-        CallerClass::External { .. } => Some(AuthMethod::DidFederation),
+
         CallerClass::Guest => None,
         _ => caller.auth_method.as_deref().and_then(AuthMethod::parse),
     };
+    if method == Some(AuthMethod::OAuth) && !settings.oauth_sources.iter().any(|s|s.enabled && Some(&s.id)==caller.oauth_source_id.as_ref()) {
+        return Err(WsError::refused(Code::PermissionDenied, Deny::ZoneMethodDisabled, "the OAuth provider is disabled"));
+    }
+    if matches!(caller.class, CallerClass::External { .. }) && method.is_none() {
+        return Err(WsError::refused(Code::PermissionDenied, Deny::EntryUnavailable, "external session has no sign-in source"));
+    }
     let (st, c) = (state.clone(), caller.clone());
     let joined = blocking(move || st.with_ws(&ws_id, |ws| ws.join_entry(&c, &local, |bits| entry_admits(bits, &settings, method)).map(|v| (v, ws.workspace_slug())))).await;
     let (mut v, slug) = joined.map_err(|e| if e.code == Code::NotFound && e.denial.is_none() { unavailable() } else { e })?;

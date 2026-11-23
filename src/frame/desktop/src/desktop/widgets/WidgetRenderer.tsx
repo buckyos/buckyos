@@ -1,6 +1,7 @@
 import { useI18n } from '../../i18n/provider'
 import type { WidgetItem } from '../../models/ui'
 import { ClockWidget } from './ClockWidget'
+import { MusicPlayerWidget } from './MusicPlayerWidget'
 import { NotepadWidget } from './NotepadWidget'
 import { SystemInfoWidget } from './SystemInfoWidget'
 import type { DesktopWidgetComponent } from './types'
@@ -9,6 +10,7 @@ const widgetRegistry: Record<string, DesktopWidgetComponent> = {
   clock: ClockWidget,
   notepad: NotepadWidget,
   'system-info': SystemInfoWidget,
+  'music-player': MusicPlayerWidget,
 }
 
 function UnsupportedWidget({ item }: { item: WidgetItem }) {
@@ -23,10 +25,10 @@ function UnsupportedWidget({ item }: { item: WidgetItem }) {
 
 export function DesktopWidgetRenderer({
   item,
-  onSaveNote,
+  onUpdateConfig,
 }: {
   item: WidgetItem
-  onSaveNote: (itemId: string, content: string) => void
+  onUpdateConfig: (itemId: string, patch: Record<string, unknown>) => void
 }) {
   const WidgetComponent = widgetRegistry[item.widgetType]
 
@@ -34,5 +36,5 @@ export function DesktopWidgetRenderer({
     return <UnsupportedWidget item={item} />
   }
 
-  return <WidgetComponent item={item} onSaveNote={onSaveNote} />
+  return <WidgetComponent item={item} onUpdateConfig={onUpdateConfig} />
 }

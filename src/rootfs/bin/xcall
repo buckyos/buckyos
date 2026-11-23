@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export BUCKYOS_ROOT=${BUCKYOS_ROOT:-$root}
+exec "$root/bin/opendan/agent_tool" xcall "$@"

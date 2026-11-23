@@ -109,6 +109,7 @@ export function parseToolbarConfig(value: unknown): ToolbarConfig | null {
       if (!entry || typeof entry !== 'object') return []
       const e = entry as Record<string, unknown>
       if (typeof e.action !== 'string' || !e.action) return []
+      if (zone === 'collab' && e.action === 'collab.jarvis' && (!e.id || e.id === e.action)) return []
       return [{
         ...(typeof e.id === 'string' ? { id: e.id } : {}), action: e.action, ...(e.args !== undefined ? { args: e.args as Json } : {}),
         ...(typeof e.title === 'string' ? { title: e.title } : {}), ...(typeof e.icon === 'string' ? { icon: e.icon } : {}),

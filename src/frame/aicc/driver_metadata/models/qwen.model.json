@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 10,
+  "revision_seq": 11,
   "required_features": [],
   "models": [
     {
@@ -358,7 +358,7 @@
       "id": "qwen3.8-flash",
       "llm": {
         "spec": "qwen-flash",
-        "effort": "xhigh",
+        "effort": "low",
         "default_effort": "xhigh",
         "supported_efforts": [
           "none",
@@ -388,7 +388,7 @@
       "id": "qwen3.8-omni-flash",
       "llm": {
         "spec": "qwen-flash",
-        "effort": "xhigh",
+        "effort": "low",
         "default_effort": "xhigh",
         "supported_efforts": [
           "none",

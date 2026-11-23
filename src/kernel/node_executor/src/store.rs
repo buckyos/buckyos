@@ -991,3 +991,29 @@ mod tests {
         assert_eq!(err.code, ExecutorErrorCode::CapacityExceeded);
     }
 }
+
+/// Decode with the same types as ledger recovery, without acquiring ownership,
+/// refreshing a state record, or reaping operations.
+pub fn validate_offline_record(name: &str, bytes: &[u8]) -> Result<(), String> {
+    macro_rules! read {
+        ($ty:ty) => {
+            serde_json::from_slice::<$ty>(bytes)
+                .map_err(|e| e.to_string())?
+                .schema_version
+        };
+    }
+    let version = match name {
+        "meta" => read!(StoreMeta),
+        "request" => read!(OpRequestRecord),
+        "state" => read!(OpStateRecord),
+        "result" => read!(OpResultRecord),
+        "tombstone" => read!(TombstoneRecord),
+        _ => return Err(format!("unknown record kind {name}")),
+    };
+    if version != STORE_SCHEMA_VERSION {
+        return Err(format!(
+            "actual schema {version}, target {STORE_SCHEMA_VERSION}"
+        ));
+    }
+    Ok(())
+}

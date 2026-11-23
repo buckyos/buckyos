@@ -331,6 +331,7 @@ General
 
 - `installed_at`：首次 boot scheduler 初始化 SystemConfig 的 Unix 时间，即系统安装时间，后续升级不得覆盖。
 - `updated_at`：BuckyOS 信息最后一次被系统安装/升级流程更新的 Unix 时间；首次安装时与 `installed_at` 相同。
+- Desktop 安装器在目标程序部署并通过启动检查后写入完成记录。System Config 根据该记录刷新主版本、完整构建号、渠道、目标平台和更新时间。零数据迁移的更新和同构建重装都走这条路径。普通重启保留上一次安装的时间。
 - Runtime 的 `nightly` channel 在产品 UI 中展示为 `Dev`。
 - Settings 前端通过 control-panel 的只读 RPC `system.buckyos_info.get` 获取该记录，Unix 秒时间戳转换为本地时间展示。
 - `Check for Updates`、`Update Now` 和 `Auto Update` 属于更新能力与用户设置，不写入 `BuckyOSInfo`。

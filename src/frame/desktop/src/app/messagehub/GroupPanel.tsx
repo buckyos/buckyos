@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { Crown, Link2, LogOut, MoreHorizontal, Pencil, Shield, Trash2, UserMinus, UserPlus } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { confirmGroupAction } from '../../components/conversation/confirmDialog'
 import { friendlyDidName } from './api/projection'
 import { InviteFailures } from './GroupDialogs'
-import { formatInviteLink, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT, inviteBlocked, participating, sortGroupMembers } from './groupModel'
+import { formatInviteLink, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT, inviteBlocked, MAX_HISTORY_BEFORE_JOIN, participating, sortGroupMembers } from './groupModel'
 import { groupErrorText } from '../../components/conversation/model/groupNotice'
 import { useNetworkDialogs } from '../../components/network/dialogs'
 import { hubButtonClass, hubInputClass, hubPrimaryButtonClass } from '../../components/conversation/DialogFocus'
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, GroupMember, MessageHubContext } from './types'
+import { issueGroupShare } from './datamodel/sessionApi'
 import { MemberAvatar } from './HubAvatar'
 import { GroupExtensionPanels } from './extensions/GroupExtensionPanels'
 import { GroupDisplaySection, GroupHooksSection } from './extensions/GroupDisplaySection'
@@ -18,24 +19,34 @@ import { groupHooks, mockPanelOrigins } from './extensions/model'
 
 const MUTE_MS = 3600_000
 
-/** Name and description of the group (`group.apply_config` on `profile`). */
+/**
+ * Name, description and how many earlier messages new members see
+ * (`group.apply_config` on `profile` and `default_session.history_before_join`).
+ */
 function ProfileEditor({ group, context, onDone }: { group: GroupInfo; context: MessageHubContext; onDone: () => void }) {
-  const { t } = useI18n(), store = useMessageHubStore()
+  const { t } = useI18n(), store = useMessageHubStore(), hintId = useId()
   const [name, setName] = useState(group.name), [description, setDescription] = useState(group.description)
+  const [history, setHistory] = useState(group.historyBeforeJoin === undefined ? '' : String(group.historyBeforeJoin))
   const [pending, setPending] = useState(false), [error, setError] = useState('')
+  const historyBeforeJoin = group.historyBeforeJoin === undefined ? undefined : /^\d+$/.test(history.trim()) ? Number(history.trim()) : Number.NaN
+  const historyValid = historyBeforeJoin === undefined || historyBeforeJoin <= MAX_HISTORY_BEFORE_JOIN
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (pending || !name.trim()) return
+    if (pending || !name.trim() || !historyValid) return
     setPending(true); setError('')
-    try { await store.updateGroupProfile(context, group.did, { name, description }); onDone() } catch (failure) { setError(groupErrorText(t, failure)) } finally { setPending(false) }
+    try { await store.updateGroupProfile(context, group.did, { name, description, historyBeforeJoin }); onDone() } catch (failure) { setError(groupErrorText(t, failure)) } finally { setPending(false) }
   }
   return <form onSubmit={event => void submit(event)} className="mt-2 space-y-2" data-testid="group-profile-form">
     <label className="block text-sm">{t('messagehub.group.name')}<input data-autofocus className={hubInputClass} value={name} maxLength={64} onChange={event => setName(event.target.value)} /></label>
     <label className="block text-sm">{t('messagehub.description')}<textarea className={hubInputClass} value={description} maxLength={500} rows={2} onChange={event => setDescription(event.target.value)} /></label>
+    {group.historyBeforeJoin !== undefined && <label className="block text-sm">{t('messagehub.group.historyBeforeJoin')}
+      <input type="number" inputMode="numeric" min={0} max={MAX_HISTORY_BEFORE_JOIN} step={1} className={hubInputClass} value={history} aria-invalid={!historyValid} aria-describedby={hintId} data-testid="group-history-before-join" onChange={event => setHistory(event.target.value)} />
+      <span id={hintId} className="mt-1 block text-xs text-[color:var(--cp-muted)]">{t('messagehub.group.historyBeforeJoinHint', undefined, { max: MAX_HISTORY_BEFORE_JOIN })}</span>
+    </label>}
     {error && <p role="alert" className="text-xs text-[color:var(--cp-danger)]">{error}</p>}
     <div className="flex justify-end gap-2">
       <button type="button" className={hubButtonClass} disabled={pending} onClick={onDone}>{t('messagehub.cancel')}</button>
-      <button type="submit" className={hubPrimaryButtonClass} disabled={pending || !name.trim()}>{t(pending ? 'messagehub.saving' : 'messagehub.save')}</button>
+      <button type="submit" className={hubPrimaryButtonClass} disabled={pending || !name.trim() || !historyValid}>{t(pending ? 'messagehub.saving' : 'messagehub.save')}</button>
     </div>
   </form>
 }
@@ -84,6 +95,10 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
   const { t, locale } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs()
   const [pending, setPending] = useState(false), [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
+  const [guestAudience, setGuestAudience] = useState<'open' | 'directed'>('directed')
+  const [guestRecipient, setGuestRecipient] = useState('')
+  const [guestLink, setGuestLink] = useState('')
+  const guestRequest = useRef<{ key: string; id: string } | null>(null)
   const [inviteToken, setInviteToken] = useState<string | null>(null), [copied, setCopied] = useState(false)
   const inviteLink = inviteToken ? formatInviteLink(entity.id, inviteToken) : null
   useEffect(() => { void store.ensureGroup(context, entity.id) }, [store, context.ownerDid, context.viewerDid, context.mode, entity.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -152,6 +167,24 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       <span className="min-w-0 flex-1">{t('messagehub.group.transferPending', undefined, { name: nameOf(group.pendingTransfer.memberDid) })}</span>
       <button type="button" disabled={pending} className="shrink-0 font-medium text-[color:var(--cp-accent)] disabled:opacity-40" onClick={() => void run(() => store.cancelGroupOwnerTransfer(context, group.did))}>{t('messagehub.group.cancelTransfer')}</button>
     </div>}
+    {group.hosted && group.can.invite && <form className="space-y-2 text-sm" onSubmit={e=>{
+      e.preventDefault()
+      void run(async () => {
+        const recipient = guestAudience === 'open' ? null : guestRecipient.trim()
+        const key = JSON.stringify([group.did, recipient])
+        if (guestRequest.current?.key !== key) guestRequest.current = { key, id: crypto.randomUUID() }
+        const result = await issueGroupShare(group.did, guestRequest.current.id, recipient)
+        setGuestLink(result.url)
+        guestRequest.current = null
+      })
+    }}>
+      <label>{t('messagehub.share.visitor','Visitor sign-in invitation')} <select value={guestAudience} onChange={e=>setGuestAudience(e.target.value as 'open'|'directed')}>
+        <option value="directed">{t('sso.share.directed','Directed only')}</option><option value="open">{t('messagehub.share.openInvitation','Open invitation')}</option>
+      </select></label>
+      {guestAudience==='directed' && <input required value={guestRecipient} aria-label={t('messagehub.share.recipient','Recipient DID or Google email')} placeholder={t('messagehub.share.recipient','Recipient DID or Google email')} onChange={e=>setGuestRecipient(e.target.value)}/>}
+      <button className={hubButtonClass} disabled={pending || (guestAudience === 'directed' && !guestRecipient.trim())}>{t('messagehub.share.issue','Create sign-in link')}</button>
+      {guestLink && <input readOnly value={guestLink} aria-label={t('messagehub.share.visitor','Visitor sign-in invitation')} onFocus={e=>e.target.select()}/>}
+    </form>}
     <div className="flex items-center justify-between gap-2">
       <h4 className="text-[13px] font-medium text-[color:var(--cp-muted)]">{t('messagehub.group.membersTitle')}{group.members ? ` · ${activeCount}` : ''}{group.members && waitingCount > 0 ? <span className="font-normal"> · {t('messagehub.group.waitingCount', undefined, { count: waitingCount })}</span> : null}</h4>
       {group.can.invite && <div className="flex items-center gap-1">
@@ -168,10 +201,9 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       </div>
     </div>}
     {group.lifecycle === 'deleted' ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.deleted')}</p>
-      : !group.hosted ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.remoteHost')}</p>
-      : !group.myRole ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.reason.group_not_member')}</p>
-      : !group.members ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.membersHidden')}</p>
-      : <ul className="mt-1 divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="group-members">
+      : group.hosted && !group.myRole ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.reason.group_not_member')}</p>
+      : !group.members ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t(group.hosted ? 'messagehub.group.membersHidden' : 'messagehub.group.remoteHost')}</p>
+      : <>{!group.hosted && <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.remoteHost')}</p>}<ul className="mt-1 divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="group-members">
         {members.map(member => {
           const removable = member.did !== context.ownerDid && member.role !== 'owner' && (member.state === 'active' ? group.can.remove : member.state === 'invited' && group.can.invite)
           return <li key={member.did} className="flex min-h-11 items-center gap-2.5 py-1" data-member-did={member.did} data-role={member.role} title={member.did}>
@@ -185,7 +217,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
             {removable && <button type="button" disabled={pending} onClick={() => void remove(member)} aria-label={`${t(member.state === 'active' ? 'messagehub.group.remove' : 'messagehub.group.cancelInvite')}: ${nameOf(member.did)}`} title={t(member.state === 'active' ? 'messagehub.group.remove' : 'messagehub.group.cancelInvite')} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-[color:var(--cp-muted)] hover:text-[color:var(--cp-danger)] disabled:opacity-40 md:min-h-8 md:min-w-8"><UserMinus size={15} /></button>}
           </li>
         })}
-      </ul>}
+      </ul></>}
     {group.myRole && group.lifecycle !== 'deleted' && <div className="mt-3 flex flex-wrap gap-2">
       {group.myRole === 'owner'
         ? <button type="button" disabled={pending} className={`${hubButtonClass} flex items-center gap-1.5 text-[color:var(--cp-danger)]`} onClick={() => void disband()}><Trash2 size={15} aria-hidden />{t('messagehub.group.delete')}</button>

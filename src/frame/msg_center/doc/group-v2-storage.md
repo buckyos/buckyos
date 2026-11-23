@@ -95,7 +95,7 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | group_seq | BIGINT | 否 | 无 | 内部扫描位置，不对外暴露 |
 | created_at_ms | BIGINT | 否 | 无 | 生成时间及到期判断 |
 
-索引：`idx_group_sync_reader(group_did,reader_did)`。仅三个键一起匹配且未过期时可用。
+索引：`idx_group_sync_reader(group_did,reader_did)`、`idx_group_sync_token_expiry(created_at_ms)`。仅三个键一起匹配且未过期时可用。宿主另在内存中保留最近拉取或确认的读者游标及成员周期，用于构造推送前驱。缓存丢失后由无正文提示或定时拉取重建。
 
 ### `group_create_operations`
 
@@ -132,7 +132,11 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | group_did | TEXT | 否 | 无 | 远端群 |
 | state_json | TEXT | 否 | 无 | `JoinedGroupState` JSON |
 
-联合主键 `(owner,group_did)`。JSON 包含 `schema_version=1`、owner_did、group_did、可见 session_cache、doc_cache、changes_token、session_seqs、last_read_seq、reported_read_seq 和 stopped。本表保存同步结果，不承担接受邀请的恢复队列。凭据不存于本表；自动登记从 `group_joined_bindings` 取得宿主并为每次请求生成 G3 签名，显式配置可从服务 Settings 取得 authorization/upstream。
+联合主键 `(owner,group_did)`。JSON 包含 `schema_version=1`、owner_did、group_did、可见 session_cache、doc_cache、changes_token、member_epoch、recent_push_tokens、session_seqs、last_read_seq、reported_read_seq 和 stopped。recent_push_tokens 随投影事务保存最近 32 个快路径已提交的后继游标，成员周期改变时清空。旧记录缺少该字段时视为空列表。凭据不存于本表；自动登记从 `group_joined_bindings` 取得宿主，通过跨 Zone 断言登录取得目标会话，显式配置可从服务 Settings 取得 authorization/upstream。
+
+### `joined_group_projections`
+
+每次同步或快投在投影事务中记录成员周期已知的消息位置，包括本人仅记 SENT 的消息。联合主键为 `(owner, group_did, member_epoch, session_key, session_seq)`，`obj_id` 记录该位置对应的对象。遇到已超出最近 32 个游标的重放时，成员按完整位置和 ObjId 判断该读者是否已提交过这条消息。旧数据库在启动时建表，缺少对应投影记录时沿用补拉。
 
 ### `group_joined_bindings`
 

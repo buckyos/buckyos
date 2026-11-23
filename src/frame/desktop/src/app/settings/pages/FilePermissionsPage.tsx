@@ -5,7 +5,7 @@ import { useI18n } from '../../../i18n/provider'
 import { installFileBrowserData } from '../../filebrowser/data/install'
 import { permissionSource } from '../../filebrowser/data/permissions'
 import type { AclRecordList, AclRecordView, PrincipalOption } from '../../filebrowser/data/permissions'
-import { toUiError } from '../../filebrowser/data/state'
+import { toUiError, type UiError } from '../../filebrowser/data/state'
 import { PermissionsDialog } from '../../filebrowser/dialogs/PermissionsDialog'
 import { levelLabel, principalLabel } from '../../filebrowser/dialogs/permissionLabels'
 import { ListCard, Section, SectionNote, StatusBadge } from '../components/shared/Section'
@@ -18,7 +18,7 @@ export function FilePermissionsPage() {
   const { t, locale } = useI18n()
   const [list, setList] = useState<AclRecordList | null>(null)
   const [users, setUsers] = useState<PrincipalOption[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<UiError | null>(null)
   const [filter, setFilter] = useState('')
   const [editing, setEditing] = useState<AclRecordView | null>(null)
   const [reload, setReload] = useState(0)
@@ -28,7 +28,7 @@ export function FilePermissionsPage() {
     const source = permissionSource()
     if (!source) return
     let alive = true
-    source.listAcls().then((result) => { if (alive) { setList(result); setError(null) } }).catch((err: unknown) => { if (alive) setError(toUiError(err).fallback) })
+    source.listAcls().then((result) => { if (alive) { setList(result); setError(null) } }).catch((err: unknown) => { if (alive) setError(toUiError(err)) })
     source.listUsers().then((result) => { if (alive) setUsers(result) }).catch(() => {})
     return () => { alive = false }
   }, [reload])
@@ -52,7 +52,7 @@ export function FilePermissionsPage() {
       await permissionSource()?.setAcl(record.path, { inherit: true, entries: [] }, record.revision)
       setReload((n) => n + 1)
     } catch (err) {
-      setError(toUiError(err).fallback)
+      setError(toUiError(err))
     }
   }
 
@@ -78,7 +78,7 @@ export function FilePermissionsPage() {
           className="mb-3 w-full rounded border bg-transparent p-2 text-sm"
         />
         {!permissionSource() && <SectionNote>{t('settings.filePermissions.unavailable', 'The file service is not available.')}</SectionNote>}
-        {error && <SectionNote tone="danger">{error}</SectionNote>}
+        {error && <SectionNote tone="danger">{t(error.messageKey, error.fallback)}</SectionNote>}
         {!list && !error && permissionSource() && <SectionNote>{t('settings.filePermissions.loading', 'Loading…')}</SectionNote>}
         {list && groups.length === 0 && <SectionNote>{filter ? t('settings.filePermissions.noMatch', 'No permissions match this filter.') : t('settings.filePermissions.empty', 'Nothing is shared yet. Open Files, right-click a file or folder and choose Permissions.')}</SectionNote>}
         <div className="space-y-4">

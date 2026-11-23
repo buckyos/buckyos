@@ -472,7 +472,7 @@ pub fn view_records(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, table
             None => format!("{} LIMIT -1 OFFSET {offset}", v.sql),
         };
         let mut st = conn.prepare(&sql).map_err(db_err)?;
-        let rows: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        let rows: Vec<String> = st.query_map(rusqlite::params_from_iter(v.params.iter().map(sql_param)), |r| r.get::<_, String>(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
         let records = rows.iter().map(|t| serde_json::from_str::<Value>(t).map_err(|e| WsError::io(e.to_string()))).collect::<WsResult<Vec<_>>>()?;
         Ok((records, total, v.diagnostics))
     })();

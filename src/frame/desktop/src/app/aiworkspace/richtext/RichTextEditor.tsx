@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom'
 import { Bold, Code, CodeXml, FileCode, Heading, Heading1, Heading2, Heading3, Image as ImageIcon, Italic, Link2, List, ListOrdered, ListTree, MessageSquarePlus, Minus, Pilcrow, Sparkles, Strikethrough, Table, TextQuote, Type } from 'lucide-react'
 import { UndoManager } from 'loro-crdt'
-import { createNodeFromLoroObj, LoroSyncPlugin, loroUndoPluginKey, type LoroDocType, type LoroNodeMapping } from 'loro-prosemirror'
+import { createNodeFromLoroObj, LoroSyncPlugin, loroSyncPluginKey, loroUndoPluginKey, type LoroDocType, type LoroNodeMapping } from 'loro-prosemirror'
 import { baseKeymap, chainCommands, exitCode, toggleMark, wrapIn } from 'prosemirror-commands'
 import { keymap } from 'prosemirror-keymap'
 import { DOMSerializer, Fragment, Node as PMNode, Slice, type MarkType, type NodeType, type Schema } from 'prosemirror-model'
@@ -21,7 +21,7 @@ import { aiwsT } from '../i18n'
 import type { CapturedAnchor } from '../anchors/registry'
 import { annotationsPlugin, captureAnchor, makeHost, richTextAnchors, selectionOf, setAnnotations, type Placement } from '../anchors/richtext'
 import { AnnotationGutter } from '../ui/annotations'
-import { consumeIntent, useEditorToolbar, useIntent } from '../ui/blocks/editorToolbar'
+import { consumeIntent, useEditorToolbar, useIntent, type Intent } from '../ui/blocks/editorToolbar'
 import { useFlowBlock } from '../ui/blocks/flowContext'
 import type { ToolbarItem } from '../ui/blocks/registry'
 import { registryEntries } from '../ui/canvas/catalog'
@@ -174,7 +174,7 @@ function buildView(
   host: HTMLElement, store: WorkspaceStore, collab: RichTextCollab, isEditable: () => boolean,
   setEmbeds: (update: (previous: Embeds) => Embeds) => void, onOpenEntity: (entityId: string) => void,
   annotations: { onPlaced: (placements: Placement[]) => void; onClick: (annotationId: string) => void },
-  onUpdate: () => void, extras: ViewExtras,
+  onUpdate: (view: EditorView, previous: EditorState) => void, extras: ViewExtras,
 ): { view: EditorView; dispose: () => void } {
   const schema = store.pmSchema
   const working = collab.working
@@ -405,6 +405,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   const [names] = useState(() => new Map<'f', (id: string) => string>())
   const codec = useMemo(() => markdownCodec(store.core, (id) => names.get('f')?.(id) ?? id), [store, names])
   const toggleSourceRef = useRef<() => void>(() => undefined)
+  const requestSourceExit = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     openEntityRef.current = onOpenEntity
@@ -424,16 +425,16 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   }, [editable])
 
   // the canvas opened this editor by typing or by double-clicking a spot: the text goes in, the caret goes there
-  const applyIntent = (view: EditorView, intent: string) => {
+  const applyIntent = (view: EditorView, { value, caretAt }: Intent) => {
     if (!editableRef.current) return
-    if (intent.startsWith('type:')) {
+    if (value.startsWith('type:')) {
       const end = Selection.atEnd(view.state.doc)
-      view.dispatch(view.state.tr.setSelection(end).insertText(intent.slice(5)))
-    } else if (intent.startsWith('caret:')) {
-      const [left, top] = intent.slice(6).split(',').map(Number)
-      const pos = view.posAtCoords({ left, top })
+      view.dispatch(view.state.tr.setSelection(end).insertText(value.slice(5)))
+    } else if (caretAt) {
+      view.dom.closest('.aiws-block-body')?.scrollTo(caretAt.scrollLeft, caretAt.scrollTop)
+      const pos = view.posAtCoords(caretAt)
       view.dispatch(view.state.tr.setSelection(pos ? TextSelection.near(view.state.doc.resolve(pos.pos)) : Selection.atEnd(view.state.doc)))
-    } else if (intent === 'newline') {
+    } else if (value === 'newline') {
       // "continue writing" below the text: an empty last line, or a new one
       const doc = view.state.doc
       const lastNode = doc.lastChild
@@ -462,10 +463,11 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     const result = buildView(host, store, collab, () => editableRef.current, setEmbeds, (id) => openEntityRef.current(id), {
       onPlaced: setPlacements,
       onClick: (id) => activateRef.current?.(id),
-    }, () => {
-      const view = viewRef.current
-      if (!view) return
+    }, (view, previous) => {
       const state = view.state
+      if (loroSyncPluginKey.getState(state)?.docSubscription && !loroSyncPluginKey.getState(previous)?.docSubscription) {
+        setBuilt({ view, host })
+      }
       const marks = store.pmSchema.marks
       const next = { strong: markActive(state, marks.strong), em: markActive(state, marks.em), strike: markActive(state, marks.strike), code: markActive(state, marks.code), block: blockKind(state), list: listKind(state) }
       setAt((previous) => (Object.entries(next).every(([key, value]) => previous[key as keyof typeof previous] === value) ? previous : next))
@@ -480,7 +482,6 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       onAnnotate: () => escapeHolder.get('a')?.() ?? false,
     })
     viewRef.current = result.view
-    setBuilt({ view: result.view, host })
     return () => {
       viewRef.current = null
       setBuilt(null)
@@ -500,7 +501,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       if (intent.value.startsWith('type:') && editableRef.current) document.execCommand('insertText', false, intent.value.slice(5))
       return
     }
-    applyIntent(built.view, intent.value)
+    applyIntent(built.view, intent)
   }, [built, intent, intentKey, source.on, root])
 
   useEffect(() => {
@@ -511,8 +512,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     const view = built?.view
     if (!view || view.isDestroyed) return
     if (source.on) {
-      setSource({ on: false, blockId: null })
-      writeSourcePref(collab.entityId, false)
+      requestSourceExit.current?.()
     } else {
       setSource({ on: true, blockId: blockIdAt(view.state.doc, view.state.selection.head) })
       writeSourcePref(collab.entityId, true)
@@ -634,7 +634,8 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       <div className="aiws-richtext-body">
         <div ref={hostRef} className="aiws-prose-host" hidden={source.on} />
         {source.on && built && (
-          <MarkdownSourceEditor key={collab.generation} view={built.view} codec={codec} editable={editable} startBlockId={source.blockId} onExit={leaveSource} subscribeDoc={docEvents.subscribe} />
+          <MarkdownSourceEditor key={collab.generation} view={built.view} codec={codec} editable={editable} startBlockId={source.blockId} onExit={leaveSource}
+            requestExit={requestSourceExit} subscribeDoc={docEvents.subscribe} collab={collab} />
         )}
         {!source.on && (
           <AnnotationGutter container={built?.host ?? null} marks={annotations} placements={placements} active={activeAnnotation}
@@ -653,7 +654,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
         </div>
       )}
       {[...embeds].map(([dom, reference]) => createPortal(renderEmbed(reference), dom))}
-      <DraftsBar entityId={collab.entityId} open={showDrafts} onToggle={() => setShowDrafts((value) => !value)} generation={collab.generation} />
+      <DraftsBar entityId={collab.entityId} open={showDrafts} onToggle={() => setShowDrafts((value) => !value)} generation={collab.generation} sourceMode={source.on} />
     </div>
   )
 }
@@ -683,7 +684,7 @@ function LinkPicker({ objects, cells, nameOf, onPick }: { objects: EntityEnvelop
   )
 }
 
-function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string; open: boolean; onToggle: () => void; generation: number }) {
+function DraftsBar({ entityId, open, onToggle, generation, sourceMode }: { entityId: string; open: boolean; onToggle: () => void; generation: number; sourceMode: boolean }) {
   const store = useStore()
   const { t, dateTime } = useAiwsText()
   const [tick, setTick] = useState(0)
@@ -691,7 +692,7 @@ function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string;
   useEffect(() => {
     const id = window.setTimeout(() => setDrafts(listDrafts(store.session.workspaceId, entityId)), 0)
     return () => window.clearTimeout(id)
-  }, [store, entityId, tick, generation])
+  }, [store, entityId, tick, generation, sourceMode])
   if (drafts.length === 0) return null
   return (
     <div className="aiws-drafts" data-testid="aiws-drafts">
@@ -699,8 +700,11 @@ function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string;
       {open && drafts.map((draft) => (
         <div key={draft.draft_id} className="aiws-draft">
           <div className="aiws-muted">{dateTime(draft.saved_at)} · {draft.reason}</div>
-          <pre>{astPlainText(draft.ast) || JSON.stringify(draft.ast)}</pre>
-          <details><summary>{t('aiworkspace.richtext.drafts.exportJson')}</summary><textarea readOnly rows={6} value={JSON.stringify(draft.ast, null, 2)} /></details>
+          {typeof draft.markdown === 'string' && <textarea readOnly rows={6} aria-label={t('aiworkspace.richtext.source.label')} value={draft.markdown} />}
+          {draft.ast !== undefined && <>
+            <pre>{astPlainText(draft.ast) || JSON.stringify(draft.ast)}</pre>
+            <details><summary>{t('aiworkspace.richtext.drafts.exportJson')}</summary><textarea readOnly rows={6} value={JSON.stringify(draft.ast, null, 2)} /></details>
+          </>}
           <button type="button" onClick={() => { deleteDraft(draft.draft_id); setTick((value) => value + 1) }}>{t('aiworkspace.richtext.drafts.delete')}</button>
         </div>
       ))}

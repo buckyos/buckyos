@@ -4,13 +4,20 @@ use log::{info, warn};
 
 mod aiworkspace_client;
 mod control_panel;
+pub mod completed_install;
 mod cross_zone_auth;
 mod cross_zone_client;
 mod device_identity;
 mod group_hook;
 mod homestation_client;
+pub mod host_account;
 pub mod bucket_client;
 mod hybrid_sso;
+mod federation_owner;
+pub use federation_owner::resolve_federation_owner;
+mod oauth;
+mod resource_share;
+pub use resource_share::*;
 mod msg_center_client;
 mod msg_contact;
 mod msg_notify;
@@ -48,6 +55,9 @@ mod aicc_usage_log;
 mod aicc_video;
 mod app_availability;
 mod app_doc;
+pub mod object_extensions;
+pub mod owner_record_ref;
+pub mod owner_resource;
 mod ext_tools;
 pub mod ext_tools_install;
 pub mod pikg;
@@ -110,6 +120,7 @@ pub use bucket_client::{
     BUCKET_EVENT_PREFIX, BUCKET_INDEX_RDB_INSTANCE_ID,
 };
 pub use hybrid_sso::*;
+pub use oauth::*;
 pub use msg_center_client::*;
 pub use msg_contact::*;
 pub use msg_notify::*;

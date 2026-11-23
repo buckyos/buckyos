@@ -372,6 +372,18 @@ impl<'a> CallResolver<'a> {
         let capabilities = provider_rule.as_ref().map_or(capabilities.clone(), |rule| {
             rule.action.narrow(&BTreeSet::new(), &capabilities).capabilities
         });
+        if let AiccCall::ImagesGenerate(request) = canonical_request {
+            if request
+                .n
+                .map(u64::from)
+                .zip(capabilities.get("max_images").and_then(Value::as_u64))
+                .is_some_and(|(requested, limit)| requested > limit)
+            {
+                return Err(CallLoweringError::InvalidCanonicalRequest(
+                    "image count exceeds the selected model or channel max_images limit".into(),
+                ));
+            }
+        }
         let model_max_output_tokens = capabilities
             .get("max_output_tokens")
             .and_then(Value::as_u64);
@@ -2917,6 +2929,82 @@ mod tests {
     }
 
     #[test]
+    fn seedream_flash_single_image_omits_unsupported_sequential_parameters() {
+        let catalog = metadata_snapshot();
+        let codecs = all_codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        for (profile, model, origin) in [
+            (
+                "doubao-agent-plan",
+                "doubao-seedream-5.0-flash",
+                "doubao-seedream-5.0-flash",
+            ),
+            (
+                "doubao",
+                "doubao-seedream-5-0-flash-260915",
+                "doubao-seedream-5.0-flash",
+            ),
+            (
+                "doubao",
+                "doubao-seedream-5-5-261028",
+                "doubao-seedream-5.5",
+            ),
+            (
+                "doubao-agent-plan",
+                "doubao-seedream-5-0-pro",
+                "doubao-seedream-5-0-pro",
+            ),
+            (
+                "doubao",
+                "doubao-seedream-5-0-pro-260628",
+                "doubao-seedream-5-0-pro",
+            ),
+        ] {
+            for n in [None, Some(1), Some(4)] {
+                let exact = format!("{model}@primary");
+                let mut route = decision(&exact);
+                route.trace.requested_model = "images.generate".into();
+                route.trace.requested_model_type = RouteModelKind::Exact;
+                route.selected.provider_instance_name = "primary".into();
+                route.selected.model_driver_id = "doubao".into();
+                route.selected.origin_model_id = origin.into();
+                route.selected.provider_model_id = model.into();
+                route.selected.provider_profile_id = profile.into();
+                route.selected.protocol_adapter_id = "doubao-responses".into();
+                route.selected.operation = "ark.images.generate".into();
+                route.selected.enabled_capabilities = vec!["image_generation".into()];
+                let mut request = buckyos_api::TextToImageInvokeRequest::new(exact, "A blue square");
+                request.n = n;
+                let mut target = target("test-secret");
+                target.provider_rules_id = Some(profile.into());
+                let lowered = resolver.lower(&route, &AiccCall::ImagesGenerate(request), target);
+                if n == Some(4) {
+                    assert!(
+                        matches!(lowered, Err(CallLoweringError::InvalidCanonicalRequest(ref message)) if message.contains("max_images"))
+                    );
+                    continue;
+                }
+                let lowered = lowered.unwrap();
+                let wire = codecs
+                    .encode(
+                        "doubao-responses",
+                        "ark.images.generate",
+                        ApiType::ImageTextToImage,
+                        &lowered.input,
+                        &lowered.context,
+                    )
+                    .unwrap();
+                let crate::protocol::HttpBody::Json(body) = wire.body else {
+                    panic!("expected JSON")
+                };
+                assert_eq!(body["model"], model);
+                assert!(body.get("sequential_image_generation").is_none());
+                assert!(body.get("sequential_image_generation_options").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn every_builtin_provider_operation_has_a_golden_lowering_binding() {
         let codecs = all_codecs();
         let providers = built_in_rules();
@@ -2988,7 +3076,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 131);
+        assert_eq!(golden.len(), 132);
         assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(

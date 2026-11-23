@@ -135,7 +135,7 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup, onEntit
           <p className="text-xs mt-1" style={{ color: 'var(--cp-muted)' }}>
             {typeLabels[entity.type]}
             {entity.isOnline && (
-              <span style={{ color: 'var(--cp-success)' }}> &bull; online</span>
+              <span style={{ color: 'var(--cp-success)' }}> &bull; {t('messagehub.agentPanel.online')}</span>
             )}
           </p>
           {entity.statusText && (

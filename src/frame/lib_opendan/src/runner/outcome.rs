@@ -429,12 +429,13 @@ pub(super) fn classify_done(
     replied: bool,
     site: &CallSite,
     completed: u64,
-    explicit_end: bool,
+    final_report: Option<ReportSubmission>,
 ) -> Next {
     let mut next = Next {
         run_ended: true,
         kind: FinishKind::Done,
-        answer,
+        answer: final_report.as_ref().map(ReportSubmission::delivery_text).or(answer),
+        report: final_report,
         ..Default::default()
     };
     match next_behavior.as_deref() {
@@ -510,12 +511,12 @@ pub(super) fn classify_done(
             }
         },
         _ if site.child => returns(&mut next, "ok", None),
-        _ if explicit_end && cfg.session.policy.completion == CompletionPolicy::ExplicitReport => {
+        _ if next.report.is_some() && cfg.session.policy.completion == CompletionPolicy::ExplicitReport => {
             next.finished = true;
             next.outcome = Some(Outcome::Succeeded);
             next.turn_end = Some(TurnStatus::Completed);
         }
-        _ if explicit_end => decide_end(cfg, &mut next, completed + 1),
+        _ if next.report.is_some() => decide_end(cfg, &mut next, completed + 1),
         _ if cfg.session.policy.completion == CompletionPolicy::ExplicitReport => {
             if nobody_answers(cfg) {
                 next.finished = true;
@@ -531,6 +532,20 @@ pub(super) fn classify_done(
             }
         }
         _ => decide_end(cfg, &mut next, completed + 1),
+    }
+    if let Some(report) = next.report.as_ref().filter(|report| {
+        !site.child && cfg.session.kind == SessionKind::Work
+            && matches!(report.outcome, Some(ReportOutcome::Failed | ReportOutcome::Blocked))
+    }) {
+        if next.finished {
+            next.outcome = Some(Outcome::Failed);
+        }
+        next.turn_end = Some(TurnStatus::Failed);
+        next.error = Some(json!({
+            "kind": "reported_failure",
+            "outcome": report.outcome,
+            "message": crate::todos::one_line(&report.report),
+        }));
     }
     next
 }
@@ -686,11 +701,6 @@ pub(super) async fn handle_context_outcome(
             super::rounds::flush_counts(sh, &lc.run, &lc.rounds).await?;
             super::reports::sync_xml(sh, &lc.run, &snapshot).await?;
             let final_report = super::reports::final_report(&lc.run)?;
-            let explicit_end = final_report.is_some();
-            let answer = final_report
-                .as_ref()
-                .map(ReportSubmission::delivery_text)
-                .or(answer);
             next = classify_done(
                 &cfg,
                 lc.behavior,
@@ -699,9 +709,8 @@ pub(super) async fn handle_context_outcome(
                 replied,
                 &site,
                 completed,
-                explicit_end,
+                final_report,
             );
-            next.report = final_report;
             next.usage = Some(usage);
             next.reply_error = reply_error;
             if is_ui_reply(&cfg, &snapshot, site.child) {
@@ -846,14 +855,13 @@ pub(super) async fn handle_context_outcome(
                     &cfg,
                     lc.behavior,
                     None,
-                    Some(report.delivery_text()),
+                    None,
                     true,
                     &site,
                     completed,
-                    true,
+                    Some(report),
                 );
                 next.usage = Some(usage.clone());
-                next.report = Some(report);
                 status = RunStatus::Completed;
             } else if stop {
                 next.kind = FinishKind::Stopped;

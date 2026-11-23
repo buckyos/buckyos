@@ -17,20 +17,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
-const DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS user_prefs (
-  principal   TEXT PRIMARY KEY,
-  prefs_json  TEXT NOT NULL,
-  revision    INTEGER NOT NULL,
-  updated_ms  INTEGER NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS user_opened (
-  principal    TEXT NOT NULL,
-  workspace_id TEXT NOT NULL,
-  opened_ms    INTEGER NOT NULL,
-  PRIMARY KEY (principal, workspace_id)
-) WITHOUT ROWID;
-"#;
+const DDL: &str = include_str!("users.sql");
 
 /// The whole preference object of one person, canonical JSON.
 pub const MAX_PREFS_BYTES: usize = 256 * 1024;
@@ -62,9 +49,9 @@ fn check_key(k: &str) -> WsResult<()> {
 impl UserStore {
     pub fn open(path: &Path) -> WsResult<UserStore> {
         let conn = Connection::open(path).map_err(db_err)?;
+        buckyos_sqlite_schema::initialize(&conn, 1, &[DDL]).map_err(db_err)?;
         conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
         conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
-        conn.execute_batch(DDL).map_err(db_err)?;
         Ok(UserStore { conn: Mutex::new(conn) })
     }
 

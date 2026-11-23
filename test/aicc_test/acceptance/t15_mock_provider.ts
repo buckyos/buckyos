@@ -323,28 +323,28 @@ function discoveryFixture(
         ? {
           task_type: [
             ...(documentedModels?.llm?.includes(id)
-              ? ["TextGeneration"]
+              ? ["text_generation"]
               : []),
             ...(documentedModels?.["vision.ocr"]?.includes(id)
-              ? ["VisualQuestionAnswering"]
+              ? ["visual_question_answering"]
               : []),
             ...(documentedModels?.["embedding.multimodal"]?.includes(id)
-              ? ["ImageEmbedding"]
+              ? ["image_embedding"]
               : []),
             ...(documentedModels?.["image.txt2img"]?.includes(id)
-              ? ["TextToImage"]
+              ? ["text_to_image"]
               : []),
             ...(documentedModels?.["image.img2img"]?.includes(id)
-              ? ["ImageToImage"]
+              ? ["image_to_image"]
               : []),
             ...(documentedModels?.["video.generate"]?.includes(id)
-              ? ["MultimodalToVideo"]
+              ? ["multimodal_to_video"]
               : []),
             ...(documentedModels?.["video.edit"]?.includes(id)
-              ? ["VideoEditing"]
+              ? ["video_editing"]
               : []),
             ...(documentedModels?.["video.extend"]?.includes(id)
-              ? ["VideoExtension"]
+              ? ["video_extension"]
               : []),
           ],
           domain: id.includes("seedream")
@@ -1572,8 +1572,8 @@ export function createT15MockHandler(
         if (body.max_output_tokens !== 2048) {
           validationErrors.push("Doubao Seed derived vision requests require max_output_tokens=2048");
         }
-        if (reasoning?.effort !== "minimal") {
-          validationErrors.push("Doubao Seed derived vision requests require reasoning.effort=minimal");
+        if (!["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(reasoning?.effort))) {
+          validationErrors.push("Doubao Seed reasoning.effort must use an official reasoning level");
         }
       }
       requests.push({

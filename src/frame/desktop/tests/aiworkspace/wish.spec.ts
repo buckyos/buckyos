@@ -26,6 +26,13 @@ async function setPrompt(api: Api, ws: { workspace_id: string; epoch: string }, 
   expect(r.status, JSON.stringify(r)).toBe('accepted')
 }
 
+/** The arrows between the card's tabs: each stage done, next or later. */
+async function expectSteps(card: ReturnType<typeof wishCard>, analyze: string, code: string, run: string) {
+  await expect(card.getByTestId('aiws-wish-step-analyze')).toHaveAttribute('data-state', analyze)
+  await expect(card.getByTestId('aiws-wish-step-code')).toHaveAttribute('data-state', code)
+  await expect(card.getByTestId('aiws-wish-step-run')).toHaveAttribute('data-state', run)
+}
+
 async function setRevenue(api: Api, ws: { workspace_id: string; epoch: string }, record: string, value: number) {
   const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', record, 'revenue')).rev
   const r = await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: record, field_id: 'revenue', value, expect: { rev } }] }])
@@ -51,6 +58,8 @@ test('§5 1/2/5/6/7/14: a new wish — analyze, code and run from its card; each
   await expect(next).toHaveText('分析需求')
   await expect(card.getByTestId('aiws-wish-run')).toHaveCount(0)
   await expect(card.getByTestId('aiws-wish-prompt')).toHaveValue(/原始销售数据/)
+  await expectSteps(card, 'next', 'later', 'later')
+  await expect(card.getByTestId('aiws-wish-step-analyze')).toHaveAttribute('title', '分析需求：下一步')
   const head = await api.headSeq(ALICE, ws.workspace_id)
 
   // 2. analyze: written as it ends (one commit), the card goes to "需求", its record says when, how long, what it used
@@ -77,6 +86,7 @@ test('§5 1/2/5/6/7/14: a new wish — analyze, code and run from its card; each
   await expect(next).toHaveAttribute('data-action', 'code')
   await expect(next).toHaveText('编写宏代码')
   await expect(next).toHaveAttribute('data-primary', 'true')
+  await expectSteps(card, 'done', 'next', 'later')
   // nothing to apply, anywhere
   await expect(page.getByTestId('aiws-workspace').getByRole('button', { name: '应用', exact: true })).toHaveCount(0)
   // its contract opens from the record: the checks with their level
@@ -104,6 +114,7 @@ test('§5 1/2/5/6/7/14: a new wish — analyze, code and run from its card; each
   await expect(records(page).first()).toContainText('试运行产出 2 项，1/1 项检查通过')
   await expect(next).toHaveAttribute('data-action', 'run')
   await expect(next).toHaveText('执行宏')
+  await expectSteps(card, 'done', 'done', 'next')
   // the macro opens from the record
   await records(page).first().locator('[data-testid="aiws-wish-record-link"][data-kind="program"]').click()
   await expect(dialog).toHaveAttribute('data-kind', 'program')
@@ -114,6 +125,7 @@ test('§5 1/2/5/6/7/14: a new wish — analyze, code and run from its card; each
   const ran = await wishStep(page, api, ALICE, ws.workspace_id, WISH, 'run')
   await expect(card).toHaveAttribute('data-tab', 'results')
   await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(1)')
+  await expectSteps(card, 'done', 'done', 'done')
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 3)
   expect(ran).toMatchObject({ stage: 'run', action: 'run', ok: true, summary: { created: 2, updated: 0 } })
   expect(ran.usage).toBeUndefined() // the macro used no AI
@@ -133,6 +145,7 @@ test('§5 1/2/5/6/7/14: a new wish — analyze, code and run from its card; each
   await page.route(`${scriptedModel().baseUrl}/chat/completions`, (route) => { modelCalls += 1; return route.abort() })
   await setRevenue(api, ws, 's-1', 500000)
   await expect(card.getByTestId('aiws-wish-results-stale')).toBeVisible()
+  await expectSteps(card, 'done', 'done', 'next')
   const again = await wishRun(page, api, ALICE, ws.workspace_id, WISH)
   expect(again).toMatchObject({ ok: true, summary: { created: 0, updated: 2 } })
   await expect(card.getByTestId('aiws-wish-tab-results')).toHaveText('结果(2)')
@@ -660,6 +673,39 @@ test('"使用我的 Agent" in the properties hands a run to the viewer\'s own Ag
   const [run] = await runs()
   expect(run.context.executor).toEqual({ kind: 'agent', principal: 'codeassistant.test.buckyos.io', did: 'did:buckyos:agent:codeassistant', owner: 'alice' })
   expect(run.aicc).toEqual({ mode: 'current_user', user_id: 'alice', operator_id: 'alice' })
+  expect((await api.rpc(ALICE, 'proc.cancel', { workspace_id: ws.workspace_id, run_id: run.run_id })).state).toBe('cancelled')
+})
+
+test('the executor beside the next step: this browser or the viewer\'s own Agent, the same choice as the properties; a run then goes to the Agent', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `wish card executor ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const card = wishCard(page, WISH)
+  const pick = card.getByTestId('aiws-wish-executor')
+  await expect(pick).toHaveAttribute('data-mode', 'local')
+  await expect(pick).toHaveAttribute('title', '执行位置：本浏览器')
+  await pick.click()
+  const menu = page.getByTestId('aiws-wish-executor-menu')
+  await expect(menu.getByRole('menuitemcheckbox')).toHaveText(['本浏览器', '使用我的 Agent'])
+  await expect(menu.getByTestId('aiws-ctl-menu-exec-local')).toHaveAttribute('aria-checked', 'true')
+  // a second press on the button closes it
+  await pick.click()
+  await expect(menu).toHaveCount(0)
+  await pick.click()
+  await menu.getByTestId('aiws-ctl-menu-exec-hosted').click()
+  await expect(menu).toHaveCount(0)
+  await expect(pick).toHaveAttribute('data-mode', 'hosted')
+  await card.getByTestId('aiws-wish-title').click()
+  await openProperties(page)
+  await expect(page.getByTestId('aiws-wish-props-exec-mode')).toHaveValue('hosted')
+  await page.keyboard.press('Escape')
+  await card.getByTestId('aiws-wish-next').click()
+  const runs = async () => (await api.rpc(ALICE, 'proc.list', { workspace_id: ws.workspace_id, wish_id: WISH })).runs
+  await expect.poll(async () => (await runs())[0]?.dispatch?.status).toBe('unavailable')
+  const [run] = await runs()
+  expect(run.context.executor).toMatchObject({ kind: 'agent', did: 'did:buckyos:agent:codeassistant' })
+  // under way there is only "取消": nothing to choose
+  await expect(card.getByTestId('aiws-wish-next')).toHaveAttribute('data-action', 'cancel')
+  await expect(pick).toHaveCount(0)
   expect((await api.rpc(ALICE, 'proc.cancel', { workspace_id: ws.workspace_id, run_id: run.run_id })).state).toBe('cancelled')
 })
 

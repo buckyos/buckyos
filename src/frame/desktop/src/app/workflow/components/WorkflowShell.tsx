@@ -1,5 +1,6 @@
 /* ── Workflow shell – responsive layout ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useCallback, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { Menu, X } from 'lucide-react'
@@ -13,6 +14,7 @@ import { AIPromptPage } from '../pages/AIPromptPage'
 import type { WorkflowSelection } from '../types'
 
 export function WorkflowShell() {
+  const { t } = useI18n()
   const [selection, setSelection] = useState<WorkflowSelection>({ kind: 'home' })
   const [importOpen, setImportOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -63,6 +65,7 @@ export function WorkflowShell() {
         >
           <button
             type="button"
+            aria-label={t('workflow.definitions')}
             onClick={() => setDrawerOpen(true)}
             className="flex h-7 w-7 items-center justify-center rounded-lg"
             style={{
@@ -74,7 +77,7 @@ export function WorkflowShell() {
             <Menu size={14} />
           </button>
           <div className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-            Workflow
+            {t('apps.workflow')}
           </div>
         </div>
       )}
@@ -111,6 +114,7 @@ export function WorkflowShell() {
             >
               <button
                 type="button"
+                aria-label={t('common.close')}
                 onClick={closeDrawer}
                 className="flex h-7 w-7 items-center justify-center rounded-lg"
                 style={{ color: 'var(--cp-muted)' }}

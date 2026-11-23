@@ -190,7 +190,8 @@ impl ServerConfig {
 
 /// Builds the buckyos-mode config: the whole `cyfs:///` namespace is backed
 /// by `data_root` ($BUCKYOS_ROOT/data) — every visible first-level directory
-/// becomes an export root — and filedb + staging live in `data_root/.fsdb`
+/// becomes an export root, a symlinked one exported as its target directory —
+/// and filedb + staging live in `data_root/.fsdb`
 /// (dot-prefixed, so the db itself never shows up in the namespace).
 ///
 /// The export list is a startup snapshot: directories created directly under
@@ -207,13 +208,35 @@ pub fn config_from_data_root(data_root: &Path) -> std::io::Result<ServerConfig> 
         if name.starts_with('.') || name.starts_with('@') {
             continue;
         }
-        if !entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        let path = if file_type.is_symlink() {
+            match link_target_dir(&entry.path()) {
+                Some(path) => path,
+                None => continue,
+            }
+        } else if file_type.is_dir() {
+            entry.path()
+        } else {
             continue;
-        }
-        exports.push(ExportRoot { id: name, path: entry.path() });
+        };
+        exports.push(ExportRoot { id: name, path });
     }
     exports.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(ServerConfig::new(data_root.join(".fsdb"), exports))
+}
+
+fn link_target_dir(link: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(link).ok().filter(|p| p.is_dir())?;
+    #[cfg(windows)]
+    if let Some(s) = real.to_str() {
+        if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+            return Some(PathBuf::from(format!(r"\\{}", unc)));
+        }
+        if let Some(local) = s.strip_prefix(r"\\?\").filter(|l| l.get(..2).is_some_and(crate::fsutil::is_drive_name)) {
+            return Some(PathBuf::from(local));
+        }
+    }
+    Some(real)
 }
 
 /// Parses `name=/abs/path` export specs from the CLI.
@@ -261,6 +284,40 @@ mod tests {
         let cfg = config_from_data_root(&fresh).unwrap();
         assert!(cfg.exports.is_empty());
         assert!(fresh.is_dir());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn data_root_follows_symlinked_dirs() {
+        let tmp = std::env::temp_dir().join(format!("nfs_cfg_link_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let data = tmp.join("data");
+        std::fs::create_dir_all(data.join("home")).unwrap();
+        std::fs::create_dir_all(tmp.join("photos")).unwrap();
+        std::fs::write(tmp.join("photos").join("a.jpg"), b"x").unwrap();
+        #[cfg(unix)]
+        let link = |target: &Path, at: &Path| std::os::unix::fs::symlink(target, at).unwrap();
+        #[cfg(windows)]
+        let link = |target: &Path, at: &Path| {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(at)
+                .arg(target)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        link(&tmp.join("photos"), &data.join("Photo"));
+        link(&tmp.join("missing"), &data.join("Gone"));
+
+        let cfg = config_from_data_root(&data).unwrap();
+        let ids: Vec<&str> = cfg.exports.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["Photo", "home"]);
+        let photo = &cfg.exports[0].path;
+        assert!(!std::fs::symlink_metadata(photo).unwrap().file_type().is_symlink());
+        assert!(!photo.to_string_lossy().starts_with(r"\\?\"));
+        assert!(photo.join("a.jpg").is_file());
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 

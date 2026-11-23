@@ -189,7 +189,10 @@ export function quotaWindow(period: QuotaPeriod, atMs: number): { startMs: numbe
 }
 
 /** `1.2K`, `3.4M`; exact integers below 1,000. */
-export function formatTokens(value: number): string {
+export function formatTokens(value: number, locale = 'en'): string {
+  if (locale !== 'en' && locale !== 'en-US') {
+    return value.toLocaleString(locale, { notation: 'compact', maximumFractionDigits: 1 })
+  }
   const abs = Math.abs(value)
   const scale = (n: number, suffix: string) => {
     const scaled = value / n
@@ -202,8 +205,8 @@ export function formatTokens(value: number): string {
 }
 
 /** Exact integer with thousands separators (shown next to every abbreviated value). */
-export function formatTokensExact(value: number): string {
-  return Math.round(value).toLocaleString('en-US')
+export function formatTokensExact(value: number, locale = 'en'): string {
+  return Math.round(value).toLocaleString(locale)
 }
 
 /** `50k`, `1.5M`, `2,000,000` → a non-negative integer; `null` when not a token amount. */

@@ -31,7 +31,12 @@ impl Drop for Server {
 impl Server {
     async fn start(dir: &std::path::Path, nfs: &Nfs) -> Server {
         let auth = dir.join("tokens.json");
-        std::fs::write(&auth, json!({ "tokens": { "tok-alice": { "principal": "alice" }, "tok-bob": { "principal": "bob" } } }).to_string()).unwrap();
+        std::fs::write(&auth, json!({ "tokens": {
+            "tok-alice": { "principal": "alice" }, "tok-bob": { "principal": "bob" },
+            "tok-a1": { "principal": "did:agent:one", "class": "agent", "owner": "alice", "app_id": "one" },
+            "tok-a2": { "principal": "did:agent:two", "class": "agent", "owner": "alice", "app_id": "two" },
+            "tok-reader": { "principal": "did:agent:reader", "class": "agent", "owner": "alice", "agent_read_only": true }
+        } }).to_string()).unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let child = Command::new(env!("CARGO_BIN_EXE_aiworkspace"))
             .arg("--data-dir").arg(dir.join("data")).arg("--listen").arg(format!("127.0.0.1:{port}")).arg("--auth-file").arg(&auth)
@@ -183,4 +188,48 @@ async fn the_cover_is_a_setting_and_whoever_reads_the_settings_gets_its_bytes() 
     assert_eq!(set("tok-alice", "uncover", Value::Null).await["status"], "accepted");
     assert_eq!(cover_of(&srv.ok("tok-bob", "ws.list", json!({})).await, &id), Some(Value::Null));
     assert!(!fetch("tok-bob", id.clone()).await.status().is_success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn human_and_two_agent_sessions_share_the_owners_named_workspace_after_restart() {
+    for first in ["tok-alice", "tok-a1"] {
+        let dir = tempfile::tempdir().unwrap();
+        let nfs = Nfs::start(dir.path()).await;
+        let srv = Server::start(dir.path(), &nfs).await;
+        let params = || json!({ "name": "schedule" });
+        assert_eq!(srv.ok(first, "ws.lookup", params()).await["found"], false);
+        assert_eq!(srv.rpc("tok-reader", "ws.ensure", params()).await["error"]["code"], "PERMISSION_DENIED");
+        assert_eq!(srv.ok("tok-reader", "ws.lookup", params()).await["found"], false);
+        let created = srv.ok(first, "ws.ensure", params()).await;
+        assert_eq!(created["created"], true);
+        let id = &created["workspace_id"];
+        let epoch = &created["epoch"];
+        let table = json!([{ "op": "entity.create", "entity_id": "calendar", "type_id": "buckyos.table-source", "name": "calendar",
+            "parent_id": "data", "order_key": "a", "payload": { "fields": [{ "field_id": "title", "name": "Title", "type": "text" }] } }]);
+        srv.ok(first, "doc.commit", json!({ "protocol_version": "1.0", "workspace_id": id, "epoch": epoch, "idempotency_key": "init", "operations": table })).await;
+        let actors = [("tok-alice", "alice", "r0"), ("tok-a1", "did:agent:one", "r1"), ("tok-a2", "did:agent:two", "r2")];
+        assert_eq!(srv.ok("tok-reader", "ws.lookup", params()).await["workspace_id"], *id);
+        let denied = srv.rpc("tok-reader", "doc.commit", json!({ "protocol_version": "1.0", "workspace_id": id, "epoch": epoch,
+            "idempotency_key": "denied", "operations": [{ "op": "table.insert_records", "source_id": "calendar", "records": [
+                { "record_id": "denied", "values": { "title": "denied" } }] }] })).await;
+        assert_eq!(denied["status"], "rejected", "{denied}");
+        let server = &srv;
+        let requests = actors.iter().map(|&(token, principal, row)| async move {
+            assert_eq!(&server.ok(token, "ws.ensure", params()).await["workspace_id"], id);
+            let info = server.ok(token, "ws.get_info", json!({ "workspace_id": id })).await;
+            assert_eq!(info["principal"], principal, "{info}");
+            assert_eq!(info["owned_by_caller_user"], true);
+            server.ok(token, "doc.commit", json!({ "protocol_version": "1.0", "workspace_id": id, "epoch": epoch, "idempotency_key": row,
+                "operations": [{ "op": "table.insert_records", "source_id": "calendar", "records": [{ "record_id": row, "values": { "title": row } }] }] })).await;
+        });
+        futures_util::future::join_all(requests).await;
+        assert_ne!(&srv.ok("tok-bob", "ws.ensure", params()).await["workspace_id"], id);
+        drop(srv);
+        let restarted = Server::start(dir.path(), &nfs).await;
+        for (token, _, _) in actors {
+            assert_eq!(&restarted.ok(token, "ws.lookup", params()).await["workspace_id"], id);
+            let rows = restarted.ok(token, "doc.query", json!({ "workspace_id": id, "sql": "SELECT _id FROM \"/data/calendar\" ORDER BY _id" })).await;
+            assert_eq!(rows["rows"], json!([["r0"], ["r1"], ["r2"]]));
+        }
+    }
 }

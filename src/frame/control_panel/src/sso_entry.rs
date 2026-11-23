@@ -275,7 +275,7 @@ impl ControlPanelServer {
         req: RPCRequest,
         client_ip: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
-        let params: RegisterParams = Self::typed_params(&req)?;
+        let mut params: RegisterParams = Self::typed_params(&req)?;
         let admitted = self
             .registration_limiter
             .lock()
@@ -284,6 +284,15 @@ impl ControlPanelServer {
         let result = if admitted {
             let runtime = get_buckyos_api_runtime()?;
             let kv = ZoneKv::connect().await?;
+            let share=crate::resource_share::checked_share(&params.entry_id).await?;
+            let service=match params.service { EntryService::MsgCenter=>"msg-center", EntryService::AiWorkspace=>"aiworkspace" };
+            if share.target.canonical_id()!=service || !matches!(share.audience,buckyos_api::ShareAudience::Open) || !share.methods.self_register {
+                return Err(AccessDenial::new(DenyReason::EntryUnavailable).into_rpc_error());
+            }
+            params.entry_id=match params.service {
+                EntryService::AiWorkspace=>share.resource_id,
+                EntryService::MsgCenter=>share.resource_id.split_once('~').map(|(group,_)|group.to_owned()).ok_or_else(||RPCErrors::NoPermission("invalid share resource".into()))?,
+            };
             let result = register_account(&ZoneEntrySource, &kv, &runtime.zone_id, params).await?;
             if let RegisterResult::Created { user_id } = &result {
                 self.registration_limiter

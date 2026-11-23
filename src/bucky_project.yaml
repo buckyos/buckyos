@@ -3,6 +3,9 @@ version: "0.7.0"
 base_dir: "."
 
 modules:
+  node_updater:
+    type: rust
+    name: node_updater
   node_daemon:
     type: rust
     name: node_daemon
@@ -102,6 +105,7 @@ apps:
     
     # 模块指向的 文件/文件夹，每次update的时候都会覆盖更新 
     modules:
+      node_updater: bin/node-updater/
       node_daemon: bin/node-daemon/
       buckyos_agent_daemon: bin/buckyos-agent-daemon/
       system_config: bin/system-config/
@@ -124,6 +128,7 @@ apps:
       agent_tool: bin/opendan/
       xagent: bin/opendan/xagent
       opendan_web: bin/opendan/web/
+      xcall-bin: bin/xcall
       buckyos-tool-bin: bin/buckyos
       buckyos-tool: libexec/buckyos-tool/
       buckyos-agent: libexec/buckyos-agent/

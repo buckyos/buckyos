@@ -45,11 +45,11 @@ export interface UploadTarget {
 async function runNfspTransfer(task: TransferTask, controls: TransferControls): Promise<FileEntry> {
   if (task.targetUrl.startsWith(DEVICE_SCHEME)) {
     const upload = hostConnectionOf(task.targetUrl).upload
-    if (!upload) throw { code: 'UNSUPPORTED', fallback: 'This location does not accept uploads', retryable: false }
+    if (!upload) throw { code: 'UNSUPPORTED', messageKey: 'filebrowser.transfer.badTarget', fallback: 'This location does not accept uploads', retryable: false }
     return upload(task, controls)
   }
   const parentPath = dfsPathOf(task.targetUrl)
-  if (parentPath === null) throw { code: 'UNSUPPORTED', fallback: 'This location does not accept uploads', retryable: false }
+  if (parentPath === null) throw { code: 'UNSUPPORTED', messageKey: 'filebrowser.transfer.badTarget', fallback: 'This location does not accept uploads', retryable: false }
   await ensureSession()
   const endpoint = nfspBaseUrl()
   return uploadInto(task, controls, {
@@ -62,7 +62,7 @@ async function runNfspTransfer(task: TransferTask, controls: TransferControls): 
 
 export async function uploadInto(task: TransferTask, controls: TransferControls, target: UploadTarget): Promise<FileEntry> {
   const input = takeLocalInput(task.candidate.localId)
-  if (!input) throw { code: 'INTERNAL', fallback: 'The selected files are no longer available — pick them again', retryable: false }
+  if (!input) throw { code: 'INTERNAL', messageKey: 'filebrowser.transfer.inputUnavailable', fallback: 'The selected files are no longer available — pick them again', retryable: false }
   const { client, parentPath } = target
   const name = task.candidate.name
   try {
@@ -72,7 +72,7 @@ export async function uploadInto(task: TransferTask, controls: TransferControls,
       if (nfspToUiError(error).code === 'NOT_FOUND') return null
       throw error
     })
-    if (existing && !imports.has(task.candidate.localId)) throw { code: 'NAMESPACE_CONFLICT', fallback: `"${name}" already exists here; choose another destination name`, retryable: true }
+    if (existing && !imports.has(task.candidate.localId)) throw { code: 'NAMESPACE_CONFLICT', messageKey: 'filebrowser.transfer.nameTaken', fallback: `"${name}" already exists here; choose another destination name`, retryable: true }
     const endpoint = nfspBaseUrl()
     const sessionToken = await target.token()
     const options = { endpoint, sessionToken, signal: controls.signal, autoStartUpload: false }

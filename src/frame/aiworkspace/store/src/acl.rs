@@ -103,43 +103,6 @@ impl AclData {
     }
 }
 
-/// Drop what the permission model replaced (`grants`, entries carrying a capability template): not migrated (§4.2).
-pub fn upgrade_local(local: &Connection) -> WsResult<()> {
-    local.execute_batch("DROP TABLE IF EXISTS grants;").map_err(db_err)?;
-    let template_form: bool = local
-        .query_row("SELECT 1 FROM pragma_table_info('share_entries') WHERE name = 'capabilities'", [], |_| Ok(true))
-        .optional()
-        .map_err(db_err)?
-        .unwrap_or(false);
-    if template_form {
-        local.execute_batch("DROP TABLE share_entries;").map_err(db_err)?;
-    }
-    Ok(())
-}
-
-/// Storage 6 → 7: entities learn their creator — the writer of the Commit that created them, the owner when that
-/// history is gone — and Commits get room for their attribution. One transaction with the version change.
-pub fn upgrade_doc_7(doc: &Connection, owner: Option<&str>) -> WsResult<()> {
-    doc.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
-    let r = (|| -> WsResult<()> {
-        doc.execute_batch("ALTER TABLE entities ADD COLUMN created_by TEXT; ALTER TABLE commits ADD COLUMN attribution_json TEXT;").map_err(db_err)?;
-        doc.execute(
-            "UPDATE entities SET created_by = COALESCE((SELECT principal FROM commits WHERE commits.seq = entities.created_seq), ?1) WHERE created_seq > 0",
-            [owner],
-        )
-        .map_err(db_err)?;
-        crate::docdb::meta_set(doc, "storage_schema_version", "7")?;
-        Ok(())
-    })();
-    match r {
-        Ok(()) => doc.execute_batch("COMMIT").map_err(db_err),
-        Err(e) => {
-            let _ = doc.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
 /// How one caller is judged on one Workspace (§4.6 step 3).
 #[derive(Debug, Clone, Default)]
 pub struct Judgment {
@@ -237,6 +200,16 @@ fn judge_one(data: &AclData, caller: &Caller) -> WsResult<Judgment> {
     let guest = !owner && data.anonymous && groups.is_empty();
     let member = owner || !groups.is_empty() || direct || guest;
     Ok(Judgment { principal: caller.principal.clone(), owner, groups, direct, guest, member, agent_as_owner: false, publication: None })
+}
+
+/// Apply the agent ceiling outside the ACL, including when the agent inherits its owner's grants.
+fn agent_ceiling(caller: &Caller, access: Access) -> Access {
+    if caller.agent_read_only {
+        let read = Access::uniform(&access.principal, CapSet::of(Cap::Read));
+        access.bounded_by(read)
+    } else {
+        access
+    }
 }
 
 /// Where an entry's subject applies to a judged caller: its tier, and whether it is `@creator`'s.
@@ -348,10 +321,11 @@ impl Workspace {
     pub fn access(&self, caller: &Caller) -> WsResult<Access> {
         let data = self.acl_data()?;
         let base = access_of(&data, &judge(&data, caller)?);
-        match caller.macro_of.as_deref() {
-            Some(wish_id) => self.bounded_by_binding(&data, base, wish_id),
-            None => Ok(base),
-        }
+        let access = match caller.macro_of.as_deref() {
+            Some(wish_id) => self.bounded_by_binding(&data, base, wish_id)?,
+            None => base,
+        };
+        Ok(agent_ceiling(caller, access))
     }
 
     /// What `ws.list` shows: the owner's Workspaces and those naming the caller or one of its groups — never one it
@@ -359,13 +333,13 @@ impl Workspace {
     pub fn listed(&self, caller: &Caller) -> WsResult<Option<Access>> {
         let data = self.acl_data()?;
         let j = judge(&data, caller)?;
-        Ok((j.owner || !j.groups.is_empty() || j.direct).then(|| access_of(&data, &j)))
+        Ok((j.owner || !j.groups.is_empty() || j.direct).then(|| agent_ceiling(caller, access_of(&data, &j))))
     }
 
     /// Member specs whose membership the service settles per request: `group:` and `contact:`.
     pub fn dynamic_subjects(&self) -> WsResult<Vec<String>> {
         let data = self.acl_data()?;
-        let set: BTreeSet<String> = data.members.into_iter().map(|m| m.member).filter(|m| m.starts_with(GROUP_PREFIX) || m.starts_with(CONTACT_PREFIX)).collect();
+        let set: BTreeSet<String> = data.members.into_iter().map(|m| m.member).filter(|m| m.starts_with(GROUP_PREFIX) || m.starts_with(CONTACT_PREFIX) || m.starts_with("did:")).collect();
         Ok(set.into_iter().collect())
     }
 
@@ -693,6 +667,7 @@ impl Workspace {
         let (_, rev) = self.acl_txn(caller, |tx| {
             tx.execute("DELETE FROM acl_entries WHERE subject = ?1", [&subject]).map_err(db_err)?;
             tx.execute("DELETE FROM acl_members WHERE group_id = ?1", [group_id]).map_err(db_err)?;
+            tx.execute("DELETE FROM entry_acceptances WHERE entry_id IN (SELECT entry_id FROM share_entries WHERE group_id=?1)", [group_id]).map_err(db_err)?;
             tx.execute("DELETE FROM acl_macro_bindings WHERE group_id = ?1", [group_id]).map_err(db_err)?;
             tx.execute("UPDATE share_entries SET state = 'closed' WHERE group_id = ?1", [group_id]).map_err(db_err)?;
             tx.execute("DELETE FROM acl_groups WHERE group_id = ?1", [group_id]).map_err(db_err)?;
@@ -754,12 +729,18 @@ impl Workspace {
         let (n, rev) = self.acl_txn(caller, |tx| {
             let (mut added, mut removed) = (Vec::new(), Vec::new());
             for m in add {
-                if tx.execute("INSERT OR IGNORE INTO acl_members (group_id, member, via_entry, added_by, added_at) VALUES (?1, ?2, NULL, ?3, ?4)", params![group_id, m, caller.principal, now]).map_err(db_err)? > 0 {
+                if tx.execute("INSERT INTO acl_members (group_id, member, via_entry, added_by, added_at) VALUES (?1, ?2, NULL, ?3, ?4) ON CONFLICT(group_id,member) DO UPDATE SET via_entry=NULL,added_by=excluded.added_by,added_at=excluded.added_at WHERE acl_members.via_entry IS NOT NULL", params![group_id, m, caller.principal, now]).map_err(db_err)? > 0 {
                     added.push(m.clone());
                 }
             }
             for m in remove {
                 if tx.execute("DELETE FROM acl_members WHERE group_id = ?1 AND member = ?2", params![group_id, m]).map_err(db_err)? > 0 {
+                    // Keep revocation tied to each accepted invitation even if another source adds this member back.
+                    tx.execute(
+                        "UPDATE entry_acceptances SET committed=-1, reserved_until=0
+                         WHERE member=?2 AND committed=1 AND entry_id IN (SELECT entry_id FROM share_entries WHERE group_id=?1)",
+                        params![group_id, m],
+                    ).map_err(db_err)?;
                     removed.push(m.clone());
                 }
             }
@@ -841,7 +822,7 @@ impl Workspace {
     pub fn macro_access(&self, triggerer: &Caller, wish_id: &str) -> WsResult<Access> {
         let data = self.acl_data()?;
         let base = access_of(&data, &judge(&data, triggerer)?);
-        self.bounded_by_binding(&data, base, wish_id)
+        Ok(agent_ceiling(triggerer, self.bounded_by_binding(&data, base, wish_id)?))
     }
 
     fn bounded_by_binding(&self, data: &AclData, base: Access, wish_id: &str) -> WsResult<Access> {

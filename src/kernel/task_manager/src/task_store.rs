@@ -14,7 +14,7 @@ use kRPC::{RPCErrors, Result};
 use log::*;
 use serde_json::{json, Value};
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
-use sqlx::{Any, AnyPool, Executor, Row, Transaction};
+use sqlx::{Any, AnyConnection, AnyPool, Connection, Executor, Row, Transaction};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
@@ -124,7 +124,7 @@ impl TaskStore {
         // is per-connection, so it must run in after_connect for every
         // connection the pool opens.
         if backend == RdbBackend::Sqlite {
-            opts = opts.after_connect(|conn, _meta| {
+            opts = opts.max_lifetime(None).idle_timeout(None).after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
                     conn.execute("PRAGMA busy_timeout = 5000;").await?;
@@ -171,6 +171,13 @@ impl TaskStore {
             }
         }
 
+        for (domain, version) in [
+            (StorageDomain::User, user_physical_version),
+            (StorageDomain::System, system_physical_version),
+        ] {
+            Self::require_supported_version(domain, version)?;
+        }
+
         let mut user = Self::open_shard(
             user_connection,
             user_backend,
@@ -194,16 +201,12 @@ impl TaskStore {
         backend: RdbBackend,
     ) -> std::result::Result<Option<i64>, String> {
         ensure_any_drivers_installed();
-        let pool = AnyPoolOptions::new()
-            .max_connections(1)
-            .connect(connection)
+        let mut conn = AnyConnection::connect(connection)
             .await
             .map_err(|err| format!("probe task-manager db at {}: {}", connection, err))?;
-        let result = Self::read_schema_version(&pool, backend)
+        Self::read_schema_version(&mut conn, backend)
             .await
-            .map_err(|err| format!("probe task store schema version: {}", err));
-        pool.close().await;
-        result
+            .map_err(|err| format!("probe task store schema version: {}", err))
     }
 
     pub async fn open_from_service_spec() -> std::result::Result<Self, String> {
@@ -242,16 +245,37 @@ impl TaskStore {
         .await
     }
 
-    /// `None` for a store without any task-manager table; a non-empty store
-    /// must carry its schema version in `task_store_meta`.
-    async fn read_schema_version(pool: &AnyPool, backend: RdbBackend) -> DbResult<Option<i64>> {
-        let existing = existing_tables(pool, backend, &TASK_STORE_TABLES).await?;
+    fn require_supported_version(
+        domain: StorageDomain,
+        version: Option<i64>,
+    ) -> std::result::Result<(), String> {
+        if let Some(actual) = version.filter(|v| *v != TASK_MANAGER_RDB_SCHEMA_VERSION as i64) {
+            return Err(format!(
+                "{} store schema version {} does not match expected {}",
+                domain, actual, TASK_MANAGER_RDB_SCHEMA_VERSION
+            ));
+        }
+        Ok(())
+    }
+
+    /// An existing SQLite file is dedicated to this partition. PostgreSQL
+    /// can share a schema with other services' tables.
+    async fn read_schema_version(
+        conn: &mut AnyConnection,
+        backend: RdbBackend,
+    ) -> DbResult<Option<i64>> {
+        let existing: Vec<String> = match backend {
+            RdbBackend::Sqlite => sqlx::query_scalar("SELECT name FROM main.sqlite_schema")
+                .fetch_all(&mut *conn)
+                .await?,
+            RdbBackend::Postgres => existing_tables(&mut *conn, backend, &TASK_STORE_TABLES).await?,
+        };
         if existing.is_empty() {
             return Ok(None);
         }
         let version = if existing.iter().any(|table| table == "task_store_meta") {
-            sqlx::query("SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'")
-                .fetch_optional(pool)
+            sqlx::query(TASK_MANAGER_READ_PHYSICAL_SCHEMA)
+                .fetch_optional(conn)
                 .await?
                 .map(|row| row.try_get::<i64, _>("meta_value"))
                 .transpose()?
@@ -275,33 +299,25 @@ impl TaskStore {
                     RdbBackend::Sqlite => TASK_MANAGER_RDB_SCHEMA_SQLITE,
                     RdbBackend::Postgres => TASK_MANAGER_RDB_SCHEMA_POSTGRES,
                 });
-        match Self::read_schema_version(&self.pool, self.backend).await? {
-            None => {
-                let mut tx = self.pool.begin().await?;
-                for statement in split_sql_statements(ddl) {
-                    (&mut *tx).execute(statement.as_str()).await?;
-                }
-                let sql = self.render_sql(
-                    "INSERT INTO task_store_meta (meta_key, meta_value) VALUES ('schema_version', ?)",
-                );
-                sqlx::query(&sql)
-                    .bind(TASK_MANAGER_RDB_SCHEMA_VERSION as i64)
-                    .execute(&mut *tx)
-                    .await?;
-                tx.commit().await?;
-            }
-            Some(actual) if actual == TASK_MANAGER_RDB_SCHEMA_VERSION as i64 => {
-                for statement in split_sql_statements(ddl) {
-                    self.pool.execute(statement.as_str()).await?;
-                }
-            }
-            Some(actual) => {
-                return Err(sqlx::Error::Protocol(format!(
-                    "{} store schema version {} does not match expected {}",
-                    self.domain, actual, TASK_MANAGER_RDB_SCHEMA_VERSION
-                )));
-            }
+        let mut tx = match self.backend {
+            RdbBackend::Sqlite => self.pool.begin_with("BEGIN IMMEDIATE").await?,
+            RdbBackend::Postgres => self.pool.begin().await?,
+        };
+        let version = Self::read_schema_version(&mut tx, self.backend).await?;
+        Self::require_supported_version(self.domain, version).map_err(sqlx::Error::Protocol)?;
+        for statement in split_sql_statements(ddl) {
+            (&mut *tx).execute(statement.as_str()).await?;
         }
+        if version.is_none() {
+            let sql = self.render_sql(
+                "INSERT INTO task_store_meta (meta_key, meta_value) VALUES ('schema_version', ?)",
+            );
+            sqlx::query(&sql)
+                .bind(TASK_MANAGER_RDB_SCHEMA_VERSION as i64)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -338,12 +354,22 @@ impl TaskStore {
         )))
     }
 
+    async fn contains_task(&self, task_id: &str) -> Result<bool> {
+        let sql = self.render_sql("SELECT 1 FROM task WHERE task_id = ?");
+        Ok(sqlx::query(&sql)
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?
+            .is_some())
+    }
+
     async fn shard_for_task(&self, task_id: &str) -> Result<Option<&TaskStore>> {
-        if self.get_task_local(task_id).await?.is_some() {
+        if self.contains_task(task_id).await? {
             return Ok(Some(self));
         }
         if let Some(system) = self.system.as_deref() {
-            if system.get_task_local(task_id).await?.is_some() {
+            if system.contains_task(task_id).await? {
                 return Ok(Some(system));
             }
         }
@@ -595,47 +621,65 @@ impl TaskStore {
         let (user_tasks, user_more) = self.list_tasks_local(&user_req).await?;
         let (system_tasks, system_more) = system.list_tasks_local(&system_req).await?;
 
-        let mut user_index = 0usize;
-        let mut system_index = 0usize;
+        let mut user_tasks = user_tasks.into_iter().peekable();
+        let mut system_tasks = system_tasks.into_iter().peekable();
         let mut tasks = Vec::with_capacity(limit);
         let mut next_user_cursor = user_cursor;
         let mut next_system_cursor = system_cursor;
-        while tasks.len() < limit
-            && (user_index < user_tasks.len() || system_index < system_tasks.len())
-        {
-            let take_user = match (user_tasks.get(user_index), system_tasks.get(system_index)) {
+        while tasks.len() < limit {
+            let take_user = match (user_tasks.peek(), system_tasks.peek()) {
                 (Some(user), Some(system)) => {
-                    (user.created_at, user.task_id.as_str())
-                        <= (system.created_at, system.task_id.as_str())
+                    let user_key = (user.created_at, user.task_id.as_str());
+                    let system_key = (system.created_at, system.task_id.as_str());
+                    if req.newest_first {
+                        user_key >= system_key
+                    } else {
+                        user_key <= system_key
+                    }
                 }
                 (Some(_), None) => true,
-                _ => false,
+                (None, Some(_)) => false,
+                (None, None) => break,
             };
-            let task = if take_user {
-                let task = user_tasks[user_index].clone();
-                user_index += 1;
-                next_user_cursor = Some(make_cursor(task.created_at, &task.task_id));
-                task
+            let (iter, cursor) = if take_user {
+                (&mut user_tasks, &mut next_user_cursor)
             } else {
-                let task = system_tasks[system_index].clone();
-                system_index += 1;
-                next_system_cursor = Some(make_cursor(task.created_at, &task.task_id));
-                task
+                (&mut system_tasks, &mut next_system_cursor)
             };
+            let task = iter.next().expect("selected a non-empty shard");
+            *cursor = Some(make_cursor(task.created_at, &task.task_id));
             tasks.push(task);
         }
-        let has_more = user_index < user_tasks.len()
-            || system_index < system_tasks.len()
-            || user_more.is_some()
-            || system_more.is_some();
-        let next_cursor = has_more
-            .then(|| make_partitioned_cursor(next_user_cursor, next_system_cursor))
-            .flatten();
+        let user_has_more = user_tasks.peek().is_some() || user_more.is_some();
+        let system_has_more = system_tasks.peek().is_some() || system_more.is_some();
+        let next_cursor = if !user_has_more && !system_has_more {
+            None
+        } else if req.newest_first {
+            // Live shards resume at the global boundary even if they contributed no rows.
+            // An exhausted shard can skip the database entirely on subsequent pages.
+            let last = tasks.last().expect("positive page limit");
+            let cursor = make_cursor(last.created_at, &last.task_id);
+            let shard_cursor = |has_more| {
+                Some(if has_more {
+                    cursor.clone()
+                } else {
+                    EXHAUSTED_SHARD.to_owned()
+                })
+            };
+            make_partitioned_cursor(shard_cursor(user_has_more), shard_cursor(system_has_more))
+        } else {
+            make_partitioned_cursor(next_user_cursor, next_system_cursor)
+        };
         Ok((tasks, next_cursor))
     }
 
     async fn list_tasks_local(&self, req: &ListTasksReq) -> Result<(Vec<Task>, Option<String>)> {
-        let mut sql = String::from("SELECT * FROM task");
+        if req.newest_first && req.cursor.as_deref() == Some(EXHAUSTED_SHARD) {
+            return Ok((Vec::new(), None));
+        }
+        // Install progress and input can be large. Select the ordered page by key before loading
+        // its bodies so SQLite's unindexed sorts never materialize payloads for all candidates.
+        let mut sql = String::from("SELECT * FROM task WHERE task_id IN (SELECT task_id FROM task");
         let mut conditions: Vec<String> = Vec::new();
         enum Param {
             Text(String),
@@ -692,8 +736,8 @@ impl TaskStore {
         }
         if let Some(cursor) = req.cursor.as_deref() {
             let (created_at, task_id) = parse_cursor(cursor)?;
-            conditions.push("(created_at > ? OR (created_at = ? AND task_id > ?))".into());
-            params.push(Param::Int(created_at));
+            let comparison = if req.newest_first { "<" } else { ">" };
+            conditions.push(format!("(created_at, task_id) {comparison} (?, ?)"));
             params.push(Param::Int(created_at));
             params.push(Param::Text(task_id));
         }
@@ -703,8 +747,10 @@ impl TaskStore {
             sql.push_str(&conditions.join(" AND "));
         }
         let limit = req.limit.unwrap_or(100).clamp(1, 500) as i64;
-        sql.push_str(" ORDER BY created_at ASC, task_id ASC LIMIT ");
+        let order = if req.newest_first { "DESC" } else { "ASC" };
+        sql.push_str(&format!(" ORDER BY created_at {order}, task_id {order} LIMIT "));
         sql.push_str(&(limit + 1).to_string());
+        sql.push(')');
 
         let sql = self.render_sql(&sql);
         let mut query = sqlx::query(&sql);
@@ -719,6 +765,14 @@ impl TaskStore {
             .into_iter()
             .map(|row| self.decode_task(row))
             .collect::<Result<_>>()?;
+        tasks.sort_unstable_by(|a, b| {
+            let order = (a.created_at, &a.task_id).cmp(&(b.created_at, &b.task_id));
+            if req.newest_first {
+                order.reverse()
+            } else {
+                order
+            }
+        });
         let next_cursor = if tasks.len() as i64 > limit {
             tasks.truncate(limit as usize);
             tasks
@@ -2357,6 +2411,8 @@ fn note_from_row(row: AnyRow) -> DbResult<TaskNote> {
 // Cursor & SQL helpers
 // ---------------------------------------------------------------------------
 
+const EXHAUSTED_SHARD: &str = "end";
+
 fn make_cursor(created_at: u64, task_id: &str) -> String {
     format!("{}:{}", created_at, task_id)
 }
@@ -2441,11 +2497,12 @@ const TASK_STORE_TABLES: [&str; 7] = [
     "task_note",
 ];
 
-pub(crate) async fn existing_tables(
-    pool: &AnyPool,
+pub(crate) async fn existing_tables<'e>(
+    connection: impl sqlx::Acquire<'e, Database = Any>,
     backend: RdbBackend,
     tables: &[&str],
 ) -> DbResult<Vec<String>> {
+    let mut conn = connection.acquire().await?;
     let sql = match backend {
         RdbBackend::Sqlite => "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         RdbBackend::Postgres => {
@@ -2456,7 +2513,7 @@ pub(crate) async fn existing_tables(
     for table in tables {
         if sqlx::query(sql)
             .bind(*table)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await?
             .is_some()
         {

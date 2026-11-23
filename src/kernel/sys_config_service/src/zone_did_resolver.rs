@@ -270,6 +270,55 @@ impl ZoneDidResolver {
             .map_err(|e| format!("sys_store get {} failed: {}", key, e))
     }
 
+    pub(crate) async fn resolve_oauth_subject(
+        &self,
+        source_zone: &str,
+        did: &str,
+    ) -> Result<Value, String> {
+        let zone = self
+            .load_zone_identity()
+            .await?
+            .ok_or("Zone has no identity")?;
+        if zone.zone_doc.id.to_string() != source_zone {
+            return Err("external identity belongs to another Zone".into());
+        }
+        let Some((label, host)) = did.strip_prefix("did:web:").and_then(|s| s.split_once('.'))
+        else {
+            return Err("invalid OAuth DID".into());
+        };
+        let settings = self
+            .store_get(buckyos_api::SSO_SETTINGS_KEY)
+            .await?
+            .map(|raw| serde_json::from_str::<buckyos_api::SsoSettings>(&raw))
+            .transpose()
+            .map_err(|_| "invalid SSO settings")?
+            .unwrap_or_default();
+        if !settings.oauth_sources.iter().any(|s| {
+            s.webhost == host
+                && buckyos_api::valid_oauth_label(
+                    s.kind == buckyos_api::OAuthSourceKind::Google,
+                    label,
+                )
+        }) {
+            return Ok(Value::Null);
+        }
+        let Some(key) = self.store_get(&buckyos_api::oauth_label_key(did)).await? else {
+            return Ok(Value::Null);
+        };
+        let Some(raw) = self
+            .store_get(&format!("services/control_panel/oauth/subjects/{key}"))
+            .await?
+        else {
+            return Err("missing external subject record".into());
+        };
+        let record: Value =
+            serde_json::from_str(&raw).map_err(|_| "invalid external subject record")?;
+        if record["did"].as_str() != Some(did) {
+            return Err("invalid external subject index".into());
+        }
+        Ok(json!({"@context":["https://www.w3.org/ns/did/v1"],"id":did}))
+    }
+
     async fn load_zone_identity(&self) -> Result<Option<ZoneIdentity>, String> {
         let Some(cfg_str) = self.store_get("boot/config").await? else {
             return Ok(None);

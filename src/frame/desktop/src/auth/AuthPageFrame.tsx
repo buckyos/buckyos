@@ -1,3 +1,4 @@
+import { useI18n } from '../i18n/provider'
 import type { ReactNode } from 'react'
 import { Box, Container, Link, Paper, Typography } from '@mui/material'
 import { Lock } from 'lucide-react'
@@ -19,6 +20,8 @@ export function AuthPageFrame({
   maxWidth?: 'xs' | 'sm'
   testId?: string
 }) {
+  const { t } = useI18n()
+  const [beforeBrand, afterBrand] = t('sso.brand.credit').split('{{brand}}')
   const zone = useZonePresentation()
   return (
     <Box
@@ -95,19 +98,19 @@ export function AuthPageFrame({
               lineHeight: 1.6,
             }}
           >
-            Powered by{' '}
+            {beforeBrand}
             <Link
               href="https://github.com/buckyos/buckyos/"
               target="_blank"
               rel="noreferrer noopener"
               color="inherit"
               underline="hover"
-              aria-label="BuckyOS on GitHub (opens in a new tab)"
+              aria-label={t('sso.brand.github')}
               sx={{ fontWeight: 600 }}
             >
               BuckyOS
             </Link>
-            , an open-source AI operating system.
+            {afterBrand}
           </Typography>
         </Paper>
       </Container>

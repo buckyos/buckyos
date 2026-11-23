@@ -24,3 +24,8 @@ pub(crate) mod visibility;
 pub async fn run_service() -> anyhow::Result<()> {
     service::run_service().await
 }
+
+/// Validate just the owned System Config value, without booting AICC or making RPCs.
+pub fn validate_persisted_settings(key: &str, contents: &str) -> Result<(), String> {
+    settings::validate_persisted(key, contents).map_err(|e| e.to_string())
+}

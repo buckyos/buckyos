@@ -252,6 +252,27 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
     let openrouter_matcher =
         openrouter::OpenRouterDiscovery::new(HttpTransport::new(Default::default()).unwrap());
     for (provider, id, effort, pointer, expected) in [
+        (
+            "doubao-agent-plan",
+            "kimi-k3.1-pro",
+            "max",
+            "/reasoning/effort",
+            json!("max"),
+        ),
+        (
+            "doubao-agent-plan",
+            "deepseek-v4.1-flash-economy",
+            "none",
+            "/reasoning/effort",
+            json!("none"),
+        ),
+        (
+            "doubao-agent-plan",
+            "deepseek-v4.1-flash-economy",
+            "high",
+            "/reasoning/effort",
+            json!("high"),
+        ),
         ("sn", "glm-5", "none", "/reasoning/enabled", json!(false)),
         ("sn", "glm-5", "thinking", "/reasoning/enabled", json!(true)),
         ("sn", "glm-5.3", "low", "/reasoning/effort", json!("low")),
@@ -1060,10 +1081,11 @@ async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions()
 #[tokio::test]
 async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
     let body = json!({"object":"list","data":[
-        {"object":"model","id":"active-vlm","task_type":["TextGeneration","VisualQuestionAnswering","SpeechToText"]},
-        {"object":"model","id":"active-video","task_type":["MultimodalToVideo","VideoEditing","VideoExtension"]},
-        {"object":"model","id":"retiring","status":"Retiring","task_type":["TextGeneration"]},
-        {"object":"model","id":"unsupported-3d","task_type":["ImageTo3D"]}
+        {"object":"model","id":"active-vlm","task_type":["text_generation","visual_question_answering","speech_to_text"]},
+        {"object":"model","id":"doubao-seedream-5-0-flash-260915","task_type":["text_to_image","image_to_image"]},
+        {"object":"model","id":"active-video","task_type":["multimodal_to_video","video_editing","video_extension"]},
+        {"object":"model","id":"retiring","status":"Retiring","task_type":["text_generation"]},
+        {"object":"model","id":"unsupported-3d","task_type":["image_to_3D"]}
     ]});
     let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
         &ModelsHttp(body),
@@ -1094,12 +1116,95 @@ async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
             ApiType::VideoExtend,
         ])
     );
+    assert_eq!(model("doubao-seedream-5-0-flash-260915").api_types.clone(), Some(vec![ApiType::ImageTextToImage, ApiType::ImageImageToImage]));
     assert_eq!(
         model("retiring").availability,
         ModelAvailability::Unavailable
     );
     assert!(model("retiring").deprecated);
     assert_eq!(model("unsupported-3d").api_types.clone(), Some(vec![]));
+}
+
+#[tokio::test]
+async fn volcengine_ark_discovery_accepts_both_documented_task_spellings() {
+    for (snake, pascal, expected) in [
+        ("text_generation", "TextGeneration", vec![ApiType::Llm]),
+        (
+            "visual_question_answering",
+            "VisualQuestionAnswering",
+            vec![ApiType::VisionOcr, ApiType::VisionCaption],
+        ),
+        (
+            "text_embedding",
+            "TextEmbedding",
+            vec![ApiType::EmbeddingText],
+        ),
+        (
+            "image_embedding",
+            "ImageEmbedding",
+            vec![ApiType::EmbeddingMultimodal],
+        ),
+        (
+            "text_to_image",
+            "TextToImage",
+            vec![ApiType::ImageTextToImage],
+        ),
+        (
+            "image_to_image",
+            "ImageToImage",
+            vec![ApiType::ImageImageToImage],
+        ),
+        ("text_to_video", "TextToVideo", vec![ApiType::VideoGenerate]),
+        (
+            "image_to_video",
+            "ImageToVideo",
+            vec![ApiType::VideoGenerate],
+        ),
+        (
+            "multimodal_to_video",
+            "MultimodalToVideo",
+            vec![ApiType::VideoGenerate],
+        ),
+        ("video_editing", "VideoEditing", vec![ApiType::VideoEdit]),
+        (
+            "video_extension",
+            "VideoExtension",
+            vec![ApiType::VideoExtend],
+        ),
+    ] {
+        let body = json!({"object":"list","data":[
+            {"id":"snake","task_type":[snake]},
+            {"id":"pascal","task_type":[pascal]},
+            {"id":"mixed","task_type":[snake,pascal,"future_task"]},
+            {"id":"unknown","task_type":["future_task"]}
+        ]});
+        let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
+            &ModelsHttp(body),
+            HttpRequest::new(reqwest::Method::GET, "https://example.test/api/v3/models"),
+            "doubao",
+        )
+        .await
+        .unwrap();
+        for id in ["snake", "pascal", "mixed"] {
+            assert_eq!(
+                models
+                    .iter()
+                    .find(|m| m.provider_model_id == id)
+                    .unwrap()
+                    .api_types
+                    .as_ref(),
+                Some(&expected)
+            );
+        }
+        assert_eq!(
+            models
+                .iter()
+                .find(|m| m.provider_model_id == "unknown")
+                .unwrap()
+                .api_types,
+            Some(vec![])
+        );
+    }
 }
 
 #[test]
@@ -1298,7 +1403,7 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
                 ),
                 (
                     "deepseek-v4-1-flash-economy-261017",
-                    "deepseek-v4.1-flash",
+                    "deepseek-v4.1-flash-economy",
                     &["none", "low", "high", "max"][..],
                 ),
             ][..],
@@ -1845,8 +1950,8 @@ fn builtin_media_models_mount_their_default_families() {
         ),
         (
             "doubao-agent-plan",
-            "doubao-seedream-5.0-lite",
-            "doubao-seedream-5.0-lite",
+            "doubao-seedream-5.0-flash",
+            "doubao-seedream-5.0-flash",
             "image.txt2img.seedream",
             "image.txt2img",
             "ark.images.generate",
@@ -1924,21 +2029,25 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
         .profiles()
         .find(|profile| profile.provider_profile_id == "doubao-agent-plan")
         .unwrap();
+    let rules = catalog.provider_rules("doubao-agent-plan").unwrap();
+    let retired = [
+        "doubao-seed-2.0-lite",
+        "doubao-seed-2.1-turbo",
+        "kimi-k2.7-code",
+        "minimax-m3",
+        "doubao-seedream-5.0-lite",
+        "kimi-k2.6",
+    ];
+    let model_ids = rules
+        .static_inventory_models
+        .iter()
+        .map(String::as_str)
+        .chain(["kimi-k2.6"])
+        .collect::<Vec<_>>();
     let inventory = InventoryBuilder::build(
         profile,
         &instance(profile, "doubao-agent-plan"),
-        discovery(&[
-            "doubao-seed-2.0-mini",
-            "deepseek-v4-flash",
-            "deepseek-v4.1-flash",
-            "glm-5.3",
-            "glm-5.3-flash",
-            "kimi-k2.7-code",
-            "kimi-k2.6",
-            "kimi-k2.8-preview",
-            "kimi-k3",
-            "minimax-m3",
-        ]),
+        discovery(&model_ids),
         &catalog,
         &providers.codecs(),
     )
@@ -1954,13 +2063,33 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
             .copied()
             .collect::<HashSet<_>>()
     };
-    assert!(
+    assert_eq!(
         inventory
             .models
             .iter()
-            .all(|model| model.provider_model_id != "kimi-k2.6"),
-        "unlisted Agent Plan models must fail closed"
+            .map(|model| model.provider_model_id.as_str())
+            .collect::<HashSet<_>>(),
+        rules
+            .static_inventory_models
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>()
     );
+    for retired_id in retired {
+        assert!(!rules.static_inventory_models.iter().any(|id| id == retired_id));
+    }
+    for (model_id, context, output) in [
+        ("deepseek-v4.1-flash-economy", 1048576, 393216),
+        ("kimi-k3.1-pro", 1048576, 1048576),
+    ] {
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == model_id)
+            .unwrap();
+        assert_eq!(model.capabilities["max_context_tokens"], context);
+        assert_eq!(model.capabilities["max_output_tokens"], output);
+    }
     let text_only = HashSet::from([ApiType::Llm]);
     let vision = HashSet::from([ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]);
     for model_id in ["deepseek-v4-flash", "glm-5.3"] {
@@ -1969,11 +2098,11 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
     for model_id in [
         "doubao-seed-2.0-mini",
         "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-economy",
         "glm-5.3-flash",
-        "kimi-k2.7-code",
         "kimi-k2.8-preview",
         "kimi-k3",
-        "minimax-m3",
+        "kimi-k3.1-pro",
     ] {
         assert_eq!(api_types(model_id), vision, "{model_id}");
     }
@@ -2702,5 +2831,93 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
             .unwrap()
             .api_types
             .contains(&api));
+    }
+}
+
+#[test]
+fn doubao_november_inventory_resolves_official_models_and_operations() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    for (provider_id, channel_id, origin_id, api_type, operation) in [
+        (
+            "doubao",
+            "doubao-seedream-5-0-flash-260915",
+            "doubao-seedream-5.0-flash",
+            "image.txt2img",
+            "ark.images.generate",
+        ),
+        (
+            "doubao",
+            "kimi-k3-1-pro-261024",
+            "kimi-k3.1-pro",
+            "llm",
+            "responses.create",
+        ),
+        (
+            "doubao",
+            "deepseek-v4-1-flash-261017",
+            "deepseek-v4.1-flash",
+            "llm",
+            "responses.create",
+        ),
+        (
+            "doubao",
+            "deepseek-v4-1-flash-economy-261017",
+            "deepseek-v4.1-flash-economy",
+            "llm",
+            "responses.create",
+        ),
+        (
+            "doubao",
+            "doubao-seedream-5-5-261028",
+            "doubao-seedream-5.5",
+            "image.img2img",
+            "ark.images.generate",
+        ),
+        (
+            "doubao",
+            "doubao-seedance-2-5-flash-261115",
+            "doubao-seedance-2.5-flash",
+            "video.edit",
+            "ark.contents.generate",
+        ),
+        (
+            "doubao-speech",
+            "doubao-seed-asr-2.0-idle",
+            "doubao-seed-asr-2.0-idle",
+            "audio.asr",
+            "asr.recognize.idle.submit",
+        ),
+    ] {
+        let profile = providers
+            .profiles()
+            .find(|p| p.provider_profile_id == provider_id)
+            .unwrap();
+        let inventory = InventoryBuilder::build(
+            profile,
+            &instance(profile, provider_id),
+            discovery(&[channel_id]),
+            &catalog,
+            &providers.codecs(),
+        )
+        .unwrap();
+        let model = inventory
+            .models
+            .iter()
+            .find(|m| m.provider_model_id == channel_id)
+            .unwrap();
+        assert_eq!(model.origin_model_id, origin_id);
+        assert_eq!(
+            model.operations.get(api_type).map(String::as_str),
+            Some(operation)
+        );
+        if channel_id == "doubao-seedance-2-5-flash-261115" {
+            let video = &model.capabilities["video_generation"];
+            assert_eq!(video["references"]["image"]["max"], 10);
+            assert_eq!(video["references"]["video"]["max"], 5);
+            assert_eq!(video["references"]["audio"]["max"], 5);
+            assert_eq!(video["output"]["durations"]["max"], 30);
+            assert_eq!(video["output"]["resolutions"].as_array().unwrap().len(), 2);
+        }
     }
 }

@@ -135,6 +135,33 @@ fn mixed_batch(ws: &str, epoch: &str) -> Value {
     ]))
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_export_requires_the_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let nfs = Nfs::start(dir.path()).await;
+    let server = Server::start(dir.path(), &nfs, None).await;
+    let created = server.rpc("tok-alice", "ws.create", json!({ "title": "Backup" })).await;
+    let id = created["workspace_id"].as_str().unwrap();
+
+    let hidden = server.rpc("tok-bob", "doc.export", json!({ "workspace_id": id })).await;
+    assert_eq!(hidden["error"]["code"], "NOT_FOUND", "{hidden}");
+    let grants = server.rpc("tok-alice", "acl.set", json!({
+        "workspace_id": id,
+        "changes": [{ "subject": "bob", "allow": aiworkspace_core::access::CapSet::ALL.names() }]
+    })).await;
+    assert_eq!(grants["ok"], true, "{grants}");
+
+    for mode in ["share", "personal_backup"] {
+        let params = json!({ "workspace_id": id, "mode": mode });
+        let denied = server.rpc("tok-bob", "doc.export", params.clone()).await;
+        assert_eq!(denied["error"]["code"], "PERMISSION_DENIED", "{denied}");
+        assert_eq!(denied["error"]["sub_code"], "OWNER_ONLY", "{denied}");
+        let package = server.rpc("tok-alice", "doc.export", params).await;
+        assert_eq!(package["manifest"]["export_mode"], mode, "{package}");
+        assert!(package["download"]["token"].is_string(), "{package}");
+    }
+}
+
 /// V23 (backend): the service starts on its own, serves the whole workflow through
 /// its API with nothing but HTTP, authenticates every call, and keeps accepted
 /// commits across a process restart.
@@ -251,6 +278,43 @@ async fn v23_service_api_end_to_end() {
     assert_eq!(notes["content"]["content"]["content"][1]["attrs"]["block_id"], "n-crash");
     assert_eq!(s.rpc("tok-alice", "diag.verify_refs", w.clone()).await["ok"], true);
     assert_eq!(s.rpc("tok-alice", "doc.commit", mixed_batch(&id, &epoch)).await["replayed"], true);
+}
+
+#[tokio::test]
+async fn wait_changes_reports_current_head_and_acl_rev() {
+    let dir = tempfile::tempdir().unwrap();
+    let nfs = Nfs::start(dir.path()).await;
+    let s = Server::start(dir.path(), &nfs, None).await;
+    let (id, epoch) = s.project(&nfs, "tok-alice").await;
+    let workspace = json!({ "workspace_id": id });
+    let set_peer_access = |allow: Value| s.rpc("tok-alice", "acl.set", json!({
+        "workspace_id": id, "changes": [{ "subject": "bob", "allow": allow }]
+    }));
+
+    assert_eq!(set_peer_access(json!(["read", "update"])).await["ok"], true);
+    let info = s.rpc("tok-bob", "ws.get_info", workspace.clone()).await;
+    let head = info["head_seq"].as_u64().unwrap();
+    let acl_rev = info["acl_rev"].as_u64().unwrap();
+    assert!(head > 0 && acl_rev > 0);
+    let wait = |timeout_ms: u64| s.rpc("tok-bob", "doc.wait_changes", json!({
+        "workspace_id": id, "epoch": epoch, "after_seq": head, "after_acl_rev": acl_rev, "timeout_ms": timeout_ms
+    }));
+    let quiet = wait(20).await;
+    assert_eq!(quiet["timed_out"], true, "{quiet}");
+    assert_eq!(quiet["head_seq"], head);
+    assert_eq!(quiet["acl_rev"], acl_rev);
+
+    let pending = wait(5000);
+    tokio::pin!(pending);
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut pending).await.is_err());
+    assert_eq!(set_peer_access(json!(["read"])).await["ok"], true);
+    let woke = pending.await;
+    let info = s.rpc("tok-bob", "ws.get_info", workspace).await;
+    assert_eq!(woke["timed_out"], false, "{woke}");
+    assert_eq!(info["head_seq"], head);
+    assert_eq!(woke["head_seq"], head);
+    assert!(info["acl_rev"].as_u64().unwrap() > acl_rev);
+    assert_eq!(woke["acl_rev"], info["acl_rev"]);
 }
 
 #[tokio::test]

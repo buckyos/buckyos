@@ -32,7 +32,7 @@ export function StatusBar({
   onExpandSidebar,
   trailing,
 }: StatusBarProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
 
   const selection = selectedItems.length === 1 ? selectedItems[0] : null
   const multiSelection = selectedItems.length > 1 ? selectedItems : null
@@ -78,7 +78,7 @@ export function StatusBar({
           {multiSelection.length > 0 ? (
             <>
               <span className="opacity-60">·</span>
-              <span className="min-w-0 truncate">{formatBytes(multiBytes)} · {t('filebrowser.meta.knownSize', 'Known size ({{count}}/{{total}} items)', { count: multiSelection.filter((item) => item.entry.sizeBytes !== undefined).length, total: multiSelection.length })}</span>
+              <span className="min-w-0 truncate">{formatBytes(multiBytes, locale)} · {t('filebrowser.meta.knownSize', 'Known size ({{count}}/{{total}} items)', { count: multiSelection.filter((item) => item.entry.sizeBytes !== undefined).length, total: multiSelection.length })}</span>
             </>
           ) : null}
         </>
@@ -89,7 +89,7 @@ export function StatusBar({
             {t('filebrowser.status.selected', 'Selected')}: {entry.name}
           </span>
           <span className="opacity-60">·</span>
-          <span className="shrink-0">{entry.kind === 'folder' ? '—' : formatBytes(entry.sizeBytes)}</span>
+          <span className="shrink-0">{entry.kind === 'folder' ? '—' : formatBytes(entry.sizeBytes, locale)}</span>
           <Tooltip title={t('filebrowser.topbar.copyPath', 'Copy path')}>
             <button
               type="button"

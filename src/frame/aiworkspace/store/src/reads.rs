@@ -4,7 +4,7 @@ use crate::docdb::db_err;
 use crate::urlsource::{SourceQuery, SourceRegistry};
 use crate::workspace::{Caller, Workspace};
 use aiworkspace_core::model::ReadCtx;
-use aiworkspace_core::access::Cap;
+use aiworkspace_core::access::{Access, Cap};
 use aiworkspace_core::filter::QuerySpec;
 use aiworkspace_core::model::*;
 use aiworkspace_core::read;
@@ -83,6 +83,9 @@ impl Workspace {
                     if m["data"].get("state").is_some() {
                         self.data_source_state(&e, &mut m["data"])?;
                     }
+                    if e.type_id == TYPE_TABLE {
+                        self.contact_metadata(&e, &mut m["data"])?;
+                    }
                     m
                 } else {
                     aiworkspace_core::body::read_body(&ctx, &access, &e, params, Some(&loader))?
@@ -100,7 +103,9 @@ impl Workspace {
         data["attempt"] = self.source_attempt(&e.entity_id)?.unwrap_or(Value::Null);
         let version = e.payload.get("data_version");
         let ms = |v: Option<&Value>| v.and_then(Value::as_str).and_then(aiworkspace_core::value::parse_datetime_ms);
-        let checked = crate::source::refreshed_at(self, &e.entity_id)?.and_then(|s| aiworkspace_core::value::parse_datetime_ms(&s));
+        let refreshed = crate::source::refreshed_at(self, &e.entity_id)?;
+        let checked = refreshed.as_deref().and_then(aiworkspace_core::value::parse_datetime_ms);
+        if let Some(at) = refreshed { data["last_success_at"] = json!(at); }
         let at = ms(version.and_then(|v| v.get("business_time"))).or_else(|| ms(version.and_then(|v| v.get("synced_at"))).max(checked));
         let max_age = aiworkspace_core::types::source_def(e).and_then(|d| d["freshness"]["max_age_s"].as_i64());
         data["expired"] = json!(match (at, max_age) {
@@ -251,7 +256,7 @@ impl Workspace {
         if !self.objects.has_object(&object_id) {
             return Err(WsError::new(Code::ResourceReclaimed, "that version's content was reclaimed after its retention period").with_data(json!({ "object_ids": [object_id] })));
         }
-        let object = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(&object_id)?)?;
+        let object = self.readable_version_object(&ctx, &access, &object_id)?;
         if object["ws_type"] != json!(e.type_id) {
             return Err(WsError::invalid_schema("stored version has another type"));
         }
@@ -325,8 +330,7 @@ impl Workspace {
                 if known.is_none() || !self.objects.has_object(obj) {
                     return Err(WsError::new(Code::ReferenceBroken, "that fixed version is not available here"));
                 }
-                use aiworkspace_core::materialize::ObjectSource;
-                let content = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(obj)?)?;
+                let content = self.readable_version_object(&ctx, &access, obj)?;
                 return Ok(json!({ "ok": true, "reference": with_ws(&reference, &self.workspace_id), "canonical": canonical_reference(&with_ws(&reference, &self.workspace_id))?,
                                   "object_id": obj, "content_rev": known, "fixed": true, "object": content }));
             }
@@ -388,11 +392,25 @@ impl Workspace {
         let Some(object_id) = object_id else {
             return Err(WsError::not_found(format!("entity {id} is not part of seq {seq}")));
         };
-        let object = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(&object_id)?)?;
+        let object = self.readable_version_object(&ctx, access, &object_id)?;
         let mut reference = canon.clone();
         reference["workspace_id"] = json!(self.workspace_id);
         Ok(json!({ "ok": true, "reference": reference, "canonical": reference, "fixed": true, "snapshot_id": snapshot_id,
                    "content_root": content_root, "object_id": object_id, "object": object }))
+    }
+
+    /// An immutable version must match its object id. Check the target recorded in that version
+    /// against today's permissions before handing out the object or a plan to restore it.
+    fn readable_version_object(&self, ctx: &dyn ReadCtx, access: &Access, id: &str) -> WsResult<Value> {
+        use aiworkspace_core::materialize::ObjectSource;
+        let object = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(id)?)?;
+        if object["ws_type"] == TYPE_ANNOTATION {
+            let payload = object["content"].as_object().ok_or_else(|| WsError::invalid_schema("stored annotation content must be an object"))?;
+            if payload.contains_key("context") && !read::annotation_target_readable(ctx, access, payload)? {
+                return Err(WsError::denied("read capability required on the annotation target"));
+            }
+        }
+        Ok(object)
     }
 
     /// `doc.get_collab_state`: the only way CRDT bytes leave the backend

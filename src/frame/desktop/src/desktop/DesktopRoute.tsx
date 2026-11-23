@@ -275,7 +275,7 @@ interface DesktopMenuState extends DesktopPlacement {
 export function DesktopRoute() {
   const store = useDesktopUIStore()
   const snap = useDesktopUISnapshot()
-  const { locale, setLocale, t } = useI18n()
+  const { locale, preferredLocale, setLocale, t } = useI18n()
   const appText = useAppText()
   const { themeMode, setThemeMode } = useThemeMode()
   const isMobile = useMediaQuery('(max-width:768px)')
@@ -676,8 +676,8 @@ export function DesktopRoute() {
     return () => window.removeEventListener('buckyos:request-logout', onRequest)
   }, [handleLogout])
   const handleCycleLocale = useCallback(
-    () => setLocale(nextSupportedLocale(locale)),
-    [setLocale, locale],
+    () => setLocale(nextSupportedLocale(preferredLocale)),
+    [setLocale, preferredLocale],
   )
   const handleToggleTheme = useCallback(
     () => setThemeMode(themeMode === 'light' ? 'dark' : 'light'),
@@ -717,8 +717,8 @@ export function DesktopRoute() {
     [store],
   )
 
-  const handleSaveNote = useCallback(
-    (itemId: string, content: string) => store.updateWidgetNote(itemId, content),
+  const handleUpdateWidgetConfig = useCallback(
+    (itemId: string, patch: Record<string, unknown>) => store.updateWidgetConfig(itemId, patch),
     [store],
   )
 
@@ -973,7 +973,7 @@ export function DesktopRoute() {
                   onOpenItemContextMenu={handleOpenItemContextMenu}
                   onResizeItem={handleResizeItem}
                   onRestore={restoreDefaults}
-                  onSaveNote={handleSaveNote}
+                  onUpdateConfig={handleUpdateWidgetConfig}
                   onViewportProgress={handleViewportProgress}
                   resizingItemId={resizingItemId}
                   selectedItemId={selectedItemId}
@@ -1184,6 +1184,7 @@ export function DesktopRoute() {
       <OpenWithHost />
       <Alert
         severity="success"
+        closeText={t('common.close')}
         onClose={() => store.setSnackbar(null)}
         sx={{
           display: snackbar ? 'flex' : 'none',
@@ -1195,7 +1196,7 @@ export function DesktopRoute() {
           color: 'var(--cp-text)',
         }}
       >
-        {snackbar}
+        {snackbar && (typeof snackbar === 'string' ? snackbar : t(snackbar.key))}
       </Alert>
     </main>
   )
@@ -1219,7 +1220,7 @@ interface DesktopPagesProps {
   onOpenItemContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
   onResizeItem: (itemId: string, next: GridRect) => GridRect | null
   onRestore: () => void
-  onSaveNote: (itemId: string, content: string) => void
+  onUpdateConfig: (itemId: string, patch: Record<string, unknown>) => void
   onViewportProgress: (progress: number, pageCount: number) => void
   resizingItemId: string | null
   selectedItemId: string | null
@@ -1248,12 +1249,14 @@ const DesktopPages = memo(function DesktopPages({
   onOpenItemContextMenu,
   onResizeItem,
   onRestore,
-  onSaveNote,
+  onUpdateConfig,
   onViewportProgress,
   resizingItemId,
   selectedItemId,
   width,
 }: DesktopPagesProps) {
+  const { locale } = useI18n()
+  const direction = locale === 'ar' ? 'rtl' : 'ltr'
   const pageCount = layout.pages.length
   const gridLayouts = useMemo(
     () => layout.pages.map((page) => mapPageToGrid(page)),
@@ -1274,6 +1277,9 @@ const DesktopPages = memo(function DesktopPages({
     [gridConfig, width],
   )
   const swiperRef = useRef<SwiperInstance | null>(null)
+  useLayoutEffect(() => {
+    swiperRef.current?.changeLanguageDirection(direction)
+  }, [direction])
   const lockPaging = useCallback((locked: boolean) => {
     if (swiperRef.current) swiperRef.current.allowTouchMove = !locked
   }, [])
@@ -1332,6 +1338,7 @@ const DesktopPages = memo(function DesktopPages({
 
   return (
     <Swiper
+      dir={direction}
       modules={[Pagination]}
       // A touch swipes pages on any screen (an iPad shows the desktop layout); the mouse drags tiles and uses the dots.
       simulateTouch={false}
@@ -1377,7 +1384,7 @@ const DesktopPages = memo(function DesktopPages({
                     onOpen={onOpenItem}
                     onOpenContextMenu={onOpenItemContextMenu}
                     onResize={onResizeItem}
-                    onSaveNote={onSaveNote}
+                    onUpdateConfig={onUpdateConfig}
                   />
                 </div>
               ))}
@@ -1480,7 +1487,7 @@ function DesktopTile({
   onOpen,
   onOpenContextMenu,
   onResize,
-  onSaveNote,
+  onUpdateConfig,
 }: {
   app?: AppDefinition
   grid: PositionParams
@@ -1493,7 +1500,7 @@ function DesktopTile({
   onOpen: (item: LayoutItem) => void
   onOpenContextMenu: (item: LayoutItem, point: { x: number; y: number }) => void
   onResize: (itemId: string, next: GridRect) => GridRect | null
-  onSaveNote: (itemId: string, content: string) => void
+  onUpdateConfig: (itemId: string, patch: Record<string, unknown>) => void
 }) {
   const appText = useAppText()
   const opens = item.type === 'app' || item.type === 'file'
@@ -1521,7 +1528,7 @@ function DesktopTile({
             width: 'var(--icon-size)',
             height: 'var(--icon-size)',
             borderRadius: 'calc(var(--icon-size) * 0.28)',
-            ...appIconSurfaceStyle(app.accent),
+            ...appIconSurfaceStyle(app.accent, app.iconKey),
           }}
         >
           <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
@@ -1608,7 +1615,7 @@ function DesktopTile({
         ) : null}
 
         {item.type === 'widget' ? (
-          <DesktopWidgetRenderer item={item} onSaveNote={onSaveNote} />
+          <DesktopWidgetRenderer item={item} onUpdateConfig={onUpdateConfig} />
         ) : null}
       </div>
       {resizeCell && item.type === 'widget' ? (

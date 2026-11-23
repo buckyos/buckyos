@@ -24,7 +24,7 @@ export function InstallWizard({
   onOpenInstaller: (params: AppInstallerDialogParams) => Promise<void>
 }) {
   const store = useAppServiceStore()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const form = useForm<ManualInstallSourceInput>({
     resolver: zodResolver(manualInstallSourceSchema),
     defaultValues: { sourceText: '' },
@@ -280,7 +280,7 @@ export function InstallWizard({
               <p className="mt-2 text-xs text-[var(--cp-muted)]">
                 {t(`app22.source.kind.${analysis.source.kind}`)}
                 {analysis.source.size_bytes !== null &&
-                  ` · ${analysis.source.size_bytes.toLocaleString()} B`}
+                  ` · ${analysis.source.size_bytes.toLocaleString(locale)} B`}
               </p>
             </>
           ) : (

@@ -1,10 +1,10 @@
 /* Display and input conversion of the value types of design §3.4.2 (table fields and record properties share them). */
 
 import { parseNumber, resolveAmbiguous, resolveMark, splitMoney } from '@table/mod'
-import type { FieldType, Json, OptionDef } from '../api/types'
+import type { FieldType, Json, OptionDef, ReferencePurpose } from '../api/types'
 import { aiwsT, aiwsText, localizedLabels } from '../i18n'
 
-export interface ValueDef { type: FieldType; scale?: number; options?: OptionDef[]; required?: boolean; nullable?: boolean; currency?: string }
+export interface ValueDef { ref_purpose?: ReferencePurpose; target_types?: string[]; type: FieldType; scale?: number; options?: OptionDef[]; required?: boolean; nullable?: boolean; currency?: string }
 
 /** A stored currency value (`{ amount, currency }`, 表格数据导入 TODO §6.1). */
 export function moneyParts(value: Json | undefined): { amount: string; currency: string } | null {
@@ -17,7 +17,7 @@ export function moneyParts(value: Json | undefined): { amount: string; currency:
 export function formatMoney(amount: string, currency: string, scale?: number): string {
   const digits = scale ?? amount.split('.')[1]?.length ?? 2
   try {
-    const format = new Intl.NumberFormat(aiwsText().locale, { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits })
+    const format = new Intl.NumberFormat(aiwsText().intl, { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits })
     // a decimal string is formatted exactly (Intl.NumberFormat v3)
     return format.format(amount as unknown as number)
   } catch {
@@ -31,6 +31,12 @@ export const COMMON_CURRENCIES = ['CNY', 'USD', 'EUR', 'JPY', 'GBP', 'HKD', 'TWD
 /** "Clear the cell": `table.unset_values` / `entity.unset_keys`. */
 export const UNSET = Symbol('unset')
 export type Input = Json | typeof UNSET
+
+export function emptyInput(def: ValueDef): null | typeof UNSET {
+  return def.required && def.nullable ? null : UNSET
+}
+
+export const referenceTypeLabels = { image: 'aiworkspace.table.ref.image', canvas: 'aiworkspace.table.ref.canvas' } as const
 
 export function formatValue(def: ValueDef, value: Json | undefined): string {
   if (value === undefined) return ''
@@ -102,7 +108,7 @@ export function parseInput(def: ValueDef, text: string): { ok: true; value: Inpu
       if (!number || number.percent || marks.some((m) => m === null)) return { ok: false, error: aiwsT('aiworkspace.data.value.invalidMoney') }
       const mark = marks[0]
       if (!mark) return { ok: true, value: number.digits }
-      const locale = aiwsText().locale
+      const locale = aiwsText().intl
       const currency = 'code' in mark ? mark.code : resolveAmbiguous(mark.ambiguous, def.currency ?? null, locale)
       return { ok: true, value: { amount: number.digits, currency } }
     }
@@ -113,7 +119,7 @@ export function parseInput(def: ValueDef, text: string): { ok: true; value: Inpu
     case 'json': {
       try {
         const value = JSON.parse(text) as Json
-        return value && typeof value === 'object' && !Array.isArray(value) ? { ok: true, value } : { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
+        return value !== null && typeof value === 'object' ? { ok: true, value } : { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
       } catch {
         return { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
       }

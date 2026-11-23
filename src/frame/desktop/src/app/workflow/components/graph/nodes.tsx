@@ -1,5 +1,6 @@
 /* ── Custom React Flow nodes for the workflow graph ── */
 
+import { useI18n } from '../../../../i18n/provider'
 import { memo } from 'react'
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react'
 import { AlertTriangle, GitBranch, Layers, Repeat, User } from 'lucide-react'
@@ -52,16 +53,12 @@ function controlIcon(node: ControlNodeView) {
   return <Repeat size={13} />
 }
 
-function taskSubtitle(node: TaskNodeView): string {
-  return node.executor?.raw ?? 'task'
-}
-
-function controlSubtitle(node: ControlNodeView): string {
+function controlSubtitle(node: ControlNodeView, t: ReturnType<typeof useI18n>['t']): string {
   if (node.controlType === 'branch')
-    return `branch · ${Object.keys(node.paths).length} paths`
+    return t('workflow.paths', undefined, { count: Object.keys(node.paths).length })
   if (node.controlType === 'parallel')
-    return `parallel · join=${node.join.strategy}${node.join.n ? `(${node.join.n})` : ''}`
-  return `for_each · concurrency=${node.effectiveConcurrency}/${node.concurrency}`
+    return t('workflow.parallelJoin', undefined, { strategy: `${node.join.strategy}${node.join.n ? `(${node.join.n})` : ''}` })
+  return t('workflow.forEachConcurrency', undefined, { effective: node.effectiveConcurrency, limit: node.concurrency })
 }
 
 interface BodyProps {
@@ -74,6 +71,7 @@ interface BodyProps {
 }
 
 function NodeBody({ node, issues, selected, icon, label, subtitle }: BodyProps) {
+  const { t } = useI18n()
   const color = accent(node)
   const hasErr = issues.some((i) => i.severity === 'error')
   const hasWarn = issues.some((i) => i.severity === 'warn')
@@ -133,7 +131,7 @@ function NodeBody({ node, issues, selected, icon, label, subtitle }: BodyProps) 
               border: '1px solid var(--cp-border)',
             }}
           >
-            {node.outputMode === 'finite_seekable' ? 'seekable' : 'sequential'}
+            {t(`workflow.node.${node.outputMode}`, node.outputMode)}
           </span>
         )}
         {(hasErr || hasWarn) && (
@@ -176,6 +174,7 @@ function NodeBody({ node, issues, selected, icon, label, subtitle }: BodyProps) 
 }
 
 function TaskNodeImpl({ data, selected }: NodeProps<WorkflowFlowNode>) {
+  const { t } = useI18n()
   const node = data.node as TaskNodeView
   const icon = node.stepType !== 'autonomous' ? <User size={13} /> : null
   return (
@@ -186,8 +185,8 @@ function TaskNodeImpl({ data, selected }: NodeProps<WorkflowFlowNode>) {
         issues={data.issues}
         selected={!!selected}
         icon={icon}
-        label={node.stepType}
-        subtitle={taskSubtitle(node)}
+        label={t(`workflow.node.${node.stepType}`, node.stepType)}
+        subtitle={node.executor?.raw ?? t('workflow.task')}
       />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
     </>
@@ -195,6 +194,7 @@ function TaskNodeImpl({ data, selected }: NodeProps<WorkflowFlowNode>) {
 }
 
 function ControlNodeImpl({ data, selected }: NodeProps<WorkflowFlowNode>) {
+  const { t } = useI18n()
   const node = data.node as ControlNodeView
   return (
     <>
@@ -204,8 +204,8 @@ function ControlNodeImpl({ data, selected }: NodeProps<WorkflowFlowNode>) {
         issues={data.issues}
         selected={!!selected}
         icon={controlIcon(node)}
-        label={node.controlType}
-        subtitle={controlSubtitle(node)}
+        label={t(`workflow.node.${node.controlType}`, node.controlType)}
+        subtitle={controlSubtitle(node, t)}
       />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
     </>

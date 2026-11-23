@@ -73,7 +73,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
       {groupSession && <GroupHooksSection hooks={groupSession.hooks} />}
       {group && groupSession && <GroupExtensionPanels panels={groupSession.panels} context={{ groupDid: group.did, sessionId: groupSession.sessionId, session: groupSession.key, locale }} hostDid={group.hostDid} allowOrigins={store.isMock ? mockPanelOrigins() : undefined} />}
       <DetailSection title={t('messagehub.members')}>
-        {group?.hosted ? <GroupSessionParticipantList session={session} context={context} group={group} fallback={localMembers} /> : localMembers}
+        {group ? <GroupSessionParticipantList session={session} context={context} group={group} fallback={localMembers} /> : localMembers}
       </DetailSection>
       <DetailSection title={t('messagehub.preferences')}>
         <ShowActionsToggle value={showActions} onChange={onShowActions} />

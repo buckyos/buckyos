@@ -14,7 +14,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useSWRConfig } from 'swr'
-import { ago, t, type TextKey } from '../i18n'
+import { lang, ago, t, type TextKey } from '../i18n'
 import { didName, fmtTokens, messageHubHref, sessionHref, useQuery } from '../lib'
 import {
   dataModel,
@@ -46,8 +46,7 @@ function Avatar({ profile, src, className }: { profile: AgentProfile; src?: stri
   ) : (
     <div
       aria-hidden
-      className={clsx('flex shrink-0 items-center justify-center rounded-full font-semibold text-white', className)}
-      style={{ background: 'linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--ok)))' }}
+      className={clsx('flex shrink-0 items-center justify-center rounded-full bg-accent font-medium text-panel', className)}
     >
       {[...profile.display_name.trim()][0]?.toUpperCase() ?? '?'}
     </div>
@@ -293,7 +292,7 @@ function ModelRow({ usage, max }: { usage: ModelUsage; max: number }) {
         <div
           key={i}
           className={clsx('text-right text-sm tabular-nums', i === 2 ? 'font-semibold' : w.total ? '' : 'text-mute')}
-          title={`${w.total.toLocaleString()} ${t('tokens')} (in ${w.input.toLocaleString()} / out ${w.output.toLocaleString()})`}
+          title={`${w.total.toLocaleString(lang)} ${t('tokens')} (${t('observeInputOutput', { input: w.input.toLocaleString(lang), output: w.output.toLocaleString(lang) })})`}
         >
           {fmtTokens(w.total)}
         </div>
@@ -317,7 +316,7 @@ function Overview({ entries }: { entries?: RegistryEntry[] }) {
 
       <div data-testid="model-usage">
         <div className="mt-4 grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem_3.75rem] gap-x-2 text-xs text-mute">
-          <span className="font-medium uppercase tracking-wide">{t('topModels')}</span>
+          <span className="font-medium">{t('topModels')}</span>
           <span className="text-right">{t('lastHour')}</span>
           <span className="text-right">{t('lastDay')}</span>
           <span className="text-right">{t('allTime')}</span>
@@ -336,7 +335,7 @@ function Overview({ entries }: { entries?: RegistryEntry[] }) {
         )}
         {usage.data?.since_ms != null && (
           <p className="text-xs text-mute">
-            {t('usageSince', { date: new Date(usage.data.since_ms).toLocaleDateString() })} · {t('tokens')}
+            {t('usageSince', { date: new Date(usage.data.since_ms).toLocaleDateString(lang) })} · {t('tokens')}
           </p>
         )}
       </div>

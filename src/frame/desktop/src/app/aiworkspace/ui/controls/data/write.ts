@@ -13,8 +13,7 @@ export interface DataWrite {
   operations: Operation[]
   /** Values shown at once, per record (undefined unsets). */
   overlay?: Record<string, Record<string, Json | undefined>>
-  /** Records added (shown at once with these values). */
-  created?: Record<string, Record<string, Json | undefined>>
+  created?: Record<string, Record<string, Json>>
   /** Records removed (hidden at once). */
   removed?: string[]
 }
@@ -22,12 +21,15 @@ export interface DataWrite {
 /** True when the service accepted (or this device saved it for later). */
 export async function submitData(store: WorkspaceStore, set: RecordSet | null, write: DataWrite): Promise<boolean> {
   if (write.operations.length === 0) return true
-  const touched = [...Object.keys(write.overlay ?? {}), ...Object.keys(write.created ?? {}), ...(write.removed ?? [])]
+  const touched = [...Object.keys(write.overlay ?? {}), ...(write.removed ?? [])]
   for (const [id, values] of Object.entries(write.overlay ?? {})) set?.overlay(id, values)
-  for (const [id, values] of Object.entries(write.created ?? {})) set?.overlay(id, values, true)
   if (write.removed?.length) set?.hide(write.removed)
   const outcome = await store.submit({ editId: write.editId, label: write.label, operations: write.operations as Operation[] })
-  if (outcome.status === 'accepted' || outcome.status === 'saved_locally') return true
+  if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
+    const rev = outcome.status === 'accepted' ? outcome.seq : outcome.provisional_seq
+    for (const [id, values] of Object.entries(write.created ?? {})) set?.inserted(id, values, rev)
+    return true
+  }
   set?.dropOverlay(touched)
   if (outcome.status === 'conflict') store.notify('info', aiwsT('aiworkspace.datactl.conflict'))
   else if (outcome.status === 'rejected') store.notify('error', aiwsT('aiworkspace.datactl.rejected', { reason: outcome.errors?.[0]?.detail ?? outcome.detail ?? outcome.code }))

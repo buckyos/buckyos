@@ -392,7 +392,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.perm.member.problem.spaces': '不能有空格。',
   'aiworkspace.perm.member.problem.public': '“public”不是成员：请改为打开匿名访问。',
   'aiworkspace.perm.memberKind.user': '用户',
-  'aiworkspace.perm.memberKind.agent': 'Agent',
+  'aiworkspace.perm.memberKind.agent': '智能体',
   'aiworkspace.perm.memberKind.did': '外部 DID',
   'aiworkspace.perm.memberKind.sysgroup': 'BuckyOS 用户组',
   'aiworkspace.perm.memberKind.contact': '联系人组',

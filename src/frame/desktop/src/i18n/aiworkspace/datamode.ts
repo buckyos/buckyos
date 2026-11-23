@@ -309,7 +309,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.datamode.members': '{{count}} 项',
   'aiworkspace.datamode.history.none': '文件夹和 Block 不单独保留版本。',
   'aiworkspace.datamode.origin.human': '人',
-  'aiworkspace.datamode.origin.agent': 'Agent',
+  'aiworkspace.datamode.origin.agent': '智能体',
   'aiworkspace.datamode.origin.macro': '宏运行',
   'aiworkspace.datamode.origin.import': '导入',
   'aiworkspace.datamode.origin.source': '来源刷新',

@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO","@waterflier","@alexsunxl"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+dunce = "1.0"
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -48,6 +49,7 @@ buckyos-kit = { workspace = true }
 package-lib = { workspace = true }
 name-lib = { workspace = true }
 name-client = { workspace = true }
+bns-client = { workspace = true }
 buckyos-http-server = { workspace = true }
 kRPC ={ workspace = true }
 rbac = { workspace = true }

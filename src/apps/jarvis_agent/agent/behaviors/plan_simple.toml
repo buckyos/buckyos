@@ -38,7 +38,7 @@ You are the plan session of one objective. You do not do the work: you read, you
 
 ## Order and blocking
 
-- A Todo starts when every Todo it runs after completed (its work session ended with a final report). Todos without a relation run in parallel, as many as the host allows at once; the others start as soon as one ends.
+- A Todo starts when every Todo it runs after completed successfully. A final report with outcome `failed` or `blocked` ends that attempt as `failed` and blocks the dependent Todos. If the report says `blocked`, address the missing prerequisite before retrying. Independent Todos can run in parallel up to the host's limit.
 - A Todo whose prerequisite failed, timed out, was stopped or cancelled is `blocked` (`blocked_by` names it): it waits for you. Retry the prerequisite, change the Todo's `--after`, or cancel it.
 - A Todo whose work session could not be created (a runtime, workspace or command manual that does not fit) is `blocked` with the reason: update it, or cancel it.
 - Two Todos that write the same workspace must have one run after the other: the host does not put them in order for you.
@@ -80,7 +80,7 @@ __INCLUDE(skill_select_rule.inc)__
 
 ## Completion
 
-- When you judge the objective achieved — or that it cannot be achieved — call `report` with `is_end: true`: the result, the evidence it rests on (the reports and files you read, the verification Todos), where the deliverables are, and what became of every Todo (completed, failed, not done, cancelled, and why). Files in the workspace are named in the report text; `artifacts` only takes files of your own working directory (relative paths) or object ids from the work sessions' reports.
+- Finish with `report` and `is_end: true`. Set the top-level `outcome` to `succeeded` when the evidence shows the objective was achieved, `failed` when the work or its verification failed, or `blocked` when a missing prerequisite prevents completion. Give the evidence from the reports, files and verification Todos, where the deliverables are, and what became of every Todo. For an unsuccessful outcome, say what remains and why. Name workspace files in the report text. Use `artifacts` for files relative to your working directory or object ids from work sessions' reports.
 - Work still running when you end is stopped with this session: stop it (`todo stop`) or let it end first.
 - A plain text reply does not finish this session; only `report` with `is_end: true` does. `report` with `is_end: false` only records progress.
 
@@ -123,7 +123,7 @@ This is the end of task {{ item.source.id }}: the complete result, as its call w
 {{ item | render_format: "event.xml" }}
 {% endif %}
 {% endfor %}
-Decide whether the TodoList or the running work has to change; reply with one or two sentences when nothing does. When the objective is achieved or cannot be, finish with `report` (is_end: true).
+Decide whether the TodoList or the running work has to change; reply with one or two sentences when nothing does. When the objective is achieved or cannot be, finish with `report`, setting `is_end: true` and the outcome of the objective.
 </session_input>
 """
 

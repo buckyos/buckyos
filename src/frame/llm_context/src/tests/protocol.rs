@@ -97,6 +97,7 @@ impl LLMResultParser for XmlBehaviorParser {
                 Some("true") => true,
                 Some(other) => return Err(format!("report end must be true or false, got {other}")),
             };
+            result.report_outcome = attr(attrs, "outcome");
         }
         if let Some((_, body)) = element(&text, "result") {
             let value: Value = serde_json::from_str(&unwrap_cdata(body))

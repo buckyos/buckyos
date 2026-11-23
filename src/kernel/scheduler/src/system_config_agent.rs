@@ -779,6 +779,8 @@ struct NodeGatewayAppInfoEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deployment: Option<buckyos_api::DeploymentIdentity>,
     access_mode: NodeGatewayAccessMode,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    resource_share_callback: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -939,6 +941,7 @@ fn build_app_host_entry(
         app_id: app_spec.app_id().clone(),
         app_instance_id: app_spec.app_instance_id().clone(),
         app_owner_user_id: app_spec.owner_user_id.clone(),
+        resource_share_callback: app_spec.app_doc.permissions.iter().any(|p| p.scope_path == buckyos_api::SHARE_DIRECTED_PERMISSION),
         sdk_version: parse_sdk_version(app_spec),
         deployment: Some(app_spec.deployment.clone()),
         access_mode,
@@ -983,6 +986,7 @@ fn build_app_host_entry_from_persisted_service_info(
         app_id: app_spec.app_id().clone(),
         app_instance_id: app_spec.app_instance_id().clone(),
         app_owner_user_id: app_spec.owner_user_id.clone(),
+        resource_share_callback: app_spec.app_doc.permissions.iter().any(|p| p.scope_path == buckyos_api::SHARE_DIRECTED_PERMISSION),
         sdk_version: parse_sdk_version(app_spec),
         deployment: Some(app_spec.deployment.clone()),
         access_mode,
@@ -998,6 +1002,12 @@ fn build_static_web_app_host_entry(
     app_spec: &AppServiceSpec,
     guest_allowed: bool,
 ) -> Option<NodeGatewayAppInfoEntry> {
+    if let Err(reason) = buckyos_api::check_app_sdk(
+        app_spec.app_doc.sdk_version.as_deref(), buckyos_api::MINIMUM_APP_SDK,
+    ) {
+        warn!("cannot publish static web App {}: {reason}", app_spec.app_instance_id());
+        return None;
+    }
     let web_pkg = app_spec.app_doc.pkg_list.web.as_ref()?;
     let dir_pkg_id = PackageId::get_pkg_id_unique_name(web_pkg.pkg_id.as_str());
     let dir_pkg_objid = web_pkg.pkg_objid.as_ref().map(|objid| objid.to_string());
@@ -1006,6 +1016,7 @@ fn build_static_web_app_host_entry(
         app_id: app_spec.app_id().clone(),
         app_instance_id: app_spec.app_instance_id().clone(),
         app_owner_user_id: app_spec.owner_user_id.clone(),
+        resource_share_callback: false,
         sdk_version: parse_sdk_version(app_spec),
         deployment: Some(app_spec.deployment.clone()),
         access_mode: if guest_allowed {
@@ -1341,6 +1352,11 @@ pub(crate) async fn update_node_gateway_info(
             },
         );
 
+        if node_gateway_info.service_info.contains_key("msg-center") {
+            node_gateway_info.app_info.insert("messagehub".into(), NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
+                service_id:"msg-center".into(), selector:control_panel_selector.clone(),
+            }));
+        }
         let control_panel_entry = NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
             service_id: "control-panel".to_string(),
             selector: control_panel_selector,
@@ -1652,6 +1668,8 @@ async fn update_rbac(
             rbac_literal(&agent_spec.binding.target_app_instance_id.to_string());
         let mailbox = MailboxAddress::new(agent_spec.agent_did.clone(), None)
             .map_err(anyhow::Error::msg)?;
+        let owner_contacts = MailboxAddress::new(agent_spec.agent_doc.owner.clone(), None)
+            .map_err(anyhow::Error::msg)?.contacts_resource();
         let agent_host = rbac_literal(&agent_spec.agent_did.to_host_name());
         for resource in [format!("obj://{agent_host}"), format!("obj://{agent_host}/*")] {
             push_policy_line(
@@ -1660,6 +1678,17 @@ async fn update_rbac(
             );
         }
         for subject in [&runtime_subject, &agent_subject] {
+            let contact_actions = if agent_spec.permission_mode == AgentPermissionMode::ReadWrite
+                && (subject != &runtime_subject || !runtime_read_only)
+            {
+                "read|write"
+            } else {
+                "read"
+            };
+            push_policy_line(
+                &mut rbac_policy,
+                format!("p, {subject}, {},{contact_actions},allow", rbac_literal(&owner_contacts)),
+            );
             for key in ["settings", "profile", "spec", "info"] {
                 push_policy_line(
                     &mut rbac_policy,
@@ -1957,6 +1986,18 @@ mod agent_rbac_tests {
             .unwrap();
         let writer = "app:writer.example.com";
         let reader = "app:reader.example.com";
+        let contacts = MailboxAddress::new(writable.agent_doc.owner.clone(), None).unwrap().contacts_resource();
+        let foreign_contacts = MailboxAddress::new(DID::new("web", "outside.example.com"), None).unwrap().contacts_resource();
+        for (app, spec, writable) in [(writer, &writable, true), (reader, &readonly, false)] {
+            for sub in ["bob".to_string(), spec.agent_did.to_string()] {
+                assert!(rbac::enforce(&sub, app, &contacts, "read", None).await);
+                assert_eq!(rbac::enforce(&sub, app, &contacts, "write", None).await, writable);
+            }
+            let agent = spec.agent_did.to_string();
+            assert!(rbac::enforce(&agent, "system:control-panel", &contacts, "read", None).await);
+            assert_eq!(rbac::enforce(&agent, "system:control-panel", &contacts, "write", None).await, writable);
+            assert!(!rbac::enforce(&agent, "system:control-panel", &foreign_contacts, "write", None).await);
+        }
         for resource in [
             "obj://config/users/bob/profile",
             "obj://config/users/bob/apps/notes/settings",
@@ -2116,6 +2157,7 @@ fn validate_beta22_app_state(input: &HashMap<String, String>) -> Result<()> {
         "www".to_string(),
         "sys".to_string(),
         "homestation".to_string(),
+        "messagehub".to_string(),
         "share".to_string(),
         "s3".to_string(),
         "reflow".to_string(),
@@ -2660,7 +2702,8 @@ fn update_managed_sn_ai_provider(
     let Some(current_settings) = input_system_config.get(AICC_SETTINGS_KEY) else {
         return Ok(HashMap::new());
     };
-    let current_settings: Value = serde_json::from_str(current_settings)?;
+    let buckyos_api::StoredAiccSettings::V1(current_settings) =
+        serde_json::from_str::<buckyos_api::StoredAiccSettings<Value>>(current_settings)?;
 
     let endpoints = (|| -> Result<_> {
         let boot_config = input_system_config
@@ -2701,7 +2744,7 @@ fn update_managed_sn_ai_provider(
     let mut actions = HashMap::new();
     actions.insert(
         AICC_SETTINGS_KEY.to_string(),
-        KVAction::Update(serde_json::to_string_pretty(&reconciled)?),
+        KVAction::Update(serde_json::to_string_pretty(&buckyos_api::StoredAiccSettings::V1(reconciled))?),
     );
     Ok(actions)
 }

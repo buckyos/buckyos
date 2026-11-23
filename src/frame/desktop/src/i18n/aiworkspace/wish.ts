@@ -4,7 +4,7 @@ export const en: Record<string, string> = {
   'aiworkspace.wish.nameWithType': '{{name}} ({{type}})',
 
   'aiworkspace.wish.blockTitle': 'Wish block',
-  'aiworkspace.wish.blockDescription': 'Describe a task: AI analyzes it into requirements, writes a macro and runs it into results, step by step on the card; each step is written at once and can be rolled back from its record.',
+  'aiworkspace.wish.blockDescription': 'Describe a task: AI analyzes it into a spec, writes a macro and runs it into results, step by step on the card; each step is written at once and can be rolled back from its record.',
   'aiworkspace.wish.resultsFolder': '{{title}} results',
   'aiworkspace.wish.run': 'Run',
   'aiworkspace.wish.runAgain': 'Run again',

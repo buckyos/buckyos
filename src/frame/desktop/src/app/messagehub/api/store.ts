@@ -20,15 +20,16 @@ import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '..
 import type { ConversationMessageReader } from '../../../components/conversation/history/types'
 import {
   acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
-  type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
+  type Contact, type GroupDoc, type GroupDocEnvelope, type GroupMemberRecord, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
-import { createGroupSchema, groupSessionId } from '../groupModel'
+import { createGroupSchema, DEFAULT_HISTORY_BEFORE_JOIN, groupSessionId, MAX_HISTORY_BEFORE_JOIN } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../../../components/conversation/history/relations'
 import { messageVoice, type MessageObject } from '../../../components/conversation/model/msgobj'
+import { isActionMessage } from '../../../components/conversation/model/activity'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupProfileInput, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import type { ConnectionChoice, ManageAction, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
 import type { OutgoingPayload, OutgoingUpload } from '../../../components/conversation/model/outgoing'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
@@ -76,8 +77,12 @@ interface OwnerData {
   peers: Map<string, { name?: string; type?: 'person' | 'agent' }>
   groupInfo: Map<string, { status: 'loading' | 'ready' | 'error'; value?: GroupInfo; loading?: Promise<void> }>
   groupSessionTitles: Record<string, string>
-  /** `group.check_access(session.post)` per local group session key. */
-  postAccess: Map<string, { allowed: boolean; reason?: string } | 'pending'>
+  /** `group.check_access(session.post)` per local group session key; a `stale` answer holds until its recheck returns. */
+  postAccess: Map<string, { allowed: boolean; reason?: string; stale?: boolean }>
+  /** Session keys whose `session.post` check is in flight. */
+  postChecks: Set<string>
+  /** Counts invalidations, so a check that an invalidation overtook is taken as stale. */
+  postGeneration: number
   /** Read receipts of own group messages per local group session key. */
   receipts: Map<string, ReceiptState>
   /** `group.list_session_members` per local group session key; `value` stays undefined when the host refuses. */
@@ -141,6 +146,10 @@ function groupEntry(doc: GroupDoc, hosted: boolean): GroupSummaryEntry {
   return { name: text(doc.profile?.name), description: text(doc.profile?.description), ownerDid: doc.owner, hostDid: typeof doc.host === 'string' ? doc.host : '', lifecycle: doc.lifecycle ?? 'active', hosted }
 }
 
+function groupMemberInfo(member: GroupMemberRecord): NonNullable<GroupInfo['members']>[number] {
+  return { did: member.member_did, role: member.role, state: member.state, expiresAt: member.expires_at_ms ?? undefined, invitedBy: member.invited_by ?? undefined }
+}
+
 function docOf(value: GroupDocEnvelope | GroupDoc | null | undefined): GroupDoc | null {
   if (!value || typeof value !== 'object') return null
   return 'doc' in value && value.doc && typeof value.doc === 'object' ? value.doc : 'id' in value ? value as GroupDoc : null
@@ -190,6 +199,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private readonly local = new LocalStateStore()
   private readers = new Map<string, { revision: number; reader: ConversationMessageReader }>()
   private tailReads = new Map<string, { again: boolean; done: Promise<void> }>()
+  private groupReloads = new Map<string, { again: boolean; done: Promise<void> }>()
   private pendingSendKeys = new Map<string, string>()
   private sendingLocalIds = new Set<string>()
   private deliveryFollowers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -261,7 +271,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), invitationStates: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), postChecks: new Set(), postGeneration: 0, receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), invitationStates: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -390,7 +400,9 @@ export class MessageHubApiStore implements MessageHubStore {
         if (previous.get(summary.session_id) === summary.updated_at_ms) continue
         const session = projected.sessions.find(item => item.id === summary.session_id)
         const groupDid = session && projected.entityById.get(session.entityId)?.type === 'group' ? session.entityId : undefined
-        if (groupDid) this.invalidatePostAccess(data, groupDid)
+        if (!groupDid) continue
+        this.invalidatePostAccess(data, groupDid)
+        if (summary.last_record?.msg && isActionMessage(summary.last_record.msg)) void this.reloadGroup(context, groupDid)
       }
       const unknownGroups = context.ownerDid === this.selfDid ? [...new Set(data.summaries.map(summary => summary.state?.origin === 'group' ? summary.state.peer_did : undefined).filter((did): did is string => Boolean(did) && !data.groups[did!] && !data.groupLookups.has(did!)))] : []
       const unknownGroup = unknownGroups.length > 0
@@ -418,8 +430,27 @@ export class MessageHubApiStore implements MessageHubStore {
     }
   }
 
+  /** Reloads a group already shown after its Action Log moved (members, roles, rules); a request during a reload runs once more after it. */
+  private reloadGroup(context: MessageHubContext, groupDid: string): Promise<void> {
+    if (!this.owner(context.ownerDid).groupInfo.has(groupDid)) return Promise.resolve()
+    const key = sessionKey(context.ownerDid, groupDid)
+    const running = this.groupReloads.get(key)
+    if (running) { running.again = true; return running.done }
+    const entry = { again: false, done: Promise.resolve() }
+    this.groupReloads.set(key, entry)
+    entry.done = (async () => {
+      try {
+        do { entry.again = false; await this.ensureGroup(context, groupDid, true) } while (entry.again)
+      } finally {
+        this.groupReloads.delete(key)
+      }
+    })()
+    return entry.done
+  }
+
   private invalidatePostAccess(data: OwnerData, groupDid: string) {
-    for (const key of [...data.postAccess.keys()]) if (key === groupDid || key.startsWith(`${groupDid}/`)) data.postAccess.delete(key)
+    data.postGeneration++
+    for (const [key, value] of data.postAccess) if (key === groupDid || key.startsWith(`${groupDid}/`)) data.postAccess.set(key, { ...value, stale: true })
   }
 
   startSync(context: MessageHubContext, activeSessionId: string | null) {
@@ -660,6 +691,8 @@ export class MessageHubApiStore implements MessageHubStore {
         if (!newest) break
       }
       const messages = this.pageMessages(context, sessionId, items)
+      const groupDid = this.groupOfSession(context, sessionId)
+      if (groupDid && items.some(item => !reached(item) && item.msg && isActionMessage(item.msg))) void this.reloadGroup(context, groupDid)
       const current = data.histories.get(key) ?? history
       const next = joined
         ? upsertMessages(current, messages)
@@ -868,8 +901,8 @@ export class MessageHubApiStore implements MessageHubStore {
       const info = data.groupInfo.get(entity.id)?.value
       const stateAccess = { canEditSharedState: info?.can.updateSharedState ?? false, canEditOwnMemberState: Boolean(info?.myRole) }
       const post = data.postAccess.get(session.id)
-      if (!post) void this.loadPostAccess(context, entity.id, session.id)
-      if (!post || post === 'pending') return { ...base, ...stateAccess, readOnlyReason: 'permission_pending' }
+      if ((!post || post.stale) && !data.postChecks.has(session.id)) void this.loadPostAccess(context, entity.id, session.id)
+      if (!post) return { ...base, ...stateAccess, readOnlyReason: 'permission_pending' }
       return post.allowed ? { ...base, ...stateAccess, mode: 'read_write' } : { ...base, ...stateAccess, readOnlyReason: readOnlyGroupReason(post.reason) }
     }
     return { ...base, mode: 'read_write' }
@@ -877,14 +910,21 @@ export class MessageHubApiStore implements MessageHubStore {
 
   private async loadPostAccess(context: MessageHubContext, groupDid: string, sessionId: string) {
     const data = this.owner(context.ownerDid)
-    data.postAccess.set(sessionId, 'pending')
+    const generation = data.postGeneration
+    data.postChecks.add(sessionId)
+    let value: { allowed: boolean; reason?: string }
     try {
       const result = await checkGroupAccess(groupDid, 'session.post', groupSessionId(groupDid, sessionId))
       // `hook_dependent`: the Session's post Hook decides per message, so the composer stays open.
-      data.postAccess.set(sessionId, { allowed: result.allowed === true || result.allowed === 'hook_dependent', reason: result.reason ?? undefined })
+      value = { allowed: result.allowed === true || result.allowed === 'hook_dependent', reason: result.reason ?? undefined }
     } catch (error) {
-      data.postAccess.set(sessionId, { allowed: false, reason: groupErrorReason(error) })
+      const reason = groupErrorReason(error)
+      const previous = data.postAccess.get(sessionId)
+      value = previous && (reason === 'unknown' || reason === 'unavailable') ? { allowed: previous.allowed, reason: previous.reason } : { allowed: false, reason }
+    } finally {
+      data.postChecks.delete(sessionId)
     }
+    data.postAccess.set(sessionId, data.postGeneration === generation ? value : { ...value, stale: true })
     this.bump(data)
   }
 
@@ -1400,7 +1440,7 @@ export class MessageHubApiStore implements MessageHubStore {
     if (!this.own(context)) return Promise.resolve()
     const data = this.owner(context.ownerDid)
     const current = data.groupInfo.get(groupDid)
-    if (current?.loading) return current.loading
+    if (current?.loading) return refresh ? current.loading.then(() => this.ensureGroup(context, groupDid, true)) : current.loading
     if (current?.status === 'ready' && !refresh) return Promise.resolve()
     const loading = Promise.resolve().then(() => this.loadGroup(context, groupDid)).finally(() => {
       const entry = data.groupInfo.get(groupDid)
@@ -1420,7 +1460,10 @@ export class MessageHubApiStore implements MessageHubStore {
     }
     this.invalidatePostAccess(data, groupDid)
     if (summary && !summary.hosted) {
-      data.groupInfo.set(groupDid, { status: 'ready', value: { did: groupDid, name: summary.name, description: summary.description, ownerDid: summary.ownerDid, hostDid: summary.hostDid, hosted: false, lifecycle: summary.lifecycle, revision: '', members: null, sessions: [], can: noGroupCapabilities, messageRules: {} } })
+      // The host answers through this Zone's joined binding; management stays on the host.
+      const membership = await listGroupMembers(groupDid).catch(() => null)
+      data.groupInfo.set(groupDid, { status: 'ready', value: { did: groupDid, name: summary.name, description: summary.description, ownerDid: summary.ownerDid, hostDid: summary.hostDid, hosted: false, lifecycle: summary.lifecycle, revision: '', members: membership ? membership.items.map(groupMemberInfo) : null, sessions: [], can: noGroupCapabilities, messageRules: {} } })
+      this.refreshLoadedSessionMembers(context, groupDid)
       this.bump(data)
       return
     }
@@ -1458,21 +1501,26 @@ export class MessageHubApiStore implements MessageHubStore {
         value: {
           did: groupDid, name: entry.name, description: entry.description, ownerDid: entry.ownerDid, hostDid: entry.hostDid, hosted: true, lifecycle: entry.lifecycle, revision: config?.revision ?? envelope.doc.revision,
           myRole: mine?.role ?? (data.groups[groupDid] && entry.ownerDid === this.selfDid ? 'owner' : undefined),
-          members: members ? members.map(member => ({ did: member.member_did, role: member.role, state: member.state, expiresAt: member.expires_at_ms ?? undefined, invitedBy: member.invited_by ?? undefined })) : null,
+          members: members ? members.map(groupMemberInfo) : null,
           sessions: sessionInfos,
           can,
           messageRules: { editWindowMs: defaultRules?.edit?.edit_window_ms ?? undefined, recallWindowMs: defaultRules?.edit?.recall_window_ms ?? undefined },
+          historyBeforeJoin: config && defaultRules?.history !== 'all' ? defaultRules?.history_before_join ?? DEFAULT_HISTORY_BEFORE_JOIN : undefined,
           pendingTransfer: transfer ? { memberDid: transfer.member_did, transferId: transfer.transfer_id, expiresAt: transfer.expires_at_ms } : previous?.pendingTransfer && previous.ownerDid === entry.ownerDid ? previous.pendingTransfer : undefined,
         },
       })
-      // Membership may have changed with whatever made the group reload.
-      for (const [sessionId, entry] of data.sessionMembers) if (entry.groupDid === groupDid && entry.loaded) void this.ensureGroupSessionMembers(context, groupDid, sessionId, true)
+      this.refreshLoadedSessionMembers(context, groupDid)
     } catch (error) {
       const reason = groupErrorReason(error)
       const previous = data.groupInfo.get(groupDid)?.value
       data.groupInfo.set(groupDid, previous && reason === 'unknown' ? { status: 'ready', value: previous } : { status: 'error', value: previous ? { ...previous, lifecycle: 'deleted', members: null, myRole: undefined, can: noGroupCapabilities, pendingTransfer: undefined } : undefined })
     }
     this.bump(data)
+  }
+
+  /** Membership may have changed with whatever made the group reload. */
+  private refreshLoadedSessionMembers(context: MessageHubContext, groupDid: string) {
+    for (const [sessionId, entry] of this.owner(context.ownerDid).sessionMembers) if (entry.groupDid === groupDid && entry.loaded) void this.ensureGroupSessionMembers(context, groupDid, sessionId, true)
   }
 
   private groupInfoOf(context: MessageHubContext, groupDid: string): GroupInfo {
@@ -1505,11 +1553,14 @@ export class MessageHubApiStore implements MessageHubStore {
     return result.group_did
   }
 
-  async updateGroupProfile(context: MessageHubContext, groupDid: string, profile: { name: string; description: string }) {
-    const name = profile.name.trim(), description = profile.description.trim()
+  async updateGroupProfile(context: MessageHubContext, groupDid: string, profile: GroupProfileInput) {
+    const name = profile.name.trim(), description = profile.description.trim(), history = profile.historyBeforeJoin
     if (!name) throw new Error('invalid-group-name')
-    const revision = this.groupInfoOf(context, groupDid).revision
-    await this.groupOperation(context, groupDid, () => applyGroupConfig(groupDid, revision, { profile: { name, description } }, crypto.randomUUID()))
+    if (history !== undefined && !(Number.isInteger(history) && history >= 0 && history <= MAX_HISTORY_BEFORE_JOIN)) throw new Error('invalid-session-rules')
+    const info = this.groupInfoOf(context, groupDid)
+    const patch: Record<string, unknown> = { profile: { name, description } }
+    if (history !== undefined && history !== info.historyBeforeJoin) patch.default_session = { history_before_join: history }
+    await this.groupOperation(context, groupDid, () => applyGroupConfig(groupDid, info.revision, patch, crypto.randomUUID()))
     const data = this.owner(context.ownerDid)
     if (data.groups[groupDid]) data.groups[groupDid] = { ...data.groups[groupDid], name, description }
     this.bump(data)
@@ -1678,7 +1729,7 @@ export class MessageHubApiStore implements MessageHubStore {
   ensureGroupSessionMembers(context: MessageHubContext, groupDid: string, sessionId: string, refresh = false): Promise<void> {
     if (!this.own(context)) return Promise.resolve()
     const data = this.owner(context.ownerDid)
-    if (!data.groups[groupDid]?.hosted) return Promise.resolve()
+    if (!data.groups[groupDid]) return Promise.resolve()
     const current = data.sessionMembers.get(sessionId)
     // A refresh asked for while a load is in flight may follow a change that load predates.
     if (current?.loading) return refresh ? current.loading.then(() => this.ensureGroupSessionMembers(context, groupDid, sessionId, true)) : current.loading

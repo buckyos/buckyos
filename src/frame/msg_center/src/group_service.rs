@@ -182,7 +182,7 @@ impl MessageCenter {
             .await?
             .map(|contact| contact.name)
             .filter(|name| !name.trim().is_empty());
-        encoded(EntryDescription {
+        let mut description = encoded(EntryDescription {
             state: EntryState::Active,
             resource: Some(EntryResource {
                 kind: "message_group".into(),
@@ -192,7 +192,127 @@ impl MessageCenter {
             }),
             methods,
             expires_at: None,
-        })
+        })?;
+        let public_share = g.resource_shares.values().find(|s| {
+            s.url.is_some() && s.request["audience"]["kind"] == "open" && g.capability(&s.creator, "group.invite_member")
+        });
+        if let Some(share) = public_share {
+            description["share_url"] = json!(share.url);
+        }
+        Ok(description)
+    }
+
+    async fn issue_resource_share(
+        &self,
+        group: &DID,
+        actor: &GroupActor,
+        p: &Value,
+    ) -> Result<Value> {
+        let request_id: String = field(p, "request_id")?;
+        if !(1..=96).contains(&request_id.len())
+            || !request_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        {
+            return Err(invalid("invalid-share-request-id"));
+        }
+        let key = buckyos_api::invite_secret_digest(&json!([actor.did, request_id]).to_string());
+        let mut tx = self.groups.begin(group).await?;
+        tx.state.require_cap(actor, "group.invite_member", None)?;
+        if tx.state.lifecycle != "active" || tx.state.config()?.membership.guest_entry.is_none() {
+            return Err(denied("guest-entry-disabled"));
+        }
+        let request = json!({"audience":p["audience"],"recipient_email":p["recipient_email"]});
+        let entry = tx
+            .state
+            .resource_shares
+            .entry(key.clone())
+            .or_insert_with(|| GroupResourceShare {
+                creator: actor.did.clone(),
+                request: request.clone(),
+                secret: format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                ),
+                url: None,
+                admitted: BTreeSet::new(),
+            });
+        if entry.request != request || entry.creator != actor.did {
+            return Err(invalid("request-id-already-used"));
+        }
+        if let Some(url) = &entry.url {
+            return Ok(json!({"url":url}));
+        }
+        let secret = entry.secret.clone();
+        tx.commit().await?;
+        let resource = format!("{}~{}", group.to_string(), key);
+        let result=get_buckyos_api_runtime()?.get_zone_service_krpc_client("control-panel").await?.call("resource.share.issue",
+            json!({"request_id":resource,"resource_id":resource,"audience":p["audience"],"recipient_email":p["recipient_email"],"return_path":format!("/messagehub/guest?group={}",group.to_string()),"callback_secret":secret})).await?;
+        let url = field::<String>(&result, "url")?;
+        let mut tx = self.groups.begin(group).await?;
+        tx.state
+            .resource_shares
+            .get_mut(&key)
+            .ok_or_else(missing)?
+            .url = Some(url);
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    pub(crate) async fn resource_share_callback(&self, p: &Value) -> Result<Value> {
+        let resource: String = field(p, "resource_id")?;
+        let (group, key) = resource.rsplit_once('~').ok_or_else(missing)?;
+        let did = DID::from_str(group).map_err(invalid)?;
+        let mut tx = self.groups.begin(&did).await?;
+        let secret = field::<String>(p, "callback_secret")?;
+        let registered = tx
+            .state
+            .resource_shares
+            .get(key)
+            .filter(|entry| entry.secret == secret)
+            .ok_or_else(missing)?;
+        if p["operation"] == "resume" {
+            let did: DID = field(p, "did")?;
+            return Ok(
+                json!({"ok":tx.state.lifecycle=="active" && !tx.state.blocked(&did) && registered.admitted.contains(&did.to_string())}),
+            );
+        }
+        if tx.state.lifecycle != "active"
+            || !tx
+                .state
+                .capability(&registered.creator, "group.invite_member")
+        {
+            return Err(denied("stale-share-authorization"));
+        }
+        let config = tx.state.config()?;
+        let entry = config.membership.guest_entry.ok_or_else(missing)?;
+        let methods = EntryMethods::from(entry.auth_methods);
+        let op: String = field(p, "operation")?;
+        if op == "inspect" {
+            return Ok(
+                json!({"ok":true,"title":config.profile.get("name").and_then(Value::as_str).unwrap_or(group),"sharer":registered.creator,"methods":methods,"operations":["group.submit_guest_request"],"expires_at":null}),
+            );
+        }
+        let subject: DID = field(p, "did")?;
+        let method: buckyos_api::AuthMethod = field(p, "auth_method")?;
+        if !methods.allows_session(Some(method)) || tx.state.blocked(&subject) {
+            return Err(denied("guest-entry-unavailable"));
+        }
+        if op == "prepare" {
+            return Ok(json!({"ok":true}));
+        }
+        if op != "commit" {
+            return Err(invalid("unknown-share-operation"));
+        }
+        tx.state
+            .resource_shares
+            .get_mut(key)
+            .ok_or_else(missing)?
+            .admitted
+            .insert(subject.to_string());
+        tx.commit().await?;
+        Ok(json!({"ok":true}))
     }
 
     /// A visitor opens a Session through the public entry only by a sign-in
@@ -229,7 +349,9 @@ impl MessageCenter {
                 &caller.user_id,
             )
         })?;
-        if !methods.effective(&settings).0.allows_session(caller.auth_method) {
+        if !methods.effective(&settings).0.allows_session(caller.auth_method) ||
+            (caller.auth_method == Some(buckyos_api::AuthMethod::OAuth) &&
+             !settings.oauth_sources.iter().any(|s| s.enabled && Some(&s.id)==caller.oauth_source_id.as_ref())) {
             return Err(crate::owner_session::gate_denial(
                 DenyReason::ZoneMethodDisabled,
                 &caller.user_id,
@@ -362,17 +484,37 @@ impl MessageCenter {
             );
         }
         let group: DID = field(&p, "group_did")?;
-        if !actor.remote && matches!(method, "group.accept_invitation" | "group.get_doc")
+        if method == "group.issue_share" { return self.issue_resource_share(&group,&actor,&p).await; }
+        if !actor.remote
+            && matches!(
+                method,
+                "group.accept_invitation"
+                    | "group.get_doc"
+                    | "group.list_members"
+                    | "group.list_session_members"
+            )
             && self.groups.load(&group).await?.is_none()
         {
-            return if method == "group.accept_invitation" {
-                self.accept_remote_group_invitation(&group, &actor, &p, &ctx).await
-            } else {
-                self.remote_group_doc(&actor.did, &group).await
+            return match method {
+                "group.accept_invitation" => {
+                    self.accept_remote_group_invitation(&group, &actor, &p, &ctx)
+                        .await
+                }
+                "group.get_doc" => self.remote_group_doc(&actor.did, &group).await,
+                "group.list_members" => self.remote_group_members(&actor.did, &group, None).await,
+                _ => {
+                    let session = optional::<String>(&p, "session_id")?;
+                    self.remote_group_members(&actor.did, &group, Some(session.as_deref()))
+                        .await
+                }
             };
         }
         if method == "group.submit_guest_request" {
             self.require_guest_entry_method(&ctx, &group).await?;
+            let group_state = self.groups.load(&group).await?.ok_or_else(missing)?;
+            if !group_state.resource_shares.values().any(|share| share.admitted.contains(&actor.did.to_string())) {
+                return Err(denied("system-resource-invitation-required"));
+            }
         }
         if method == "group.sync_joined" {
             if let Some(value) = self.sync_remote_group(&actor.did, &group).await? {
@@ -488,23 +630,7 @@ impl MessageCenter {
                     json!({"allowed":result.is_ok(),"reason":result.err().map(|e|e.to_string())}),
                 );
             }
-            "group.list_members" => {
-                self.expire_group_invitations(&group).await?;
-                let g = self.groups.load(&group).await?.ok_or_else(missing)?;
-                if g.role(&actor.did).is_none() || g.blocked(&actor.did) || g.lifecycle == "deleted"
-                {
-                    return Err(missing());
-                }
-                g.check_client(&actor)?;
-                if g.config()?.membership.member_list_visibility == "admins_only"
-                    && !g.capability(&actor.did, "group.approve_member")
-                {
-                    return Err(denied("member-list-hidden"));
-                }
-                return Ok(
-                    json!({"items":g.members.values().collect::<Vec<_>>(),"pending_owner_transfer":g.pending_owner_transfer.as_ref().filter(|t|t.expires_at_ms>Self::now_ms())}),
-                );
-            }
+            "group.list_members" => return self.group_members(&actor, &group).await,
             "group.list_events" => {
                 let g = self.groups.load(&group).await?.ok_or_else(missing)?;
                 g.require_cap(&actor, "group.read_all", None)?;
@@ -579,6 +705,7 @@ impl MessageCenter {
             }
             return Ok(saved.result.clone());
         }
+        let previous_seq = tx.state.group_seq;
         let shown = crate::buckets::display_files(&tx.state).ok();
         let result = self
             .mutate_group(&mut tx, &actor, method, &p, attestation)
@@ -597,7 +724,11 @@ impl MessageCenter {
         if display_changed {
             self.bind_display_files(&group, &display).await?;
         }
+        let changed = tx.state.group_seq != previous_seq;
         tx.commit().await?;
+        if changed {
+            self.schedule_group_push(&group, previous_seq);
+        }
         if display_changed {
             self.unbind_display_files(&group, &display).await;
         }
@@ -625,6 +756,7 @@ impl MessageCenter {
             return Ok(());
         }
         let mut tx = self.groups.begin(group).await?;
+        let previous_seq = tx.state.group_seq;
         let members: Vec<_> = tx
             .state
             .members
@@ -649,7 +781,9 @@ impl MessageCenter {
             )
             .await?;
         }
-        tx.commit().await
+        tx.commit().await?;
+        self.schedule_group_push(group, previous_seq);
+        Ok(())
     }
 
     /// External platform users (`did:msgtunnel:*`) cannot act for themselves;
@@ -864,6 +998,7 @@ impl MessageCenter {
             intervals: BTreeMap::new(),
             moderation: BTreeMap::new(),
             pending_owner_transfer: None,
+            resource_shares: BTreeMap::new(),
             invite_links: BTreeMap::new(),
             group_seq: 0,
             session_seqs: BTreeMap::new(),
@@ -938,6 +1073,7 @@ impl MessageCenter {
             buckyos_api::group_changed_event_id(&did),
             json!({"group_did":did}),
         );
+        self.schedule_group_push(&did, 0);
         self.register_local_recipients([did]);
         Ok(result)
     }
@@ -1107,12 +1243,21 @@ impl MessageCenter {
                 .as_ref()
                 .map(|r| (r.rel.clone(), r.target.clone(), r.key.clone())),
             redacted: false,
+            standard_text: is_standard_text(msg),
         };
         tx.object(msg, jwt).await?;
         tx.state.messages.insert(id.to_string(), meta.clone());
         let mut audience = tx.state.audience(s);
         audience.extend(additional);
-        tx.state.changes.push(Change {group_seq,kind:change_kind.into(),session_id:msg.to_session.clone(),subject,data:json!({"message":{"seq":session_seq,"obj_id":id,"redacted":false,"accepted_at_ms":accepted_at_ms},"change":data,"action":msg.content.content}),audience});
+        let action = (change_kind != "message").then_some(&msg.content.content);
+        tx.state.changes.push(Change {
+            group_seq,
+            kind: change_kind.into(),
+            session_id: msg.to_session.clone(),
+            subject,
+            data: json!({"message":{"seq":session_seq,"obj_id":id,"redacted":false,"accepted_at_ms":accepted_at_ms},"change":data,"action":action}),
+            audience,
+        });
         let group = tx.state.group_did.clone();
         let mut record = Self::build_mailbox_record(
             group.clone(),
@@ -2031,7 +2176,7 @@ impl MessageCenter {
                     tx.state.tombstone_readers.extend(readers);
                     tx.state
                         .changes
-                        .retain(|c| c.data["action"] == "entity.group_deleted");
+                        .retain(|c| c.action() == Some("entity.group_deleted"));
                     tx.state.members.clear();
                     tx.state.participants.clear();
                     tx.state.pending_owner_transfer = None;
@@ -2983,6 +3128,22 @@ impl MessageCenter {
         };
         Ok(json!({"items":items,"group_doc":doc}))
     }
+    pub(crate) async fn group_members(&self, a: &GroupActor, group: &DID) -> Result<Value> {
+        self.expire_group_invitations(group).await?;
+        let g = self.groups.load(group).await?.ok_or_else(missing)?;
+        if g.role(&a.did).is_none() || g.blocked(&a.did) || g.lifecycle == "deleted" {
+            return Err(missing());
+        }
+        g.check_client(a)?;
+        if g.config()?.membership.member_list_visibility == "admins_only"
+            && !g.capability(&a.did, "group.approve_member")
+        {
+            return Err(denied("member-list-hidden"));
+        }
+        Ok(
+            json!({"items":g.members.values().collect::<Vec<_>>(),"pending_owner_transfer":g.pending_owner_transfer.as_ref().filter(|t|t.expires_at_ms>Self::now_ms())}),
+        )
+    }
     /// Participants of one Session as the reader may see them (v2 §3.3): a
     /// reader who may see the group's member list gets every effective
     /// participant (`complete`); a Session Guest, or a member while the list is
@@ -3111,11 +3272,14 @@ impl MessageCenter {
         limit: usize,
     ) -> Result<Value> {
         let g = self.groups.load(group).await?.ok_or_else(missing)?;
-        g.check_client(a)?;
+        // Deleted groups retain only the audience-scoped tombstone.
+        if g.lifecycle != "deleted" {
+            g.check_client(a)?;
+        }
         let known = g.changes.iter().any(|c| {
-            c.data["action"] == "entity.group_deleted" && c.audience.contains(&a.did.to_string())
+            c.action() == Some("entity.group_deleted") && c.audience.contains(&a.did.to_string())
         }) || g.changes.iter().any(|c| {
-            c.data["action"] == "session.deleted" && c.audience.contains(&a.did.to_string())
+            c.action() == Some("session.deleted") && c.audience.contains(&a.did.to_string())
         }) || g.members.contains_key(&a.did.to_string())
             || g.tombstone_readers.contains(&a.did.to_string())
             || g.participants
@@ -3131,6 +3295,31 @@ impl MessageCenter {
         };
         let limited = cursor.is_none();
         let after = cursor.unwrap_or(0);
+        let (items, position) = self.visible_group_changes(&g, a, after, limit, false).await?;
+        let token = self
+            .groups
+            .save_cursor(group, &a.did, position, Self::now_ms())
+            .await?;
+        let member = g.members.get(&a.did.to_string());
+        if a.remote {
+            if let Some(member) = member.filter(|m| m.state == MemberStatus::Active) {
+                self.groups.push.observe_pull(group, &a.did, member.epoch, position, &token);
+            }
+        }
+        let member = member.map(|m| json!({"state":m.state,"epoch":m.epoch}));
+        Ok(json!({"items":items,"next_token":token,"limited":limited,"member":member}))
+    }
+
+    /// Resolve exactly the same reader-visible stream for HTTP pages and inline push.
+    pub(crate) async fn visible_group_changes(
+        &self,
+        g: &GroupState,
+        a: &GroupActor,
+        after: u64,
+        limit: usize,
+        require_hook_decision: bool,
+    ) -> Result<(Vec<Value>, u64)> {
+        let group = &g.group_did;
         let mut hooks = BTreeMap::<String, bool>::new();
         let mut items = vec![];
         let mut position = after;
@@ -3142,12 +3331,9 @@ impl MessageCenter {
             let hook = if readable {
                 let key = session.unwrap_or("").to_owned();
                 if !hooks.contains_key(&key) {
-                    hooks.insert(
-                        key.clone(),
-                        self.run_group_hooks(&g, a, session, "read", true, None)
-                            .await
-                            .unwrap_or(false),
-                    );
+                    let decision = self.run_group_hooks(g, a, session, "read", true, None).await;
+                    let allowed = if require_hook_decision { decision? } else { decision.unwrap_or(false) };
+                    hooks.insert(key.clone(), allowed);
                 }
                 hooks[&key]
             } else {
@@ -3164,28 +3350,24 @@ impl MessageCenter {
                 && (g.capability(&a.did, "group.read_all")
                     || meta.is_some_and(|m| g.visible_at(&a.did, m)));
             if visible {
-                items.push(json!({"kind":c.kind,"session":session_key(group,session)?,"session_id":session,"message":{"seq":c.data["message"]["seq"],"obj_id":c.data["message"]["obj_id"],"redacted":meta.is_some_and(|m|m.redacted),"accepted_at_ms":meta.map(|m|m.accepted_at_ms)},"change":c.data["change"],"action":c.data["action"],"subject_did":c.subject}));
+                items.push(json!({"kind":c.kind,"session":session_key(group,session)?,"session_id":session,"message":{"seq":c.data["message"]["seq"],"obj_id":c.data["message"]["obj_id"],"redacted":meta.is_some_and(|m|m.redacted),"accepted_at_ms":meta.map(|m|m.accepted_at_ms)},"change":c.data["change"],"action":c.action(),"subject_did":c.subject}));
             } else if own
-                || (c.data["action"] == "entity.group_deleted"
+                || (c.action() == Some("entity.group_deleted")
                     && (c.audience.contains(&a.did.to_string())
                         || g.tombstone_readers.contains(&a.did.to_string())))
                 || (c.kind == "session"
                     && c.audience.contains(&a.did.to_string())
-                    && c.data["action"] == "session.deleted")
+                    && c.action() == Some("session.deleted"))
             {
-                items.push(json!({"kind":if session.is_some(){"session"}else{"member"},"session":session_key(group,session)?,"session_id":session,"change":c.data["change"],"action":c.data["action"],"subject_did":c.subject}));
+                items.push(json!({"kind":if session.is_some(){"session"}else{"member"},"session":session_key(group,session)?,"session_id":session,"change":c.data["change"],"action":c.action(),"subject_did":c.subject}));
             }
             if items.len() >= limit.clamp(1, 4096) {
                 break;
             }
         }
-        let token = self
-            .groups
-            .save_cursor(group, &a.did, position, Self::now_ms())
-            .await?;
-        let member = g.members.get(&a.did.to_string()).map(|member| json!({"state":member.state,"epoch":member.epoch}));
-        Ok(json!({"items":items,"next_token":token,"limited":limited,"member":member}))
+        Ok((items, position))
     }
+
     async fn audit_group_read(
         &self,
         g: &GroupState,
@@ -3301,6 +3483,7 @@ impl MessageCenter {
             }
             return Ok(saved);
         }
+        let previous_seq = tx.state.group_seq;
         let result = self
             .accept_group_message_tx(&mut tx, a, &msg, jwt.as_deref())
             .await;
@@ -3340,6 +3523,7 @@ impl MessageCenter {
             self.fetch_accepted_attachments(&id, &msg);
         }
         if let Some(group) = &result.delivered_group {
+            self.schedule_group_push(group, previous_seq);
             Self::publish_event(
                 buckyos_api::group_changed_event_id(&group),
                 json!({"group_did":group}),

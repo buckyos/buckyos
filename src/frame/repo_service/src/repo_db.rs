@@ -90,7 +90,10 @@ impl RepoDb {
         schema: Option<&str>,
     ) -> Result<Self, String> {
         ensure_any_drivers_installed();
-        let opts = AnyPoolOptions::new().max_connections(8);
+        let mut opts = AnyPoolOptions::new().max_connections(8);
+        if backend == RdbBackend::Sqlite {
+            opts = opts.max_lifetime(None).idle_timeout(None);
+        }
         let pool = opts
             .connect(connection)
             .await
@@ -130,6 +133,15 @@ impl RepoDb {
                     RdbBackend::Sqlite => REPO_SERVICE_RDB_SCHEMA_SQLITE,
                     RdbBackend::Postgres => REPO_SERVICE_RDB_SCHEMA_POSTGRES,
                 });
+        if self.backend == RdbBackend::Sqlite {
+            return buckyos_sqlite_schema::initialize_pool(
+                &self.pool,
+                buckyos_api::REPO_SERVICE_RDB_SCHEMA_VERSION as u32,
+                &[],
+                &[ddl],
+            )
+            .await;
+        }
         // sqlx::AnyPool::execute accepts a single statement at a time when the
         // backend driver is strict, so split on ';' and run each non-empty
         // fragment.

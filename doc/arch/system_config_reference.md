@@ -46,7 +46,7 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | `users/<user_id>/agents/<agent_id>/settings` | Agent app 自有 settings JSON。schema 由 Agent app 约定。 | Agent runtime 或管理流程 | Agent runtime 读取自己的配置。 |
 | `users/<user_id>/apps/<app_id>/info` | app 自有 info 路径，RBAC 中允许 app 写。当前未发现系统组件固定 schema。 | app 自己 | app 自有运行信息。 |
 | `users/<user_id>/agents/<agent_id>/info` | Agent app 自有 info 路径，RBAC 中允许 Agent 写。当前未发现系统组件固定 schema。 | Agent app 自己 | Agent 自有运行信息。 |
-| `users/<user_id>/samba/settings` | `UserSambaInfo`，包含 `is_enable` 和 SMB 密码。 | SMB/用户设置流程 | smb-service 读取后生成本机 SMB 用户配置。 |
+| `users/<user_id>/samba/settings` | `UserSambaInfo`，包含 `schema="buckyos.samba.settings.v1"`、`is_enable` 和 SMB 密码。 | SMB/用户设置流程 | smb-service 读取后生成本机 SMB 用户配置。 |
 | `users/<user_id>/desktop/<session_id>/_meta` | 桌面 UI session 元数据，包含名称和创建/更新时间。 | control-panel UI session manager | 桌面状态同步与管理。 |
 | `users/<user_id>/desktop/<session_id>/<state_key>` | 桌面 UI session 的单项状态 JSON。已知 state key 包括 `appearance`、`window_layout`、`app_items_layout`、`widgets_layout`（桌面上有哪些项目不在这里，而是用户 home 下的 `Desktop` 文件夹）。 | control-panel UI session manager | 桌面状态恢复。 |
 
@@ -109,7 +109,7 @@ verify-hub 的私钥不在 `services/verify-hub/settings`，而在 `security/ver
 
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
-| `services/aicc/settings` | AICC provider 和路由配置。包含 provider 实例、模型、默认模型、alias、feature、image model、`routing_config` 等。 | scheduler 初始化；aicc 管理接口；control-panel AI provider 管理 | aicc 启动和 reload 时读取；Control Panel AI 设置页读取和更新。 |
+| `services/aicc/settings` | AICC provider 和路由配置，含顶层 `schema: "buckyos.aicc.settings.v1"`。包含 provider 实例、模型、默认模型、alias、feature、image model、`routing_config` 等。 | scheduler 初始化；aicc 管理接口；control-panel AI provider 管理 | aicc 启动和 reload 时读取；Control Panel AI 设置页读取和更新。 |
 
 当前 AICC 代码识别的 provider section 包括 `sn-ai-provider`、`openai`、`google`、`gemini`、`google_gemini`、`google_gemini`、`claude`、`anthropic`、`minimax`、`fal`。
 

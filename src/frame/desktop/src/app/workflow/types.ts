@@ -100,7 +100,6 @@ export interface ForEachControlNodeView {
   maxItems: number
   concurrency: number
   effectiveConcurrency: number
-  degradedReason?: string
 }
 
 export type ControlNodeView =

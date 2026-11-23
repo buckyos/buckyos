@@ -79,6 +79,7 @@ while (pending.length > 0) {
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
+copyFileSync(join(rootDir, "resource_share.ts"), join(distDir, "resource_share.ts"));
 copyFileSync(join(rootDir, "main.ts"), join(distDir, "main.ts"));
 copyFileSync(join(rootDir, "static_web.ts"), join(distDir, "static_web.ts"));
 copyFileSync(

@@ -11,7 +11,7 @@ import '../../aiworkspace.css'
 import { I18nProvider } from '../../../../i18n/provider'
 import { supportedLocales, type SupportedLocale } from '../../../../models/ui'
 import { loadCore } from '../../api/wasm'
-import { setAiwsLocale } from '../../i18n'
+import { loadAiwsLocale, setAiwsLocale } from '../../i18n'
 import { loadLoro } from '../../richtext/loro'
 import { WorkspaceStore } from '../../state/store'
 import { registerDefaultBlocks } from '../../ui/blocks/registerAll'
@@ -39,13 +39,14 @@ async function start(pkg: PrintPackage) {
   const started = performance.now()
   const locale: SupportedLocale = (supportedLocales as readonly string[]).includes(pkg.job.locale) ? pkg.job.locale as SupportedLocale : 'en'
   setAiwsLocale(locale)
+  const text = loadAiwsLocale(locale)
   document.documentElement.lang = locale
   document.title = pkg.job.title
   // the page size of every page: Chromium's margins are 0, the header and footer are ours (Q19)
   const page = document.createElement('style')
   page.textContent = `@page { size: ${pkg.job.paper.width_mm}mm ${pkg.job.paper.height_mm}mm; margin: 0; }`
   document.head.appendChild(page)
-  const [core] = await Promise.all([loadCore(), loadLoro()])
+  const [core] = await Promise.all([loadCore(), loadLoro(), text])
   registerDefaultBlocks()
   const store = new WorkspaceStore(new PrintSession(core, pkg), core)
   await store.outline.reload()

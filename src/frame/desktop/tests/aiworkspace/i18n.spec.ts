@@ -4,7 +4,10 @@
  * tests/datamodel/aiworkspace-i18n.test.ts. */
 
 import type { Page } from '@playwright/test'
-import { backToList, closePermissions, expect, LOCALE_STORAGE_KEY, openApp, openPermissions, openSide, openStatus, setCanvasMode, test, wishThreeSteps } from './fixtures'
+import ja from '../../src/i18n/aiworkspace/locales/ja'
+import ru from '../../src/i18n/aiworkspace/locales/ru'
+import type { SupportedLocale } from '../../src/models/ui'
+import { backToList, closePermissions, desktopLabel, expect, LOCALE_STORAGE_KEY, openApp, openPermissions, openSide, openStatus, setCanvasMode, test, wishThreeSteps } from './fixtures'
 
 const ALICE = 'tok-alice'
 const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]/
@@ -43,14 +46,14 @@ async function expectEnglish(page: Page, where: string) {
 
 /** The Desktop's language setting, changed live while the workspace stays open: minimise the AI Workspace
  * window, Settings → Appearance → Language, close Settings, bring the workspace back. */
-async function switchLanguage(page: Page, locale: 'en' | 'zh-CN') {
+async function switchLanguage(page: Page, locale: SupportedLocale) {
   const workspace = page.getByTestId('window-aiworkspace')
-  await workspace.getByRole('button', { name: /^(Minimize|最小化)$/ }).click()
+  await workspace.getByRole('button', { name: desktopLabel('common.minimize') }).click()
   await page.getByTestId('desktop-app-settings').click()
   const settings = page.getByTestId('window-settings')
-  await settings.getByRole('button', { name: /^(Appearance|外观)$/, exact: true }).click()
+  await settings.getByRole('button', { name: desktopLabel('settings.nav.appearance'), exact: true }).click()
   await settings.getByTestId('settings-language').selectOption(locale)
-  await settings.getByRole('button', { name: /^(Close|关闭)$/ }).first().click()
+  await settings.getByRole('button', { name: desktopLabel('common.close') }).first().click()
   await expect(settings).toHaveCount(0)
   await page.getByTestId('desktop-app-aiworkspace').click()
   await expect(page.getByTestId('aiws-workspace')).toBeVisible()
@@ -144,7 +147,7 @@ test('i18n: the film demo in English; a live language switch re-renders the open
   // a live switch in Settings → Appearance re-renders the open (minimised) workspace, both ways
   await switchLanguage(page, 'zh-CN')
   await expect(page.getByRole('toolbar', { name: '主工具栏' })).toBeVisible()
-  await expect(page.getByTestId('aiws-status')).toContainText(CJK)
+  await expect(page.getByTestId('aiws-status')).toHaveAccessibleName('工作区状态：提交、连接与离线')
   await switchLanguage(page, 'en')
   await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
   await expectEnglish(page, 'after switching back to English without a reload')
@@ -159,4 +162,25 @@ test('i18n: the film demo in English; a live language switch re-renders the open
   await backToList(page)
   await expect(page.getByTestId('aiws-new-template')).toContainText(CJK)
   await expect(page.getByTestId('aiws-list')).toContainText(/i18n film/)
+})
+
+test('i18n: the other product languages — a workspace made in Japanese, a live switch loads Russian without a reload', async ({ page }) => {
+  test.setTimeout(180_000)
+  // after the English init script of beforeEach: the page starts in Japanese
+  await page.addInitScript((key) => window.localStorage.setItem(key, 'ja'), LOCALE_STORAGE_KEY)
+  await openApp(page, ALICE)
+  await expect(page.getByTestId('aiws-new-template')).toHaveText(ja['aiworkspace.core.list.newFromTemplate'])
+  await page.getByTestId('aiws-new-template').click()
+  await page.getByTestId('aiws-template-film').click()
+  await page.getByLabel(ja['aiworkspace.shell.new.workspace.titleInput'], { exact: true }).fill(`i18n ja ${Date.now()}`)
+  await page.getByTestId('aiws-create-template').click()
+  await expect(page.getByTestId('aiws-canvas-block-blk-wish-1')).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByRole('toolbar', { name: ja['aiworkspace.shell.toolbar.main'] })).toBeVisible()
+  await expect(page.getByTestId('aiws-status')).toHaveAccessibleName(ja['aiworkspace.shell.status.label'])
+
+  // Russian's table is not loaded yet: the open workspace re-renders in it once it arrives
+  await switchLanguage(page, 'ru')
+  await expect(page.getByRole('toolbar', { name: ru['aiworkspace.shell.toolbar.main'] })).toBeVisible()
+  await expect(page.getByTestId('aiws-status')).toHaveAccessibleName(ru['aiworkspace.shell.status.label'])
+  expect(await page.evaluate(() => document.documentElement.lang)).toBe('ru')
 })

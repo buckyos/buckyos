@@ -728,17 +728,13 @@ impl SystemConfigClient {
     //list direct children
     pub async fn list(&self, key: &str) -> SytemConfigResult<Vec<String>> {
         let client = self.get_krpc_client()?;
-        client
+        let result = client
             .call("sys_config_list", json!({"key": key}))
             .await
-            .map_err(SystemConfigError::from)
-            .map(|result| {
-                let mut list = Vec::new();
-                for item in result.as_array().unwrap() {
-                    list.push(item.as_str().unwrap().to_string());
-                }
-                list
-            })
+            .map_err(SystemConfigError::from)?;
+        serde_json::from_value(result).map_err(|error| {
+            SystemConfigError::ReasonError(format!("invalid child list for {key}: {error}"))
+        })
     }
 
     pub async fn exec_tx(
@@ -823,6 +819,22 @@ impl SystemConfigClient {
             self.remove_config_cache(key).await;
         }
         Ok(0)
+    }
+
+    pub async fn resolve_oauth_did(
+        &self,
+        source_zone: &str,
+        did: &str,
+    ) -> SytemConfigResult<Option<Value>> {
+        let value = self
+            .client
+            .call(
+                "sys_config_resolve_oauth_did",
+                json!({"source_zone":source_zone,"did":did}),
+            )
+            .await
+            .map_err(SystemConfigError::from)?;
+        Ok((!value.is_null()).then_some(value))
     }
 
     pub async fn dump_configs_for_scheduler(&self) -> SytemConfigResult<Value> {

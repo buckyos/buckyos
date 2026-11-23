@@ -141,7 +141,7 @@ test('a running download opens its Task Center page, which can cancel it', async
   await expect(page).toHaveURL(new RegExp(`/taskcenter\\?taskid=${taskId}`))
 
   await page.getByTestId('task-cancel').click()
-  await expect(page.getByText('cancelled', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Cancelled', { exact: true }).first()).toBeVisible()
   await page.goto('/?scenario=normal')
   await page.getByTestId('status-tray-notifications-button').click()
   await expect(page.getByTestId('tray-task-row').filter({ hasText: 'Download dataset.tar.gz' })).toHaveAttribute('data-state', 'canceled')

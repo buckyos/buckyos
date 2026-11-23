@@ -6,8 +6,9 @@
  * Every Block subscribes to its own entry (`subscribeEntity`), so one Block's change re-renders
  * that Block alone. Children lists are kept per parent for the trees and the RenderHost. */
 
+import { labelConfig } from '@controls/label'
 import { isControlKind, isDataControl } from '@controls/contract'
-import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, Json, Operation, StoredPlacement } from '../api/types'
+import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, EntitySource, Json, Operation, StoredPlacement } from '../api/types'
 import { Emitter } from './emitter'
 
 const COLOR = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/
@@ -34,7 +35,7 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
   // a sourced entity (内核架构改进 D12): where it comes from; its content is read-only here
   const source = payload.source as Record<string, unknown> | undefined
   out.source = source && typeof source === 'object'
-    ? { kind: source.kind as 'url' | 'workspace', mode: (source.mode as 'live' | 'fixed' | undefined) ?? 'live', url: (source.url as string | undefined) ?? null, workspace_id: (source.workspace_id as string | undefined) ?? null,
+    ? { kind: source.kind as EntitySource['kind'], provider: source.provider as EntitySource['provider'], mode: (source.mode as 'live' | 'fixed' | undefined) ?? 'live', url: (source.url as string | undefined) ?? null, workspace_id: (source.workspace_id as string | undefined) ?? null,
         entity_id: (source.entity_id as string | undefined) ?? null, zone: (source.zone as string | undefined) ?? null, refresh: (source.refresh as { interval_s: number } | undefined) ?? null, auth_mode: (source.auth_mode as 'none' | 'hosted' | undefined) ?? 'none' }
     : null
   // the events an instance binds (扩展控件 P2): the canvas marks them, an Agent finds them without reading the Block
@@ -65,6 +66,7 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     const view = payload.view as { type?: string; version?: number } | undefined
     out.view_type = view?.type ?? null
     out.view_version = view?.version ?? null
+    out.config = view?.type === 'mindnode' || view?.type === 'label' ? labelConfig(payload.config) ?? null : null
     // a connector's geometry keys, as the backend's `outline_extras` projects them (连接线实现方案 §9.2)
     out.connector = view?.type === 'connector' ? connectorProjection(payload) : null
     const stroke = (payload.config as { stroke?: unknown } | undefined)?.stroke
@@ -398,7 +400,12 @@ export class OutlineModel {
                 target: current.target_id ? { entity_id: current.target_id } : undefined,
                 ...(current.connector ?? {}),
                 config: current.type_id === 'buckyos.container' ? current.config ?? undefined
-                  : current.ink_stroke || current.side || current.branch_color ? { ...(current.ink_stroke ? { stroke: current.ink_stroke } : {}), ...(current.side ? { side: current.side } : {}), ...(current.branch_color ? { branch_color: current.branch_color } : {}) } : undefined,
+                  : {
+                      ...current.config,
+                      ...(current.ink_stroke ? { stroke: current.ink_stroke } : {}),
+                      ...(current.side ? { side: current.side } : {}),
+                      ...(current.branch_color ? { branch_color: current.branch_color } : {}),
+                    },
                 slot: current.slot ?? undefined,
                 bindings: current.bindings ? Object.fromEntries(Object.entries(current.bindings).map(([name, id]) => [name, Array.isArray(id) ? id.map((x) => ({ entity_id: x })) : { entity_id: id }])) : undefined,
                 presentation: current.live ? { live: true } : undefined,

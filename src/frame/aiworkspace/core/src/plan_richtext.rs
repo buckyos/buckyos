@@ -131,9 +131,8 @@ fn candidate(p: &Planner, entity_id: &str, st: &RichTextState) -> LoroDoc {
     }
 }
 
-/// Validate the candidate and stage it. Returns the ids of blocks whose
-/// content or position changed.
-fn stage(p: &mut Planner, mut e: EntityRow, old: RichTextState, cand: LoroDoc, update: Vec<u8>) -> WsResult<Vec<String>> {
+/// Validate the candidate and stage it. Returns whether the explicit move changed position.
+fn stage(p: &mut Planner, mut e: EntityRow, old: RichTextState, cand: LoroDoc, update: Vec<u8>, moved_block: Option<&str>) -> WsResult<bool> {
     let id = e.entity_id.clone();
     if update.len() > p.env.limits.richtext.max_update_bytes {
         return Err(WsError::limit("rich text update exceeds the size limit"));
@@ -142,7 +141,11 @@ fn stage(p: &mut Planner, mut e: EntityRow, old: RichTextState, cand: LoroDoc, u
     let new_v = richtext::validate_ast(&ast, &p.env.limits.richtext)?;
     let old_v = richtext::validate_ast(&old.meta.ast, &p.env.limits.richtext)?;
     check_new_refs(p, &old_v, &new_v)?;
-    let block_index = richtext::next_block_index(&old.meta.block_index, &old_v, &new_v, p.seq());
+    let position_changed = moved_block.is_some() && old_v.order != new_v.order;
+    let block_index = match moved_block {
+        Some(target) => richtext::block_index_with_moves(&old.meta.block_index, &new_v, p.seq(), |id| id == target && position_changed),
+        None => richtext::next_block_index(&old.meta.block_index, &old_v, &new_v, p.seq()),
+    };
     let mut changed: Vec<String> = block_index
         .iter()
         .filter(|(b, info)| old.meta.block_index.get(*b).map_or(true, |o| o.hash != info.hash || o.struct_rev != info.struct_rev))
@@ -159,7 +162,7 @@ fn stage(p: &mut Planner, mut e: EntityRow, old: RichTextState, cand: LoroDoc, u
     for b in changed.iter().take(256) {
         p.touch(&id, sel(block_sel(b)), "text");
     }
-    Ok(changed)
+    Ok(position_changed)
 }
 
 fn apply_update(p: &mut Planner, op: &Value) -> OpResult {
@@ -177,7 +180,7 @@ fn apply_update(p: &mut Planner, op: &Value) -> OpResult {
     if !richtext::import_update(&cand, &bytes)? {
         return Err(WsError::new(Code::BaseUnknown, "update depends on operations the backend does not have; catch up and resend"));
     }
-    stage(p, e, st, cand, bytes)?;
+    stage(p, e, st, cand, bytes, None)?;
     // SessionLocal: only the originating editor session can undo it
     Ok((op.clone(), None))
 }
@@ -319,14 +322,18 @@ fn block_op(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         None => {
             cand.set_peer_id(p.env.peer_id).map_err(|e| WsError::io(format!("crdt peer: {e}")))?;
             let vv = cand.oplog_vv();
-            richtext::apply_block_ops(&cand, &[bop])?;
+            richtext::apply_block_ops(&cand, std::slice::from_ref(&bop))?;
             richtext::export_updates(&cand, &vv)?
         }
     };
     // the bytes the backend produced are what clients and replicas apply
     norm["server_update"] = json!(B64.encode(&update));
     norm["lineage_id"] = json!(st.meta.lineage_id);
-    stage(p, e, st, cand, update)?;
+    let moved_block = match &bop {
+        BlockOp::Move { block_id, .. } => Some(block_id.as_str()),
+        _ => None,
+    };
+    let position_changed = stage(p, e, st, cand, update, moved_block)?;
     let now = p.ov.richtext(id)?.expect("staged");
     let inverse = match undo {
         Undo::Inserted(ids) => {
@@ -344,9 +351,11 @@ fn block_op(p: &mut Planner, name: &str, op: &Value) -> OpResult {
             .into_iter()
             .map(|(pos, node)| json!({ "op": "richtext.insert_blocks", "entity_id": id, "position": pos.to_json(), "blocks": [node] }))
             .collect(),
+        Undo::Moved(_, _) if !position_changed => vec![],
         Undo::Moved(b, back) => {
+            let block = now.meta.block_index.get(&b).ok_or_else(|| WsError::invalid_op(format!("move update is missing block {b}")))?;
             vec![json!({ "op": "richtext.move_block", "entity_id": id, "block_id": b,
-                         "expect": { "struct_rev": seq }, "position": back.to_json() })]
+                         "expect": { "struct_rev": block.struct_rev }, "position": back.to_json() })]
         }
     };
     Ok((norm, Some(inverse)))

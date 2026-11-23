@@ -19,15 +19,74 @@ impl SledStore {
     const INTERNAL_META_PREFIX: &'static str = "__meta/";
     const REVISION_PREFIX: &'static str = "__meta/revision/";
 
-    pub(crate) fn from_db(db: Db) -> Self {
-        SledStore { db: Arc::new(db) }
-    }
+    pub const SCHEMA_KEY: &'static str = "__meta/schema_version";
+    const SCHEMA: &'static [u8] = b"1";
 
     pub fn new() -> std::result::Result<Self, Box<dyn std::error::Error>> {
-        let data_path = get_buckyos_service_local_data_dir("system_config");
-        //let path = root_path.join("data").join("system_config");
-        let db = sled::open(data_path)?;
-        Ok(Self::from_db(db))
+        Ok(Self::open(&get_buckyos_service_local_data_dir(
+            "system_config",
+        ))?)
+    }
+
+    /// Only an absent or empty directory is available for first-time initialization.
+    pub fn open(path: &std::path::Path) -> sled::Result<Self> {
+        let fresh = match std::fs::read_dir(path) {
+            Ok(mut entries) => entries.next().transpose()?.is_none(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => return Err(e.into()),
+        };
+        if !fresh {
+            return Self::open_existing(path);
+        }
+        let db = sled::open(path)?;
+        if !db.was_recovered() {
+            db.insert(Self::SCHEMA_KEY, Self::SCHEMA)?;
+            db.flush()?;
+        }
+        Self::from_existing_db(db)
+    }
+
+    // A recovered database must already declare its own format. Never relabel it.
+    fn from_existing_db(db: Db) -> sled::Result<Self> {
+        if db
+            .tree_names()
+            .iter()
+            .any(|n| n.as_ref() != b"__sled__default")
+        {
+            return Err(sled::Error::Unsupported(
+                "unknown System Config tree".into(),
+            ));
+        }
+        if db.get(Self::SCHEMA_KEY)?.as_deref() != Some(Self::SCHEMA) {
+            return Err(sled::Error::Unsupported(
+                "missing or unsupported System Config schema_version (expected 1)".into(),
+            ));
+        }
+        Ok(Self { db: Arc::new(db) })
+    }
+
+    /// Open a previously initialized store. Offline probes pass a copy since sled may run recovery.
+    pub fn open_existing(path: &std::path::Path) -> sled::Result<Self> {
+        for file in ["conf", "db"] {
+            match std::fs::metadata(path.join(file)) {
+                Ok(metadata) if metadata.is_file() => (),
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {
+                    return Err(sled::Error::Unsupported(format!(
+                        "missing or invalid sled {file}"
+                    )))
+                }
+            }
+        }
+        Self::from_existing_db(sled::open(path)?)
+    }
+
+    /// Includes revision and opaque keys. Every iterator error aborts the probe.
+    pub fn snapshot(&self) -> sled::Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> {
+        self.db
+            .iter()
+            .map(|entry| entry.map(|(k, v)| (k.to_vec(), v.to_vec())))
+            .collect()
     }
 
     fn revision_key(key: &str) -> String {
@@ -253,51 +312,43 @@ impl KVStoreProvider for SledStore {
 
     async fn list_data(&self, key_perfix: &str) -> Result<HashMap<String, String>> {
         let mut result = HashMap::new();
-        let iter = self.db.scan_prefix(key_perfix.to_string());
-        for item in iter {
-            if item.is_ok() {
-                let (key, value) = item.unwrap();
-                let key_str = String::from_utf8(key.to_vec())
-                    .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
-                if Self::is_internal_key(&key_str) {
-                    continue;
-                }
-                let value_str = String::from_utf8(value.to_vec())
-                    .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
-                result.insert(key_str, value_str);
+        for item in self.db.scan_prefix(key_perfix) {
+            let (key, value) = item.map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+            let key = String::from_utf8(key.to_vec())
+                .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+            if Self::is_internal_key(&key) {
+                continue;
             }
+            let value = String::from_utf8(value.to_vec())
+                .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+            result.insert(key, value);
         }
         Ok(result)
     }
 
     async fn list_direct_children(&self, prefix: String) -> Result<Vec<String>> {
-        let mut result = Vec::new();
-        let prefix = if prefix.eq("") || prefix.ends_with("/") {
+        let mut result = std::collections::BTreeSet::new();
+        let prefix = if prefix.is_empty() || prefix.ends_with('/') {
             prefix
         } else {
             format!("{}/", prefix)
         };
-        let iter = self.db.scan_prefix(prefix.clone()).keys();
-        for key in iter {
-            if let Ok(key) = key {
-                if let Ok(key_str) = String::from_utf8(key.to_vec()) {
-                    if Self::is_internal_key(&key_str) {
-                        continue;
-                    }
-                    let suffix = key_str.trim_start_matches(prefix.as_str());
-                    let splite_result: Vec<_> = if suffix.ends_with("/") {
-                        suffix[1..].split("/").collect()
-                    } else {
-                        suffix.split("/").collect()
-                    };
-                    let child = splite_result[0];
-                    if !result.contains(&child.to_string()) {
-                        result.push(child.to_string());
-                    }
-                }
+        for key in self.db.scan_prefix(&prefix).keys() {
+            let key = key.map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+            let key = std::str::from_utf8(&key)
+                .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+            if Self::is_internal_key(key) {
+                continue;
+            }
+            if let Some(child) = key[prefix.len()..]
+                .split('/')
+                .next()
+                .filter(|s| !s.is_empty())
+            {
+                result.insert(child.to_owned());
             }
         }
-        Ok(result)
+        Ok(result.into_iter().collect())
     }
 
     async fn exec_tx(
@@ -445,7 +496,8 @@ mod tests {
             .temporary(true)
             .open()
             .expect("open temporary sled db");
-        SledStore::from_db(db)
+        db.insert(SledStore::SCHEMA_KEY, SledStore::SCHEMA).unwrap();
+        SledStore::from_existing_db(db).unwrap()
     }
 
     #[tokio::test]
@@ -602,5 +654,34 @@ mod tests {
             user_data.keys().collect::<Vec<_>>(),
             vec!["users/alice/profile"]
         );
+    }
+
+    #[tokio::test]
+    async fn app_enumeration_preserves_directory_names_and_reports_unreadable_keys() {
+        let store = setup_store();
+        store
+            .create("users/alice/apps/editor/", "folder")
+            .await
+            .unwrap();
+        store
+            .create("users/alice/apps/editor/spec", "app")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .list_direct_children("users/alice/apps".into())
+                .await
+                .unwrap(),
+            ["editor"]
+        );
+        store
+            .db
+            .insert(b"users/alice/apps/\xff", b"invalid key")
+            .unwrap();
+        assert!(store
+            .list_direct_children("users/alice/apps".into())
+            .await
+            .is_err());
+        assert!(store.list_data("users/alice/apps/").await.is_err());
     }
 }

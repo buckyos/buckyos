@@ -389,13 +389,15 @@ run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键�
 
 ## 7.1 显式报告与完成提交（版本 6）
 
-Session 的 function_call 默认启用工具列表含宿主 `report`；自定义工具列表可显式选择 `{name:"report"}`。`explicit_report` 策略会把它加入该 run 的冻结工具配置；显式 `tools.enabled=false` 与 function_call 的显式完成策略冲突，准备时拒绝。参数为 `{report: string, artifacts?: string[], result?: JSON, is_end?: boolean}`：`report` 必须非空，`is_end` 缺省 false；未知参数拒绝。普通报告更新当前 run 的报告和顶层 `state.latest_report`，不关闭 Turn、不发送消息、不截断工具批次。独立 xllm 不默认提供此工具；接手已有宿主 run 时只能保留冻结的描述，调用返回需要 Session 执行器的工具错误，不自行接受报告。
+Session 的 function_call 默认启用工具列表含宿主 `report`；自定义工具列表可显式选择 `{name:"report"}`。`explicit_report` 策略会把它加入该 run 的冻结工具配置；显式 `tools.enabled=false` 与 function_call 的显式完成策略冲突，准备时拒绝。参数为 `{report: string, artifacts?: string[], result?: JSON, is_end?: boolean, outcome?: "succeeded" | "failed" | "blocked"}`：`report` 必须非空，`is_end` 缺省 false；未知参数拒绝。普通报告更新当前 run 的报告和顶层 `state.latest_report`，不关闭 Turn、不发送消息、不截断工具批次。独立 xllm 不默认提供此工具；接手已有宿主 run 时只能保留冻结的描述，调用返回需要 Session 执行器的工具错误，不自行接受报告。
+
+采用 `completion=explicit_report` 的顶层 Work 提交最终报告时必须填写 `outcome`。工具调用把它与 `is_end: true` 放在同一层，XML 写作 `<report end="true" outcome="succeeded">…</report>`。验收通过用 `succeeded`，执行或验收失败用 `failed`，缺少必要输入、权限或其他前置条件用 `blocked`。三者都结束本次 Work。后两种均将 Session 及 Turn 记为 `failed`，并保留报告和产物。宿主拒绝缺少 `outcome` 的新提交。恢复已接受且缺少该字段的旧报告时沿用成功语义。只有顶层 Work 的最终报告可以携带此字段。Goal 的决策、其他应用的结构化数据仍放在 `result`。
 
 XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校验、报告归属及最终交付。`end` 缺省或 false 为阶段报告；true 与任何本次动作（XML actions、provider-native tool_calls）或非空 next_behavior 互斥。空 actions 允许；非法布尔值、重复 report、空结束报告，以及 END/done 终止指令均拒绝，副作用前反馈可修正错误。没有 report、动作与调度的 Step 是 Yield（§4），不是错误。同层可带 `<artifacts>["out.txt"]</artifacts>` 和 `<result>{"ok":true}</result>`，须同次有 report；正文保持自由文本。
 
 产物是显式选择的工作目录相对文件路径、桶对象（`obj://bucket/<bucket_id>/<key>`，如媒体命令返回的结果）或对象 id（如 `cyfile:…`），不从正文或目录扫描推断。不含路径分隔符和空白、能解析为 ObjId 的项按对象 id 处理，原样登记，不读文件；桶对象交给对象库保留（`ObjectStore::retain_url`：OpenDAN 把别处的绑定 `bucket.copy` 进本 Agent 的 `artifacts` 桶），记录它的 obj_id 与保留它的 url。文件项拒绝绝对路径、上级路径、runtime URI（如 `host:/…`）、目录及逃逸工作目录的符号链接；跨 Session 转交使用已提交的 obj_id，不能转交另一个 Session 的相对路径或节点路径。宿主保存 `.opendan_agent_session/reports/<submission_id>/<index>-<sha256>` 稳定副本，源文件随后变化不改变交付。宿主提供对象库（`RunnerDeps.objects`）时，接受报告时把稳定副本放入对象库，对象名取产物文件名；对象库返回保留它的桶绑定（`StoredObject.url`）时稳定副本随即删除。记录为 `{path, reference?, digest?, obj_id?, url?}`：文件项有 reference / digest，放入成功或本来就是对象 id 时有 obj_id（规范的 `type:hex` 形式），被桶保留时有 url（`obj://bucket/...`）。对象库上传或绑定失败时拒绝该次报告并返回可纠正错误，不接受无附件的成功交付；未提供对象库的独立运行环境仍可保留稳定文件。JSON result 不固定业务 schema，显式 null 也保留。
 
-`ReportSubmission` 的 schema 为 `report_submission.schema.json`：`{id, run_id, source, report, artifacts, result?, is_end, accepted_at_ms}`。source 是 `{kind:"tool", call_id}` 或 `{kind:"behavior", step_index}`；id 由 run 和 source 确定。`run.json.host.extra.reports` 保存已接受提交，结束意图独立于普通阶段报告。重复同源同参数返回已保存回执；同源变参拒绝。工具结果仅给出 accepted、report_id 和 is_end，不重复报告正文。
+`ReportSubmission` 的 schema 为 `report_submission.schema.json`：`{id, run_id, source, report, artifacts, result?, is_end, outcome?, accepted_at_ms}`。source 是 `{kind:"tool", call_id}` 或 `{kind:"behavior", step_index}`；id 由 run 和 source 确定。`run.json.host.extra.reports` 保存已接受提交，结束意图独立于普通阶段报告。重复同源同参数返回已保存回执；同源变参拒绝。工具结果仅给出 accepted、report_id 和 is_end，不重复报告正文。
 
 接受结束前检查停止状态、当前 run 的后台任务，以及顶层 Session 跟踪的 task / 尚未收齐结果的子 Session；未满足则拒绝并允许模型修正。子 context 完成只返回调用方，`process_result.submission` 携带原报告、产物和可选 result，不写父 Session 的 final_report。执行成功后 Work 的 acceptance 仍为 pending，人工验收由 decide 独立决定。
 

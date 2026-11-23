@@ -9,7 +9,18 @@
   "categories": [
     "dapp"
   ],
-  "permissions": [],
+  "permissions": [
+    {
+      "scope_path": "sso/share/directed",
+      "required": false,
+      "exp": null
+    },
+    {
+      "scope_path": "sso/share/open",
+      "required": false,
+      "exp": null
+    }
+  ],
   "selector_type": "single",
   "service_config_tips": {
     "service_endpoints": {
@@ -35,5 +46,24 @@
       }
     },
     "storage_quota_mib": 64
+  },
+  "presentation": {
+    "title": {
+      "fr": "Tests système BuckyOS",
+      "de": "BuckyOS-Systemtest",
+      "es": "Pruebas de sistema de BuckyOS",
+      "ru": "Проверка системы BuckyOS",
+      "ja": "BuckyOS システムテスト",
+      "ko": "BuckyOS 시스템 테스트",
+      "ar": "اختبار نظام BuckyOS",
+      "zh-TW": "BuckyOS 系統測試",
+      "zh-CN": "BuckyOS 系统功能检测",
+      "en": "BuckyOS System Test"
+    },
+    "summary": {},
+    "description": {},
+    "icons": {},
+    "links": {},
+    "license": "AGPL-3.0-only"
   }
 }

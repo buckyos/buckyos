@@ -8,7 +8,9 @@ import shutil
 import subprocess
 import sys
 import platform
+import re
 import tempfile
+import tomllib
 from pathlib import Path
 
 
@@ -200,6 +202,44 @@ def _run_make_config(config_group_name: str, target_root: Path, edition: str | N
     ).returncode
     if result != 0:
         raise RuntimeError(f"make_config.ts failed with return code {result}")
+
+
+def _check_dev_boot_override(group: str | None) -> None:
+    if group not in ("dev", "devtest_ood1"):
+        return
+    path = Path.home() / ".buckycli" / "buckyos_boot.toml"
+    key = "services/aicc/settings"
+    schema = "buckyos.aicc.settings.v1"
+    try:
+        source = path.read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return
+    except (OSError, UnicodeDecodeError):
+        raise ValueError(f"Cannot read {path} to validate {key} (expected schema {schema})") from None
+
+    # Match the multiline entries that make_config.ts actually merges. The last
+    # override of a key wins. Let Scheduler check dynamic values after rendering.
+    entries = re.finditer(
+        r'^[^\S\n]*"([^"\n]+)"[^\S\n]*=[^\S\n]*"""\n[\s\S]*?\n"""[ \t]*\n?',
+        source,
+        re.MULTILINE,
+    )
+    block = None
+    for entry in entries:
+        if entry[1] == key:
+            block = entry[0]
+    if block is None or "{%" in block:
+        return
+    try:
+        value = json.loads(tomllib.loads(block)[key])
+    except (ValueError, RecursionError):
+        if "{{" in block:
+            return
+        value = None
+    marker = value.get("schema") if isinstance(value, dict) else None
+    if marker == schema or (isinstance(marker, str) and "{{" in marker):
+        return
+    raise ValueError(f'{path}: {key} must be a JSON object with "schema": "{schema}"')
 
 
 def _windows_subprocess_kwargs(detached: bool = False) -> dict[str, object]:
@@ -527,6 +567,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if need_update and not _sdk_tool_distribution_ready():
+        return 2
+    try:
+        _check_dev_boot_override(config_group_name)
+    except ValueError as error:
+        print(error, file=sys.stderr)
         return 2
     if not _root_access_ready():
         return 2

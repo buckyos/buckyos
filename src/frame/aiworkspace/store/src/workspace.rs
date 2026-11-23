@@ -61,6 +61,7 @@ pub struct Caller {
     pub run_scope: Option<String>,
     /// How the session was established (`password`, `exclusive_invite`, `did_federation`, `assertion`).
     pub auth_method: Option<String>,
+    pub oauth_source_id: Option<String>,
     /// `contact:<owner_did>#<tag>` member specs the service confirmed the caller belongs to.
     pub contacts: BTreeSet<String>,
     /// `group:` / `contact:` member specs whose membership could not be checked: a decision depending on one is
@@ -69,6 +70,8 @@ pub struct Caller {
     /// An Agent's owner (权限需求 R16), from a trusted source (its AgentSpec), memberships settled like the caller's:
     /// a Workspace that configured nothing for the Agent judges it as this owner.
     pub acting_for: Option<Box<Caller>>,
+    /// Current permission ceiling of a verified agent, independent of its workspace ACL.
+    pub agent_read_only: bool,
     /// The reader of an inner-path publication (R26): it holds that publication's own subject and nothing else.
     pub publication: Option<String>,
     /// The wish whose macro this caller acts as (a coding or running stage, its run token): what it reads and writes
@@ -97,8 +100,8 @@ pub enum MemberMatch {
 
 impl Caller {
     fn with_class(principal: &str, class: CallerClass) -> Caller {
-        Caller { principal: principal.to_string(), app_id: None, class, kind: None, run_scope: None, auth_method: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new(),
-                 acting_for: None, publication: None, macro_of: None }
+        Caller { principal: principal.to_string(), app_id: None, class, kind: None, run_scope: None, auth_method: None, oauth_source_id: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new(),
+                 acting_for: None, agent_read_only: false, publication: None, macro_of: None }
     }
     /// The holder of a run token (M3): acts as the run's principal, for that run only.
     pub fn run_token(principal: &str, run_id: &str) -> Caller {
@@ -141,8 +144,10 @@ impl Caller {
             CallerClass::Guest => ("guest", true, None),
             CallerClass::Service => ("service", false, None),
         };
-        serde_json::json!({ "principal": self.principal, "class": class, "restricted": restricted, "did": did, "kind": self.kind,
-                            "owner": self.acting_for.as_ref().map(|o| o.principal.clone()) })
+        let mut identity = serde_json::json!({ "principal": self.principal, "class": class, "restricted": restricted, "did": did, "kind": self.kind,
+                            "owner": self.acting_for.as_ref().map(|o| o.principal.clone()) });
+        if self.agent_read_only { identity["agent_read_only"] = serde_json::json!(true); }
+        identity
     }
     /// The caller a run acts for, rebuilt from [`Self::identity_json`] (R14): its class and restriction, an Agent with its
     /// owner; memberships empty until the service settles them. Never an unrestricted account made up from a name.
@@ -154,6 +159,7 @@ impl Caller {
             Some("service") => Caller::service(principal),
             _ => Caller::with_class(principal, CallerClass::Guest),
         };
+        c.agent_read_only = identity["agent_read_only"].as_bool().unwrap_or(false);
         c.kind = identity["kind"].as_str().map(str::to_string);
         if let Some(owner) = identity["owner"].as_str() {
             c.acting_for = Some(Box::new(Caller::user(owner)));
@@ -197,6 +203,9 @@ impl Caller {
     }
     /// Creates, imports and clones Workspaces and lists the Zone's principals: unrestricted accounts and services.
     pub fn may_own(&self) -> bool {
+        if self.is_agent() {
+            return self.acting_for.as_ref().is_some_and(|o| matches!(o.class, CallerClass::Account { restricted: false, .. }));
+        }
         matches!(self.class, CallerClass::Account { restricted: false, .. } | CallerClass::Service)
     }
     /// Who owns what this caller creates: an Agent's Workspaces belong to its owner (R16).
@@ -228,7 +237,7 @@ impl Caller {
     /// Whether a logical group's member spec names this caller: the exact principal, `*` for unrestricted accounts,
     /// the caller's system groups, confirmed contact groups.
     pub fn matches_member(&self, member: &str) -> MemberMatch {
-        if member == self.principal {
+        if member == self.principal || self.did() == Some(member) {
             return MemberMatch::Yes;
         }
         if self.unconfirmed.contains(member) {
@@ -388,8 +397,7 @@ fn refresh_table_stats(doc: &Connection) -> WsResult<usize> {
     Ok(table_stats(doc).unwrap_or(0))
 }
 
-fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
-    let conn = Connection::open(path).map_err(db_err)?;
+fn configure_db(conn: &Connection, synchronous_full: bool) -> WsResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
     // an answered commit must survive power loss
     conn.pragma_update(None, "synchronous", if synchronous_full { "FULL" } else { "NORMAL" }).map_err(db_err)?;
@@ -397,7 +405,7 @@ fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
     // a WAL that grew while a wish stage held its snapshot shrinks back once the snapshot ends (余下任务 D2)
     conn.pragma_update(None, "journal_size_limit", 16 * 1024 * 1024).map_err(db_err)?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
-    Ok(conn)
+    Ok(())
 }
 
 /// The origin of a Commit as the server reads it (内核架构改进 D08): internal compensations are `system`,
@@ -423,8 +431,12 @@ pub fn derive_origin(caller: &Caller, opts: &CommitOpts, has_run: bool) -> &'sta
     }
 }
 
-/// Keep only the rows of entities `can_read` admits (the replica bootstrap applies the same rule).
-pub(crate) fn filter_rows(rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>) -> WsResult<()> {
+/// Filter replica rows and record target visibility for the annotations at this point in history.
+pub(crate) fn filter_rows(
+    rows: &mut Value,
+    can_read: &mut dyn FnMut(&str) -> WsResult<bool>,
+    target_visible: &dyn Fn(Option<&Value>) -> WsResult<bool>,
+) -> WsResult<BTreeMap<String, bool>> {
     let keep = |table: &str, key: &str, rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>| -> WsResult<()> {
         if let Some(a) = rows.get_mut(table).and_then(Value::as_array_mut) {
             let mut out = Vec::with_capacity(a.len());
@@ -445,7 +457,21 @@ pub(crate) fn filter_rows(rows: &mut Value, can_read: &mut dyn FnMut(&str) -> Ws
     keep("richtext_updates", "entity_id", rows, can_read)?;
     keep("refs", "src_entity_id", rows, can_read)?;
     keep("refs_deleted", "src_entity_id", rows, can_read)?;
-    Ok(())
+    let mut targets = BTreeMap::new();
+    for row in rows.get_mut("entities").and_then(Value::as_array_mut).into_iter().flatten().filter(|r| r["type_id"] == TYPE_ANNOTATION) {
+        let raw = &row["payload_json"];
+        let mut payload: JsonMap = match raw.as_str() {
+            Some(text) => serde_json::from_str(text),
+            None => serde_json::from_value(raw.clone()),
+        }.map_err(|e| WsError::invalid_schema(format!("annotation payload_json: {e}")))?;
+        let visible = target_visible(payload.get("target"))?;
+        if !visible && payload.remove("context").is_some() {
+            let projected = Value::Object(payload);
+            row["payload_json"] = if raw.is_string() { Value::String(projected.to_string()) } else { projected };
+        }
+        targets.insert(row["entity_id"].as_str().unwrap_or("").to_string(), visible);
+    }
+    Ok(targets)
 }
 
 fn add_usage(conn: &Connection, category: &str, bytes: i64) -> WsResult<()> {
@@ -518,6 +544,22 @@ pub(crate) fn backfill_names(doc: &Connection) -> WsResult<()> {
     }
 }
 
+/// This release recognizes one persistent workspace format.
+pub fn validate_workspace_storage(doc: &Connection, local: &Connection) -> WsResult<()> {
+    let storage = meta_get(doc, "storage_schema_version")?;
+    let format = meta_get(doc, "format_version")?;
+    let local_version: i64 = local.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(db_err)?;
+    if storage.as_deref() != Some(STORAGE_SCHEMA_VERSION.to_string().as_str())
+        || format.as_deref() != Some(FORMAT_VERSION)
+        || local_version != i64::from(crate::schema::LOCAL_SCHEMA_VERSION)
+    {
+        return Err(WsError::new(Code::UnsupportedVersion, format!(
+            "unsupported workspace format {format:?}, document schema {storage:?}, local schema {local_version}"
+        )));
+    }
+    Ok(())
+}
+
 impl Workspace {
     pub fn now(&self) -> String {
         format_utc_ms((self.clock)())
@@ -533,11 +575,14 @@ impl Workspace {
         if !aiworkspace_core::id::is_workspace_id(workspace_id) {
             return Err(WsError::invalid_op("workspace_id must be ws_ + YYMM + 4 base36 chars"));
         }
-        std::fs::create_dir_all(dir).map_err(|e| WsError::io(e.to_string()))?;
-        let doc = open_db(&dir.join("doc.sqlite"), true)?;
-        let local = open_db(&dir.join("local.sqlite"), false)?;
+        // Reserve a fresh directory before creating either half of the workspace.
+        std::fs::create_dir(dir).map_err(|e| WsError::io(e.to_string()))?;
+        let doc = Connection::open(dir.join("doc.sqlite")).map_err(db_err)?;
+        let local = Connection::open(dir.join("local.sqlite")).map_err(db_err)?;
+        configure_db(&doc, true)?;
+        configure_db(&local, false)?;
         doc.execute_batch(DOC_DDL).map_err(db_err)?;
-        local.execute_batch(LOCAL_DDL).map_err(db_err)?;
+        buckyos_sqlite_schema::initialize(&local, crate::schema::LOCAL_SCHEMA_VERSION, &[LOCAL_DDL, LOCAL_ADDED_DDL]).map_err(db_err)?;
         let now = format_utc_ms(clock());
         let epoch = random_id("ep_");
         let peer_id: u64 = rand::random::<u64>() >> 1;
@@ -564,7 +609,6 @@ impl Workspace {
             }
         }
         apply_changes(&doc, &changes, 0)?;
-        local.execute_batch(LOCAL_ADDED_DDL).map_err(db_err)?;
         local.execute("INSERT INTO local_meta (key, value) VALUES ('owner', ?1)", [owner]).map_err(db_err)?;
         drop(doc);
         drop(local);
@@ -575,31 +619,17 @@ impl Workspace {
         if !dir.join("doc.sqlite").exists() {
             return Err(WsError::not_found("workspace not found"));
         }
-        let doc = open_db(&dir.join("doc.sqlite"), true)?;
-        let local = open_db(&dir.join("local.sqlite"), false)?;
-        crate::acl::upgrade_local(&local)?;
-        local.execute_batch(LOCAL_ADDED_DDL).map_err(db_err)?;
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE;
+        let doc = Connection::open_with_flags(dir.join("doc.sqlite"), flags).map_err(db_err)?;
+        let local = Connection::open_with_flags(dir.join("local.sqlite"), flags).map_err(db_err)?;
+        validate_workspace_storage(&doc, &local)?;
+        configure_db(&doc, true)?;
+        doc.execute_batch(crate::schema::RECORD_ORDER_INDEX).map_err(db_err)?;
+        configure_db(&local, false)?;
+        local.execute_batch(crate::entries::REGISTERED_ENTRIES_DDL).map_err(db_err)?;
         let get = |k: &str| -> WsResult<String> {
             meta_get(&doc, k)?.ok_or_else(|| WsError::io(format!("workspace_meta.{k} missing")))
         };
-        // unknown storage or format versions are refused; the file is never modified or emptied
-        let mut storage: u32 = get("storage_schema_version")?.parse().unwrap_or(0);
-        if storage == 5 {
-            backfill_names(&doc)?;
-            meta_set(&doc, "storage_schema_version", "6")?;
-            storage = 6;
-        }
-        if storage == 6 {
-            let owner: Option<String> = local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)?;
-            crate::acl::upgrade_doc_7(&doc, owner.as_deref())?;
-            storage = 7;
-        }
-        if storage != STORAGE_SCHEMA_VERSION {
-            return Err(WsError::new(Code::UnsupportedVersion, format!("storage_schema_version {storage} is not supported")));
-        }
-        if get("format_version")? != FORMAT_VERSION {
-            return Err(WsError::new(Code::UnsupportedVersion, "format_version is not supported"));
-        }
         let session_events: bool = doc
             .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_events'", [], |_| Ok(true))
             .optional()
@@ -1122,11 +1152,20 @@ impl Workspace {
                    "cloned_from": meta_get(&self.doc, "cloned_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
                    "acl_rev": self.acl_rev(), "anonymous": self.anonymous()?, "judged_as": access.principal });
+        let account = if caller.is_agent() { caller.acting_for.as_deref() } else { Some(caller) };
+        let owner = self.owner()?;
+        info["owned_by_caller_user"] = json!(account.is_some_and(|c| matches!(c.class, CallerClass::Account { .. })
+            && owner.as_deref() == Some(c.principal.as_str())));
         if access.is_owner() {
             info["owner"] = json!(true);
         }
         if let Some(name) = self.name()? {
             info["name"] = json!(name);
+        } else if info["owned_by_caller_user"] == true {
+            let former: Option<String> = self.local.query_row("SELECT value FROM local_meta WHERE key = 'former_name'", [], |r| r.get(0)).optional().map_err(db_err)?;
+            if let Some(name) = former {
+                info["former_name"] = json!(name);
+            }
         }
         Ok(info)
     }
@@ -1290,6 +1329,9 @@ impl Workspace {
             }
             operations.append(&mut req.operations);
             req.operations = operations;
+        }
+        if opts.undoes.is_some() {
+            self.check_contacts_undo(&req.operations, access.is_owner())?;
         }
         req.origin = origin.to_string();
         let req = &req;
@@ -1617,6 +1659,44 @@ impl Workspace {
         })
     }
 
+    /// A table-action receipt: recheck each operation on its original table before replaying its result.
+    pub fn table_submission(&self, caller: &Caller, epoch: &str, key: &str, source: &str) -> WsResult<Value> {
+        self.require_on(caller, Some(source), Cap::Read)?;
+        let receipt = self.get_submission(caller, epoch, key)?;
+        if receipt["status"] != "accepted" {
+            return Ok(receipt);
+        }
+        let seq = receipt["result"]["seq"].as_i64().ok_or_else(|| WsError::io("submission has no sequence"))?;
+        let mut st = self.doc.prepare("SELECT op_json FROM commit_ops WHERE seq = ?1 ORDER BY op_index").map_err(db_err)?;
+        let mut rows = st.query([seq]).map_err(db_err)?;
+        let mut changed = Vec::new();
+        let mut inserted = Vec::new();
+        let mut seen = false;
+        while let Some(row) = rows.next().map_err(db_err)? {
+            let raw: String = row.get(0).map_err(db_err)?;
+            let op: Value = serde_json::from_str(&raw).map_err(|e| WsError::io(e.to_string()))?;
+            if op["source_id"].as_str() != Some(source) {
+                return Err(WsError::denied("submission targets another resource"));
+            }
+            let (cap, field) = match op["op"].as_str() {
+                Some("table.insert_records") => (Cap::Append, "records"),
+                Some("table.delete_records") => (Cap::Delete, "records"),
+                Some("table.set_values" | "table.unset_values") => (Cap::Update, "values"),
+                _ => return Err(WsError::invalid_op("submission is not a table record action")),
+            };
+            self.require_on(caller, Some(source), cap)?;
+            let ids = if cap == Cap::Append { &mut inserted } else { &mut changed };
+            if let Some(records) = op[field].as_array() {
+                for id in records.iter().filter_map(|r| r["record_id"].as_str()) {
+                    if !ids.iter().any(|v| v == id) { ids.push(id.to_owned()); }
+                }
+            }
+            seen = true;
+        }
+        if !seen { return Ok(json!({"ok": true, "status": "unknown"})); }
+        Ok(json!({"ok": true, "status": "accepted", "inserted": inserted, "changed": changed}))
+    }
+
     // ---- undo ----
 
     /// `doc.undo`: compensate a commit with its stored inverse operations. Redo
@@ -1717,6 +1797,61 @@ impl Workspace {
 
     // ---- change stream ----
 
+    /// The row delta gives the final target. Walk back through re-anchors in this commit so a
+    /// context-only edit is checked against the target it had when the edit was made.
+    fn filter_annotation_ops(
+        &self, ctx: &dyn ReadCtx, seq: u64, ops: &mut [(usize, Value)], mut targets: BTreeMap<String, bool>,
+        target_visible: &dyn Fn(Option<&Value>) -> WsResult<bool>,
+    ) -> WsResult<()> {
+        for (index, op) in ops.iter_mut().rev() {
+            if op["op"] == "entity.create" && op["type_id"] == TYPE_ANNOTATION {
+                if let Some(payload) = op["payload"].as_object_mut() {
+                    if !target_visible(payload.get("target"))? {
+                        payload.remove("context");
+                    }
+                }
+                continue;
+            }
+            if !matches!(op["op"].as_str(), Some("entity.set_keys" | "entity.unset_keys")) {
+                continue;
+            }
+            let id = op["entity_id"].as_str().unwrap_or("").to_string();
+            let Some(keys) = op["keys"].as_array_mut() else { continue };
+            if !keys.iter().any(|k| matches!(k["key"].as_str(), Some("context" | "target"))) {
+                continue;
+            }
+            // Older commits may have only operations. The entity type is immutable, but the head's
+            // target says nothing about that earlier context.
+            if !targets.contains_key(&id) && !ctx.entity(&id)?.is_some_and(|e| e.type_id == TYPE_ANNOTATION) {
+                continue;
+            }
+            let target_edits = keys.iter().filter(|k| k["key"] == "target").count();
+            let visible = match keys.iter().rev().find(|k| k["key"] == "target") {
+                Some(k) => target_visible(k.get("value"))?,
+                None => targets.get(&id).copied().unwrap_or(false),
+            };
+            if !visible {
+                for k in keys.iter_mut().filter(|k| k["key"] == "context" && k.get("value").is_some()) {
+                    k["value"] = Value::Null;
+                }
+            }
+            if target_edits > 0 && *index > 0 {
+                // The inverse written alongside this exact operation records its previous target.
+                let inverse: Option<String> = self.doc.query_row(
+                    "SELECT inverse_json FROM commit_ops WHERE seq = ?1 AND op_index = ?2", params![seq, *index], |r| r.get(0)
+                ).map_err(db_err)?;
+                let inverse: Vec<Value> = serde_json::from_str(inverse.as_deref().unwrap_or("[]")).map_err(|e| WsError::io(e.to_string()))?;
+                let before = inverse.iter().flat_map(|o| o["keys"].as_array().into_iter().flatten()).find(|k| k["key"] == "target");
+                let before_visible = match before {
+                    Some(k) if target_edits == 1 => target_visible(k.get("value"))?,
+                    _ => false,
+                };
+                targets.insert(id, before_visible);
+            }
+        }
+        Ok(())
+    }
+
     /// `doc.get_changes`: the only authoritative propagation mechanism. Entries
     /// are filtered by the caller's *current* read permission; a fully filtered
     /// commit still yields an empty event so `seq` stays contiguous.
@@ -1755,13 +1890,13 @@ impl Workspace {
             readable.insert(id.to_string(), ok);
             Ok(ok)
         };
-        let mut ops_st = self.doc.prepare_cached("SELECT op_json, touched_json FROM commit_ops WHERE seq = ?1 ORDER BY op_index").map_err(db_err)?;
+        let mut ops_st = self.doc.prepare_cached("SELECT op_index, op_json, touched_json FROM commit_ops WHERE seq = ?1 ORDER BY op_index").map_err(db_err)?;
         let (mut events, mut bytes) = (Vec::new(), 0usize);
         for (seq, commit_id, principal, origin, run_id, undoes, idem_key, accepted_at, undo_group) in commits.into_iter().take(limit) {
-            let rows: Vec<(String, String)> =
-                ops_st.query_map([seq], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+            let rows: Vec<(usize, String, String)> =
+                ops_st.query_map([seq], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
             let (mut touched_out, mut ops_out) = (Vec::new(), Vec::new());
-            for (op_json, touched_json) in rows {
+            for (op_index, op_json, touched_json) in rows {
                 let touched: Vec<Value> = serde_json::from_str(&touched_json).map_err(|e| WsError::io(e.to_string()))?;
                 let op: Value = serde_json::from_str(&op_json).map_err(|e| WsError::io(e.to_string()))?;
                 let primary = op.get("entity_id").or_else(|| op.get("source_id")).and_then(Value::as_str).unwrap_or("").to_string();
@@ -1774,7 +1909,7 @@ impl Workspace {
                 }
                 if with_ops && any && can_read(&primary)? {
                     bytes += op_json.len();
-                    ops_out.push(op);
+                    ops_out.push((op_index, op));
                 }
             }
             let mut ev = json!({ "seq": seq });
@@ -1782,15 +1917,18 @@ impl Workspace {
                 ev = json!({ "seq": seq, "commit_id": commit_id, "origin": origin, "run_id": run_id, "undoes": undoes,
                              "undo_group": undo_group, "author": principal, "accepted_at": accepted_at, "touched": touched_out });
                 if with_ops {
-                    ev["ops"] = json!(ops_out);
+                    let target_visible = |target: Option<&Value>| aiworkspace_core::anchor::target_visible(&ctx, target, &|e| access.can_read(&ctx, e));
+                    let mut targets = BTreeMap::new();
                     // the row delta, restricted to what the caller may read (D20)
                     let delta: Option<String> = self.doc.query_row("SELECT rows_json FROM commit_deltas WHERE seq = ?1", [seq], |r| r.get(0)).optional().map_err(db_err)?;
                     if let Some(d) = delta {
                         let mut rows: Value = serde_json::from_str(&d).map_err(|e| WsError::io(e.to_string()))?;
                         bytes += d.len();
-                        filter_rows(&mut rows, &mut can_read)?;
+                        targets = filter_rows(&mut rows, &mut can_read, &target_visible)?;
                         ev["rows"] = rows;
                     }
+                    self.filter_annotation_ops(&ctx, seq, &mut ops_out, targets, &target_visible)?;
+                    ev["ops"] = Value::Array(ops_out.into_iter().map(|(_, op)| op).collect());
                 }
             }
             if principal == caller.principal {

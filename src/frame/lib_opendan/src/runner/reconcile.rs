@@ -166,7 +166,7 @@ async fn redo_transfer(
             replied,
             &site,
             completed,
-            false,
+            None,
         );
         next.usage = record.usage.main.clone();
         hold_for_children(sh, &mut next).await?;
@@ -274,8 +274,7 @@ async fn derive_next(
                 .and_then(|h| h.extra.get("reports"))
                 .and_then(|v| serde_json::from_value::<Vec<ReportSubmission>>(v.clone()).ok())
                 .and_then(|r| r.into_iter().find(|r| r.is_end));
-            let explicit_end = final_report.is_some();
-            let output = if is_ui_reply(&cfg, snapshot, child) && !explicit_end {
+            let output = if is_ui_reply(&cfg, snapshot, child) && final_report.is_none() {
                 let content = answer.as_deref().unwrap_or_default();
                 let checked = async {
                     let value = llm_context::json_check::parse_reply(content)
@@ -304,10 +303,6 @@ async fn derive_next(
             } else {
                 None
             };
-            let answer = final_report
-                .as_ref()
-                .map(ReportSubmission::delivery_text)
-                .or(answer);
             let mut next = classify_done(
                 &cfg,
                 behavior,
@@ -316,9 +311,8 @@ async fn derive_next(
                 replied,
                 &site,
                 completed,
-                explicit_end,
+                final_report,
             );
-            next.report = final_report;
             next.usage = record.usage.main.clone();
             if let Some(output) = output {
                 apply_ui_reply(sh, run, &cfg, &mut next, &output).await;

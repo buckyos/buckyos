@@ -130,6 +130,21 @@
   "values": [
     {
       "def": {
+        "field_id": "tags",
+        "name": "Tags",
+        "type": "json"
+      },
+      "input": [
+        "friends",
+        "team"
+      ],
+      "output": [
+        "friends",
+        "team"
+      ]
+    },
+    {
+      "def": {
         "field_id": "f",
         "name": "f",
         "scale": 2,

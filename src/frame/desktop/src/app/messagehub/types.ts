@@ -238,6 +238,13 @@ export interface GroupSessionParticipants {
   complete: boolean
 }
 
+/** What the group editor saves; `historyBeforeJoin` is left out when the group shows the whole history. */
+export interface GroupProfileInput {
+  name: string
+  description: string
+  historyBeforeJoin?: number
+}
+
 /** The viewer's view of one group: hosted by this zone, or joined on a remote host. */
 export interface GroupInfo {
   did: string
@@ -257,6 +264,11 @@ export interface GroupInfo {
   can: GroupCapabilities
   /** Edit / recall windows of the default session; undefined means unlimited. */
   messageRules: { editWindowMs?: number; recallWindowMs?: number }
+  /**
+   * How many messages from before joining a new member sees in the default
+   * session; undefined when it shows the whole history or the configuration is unknown.
+   */
+  historyBeforeJoin?: number
   /** An owner transfer the owner started and the target has not accepted yet. */
   pendingTransfer?: { memberDid: string; transferId: string; expiresAt: number }
 }

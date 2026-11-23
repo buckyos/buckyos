@@ -2,10 +2,10 @@ import { useSyncExternalStore } from 'react'
 import clsx from 'clsx'
 import { ChevronLeft, RefreshCw } from 'lucide-react'
 import { useSWRConfig } from 'swr'
-import { t } from './i18n'
+import { currentLanguage, subscribeLanguage, t } from './i18n'
 import { REFRESH_MS, useQuery } from './lib'
 import { dataModel } from './model'
-import { Mono } from './ui'
+import { Dot, Mono } from './ui'
 import AgentStatePage from './pages/AgentState'
 import GoalDetailPage from './pages/GoalDetail'
 import HomePage from './pages/Home'
@@ -24,20 +24,20 @@ const subscribeHash = (notify: () => void) => {
 const readHash = () => window.location.hash
 
 const TABS = [
-  { id: 'sessions', label: 'Sessions' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'agent', label: 'Agent State' },
-  { id: 'loader', label: 'Loader' },
-]
+  { id: 'sessions', label: 'sessions' },
+  { id: 'skills', label: 'skills' },
+  { id: 'agent', label: 'observeAgentState' },
+  { id: 'loader', label: 'observeLoader' },
+] as const
 
 // Reloading is a navigation: the zone gateway sends it to the zone's login
 // page, which comes back here once signed in.
 function LoginLost() {
   return (
     <div className="mx-auto max-w-md px-4 py-16 text-center" data-testid="login-lost" role="alert">
-      <h1 className="mb-2 text-base font-semibold">{t('loginLost')}</h1>
+      <h1 className="mb-2 text-base font-medium">{t('loginLost')}</h1>
       <p className="mb-4 text-sm text-mute">{t('loginLostHint')}</p>
-      <button className="btn mx-auto" onClick={() => window.location.reload()}>
+      <button className="btn btn-primary mx-auto" onClick={() => window.location.reload()}>
         {t('signInAgain')}
       </button>
     </div>
@@ -45,6 +45,7 @@ function LoginLost() {
 }
 
 export default function App() {
+  useSyncExternalStore(subscribeLanguage, currentLanguage)
   const hash = useSyncExternalStore(subscribeHash, readHash)
   const loginLost = useSyncExternalStore(dataModel.login.subscribe, dataModel.login.lost)
   const [page = '', arg] = hash.replace(/^#\/?/, '').split('/')
@@ -61,8 +62,9 @@ export default function App() {
   if (loginLost) return <LoginLost />
   const meta = (
     <>
-      <span data-testid="data-source">data: {dataModel.source}</span>
-      <span>auto {REFRESH_MS / 1000}s</span>
+      <span data-testid="data-source">{t('observeMetaSource', { source: dataModel.source })}</span>
+      <span aria-hidden>·</span>
+      <span>{t('observeAutoRefresh', { seconds: REFRESH_MS / 1000 })}</span>
     </>
   )
 
@@ -85,29 +87,36 @@ export default function App() {
   }
 
   return (
-    <div className="mx-auto max-w-[1400px] px-3 pb-8">
-      <header className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line py-2">
-        <a href="#/" className="flex items-center text-sm font-semibold" aria-label="Home">
-          <ChevronLeft size={16} />
-          OpenDAN Agent Loader
+    <div className="mx-auto max-w-[1440px] px-4 pb-12 sm:px-6">
+      <header className="mb-6 flex min-h-14 flex-wrap items-center gap-x-6 gap-y-2 border-b border-line py-2">
+        <a href="#/" className="-ml-1 flex h-8 items-center gap-1 rounded-lg pl-0.5 pr-1.5 text-sm font-medium transition-colors hover:text-accent" aria-label={t('backHome')}>
+          <ChevronLeft size={16} className="text-mute" />
+          {t('observeOpendanAgentLoader')}
         </a>
         <nav className="flex gap-1">
           {TABS.map((x) => (
             <a
               key={x.id}
               href={`#/${x.id}`}
-              className={clsx('rounded px-2 py-1 text-xs', tab === x.id ? 'bg-accent text-panel' : 'text-mute hover:text-fg')}
+              aria-current={tab === x.id ? 'page' : undefined}
+              className={clsx(
+                'flex h-7 items-center rounded-lg px-2.5 text-xs transition-colors',
+                tab === x.id ? 'bg-panel text-fg shadow-[inset_0_0_0_1px_var(--line)]' : 'text-mute hover:bg-hover hover:text-fg',
+              )}
             >
-              {x.label}
+              {t(x.label)}
             </a>
           ))}
         </nav>
-        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mute">
-          {status.data && <Mono className="hidden sm:inline">{status.data.agent_did}</Mono>}
-          {meta}
-          <button className="btn" onClick={() => mutate(() => true)} aria-label="Refresh">
+        <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-mute">
+          {status.data && <Mono className="hidden lg:inline">{status.data.agent_did}</Mono>}
+          <span className="flex items-center gap-2 font-mono" title={status.error ? status.error.message : undefined}>
+            <Dot tone={status.error ? 'bad' : status.data ? 'ok' : 'mute'} />
+            {meta}
+          </span>
+          <button className="btn" onClick={() => mutate(() => true)} aria-label={t('refresh')}>
             <RefreshCw size={12} />
-            Refresh
+            {t('refresh')}
           </button>
         </div>
       </header>

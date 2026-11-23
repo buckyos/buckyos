@@ -3,7 +3,9 @@
  * ("notepad") mode and its block-level sync; the table as a database grid. Real backend, sample workspace. */
 
 import type { Page } from '@playwright/test'
-import { expect, expectAllCommitted, openWorkspace, setCanvasMode, test, type Api } from './fixtures'
+import { markdownCodec } from '../../src/app/aiworkspace/richtext/markdownSource'
+import { buildRichTextSchema } from '../../src/app/aiworkspace/richtext/schema'
+import { core, expect, expectAllCommitted, openWorkspace, setCanvasMode, test, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -201,6 +203,87 @@ test('FP04 Markdown source ("notepad") mode: typed text reaches the rich text bl
   await expect(notes(page).locator('blockquote')).toContainText('引用一段')
 })
 
+test('FP04 escaped outline survives reopening Markdown source and editing one word', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `escaped outline ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const toggle = frame(page, 'cell-notes').getByTestId('aiws-md-toggle')
+  const source = frame(page, 'cell-notes').getByTestId('aiws-md-source')
+  const outline = ['\\===', '\\- Agent 核心机制\\', '&#x20; \\- chat_route\\', '&#x20;   \\- 选择runtime\\', '&#x20;     \\- work_simple\\', '&#x20;       \\- 最后一行\\'].join('\n')
+  const lines = ['=== - Agent 核心机制', '  - chat_route', '    - 选择runtime', '      - work_simple', '        - 最后一行\\']
+  await toggle.click()
+  await source.fill(outline)
+  await source.press('Control+/')
+  await expect(notes(page).locator('p')).toHaveCount(1)
+  const storedLines = async () => (await api.ast(ALICE, ws.workspace_id, 'notes')).content[0].content
+    .map((node: Json) => node.type === 'hard_break' ? '\n' : node.text).join('').split('\n')
+  await expect.poll(storedLines).toEqual(lines)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await toggle.click()
+  await source.fill((await source.inputValue()).replace('选择runtime', '选择环境'))
+  await source.press('Control+/')
+  await expect.poll(storedLines).toEqual(lines.map((line) => line.replace('选择runtime', '选择环境')))
+})
+
+test('FP04 a deeply nested Markdown list can be saved verbatim', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `deep outline ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const block = frame(page, 'cell-notes')
+  await block.getByTestId('aiws-md-toggle').click()
+  const source = block.getByTestId('aiws-md-source')
+  const outline = ['- 机制', '  - 任务', '    - 执行', '      - runtime', '        - 子任务'].join('\n')
+  await source.fill(outline)
+  await source.press('Control+/')
+  await expect(source).toHaveValue(outline)
+  await block.getByTestId('aiws-md-toggle').click()
+  await expect(source).toHaveValue(outline)
+  await block.getByTestId('aiws-md-save-plain').click()
+  await source.press('Control+/')
+  await expect.poll(async () => {
+    const { content } = await api.ast(ALICE, ws.workspace_id, 'notes')
+    return content.flatMap((p: Json) => p.content ?? []).map((node: Json) => node.type === 'hard_break' ? '\n' : node.text).join('')
+  }).toBe(outline)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await expect(notes(page).locator('p')).toHaveCount(1)
+  await expect(notes(page).locator('br')).toHaveCount(4)
+})
+
+test('FP04 refreshing with a pending source edit keeps the original in local drafts', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `source recovery ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const block = frame(page, 'cell-notes')
+  await block.getByTestId('aiws-md-toggle').click()
+  const input = '# 变更记录\n\n  \\- 待验证\\'
+  await block.getByTestId('aiws-md-source').evaluate((el, value) => {
+    (el as HTMLTextAreaElement).value = value
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    location.reload()
+  }, input)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const drafts = block.getByTestId('aiws-drafts')
+  await drafts.getByRole('button').first().click()
+  await expect(drafts.locator('textarea[readonly]')).toHaveValue(input)
+})
+
+test('Markdown source preserves a literal indented outline, blank lines, and inline formatting on re-edit', () => {
+  const wasm = core()
+  const schema = buildRichTextSchema(JSON.parse(wasm.richtext_schema()))
+  const codec = markdownCodec(wasm, (id) => id)
+  const br = { type: 'hard_break' }
+  const literal = (text: string) => ({ type: 'text', text })
+  const paragraph = schema.nodeFromJSON({ type: 'paragraph', attrs: { block_id: 'outline' }, content: [
+    literal('==='), br, literal('- Agent'), br, literal('  - chat_route'), br, literal('    - nested'), br,
+    literal('      - deeper'), br, literal('        - deepest'), br, br,
+    literal('1. text'), br, literal('\t # **literal** &amp; [ref](entity:ref) \\ '), br,
+    { type: 'text', text: 'bold', marks: [{ type: 'strong' }] }, literal(' and '),
+    { type: 'text', text: 'code_name', marks: [{ type: 'code' }] }, br, literal('last\\'), br,
+  ] })
+  const source = codec.toMd(paragraph)
+  const parsed = codec.parse(source)
+  expect(parsed).toHaveLength(1)
+  expect(parsed[0].type).toBe('paragraph')
+  expect(schema.nodeFromJSON(parsed[0]).content.toJSON()).toEqual(paragraph.content.toJSON())
+})
+
 test('FP05 source mode and a colleague: changes from elsewhere come in, my typing is kept', async ({ browser, api }) => {
   const ws = await api.sample(ALICE, `fp05 ${Date.now()}`)
   await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'append', 'comment'] }] })
@@ -303,7 +386,7 @@ test('FP07 insertion where the user is: ＋ before a Block, and a click below th
   expect((ast.content as Json[]).map(text)).toEqual(['页尾第一段', '页尾第二段'])
 })
 
-test('FP08 the table as a database grid: new rows by typing, a field from the header, tick boxes, keyboard between cells', async ({ page, api }) => {
+test('FP08 the table as a database grid: required fields for new rows, a typed field from field management, tick boxes, keyboard between cells', async ({ page, api }) => {
   const ws = await api.sample(ALICE, `fp08 ${Date.now()}`)
   await openWorkspace(page, ALICE, ws.workspace_id)
   const all = frame(page, 'cell-all-tasks')
@@ -311,22 +394,23 @@ test('FP08 the table as a database grid: new rows by typing, a field from the he
   // field types show as icons in the header; options as pills
   await expect(all.locator('.aiws-th').first().locator('svg')).toBeVisible()
   await expect(all.getByTestId('aiws-cell-task-40-status').locator('.aiws-pill')).toHaveText('完成')
-  // "+ 新建": type, Enter, type the next one
-  await all.getByTestId('aiws-add-record-cell-all-tasks').click()
-  await page.getByTestId('aiws-new-record-input').fill('第一条新任务')
-  await page.getByTestId('aiws-new-record-input').press('Enter')
-  await expect(page.getByTestId('aiws-new-record-input')).toHaveValue('')
-  await page.getByTestId('aiws-new-record-input').fill('第二条新任务')
-  await page.getByTestId('aiws-new-record-input').press('Enter')
+  const add = all.getByTestId('aiws-add-record-cell-all-tasks')
+  await add.hover()
+  await add.click()
+  const form = page.getByTestId('aiws-table-record-panel')
+  await form.getByLabel('新记录 任务').fill('第一条新任务')
+  await form.getByTestId('aiws-table-record-add-next').click()
+  await expect(form.getByLabel('新记录 任务')).toHaveValue('')
+  await form.getByLabel('新记录 任务').fill('第二条新任务')
+  await form.getByTestId('aiws-table-record-add').click()
   await expect.poll(async () => (await rows()).length).toBe(7)
-  await page.getByTestId('aiws-new-record-input').press('Escape')
-  await expect(page.getByTestId('aiws-new-record-input')).toHaveCount(0)
   await expect(all.getByTestId('aiws-row').filter({ hasText: '第二条新任务' })).toBeVisible()
-  // a field from the header's "+": name and type only
-  await all.getByTestId('aiws-add-field-open-cell-all-tasks').click()
-  await page.getByTestId('aiws-quick-field-name').fill('已复核')
-  await page.getByTestId('aiws-quick-field-type-boolean').click()
-  await page.getByTestId('aiws-quick-field-add').click()
+  await all.getByTestId('aiws-fields-cell-all-tasks').click()
+  const manager = all.getByTestId('aiws-field-manager')
+  await manager.getByLabel('新字段名').fill('已复核')
+  await manager.getByLabel('新字段类型').selectOption('boolean')
+  await manager.getByTestId('aiws-add-field').click()
+  await all.getByTestId('aiws-fields-cell-all-tasks').click()
   await expect(all.locator('.aiws-th').filter({ hasText: '已复核' })).toBeVisible()
   const fieldId = ((await api.read(ALICE, ws.workspace_id, 'tasks')).content.fields as { field_id: string; name: string }[]).find((f) => f.name === '已复核')?.field_id as string
   // a tick box writes with one click
@@ -345,6 +429,8 @@ test('FP08 the table as a database grid: new rows by typing, a field from the he
   await expect.poll(async () => (await rows()).find((row) => row.record_id === 'task-41')?.values.owner).toBe('Z')
   // a row is deleted by ticking its head and deleting from the selection bar, asked first (UI 框架 PRD §7.3)
   const added = (await rows()).find((row) => row.values.title === '第一条新任务')?.record_id as string
+  await all.getByTestId('aiws-table-menu-cell-all-tasks').click()
+  await page.getByTestId('aiws-ctl-menu-table-select').click()
   await all.getByTestId(`aiws-row-check-${added}`).check()
   await all.getByTestId('aiws-table-selection-delete').click()
   await page.getByTestId('aiws-table-confirm-ok').click()

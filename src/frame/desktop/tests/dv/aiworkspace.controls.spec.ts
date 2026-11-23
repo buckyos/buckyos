@@ -4,15 +4,15 @@
  * with a video over 32 MiB chosen from the Zone, the time-limited control, the photo vote and listen together — with
  * the owner on the desktop and a second account on a phone. */
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import { devices, type Browser, type BrowserContext, type Page } from '@playwright/test'
 import type { EntityEnvelope, Operation, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
-import { openedPicker, zoneGoto, type PickedFile } from '../aiworkspace/fixtures'
+import { expectAllCommitted, openedPicker, zoneGoto, type PickedFile } from '../aiworkspace/fixtures'
 import { selectRow } from '../e2e/fixtures/selectDialog'
 import { expect, openWorkspace, putHomeFile, screenshot, test, ZoneClient, type Actor } from './aiworkspace.fixtures'
 
@@ -47,7 +47,7 @@ function png(r: number, g: number, b: number, w = 48, h = 32): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))])
 }
 
-/** The buckyos CLI of the websdk checkout next to this repository, as `actor` (what an Agent runs). */
+/** The workspace CLI of the WebSDK checkout, using the signed-in test actor. */
 function cli(actor: Actor, baseURL: string, ...args: string[]): J {
   const launcher = resolve(process.env.BUCKYOS_WEBSDK_DIR ?? '../../../../buckyos-websdk', 'cli/launcher.mjs')
   const cwd = mkdtempSync(join(tmpdir(), 'aiws-ctl-dv-'))
@@ -64,6 +64,71 @@ function cli(actor: Actor, baseURL: string, ...args: string[]): J {
   const envelope = JSON.parse(out) as { ok: boolean; data: J }
   expect(envelope.ok, out).toBe(true)
   return envelope.data
+}
+
+/** Exercise the installed executor and its packaged extensions using this browser actor's Zone session. */
+function xcall(actor: Actor, baseURL: string, object: string, action: string, params: Record<string, unknown> = {}, key?: string): J {
+  const args = [object, action, '--params', JSON.stringify(params)]
+  if (key) args.push('--idempotency-key', key)
+  const ca = join(process.env.BUCKYOS_ROOT || '/opt/buckyos', 'etc/ca.cert')
+  const command = spawnSync(process.env.BUCKYOS_XCALL || 'xcall', args, {
+    encoding: 'utf8', timeout: 120_000, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? (existsSync(ca) ? ca : undefined),
+      BUCKYOS_TOOL_ENDPOINT: baseURL, BUCKYOS_APPCLIENT_SESSION_TOKEN: actor.client.token },
+  })
+  if (command.error) throw command.error
+  const envelope = JSON.parse(command.stdout)
+  expect(command.status, envelope.summary).toBe(0)
+  expect(envelope.detail?.error).toBeUndefined()
+  expect(envelope.detail?.result).toBeDefined()
+  return envelope.detail.result
+}
+
+// The real Zone needs a running Jarvis Docker container and a configured model to drive its private shell.
+async function jarvisXcalls(owner: Actor, tag: string, commands: string[][]) {
+  const container = process.env.BUCKYOS_TEST_JARVIS_CONTAINER || 'buckyos-app-jarvis'
+  const docker = (args: string[], input?: string) => execFileSync('docker', ['exec', ...(input ? ['-i'] : []), container, ...args], {
+    encoding: 'utf8', input, timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim()
+  const appId = docker(['printenv', 'BUCKYOS_APP_ID'])
+  const appDid = docker(['printenv', 'BUCKYOS_APP_DID'])
+  expect(docker(['printenv', 'BUCKYOS_OWNER_USER_ID'])).toBe(owner.userId)
+  const dir = docker(['mktemp', '-d', '/tmp/owner-schedule-dv.XXXXXXXX'])
+  const quote = (word: string) => "'" + word.replaceAll("'", "'\\''") + "'"
+  const script = ['set -eu', 'cd "$(dirname "$0")"', 'exec > receipts.tmp',
+    "trap 'echo $? > exit-code' EXIT", ...commands.flatMap((args) => ['xcall ' + args.map(quote).join(' '), 'echo']),
+  ].join('\n')
+  let goal: { goal_id: string } | undefined
+  try {
+    docker(['sh', '-c', 'cat > "$1/run.sh"', 'sh', dir], script)
+    goal = await owner.client.service<{ goal_id: string }>(appId, 'goals.create', { request: {
+      key: 'private-schedule-' + tag, title: `Private schedule DV ${tag}`, lifecycle: 'achieve',
+      objective: `在你的 private runtime（本容器）中用 shell 执行一次 sh ${dir}/run.sh。此脚本会执行本次桌面验收所需的 xcall 并保存回执。运行后结束。`,
+      achieved_when: 'The supplied script has completed.', schedule: { start_on_create: true },
+    } })
+    await expect.poll(() => docker(['sh', '-c', 'if test -f "$1/exit-code"; then cat "$1/exit-code"; fi', 'sh', dir]),
+      { timeout: 180_000, intervals: [1000, 3000] }).toMatch(/^\d+$/)
+    const envelopes = docker(['cat', dir + '/receipts.tmp']).split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    expect(docker(['cat', dir + '/exit-code']), JSON.stringify(envelopes.map((e) => e.summary))).toBe('0')
+    expect(envelopes).toHaveLength(commands.length)
+    const results = envelopes.map((envelope) => {
+      expect(envelope.status, envelope.summary).toBe('success')
+      return envelope.detail.result
+    })
+    return { results, appId, appDid, goalId: goal.goal_id }
+  } finally {
+    try {
+      if (goal) await owner.client.service(appId, 'goals.set_status', { goal_id: goal.goal_id, request: { status: 'archived', reason: 'Private schedule DV finished' } })
+    } finally {
+      docker(['rm', '-r', '--', dir])
+    }
+  }
+}
+
+function rowId(receipt: J): string {
+  const id = new URL(receipt.open_url).searchParams.get('record')
+  if (!id) throw new Error('record link has no record parameter')
+  return id
 }
 
 const serverNow = async (actor: Actor): Promise<number> => (await actor.client.ok<{ server_ms: number }>('ws.time', {})).server_ms
@@ -173,38 +238,49 @@ function localIso(date: string, hh: number): string {
 // ---- §5.1 / §5.2 on the Zone: the private schedule
 
 test('[ctl] the private schedule: made on first use, the Agent commands and both controls agree, a link lands on its record, a member is kept out', async ({ owner, peer, baseURL }, info) => {
-  test.setTimeout(300_000)
-  const tag = randomBytes(3).toString('hex')
+  test.setTimeout(420_000)
+  const tag = randomUUID()
   const page = owner.page
-  const before = (await owner.client.list()).workspaces.find((w) => (w as J).name === 'schedule')
-  let wsId = ''
-  const todos: string[] = []
-  const events: string[] = []
+  const before = await owner.client.ok<{ found: boolean; workspace_id?: string }>('ws.lookup', { name: 'schedule' })
+  const today = localDate(Date.now())
+  const list = (object: 'owner.todo' | 'owner.cal', filters: Record<string, unknown>): J[] => {
+    const rows: J[] = []
+    let cursor: string | undefined
+    do {
+      const result = xcall(owner, baseURL!, object, 'list', { ...filters, limit: 200, cursor })
+      rows.push(...(object === 'owner.todo' ? result.items : result.events))
+      cursor = result.next_cursor
+    } while (cursor)
+    return rows
+  }
+  const todoList = (includeDone = false) => list('owner.todo', { include_done: includeDone })
+  const mine = (row: J) => row.title.startsWith(`DV ${tag} `)
   let peerSchedule = ''
   try {
-    // the Agent's first command makes the schedule (G9, G11)
-    const today = localDate(Date.now())
-    const first = cli(owner, baseURL!, 'aiws', 'todo', 'add', `DV ${tag} 续签护照`, '--due', today).item
-    todos.push(first.id)
-    const listed = cli(owner, baseURL!, 'aiws', 'todo', 'list')
-    wsId = listed.workspace_id
-    expect(listed.table).toBe('todo')
-    if (before) expect(wsId).toBe(before.workspace_id)
-    const ensured = await owner.client.ok<{ workspace_id: string; epoch: string; created: boolean }>('ws.ensure', { name: 'schedule' })
-    expect(ensured).toMatchObject({ workspace_id: wsId, created: false })
+    const human = xcall(owner, baseURL!, 'owner', 'who')
+    expect(human.caller_did).toBe(human.owner_did)
+    const task = { title: `DV ${tag} 续签护照`, due: today }
+    const first = xcall(owner, baseURL!, 'owner.todo', 'add', task, tag + '-add')
+    expect(xcall(owner, baseURL!, 'owner.todo', 'add', task, tag + '-add').record_ref).toBe(first.record_ref)
+    const ensured = await owner.client.ok<{ found: boolean; workspace_id: string; epoch: string }>('ws.lookup', { name: 'schedule' })
+    expect(ensured.found).toBe(true)
+    const wsId = ensured.workspace_id
+    if (before.found) expect(wsId).toBe(before.workspace_id)
+    expect(todoList().filter((i) => i.record_ref === first.record_ref)).toHaveLength(1)
     const ws = { workspace_id: wsId, epoch: ensured.epoch }
-    await info.attach('schedule', { body: Buffer.from(JSON.stringify({ workspace_id: wsId, existed_before: Boolean(before) })), contentType: 'application/json' })
+    await info.attach('schedule', { body: Buffer.from(JSON.stringify({ workspace_id: wsId, existed_before: before.found, first_record_ref: first.record_ref, caller: owner.userId })), contentType: 'application/json' })
 
-    // the schedule page: both controls, the Agent's to-do in the list
-    await open(owner, ws)
+    // Open the receipt on the schedule board even when a different canvas is the current default.
+    await page.goto(first.open_url)
+    await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', wsId)
     const item = (id: string, node = 'title') => page.locator(`[data-proj="schedule-board-todo~${node}~${id}"]`)
     await expect(page.getByTestId('aiws-todo-schedule-board-todo')).toBeVisible()
     await expect(page.getByTestId('aiws-cal-schedule-board-calendar')).toBeVisible()
-    await expect(item(first.id)).toContainText(`DV ${tag} 续签护照`)
+    await expect(item(rowId(first))).toContainText(`DV ${tag} 续签护照`)
     // the to-do's due date shows on the calendar
-    await expect(page.locator(`[data-proj^="schedule-board-calendar~title~todo:${first.id}"]`).first()).toContainText(`DV ${tag}`)
+    await expect(page.locator(`[data-proj^="schedule-board-calendar~title~todo:${rowId(first)}"]`).first()).toContainText(`DV ${tag}`)
 
-    // quick add in the control (Enter keeps adding), tick to complete: the Agent's list agrees
+    // Quick add stays open after Enter; the CLI sees the completed item.
     const head = await page.getByTestId('aiws-todo-head-schedule-board-todo').boundingBox()
     await page.mouse.click(head!.x + 200, head!.y + 12)
     await expect(page.getByTestId('aiws-data-body-schedule-board-todo')).toHaveAttribute('data-active', 'true')
@@ -215,51 +291,74 @@ test('[ctl] the private schedule: made on first use, the Agent commands and both
     await add.fill(`DV ${tag} 浇花`)
     await add.press('Enter')
     await expect(add).toHaveValue('')
-    await expect.poll(() => cli(owner, baseURL!, 'aiws', 'todo', 'list').items.filter((i: J) => i.title.startsWith(`DV ${tag}`)).length, { timeout: 15_000 }).toBe(3)
-    const mine = cli(owner, baseURL!, 'aiws', 'todo', 'list').items.filter((i: J) => i.title.startsWith(`DV ${tag}`))
-    todos.push(...mine.map((i: J) => i.id).filter((id: string) => !todos.includes(id)))
-    const milk = mine.find((i: J) => i.title.endsWith('买牛奶'))
-    await item(milk.id, 'check').click()
-    await expect.poll(() => cli(owner, baseURL!, 'aiws', 'todo', 'list', '--all').items.find((i: J) => i.id === milk.id)?.done, { timeout: 15_000 }).toBe(true)
+    await expect.poll(() => todoList().filter(mine).length, { timeout: 15_000 }).toBe(3)
+    const milk = todoList().find((i: J) => i.title === `DV ${tag} 买牛奶`)
+    await item(rowId(milk), 'check').click()
+    await expect.poll(() => todoList(true).find((i: J) => i.record_ref === milk.record_ref)?.done, { timeout: 15_000 }).toBe(true)
 
     // the Agent writes while the control is open: seen at once (§5.1 7)
-    const agent = cli(owner, baseURL!, 'aiws', 'todo', 'add', `DV ${tag} Agent 加的`).item
-    todos.push(agent.id)
-    await expect(item(agent.id)).toContainText('Agent 加的', { timeout: 10_000 })
-    cli(owner, baseURL!, 'aiws', 'todo', 'update', '--id', agent.id, '--title', `DV ${tag} Agent 改过`)
-    await expect(item(agent.id)).toContainText('Agent 改过', { timeout: 10_000 })
+    const afterSeq = (await owner.client.info(ws)).head_seq
+    const { results: [who, agent, ev], appId, appDid, goalId } = await jarvisXcalls(owner, tag + '-write', [
+      ['owner', 'who'],
+      ['owner.todo', 'add', '--params', JSON.stringify({ title: `DV ${tag} Agent 加的` }), '--idempotency-key', tag + '-agent-todo'],
+      ['owner.cal', 'add', '--params', JSON.stringify({ title: `DV ${tag} 评审`, start: localIso(today, 10), end: localIso(today, 11) }), '--idempotency-key', tag + '-agent-cal'],
+    ])
+    expect(who.caller_did).toBe(appDid)
+    expect(who.owner_did).toBe(human.owner_did)
+    expect(who.caller_did).not.toBe(human.caller_did)
+    await expect(item(rowId(agent))).toContainText('Agent 加的', { timeout: 10_000 })
+    xcall(owner, baseURL!, 'owner.todo', 'update', { record_ref: agent.record_ref, patch: { title: `DV ${tag} 本人改过` } })
+    await expect(item(rowId(agent))).toContainText('本人改过', { timeout: 10_000 })
 
     // an event from the Agent, today 10:00–11:00 on this machine: on the week view; the kernel refuses one ending before it starts
-    const ev = cli(owner, baseURL!, 'aiws', 'cal', 'add', `DV ${tag} 评审`, '--start', localIso(today, 10), '--end', localIso(today, 11))
-    events.push(ev.id)
-    await expect(page.locator(`[data-proj^="schedule-board-calendar~title~${ev.id}"]`).first()).toContainText(`DV ${tag} 评审`, { timeout: 10_000 })
+    const { changes } = await owner.client.ok<{ changes: J[] }>('doc.get_changes', { ...ws, after_seq: afterSeq })
+    const writes = [['todo', agent], ['calendar', ev]].map(([table, receipt]) => {
+      const id = rowId(receipt)
+      const commit = changes.find((c) => c.ops?.some((op: J) => op.op === 'table.insert_records' && op.source_id === table && op.records.some((r: J) => r.record_id === id)))
+      expect(commit?.author).toBe(who.caller_did)
+      return { table, id, commit_id: commit.commit_id, author: commit.author, receipt }
+    })
+    await info.attach('agent-submissions', { body: JSON.stringify({ human, who, appId, goalId, ws, writes }), contentType: 'application/json' })
+    await expect(page.locator(`[data-proj^="schedule-board-calendar~title~${rowId(ev)}"]`).first()).toContainText(`DV ${tag} 评审`, { timeout: 10_000 })
     const backwards = await owner.client.commit(ws, [{ op: 'table.insert_records', source_id: 'calendar', records: [{ record_id: `dvbad${tag}`, values: { title: 'backwards', start: localIso(today, 11), end: localIso(today, 10) } }] }] as unknown as Operation[])
     expect(backwards.status, JSON.stringify(backwards)).not.toBe('accepted')
     await screenshot(page, info, 'schedule-board')
 
     // a link to one record selects it; page=control shows the control alone (G12, G14)
     const origin = new URL(page.url()).origin
-    await page.goto(`${origin}/w/s?id=schedule-board&block=schedule-board-todo&record=${encodeURIComponent(agent.id)}`)
-    await expect(item(agent.id)).toBeVisible({ timeout: 30_000 })
-    await expect(page.locator(`[data-proj="schedule-board-todo~bg~${agent.id}"] path`).first()).toBeVisible()
+    await page.goto(ev.open_url)
+    await expect(page.getByTestId('aiws-cal-detail')).toContainText(`DV ${tag} 评审`)
+    await page.getByTestId('aiws-cal-detail-edit').click()
+    await page.getByTestId('aiws-cal-form-start-time').fill('14:00')
+    await page.getByTestId('aiws-cal-form-end-time').fill('14:30')
+    await page.getByTestId('aiws-cal-form-save').click()
+    const window = { from: localIso(today, 13), to: localIso(today, 15), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }
+    await expectAllCommitted(page)
+    const readback = await jarvisXcalls(owner, tag + '-list', [['owner.cal', 'list', '--params', JSON.stringify({ ...window, limit: 200 })]])
+    const moved = readback.results[0].events.find((event: J) => event.record_ref === ev.record_ref)
+    expect(moved?.start).toBe(new Date(localIso(today, 14)).toISOString())
+    expect(Date.parse(moved.end) - Date.parse(moved.start)).toBe(30 * 60_000)
+    await info.attach('rescheduled-event', { body: JSON.stringify({ goalId: readback.goalId, appId: readback.appId, window, moved }), contentType: 'application/json' })
+    await page.goto(agent.open_url)
+    await expect(item(rowId(agent))).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator(`[data-proj="schedule-board-todo~bg~${rowId(agent)}"] path`).first()).toBeVisible()
     await page.goto(`${origin}/w/s?id=schedule-board&block=schedule-board-todo&page=control`)
     await expect(page.getByTestId('aiws-control-page-schedule-board-todo')).toBeVisible({ timeout: 30_000 })
-    await expect(item(agent.id)).toContainText('Agent 改过')
+    await expect(item(rowId(agent))).toContainText('本人改过')
 
     // a member: not listed, not readable; their own schedule is a workspace of their own (§5.2 11)
     expect((await peer.client.list()).workspaces.map((w) => w.workspace_id)).not.toContain(wsId)
     await expect(peer.client.ok('ws.get_info', { workspace_id: wsId })).rejects.toThrow()
     const theirs = await peer.client.ok<{ workspace_id: string; created: boolean }>('ws.ensure', { name: 'schedule' })
-    peerSchedule = theirs.workspace_id
+    if (theirs.created) peerSchedule = theirs.workspace_id
     expect(theirs.workspace_id).not.toBe(wsId)
     await expect(peer.client.ok('doc.read', { workspace_id: wsId, entity_id: 'todo' })).rejects.toThrow()
   } finally {
     if (peerSchedule) await peer.client.ok('ws.delete', { workspace_id: peerSchedule }).catch(() => undefined)
-    if (wsId && !before) await owner.client.ok('ws.delete', { workspace_id: wsId })
-    else if (wsId) {
-      if (todos.length) cli(owner, baseURL!, 'aiws', 'todo', 'rm', '--id', todos.join(','))
-      for (const id of events) cli(owner, baseURL!, 'aiws', 'cal', 'rm', '--id', id)
-    }
+    const todos = todoList(true).filter(mine)
+    if (todos.length) xcall(owner, baseURL!, 'owner.todo', 'rm', { record_refs: todos.map((t) => t.record_ref) })
+    const events = list('owner.cal', { from: localIso(today, 9), to: localIso(today, 16) }).filter(mine)
+    for (const event of events) xcall(owner, baseURL!, 'owner.cal', 'rm', { record_ref: event.record_ref })
   }
 })
 

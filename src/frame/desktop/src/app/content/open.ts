@@ -6,6 +6,7 @@ import { openPreview } from '../preview/launch'
 import type { PreviewOpenRequest } from '../preview/types'
 import { isMockRuntime } from '../../runtime'
 import { contentFixtureEnabled, mockContentRegistry } from '../../mock/content'
+import { translateNow } from '../../i18n/translate'
 import { appTitleNow } from '../../presentation/appText'
 export const appFrames = new Map<string, { host: AppFrameHost; handlerKey?: string }>()
 let registry: ContentRegistryClient | undefined
@@ -34,7 +35,7 @@ export async function contentHandlers(request: PreviewOpenRequest, hints: { name
   return resolveContentHandlers(client?.registry ?? { schema_version: 1, handlers: {} }, client?.defaults ?? emptyDefaults(), contentDescriptor(request.source, hints), 'open', {}, snapshot.apps.map(app => app.appInstanceId ?? app.id))
 }
 export function handlerLabel(plan: HandlerPlan): string {
-  if (!plan.appInstanceId) return 'Preview'
+  if (!plan.appInstanceId) return translateNow('apps.preview', 'Preview')
   const app = desktopUIStore.getSnapshot().apps.find(a => (a.appInstanceId ?? a.id) === plan.appInstanceId)
   return app ? appTitleNow(app) : plan.appInstanceId.split('@')[0]
 }
@@ -42,7 +43,7 @@ export function handlerLabel(plan: HandlerPlan): string {
 export async function openContent(request: PreviewOpenRequest, options: { handlerKey?: string; newWindow?: boolean; name?: string; mime?: string; size?: number; exclude?: string } = {}): Promise<string | null> {
   if (!isTransferableRef(request.source) || request.session && !isTransferableSession(request.session)) return openPreview(request)
   const candidates = (await contentHandlers(request, options)).filter(plan => !options.exclude || !handlerOfApp(plan, options.exclude))
-  if (options.handlerKey && !candidates.some(p => p.handlerKey === options.handlerKey)) desktopUIStore.setSnackbar('The selected app is unavailable. Using the default app.')
+  if (options.handlerKey && !candidates.some(p => p.handlerKey === options.handlerKey)) desktopUIStore.setSnackbar(translateNow('webFrame.useDefault'))
   const selected = candidates.find(p => p.handlerKey === options.handlerKey) ?? candidates[0]
   if (!selected || selected.binding.entry.type === 'builtin') return openPreview({ ...request, newWindow: options.newWindow ?? request.newWindow })
   const open: OpenRequest = { requestId: crypto.randomUUID(), source: request.source, session: request.session,
@@ -55,7 +56,7 @@ export async function openContent(request: PreviewOpenRequest, options: { handle
       try {
         const result = await frame.host.open(open)
         if (result.accepted) { desktopUIStore.focusWindow(window.id); return window.id }
-        if (result.fallback === 'preview') { desktopUIStore.setSnackbar(`Unable to open with ${handlerLabel(selected)}`); return openPreview(request) }
+        if (result.fallback === 'preview') { desktopUIStore.setSnackbar(translateNow('webFrame.unableToOpenWith').replace('{{app}}', () => handlerLabel(selected))); return openPreview(request) }
       } catch { continue }
     }
   }

@@ -37,6 +37,8 @@ pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 /// opaque string task ids, immutable input, one-shot result, composite
 /// phase, executor binding with runner epoch, ACL grants and durable events.
 pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 8;
+pub const TASK_MANAGER_READ_PHYSICAL_SCHEMA: &str =
+    "SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'";
 
 /// Sqlite DDL for the Task Core database. `CREATE TABLE IF NOT EXISTS` so the
 /// bootstrap is safe to re-run on every process start. Boolean-like columns
@@ -98,6 +100,8 @@ CREATE INDEX IF NOT EXISTS idx_task_phase_updated ON task(phase, updated_at, tas
 CREATE INDEX IF NOT EXISTS idx_task_creator_created ON task(creator_user_id, creator_app_id, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_schema_created ON task(schema_id, schema_version, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_runner_phase ON task(runner_target_id, runner_instance_id, phase);
+CREATE INDEX IF NOT EXISTS idx_task_schema_order ON task(schema_id, created_at, task_id);
+CREATE INDEX IF NOT EXISTS idx_task_runner_app_created ON task(runner_app_id, created_at, task_id);
 
 CREATE TABLE IF NOT EXISTS task_assignee (
     task_id            TEXT NOT NULL REFERENCES task(task_id),
@@ -234,6 +238,8 @@ CREATE INDEX IF NOT EXISTS idx_task_phase_updated ON task(phase, updated_at, tas
 CREATE INDEX IF NOT EXISTS idx_task_creator_created ON task(creator_user_id, creator_app_id, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_schema_created ON task(schema_id, schema_version, created_at, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_runner_phase ON task(runner_target_id, runner_instance_id, phase);
+CREATE INDEX IF NOT EXISTS idx_task_schema_order ON task(schema_id, created_at, task_id);
+CREATE INDEX IF NOT EXISTS idx_task_runner_app_created ON task(runner_app_id, created_at, task_id);
 
 CREATE TABLE IF NOT EXISTS task_assignee (
     task_id            TEXT NOT NULL REFERENCES task(task_id),
@@ -1655,6 +1661,9 @@ pub struct ListTasksReq {
     pub created_after: Option<u64>,
     #[serde(default)]
     pub created_before: Option<u64>,
+    /// Descending (created_at, task_id) order. Keep the same order when following a cursor.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub newest_first: bool,
     /// Include archived tasks (hidden by default).
     #[serde(default)]
     pub include_archived: bool,

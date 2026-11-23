@@ -38,7 +38,7 @@ fn system_of(req: &LlmInferenceRequest) -> String {
 
 /// The explicit final report that ends a work session.
 fn done(text_: &str) -> buckyos_api::AiResponse {
-    tool_call("done", "report", json!({ "report": text_, "is_end": true }))
+    tool_call("done", "report", json!({ "report": text_, "outcome": "succeeded", "is_end": true }))
 }
 
 /// Inputs that opened or joined a Turn with a sub session's state.
@@ -927,7 +927,7 @@ async fn an_interactive_sub_session_asks_its_parent() {
         if is_child(req) {
             // Behavior loop of the child: ask, then deliver.
             return if all.contains("the color is blue") {
-                text("<response><report end=\"true\"><![CDATA[painted blue]]></report></response>")
+                text("<response><report end=\"true\" outcome=\"succeeded\"><![CDATA[painted blue]]></report></response>")
             } else {
                 text("<response><report><![CDATA[which color?]]></report><next_behavior>WAIT_USER_MSG</next_behavior></response>")
             };

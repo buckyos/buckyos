@@ -766,6 +766,7 @@ impl<'a> UserEnvScope<'a> {
 
         if device_name.starts_with("ood") {
             let start_config = json!({
+                "schema": crate::START_CONFIG_SCHEMA,
                 "admin_password_hash": admin_password_hash_for(self.username),
                 "ood_jwt": device_jwt.to_string(),
                 "friend_passcode": "sdfsdfsdf",
@@ -1596,6 +1597,7 @@ mod tests {
             get_jwk(&owner_keys.public_key_x),
         );
         let start_config = json!({
+            "schema": crate::START_CONFIG_SCHEMA,
             "admin_password_hash": admin_password_hash_for("devtest"),
             "friend_passcode": "sdfsdfsdf",
             "gateway_type": "PortForward",

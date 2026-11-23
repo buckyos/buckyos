@@ -1,7 +1,7 @@
 use buckyos_api::MailboxAddress;
 use kRPC::RPCErrors;
 use name_lib::DID;
-use ndn_lib::{MsgObjKind, MsgRelType, ObjId};
+use ndn_lib::{MsgContentFormat, MsgObjKind, MsgObject, MsgRelType, ObjId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -333,12 +333,19 @@ pub fn validate_panels(panels: &[PanelDecl], host: &DID, max: usize) -> Result<(
     }
     Ok(())
 }
+/// Messages before joining that a new participant sees by default.
+pub const DEFAULT_HISTORY_BEFORE_JOIN: u32 = 32;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionRules {
     pub post: PostRule,
     pub react: PostRule,
     pub history: String,
+    /// With `from_join`, how many of the latest messages posted before a
+    /// participant starts seeing the Session stay readable to them; 0 means
+    /// strictly from that point. Counted when the participant starts seeing
+    /// it, so later settings changes leave existing participants alone.
+    pub history_before_join: u32,
     pub allow_guests: bool,
     pub edit: EditRule,
     pub receipts: String,
@@ -355,6 +362,7 @@ impl Default for SessionRules {
             post: PostRule::default(),
             react: PostRule::default(),
             history: "from_join".into(),
+            history_before_join: DEFAULT_HISTORY_BEFORE_JOIN,
             allow_guests: false,
             edit: EditRule::default(),
             receipts: "hidden".into(),
@@ -413,6 +421,7 @@ pub struct GuestEntry {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuestEntryMethods {
+    pub oauth: bool,
     pub password: bool,
     pub self_register: bool,
     pub did_login: bool,
@@ -421,6 +430,7 @@ impl From<GuestEntryMethods> for buckyos_api::EntryMethods {
     fn from(m: GuestEntryMethods) -> Self {
         Self {
             guest: false,
+            oauth: m.oauth,
             password: m.password,
             self_register: m.self_register,
             did_login: m.did_login,
@@ -694,6 +704,15 @@ pub struct GroupInviteLink {
     pub revoked: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupResourceShare {
+    pub creator: DID,
+    pub request: Value,
+    pub secret: String,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub admitted: BTreeSet<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageMeta {
     pub obj_id: ObjId,
     pub session_id: Option<String>,
@@ -704,6 +723,31 @@ pub struct MessageMeta {
     pub kind: MsgObjKind,
     pub relation: Option<(MsgRelType, ObjId, Option<String>)>,
     pub redacted: bool,
+    /// [`is_standard_text`], the only messages that count toward
+    /// `history_before_join`. Metadata stored before this field reads as
+    /// true; for it the kind and relation checks of `history_start` remain.
+    #[serde(default = "stored_before_text_check")]
+    pub standard_text: bool,
+}
+fn stored_before_text_check() -> bool {
+    true
+}
+/// A standard text message: a participant's post or reply whose content is
+/// plain or Markdown text, without attachments, a card or a voice note.
+pub fn is_standard_text(msg: &MsgObject) -> bool {
+    matches!(msg.kind, MsgObjKind::GroupMsg | MsgObjKind::Chat)
+        && msg
+            .relates_to
+            .as_ref()
+            .is_none_or(|r| r.rel == MsgRelType::Thread)
+        && matches!(
+            msg.content.format,
+            None | Some(MsgContentFormat::TextPlain | MsgContentFormat::TextMarkdown)
+        )
+        && !msg.content.content.trim().is_empty()
+        && msg.content.machine.is_none()
+        && msg.content.refs.is_empty()
+        && !msg.meta.contains_key("voice")
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Change {
@@ -713,6 +757,16 @@ pub struct Change {
     pub subject: Option<DID>,
     pub data: Value,
     pub audience: BTreeSet<String>,
+}
+impl Change {
+    pub(crate) fn action(&self) -> Option<&str> {
+        // Older hosted groups also stored the ordinary message text in this
+        // field. Only management changes carry actions on the visible stream.
+        match self.kind.as_str() {
+            "session" | "member" => self.data["action"].as_str(),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedOperation {
@@ -740,6 +794,8 @@ pub struct GroupState {
     #[serde(default)]
     pub pending_owner_transfer: Option<OwnerTransfer>,
     pub invite_links: BTreeMap<String, GroupInviteLink>,
+    #[serde(default)]
+    pub resource_shares: BTreeMap<String, GroupResourceShare>,
     pub group_seq: u64,
     pub session_seqs: BTreeMap<String, u64>,
     pub accepted_at_ms: u64,
@@ -939,25 +995,63 @@ impl GroupState {
                 })
             })
     }
+    /// Where a participant who starts seeing Session `s` at `seq` begins: the
+    /// `history_before_join`-th latest standard text message before it that
+    /// was not retracted. Everything else (the group's own events, files,
+    /// images, voice notes, cards, reactions, edits…) is shown when it falls
+    /// inside that range but does not take a slot.
+    fn history_start(&self, s: Option<&str>, seq: u64) -> u64 {
+        let keep = self.rules(s).map_or(0, |r| r.history_before_join) as usize;
+        if keep == 0 {
+            return seq;
+        }
+        let mut earlier: Vec<u64> = self
+            .messages
+            .values()
+            .filter(|m| {
+                m.session_id.as_deref() == s
+                    && m.group_seq < seq
+                    && m.standard_text
+                    && !m.redacted
+                    && matches!(m.kind, MsgObjKind::GroupMsg | MsgObjKind::Chat)
+                    && m.relation.as_ref().is_none_or(|(r, _, _)| *r == MsgRelType::Thread)
+            })
+            .map(|m| m.group_seq)
+            .collect();
+        if earlier.len() <= keep {
+            return 0;
+        }
+        earlier.sort_unstable();
+        earlier[earlier.len() - keep]
+    }
     pub fn refresh_intervals(&mut self, seq: u64) {
         let sessions: Vec<_> = std::iter::once(String::new())
             .chain(self.sessions.keys().cloned())
             .collect();
         let candidates = self.candidates();
         for s in sessions {
+            let sid = if s.is_empty() { None } else { Some(s.as_str()) };
+            let mut start = None;
             for d in &candidates {
-                let effective = DID::from_str(d)
-                    .is_ok_and(|d| self.effective(if s.is_empty() { None } else { Some(&s) }, &d));
+                let effective = DID::from_str(d).is_ok_and(|d| self.effective(sid, &d));
+                let open = self
+                    .intervals
+                    .get(&s)
+                    .and_then(|v| v.get(d))
+                    .and_then(|v| v.last())
+                    .is_some_and(|i| i.to_group_seq.is_none());
+                if effective && !open && start.is_none() {
+                    start = Some(self.history_start(sid, seq));
+                }
                 let intervals = self
                     .intervals
                     .entry(s.clone())
                     .or_default()
                     .entry(d.clone())
                     .or_default();
-                let open = intervals.last().is_some_and(|i| i.to_group_seq.is_none());
                 if effective && !open {
                     intervals.push(VisibleInterval {
-                        from_group_seq: seq,
+                        from_group_seq: start.unwrap_or(seq),
                         to_group_seq: None,
                     });
                 } else if !effective && open {

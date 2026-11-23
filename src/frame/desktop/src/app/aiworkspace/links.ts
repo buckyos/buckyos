@@ -12,6 +12,7 @@
  * workspace's own origin — through the Control Panel's launch when the Desktop user is signed in (launch.ts), so
  * the new origin gets its own session (hybrid SSO: the host-only cookies `/sso_callback` sets there). */
 
+import { objectUrl } from 'buckyos'
 import type { LaunchTarget } from './ui/shell/WorkspaceShell'
 
 /** The signed-in user's workspace list on the Zone host. */
@@ -42,6 +43,25 @@ export function onWorkspaceHost(host = window.location.host): boolean {
   return HOST_LABEL.test(host)
 }
 
+/** The language for a navigation to another workspace origin. A public or copied link keeps its canonical URL. */
+export function workspaceLinkForLocale(url: string, locale: string): string {
+  const address = new URL(url, window.location.href)
+  if (address.origin === window.location.origin || !onWorkspaceHost(address.host)) return url
+  address.searchParams.set('lang', locale)
+  return address.href
+}
+
+/** Whether the Zone login can hand this address to its own AI Workspace service. */
+export function isZoneWorkspaceUrl(address: string): boolean {
+  try {
+    const url = new URL(address)
+    return !url.username && !url.password && url.protocol === window.location.protocol
+      && onWorkspaceHost(url.hostname) && url.host.replace(HOST_LABEL, '') === window.location.host
+  } catch {
+    return false
+  }
+}
+
 /** The workspace id a Workspace host names, null elsewhere. */
 export function workspaceIdOfHost(host = window.location.host): string | null {
   const m = HOST_LABEL.exec(host)
@@ -53,6 +73,19 @@ export function workspaceIdOfHost(host = window.location.host): string | null {
 export function zoneOrigin(): string {
   const { protocol, host } = window.location
   return `${protocol}//${host.replace(HOST_LABEL, '')}`
+}
+
+export function contactRecordHref(fieldId: string, value: unknown): string | null {
+  if (fieldId !== 'contact_ref' || typeof value !== 'string' || !value.startsWith('obj://msg-center/owners/')) return null
+  try {
+    const url = objectUrl.parseObjectUrl(value)
+    if (url.kind !== 'obj' || Object.keys(url.query).length > 0) return null
+    const [owners, owner, contacts, did, ...rest] = objectUrl.objectSegments(url)
+    if (owners !== 'owners' || contacts !== 'contacts' || !owner?.startsWith('did:') || !did?.startsWith('did:') || rest.length) return null
+    return `${objectUrl.objectEndpoint(url, zoneOrigin())}/props/record`
+  } catch {
+    return null
+  }
 }
 
 export interface PageSurface { id: string; title: string }

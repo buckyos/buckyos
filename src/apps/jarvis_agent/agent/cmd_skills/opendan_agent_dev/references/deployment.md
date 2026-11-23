@@ -1,0 +1,25 @@
+#### Package the template
+Use `src/apps/jarvis_agent/dapp_meta/{app.json,pikg.json}` as working examples. Create `tpl/agent/` from the source template and `tpl/dapp_meta/` for metadata. In app.json set `did:bns:<name>.<owner>`, name, owner/author, show_name and version. Keep `categories:["agent"]` and the `www` HTTP endpoint (Jarvis inner port 4060). In pikg.json set `schema_version:1`, `output_dir:"../dapp_dist"`, `pikg_file:"<name>-<ver>.pikg"`, and `sub_pkgs.agent:{required:true,source:{type:"path",path:"../agent"}}`. Optional `agent_skills` contains additional skills. There is no `pikg init --kind agent`. Never package keys, tokens or instance state. External source paths require `--allow-read <dir>`.
+
+```sh
+cd tpl
+buckyos pikg build ./dapp_meta
+buckyos pikg pack ./dapp_dist
+buckyos pikg info "./dapp_dist/<name>-<ver>.pikg"
+```
+
+#### Register and create as owner
+1. Use `buckyos app fetch <pikg> --plan p.json --policy local-developer` then `buckyos --yes app install <pikg> --plan p.json --policy local-developer`. Expect `template_registered` / `template_updated` and `installed:<app_id>` with no task. Use throwaway names in tests; there is no unregister command.
+2. Use Desktop “Add Agent” or Control Panel kRPC `agent.create {idempotency_key,name,template_id,permission_mode?,template_auto_update?,allow_group?}`. Inspect `agent.list_templates`, `agent.list`, `agent.get` and `agent.create.status {agent_id}`. The built-in ID is `bundled:jarvis.buckyos.bns.did`. Creation builds a per-Agent App, and `AgentSpec.binding` points to its `www` service. Control Panel generates the key; the Loader writes `.meta/identity.json` and `.meta/role_supplement.md`.
+3. Verify `ready`, `loaded_version`, `permission_mode` and first Message Center reply. If `msg_center_reload_failed` at start, restore Message Center then use `agent.create.retry`. Verify read-only home and writable AgentRoot inside the container; host debugging uses host permissions. Template install rejection: check `app_type`, App DID/AppId and `www` endpoint.
+
+Only the owner installs/removes/enables/disables skills and edits the UI set on the Skills page or via `buckyos skill … --agent <agent_id>`. An Agent can `agent-session skill list|status|revise` and produce drafts via `skill_import`. Consult `skill_authoring` and `doc/sdk/skill-dev-quickstart.md`. The installed package working copy is `/opt/buckyos/bin/<agent_id>/`; to distribute an instance's edits, apply them to template source.
+
+#### Debug and recover
+- Check `agent-session sessions --children --active`, `agent-session read-session <sid> --report --worklog 50` and `/opt/buckyos/logs/`. Creation errors identify missing behavior/skill or >8/duplicate manuals.
+- From `buckyos/src` use `./debug_jarvis.sh <owner> --agent <agent_id> [--no-build]`; point `JARVIS_PACKAGE_ROOT` at your package. For no Zone, `opendan --dev --agent-root <dir> --agent-did <did> --queue-dir <dir>`. Container changes need `./build_aios --local-test` at repo root and container recreation. A native service follows its node install via `buckyos-build.py` and `start.py`. From `src/` run `cargo test -p opendan --test loader -- --test-threads=1` and `cargo test -p libopendan -- --test-threads=1`.
+- For unexpected `.bns.did` MessageHub links check read-only host `/opt/buckyos/etc/machine.json`, `web3_bridge.bns`, node-daemon and aios versions. For `503 service_not_ready:opendan` use `/api/opendan` on the App host, or full `/kapi/<agent_id>` across apps. Unknown `skills.list|install` can indicate an older aios; upgrade and recreate.
+- Read `loader.status.authentication` (`state,last_error,error_code,denial,next_retry_time`), `errors`, then `session.read` for `bind_failed`, input ACK and outbox. Preserve unacknowledged inputs and outbox IDs. For `reauthorization_required` / `unavailable` verify owner/App/Agent grants, then have an authorized owner/host use `buckyos app restart <full_app_instance_id> --strategy recreate` for a new signed startup assertion. A plain Docker restart reuses the old one. Never copy device keys or silently relogin after revocation. Verify credential exchange, one reply per pending message and later renewal.
+- A retriable provider outage preserves the run and retries after 30 s, doubling to 10 min. A user message retries immediately. Inspect `read-session` / `retry_not_before_ms`. Six consecutive retries or 30 minutes produce `last_error.kind="provider_unavailable"` with `retries_exhausted`, attempts and last error. This is separate from in-run `error_policy.max_consecutive_errors`.
+
+Sources: `src/frame/opendan/README.md`, `src/frame/opendan/src/{loader,rootfs,config}.rs`, `src/frame/lib_opendan/src/{template.rs,skills.rs,state/behaviors.rs,bin/xagent.rs}`, `src/frame/control_panel/src/agent_mgr.rs`, `doc/pikg/format.md`, `doc/sdk/app-package-config.md` and `buckyos-websdk/doc/modules/pikg.md`. Prior validation (2026-10-17, BuckyOS 0.7.0 / Tool 0.7.131) covered Jarvis packaging and fetch-plan only.

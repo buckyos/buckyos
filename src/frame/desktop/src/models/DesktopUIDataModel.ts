@@ -133,7 +133,7 @@ export interface DesktopRuntimeState {
   /** 活动日志 */
   activityLog: string[]
   /** Snackbar 提示信息 */
-  snackbar: string | null
+  snackbar: string | { key: string } | null
   /** 系统侧边栏是否展开（桌面端即左侧 taskbar 是否划出） */
   isSystemSidebarOpen: boolean
   /** 桌面端 taskbar 是否锁定常驻（持久化到 localStorage） */
@@ -1611,13 +1611,13 @@ export class DesktopUIStore {
     return after
   }
 
-  /** Saves a note widget's text into its `.widget` file. */
-  updateWidgetNote(itemId: string, content: string) {
+  /** Saves part of a widget's own settings (a note's text, a player's folder) into its `.widget` file. */
+  updateWidgetConfig(itemId: string, patch: Record<string, unknown>) {
     const { layoutState } = this.snapshot
     const entry = this.getDesktopEntry(itemId)
     if (!layoutState || entry?.kind !== 'widget') return
 
-    const raw = { ...entry.raw, text: content }
+    const raw = { ...entry.raw, ...patch, widget: entry.widget }
     this.desktopEntries = this.desktopEntries.map((other) => (other === entry ? { ...entry, raw } : other))
     this.update({
       layoutState: {
@@ -1626,7 +1626,7 @@ export class DesktopUIStore {
           ...page,
           items: page.items.map((item) =>
             item.id === itemId && item.type === 'widget'
-              ? { ...item, config: { ...item.config, text: content } }
+              ? { ...item, config: { ...item.config, ...patch } }
               : item,
           ),
         })),
@@ -1710,7 +1710,7 @@ export class DesktopUIStore {
         windowAppearance: nextWindowAppearance,
         deadZone: nextDeadZone,
       },
-      runtime: { snackbar: 'Settings saved' },
+      runtime: { snackbar: { key: 'shell.settingsSaved' } },
     })
 
     if (this.snapshot.formFactor === 'desktop') {

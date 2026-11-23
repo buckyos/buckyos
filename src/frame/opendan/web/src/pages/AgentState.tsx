@@ -1,3 +1,4 @@
+import { t } from '../i18n'
 import { useState } from 'react'
 import { useQuery } from '../lib'
 import { dataModel, type MemoryQueryResult } from '../model'
@@ -8,8 +9,8 @@ import { Badge, Empty, ErrorBox, Fields, Mono, Panel, Pre, Sid, Time } from '../
 // only perception read left and it is per session.
 function Perception() {
   return (
-    <Panel title="Perception" testId="agent-perception">
-      <Empty>Perceptions are consolidated by the memory maintenance goal; see Goals on the home page.</Empty>
+    <Panel title={t('observePerception')} testId="agent-perception">
+      <Empty>{t('observePerceptionsAreConsolidatedByTheMemoryMaintenanceGoal')}</Empty>
     </Panel>
   )
 }
@@ -17,18 +18,18 @@ function Perception() {
 function ArtifactVersions({ aid }: { aid: string }) {
   const { data, error } = useQuery(['artifacts.versions', aid], () => dataModel.artifactVersions(aid))
   if (error) return <ErrorBox error={error} />
-  if (!data) return <Empty>Loading…</Empty>
+  if (!data) return <Empty>{t('loading')}</Empty>
   return data.length ? (
     <table className="tbl">
       <thead>
         <tr>
-          <th>ver</th>
-          <th>state</th>
-          <th>base</th>
-          <th>session</th>
-          <th>outputs</th>
-          <th>side effects</th>
-          <th>updated</th>
+          <th>{t('observeVer')}</th>
+          <th>{t('observeState')}</th>
+          <th>{t('observeBase')}</th>
+          <th>{t('observeSession')}</th>
+          <th>{t('observeOutputs')}</th>
+          <th>{t('observeSideEffects')}</th>
+          <th>{t('observeUpdated')}</th>
         </tr>
       </thead>
       <tbody>
@@ -46,7 +47,7 @@ function ArtifactVersions({ aid }: { aid: string }) {
       </tbody>
     </table>
   ) : (
-    <Empty>No versions.</Empty>
+    <Empty>{t('observeNoVersions')}</Empty>
   )
 }
 
@@ -54,38 +55,38 @@ function Artifacts() {
   const { data, error } = useQuery(['artifacts.list'], () => dataModel.artifacts())
   const [open, setOpen] = useState('')
   return (
-    <Panel title={`Artifacts (${data?.length ?? 0})`} testId="agent-artifacts">
+    <Panel title={t('observeArtifacts')} count={data?.length ?? 0} testId="agent-artifacts">
       <ErrorBox error={error} />
       {data?.length ? (
         <table className="tbl">
           <thead>
             <tr>
               <th>aid</th>
-              <th>head</th>
-              <th>rev</th>
-              <th>updated</th>
+              <th>{t('observeHead')}</th>
+              <th>{t('observeRev')}</th>
+              <th>{t('observeUpdated')}</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {data.map((a) => (
               <tr key={a.aid}>
-                <td><Mono>{a.aid}</Mono></td>
+                <td className="whitespace-nowrap"><Mono>{a.aid}</Mono></td>
                 <td><Mono>{a.head ?? '–'}</Mono></td>
                 <td>{a.rev}</td>
                 <td><Time ms={a.updated_at_ms} /></td>
                 <td className="w-full">
-                  <button className="btn" onClick={() => setOpen(open === a.aid ? '' : a.aid)}>
-                    {open === a.aid ? 'Hide' : 'Versions'}
+                  <button className="btn" aria-expanded={open === a.aid} onClick={() => setOpen(open === a.aid ? '' : a.aid)}>
+                    {open === a.aid ? t('skDraftHide') : t('observeVersions')}
                   </button>
-                  {open === a.aid && <div className="mt-1"><ArtifactVersions aid={a.aid} /></div>}
+                  {open === a.aid && <div className="mt-2 rounded-lg bg-bg px-3 py-1"><ArtifactVersions aid={a.aid} /></div>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       ) : (
-        <Empty>No artifacts.</Empty>
+        <Empty>{t('observeNoArtifacts')}</Empty>
       )}
     </Panel>
   )
@@ -94,7 +95,7 @@ function Artifacts() {
 function BehaviorConfig({ name }: { name: string }) {
   const { data, error } = useQuery(['behaviors.get', name], () => dataModel.behavior(name), false)
   if (error) return <ErrorBox error={error} />
-  return data === undefined ? <Empty>Loading…</Empty> : <Pre value={data ?? 'not found'} />
+  return data === undefined ? <Empty>{t('loading')}</Empty> : <Pre value={data ?? t('observeNotFound')} />
 }
 
 function Behaviors() {
@@ -104,25 +105,26 @@ function Behaviors() {
   return (
     <>
       <Panel
-        title={`Behaviors (${data?.behaviors.length ?? 0})`}
+        title={t('observeBehaviors')}
+        count={data?.behaviors.length ?? 0}
         testId="agent-behaviors"
-        extra={data && <span className="text-xs text-mute">revision <Mono>{data.revision}</Mono></span>}
+        extra={data && <span>{t('observeRevision')} <Mono>{data.revision}</Mono></span>}
       >
         <ErrorBox error={error} />
         {data?.behaviors.length ? (
           <table className="tbl">
             <thead>
               <tr>
-                <th>name</th>
-                <th>objective</th>
-                <th>next</th>
+                <th>{t('observeName')}</th>
+                <th>{t('observeObjective')}</th>
+                <th>{t('observeNext')}</th>
               </tr>
             </thead>
             <tbody>
               {data.behaviors.map((b) => (
                 <tr key={b.name}>
                   <td>
-                    <button className="font-mono text-xs text-accent hover:underline" onClick={() => setOpen(open === b.name ? '' : b.name)}>
+                    <button className="whitespace-nowrap font-mono text-xs text-accent hover:underline" aria-expanded={open === b.name} onClick={() => setOpen(open === b.name ? '' : b.name)}>
                       {b.name}
                     </button>
                   </td>
@@ -133,27 +135,27 @@ function Behaviors() {
             </tbody>
           </table>
         ) : (
-          <Empty>No behaviors.</Empty>
+          <Empty>{t('observeNoBehaviors')}</Empty>
         )}
         {open && (
-          <div className="mt-2" data-testid="behavior-config">
-            <div className="mb-1 text-xs text-mute">behaviors.get <Mono>{open}</Mono></div>
+          <div className="mt-3" data-testid="behavior-config">
+            <div className="mb-2 text-xs text-mute">behaviors.get <Mono>{open}</Mono></div>
             <BehaviorConfig name={open} />
           </div>
         )}
       </Panel>
-      <Panel title="Identity" testId="agent-identity">
+      <Panel title={t('observeIdentity')} testId="agent-identity">
         <ErrorBox error={identity.error} />
         {identity.data?.role || identity.data?.self ? (
           <Fields
             rows={[
-              ['role', identity.data.role ? <Pre value={identity.data.role} /> : null],
-              ['self', identity.data.self ? <Pre value={identity.data.self} /> : null],
+              [t('observeRole'), identity.data.role ? <Pre value={identity.data.role} /> : null],
+              [t('observeSelf'), identity.data.self ? <Pre value={identity.data.self} /> : null],
               ['i18n', identity.data.i18n ? <Mono>{Object.keys(identity.data.i18n).join(', ')}</Mono> : null],
             ]}
           />
         ) : (
-          <Empty>No identity text.</Empty>
+          <Empty>{t('observeNoIdentityText')}</Empty>
         )}
       </Panel>
     </>
@@ -183,29 +185,29 @@ function Hints() {
   }
   const rows = result ? [...result.cognitions, ...result.recent_perceptions] : []
   return (
-    <Panel title="Memory recall (as a session)" testId="agent-hints">
+    <Panel title={t('observeMemoryRecallAsASession')} testId="agent-hints">
       <form
-        className="mb-2 flex gap-2"
+        className="mb-3 flex flex-wrap gap-2"
         onSubmit={(e) => {
           e.preventDefault()
           void recall()
         }}
       >
-        <input className="input w-48" placeholder="session id" aria-label="Session" value={session} onChange={(e) => setSession(e.target.value)} />
-        <input className="input flex-1" placeholder="words or tags (space or comma separated)" aria-label="Tags" value={words} onChange={(e) => setWords(e.target.value)} />
-        <button className="btn" type="submit">Recall</button>
+        <input className="input w-48 font-mono" placeholder={t('observeSessionId')} aria-label={t('goalSession')} value={session} onChange={(e) => setSession(e.target.value)} />
+        <input className="input min-w-[12rem] flex-1" placeholder={t('observeWordsOrTagsSpaceOrCommaSeparated')} aria-label={t('observeTags')} value={words} onChange={(e) => setWords(e.target.value)} />
+        <button className="btn btn-primary" type="submit">{t('observeRecall')}</button>
       </form>
       <ErrorBox error={error} />
-      {needSession && <Empty>Memory answers as one session: enter its id.</Empty>}
+      {needSession && <Empty>{t('observeMemoryAnswersAsOneSessionEnterItsId')}</Empty>}
       {result &&
         (rows.length ? (
           <table className="tbl">
             <tbody>
               {rows.map((h) => (
                 <tr key={h.reference}>
-                  <td className="w-px"><Mono>{h.reference}</Mono></td>
+                  <td className="w-px whitespace-nowrap"><Mono>{h.reference}</Mono></td>
                   <td className="w-px">
-                    <Badge value={h.layer === 'cognition' ? h.state : 'not yet consolidated'} />
+                    <Badge value={h.layer === 'cognition' ? h.state : t('observeNotYetConsolidated')} />
                   </td>
                   <td className="text-xs">{h.summary}</td>
                   <td className="w-px whitespace-nowrap text-xs text-mute">{h.observed_at}</td>

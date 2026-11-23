@@ -26,11 +26,11 @@ import { edgeScroll, localPoint, trackPress, type Point } from '../data/gestures
 import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecords } from '../data/records'
 import { useControlView } from '../data/viewState'
-import { submitData } from '../data/write'
+import { submitData, type DataWrite } from '../data/write'
 import { UnboundSource } from '../data/BindDialogs'
 import { registerControlKeys } from '../data/keys'
 import { annotatedRecords, copyRecordLink, openControlPage, recordAnchor, useRecordFocus } from '../data/focus'
-import type { ControlBodyProps } from '../registry'
+import { controlInputProps, type ControlBodyProps } from '../registry'
 import { TodoDetail } from './TodoDetail'
 import { CARD_GAP, CARD_TEMPLATE, cardHeight, COLUMN_COLLAPSED_W, COLUMN_GAP, COLUMN_HEADER, COLUMN_W, ITEMS_BINDING, itemScope, itemsOf, LIST_GAP, LIST_ROW_H, LIST_TEMPLATE, todayLocal, TODO_VIEW_DEFAULTS, TODO_VIEW_KEYS, type TodoView } from './model'
 
@@ -72,13 +72,14 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   // the drop reads the drag as it was last drawn (the write happens outside any state update)
   const dragRef = useRef<Drag | null>(null)
   useEffect(() => { dragRef.current = drag }, [drag])
-  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const [editing, setEditing] = useState<{ base: TodoItem; text: string } | null>(null)
+  const cancelRename = useRef(false)
   const [popover, setPopover] = useState<Popover | null>(null)
   const [adding, setAdding] = useState<{ column: string | null; text: string } | null>(null)
+  const pendingAdds = useRef(new Map<string, { sourceId: string; status: string; order: string }>())
   const [newColumn, setNewColumn] = useState<string | null>(null)
   const [scroll, setScroll] = useState({ top: 0, left: 0, h: 600, w: 600 })
   const rootRef = useRef<HTMLDivElement>(null)
-  const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
   const ui = useWorkspaceUi()
   const noted = useMemo(() => annotatedRecords(ui.annotations, sourceId), [ui.annotations, sourceId])
@@ -139,7 +140,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   }, [items, list, board, view.mode, scroll, selected, today, options, doneId, containerId, noted])
 
   // ---- writes
-  const write = (label: string, operations: Operation[], effects: { overlay?: Record<string, Record<string, Json | undefined>>; created?: Record<string, Record<string, Json | undefined>>; removed?: string[] } = {}) => {
+  const write = (label: string, operations: Operation[], effects: Pick<DataWrite, 'overlay' | 'created' | 'removed'> = {}) => {
     if (!sourceId) return Promise.resolve(false)
     return submitData(store, set, { editId: `todo:${sourceId}:${Date.now()}`, label, operations, ...effects })
   }
@@ -156,25 +157,32 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       ops.push(...todoCompleteOps(sourceId, item, to, { now, reopenStatus: options[0]?.option_id }) as Operation[])
       overlay[item.record_id] = to ? { status: doneId, done_at: now } : { status: options[0]?.option_id ?? 'todo', done_at: undefined }
     }
-    void write(t(to ? 'aiworkspace.todo.completeN' : 'aiworkspace.todo.reopenN', { n: Object.keys(overlay).length }), ops, { overlay })
+    void write(t(to ? 'aiworkspace.todo.completeN' : 'aiworkspace.todo.reopenN', { count: Object.keys(overlay).length }), ops, { overlay })
   }
 
   const addItem = async (title: string, status?: string) => {
     if (!sourceId || !title.trim()) return
     if (!canAdd) { store.notify('info', noWrite); return }
     const column = status ?? options[0]?.option_id ?? 'todo'
-    const inStatus = sortTodos(items.filter((i) => (status ? i.status === status : !i.done)))
-    const { record_id, ops, order } = todoAddOps(sourceId, { title: title.trim(), status: column }, { items: inStatus })
-    await write(t('aiworkspace.todo.addOne', { title: title.trim() }), ops as Operation[], { created: { [record_id]: { title: title.trim(), status: column, order } } })
+    const pending = [...pendingAdds.current.values()].filter((item) => item.sourceId === sourceId)
+    const inStatus = [...items, ...pending].filter((item) => status ? item.status === status : item.status !== TODO_DONE)
+    const values = { title: title.trim(), status: column, ...(column === TODO_DONE ? { done_at: new Date().toISOString() } : {}) }
+    const { record_id, ops, order } = todoAddOps(sourceId, values, { items: inStatus })
+    pendingAdds.current.set(record_id, { sourceId, status: column, order })
+    try {
+      await write(t('aiworkspace.todo.addOne', { title: values.title }), ops as Operation[], { created: { [record_id]: { ...values, order } } })
+    } finally {
+      pendingAdds.current.delete(record_id)
+    }
     // the new item scrolls into sight
-    window.requestAnimationFrame(() => scrollRef.current?.querySelector(`[data-item="${record_id}"]`)?.scrollIntoView({ block: 'nearest' }))
+    window.requestAnimationFrame(() => rootRef.current?.querySelector(`[data-item="${record_id}"]`)?.scrollIntoView({ block: 'nearest' }))
   }
 
   const removeItems = (ids: string[]) => {
     if (!sourceId || !canWrite) { if (!canWrite) store.notify('info', noWrite); return }
     const rows = ids.map((id) => byId.get(id)).filter((i): i is TodoItem => Boolean(i))
     if (!rows.length) return
-    void write(t('aiworkspace.todo.deleteN', { n: rows.length }), [deleteRecordsOp(sourceId, rows) as Operation], { removed: rows.map((r) => r.record_id) })
+    void write(t('aiworkspace.todo.deleteN', { count: rows.length }), [deleteRecordsOp(sourceId, rows) as Operation], { removed: rows.map((r) => r.record_id) })
     setSelection([])
   }
 
@@ -205,13 +213,22 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       overlay[item.record_id] = { order: keys[i], status, ...(status !== item.status ? { done_at: status === doneId ? now : undefined } : {}) }
     })
     const statusLabel = to.status ? options.find((o) => o.option_id === to.status)?.label ?? to.status : null
-    void write(statusLabel ? t('aiworkspace.todo.moveToStatus', { n: moving.length, status: statusLabel }) : t('aiworkspace.todo.reorderN', { n: moving.length }), ops, { overlay })
+    void write(statusLabel ? t('aiworkspace.todo.moveToStatus', { n: moving.length, status: statusLabel }) : t('aiworkspace.todo.reorderN', { count: moving.length }), ops, { overlay })
   }
 
-  const rename = (id: string, text: string) => {
-    const item = byId.get(id)
-    if (!item || !sourceId || text.trim() === item.title || !text.trim()) return
-    void write(t('aiworkspace.todo.renameOne'), todoUpdateOps(sourceId, item, { title: text.trim() }) as Operation[], { overlay: { [id]: { title: text.trim() } } })
+  const beginRename = (item: TodoItem | undefined) => {
+    if (!canWrite || !item) return
+    cancelRename.current = false
+    setEditing({ base: item, text: item.title })
+  }
+
+  const finishRename = () => {
+    setEditing(null)
+    if (cancelRename.current || !editing || !canWrite || !sourceId) return
+    const { base, text } = editing
+    const title = text.trim()
+    if (!title || title === base.title.trim()) return
+    void write(t('aiworkspace.todo.renameOne'), todoUpdateOps(sourceId, base, { title }) as Operation[], { overlay: { [base.record_id]: { title } } })
   }
 
   const addColumn = (label: string) => {
@@ -266,7 +283,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       const next = order[Math.max(0, Math.min(order.length - 1, at < 0 ? 0 : at + (event.key === 'ArrowDown' ? 1 : -1)))]
       if (next) {
         select(next, { shiftKey: event.shiftKey })
-        scrollRef.current?.querySelector(`[data-item="${next}"]`)?.scrollIntoView({ block: 'nearest' })
+        scrollEl?.querySelector(`[data-item="${next}"]`)?.scrollIntoView({ block: 'nearest' })
       }
       return true
     }
@@ -281,7 +298,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       return true
     }
     if (event.key === ' ' && selection.length) { toggleDone(selection); return true }
-    if (event.key === 'Enter' && current && !mod) { setEditing({ id: current, text: byId.get(current)?.title ?? '' }); return true }
+    if (event.key === 'Enter' && current && !mod) { beginRename(byId.get(current)); return true }
     if ((event.key === 'Delete' || event.key === 'Backspace') && selection.length) { removeItems(selection); return true }
     if (mod && event.key.toLowerCase() === 'a') { setSelection(order); return true }
     if (event.key === 'Escape' && selection.length) { setSelection([]); return true }
@@ -296,7 +313,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
     if (item && view.mode === 'board' && view.collapsed.includes(item.status)) ctl.set({ collapsed: view.collapsed.filter((c) => c !== item.status) })
     setSelection([focus.record])
     setAnchorSel(focus.record)
-    window.setTimeout(() => scrollRef.current?.querySelector(`[data-item="${focus.record}"]`)?.scrollIntoView({ block: 'center' }), 80)
+    window.setTimeout(() => rootRef.current?.querySelector(`[data-item="${focus.record}"]`)?.scrollIntoView({ block: 'center' }), 80)
   })
 
   // the canvas hands the keys of a selected control to it (the handler of the latest render)
@@ -305,10 +322,10 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   useEffect(() => registerControlKeys(containerId, (event) => keyRef.current(event)), [containerId])
 
   // ---- pointer
-  const toLocal = (x: number, y: number) => localPoint(scrollRef.current, x, y)
+  const toLocal = (x: number, y: number) => localPoint(scrollEl, x, y)
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!active) return
-    const hit = projectedAt(event.target, scrollRef.current)
+    const hit = projectedAt(event.target, scrollEl)
     if (!hit) {
       if ((event.target as HTMLElement).closest('.aiws-dc-canvas') && !(event.target as HTMLElement).closest('button, input')) setSelection([])
       return
@@ -324,7 +341,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
         select(id, e)
       },
       onDoubleTap: () => {
-        if (hit.role === 'title' && canWrite) setEditing({ id, text: item.title })
+        if (hit.role === 'title' && canWrite) beginRename(item)
         else openDetail(id)
       },
       onLongPress: () => openMenu(selected.has(id) ? selection : [id], id),
@@ -365,10 +382,10 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   // a drag near the edge scrolls
   useEffect(() => {
     if (!drag) return
-    const onMove = (e: PointerEvent) => edgeScroll(scrollRef.current, e.clientX, e.clientY, view.mode === 'board' ? 'both' : 'y')
+    const onMove = (e: PointerEvent) => edgeScroll(scrollEl, e.clientX, e.clientY, view.mode === 'board' ? 'both' : 'y')
     window.addEventListener('pointermove', onMove)
     return () => window.removeEventListener('pointermove', onMove)
-  }, [drag, view.mode])
+  }, [drag, scrollEl, view.mode])
 
   const openDetail = (id: string) => {
     const rect = (view.mode === 'list' ? list.rects : board.rects).get(id)
@@ -381,13 +398,12 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
 
   // keep the visible window for the projection
   useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const update = () => setScroll({ top: el.scrollTop, left: el.scrollLeft, h: el.clientHeight, w: el.clientWidth })
+    if (!scrollEl) return
+    const update = () => setScroll({ top: scrollEl.scrollTop, left: scrollEl.scrollLeft, h: scrollEl.clientHeight, w: scrollEl.clientWidth })
     update()
-    el.addEventListener('scroll', update, { passive: true })
-    return () => el.removeEventListener('scroll', update)
-  }, [view.mode, size.w, size.h])
+    scrollEl.addEventListener('scroll', update, { passive: true })
+    return () => scrollEl.removeEventListener('scroll', update)
+  }, [scrollEl, view.mode, size.w, size.h])
 
   // the view menu (UI 框架 PRD §10.1): published to the Block's menu — the ⋯ of this title row on a canvas, of the Block's title row on a flow
   // page (§6.2), its toolbar's "more", the phone's context window, the control page's bar; "open as a page" is the Block menu's "expand",
@@ -407,7 +423,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
 
   const dragging = drag !== null
   const editingRect = editing ? (() => {
-    const rect = (view.mode === 'list' ? list.rects : board.rects).get(editing.id)
+    const rect = (view.mode === 'list' ? list.rects : board.rects).get(editing.base.record_id)
     if (!rect) return null
     return view.mode === 'list' ? { x: rect.x + 42, y: rect.y + 4, w: rect.w - 146, h: rect.h - 8 } : { x: rect.x + 34, y: rect.y + 6, w: rect.w - 42, h: Math.max(26, rect.h - 32) }
   })() : null
@@ -444,13 +460,13 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       <div className="aiws-dc-seg" role="radiogroup" aria-label={t('aiworkspace.todo.mode')}>
         {(['list', 'board'] as const).map((m) => (
           <button key={m} type="button" role="radio" aria-checked={view.mode === m} className={view.mode === m ? 'is-on' : undefined} data-testid={`aiws-todo-mode-${m}`}
-            title={t(MODE_LABEL[m])} disabled={!active} onClick={() => ctl.set({ mode: m })}>
+            title={t(MODE_LABEL[m])} {...controlInputProps(active)} onClick={() => ctl.set({ mode: m })}>
             {m === 'list' ? <List size={14} aria-hidden="true" /> : <Columns3 size={14} aria-hidden="true" />}<span>{t(MODE_LABEL[m])}</span>
           </button>
         ))}
       </div>
       {host === 'canvas' && (
-        <button type="button" className="aiws-dc-iconbtn" aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} disabled={!active} data-testid={`aiws-todo-menu-${containerId}`}
+        <button type="button" className="aiws-dc-iconbtn" aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} {...controlInputProps(active)} data-testid={`aiws-todo-menu-${containerId}`}
           onClick={(e) => openBlockMenu(containerId, e.currentTarget)}><Ellipsis size={16} aria-hidden="true" /></button>
       )}
     </div>
@@ -461,7 +477,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       data-testid={`aiws-todo-${containerId}`} data-host={host} data-role={active ? 'editor' : undefined} tabIndex={active ? 0 : -1}
       onKeyDown={(event) => { if (event.target === rootRef.current && onKey(event)) { event.preventDefault(); event.stopPropagation() } }}
       onContextMenu={(event) => {
-        const hit = projectedAt(event.target, scrollRef.current)
+        const hit = projectedAt(event.target, scrollEl)
         if (!hit || !active) return
         event.preventDefault()
         openMenu(selected.has(hit.item) ? selection : [hit.item], hit.item)
@@ -470,7 +486,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       {view.mode === 'list' && (
         <div className="aiws-todo-add">
           <Plus size={16} aria-hidden="true" />
-          <input value={adding?.column === null ? adding.text : ''} placeholder={canAdd ? t('aiworkspace.todo.addPlaceholder') : noWrite} disabled={!canAdd || !active} data-testid={`aiws-todo-add-${containerId}`}
+          <input value={adding?.column === null ? adding.text : ''} placeholder={canAdd ? t('aiworkspace.todo.addPlaceholder') : noWrite} {...controlInputProps(active, canAdd)} data-testid={`aiws-todo-add-${containerId}`}
             onFocus={() => { if (!adding) setAdding({ column: null, text: '' }) }}
             onChange={(e) => setAdding({ column: null, text: e.target.value })}
             onBlur={() => { if (!adding?.text) setAdding(null) }}
@@ -483,7 +499,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
           <CornerDownLeft size={14} className="aiws-todo-add-hint" aria-hidden="true" />
         </div>
       )}
-      <div ref={(el) => { scrollRef.current = el; if (el !== scrollEl) setScrollEl(el) }} className={`aiws-dc-scroll${view.mode === 'board' ? ' is-board' : ''}`} onPointerDown={onPointerDown} data-testid={`aiws-todo-scroll-${containerId}`}>
+      <div ref={setScrollEl} className={`aiws-dc-scroll${view.mode === 'board' ? ' is-board' : ''}`} onPointerDown={onPointerDown} data-testid={`aiws-todo-scroll-${containerId}`}>
         <div className="aiws-dc-canvas" style={view.mode === 'list' ? { height: list.height, width: contentW } : { height: boardHeight, width: board.width + (canStructure || caps.length ? 220 : 0) }}>
           {view.mode === 'board' && board.columns.map((c) => (
             <BoardColumn key={c.id} column={c} label={options.find((o) => o.option_id === c.id)?.label ?? c.id} count={c.keys.filter((k) => !k.startsWith('__')).length} height={boardHeight}
@@ -496,7 +512,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
           {view.mode === 'board' && (
             <div className="aiws-board-newcol" style={{ left: board.width + COLUMN_GAP, width: 200 }}>
               {newColumn === null ? (
-                <button type="button" className="aiws-dc-ghostbtn" disabled={!canStructure || !active} title={canStructure ? undefined : t('aiworkspace.todo.needStructure')} data-testid={`aiws-todo-addcol-${containerId}`}
+                <button type="button" className="aiws-dc-ghostbtn" {...controlInputProps(active, canStructure)} title={canStructure ? undefined : t('aiworkspace.todo.needStructure')} data-testid={`aiws-todo-addcol-${containerId}`}
                   onClick={() => setNewColumn('')}><Plus size={14} aria-hidden="true" /> {t('aiworkspace.todo.addColumn')}</button>
               ) : (
                 <input autoFocus value={newColumn} placeholder={t('aiworkspace.todo.columnName')} data-testid={`aiws-todo-colname-${containerId}`}
@@ -507,7 +523,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
             </div>
           )}
           {view.mode === 'list' && (done.length > 0) && (
-            <button type="button" className="aiws-todo-donehead" style={{ top: list.doneY, width: contentW }} disabled={!active} data-testid={`aiws-todo-donehead-${containerId}`}
+            <button type="button" className="aiws-todo-donehead" style={{ top: list.doneY, width: contentW }} {...controlInputProps(active)} data-testid={`aiws-todo-donehead-${containerId}`}
               onClick={() => ctl.set({ hide_done: !view.hide_done })}>
               {view.hide_done ? <ChevronRight size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
               {t('aiworkspace.todo.doneSection', { n: done.length })}
@@ -545,12 +561,15 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
             <input className="aiws-dc-inline-edit" style={{ left: editingRect.x, top: editingRect.y, width: editingRect.w, height: Math.min(editingRect.h, 30) }} autoFocus value={editing.text}
               aria-label={t('aiworkspace.todo.renameOne')} data-testid={`aiws-todo-edit-${containerId}`}
               onChange={(e) => setEditing({ ...editing, text: e.target.value })}
-              onBlur={() => { rename(editing.id, editing.text); setEditing(null) }}
+              onBlur={finishRename}
               onKeyDown={(e) => {
                 e.stopPropagation()
                 if (e.nativeEvent.isComposing) return
-                if (e.key === 'Enter') { rename(editing.id, editing.text); setEditing(null); rootRef.current?.focus() }
-                if (e.key === 'Escape') { setEditing(null); rootRef.current?.focus() }
+                if (e.key === 'Enter' || e.key === 'Escape') {
+                  e.preventDefault()
+                  cancelRename.current = e.key === 'Escape'
+                  rootRef.current?.focus()
+                }
               }} />
           )}
           {snapshot.loading && items.length === 0 && <div className="aiws-dc-empty">{t('aiworkspace.blocks.loading')}</div>}
@@ -591,14 +610,14 @@ function BoardColumn({ column, label, count, height, dropping, active, onToggle,
   return (
     <>
       <div className={`aiws-board-col${column.collapsed ? ' is-collapsed' : ''}${dropping ? ' is-dropping' : ''}`} style={{ left: r.x, top: r.y, width: r.w, height }} data-testid={`aiws-board-col-${column.id}`} />
-      <button type="button" className={`aiws-board-colhead${column.collapsed ? ' is-collapsed' : ''}`} style={{ left: r.x, top: r.y, width: r.w, height: column.collapsed ? height : COLUMN_HEADER }} disabled={!active}
+      <button type="button" className={`aiws-board-colhead${column.collapsed ? ' is-collapsed' : ''}`} style={{ left: r.x, top: r.y, width: r.w, height: column.collapsed ? height : COLUMN_HEADER }} {...controlInputProps(active)}
         title={column.collapsed ? t('aiworkspace.todo.expandColumn', { name: label }) : t('aiworkspace.todo.foldColumn', { name: label })} data-testid={`aiws-board-colhead-${column.id}`} onClick={onToggle}>
         {column.collapsed ? <ChevronRight size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
         <span className="aiws-board-colname">{label}</span>
         <span className="aiws-board-colcount">{count}</span>
       </button>
       {!column.collapsed && (adding === null ? (
-        <button type="button" className="aiws-dc-ghostbtn aiws-board-add" style={{ left: column.body.x, top: addTop, width: column.body.w }} disabled={!canAdd || !active} title={canAdd ? undefined : noWrite}
+        <button type="button" className="aiws-dc-ghostbtn aiws-board-add" style={{ left: column.body.x, top: addTop, width: column.body.w }} {...controlInputProps(active, canAdd)} title={canAdd ? undefined : noWrite}
           data-testid={`aiws-board-add-${column.id}`} onClick={onAddStart}><Plus size={14} aria-hidden="true" /> {t('aiworkspace.todo.addCard')}</button>
       ) : (
         <input className="aiws-board-addinput" style={{ left: column.body.x, top: addTop, width: column.body.w }} autoFocus value={adding} placeholder={t('aiworkspace.todo.addPlaceholder')}

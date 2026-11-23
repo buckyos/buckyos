@@ -45,7 +45,7 @@ const BY_CODE: Record<string, ErrorShape> = {
     retryable: false,
   },
   NAMESPACE_CONFLICT: {
-    messageKey: 'filebrowser.error.nameConflict',
+    messageKey: 'filebrowser.operation.CONFLICT',
     fallback: 'This name already exists here',
     retryable: false,
   },
@@ -94,7 +94,15 @@ const BY_CODE: Record<string, ErrorShape> = {
     fallback: 'The server rejected this request',
     retryable: false,
   },
+  TOO_LARGE: {
+    messageKey: 'filebrowser.error.uploadTooLarge',
+    fallback: 'Too many files to upload at once. Upload the folder in smaller parts.',
+    retryable: false,
+  },
 }
+
+/** NDM store errors (import, finalize) carry the server code as `errorCode`, in snake case. */
+const NDM_CODES: Record<string, string> = { too_many_objects: 'TOO_LARGE', payload_too_large: 'TOO_LARGE' }
 
 /** Normalize any thrown value from the NFSP client stack into a UiError. */
 export function nfspToUiError(err: unknown): UiError {
@@ -123,6 +131,10 @@ export function nfspToUiError(err: unknown): UiError {
 /** NfspError instances and `{code, message}` literals both carry a backend code. */
 function backendCodeOf(err: unknown): string | null {
   if (err instanceof NfspError) return err.code
+  if (err instanceof Error && err.name === 'NdmStoreApiError') {
+    const code = (err as Error & { errorCode?: string }).errorCode
+    return code ? NDM_CODES[code] ?? code.toUpperCase() : 'BACKEND'
+  }
   if (
     typeof err === 'object' &&
     err !== null &&

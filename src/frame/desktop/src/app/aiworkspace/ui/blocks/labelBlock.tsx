@@ -5,13 +5,14 @@
  * data and shows what is there now. Its size is its text's within a width (a text view: `"auto"` inside a control).
  *
  * `LabelArt` is the same drawing without a Block around it: what data controls use for the labels they project from
- * records (G2, G7), so hundreds of them cost a span each.
+ * records (G2, G7), without mounting a BlockHost for each one.
  *
  * A constant label of a PDF Frame's header or footer, or of a printed page, may hold page context values (打印 TODO §3.3):
  * `{page}`, `{pages}`, `{title}`, `{date}` are the page's (`PageContextValue`), samples while the frame is edited. */
 
-import { useCallback, useContext, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import { AlignCenter, AlignLeft, AlignRight, Baseline, Bold, Hash, Tag, Type, WrapText } from 'lucide-react'
+import { useCallback, useContext, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from 'react'
+import { labelBackgroundImage, labelFontFamily, labelIcon, readLabelLook, type LabelLook } from '@controls/label'
+import { Baseline, Hash, Tag, WrapText } from 'lucide-react'
 import { fillPageContext } from '@print/page.ts'
 import type { Json, RecordContent } from '../../api/types'
 import { aiwsT, aiwsText } from '../../i18n'
@@ -21,27 +22,14 @@ import { PAGE_VALUES, PageContextValue, samplePageContext } from '../controls/pd
 import { frameOfBlock, surfaceOf } from '../controls/pdfframe/model'
 import { PAGE_VALUE_LABEL } from '../controls/pdfframe/labels'
 import { consumeIntent, useIntent } from './editorToolbar'
+import { labelAppearanceFields } from './labelFields'
 import type { BlockDefinition, ConfigField, RenderContext } from './registry'
 
 export const LABEL_VIEW = 'label'
 
 export type LabelFormat = 'text' | 'date' | 'date_short' | 'weekday' | 'weekday_short' | 'day' | 'month' | 'time' | 'datetime' | 'relative' | 'number' | 'percent' | 'duration' | 'countdown'
 
-/** How a label looks: the keys of its `config` (and of a projected label's template config). */
-export interface LabelLook {
-  font_size?: number
-  font_color?: string
-  weight?: 'normal' | 'medium' | 'bold'
-  italic?: boolean
-  strike?: boolean
-  align?: 'left' | 'center' | 'right'
-  valign?: 'top' | 'middle' | 'bottom'
-  /** Several lines (default: one line, cut with an ellipsis). */
-  wrap?: boolean
-  max_lines?: number
-  mono?: boolean
-  muted?: boolean
-}
+export type { LabelLook } from '@controls/label'
 
 const FORMAT_LABEL: Partial<Record<LabelFormat, string>> = {
   text: 'aiworkspace.label.fmt.text', date: 'aiworkspace.label.fmt.date', date_short: 'aiworkspace.label.fmt.date_short', weekday: 'aiworkspace.label.fmt.weekday',
@@ -49,7 +37,6 @@ const FORMAT_LABEL: Partial<Record<LabelFormat, string>> = {
   relative: 'aiworkspace.label.fmt.relative', number: 'aiworkspace.label.fmt.number', percent: 'aiworkspace.label.fmt.percent', duration: 'aiworkspace.label.fmt.duration',
 }
 const FORMATS = Object.keys(FORMAT_LABEL) as LabelFormat[]
-const SIZES = [11, 12, 13, 14, 16, 18, 20, 24, 28, 32, 40, 48]
 
 const dateOnly = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s)
 /** A date (`YYYY-MM-DD`) is a day on the reader's calendar, not an instant: shown without shifting it. */
@@ -70,7 +57,7 @@ const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDat
 export function formatLabelValue(value: Json | undefined, format: LabelFormat | string | undefined, now: number = Date.now()): string {
   if (value === undefined || value === null) return ''
   const text = aiwsText()
-  const locale = text.locale === 'zh-CN' ? 'zh-CN' : 'en'
+  const locale = text.intl
   const f = (format ?? 'text') as LabelFormat
   if (f === 'number' || f === 'percent') {
     const n = typeof value === 'number' ? value : Number(value)
@@ -123,26 +110,40 @@ export function formatLabelValue(value: Json | undefined, format: LabelFormat | 
 
 /** The CSS of a label's look. */
 export function labelStyle(look: LabelLook): CSSProperties {
-  const lines = look.wrap ? look.max_lines : 1
+  const image = labelBackgroundImage(look.background_image)
   return {
     fontSize: look.font_size ?? 14,
     color: look.font_color && look.font_color !== 'auto' ? look.font_color : look.muted ? 'var(--cp-muted)' : undefined,
-    fontWeight: look.weight === 'bold' ? 700 : look.weight === 'medium' ? 500 : undefined,
+    fontWeight: look.weight === 'bold' ? 700 : look.weight === 'medium' ? 500 : look.weight === 'normal' ? 400 : undefined,
     fontStyle: look.italic ? 'italic' : undefined,
-    textDecoration: look.strike ? 'line-through' : undefined,
     textAlign: look.align ?? 'left',
-    justifyContent: look.valign === 'top' ? 'flex-start' : look.valign === 'bottom' ? 'flex-end' : 'center',
-    fontFamily: look.mono ? 'var(--aiws-mono, ui-monospace, monospace)' : undefined,
-    whiteSpace: look.wrap ? 'pre-wrap' : 'pre',
-    ...(lines ? { WebkitLineClamp: lines } : {}),
+    justifyContent: look.align === 'right' ? 'flex-end' : look.align === 'center' ? 'center' : 'flex-start',
+    alignItems: look.valign === 'top' ? 'flex-start' : look.valign === 'bottom' ? 'flex-end' : 'center',
+    fontFamily: labelFontFamily(look),
+    backgroundColor: look.background_color === 'auto' || look.background_color === 'none' ? undefined : look.background_color,
+    ...(image && { backgroundImage: `url(${JSON.stringify(image)})`, backgroundPosition: 'center', backgroundSize: 'cover', backgroundRepeat: 'no-repeat' }),
   }
 }
 
-/** A label without a Block around it: one span. */
-export function LabelArt({ text, look, className, testId, title }: { text: string; look: LabelLook; className?: string; testId?: string; title?: string }) {
+interface LabelArtProps {
+  text: ReactNode
+  look: LabelLook
+  className?: string
+  style?: CSSProperties
+  testId?: string
+  title?: string
+  ref?: Ref<HTMLSpanElement>
+}
+
+/** Shared display for a constant, a projected value, or a control's own formatted text. */
+export function LabelArt({ text, look, className, style, testId, ref, ...attributes }: LabelArtProps) {
+  const glyph = labelIcon(look)
+  const icon = glyph && <span aria-hidden="true" className="aiws-label-icon">{glyph}</span>
   return (
-    <span className={`aiws-label${look.wrap ? ' is-wrap' : ''}${className ? ` ${className}` : ''}`} style={labelStyle(look)} data-testid={testId} title={title}>
-      <span className="aiws-label-text">{text}</span>
+    <span {...attributes} ref={ref} className={`aiws-label${look.wrap ? ' is-wrap' : ''}${className ? ` ${className}` : ''}`} style={{ ...labelStyle(look), ...style }} data-testid={testId}>
+      {look.icon_position !== 'right' && icon}
+      <span className="aiws-label-text" style={{ textDecoration: look.strike ? 'line-through' : undefined, WebkitLineClamp: look.wrap ? look.max_lines : undefined }}>{text}</span>
+      {look.icon_position === 'right' && icon}
     </span>
   )
 }
@@ -170,10 +171,6 @@ function useBoundValue(context: RenderContext): { value: Json | undefined; bound
   return { value: loaded.data, bound: Boolean(source) }
 }
 
-function lookOf(config: Record<string, Json> | undefined): LabelLook {
-  return (config ?? {}) as LabelLook
-}
-
 /** A constant text with its page context values filled: the printed page's, or samples in an edited PDF Frame. */
 function usePageText(context: RenderContext, text: string): string {
   const store = useStore()
@@ -193,7 +190,7 @@ function LabelStatic(context: RenderContext) {
   const empty = !text && context.mode === 'edit'
   return (
     <div className="aiws-label-block" data-testid={`aiws-label-${context.cell.entity_id}`}>
-      <LabelArt text={empty ? t('aiworkspace.label.empty') : text} look={lookOf(config)} className={empty ? 'is-empty' : undefined} />
+      <LabelArt text={empty ? t('aiworkspace.label.empty') : text} look={readLabelLook(config)} className={empty ? 'is-empty' : undefined} />
     </div>
   )
 }
@@ -213,7 +210,7 @@ function saveTitle(context: RenderContext, store: ReturnType<typeof useStore>, n
 function LabelEditor(context: RenderContext) {
   const { t } = useAiwsText()
   const store = useStore()
-  const ref = useRef<HTMLDivElement>(null)
+  const ref = useRef<HTMLSpanElement>(null)
   const closed = useRef(false)
   const intent = useIntent(context.cell.entity_id)
   const [started] = useState(() => (intent?.value.startsWith('type:') ? intent.value.slice(5) : null))
@@ -237,29 +234,27 @@ function LabelEditor(context: RenderContext) {
     if (save && ref.current) saveTitle(context, store, (ref.current.innerText ?? '').replace(/\n$/, ''))
     context.deactivateEditor()
   }
-  const look = lookOf(context.payload.config)
+  const look = readLabelLook(context.payload.config)
+  const input = (
+    <span ref={ref} className="aiws-label-input" contentEditable="plaintext-only" suppressContentEditableWarning role="textbox"
+      aria-label={t('aiworkspace.label.title')} aria-multiline="true" data-role="editor" data-testid={`aiws-label-edit-${context.cell.entity_id}`} data-placeholder={t('aiworkspace.label.empty')}
+      onBlur={() => done(true)}
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing) return
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); done(true) }
+        else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); done(false) }
+      }} />
+  )
   return (
     <div className="aiws-label-block">
-      <div ref={ref} className="aiws-label is-editing" style={{ ...labelStyle(look), whiteSpace: 'pre-wrap' }} contentEditable="plaintext-only" suppressContentEditableWarning role="textbox"
-        aria-label={t('aiworkspace.label.title')} data-role="editor" data-testid={`aiws-label-edit-${context.cell.entity_id}`} data-placeholder={t('aiworkspace.label.empty')}
-        onBlur={() => done(true)}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing) return
-          if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); done(true) }
-          else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); done(false) }
-        }} />
+      <LabelArt look={look} className="is-editing" text={input} />
     </div>
   )
 }
 
-/** The label's look (its Cell configuration): the properties panel shows them all, the Block toolbar every one of them. */
+/** The label's look (its Cell configuration): the properties panel includes the full set and the toolbar offers quick edits. */
 const labelFields = (): ConfigField[] => [
-  { key: 'font_size', id: 'label-size', label: aiwsT('aiworkspace.label.fontSize'), kind: 'number', quick: true, icon: Type, default: 14, presets: SIZES },
-  { key: 'font_color', id: 'label-color', label: aiwsT('aiworkspace.label.color'), kind: 'color', quick: true, palette: 'ink', default: 'auto', extras: [{ value: 'auto', label: aiwsT('aiworkspace.label.colorAuto') }] },
-  { key: 'weight', id: 'label-bold', label: aiwsT('aiworkspace.label.bold'), kind: 'boolean', quick: true, icon: Bold,
-    get: (context) => lookOf(context.payload.config).weight === 'bold', patch: (_context, value) => ({ weight: value === true ? 'bold' : null }), editLabel: () => aiwsT('aiworkspace.label.bold') },
-  { key: 'align', id: 'label-align', label: aiwsT('aiworkspace.label.align'), kind: 'select', quick: true, default: 'left',
-    options: [{ value: 'left', label: aiwsT('aiworkspace.label.alignLeft'), icon: AlignLeft }, { value: 'center', label: aiwsT('aiworkspace.label.alignCenter'), icon: AlignCenter }, { value: 'right', label: aiwsT('aiworkspace.label.alignRight'), icon: AlignRight }] },
+  ...labelAppearanceFields(),
   { key: 'wrap', id: 'label-wrap', label: aiwsT('aiworkspace.label.wrap'), kind: 'boolean', quick: true, icon: WrapText },
   { key: 'format', id: 'label-format', label: aiwsT('aiworkspace.label.format'), kind: 'select', quick: true, icon: Baseline, default: 'text', when: (context) => Boolean(context.source),
     options: FORMATS.map((f) => ({ value: f, label: aiwsT(FORMAT_LABEL[f]!) })) },

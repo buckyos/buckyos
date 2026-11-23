@@ -55,6 +55,7 @@ fn build() -> Value {
         })
         .collect();
     let values = json!([
+        { "def": { "field_id": "tags", "name": "Tags", "type": "json" }, "input": ["friends","team"], "output": ["friends","team"] },
         { "def": { "field_id": "f", "name": "f", "type": "decimal", "scale": 2 }, "input": "001200.5", "output": "1200.50" },
         { "def": { "field_id": "f", "name": "f", "type": "decimal", "scale": 2 }, "input": "-0.00", "output": "0.00" },
         { "def": { "field_id": "f", "name": "f", "type": "decimal", "scale": 2 }, "input": "1.005", "error": "INVALID_SCHEMA" },

@@ -149,6 +149,14 @@ test('§15-12 new data from the tree’s menu goes where the menu was opened: in
   await expect(dialog).toHaveCount(0)
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e) => e.name === '预算表')?.parent_id).toBe('f-docs')
   const table = (await api.outline(ALICE, ws.workspace_id)).find((e) => e.name === '预算表')
+  const source = (await api.read(ALICE, ws.workspace_id, table.entity_id)).content
+  expect(source.fields.map((f: { name: string }) => f.name)).toEqual(['列 A', '列 B', '列 C'])
+  expect(source.fields.every((f: { type: string; required?: boolean }) => f.type === 'text' && !f.required)).toBe(true)
+  expect(source.payload.title_field_id).toBe(source.fields[0].field_id)
+  const initial = await api.table(ALICE, ws.workspace_id, { source_id: table.entity_id })
+  expect(initial.total).toBe(2)
+  expect(new Set(initial.rows.map((r) => r.record_id)).size).toBe(2)
+  expect(initial.rows.map((r) => r.values)).toEqual([{}, {}])
   // it opens in a tab of its own, and its row is inside the folder
   await expect(tab(page, table.entity_id)).toHaveAttribute('data-preview', 'false')
   await expect(page.locator('[data-testid="aiws-tree-item"][data-entity-id="f-docs"]').locator(`[data-entity-id="${table.entity_id}"]`)).toBeVisible()
@@ -357,8 +365,18 @@ test('§5.5 the status bar shows the row a table is on: the current cell’s row
   await page.keyboard.press('ArrowDown')
   await expect(info).toHaveText('表 · 第 4 行 / 共 12 行')
   // the record open in its form; its next record moves the table along, and it stays the current one when closed
+  await page.getByTestId('aiws-dm-tree-hide').click()
+  await expect(page.getByTestId('aiws-dm-tree-show')).toBeVisible()
   const fifth = await grid.getByTestId('aiws-row').nth(4).getAttribute('data-record-id')
-  await grid.getByTestId(`aiws-row-open-${fifth}`).click()
+  await grid.getByTestId('aiws-row').nth(4).getByRole('gridcell').first().hover()
+  await grid.getByTestId(`aiws-row-handle-${fifth}`).click()
+  const rowMenu = page.getByTestId(`aiws-row-menu-${fifth}`)
+  await expect(rowMenu).toBeInViewport({ ratio: 1 })
+  await expect(rowMenu.locator('svg')).toBeVisible()
+  const button = (await rowMenu.boundingBox())!
+  expect(button.x + button.width).toBeLessThanOrEqual((await grid.getByRole('grid').boundingBox())!.x + 1)
+  await page.mouse.click(button.x + 2, button.y + button.height / 2)
+  await page.getByTestId('aiws-ctl-menu-open-record').click()
   await expect(info).toHaveText('表 · 第 5 行 / 共 12 行')
   await page.getByTestId('aiws-table-record-next').click()
   await expect(info).toHaveText('表 · 第 6 行 / 共 12 行')
@@ -370,6 +388,7 @@ test('§5.5 the status bar shows the row a table is on: the current cell’s row
   await page.keyboard.press('Escape')
   await expect(info).toHaveText('表 · 第 3 行 / 共 12 行')
   // another tab has no row; the table's tab opened again starts on none
+  await page.getByTestId('aiws-dm-tree-show').click()
   await page.getByTestId('aiws-tree-intro').dblclick()
   await expect(info).not.toContainText('第')
   await tab(page, 'sales').click()

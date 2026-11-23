@@ -41,6 +41,10 @@ pub trait ObjectReader: Send + Sync + std::fmt::Debug {
 /// (`agent-did-object-lib`), then windowed like a file.
 #[async_trait]
 pub trait UrlReader: Send + Sync + std::fmt::Debug {
+    async fn read_alias(&self, _ctx: &SessionRuntimeContext, _name: &str, _cwd: &Path, _property: Option<&str>) -> Result<Option<UrlContent>,AgentToolError> {
+        Ok(None)
+    }
+
     /// `property`: a property the object's Profile declares, read instead of
     /// the object's description.
     async fn read_url(
@@ -204,8 +208,7 @@ impl FileBackend for ObjectBackend {
     async fn read(&self, path: &Path) -> Result<Vec<u8>, AgentToolError> {
         let id = path.to_string_lossy();
         let bytes = self.reader.read_object(&id).await?;
-        let head = &bytes[..bytes.len().min(8192)];
-        if head.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        if crate::file_tools::looks_binary(&bytes) || std::str::from_utf8(&bytes).is_err() {
             return Err(AgentToolError::InvalidArgs(format!(
                 "{id} is not text; use llm_understand_media to look at media objects"
             )));
@@ -368,7 +371,14 @@ impl AgentTool for ReadTool {
             .map(str::trim)
             .filter(|s| !s.is_empty());
         let mut object = None;
-        let target = parse_read_target(&uri)?;
+        let mut target = parse_read_target(&uri)?;
+        let mut alias_content = None;
+        if matches!(target, ReadTarget::File {..}) && buckyos_api::object_extensions::object_alias_name(&uri) {
+            if let Some(reader) = &self.urls {
+                alias_content = reader.read_alias(ctx,&uri,&self.cfg.root_dir,property).await?;
+                if alias_content.is_some() {target = ReadTarget::Url {url: uri.clone()};}
+            }
+        }
         if property.is_some() && !matches!(target, ReadTarget::Url { .. }) {
             return Err(AgentToolError::InvalidArgs(format!(
                 "`property` applies to object URLs; `{uri}` is a file or a content object"
@@ -383,7 +393,7 @@ impl AgentTool for ReadTool {
                         "unsupported read uri `{url}`: this runtime has no object resolver; use a path, file:///abs/path or an object id (cyfile:…)"
                     ))
                 })?;
-                let content = reader.read_url(ctx, &url, property).await?;
+                let content = match alias_content {Some(content) => content, None => reader.read_url(ctx, &url, property).await?};
                 object = Some(content.details);
                 let text: Arc<dyn ObjectReader> = Arc::new(FetchedText(content.text));
                 (self.object_cfg(text), url)
@@ -419,7 +429,8 @@ pub fn with_read_dedup(result: AgentToolResult, what: &str, window: &str) -> Age
         return result;
     }
     let digest = blake3::hash(result.observation_text().as_bytes()).to_hex();
-    let key = format!("read:{what}#{window}:{}", &digest[..16]);
+    let version = result.details.pointer("/object/version").and_then(Json::as_str).unwrap_or("");
+    let key = format!("read:{what}#{window}:{version}:{}", &digest[..16]);
     result.with_dedup(
         key,
         format!("`{what}` is unchanged since you read it earlier in this run; use that content."),

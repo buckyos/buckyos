@@ -1,5 +1,6 @@
 /* ── Workflow node config panel (read-only) ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { Copy, X } from 'lucide-react'
 import type {
   AnalysisIssue,
@@ -62,13 +63,14 @@ function Code({ value }: { value: string }) {
 }
 
 function CopyButton({ text }: { text: string }) {
+  const { t } = useI18n()
   return (
     <button
       type="button"
       onClick={() => navigator.clipboard.writeText(text).catch(() => {})}
       className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded"
       style={{ color: 'var(--cp-muted)' }}
-      title="Copy"
+      title={t('common.copy')}
     >
       <Copy size={11} />
     </button>
@@ -76,6 +78,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 export function NodeConfigPanel({ node, issues, onClose }: Props) {
+  const { t, locale } = useI18n()
   return (
     <div
       className="flex h-full w-[340px] shrink-0 flex-col overflow-hidden"
@@ -93,6 +96,7 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
         </div>
         <button
           type="button"
+          aria-label={t('common.close')}
           onClick={onClose}
           className="flex h-6 w-6 items-center justify-center rounded"
           style={{ color: 'var(--cp-muted)' }}
@@ -101,52 +105,52 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
         </button>
       </div>
       <div className="desktop-scrollbar flex-1 overflow-y-auto p-3">
-        <Section title="Basics">
-          <Field label="id">
+        <Section title={t('workflow.basics')}>
+          <Field label={t('workflow.field.id')}>
             <Code value={node.id} />
             <CopyButton text={node.id} />
           </Field>
-          <Field label="name">{node.name}</Field>
+          <Field label={t('workflow.field.name')}>{node.name}</Field>
           {node.kind === 'task' ? (
-            <Field label="step type">{node.stepType}</Field>
+            <Field label={t('workflow.field.stepType')}>{t(`workflow.node.${node.stepType}`, node.stepType)}</Field>
           ) : (
-            <Field label="control">{node.controlType}</Field>
+            <Field label={t('workflow.field.control')}>{t(`workflow.node.${node.controlType}`, node.controlType)}</Field>
           )}
           {'description' in node && node.description && (
-            <Field label="description">{node.description}</Field>
+            <Field label={t('workflow.field.description')}>{node.description}</Field>
           )}
         </Section>
 
         {node.kind === 'task' && (
           <>
-            <Section title="Executor">
+            <Section title={t('workflow.executor')}>
               {node.executor ? (
                 <>
-                  <Field label="raw">
+                  <Field label={t('workflow.field.raw')}>
                     <Code value={node.executor.raw} />
                   </Field>
                   {node.executor.resolvedNamespace && (
-                    <Field label="namespace">
+                    <Field label={t('workflow.field.namespace')}>
                       {node.executor.resolvedNamespace}
                     </Field>
                   )}
                   {node.executor.resolvedTarget && (
-                    <Field label="resolved">
+                    <Field label={t('workflow.field.resolved')}>
                       <Code value={node.executor.resolvedTarget} />
                     </Field>
                   )}
                 </>
               ) : (
                 <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                  No executor configured.
+                  {t('workflow.noExecutor')}
                 </div>
               )}
             </Section>
 
-            <Section title="Input">
+            <Section title={t('workflow.input')}>
               {node.inputBindings.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                  No input bindings.
+                  {t('workflow.noBindings')}
                 </div>
               ) : (
                 node.inputBindings.map((b, i) => (
@@ -165,10 +169,10 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
               )}
             </Section>
 
-            <Section title="Output">
-              <Field label="output_mode">{node.outputMode}</Field>
+            <Section title={t('workflow.output')}>
+              <Field label={t('workflow.field.outputMode')}>{t(`workflow.node.${node.outputMode}`, node.outputMode)}</Field>
               {node.subjectRef && (
-                <Field label="subject_ref">
+                <Field label={t('workflow.field.subjectRef')}>
                   <Code
                     value={`\${${node.subjectRef.nodeId}.output${
                       node.subjectRef.fieldPath.length
@@ -180,40 +184,40 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
               )}
             </Section>
 
-            <Section title="Behavior">
-              <Field label="idempotent">{String(node.idempotent)}</Field>
-              <Field label="skippable">{String(node.skippable)}</Field>
-              {node.prompt && <Field label="prompt">{node.prompt}</Field>}
+            <Section title={t('workflow.behavior')}>
+              <Field label={t('workflow.field.idempotent')}>{node.idempotent ? t('workflow.yes') : t('workflow.no')}</Field>
+              <Field label={t('workflow.field.skippable')}>{node.skippable ? t('workflow.yes') : t('workflow.no')}</Field>
+              {node.prompt && <Field label={t('workflow.field.prompt')}>{node.prompt}</Field>}
             </Section>
 
             {node.guards && (
-              <Section title="Guards">
+              <Section title={t('workflow.guards')}>
                 {node.guards.budget && (
                   <>
                     {node.guards.budget.maxTokens != null && (
-                      <Field label="max tokens">
-                        {node.guards.budget.maxTokens.toLocaleString()}
+                      <Field label={t('workflow.field.maxTokens')}>
+                        {node.guards.budget.maxTokens.toLocaleString(locale)}
                       </Field>
                     )}
                     {node.guards.budget.maxCostUsdb != null && (
-                      <Field label="max cost (UsDB)">
+                      <Field label={t('workflow.field.maxCost')}>
                         {node.guards.budget.maxCostUsdb}
                       </Field>
                     )}
                     {node.guards.budget.maxDuration && (
-                      <Field label="max duration">
+                      <Field label={t('workflow.field.maxDuration')}>
                         {node.guards.budget.maxDuration}
                       </Field>
                     )}
                   </>
                 )}
                 {node.guards.retry && (
-                  <Field label="retry">
+                  <Field label={t('workflow.field.retry')}>
                     {`${node.guards.retry.maxAttempts}× ${node.guards.retry.backoff} → ${node.guards.retry.fallback}`}
                   </Field>
                 )}
                 {node.guards.permissions && node.guards.permissions.length > 0 && (
-                  <Field label="permissions">
+                  <Field label={t('workflow.field.permissions')}>
                     {node.guards.permissions.join(', ')}
                   </Field>
                 )}
@@ -223,8 +227,8 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
         )}
 
         {node.kind === 'control' && node.controlType === 'branch' && (
-          <Section title="Branch">
-            <Field label="on">
+          <Section title={t('workflow.node.branch')}>
+            <Field label={t('workflow.field.on')}>
               <Code
                 value={`\${${node.on.nodeId}.output${
                   node.on.fieldPath.length ? '.' + node.on.fieldPath.join('.') : ''
@@ -239,27 +243,27 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
               ))}
             </div>
             {node.maxIterations != null && (
-              <Field label="max iterations">{node.maxIterations}</Field>
+              <Field label={t('workflow.field.maxIterations')}>{node.maxIterations}</Field>
             )}
           </Section>
         )}
 
         {node.kind === 'control' && node.controlType === 'parallel' && (
-          <Section title="Parallel">
-            <Field label="branches">
+          <Section title={t('workflow.node.parallel')}>
+            <Field label={t('workflow.field.branches')}>
               {node.branches.map((b) => (
                 <Code key={b} value={b} />
               ))}
             </Field>
-            <Field label="join">
+            <Field label={t('workflow.field.join')}>
               {`${node.join.strategy}${node.join.n ? ` (${node.join.n})` : ''}`}
             </Field>
           </Section>
         )}
 
         {node.kind === 'control' && node.controlType === 'for_each' && (
-          <Section title="For each">
-            <Field label="items">
+          <Section title={t('workflow.node.for_each')}>
+            <Field label={t('workflow.field.items')}>
               <Code
                 value={`\${${node.items.nodeId}.output${
                   node.items.fieldPath.length
@@ -268,27 +272,27 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
                 }}`}
               />
             </Field>
-            <Field label="steps">
+            <Field label={t('workflow.steps')}>
               {node.steps.map((s) => (
                 <Code key={s} value={s} />
               ))}
             </Field>
-            <Field label="max items">{node.maxItems.toLocaleString()}</Field>
-            <Field label="concurrency">
+            <Field label={t('workflow.field.maxItems')}>{node.maxItems.toLocaleString(locale)}</Field>
+            <Field label={t('workflow.field.concurrency')}>
               {node.effectiveConcurrency} / {node.concurrency}
-              {node.degradedReason && (
+              {node.effectiveConcurrency < node.concurrency && (
                 <span
                   className="ml-1 text-[10px]"
                   style={{ color: 'var(--cp-warning)' }}
                 >
-                  (downgraded)
+                  {t('workflow.downgraded')}
                 </span>
               )}
             </Field>
-            {node.degradedReason && (
-              <Field label="reason">
+            {node.effectiveConcurrency < node.concurrency && (
+              <Field label={t('workflow.field.reason')}>
                 <span style={{ color: 'var(--cp-warning)' }}>
-                  {node.degradedReason}
+                  {t('workflow.degradedReason', undefined, { count: node.effectiveConcurrency })}
                 </span>
               </Field>
             )}
@@ -296,7 +300,7 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
         )}
 
         {issues.length > 0 && (
-          <Section title="Analysis">
+          <Section title={t('workflow.analysis')}>
             <div className="space-y-1.5">
               {issues.map((iss, i) => (
                 <div
@@ -325,7 +329,7 @@ export function NodeConfigPanel({ node, issues, onClose }: Props) {
                             : 'var(--cp-muted)',
                     }}
                   >
-                    {iss.severity} · {iss.code}
+                    {t(`workflow.severity.${iss.severity}`, iss.severity)} · {iss.code}
                   </div>
                   <div className="mt-0.5">{iss.message}</div>
                 </div>

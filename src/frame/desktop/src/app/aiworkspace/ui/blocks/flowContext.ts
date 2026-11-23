@@ -6,6 +6,7 @@ import { createContext, useContext } from 'react'
 import type { CatalogEntry } from '../canvas/catalog'
 
 export interface FlowBlockApi {
+  tableHeading?: HTMLElement | null
   cellId: string
   /** Insert a Block of `entry` right after this one; an entry that needs a file asks for it first. */
   insertAfter: (entry: CatalogEntry) => void

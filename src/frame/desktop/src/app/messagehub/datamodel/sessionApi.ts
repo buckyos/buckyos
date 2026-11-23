@@ -401,6 +401,9 @@ export interface GroupPanelDecl {
 }
 
 export interface GroupSessionRules {
+  history?: 'all' | 'from_join'
+  /** With `from_join`, how many messages from before joining a new participant sees. */
+  history_before_join?: number
   receipts?: string
   edit?: { edit_window_ms?: number | null; recall_window_ms?: number | null }
   allow_guests?: boolean
@@ -511,6 +514,15 @@ export const acceptGroupSessionInvitation = (groupDid: DID, sessionId: string, i
 /** A guest's request through the group's public entry: a new Session from its template with the caller as guest; `request_id` makes it retry-safe. */
 export const submitGuestRequest = (groupDid: DID, requestId: string) => call<{ group_did: DID; session_id: string; session: string; revision: string }>('group.submit_guest_request', { group_did: groupDid, request_id: requestId })
 /** Public description of the group's Message Hub entry (`EntryDescription`: the resource service's own allowance). */
+export const issueGroupShare = (groupDid: DID, requestId: string, recipient: string | null) => {
+  const email = recipient?.includes('@') && !recipient.startsWith('did:')
+  const audience = recipient === null ? { kind: 'open' } : { kind: 'directed', ...(email ? {} : { did: recipient }) }
+  return call<{ url: string }>('group.issue_share', {
+    group_did: groupDid, request_id: requestId, audience,
+    ...(email ? { recipient_email: { source_id: 'google', email: recipient } } : {}),
+  })
+}
+
 export const describeGroupEntry = (groupDid: DID) => call<Pick<EntryDescriptor, 'state' | 'resource' | 'methods' | 'expires_at'>>('group.describe_entry', { group_did: groupDid })
 /** Message sequence numbers of a session (`seq` ↔ `obj_id`), which read markers are expressed in. */
 export const listGroupMessages = (groupDid: DID, sessionId: string | undefined, afterSeq: number, limit: number) => call<{ items?: Array<{ seq: number; obj_id: string; redacted?: boolean }>; next_after_seq?: number; limited?: boolean } | null>('group.list_messages', { group_did: groupDid, ...session(sessionId), after_seq: afterSeq, limit }).then(result => result ?? {})

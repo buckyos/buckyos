@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { accessDenialOf, ANONYMOUS_IDENTITY, DENY_REASONS, type AccessDenial, type DenyReason } from 'buckyos'
+import { accessDenialOf, ANONYMOUS_IDENTITY, DENY_REASONS, type AccessDenial, type DenyReason, type PublicOAuthSource } from 'buckyos'
 import {
   Alert,
   Box,
@@ -15,12 +15,14 @@ import {
 import { Eye, EyeOff, ExternalLink, Fingerprint } from 'lucide-react'
 import { requestServiceLaunch } from '../api/app_launch'
 import { describeLoginTarget, fetchSsoConfig } from '../api/sso'
-import { onWorkspaceHost } from '../app/aiworkspace/links'
+import { isZoneWorkspaceUrl } from '../app/aiworkspace/links'
 import { useI18n } from '../i18n/provider'
 import { useDocumentTitle } from '../presentation/documentHead'
 import { useZonePresentation } from '../presentation/zone'
 import { denialText } from '../sso/denial'
 import { loadCurrentIdentity } from '../sso/identity'
+import { rememberedSharePage } from '../sso/shareReturn'
+import { OAuthButtons } from '../sso/OAuthButtons'
 import { DidLoginForm } from '../sso/DidLoginForm'
 import { AuthPageFrame } from './AuthPageFrame'
 import { loginWithPassword } from './passwordLogin'
@@ -90,34 +92,34 @@ const classifyError = (error: unknown): LoginError => {
   return { kind: 'unknown', detail: message }
 }
 
-const errorMessage = (err: Exclude<LoginError, { kind: 'denied' }>): string => {
+const errorMessage = (err: Exclude<LoginError, { kind: 'denied' }>, t: ReturnType<typeof useI18n>['t']): string => {
   switch (err.kind) {
     case 'empty_fields':
-      return 'Please enter your username and password.'
+      return t('sso.login.error.empty_fields')
     case 'invalid_redirect':
-      return 'Invalid or missing redirect URL. Unable to continue sign-in.'
+      return t('sso.login.error.invalid_redirect')
     case 'init_failed':
-      return `Failed to initialize: ${err.detail}`
+      return t('sso.login.error.init_failed', undefined, { detail: err.detail })
     case 'invalid_password':
-      return 'Incorrect password. Please check and try again.'
+      return t('sso.login.error.invalid_password')
     case 'user_not_found':
       return err.username
-        ? `User "${err.username}" does not exist.`
-        : 'User does not exist. Please check your username.'
+        ? t('sso.login.error.user_not_found_named', undefined, { username: err.username })
+        : t('sso.login.error.user_not_found')
     case 'account_locked':
       return err.username
-        ? `Account "${err.username}" has been locked. Please contact the administrator.`
-        : 'Your account has been locked. Please contact the administrator.'
+        ? t('sso.login.error.account_locked_named', undefined, { username: err.username })
+        : t('sso.login.error.account_locked')
     case 'rate_limited':
-      return 'Too many login attempts. Please wait a moment and try again.'
+      return t('sso.login.error.rate_limited')
     case 'network':
-      return 'Unable to reach the server. Please check your network connection.'
+      return t('sso.login.error.network')
     case 'timeout':
-      return 'Request timed out. Please try again.'
+      return t('sso.login.error.timeout')
     case 'server':
-      return `Server error: ${err.detail}`
+      return t('sso.login.error.server', undefined, { detail: err.detail })
     case 'unknown':
-      return err.detail || 'An unexpected error occurred. Please try again.'
+      return err.detail || t('sso.login.error.unknown')
   }
 }
 
@@ -136,14 +138,30 @@ function useDidErrorText(code: string): string | null {
   return t('sso.login.didError.failed', 'DID sign-in did not complete. Try again.')
 }
 
+/** On failure, the DID callback wraps its original return page in another /login URL. */
+function loginDestination(params: URLSearchParams): string {
+  const destination = params.get('redirect_url') ?? ''
+  if (params.has('did_error') && URL.canParse(destination)) {
+    const back = new URL(destination)
+    const workspace = back.searchParams.get('redirect_url')
+    if (back.origin === window.location.origin && back.pathname === '/login'
+      && back.searchParams.get('did_return') === '1' && workspace && isZoneWorkspaceUrl(workspace)) {
+      return workspace
+    }
+  }
+  return destination
+}
+
 const LoginPage = () => {
   const { t } = useI18n()
   const [searchParams] = useSearchParams()
   const redirectUrl = useMemo(
-    () => searchParams.get('redirect_url') ?? '',
+    () => loginDestination(searchParams),
     [searchParams],
   )
   const didErrorText = useDidErrorText(searchParams.get('did_error') ?? '')
+  const didReturned = searchParams.get('did_return') === '1'
+  const workspaceTarget = isZoneWorkspaceUrl(redirectUrl)
   const zone = useZonePresentation()
 
   const [requester, setRequester] = useState<{ url: string; name: string } | null>(null)
@@ -163,26 +181,37 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<LoginError | null>(null)
+  const [providers,setProviders] = useState<PublicOAuthSource[]>([])
   const [didLoginEnabled, setDidLoginEnabled] = useState(false)
   const [showDidLogin, setShowDidLogin] = useState(false)
   const [didErrorOpen, setDidErrorOpen] = useState(true)
 
-  useDocumentTitle('Sign in')
+  useDocumentTitle(t('sso.userInvite.signIn'))
 
   useEffect(() => {
     let live = true
     void fetchSsoConfig().then(({ data }) => {
-      if (live) setDidLoginEnabled(data?.did_login_enabled === true)
+      if (!live) return
+      if (data?.zone_origin && window.location.origin !== data.zone_origin &&
+          window.location.hostname === 'sys.' + new URL(data.zone_origin).hostname) {
+        const root = new URL('/login',data.zone_origin)
+        root.search = window.location.search
+        root.hash = window.location.hash
+        window.location.replace(root.href)
+        return
+      }
+      const remembered = rememberedSharePage(redirectUrl,window.location.hash)
+      if (remembered) { window.location.replace(remembered); return }
+      if (live) { setDidLoginEnabled(data?.did_login_enabled === true); setProviders(data?.oauth_sources ?? []) }
     })
     return () => { live = false }
-  }, [])
+  }, [redirectUrl])
 
   // A page on a Workspace's own origin (`aiws-<id>.<zone>`, AI Workspace T4-8) sent its visitor here: someone
   // already signed in on this host is handed over through the Control Panel's launch — the one-time callback on
   // that origin signs them in there — without seeing the form. Anyone else signs in as usual.
-  const [handoff, setHandoff] = useState(() => {
-    try { return !!redirectUrl && onWorkspaceHost(new URL(redirectUrl).host) } catch { return false }
-  })
+  const [handoff, setHandoff] = useState(workspaceTarget && !didErrorText)
+  const [handoffFailed, setHandoffFailed] = useState(false)
   useEffect(() => {
     if (!handoff) return
     let live = true
@@ -192,10 +221,13 @@ const LoginPage = () => {
       const launch = identity.kind === 'anonymous' ? null : await requestServiceLaunch('aiworkspace', redirectUrl).catch(() => null)
       if (!live) return
       if (launch?.status === 'ready') window.location.replace(launch.callback_url)
-      else setHandoff(false)
+      else {
+        setHandoffFailed(didReturned || identity.kind !== 'anonymous')
+        setHandoff(false)
+      }
     })()
     return () => { live = false }
-  }, [handoff, redirectUrl])
+  }, [handoff, redirectUrl, didReturned])
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -233,8 +265,14 @@ const LoginPage = () => {
   )
 
   const disabled = submitting
-  // DID login comes back to the page that asked for sign-in, or to the Desktop.
-  const didRedirectUrl = redirectUrl || new URL('/', window.location.origin).href
+  // Federation sets the Zone root's cookie. Resume here to launch a Workspace on its own host.
+  let didRedirectUrl = redirectUrl || new URL('/', window.location.origin).href
+  if (workspaceTarget) {
+    const didReturn = new URL('/login', window.location.origin)
+    didReturn.searchParams.set('redirect_url', redirectUrl)
+    didReturn.searchParams.set('did_return', '1')
+    didRedirectUrl = didReturn.href
+  }
 
   if (handoff) {
     return (
@@ -246,7 +284,7 @@ const LoginPage = () => {
 
   return (
     <AuthPageFrame
-      title={<>Sign in to {zone.title}</>}
+      title={t('sso.login.zone', undefined, { zone: zone.title })}
       header={
         <>
           {zone.description && (
@@ -264,7 +302,7 @@ const LoginPage = () => {
             color="text.secondary"
             sx={{ mt: 0.5 }}
           >
-            Enter your credentials to continue
+            {t('sso.login.credentials')}
           </Typography>
           {requesterName && (
             <Box
@@ -282,7 +320,7 @@ const LoginPage = () => {
             >
               <ExternalLink size={14} style={{ opacity: 0.6 }} />
               <Typography variant="caption" color="text.secondary">
-                Requested by <strong>{requesterName}</strong>
+                {t('sysdlg.select.requestedBy', undefined, { name: requesterName })}
               </Typography>
             </Box>
           )}
@@ -292,6 +330,12 @@ const LoginPage = () => {
       {didErrorText && didErrorOpen && (
         <Alert severity="error" sx={{ mb: 2.5 }} onClose={() => setDidErrorOpen(false)} data-testid="login-did-error">
           {didErrorText}
+        </Alert>
+      )}
+
+      {handoffFailed && (
+        <Alert severity="error" sx={{ mb: 2.5 }} data-testid="login-workspace-error">
+          {t('sso.login.workspaceFailed', 'Could not open this workspace with your current sign-in. Reload to retry or sign in again.')}
         </Alert>
       )}
 
@@ -306,7 +350,7 @@ const LoginPage = () => {
           onClose={() => setError(null)}
           data-testid="login-error"
         >
-          {error.kind === 'denied' ? denialText(t, error.denial) : errorMessage(error)}
+          {error.kind === 'denied' ? denialText(t, error.denial) : errorMessage(error, t)}
         </Alert>
       )}
 
@@ -315,7 +359,7 @@ const LoginPage = () => {
       ) : (
         <Box component="form" onSubmit={handleSubmit} noValidate>
           <TextField
-            label="Username"
+            label={t('sso.login.username')}
             autoComplete="username"
             slotProps={{ htmlInput: { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } }}
             autoFocus
@@ -331,7 +375,8 @@ const LoginPage = () => {
           />
 
           <TextField
-            label="Password"
+            id="login-password"
+            label={t('sso.register.password')}
             type={showPassword ? 'text' : 'password'}
             autoComplete="current-password"
             value={password}
@@ -348,6 +393,9 @@ const LoginPage = () => {
                   <InputAdornment position="end">
                     <IconButton
                       size="small"
+                      aria-label={t('sso.login.showCharacters')}
+                      aria-pressed={showPassword}
+                      aria-controls="login-password"
                       onClick={() => setShowPassword((v) => !v)}
                       edge="end"
                       sx={{ border: 'none' }}
@@ -383,7 +431,7 @@ const LoginPage = () => {
               }}
               sx={{ whiteSpace: 'nowrap' }}
             >
-              Forgot password?
+              {t('sso.login.forgotPassword')}
             </Link>
           </Box>
 
@@ -397,10 +445,11 @@ const LoginPage = () => {
             {submitting ? (
               <CircularProgress size={22} color="inherit" />
             ) : (
-              'Sign In'
+              t('sso.login.submit')
             )}
           </Button>
 
+          <OAuthButtons sources={providers} purpose="login" redirectUrl={didRedirectUrl} />
           {didLoginEnabled && (
             <Button
               fullWidth

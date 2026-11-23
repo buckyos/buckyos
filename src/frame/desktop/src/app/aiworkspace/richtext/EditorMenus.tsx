@@ -2,13 +2,14 @@
  * bubble over a text selection, and the Markdown source editor of the "notepad" input mode (§4). Nothing of
  * this sits permanently over the text: the page reads like a document until the user asks for a tool. */
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import type { EditorView } from 'prosemirror-view'
 import type { ToolbarItem } from '../ui/blocks/registry'
 import { InlineTools } from '../ui/canvas/tools'
 import { useAiwsText } from '../useAiwsText'
-import { applyEdit, buildSource, changedRange, offsetOfBlock, rebase, segmentAt, sourceText, type MdCodec, type MdSource } from './markdownSource'
+import type { RichTextCollab } from './collab'
+import { applyEdit, buildSource, changedRange, offsetOfBlock, rebase, segmentAt, sourceText, type MdCodec } from './markdownSource'
 import type { SlashKey, SlashState } from './slash'
 
 // ---- position helpers: the floating parts are drawn in the application root (absolute), so a canvas Block or a
@@ -142,7 +143,7 @@ export function FormatBubble({ view, items, container, version }: { view: Editor
 
 /** A plain text area holding the Markdown of the document. What is typed reaches the rich text a moment later
  * (or on leaving); changes from elsewhere come in without rewriting the text being typed. */
-export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onExit, subscribeDoc }: {
+export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onExit, requestExit, collab, subscribeDoc }: {
   view: EditorView
   codec: MdCodec
   editable: boolean
@@ -150,6 +151,8 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
   startBlockId: string | null
   /** Leave source mode; the editor's caret goes to the block holding the text caret. */
   onExit: (blockId: string | null) => void
+  requestExit: Ref<() => void>
+  collab: RichTextCollab
   subscribeDoc: (listener: () => void) => () => void
 }) {
   const { t } = useAiwsText()
@@ -158,27 +161,28 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
     return { source, text: sourceText(source), caret: offsetOfBlock(source, startBlockId) }
   })
   const areaRef = useRef<HTMLTextAreaElement>(null)
-  const [live] = useState(() => new Map<'s', { source: MdSource; text: string; timer: number; composing: boolean; ownDoc: unknown; remote: boolean; failed: boolean }>())
+  const savePlain = useRef<(() => void) | null>(null)
+  const leave = useRef<(() => void) | null>(null)
+  useImperativeHandle(requestExit, () => () => leave.current?.(), [])
   const [failed, setFailed] = useState(false)
   // what may change while the text area stays (the lock taken, names of linked objects): read when used
-  const [options] = useState(() => new Map<'o', { codec: MdCodec; editable: boolean }>())
-  useEffect(() => { options.set('o', { codec, editable }) })
+  const options = useRef({ codec, editable, onExit })
+  useLayoutEffect(() => { options.current = { codec, editable, onExit } })
 
-  useEffect(() => {
+  // Flush on layout cleanup, while the parent's ProseMirror view and collaborative document are still open.
+  useLayoutEffect(() => {
     const area = areaRef.current
     if (!area) return
-    live.set('s', { source: initial.source, text: initial.text, timer: 0, composing: false, ownDoc: view.state.doc, remote: false, failed: false })
+    const working = collab.working
+    const state = { source: initial.source, text: initial.text, timer: 0, composing: false, ownDoc: view.state.doc, remote: false, failed: false }
     const fit = () => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px` }
     area.value = initial.text
     fit()
     area.focus()
     area.setSelectionRange(initial.caret, initial.caret)
-    const s = () => live.get('s')
     const rebaseNow = () => {
-      const state = s()
-      if (!state) return
       if (state.composing) { state.remote = true; return }
-      const next = rebase(view.state.doc, state.source, options.get('o')?.codec ?? codec)
+      const next = rebase(view.state.doc, state.source, options.current.codec)
       const text = sourceText(next)
       state.source = next
       state.ownDoc = view.state.doc
@@ -189,41 +193,48 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
       }
       state.text = text
     }
-    const sync = () => {
-      const state = s()
-      if (!state || view.isDestroyed) return
+    const sync = (mode: 'markdown' | 'plain' = 'markdown') => {
       if (state.timer) { window.clearTimeout(state.timer); state.timer = 0 }
-      if (state.composing) return
+      if (view.isDestroyed || collab.working !== working || state.composing) return
       const next = area.value
-      const current = options.get('o')
-      if (next !== state.text && current?.editable) {
-        const applied = applyEdit(view, state.source, state.text, next, current.codec)
-        if (applied) {
-          state.source = applied
-          state.text = next
-          state.ownDoc = view.state.doc
-          if (state.failed) { state.failed = false; setFailed(false) }
-        } else if (!state.failed) { state.failed = true; setFailed(true) }
+      const current = options.current
+      if (next !== state.text) {
+        if (!current.editable) return
+        const applied = applyEdit(view, state.source, state.text, next, current.codec, mode)
+        if (!applied) {
+          if (!state.failed) { state.failed = true; setFailed(true) }
+          return // A deferred remote update must not overwrite the unconverted source.
+        }
+        state.source = applied
+        state.text = mode === 'plain' ? sourceText(applied) : next
+        if (area.value !== state.text) { area.value = state.text; fit() }
+        collab.noteMarkdown(next, false)
+        state.ownDoc = view.state.doc
       }
+      if (state.failed) { state.failed = false; setFailed(false) }
       if (state.remote) { state.remote = false; rebaseNow() }
     }
     const schedule = () => {
-      const state = s()
-      if (!state) return
       if (state.timer) window.clearTimeout(state.timer)
       state.timer = window.setTimeout(sync, 350)
     }
-    const onInput = () => { fit(); schedule() }
-    const onCompositionStart = () => { const state = s(); if (state) state.composing = true }
-    const onCompositionEnd = () => { const state = s(); if (state) state.composing = false; schedule() }
+    const onInput = () => { collab.noteMarkdown(area.value, area.value !== state.text); fit(); schedule() }
+    const onCompositionStart = () => { state.composing = true }
+    const onCompositionEnd = () => { state.composing = false; schedule() }
     const onBlur = () => sync()
+    savePlain.current = () => { sync('plain'); area.focus({ preventScroll: true }) }
+    leave.current = () => {
+      state.composing = false
+      sync()
+      if (area.value !== state.text && options.current.editable) { area.focus({ preventScroll: true }); return }
+      options.current.onExit(segmentAt(state.source, area.selectionStart)?.ids[0] ?? null)
+    }
     area.addEventListener('input', onInput)
     area.addEventListener('compositionstart', onCompositionStart)
     area.addEventListener('compositionend', onCompositionEnd)
     area.addEventListener('blur', onBlur)
     const off = subscribeDoc(() => {
-      const state = s()
-      if (!state || view.state.doc === state.ownDoc) return
+      if (view.state.doc === state.ownDoc) return
       // typed text not handed over yet: it goes first, the outside change is merged right after
       if (state.timer || area.value !== state.text) { state.remote = true; return }
       rebaseNow()
@@ -237,20 +248,16 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
       area.removeEventListener('compositionstart', onCompositionStart)
       area.removeEventListener('compositionend', onCompositionEnd)
       area.removeEventListener('blur', onBlur)
-      const state = s()
-      if (state) state.composing = false
+      state.composing = false
       sync()
-      live.delete('s')
+      if (area.value !== state.text) {
+        collab.noteMarkdown(area.value, true)
+        collab.keepUnsentMarkdown()
+      }
+      savePlain.current = null
+      leave.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- codec and editable are read through `options`
-  }, [view, initial, live, options, subscribeDoc])
-
-  const leave = () => {
-    const area = areaRef.current
-    // the cleanup hands over what is still pending
-    const state = live.get('s')
-    onExit(area && state ? segmentAt(state.source, area.selectionStart)?.ids[0] ?? null : null)
-  }
+  }, [view, initial, collab, subscribeDoc])
 
   return (
     <div className="aiws-md-source-wrap">
@@ -264,15 +271,21 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
         placeholder={t('aiworkspace.richtext.source.placeholder')}
         onKeyDown={(event) => {
           const mod = event.ctrlKey || event.metaKey
-          if (mod && event.key === '/') { event.preventDefault(); leave(); return }
+          if (mod && event.key === '/') { event.preventDefault(); leave.current?.(); return }
           if (event.key === 'Tab' && !mod && !event.altKey && editable) {
             event.preventDefault()
             // keeps the browser's own undo for the text area
-            if (!document.execCommand('insertText', false, '\t')) event.currentTarget.setRangeText('\t', event.currentTarget.selectionStart, event.currentTarget.selectionEnd, 'end')
+            if (!document.execCommand('insertText', false, '\t')) {
+              event.currentTarget.setRangeText('\t', event.currentTarget.selectionStart, event.currentTarget.selectionEnd, 'end')
+              event.currentTarget.dispatchEvent(new Event('input', { bubbles: true }))
+            }
           }
         }}
       />
-      {failed && <div className="aiws-warning" role="status">{t('aiworkspace.richtext.source.failed')}</div>}
+      {failed && <div className="aiws-warning" role="status">
+        {t('aiworkspace.richtext.source.failed')}{' '}
+        {editable && <button type="button" data-testid="aiws-md-save-plain" onClick={() => savePlain.current?.()}>{t('aiworkspace.richtext.source.savePlain')}</button>}
+      </div>}
     </div>
   )
 }

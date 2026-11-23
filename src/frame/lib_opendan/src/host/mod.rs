@@ -715,6 +715,8 @@ pub struct HostedStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_result: Option<DriveResult>,
     pub last_result_at_ms: u64,
+    /// Drives in a row that ended with an error (rechecks back off).
+    pub errors_in_a_row: u32,
     pub idle_unload_secs: Option<u64>,
     /// Why the loop was started last.
     pub reason: String,
@@ -731,6 +733,13 @@ impl Slot {
     fn running(&self) -> bool {
         self.task.as_ref().is_some_and(|t| !t.is_finished())
     }
+}
+
+/// How long an unloaded session waits for its recheck: `recheck`, doubled
+/// for every error in a row after the first, at most 16 times. New input
+/// ([`Supervisor::ensure_task`]) does not wait.
+fn recheck_after(recheck: Duration, errors_in_a_row: u32) -> Duration {
+    recheck.saturating_mul(1 << errors_in_a_row.saturating_sub(1).min(4))
 }
 
 fn blocked(r: Option<&DriveResult>) -> bool {
@@ -828,6 +837,7 @@ impl Supervisor {
             drives: previous.as_ref().map(|s| s.drives).unwrap_or(0),
             last_result: previous.as_ref().and_then(|s| s.last_result.clone()),
             last_result_at_ms: previous.as_ref().map(|s| s.last_result_at_ms).unwrap_or(0),
+            errors_in_a_row: previous.as_ref().map(|s| s.errors_in_a_row).unwrap_or(0),
             idle_unload_secs: idle.map(|d| d.as_secs()),
             reason: reason.to_string(),
         }));
@@ -839,6 +849,10 @@ impl Supervisor {
         let observer: Arc<dyn Fn(&DriveResult) + Send + Sync> = Arc::new(move |r| {
             let mut s = seen.lock().expect("status");
             s.drives += 1;
+            s.errors_in_a_row = match r {
+                DriveResult::Error { .. } => s.errors_in_a_row.saturating_add(1),
+                _ => 0,
+            };
             s.last_result = Some(r.clone());
             s.last_result_at_ms = crate::now_ms();
         });
@@ -999,7 +1013,9 @@ impl Supervisor {
                         continue
                     }
                     Some(s) => {
-                        if s.unloaded_at.is_some_and(|t| t.elapsed() < self.recheck) {
+                        let errors = s.status.lock().expect("status").errors_in_a_row;
+                        let wait = recheck_after(self.recheck, errors);
+                        if s.unloaded_at.is_some_and(|t| t.elapsed() < wait) {
                             continue;
                         }
                         "recheck"
@@ -1074,4 +1090,17 @@ fn kind_of(r: &DriveResult) -> String {
         .ok()
         .and_then(|v| v.get("kind").and_then(|k| k.as_str().map(str::to_string)))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rechecks_back_off_after_errors_in_a_row() {
+        let base = Duration::from_secs(30);
+        let secs: Vec<u64> = (0..8).map(|n| recheck_after(base, n).as_secs()).collect();
+        assert_eq!(secs, vec![30, 30, 60, 120, 240, 480, 480, 480]);
+        assert_eq!(recheck_after(base, u32::MAX).as_secs(), 480);
+    }
 }

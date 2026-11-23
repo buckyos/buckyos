@@ -240,3 +240,17 @@ fn old_protocol_requests_are_still_understood() {
     assert!(!supports_protocol("2.0"));
     assert!(!supports_protocol("1"));
 }
+
+#[test]
+fn label_appearance_is_available_to_outline_only_renderers() {
+    let mut ws = fixture();
+    for view in ["mindnode", "label"] {
+        let mut create = node(view, "min-1", "y", auto());
+        create["payload"] = json!({ "view": { "type": view }, "title": "Status",
+            "config": { "font_size": 24, "icon": "star", "background_image": "https://example.org/card.png", "prop": "status", "branch_color": "#acd123" } });
+        ws.ok(json!([create]));
+        let outline = outline_of(&ws, view);
+        assert_eq!(outline["config"], json!({ "font_size": 24, "icon": "star", "background_image": "https://example.org/card.png" }));
+        assert_eq!(outline["branch_color"], "#acd123");
+    }
+}

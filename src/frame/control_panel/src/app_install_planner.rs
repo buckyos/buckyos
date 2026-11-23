@@ -121,6 +121,16 @@ fn validate_permission_selection(app_doc: &AppDoc, install_params: &InstallParam
         }
     }
 
+    let has_share = |items: &[buckyos_api::PermissionItem], name: &str| items.iter().any(|p| p.scope_path == name);
+    for items in [&app_doc.permissions, &install_params.permissions] {
+        if has_share(items, buckyos_api::SHARE_OPEN_PERMISSION) && !has_share(items, buckyos_api::SHARE_DIRECTED_PERMISSION) {
+            issues.push("Open invitations require directed invitations".to_string());
+        }
+        if items.iter().any(|p| p.required && matches!(p.scope_path.as_str(), buckyos_api::SHARE_DIRECTED_PERMISSION | buckyos_api::SHARE_OPEN_PERMISSION)) {
+            issues.push("Resource invitation permissions must be optional".to_string());
+        }
+    }
+
     for required in app_doc.permissions.iter().filter(|item| item.required) {
         if !install_params
             .permissions

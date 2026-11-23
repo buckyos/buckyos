@@ -445,9 +445,20 @@ impl SystemConfigBuilder {
         } else {
             None
         };
+        if let Some(input) = self.entries.get("services/aicc/settings") {
+            anyhow::ensure!(
+                serde_json::from_str::<buckyos_api::StoredAiccSettings<Value>>(input).is_ok(),
+                "invalid services/aicc/settings in the scheduler boot template: \
+                 expected a JSON object with schema buckyos.aicc.settings.v1"
+            );
+            return Ok(self);
+        }
         let settings =
             build_aicc_settings_with_endpoints(config, sn_ai_provider_endpoints.as_ref());
-        self.insert_json_if_absent("services/aicc/settings", &settings)?;
+        self.insert_json(
+            "services/aicc/settings",
+            &buckyos_api::StoredAiccSettings::V1(settings),
+        )?;
         Ok(self)
     }
 
@@ -956,6 +967,7 @@ impl TryFrom<&Value> for StartConfigSummary {
     type Error = anyhow::Error;
 
     fn try_from(value: &Value) -> Result<Self> {
+        buckyos_api::validate_start_config_schema(value).map_err(anyhow::Error::msg)?;
         let owner_document: OwnerDocument = serde_json::from_value(
             value
                 .get("owner_document")
@@ -1079,6 +1091,7 @@ mod beta22_tests {
 
     fn start_config() -> StartConfigSummary {
         StartConfigSummary::from_value(&json!({
+            "schema": buckyos_api::START_CONFIG_SCHEMA,
             "user_name": "alice",
             "admin_password_hash": "hashed",
             "owner_document": {
@@ -1216,6 +1229,7 @@ mod beta22_tests {
     #[test]
     fn start_config_reads_owner_telegram_account_id() {
         let config = StartConfigSummary::from_value(&json!({
+            "schema": buckyos_api::START_CONFIG_SCHEMA,
             "user_name": "alice",
             "admin_password_hash": "hashed",
             "owner_document": start_config().owner_document,
@@ -1234,10 +1248,37 @@ mod beta22_tests {
         assert_canonical_aicc_settings(&settings);
     }
 
+    #[tokio::test]
+    async fn aicc_boot_override_requires_the_explicit_schema_before_writing_system_config() {
+        let key = "services/aicc/settings";
+        let example = include_str!("../../../dev_configs/aicc.json");
+        let mut builder = SystemConfigBuilder::new(HashMap::from([(key.into(), example.into())]));
+        builder.add_aicc(&start_config(), None).await.unwrap();
+        assert_eq!(builder.entries[key], example);
+        for invalid in [
+            r#"{"schema":"buckyos.aicc.settings.v2","providers":[]}"#,
+            r#"{"providers":[]}"#,
+            r#"{"providers":["not-for-logs"]"#,
+        ] {
+            let mut builder =
+                SystemConfigBuilder::new(HashMap::from([(key.into(), invalid.into())]));
+            let error = builder
+                .add_aicc(&start_config(), None)
+                .await
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains(key));
+            assert!(error.contains("buckyos.aicc.settings.v1"));
+            assert!(!error.contains("not-for-logs"));
+        }
+    }
+
     #[test]
     fn checked_in_aicc_dev_and_rootfs_settings_are_canonical() {
         let dev: Value = serde_json::from_str(include_str!("../../../dev_configs/aicc.json"))
             .expect("dev AICC settings must be valid JSON");
+        let buckyos_api::StoredAiccSettings::V1(dev) = serde_json::from_value(dev).unwrap();
         assert_canonical_aicc_settings(&dev);
 
         let rootfs: toml::Value = toml::from_str(include_str!(
@@ -1247,8 +1288,8 @@ mod beta22_tests {
         let raw = rootfs["services/aicc/settings"]
             .as_str()
             .expect("rootfs boot sample must contain AICC settings");
-        let settings: Value =
-            serde_json::from_str(raw).expect("rootfs AICC settings must contain valid JSON");
+        let buckyos_api::StoredAiccSettings::V1(settings) = serde_json::from_str(raw)
+            .expect("rootfs AICC settings must match the persisted schema");
         assert_canonical_aicc_settings(&settings);
     }
 

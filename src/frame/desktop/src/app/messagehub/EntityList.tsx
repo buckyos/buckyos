@@ -124,9 +124,9 @@ function hasDrilldownChildren(entity: Entity): boolean {
 }
 
 function EntityActivityTime({ time }: { time: number }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const now = useMessageHubClock()
-  return <time title={time ? new Date(time).toLocaleString() : undefined}>{relativeActivity(time, now, t('messagehub.now'))}</time>
+  return <time title={time ? new Date(time).toLocaleString(locale) : undefined}>{relativeActivity(time, now, t('messagehub.now'), locale)}</time>
 }
 
 function getEntityTypeLabel(type: EntityType, t: (key: string, fallback: string) => string) {
@@ -142,7 +142,7 @@ function getEntityTypeLabel(type: EntityType, t: (key: string, fallback: string)
   }
 }
 
-function getChildrenSections(entity: Entity): Array<EntityChildrenSection & { items: Entity[] }> {
+function getChildrenSections(entity: Entity, t: ReturnType<typeof useI18n>['t']): Array<EntityChildrenSection & { items: Entity[] }> {
   const children = entity.children ?? []
   if (children.length === 0) {
     return []
@@ -165,7 +165,7 @@ function getChildrenSections(entity: Entity): Array<EntityChildrenSection & { it
     return [
       {
         id: `${entity.id}-children`,
-        title: 'Items',
+        title: t('messagehub.entity.items'),
         childIds: children.map((child) => child.id),
         items: children,
       },
@@ -180,7 +180,7 @@ function getChildrenSections(entity: Entity): Array<EntityChildrenSection & { it
     ...configuredSections,
     {
       id: `${entity.id}-more`,
-      title: 'More',
+      title: t('messagehub.entity.more'),
       childIds: remainingChildren.map((child) => child.id),
       items: remainingChildren,
     },
@@ -605,7 +605,7 @@ function DrilldownPanel({
   onSelectEntity: (id: string) => void
 }) {
   const { t } = useI18n()
-  const sections = getChildrenSections(entity)
+  const sections = getChildrenSections(entity, t)
   const children = entity.children ?? []
   const unreadTotal = countUnread(children)
 

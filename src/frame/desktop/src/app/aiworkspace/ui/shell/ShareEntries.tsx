@@ -5,13 +5,13 @@
  * the entry. Ways the Zone switched off stay on the entry but are marked; the Control Panel says which
  * (`auth.entry.describe`), and when it cannot be asked the marks are simply missing. */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { EntryMethod } from 'buckyos'
 import { describeEntry } from '../../../../api/sso'
 import { unwrap, type AiwsClient } from '../../api/client'
 import { describeError } from '../../api/session'
 import type { Capability, ShareEntry } from '../../api/types'
-import { entryUrl } from '../../links'
+import { entryUrl, workspaceIdOfHost } from '../../links'
 import { useLoad } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { useAcl, useAclRead } from '../permissions/aclData'
@@ -20,7 +20,8 @@ import { PRESETS } from '../sources/presets'
 
 type Methods = ShareEntry['methods']
 
-const METHODS: readonly { key: EntryMethod; label: string }[] = [
+const METHODS: readonly { key: keyof Methods; label: string }[] = [
+  { key: 'oauth', label: 'aiworkspace.shell.share.method.oauth' },
   { key: 'guest', label: 'aiworkspace.shell.share.method.guest' },
   { key: 'password', label: 'aiworkspace.shell.share.method.password' },
   { key: 'self_register', label: 'aiworkspace.shell.share.method.selfRegister' },
@@ -55,7 +56,10 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
   const { t, dateTime } = useAiwsText()
   const { api } = useAcl()
   const [tick, setTick] = useState(0)
-  const [methods, setMethods] = useState<Methods>({ guest: true, password: true, self_register: false, did_login: false })
+  const [methods, setMethods] = useState<Methods>({ guest: false, password: true, self_register: false, did_login: true, oauth: true })
+  const [audience, setAudience] = useState<'directed' | 'open'>('directed')
+  const [recipient, setRecipient] = useState('')
+  const attempt = useRef<{input:string; id:string; expiry?:number} | null>(null)
   const [target, setTarget] = useState('commenter')
   const [expiry, setExpiry] = useState('')
   const [maxJoins, setMaxJoins] = useState('')
@@ -82,7 +86,9 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
       .catch((error: unknown) => setMessage({ kind: 'error', text: t(failedKey, { error: describeError(error) }) }))
       .finally(() => { setBusy(false); setTick((n) => n + 1) })
   }
-  const offered = METHODS.some((m) => methods[m.key])
+  const guestOnly = methods.guest && !METHODS.some(m=>m.key!=='guest' && methods[m.key])
+  const offered = METHODS.some((m) => methods[m.key]) && (guestOnly || audience === 'open' || !!recipient.trim())
+  const linkFor = (entry: ShareEntry) => entry.share_url || (entry.methods.guest ? entryUrl(entry.entry_id) : '')
   const max = maxJoins.trim() === '' ? null : Number(maxJoins)
   const maxOk = max === null || (Number.isInteger(max) && max >= 1 && max <= 100_000)
   const create = () => run('aiworkspace.shell.share.entryCreateFailed', async () => {
@@ -99,11 +105,25 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
     }
     const days = Number(expiry)
     const expires_at = expiry ? Math.floor(Date.now() / 1000) + days * 86400 : undefined
-    const entry = unwrap(await client.wsCreateEntry({ workspace_id: workspaceId }, { group_id: groupId, methods, ...(expires_at ? { expires_at } : {}), ...(max !== null ? { max_joins: max } : {}) })).entry
-    return (await copyLink(entryUrl(entry.entry_id))) ? t('aiworkspace.shell.share.entryCreated') : t('aiworkspace.shell.share.entryCreatedManual')
+    const args = { group_id: groupId, methods, ...(expires_at ? { expires_at } : {}), ...(max !== null ? { max_joins: max } : {}) }
+    const selection = recipient.trim()
+    const email = audience === 'directed' && selection.includes('@') && !selection.startsWith('did:')
+    const input = JSON.stringify([workspaceId,groupId,methods,audience,selection,expiry,max,window.location.href])
+    if (attempt.current?.input !== input) attempt.current = {input,id:crypto.randomUUID(),expiry:expires_at}
+    if (attempt.current.expiry) args.expires_at=attempt.current.expiry
+    const entry = guestOnly ? unwrap(await client.wsCreateEntry({ workspace_id: workspaceId }, args)).entry :
+      unwrap(await client.wsIssueShare({workspace_id:workspaceId}, {...args,request_id:attempt.current.id,
+        audience: audience === 'open' ? {kind:'open'} : {kind:'directed',...(email ? {} : {did:selection})},
+        ...(email ? {recipient_email:{source_id:'google',email:selection}} : {}),
+        ...(workspaceIdOfHost() === workspaceId ? {return_path:window.location.pathname + window.location.search + window.location.hash} : {}),
+      })).entry
+    const url=linkFor(entry)
+    if (!url) throw new Error(t('aiworkspace.shell.share.unavailable'))
+    attempt.current=null
+    return (await copyLink(url)) ? t('aiworkspace.shell.share.entryCreated') : t('aiworkspace.shell.share.entryCreatedManual')
   })
   const copyEntry = (entry: ShareEntry) => {
-    void copyLink(entryUrl(entry.entry_id)).then((copied) => setMessage({ kind: 'info', text: copied ? t('aiworkspace.shell.share.entryCopied') : t('aiworkspace.shell.share.copyManually') }))
+    void copyLink(linkFor(entry)).then((copied) => setMessage({ kind: 'info', text: copied ? t('aiworkspace.shell.share.entryCopied') : t('aiworkspace.shell.share.copyManually') }))
   }
   const close = (entry: ShareEntry) => run('aiworkspace.shell.share.entryCloseFailed', async () => {
     const closed = unwrap(await client.wsCloseEntry({ workspace_id: workspaceId }, entry.entry_id, removeMembers))
@@ -117,11 +137,23 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
           <legend>{t('aiworkspace.shell.share.entryMethods')}</legend>
           {METHODS.map((m) => (
             <label key={m.key} className="aiws-share-entry-option">
-              <input type="checkbox" checked={methods[m.key]} data-testid={`aiws-share-entry-${m.key}`} onChange={(event) => setMethods({ ...methods, [m.key]: event.target.checked })} />
+              <input type="checkbox" checked={methods[m.key]} data-testid={`aiws-share-entry-${m.key}`} onChange={(event) => {
+                setMethods({...methods,[m.key]:event.target.checked})
+                if (m.key==='guest' && event.target.checked) setAudience('open')
+              }} />
               <span>{t(m.label)}</span>
             </label>
           ))}
         </fieldset>
+        {!guestOnly && <div className="aiws-share-entry-create-row">
+          <label>{t('aiworkspace.shell.share.audience')}<select data-testid="aiws-share-audience" value={audience} onChange={e => {
+            setAudience(e.target.value as 'directed'|'open')
+            if (e.target.value==='directed') setMethods({...methods,guest:false})
+          }}>
+            <option value="directed">{t('aiworkspace.shell.share.directed')}</option><option value="open">{t('aiworkspace.shell.share.open')}</option>
+          </select></label>
+          {audience === 'directed' && <label>{t('aiworkspace.shell.share.recipient')}<input data-testid="aiws-share-recipient" required value={recipient} onChange={e=>setRecipient(e.target.value)} /></label>}
+        </div>}
         {!offered && <div className="aiws-muted">{t('aiworkspace.shell.share.entryMethodRequired')}</div>}
         <div className="aiws-share-entry-create-row">
           <label>{t('aiworkspace.perm.share.target')}
@@ -164,8 +196,8 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
               <div className="aiws-share-entry-header">
                 <div className="aiws-share-entry-methods">
                   {METHODS.filter((m) => entry.methods[m.key]).map((m) => (
-                    <span key={m.key} className={`aiws-chip${off.includes(m.key) ? ' aiws-chip-warn' : ''}`} data-testid={`aiws-share-entry-method-${m.key}`} data-zone-disabled={off.includes(m.key) ? 'true' : undefined}>
-                      {t(m.label)}{off.includes(m.key) && <> · {t('aiworkspace.shell.share.zoneDisabled')}</>}
+                    <span key={m.key} className={`aiws-chip${off.some((method) => String(method) === m.key) ? ' aiws-chip-warn' : ''}`} data-testid={`aiws-share-entry-method-${m.key}`} data-zone-disabled={off.some((method) => String(method) === m.key) ? 'true' : undefined}>
+                      {t(m.label)}{off.some((method) => String(method) === m.key) && <> · {t('aiworkspace.shell.share.zoneDisabled')}</>}
                     </span>
                   ))}
                   <span className="aiws-muted" data-testid="aiws-share-entry-group">{t('aiworkspace.perm.share.joins', { group: titleOf(entry.group_id) })}</span>
@@ -177,7 +209,7 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
                 <button type="button" data-testid="aiws-share-entry-close" disabled={busy} onClick={() => close(entry)}>{t('aiworkspace.shell.share.entryClose')}</button>
               </div>
               <div className="aiws-share-link-row">
-                <input readOnly aria-label={t('aiworkspace.shell.share.entryLink')} value={entryUrl(entry.entry_id)} data-testid="aiws-share-entry-link" onFocus={(event) => event.target.select()} />
+                <input readOnly aria-label={t('aiworkspace.shell.share.entryLink')} value={linkFor(entry)} data-testid="aiws-share-entry-link" onFocus={(event) => event.target.select()} />
                 <button type="button" data-testid="aiws-share-entry-copy" onClick={() => copyEntry(entry)}>{t('aiworkspace.shell.share.entryCopy')}</button>
               </div>
             </div>

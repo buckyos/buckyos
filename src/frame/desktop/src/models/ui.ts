@@ -1,17 +1,7 @@
 import { z } from 'zod'
+import { supportedLocales } from '../../../../apps/shared/locale'
+export { matchSupportedLocale, supportedLocales, type SupportedLocale } from '../../../../apps/shared/locale'
 
-export const supportedLocales = [
-  'en',
-  'zh-CN',
-  'ja',
-  'ko',
-  'fr',
-  'de',
-  'es',
-  'ar',
-] as const
-
-export type SupportedLocale = (typeof supportedLocales)[number]
 export type ThemeMode = 'light' | 'dark'
 export type RuntimeContainer = 'browser' | 'desktop-app' | 'mobile-app'
 export type FormFactor = 'desktop' | 'mobile'

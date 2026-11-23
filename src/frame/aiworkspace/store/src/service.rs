@@ -7,7 +7,7 @@ use crate::urlsource::SourceRegistry;
 use crate::docdb::db_err;
 use crate::workspace::{random_id, system_clock, Caller, Clock, FailPoint, Workspace};
 use aiworkspace_core::value::format_utc_ms;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use aiworkspace_core::access::Cap;
 use aiworkspace_core::id::{is_prefixed_id, is_workspace_id, workspace_id, WORKSPACE_CODE_SPACE};
 use aiworkspace_core::{Code, Deny, WsError, WsResult};
@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub type WsHandle = Arc<Mutex<Workspace>>;
+type NameIndex = HashMap<(String, String), Vec<String>>;
 
 pub struct Service {
     pub data_dir: PathBuf,
@@ -45,7 +46,7 @@ pub struct Service {
     reserved: Mutex<HashSet<String>>,
     /// `(owner, name) → workspace id` of the named Workspaces (控件机制 TODO G9), built from the folders on first use. Its
     /// lock serializes a lookup with the creation that follows, so one name never makes two Workspaces.
-    names: Mutex<Option<HashMap<(String, String), String>>>,
+    names: Mutex<Option<NameIndex>>,
 }
 
 /// A Workspace id this service will not hand out again until the lease is dropped — by then its folder exists
@@ -237,30 +238,20 @@ impl Service {
         }
     }
 
-    fn register(&self, mut ws: Workspace) -> WsHandle {
-        self.configure(&mut ws);
-        let id = ws.workspace_id.clone();
-        let handle = Arc::new(Mutex::new(ws));
-        self.open.lock().unwrap().insert(id, handle.clone());
-        handle
-    }
-
     /// The single writer of a Workspace. Opens the folder on first use.
     pub fn workspace(&self, id: &str) -> WsResult<WsHandle> {
         if !is_workspace_id(id) {
             return Err(WsError::not_found("workspace not found"));
         }
-        if let Some(h) = self.open.lock().unwrap().get(id) {
-            return Ok(h.clone());
+        let mut open = self.open.lock().unwrap();
+        if let Some(handle) = open.get(id) {
+            return Ok(handle.clone());
         }
-        let ws = Workspace::open(&self.ws_dir(id), self.objects.clone(), self.clock.clone())?;
-        // two racing opens must not create two writers
-        let open = self.open.lock().unwrap();
-        if let Some(h) = open.get(id) {
-            return Ok(h.clone());
-        }
-        drop(open);
-        Ok(self.register(ws))
+        let mut ws = Workspace::open(&self.ws_dir(id), self.objects.clone(), self.clock.clone())?;
+        self.configure(&mut ws);
+        let handle = Arc::new(Mutex::new(ws));
+        open.insert(id.to_string(), handle.clone());
+        Ok(handle)
     }
 
     /// Release the writer of an idle Workspace (its WAL is checkpointed on close).
@@ -280,65 +271,106 @@ impl Service {
     /// `ws.create { name? }`: a name already used by one of the caller's Workspaces is `NAME_CONFLICT`.
     pub fn create_workspace_with(&self, caller: &Caller, title: &str, workspace_id: Option<&str>, name: Option<&str>) -> WsResult<Value> {
         let Some(name) = name else { return self.create_folder(caller, title, workspace_id, None) };
-        require_may_own(caller)?;
-        check_workspace_name(name)?;
+        let key = named_key(caller, name)?;
         let mut names = self.names.lock().unwrap();
         let index = self.name_index(&mut names)?;
-        if let Some(id) = index.get(&(caller.principal.clone(), name.to_string())).filter(|id| self.ws_dir(id).exists()) {
+        if let Some(info) = self.named_workspace(caller, name, index.get(&key).map(Vec::as_slice))? {
             return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("a workspace named {name} already exists"))
-                .with_data(json!({ "workspace_id": id })));
+                .with_data(json!({ "workspace_id": info["workspace_id"] })));
         }
         let info = self.create_folder(caller, title, workspace_id, Some(name))?;
-        index.insert((caller.principal.clone(), name.to_string()), info["workspace_id"].as_str().unwrap_or_default().to_string());
+        index.insert(key, vec![info["workspace_id"].as_str().unwrap().to_string()]);
         Ok(info)
     }
 
-    /// `ws.ensure`: the caller's Workspace of that name, created (titled `title`, else the name) when it has none.
-    /// Concurrent calls for one name create one Workspace.
-    pub fn ensure_workspace(&self, caller: &Caller, name: &str, title: Option<&str>) -> WsResult<Value> {
-        require_may_own(caller)?;
-        check_workspace_name(name)?;
+    /// Lookup never creates a workspace. Missing, inaccessible and ambiguous names are distinct outcomes.
+    pub fn lookup_workspace(&self, caller: &Caller, name: &str) -> WsResult<Value> {
+        let key = named_key(caller, name)?;
         let mut names = self.names.lock().unwrap();
         let index = self.name_index(&mut names)?;
-        let key = (caller.principal.clone(), name.to_string());
-        if let Some(id) = index.get(&key).cloned() {
-            if self.ws_dir(&id).exists() {
-                let handle = self.workspace(&id)?;
-                let ws = handle.lock().unwrap();
-                return Ok(json!({ "ok": true, "workspace_id": id, "name": name, "title": ws.title(), "epoch": ws.epoch, "head_seq": ws.head_seq, "created": false }));
+        match self.named_workspace(caller, name, index.get(&key).map(Vec::as_slice))? {
+            Some(mut info) => {
+                info["found"] = json!(true);
+                Ok(info)
             }
-            index.remove(&key);
+            None => Ok(json!({ "ok": true, "found": false })),
+        }
+    }
+
+    /// Concurrent calls from the account and its agents create one workspace under the persisted owner's name.
+    pub fn ensure_workspace(&self, caller: &Caller, name: &str, title: Option<&str>) -> WsResult<Value> {
+        let key = named_key(caller, name)?;
+        let mut names = self.names.lock().unwrap();
+        let index = self.name_index(&mut names)?;
+        if let Some(mut info) = self.named_workspace(caller, name, index.get(&key).map(Vec::as_slice))? {
+            info["created"] = json!(false);
+            return Ok(info);
         }
         let mut info = self.create_folder(caller, title.unwrap_or(name), None, Some(name))?;
-        index.insert(key, info["workspace_id"].as_str().unwrap_or_default().to_string());
+        index.insert(key, vec![info["workspace_id"].as_str().unwrap().to_string()]);
         info["created"] = json!(true);
         Ok(info)
     }
 
-    /// The name index, read from every Workspace's `local.sqlite` (`owner`, `name`) the first time it is needed.
-    fn name_index<'a>(&self, names: &'a mut Option<HashMap<(String, String), String>>) -> WsResult<&'a mut HashMap<(String, String), String>> {
+    fn named_workspace(&self, caller: &Caller, name: &str, ids: Option<&[String]>) -> WsResult<Option<Value>> {
+        let Some(ids) = ids else { return Ok(None) };
+        if ids.len() != 1 {
+            let mut conflict = WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", "multiple workspaces have this name; the owner must select one");
+            // Only the actual owner gets identifiers that can be used to resolve the conflict.
+            if matches!(caller.class, crate::CallerClass::Account { restricted: false, .. }) {
+                conflict = conflict.with_data(json!({ "workspace_ids": ids }));
+            }
+            return Err(conflict);
+        }
+        let handle = self.workspace(&ids[0])?;
+        let ws = handle.lock().unwrap();
+        ws.require_ws(caller, Cap::Read)?;
+        Ok(Some(json!({ "ok": true, "workspace_id": ws.workspace_id, "name": name, "title": ws.title(), "epoch": ws.epoch, "head_seq": ws.head_seq })))
+    }
+
+    /// The owner keeps one legacy duplicate's name. Each other copy retains its former name as provenance outside the name index.
+    /// Holding the name lock until the last delete makes the operation safely resumable after a restart.
+    pub fn select_workspace_name(&self, caller: &Caller, name: &str, id: &str) -> WsResult<Value> {
+        let key = named_key(caller, name)?;
+        if !matches!(caller.class, crate::CallerClass::Account { restricted: false, .. }) {
+            return Err(WsError::sub(Code::PermissionDenied, "OWNER_ONLY", "the signed-in owner must select the named workspace"));
+        }
+        let mut names = self.names.lock().unwrap();
+        let index = self.name_index(&mut names)?;
+        let ids = index.get(&key).filter(|ids| ids.iter().any(|i| i == id))
+            .ok_or_else(|| WsError::not_found("workspace does not have this name for its owner"))?.clone();
+        for other in ids.iter().filter(|i| *i != id) {
+            let handle = self.workspace(other)?;
+            let ws = handle.lock().unwrap();
+            ws.local.execute("UPDATE local_meta SET key = 'former_name' WHERE key = 'name' AND value = ?1", [name]).map_err(db_err)?;
+            index.get_mut(&key).unwrap().retain(|i| i != other);
+        }
+        Ok(json!({ "ok": true, "workspace_id": id, "name": name }))
+    }
+
+    /// Keep every owner/name match on rebuild. A legacy collision affects only the conflicting key.
+    fn name_index<'a>(&self, names: &'a mut Option<NameIndex>) -> WsResult<&'a mut NameIndex> {
         if names.is_none() {
-            let mut index = HashMap::new();
+            let mut index = NameIndex::new();
             for id in self.workspace_ids()? {
                 let path = self.ws_dir(&id).join("local.sqlite");
-                let Ok(local) = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) else { continue };
-                let meta = |key: &str| local.query_row("SELECT value FROM local_meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).ok();
-                if let (Some(owner), Some(name)) = (meta("owner"), meta("name")) {
-                    index.insert((owner, name), id);
+                let local = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(db_err)?;
+                let key = local.query_row("SELECT o.value, n.value FROM local_meta o, local_meta n WHERE o.key = 'owner' AND n.key = 'name'", [],
+                    |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(db_err)?;
+                if let Some(key) = key {
+                    index.entry(key).or_default().push(id);
                 }
+            }
+            for ids in index.values_mut() {
+                ids.sort_unstable();
             }
             *names = Some(index);
         }
         Ok(names.as_mut().unwrap())
     }
 
-    /// Forget the name index (a Workspace went or was replaced); the next use reads the folders again.
-    fn names_changed(&self) {
-        *self.names.lock().unwrap() = None;
-    }
-
     fn create_folder(&self, caller: &Caller, title: &str, workspace_id: Option<&str>, name: Option<&str>) -> WsResult<Value> {
-        require_may_own(caller)?;
+        require_may_create(caller)?;
         let lease = match workspace_id {
             Some(id) if is_workspace_id(id) => None,
             Some(_) => return Err(WsError::invalid_op("workspace_id must be ws_ + YYMM + 4 base36 chars")),
@@ -415,6 +447,9 @@ impl Service {
             {
                 let mut item = json!({ "workspace_id": name, "title": ws.title(), "head_seq": ws.head_seq, "epoch": ws.epoch,
                                        "capabilities": access.ws_caps.names() });
+                if access.is_owner() {
+                    item["owner"] = json!(true);
+                }
                 if let Ok(Some(n)) = ws.name() {
                     item["name"] = json!(n);
                 }
@@ -454,7 +489,7 @@ impl Service {
         let mut names = self.names.lock().unwrap();
         self.trash(id)?;
         if let Some(index) = names.as_mut() {
-            index.retain(|_, v| v != id);
+            index.retain(|_, ids| { ids.retain(|i| i != id); !ids.is_empty() });
         }
         Ok(json!({ "ok": true }))
     }
@@ -465,7 +500,7 @@ impl Service {
     /// nothing inside the package grants anything). `design`: the permission design a `new` import starts with (the
     /// service read it from a source the caller manages; R12).
     pub fn import(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool) -> WsResult<Value> {
-        require_may_own(caller)?;
+        require_may_create(caller)?;
         let pkg = open_package(package, &self.objects)?;
         let m = &pkg.manifest;
         let snapshot = m["snapshot"].as_str().ok_or_else(|| WsError::invalid_schema("manifest.snapshot missing"))?;
@@ -544,6 +579,7 @@ impl Service {
                            "semantics": semantics, "replaced": existing, "missing": m["missing"], "external_sources": m["external_sources"],
                            "permission_design": design });
         drop(ws);
+        let mut names = self.names.lock().unwrap();
         if existing {
             let handle = self.workspace(&id)?;
             let mut active = handle.lock().unwrap();
@@ -562,7 +598,7 @@ impl Service {
                                 DELETE FROM acl_macro_bindings; INSERT INTO acl_macro_bindings SELECT * FROM old.acl_macro_bindings; \
                                 DELETE FROM acl_audit; INSERT INTO acl_audit SELECT * FROM old.acl_audit; \
                                 INSERT INTO share_entries SELECT * FROM old.share_entries; \
-                                INSERT OR REPLACE INTO local_meta SELECT * FROM old.local_meta; DETACH DATABASE old;")
+                                INSERT OR REPLACE INTO local_meta SELECT * FROM old.local_meta WHERE key NOT GLOB 'contacts.*' AND key NOT GLOB 'source.*' AND key NOT GLOB 'source_refreshed:*'; DETACH DATABASE old;")
                 .map_err(crate::docdb::db_err)?;
             drop(conn);
             let old_doc = self.ws_dir(&id).join("doc.sqlite");
@@ -599,7 +635,7 @@ impl Service {
             std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         }
         // a restore over a Workspace keeps its name (its `local_meta` moved over); a new or restored folder has none
-        self.names_changed();
+        *names = None;
         Ok(info)
     }
 
@@ -609,7 +645,7 @@ impl Service {
     /// `manage` on the source the permission design comes along (R12); entries on entities left out are dropped and
     /// reported. `cloned_from` is provenance only.
     pub fn clone_workspace(&self, caller: &Caller, source_id: &str) -> WsResult<Value> {
-        require_may_own(caller)?;
+        require_may_create(caller)?;
         let (cp, title, design) = {
             let handle = self.workspace(source_id)?;
             let ws = handle.lock().unwrap();
@@ -664,7 +700,7 @@ impl Service {
     /// (the path of `ws.import new`: fresh id, rich texts as new lineages), then one internal Commit for its parameters
     /// and the tables it starts empty. Two creations are two independent Workspaces.
     pub fn create_from_template(&self, caller: &Caller, title: Option<&str>, tf: &crate::template::TemplateFiles, params: &serde_json::Map<String, Value>) -> WsResult<Value> {
-        require_may_own(caller)?;
+        require_may_create(caller)?;
         let root = tf.content_root()?;
         tf.load_into(&self.objects)?;
         let lease = self.allocate_workspace_id()?;
@@ -720,6 +756,12 @@ pub fn is_workspace_name(s: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
 }
 
+fn named_key(caller: &Caller, name: &str) -> WsResult<(String, String)> {
+    require_may_own(caller)?;
+    check_workspace_name(name)?;
+    Ok((caller.owner_principal().to_string(), name.to_string()))
+}
+
 fn check_workspace_name(name: &str) -> WsResult<()> {
     if !is_workspace_name(name) {
         return Err(WsError::invalid_op("name must match ^[a-z0-9][a-z0-9._-]{0,63}$"));
@@ -730,6 +772,15 @@ fn check_workspace_name(name: &str) -> WsResult<()> {
 pub fn require_may_own(caller: &Caller) -> WsResult<()> {
     if !caller.may_own() {
         return Err(WsError::refused(Code::PermissionDenied, Deny::SessionKindNotAllowed, "this kind of account cannot own workspaces"));
+    }
+    Ok(())
+}
+
+
+fn require_may_create(caller: &Caller) -> WsResult<()> {
+    require_may_own(caller)?;
+    if caller.agent_read_only {
+        return Err(WsError::denied("a read-only agent cannot create a workspace"));
     }
     Ok(())
 }

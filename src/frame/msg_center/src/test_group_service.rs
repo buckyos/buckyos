@@ -262,6 +262,23 @@ async fn create(c: &MessageCenter, config: Value) -> Value {
     .await
     .unwrap()
 }
+/// Exercise the group service's side of registered visitor admission before opening a ticket.
+async fn accept_visitor_share(c: &MessageCenter, visitor: &DID) {
+    let secret = "resource-scoped-test-credential";
+    let mut tx = c.groups.begin(&group()).await.unwrap();
+    tx.state.resource_shares.insert("visit".into(), GroupResourceShare {
+        creator: tx.state.owner.clone(),
+        request: json!({"audience":{"kind":"directed","did":visitor}}),
+        secret: secret.into(), url: None, admitted: Default::default(),
+    });
+    tx.commit().await.unwrap();
+    for operation in ["prepare","commit"] {
+        let args = json!({"resource_id":format!("{}~visit",group().to_string()),"callback_secret":secret,
+                          "operation":operation, "did":visitor,"auth_method":"password"});
+        assert_eq!(c.resource_share_callback(&args).await.unwrap()["ok"],true);
+    }
+}
+
 /// Invite `d` and accept explicitly: without a contact relationship the
 /// invitee is a stranger to the inviter, so nothing is accepted automatically.
 async fn join(c: &MessageCenter, d: &DID) -> Value {
@@ -465,7 +482,7 @@ async fn session_isolation_guests_and_explicit_members_survive_restart() {
 #[tokio::test]
 async fn from_join_history_has_gaps_and_old_session_exclusions_expire_with_epoch() {
     let (c, _tmp, _) = center().await;
-    create(&c, json!({})).await;
+    create(&c, json!({"default_session":{"history_before_join":0}})).await;
     let before = send(&c, &owner(), None, "before joining", 100).await;
     join(&c, &member()).await;
     let first = send(&c, &owner(), None, "first epoch", 200).await;
@@ -529,6 +546,91 @@ async fn from_join_history_has_gaps_and_old_session_exclusions_expire_with_epoch
         g.messages[&late.gen_obj_id().0.to_string()].accepted_at_ms
             >= g.messages[&first.gen_obj_id().0.to_string()].accepted_at_ms
     );
+}
+
+#[tokio::test]
+async fn new_participants_see_the_configured_number_of_earlier_messages() {
+    let (c, _tmp, _) = center().await;
+    let created = create(&c, json!({})).await;
+    let g = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(g.rules(None).unwrap().history_before_join, DEFAULT_HISTORY_BEFORE_JOIN);
+    assert_eq!(DEFAULT_HISTORY_BEFORE_JOIN, 32);
+    let config = |revision: &Value, key: &str, keep: u32| {
+        json!({"expected_revision":revision,"idempotency_key":key,
+               "patch":{"default_session":{"history_before_join":keep}}})
+    };
+    let three = call(&c, &owner(), "group.apply_config", config(&created["revision"], "three", 3))
+        .await
+        .unwrap();
+    let readable = |d: DID, msg: MsgObject| {
+        let c = &c;
+        async move { c.authorize_group_message(&actor(d), &msg.gen_obj_id().0).await.is_ok() }
+    };
+    let mut earlier = vec![];
+    for i in 0..6 {
+        earlier.push(send(&c, &owner(), None, &format!("earlier {i}"), 100 + i).await);
+    }
+    // Only standard text messages take a slot: not a reaction, a retraction,
+    // the retracted message, a file (even with a caption), a card, a voice
+    // note or the group's own events. So the 3 reach back to the third message.
+    for (rel, target, text) in [
+        (MsgRelType::Reaction, &earlier[5], "+1"),
+        (MsgRelType::Redact, &earlier[3], "retract"),
+    ] {
+        let mut msg = message(&owner(), None, text, 200);
+        let mut relation = MsgRelation::new(rel.clone(), target.gen_obj_id().0);
+        relation.key = (rel == MsgRelType::Reaction).then(|| "👍".to_owned());
+        msg.relates_to = Some(relation);
+        assert!(c.accept_group_message(&actor(owner()), msg, None).await.unwrap().ok);
+    }
+    let file = ndn_lib::build_named_object_by_json("file", &json!({"name":"photo.jpg"})).0;
+    let attached = |text: &str, created: u64| {
+        let mut msg = message(&owner(), None, text, created);
+        msg.content.refs.push(ndn_lib::RefItem {
+            role: ndn_lib::RefRole::Output,
+            target: ndn_lib::RefTarget::DataObj { obj_id: file.clone(), uri_hint: None },
+            label: Some("photo.jpg".into()),
+        });
+        msg
+    };
+    let mut card = message(&owner(), None, "pick one", 210);
+    card.content.machine = Some(ndn_lib::MachineContent { intent: Some("poll".into()), ..Default::default() });
+    let mut voice = attached("[voice]", 220);
+    voice.meta.insert("voice".into(), json!({"duration_ms":1200}));
+    for msg in [attached("photo with a caption", 230), card, voice] {
+        assert!(c.accept_group_message(&actor(owner()), msg, None).await.unwrap().ok);
+    }
+    join(&c, &member()).await;
+    assert!(!readable(member(), earlier[1].clone()).await);
+    assert!(readable(member(), earlier[2].clone()).await);
+    assert!(readable(member(), earlier[5].clone()).await);
+
+    // Rejoining counts again from the new join, gap included.
+    call(&c, &member(), "group.leave", json!({})).await.unwrap();
+    let away = send(&c, &owner(), None, "away", 300).await;
+    join(&c, &member()).await;
+    assert!(readable(member(), away.clone()).await);
+
+    // A new setting applies to later joins only; a Session may set its own.
+    call(&c, &owner(), "group.create_session", json!({"session_id":"quiet","rule_overrides":{"history_before_join":0}}))
+        .await
+        .unwrap();
+    let quiet = send(&c, &owner(), Some("quiet"), "before guest", 400).await;
+    call(&c, &owner(), "group.apply_config", config(&three["revision"], "one", 1))
+        .await
+        .unwrap();
+    let last = send(&c, &owner(), None, "last before guest", 500).await;
+    join(&c, &guest()).await;
+    assert!(readable(guest(), last).await);
+    assert!(!readable(guest(), away).await);
+    assert!(!readable(guest(), quiet).await);
+    assert!(readable(member(), earlier[2].clone()).await);
+
+    // Metadata stored before the text check still counts.
+    let g = c.groups.load(&group()).await.unwrap().unwrap();
+    let mut stored = serde_json::to_value(&g.messages[&earlier[0].gen_obj_id().0.to_string()]).unwrap();
+    stored.as_object_mut().unwrap().remove("standard_text");
+    assert!(serde_json::from_value::<MessageMeta>(stored).unwrap().standard_text);
 }
 
 #[tokio::test]
@@ -934,6 +1036,10 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
     create(&host, json!({})).await;
     join(&host, &member()).await;
     let original = send(&host, &owner(), None, "secret", 1).await;
+    // A pre-push host also kept the plaintext in a message change's action.
+    let mut legacy = host.groups.begin(&group()).await.unwrap();
+    legacy.state.changes.last_mut().unwrap().data["action"] = json!("secret");
+    legacy.commit().await.unwrap();
     let (url, server) = host_fixture(host.clone()).await;
     let member_route = joined_route(url.clone(), &member());
     let owner_route = joined_route(url, &owner());
@@ -952,6 +1058,10 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
             .unwrap()
             .ok
     );
+    let page = host.group_changes(&actor(member()), &group(), None, 100).await.unwrap();
+    let original_change = page["items"].as_array().unwrap().iter()
+        .find(|c| c["message"]["obj_id"] == json!(original.gen_obj_id().0)).unwrap();
+    assert!(original_change["message"]["redacted"] == true && original_change["action"].is_null());
     local.sync_joined_group(&member_route).await.unwrap();
     assert!(local
         .groups
@@ -1032,6 +1142,7 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
 async fn guest_requests_are_atomic_idempotent_and_do_not_leak_other_sessions() {
     let (c, _tmp, _) = center().await;
     create(&c, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1,"auth_methods":{"password":true}}},"session_templates":{"tickets":{"membership":{"roles":["owner","admin"]},"rules":{"allow_guests":true}}}})).await;
+    accept_visitor_share(&c, &guest()).await;
     let p = json!({"request_id":"request1"});
     let one = call(&c, &guest(), "group.submit_guest_request", p.clone())
         .await
@@ -1358,6 +1469,7 @@ async fn attachments_require_the_exact_message_context_and_remote_client_policy(
 async fn deleted_guest_sessions_keep_minimal_notifications_and_existing_local_copies() {
     let (host, _htmp, _) = center().await;
     create(&host, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1,"auth_methods":{"password":true}}},"session_templates":{"tickets":{"membership":{"roles":["owner"]},"rules":{"allow_guests":true}}}})).await;
+    accept_visitor_share(&host, &guest()).await;
     let session = call(
         &host,
         &guest(),

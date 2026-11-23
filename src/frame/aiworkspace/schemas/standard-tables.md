@@ -15,7 +15,7 @@ columns). Rules on a standard field that a table lacks are skipped.
 | field_id | type | rule |
 | --- | --- | --- |
 | `title` | text, required | the table's `title_field_id` |
-| `status` | select, required | the option list is the board's columns, in order; option `done` means completed (initial options `todo`, `doing`, `done`) |
+| `status` | select, required | new records take the schema default (initially `todo`) when this field is omitted. The option list is the board's columns, in order; option `done` means completed (initial options `todo`, `doing`, `done`) |
 | `due` | date, nullable | |
 | `order` | text, nullable | an order key (`order_key::check_order_key`): the list / column order, one per record so concurrent moves of different cards do not conflict |
 | `done_at` | datetime, nullable | set when completed |
@@ -23,6 +23,8 @@ columns). Rules on a standard field that a table lacks are skipped.
 
 `ext` keys with a meaning (others are kept as they are): `priority` (`low` \| `normal` \| `high` \| `urgent`), `tags`
 (≤ 32 strings of ≤ 64 characters), `assignee` (string ≤ 256), `reminders` (as on the calendar), `source` (object ≤ 4 KiB).
+
+The add-record form asks only for missing required fields, including hidden fields. A new standard to-do needs only its title when its status has a default.
 
 ## `buckyos.calendar@1`
 
@@ -36,6 +38,8 @@ columns). Rules on a standard field that a table lacks are skipped.
 | `end_date` | date, nullable | an all-day event's last day (inclusive); not before `start_date`; absent when not `all_day` |
 | `status` | select, nullable | `confirmed`, `tentative`, `cancelled` |
 | `ext` | json, nullable | extension fields, see below |
+
+An event has no default start time. The form asks for a title and the start appropriate to the current `all_day` choice.
 
 `ext` keys with a meaning (others are kept):
 

@@ -89,6 +89,37 @@ pub const DEFAULT_RBAC_POLICY: &str = r#"
 p, agent_read_only, obj://config/users/{user}/settings,all,deny
 p, agent_read_only, obj://config/users/{user}/agents/{agent}/key,all,deny
 p, agent_read_only, obj://config/security/*,all,deny
+# Control Panel checks the caller and the expected revision before writing these facts as the service.
+p, system:control-panel, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,allow
+p, system:control-panel, obj://config/users/{user}/(?:resource_bindings|object_aliases)(?:/.*)?,all,allow
+# The reservation proves ownership of an Agent DID. The runtime binding and its enabled flag are checked on each request.
+p, system:aiworkspace, obj://config/services/control_panel/agent_names/{id},^read$,allow
+p, system:aiworkspace, obj://config/users/{user}/agents,^read$,allow
+p, system:aiworkspace, obj://config/users/{user}/agents/{agent}/(?:spec|settings),^read$,allow
+p, app, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, app, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, app, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, agent_read_only, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, agent_read_only, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, agent_read_only, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, agent_read_write, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, agent_read_write, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, agent_read_write, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, frame, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, frame, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, frame, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, system, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, system, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, system, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, kernel, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, kernel, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, kernel, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, users, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, users, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, users, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
+p, admin, obj://config/services/control_panel/owner_(?:operations|records|shares)(?:/.*)?,all,deny
+p, admin, obj://config/users/{user}/resource_bindings(?:/.*)?,all,deny
+p, admin, obj://config/users/{user}/object_aliases(?:/.*)?,^(?:write|update|create|delete)$,deny
 p, agent_read_write, obj://*, all,allow
 p, agent_read_only, obj://*, ^(read|list|query|subscribe)$,allow
 p, system:scheduler, obj://config/system/content_registry,all,allow
@@ -117,6 +148,9 @@ p, frame, obj://config/services/{service}/info,read,allow
 p, frame, obj://config/users*,read,allow
 
 p, app, obj://config/system/content_registry,read,allow
+p, app, obj://config/users/{user}/object_aliases(?:/.*)?,^read$,allow
+p, users, obj://config/users/{users}/object_aliases(?:/.*)?,^read$,allow
+p, admin, obj://config/users/{admin}/object_aliases(?:/.*)?,^read$,allow
 p, app, obj://config/users/{user}/content_defaults,read,allow
 p, users, obj://config/system/content_registry,read,allow
 p, users, obj://config/users/{users}/content_defaults,read|write,allow
@@ -206,6 +240,7 @@ p, frame,obj://msg-center/notify,read|write,allow
 # Resource services ask whether a DID is in an owner's contact group
 # (contact.check_membership, projection included).
 p, system:aiworkspace,obj://msg-center/contact_membership,read,allow
+p, system:aiworkspace,obj://msg-center/owners/{owner}/contacts,^read$,allow
 # Wish runs call AICC on behalf of the workspace owner or the triggering user.
 p, system:aiworkspace,obj://aicc/on_behalf_of,write,allow
 p, system:homestation,obj://msg-center/contact_membership,read,allow
@@ -449,6 +484,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_resource_control_state_requires_the_control_panel_service() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some(
+            "g, alice, admin\ng, eve, users\ng, ood1, ood\ng, app:writer, agent_read_write\ng, app:reader, agent_read_only\ng, app:reader, app",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy).await.unwrap();
+        for key in ["services/control_panel/owner_operations", "services/control_panel/owner_records/r",
+                    "services/control_panel/owner_shares/s", "users/alice/resource_bindings", "users/alice/resource_bindings/calendar"] {
+            let url = format!("obj://config/{key}");
+            for op in ["read", "list", "create", "write", "update", "delete"] {
+                assert!(rbac::enforce("ood1", "system:control-panel", &url, op, None).await, "{key} {op}");
+                for app in ["app:reader", "app:writer", "system:buckycli", "system:aiworkspace"] {
+                    assert!(!rbac::enforce("alice", app, &url, op, None).await, "{app} {key} {op}");
+                    assert!(!rbac::enforce("ood1", app, &url, op, None).await, "{app} {key} {op}");
+                }
+            }
+        }
+        let alias = "obj://config/users/alice/object_aliases/owner.cal";
+        for app in ["app:reader", "app:writer"] {
+            assert!(rbac::enforce("alice", app, alias, "read", None).await);
+            assert!(!rbac::enforce("eve", app, alias, "read", None).await);
+            for op in ["create", "update", "write", "delete"] {
+                assert!(!rbac::enforce("alice", app, alias, op, None).await);
+                assert!(rbac::enforce("ood1", "system:control-panel", alias, op, None).await);
+            }
+        }
+        for key in ["services/control_panel/agent_names/demo", "users/alice/agents", "users/alice/agents/demo/settings", "users/alice/agents/demo/spec"] {
+            let url = format!("obj://config/{key}");
+            assert!(rbac::enforce("ood1", "system:aiworkspace", &url, "read", None).await, "{key}");
+            assert!(!rbac::enforce("ood1", "system:aiworkspace", &url, "write", None).await, "{key}");
+        }
+    }
+
+    #[tokio::test]
     async fn an_app_may_notify_its_user_but_not_read_the_mailbox() {
         let _guard = TEST_LOCK.lock().await;
         let config =
@@ -630,6 +699,17 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
         assert!(rbac::enforce("ood1", "system:homestation", &owner, "read", None).await);
         assert!(!rbac::enforce("ood1", "system:homestation", &owner, "write", None).await);
         assert!(!rbac::enforce("ood1", "system:aiworkspace", &owner, "read", None).await);
+        for did in ["did:bns:alice", "did:bns:bob"] {
+            let mailbox = crate::MailboxAddress::new(name_lib::DID::from_str(did).unwrap(), None).unwrap();
+            assert!(rbac::enforce("ood1", "system:aiworkspace", &mailbox.contacts_resource(), "read", None).await);
+            for action in ["write", "list", "query", "delete", "read-write"] {
+                assert!(!rbac::enforce("ood1", "system:aiworkspace", &mailbox.contacts_resource(), action, None).await);
+            }
+            for suffix in ["sessions", "contacts/did:bns:carol", "nested/contacts", "contacts-extra"] {
+                let resource = format!("{}/{suffix}", mailbox.owner_resource());
+                assert!(!rbac::enforce("ood1", "system:aiworkspace", &resource, "read", None).await);
+            }
+        }
         let own_tags = format!("{}homestation", crate::CONTACT_TAGS_RBAC_RESOURCE_PREFIX);
         let other_tags = format!("{}aiworkspace", crate::CONTACT_TAGS_RBAC_RESOURCE_PREFIX);
         assert!(rbac::enforce("ood1", "system:homestation", &own_tags, "write", None).await);

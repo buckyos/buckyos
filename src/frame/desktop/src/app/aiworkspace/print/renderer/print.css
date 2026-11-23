@@ -49,3 +49,6 @@ body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .aiws-print-table th { background: var(--cp-surface-2-opaque, var(--cp-surface-2)); font-weight: 600; }
 .aiws-print-table td:is([data-type='number'], [data-type='decimal'], [data-type='currency']) { text-align: right; font-variant-numeric: tabular-nums; }
 .aiws-print-table .aiws-pills { flex-wrap: wrap; }
+.aiws-print-table caption { text-align: left; font-size: 16px; font-weight: 600; padding: 4px 6px; }
+.aiws-print-table[data-grid-style='striped'] tr[data-stripe='1'] { background: var(--cp-surface-2); print-color-adjust: exact; }
+.aiws-print-table[data-grid-style='lines'] :is(td, th) { border-width: 0 0 1px; }

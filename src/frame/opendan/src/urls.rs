@@ -2,7 +2,7 @@
 //! `file://<device_id>/<path>` outside the Zone's data, is read through the node runtime the owner registered for
 //! that device; every other URL goes to the object library (`ObjectUrlReader`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_did_object_lib::ObjectUrlReader;
@@ -75,6 +75,16 @@ impl AgentUrlReader {
 
 #[async_trait]
 impl UrlReader for AgentUrlReader {
+    async fn read_alias(
+        &self,
+        ctx: &SessionRuntimeContext,
+        name: &str,
+        cwd: &Path,
+        property: Option<&str>,
+    ) -> Result<Option<UrlContent>, AgentToolError> {
+        self.objects.read_alias(ctx, name, cwd, property).await
+    }
+
     async fn read_url(
         &self,
         ctx: &SessionRuntimeContext,

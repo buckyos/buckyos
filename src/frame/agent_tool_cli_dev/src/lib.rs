@@ -40,7 +40,7 @@ const TOOL_CANCEL_TASK: &str = "cancel_task";
 const TOOL_FINISH_TASK: &str = "finish_task";
 const TOOL_READ_OBJECT: &str = "read";
 const TOOL_XCALL: &str = "xcall";
-const XCALL_USAGE: &str = "xcall <object> <action> [--params <json>] [key=value ...] [--key=value ...] [--config <route.toml>]";
+const XCALL_USAGE: &str = "xcall <alias-or-object-url> <action> [--params <json>] [key=value ...] [--idempotency-key <key>] [--confirm-token <token>] [--trace-id <id>] [--config <route.toml>]";
 const TOOL_AGENT_MEMORY: &str = "agent-memory";
 const TOOL_AGENT_MEMORY_SNAKE: &str = "agent_memory";
 const TOOL_NAMES: [&str; 14] = [
@@ -338,6 +338,17 @@ pub async fn run_process() -> CliRunOutput {
         }
     };
 
+    if let Some(raw) = human_xcall_args(&args, &env) {
+        let root = buckyos_kit::get_buckyos_root_dir();
+        let launcher = root.join("bin").join(if cfg!(windows) { "buckyos.cmd" } else { "buckyos" });
+        match tokio::process::Command::new(launcher).args(["obj","call"]).args(raw).status().await {
+            Ok(status) => return CliRunOutput{exit_code:status.code().unwrap_or(1),stdout:String::new(),stderr:String::new()},
+            Err(_) => return render_object_error_output(Some("xcall"),agent_did_object_lib::AgentDIDObjectError::Business{
+                code:"IDENTITY_UNAVAILABLE".into(),message:"cannot start the installed BuckyOS login client".into(),detail:Json::Null,
+            }),
+        }
+    }
+
     match execute(args, env, None).await {
         Ok(output) => output,
         Err(err) => {
@@ -347,12 +358,61 @@ pub async fn run_process() -> CliRunOutput {
     }
 }
 
+fn human_xcall_args<'a>(args: &'a [OsString], env: &CliRuntimeEnv) -> Option<&'a [OsString]> {
+    if env.has_agent_env
+        || std::env::var_os("BUCKYOS_APP_ID").is_some()
+        || (std::env::var_os("BUCKYOS_APPCLIENT_SESSION_TOKEN").is_some() && std::env::var_os("BUCKYOS_TOOL_ENDPOINT").is_some())
+    {
+        return None;
+    }
+    let name = Path::new(args.first()?).file_stem()?.to_str()?;
+    let raw = if name == "xcall" {
+        &args[1..]
+    } else if name == MAIN_BINARY_NAME && args.get(1).is_some_and(|s| s == "xcall") {
+        &args[2..]
+    } else {
+        return None;
+    };
+    if raw.is_empty()
+        || raw.iter().any(|arg|arg=="--help" || arg=="-h")
+    {
+        return None;
+    }
+    let profile_dir = std::env::var_os("BUCKYOS_TOOL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(|home| PathBuf::from(home).join(".buckyos_tool"))
+        });
+    (profile_dir
+        .is_some_and(|dir| dir.join("config.json").is_file() || dir.join("profiles").is_dir())
+        || [
+            "BUCKYOS_TOOL_ZONE",
+            "BUCKYOS_TOOL_PROFILE",
+            "BUCKYOS_TOOL_IDENTITY",
+            "BUCKYOS_TOOL_ENDPOINT",
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some()))
+    .then_some(raw)
+}
+
 async fn execute(
     args: Vec<OsString>,
     env: CliRuntimeEnv,
     stdin_override: Option<String>,
 ) -> Result<CliRunOutput, AgentToolError> {
-    let parsed = parse_command(&args, &env.current_dir)?;
+    let parsed = match parse_command(&args, &env.current_dir) {
+        Ok(parsed) => parsed,
+        Err(err) if args.iter().take(2).any(|arg| {
+            Path::new(arg).file_stem().is_some_and(|name| name == "xcall")
+        }) => {
+            let mut result = cli_error_result(Some("xcall"), &err);
+            result.details = json!({"error": {"code": "INVALID_PARAMS", "message": err.to_string()}});
+            return Ok(render_cli_output(&result, cli_exit_code_for_error(&err)));
+        }
+        Err(err) => return Err(err),
+    };
     match parsed {
         ParsedCommand::CommandNotFound { command, argv } => {
             // Delegate to `llm_tool_carft` — the intent-engine-bypass scaffold.
@@ -561,7 +621,7 @@ async fn dispatch_object_x_call(
     }
     ensure_zone_runtime().await;
     let runtime = build_object_runtime(env, route_config_path).await?;
-    match runtime.x_call(input).await {
+    match runtime.x_call_in(input, &env.current_dir).await {
         Ok(result) => {
             let exit_code = result.return_code.unwrap_or_else(|| {
                 if result.status == AgentToolStatus::Error {
@@ -582,7 +642,9 @@ async fn dispatch_object_x_call(
 /// Object URLs are read with this process's Zone identity (the session's token in an Agent's shell); without one
 /// the object library reports that there is no Zone here.
 async fn ensure_zone_runtime() {
-    let _ = agent_tool::xllm::ensure_buckyos_runtime().await;
+    if std::env::var_os("BUCKYOS_TOOL_ENDPOINT").is_none() {
+        let _ = agent_tool::xllm::ensure_buckyos_runtime().await;
+    }
 }
 
 async fn build_object_runtime(
@@ -614,9 +676,12 @@ fn render_object_error_output(
     tool_name: Option<&str>,
     err: agent_did_object_lib::AgentDIDObjectError,
 ) -> CliRunOutput {
+    let detail = err.detail();
     let agent_err = object_error_to_agent_tool_error(err);
     let exit_code = cli_exit_code_for_error(&agent_err);
-    render_cli_output(&cli_error_result(tool_name, &agent_err), exit_code)
+    let mut result = cli_error_result(tool_name, &agent_err);
+    result.details = json!({"error":detail});
+    render_cli_output(&result, exit_code)
 }
 
 async fn resolve_content_input(
@@ -828,7 +893,13 @@ fn parse_object_x_call_cli_command(
                 }
             }
             _ => {
-                if let Some((key, value)) = token.split_once('=') {
+                let is_url = token.split_once("://").is_some_and(|(scheme, _)| {
+                    scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                        && scheme.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
+                });
+                if is_url && positionals.is_empty() && object.is_none() {
+                    positionals.push(token.clone());
+                } else if let Some((key, value)) = token.split_once('=') {
                     match key {
                         "object" => object = Some(value.to_string()),
                         "action" => action = Some(value.to_string()),
@@ -2522,7 +2593,7 @@ fn parse_scalar_json_value(raw: &str) -> Json {
 
 fn canonical_object_url_for_cli(raw: &str, current_dir: &Path) -> Result<String, AgentToolError> {
     let raw = raw.trim();
-    if raw.contains("://") {
+    if raw.contains("://") || buckyos_api::object_extensions::object_alias_name(raw) {
         return Ok(raw.to_string());
     }
     let path = resolve_cli_path(raw, current_dir);
@@ -2553,6 +2624,7 @@ fn object_error_to_agent_tool_error(
 ) -> AgentToolError {
     use agent_did_object_lib::AgentDIDObjectError as ObjErr;
     match err {
+        ObjErr::Business{..} => AgentToolError::ExecFailed(err.to_string()),
         ObjErr::InvalidConfig(message)
         | ObjErr::RouteNotFound(message)
         | ObjErr::UnsupportedObjectRef(message)

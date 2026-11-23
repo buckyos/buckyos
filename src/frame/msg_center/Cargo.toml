@@ -9,6 +9,7 @@ authors = ["BuckyOS DAO", "@waterflier"]
 
 
 [dependencies]
+buckyos-sqlite-schema = { workspace = true, features = ["sqlx"] }
 async-trait = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }

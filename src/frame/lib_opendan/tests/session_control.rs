@@ -44,7 +44,7 @@ fn control(key: &str, command: ControlCommand) -> PostedInput {
 }
 
 fn end() -> buckyos_api::AiResponse {
-    tool_call("end", "report", json!({ "report": "done", "is_end": true }))
+    tool_call("end", "report", json!({ "report": "done", "outcome": "succeeded", "is_end": true }))
 }
 
 fn applied(sd: &SessionDir, command: &str) -> Vec<serde_json::Value> {

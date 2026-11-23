@@ -1,5 +1,6 @@
 /* ── Definition detail page ── */
 
+import { useI18n } from '../../../i18n/provider'
 import { useState } from 'react'
 import { Archive, Lock } from 'lucide-react'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
@@ -33,6 +34,7 @@ function issuesByNode(def: WorkflowDefinition): Record<string, AnalysisIssue[]> 
 }
 
 export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
+  const { t } = useI18n()
   const store = useWorkflowStore()
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -41,7 +43,7 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
   if (!def) {
     return (
       <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--cp-muted)' }}>
-        {store.loading ? 'Loading…' : 'Definition not found.'}
+        {store.loading ? t('states.loading') : t('workflow.missingDefinition')}
       </div>
     )
   }
@@ -55,7 +57,7 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
       <div className="flex items-center gap-3 px-5 py-3" style={{ borderBottom: '1px solid var(--cp-border)' }}>
         <div className="min-w-0 flex-1">
           <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--cp-muted)' }}>
-            {def.readOnly ? 'System definition' : 'Definition'}
+            {def.readOnly ? t('workflow.systemDefinition') : t('workflow.definition')}
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
             <span className="truncate">{def.name}</span>
@@ -72,10 +74,10 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
                       : 'var(--cp-muted)',
               }}
             >
-              {def.status}
+              {t(`workflow.status.${def.status}`, def.status)}
             </span>
             <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-              v{def.version} · {def.source} · revision{' '}
+              v{def.version} · {t(`workflow.source.${def.source}`, def.source)} · {t('workflow.revision')}{' '}
               <span className="font-mono" title={def.revision}>{def.revision.slice(0, 12)}</span>
             </span>
           </div>
@@ -88,9 +90,9 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
           <span
             className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] uppercase tracking-wider"
             style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-muted)', border: '1px solid var(--cp-border)' }}
-            title={def.readOnly ? 'Shipped with the system; only a service release changes it.' : 'The WebUI never edits definitions in place.'}
+            title={def.readOnly ? t('workflow.systemReadOnly') : t('workflow.readOnlyHint')}
           >
-            {def.readOnly && <Lock size={11} />} Read-only
+            {def.readOnly && <Lock size={11} />} {t('workflow.readOnly')}
           </span>
           {!def.readOnly && def.status !== 'archived' && (
             <button
@@ -101,7 +103,7 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
               className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px]"
               style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
             >
-              <Archive size={12} /> Archive
+              <Archive size={12} /> {t('workflow.archive')}
             </button>
           )}
         </div>
@@ -136,7 +138,7 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
 
         <div className="px-5 py-3" style={{ borderTop: '1px solid var(--cp-border)' }}>
           <div className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--cp-muted)' }}>
-            Runs
+            {t('workflow.runs')}
             <span
               className="ml-1 rounded px-1 text-[9px]"
               style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-muted)', border: '1px solid var(--cp-border)' }}
@@ -144,7 +146,7 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
               {runs.length}
             </span>
             <span className="ml-2 normal-case" style={{ color: 'var(--cp-muted)' }}>
-              Approve / retry / abort live in TaskMgr; this view observes.
+              {t('workflow.actionsHint')}
             </span>
             <button
               type="button"
@@ -152,7 +154,7 @@ export function DetailPage({ definitionId, onSelect }: DetailPageProps) {
               className="ml-auto rounded px-1.5 py-0.5 text-[10px]"
               style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
             >
-              Refresh
+              {t('workflow.refresh')}
             </button>
           </div>
           <RunsList runs={runs} onOpen={(runId) => onSelect({ kind: 'run', runId })} />

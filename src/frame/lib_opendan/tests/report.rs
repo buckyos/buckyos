@@ -699,6 +699,29 @@ async fn behavior_artifact_storage_failure_recovers_without_inference_or_reexecu
 }
 
 #[tokio::test]
+async fn explicit_work_requires_an_outcome_from_a_behavior_end_report() {
+    let env = Env::new();
+    let mut spec = report_spec("verify the output");
+    spec.policy.completion = CompletionPolicy::ExplicitReport;
+    spec.prompt.llm_context["loop_model"] = json!("behavior");
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => text(r#"<response><report end="true">Unclassified.</report></response>"#),
+        1 => {
+            assert!(last_user_text(req).contains("outcome"), "{}", render(&req.messages));
+            text(r#"<response><report end="true" outcome="failed">Checksum mismatch.</report></response>"#)
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let result = drive(&sd, &env.deps(llm), StopWhen::Finished).await;
+    assert!(matches!(result, DriveResult::Finished { outcome: Some(Outcome::Failed), .. }), "{result:?}");
+    assert_eq!(deliveries(&sd, "Unclassified."), 0);
+    let report = sd.state().unwrap().final_report.unwrap();
+    assert_eq!(report.report, "Checksum mismatch.");
+    assert_eq!(serde_json::to_value(report).unwrap()["outcome"], "failed");
+}
+
+#[tokio::test]
 async fn explicit_completion_without_a_queue_fails_when_the_model_omits_report() {
     let env = Env::new();
     let mut spec = report_spec("must explicitly deliver");
@@ -1034,13 +1057,14 @@ async fn behavior_final_report_requires_background_tasks_to_be_settled() {
 
 const CRASH_ROOT: &str = "LIBOPENDAN_REPORT_TEST_ROOT";
 const CRASH_SESSION: &str = "LIBOPENDAN_REPORT_TEST_SESSION";
+const CRASH_OUTCOME: &str = "LIBOPENDAN_REPORT_TEST_OUTCOME";
 
-fn crashing_report_script(behavior: bool) -> std::sync::Arc<ScriptedLlm> {
+fn crashing_report_script(behavior: bool, outcome: String) -> std::sync::Arc<ScriptedLlm> {
     ScriptedLlm::new(move |_, n| {
         if behavior {
             return match n {
                 0 => text("<response><actions><shell><![CDATA[echo once >> crash.marker]]></shell></actions></response>"),
-                1 => text("<response><report end=\"true\">crash-safe delivery</report><artifacts>[\"answer.txt\"]</artifacts><result>null</result></response>"),
+                1 => text(&format!(r#"<response><report end="true" outcome="{outcome}">crash-safe delivery</report><artifacts>["answer.txt"]</artifacts><result>null</result></response>"#)),
                 _ => panic!("unexpected inference {n}"),
             };
         }
@@ -1058,6 +1082,7 @@ fn crashing_report_script(behavior: bool) -> std::sync::Arc<ScriptedLlm> {
                     "report": "crash-safe delivery",
                     "artifacts": ["answer.txt"],
                     "result": null,
+                    "outcome": outcome,
                     "is_end": true
                 }),
             ),
@@ -1078,9 +1103,10 @@ async fn report_crash_child_driver() {
     let env = Env::at(Path::new(&root));
     let sd = SessionDir::open(&session).unwrap();
     let xml = sd.config().unwrap().prompt.llm_context["tools"]["tools2actions"] == true;
+    let outcome = std::env::var(CRASH_OUTCOME).unwrap();
     let result = drive(
         &sd,
-        &env.deps(crashing_report_script(xml)),
+        &env.deps(crashing_report_script(xml, outcome)),
         StopWhen::Finished,
     )
     .await;
@@ -1089,7 +1115,12 @@ async fn report_crash_child_driver() {
 
 #[tokio::test]
 async fn final_report_recovers_without_inference_or_duplicate_delivery_at_commit_windows() {
-    for mode in ["function_call", "behavior_xml", "behavior_native"] {
+    for (mode, outcome) in [
+        ("function_call", "succeeded"),
+        ("behavior_xml", "succeeded"),
+        ("behavior_native", "succeeded"),
+        ("function_call", "failed"),
+    ] {
         let behavior = mode != "function_call";
         let xml = mode == "behavior_xml";
         for fault in [
@@ -1100,6 +1131,7 @@ async fn final_report_recovers_without_inference_or_duplicate_delivery_at_commit
         ] {
             let env = Env::new();
             let mut spec = report_spec("recover a submitted final report");
+            spec.policy.completion = CompletionPolicy::ExplicitReport;
             if behavior {
                 spec.prompt.llm_context["loop_model"] = json!("behavior");
                 spec.prompt.llm_context["tools"]["tools2actions"] = json!(xml);
@@ -1115,6 +1147,7 @@ async fn final_report_recovers_without_inference_or_duplicate_delivery_at_commit
                 ])
                 .env(CRASH_ROOT, &env.root)
                 .env(CRASH_SESSION, sd.path())
+                .env(CRASH_OUTCOME, outcome)
                 .env("LIBOPENDAN_FAULT", fault)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -1145,14 +1178,20 @@ async fn final_report_recovers_without_inference_or_duplicate_delivery_at_commit
                 "once\n",
                 "{fault}"
             );
-            assert_one_completion(&sd, "crash-safe delivery", if xml { 2 } else { 1 });
             let state = sd.state().unwrap();
+            if outcome == "failed" {
+                assert_eq!(state.outcome, Some(Outcome::Failed), "{fault}");
+                assert_eq!(deliveries(&sd, "crash-safe delivery"), 1, "{fault}");
+            } else {
+                assert_one_completion(&sd, "crash-safe delivery", if xml { 2 } else { 1 });
+            }
             let record = sd.runs().record(state.last_run.as_ref().unwrap()).unwrap();
             let reports = record.host.as_ref().unwrap().extra["reports"]
                 .as_array()
                 .unwrap();
             assert_eq!(reports.len(), 1, "{fault}");
             let final_report = state.final_report.as_ref().unwrap();
+            assert_eq!(serde_json::to_value(final_report).unwrap()["outcome"], outcome, "{fault}");
             // `null` is no result (folded with the XML <artifacts>, it is dropped).
             assert!(final_report.result.as_ref().is_none_or(Value::is_null), "{fault}");
             assert_eq!(final_report.artifacts.len(), 1);

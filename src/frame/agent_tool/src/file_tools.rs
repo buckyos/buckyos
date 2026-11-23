@@ -21,6 +21,12 @@ pub const TOOL_READ_FILE: &str = "read_file";
 
 const CMD_PARAM_PREVIEW_KEEP_CHARS: usize = 32;
 const READ_FILE_PREVIEW_MAX_LINES: usize = 200;
+/// Leading bytes looked at for a NUL (git's binary test).
+const BINARY_PROBE_BYTES: usize = 8192;
+
+pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(BINARY_PROBE_BYTES).any(|b| *b == 0)
+}
 
 #[derive(Clone, Debug)]
 pub struct FileToolConfig {
@@ -805,8 +811,14 @@ impl TypedTool for ReadFileTool {
             .resolve(&self.cfg.root_dir, &file_path, &self.cfg.allowed_read_roots)
             .await?;
 
-        let full_content =
-            String::from_utf8_lossy(&self.cfg.backend.read(&abs_path).await?).to_string();
+        let raw = self.cfg.backend.read(&abs_path).await?;
+        if looks_binary(&raw) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "`{file_path}` is a binary file ({} bytes): read_file only reads text. Use llm_understand_media for images, PDFs and office documents, or a shell command that converts or inspects the format.",
+                raw.len()
+            )));
+        }
+        let full_content = String::from_utf8_lossy(&raw).to_string();
         let first_chunk = args.first_chunk.clone();
         let (chunk_content, matched, chunk_start_line) =
             if let Some(first_chunk) = first_chunk.as_deref() {
@@ -1765,6 +1777,32 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("match exactly once"));
+    }
+
+    #[tokio::test]
+    async fn read_file_refuses_binary_files() {
+        let dir = tempdir().unwrap();
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x05\x00".repeat(64);
+        fs::write(dir.path().join("shot.png"), &png).await.unwrap();
+        fs::write(dir.path().join("notes.txt"), "中文\nline\n").await.unwrap();
+        let tool = ReadFileTool::new(FileToolConfig::new(dir.path()));
+        let session = test_session();
+        let ctx = ToolCtx::new(&session);
+        let read = |path: &str| ReadFileArgs {
+            path: path.to_string(),
+            range: None,
+            first_chunk: None,
+        };
+
+        let Err(err) = tool.execute(&ctx, read("shot.png")).await else {
+            panic!("a binary file was read as text");
+        };
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)), "{err}");
+        assert!(err.to_string().contains("binary file"), "{err}");
+        assert!(err.to_string().contains("llm_understand_media"), "{err}");
+
+        let out = tool.execute(&ctx, read("notes.txt")).await.unwrap();
+        assert_eq!(out.content, "中文\nline\n");
     }
 
     #[tokio::test]

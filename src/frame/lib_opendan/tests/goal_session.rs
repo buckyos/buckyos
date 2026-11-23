@@ -471,6 +471,37 @@ async fn a_wrong_goal_result_is_refused_to_the_model() {
     h.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_goal_rejects_a_work_outcome_and_accepts_its_own_result() {
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("work-outcome", "report", json!({
+            "report": "looked; nothing to do",
+            "is_end": true,
+            "outcome": "blocked",
+            "result": { "decision": "no_action", "distance": "nothing open" }
+        })),
+        1 => {
+            let error = this_result(req, "work-outcome").expect("the rejected call must reach the Goal");
+            assert!(error.contains("outcome"), "{error}");
+            no_action()
+        }
+        _ => panic!("the corrected Goal result should close this activation"),
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("check for open tasks");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("corrected activation", |h| !h.activations(&g.goal_id).is_empty()).await;
+
+    let acts = h.activations(&g.goal_id);
+    assert_eq!(llm.count(), 2);
+    assert_eq!(acts.len(), 1);
+    assert_eq!(acts[0].decision, ActivationDecision::NoAction);
+    assert_eq!(acts[0].outcome, ActivationOutcome::Completed);
+    h.shutdown().await;
+}
+
 /// Create a Work of the goal session `parent` from inside an LLM script.
 fn create_work(root: &Path, parent: &str, objective: &str, key: &str) -> Result<String, OpenDanError> {
     let env = Env::at(root);
