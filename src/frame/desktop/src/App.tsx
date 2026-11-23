@@ -1,11 +1,11 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, RouterProvider, createBrowserRouter } from 'react-router-dom'
+import { Navigate, RouterProvider, createBrowserRouter, useRouteError } from 'react-router-dom'
 import { DesktopBackground } from './desktop/DesktopBackground'
 import {
   DesktopBackgroundProvider,
   useDesktopBackground,
 } from './desktop/DesktopBackgroundProvider'
-import { I18nProvider } from './i18n/provider'
+import { I18nProvider, useI18n } from './i18n/provider'
 import { PrototypeThemeProvider } from './theme/provider'
 import { DesktopRoute } from './desktop/DesktopRoute'
 import { isPortalRoot } from './app/homestation/links'
@@ -82,6 +82,15 @@ function usesRestrictedShell(identity: CurrentIdentity): boolean {
 }
 
 function RootRoute() {
+  const error = useRouteError()
+  const { t } = useI18n()
+  if (error) return (
+    <main role="alert" className="mx-auto flex min-h-screen max-w-lg flex-col justify-center gap-4 p-6">
+      <h1 className="text-xl font-semibold">{t('shell.pageLoadFailed', 'Unable to load the page')}</h1>
+      <p>{t('shell.pageLoadRetryHint', 'Check your connection and reload the page. If it still fails, close this tab and open it again.')}</p>
+      <button type="button" className="min-h-11 rounded-lg border px-4 py-2" onClick={() => window.location.reload()}>{t('common.retry', 'Retry')}</button>
+    </main>
+  )
   return usesRestrictedShell(getBootIdentity()) ? (
     <Suspense fallback={null}>
       <RestrictedHome />
@@ -96,6 +105,7 @@ const router = createBrowserRouter([
     path: '/',
     // `www.<zone>/` and `homestation.<zone>/` open the zone's default HomeStation feed.
     element: isPortalRoot() ? portalRoute : <RootRoute />,
+    errorElement: <RootRoute />,
   },
   {
     path: '/login',
