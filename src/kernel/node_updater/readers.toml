@@ -11,7 +11,7 @@ msg-center 的审计加 group_types.rs；依赖仓库加 cyfs-gateway 和 buckyo
 
 [audited_sources]
 buckyos-base = "e1ddc24ae7930972f9bc766a6ddb392282695afb"
-cyfs-gateway = "76c69089ce5d755c863ae85ce4de847e7d9cfbd8"
+cyfs-gateway = "e80b6e282ae37520431385bf7d23ac7c8a722b48"
 cyfs-ndn = "0c9c823a5ce530a5363393cc5c0dd23fa3f14500"
 
 [[reader]]
