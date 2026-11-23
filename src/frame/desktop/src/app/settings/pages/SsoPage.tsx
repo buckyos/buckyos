@@ -1,5 +1,5 @@
 import { Button, FormControlLabel, Switch, TextField } from '@mui/material'
-import { OAuthSourcesEditor } from '../components/OAuthSourcesEditor'
+import { OAuthSourcesSection } from '../components/oauth/OAuthSourcesSection'
 import { type OAuthSource } from '../../../api/sso'
 import { Save } from 'lucide-react'
 import { callControlPanel } from '../../../api/user_mgr'
@@ -40,7 +40,6 @@ function RememberedApps() {
 }
 
 interface Draft {
-  oauth_sources: OAuthSource[]
   self_register_enabled: boolean
   did_login_enabled: boolean
   jump_base_url: string
@@ -48,7 +47,6 @@ interface Draft {
 
 function draftOf(settings: SsoSettings): Draft {
   return {
-    oauth_sources: settings.oauth_sources ?? [],
     self_register_enabled: settings.self_register_enabled,
     did_login_enabled: settings.did_login_enabled,
     jump_base_url: settings.jump_base_url?.trim() ?? '',
@@ -58,7 +56,6 @@ function draftOf(settings: SsoSettings): Draft {
 const sameDraft = (left: Draft, right: Draft) =>
   left.self_register_enabled === right.self_register_enabled
   && left.did_login_enabled === right.did_login_enabled
-  && JSON.stringify(left.oauth_sources) === JSON.stringify(right.oauth_sources)
   && left.jump_base_url.trim() === right.jump_base_url.trim()
 
 /** An https origin, or empty for the default jump entry. */
@@ -87,6 +84,7 @@ export function SsoPage() {
   const isAdmin = useViewerIsAdmin()
   const [stored, setStored] = useState<Draft | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [sources, setSources] = useState<OAuthSource[] | null>(null)
   const [status, setStatus] = useState<Status>({ kind: 'loading' })
   const [reloadSeq, setReloadSeq] = useState(0)
 
@@ -101,6 +99,7 @@ export function SsoPage() {
       }
       setStored(draftOf(data))
       setDraft(draftOf(data))
+      setSources(data.oauth_sources ?? [])
       setStatus({ kind: 'ready' })
     })
     return () => { live = false }
@@ -190,9 +189,7 @@ export function SsoPage() {
         )}
       </Section>
 
-      {draft && <Section title={t('sso.provider.title','External login providers')}>
-        <OAuthSourcesEditor sources={draft.oauth_sources} onChange={oauth_sources=>update({oauth_sources})} disabled={busy}/>
-      </Section>}
+      {sources && <OAuthSourcesSection sources={sources} onSaved={setSources} />}
 
       {status.kind !== 'load_failed' ? (
         <Section

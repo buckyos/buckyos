@@ -64,7 +64,7 @@ import type {
   UserTunnelBinding,
   UserInviteRecord,
 } from './user_mgr.ts'
-import type { ExclusiveInvite, InviteResource, SsoSettings } from './sso.ts'
+import type { ExclusiveInvite, InviteResource, OAuthSource, SsoSettings } from './sso.ts'
 
 export const MOCK_CONTROL_PANEL_STORAGE_KEY = 'buckyos.mock.control-panel.v1'
 
@@ -185,6 +185,8 @@ interface MockSso {
   /** Target Zones the signed-in account agreed to (canonical side). */
   consents: string[]
   did_logins?: Record<string, { did: string; redirect_url: string }>
+  /** `sso.oauth_source.accounts`: local accounts bound to each login source, by source ID. */
+  oauth_accounts?: Record<string, { user_id: string; show_name: string; email: string; state: string }[]>
 }
 
 const RESERVED_NAMES = new Set(['root', 'system', 'admin', 'guest', '_', 'www', 'sys', 'homestation'])
@@ -1257,9 +1259,11 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       return { target: { kind: 'system', service_id: 'control-panel' }, display_name: 'Desktop' }
     case 'auth.sso_config':
       return {
+        oauth_sources: (sso.settings.oauth_sources ?? []).filter((source) => source.enabled).map(({ id, display_name }) => ({ id, display_name })),
         self_register_enabled: sso.settings.self_register_enabled,
         did_login_enabled: sso.settings.did_login_enabled,
         jump_base_url: sso.settings.jump_base_url || DEFAULT_JUMP_BASE_URL,
+        zone_origin: `https://${zoneHostOf(state)}`,
       }
     case 'auth.current_identity':
       requireSignedIn(state, method)
@@ -1416,19 +1420,36 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       requireSsoAdmin(state, method)
       return { ...sso.settings }
     case 'sso.settings.set': {
+      // Fields left out keep their value, as on the real service.
       requireSsoAdmin(state, method)
-      if (typeof params.self_register_enabled !== 'boolean' || typeof params.did_login_enabled !== 'boolean') {
-        throw new MockRpcError('self_register_enabled and did_login_enabled must be booleans')
+      for (const key of ['self_register_enabled', 'did_login_enabled'] as const) {
+        if (params[key] !== undefined && typeof params[key] !== 'boolean') throw new MockRpcError(`${key} must be a boolean`)
       }
-      const jump = typeof params.jump_base_url === 'string' ? params.jump_base_url.trim() : ''
-      if (jump && !/^https:\/\/[^/?#]+\/?$/.test(jump)) throw new MockRpcError('jump_base_url must be an https origin')
-      sso.settings = {
-        self_register_enabled: params.self_register_enabled,
-        did_login_enabled: params.did_login_enabled,
-        oauth_sources: Array.isArray(params.oauth_sources) ? params.oauth_sources : sso.settings.oauth_sources,
-        ...(jump ? { jump_base_url: jump } : {}),
+      const next: SsoSettings = { ...sso.settings }
+      if (typeof params.self_register_enabled === 'boolean') next.self_register_enabled = params.self_register_enabled
+      if (typeof params.did_login_enabled === 'boolean') next.did_login_enabled = params.did_login_enabled
+      if (params.jump_base_url !== undefined) {
+        const jump = typeof params.jump_base_url === 'string' ? params.jump_base_url.trim() : ''
+        if (jump && !/^https:\/\/[^/?#]+\/?$/.test(jump)) throw new MockRpcError('jump_base_url must be an https origin')
+        if (jump) next.jump_base_url = jump
+        else delete next.jump_base_url
       }
-      return { ...sso.settings }
+      if (Array.isArray(params.oauth_sources)) {
+        const sources = params.oauth_sources as OAuthSource[]
+        const ids = new Set(sources.map((source) => source.id))
+        if (ids.size !== sources.length || sources.some((source) => !source.id || !source.display_name?.trim() || !source.client_id?.trim())) {
+          throw new MockRpcError('invalid or duplicate OAuth source ID, display name, client ID or secret reference')
+        }
+        next.oauth_sources = sources
+      }
+      sso.settings = next
+      return { oauth_sources: [], ...sso.settings }
+    }
+    case 'sso.oauth_source.accounts': {
+      requireSsoAdmin(state, method)
+      const id = String(params.source_id ?? '')
+      if (!sso.settings.oauth_sources?.some((source) => source.id === id)) throw new MockRpcError(`unknown login source \`${id}\``)
+      return { accounts: sso.oauth_accounts?.[id] ?? [] }
     }
     case 'user.exclusive_invite.create': {
       requireSsoAdmin(state, method)

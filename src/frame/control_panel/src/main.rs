@@ -1298,6 +1298,9 @@ impl ControlPanelServer {
             "auth.federation.deny" => Box::pin(self.handle_auth_federation_deny(req, principal)),
             "sso.settings.get" => Box::pin(self.handle_sso_settings_get(req, principal)),
             "sso.settings.set" => Box::pin(self.handle_sso_settings_set(req, principal)),
+            "sso.oauth_source.accounts" => {
+                Box::pin(self.handle_sso_oauth_source_accounts(req, principal))
+            }
 
             // User Mgr
             "user.list" => Box::pin(self.handle_user_list(req, principal)),

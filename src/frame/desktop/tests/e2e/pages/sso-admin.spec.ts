@@ -60,7 +60,7 @@ test.describe('settings: sign-in and sharing', () => {
     await ssoPage.getByTestId('settings-sso-jump').fill('https://jump.example.com')
     await ssoPage.getByTestId('settings-sso-save').click()
     await expect(ssoPage.getByTestId('settings-sso-status')).toHaveText('Saved.')
-    expect((await mockState(page)).sso.settings).toEqual({ oauth_sources: [], self_register_enabled: true, did_login_enabled: false, jump_base_url: 'https://jump.example.com' })
+    expect((await mockState(page)).sso.settings).toEqual({ self_register_enabled: true, did_login_enabled: false, jump_base_url: 'https://jump.example.com' })
 
     await page.evaluate((key) => {
       const state = JSON.parse(localStorage.getItem(key) ?? '{}')
@@ -71,53 +71,143 @@ test.describe('settings: sign-in and sharing', () => {
     expect(errors).toEqual([])
   })
 
-  test('shows the Google credential path and saves it when adding a provider', async ({ page }) => {
+  async function openProviders(page: Page) {
     const win = await openSettings(page)
     await win.getByRole('button', { name: 'Sign-in & Sharing', exact: true }).click()
-    const settings = win.getByTestId('settings-sso-page')
-    await settings.getByRole('button', { name: 'Add login provider' }).click()
+    const section = win.getByTestId('settings-sso-providers')
+    await expect(section).toBeVisible()
+    return section
+  }
 
-    const filename = settings.getByRole('textbox', { name: 'Secret file name' })
-    await expect(filename).toHaveCount(0)
-    await expect(settings).toContainText('$BUCKYOS_ROOT/security/oauth/google-demo')
-    await expect(settings).toContainText('web.client_secret')
+  const googleSource = { kind: 'google', id: 'google', display_name: 'Google', enabled: true, client_id: 'old.apps.googleusercontent.com', secret_ref: 'existing-google' }
+  const acmeSource = {
+    kind: 'oidc', id: 'acme', display_name: 'Acme SSO', enabled: true, client_id: 'desktop', secret_ref: 'acme',
+    webhost: 'acme.example', issuer: 'https://login.acme.example', authorization_endpoint: 'https://login.acme.example/authorize',
+    token_endpoint: 'https://login.acme.example/token', jwks_uri: 'https://login.acme.example/keys', scopes: ['openid', 'email'],
+  }
 
-    await settings.getByRole('combobox').click()
-    await page.getByRole('option', { name: 'OpenID Connect', exact: true }).click()
-    await filename.fill('custom-oidc')
-    await settings.getByRole('combobox').click()
-    await page.getByRole('option', { name: 'Google', exact: true }).click()
-    await expect(filename).toHaveCount(0)
-    await expect(settings).toContainText('$BUCKYOS_ROOT/security/oauth/google-demo')
+  test('adds Google in two steps: what to prepare, then the form', async ({ page }) => {
+    const errors = trackConsole(page)
+    const section = await openProviders(page)
+    await expect(section).toContainText('No external login provider yet.')
+    await section.getByTestId('sso-provider-add').click()
 
-    await settings.getByRole('textbox', { name: 'Client ID', exact: true }).fill('test.apps.googleusercontent.com')
-    await settings.getByTestId('settings-sso-save').click()
-    await expect(settings.getByTestId('settings-sso-status')).toHaveText('Saved.')
+    const dialog = page.getByTestId('sso-provider-dialog')
+    await expect(dialog).toContainText('Step 1 of 2')
+    await expect(dialog.getByRole('radio', { name: 'Google' })).toBeChecked()
+    await expect(dialog).toContainText('/sso/oauth/google/callback')
+    await expect(dialog).toContainText('$BUCKYOS_ROOT/security/oauth/google-demo')
+    await expect(dialog).toContainText('web.client_secret')
+    await dialog.getByRole('radio', { name: 'OpenID Connect' }).check()
+    await expect(dialog).toContainText('.well-known/openid-configuration')
+    await dialog.getByRole('radio', { name: 'Google' }).check()
+    await dialog.getByTestId('sso-provider-ready').click()
+
+    await expect(dialog).toContainText('Step 2 of 2')
+    await expect(dialog.getByRole('textbox', { name: 'Secret file name' })).toHaveCount(0)
+    await dialog.getByTestId('sso-provider-save').click()
+    await expect(dialog).toContainText('Required')
+    await dialog.getByRole('textbox', { name: 'Client ID', exact: true }).fill('test.apps.googleusercontent.com')
+    await dialog.getByTestId('sso-provider-save').click()
+    await expect(dialog).toBeHidden()
+
+    await expect(section.getByTestId('sso-provider-row-google')).toContainText('Google')
     expect((await mockState(page)).sso.settings.oauth_sources).toMatchObject([
-      { id: 'google', client_id: 'test.apps.googleusercontent.com', secret_ref: 'google-demo' },
+      { kind: 'google', id: 'google', client_id: 'test.apps.googleusercontent.com', secret_ref: 'google-demo', enabled: true },
     ])
+
+    // A Zone has one Google source.
+    await section.getByTestId('sso-provider-add').click()
+    await expect(dialog.getByRole('radio', { name: 'Google' })).toBeDisabled()
+    await expect(dialog.getByRole('radio', { name: 'OpenID Connect' })).toBeChecked()
+    expect(errors).toEqual([])
   })
 
-  test('keeps an existing Google credential filename when the client ID changes', async ({ page }) => {
-    await seedControlPanel(page, { sso: { settings: {
-      self_register_enabled: true,
-      did_login_enabled: true,
-      oauth_sources: [{
-        kind: 'google', id: 'google', display_name: 'Google', enabled: true,
-        client_id: 'old.apps.googleusercontent.com', secret_ref: 'existing-google',
-      }],
-    } } })
-    const win = await openSettings(page)
-    await win.getByRole('button', { name: 'Sign-in & Sharing', exact: true }).click()
-    const settings = win.getByTestId('settings-sso-page')
-    await expect(settings).toContainText('$BUCKYOS_ROOT/security/oauth/existing-google')
-    await expect(settings.getByRole('textbox', { name: 'Secret file name' })).toHaveCount(0)
-    await settings.getByRole('textbox', { name: 'Client ID', exact: true }).fill('new.apps.googleusercontent.com')
-    await settings.getByTestId('settings-sso-save').click()
-    await expect(settings.getByTestId('settings-sso-status')).toHaveText('Saved.')
+  test('adds an OpenID Connect source after checking its fields', async ({ page }) => {
+    const section = await openProviders(page)
+    await section.getByTestId('sso-provider-add').click()
+    const dialog = page.getByTestId('sso-provider-dialog')
+    await dialog.getByRole('radio', { name: 'OpenID Connect' }).check()
+    await dialog.getByTestId('sso-provider-ready').click()
+
+    const field = (name: string) => dialog.getByTestId(`sso-provider-field-${name}`)
+    await field('id').fill('Acme')
+    await expect(dialog).toContainText('Lowercase letters, digits, - and _ only')
+    await field('id').fill('acme')
+    await expect(dialog.getByTestId('sso-provider-callback')).toContainText('/sso/oauth/acme/callback')
+    await field('display_name').fill('Acme SSO')
+    await field('client_id').fill('desktop')
+    await field('secret_ref').fill('acme')
+    await expect(dialog).toContainText('$BUCKYOS_ROOT/security/oauth/acme')
+    await field('webhost').fill('acme.example')
+    await field('issuer').fill('http://login.acme.example')
+    await expect(dialog).toContainText('Use an https:// address')
+    await field('issuer').fill('https://login.acme.example')
+    await field('authorization_endpoint').fill('https://login.acme.example/authorize')
+    await field('token_endpoint').fill('https://login.acme.example/token')
+    await dialog.getByTestId('sso-provider-save').click()
+    await expect(dialog).toContainText('Required')
+    await field('jwks_uri').fill('https://login.acme.example/keys')
+    await dialog.getByTestId('sso-provider-save').click()
+    await expect(dialog).toBeHidden()
+
+    await expect(section.getByTestId('sso-provider-row-acme')).toContainText('OpenID Connect · acme.example')
+    expect((await mockState(page)).sso.settings.oauth_sources).toMatchObject([{ ...acmeSource, scopes: [] }])
+  })
+
+  test('edits a source; the fields that name its accounts are locked', async ({ page }) => {
+    await seedControlPanel(page, { sso: { settings: { self_register_enabled: true, did_login_enabled: true, oauth_sources: [googleSource, acmeSource] } } })
+    const section = await openProviders(page)
+    const dialog = page.getByTestId('sso-provider-dialog')
+
+    await section.getByRole('button', { name: 'Edit Acme SSO' }).click()
+    await expect(dialog).toContainText('Edit “Acme SSO”')
+    for (const name of ['id', 'webhost', 'issuer']) {
+      await expect(dialog.getByTestId(`sso-provider-field-${name}`)).toBeDisabled()
+    }
+    await dialog.getByTestId('sso-provider-field-display_name').fill('Acme')
+    await dialog.getByTestId('sso-provider-save').click()
+    await expect(dialog).toBeHidden()
+    await expect(section.getByTestId('sso-provider-row-acme')).toContainText('Acme')
+
+    // Google keeps its stored credential file name.
+    await section.getByRole('button', { name: 'Edit Google' }).click()
+    await expect(dialog).toContainText('$BUCKYOS_ROOT/security/oauth/existing-google')
+    await dialog.getByRole('textbox', { name: 'Client ID', exact: true }).fill('new.apps.googleusercontent.com')
+    await dialog.getByTestId('sso-provider-save').click()
+    await expect(dialog).toBeHidden()
     expect((await mockState(page)).sso.settings.oauth_sources).toMatchObject([
       { id: 'google', client_id: 'new.apps.googleusercontent.com', secret_ref: 'existing-google' },
+      { id: 'acme', display_name: 'Acme', webhost: 'acme.example' },
     ])
+
+    await section.getByRole('switch', { name: 'Allow sign-in with Acme' }).uncheck()
+    await expect(section.getByTestId('sso-provider-row-acme')).toContainText('Off')
+    expect((await mockState(page)).sso.settings.oauth_sources[1].enabled).toBe(false)
+  })
+
+  test('deleting a source names the local accounts that sign in with it', async ({ page }) => {
+    await seedControlPanel(page, { sso: {
+      settings: { self_register_enabled: true, did_login_enabled: true, oauth_sources: [googleSource, acmeSource] },
+      oauth_accounts: { google: [{ user_id: 'alice', show_name: 'Alice', email: 'alice@gmail.com', state: 'active' }] },
+    } })
+    const section = await openProviders(page)
+    const dialog = page.getByTestId('sso-provider-delete-dialog')
+
+    await section.getByRole('button', { name: 'Delete Google' }).click()
+    await expect(dialog).toContainText('the users below can no longer sign in with Google')
+    await expect(dialog.getByTestId('sso-provider-delete-accounts')).toContainText('Alice · alice')
+    await expect(dialog.getByTestId('sso-provider-delete-accounts')).toContainText('alice@gmail.com')
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(section.getByTestId('sso-provider-row-google')).toBeVisible()
+
+    await section.getByRole('button', { name: 'Delete Acme SSO' }).click()
+    await expect(dialog).toContainText('No local account signs in with Acme SSO')
+    await dialog.getByTestId('sso-provider-delete-confirm').click()
+    await expect(dialog).toBeHidden()
+    await expect(section.getByTestId('sso-provider-row-acme')).toHaveCount(0)
+    expect((await mockState(page)).sso.settings.oauth_sources).toMatchObject([{ id: 'google' }])
   })
 
   test('is hidden from non-admins', async ({ page }) => {

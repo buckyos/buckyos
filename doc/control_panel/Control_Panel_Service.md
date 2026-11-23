@@ -338,7 +338,7 @@ identifier / staging handle
 | `user.invite.get` | 凭邀请链接读邀请详情 |
 | `zone.presentation.get` | 登录页等读取 Zone 名称、描述、图标（只含展示字段，不开放 `zone.overview`） |
 
-管理员以 `sso.settings.get/set` 管理 `oauth_sources`。Google 使用固定的 `id=google`、`kind=google`、`webhost=google.com` 及官方端点。填写 `display_name`、`enabled`、`client_id` 和 `secret_ref`。凭据引用是 `$BUCKYOS_ROOT/security/oauth/<secret_ref>` 里的文件名。精确 HTTPS 回调是 `https://<zone>/sso/oauth/<id>/callback`，可显式登记或采用此默认值。自定义 OIDC 还须登记 `webhost`、`issuer`、`authorization_endpoint`、`token_endpoint`、`jwks_uri`。纯 OAuth 使用 `kind=oauth2`、受保护的 `account_endpoint` 及其 `id_field`、`email_field`、`email_verified_field`。停用来源用 `enabled=false`，保留命名空间和绑定。[来源配置类型](../../src/kernel/buckyos-api/src/oauth.rs)
+管理员以 `sso.settings.get/set` 管理 `oauth_sources`。Google 使用固定的 `id=google`、`kind=google`、`webhost=google.com` 及官方端点。填写 `display_name`、`enabled`、`client_id` 和 `secret_ref`。凭据引用是 `$BUCKYOS_ROOT/security/oauth/<secret_ref>` 里的文件名。精确 HTTPS 回调是 `https://<zone>/sso/oauth/<id>/callback`，可显式登记或采用此默认值。自定义 OIDC 还须登记 `webhost`、`issuer`、`authorization_endpoint`、`token_endpoint`、`jwks_uri`。纯 OAuth 使用 `kind=oauth2`、受保护的 `account_endpoint` 及其 `id_field`、`email_field`、`email_verified_field`。停用来源用 `enabled=false`，保留命名空间和绑定。已保存来源的 `id`、`kind`、`webhost`、`issuer` 不能修改（纯 OAuth 的 `issuer` 就是 `account_endpoint`）。`oauth_sources` 里省略某个来源即删除它：外部主体记录与账号绑定保留，这四项记入 `services/control_panel/oauth/retired_sources`，此后只有四项都相同的来源能占用其中任一个 `id`、`webhost` 或 `issuer`，重新添加后原绑定恢复可用。删除前用 `sso.oauth_source.accounts {source_id}`（管理员）列出绑定到该来源 issuer 的未删除本地账号 `{accounts:[{user_id,show_name,email,state}]}`。[来源配置类型](../../src/kernel/buckyos-api/src/oauth.rs) · [来源的保存与删除](../../src/frame/control_panel/src/sso_settings.rs)
 
 ### 6.2 后端：公开 HTTP 路由
 
