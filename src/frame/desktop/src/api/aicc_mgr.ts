@@ -426,7 +426,7 @@ interface AiccDataProvider {
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
-  queryUsageOverview(scope: UsageScope): Promise<UsageOverview>
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   fetchRoutingWorkspace(): Promise<RoutingWorkspace>
   getRoutingState(): Promise<RoutingState>
@@ -449,7 +449,7 @@ export interface AICCMgr {
   fetchModelCatalog(): Promise<ModelCatalog>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
-  queryUsageOverview(scope: UsageScope): Promise<UsageOverview>
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview>
   addProvider(draft: WizardDraft): Promise<ProviderView>
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
@@ -508,12 +508,26 @@ export interface UserUsageSummary {
   finance_complete: boolean
 }
 
+export interface UsageOverviewProgress { section: string; overview: UsageOverview; failed?: boolean }
+
 export interface UsageOverview {
+  timeRange?: UsageTimeRange
   summary: UsageSummary
   trend: UsageTrendPoint[]
   users: UserUsageSummary[]
   breakdowns: UsageBreakdown[]
   periods: { today: UsageTotals; thisMonth: UsageTotals; trailingDays: UsageTotals }
+}
+
+export function mergeUsageOverview(current: UsageOverview, { section, overview }: UsageOverviewProgress): UsageOverview {
+  current = { ...current, timeRange: overview.timeRange ?? current.timeRange }
+  const fields: Record<string, [string, 'by_model' | 'by_provider' | 'by_app' | 'by_api_namespace']> = { models: ['provider_model', 'by_model'], providers: ['provider_instance_name', 'by_provider'], apps: ['caller_app_id', 'by_app'], capabilities: ['capability', 'by_api_namespace'] }
+  const field = fields[section]
+  if (field) return { ...current, summary: { ...current.summary, [field[1]]: overview.summary[field[1]] }, breakdowns: [...current.breakdowns.filter((row) => !(field[0] in row.group)), ...overview.breakdowns.filter((row) => field[0] in row.group)] }
+  if (section === 'today') return { ...current, summary: { ...current.summary, today_tokens: overview.summary.today_tokens }, periods: { ...current.periods, today: overview.periods.today } }
+  if (section === 'thisMonth') return { ...current, summary: { ...current.summary, this_month_tokens: overview.summary.this_month_tokens }, periods: { ...current.periods, thisMonth: overview.periods.thisMonth } }
+  if (section === 'users') return { ...current, users: overview.users }
+  return { ...current, trend: overview.trend, summary: { ...current.summary, total_tokens: overview.summary.total_tokens, total_requests: overview.summary.total_requests, finance_totals: overview.summary.finance_totals, finance_complete: overview.summary.finance_complete }, periods: { ...current.periods, trailingDays: overview.periods.trailingDays } }
 }
 
 export interface UsageEventsQuery {
@@ -636,8 +650,8 @@ export class AICCModelStore implements AICCMgr {
     return this.provider.getUsageTrend(granularity)
   }
 
-  queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
-    return this.provider.queryUsageOverview(scope)
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview> {
+    return this.provider.queryUsageOverview(scope, onProgress)
   }
 
   async addProvider(draft: WizardDraft): Promise<ProviderView> {
@@ -877,7 +891,7 @@ class MockAiccProvider implements AiccDataProvider {
     )
   }
 
-  async queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
+  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview> {
     const scopedEvents = await this.scopedUsageEvents(scope)
     const timeRange = localTrailingDaysRange(30)
     const events = scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange, limit: 0 }))
@@ -892,20 +906,23 @@ class MockAiccProvider implements AiccDataProvider {
       userEvents.push(event)
       users.set(userId, userEvents)
     }
-    return {
+    const overview: UsageOverview = {
+      timeRange,
       summary,
       periods: {
         today: aggregateUsageEvents(scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange: localTodayRange(), limit: 0 }))),
         thisMonth: aggregateUsageEvents(scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange: localCurrentMonthRange(), limit: 0 }))),
         trailingDays: aggregateUsageEvents(events),
       },
-      breakdowns: groupUsageEvents(events),
+      breakdowns: ['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'].flatMap((group) => groupUsageEvents(events, group)),
       trend: this.store.getUsageTrend(events),
       users: Array.from(users, ([user_id, userEvents]) => {
         const usage = this.store.getUsageSummary(userEvents)
         return { user_id, total_tokens: usage.total_tokens, total_requests: usage.total_requests, finance_totals: usage.finance_totals, finance_complete: usage.finance_complete }
       }).sort((left, right) => right.total_tokens - left.total_tokens),
     }
+    for (const section of ['models', 'providers', 'capabilities', 'apps', 'trend', 'today', 'thisMonth', 'users']) onProgress?.({ section, overview })
+    return overview
   }
 
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
@@ -1140,37 +1157,43 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return this.usageTrend
   }
 
-  async queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
+  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview> {
     const dashboardRange = localTrailingDaysRange(30)
-    const query = (timeRange: UsageTimeRange, extra: Record<string, unknown> = {}) => this.queryUsage({
-      time_range: toRawTimeRange(timeRange),
-      zone_wide: scope.zoneWide === true,
-      filters: scope.userId ? { user_ids: [scope.userId] } : {},
-      output_mode: 'summary',
-      ...extra,
-    })
-    const [byModel, byCapability, byApp, trend, today, thisMonth, byUser] = await Promise.all([
-      query(dashboardRange, { group_by: ['provider_model'] }),
-      query(dashboardRange, { group_by: ['capability'] }),
-      query(dashboardRange, { group_by: ['caller_app_id'] }),
-      query(dashboardRange, { time_bucket: 'day' }),
-      query(localTodayRange()),
-      query(localCurrentMonthRange()),
-      query(dashboardRange, { group_by: ['user_id'] }),
-    ])
-    return {
-      summary: toUsageSummary({ byModel, byCapability, byApp, today, thisMonth }),
-      periods: { today: toUsageTotals(today.total), thisMonth: toUsageTotals(thisMonth.total), trailingDays: toUsageTotals(byModel.total) },
-      breakdowns: [byModel, byCapability, byApp].flatMap((raw) => groupedRows(raw).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([key,value]) => [key,asNonEmptyString(value, key === 'caller_app_id' ? 'system' : '')])), aggregate: toUsageTotals(row.aggregate) }))),
-      trend: toUsageTrend(trend),
-      users: groupedRows(byUser).map((row) => ({
-        user_id: asNonEmptyString(row.group?.user_id, ''),
-        total_tokens: aggregateTokens(row.aggregate),
-        total_requests: asNumber(row.aggregate?.total_requests, 0),
-        finance_totals: normalizeFinanceTotals(row.aggregate?.finance_totals),
-        finance_complete: asBoolean(row.aggregate?.finance_complete, true),
-      })).sort((left, right) => right.total_tokens - left.total_tokens),
+    const values: Record<string, RawUsageQueryResponse> = {}
+    const build = (): UsageOverview => {
+      const summary = toUsageSummary({ byModel: { ...values.models, total: values.trend?.total }, byCapability: values.capabilities ?? {}, byApp: values.apps ?? {}, today: values.today ?? {}, thisMonth: values.thisMonth ?? {} })
+      summary.by_provider = Object.fromEntries(groupedRows(values.providers ?? {}).map((row) => [asNonEmptyString(row.group?.provider_instance_name, ''), aggregateTokens(row.aggregate)]))
+      return {
+        timeRange: dashboardRange,
+        summary,
+        periods: { today: toUsageTotals(values.today?.total), thisMonth: toUsageTotals(values.thisMonth?.total), trailingDays: toUsageTotals(values.trend?.total) },
+        breakdowns: ['models', 'providers', 'capabilities', 'apps'].flatMap((section) => groupedRows(values[section] ?? {}).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([key,value]) => [key,asNonEmptyString(value, key === 'caller_app_id' ? 'system' : '')])), aggregate: toUsageTotals(row.aggregate) }))),
+        trend: toUsageTrend(values.trend ?? {}),
+        users: groupedRows(values.users ?? {}).map((row) => ({ user_id: asNonEmptyString(row.group?.user_id, ''), total_tokens: aggregateTokens(row.aggregate), total_requests: asNumber(row.aggregate?.total_requests, 0), finance_totals: normalizeFinanceTotals(row.aggregate?.finance_totals), finance_complete: asBoolean(row.aggregate?.finance_complete, true) })).sort((left,right) => right.total_tokens - left.total_tokens),
+      }
     }
+    const requests: Array<[string, UsageTimeRange, Record<string, unknown>]> = [
+      ['models', dashboardRange, { group_by: ['provider_model'], output_mode: 'groups', group_limit: 20 }],
+      ['providers', dashboardRange, { group_by: ['provider_instance_name'], output_mode: 'groups', group_limit: 20 }],
+      ['capabilities', dashboardRange, { group_by: ['capability'], output_mode: 'groups', group_limit: 20 }],
+      ['apps', dashboardRange, { group_by: ['caller_app_id'], output_mode: 'groups', group_limit: 20 }],
+      ['trend', dashboardRange, { time_bucket: 'day' }],
+      ['today', localTodayRange(), {}],
+      ['thisMonth', localCurrentMonthRange(), {}],
+      ['users', dashboardRange, { group_by: ['user_id'], output_mode: 'groups' }],
+    ]
+    const results = await Promise.allSettled(requests.map(async ([section,timeRange,extra]) => {
+      try {
+        values[section] = await this.queryUsage({ time_range: toRawTimeRange(timeRange), zone_wide: scope.zoneWide === true, filters: scope.userId ? { user_ids: [scope.userId] } : {}, output_mode: 'summary', ...extra })
+        onProgress?.({ section, overview: build() })
+      } catch (error) {
+        onProgress?.({ section, overview: build(), failed: true })
+        throw error
+      }
+    }))
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+    return build()
   }
 
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {

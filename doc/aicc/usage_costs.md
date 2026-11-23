@@ -120,3 +120,5 @@ uv run python src/tools/repair_aicc_usage_cost.py --database /path/to/aicc-usage
 本地协议/结算测试覆盖图片数、音乐请求、音频秒、计算秒、显式免费、币种优先级、Omni 视频费率；存储测试覆盖跨页相同筛选总计、多币种、0/null 和覆盖数。T1.5 fixture 同步补充 fal duration，且对媒体计费用量增加明确断言；真实 Provider 与 Zone Gateway 的 T1.5/T2 验证须另行安排，不能由本地测试代替。
 
 按用户要求，内置手册 `aigc_image`、`aigc_audio`、`aigc_video`、`buckyos_admin` 不作修改，用量与成本说明集中在本文。没有修改 AgentRoot、Session/Behavior、skill 安装协议、工具挂载或发布命令。没有新增服务、第三方依赖或通用组件，workspace、安装映射和 scheduler 不需新增接入。
+
+首页统计采用渐进响应：近期记录独立分页；今天、本月、趋势、用户及各分类分别展示。模型和 Provider 分组分页不影响完整时间窗口总量，Provider 费用直接取 Provider 分组，不与模型分组重复相加。

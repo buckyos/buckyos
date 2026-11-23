@@ -1,5 +1,5 @@
 import { buckyos } from 'buckyos'
-import { createAICCMgr, type UsageScope } from '../../src/api/aicc_mgr.ts'
+import { createAICCMgr, mergeUsageOverview, type UsageScope } from '../../src/api/aicc_mgr.ts'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -52,13 +52,13 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
       assert(overview.trend[0].tokens === 120, 'trend carries scoped aggregates')
       for (const period of Object.values(overview.periods)) assert(period.total_tokens === 120 && period.dimensions.image_units.amount === 1 && period.dimensions.input_tokens.reported_events === 3, 'every home period preserves its own full usage dimensions and coverage')
       assert(overview.breakdowns.some((row) => row.group.caller_app_id === 'system'), 'missing caller app uses the same system group as the home summary')
-      assert(overview.breakdowns.length === 3 && overview.breakdowns[0].aggregate.finance_totals.length === 2, 'home breakdowns preserve scoped aggregate currencies instead of estimating from recent rows')
+      assert(overview.breakdowns.length === 4 && overview.breakdowns[0].aggregate.finance_totals.length === 2, 'home breakdowns preserve scoped aggregate currencies instead of estimating from recent rows')
       const page = await manager.queryUsageEvents({
         scope, timeRange: { startTimeMs: 0, endTimeMs: Date.now() }, limit: 10,
         filters: { providerInstanceNames: ['provider'] },
       })
       assert(page.events[0].user_id === 'bob' && page.events[0].tenant_id === 'tenant-bob', 'event ownership and tenant remain distinct')
-      assert(sent.length === 8, 'all seven overview slices plus events are requested')
+      assert(sent.length === 9, 'all eight independent overview slices plus events are requested')
       for (const params of sent) {
         assert(params.zone_wide === (scope.zoneWide === true), 'every request carries the selected system/personal boundary')
         const filters = params.filters as Record<string, unknown>
@@ -89,12 +89,15 @@ Deno.test('usage overview rejects a failed slice instead of displaying an empty 
   })
   try {
     let error: unknown
+    const completed: string[] = []
+    const failed: string[] = []
     try {
-      await createAICCMgr({ useMock: false }).queryUsageOverview({ zoneWide: true })
+      await createAICCMgr({ useMock: false }).queryUsageOverview({ zoneWide: true }, (progress) => (progress.failed ? failed : completed).push(progress.section))
     } catch (caught) {
       error = caught
     }
     assert(error instanceof Error && error.message === 'usage unavailable', 'failed group query must remain visible to the dashboard')
+    assert(failed.join(',') === 'users' && completed.includes('today') && completed.length === 7, 'one failed card does not discard successful slices')
   } finally {
     sdk.getAccountInfo = originalAccountInfo
     sdk.getServiceRpcClient = originalClient
@@ -145,4 +148,37 @@ Deno.test('usage pages omit aggregates while independent breakdowns keep scope a
     assert(JSON.stringify(sent[0].filters) === JSON.stringify(sent[1].filters), 'pages and summaries share exact filters')
     assert(sent.every((params) => params.zone_wide === true), 'both requests preserve the permission boundary')
   } finally { sdk.getServiceRpcClient = original }
+})
+
+
+Deno.test('home overview publishes completed slices before a slow model query finishes', async () => {
+  const sdk = buckyos as unknown as { getServiceRpcClient: (service: string) => unknown }
+  const original = sdk.getServiceRpcClient
+  let release!: () => void
+  const delayed = new Promise<void>((resolve) => { release = resolve })
+  const seen: string[] = []
+  const aggregate = { total_requests: 2, total_tokens: 100, finance_totals: [{ currency: 'USD', amount: 0.3 }], finance_complete: true }
+  sdk.getServiceRpcClient = () => ({ call: async (_method: string, params: Record<string, unknown>) => {
+    const group = (params.group_by as string[] | undefined)?.[0]
+    if (group === 'provider_model') {
+      assert(params.output_mode === 'groups' && params.group_limit === 20, 'model breakdown is bounded on the server')
+      await delayed
+    }
+    return { total: aggregate, grouped: group ? [{ group: { [group]: 'example' }, aggregate }] : [], buckets: [] }
+  } })
+  try {
+    const manager = createAICCMgr({ useMock: false })
+    let complete = false
+    const pending = manager.queryUsageOverview({}, ({ section }) => seen.push(section)).then((value) => { complete = true; return value })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert(seen.includes('today') && seen.includes('providers'), 'fast independent sections publish without waiting for models')
+    assert(!complete && !seen.includes('models'), 'slow section remains pending')
+    release()
+    const overview = await pending
+    assert(seen.length === 8 && seen.includes('models'), 'every section publishes its result')
+    const expanded = { ...overview, summary: { ...overview.summary, by_model: { ...overview.summary.by_model, extra: 10 } } }
+    const merged = mergeUsageOverview(expanded, { section: 'trend', overview })
+    assert(merged.summary.by_model.extra === 10, 'late totals do not overwrite expanded model data')
+    assert(merged.summary.total_tokens === 100, 'complete totals stay independent of limited groups')
+  } finally { release(); sdk.getServiceRpcClient = original }
 })

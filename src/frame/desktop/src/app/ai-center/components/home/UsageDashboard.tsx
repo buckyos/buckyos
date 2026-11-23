@@ -13,6 +13,7 @@ import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
 import { ConsumptionValue, UsageConsumption, UsageUnits, UsageMoney, UsageCost } from '../usage/UsageConsumption'
 import { aggregateUsageEvents, eventUsageDimensions, mergeUsageTotals } from '../../datamodel/usage-units'
 import type { UsageTotals } from '../../mock/types'
+import { mergeUsageOverview } from '../../../../api/aicc_mgr'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageOverview, UsageScope, UsageSummary, UsageTimeRange, UserUsageSummary } from '../../../../api/aicc_mgr'
 import { formatTokens as formatQuotaTokens, type QuotaRuleDraft } from '../../datamodel/quota'
 
@@ -221,7 +222,6 @@ interface UsageDashboardProps {
 export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProps) {
   const { t } = useI18n()
   const store = useAICCStore()
-  const version = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
   const isAdmin = useViewerIsAdmin()
   const [selection, setSelection] = useState('system')
   const scopeKey = isAdmin ? selection : 'mine'
@@ -233,6 +233,16 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
   const [result, setResult] = useState<{ key: string; overview: UsageOverview } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
+  const snapshotVersion = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
+  const lastSnapshotVersion = useRef(snapshotVersion)
+  useEffect(() => {
+    const previous = lastSnapshotVersion.current
+    lastSnapshotVersion.current = snapshotVersion
+    if (previous !== snapshotVersion && previous !== 0) setRetry((value) => value + 1)
+  }, [snapshotVersion])
+  const overviewGeneration = useRef(0)
+  const [overviewStates, setOverviewStates] = useState<Record<string, string>>({})
+  const [homeHasMore, setHomeHasMore] = useState<Record<string, boolean>>({})
   const refreshBillingOverview = useCallback(() => setRetry((value) => value + 1), [])
 
   useEffect(() => {
@@ -244,22 +254,52 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
     return () => { live = false }
   }, [isAdmin])
 
+  const emptyOverview = useMemo<UsageOverview>(() => {
+    const summary = store.getUsageSummary()
+    return { summary: { ...summary, total_tokens: 0, total_requests: 0, today_tokens: 0, this_month_tokens: 0, finance_totals: [], finance_complete: true, by_provider: {}, by_model: {}, by_app: {}, by_api_namespace: Object.fromEntries(Object.keys(summary.by_api_namespace).map((key) => [key, 0])) as UsageSummary['by_api_namespace'] }, trend: [], periods: { today: aggregateUsageEvents([]), thisMonth: aggregateUsageEvents([]), trailingDays: aggregateUsageEvents([]) }, breakdowns: [], users: [] }
+  }, [store])
   useEffect(() => {
     if (isAdmin === null || mode === 'usage') return
+    const generation = ++overviewGeneration.current
     let live = true
-    void store.queryUsageOverview(scope).then((overview) => {
+    setError(null)
+    setOverviewStates({})
+    setHomeHasMore({})
+    setResult({ key: scopeKey, overview: emptyOverview })
+    void store.queryUsageOverview(scope, (progress) => {
       if (!live) return
-      setError(null)
-      setResult({ key: scopeKey, overview })
-      if (isAdmin) setUsers((current) => uniqueSorted([...current, ...overview.users.map((user) => user.user_id)]))
-    }).catch(() => {
-      if (live) setError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.'))
-    })
-    return () => { live = false }
-  }, [isAdmin, mode, retry, scope, scopeKey, store, t, version])
+      setOverviewStates((current) => ({ ...current, [progress.section]: progress.failed ? 'error' : 'ready' }))
+      if (progress.failed) return
+      setResult((current) => ({ key: scopeKey, overview: mergeUsageOverview(current?.key === scopeKey ? current.overview : emptyOverview, progress) }))
+      const field = { models: 'provider_model', providers: 'provider_instance_name', apps: 'caller_app_id', capabilities: 'capability' }[progress.section]
+      if (field) setHomeHasMore((current) => ({ ...current, [progress.section]: progress.overview.breakdowns.filter((row) => field in row.group).length === 20 }))
+      if (isAdmin && progress.section === 'users') setUsers((current) => uniqueSorted([...current, ...progress.overview.users.map((user) => user.user_id)]))
+    }).catch(() => { if (live) setError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.')) })
+    return () => { live = false; if (overviewGeneration.current === generation) overviewGeneration.current++ }
+  }, [isAdmin, mode, retry, scope, scopeKey, store, t, emptyOverview])
 
-  const emptyOverview = useMemo<UsageOverview>(() => ({ summary: store.getUsageSummary(), trend: [], periods: { today: aggregateUsageEvents([]), thisMonth: aggregateUsageEvents([]), trailingDays: aggregateUsageEvents([]) }, breakdowns: [], users: [] }), [store])
-  const ready = isAdmin !== null && (mode === 'usage' || result?.key === scopeKey)
+  const loadHomeGroup = async (key: HomeBreakdownKey) => {
+    if (result?.key !== scopeKey) return
+    const generation = overviewGeneration.current
+    const [section, field] = { provider: ['providers', 'provider_instance_name'], model: ['models', 'provider_model'], appAgent: ['apps', 'caller_app_id'], apiType: ['capabilities', 'capability'] }[key]
+    if (overviewStates[section] === 'loading') return
+    setOverviewStates((current) => ({ ...current, [section]: 'loading' }))
+    try {
+      const page = await store.queryUsageEvents({ scope, timeRange: result.overview.timeRange ?? localTrailingDaysRange(30, Date.now()), limit: 1, summaryOnly: true, groupBy: field, groupLimit: 20, groupOffset: result.overview.breakdowns.filter((row) => field in row.group).length })
+      if (generation !== overviewGeneration.current) return
+      setResult((current) => {
+        if (current?.key !== scopeKey) return current
+        const overview = current.overview
+        const summaryField = { providers: 'by_provider', models: 'by_model', apps: 'by_app', capabilities: 'by_api_namespace' }[section] as 'by_provider' | 'by_model' | 'by_app' | 'by_api_namespace'
+        const grouped: Record<string, number> = { ...overview.summary[summaryField] }
+        for (const row of page.grouped) { const label = key === 'apiType' ? row.group[field].split('.')[0] : row.group[field]; grouped[label] = (grouped[label] ?? 0) + row.aggregate.total_tokens }
+        return { key: scopeKey, overview: { ...overview, summary: { ...overview.summary, [summaryField]: grouped }, breakdowns: [...overview.breakdowns, ...page.grouped] } }
+      })
+      setHomeHasMore((current) => ({ ...current, [section]: page.grouped.length === 20 }))
+      setOverviewStates((current) => ({ ...current, [section]: 'ready' }))
+    } catch { if (generation === overviewGeneration.current) setOverviewStates((current) => ({ ...current, [section]: 'error' })) }
+  }
+  const ready = isAdmin !== null
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -282,18 +322,22 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
           </select>
         ) : <span className="text-sm" style={{ color: 'var(--cp-text)' }}>{isAdmin === null ? t('common.loading', 'Loading...') : t('aiCenter.home.myUsage', 'My usage')}</span>}
       </section>
-      {error ? (
+      {error && (
         <div role="alert" className="rounded-xl p-4 text-sm" style={{ color: 'var(--cp-danger)', background: 'var(--cp-surface)' }}>
           {error}
           <button type="button" onClick={() => { setError(null); setResult(null); setRetry((value) => value + 1) }} className="ml-3 min-h-10 underline">{t('common.retry', 'Retry')}</button>
         </div>
-      ) : ready ? (
+      )}
+      {ready ? (
         <div data-testid="usage-scope-content" data-scope={scopeKey}>
           <ScopedUsageDashboard
             key={scopeKey}
             mode={mode}
             scope={scope}
-            overview={mode === 'usage' ? emptyOverview : result!.overview}
+            overview={mode === 'usage' || result?.key !== scopeKey ? emptyOverview : result.overview}
+            overviewStates={result?.key === scopeKey ? overviewStates : {}}
+            homeHasMore={homeHasMore}
+            onLoadHomeGroup={loadHomeGroup}
             onBillingRefresh={refreshBillingOverview}
             onSelectUser={isAdmin && scopeKey === 'system' ? (user) => setSelection(`user:${user}`) : undefined}
             onSetQuota={scopeKey === 'mine' ? onSetQuota : undefined}
@@ -304,9 +348,12 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
   )
 }
 
-function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSelectUser, onBillingRefresh }: UsageDashboardProps & {
+function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, overviewStates, homeHasMore, onLoadHomeGroup, onSelectUser, onBillingRefresh }: UsageDashboardProps & {
   scope: UsageScope
   overview: UsageOverview
+  overviewStates: Record<string, string>
+  homeHasMore: Record<string, boolean>
+  onLoadHomeGroup: (key: HomeBreakdownKey) => void
   onBillingRefresh: () => void
   onSelectUser?: (user: string) => void
 }) {
@@ -315,6 +362,10 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
   const status = useAIStatus()
   const providers = useProviders()
   const { summary, trend } = overview
+  const homeMessage = (section: string) => overviewStates[section] === 'error' ? t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.') : t('common.loading', 'Loading...')
+  const homeValue = (section: string, value: ReactNode) => overviewStates[section] === 'ready' ? value : <span role={overviewStates[section] === 'error' ? 'alert' : 'status'}>{homeMessage(section)}</span>
+  const homeSections = { provider: 'providers', model: 'models', appAgent: 'apps', apiType: 'capabilities' }
+
   const isMobile = useMediaQuery('(max-width: 767px)')
   const [timeRange, setTimeRange] = useState<TimeRangeFilter>('all')
   const [providerFilter, setProviderFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
@@ -369,7 +420,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
     axis: new Intl.DateTimeFormat(locale, { day: 'numeric' }),
     tooltip: new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }),
   }), [locale])
-  const costValue = formatFinanceTotals(summary.finance_totals, locale, costExpanded)
+  const costValue = overviewStates.trend === 'ready' ? formatFinanceTotals(summary.finance_totals, locale, costExpanded) : homeMessage('trend')
   const currencyInteraction = hasMultipleCurrencies
     ? costExpanded
       ? t('aiCenter.home.collapseCurrenciesHint', 'Click to collapse currencies')
@@ -614,7 +665,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
   const homeBilling = (key: HomeBreakdownKey, label: string): UsageTotals | undefined => {
     const field = { provider: 'provider_instance_name', model: 'provider_model', appAgent: 'caller_app_id', apiType: 'capability' }[key]
     const rows = overview.breakdowns.filter((row) => {
-      if (key === 'provider' && !row.group.provider_instance_name) return row.group.provider_model?.endsWith(`@${label}`)
+      if (key === 'provider') return row.group.provider_instance_name === label
       if (key === 'apiType') return row.group.capability?.split('.')[0] === label
       return row.group[field] === label
     })
@@ -712,7 +763,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
               icon: <DollarSign size={18} />,
               title: t('aiCenter.home.periodCost', 'Est. cost · 30 days'),
               value: costValue,
-              subtitle: costSubtitle,
+              subtitle: overviewStates.trend === 'ready' ? costSubtitle : undefined,
               onClick: hasMultipleCurrencies ? () => setCostExpanded((value) => !value) : undefined,
               tone: summary.finance_totals.some((money) => money.amount > 0) ? 'warning' : 'default',
             },
@@ -765,6 +816,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
             </span>
           </div>
           <div className="flex items-end gap-1 h-40 md:h-52">
+            {overviewStates.trend !== 'ready' && <p role="status" className="self-center text-xs">{homeMessage('trend')}</p>}
             {trend.map((point) => {
               // Older fixtures use MM-DD; the service sends YYYY-MM-DD local calendar dates.
               const date = new Date(`${point.timestamp.length === 5 ? '2000-' : ''}${point.timestamp}T00:00:00`)
@@ -795,10 +847,10 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
             {t('aiCenter.home.usageSummary', 'Usage Summary')}
           </h3>
           <div className="grid grid-cols-2 gap-4 items-stretch">
-            <Stat label={t('aiCenter.home.today', 'Today')} value={<UsageUnits alignStart tokens={overview.periods.today.total_tokens} dimensions={overview.periods.today.dimensions} count={overview.periods.today.total_requests} />} />
-            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={<UsageUnits tokens={overview.periods.thisMonth.total_tokens} dimensions={overview.periods.thisMonth.dimensions} count={overview.periods.thisMonth.total_requests} />} />
-            <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={<UsageUnits alignStart tokens={overview.periods.trailingDays.total_tokens} dimensions={overview.periods.trailingDays.dimensions} count={overview.periods.trailingDays.total_requests} />} />
-            <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={<UsageMoney totals={summary.finance_totals} />} />
+            <Stat label={t('aiCenter.home.today', 'Today')} value={homeValue('today', <UsageUnits alignStart tokens={overview.periods.today.total_tokens} dimensions={overview.periods.today.dimensions} count={overview.periods.today.total_requests} />)} />
+            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={homeValue('thisMonth', <UsageUnits tokens={overview.periods.thisMonth.total_tokens} dimensions={overview.periods.thisMonth.dimensions} count={overview.periods.thisMonth.total_requests} />)} />
+            <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={homeValue('trend', <UsageUnits alignStart tokens={overview.periods.trailingDays.total_tokens} dimensions={overview.periods.trailingDays.dimensions} count={overview.periods.trailingDays.total_requests} />)} />
+            <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={homeValue('trend', <UsageMoney totals={summary.finance_totals} />)} />
           </div>
         </section>
       </div>}
@@ -808,17 +860,17 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           {t('aiCenter.home.usageSummary', 'Usage Summary')}
         </h3>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 items-stretch">
-          <Stat label={t('aiCenter.home.today', 'Today')} value={<UsageUnits alignStart tokens={overview.periods.today.total_tokens} dimensions={overview.periods.today.dimensions} count={overview.periods.today.total_requests} />} />
-          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={<UsageUnits tokens={overview.periods.thisMonth.total_tokens} dimensions={overview.periods.thisMonth.dimensions} count={overview.periods.thisMonth.total_requests} />} />
-          <Stat label={t('aiCenter.home.total', 'Total')} value={<UsageUnits alignStart tokens={overview.periods.trailingDays.total_tokens} dimensions={overview.periods.trailingDays.dimensions} count={overview.periods.trailingDays.total_requests} />} />
-          <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
-          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={<UsageMoney totals={summary.finance_totals} />} />
+          <Stat label={t('aiCenter.home.today', 'Today')} value={homeValue('today', <UsageUnits alignStart tokens={overview.periods.today.total_tokens} dimensions={overview.periods.today.dimensions} count={overview.periods.today.total_requests} />)} />
+          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={homeValue('thisMonth', <UsageUnits tokens={overview.periods.thisMonth.total_tokens} dimensions={overview.periods.thisMonth.dimensions} count={overview.periods.thisMonth.total_requests} />)} />
+          <Stat label={t('aiCenter.home.total', 'Total')} value={homeValue('trend', <UsageUnits alignStart tokens={overview.periods.trailingDays.total_tokens} dimensions={overview.periods.trailingDays.dimensions} count={overview.periods.trailingDays.total_requests} />)} />
+          <Stat label={t('aiCenter.home.requests', 'Requests')} value={homeValue('trend', summary.total_requests.toString())} />
+          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={homeValue('trend', <UsageMoney totals={summary.finance_totals} />)} />
         </div>
       </section>}
 
       {isUsagePage && usageTab === 'usage' && <UsageConsumption page={consumptionPage} loading={consumptionLoading} error={consumptionError} groupHasMore={groupHasMore} groupLoading={groupLoading} groupErrors={groupErrors} onRetryTotal={() => void loadConsumption()} onRetryGroup={(key) => void loadConsumption(key, consumptionPage.grouped.some((row) => key in row.group))} onLoadMore={(key) => void loadConsumption(key, true)} />}
 
-      {!isUsagePage && onSelectUser && <UserUsageTable users={overview.users} onSelect={onSelectUser} />}
+      {!isUsagePage && onSelectUser && (overviewStates.users === 'ready' ? <UserUsageTable users={overview.users} onSelect={onSelectUser} /> : <section role="status" className="rounded-xl p-4 text-xs">{homeMessage('users')}</section>)}
 
       {!isUsagePage && (
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -847,6 +899,10 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
               <Breakdown
                 key={item.key}
                 title={item.title}
+                loading={!overviewStates[homeSections[item.key]] || overviewStates[homeSections[item.key]] === 'loading'}
+                error={overviewStates[homeSections[item.key]] === 'error'}
+                hasMore={homeHasMore[homeSections[item.key]]}
+                onLoadMore={() => onLoadHomeGroup(item.key)}
                 billing={(label) => homeBilling(item.key, label)}
                 rows={item.rows}
                 total={summary.total_tokens}
@@ -863,6 +919,10 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           <div className="md:hidden">
             <Breakdown
               title={activeHomeBreakdown.title}
+              loading={!overviewStates[homeSections[activeHomeBreakdown.key]] || overviewStates[homeSections[activeHomeBreakdown.key]] === 'loading'}
+              error={overviewStates[homeSections[activeHomeBreakdown.key]] === 'error'}
+              hasMore={homeHasMore[homeSections[activeHomeBreakdown.key]]}
+              onLoadMore={() => onLoadHomeGroup(activeHomeBreakdown.key)}
               billing={(label) => homeBilling(activeHomeBreakdown.key, label)}
               rows={activeHomeBreakdown.rows}
               total={summary.total_tokens}
@@ -2005,7 +2065,15 @@ function Breakdown({
   filterLabel,
   emptyLabel,
   billing,
+  loading,
+  error,
+  hasMore,
+  onLoadMore,
 }: {
+  loading?: boolean
+  error?: boolean
+  hasMore?: boolean
+  onLoadMore?: () => void
   billing?: (label: string) => UsageTotals | undefined
   title: string
   rows: Array<[string, number]>
@@ -2030,10 +2098,12 @@ function Breakdown({
           {title}
         </h3>
         <span className="shrink-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
-          {rows.length}
+          {loading ? '…' : `${rows.length}${hasMore ? '+' : ''}`}
         </span>
       </div>
       <div className={`flex flex-col gap-1 ${expanded ? 'max-h-80 overflow-y-auto pr-1' : ''}`}>
+        {loading && <p role="status" className="text-xs">{t('common.loading', 'Loading...')}</p>}
+        {error && <p role="alert" className="text-xs">{t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.')} <button type="button" className="underline" onClick={onLoadMore}>{t('common.retry', 'Retry')}</button></p>}
         {visibleRows.map(([label, value]) => (
           <div key={label} className="flex min-w-0 items-center gap-1">
             <div className="min-w-0 flex-1">
@@ -2063,12 +2133,13 @@ function Breakdown({
             )}
           </div>
         ))}
-        {rows.length === 0 && (
+        {!loading && !error && rows.length === 0 && (
           <div className="rounded-md px-2 py-6 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
             {emptyLabel}
           </div>
         )}
       </div>
+      {expanded && hasMore && <button type="button" disabled={loading} className="mt-3 text-xs underline" onClick={onLoadMore}>{t('common.loadMore', 'Load more')}</button>}
       {hiddenCount > 0 && (
         <button
           type="button"
