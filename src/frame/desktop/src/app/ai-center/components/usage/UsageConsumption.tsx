@@ -5,13 +5,13 @@ import type { Money, UsageDimension, UsageTotals } from '../../mock/types'
 import type { UsageEventsPage } from '../../../../api/aicc_mgr'
 import { mergeUsageTotals, usageUnits } from '../../datamodel/usage-units'
 
-export function UsageUnits({ tokens, dimensions, count, alignStart = false }: { tokens: number; dimensions: Record<string, UsageDimension>; count: number; alignStart?: boolean }) {
+export function UsageUnits({ tokens, dimensions, count, alignStart = false, compact = false }: { tokens: number; dimensions: Record<string, UsageDimension>; count: number; alignStart?: boolean; compact?: boolean }) {
   const { locale } = useI18n()
   const en = locale === 'en'
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const format = (value: number) => value.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })
   return <ClickAwayListener mouseEvent="onPointerDown" touchEvent={false} onClickAway={() => { if (detailsRef.current) detailsRef.current.open = false }}><details ref={detailsRef} className="relative" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
-    <summary className="cursor-pointer whitespace-nowrap text-xs underline decoration-dotted underline-offset-4" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Usage details' : '用量明细'}>{format(tokens)} tokens</summary>
+    <summary className="cursor-pointer truncate text-xs underline decoration-dotted underline-offset-4" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Usage details' : '用量明细'} title={`${format(tokens)} tokens`}>{compact ? tokens.toLocaleString(en ? 'en-US' : 'zh-CN', { notation: 'compact', maximumFractionDigits: 1 }) : `${format(tokens)} tokens`}</summary>
     <div className={`absolute ${alignStart ? 'left-0 md:left-auto md:right-0' : 'right-0'} z-30 mt-2 w-72 max-w-[85vw] rounded-lg p-3 shadow-xl text-left`} style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}>
       <p className="mb-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{en ? 'Subsets overlap; do not add them to the total.' : '缓存、多模态、推理为细分子项，不重复累加至总量。'}</p>
       <dl className="max-h-72 overflow-y-auto text-xs">
@@ -25,28 +25,28 @@ export function UsageUnits({ tokens, dimensions, count, alignStart = false }: { 
   </details></ClickAwayListener>
 }
 
-export function UsageMoney({ totals, empty = '—' }: { totals: Money[]; empty?: string }) {
+export function UsageMoney({ totals, empty = '—', compact = false }: { totals: Money[]; empty?: string; compact?: boolean }) {
   const { locale } = useI18n()
   const en = locale === 'en'
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const ordered = [...totals].sort((a, b) => Number(b.currency === 'USD') - Number(a.currency === 'USD') || a.currency.localeCompare(b.currency))
   const format = (money: Money) => `${money.currency} ${money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}`
-  if (ordered.length < 2) return <span className="whitespace-nowrap tabular-nums">{ordered.length ? format(ordered[0]) : empty}</span>
+  if (!ordered.length || (!compact && ordered.length < 2)) return <span className="whitespace-nowrap tabular-nums">{ordered.length ? format(ordered[0]) : empty}</span>
   return <ClickAwayListener mouseEvent="onPointerDown" touchEvent={false} onClickAway={() => { if (detailsRef.current) detailsRef.current.open = false }}><details ref={detailsRef} className="relative" data-testid="usage-currencies" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') event.currentTarget.open = false }}>
-    <summary className="cursor-pointer whitespace-nowrap underline decoration-dotted underline-offset-4 tabular-nums" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Cost by currency' : '各币种费用'}>{format(ordered[0])}</summary>
+    <summary className="cursor-pointer truncate underline decoration-dotted underline-offset-4 tabular-nums" style={{ color: 'var(--cp-accent)' }} aria-label={en ? 'Cost by currency' : '各币种费用'} title={format(ordered[0])}>{compact && /^[A-Z]{3}$/.test(ordered[0].currency) ? ordered[0].amount.toLocaleString(en ? 'en-US' : 'zh-CN', { style: 'currency', currency: ordered[0].currency, currencyDisplay: 'narrowSymbol', notation: 'compact', maximumSignificantDigits: 3 }) : format(ordered[0])}</summary>
     <dl className="absolute right-0 z-30 mt-2 min-w-44 rounded-lg p-3 text-xs shadow-xl" style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}>
       {ordered.map((money) => <div key={money.currency} className="flex justify-between gap-4 py-1"><dt>{money.currency}</dt><dd className="tabular-nums">{money.amount.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumFractionDigits: 6 })}</dd></div>)}
     </dl>
   </details></ClickAwayListener>
 }
 
-export function ConsumptionValue({ total }: { total: UsageTotals }) {
+export function ConsumptionValue({ total, horizontal = false }: { total: UsageTotals; horizontal?: boolean }) {
   const { locale } = useI18n()
   const en = locale === 'en'
-  return <div className="flex shrink-0 flex-col items-end gap-1">
-    <UsageUnits tokens={total.total_tokens} dimensions={total.dimensions} count={total.total_requests} />
-    <div className="text-xs"><UsageMoney totals={total.finance_totals} empty={total.total_requests === 0 ? '—' : (en ? 'Unknown cost' : '费用未知')} /></div>
-    {!total.finance_complete && <span className="text-[10px]" style={{ color: 'var(--cp-warning)' }}>{en ? 'Known cost subtotal · unpriced' : '已知费用小计 · 未计价'} {total.unpriced_requests}</span>}
+  return <div className={horizontal ? "grid min-w-0 grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)] items-center gap-x-2 gap-y-1" : "flex shrink-0 flex-col items-end gap-1"}>
+    <UsageUnits tokens={total.total_tokens} dimensions={total.dimensions} count={total.total_requests} compact={horizontal} />
+    <div className="min-w-0 text-xs"><UsageMoney compact={horizontal} totals={total.finance_totals} empty={total.total_requests === 0 ? '—' : (en ? 'Unknown cost' : '费用未知')} /></div>
+    {!total.finance_complete && <span className={`text-[10px] ${horizontal ? 'col-span-2 text-right' : ''}`} style={{ color: 'var(--cp-warning)' }}>{en ? 'Known cost subtotal · unpriced' : '已知费用小计 · 未计价'} {total.unpriced_requests}</span>}
   </div>
 }
 
@@ -65,7 +65,7 @@ export function UsageConsumption({ page, loading, error, groupHasMore, groupLoad
         map.set(label, [...(map.get(label) ?? []), row.aggregate])
       }
       const rows = Array.from(map, ([label, totals]) => ({ label, total: mergeUsageTotals(totals) })).sort((a,b) => b.total.total_tokens - a.total.total_tokens || b.total.total_requests - a.total.total_requests)
-      return <section key={key} data-testid={`usage-consumption-${key}`} aria-busy={groupLoading?.[key] === true} className="flex min-w-0 flex-col rounded-lg p-3" style={{ border: '1px solid var(--cp-border)' }}><h4 className="mb-3 min-h-10 text-xs font-medium">{en ? english : chinese}{!groupLoading?.[key] && !groupErrors?.[key] && <> · {rows.length}{groupHasMore?.[key] ? '+' : ''}</>}</h4>{groupLoading?.[key] && <p role="status" className="mb-2 text-xs">{en ? 'Loading…' : '加载中…'}</p>}{groupErrors?.[key] && <div role="alert" className="mb-2 text-xs">{groupErrors[key]} {onRetryGroup && <button type="button" className="underline" onClick={() => onRetryGroup(key)}>{en ? 'Retry' : '重试'}</button>}</div>}{(expanded[key] ? rows : rows.slice(0,4)).map(({label,total}) => <div key={label} className="mb-3 min-h-24"><div className="flex min-w-0 flex-col gap-1"><span className="min-w-0 truncate text-xs" title={label}>{label}</span><div className="min-h-14 self-end"><ConsumptionValue total={total} /></div></div><div className="mt-1 h-1 rounded" style={{ background: 'var(--cp-bg)' }}><div className="h-1 rounded" style={{ background: 'var(--cp-accent)', width: `${!loading && !error && page.total.total_tokens ? total.total_tokens / page.total.total_tokens * 100 : 0}%` }} /></div></div>)}{expanded[key] && groupHasMore?.[key] && onLoadMore && <button type="button" className="mr-3 text-xs" style={{ color: 'var(--cp-accent)' }} disabled={groupLoading?.[key] === true} onClick={() => onLoadMore(key)}>{en ? 'Load more' : '加载更多'}</button>}{rows.length > 4 && <button type="button" className="text-xs" style={{ color: 'var(--cp-accent)' }} onClick={() => setExpanded({ ...expanded, [key]: !expanded[key] })}>{expanded[key] ? (en ? 'Show less' : '收起') : (en ? 'Show more' : '展开')}</button>}</section>
+      return <section key={key} data-testid={`usage-consumption-${key}`} aria-busy={groupLoading?.[key] === true} className="flex min-w-0 flex-col rounded-lg p-3" style={{ border: '1px solid var(--cp-border)' }}><h4 className="mb-3 min-h-10 text-xs font-medium">{en ? english : chinese}{!groupLoading?.[key] && !groupErrors?.[key] && <> · {rows.length}{groupHasMore?.[key] ? '+' : ''}</>}</h4>{groupLoading?.[key] && <p role="status" className="mb-2 text-xs">{en ? 'Loading…' : '加载中…'}</p>}{groupErrors?.[key] && <div role="alert" className="mb-2 text-xs">{groupErrors[key]} {onRetryGroup && <button type="button" className="underline" onClick={() => onRetryGroup(key)}>{en ? 'Retry' : '重试'}</button>}</div>}{(expanded[key] ? rows : rows.slice(0,4)).map(({label,total}) => <div key={label} className="mb-3"><div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-center gap-2"><span className="min-w-0 truncate text-xs" title={label}>{label}</span><ConsumptionValue total={total} horizontal /></div><div className="mt-1 h-1 rounded" style={{ background: 'var(--cp-bg)' }}><div className="h-1 rounded" style={{ background: 'var(--cp-accent)', width: `${!loading && !error && page.total.total_tokens ? total.total_tokens / page.total.total_tokens * 100 : 0}%` }} /></div></div>)}{expanded[key] && groupHasMore?.[key] && onLoadMore && <button type="button" className="mr-3 text-xs" style={{ color: 'var(--cp-accent)' }} disabled={groupLoading?.[key] === true} onClick={() => onLoadMore(key)}>{en ? 'Load more' : '加载更多'}</button>}{rows.length > 4 && <button type="button" className="text-xs" style={{ color: 'var(--cp-accent)' }} onClick={() => setExpanded({ ...expanded, [key]: !expanded[key] })}>{expanded[key] ? (en ? 'Show less' : '收起') : (en ? 'Show more' : '展开')}</button>}</section>
     })}</div>
   </section>
 }

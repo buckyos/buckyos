@@ -2105,8 +2105,8 @@ function Breakdown({
         {loading && <p role="status" className="text-xs">{t('common.loading', 'Loading...')}</p>}
         {error && <p role="alert" className="text-xs">{t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.')} <button type="button" className="underline" onClick={onLoadMore}>{t('common.retry', 'Retry')}</button></p>}
         {visibleRows.map(([label, value]) => (
-          <div key={label} className="flex min-w-0 flex-col gap-1">
-            <div className="flex min-h-11 min-w-0 items-center gap-1"><div className="min-w-0 flex-1">
+          <div key={label} className="flex min-h-11 min-w-0 items-center gap-1">
+            <div className="min-w-0 flex-1">
               <MeterRow
                 label={label}
                 value={value}
@@ -2117,6 +2117,7 @@ function Breakdown({
                 onClick={onSelect ? () => onSelect(label) : undefined}
               />
             </div>
+            {billing?.(label) && <div className="min-w-0 flex-[2]"><ConsumptionValue total={billing(label)!} horizontal /></div>}
             {onSetQuota && (
               <button
                 type="button"
@@ -2129,8 +2130,7 @@ function Breakdown({
               >
                 <Gauge size={14} />
               </button>
-            )}</div>
-            {billing?.(label) && <div className="min-h-14 self-end"><ConsumptionValue total={billing(label)!} /></div>}
+            )}
           </div>
         ))}
         {!loading && !error && rows.length === 0 && (
