@@ -115,9 +115,9 @@ function hashPassword(user: string, value: string, nonce?: number) {
 
 export async function login(page: Page, userId: string, value: string): Promise<Actor> {
   await page.goto('/')
-  await page.getByLabel('Username', { exact: true }).fill(userId)
-  await page.getByLabel('Password', { exact: true }).fill(value)
-  await page.getByRole('button', { name: 'Sign In', exact: true }).click()
+  await page.getByLabel(/^(Username|用户名)$/).fill(userId)
+  await page.getByLabel(/^(Password|密码)$/).fill(value)
+  await page.getByRole('button', { name: /^(Sign In|登录)$/ }).click()
   await expect(page.getByTestId('desktop-app-aiworkspace')).toBeVisible({ timeout: 30_000 })
   const cookie = (await page.context().cookies()).find((entry) => entry.name === 'buckyos_session_token')
   if (!cookie) throw new Error('Real login returned no BuckyOS session cookie')
@@ -165,7 +165,14 @@ export async function openWorkspace(actor: Actor, ws: Workspace) {
   await actor.page.goto(`${workspaceOrigin(actor, ws)}/w`)
   await expect(actor.page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id)
   await expect(actor.page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
-  await expect(actor.page.getByTestId('aiws-principal')).toHaveAttribute('data-principal', actor.userId)
+  if (await actor.page.getByTestId('aiws-workspace').getAttribute('data-phone') === 'true') {
+    await expect.poll(async () => {
+      const cookie = (await actor.page.context().cookies(actor.page.url())).find(entry => entry.name === 'buckyos_session_token')
+      return cookie ? (JSON.parse(Buffer.from(cookie.value.split('.')[1], 'base64url').toString('utf8')) as { sub: string }).sub : null
+    }).toBe(actor.userId)
+  } else {
+    await expect(actor.page.getByTestId('aiws-principal')).toHaveAttribute('data-principal', actor.userId)
+  }
 }
 
 export async function createTemplate(actor: Actor, template: 'sample' | 'quarterly', desktop = false): Promise<Workspace> {

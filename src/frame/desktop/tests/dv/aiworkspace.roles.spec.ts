@@ -67,6 +67,26 @@ async function read<T = EntityEnvelope>(actor: Actor, ws: Workspace, entity_id: 
   return actor.client.ok<T>('doc.read', { workspace_id: ws.workspace_id, entity_id })
 }
 
+async function createReviewWorkspace(owner: Actor): Promise<Workspace> {
+  const ws = await owner.client.ok<Workspace>('ws.create', { title: owner.client.prefix })
+  owner.client.owned.add(ws.workspace_id)
+  const entities = new Set(['surface-main-content', 'surface-main', 'tasks', 'task-42-details', 'cell-all-tasks', 'notes'])
+  const fixture = JSON.parse(readFileSync(new URL('../../src/app/aiworkspace/fixtures/project-workspace.commits.json', import.meta.url), 'utf8')) as { commits: { message: string; operations: Operation[] }[] }
+  for (const commit of fixture.commits) {
+    const operations = commit.operations.filter(op => (
+      op.op === 'table.insert_records' ? op.source_id === 'tasks'
+        : op.op === 'entity.create' && entities.has(op.entity_id)
+    )).map(op => op.op === 'entity.create' && op.entity_id === 'notes'
+      ? { ...op, payload: { ...op.payload, content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: 'review-source' }, content: [{ type: 'text', text: 'Synthetic project notes' }] }] } } }
+      : op)
+    if (operations.length) {
+      const result = await owner.client.commit(ws, operations)
+      expect(result.status, commit.message + ': ' + JSON.stringify(result)).toBe('accepted')
+    }
+  }
+  return ws
+}
+
 test('real accounts cannot read another private workspace through data, annotations, exports, history or references', async ({ owner, participants }, info) => {
   const { editor, outsider, commenter } = participants
   const ws = await createSample(owner)
@@ -106,7 +126,7 @@ test('real accounts cannot read another private workspace through data, annotati
 
 test('real history readers see private source content only with access to it', async ({ owner, participants }) => {
   const { outsider } = participants
-  const ws = await createSample(owner)
+  const ws = await createReviewWorkspace(owner)
   await grant(owner, ws, outsider, ['read'])
   await owner.client.ok('acl.set', {
     workspace_id: ws.workspace_id,
@@ -313,7 +333,7 @@ for (const roleDevice of ['desktop', 'phone'] as const) {
 
     test('a real teacher comments in the permitted folder, except during a student’s show', async ({ owner, participants }, info) => {
       const { commenter: teacher, editor: student } = participants
-      const ws = await createSample(owner)
+      const ws = await createReviewWorkspace(owner)
       await grant(owner, ws, teacher, ['read'])
       await grant(owner, ws, student, ['read', 'update'])
       const outline = await owner.client.ok<{ entities: EntityEnvelope[] }>('doc.outline', { workspace_id: ws.workspace_id })
@@ -322,6 +342,9 @@ for (const roleDevice of ['desktop', 'phone'] as const) {
       const parentId = roleDevice === 'phone' ? 'data' : folder!
       await grant(owner, ws, teacher, ['comment'], parentId)
       expect((await teacher.client.info(ws)).capabilities).not.toContain('comment')
+      expect((await read(teacher, ws, parentId)).capabilities).toContain('comment')
+      const visible = await teacher.client.ok<{ entities: EntityEnvelope[] }>('doc.outline', { workspace_id: ws.workspace_id })
+      expect(visible.entities.find(entity => entity.entity_id === parentId)?.capabilities).toContain('comment')
       expect((await read(owner, ws, 'tasks')).parent_id).toBe('data')
       const path = await owner.client.commit(ws, [{
         op: 'entity.create', entity_id: 'review-show', type_id: 'buckyos.show-path', parent_id: 'shows', order_key: 'z',
@@ -334,12 +357,16 @@ for (const roleDevice of ['desktop', 'phone'] as const) {
         await teacher.page.getByTestId('aiws-menu-data-mode').tap()
         await teacher.page.getByTestId('aiws-tree-tasks').tap()
         await expect(teacher.page.getByTestId('aiws-dm')).toHaveAttribute('data-layout', 'phone')
+        await teacher.page.getByTestId('aiws-table-toggle-layout').tap()
       } else {
         await setCanvasMode(teacher.page, 'view')
       }
       const cell = teacher.page.getByTestId('aiws-cell-task-41-owner').first()
       await expect(cell).toHaveAttribute('data-editable', 'false')
-      const comment = cell.getByRole('button', { name: '评论 负责人 task-41', exact: true })
+      const comment = cell.locator('.aiws-cell-annotate')
+      if (roleDevice === 'desktop') {
+        await expect(comment).toHaveCount(1)
+      }
       const baseline = await owner.client.cell(ws, 'task-41', 'owner')
       const show = await student.client.ok<{ show_id: string; locked: boolean }>('show.start', { workspace_id: ws.workspace_id, path_id: 'review-show', live: false })
       expect(show.locked).toBe(true)
