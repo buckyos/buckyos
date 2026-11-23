@@ -2117,7 +2117,7 @@ function Breakdown({
                 onClick={onSelect ? () => onSelect(label) : undefined}
               />
             </div>
-            {billing?.(label) && <div className="min-w-0 flex-[2]"><ConsumptionValue total={billing(label)!} horizontal /></div>}
+            {billing?.(label) && <div className="min-w-0 flex-1"><ConsumptionValue total={billing(label)!} compact /></div>}
             {onSetQuota && (
               <button
                 type="button"
