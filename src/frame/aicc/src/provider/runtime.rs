@@ -31,6 +31,14 @@ impl ProviderRuntime {
             .await
     }
 
+    pub(super) async fn refresh_dynamic_credential(
+        &self,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        self.credential_resolver
+            .refresh_dynamic(&self.config.credential)
+            .await
+    }
+
     pub(super) async fn quota_observation(&self) -> ProviderQuotaObservation {
         ProviderQuotaObservation {
             state: ProviderQuotaObservationState::Unsupported,

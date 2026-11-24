@@ -1583,7 +1583,7 @@ impl AiccError {
     }
 
     pub fn to_krpc_error(&self) -> RPCErrors {
-        if self.code.is_policy_refusal() {
+        if self.code.is_policy_refusal() || self.code == AiccErrorCode::NoCandidateModel {
             // The wire carries the code and the whole error as data, so every
             // client branches on `code` (PRD §7.4) instead of parsing text.
             return RPCErrors::Detailed(RPCErrorDetail {
@@ -7058,4 +7058,22 @@ pub fn generate_aicc_service_doc() -> AppDoc {
     .selector_type(SelectorType::Random)
     .build()
     .unwrap()
+}
+
+#[cfg(test)]
+mod routing_error_tests {
+    use super::*;
+
+    #[test]
+    fn routing_errors_keep_their_structured_code() {
+        for code in [AiccErrorCode::NoCandidateModel, AiccErrorCode::ResourceNotPermitted] {
+            let error = AiccError::new(code, "request cannot be served");
+            let wire = error.to_krpc_error();
+            let RPCErrors::Detailed(detail) = &wire else {
+                panic!("expected structured error")
+            };
+            assert_eq!(detail.code, code.as_str());
+            assert_eq!(AiccError::from_krpc_error(&wire).unwrap().code, code);
+        }
+    }
 }

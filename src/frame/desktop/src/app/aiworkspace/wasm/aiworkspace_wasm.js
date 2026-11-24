@@ -1410,7 +1410,7 @@ function __wbg_get_imports() {
             const ret = arg0.node;
             return ret;
         },
-        __wbg_now_9bf5511d775c411f: function() {
+        __wbg_now_e9a103e6f2c18d6d: function() {
             const ret = Date.now();
             return ret;
         },

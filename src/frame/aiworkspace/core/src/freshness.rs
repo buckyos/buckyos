@@ -414,8 +414,16 @@ pub fn hand_edited(e: &EntityRow, generated_rev: u64) -> bool {
 const CODING_CODES: &[&str] = &["PROGRAM_FAILED", "MACRO_CODE_CHANGED", "NEEDS_CODING"];
 /// Run codes that say the wish cannot run here now (permissions, AI quota, execution environment).
 const CANNOT_RUN_CODES: &[&str] = &[
-    "AI_QUOTA_EXHAUSTED", "AI_QUOTA_BUDGET_EXCEEDED", "AI_RESOURCE_NOT_PERMITTED", "AI_ATTRIBUTION_UNAVAILABLE", "AI_UNAVAILABLE",
-    "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE", "PERMISSION_DENIED", "ACCESS_DENIED",
+    "AI_QUOTA_EXHAUSTED",
+    "AI_QUOTA_BUDGET_EXCEEDED",
+    "AI_RESOURCE_NOT_PERMITTED",
+    "AI_NO_CANDIDATE_MODEL",
+    "AI_ATTRIBUTION_UNAVAILABLE",
+    "AI_UNAVAILABLE",
+    "EXECUTION_CONTEXT_MISSING",
+    "SNAPSHOT_TOO_LARGE",
+    "PERMISSION_DENIED",
+    "ACCESS_DENIED",
 ];
 
 fn run_code(run: &Value) -> Option<&str> {
@@ -667,7 +675,7 @@ mod tests {
         g["input_problems"] = json!([{ "entity_id": "orders", "reason": "missing" }]);
         assert_eq!(main_of(&g, &failed("INVALID_OPERATION", Some("PROGRAM_FAILED"))).0, "needs_coding");
         // cannot run: permissions, AI quota, execution environment — by code when there is no sub code
-        for code in ["PERMISSION_DENIED", "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE"] {
+        for code in ["PERMISSION_DENIED", "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE", "AI_NO_CANDIDATE_MODEL", "AI_RESOURCE_NOT_PERMITTED"] {
             assert_eq!(main_of(&f, &failed(code, None)), s("cannot_run", "fix", false), "{code}");
         }
         // any other failure (a failed error-level check included) leaves the state to what the wish is: here current
