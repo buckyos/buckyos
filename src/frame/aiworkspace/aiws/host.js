@@ -158,9 +158,13 @@ function mediaRequest(kind, req) {
   if (typeof req.negative === 'string' && req.negative) out.negative_prompt = req.negative
   if (Number.isInteger(req.seed)) out.seed = req.seed
   if (kind === 'image') {
-    if (req.aspect) out.aspect_ratio = String(req.aspect)
+    if (req.aspect) {
+      const ratio = String(req.aspect).match(/^([1-9]\d{0,2}):([1-9]\d{0,2})$/)
+      if (!ratio || Number(ratio[1]) > 100 || Number(ratio[2]) > 100) throw new Error('aiws.ai.image: aspect is W:H with integers in 1..=100')
+      out.aspect_ratio = String(req.aspect)
+    }
     if (req.size) {
-      if (!/^\d+x\d+$/.test(String(req.size))) throw new Error('aiws.ai.image: size is WxH, such as 1024x1536')
+      if (!/^(?:[1-9]\d*x[1-9]\d*|1K|2K|4K)$/.test(String(req.size))) throw new Error('aiws.ai.image: size is WxH or a model-supported 1K, 2K, 4K preset')
       out.size = String(req.size)
     }
     if (req.quality) out.quality = String(req.quality)
@@ -171,7 +175,10 @@ function mediaRequest(kind, req) {
     }
     const images = req.images === undefined || req.images === null ? [] : Array.isArray(req.images) ? req.images : [req.images]
     if (images.length > 8) throw new Error('aiws.ai.image: at most 8 reference images')
-    if (images.length) out.images = images.map((x) => mediaRef(x, 'aiws.ai.image images'))
+    if (images.length) {
+      out.images = images.map((x) => mediaRef(x, 'aiws.ai.image images'))
+      if (out.size) { out.output = { ...out.output, size: out.size }; delete out.size }
+    }
     return out
   }
   const output = {}
@@ -196,6 +203,16 @@ function mediaRequest(kind, req) {
   }
   if (conditions.length) out.conditions = conditions
   return out
+}
+
+function imageAspectProblem(media, request) {
+  if (!request.aspect_ratio) return null
+  const [w, h] = request.aspect_ratio.split(':').map(Number)
+  if (!(media.width > 0 && media.height > 0)) return { error: `cannot verify requested aspect ${request.aspect_ratio}: image dimensions are missing`, code: 'AI_INVALID_ANSWER' }
+  if (Math.abs(media.width / media.height / (w / h) - 1) > 0.05) return {
+    error: `image aspect does not match requested ${request.aspect_ratio}: received ${media.width}x${media.height}`, code: 'AI_INVALID_ANSWER',
+  }
+  return null
 }
 
 /** The width and height the Workspace found in a staged picture. */
@@ -432,7 +449,10 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
     if (hit && typeof hit === 'object' && typeof hit.object_id === 'string') {
       // the same request made this before: stage it again for this run (it may have been applied, or have expired)
       const staged = await importAsset(hit.object_id).catch(() => null)
-      if (staged) return { ...hit, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+      if (staged) {
+        const media = { ...hit, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+        if (kind !== 'image' || !imageAspectProblem(media, request)) return media
+      }
     }
     if (spent[kind] >= maxCalls) return { error: `the ${kind} budget of this run is spent: at most ${maxCalls} calls`, code: 'AI_BUDGET_EXCEEDED' }
     spent[kind] += 1
@@ -443,7 +463,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       const staged = await importAsset(got.obj_id)
       out = { kind, object_id: staged.object_id ?? got.obj_id, media_type: staged.media_type ?? got.media_type, size: staged.size ?? null, ...dims(staged) }
       const m = got.metadata
-      if (m && typeof m === 'object') {
+      if (kind === 'video' && m && typeof m === 'object') {
         if (Number(m.duration_seconds) > 0) out.duration = Number(m.duration_seconds)
         if (Number(m.width) > 0 && Number(m.height) > 0) Object.assign(out, { width: Number(m.width), height: Number(m.height) })
       }
@@ -456,6 +476,10 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
           : ' — no image model of this Zone takes this request; try fewer reference images, another size or aspect'
       }
       return r
+    }
+    if (kind === 'image') {
+      const problem = imageAspectProblem(out, request)
+      if (problem) return problem
     }
     await cachePut([{ key, value: out }])
     return { ...out, cached: false }

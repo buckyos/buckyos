@@ -125,7 +125,15 @@ fn immediate_operation(id: &str, api_types: &[ApiType]) -> OperationDescriptor {
         bindings: api_types
             .iter()
             .copied()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::Immediate]))
+            .map(|api_type| {
+                OperationBinding::new(api_type, [ExecutionMode::Immediate]).with_image_parameters(
+                    match api_type {
+                        ApiType::ImageTextToImage => &["aspect_ratio", "n"],
+                        ApiType::ImageImageToImage => &["aspect_ratio"],
+                        _ => &[],
+                    },
+                )
+            })
             .collect(),
         supports_cancel: false,
         supports_webhook: false,
@@ -285,11 +293,46 @@ impl OperationCodec for MiniMaxImmediateCodec {
                 }
                 ("/v1/t2a_v2", Value::Object(body))
             }
-            (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => (
-                "/v1/image_generation",
-                Value::Object(image_body(request, &model)),
-            ),
+            (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => {
+                call.context.reject_unsupported_options(
+                    "MiniMax image generation",
+                    &[
+                        ("negative_prompt", request.negative_prompt.is_some()),
+                        ("quality", request.quality.is_some()),
+                        ("size", request.size.is_some()),
+                        ("style", request.style.is_some()),
+                        ("seed", request.seed.is_some()),
+                        (
+                            "output",
+                            request
+                                .output
+                                .as_ref()
+                                .is_some_and(|o| o != &Default::default()),
+                        ),
+                    ],
+                )?;
+                (
+                    "/v1/image_generation",
+                    Value::Object(image_body(request, &model)),
+                )
+            }
             (AiccCall::ImageToImage(request), ApiType::ImageImageToImage) => {
+                call.context.reject_unsupported_options(
+                    "MiniMax image edit",
+                    &[
+                        ("negative_prompt", request.negative_prompt.is_some()),
+                        ("quality", request.quality.is_some()),
+                        ("seed", request.seed.is_some()),
+                        ("strength", request.strength.is_some()),
+                        (
+                            "output",
+                            request
+                                .output
+                                .as_ref()
+                                .is_some_and(|o| o != &Default::default()),
+                        ),
+                    ],
+                )?;
                 if request.images.len() != 1 {
                     return Err(ProtocolError::new(
                         ProtocolErrorKind::UnsupportedOperation,
@@ -301,6 +344,9 @@ impl OperationCodec for MiniMaxImmediateCodec {
                     ("prompt".to_string(), json!(request.prompt)),
                     ("response_format".to_string(), json!("url")),
                 ]);
+                if let Some(ratio) = &request.aspect_ratio {
+                    body.insert("aspect_ratio".into(), json!(ratio));
+                }
                 body.insert(
                     "subject_reference".to_string(),
                     json!([{"type":"character","image_file":resource_string(&request.images[0], call.context)?}]),

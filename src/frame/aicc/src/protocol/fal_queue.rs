@@ -37,7 +37,15 @@ pub(crate) fn fal_queue_adapter() -> (AdapterDescriptor, CodecRegistration) {
         operation_id: FAL_QUEUE_OPERATION_ID.to_string(),
         bindings: FAL_API_TYPES
             .into_iter()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::NativeTask]))
+            .map(|api_type| {
+                OperationBinding::new(api_type, [ExecutionMode::NativeTask]).with_image_parameters(
+                    match api_type {
+                        ApiType::ImageTextToImage => &["negative_prompt", "seed", "n"],
+                        ApiType::ImageImageToImage => &["negative_prompt", "seed", "strength"],
+                        _ => &[],
+                    },
+                )
+            })
             .collect(),
         supports_cancel: true,
         supports_webhook: false,
@@ -187,8 +195,42 @@ fn canonical_body(
     context: &CodecContext,
 ) -> ProtocolResultValue<Map<String, Value>> {
     let value = match call {
-        AiccCall::ImagesGenerate(request) => request_value(request)?,
-        AiccCall::ImageToImage(request) => request_value(request)?,
+        AiccCall::ImagesGenerate(request) => {
+            context.reject_unsupported_options(
+                "fal image generation",
+                &[
+                    ("aspect_ratio", request.aspect_ratio.is_some()),
+                    ("size", request.size.is_some()),
+                    ("quality", request.quality.is_some()),
+                    ("style", request.style.is_some()),
+                    (
+                        "output",
+                        request
+                            .output
+                            .as_ref()
+                            .is_some_and(|o| o != &Default::default()),
+                    ),
+                ],
+            )?;
+            request_value(request)?
+        }
+        AiccCall::ImageToImage(request) => {
+            context.reject_unsupported_options(
+                "fal image edit",
+                &[
+                    ("aspect_ratio", request.aspect_ratio.is_some()),
+                    ("quality", request.quality.is_some()),
+                    (
+                        "output",
+                        request
+                            .output
+                            .as_ref()
+                            .is_some_and(|o| o != &Default::default()),
+                    ),
+                ],
+            )?;
+            request_value(request)?
+        }
         AiccCall::ImageInpaint(request) => request_value(request)?,
         AiccCall::ImageUpscale(request) => request_value(request)?,
         AiccCall::ImageBackgroundRemove(request) => request_value(request)?,

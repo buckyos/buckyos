@@ -176,8 +176,12 @@ pub fn check_value(ty: &str, v: &Value) -> bool {
 pub fn sniff_file(bytes: &[u8]) -> (String, Option<(u64, u64)>) {
     let media = crate::objects::sniff_media_type(bytes).to_string();
     let dims = match media.as_str() {
-        "image/png" if bytes.len() >= 24 => Some((u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as u64, u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as u64)),
+        "image/png" if bytes.len() >= 24 => Some((
+            u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as u64,
+            u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as u64,
+        )),
         "image/jpeg" => jpeg_dims(bytes),
+        "image/webp" => webp_dims(bytes),
         "image/svg+xml" => {
             let head = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]).to_string();
             let attr = |n: &str| -> Option<u64> {
@@ -198,7 +202,49 @@ pub fn sniff_file(bytes: &[u8]) -> (String, Option<(u64, u64)>) {
         }
         _ => None,
     };
-    (media, dims.filter(|(w, h)| *w > 0 && *h > 0 && *w <= 1 << 20 && *h <= 1 << 20))
+    (
+        media,
+        dims.filter(|(w, h)| *w > 0 && *h > 0 && *w <= 1 << 20 && *h <= 1 << 20),
+    )
+}
+
+fn webp_dims(b: &[u8]) -> Option<(u64, u64)> {
+    if b.get(..4)? != b"RIFF" || b.get(8..12)? != b"WEBP" {
+        return None;
+    }
+    let end = usize::try_from(u32::from_le_bytes(b.get(4..8)?.try_into().ok()?))
+        .ok()?
+        .checked_add(8)?;
+    let mut i = 12usize;
+    while i.checked_add(8)? <= b.len().min(end) {
+        let tag = b.get(i..i + 4)?;
+        let len = u32::from_le_bytes(b.get(i + 4..i + 8)?.try_into().ok()?) as usize;
+        let start = i.checked_add(8)?;
+        let next = start.checked_add(len)?;
+        if next > end {
+            return None;
+        }
+        let data = b.get(start..next)?;
+        let u24 = |p: &[u8]| u64::from(p[0]) | (u64::from(p[1]) << 8) | (u64::from(p[2]) << 16);
+        if tag == b"VP8X" && data.len() >= 10 {
+            return Some((u24(&data[4..7]) + 1, u24(&data[7..10]) + 1));
+        }
+        if tag == b"VP8 " && data.len() >= 10 && data[3..6] == [0x9d, 0x01, 0x2a] {
+            return Some((
+                u64::from(u16::from_le_bytes([data[6], data[7]]) & 0x3fff),
+                u64::from(u16::from_le_bytes([data[8], data[9]]) & 0x3fff),
+            ));
+        }
+        if tag == b"VP8L" && data.len() >= 5 && data[0] == 0x2f {
+            let bits = u32::from_le_bytes(data[1..5].try_into().ok()?);
+            return Some((
+                u64::from((bits & 0x3fff) + 1),
+                u64::from(((bits >> 14) & 0x3fff) + 1),
+            ));
+        }
+        i = next.checked_add(len % 2)?;
+    }
+    None
 }
 
 /// The size in a JPEG's frame header (SOF0–SOF15 but DHT, JPG and DAC), when the bytes reach it.
@@ -1052,5 +1098,43 @@ mod tests {
         assert!(!check_value("currency", &json!("twelve")));
         let (m, d) = sniff_file(br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"></svg>"#);
         assert_eq!((m.as_str(), d), ("image/svg+xml", Some((640, 360))));
+    }
+}
+
+#[cfg(test)]
+mod webp_tests {
+    use super::sniff_file;
+    fn webp(tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut b = b"RIFF".to_vec();
+        b.extend_from_slice(&(12u32 + data.len() as u32 + data.len() as u32 % 2).to_le_bytes());
+        b.extend_from_slice(b"WEBP");
+        b.extend_from_slice(tag);
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(data);
+        if data.len() % 2 != 0 {
+            b.push(0);
+        }
+        b
+    }
+    #[test]
+    fn dimensions_cover_lossy_lossless_and_extended_webp() {
+        let mut extended = vec![0; 10];
+        extended[4..7].copy_from_slice(&[0xff, 3, 0]);
+        extended[7..10].copy_from_slice(&[0xff, 5, 0]);
+        let mut lossy = vec![0, 0, 0, 0x9d, 1, 0x2a];
+        lossy.extend_from_slice(&1024u16.to_le_bytes());
+        lossy.extend_from_slice(&1536u16.to_le_bytes());
+        let mut lossless = vec![0x2f];
+        lossless.extend_from_slice(&(1023u32 | (1535 << 14)).to_le_bytes());
+        for (tag, data) in [(b"VP8X", extended), (b"VP8 ", lossy), (b"VP8L", lossless)] {
+            let b = webp(tag, &data);
+            assert_eq!(sniff_file(&b), ("image/webp".into(), Some((1024, 1536))));
+            for n in 0..b.len() - 1 {
+                assert_eq!(sniff_file(&b[..n]).1, None);
+            }
+        }
+        let mut bad = webp(b"VP8X", &[0; 10]);
+        bad[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(sniff_file(&bad).1, None);
     }
 }

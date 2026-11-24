@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-16.1",
+  "revision": "2026-11-24.image-contract.1",
   "checked_at": "2026-11-16",
   "providers": [
     {
@@ -784,6 +784,22 @@
               "gpt-image-2.5-flare",
               "gpt-image-2.5-sunburst"
             ]
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "1280x720",
+                "/quality": "medium",
+                "/output_format": "jpeg"
+              }
+            }
           }
         },
         {
@@ -862,6 +878,22 @@
               "gpt-image-2.5-flare",
               "gpt-image-2.5-sunburst"
             ]
+          },
+          "image_parameter_probes": {
+            "image.img2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "1280x720",
+                "/quality": "medium",
+                "/output_format": "jpeg"
+              }
+            }
           }
         },
         {
@@ -2007,7 +2039,39 @@
             "https://ai.google.dev/gemini-api/docs/image-generation",
             "https://ai.google.dev/gemini-api/docs/api-errors"
           ],
-          "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks."
+          "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks.",
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "seed": 7,
+                "output": {
+                  "media_type": "image/jpeg",
+                  "size": "2K"
+                }
+              },
+              "expected_body_paths": {
+                "/response_format/aspect_ratio": "16:9",
+                "/response_format/image_size": "2K",
+                "/generation_config/seed": 7
+              }
+            },
+            "image.img2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "seed": 7,
+                "output": {
+                  "media_type": "image/jpeg",
+                  "size": "2K"
+                }
+              },
+              "expected_body_paths": {
+                "/response_format/aspect_ratio": "16:9",
+                "/response_format/image_size": "2K",
+                "/generation_config/seed": 7
+              }
+            }
+          }
         },
         {
           "id": "gemini.interactions.tts.v1beta",
@@ -3134,7 +3198,25 @@
             "https://platform.minimax.io/docs/api-reference/image-generation-t2i",
             "https://platform.minimax.io/docs/api-reference/image-generation-i2i"
           ],
-          "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls."
+          "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls.",
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "aspect_ratio": "16:9"
+              },
+              "expected_body_paths": {
+                "/aspect_ratio": "16:9"
+              }
+            },
+            "image.img2img": {
+              "request": {
+                "aspect_ratio": "16:9"
+              },
+              "expected_body_paths": {
+                "/aspect_ratio": "16:9"
+              }
+            }
+          }
         },
         {
           "id": "minimax.video-generation.v2",
@@ -4440,7 +4522,33 @@
             "https://openrouter.ai/docs/guides/overview/multimodal/image-generation",
             "https://openrouter.ai/openapi.json"
           ],
-          "evidence_summary": "OpenRouter dedicated Image API uses POST /api/v1/images, input_references for image-to-image, and data[].b64_json plus media_type for output."
+          "evidence_summary": "OpenRouter dedicated Image API uses POST /api/v1/images, input_references for image-to-image, and data[].b64_json plus media_type for output.",
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "seed": 7,
+                "quality": "high"
+              },
+              "expected_body_paths": {
+                "/aspect_ratio": "16:9",
+                "/seed": 7,
+                "/quality": "high"
+              }
+            },
+            "image.img2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "seed": 7,
+                "quality": "high"
+              },
+              "expected_body_paths": {
+                "/aspect_ratio": "16:9",
+                "/seed": 7,
+                "/quality": "high"
+              }
+            }
+          }
         },
         {
           "id": "openrouter.embeddings.v1",
@@ -6513,6 +6621,26 @@
             "image.img2img": [
               "doubao-seedream-5.0-flash"
             ]
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "size": "2048x2048"
+              },
+              "expected_body_paths": {
+                "/size": "2048x2048"
+              }
+            },
+            "image.img2img": {
+              "request": {
+                "output": {
+                  "size": "2048x2048"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "2048x2048"
+              }
+            }
           }
         },
         {
@@ -7691,6 +7819,26 @@
               "doubao-seedream-5-0-flash-260915",
               "doubao-seedream-5-5-261028"
             ]
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "size": "2048x2048"
+              },
+              "expected_body_paths": {
+                "/size": "2048x2048"
+              }
+            },
+            "image.img2img": {
+              "request": {
+                "output": {
+                  "size": "2048x2048"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "2048x2048"
+              }
+            }
           }
         }
       ]
@@ -8406,6 +8554,20 @@
           "aicc_error_code_by_scenario": {
             "invalid_request": "invalid_request",
             "not_found": "invalid_request"
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "negative_prompt": "watermark",
+                "seed": 7,
+                "size": "1536x1024"
+              },
+              "expected_body_paths": {
+                "/parameters/size": "1536*1024",
+                "/parameters/seed": 7,
+                "/input/negative_prompt": "watermark"
+              }
+            }
           }
         },
         {
@@ -8501,6 +8663,34 @@
           "aicc_error_code_by_scenario": {
             "invalid_request": "invalid_request",
             "not_found": "invalid_request"
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "negative_prompt": "watermark",
+                "seed": 7,
+                "size": "1536x1024"
+              },
+              "expected_body_paths": {
+                "/parameters/size": "1536*1024",
+                "/parameters/seed": 7,
+                "/parameters/negative_prompt": "watermark"
+              }
+            },
+            "image.img2img": {
+              "request": {
+                "negative_prompt": "watermark",
+                "seed": 7,
+                "output": {
+                  "size": "1536x1024"
+                }
+              },
+              "expected_body_paths": {
+                "/parameters/size": "1536*1024",
+                "/parameters/seed": 7,
+                "/parameters/negative_prompt": "watermark"
+              }
+            }
           }
         },
         {
@@ -8564,6 +8754,22 @@
             },
             "usage": {
               "image_count": 1
+            }
+          },
+          "image_parameter_probes": {
+            "image.img2img": {
+              "request": {
+                "negative_prompt": "watermark",
+                "seed": 7,
+                "output": {
+                  "size": "1536x1024"
+                }
+              },
+              "expected_body_paths": {
+                "/parameters/size": "1536*1024",
+                "/parameters/seed": 7,
+                "/parameters/negative_prompt": "watermark"
+              }
             }
           }
         },
@@ -10422,6 +10628,36 @@
             "gpt-6.1-terra-pro": {
               "/reasoning/mode": "pro"
             }
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "aspect_ratio": "3:2",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/tools/0/size": "1536x1024",
+                "/tools/0/quality": "medium",
+                "/tools/0/output_format": "jpeg"
+              }
+            },
+            "image.img2img": {
+              "request": {
+                "aspect_ratio": "3:2",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/tools/0/size": "1536x1024",
+                "/tools/0/quality": "medium",
+                "/tools/0/output_format": "jpeg"
+              }
+            }
           }
         },
         {
@@ -10686,6 +10922,22 @@
             "provider_driver": "openai",
             "contract_id": "openai.images.edits.v1",
             "api_type": "image.img2img"
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "1280x720",
+                "/quality": "medium",
+                "/output_format": "jpeg"
+              }
+            }
           }
         },
         {
@@ -10779,6 +11031,22 @@
               "gpt-image-2.5-flare",
               "gpt-image-2.5-sunburst"
             ]
+          },
+          "image_parameter_probes": {
+            "image.img2img": {
+              "request": {
+                "aspect_ratio": "16:9",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "1280x720",
+                "/quality": "medium",
+                "/output_format": "jpeg"
+              }
+            }
           }
         },
         {
@@ -11382,6 +11650,22 @@
             "image.txt2img": [
               "qwen-image-3-pro"
             ]
+          },
+          "image_parameter_probes": {
+            "image.txt2img": {
+              "request": {
+                "aspect_ratio": "1:1",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "1024x1024",
+                "/quality": "medium",
+                "/output_format": "jpeg"
+              }
+            }
           }
         },
         {
@@ -11465,6 +11749,22 @@
             "image.img2img": [
               "qwen-image-3-pro"
             ]
+          },
+          "image_parameter_probes": {
+            "image.img2img": {
+              "request": {
+                "aspect_ratio": "1:1",
+                "quality": "medium",
+                "output": {
+                  "media_type": "image/jpeg"
+                }
+              },
+              "expected_body_paths": {
+                "/size": "1024x1024",
+                "/quality": "medium",
+                "/output_format": "jpeg"
+              }
+            }
           }
         }
       ],

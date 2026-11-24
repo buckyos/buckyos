@@ -7133,3 +7133,32 @@ test("Doubao vision Mock accepts official reasoning levels and rejects unknown v
     }
   }
 });
+
+test("image wire fixtures validate model size constraints and Qwen negative prompt and seed", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const driver of ["openai", "sn-ai-provider"]) {
+    const contract = protocolContract(catalog, driver, driver === "openai" ? "openai.images.generations.v1" : "sn.openai-images-generations.v1");
+    const request = t15ProviderRequest("https://mock.invalid", contract, "gpt-image-2", { size: "1280x720" });
+    const body = JSON.parse(request.init.body as string);
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+    assert.deepEqual(validateProviderRequest(contract, captured, "image.txt2img"), []);
+    for (const size of ["1281x720", "0x0", "4096x4096", "2048x256", "2K"]) {
+      body.size = size;
+      assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("size")), size);
+    }
+  }
+  const contract = protocolContract(catalog, "qwen", "qwen.dashscope.image_generation.v1");
+  const request = t15ProviderRequest("https://mock.invalid", contract, "qwen-image-3.0-pro", { parameters: { size: "1536*1024", negative_prompt: "watermark", seed: 7 } });
+  const body = JSON.parse(request.init.body as string);
+  const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+  assert.deepEqual(validateProviderRequest(contract, captured, "image.txt2img"), []);
+  body.parameters.seed = 2147483648;
+  assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("seed")));
+  body.parameters.seed = 7; body.parameters.negative_prompt = 12;
+  assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("negative_prompt")));
+  const manifest = buildT15Manifest(catalog);
+  for (const provider of catalog.providers) for (const contract of provider.contracts) for (const api of Object.keys(contract.image_parameter_probes ?? {})) {
+    assert.ok(manifest.some(c => c.protocol_contract_id === contract.id && c.api_type === api && c.tags.includes("image_parameters")));
+    assert.ok(manifest.some(c => c.protocol_contract_id === contract.id && c.api_type === api && c.expected_aicc_error_code === "unsupported_operation"));
+  }
+});

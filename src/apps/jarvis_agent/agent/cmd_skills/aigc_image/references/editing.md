@@ -1,8 +1,8 @@
 #### Generation and single-image operations
 
-- `gen_image PROMPT [out]` accepts `--size WxH`, `--aspect 1:1|16:9|9:16|4:3|3:4`, `--quality low|medium|high`, `--n`, `--seed`, `--negative` and `--format png|jpg|webp`. In the tested Zone, gpt-image-2 used size, quality and format, ignoring aspect, seed and negative. Gemini used aspect and seed, accepting JPEG and rejecting PNG/WebP. Query current support and prices with `ai_provider models --api-type image.txt2img`.
+- `gen_image PROMPT [out]` accepts `--size WxH`, `--aspect 1:1|16:9|9:16|4:3|3:4`, `--quality low|medium|high`, `--n`, `--seed`, `--negative` and `--format png|jpg|webp`. The selected model must support every supplied option: unsupported parameters fail before an upstream request. OpenAI/SN map aspect to supported pixel dimensions; they reject seed and negative. Gemini uses aspect and seed, accepting JPEG and rejecting PNG/WebP. Query current support and prices with `ai_provider models --api-type image.txt2img`.
 - With `--n 2`, `gen_image` delivers one image. `resume_aicc_task <task_id> out/set.png` delivers all, with local copies such as `out/set-1.png`.
-- `edit_image INPUT PROMPT [out]` accepts `--strength 0-1` (ignored by gpt-image-2) and `--format`. For masked edits this model expects a same-sized PNG with transparent pixels where it should repaint (`alpha_zero_is_edit_area`). It rejects white/black-area semantics.
+- `edit_image INPUT PROMPT [out]` accepts `--strength 0-1` (rejected by gpt-image-2) and `--format`. For masked edits this model expects a same-sized PNG with transparent pixels where it should repaint (`alpha_zero_is_edit_area`). It rejects white/black-area semantics.
 - `upscale_image INPUT [out]` takes `--scale 2|4`, `--target-width`, `--target-height`, `--preserve-faces`. `remove_bg INPUT [out]` takes `--mode rgba_image|mask`.
 
 ```bash

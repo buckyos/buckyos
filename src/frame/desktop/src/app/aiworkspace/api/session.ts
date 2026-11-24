@@ -896,6 +896,7 @@ export function aiRefusalText(subCode: string | undefined, data: Record<string, 
     case 'AI_QUOTA_BUDGET_EXCEEDED': return aiwsT(own ? 'aiworkspace.wish.aicc.budgetOwn' : 'aiworkspace.wish.aicc.quotaOther')
     case 'AI_RESOURCE_NOT_PERMITTED': return aiwsT(own ? 'aiworkspace.wish.aicc.notPermittedOwn' : 'aiworkspace.wish.aicc.notPermittedOther')
     case 'AI_ATTRIBUTION_UNAVAILABLE': return aiwsT(aicc.mode === 'current_user' ? 'aiworkspace.wish.aicc.noOwnResources' : 'aiworkspace.wish.aicc.noAttribution')
+    case 'AI_UNSUPPORTED_OPERATION': return aiwsT('aiworkspace.wish.aicc.unsupportedOperation')
     case 'AI_UNAVAILABLE': return aiwsT('aiworkspace.wish.error.aiUnavailable')
     default: return undefined
   }

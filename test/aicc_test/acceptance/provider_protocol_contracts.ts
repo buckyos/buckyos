@@ -98,6 +98,7 @@ export type ProviderProtocolContract = {
   forbidden_body_paths?: string[];
   forbidden_body_paths_by_model?: Record<string, string[]>;
   canonical_request_overrides?: Record<string, unknown>;
+  image_parameter_probes?: Record<string, { request: Record<string, unknown>; expected_body_paths: Record<string, unknown> }>;
   cross_provider_target?: { provider_driver: string; contract_id: string; api_type: string };
   generation_config?: {
     allowed_fields: string[];
@@ -1694,6 +1695,11 @@ function validateNestedProviderBody(
     contract.operation === "ark.images.generate" && body.size !== undefined &&
     !/^(1K|2K|4K|[0-9]+x[0-9]+)$/.test(String(body.size))
   ) errors.push("Seedream size must be a resolution or WxH");
+  if (["images.generate", "images.edit"].includes(contract.operation) && String(body.model).startsWith("gpt-image-2") && body.size !== undefined && body.size !== "auto") {
+    const dimensions = /^([1-9]\d*)x([1-9]\d*)$/.exec(String(body.size));
+    const w = Number(dimensions?.[1]), h = Number(dimensions?.[2]);
+    if (!dimensions || w % 16 !== 0 || h % 16 !== 0 || w > 3840 || h > 3840 || w * h > 3840 * 2160 || w > 3 * h || h > 3 * w) errors.push("GPT Image 2 size requires multiples of 16 and aspect between 1:3 and 3:1");
+  }
   if (contract.operation.startsWith("dashscope.")) {
     const input = recordValue(body.input) ?? {};
     const parameters = recordValue(body.parameters) ?? {};
@@ -1759,6 +1765,9 @@ function validateNestedProviderBody(
         errors.push(`unsupported DashScope parameters.${field}`);
       }
     }
+    if (parameters.negative_prompt !== undefined && typeof parameters.negative_prompt !== "string") errors.push("DashScope parameters.negative_prompt must be a string");
+    if (parameters.negative_prompt !== undefined && String(body.model).startsWith("qwen-image-2.1")) errors.push("DashScope model does not support negative_prompt");
+    if (parameters.seed !== undefined && (!Number.isInteger(parameters.seed) || Number(parameters.seed) < 0 || Number(parameters.seed) > 2147483647)) errors.push("DashScope seed must be in 0..2147483647");
     if (
       parameters.size !== undefined &&
       !/^[0-9]+\*[0-9]+$/.test(String(parameters.size))
@@ -2586,6 +2595,10 @@ export function buildT15Manifest(
           ),
           mock_scenario: "success",
         } as AcceptanceCase);
+        if (contract.image_parameter_probes?.[apiType]) {
+          cases.push({ ...common, case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.image-parameters`), tags: [...common.tags!, "image_parameters"], mock_scenario: "success" } as AcceptanceCase);
+          cases.push({ ...common, case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.reject-image-output-fps`), tags: [...common.tags!, "canonical_rejection", "image_output_rejected"], mock_scenario: "success", expected_error_class: "provider_protocol_failed", expected_aicc_error_code: "unsupported_operation", expected_task_status: "failed" } as AcceptanceCase);
+        }
         if (apiType === "image.txt2img") {
           const scopedModels = new Set([
             ...(provider.official_first_party_model_ids?.[apiType] ?? []),
@@ -3049,6 +3062,8 @@ export function buildT15Manifest(
       !testCase.tags.includes("generated_artifact_id") &&
       !testCase.tags.includes("video_scenario") &&
       !testCase.tags.includes("model_api_conformance") &&
+      !testCase.tags.includes("image_parameters") &&
+      !testCase.tags.includes("canonical_rejection") &&
       !testCase.tags.includes("custom_provider")
     ).map((testCase) => ({
       ...testCase,
