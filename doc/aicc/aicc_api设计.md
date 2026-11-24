@@ -1051,6 +1051,8 @@ Request：
 }
 ```
 
+可选参数还包括 `aspect_ratio`、`negative_prompt`、`quality`、`seed`，尺寸位于 `output.size`。支持范围由选定模型的 operation 决定；不支持的参数在发起上游请求前返回包含渠道、模型和字段的 `unsupported_operation`。参数不参与模型筛选或触发候选切换。详见 [图片契约与结果处理](image_parameters.md)。
+
 Response：同 `images.generate`。
 
 当 Provider Rules 为已选模型解析出 Responses image-generation edit operation 时，输入图片降低为 `input_image`，tool action 使用 `edit`；否则使用图片模型的 Image API edit operation。`image.inpaint` 只有在 mask lowering 已被对应 operation 明确支持时才可声明。

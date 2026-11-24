@@ -1214,7 +1214,7 @@ fn image_response_format(
             if mime != "image/jpeg" {
                 return Err(ProtocolError::new(
                     ProtocolErrorKind::UnsupportedOperation,
-                    "Gemini Interactions image response format only supports image/jpeg",
+                    "Gemini Interactions output.media_type only supports image/jpeg",
                 ));
             }
             format.insert("mime_type".to_string(), json!(mime));

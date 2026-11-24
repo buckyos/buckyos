@@ -2145,7 +2145,7 @@ fn image_format(media_type: &str) -> ProtocolResultValue<&'static str> {
         "image/webp" => Ok("webp"),
         _ => Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI image operation does not support the requested media type",
+            "OpenAI image operation does not support output.media_type",
         )),
     }
 }
@@ -2939,7 +2939,7 @@ fn audio_format(media_type: &str) -> ProtocolResultValue<&'static str> {
         "audio/pcm" | "audio/L16" => Ok("pcm"),
         _ => Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI speech does not support the requested media type",
+            "OpenAI speech does not support output.media_type",
         )),
     }
 }

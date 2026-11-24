@@ -298,7 +298,7 @@ fn image_format(media_type: &str) -> ProtocolResultValue<&'static str> {
         "image/svg+xml" => Ok("svg"),
         _ => Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            format!("OpenRouter Image API does not support output media type {media_type}"),
+            format!("OpenRouter Image API does not support output.media_type {media_type}"),
         )),
     }
 }

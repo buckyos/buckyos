@@ -638,6 +638,22 @@ impl std::fmt::Debug for CodecContext {
 }
 
 impl CodecContext {
+    fn image_parameter_error(&self, api_type: ApiType, mut error: ProtocolError) -> ProtocolError {
+        if matches!(
+            api_type,
+            ApiType::ImageTextToImage | ApiType::ImageImageToImage
+        ) && error.kind == ProtocolErrorKind::UnsupportedOperation
+        {
+            error.message = format!(
+                "{} for {}/{}",
+                error.message,
+                self.state_coordinate.provider_profile_id,
+                self.state_coordinate.origin_model
+            );
+        }
+        error
+    }
+
     pub(crate) fn reject_unsupported_options(
         &self,
         protocol: &str,
@@ -1393,6 +1409,7 @@ impl CodecRegistry {
                 input: filtered.as_ref().unwrap_or(input),
                 context,
             })
+            .map_err(|error| context.image_parameter_error(api_type, error))
     }
 
     #[cfg(test)]
@@ -1554,6 +1571,7 @@ impl CodecRegistry {
             }),
             None => codec.encode_native(input),
         }
+        .map_err(|error| input.context.image_parameter_error(api_type, error))
     }
 
     pub(crate) fn output_video_seconds(
