@@ -1623,7 +1623,9 @@ async function executeCase(
   }
   if (testCase.tags.includes("canonical_rejection")) {
     if (requests.length !== 0) diagnostics.push("rejected canonical request reached the Provider");
-    if (!String(failed).includes(testCase.expected_aicc_error_code ?? "invalid_request")) {
+    const code = failed && typeof failed === "object" && "code" in failed ? failed.code : undefined;
+    const expected = testCase.expected_aicc_error_code ?? "invalid_request";
+    if (typeof code === "string" ? code !== expected : !String(failed).includes(expected)) {
       diagnostics.push("missing canonical rejection error code");
     }
   } else if (requests.length === 0) {
@@ -1637,12 +1639,6 @@ async function executeCase(
   const wireBody = requests.find((request) => request.body)?.body as
     | Record<string, unknown>
     | undefined;
-  if (testCase.tags.includes("image_parameters")) {
-    for (const [pointer, expected] of Object.entries(contract.image_parameter_probes?.[testCase.api_type!]?.expected_body_paths ?? {})) {
-      const actual = pointer.split("/").slice(1).reduce<unknown>((v, k) => v && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined, wireBody);
-      if (JSON.stringify(actual) !== JSON.stringify(expected)) diagnostics.push(`image parameter ${pointer}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
-    }
-  }
   if (testCase.tags.includes("native_history")) {
     const input = Array.isArray(wireBody?.input) ? wireBody.input : [];
     const reasoning = input.find((item) =>
@@ -1703,6 +1699,12 @@ async function executeCase(
     testCase.provider_driver!,
     testCase.protocol_contract_id!,
   );
+  if (testCase.tags.includes("image_parameters")) {
+    for (const [pointer, expected] of Object.entries(contract.image_parameter_probes?.[testCase.api_type!]?.expected_body_paths ?? {})) {
+      const actual = pointer.split("/").slice(1).reduce<unknown>((v, k) => v && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined, wireBody);
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) diagnostics.push(`image parameter ${pointer}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+    }
+  }
   const observedAsyncSteps = new Set(
     requests.map((request) => request.async_step).filter(Boolean),
   );
