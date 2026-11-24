@@ -34,6 +34,6 @@
 
 `aiws.ai.image({ prompt, images?, aspect?, size?, quality?, negative?, seed?, format? })` 保持原有调用方式。有参考图时把尺寸放入 `output.size`，保留输出格式。
 
-显式请求比例时，host 检查导入资源的实际尺寸，允许 5% 误差。尺寸缺失或比例错误返回 `AI_INVALID_ANSWER`，不写入成功缓存。旧缓存命中后若无法导入或比例不符，按本次预算重新生成并替换缓存；有效缓存不消耗生成预算。资源导入识别 WebP 的 VP8、VP8L、VP8X 尺寸，避免有效 WebP 因缺失尺寸被反复拒绝。
+显式请求比例时，host 检查导入资源的实际尺寸，允许 5% 误差。尺寸缺失或比例错误返回 `AI_INVALID_ANSWER`，不写入成功缓存。旧缓存命中后若无法导入或比例不符，按本次预算重新生成并替换缓存；有效缓存不消耗生成预算。资源导入从最多 64 KiB 文件头识别 WebP 的 VP8、VP8L、VP8X 尺寸，不要求压缩图片块的完整内容，避免有效 WebP 因缺失尺寸被反复拒绝。
 
 `unsupported_operation` 在 SDK、CLI 和 Desktop 中保留为 `AI_UNSUPPORTED_OPERATION`；用户应修改参数或显式更换模型。WASM 与服务端将其视为需要干预的终态，避免自动重复执行。此变更不负责自动裁剪、拉伸或跨步骤画幅规划。

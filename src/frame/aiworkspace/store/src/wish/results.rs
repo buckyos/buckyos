@@ -224,7 +224,7 @@ fn webp_dims(b: &[u8]) -> Option<(u64, u64)> {
         if next > end {
             return None;
         }
-        let data = b.get(start..next)?;
+        let data = b.get(start..next.min(b.len()))?;
         let u24 = |p: &[u8]| u64::from(p[0]) | (u64::from(p[1]) << 8) | (u64::from(p[2]) << 16);
         if tag == b"VP8X" && data.len() >= 10 {
             return Some((u24(&data[4..7]) + 1, u24(&data[7..10]) + 1));
@@ -1132,6 +1132,17 @@ mod webp_tests {
             for n in 0..b.len() - 1 {
                 assert_eq!(sniff_file(&b[..n]).1, None);
             }
+        }
+        let mut large_lossy = vec![0, 0, 0, 0x9d, 1, 0x2a];
+        large_lossy.extend_from_slice(&1024u16.to_le_bytes());
+        large_lossy.extend_from_slice(&1536u16.to_le_bytes());
+        large_lossy.resize(256 * 1024, 0);
+        let mut large_lossless = vec![0x2f];
+        large_lossless.extend_from_slice(&(1023u32 | (1535 << 14)).to_le_bytes());
+        large_lossless.resize(256 * 1024, 0);
+        for (tag, data) in [(b"VP8 ", large_lossy), (b"VP8L", large_lossless)] {
+            let file = webp(tag, &data);
+            assert_eq!(sniff_file(&file[..64 * 1024]).1, Some((1024, 1536)));
         }
         let mut bad = webp(b"VP8X", &[0; 10]);
         bad[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
