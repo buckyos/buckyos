@@ -19,6 +19,9 @@ export const VIEW_SCHEME = 'view://'
 export const COLLECTION_SCHEME = 'collection://'
 export const DEVICE_SCHEME = 'device://'
 export const FILE_URI_SCHEME = 'file://'
+/** Zone-wide folders with a fixed sidebar entry: `cyfs:///srv/publish` and `cyfs:///srv/library`. */
+export const PUBLISH_URL = `${DFS_SCHEME}/srv/publish`
+export const LIBRARY_URL = `${DFS_SCHEME}/srv/library`
 /** `archive://<objId>/archive/<member>`: a folder inside an archive object (a chat attachment), Preview only. */
 export const ARCHIVE_SCHEME = 'archive://'
 

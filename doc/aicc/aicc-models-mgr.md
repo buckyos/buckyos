@@ -67,7 +67,7 @@ claude-sonnet-4.6@claude-main
 fal-ai/esrgan@fal-main
 ```
 
-精确模型名的语义是“明确指定某个 provider instance 下的某个模型”。它默认不做复杂逻辑路由，也默认不 fallback，除非 request policy 显式允许 `allow_exact_model_fallback`。
+精确模型名的语义是“明确指定某个 provider instance 下的某个模型”。它不做复杂逻辑路由，也不 fallback。
 
 reasoning effort 这类会显著改变模型行为、成本和能力边界的参数，应视为模型身份的一部分，而不是普通 request option。当前实现已经通过 driver metadata 的 `variants` 把它展开成独立精确模型名：
 
@@ -199,7 +199,7 @@ llm.summarize  # 总结压缩
 llm.reason     # 显式推理
 llm.vision     # 视觉输入
 llm.long       # 长上下文
-llm.fallback   # 兜底
+llm.fallback   # 默认空，只接收管理员显式配置
 ```
 
 用途目录里放的是 items。每个 item 指向一个家族目录、另一个逻辑目录或精确模型，并带有权重。用途树不是当前库存快照，而是模型挂载到逻辑目录树时的静态参照策略；它可以引用暂时没有库存的家族目录，这些分支在展开时自然为空，不会产生候选。后续 Provider inventory 把模型挂到该 family path 时，会自动继承用途目录中已经配置好的路径权重。
@@ -334,11 +334,11 @@ AICC session 路由历史  # 只保存上次 selected exact model，不是配置
 `LogicalTreeOverlay` 支持：
 
 - `merge_mode=inherit`：继承默认目录 items，只覆盖或追加部分 item；
-- `merge_mode=replace`：替换该目录 items，并默认禁用 fallback；
+- `merge_mode=replace`：替换该目录 items，并关闭 fallback；
 - `items`：显式指定目录 items；
 - `item_overrides`：patch 已存在 item 的 target 或 weight；
 - `exact_model_weights`：调整具体物理模型；
-- `fallback`：调整 fallback；
+- `fallback`：请求与 session 只能关闭；目标只能由系统级配置指定（[aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）；
 - `route_policy_override`：调整策略。
 
 ## 4. 目录来源与叠加顺序
@@ -636,7 +636,7 @@ driver parses version rank
 llm.plan 更偏高质量模型
 llm.swift 更偏低延迟轻量模型
 llm.summarize 更偏低成本长上下文模型
-llm.reason 不随意 fallback
+所有用途默认不 fallback
 ```
 
 这些默认权重属于系统基础逻辑目录，应随版本升级维护。

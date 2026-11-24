@@ -14,7 +14,7 @@ use agent_tool::xllm::{
     RunStatus, XllmTask,
 };
 use buckyos_api::{AiContent, AiMessage, AiRole};
-use llm_context::deps::{Injection, LLMContextDeps, LlmClient};
+use llm_context::deps::{Injection, LLMContextDeps, LlmClient, ToolManager};
 use llm_context::error::{LLMComputeError, ProviderFailure};
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
 use llm_context::state::LLMContextSnapshot;
@@ -29,7 +29,7 @@ use crate::session::runs::RunHandle;
 
 use super::flush::{run_history_entries, FlushMarks};
 use super::history::{
-    build_chat_history, build_history, compact_for_limit, HistoryShape, LimitLine, Summarizer,
+    build_chat_history, build_history, compact_for_limit, HistoryLine, HistoryShape, LimitLine, Summarizer,
 };
 use agent_tool::llm_compress::CompressReport;
 use super::hook::{scope_touching, SessionCheckpointHook};
@@ -151,6 +151,10 @@ async fn xllm_deps_for(
     *sh.behavior_functions.lock().expect("behavior functions") = functions;
     x.host_tools
         .insert(TOOL_REPORT.into(), Arc::new(super::reports::ReportTool));
+    if kind == SessionKind::Ui && function_call {
+        x.host_tools
+            .insert(TOOL_SUBMIT_REPLY.into(), Arc::new(super::reports::SubmitReplyTool));
+    }
     if super::consolidation::caps(sh).consolidation {
         x.host_tools.insert(
             super::consolidation::TOOL_BEGIN.into(),
@@ -246,10 +250,14 @@ struct NewRun {
 /// A child continues the caller's step / action numbering; what it inherited
 /// is never written to the worklog by it (`HostMeta.inherited_below`,
 /// `base_input_len`).
+///
+/// `rebuild`: the conversation's prompt was frozen again after a long pause
+/// and its history starts from the compression target.
 pub(super) async fn new_run_context(
     sh: &Arc<Shared>,
     binding: &Binding,
     env: &SessionEnv,
+    rebuild: bool,
 ) -> Result<LiveCtx> {
     // A new context: no result of an earlier one is in it.
     sh.hints.clear_dedup();
@@ -294,7 +302,7 @@ pub(super) async fn new_run_context(
             let reply = new.entry.as_ref().and_then(|e| e.reply.clone());
             fork_run_context(sh, env, parent, new.depth, budget, reply).await
         }
-        _ => own_run_context(sh, binding, env, &cfg, &new).await,
+        _ => own_run_context(sh, binding, env, &cfg, &new, rebuild).await,
     }
 }
 
@@ -385,7 +393,8 @@ async fn fork_run_context(
             extra.remove("reports");
             extra.remove("finish");
             extra.remove("tasks");
-            extra.remove("asks");
+            extra.remove("task_calls");
+            extra.remove("task_briefs");
             extra.remove(super::reports::EXTRA_REPLY);
         }
         if let Some(v) = reply.as_ref().and_then(reply_extra) {
@@ -448,7 +457,8 @@ async fn fork_run_context(
 /// What a resumed run needs to know of its reply contract (run.json
 /// `host.extra.reply`).
 fn reply_extra(r: &BehaviorReply) -> Option<Value> {
-    r.asks_field.as_ref().map(|f| json!({ "asks_field": f }))
+    (r.asks_field.is_some() || r.contract.is_some())
+        .then(|| json!({ "asks_field": r.asks_field, "contract": r.contract }))
 }
 
 fn session_env_check(sh: &Shared, env: &SessionEnv) -> Result<Value> {
@@ -543,6 +553,7 @@ async fn own_run_context(
     env: &SessionEnv,
     session_cfg: &SessionConfig,
     new: &NewRun,
+    rebuild: bool,
 ) -> Result<LiveCtx> {
     let sid = sh.dir.sid().to_string();
     let mut cfg = match &new.entry {
@@ -673,7 +684,20 @@ async fn own_run_context(
             && s.state.open_turn.is_none()
             && s.state.process_stack.is_empty()
         {
-            build_chat_history(&mut s, &sh.lease, &summarizer, budget).await?
+            let prefix = u64::from(super::history::tokens(&hosted.prompt.system_prompt))
+                + hosted
+                    .manager
+                    .list_tool_specs()
+                    .iter()
+                    .map(|spec| {
+                        u64::from(super::history::tokens(&spec.name))
+                            + u64::from(super::history::tokens(&spec.description))
+                            + u64::from(super::history::tokens(&spec.args_schema.to_string()))
+                    })
+                    .sum::<u64>();
+            let line = HistoryLine::of_window(&cfg, &sh.deps.options, &hosted.config.limits, prefix)
+                .unwrap_or(HistoryLine::fixed(budget));
+            build_chat_history(&mut s, &sh.lease, &summarizer, line, rebuild).await?
         } else {
             let shape = if function_call {
                 HistoryShape::Native
@@ -936,7 +960,7 @@ pub(super) async fn resume_live_run(
     };
     *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
     if let Some(report) = super::reports::final_report(&run)? {
-        if let ReportSource::Tool { call_id } = &report.source {
+        if let Some(call_id) = report.source.call_id() {
             if super::reports::has_result(&ctx.snapshot(), call_id) {
                 ctx.interrupt_handle()
                     .finish("resume accepted final report");
@@ -1716,6 +1740,27 @@ pub(super) async fn commit_input_batch(
     }
     s.state.activity.heartbeat_ms = crate::now_ms();
     super::turn_task::note_live_line(&mut s, None, None);
+    // What let a group's messages through.
+    let triggers: Vec<WorklogBody> = batch
+        .picked
+        .iter()
+        .filter_map(|m| {
+            let msg = m.msg()?;
+            let trigger = msg.delivery.trigger.as_ref()?;
+            Some(WorklogBody::ControlApplied {
+                input: m.input_ref(),
+                command: "group_trigger".into(),
+                detail: json!({
+                    "reason": trigger.reason,
+                    "from": msg.msg.from.to_string(),
+                    "member": trigger.member,
+                }),
+            })
+        })
+        .collect();
+    if !triggers.is_empty() {
+        s.append_worklog(&sh.lease, triggers)?;
+    }
     commit_and_report(sh, &mut s).await?; // ③
     crate::fault::point("input_batch:after_state_commit");
     lc.run.complete_host_commit()?; // ④

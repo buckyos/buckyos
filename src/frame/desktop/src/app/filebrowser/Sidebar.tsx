@@ -1,5 +1,6 @@
 import clsx from 'clsx'
 import {
+  BookMarked,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -25,7 +26,7 @@ import { useI18n } from '../../i18n/provider'
 import { isMockRuntime } from '../../runtime'
 import type { CollectionSummary, DfsNode, HostInfo, Topic } from './types'
 import type { FolderChildrenPage, SidebarSource } from './data/sidebarSources'
-import { collectionUrl, displayPath, normalizeUrl } from './data/urls'
+import { collectionUrl, displayPath, LIBRARY_URL, normalizeUrl, PUBLISH_URL } from './data/urls'
 import { FolderTree, SectionError, type FolderTreeRoot } from './FolderTree'
 
 type Section = 'dfs' | 'devices' | 'views' | 'collections'
@@ -245,6 +246,22 @@ export function Sidebar({
         label: t('filebrowser.sidebar.recent', 'Recent'),
         active: activeUrl === 'view://recent',
         onClick: () => goto('view://recent'),
+      })}
+      {navButton({
+        key: 'published',
+        icon: <Globe size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
+        label: t('filebrowser.sidebar.published', 'Published'),
+        title: displayPath(PUBLISH_URL),
+        active: activeUrl === PUBLISH_URL,
+        onClick: () => goto(PUBLISH_URL),
+      })}
+      {navButton({
+        key: 'library',
+        icon: <BookMarked size={16} className="shrink-0 text-[color:var(--cp-muted)]" />,
+        label: t('filebrowser.sidebar.library', 'Library'),
+        title: displayPath(LIBRARY_URL),
+        active: activeUrl === LIBRARY_URL,
+        onClick: () => goto(LIBRARY_URL),
       })}
       {pins.map((url) =>
         navButton({

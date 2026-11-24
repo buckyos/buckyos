@@ -1,6 +1,6 @@
 # Jarvis 默认聊天与会话路由 TODO
 
-D1–D11、Q1–Q6 已裁决，没有待你回答的问题 · 2026-11-23（原稿 2026-11-18）· 源码基线 `c1940beeb`
+D1–D11、Q1–Q7 已裁决 · 2026-11-23（原稿 2026-11-18）· 源码基线 `c1940beeb` · **已实施，未提交、未部署**（2026-11-23，记录在 §6，其中有待你确认的取舍）
 
 目标是让用户有一个随时能回来的主聊天。能在对话内回答的事当场完成，需要执行的事交给合适的工作会话。用户补充要求、点了通知卡或隔了很久再问时，Agent 能找到原工作、用户的决定和依据。
 
@@ -13,9 +13,8 @@ D1–D11、Q1–Q6 已裁决，没有待你回答的问题 · 2026-11-23（原�
 - **Q6**　有两处是我定的。
   - 默认会话记的是对话，不是某一代 UI session。所以通道换绑到新的 UI 会话之后，默认仍在这个通道上，通知照常到通道。
   - “用户要知道影响”我做成改默认之前的确认：先说明哪个通道将收不到系统通知，用户确认后才改。另一种做法是照常改，改完再提示。
-- **Q5**　通知怎样跟随默认会话，有三处是我定的。
-  - 通知只认用户明确设过的默认会话。没设过时投递规则不变。
-  - 设了默认之后，`timely` 原来加投“最近活跃的会话”，改成加投默认会话。`normal` 的通知没有来源会话时投到默认会话，比如 goal 发的。`quiet` 和 `urgent` 不变。
+- **Q5**　通知怎样跟随默认会话，有两处是我定的（原来还有一处“没设过时投递规则不变”，已由 Q7 推翻）。
+  - `timely` 原来加投“最近活跃的会话”，改成加投默认会话。`normal` 的通知没有来源会话时投到默认会话，比如 goal 发的。`quiet` 和 `urgent` 不变。
   - 非 Agent 来源的通知这一期仍不走 Telegram，比如 App 通知。它们现在只有分类会话里的主记录。默认会话是按 Agent 记的，这类通知不属于哪个 Agent。
 - **Q2**　有三处是从你的答复推出来的。
   - Agent 不能写用户的信箱，所以新建聊天的 `/new` 由 Desktop 处理，不经过 Agent。
@@ -60,6 +59,14 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
 > Q6 按接受写。 用户要知道这个行为对通道的影响
 
 落实：在 WebUI 里新建并设为默认，会让原来是默认的通道收不到系统通知，这个后果接受。改默认之前 Desktop 向用户说明对通道的影响。
+
+实施之后（Q7，默认会话被删、没设过时怎样）：
+
+> 默认UIsession应该总是会存在的，如果删除了默认会话，那么下一个获得默认会话的调用，会导致自动创建
+
+> 一律跟随默认会话
+
+落实：默认会话总是存在，由服务端的 `msg.get_default_session` 保证。删除后，下一个取默认会话的调用新建一个。通知一律跟随默认会话，不分是系统选的还是用户设的，所以发通知也算取默认会话。§2 第一项里“没设过时通知规则不变”的说法以这里为准。
 
 **D3 澄清问答由谁写进分析报告。**（§2 第二项）
 
@@ -133,7 +140,7 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
 
 ## 2. 优先处理
 
-- [ ] **主聊天有稳定入口，通知跟随默认会话。**（D1、D2）
+- [x] **主聊天有稳定入口，通知跟随默认会话。**（D1、D2）
   - **概念**（owner 2026-11-23）
     - 每个通道绑定一个 UI 会话，它可以就是默认会话。现在的实现是，通道发来的消息落在一个固定的信箱地址上，Loader 把这个地址绑到一个 UI session。[Loader 的绑定](../src/frame/opendan/src/ui.rs#L1)
     - WebUI 能看到全部 UI 会话，其中通道绑定的是只读。现在用户自己的会话列表里没有通道的会话，要补。
@@ -146,10 +153,10 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
   - **做法**
     - msg_center 为每对 owner 和对方记一个默认会话。`msg.create_session` 可以带“设为默认”，另加一个把已有会话设为默认的调用。同一个对方只有一个默认，设了新的就取代旧的。[创建时的会话 ID](../src/frame/msg_center/src/owner_session.rs#L1266)
     - 默认会话的候选是用户和这个 Agent 已有的对话，原生和 Telegram 都算。这份列表通知投递已经在用，设默认时按它校验。记录的写法和通知的来源会话一致，是用户端点加会话 ID。它记的是对话，不是某一代 UI session，所以通道换绑到新的 UI 会话之后，默认仍在这个通道上。[对话的写法](../src/frame/msg_center/src/notify.rs#L187)
-    - 没设过时，Desktop 的主入口取最早创建的那个 native 会话。已经在用的人不用迁移，新用户第一次建出的会话就是默认。这条只用于主入口，通知不看它。
+    - 没设过时，取最早创建的那个 native 会话并记成默认，一个都没有就新建。已经在用的人不用迁移，新用户第一次建出的会话就是默认。默认会话被删后，下一个取默认会话的调用新建一个（Q7）。
     - Desktop 的 `selectDefaultSession` 对 Agent 返回默认会话。会话详情里加“设为默认”，新建会话时可以勾选“设为默认会话”，列表里标出哪个是默认。
     - Desktop 在 Agent 的会话列表里列出它的 Telegram 对话，读的是 Agent 的信箱，只读，可以设为默认。默认会话是 Telegram 会话时，主入口打开的就是这个只读会话，这是预期的体验。用户要在网页上聊，就打开或新建别的聊天。
-    - 通知跟随默认会话。用户设了默认会话后，`timely` 加投的“最近活跃的会话”改成默认会话，`normal` 的通知没有来源会话时投到默认会话，`quiet` 和 `urgent` 不变。默认会话是 Telegram 会话时，这些通知经 Telegram 到用户。没设过默认时规则不变，非 Agent 来源的通知不变。投递规则文档同步改。
+    - 通知跟随默认会话。`timely` 加投的“最近活跃的会话”改成默认会话，`normal` 的通知没有来源会话时投到默认会话，`quiet` 和 `urgent` 不变。默认会话是 Telegram 会话时，这些通知经 Telegram 到用户。是不是用户设过的没有区别（Q7），非 Agent 来源的通知不变。投递规则文档同步改。
     - 每个通道有它绑定的会话。Telegram 入站不改，仍落在它绑定的会话。其他无显式会话的私信仍落到 `dm:<peer>`。
     - `/new` 改成新建聊天。Desktop 的会话组件在发送前识别 `/new`。在用户自己建的、和 Agent 的聊天里，它等同于“新建会话并设为默认”，然后切到新聊天，这条文字不发给 Agent。旧聊天留在列表里，它的工作继续跑，结果仍在旧聊天里转述，所以不需要拒绝。用户自己建的聊天按会话来源 `manual` 认。[会话来源](../src/frame/desktop/src/app/messagehub/types.ts#L77)
     - 在通道里发 `/new` 不变。它是通道换绑到新的 UI 会话，旧的存档，仍发给 Agent 由 Loader 处理，有未结束的工作时仍拒绝。App 创建的会话同样处理。`/clean` 在哪里都是这种换法。默认会话是这个通道的会话时，换绑之后通知仍到这个通道。
@@ -166,10 +173,10 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
     - 从 Telegram 发来的消息仍进它自己的会话，改默认会话不影响它。
     - 把 Telegram 会话设为默认后，从 Desktop 主入口进入的是这个会话，能看到完整记录，不能输入。
     - 之后 goal 发出的 `normal` 通知和任意一条 `timely` 通知，用户在 Telegram 里收到。把默认改回 Desktop 的聊天后，同样的通知出现在那个聊天里。
-    - 没设过默认时，通知的投递和现在一致。
+    - 没设过默认时，通知投到系统选定的默认会话（Q7）。删除默认会话后，从主入口进入或来一条通知，都会新建一个默认会话。
     - 归档默认会话后从主入口进入，回到它并恢复，不另建会话。
 
-- [ ] **让下一次意图分析能用上本次报告。**（D2、D3）
+- [x] **让下一次意图分析能用上本次报告。**（D2、D3）
   - **现状**　fork 的结果已进入父聊天历史。当前 schema 接受 `outcome="work_created", report="", work=null`，宿主对澄清问答只核对条数。请求被转给现有 goal 或运行中的 plan 时，结果里带不出它们的 ID。分析器被指引用 `sessions --children --active` 找刚结束的工作，而 `--active` 会过滤所有 `Finished`。[分析输入与历史查找](../src/apps/jarvis_agent/agent/behaviors/analyze_intent.toml#L43) · [转给 plan 时的结果](../src/apps/jarvis_agent/agent/behaviors/analyze_intent.toml#L112) · [返回契约](../src/apps/jarvis_agent/agent/behaviors/analyze_intent.toml#L115) · [宿主校验](../src/frame/lib_opendan/src/runner/reports.rs#L602) · [CLI 过滤](../src/frame/lib_opendan/src/xagent_cli.rs#L1313)
   - **做法**
     - 跨字段条件放进宿主的 `ReplyValidator`，原生 schema 表达不了这类条件。`report` 不能为空。`work_created` 必须带 `work`，其 `session_id` 是本分支创建的子会话。`goal_created` 必须带 `goal`，其 `goal_id` 存在。[ReplyValidator](../src/frame/lib_opendan/src/runner/reports.rs#L550)
@@ -180,7 +187,7 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
     - CLI 变了，同步 `ui_core`、它的 `references/sessions.md` 和 `opendan_agent_dev`。
   - **验收**　空报告、缺工作 ID、ID 不是本分支创建的，均触发纠正。报告里的问答与用户在通知卡上的原话一致。已有 goal 或运行中的 plan 收到消息后，结果带回其原 ID。上一份工作失败后再分析，能找回报告里的缺失条件，无需再问已回答的问题。主聊天创建过很多工作时，查询结果仍有上限。`/new` 之后，新聊天里的查询不带出旧聊天的工作。原地换代之后的查询不带出上一代的工作。
 
-- [ ] **回复格式不合格时，模型可以切到兼容模式。**（D4、D5）
+- [x] **回复格式不合格时，模型可以切到兼容模式。**（D4、D5）
   - **现状**　正常路径输出 `{reply, topic, artifacts}`。宿主允许一次格式纠正，再错就以 `output_format` 结束本轮，用户看到失败提示，原始输出不发给用户。纠正消息由通用的 llm_context 层生成，只重述格式要求。[一次纠正](../src/frame/lib_opendan/src/runner/live.rs#L354) · [纠正消息](../src/frame/llm_context/src/context_loop.rs#L2528) · [失败处理](../src/frame/lib_opendan/src/runner/outcome.rs#L251) · [失败用例](../src/frame/lib_opendan/tests/ui_chat.rs#L281)
   - **不采用的方案**　原稿的 `report()` 回退。聊天有任务未结束时 final report 会被拒，附件无效时照样失败，UI 的工具白名单里也没有 `report`。[final 校验](../src/frame/lib_opendan/src/runner/reports.rs#L267) · [工具白名单](../src/apps/jarvis_agent/agent/behaviors/chat_route.toml#L64) · [上一份 TODO](done/jarvis-chat-prompt-todo.md) §13 第 8 条
   - **做法**
@@ -202,7 +209,7 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
 
 ## 3. 后续消息与群聊
 
-- [ ] **统一已有工作的续接规则。**（D6）
+- [x] **统一已有工作的续接规则。**（D6）
   - **现状**　私聊会把与未结束 plan 有关的补充发回原 plan，暂停时排队。群聊的路由提示没有这一节。`work` 类会话的队列只收控制，消息在投递前和消费时各拦一次，而这个队列在 Zone 里本来就存在。创建子会话时已有一个“接收父会话的消息、但不等待输入”的选项，plan 派发 Todo 用的就是它，CLI 创建时固定为关。运行中到达的消息留到下一个 Turn 才读入。`work_simple` 的输入模板已经能渲染消息，但提示里写的是“没有人读这个会话”。[私聊路由](../src/apps/jarvis_agent/agent/behaviors/chat_route.toml#L20) · [群聊路由](../src/apps/jarvis_agent/agent/behaviors/groupchat_route.toml#L18) · [work 类的输入通道](../src/frame/lib_opendan/src/template.rs#L226) · [投递前的拦截](../src/frame/lib_opendan/src/state/registry.rs#L725) · [只收控制的队列](../src/frame/lib_opendan/src/api.rs#L379) · [子会话选项](../src/frame/lib_opendan/src/api.rs#L698) · [plan 派发](../src/frame/lib_opendan/src/todos.rs#L159) · [CLI 创建](../src/frame/lib_opendan/src/xagent_cli.rs#L1450) · [轮间检查点](../src/frame/lib_opendan/src/runner/hook.rs#L85) · [work_simple 提示](../src/apps/jarvis_agent/agent/behaviors/work_simple.toml#L15)
   - **做法**
     - 群聊的路由提示补上与私聊相同的“进行中的工作”一节。
@@ -217,12 +224,12 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
     - 补充和结束报告同时发生时，工作不会带着未读的补充结束。
     - 工作结束后才到的补充，聊天会告诉用户并重新分析。
 
-- [ ] **把用户对通知的处理结果带回相关聊天。**
+- [x] **把用户对通知的处理结果带回相关聊天。**
   - **现状**　通知有两类。告知类（`Notice`）没有可回答的内容。提问类（`Input`）被用户回答后，监听器唤醒的是提问的会话，通常是 work 或 goal。显示卡片的聊天只有一行“已投递”背景，之后可以用 `notify show` 主动查，不会得知用户选了什么。`ask_user` 的答案回到提问分支，再由分析报告带给父聊天。[通知背景](../src/frame/lib_opendan/src/notify.rs#L309) · [只跟踪提问类](../src/frame/opendan/src/notify.rs#L33) · [唤醒目标](../src/frame/opendan/src/notify.rs#L82)
   - **做法**　Agent 侧的监听器在提问类通知关闭时，向显示卡片的那个聊天（`source.conversation` 对应的 UI session）投一条背景事件，带通知 ID、处理状态和答案，不主动开一轮。不改 msg_center 协议。事件的 key 要和“已投递”的 `notify:<id>:<session>` 区分开，同 key 的输入会被当作重复去掉。[按 key 去重](../src/frame/lib_opendan/src/runner/inputs.rs#L299)
   - **验收**　用户在通知卡上选择 B 后回到聊天问“按刚才选的继续”，聊天能关联到 B。重复投递只出现一次，无关聊天看不到该选择。
 
-- [ ] **群聊的触发条件和回看条数可配置。**（D7）
+- [x] **群聊的触发条件和回看条数可配置。**（D7）
   - **现状**　群聊默认关闭。开启后，只有 owner 结构化 @ Agent 才触发，这条规则写死在宿主里，在任何推理之前判断。每次从同一 mailbox 最近 20 条已读记录取背景，保留说话人并去重。群聊的路由提示通篇以“回答 owner 的请求”为前提，其他成员的发言只是材料。goal 的做法是，宿主在一次运行机会变成推理之前先跑检查脚本，脚本返回 `{run, reason}`，不花 token，能看到当前是被间隔还是被预算按住。[触发者判断](../src/frame/lib_opendan/src/bridge/msg.rs#L197) · [上限](../src/frame/opendan/src/ui.rs#L48) · [群聊路由提示](../src/apps/jarvis_agent/agent/behaviors/groupchat_route.toml#L9) · [goal 检查脚本](../src/frame/lib_opendan/src/goal_check.rs#L1) · [群聊回归用例](../src/frame/opendan/tests/loader.rs#L2122)
   - **做法**
     - 这一项的重点是结构可扩展，这一期的条件本身只做最少的。
@@ -241,7 +248,7 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
 
 ## 4. 记忆与长聊天
 
-- [ ] **用户或 App 创建聊天时可选择记忆模式。**（D8、D9）
+- [x] **用户或 App 创建聊天时可选择记忆模式。**（D8、D9）
   - **现状**　创建请求没有对应字段，模板 `load_hints=false` 只关闭自动注入。记忆层的写入侧已有 `RecordPolicy::DoNotRecord`，目前没有任何地方设置它。聊天的主题会以“conversation … is about”的形式出现在其他会话的背景里。[创建请求](../src/kernel/buckyos-api/src/msg_center_client.rs#L1871) · [自动注入条件](../src/frame/lib_opendan/src/runner/memory_batch.rs#L73) · [记忆访问身份](../src/frame/lib_opendan/src/memory/mod.rs#L238) · [不记录策略](../src/frame/lib_opendan/src/memory/mod.rs#L219) · [主题进入其他会话](../src/frame/lib_opendan/src/runner/background.rs#L231)
   - **做法**
     - 创建请求增加记忆模式，三个值：正常、不写、不读不写。从创建请求传到宿主的会话配置。Desktop 新建会话时可选，App 创建会话时可以带这个字段。
@@ -254,7 +261,7 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
     - 其他会话的背景里不出现这两种聊天的主题。
     - 重开该会话后模式仍有效。
 
-- [ ] **让跨轮聊天的历史预算与模型窗口一致，提示词升级后有机会重建上下文。**（D11）
+- [x] **让跨轮聊天的历史预算与模型窗口一致，提示词升级后有机会重建上下文。**（D11）
   - **现状**
     - 三处各有一条线。运行中约 80% 窗口触发，重写到约 30%。run 结束后，历史超过 0.75 × 24,000 = 18,000 token 就压缩到 12,000，与窗口无关。下一轮重建时，上一轮的原生消息不超过 24,000 才原样复用，而且压缩过一次之后就不再走这条路径。所以大窗口下，原生前缀在 18,000 token 时就丢了。[运行中的触发线](../src/frame/agent_tool/src/xllm.rs#L146) · [默认值](../src/frame/lib_opendan/src/runner/mod.rs#L255) · [run 结束后的压缩](../src/frame/lib_opendan/src/runner/outcome.rs#L1528) · [压缩阈值](../src/frame/lib_opendan/src/runner/history.rs#L931) · [历史重建](../src/frame/lib_opendan/src/runner/history.rs#L60)
     - 聊天的历史被压缩过之后，下一次新开 run 会重新冻结提示词，Agent 包升级后的提示词从这里生效。没压缩过的聊天一直用创建时冻结的那份。会话状态里已经能比较出冻结的提示词和当前的有没有差别。[压缩后重新冻结](../src/frame/lib_opendan/src/runner/drive.rs#L625) · [调用位置](../src/frame/lib_opendan/src/runner/drive.rs#L2120) · [提示词是否最新](../src/frame/opendan/src/ui.rs#L1127)
@@ -270,7 +277,7 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
     - 提示词没变时超过阈值回来，不重建。
     - 相关工作已有运行中压缩与摘要失败恢复的记录。[窗口压缩 TODO](opendan-context-window-compaction-todo.md) · [摘要失败修复记录](fixbug-jarvis-silent-after-compaction-failure.md)
 
-- [ ] **压缩后保留本会话感知线索，给出稳定的原文回读入口。**
+- [x] **压缩后保留本会话感知线索，给出稳定的原文回读入口。**
   - **现状**　摘要保留开头、摘要、精确片段和尾部，worklog 仍在。自动召回会过滤本会话的感知，理由是它们还在上下文里，压缩后这个前提不成立。固定压缩提示只让模型重读会话目录。CLI 的 `read-session <sid> --worklog N` 只能读最近 N 条。按 turn 和游标分页只在 kRPC `session.worklog` 上，Agent 用不到。[摘要与固定提示](../src/frame/lib_opendan/src/runner/history.rs#L39) · [本会话过滤](../src/frame/lib_opendan/src/memory/observation.rs#L721) · [CLI 读取](../src/frame/lib_opendan/src/xagent_cli.rs#L1362) · [历史分页](../src/frame/opendan/src/service.rs#L272)
   - **做法**　感知线索由宿主负责，不依赖摘要模型保留引用。两种做法取改动小的一种：在摘要块后固定附上本会话感知的引用，或者对压缩边界之前写下的感知取消“本会话”过滤。`read-session` 增加按 turn 和游标读取，固定压缩提示改为给出这条命令。CLI 变了，同步 `ui_core`、它的 `references/sessions.md` 和 `opendan_agent_dev`。
   - **验收**　压缩前记录用户的关键纠正，连续压缩两次后仍能定位那条感知和原话。之后追加新消息，旧引用仍指向同一条记录。
@@ -280,3 +287,57 @@ D5、D6、D8、D10、D11 的落实是我按理解写的，第二轮你没有改�
 ## 5. 验证基线
 
 2026-11-23 按 `c1940beeb` 重新核对了文中的源码引用，行号已更新。同日三轮按裁决改写时，新增的引用也在这个基线上核对过。每次都没有跑测试。上次 Review 在 `4c91b3d0c` 跑过 47 个 Rust 定向测试和 9 个 Desktop 会话测试，全部通过。它们覆盖包加载、群聊、默认会话选择、输入批次、fork、召回、通知、历史压缩与回复失败路径。真实模型选择工作形态的准确性、跨轮缓存命中率仍待 DV。可用同一条“直接问答 → 澄清 → 创建工作 → 追加要求 → 读回交付”的对话记录对照改动前后表现。
+
+## 6. 实施记录（2026-11-23）
+
+九项全部实施，没有提交，没有部署，没有在真实 Zone、真实 Telegram、真实模型上跑过。下面的行为由单测和 Desktop 的 mock e2e 覆盖。
+
+### 6.1 落点
+
+| 项 | 落点 |
+| --- | --- |
+| 默认会话、通知跟随 | msg_center：`default_session.rs`（新）、`notify.rs` 的 `plan_copies`。接口 `msg.get_default_session`（总会返回一个）、`msg.create_session {set_default, memory_mode}`、`msg.set_default_session`、`msg.list_conversations`。记录存在 `owner_ui_session_states`，键 `default:<peer>`，不加表、不升 schema。合同写在 `Message Center.md` §5.8.1 和 `System Notify.md` §3 |
+| Desktop | `messagehub/` 的 `sessionModel.ts`、`store/`、`api/store.ts`、`SessionDetails.tsx`、`SessionDialogs.tsx`、`SessionSidebar.tsx`、`defaultChange.tsx`（新，离开通道前的确认）。`/new` 由 `ConversationComposer` 的 `commands` 识别。数据模型写在 `UI_DATAMODEL.md` §3.3.7 |
+| 分析报告 | `reports.rs` 的 `ReplyValidator::check_intent`（`[reply] contract = "intent_analysis"`）和 `complete_reply`（`asks_field` 由宿主填）；`sessions --finished <n>`；结果多一种 `forwarded` |
+| 回复兼容模式 | `state.reply_mode`、`ctl reply-mode compat\|schema`、工具 `submit_reply`；`llm_context` 的 `OutputValidator` 加 `accepts_text` 和 `repair_hint` 两个默认方法，兼容模式下请求不再带 JSON schema |
+| work_simple 收消息 | `session.policy.reads_messages`；`hook.rs` 在推理边界为消息停下（`FinishKind::Message`），消息并进同一个 Turn；`reopen_for_message` 加投递锁，堵住“报告已收下、结束还没提交”的窗口 |
+| 通知结果回聊天 | `opendan/src/notify.rs` 的监听器、`notify_closed_event`（key `notify-closed:<id>:<session>`） |
+| 群聊触发条件 | `lib_opendan/src/group_trigger.rs`（新，接口 `GroupTrigger` 和内置的 `MessageConditions`）；`AgentSettings.group_chat`；control panel 的 `agent.update {group_chat}` |
+| 记忆模式 | `MemoryMode` 在 `session.policy.memory`，Loader 建 UI session 时从 msg-center 读，子会话继承 |
+| 历史预算与重建 | `history.rs` 的 `HistoryLine`、`drive.rs` 的 `refresh_frozen`、`RunnerOptions.prompt_cache_idle` |
+| 压缩后的感知线索与回读 | `summary.json` 的 `perceptions`、`compressed_note`；`read-session <sid> --turn <n> [--after\|--before <游标>]` |
+
+### 6.2 待你确认的取舍
+
+- **Goal 的通知**　TODO 说 Goal 的通知没有来源会话，实际有：创建它的聊天会被填成来源。Goal 的 `normal` 通知总投默认会话、不投创建它的聊天，否则“Goal 的通知到 Telegram”不成立。
+- **默认会话的通道已经不在**（bot 解绑等）时，通知改投主聊天（没有记录默认时会选的那个 native 会话），默认不变，免得主记录标成已读、用户哪里都看不到。
+- **默认会话总是存在**　（2026-11-23 你在实施后定的，已改）默认会话被删后，下一个取默认会话的调用自动新建一个。选择从 Desktop 移到服务端的 `msg.get_default_session`。我按这条做了：
+  - 删除之后新建，不改用剩下的别的聊天。
+  - 从没设过默认时，取最早的非 App 聊天并存成默认；没有聊天就新建。
+  - 通知一律跟随默认会话（你随后确认），系统选的和用户设的不再区分。非 `quiet` 的 Agent 通知都会取默认会话，所以从没和某个 Agent 聊过的用户收到它的通知时，会多出一个默认会话。`urgent` 投全部会话，再加默认会话。
+- **`manual` 不够用**　App 创建的会话在 msg-center 里的来源也是 `manual`，区别只是 `ui.source` 标记。所以“用户自己建的聊天”＝来源 `manual` 且没有 App 标记，没设过默认时的主入口也跳过 App 的会话。
+- **没设过默认、最早的会话已归档**　（现由服务端选）先取最早的活跃会话，全都归档时取最早的那个并恢复。没有登记过的会话（没有创建时间）排在最后。
+- **转发、Pin 等要写入的入口**　默认是通道会话时，改用按“没设过”规则选出的可写聊天。
+- **`forwarded` 的对象**　写成 `goal` 或 `work`，work 包括 plan 和能收消息的 `work_simple`。
+- **兼容模式下模型仍给出合格的 JSON**，按结构化回复处理，不把 JSON 原样发给用户。
+- **通知结果投给谁**　除了 `source.conversation`，也投给卡片实际出现过的会话（例如默认会话），不投给提问的会话自己。
+- **群聊里其他成员的斜杠命令**不当命令。条件只能用 `agent.update` 改，Desktop 的 Agent 设置页没有做编辑界面。
+- **记忆模式**　无记忆的聊天发起的工作也不发 HomeStation 笔记。Goal 不继承。经验结晶 Goal（默认关闭）仍可能读到这些工作的记录。
+- **历史预算**只改聊天（UI session），Work 和 Goal 仍用原来的固定预算。压缩过的聊天也继续走原生前缀，直到下一次压缩。
+- **缓存失效的阈值**定为 1 小时：AICC 现在不给任何请求加 `cache_control`，靠 provider 自动缓存，最长 1 小时。
+- Desktop 改用 `msg.get_default_session` 时定的几处：本机给 Agent 设的“新会话”策略为拒绝时，服务端仍会建默认会话；Agent 整体静音时，新建的默认会话继承静音；只归档（不删除）最后一个会话时，不立即恢复或新建，等下次进入主入口；会话详情不再区分自动选的和用户设的默认。
+- 子 agent 在 Desktop 里定的几处：离开通道的确认框两个按钮是“保留 Telegram”和“更改默认”；通道会话按用户一侧的视角显示；`/new` 在 Agent 忙的时候也能用；新聊天不继承记忆模式。
+
+### 6.3 测试
+
+Rust（串行，`--test-threads=1`）：`msg_center` 264（Q7 改完之后重跑；`test_group_remote::stale_invitation_cannot_erase_recovery_of_a_confirmed_invitation` 在全量里偶尔失败，单独跑不失败，见下）、`llm_context` 108、`opendan` lib 101 与 loader 33、`node_updater` 31、`control_panel` 的 agent 用例 35 全过。`libopendan` 只有 6 个失败，都是改动前就失败的：`fixtures` 的 f04、f06、f07、f12、f15（在 HEAD 的 worktree 里同样失败），`memory_replay` 的 `a_jarvis_conversation_is_told_what_to_perceive`（它要的手册原文 HEAD 里已经没有）。
+
+新增用例：`test_notify::notifications_follow_the_default_session`、`test_notify::there_always_is_a_default_session`（取最早的非 App 聊天、连删两次各建一个新的、并发取到同一个、删到一半崩溃、通道默认另给可写聊天、没有聊天就新建）、`test_msg_center::a_session_keeps_the_memory_mode_it_was_created_with`、`reply_contract::the_host_may_take_a_plain_text`、`ui_chat` 5 个（兼容模式、`submit_reply`、恢复、大小窗口、压缩后的线索与回读）、`notify::the_analysis_result_is_checked_and_gets_its_questions`、`work_simple_async` 4 个、`group_trigger` 与 `bridge::msg` 的单测、`memory_mode.rs`、`session_control` 的空闲重建、loader 3 个（群条件、通知结果、记忆模式）。
+
+Desktop：`pnpm check` 通过；datamodel 用例里 messagehub 只有 `messagehub-guest` 的 7 个旧失败；MessageHub、会话 embed、Agent 浏览器会话三组 e2e 在 Q7 改完之后重跑，212 个里 205 过、7 个失败，默认会话的 12 个全过。`links:90` 单独重跑通过（并行时会失败），其余失败的 6 个是 `agent-task:567`、`actions:87`、`group:315`、`media:173`、`messagehub:764`、`notify:259`，都在 HEAD 的 worktree 里单独跑过，同样失败（`notify:259` 断言的中文是旧文案，HEAD 的文案是“智能体”）。`messagehub-search` 的 datamodel 用例在 HEAD 就加载不了（引用了已不存在的 `senderTone.ts`）。
+
+### 6.4 没做
+
+- 真实 Zone、真机、真实 Telegram、真实模型都没跑。真实模型会不会用 `forwarded`、会不会在该切的时候切兼容模式，要 DV 才知道。
+- 上线要重建 aios 镜像（容器里的 OpenDAN、xagent、agent-session），重新打包 Jarvis 的 Agent 包，msg_center 和 Desktop 一起部署。Desktop 先于 msg_center 部署时没有 `msg.get_default_session`，Agent 的主入口会报错，等 msg_center 升级后恢复。
+- node_updater：没有改表结构，`readers.toml` 不用动。

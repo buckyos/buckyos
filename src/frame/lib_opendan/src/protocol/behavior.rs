@@ -181,10 +181,24 @@ pub const BEHAVIOR_TOOL_PREFIX: &str = "behavior:";
 pub struct BehaviorReply {
     /// JSON Schema of the reply (an object schema).
     pub schema: Value,
-    /// An array field of the reply that must list every question the
-    /// context asked the user (`ask_user`), one entry each.
+    /// A field the host adds to the reply: every question the context asked
+    /// the user (`ask_user`) with the user's answer, as the notification
+    /// holds them. The schema does not declare it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asks_field: Option<String>,
+    /// Checks of the reply a schema cannot state, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<ReplyContract>,
+}
+
+/// Host checks of a reply beyond its schema (`[reply] contract`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyContract {
+    /// The result of an intent analysis: a report, and with each outcome
+    /// what it claims — the work session this context created, a goal there
+    /// is, the goal or plan the request was handed to.
+    IntentAnalysis,
 }
 
 impl BehaviorReply {
@@ -195,13 +209,9 @@ impl BehaviorReply {
             ));
         }
         if let Some(f) = &self.asks_field {
-            let declared = self
-                .schema
-                .pointer(&format!("/properties/{f}/type"))
-                .and_then(Value::as_str);
-            if declared != Some("array") {
+            if self.schema.pointer(&format!("/properties/{f}")).is_some() {
                 return Err(format!(
-                    "behavior `{behavior}`: [reply] asks_field `{f}` must be an array property of the schema"
+                    "behavior `{behavior}`: [reply] asks_field `{f}` is filled by the host, the schema must not declare it"
                 ));
             }
         }

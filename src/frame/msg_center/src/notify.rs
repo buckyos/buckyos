@@ -29,13 +29,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 const NOTIFY_SWEEP_INTERVAL_SECS: u64 = 30;
 const IDEMPOTENCY_SCOPE_NOTIFY: &str = "notify";
 const NOTIFY_SESSION_ORIGIN: &str = "sysnotify";
-/// Latest records of a conversation looked at to find the user's last
-/// message in it.
+/// Latest chat messages of a conversation looked at to find the user's last
+/// one in it.
 const CONVERSATION_SCAN_RECORDS: usize = 30;
 const DEFAULT_LIST_LIMIT: usize = 50;
 const MAX_LIST_LIMIT: usize = 200;
@@ -951,6 +952,8 @@ impl MessageCenter {
             title: Some(category_title(category).to_string()),
             binding: None,
             origin: Some(NOTIFY_SESSION_ORIGIN.to_string()),
+            set_default: false,
+            memory_mode: SessionMemoryMode::Normal,
         })
         .await?;
         Ok(())
@@ -1014,20 +1017,9 @@ impl MessageCenter {
             let session_id = entry.session_id;
             let records = self
                 .msg_box_db
-                .list_visible_session_records(
-                    agent,
-                    &session_id,
-                    CONVERSATION_SCAN_RECORDS,
-                    None,
-                    None,
-                    true,
-                    None,
-                )
+                .list_received_chats(agent, &session_id, CONVERSATION_SCAN_RECORDS)
                 .await?;
             for record in records {
-                if record.box_kind != MailboxKind::Inbox || record.msg_kind != MsgObjKind::Chat {
-                    continue;
-                }
                 let speaker = Self::ingress_principal(record.ingress.as_ref())
                     .unwrap_or_else(|| record.from.clone());
                 if &speaker != user {
@@ -1083,20 +1075,25 @@ impl MessageCenter {
                 .find(|x| x.to == c.to && x.to_session == c.to_session)
                 .cloned()
         });
+        let default = self.default_conversation(&row.owner_did, &agent).await?;
         let mut planned: Vec<Conversation> = Vec::new();
         match row.level {
             NotifyLevel::Quiet => {}
-            NotifyLevel::Normal => planned.extend(source),
+            // A Goal speaks for itself, not for the chat it was once created
+            // in.
+            NotifyLevel::Normal if row.source.goal_id.is_some() => planned.push(default),
+            NotifyLevel::Normal => planned.push(source.unwrap_or(default)),
             NotifyLevel::Timely => {
                 planned.extend(source);
-                if let Some(latest) = candidates.first() {
-                    if !planned.iter().any(|p| p.session_id == latest.session_id) {
-                        planned.push(latest.clone());
-                    }
-                }
+                planned.push(default);
             }
-            NotifyLevel::Urgent => planned = candidates,
+            NotifyLevel::Urgent => {
+                planned = candidates;
+                planned.push(default);
+            }
         }
+        let mut seen = HashSet::new();
+        planned.retain(|c| seen.insert(c.session_id.clone()));
         Ok(planned)
     }
 

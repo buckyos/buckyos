@@ -83,11 +83,13 @@ import {
   crumbsForUrl,
   dfsPathOf,
   displayPath,
+  LIBRARY_URL,
   normalizeUrl,
   parentUrl,
   parseDeviceUrl,
   pathOfFileUri,
   deviceUrl,
+  PUBLISH_URL,
   archiveRootOf,
   archiveRootUrl,
   archiveSplit,
@@ -280,8 +282,14 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     if (!hostInfo) { showToast(t('filebrowser.host.unavailable', 'This computer\'s folders cannot be opened here')); return null }
     return deviceUrl(hostKey, filePath)
   }
-  const titledTabs = (tabs: BrowserTab[]) => tabs.map((tab) =>
-    tab.path === homeUrl ? { ...tab, title: myFilesLabel } : tab.path === hostRoot ? { ...tab, title: hostInfo?.label ?? tab.title } : tab)
+  /** Tabs on a fixed sidebar place carry its name. */
+  const placeTitles: Record<string, string | undefined> = {
+    [PUBLISH_URL]: t('filebrowser.sidebar.published', 'Published'),
+    [LIBRARY_URL]: t('filebrowser.sidebar.library', 'Library'),
+    [hostRoot]: hostInfo?.label,
+    [homeUrl]: myFilesLabel,
+  }
+  const titledTabs = (tabs: BrowserTab[]) => tabs.map((tab) => ({ ...tab, title: placeTitles[tab.path] ?? tab.title }))
   const topicList = topicsSource.state.data ?? NO_TOPICS
 
   // Live collection list (sidebar + "Add to Collection" submenu).

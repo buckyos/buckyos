@@ -254,7 +254,7 @@ async fn derive_next(
                         .map(|m| m.text_content()),
                 )
             };
-            let answer = answer.or_else(|| record.result.as_ref().map(|r| r.raw.clone()));
+            let mut answer = answer.or_else(|| record.result.as_ref().map(|r| r.raw.clone()));
             // A terminal record has no hand-over left (a hosted run that
             // hands over stays `paused`, see `redo_transfer`): whatever the
             // last step named, the run delivered its result.
@@ -274,8 +274,24 @@ async fn derive_next(
                 .and_then(|h| h.extra.get("reports"))
                 .and_then(|v| serde_json::from_value::<Vec<ReportSubmission>>(v.clone()).ok())
                 .and_then(|r| r.into_iter().find(|r| r.is_end));
+            // A branch's result gets what the host adds to it.
+            if child {
+                if let Some(mut value) = answer
+                    .as_deref()
+                    .and_then(|a| llm_context::json_check::parse_reply(a).ok())
+                    .filter(serde_json::Value::is_object)
+                {
+                    super::reports::complete_reply(sh, run, &mut value).await;
+                    answer = Some(value.to_string());
+                }
+            }
             let output = if is_ui_reply(&cfg, snapshot, child) && final_report.is_none() {
                 let content = answer.as_deref().unwrap_or_default();
+                let validator = super::reports::ReplyValidator {
+                    sh: sh.clone(),
+                    run: run.clone(),
+                };
+                let plain = validator.accepts_text().await;
                 let checked = async {
                     let value = llm_context::json_check::parse_reply(content)
                         .map_err(|e| format!("the reply is not one JSON value ({e})"))?;
@@ -284,17 +300,15 @@ async fn derive_next(
                     {
                         llm_context::json_check::validate(schema, &value)?;
                     }
-                    super::reports::ReplyValidator {
-                        sh: sh.clone(),
-                        run: run.clone(),
-                    }
-                    .validate(&value)
-                    .await?;
+                    validator.validate(&value).await?;
                     Ok::<_, String>(value)
                 }
                 .await;
                 Some(match checked {
                     Ok(content) => ContextOutput::Json { content },
+                    Err(_) if plain => ContextOutput::Text {
+                        content: content.to_string(),
+                    },
                     Err(error) => ContextOutput::Invalid {
                         content: content.to_string(),
                         error,

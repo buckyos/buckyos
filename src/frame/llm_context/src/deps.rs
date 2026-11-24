@@ -472,6 +472,18 @@ pub trait OutputValidator: Send + Sync {
     /// `Err(message)`: the reply is rejected; `message` tells the model
     /// what to fix.
     async fn validate(&self, reply: &Value) -> Result<(), String>;
+
+    /// The host takes a plain text as the reply right now: inferences ask
+    /// for no JSON, a reply in the contract's format is still that, any
+    /// other text is the output as it is (`ContextOutput::Text`).
+    async fn accepts_text(&self) -> bool {
+        false
+    }
+
+    /// What the host adds to the correction message of a rejected reply.
+    async fn repair_hint(&self) -> Option<String> {
+        None
+    }
 }
 
 impl LLMContextDeps {

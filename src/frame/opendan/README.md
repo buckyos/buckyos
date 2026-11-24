@@ -30,7 +30,7 @@ OpenDAN kRPC 对只读 Agent 的 App token 同样检查该授权：保留已有 
 | 记录（`users/<owner>/agents/<agent_id>/…`） | Loader 的用法 |
 |---|---|
 | `spec` | `agent_doc.owner` 是 Owner DID；`agent_doc_object_id` / `generation` 用于 AgentRoot 身份与 `info` |
-| `settings` | 启动时读一次：`role_supplement`、`template_auto_update`；`allow_group` 在收到群消息时重新读 |
+| `settings` | 启动时读一次：`role_supplement`、`template_auto_update`；`allow_group`、`group_chat` 在收到群消息时重新读 |
 | `profile` | 首页资料卡读写它（`agent.profile` / `agent.profile_set`） |
 | `info` | 加载成功后写入 `{agent_doc_object_id, generation, loaded_at, template_version}`（`loaded_at` 为秒），写不进去时退避重试；control_panel 据此判断就绪 |
 
@@ -38,10 +38,10 @@ OpenDAN kRPC 对只读 Agent 的 App token 同样检查该授权：保留已有 
 - **模板固定**：`template_auto_update = false` 且 AgentRoot 已从包同步过（有 `.meta/rootfs_sync.json`）时不再同步，日志里记一条；`info.template_version` 保持原值。否则照常同步，`template_version` 取本次部署的包版本（环境变量 `app_instance_config` 里 `agent` 包的 `#<version>`）。
 - **角色补充**：`settings.role_supplement` 写到 `.meta/role_supplement.md`（为空则删除），libopendan 的 behavior catalog 把它接在 `role.md` 之后，并计入 catalog revision。Session 创建时冻结身份文本，修改只对新 Session 生效。
 - **只放行 Owner**：消息的发送者是 `record.ingress.extra.principal_did`（msg-center 解析出的本人，例如 Telegram 账号背后的 Owner），没有时是 `record.from`。不是 Owner 的记录只标记已读：不建 Session、不调用 LLM、不回复。聊天命令和撤回也只有 Owner 的生效。
-- **聊天命令**（给没有界面的渠道用，Session 看不到它们）：`/stop`、`/cancel` 停止正在处理的这条消息（对当前 UI Session 投 `stop(scope=turn)`；对话和上下文留着，这条消息已经发起的 Work 不受影响；没有在处理的消息时回一句提示）。`/clean`、`/new` 归档当前 UI Session，下一条消息新建一代（同 `ui.rotate`；这个对话发起的 Work 还没结束时拒绝并列出它们）。`/resume` 恢复这个对话里被宿主重启中断的 Session：UI Session 自己被中断时恢复它（它名下一起中断的 Work 随之恢复），否则恢复它名下最靠上的那些。命令的回复文案在 Agent 包 `i18n/<lang>.toml` 的 `[commands]`，没有时用内置英文。
+- **聊天命令**（给没有界面的渠道用，Session 看不到它们）：`/stop`、`/cancel` 停止正在处理的这条消息（对当前 UI Session 投 `stop(scope=turn)`；对话和上下文留着，这条消息已经发起的 Work 不受影响；没有在处理的消息时回一句提示）。`/clean`、`/new` 归档当前 UI Session，下一条消息新建一代（Desktop 在用户自己建的聊天里自己处理 `/new`：新建聊天并设为默认，不发给 Agent）（同 `ui.rotate`；这个对话发起的 Work 还没结束时拒绝并列出它们）。`/resume` 恢复这个对话里被宿主重启中断的 Session：UI Session 自己被中断时恢复它（它名下一起中断的 Work 随之恢复），否则恢复它名下最靠上的那些。命令的回复文案在 Agent 包 `i18n/<lang>.toml` 的 `[commands]`，没有时用内置英文。
 - **撤回**：Owner 对一条消息发 redact（MessageHub 的“撤回 / 删除”）时，桥把它转成对当前 UI Session 的 `control(retract)`：还没被处理的输入直接丢弃；正在处理的，停止这个 Turn 并在历史里记下撤回；已经回复的不变。已经执行的步骤不会撤销。
 - **重启后的中断**：宿主重启前正在处理消息的 UI Session 重启后停在“异常中断”。这时到达的普通消息照常入队，并回一句提示（发 `/resume` 继续或 `/stop` 放弃），同一次中断只提示一次。
-- **群聊**：`allow_group = false` 时群消息只标记已读。`allow_group = true` 时只有 Owner 发出、且 `mentions.dids` 含 Agent DID 的群消息触发；触发时先把同一 mailbox 最近 20 条已读消息（不含 Agent 自己的）作为上下文（`delivery.context = true`，保留各自的发言者）按时间顺序投进 Session 队列，再投触发消息。上下文消息不单独组成输入批次、不构成请求，渲染时带 `context="true"`；Session 已经看过的按 ObjId 去重。Agent 包需要 `[[loader.ui]] on = "msg.group"` 规则。
+- **群聊**：`allow_group = false` 时群消息只标记已读。`allow_group = true` 时由 `group_chat.triggers` 的条件决定哪条群消息触发，任一条满足就开一轮，在任何推理之前判断：每条写“谁”（`owner`、`everyone`、成员 DID 列表）和“怎样”（`mention`：`mentions.dids` 含 Agent DID；`reply`：`thread.reply_to` 是 Agent 的消息），不写列表时只有 Owner 的 @，不认识的条件按不满足处理并记日志。判断是接口 `libopendan::group_trigger::GroupTrigger`（输入是这条消息、最近的背景、预算，输出 `{run, reason}`，同 Goal 检查脚本），内置条件是它的一个实现；哪条条件放行记在 worklog（`control_applied{group_trigger}`）。非 Owner 触发的消息带 `triggered_by="member"`，其中的斜杠命令不当命令。触发时先把同一 mailbox 最近 `group_chat.context_messages`（默认 20，上限 200）条已读消息（不含 Agent 自己的）作为上下文（`delivery.context = true`，保留各自的发言者）按时间顺序投进 Session 队列，再投触发消息。上下文消息不单独组成输入批次、不构成请求，渲染时带 `context="true"`；Session 已经看过的按 ObjId 去重。Agent 包需要 `[[loader.ui]] on = "msg.group"` 规则。
 
 Goals（`[loader.goals] enabled`，缺省开启，没有 Goal 时没有开销）：Supervisor 带 `libopendan::host::goals::GoalHost`。每次巡检按 Goal 列表补建当前 epoch 的 Goal Session（`<agent_root>/sessions/`，`[llm_context]` 为基础配置，class `goal`）、投递 epoch 开始事件（`created` 需 `schedule.start_on_create`）、按本地计划（`every_secs`，`LocalScheduleBackend`）在准入（Goal active、距上次 Activation 不少于 `min_interval_secs`、周期上限未到）后投递定时运行机会，并处理 epoch 迁移（reopen / restart：旧 Session 由其状态闸门结束、Goal State 存档、新 Session 建立）与结束（archive / achieved）。Goal 本身与 Goal Session 的语义见 [Agent State Protocol](../../../doc/opendan/protocol/Agent%20State%20Protocol.md) §9。`[session.goal.maintenance] enabled = true` 时 GoalHost 另播种内置整理 Goal `memory_maintenance`，并对它的 start 事件与定时 fire 加 30 分钟 / 2 小时的确定性 gate（Agent State Protocol §9.7；`loader.status.modules` 里的 `memory_maintenance`）。一次 Activation 是 Goal Session 的一个 Turn，因此也是一个 TaskMgr task；TaskMgr 取消它（`CancelBridge` 投递 `stop{scope: turn}`）只结束这次 Activation。
 

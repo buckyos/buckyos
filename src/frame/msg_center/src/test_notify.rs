@@ -490,11 +490,18 @@ async fn categories_and_permissions_follow_the_caller() {
 async fn levels_decide_copies_and_where_unread_lands() {
     let env = env().await;
     let c = &env.center;
-    // No conversation yet: only the home record, unread.
+    // No conversation yet: it starts the default one.
     let lonely = send(c, work_question("q0", NotifyLevel::Normal), agent_ctx()).await.unwrap();
-    assert!(lonely.deliveries.is_empty());
+    assert_eq!(lonely.deliveries.len(), 1);
+    assert!(lonely.deliveries[0].ok);
+    let default = lonely.deliveries[0].session_id.clone();
+    assert!(session_records(c, &jarvis(), &default).await.iter().any(|r| r.msg_kind == MsgObjKind::Event));
     let home = lonely.home.unwrap();
-    assert_eq!(record(c, &alice(), &home.record_id).await.state, RecipientState::Unread);
+    assert_eq!(
+        record(c, &alice(), &home.record_id).await.state,
+        RecipientState::Read,
+        "unread lands on the copy"
+    );
 
     user_says(c, &alice(), "chat-a", next_ms()).await;
     user_says(c, &alice(), "chat-b", next_ms()).await;
@@ -526,11 +533,14 @@ async fn levels_decide_copies_and_where_unread_lands() {
 
     let timely = send(c, work_question("q3", NotifyLevel::Timely), agent_ctx()).await.unwrap();
     let sessions: Vec<&str> = timely.deliveries.iter().map(|d| d.session_id.as_str()).collect();
-    assert_eq!(sessions, vec!["chat-a", "tg:jarvis-bot:777"]);
-    assert_eq!(timely.deliveries[1].platform, "telegram");
+    assert_eq!(sessions, vec!["chat-a", default.as_str()], "not the most recent conversation");
 
     let urgent = send(c, work_question("q4", NotifyLevel::Urgent), agent_ctx()).await.unwrap();
-    assert_eq!(urgent.deliveries.len(), 3);
+    let mut sessions: Vec<&str> = urgent.deliveries.iter().map(|d| d.session_id.as_str()).collect();
+    sessions.sort();
+    let mut all = vec!["chat-a", "chat-b", "tg:jarvis-bot:777", default.as_str()];
+    all.sort();
+    assert_eq!(sessions, all, "every conversation and the default");
     assert_eq!(
         record(c, &alice(), &urgent.home.unwrap().record_id).await.state,
         RecipientState::Unread
@@ -569,7 +579,292 @@ async fn levels_decide_copies_and_where_unread_lands() {
     assert_eq!(delivered[0].reply_route.to_session.as_deref(), Some("chat-a"));
     assert_eq!(delivered[0].options.len(), 2);
     let tg_obs = session_records(c, &jarvis(), "tg:jarvis-bot:777").await;
-    assert_eq!(tg_obs.iter().filter(|r| r.msg_kind == MsgObjKind::Event).count(), 2);
+    assert_eq!(tg_obs.iter().filter(|r| r.msg_kind == MsgObjKind::Event).count(), 1, "urgent");
+}
+
+#[tokio::test]
+async fn notifications_follow_the_default_session() {
+    let env = env().await;
+    let c = &env.center;
+    let tg = DID::new("msgtunnel", "777.user.tg-main");
+    c.register_tunnel("tg-main".into(), DID::new("bns", "tg-box"), "telegram".into())
+        .unwrap();
+    user_says(c, &alice(), "chat-a", next_ms()).await;
+    user_says(c, &tg, "tg:jarvis-bot:777", next_ms()).await;
+    user_says(c, &alice(), "chat-b", next_ms()).await;
+    let goal = |key: &str, level: NotifyLevel| {
+        let mut req = work_question(key, level);
+        req.source = Some(NotifySource { goal_id: Some("goal-1".into()), ..Default::default() });
+        req
+    };
+    let copies = |view: &NotifyView| -> Vec<String> {
+        assert!(view.deliveries.iter().all(|d| d.ok));
+        view.deliveries.iter().map(|d| d.session_id.clone()).collect()
+    };
+    let list = |ctx: RPCContext| {
+        c.handle_list_conversations(
+            MsgCenterListConversationsReq { owner: alice(), peer_did: jarvis() },
+            ctx,
+        )
+    };
+    let set = |to: String, to_session: Option<&str>, ctx: RPCContext| {
+        c.handle_set_default_session(
+            MsgCenterSetDefaultSessionReq {
+                owner: alice(),
+                peer_did: jarvis(),
+                to,
+                to_session: to_session.map(str::to_string),
+            },
+            ctx,
+        )
+    };
+
+    // Never set: the service picks one, and they follow it.
+    let known = list(user_ctx("alice")).await.unwrap();
+    assert_eq!(known.default, None);
+    assert_eq!(
+        known.conversations.iter().map(|x| x.session_id.as_str()).collect::<Vec<_>>(),
+        ["chat-b", "tg:jarvis-bot:777", "chat-a"]
+    );
+    let v = send(c, goal("d0", NotifyLevel::Normal), agent_ctx()).await.unwrap();
+    let picked = list(user_ctx("alice")).await.unwrap().default.unwrap().session_id;
+    assert_eq!(copies(&v), [picked.clone()]);
+    // A Goal does not speak for the chat it was created in.
+    let of_chat = |key: &str| {
+        let mut req = work_question(key, NotifyLevel::Normal);
+        req.source.as_mut().unwrap().goal_id = Some("goal-2".into());
+        req
+    };
+    let v = send(c, of_chat("d0-chat"), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), [picked.clone()]);
+    let v = send(c, goal("d1", NotifyLevel::Timely), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), [picked.clone()]);
+
+    // Only the owner sets it, and only to a conversation there is.
+    assert!(set(tg.to_string(), Some("tg:jarvis-bot:777"), user_ctx("bob")).await.is_err());
+    assert!(set(tg.to_string(), Some("tg:jarvis-bot:778"), user_ctx("alice")).await.is_err());
+    assert!(set(alice().to_string(), Some("nowhere"), user_ctx("alice")).await.is_err());
+    assert!(list(user_ctx("bob")).await.is_err());
+    let default = set(tg.to_string(), Some("tg:jarvis-bot:777"), user_ctx("alice")).await.unwrap();
+    assert_eq!((default.session_id.as_str(), default.platform.as_str()), ("tg:jarvis-bot:777", "telegram"));
+    assert_eq!(list(user_ctx("alice")).await.unwrap().default, Some(default));
+
+    let v = send(c, goal("d2", NotifyLevel::Normal), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), ["tg:jarvis-bot:777"]);
+    let v = send(c, of_chat("d2-chat"), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), ["tg:jarvis-bot:777"]);
+    assert_eq!(
+        record(c, &alice(), &v.home.unwrap().record_id).await.state,
+        RecipientState::Read,
+        "unread lands on the copy"
+    );
+    let v = send(c, goal("d3", NotifyLevel::Timely), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), ["tg:jarvis-bot:777"]);
+    let v = send(c, work_question("d4", NotifyLevel::Normal), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), ["chat-a"], "a source conversation keeps it");
+    let v = send(c, work_question("d5", NotifyLevel::Timely), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), ["chat-a", "tg:jarvis-bot:777"]);
+    let v = send(c, goal("d6", NotifyLevel::Quiet), agent_ctx()).await.unwrap();
+    assert!(copies(&v).is_empty());
+    let v = send(c, goal("d7", NotifyLevel::Urgent), agent_ctx()).await.unwrap();
+    assert_eq!(v.deliveries.len(), 3, "the default is one of them");
+    let v = send(c, NotifySendReq::notice("alice", "Backup", "", "d8"), app_ctx("notes", "alice"))
+        .await
+        .unwrap();
+    assert!(copies(&v).is_empty(), "no Agent's notification");
+
+    // Notifications in it do not push the conversation out of the list.
+    for n in 0..40 {
+        send(c, goal(&format!("flood-{n}"), NotifyLevel::Normal), agent_ctx()).await.unwrap();
+    }
+    assert_eq!(list(user_ctx("alice")).await.unwrap().conversations.len(), 3);
+
+    // A new chat made the default: it gets them before a word was said in it.
+    let created = c
+        .handle_create_session(
+            MsgCenterCreateSessionReq {
+                owner: alice(),
+                peer_did: jarvis(),
+                session_id: None,
+                title: Some("Fresh".into()),
+                binding: None,
+                origin: None,
+                set_default: true,
+                memory_mode: SessionMemoryMode::NoWrite,
+            },
+            user_ctx("alice"),
+        )
+        .await
+        .unwrap();
+    let default = list(user_ctx("alice")).await.unwrap().default.unwrap();
+    assert_eq!((&default.session_id, default.platform.as_str()), (&created.session_id, "native"));
+    // The Agent reads how the owner created it; another one's Agent does not.
+    let state = c
+        .handle_get_session_state(alice(), created.session_id.clone(), agent_ctx())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.memory_mode, SessionMemoryMode::NoWrite);
+    assert!(c
+        .handle_get_session_state(bob(), created.session_id.clone(), agent_ctx())
+        .await
+        .is_err());
+    let v = send(c, goal("d9", NotifyLevel::Normal), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), [created.session_id.clone()]);
+    assert_eq!((v.deliveries[0].to.as_str(), v.deliveries[0].platform.as_str()), (alice().to_string().as_str(), "native"));
+    assert_eq!(v.deliveries[0].to_session.as_deref(), Some(created.session_id.as_str()));
+    let seen = session_records(c, &jarvis(), &created.session_id).await;
+    assert_eq!(seen.iter().filter(|r| r.msg_kind == MsgObjKind::Event).count(), 1);
+
+    // Archiving keeps it. Deleted, the next one is created by whoever asks
+    // for it first: here a notification.
+    c.handle_archive_session(alice(), created.session_id.clone(), user_ctx("alice")).await.unwrap();
+    assert!(list(user_ctx("alice")).await.unwrap().default.is_some());
+    c.handle_delete_session(alice(), created.session_id.clone(), user_ctx("alice")).await.unwrap();
+    assert_eq!(list(user_ctx("alice")).await.unwrap().default, None);
+    let v = send(c, goal("d9-deleted", NotifyLevel::Normal), agent_ctx()).await.unwrap();
+    let replaced = list(user_ctx("alice")).await.unwrap().default.unwrap();
+    assert_ne!(replaced.session_id, created.session_id);
+    assert_eq!(copies(&v), [replaced.session_id.clone()]);
+    let own = c
+        .handle_get_session_state(alice(), replaced.session_id.clone(), user_ctx("alice"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(own.registered && own.peer_did == Some(jarvis()) && own.origin.as_deref() == Some("manual"));
+
+    // A default whose tunnel is gone does not swallow anything: the main
+    // native chat stands in.
+    set(tg.to_string(), Some("tg:jarvis-bot:777"), user_ctx("alice")).await.unwrap();
+    c.clear_tunnel_registry();
+    let v = send(c, goal("d10", NotifyLevel::Normal), agent_ctx()).await.unwrap();
+    assert_eq!(copies(&v), [picked]);
+    assert_eq!(list(user_ctx("alice")).await.unwrap().default.unwrap().session_id, "tg:jarvis-bot:777");
+}
+
+#[tokio::test]
+async fn there_always_is_a_default_session() {
+    let env = env().await;
+    let c = &env.center;
+    let get_as = |native: bool, ctx: RPCContext| {
+        c.handle_get_default_session(
+            MsgCenterGetDefaultSessionReq { owner: alice(), peer_did: jarvis(), native },
+            ctx,
+        )
+    };
+    let get = || async { get_as(false, user_ctx("alice")).await.unwrap() };
+    let create = |title: &str| {
+        c.handle_create_session(
+            MsgCenterCreateSessionReq {
+                owner: alice(),
+                peer_did: jarvis(),
+                session_id: None,
+                title: Some(title.into()),
+                binding: None,
+                origin: None,
+                set_default: false,
+                memory_mode: SessionMemoryMode::Normal,
+            },
+            user_ctx("alice"),
+        )
+    };
+    let delete = |sid: &str| c.handle_delete_session(alice(), sid.to_string(), user_ctx("alice"));
+    let goal = |key: &str| {
+        let mut req = work_question(key, NotifyLevel::Normal);
+        req.source = Some(NotifySource { goal_id: Some("goal-1".into()), ..Default::default() });
+        req
+    };
+    assert!(get_as(false, user_ctx("bob")).await.is_err());
+    assert!(get_as(false, agent_ctx()).await.is_err(), "an Agent creates no session of its owner");
+
+    // The earliest chat the user started, not an App's.
+    let app = create("in an App").await.unwrap();
+    c.handle_update_owner_ui_session_state(
+        alice(),
+        app.session_id.clone(),
+        "ui.source".into(),
+        json!("aiworkspace"),
+        user_ctx("alice"),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    let first = create("first").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    let second = create("second").await.unwrap();
+    let default = get().await;
+    assert_eq!(default.session_id, first.session_id);
+    assert_eq!(get().await, default, "asking again changes nothing");
+    let v = send(c, goal("g1"), agent_ctx()).await.unwrap();
+    assert_eq!(v.deliveries[0].session_id, first.session_id);
+
+    // Deleted: a new chat, not one of the others; as often as it happens.
+    let mut seen = vec![first.session_id.clone(), second.session_id.clone(), app.session_id.clone()];
+    let mut current = default;
+    for _ in 0..2 {
+        delete(&current.session_id).await.unwrap();
+        current = get().await;
+        assert!(!seen.contains(&current.session_id), "{}", current.session_id);
+        seen.push(current.session_id.clone());
+    }
+    // Deleting another chat does not touch it.
+    delete(&second.session_id).await.unwrap();
+    assert_eq!(get().await, current);
+
+    // Also where the process ended before the deletion reached the default.
+    let key = format!("default:{}", jarvis().to_string());
+    let row = c
+        .msg_box_db
+        .get_owner_ui_session_state(&alice(), &key, "default_session")
+        .await
+        .unwrap()
+        .unwrap();
+    delete(&current.session_id).await.unwrap();
+    c.msg_box_db
+        .upsert_owner_ui_session_state(&alice(), &key, "default_session", &row.value, next_ms())
+        .await
+        .unwrap();
+    let before = current.session_id.clone();
+    current = get().await;
+    assert_ne!(current.session_id, before);
+
+    // Calls at the same time agree.
+    delete(&current.session_id).await.unwrap();
+    let (a, b) = tokio::join!(get(), get());
+    assert_eq!(a, b);
+
+    // A tunnel conversation as the default: a writable chat is another call,
+    // which leaves the default alone.
+    let tg = DID::new("msgtunnel", "777.user.tg-main");
+    c.register_tunnel("tg-main".into(), DID::new("bns", "tg-box"), "telegram".into())
+        .unwrap();
+    user_says(c, &tg, "tg:jarvis-bot:777", next_ms()).await;
+    c.handle_set_default_session(
+        MsgCenterSetDefaultSessionReq {
+            owner: alice(),
+            peer_did: jarvis(),
+            to: tg.to_string(),
+            to_session: Some("tg:jarvis-bot:777".into()),
+        },
+        user_ctx("alice"),
+    )
+    .await
+    .unwrap();
+    let default = get().await;
+    assert_eq!(default.session_id, "tg:jarvis-bot:777");
+    let writable = get_as(true, user_ctx("alice")).await.unwrap();
+    assert_eq!((&writable.session_id, writable.platform.as_str()), (&a.session_id, "native"));
+    assert_eq!(get().await, default);
+
+    // Without any chat with the peer one is created.
+    let other = c
+        .handle_get_default_session(
+            MsgCenterGetDefaultSessionReq { owner: alice(), peer_did: bob(), native: false },
+            user_ctx("alice"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(other.platform, "native");
 }
 
 #[tokio::test]

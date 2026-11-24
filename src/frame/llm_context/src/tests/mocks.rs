@@ -194,6 +194,7 @@ pub(super) struct ScriptedRecordingLlm {
     script: Mutex<Vec<Result<AiResponse, LLMComputeError>>>,
     seen: Mutex<Vec<Vec<AiMessage>>>,
     offers: Mutex<Vec<Option<Vec<String>>>>,
+    json: Mutex<Vec<bool>>,
 }
 
 impl ScriptedRecordingLlm {
@@ -206,7 +207,13 @@ impl ScriptedRecordingLlm {
             script: Mutex::new(script),
             seen: Mutex::new(Vec::new()),
             offers: Mutex::new(Vec::new()),
+            json: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Per request: JSON matching a schema was asked for.
+    pub(super) fn json(&self) -> Vec<bool> {
+        self.json.lock().unwrap().clone()
     }
 
     pub(super) fn seen(&self) -> Vec<Vec<AiMessage>> {
@@ -227,6 +234,10 @@ impl LlmClient for ScriptedRecordingLlm {
             req.allow_tool_calls
                 .then(|| req.tool_specs.iter().map(|spec| spec.name.clone()).collect()),
         );
+        self.json
+            .lock()
+            .unwrap()
+            .push(req.force_json && req.json_schema.is_some());
         self.seen.lock().unwrap().push(req.messages);
         let mut guard = self.script.lock().unwrap();
         if guard.is_empty() {

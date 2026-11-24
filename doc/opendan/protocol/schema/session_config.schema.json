@@ -488,11 +488,22 @@
       "description": "`[reply]`: the reply contract of a behavior's context. The final reply (an assistant text without tool calls) is one JSON value matching `schema`: the provider enforces it natively where it can, the host checks it and asks for one correction (`OutputSpec::Json { max_repairs: Some(1) }`). Function call loop only.",
       "properties": {
         "asks_field": {
-          "description": "An array field of the reply that must list every question the context asked the user (`ask_user`), one entry each.",
+          "description": "A field the host adds to the reply: every question the context asked the user (`ask_user`) with the user's answer, as the notification holds them. The schema does not declare it.",
           "type": [
             "string",
             "null"
           ]
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReplyContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Checks of the reply a schema cannot state, by name."
         },
         "schema": {
           "description": "JSON Schema of the reply (an object schema)."
@@ -911,6 +922,25 @@
           "type": "object"
         },
         {
+          "description": "UI sessions: how the final reply is given from now on.",
+          "properties": {
+            "command": {
+              "enum": [
+                "reply_mode"
+              ],
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/definitions/ReplyMode"
+            }
+          },
+          "required": [
+            "command",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Goal Sessions: change the Goal's current skills (applied by the driver to the Goal State it owns).",
           "properties": {
             "add": {
@@ -1086,7 +1116,6 @@
           "type": "array"
         },
         "waiting": {
-          "default": [],
           "description": "Extended commands whose launcher is there while the online item it runs (a download of its package, such as the browser) is not yet on the node: not missing, not usable either.",
           "items": {
             "type": "string"
@@ -1493,6 +1522,31 @@
         }
       ]
     },
+    "MemoryMode": {
+      "description": "How a session uses the Agent's Memory, chosen when the conversation was created (`SessionMemoryMode` of its msg-center session).",
+      "oneOf": [
+        {
+          "enum": [
+            "normal"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Reads it and leaves nothing: no perception is recorded.",
+          "enum": [
+            "no_write"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Neither: no recall, no perception.",
+          "enum": [
+            "no_read_write"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "MsgDelivery": {
       "description": "Delivery layer information; everything optional.",
       "properties": {
@@ -1521,6 +1575,17 @@
             "null"
           ]
         },
+        "trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MsgTrigger"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A group message that started a turn: what let it through."
+        },
         "tunnel": {
           "description": "DID of the ingress tunnel.",
           "type": [
@@ -1529,6 +1594,23 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "MsgTrigger": {
+      "description": "Why a group message reached the session.",
+      "properties": {
+        "member": {
+          "description": "Another member than the owner.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "The condition ([`crate::group_trigger`]).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
       "type": "object"
     },
     "NativeComputerConfig": {
@@ -1902,6 +1984,37 @@
           "description": "The machine's own PATH.",
           "enum": [
             "system"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ReplyContract": {
+      "description": "Host checks of a reply beyond its schema (`[reply] contract`).",
+      "oneOf": [
+        {
+          "description": "The result of an intent analysis: a report, and with each outcome what it claims — the work session this context created, a goal there is, the goal or plan the request was handed to.",
+          "enum": [
+            "intent_analysis"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ReplyMode": {
+      "description": "How a UI session's final reply is given. The model changes it (`agent-session ctl reply-mode`); it holds for the session, a new one starts with the default.",
+      "oneOf": [
+        {
+          "description": "The final text is the JSON of the behavior's `[reply]` schema.",
+          "enum": [
+            "schema"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The final text is what the user reads; a reply with a topic or artifacts goes through `submit_reply`.",
+          "enum": [
+            "compat"
           ],
           "type": "string"
         }
@@ -2364,6 +2477,14 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "memory": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MemoryMode"
+            }
+          ],
+          "description": "What the session takes from and leaves in Memory; the work it starts has the same."
+        },
         "observe": {
           "allOf": [
             {
@@ -2371,6 +2492,10 @@
             }
           ],
           "default": "events_and_active"
+        },
+        "reads_messages": {
+          "description": "A Work whose messages come in while it works: they are read before the next inference, and it does not end with one unread.",
+          "type": "boolean"
         },
         "runtime_view": {
           "allOf": [

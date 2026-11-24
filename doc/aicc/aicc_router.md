@@ -9,6 +9,8 @@
 
 > 2026-09-25 LLM 实现更新：厂商规格、动态家族、固定 effort 和禁止隐式父级回退已实现；路由已改为“逐层最高可用权重展开 → 候选池按策略选择”（§6.2.1、§10.4），规格内版本偏好由 metadata `llm.weight` 声明，不再从模型名推导版本排序；参见 [Metadata Schema](driver_metadata_schema.md) 与 [实现报告](model_driver_v2_implementation.md)。下面通用 Auto/Hybrid、父级回退及历史目录示例仅适用于非 LLM；LLM 功能只能引用声明规格。实验版由内部 `RoutingRequest.allow_experimental` 控制，默认关闭，公共 RPC 未新增字段。
 
+> **2026-11-23 路由与 fallback 原则（以 §9 为准）**：相同的配置得到相同的模型；Provider 不可用就修 Provider，系统不自动换到别的模型或 Provider；fallback 只来自系统管理员手工配置的模型路由，没有内置默认目标。本文已按此修订；代码仍有旧行为，差距与改造步骤见 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md)。两者冲突时，原则以 §9 为准，当前实际行为以代码为准。
+
 ---
 
 ## 1. 背景
@@ -26,7 +28,7 @@ AICC 的核心职责是为不同类型的 AI 能力定义统一的标准输入�
 
 1. 一个模型名到底会被路由到哪个 Provider；
 2. 多个 Provider 都能提供同一逻辑模型时，应该如何选择；
-3. 当目标模型不可用、无候选、超预算、超时或配额耗尽时，如何 fallback；
+3. 当目标模型不可用、无候选、超预算、超时或配额耗尽时，如何让调用方和管理员知道原因；管理员是否为它配置了 fallback 模型；
 4. 应用开发者和最终用户分别应该拥有怎样的模型选择控制面；
 5. 在 Agent、多步骤任务、Provider cache 优惠和 session 复用场景下，路由粒度应该是 per request 还是 per session。
 
@@ -43,7 +45,7 @@ AICC 的核心职责是为不同类型的 AI 能力定义统一的标准输入�
 1. **统一模型名体系**：同时支持精确模型名和逻辑模型名，并明确二者语义。
 2. **支持多 Provider 常态化注册**：同一个逻辑模型名可以由多个 Provider 同时提供，不再采用抢占式注册。
 3. **提供清晰的候选列表生成机制**：将逻辑模型名解析为候选 Provider/精确模型集合。
-4. **提供可控 fallback 机制**：候选为空或执行失败时，按规则降级，避免不可预测的无限 fallback。
+4. **稳定预期与显式 fallback**：相同的配置得到相同的模型；模型不可用时明确报错，只有管理员配置了 fallback 模型路由时才改用它。
 5. **提供调度策略**：在多个候选者中，基于成本、可用性、延迟、质量、用户策略等因素选择最佳 Provider。
 6. **支持 request 级 overlay**：调用方可在每次 RPC 传入已经合成好的 `session_overlay`，AICC 将其覆盖到系统级路由配置之上。
 7. **提供可解释性**：能回答“为什么这个 request 被路由到了这个 Provider”。
@@ -69,7 +71,7 @@ AICC 的核心职责是为不同类型的 AI 能力定义统一的标准输入�
 | 逻辑模型名 | 面向能力、用途或模型家族的模型名，如 `llm.gpt-pro`、`llm.plan`、`llm.code`。需要解析为候选精确模型集合。 |
 | 模型目录树 | 逻辑模型名构成的树状结构。目录越精细，候选范围越窄；目录越宽，候选范围越大。 |
 | 候选列表 | 逻辑模型名解析后得到的一组可执行候选项，每个候选项包含 Provider、精确模型名、能力元数据和动态状态。 |
-| Fallback | 当候选为空或执行失败时，按配置选择备用逻辑目录、备用精确模型或备用 fallback 目录。 |
+| Fallback | 系统管理员为某个逻辑目录手工配置的备用模型路由（精确模型或逻辑目录）。没有配置就没有 fallback，见 §9。 |
 | 调度器 | 在候选列表中，根据硬性过滤和评分规则选择最终 Provider/精确模型的模块。 |
 | Request Overlay | 调用方在 RPC 前合成好的本次路由覆盖层，AICC 不维护 `session_id -> config` 状态。 |
 | 控制面 | 应用开发者或最终用户对模型选择、Provider 约束、成本、隐私、本地优先等策略的配置入口。 |
@@ -104,9 +106,9 @@ flowchart LR
 | Model Registry | 管理逻辑模型树、精确模型、Provider 注册关系、能力元数据和 fallback 配置。 |
 | Provider Metadata | Provider 声明自身可用模型、能力、价格、配额、健康状态、上下文长度等信息。 |
 | Model Resolver | 将输入模型名解析成候选列表。 |
-| Fallback Resolver | 在候选为空或执行失败时，根据 fallback 策略扩大或替换候选范围。 |
+| Fallback Resolver | 只解析管理员显式配置的 fallback 路由，不推导、不扩大候选范围。 |
 | Scheduler | 基于策略和评分模型，从候选列表中选择最佳候选。 |
-| Provider Executor | 执行实际 Provider 调用，处理重试、运行时 failover 和错误归一化。 |
+| Provider Executor | 执行实际 Provider 调用，处理同一精确模型的重试、显式 fallback 和错误归一化。 |
 | Route Trace / Metrics | 记录路由原因、候选数量、fallback 原因、最终 Provider、成本估算、执行状态等。 |
 
 ### 4.2 控制面 / 数据面 API 边界
@@ -154,8 +156,8 @@ qwen3@local
 
 - 表示调用方希望准确无误地选择该 Provider；
 - 默认绕过逻辑模型路由；
-- 默认不做逻辑 fallback；
-- Provider 不可用时直接失败；调用方重新 route 或显式选择 route 返回的 fallback candidate；
+- 不做 fallback；
+- Provider 不可用时直接失败，返回真实错误；
 - 对调试、测试、Provider 对比、强制指定供应商场景非常重要。
 
 #### 5.1.1 Variant 后缀（reasoning effort 等）
@@ -206,7 +208,7 @@ image.txt2image.gpt5
 | 是否需要路由 | 默认不需要复杂路由 | 需要解析候选并调度 |
 | 是否可多 Provider | 否 | 是 |
 | 主要用途 | 强制指定、调试、测试、精确控制 | 应用默认配置、用户选择、自动调度、fallback |
-| fallback 默认行为 | 不 fallback | 可按配置 fallback |
+| fallback 默认行为 | 不 fallback | 不 fallback；管理员为该目录配置后才有 |
 
 ### 5.4 命名唯一性原则
 
@@ -226,7 +228,7 @@ image.txt2image.gpt5
 1. **能力优先**：目录表示任务能力、模型用途或模型家族。
 2. **属性不进目录**：本地/云端、隐私级别、价格、延迟等更适合作为候选属性和过滤条件，不应默认成为目录路径。
 3. **LLM 根只作命名空间**：通用请求明确选择 `llm.chat` 等功能，不由 `llm` 自动收集模型。
-4. **LLM 回退显式配置**：任务、规格、家族禁止隐式 Parent fallback，原任务的能力约束在回退时仍有效。
+4. **回退只来自管理员配置**：所有逻辑目录默认不回退（§9）；配置了回退时，原任务的能力约束仍有效。
 5. **用户可理解**：目录保留按官方模型 ID 归一化的家族名，例如 `llm.gpt-5-6-sol`，并与功能、规格区分。
 6. **支持 Agent 多角色**：Agent 内部可能同时使用 `plan`、`code`、`summary` 等多个逻辑模型名，UI 和配置应支持对这些角色分别设置策略。
 
@@ -237,7 +239,7 @@ llm                                      # 只作命名空间
 ├── plan                                 # 功能目录
 │   └── gpt_pro -> llm.gpt-pro (2.3)      # 功能偏好
 ├── chat / code / swift / summarize / …   # 其他功能
-├── fallback                             # 默认空
+├── fallback                             # 默认空，只接收管理员显式配置
 ├── gpt-pro                              # metadata 声明的规格，零库存也存在
 │   ├── llm.gpt-5-6-sol -> llm.gpt-5-6-sol:high (56，metadata llm.weight)
 │   └── llm.gpt-5-5-pro -> llm.gpt-5-5-pro:high (55)
@@ -255,7 +257,7 @@ Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1�
 
 LLM 与其它 API 类型使用同一套两阶段算法（详见 §10.4），不再有 LLM 专用比较器：
 
-1. **展开**：功能目录 → 规格 → 家族预设 → instance，每一层只展开本层**可用** item 中最终权重最大的一组，并列全部展开；最高组没有任何可用候选（无库存、未通过 admission、被运行状态或策略硬过滤）时才尝试同层下一权重组；子目录独立重复该规则。
+1. **展开**：功能目录 → 规格 → 家族预设 → instance，每一层只展开本层**可用** item 中最终权重最大的一组，并列全部展开；最高组没有任何可用候选时才尝试同层下一权重组；子目录独立重复该规则。“可用”只看静态条件（库存、admission、启用、凭据、策略），不看健康、熔断、冷却等运行状态，见 §10.4。
 2. **选择**：展开得到的合格 instance 合并成一个候选池，按调度 profile 选择；所有策略项相同时按默认顺序。
 
 功能偏好 `2.3` 与规格内的 `56/55` 分属不同父节点，只在各自父节点内比较，不相乘，也不按路径字典序跨分支比较；`gpt-5.6 = 56` 不会让它在阶段二天然胜过另一规格的 `opus-5.5 = 55`。路由层不从模型名解析版本，不按 stability 隐式排序：`stability = experimental` 只作为准入条件（请求未允许实验版时硬过滤），“稳定版优先”如需保留应体现为 metadata/配置权重。固定 `effort` 不能被请求覆盖；不支持所需强度的 Provider 实例不是该强度的候选。
@@ -320,7 +322,7 @@ logical_tree:
           - { name: claude_opus, target: llm.claude-opus, weight: 2.0 }
 ```
 
-当 request model 为 `llm.plan` 时，Resolver 先读取 `llm.plan` 的 items，只展开最高权重且可用的 `llm.gpt-pro`；`llm.gpt-pro` 没有任何可用候选时才展开 `llm.claude-opus`。进入目标目录后按同样规则继续展开，直到得到精确模型候选。`weight` 不沿路径相乘，只在当前目录的同级 item 之间表达“先选哪个分支”。
+当 request model 为 `llm.plan` 时，Resolver 先读取 `llm.plan` 的 items，只展开最高权重且可用的 `llm.gpt-pro`；Zone 没有接入任何属于 `llm.gpt-pro` 的模型时才展开 `llm.claude-opus`。`llm.gpt-pro` 的 Provider 临时故障不会触发这一步。进入目标目录后按同样规则继续展开，直到得到精确模型候选。`weight` 不沿路径相乘，只在当前目录的同级 item 之间表达“先选哪个分支”。
 
 item 解析规则：
 
@@ -493,25 +495,24 @@ flowchart TD
     C -- 是 --> D[校验 Provider 与模型存在]
     D --> E{硬性策略通过?}
     E -- 是 --> F[返回精确候选]
-    E -- 否 --> G{允许精确模型 fallback?}
-    G -- 否 --> ERR1[返回策略拒绝错误]
-    G -- 是 --> H[进入 fallback 解析]
+    E -- 否 --> ERR1[返回明确原因]
     C -- 否 --> I[按逻辑模型名查询目录树]
-    I --> J[生成候选列表]
-    J --> K[应用硬性过滤]
+    I --> J[按静态条件生成候选列表]
+    J --> K[应用请求的硬性过滤]
     K --> L{候选是否为空?}
-    L -- 是 --> H[进入 fallback 解析]
-    L -- 否 --> Q[调度器评分选择]
-    H --> N{fallback 后是否有候选?}
-    N -- 否 --> ERR2[返回无候选错误]
-    N -- 是 --> Q
+    L -- 是 --> H{管理员配置了 fallback?}
+    L -- 否 --> Q[调度器选择]
+    H -- 否 --> ERR2[返回无候选错误]
+    H -- 是 --> N[解析 fallback 路由，重新过滤]
+    N --> Q
     Q --> S[执行 Provider 调用]
     S --> T{执行成功?}
     T -- 是 --> U[返回 response 与 route trace]
-    T -- 否 --> V{允许运行时 failover?}
-    V -- 否 --> ERR3[返回执行错误]
-    V -- 是 --> W[选择下一个候选重试]
-    W --> S
+    T -- 否 --> V{可对同一精确模型重试?}
+    V -- 是 --> S
+    V -- 否 --> W{属于 §9.2 的触发条件，且管理员配置了 fallback?}
+    W -- 否 --> ERR3[返回 Provider 的真实错误]
+    W -- 是 --> X[执行 fallback 路由，每次请求最多一次]
 ```
 
 ### 8.2 路由伪代码
@@ -537,9 +538,8 @@ function route(request: AICCRequest): RouteDecision {
       return chooseExactWithSession(candidates[0], request, policy, trace);
     }
 
-    if (!policy.allow_exact_model_fallback) {
-      throw new RouteError("AICC_ROUTE_EXACT_MODEL_UNAVAILABLE", trace);
-    }
+    // 精确模型从不换模型
+    throw new RouteError("AICC_ROUTE_EXACT_MODEL_UNAVAILABLE", trace);
   } else {
     candidates = resolveLogical(modelName, apiType, sessionConfig);
     candidates = applyHardFilters(candidates, policy, request);
@@ -549,7 +549,8 @@ function route(request: AICCRequest): RouteDecision {
     }
   }
 
-  const fallbackCandidates = resolveFallback(modelName, apiType, policy, request, trace);
+  // 只解析管理员显式配置的 fallback；没有配置时返回空
+  const fallbackCandidates = resolveConfiguredFallback(modelName, apiType, effectiveConfig, trace);
   const filteredFallbackCandidates = applyHardFilters(fallbackCandidates, policy, request);
 
   if (filteredFallbackCandidates.length === 0) {
@@ -566,147 +567,100 @@ function route(request: AICCRequest): RouteDecision {
 
 1. API 类型不匹配；
 2. Provider 未启用或凭据不可用；
-3. 模型不可用、下线或健康状态为不可用；
+3. 模型不在库存或已被管理员停用；
 4. request 所需能力不支持，例如 tool call、JSON schema、web search、vision、streaming；
 5. 上下文长度不足；
 6. 用户或应用策略禁止该 Provider；
 7. `local_only = true` 时候选不是本地 Provider；
 8. 隐私策略不允许将数据发送到云端；
 9. 预算硬限制会被明显突破；
-10. Provider 明确报告配额耗尽且不允许超额付费。
+10. 用户、应用或组织的额度规则拒绝该模型（返回额度错误，不换模型，见 §9.2）。
+
+健康状态、熔断、冷却、上游配额余量**不在**硬过滤之列：它们会随时间变化，用来选模型会让同一个功能今天用这家、明天用那家。这些状态只用于展示、告警和报错（§10.7）。
 
 ---
 
-## 9. Fallback 与降级机制
+## 9. Fallback 与失败处理
 
-### 9.1 Fallback 触发条件
+### 9.1 原则
 
-Fallback 分为解析期 fallback 和运行时 failover。
+自动换模型会让费用不可控、行为不可预期，还会掩盖 Provider 的真实故障。大多数个人用户只配了一个 Provider，出问题时没有可换的；企业配多个 Provider 通常是出于成本考虑，很少接受一个功能点今天用这家、明天用那家。因此：
 
-解析期 fallback 触发条件：
+1. **稳定预期。** 相同的配置、库存和请求得到相同的模型与 Provider。选择只由管理员配置、静态库存和请求自身的硬约束决定，不受健康、熔断、冷却、延迟等运行状态影响。
+2. **Provider 不可用就修 Provider。** 失败时返回真实原因（哪个 Provider、哪个精确模型、上游返回了什么），并引导管理员处理。系统不自动换到别的模型或 Provider；同一 Provider 里的另一个模型、同一厂商的另一个 Provider 实例都算“别的”。
+3. **fallback 只来自手工配置。** 系统管理员可以为逻辑目录明确指定一条 fallback 模型路由。系统不内置默认目标，不从权重、价格估算、能力或健康状态推导目标。
+4. **目标由管理员判断。** fallback 通常应指向比原模型更便宜的模型。Provider 不提供可靠的价格信息，系统无法判断谁更便宜，只能由完成配置的系统管理员决定；配置界面要说明这一点，并让管理员确认。
+5. **引导配置。** 系统的职责是帮用户把路由配对、把错误讲清楚，而不是在配错或故障时猜一个能用的模型。
 
-1. 逻辑模型名解析后候选为空；
-2. 候选存在但被硬性策略全部过滤；
-3. 精确模型不可用，且 policy 明确允许精确模型 fallback；
-4. 目录路径不存在，且 policy 允许按配置 fallback。
+### 9.2 失败处理顺序
 
-运行时 failover 触发条件：
+1. **同一精确模型重试。** 连接中断、timeout、5xx、无效或不完整响应等可能由偶发抖动造成的错误，对当前 exact model 重试 1 次；存在合法 `Retry-After` 时遵循它，但单次等待最多 2 秒。
+2. **恢复同一 Provider。** Provider 拒绝了动态登录的凭证时，可以重新登录一次再试。Provider、模型和配置都没有变，不属于换模型。
+3. **显式 fallback。** 仍然失败，且管理员为该逻辑目录配置了 fallback，才执行它。触发条件：无静态候选、Provider 不可用（重试后仍 timeout / 5xx / 连接失败）、模型不存在或已下线、上游配额耗尽、用户额度规则拒绝该模型。
+4. **其余直接返回真实错误。** 没有配置 fallback 时不换模型，也不把上游错误改写成“没有可用模型”。
 
-1. Provider 调用超时；
-2. Provider 5xx 或服务不可用；
-3. Provider 返回配额耗尽；
-4. Provider 返回模型临时不可用；
-5. 调用失败且 request 可重试；
-6. 调用失败且 policy 允许 failover 到下一个候选。
+以下情况**任何时候都不执行 fallback**：400 参数或 schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突、请求取消、已报告用量的失败，以及异步任务已成功提交并取得 remote task ID 之后的失败。换模型会掩盖调用方或配置的错误，或造成重复计费。
 
-执行重试分为两个有固定顺序的维度：
+请求使用精确模型时从不换模型。
 
-1. **同一精确模型重试**：连接中断、timeout、5xx、无效或不完整响应等可能由偶发抖动造成的可重试错误，先对当前 exact model 重试 1 次；存在合法 `Retry-After` 时遵循它，但单次等待最多 2 秒；
-2. **候选切换**：同一模型重试仍失败，且 `runtime_failover = true` 时，切换到路由阶段已经产生的下一个合格候选。模型不存在或已下线、模型临时不可用、quota exhausted 等确定继续调用当前模型无效的错误，不进行同模型重试，直接切换候选；
-3. 400 参数或 schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突、取消，以及明确不可重试的 Provider 错误立即终止，不得换模型掩盖调用方或配置错误；
-4. 是否允许切换由路由语义和 effective policy 决定。显式 exact model 默认没有其它候选，因此默认不发生隐式 fallback；只有显式启用 exact-model fallback 并实际解析出候选时才可切换；
-5. Provider 是否已经接收 HTTP 请求不改变上述错误分类。只要 Provider 明确返回 timeout、5xx、quota exhausted、模型不可用等可 failover 错误，就按本节执行；异步 Provider task 已成功提交并取得 remote task ID 后保持 pinned binding，不跨 Provider 重提。
+> §9.1 是 owner 定的原则。§9.2 的触发条件、§9.3 的第 1 行与规则 3、5 是按原则推出的细则，待确认项见 [TODO](../../notepads/aicc-explicit-fallback-todo.md) §5。
 
-### 9.2 Fallback 模式
+### 9.3 Fallback 模式
 
-建议支持以下 fallback 模式：
+| 模式 | 含义 |
+|---|---|
+| `strict` | 不 fallback。**所有逻辑目录的默认值。** |
+| `disabled` | 显式禁止；下层配置不能再打开。 |
+| `target_exact` | 改用管理员指定的一个精确模型，例如 `gpt-mini@openai`。 |
+| `target_logical` | 改用管理员指定的一个逻辑目录，例如 `llm.gpt-mini`。 |
+| `parent` | 扩大到父目录。它会选中管理员没有点名的模型，不符合 §9.1，不再作为任何目录的默认值，计划移除。 |
 
-| 模式 | 含义 | 示例 |
-|---|---|---|
-| `strict` | 不 fallback，候选为空即失败。 | 高隐私、强一致性任务。 |
-| `parent` | 向上扩大到父目录继续查找；LLM 禁止隐式父级回退。 | 非 LLM 按各 API 的规则使用。 |
-| `target_exact` | fallback 到指定精确模型。 | `gpt5@openai`。 |
-| `target_logical` | fallback 到指定逻辑目录。 | `llm.fallback`。 |
-| `disabled` | 显式禁止该节点 fallback。 | 宁可失败，也不串到其他模型。 |
+规则：
 
-每个目录节点只能配置一种 fallback 模式，`parent`、`target_exact`、`target_logical`、`strict`、`disabled` 互斥。不能表达“先 parent 一级，再 target_logical”的组合；如果需要组合，应显式把上一级目录配置成 `target_logical`，让 fallback chain 通过多个节点串联，且每一步都进入 visited set 检测。
+1. 每个目录节点只能配置一种模式。
+2. `llm.fallback` 默认为空，不随 Provider 接入自动获得候选。
+3. 只有系统级配置（AI Center、CLI 或 `services/aicc/settings.routing_config`）能设置 fallback 目标。请求和 session overlay 只能关闭 fallback，不能打开或改目标。
+4. 不跨 API namespace；原请求和原任务的能力、隐私、`local_only` 约束在 fallback 时仍全部有效。
+5. 每次请求最多执行一次 fallback；目标失败就返回错误，错误里同时给出原模型与 fallback 模型的失败原因。
+6. 发生 fallback 必须可见：route trace、用量记录和 AI Center 都要标出原模型、实际模型和原因，并通知管理员去修原 Provider。
 
-### 9.3 推荐默认策略
+### 9.4 示例
 
-1. LLM 任务、规格和家族禁止隐式 `parent` fallback，根只作命名空间；其他 API 按各自约束设置；
-2. 对安全、隐私、合规、强模型一致性场景，默认使用 `strict` 或 `disabled`；
-3. `llm.fallback` 默认空，只接收显式配置；LLM 显式回退仍保留原请求和原任务的能力约束；
-4. 对精确模型名，默认不 fallback，除非 request policy 明确开启；
-5. Fallback 不允许跨 API namespace，例如 `llm.code` 不能 fallback 到 `image.txt2image`；
-6. Fallback 过程中必须记录 trace，便于解释最终模型选择。
+#### 示例一：默认不 fallback
 
-### 9.4 Fallback 链示例
+`llm.code` 没有配置 fallback，选中的 `gpt-codex@sn` 返回 404 模型不存在。结果：返回 `provider_error`，带 Provider 实例名、精确模型和上游的 404 原文；AI Center 在该 Provider 上标出“目录中有、但调用返回 404 的模型”。不会改用 `gpt-standard` 或 `claude-opus`。
 
-#### 示例一：向父目录 fallback（历史示例，不适用于新 LLM 契约）
-
-请求：
-
-```json
-{
-  "model": "llm.code",
-  "api_type": "llm"
-}
-```
-
-流程：
-
-1. 查询 `llm.code`，无候选；
-2. `llm.code` 未配置专用 fallback；
-3. 按 `parent` 模式查询 `llm`；
-4. `llm` 下存在候选；
-5. 调度器从 `llm` 候选中选择一个 Provider；
-6. trace 中记录 `fallback_from = llm.code`、`fallback_to = llm`。
-
-#### 示例二：fallback 到专用目录
-
-配置：
+#### 示例二：管理员配置了 fallback
 
 ```yaml
 logical_tree:
   llm:
-    fallback:
-      mode: target_logical
-      target: llm.fallback
+    children:
+      code:
+        fallback:
+          mode: target_exact
+          target: gpt-mini@openai   # 管理员选定，确认过价格
 ```
 
-请求 `llm.plan` 无候选时：
+`llm.code` 选中的模型重试后仍不可用时，改用 `gpt-mini@openai`，trace 记录 `fallback_from`、`fallback_to` 和原因，并通知管理员。`gpt-mini@openai` 也失败时返回错误，不再继续。
 
-1. 先查 `llm.plan`；
-2. 再查父目录或节点 fallback；
-3. 最终落到 `llm.fallback`；
-4. 从 `llm.fallback` 候选中调度。
+#### 示例三：同一厂商的备用 key
 
-#### 示例三：精确模型不自动 fallback
+两个 OpenAI token 建成 `openai_primary` 和 `openai_backup` 两个 Provider 实例，系统不会在它们之间自动切换。需要备用时，由管理员配置 `target_exact: gpt-codex@openai_backup`。
 
-请求：
+#### 示例四：精确模型
 
-```json
-{
-  "model": "gpt5@openai",
-  "api_type": "llm"
-}
-```
-
-如果 `gpt5@openai` 不可用，默认直接返回错误。只有显式配置：
-
-```json
-{
-  "policy": {
-    "allow_exact_model_fallback": true,
-    "fallback": {
-      "mode": "target_logical",
-      "target": "llm.gpt-pro"
-    }
-  }
-}
-```
-
-才允许 fallback。
+请求 `gpt5@openai`，不可用时直接返回错误。
 
 ### 9.5 防止无限 fallback
 
 必须实现以下保护：
 
 1. Fallback 解析时维护 visited set；
-2. 任意 fallback 链最大深度默认不超过 5；
+2. 配置校验按 visited set 检查整张图；执行时每次请求最多一次 fallback（§9.3）；
 3. 发现环路立即返回 `AICC_ROUTE_FALLBACK_LOOP`；
 4. `target_logical` 也必须受 visited set 约束；
-5. `target_exact` 是终止节点，不再继续逻辑 fallback，除非运行时 failover policy 另行允许；
+5. `target_exact` 是终止节点；
 6. 所有 fallback 必须保持同一 API namespace。
 
 ---
@@ -733,7 +687,7 @@ logical_tree:
 - 用户策略；
 - Provider 动态状态；
 - session 绑定状态；
-- 健康状态与熔断（只用于硬过滤；p95 latency 只用于显式 `max_latency_ms` 门槛）；
+- 健康状态（只用于展示与告警，不参与选择；p95 latency 只用于显式 `max_latency_ms` 门槛）；
 - budget 和 quota 状态。
 
 ### 10.3 硬过滤 + 软评分
@@ -785,13 +739,13 @@ expand(node):
 ```
 
 1. 最大权重在当前父节点内求值，并列项全部展开，子目录分别递归；结果合并时保持首次到达顺序并按 exact model 去重。
-2. 硬过滤（能力、operation、实验版许可、Provider enabled/凭证/可用性、unavailable/circuit open、显式延迟上限、隐私、信任、本地、预算、quota 等）在展开时逐个叶子求值；一个 item 只有在其子树中至少有一个通过硬过滤的候选时才算“可用”。
-3. 最高权重组不可用时才尝试同层下一权重组；所有 item 都不可用则该目录为空，最终无候选时只执行显式配置的目录 fallback，否则返回路由失败。
+2. 静态硬过滤（库存、能力、operation、实验版许可、Provider enabled、凭证已配置、隐私、信任、本地、预算、权限）在展开时逐个叶子求值；一个 item 只有在其子树中至少有一个通过静态硬过滤的候选时才算“可用”。健康、unavailable、circuit open、模型冷却、上游配额余量等运行状态**不参与**，不会使一个权重组变成“不可用”。
+3. 最高权重组静态不可用（例如 Zone 没有接入该家族）时才尝试同层下一权重组。因此权重分组决定的是“接入了哪些模型时默认用谁”，不是故障时的切换顺序。所有 item 都不可用则该目录为空，只执行管理员显式配置的 fallback（§9），否则返回路由失败。
 4. trace 的 `logical_expansion` 记录每个被访问目录的选中权重，以及每个 item 的权重、权重来源和状态（`expanded`、`unavailable`、`not_expanded`）。
 
 **阶段二：候选池内按策略选择**
 
-阶段二只看阶段一得到的候选池，不再比较目录权重、路径深度、规格/家族/版本或稳定性。按 §10.3 的 profile 评分升序排序，平局按默认顺序；第一名为 selected，池内其余候选按同一顺序作为运行时 failover 列表。低权重分支不会因为运行时 failover 被加入执行列表。
+阶段二只看阶段一得到的候选池，不再比较目录权重、路径深度、规格/家族/版本或稳定性。按 §10.3 的 profile 评分升序排序，平局按默认顺序；第一名为 selected。池内其余候选只用于 trace 解释，不作为失败后的切换列表；低权重分支同样不会因为失败被加入执行列表。
 
 权重来源：
 
@@ -841,7 +795,7 @@ llm.chat
 - 请求 `llm.chat` 时，第一层最高权重 `2.0` 并列，展开 `gpt-mini` 和 `claude-opus`，不进入 `gemini-flash`。
 - `gpt-mini` 内只展开 `gpt-5.6`；`claude-opus` 内只展开 `opus-5.5`。`56 > 55` 属于不同父节点，不会使 `gpt-5.6` 在阶段二天然胜出。
 - 两者的合格 instance 合并入池，cost_first 下选成本最低者；成本及其它策略项都相同时按默认顺序选 `gpt-5.6`。
-- `gpt-5.6` 的 instance 全部不可用时，`gpt-mini` 内改为展开 `gpt-5.5`；`gpt-mini` 与 `claude-opus` 都没有可用候选时才展开 `gemini-flash`。
+- Zone 没有接入任何 `gpt-5.6` 的 instance 时，`gpt-mini` 内改为展开 `gpt-5.5`；`gpt-mini` 与 `claude-opus` 都没有接入时才展开 `gemini-flash`。`gpt-5.6` 的 Provider 临时故障不触发这些改变，请求返回真实错误或执行管理员配置的 fallback。
 - 用户将 `llm.gpt-mini` 下 `gpt-5.5` 的权重覆盖为 `60` 后，`gpt-mini` 分支展开 `gpt-5.5`；该 `60` 不与 `claude-opus` 分支的 `55` 比较。
 
 ### 10.5 调度 Profile
@@ -852,7 +806,7 @@ llm.chat
 | `latency_first` | 不使用运行期延迟观测；延迟要求通过 `max_latency_ms` 硬门槛表达，排序偏向本地 Provider 与成本（默认 cost 0.5、local 0.5）。 | UI 交互、实时助手。 |
 | `quality_first` | 规范字段匹配质量优先（默认 quality 0.7、cost 0.3）。 | 复杂推理、规划、代码生成。 |
 | `balanced` | 成本、质量、偏好均衡（默认 cost 0.5、quality 0.3、preference 0.2）。 | 通用 Agent。 |
-| `local_first` | 本地优先，云端作为可选 fallback（默认 local 0.7、cost 0.3）。 | 隐私、离线、边缘计算。 |
+| `local_first` | 本地优先，没有接入本地模型时用云端（默认 local 0.7、cost 0.3）。 | 隐私、离线、边缘计算。 |
 | `strict_local` | 只允许本地 Provider（策略硬过滤），池内按 balanced 权重。 | 高隐私任务。 |
 
 profile 权重字段为 `cost`、`quality`、`preference`、`cache`、`local`，可通过路由策略 `scheduler_profiles` 覆盖；不再有 `latency`、`reliability` 分量。
@@ -893,27 +847,27 @@ interface CostEstimateOutput {
 
 ### 10.7 可用性与延迟模型
 
-调度器应使用 Provider 动态健康状态：
+Provider 动态健康状态用于展示、告警和报错，不参与选择模型（§9.1）：
 
 | 指标 | 用途 |
 |---|---|
-| `status` | unavailable 时硬过滤。 |
+| `status` | 展示与告警；不过滤候选。 |
 | `p50_latency_ms` | 观测与展示，不参与排序。 |
-| `p95_latency_ms` | 显式 `max_latency_ms` 硬门槛；不参与排序。 |
-| `error_rate_5m` | 观测与熔断输入，不参与排序。 |
-| `recent_failures` | 熔断输入，不参与排序。 |
+| `p95_latency_ms` | 观测与展示；请求显式给出 `max_latency_ms` 时作为该请求的硬门槛。 |
+| `error_rate_5m` | 观测与告警，不参与排序。 |
+| `recent_failures` | 观测与告警，不参与排序。 |
 | `queue_depth` | 预留；不参与排序。 |
-| `quota_state` | `exhausted` 时硬过滤或降权；`unknown` 保留候选。 |
+| `quota_state` | 上游配额余量，展示与告警；不过滤候选。 |
 
-运行时调用结果必须回写到 exact model 和 Provider instance 两级健康窗口。`p50_latency_ms`、`p95_latency_ms`、`error_rate_5m` 使用最近 5 分钟样本计算；延迟评分使用 p50 与 p95 的均值，只有一项可用时使用该项；`recent_failures` 记录连续的可重试失败，成功后清零。调用方参数、认证、权限、策略、幂等冲突等永久错误不得污染 Provider 健康度。模型不存在只将对应 exact model 标记为临时不可用，不应把同一 Provider 的其它模型一并下线。Router 在每次生成候选时读取最新快照：模型不可用、Provider unavailable 和 circuit open 硬过滤；degraded、错误率、连续失败和延迟不参与软评分与平局裁决，只通过熔断、健康状态或显式延迟上限改变候选资格；动态健康数据缺失时保留候选，除非 request 设置了必须满足的延迟上限。
+运行时调用结果必须回写到 exact model 和 Provider instance 两级健康窗口。`p50_latency_ms`、`p95_latency_ms`、`error_rate_5m` 使用最近 5 分钟样本计算；延迟评分使用 p50 与 p95 的均值，只有一项可用时使用该项；`recent_failures` 记录连续的可重试失败，成功后清零。调用方参数、认证、权限、策略、幂等冲突等永久错误不得污染 Provider 健康度。模型不存在只标记对应 exact model，不影响同一 Provider 的其它模型。Router 不因健康快照改变候选资格、排序或平局裁决；唯一例外是请求显式设置的延迟上限。
 
-### 10.8 熔断与恢复
+### 10.8 故障提示与恢复
 
-1. Provider instance 或 exact model 连续发生 3 次可重试失败后进入 30 秒短期熔断；
-2. 熔断期间候选应被硬过滤或高额降权；
-3. 熔断到期后以 degraded 状态恢复探测流量；模型不存在使用 5 分钟 negative cache，到期后同样重新探测；
-4. 一次成功会关闭熔断并清零连续失败；5 分钟窗口内残留的错误率继续参与降权，随旧样本淘汰逐步恢复权重；
-5. 熔断状态必须写入 metrics 和 trace。
+1. Provider instance 或 exact model 连续发生 3 次可重试失败后标记为故障，通知管理员，并在 AI Center 的 Provider 页给出精确模型、上游错误和首次发生时间；同一故障在恢复前不重复通知；
+2. 故障期间请求仍发往原模型，失败返回真实错误；不切换到其它候选，也不返回“没有可用模型”；
+3. 上游返回模型不存在时，标出“目录中有、但调用失败的模型”，引导管理员核对 Provider 配置；
+4. 一次成功即清除故障标记；管理员修改 Provider 配置后也立即清除，不需要等待；
+5. 故障状态写入 metrics 和 trace。
 
 ---
 
@@ -967,14 +921,13 @@ factory/default route config < system global route config < request session_over
 应用开发者需要在自己发起的 request overlay 中定义默认模型策略，包括：
 
 1. 应用内部使用哪些逻辑模型名；
-2. 每个逻辑模型名对应的 fallback 策略；
+2. 哪些逻辑模型名不允许 fallback（应用只能关闭，不能配置目标）；
 3. Provider 硬约束或组织级安全限制；
 4. 成本、质量、延迟偏好；
 5. 是否允许云端；
 6. 是否允许用户覆盖；
-7. 精确模型 fallback 是否允许；
-8. 应用侧是否复用同一 overlay；
-9. 预算和 quota 限制。
+7. 应用侧是否复用同一 overlay；
+8. 预算和 quota 限制。
 
 示例：
 
@@ -991,13 +944,10 @@ session_overlay:
           policy:
             profile: quality_first
           fallback:
-            mode: target_logical
-            target: llm.fallback
+            mode: disabled
         code:
           policy:
             profile: balanced
-          fallback:
-            mode: parent
         summary:
           policy:
             profile: cost_first
@@ -1035,7 +985,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 3. 调整某个精确模型的全局权重；
 4. 调整某个逻辑目录内 item 的 `target` 或 `weight`；
 5. 通过 item 的 `target` 将某个目录入口软链接到另一个逻辑目录或精确模型；
-6. 设置成本、隐私、fallback、failover、explain 等运行策略。
+6. 设置成本、隐私、explain 等运行策略，或关闭 fallback。
 
 ```json
 {
@@ -1054,7 +1004,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
               { "name": "claude", "target": "llm.claude-opus", "weight": 2.0 }
             ],
             "fallback": {
-              "mode": "parent"
+              "mode": "disabled"
             }
           },
           "code": {
@@ -1074,8 +1024,6 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
         "currency": "USD"
       },
       "allow_fallback": true,
-      "allow_exact_model_fallback": false,
-      "runtime_failover": true,
       "explain": true
     }
   },
@@ -1087,6 +1035,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 
 字段说明：
 
+- `policy.allow_fallback`：是否接受管理员为该目录配置的 fallback，默认 `true`；没有配置时不产生任何 fallback。
 - `session_overlay`：调用方已经合成好的本次请求 route overlay；AICC 不保存，不生成 revision。
 - `logical_tree`：和 system_config routing_config overlay 使用同一结构；每一级目录通过 `children` 嵌套子目录，通过 `items` 放置候选入口。
 - `items`：目录下的软链接入口有序列表，每个 item 为 `{name, target, weight}`；`name` 在目录内唯一，列表顺序是默认顺序；`target` 可以是另一个逻辑目录或精确模型。
@@ -1144,8 +1093,8 @@ LogicalTreeOverlay
 
 两种核心模式：
 
-1. **`inherit`**：优先指定模型，但保留原候选和 fallback；指定模型 quota exhausted 后可 fallback。
-2. **`replace`**：Only 模式，只保留指定模型；不可用 / quota exhausted 时直接失败，不 fallback。
+1. **`inherit`**：优先指定模型，保留原目录的候选与管理员配置的 fallback。
+2. **`replace`**：Only 模式，只保留指定模型，并关闭 fallback。
 
 落地规则：
 
@@ -1169,7 +1118,7 @@ LogicalTreeOverlay
 4. 哪些候选被过滤，原因是什么；
 5. 是否发生 fallback；
 6. 为什么最终选择某个 Provider；
-7. 是否发生运行时 failover；
+7. 执行时是否改用了管理员配置的 fallback，原因是什么；
 8. 本次是否应用了 request overlay；
 9. 成本估算和实际执行情况。
 
@@ -1311,14 +1260,14 @@ interface UserFacingRouteSummary {
 |---|---|---|
 | `AICC_ROUTE_INVALID_MODEL_NAME` | 模型名格式非法。 | 提示用户或开发者修正。 |
 | `AICC_ROUTE_MODEL_NOT_FOUND` | 精确模型或逻辑目录不存在。 | 检查 Provider 注册和逻辑目录配置。 |
-| `AICC_ROUTE_NO_CANDIDATE` | 解析和 fallback 后仍无候选。 | 调整 fallback、放宽策略或安装 Provider。 |
+| `AICC_ROUTE_NO_CANDIDATE` | 没有接入满足请求的模型。不用于表示 Provider 故障。 | 接入 Provider，或由管理员配置路由 / fallback。 |
 | `AICC_ROUTE_POLICY_REJECTED` | 候选被策略全部过滤。 | 检查 local_only、逻辑覆盖、权重、预算、能力要求。 |
 | `AICC_ROUTE_FALLBACK_LOOP` | fallback 链存在环。 | 修正 fallback 配置。 |
 | `AICC_ROUTE_LOGICAL_TREE_LOOP` | 目录 item 的软链接目标形成环。 | 修正 item `target` 指向。 |
 | `AICC_ROUTE_SESSION_CONFIG_INVALID` | request overlay schema 非法。 | 修正字段、权重、items 覆盖方式或 fallback 模式。 |
 | `AICC_ROUTE_POLICY_LOCKED` | patch 尝试覆盖被上级锁定的策略字段。 | 去掉下级覆盖或调整组织策略。 |
-| `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE` | 精确模型不可用且不允许 fallback。 | 启用 fallback 或更换精确模型。 |
-| `AICC_ROUTE_PROVIDER_UNAVAILABLE` | Provider 不可用。 | 运行时 failover 或返回错误。 |
+| `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE` | 精确模型不可用。 | 修复 Provider 或更换精确模型。 |
+| `AICC_ROUTE_PROVIDER_UNAVAILABLE` | Provider 不可用。 | 修复 Provider；有显式 fallback 时按 §9 执行。 |
 | `AICC_ROUTE_BUDGET_EXCEEDED` | 成本估算超过预算硬限制。 | 降低模型规格或提高预算。 |
 | `AICC_ROUTE_CONTEXT_TOO_LONG` | 候选上下文长度不足（实现：有候选仅因 `context_length_insufficient` 被过滤时返回 `context_length_exceeded`）。 | 选择长上下文模型或压缩输入。 |
 | `AICC_ROUTE_FEATURE_UNSUPPORTED` | 候选不支持 request 所需能力。 | 更换模型或关闭相关特性。 |
@@ -1334,42 +1283,22 @@ routing_config:
   policy:
     profile: cost_first
     allow_fallback: true
-    runtime_failover: true
   global_exact_model_weights:
     gpt-5.2@openai_primary: 2
   logical_tree:
     llm:
-      fallback:
-        mode: target_logical
-        target: llm.fallback
       children:
         plan:
           items:
             - { name: gpt5, target: llm.gpt-pro, weight: 3.0 }
             - { name: claude, target: llm.claude, weight: 2.0 }
-          fallback:
-            mode: parent
         code:
           items:
             - { name: gpt5, target: llm.gpt-pro, weight: 2.0 }
             - { name: local, target: llm.local, weight: 1.0 }
-        fallback:
-          mode: parent
-        chat:
-          fallback:
-            mode: parent
-        swift:
-          fallback:
+          fallback:                       # 管理员手工指定；其余目录不写就不 fallback
             mode: target_logical
-            target: llm.fallback
-        summary:
-          fallback:
-            mode: parent
-        fallback:
-          fallback:
-            mode: disabled
-          items:
-            - { name: local, target: llm.local, weight: 1.0 }
+            target: llm.local
         gpt5:
           items:
             - { name: openai_primary, target: gpt-5.2@openai_primary, weight: 1.0 }
@@ -1388,7 +1317,7 @@ routing_config:
 - 默认逻辑目录配置由服务内置装配；`services/aicc/settings.routing_config` 只表达运营或用户覆盖，不应成为 `llm.chat` 等标准目录可用性的前提。
 - Provider inventory 声明中的 `logical_mounts` 可作为生成 default items 的输入；显式写在 system/session config 中的 `items` 会完整覆盖 default items，局部修改使用 `item_overrides`。
 - `global_exact_model_weights` 只对已经出现在当前候选集合中的精确模型生效，不会把模型加入候选集合。
-- item `weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 只展开 `llm.gpt-pro`，其没有可用候选时才展开 `llm.claude-opus`；`llm.gpt-pro` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
+- item `weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 只展开 `llm.gpt-pro`，没有接入任何属于它的模型时才展开 `llm.claude`；`llm.gpt-pro` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
 - 权重只决定展开资格；同一展开池内的候选由调度 profile 决定，全部策略项相同时按 items 书写顺序。
 
 ### 15.2 Provider Inventory 声明示例
@@ -1502,7 +1431,7 @@ scheduler_profiles:
 1. Resolver 展开 `llm.gpt-pro`，得到 `gpt-5.2@openai_primary` 和 `gpt-5.2@openai_backup`；
 2. 两个 Provider 都通过硬过滤；
 3. `llm.gpt-pro` 内两个 item 权重相同，进入 profile 评分；
-4. `cost_first` 选择动态成本更低且健康状态正常的候选；
+4. `cost_first` 选择成本更低的候选；
 5. trace 返回 selected exact model、Provider instance、成本估算和 `user_summary`。
 
 #### Agent 多角色
@@ -1523,14 +1452,13 @@ scheduler_profiles:
 3. 如果没有本地候选，返回 `AICC_ROUTE_NO_CANDIDATE` 或 `AICC_ROUTE_POLICY_REJECTED`；
 4. fallback 后仍必须再次执行同样的本地硬过滤。
 
-#### 配额耗尽 fallback
+#### 上游配额耗尽
 
-请求 `llm.plan`，首选 Provider 返回 quota exhausted：
+请求 `llm.plan`，选中的 Provider 返回 quota exhausted：
 
-1. Executor 记录运行时失败；
-2. 如果 `runtime_failover = true` 且 request 可重试，从同一优先级候选或 fallback 后候选中选择下一个；
-3. 如果 failover 导致 Provider 改变，trace 标记 `was_failover = true`；
-4. 该次路由已选 exact model 按 session 历史规则写入；后续请求仍会重新执行配额、健康和 policy 硬过滤，不允许历史偏好越过已耗尽 Provider。
+1. Executor 记录失败，不重试、不换模型；
+2. 管理员没有为 `llm.plan` 配置 fallback：返回该 Provider 的配额错误，通知管理员；
+3. 管理员配置了 fallback：执行一次，trace 与用量记录标出原模型、实际模型和原因。
 
 #### 精确模型显式指定
 
@@ -1538,8 +1466,8 @@ scheduler_profiles:
 
 1. AICC 要求字符串恰好包含一个 `@`，并据此解析；
 2. 路由时校验 Provider instance 是否已注册、模型是否支持当前 API type；
-3. 默认不进入逻辑 fallback，也不使用目录权重；
-4. 如果不可用且未开启 `allow_exact_model_fallback`，返回 `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE`。
+3. 不进入逻辑 fallback，也不使用目录权重；
+4. 不可用时返回 `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE`。
 
 ---
 
@@ -1555,14 +1483,14 @@ scheduler_profiles:
 | R-004 | 支持 Provider 声明式模型元数据。 | Provider 可通过 inventory/metadata 接口声明实体模型、参数规模、目录挂载、能力、属性、价格、健康状态；AICC 不通过静态配置维护 Provider 模型列表。 |
 | R-005 | 支持候选列表生成。 | 输入逻辑模型名可生成符合 API 类型的候选集合。 |
 | R-006 | 支持硬性过滤。 | 不满足本地、隐私、能力、上下文、预算等条件的候选被剔除。 |
-| R-007 | 支持 fallback 策略。 | 候选为空时可按 parent、target_exact、target_logical 或 strict 处理。 |
+| R-007 | 支持显式 fallback。 | 默认 strict；只有管理员配置了 target_exact / target_logical 的目录才会 fallback。 |
 | R-008 | 支持 fallback 环路检测。 | 环形 fallback 配置返回 `AICC_ROUTE_FALLBACK_LOOP`。 |
 | R-009 | 支持权重优先、同优先级 profile 调度。 | 多候选时先按目录内同级权重和精确模型权重形成最高优先级候选；同优先级候选再按当前 profile 评分。 |
 | R-010 | 支持 request 级 overlay。 | 每次 RPC 可传入 `session_overlay` 覆盖系统级 route config。 |
-| R-011 | 支持运行时 failover。 | Provider 超时或不可用时，在 policy 允许下重试下一个候选。 |
+| R-011 | 执行失败不自动换模型。 | Provider 超时或不可用时只重试同一精确模型；没有显式 fallback 时返回真实错误。 |
 | R-012 | 支持 route trace。 | response metadata 或日志中可解释最终 Provider 选择原因。 |
 | R-013 | 支持配置化策略合并。 | 默认逻辑目录配置、`system_config` 系统配置和 request `session_overlay` 按优先级合并。 |
-| R-014 | 支持精确模型默认不 fallback。 | 精确模型不可用时默认报错，显式允许后才 fallback。 |
+| R-014 | 精确模型不 fallback。 | 精确模型不可用时报错。 |
 | R-015 | 支持目录 item 权重。 | item `weight` 只在对应逻辑目录的同级 item 间比较，每层只展开最高可用权重组，不沿路径相乘。 |
 | R-016 | 支持全局与目录级精确模型权重。 | `global_exact_model_weights` 和目录 `exact_model_weights` 只影响已经成为候选的精确模型；weight 0 作为硬过滤。 |
 | R-017 | 支持应用侧 overlay 分层。 | 应用可自行合成 app/agent/conversation/user overlay，并把最终 `session_overlay` 传给 AICC。 |
@@ -1577,8 +1505,8 @@ scheduler_profiles:
 |---|---|---|
 | R-101 | Provider 动态刷新模型列表。 | inventory 按全量 replace 语义刷新；支持 `inventory_changed` 事件、5 分钟兜底轮询和 `inventory_revision` 原子切换。 |
 | R-102 | 动态成本估算。 | 调度器优先且唯一使用 Provider 返回的 `CostEstimateOutput` 作为成本评分来源；静态 pricing 只作展示或 fallback。 |
-| R-103 | 包月/免费额度/超额价格支持。 | quota 状态变化会影响调度选择。 |
-| R-104 | 熔断与恢复。 | Provider 连续失败后短期降权或过滤，恢复后逐步加入。 |
+| R-103 | 包月/免费额度/超额价格支持。 | quota 状态变化可见并告警，不改变选择。 |
+| R-104 | 故障提示与恢复。 | Provider 连续失败后通知管理员，恢复或改配置后清除；期间不切换模型。 |
 | R-105 | UI 模型树展示。 | 用户能看到逻辑目录、模型家族和当前选择。 |
 | R-106 | Agent 多角色模型映射。 | UI/配置可分别控制 plan/code/summary 等角色模型。 |
 | R-107 | 应用侧 route overlay 组合基础设施。 | SDK/强类型结构帮助应用合成 app/agent/conversation overlay。 |
@@ -1607,11 +1535,11 @@ scheduler_profiles:
 
 ### 17.2 可用性
 
-1. 单个 Provider 故障不应导致逻辑模型整体不可用；
-2. Fallback 与 failover 应可配置；
+1. 单个 Provider 故障时返回明确原因并通知管理员，不静默切换；需要备用的功能由管理员配置 fallback；
+2. Fallback 应可由管理员按逻辑目录配置；
 3. 配置错误应能快速定位；
 4. Registry 应支持热更新或平滑 reload；
-5. Provider 健康状态异常时应自动降权或熔断。
+5. Provider 健康状态异常时应告警。
 
 ### 17.3 可解释性
 
@@ -1656,33 +1584,29 @@ scheduler_profiles:
 期望：
 
 1. Registry 返回两个候选；
-2. 调度器根据成本、延迟、可靠性评分；
+2. 调度器按 profile 评分（延迟、可靠性等运行指标不参与）；
 3. 选择综合分最低候选；
 4. trace 能解释选择原因。
 
-### 18.2 逻辑目录 parent fallback
+### 18.2 默认不 fallback 与显式 fallback
 
-前置条件：
+操作一：`llm.code` 无静态候选，未配置 fallback，调用 `model = llm.code`。
 
-- `llm.code` 无候选；
-- `llm` 有候选；
-- `llm.code` fallback mode 为 `parent`。
+期望：返回 `AICC_ROUTE_NO_CANDIDATE`，不查询父目录、`llm.fallback` 或其它用途的模型。
 
-操作：调用 `model = llm.code`。
+操作二：管理员为 `llm.code` 配置 `target_logical: llm.gpt-mini` 后再次调用。
 
 期望：
 
-1. 初始候选为空；
-2. fallback 到 `llm`；
-3. 从 `llm` 候选中调度；
-4. trace 记录 fallback chain。
+1. 从 `llm.gpt-mini` 中选择；
+2. 原任务的能力约束仍然生效；
+3. trace 与用量记录标出原目录、fallback 目标和原因。
 
 ### 18.3 精确模型不可用
 
 前置条件：
 
-- `gpt5@openai` 已注册但当前不可用；
-- request 未开启 `allow_exact_model_fallback`。
+- `gpt5@openai` 已注册但当前不可用。
 
 操作：调用 `model = gpt5@openai`。
 
@@ -1720,22 +1644,22 @@ scheduler_profiles:
 3. 最终选择 `provider_b`；
 4. 后续不传 overlay 的请求不会复用本次覆盖结果。
 
-### 18.6 运行时 failover
+### 18.6 Provider 故障时不换模型
 
 前置条件：
 
-- `llm.gpt-pro` 有两个候选；
+- `llm.gpt-pro` 有两个候选，选中第一个；
 - 第一个候选执行时超时；
-- policy 允许 `runtime_failover = true`。
+- 未配置 fallback。
 
-操作：调用 `model = llm.gpt-pro`。
+操作：调用 `model = llm.gpt-pro`，随后再调用一次。
 
 期望：
 
-1. 第一个候选失败被记录；
-2. Executor 选择第二个候选重试；
-3. 成功后返回 response；
-4. trace 记录 failover 次数和原因。
+1. 第一个候选重试一次后仍失败，返回它的真实错误；
+2. 第二个候选没有收到请求；
+3. 第二次调用仍选中第一个候选，不因上次失败改选；
+4. 连续失败达到阈值后管理员收到通知。
 
 ---
 
@@ -1743,10 +1667,10 @@ scheduler_profiles:
 
 | 风险 | 表现 | 对策 |
 |---|---|---|
-| fallback 过于宽泛导致用户困惑 | 用户选择 `llm.code`，最终跑到不适合代码的模型。 | 默认同 namespace fallback；提供 strict/disabled；trace 必须可解释。 |
+| 自动换模型导致费用失控、行为不可预期 | 故障或配额耗尽后，请求静默跑到更贵或不合适的模型。 | 默认不 fallback；目标只能由管理员手工配置；发生时可见并通知。 |
 | 成本估算不准确 | 包月、免费额度、超额价格导致调度偏差。 | Provider 提供动态 cost estimate；配置成本地板值；记录实际成本回填。 |
-| Provider 动态模型变化 | 模型下线或改名导致路由失败。 | 周期刷新；失效检测；fallback；兼容 alias。 |
-| 应用侧 overlay 长期偏向异常 Provider | 调用方持续传入变差 Provider 的高权重。 | 健康硬过滤优先于权重；允许 runtime failover；trace 明确显示过滤原因。 |
+| Provider 动态模型变化 | 模型下线或改名导致路由失败。 | 周期刷新；失效检测；明确报错并通知管理员；兼容 alias。 |
+| 应用侧 overlay 长期偏向异常 Provider | 调用方持续传入变差 Provider 的高权重。 | 返回真实错误并通知管理员；trace 明确显示选择原因。 |
 | 目录树过于复杂 | 用户不知道该选哪个模型。 | 保持少量核心目录；UI 显示任务角色；保留熟悉模型家族名。 |
 | 隐私策略被 fallback 绕过 | 本地任务 fallback 到云端。 | 隐私/local_only 作为硬过滤；fallback 后再次过滤。 |
 | Trace 泄露敏感信息 | 日志中包含 prompt 或密钥。 | 只记录 hash 和模型路由信息；密钥永不进入 trace。 |
@@ -1766,11 +1690,11 @@ scheduler_profiles:
 
 ### 阶段二：Fallback 与调度
 
-1. 实现 parent、target_exact、target_logical、strict、disabled fallback；
+1. 实现管理员显式配置的 target_exact、target_logical fallback，默认 strict；
 2. 实现 fallback loop detection；
 3. 实现 cost_first 调度；
 4. 引入 Provider 健康状态；
-5. 实现运行时 failover。
+5. 实现故障提示与 fallback 可见性。
 
 ### 阶段三：Overlay 与高级策略
 
@@ -1779,7 +1703,7 @@ scheduler_profiles:
 3. 支持应用侧合成 app/agent/conversation overlay；
 4. 支持多 profile 调度；
 5. 支持 Provider 动态成本估算；
-6. 支持熔断和恢复。
+6. 支持故障告警和恢复。
 
 ### 阶段四：UI 与产品化
 
@@ -1799,10 +1723,10 @@ scheduler_profiles:
 | Provider 内部模型 ID 是否允许 `@` | 不允许 | 厂商原始模型 ID 含 `@` 时，使用不含 `@` 的 AICC ID，并在 metadata 独立字段保留原始值。 |
 | 目录权重语义 | 目录内同辈优先级，不沿路径相乘 | 符合 UI 心智：角色目录选家族，家族目录选 Provider。 |
 | Provider default items 覆盖 | `items` 完整覆盖，`item_overrides` 局部 patch | 避免 default mount 与 request overlay merge 语义不清。 |
-| 逻辑目录默认 fallback | 普通目录默认 `parent`，敏感目录默认 `strict` | 兼顾可用性和可控性。 |
-| 全局兜底位置 | 使用 `llm.fallback` 或精确模型 | 避免 fallback 到用户无法预测的任意模型。 |
+| 逻辑目录默认 fallback | 全部默认 `strict` | 2026-11-23 改：稳定预期优先，见 §9.1。 |
+| 全局兜底位置 | 无内置兜底；由管理员指定精确模型或逻辑目录 | 2026-11-23 改：系统没有可靠价格信息，目标只能由管理员判断。 |
 | 本地/隐私是否作为目录 | 不作为默认目录，作为属性和策略 | 避免目录膨胀，增强策略组合能力。 |
-| 精确模型是否 fallback | 默认不 fallback | 精确模型表达强制 Provider 意图。 |
+| 精确模型是否 fallback | 不 fallback | 精确模型表达强制 Provider 意图。 |
 | AICC session 状态 | 不维护 `session_id -> config`；持久化 tenant/user/app/session 隔离的上次 exact model | 应用层负责 session 与 overlay 的对应关系；AICC 历史只是硬约束后的软优先。 |
 | request overlay 并发 | AICC 不共享 session config，因此无 overlay revision conflict | 并发合并由应用层或配置服务负责；路由历史使用数据库 upsert。 |
 | 调度成本来源 | 动态 `CostEstimateOutput` 优先且唯一参与评分 | inventory pricing 只作展示或 fallback，避免静态/动态不一致。 |
@@ -1812,19 +1736,19 @@ scheduler_profiles:
 
 ## 22. 总结
 
-新版 AICC 模型路由需要从简单的“模型名映射到 Provider”升级为“逻辑模型目录 + 多 Provider 候选 + 策略过滤 + fallback + 调度评分 + request overlay + 可解释 trace”的完整体系。
+新版 AICC 模型路由需要从简单的“模型名映射到 Provider”升级为“逻辑模型目录 + 多 Provider 候选 + 策略过滤 + 调度评分 + 显式 fallback + request overlay + 可解释 trace”的完整体系。
 
 核心设计判断如下：
 
 1. **精确模型名解决强制指定 Provider 的问题**；
 2. **逻辑模型名解决按能力、任务和模型家族选择的问题**；
 3. **多 Provider 挂载同一逻辑模型是常态**；
-4. **fallback 必须可控、可解释、可防环**；
-5. **调度默认成本优先，但必须同时考虑可用性、延迟、质量、隐私和 request overlay 权重**；
+4. **相同配置得到相同模型；fallback 只来自管理员手工配置，可见、可解释、可防环**；
+5. **调度默认成本优先，同时考虑质量、隐私和 request overlay 权重；可用性与延迟只用于告警和展示**；
 6. **LLM/Agent 的行为一致性由应用层通过重复传入同一 overlay 或递进 overlay 表达**；
 7. **最终用户看到的是模型树和偏好控制，开发者看到的是策略、trace 和 Provider 注册细节**。
 
-该设计可以让 AICC 在 Provider 数量增加、模型能力快速变化、成本结构动态变化的情况下，仍然保持可用、可控、可解释和可扩展。
+该设计可以让 AICC 在 Provider 数量增加、模型能力快速变化、成本结构动态变化的情况下，仍然保持稳定预期、可控、可解释和可扩展。
 
 ## Decision 请求资格（2026-09-25）
 

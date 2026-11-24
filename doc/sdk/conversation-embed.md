@@ -36,7 +36,7 @@ embed.dispose()
 
 | target | 打开哪个会话 |
 |---|---|
-| `{ kind: 'agent', agentDid? }` | 用户和这个 Agent 的、由本 App 建立的最近一个会话。还没有时，第一条消息（App 的 `send` 或用户在输入框里发的）会新建一个。`agentDid` 不填就用用户的默认 Agent（第一个就绪的 Agent） |
+| `{ kind: 'agent', agentDid?, memoryMode? }` | 用户和这个 Agent 的、由本 App 建立的最近一个会话。还没有时，第一条消息（App 的 `send` 或用户在输入框里发的）会新建一个。`agentDid` 不填就用用户的默认 Agent（第一个就绪的 Agent）。`memoryMode` 是会话的记忆模式：`normal`（不填时新建的就是它）、`no_write`（这里说的内容和从这里创建的工作不写入长期记忆）、`no_read_write`（既不读也不写）。填了就只认这个模式的会话，没有就按这个模式新建；已有会话的模式不会改 |
 | `{ kind: 'session', sessionId }` | 指定的会话，但只能是本 App 建立的；别的会话回 `denied` |
 
 `attachments` 里，`object-id` 引用作为消息附件发出；`cyfs-path` 引用不指向具体对象，作为一行路径文字附在消息里，Agent 用自己的权限去读。

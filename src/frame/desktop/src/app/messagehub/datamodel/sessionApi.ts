@@ -1,5 +1,6 @@
 import { accessDenialOf, buckyos, type AccessDenial, type EntryDescriptor, type DID, type NotifyCategory, type NotifyKind, type NotifyStatus, type ndn } from 'buckyos'
 import { fetchUserDetail } from '../../../api/user_mgr'
+import type { ConversationMemoryMode } from '../../../components/conversation/backendTypes'
 import type { NotifyView } from '../notify/model'
 import { groupErrorCode } from '../../../components/conversation/model/groupNotice'
 
@@ -87,12 +88,42 @@ export interface OwnerSessionState {
   peer_did?: DID
   binding?: unknown
   title?: string
+  /** Absent: normal. */
+  memory_mode?: ConversationMemoryMode
   archived_at_ms?: number
   delete_watermark_sort_key?: number
   delete_watermark_record_id?: string
   deleted_at_ms?: number
   created_at_ms: number
   updated_at_ms: number
+}
+
+/** A conversation of the owner with an Agent, from the Agent's mailbox (`msg.list_conversations`). */
+export interface PeerConversation {
+  /** The session in the Agent's mailbox. */
+  session_id: string
+  /** `native`, or the platform of the channel. */
+  platform: string
+  /** The owner's endpoint the Agent replies to, and the session there. */
+  to: DID
+  to_session?: string
+  last_active_at_ms: number
+}
+
+/** The default session of the owner with an Agent. */
+export interface DefaultSession {
+  /** `native`: the owner's own session; otherwise the session in the Agent's mailbox. */
+  session_id: string
+  platform: string
+  to: DID
+  to_session?: string
+  set_at_ms: number
+}
+
+export interface PeerConversations {
+  /** The stored one; absent: none is stored yet, or it was deleted. */
+  default?: DefaultSession
+  conversations: PeerConversation[]
 }
 
 export interface SessionSummary {
@@ -292,12 +323,18 @@ export function msgCenterServiceUrl(): string {
 export const listSessions = (request: ListSessionsRequest) => call<SessionSummaryPage | null>('msg.list_sessions', request as unknown as Record<string, unknown>).then(page => page ?? {})
 export const listSessionMessages = (request: ListSessionRequest) => call<SessionMessagePage | null>('msg.list_session', request as unknown as Record<string, unknown>).then(page => page ?? {})
 export const getSessionState = (owner: DID, sessionId: string) => call<OwnerSessionState | null>('msg.get_session_state', { owner, session_id: sessionId })
-export const createSession = (input: { owner: DID; peer_did: DID; title?: string; binding?: unknown; session_id?: string; origin?: string }) => call<OwnerSessionState>('msg.create_session', input as unknown as Record<string, unknown>)
+export const createSession = (input: { owner: DID; peer_did: DID; title?: string; binding?: unknown; session_id?: string; origin?: string; set_default?: boolean; memory_mode?: ConversationMemoryMode }) => call<OwnerSessionState>('msg.create_session', input as unknown as Record<string, unknown>)
 export const archiveSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.archive_session', { owner, session_id: sessionId })
 export const restoreSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.restore_session', { owner, session_id: sessionId })
 export const deleteSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.delete_session', { owner, session_id: sessionId })
 /** Hides the records the session holds now from the owner; the session itself, its title and UI state stay. */
 export const clearSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.clear_session', { owner, session_id: sessionId })
+
+/** The stored default of the owner with an Agent and their conversations with it, most recent first. */
+export const listConversations = (owner: DID, peer: DID) => call<Partial<PeerConversations> | null>('msg.list_conversations', { owner, peer_did: peer }).then((result): PeerConversations => ({ ...result, conversations: result?.conversations ?? [] }))
+/** The default, chosen or created when none is stored; `native`: a chat of the owner's own when the default is on a channel. */
+export const getDefaultSession = (owner: DID, peer: DID, native: boolean) => call<DefaultSession>('msg.get_default_session', { owner, peer_did: peer, ...(native ? { native } : {}) })
+export const setDefaultSession = (owner: DID, peer: DID, to: DID, toSession?: string) => call<DefaultSession>('msg.set_default_session', { owner, peer_did: peer, to, ...(toSession !== undefined ? { to_session: toSession } : {}) })
 
 /* ── Records ── */
 

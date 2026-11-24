@@ -34,9 +34,72 @@ use crate::lock::Lease;
 use crate::protocol::*;
 use crate::session::Session;
 
-/// Fixed line after the summary block; part of the rebuilt history only,
-/// never of the worklog.
+/// Opening of the fixed lines after the summary block; part of the rebuilt
+/// history only, never of the worklog.
 pub const COMPRESSED_NOTE: &str = "Everything before this point was compressed; files in the session directory are intact — re-read only what you need";
+
+/// Recorded perceptions listed after a summary, the newest, and how much of
+/// each.
+const COMPRESSED_PERCEPTIONS: usize = 40;
+const COMPRESSED_PERCEPTION_CHARS: usize = 300;
+
+/// The fixed lines after the summary block of `session`: how to read the
+/// original words again, and what it recorded. They change only with a
+/// compression.
+fn compressed_note(session: &Session, perceptions: &[String]) -> String {
+    let mut note = COMPRESSED_NOTE.to_string();
+    let sid = session.sid();
+    if !session.config.runtime.is_node() {
+        note.push_str(&format!(
+            ". The original messages are kept: `agent-session read-session {sid} --turn <n>` shows those of one turn (`--after <cursor>` goes on from its `next_after`)"
+        ));
+    }
+    if !perceptions.is_empty() {
+        note.push_str("\nNotes you recorded in this session (`agent-session recall --read <ref>` shows one whole):");
+        for p in perceptions {
+            note.push_str(&format!("\n- {p}"));
+        }
+    }
+    note
+}
+
+/// What the session recorded, from its worklog (oldest first, the newest
+/// [`COMPRESSED_PERCEPTIONS`]).
+fn recorded_perceptions(session: &Session) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut r = session
+        .dir
+        .worklog()
+        .reverse(session.state.worklog.committed_bytes, 0)?;
+    while let Some((_, e)) = r.next_json::<WorklogEntry>()? {
+        let WorklogBody::ControlApplied { command, detail, .. } = e.body else {
+            continue;
+        };
+        let Some(reference) = detail.get("reference").and_then(Value::as_str) else {
+            continue;
+        };
+        if command != "perceive" {
+            continue;
+        }
+        let text: String = detail
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(COMPRESSED_PERCEPTION_CHARS)
+            .collect();
+        let turn = detail.get("turn").and_then(Value::as_u64).unwrap_or(0);
+        out.push(format!("{reference} (turn {turn}): {text}"));
+        if out.len() == COMPRESSED_PERCEPTIONS {
+            break;
+        }
+    }
+    out.reverse();
+    Ok(out)
+}
 
 /// How the rebuilt messages carry tool calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,19 +120,84 @@ pub struct Summarizer {
     pub model: String,
 }
 
+/// The lines of a history between Turns: compressed once it exceeds
+/// `trigger`, down to `target`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryLine {
+    pub trigger: u32,
+    pub target: u32,
+}
+
+/// Least room a window's trigger leaves for the history, whatever the prefix
+/// takes.
+const MIN_TRIGGER_TOKENS: u32 = 2_048;
+
+impl HistoryLine {
+    /// A conversation follows its model's window, with the lines of the
+    /// mid-run rewrite (`context_yield_ratio` starts it, the target ratio is
+    /// where it lands), less what the request carries besides
+    /// (`prefix_tokens`). `None`: the session states a history budget of its
+    /// own, is no conversation, or the window is unknown — the fixed budget
+    /// holds.
+    pub fn of_window(
+        cfg: &SessionConfig,
+        options: &super::RunnerOptions,
+        limits: &agent_tool::xllm::RunLimits,
+        prefix_tokens: u64,
+    ) -> Option<Self> {
+        if cfg.session.kind != SessionKind::Ui || cfg.prompt.history_budget_tokens.is_some() {
+            return None;
+        }
+        let window = limits.context_window_tokens?;
+        let ratio = limits
+            .context_yield_ratio
+            .unwrap_or(agent_tool::xllm::DEFAULT_CONTEXT_YIELD_RATIO);
+        let prefix = prefix_tokens.min(u64::from(u32::MAX)) as u32;
+        let trigger = ((f64::from(window) * f64::from(ratio)).floor() as u32)
+            .saturating_sub(prefix)
+            .max(MIN_TRIGGER_TOKENS);
+        let line = LimitLine::new(
+            Some(window),
+            cfg.prompt.context_target_ratio.unwrap_or(options.context_target_ratio),
+            prefix_tokens,
+            options.history_budget_tokens,
+        );
+        Some(Self {
+            trigger,
+            // Well below the line that triggers it, also in a small window.
+            target: line.history_budget.min(trigger / 2),
+        })
+    }
+
+    /// A fixed budget: what fits it stays, what does not is brought to it.
+    pub fn fixed(budget: u32) -> Self {
+        Self {
+            trigger: budget,
+            target: budget,
+        }
+    }
+}
+
+/// The history of a chat's next run: the previous run's messages as they
+/// were while they fit (the provider's prefix cache holds), else rebuilt.
+/// What a compression replaced is not in them: the previous run ended after
+/// it. `rebuild`: the context starts anew, its history brought to the target.
 pub(super) async fn build_chat_history(
     session: &mut Session,
     lease: &Lease,
     summarizer: &Summarizer,
-    budget: u32,
+    line: HistoryLine,
+    rebuild: bool,
 ) -> Result<Vec<AiMessage>> {
     let sm = session.summary()?;
-    if sm.start_offset == 0 && sm.history_summary.is_empty() {
+    let fits = if rebuild { line.target } else { line.trigger };
+    {
         if let Some(run_id) = session.state.last_run.as_deref() {
             let (record, snapshot) = session.dir.runs().load_checked(run_id)?;
             let ended_turn = crate::session::runs::finish_info(&record)
                 .is_some_and(|f| !f["turn_end"].is_null());
-            if record.config.loop_model == agent_tool::xllm::LoopModel::FunctionCall && ended_turn {
+            let current = sm.updated_at_ms <= record.updated_at_ms;
+            if record.config.loop_model == agent_tool::xllm::LoopModel::FunctionCall && ended_turn && current {
                 let snapshot = snapshot.ok_or_else(|| {
                     OpenDanError::blocked("the previous chat run has no snapshot", Some(run_id))
                 })?;
@@ -87,14 +215,25 @@ pub(super) async fn build_chat_history(
                                 || !super::budget::is_budget_line(&m.text_content())
                         })
                         .collect();
-                    if estimate(&messages) <= u64::from(budget) {
+                    if estimate(&messages) <= u64::from(fits) {
                         return Ok(messages);
                     }
                 }
             }
         }
     }
-    build_history(session, lease, Some(summarizer), HistoryShape::Native, budget).await
+    let made_by = if rebuild { "prompt_refrozen" } else { "context_limit" };
+    Ok(build(
+        session,
+        lease,
+        Some(summarizer),
+        HistoryShape::Native,
+        HistoryLine { trigger: fits, ..line },
+        made_by,
+        None,
+    )
+    .await?
+    .0)
 }
 
 /// Rough token estimate (bytes / 4), same heuristic as the waist.
@@ -170,7 +309,7 @@ impl ReturnedChildren {
     }
 
     fn delivered_call(&self, run_id: &str, call_id: &str) -> bool {
-        matches!(self.deliveries.get(run_id), Some(ReportSource::Tool { call_id: c }) if c == call_id)
+        self.deliveries.get(run_id).and_then(ReportSource::call_id) == Some(call_id)
     }
 }
 
@@ -395,9 +534,9 @@ impl<'a> Render<'a> {
                 report,
                 ..
             } => {
-                // A run's normal end and the rewrite boundary are not part
-                // of what the model saw.
-                if matches!(kind.as_str(), "done" | "wait" | "context_rewritten") {
+                // A run's normal end, a message it stopped for and the rewrite
+                // boundary are not part of what the model saw.
+                if matches!(kind.as_str(), "done" | "wait" | "message" | "context_rewritten") {
                     return;
                 }
                 self.note(
@@ -652,7 +791,7 @@ fn assemble(
                 summary: sm.history_summary.clone(),
                 keep_exact: sm.keep_exact.clone(),
             },
-            Some(COMPRESSED_NOTE),
+            Some(&compressed_note(session, &sm.perceptions)),
         ));
         positions.push(None);
     }
@@ -712,7 +851,9 @@ async fn compact(
     });
     log::info!("opendan.context.compaction.started {}", event);
     let deps = LLMContextDeps::new(summarizer.llm.clone(), Arc::new(NoTools));
-    let opts = CompressOptions::new(target, summarizer.model.clone()).with_note(COMPRESSED_NOTE);
+    let perceptions = recorded_perceptions(session)?;
+    let opts = CompressOptions::new(target, summarizer.model.clone())
+        .with_note(compressed_note(session, &perceptions));
     let out = match llm_compress::compress_history(&full.messages, &deps, &opts).await {
         Ok(out) => out,
         Err(error) => {
@@ -762,6 +903,7 @@ async fn compact(
         schema: SESSION_SUMMARY_SCHEMA.to_string(),
         history_summary: summary.summary,
         keep_exact: summary.keep_exact,
+        perceptions,
         head_end_seq,
         head_end_offset,
         start_seq,
@@ -816,9 +958,17 @@ pub async fn build_history(
     shape: HistoryShape,
     budget: u32,
 ) -> Result<Vec<AiMessage>> {
-    Ok(build(session, lease, summarizer, shape, budget, None)
-        .await?
-        .0)
+    Ok(build(
+        session,
+        lease,
+        summarizer,
+        shape,
+        HistoryLine::fixed(budget),
+        "context_limit",
+        None,
+    )
+    .await?
+    .0)
 }
 
 async fn build(
@@ -826,9 +976,11 @@ async fn build(
     lease: &Lease,
     summarizer: Option<&Summarizer>,
     shape: HistoryShape,
-    budget: u32,
+    lines: HistoryLine,
+    made_by: &str,
     line: Option<&LimitLine>,
 ) -> Result<(Vec<AiMessage>, Option<CompressReport>)> {
+    let budget = lines.trigger;
     let sm = session.summary()?;
     let window = assemble(session, &sm, shape, Some(u64::from(budget)))?;
     let mut event = json!({
@@ -836,6 +988,7 @@ async fn build(
         "phase": if line.is_some() { "context_limit" } else { "build_history" },
         "reason": if line.is_some() { "context_limit" } else { "history_budget" },
         "budget_tokens": budget,
+        "compress_to_tokens": lines.target,
         "summary_tokens": tokens(&sm.history_summary),
         "history_tokens": window.tokens,
         "history_tokens_lower_bound": !window.complete,
@@ -863,13 +1016,13 @@ async fn build(
         ));
     };
     let full = assemble(session, &sm, shape, None)?;
-    let (messages, report) = compact(session, lease, s, &sm, full, budget, "context_limit").await?;
+    let (messages, report) = compact(session, lease, s, &sm, full, lines.target, made_by).await?;
     if !report.reached_target {
         log::warn!(
             "opendan.context.compaction.budget_exceeded {}",
             json!({
                 "session_id": session.sid(),
-                "budget_tokens": budget,
+                "budget_tokens": lines.target,
                 "history_tokens": report.tokens_after,
                 "strategy": report.strategy,
             })
@@ -923,25 +1076,32 @@ pub async fn compact_for_limit(
     line: &LimitLine,
     budget: u32,
 ) -> Result<(Vec<AiMessage>, Option<CompressReport>)> {
-    build(session, lease, Some(summarizer), shape, budget, Some(line)).await
+    build(
+        session,
+        lease,
+        Some(summarizer),
+        shape,
+        HistoryLine::fixed(budget),
+        "context_limit",
+        Some(line),
+    )
+    .await
 }
 
-/// After a run: compress when the history occupies more than `ratio` of the
-/// budget, down to about half of the budget.
+/// After a run: compress a history over `line.trigger` to `line.target`
+/// (a fixed budget: over `compact_ratio` of it, to half of it).
 pub async fn maybe_compact(
     session: &mut Session,
     lease: &Lease,
     summarizer: Option<&Summarizer>,
-    budget: u32,
-    ratio: f32,
+    line: HistoryLine,
 ) -> Result<bool> {
     let mut event = json!({
         "session_id": session.sid(),
         "phase": "after_run",
         "reason": "ratio",
-        "budget_tokens": budget,
-        "ratio": ratio,
-        "threshold_tokens": ratio * budget as f32,
+        "threshold_tokens": line.trigger,
+        "compress_to_tokens": line.target,
     });
     let Some(s) = summarizer else {
         event["failure_reason"] = json!("missing_summarizer");
@@ -949,16 +1109,16 @@ pub async fn maybe_compact(
         return Ok(false);
     };
     let sm = session.summary()?;
-    let window = assemble(session, &sm, HistoryShape::Native, Some(u64::from(budget)))?;
+    let window = assemble(session, &sm, HistoryShape::Native, Some(u64::from(line.trigger)))?;
     event["history_tokens"] = json!(window.tokens);
     event["history_tokens_lower_bound"] = json!(!window.complete);
-    if window.complete && (window.tokens as f32) <= ratio * budget as f32 {
+    if window.complete {
         event["skip_reason"] = json!("below_threshold");
         log::debug!("opendan.context.compaction.skipped {}", event);
         return Ok(false);
     }
     log::info!("opendan.context.compaction.triggered {}", event);
     let full = assemble(session, &sm, HistoryShape::Native, None)?;
-    let (_, report) = compact(session, lease, s, &sm, full, budget / 2, "ratio").await?;
+    let (_, report) = compact(session, lease, s, &sm, full, line.target, "ratio").await?;
     Ok(report.strategy == "llm")
 }

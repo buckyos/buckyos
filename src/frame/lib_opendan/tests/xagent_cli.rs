@@ -457,6 +457,19 @@ fn a_sub_session_is_created_and_followed_through_the_shell_tool() {
     let (code, active, err) = cli.run(&["sessions", "--json", "--active", "--children", "--of", sd.sid()]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(active, json!([]));
+    // What ended lately, bounded; only this session's children.
+    let (code, ended, err) = cli.run(&["sessions", "--json", "--children", "--finished", "5", "--of", sd.sid()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(ended.as_array().unwrap().len(), 1, "{ended}");
+    assert_eq!(ended[0]["session_id"], children[0]["session_id"]);
+    assert!(ended[0]["ended_at_ms"].as_u64().unwrap() > 0);
+    let text = cli.text(&["sessions", "--children", "--finished", "5", "--of", sd.sid()]);
+    assert!(text.contains("  Ended: 20"), "{text}");
+    for bad in [&["--finished", "21"][..], &["--finished", "0"], &["--finished", "5", "--active"]] {
+        let mut args = vec!["sessions", "--json", "--children", "--of", sd.sid()];
+        args.extend_from_slice(bad);
+        assert_ne!(cli.run(&args).0, 0, "{bad:?}");
+    }
     let (_, st, _) = cli.run(&["status", child, "--report"]);
     assert_eq!(st["entry"]["title"], "The answer");
     let origin = &st["entry"]["origin"];

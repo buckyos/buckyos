@@ -40,6 +40,10 @@ pub(super) fn after_finish(sh: &Arc<Shared>, run: &RunHandle, next: &Next, finis
     if !(next.finished && next.outcome == Some(Outcome::Succeeded)) {
         return;
     }
+    // Nothing of a conversation without memory is kept for others.
+    if !finished.config.session.policy.memory.writes() {
+        return;
+    }
     let Some(parent) = user_task(&finished.config) else { return };
     let Some(report) = super::reports::final_report(run).ok().flatten() else { return };
     if run.shared() {

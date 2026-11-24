@@ -56,6 +56,8 @@ export interface ConversationSurfaceProps extends ConversationHostActions {
   historyReader?: ConversationMessageReader
   /** false: nothing under the history, not even the read-only note. */
   composer?: boolean
+  /** Texts the host carries out as commands instead of sending them (`ConversationComposer`). */
+  commands?: Record<string, () => void>
   /** A swipe to the left over the history (touch layouts). */
   onSwipeLeft?: () => void
   /** What the conversation in front is doing: the Agent's Turn (`foregroundState`), or `answer` while its question is open. */
@@ -82,6 +84,7 @@ export function ConversationSurface({
   panelDetails,
   historyReader: filteredReader,
   composer = true,
+  commands,
   onSwipeLeft,
   onTurnMode,
   onOpenMessage,
@@ -271,6 +274,7 @@ export function ConversationSurface({
             canMentionAll={group?.canMentionAll ?? false}
             allowFiles={source.attachments !== false}
             sendBlocked={sendBlocked}
+            commands={commands}
             onStopTurn={answerState ? stopAnswerTurn : undefined}
             onReleaseAttachments={source.releaseAttachments}
           /> : <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="composer-readonly"><Lock size={14} className="shrink-0" aria-hidden /><span>{readOnlyReason ? t(`messagehub.reason.${readOnlyReason}`) : readOnlyLabel ?? t('messagehub.noSessions')}</span></div>}

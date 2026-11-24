@@ -170,7 +170,8 @@ pub enum WorklogBody {
         /// Run ended: `done | process_done | budget | error | stopped`;
         /// `wait`: the run ended waiting for the user's next message
         /// (`WAIT_USER_MSG`), or it is kept while its tasks or sub sessions
-        /// run and their ends are injected into it; process suspended into
+        /// run and their ends are injected into it; `message`: it stopped for
+        /// a message, which joins its open Turn; process suspended into
         /// `process_stack`: `suspended`;
         /// `context_rewritten`: the run hit the context limit, its history
         /// so far is above this entry and it continues from the compacted

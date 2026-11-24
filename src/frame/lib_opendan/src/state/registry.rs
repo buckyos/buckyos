@@ -188,6 +188,24 @@ pub(super) struct FsRegistry {
     cache: Mutex<HashMap<String, ((SystemTime, u64), RegistryEntry)>>,
 }
 
+/// The critical section of every producer of a session's queue.
+pub(crate) async fn lock_posts(state_dir: &Path) -> Result<crate::lock::FileLock> {
+    let path = state_dir.join(POST_LOCK_FILE);
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(lock) = crate::lock::FileLock::try_acquire(&path)? {
+            return Ok(lock);
+        }
+        if std::time::Instant::now() >= give_up {
+            return Err(OpenDanError::Busy {
+                resource: path.display().to_string(),
+                holder: None,
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 impl FsRegistry {
     pub(super) fn new(
         layout: AgentLayout,
@@ -770,22 +788,12 @@ impl SessionRegistry for FsRegistry {
                         ),
                     });
                 }
-                let lock_path = sd.state_dir().join(POST_LOCK_FILE);
-                let give_up = std::time::Instant::now() + std::time::Duration::from_secs(30);
-                let lock = loop {
-                    if let Some(lock) = crate::lock::FileLock::try_acquire(&lock_path)? {
-                        break lock;
-                    }
-                    if std::time::Instant::now() >= give_up {
-                        return Err(OpenDanError::Busy {
-                            resource: lock_path.display().to_string(),
-                            holder: None,
-                        });
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                };
-                // Re-read under the lock.
+                let lock = lock_posts(&sd.state_dir()).await?;
+                // Re-read under the lock: it may have finished meanwhile.
                 let state = sd.state()?;
+                if state.is_finished() && !(input.input.allowed_after_finish() && state.takes_input()) {
+                    return Err(OpenDanError::SessionFinished(sid.to_string()));
+                }
                 let stats = client.get_queue_stats(&queue).await.map_err(missing)?;
                 let src = config.channels.kmsg().map(|(id, _, _)| id.to_string());
                 let pending = src

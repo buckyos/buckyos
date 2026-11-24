@@ -504,6 +504,9 @@ const METHOD_MSG_RESTORE_SESSION: &str = "msg.restore_session";
 const METHOD_MSG_DELETE_SESSION: &str = "msg.delete_session";
 const METHOD_MSG_CLEAR_SESSION: &str = "msg.clear_session";
 const METHOD_MSG_GET_SESSION_STATE: &str = "msg.get_session_state";
+const METHOD_MSG_LIST_CONVERSATIONS: &str = "msg.list_conversations";
+const METHOD_MSG_SET_DEFAULT_SESSION: &str = "msg.set_default_session";
+const METHOD_MSG_GET_DEFAULT_SESSION: &str = "msg.get_default_session";
 
 const METHOD_CONTACT_RESOLVE_DID: &str = "contact.resolve_did";
 const METHOD_CONTACT_RESOLVE_ENDPOINT_DID: &str = "contact.resolve_endpoint_did";
@@ -982,6 +985,34 @@ pub enum SessionLifecycle {
     Archived,
 }
 
+/// What a conversation of an Agent takes from and leaves in the Agent's
+/// long-term memory. Chosen when the session is created; the work it starts
+/// inherits it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMemoryMode {
+    #[default]
+    Normal,
+    /// Reads memory, leaves nothing in it.
+    NoWrite,
+    /// Neither reads memory nor leaves anything in it.
+    NoReadWrite,
+}
+
+impl SessionMemoryMode {
+    pub fn is_normal(&self) -> bool {
+        *self == Self::Normal
+    }
+
+    pub fn writes(&self) -> bool {
+        *self == Self::Normal
+    }
+
+    pub fn reads(&self) -> bool {
+        *self != Self::NoReadWrite
+    }
+}
+
 /// Persisted owner-scoped session metadata: lifecycle, delete watermark and
 /// (for manually created sessions) the registration that makes an empty
 /// session visible before its first message.
@@ -1013,8 +1044,50 @@ pub struct OwnerSessionState {
     pub delete_watermark_record_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at_ms: Option<u64>,
+    /// Owner-scoped UI state `memory_mode` of the session.
+    #[serde(default, skip_serializing_if = "SessionMemoryMode::is_normal")]
+    pub memory_mode: SessionMemoryMode,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+/// A one-to-one conversation of `owner` with a peer, named by the endpoint
+/// the peer replies to: a native session of the owner (`to` is the owner) or
+/// a tunnel conversation (`to` is the tunnel endpoint).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerConversation {
+    /// The session in the peer's mailbox.
+    pub session_id: String,
+    /// `native`, or the tunnel platform.
+    pub platform: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_session: Option<String>,
+    pub last_active_at_ms: u64,
+}
+
+/// The owner's default conversation with a peer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DefaultSession {
+    /// `native`: the owner's own session. A tunnel: the session in the
+    /// peer's mailbox.
+    pub session_id: String,
+    pub platform: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_session: Option<String>,
+    pub set_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerConversations {
+    /// The default as it is now; `msg.get_default_session` makes sure there
+    /// is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<DefaultSession>,
+    /// Where the owner has spoken, most recent first.
+    #[serde(default)]
+    pub conversations: Vec<PeerConversation>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1883,11 +1956,63 @@ pub struct MsgCenterCreateSessionReq {
     pub binding: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Also make it the owner's default conversation with the peer.
+    #[serde(default)]
+    pub set_default: bool,
+    #[serde(default, skip_serializing_if = "SessionMemoryMode::is_normal")]
+    pub memory_mode: SessionMemoryMode,
 }
 
 impl MsgCenterCreateSessionReq {
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         parse_from_json(value, "MsgCenterCreateSessionReq")
+    }
+}
+
+/// `msg.list_conversations`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterListConversationsReq {
+    pub owner: DID,
+    pub peer_did: DID,
+}
+
+impl MsgCenterListConversationsReq {
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterListConversationsReq")
+    }
+}
+
+/// `msg.get_default_session`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterGetDefaultSessionReq {
+    pub owner: DID,
+    pub peer_did: DID,
+    /// A native session the owner can write in, also while the default one
+    /// is a tunnel conversation (the default stays).
+    #[serde(default)]
+    pub native: bool,
+}
+
+impl MsgCenterGetDefaultSessionReq {
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterGetDefaultSessionReq")
+    }
+}
+
+/// `msg.set_default_session`: `to` and `to_session` name one of the owner's
+/// conversations with the peer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterSetDefaultSessionReq {
+    pub owner: DID,
+    pub peer_did: DID,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_session: Option<String>,
+}
+
+impl MsgCenterSetDefaultSessionReq {
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterSetDefaultSessionReq")
     }
 }
 
@@ -2907,6 +3032,63 @@ impl MsgCenterClient {
                 let req_json = serialize_to_json(&req, "MsgCenterSessionRefReq")?;
                 let result = client.call(METHOD_MSG_GET_SESSION_STATE, req_json).await?;
                 parse_rpc_response(result, "Option<OwnerSessionState>")
+            }
+        }
+    }
+
+    pub async fn list_conversations(
+        &self,
+        req: MsgCenterListConversationsReq,
+    ) -> std::result::Result<PeerConversations, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_list_conversations(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "MsgCenterListConversationsReq")?;
+                let result = client.call(METHOD_MSG_LIST_CONVERSATIONS, req_json).await?;
+                parse_rpc_response(result, "PeerConversations")
+            }
+        }
+    }
+
+    /// There always is one: without a default the service picks the owner's
+    /// earliest chat with the peer, else (or after the default was deleted)
+    /// creates one.
+    pub async fn get_default_session(
+        &self,
+        req: MsgCenterGetDefaultSessionReq,
+    ) -> std::result::Result<DefaultSession, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_get_default_session(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "MsgCenterGetDefaultSessionReq")?;
+                let result = client.call(METHOD_MSG_GET_DEFAULT_SESSION, req_json).await?;
+                parse_rpc_response(result, "DefaultSession")
+            }
+        }
+    }
+
+    pub async fn set_default_session(
+        &self,
+        req: MsgCenterSetDefaultSessionReq,
+    ) -> std::result::Result<DefaultSession, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_set_default_session(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "MsgCenterSetDefaultSessionReq")?;
+                let result = client.call(METHOD_MSG_SET_DEFAULT_SESSION, req_json).await?;
+                parse_rpc_response(result, "DefaultSession")
             }
         }
     }
@@ -4029,6 +4211,37 @@ pub trait MsgCenterHandler: Send + Sync {
         ))
     }
 
+    /// The owner's conversations with a peer and the default one among them.
+    async fn handle_list_conversations(
+        &self,
+        _req: MsgCenterListConversationsReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<PeerConversations, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_LIST_CONVERSATIONS.to_string(),
+        ))
+    }
+
+    async fn handle_get_default_session(
+        &self,
+        _req: MsgCenterGetDefaultSessionReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DefaultSession, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_GET_DEFAULT_SESSION.to_string(),
+        ))
+    }
+
+    async fn handle_set_default_session(
+        &self,
+        _req: MsgCenterSetDefaultSessionReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DefaultSession, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_SET_DEFAULT_SESSION.to_string(),
+        ))
+    }
+
     async fn handle_list_session(
         &self,
         owner: DID,
@@ -4555,6 +4768,21 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .0
                     .handle_get_session_state(ref_req.owner, ref_req.session_id, ctx)
                     .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_LIST_CONVERSATIONS => {
+                let list_req = MsgCenterListConversationsReq::from_json(req.params)?;
+                let result = self.0.handle_list_conversations(list_req, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_GET_DEFAULT_SESSION => {
+                let get_req = MsgCenterGetDefaultSessionReq::from_json(req.params)?;
+                let result = self.0.handle_get_default_session(get_req, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_SET_DEFAULT_SESSION => {
+                let set_req = MsgCenterSetDefaultSessionReq::from_json(req.params)?;
+                let result = self.0.handle_set_default_session(set_req, ctx).await?;
                 RPCResult::Success(json!(result))
             }
             METHOD_MSG_LIST_SESSION => {

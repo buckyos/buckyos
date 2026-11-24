@@ -133,6 +133,25 @@
             "step_index"
           ],
           "type": "object"
+        },
+        {
+          "description": "`submit_reply`: the Turn's reply, not a report of the session; its `result` is `{topic}`.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "reply"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "kind"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -583,7 +602,7 @@
       "description": "How the session ended or set aside a run (written with the run's history). Outcomes that keep the run open without a decision (context limit pause, interrupt, retryable error) write nothing here.",
       "properties": {
         "kind": {
-          "description": "Run ended: `done | process_done | budget | error | stopped`; `wait`: the run ended waiting for the user's next message (`WAIT_USER_MSG`), or it is kept while its tasks or sub sessions run and their ends are injected into it; process suspended into `process_stack`: `suspended`; `context_rewritten`: the run hit the context limit, its history so far is above this entry and it continues from the compacted session history. Not a Turn end: see `turn_ended`.",
+          "description": "Run ended: `done | process_done | budget | error | stopped`; `wait`: the run ended waiting for the user's next message (`WAIT_USER_MSG`), or it is kept while its tasks or sub sessions run and their ends are injected into it; `message`: it stopped for a message, which joins its open Turn; process suspended into `process_stack`: `suspended`; `context_rewritten`: the run hit the context limit, its history so far is above this entry and it continues from the compacted session history. Not a Turn end: see `turn_ended`.",
           "type": "string"
         },
         "next_behavior": {

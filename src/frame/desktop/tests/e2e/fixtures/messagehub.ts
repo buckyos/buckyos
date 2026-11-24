@@ -30,12 +30,13 @@ export async function newSessionButton(page: Scope) {
 }
 
 /** Creates a session of the open entity over its default (native) connection. */
-export async function createNamedSession(page: Scope, name: string, options: { description?: string } = {}) {
+export async function createNamedSession(page: Scope, name: string, options: { description?: string; setDefault?: boolean } = {}) {
   const restore = await openNewSession(page)
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Session name', { exact: true }).fill(name)
   if (options.description) await dialog.getByLabel('Description (optional)', { exact: true }).fill(options.description)
   await expect(dialog.getByRole('combobox', { name: 'Connection', exact: true })).toHaveValue('native')
+  if (options.setDefault) await dialog.getByLabel('Set as default session', { exact: true }).check()
   await dialog.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(dialog).toHaveCount(0)
   await restore()

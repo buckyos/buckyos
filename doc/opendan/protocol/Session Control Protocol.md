@@ -50,6 +50,7 @@
 | `unsubscribe` | `id` | 移除订阅、其拉模式游标和 `pending_events` 中尚未注入的状态；之后到达的该订阅事件丢弃 |
 | `activity` | `summary?`、`touch[]`、`clear` | 合并进 `state.activity`（touching 上限 16） |
 | `perceive` | `kind`（默认 `observation`）、`summary`、`tags[]`、`objects[]` | 驱动者以 lease 追加到 Agent 感知流（按 seq 幂等），再消费输入 |
+| `reply_mode` | `mode`：`schema` \| `compat` | 只对 UI Session：最后的回复怎样给出（`state.reply_mode`），在下一个推理边界生效，跨 Turn 保持；其它 Session 记 `applied = false` |
 
 ## 4. 停止
 
@@ -62,7 +63,7 @@
 | `stop(scope=archive)`，UI Session | 打开的 Turn 以 `stopped` 关闭 | `finished`、`outcome = stopped`；同一 `route_key` 的下一条消息新建一代 UI Session | 同 Session 范围（宿主在归档前拒绝还有未结束 Work 的会话） |
 | `stop(scope=archive)`，其它 Session | 不变 | 拒绝，`applied = false` | 无 |
 
-停止的范围就是用户的两种意图：针对消息的 stop（`turn`）和针对 Session 的 stop（`session`）。结束一个 UI Session 只有归档这一条路；归档是 clean（“开始新对话”），由宿主的 `ui.rotate` 和聊天命令 `/clean`、`/new` 发出，旧会话的目录、worklog、Session id 都保留。没有打开 Turn 时，Turn 范围 stop 记录 `applied = false`，也不禁止未来的新 Turn；它不是持续的暂停开关。停止一个被重启中断的 Turn（暂停来源 `interrupted`）时一并清掉这个暂停，Session 回到等待输入；其它来源的暂停不受 stop 影响（§5）。
+停止的范围就是用户的两种意图：针对消息的 stop（`turn`）和针对 Session 的 stop（`session`）。结束一个 UI Session 只有归档这一条路；归档是 clean（“开始新对话”），由宿主的 `ui.rotate` 和聊天命令 `/clean`、`/new` 发出（用户在 Desktop 自己建的聊天里，`/new` 由 Desktop 处理成新建聊天并设为默认，不归档这个会话），旧会话的目录、worklog、Session id 都保留。没有打开 Turn 时，Turn 范围 stop 记录 `applied = false`，也不禁止未来的新 Turn；它不是持续的暂停开关。停止一个被重启中断的 Turn（暂停来源 `interrupted`）时一并清掉这个暂停，Session 回到等待输入；其它来源的暂停不受 stop 影响（§5）。
 
 已经接受的最终报告先于后到的 stop 完成；先被宿主观察到的 stop 拒绝新的结束提交。stop 不把已经由报告提交确定的终局改写成 `stopped`；若目标 Turn 已由报告关闭，Turn stop 清除标志后返回。提交先后规则见 Session Directory Protocol §7.1。
 
@@ -136,7 +137,7 @@ Goal Session 的终止由 Goal 生命周期驱动，不是另一个 `ControlComm
 
 ## 8. 宿主和界面映射
 
-- **控制队列**：宿主有队列客户端时，每个 Session 都有输入队列，控制命令一律走它。队列收不收 msg / Input event 是另一个属性：`session.input_policy = none` 的 Session（内置 `work` 类，以及模板里 `input = "none"` 的类）只收控制命令，它的首批材料来自 `prompt.initial_inputs`；向它投 msg 在投递时就被拒绝并说明原因。收消息的后台 Work 只有 plan（`input = "queue"`）、Todo 派发的 Work 和 `--interactive` 的 Work。
+- **控制队列**：宿主有队列客户端时，每个 Session 都有输入队列，控制命令一律走它。队列收不收 msg / Input event 是另一个属性：`session.input_policy = none` 的 Session（内置 `work` 类，以及模板里 `input = "none"` 的类）只收控制命令，它的首批材料来自 `prompt.initial_inputs`；向它投 msg 在投递时就被拒绝并说明原因。收消息的后台 Work 有 plan（`input = "queue"`）、Todo 派发的 Work、`--interactive` 的 Work，以及 UI Session 用 `--behavior work_simple` 创建的 Work（`session.policy.reads_messages`：消息在下一次推理前读入，同一个 Turn；还有未读的消息时最终报告被拒，报告已收下、结束还没提交时到的消息把报告退回成进展报告；结束之后投递返回 `session_finished`）。
 - **驱动者自己的停止请求**：驱动进程可以不经队列请求停止，例如 SIGINT。记录 `control_applied{command: stop, input.src: "_runner"}`，按 Session 范围停止；Goal Session 上只停当前 Activation。
 - **无队列 Session**：只出现在没有队列客户端的宿主上（§7 末）。不接受队列型控制；`decide` 可由决定者在 `artifact:<aid>` 锁下直接操作产物列表（Agent State Protocol §6）。
 - **聊天与按钮**：斜杠命令不由 Session 解析，msg bridge 在入队前按登记表与发送者身份处理。`/stop`、`/cancel` 转成 `stop(scope=turn)`，只投给对话当前的 UI Session，没有打开的 Turn 时不投、回一句提示；`/clean`、`/new` 由宿主归档当前 UI Session（有未结束的 Work 时拒绝并列出它们）；`/resume` 由宿主恢复这个对话里被中断的 Session（它自己，否则它名下最靠上的那些）；owner 的 redact 转成 `retract`。控制和撤回都不会为一个还没有 UI Session 的对话新建会话。界面的“停止”按钮在占位消息上发 `turn` 范围，在后台 Work 上发 `session` 范围。

@@ -64,6 +64,9 @@ pub struct Shared {
     /// Functions that run a sub context (`call_behavior` and the behaviors'
     /// `[tool]` names) offered to the runs of this drive.
     pub behavior_functions: Mutex<std::collections::BTreeSet<String>>,
+    /// Held from the last look at the queue to the commit that ends the
+    /// session: nothing is posted in between.
+    pub post_lock: Mutex<Option<crate::lock::FileLock>>,
 }
 
 /// A Turn closed by a commit of this drive.

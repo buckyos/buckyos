@@ -828,7 +828,8 @@ async fn a_rewrite_fills_the_history_budget_with_head_summary_and_raw_tail() {
         .position(|m| m.text_content().starts_with("<history_summary>"))
         .unwrap();
     assert_eq!(summary_at, 4);
-    assert!(m[4].text_content().ends_with(libopendan::runner::history::COMPRESSED_NOTE));
+    assert!(m[4].text_content().contains(libopendan::runner::history::COMPRESSED_NOTE));
+    assert!(m[4].text_content().contains("agent-session read-session"));
     assert_eq!(m[5].role, AiRole::Assistant);
     let calls: Vec<String> = m.iter().flat_map(|m| m.tool_calls()).map(|c| c.call_id).collect();
     let results: Vec<String> = m

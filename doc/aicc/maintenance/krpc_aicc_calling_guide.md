@@ -133,4 +133,4 @@ Helper 接受逻辑模型和对应业务字段，内部完成一次 route + type
 
 常见稳定错误包括 `no_provider_available`、`logical_model_not_found`、`exact_model_not_found`、`operation_not_supported`、`context_too_long`、`resource_invalid`、`provider_start_failed` 和 `cancel_not_confirmed`。
 
-`route.resolve` 可以返回有序候选。typed inference 对逻辑模型调用按 `aicc_router.md` 的错误分类先做同模型重试，再在 `runtime_failover` 允许时切换到下一候选；显式 exact model 默认不产生其它候选，因此仍不会隐式换模型，只有显式启用 exact-model fallback 时例外。
+调用失败时 AICC 只对同一精确模型重试，然后返回 Provider 的真实错误；不自动换模型或 Provider。只有系统管理员为该逻辑目录手工配置了 fallback 时才改用它，显式 exact model 从不换模型（[aicc_router.md §9](../aicc_router.md#9-fallback-与失败处理)）。当前实现仍会在 `runtime_failover` 默认开启时切换到同池候选，将按 [显式 fallback 改造 TODO](../../../notepads/aicc-explicit-fallback-todo.md) 移除，调用方不要依赖。

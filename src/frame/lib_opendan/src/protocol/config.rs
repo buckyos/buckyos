@@ -191,6 +191,52 @@ pub struct SessionPolicy {
     /// §0.3, three levels).
     #[serde(default)]
     pub runtime_view: RuntimeView,
+    /// A Work whose messages come in while it works: they are read before
+    /// the next inference, and it does not end with one unread.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_messages: bool,
+    /// What the session takes from and leaves in Memory; the work it starts
+    /// has the same.
+    #[serde(default, skip_serializing_if = "MemoryMode::is_normal")]
+    pub memory: MemoryMode,
+}
+
+/// How a session uses the Agent's Memory, chosen when the conversation was
+/// created (`SessionMemoryMode` of its msg-center session).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryMode {
+    #[default]
+    Normal,
+    /// Reads it and leaves nothing: no perception is recorded.
+    NoWrite,
+    /// Neither: no recall, no perception.
+    NoReadWrite,
+}
+
+impl MemoryMode {
+    pub fn is_normal(&self) -> bool {
+        *self == Self::Normal
+    }
+
+    pub fn writes(self) -> bool {
+        self == Self::Normal
+    }
+
+    pub fn reads(self) -> bool {
+        self != Self::NoReadWrite
+    }
+}
+
+impl From<buckyos_api::SessionMemoryMode> for MemoryMode {
+    fn from(mode: buckyos_api::SessionMemoryMode) -> Self {
+        use buckyos_api::SessionMemoryMode as M;
+        match mode {
+            M::Normal => Self::Normal,
+            M::NoWrite => Self::NoWrite,
+            M::NoReadWrite => Self::NoReadWrite,
+        }
+    }
 }
 
 /// What a session is told about the agent's runtimes: a chat knows two
@@ -217,6 +263,8 @@ impl Default for SessionPolicy {
             max_session_depth: default_session_depth(),
             tick_secs: default_tick_secs(),
             runtime_view: RuntimeView::default(),
+            reads_messages: false,
+            memory: MemoryMode::Normal,
         }
     }
 }
@@ -951,6 +999,8 @@ pub const TASK_WATCH_TIMER: &str = "task_watch";
 pub const NOTIFY_SOURCE_ID: &str = "notify";
 /// Event of a notification that reached the session's conversation.
 pub const NOTIFY_EVENT_DELIVERED: &str = "delivered";
+/// A question shown in the conversation is closed: answered, or not.
+pub const NOTIFY_EVENT_CLOSED: &str = "closed";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Subscription {

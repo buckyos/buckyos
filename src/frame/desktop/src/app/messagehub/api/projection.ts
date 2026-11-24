@@ -4,7 +4,7 @@
  * in, so the rules are unit-testable with Deno fixtures.
  */
 import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, SessionBinding } from '../types'
-import type { Contact, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
+import type { Contact, MailboxRecordWithObject, PeerConversation, SessionSummary } from '../datamodel/sessionApi'
 import { notifyCategoryFromSessionId, type NotifyCategory } from 'buckyos'
 import { messageNotify, messageVoice, type MessageObject } from '../../../components/conversation/model/msgobj'
 import { formatVoiceDuration } from '../../../components/conversation/media/voice'
@@ -259,6 +259,41 @@ function bindingFor(peerDid: string, contacts: readonly Contact[], summary: Sess
   return { kind: 'native', targetDid: peerDid }
 }
 
+function platformName(platform: string): string {
+  return platform.charAt(0).toUpperCase() + platform.slice(1)
+}
+
+/** An Agent's conversation with the owner on a channel, listed among the owner's sessions with the Agent. */
+export function channelSession(agentDid: string, conversation: PeerConversation): Session {
+  const name = platformName(conversation.platform)
+  return {
+    id: conversation.session_id,
+    ownerDid: agentDid,
+    entityId: agentDid,
+    binding: {
+      kind: 'tunnel',
+      tunnelInstanceId: parseTunnelDid(conversation.to)?.tunnelInstanceId ?? conversation.platform,
+      endpointDid: conversation.to,
+      connectionName: name,
+      remoteContextId: conversation.to_session,
+      supportsMultipleSessions: false,
+      canCreateRemoteSession: false,
+      canSend: false,
+      connected: true,
+    },
+    origin: 'connection',
+    lifecycle: 'active',
+    createdAt: 0,
+    shared: { title: '', description: '', updatedAt: 0 },
+    members: {},
+    title: name,
+    type: 'chat',
+    source: conversation.platform,
+    lastActiveAt: conversation.last_active_at_ms,
+    unreadCount: 0,
+  }
+}
+
 export function projectOwner(input: ProjectionInput): ProjectedOwner {
   const { ownerDid, contacts, labels } = input
   const contactByDid = new Map(contacts.map(contact => [contact.did, contact]))
@@ -366,6 +401,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
       requestCount: summary.request_count,
       lastDelivery: summary.last_record?.record.box_kind === 'SENT' ? undefined : undefined,
       attributionEvidence: attribution.evidence,
+      ...(summary.state?.memory_mode && summary.state.memory_mode !== 'normal' ? { memoryMode: summary.state.memory_mode } : {}),
     }
     sessions.push(session)
     const list = sessionsByEntity.get(entityId) ?? []

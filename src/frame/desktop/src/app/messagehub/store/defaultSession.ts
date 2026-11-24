@@ -1,24 +1,31 @@
 import { creationReason, viewerSessionKey } from '../sessionModel'
 import type { MessageHubContext, Session } from '../types'
-import type { MessageHubStore } from './types'
+import type { DefaultSessionOptions, MessageHubStore } from './types'
 
-type DefaultSessionStore = Pick<MessageHubStore, 'ensureOwner' | 'canView' | 'ownerStatus' | 'defaultSession' | 'hasMoreEntities' | 'loadMoreEntities' | 'findEntity' | 'connections' | 'policy' | 'create'>
+type DefaultSessionStore = Pick<MessageHubStore, 'ensureOwner' | 'canView' | 'ownerStatus' | 'agentDefaultSession' | 'defaultSession' | 'hasMoreEntities' | 'loadMoreEntities' | 'findEntity' | 'connections' | 'policy' | 'create' | 'manage' | 'sessions'>
 const pending = new WeakMap<DefaultSessionStore, Map<string, Promise<Session | null>>>()
 
-export function ensureDefaultSession(store: DefaultSessionStore, context: MessageHubContext, entityId: string): Promise<Session | null> {
+export function ensureDefaultSession(store: DefaultSessionStore, context: MessageHubContext, entityId: string, options: DefaultSessionOptions = {}): Promise<Session | null> {
   let requests = pending.get(store)
   if (!requests) { requests = new Map(); pending.set(store, requests) }
-  const key = viewerSessionKey(context, entityId)
+  const key = `${viewerSessionKey(context, entityId)}${options.writable ? ' writable' : ''}`
   const existing = requests.get(key)
   if (existing) return existing
-  const request = resolveDefaultSession(store, context, entityId).finally(() => { requests.delete(key) })
+  const request = resolveDefaultSession(store, context, entityId, options).finally(() => { requests.delete(key) })
   requests.set(key, request)
   return request
 }
 
-async function resolveDefaultSession(store: DefaultSessionStore, context: MessageHubContext, entityId: string): Promise<Session | null> {
+async function resolveDefaultSession(store: DefaultSessionStore, context: MessageHubContext, entityId: string, options: DefaultSessionOptions): Promise<Session | null> {
   await store.ensureOwner(context)
   if (!store.canView(context) || store.ownerStatus(context).phase !== 'ready') throw new Error('permission_denied')
+  const stored = await store.agentDefaultSession(context, entityId, options)
+  if (stored) {
+    // Entering an archived default brings it back.
+    if (stored.lifecycle !== 'archived') return stored
+    await store.manage(context, stored.id, 'restore')
+    return store.sessions(context, entityId).find(session => session.id === stored.id) ?? stored
+  }
   let session = store.defaultSession(context, entityId)
   while (!session && store.hasMoreEntities(context)) {
     await store.loadMoreEntities(context)

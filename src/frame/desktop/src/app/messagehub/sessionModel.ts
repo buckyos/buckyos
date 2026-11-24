@@ -1,11 +1,14 @@
 import { z } from 'zod'
 import { notifyCategoryFromSessionId } from 'buckyos'
 import { NOTIFY_CATEGORIES } from '../../components/conversation/model/msgobj'
+import type { ConversationMemoryMode } from '../../components/conversation/backendTypes'
 import type { Entity, MessageHubContext, Session, SessionAccess, SessionBinding, SessionPreferences } from './types'
 
-export const createSessionSchema = z.object({ entityId: z.string().min(1), title: z.string().trim().max(64), description: z.string().trim().max(500).optional(), connection: z.string().min(1) })
+export const MEMORY_MODES = ['normal', 'no_write', 'no_read_write'] as const satisfies readonly ConversationMemoryMode[]
+/** `setDefault` and `memoryMode` are an Agent's alone. */
+export const createSessionSchema = z.object({ entityId: z.string().min(1), title: z.string().trim().max(64), description: z.string().trim().max(500).optional(), connection: z.string().min(1), setDefault: z.boolean().optional(), memoryMode: z.enum(MEMORY_MODES).optional() })
 /** The new-session dialog: the entity is the one whose session list it was opened from. */
-export const newSessionFormSchema = z.object({ title: z.string().trim().min(1).max(64), description: z.string().trim().max(500), connection: z.string().min(1) })
+export const newSessionFormSchema = z.object({ title: z.string().trim().min(1).max(64), description: z.string().trim().max(500), connection: z.string().min(1), setDefault: z.boolean(), memoryMode: z.enum(MEMORY_MODES) })
 /** Display name of the native connection (MsgObject over the Named Message Protocol). */
 export const NATIVE_CONNECTION_LABEL = 'Named Message Protocol'
 export const sharedStateSchema = z.object({ title: z.string().trim().max(64), description: z.string().trim().max(500) })
@@ -30,6 +33,12 @@ export function sortSessions(sessions: Session[], preferences: (id: string) => S
   slots.forEach((slot, index) => { sorted[slot] = notify[index] })
   return sorted
 }
+/** A conversation with an Agent on a channel of another platform, read from the Agent's mailbox (`MessageHubStore.channelSessions`). */
+export const isChannelSession = (context: MessageHubContext, session: Session) => context.mode === 'self' && session.ownerDid !== context.ownerDid
+/** The context a session listed in `context` is read in. */
+export const readingContext = (context: MessageHubContext, session: Session): MessageHubContext => isChannelSession(context, session) ? { viewerDid: context.viewerDid, ownerDid: session.ownerDid, mode: 'observe' } : context
+export const channelAccess: SessionAccess = { mode: 'read_only', canManage: false, canEnableWrite: false, canEditPresentation: false, canEditSharedState: false, canEditOwnMemberState: false, readOnlyReason: 'channel' }
+/** Where the main entry of an entity leads; the owner's own Agents have a stored default (`MessageHubStore.defaultSession`). */
 export function selectDefaultSession(entity: Entity, sessions: Session[]): Session | null {
   const active = sessions.filter(session => session.entityId === entity.id && session.lifecycle === 'active')
   // The system notifications open on their most important category.

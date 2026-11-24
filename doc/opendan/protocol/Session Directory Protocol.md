@@ -306,7 +306,10 @@ Schema：`schema/session_state.schema.json`。
   ```
 
   最后一行是固定说明，不是摘要，也不进 worklog。
-- UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，历史直接取 `last_run` 快照 `state.accumulated` 的非 system 消息列表。消息顺序、角色与内容原样保留，包括工具调用 / 结果和媒体。这些消息进入新 run 的 `request.input`，随新快照持久化；flush 只追加新 run 产生的部分，因此清理旧 run 不会丢失续聊前缀或重复写入 worklog。超过 `history_budget_tokens` 时改用上面的 worklog 重建。
+- UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且摘要不比那个 run 新（没压缩过，或压缩在它结束之前）时，历史直接取 `last_run` 快照 `state.accumulated` 的非 system 消息列表。消息顺序、角色与内容原样保留，包括工具调用 / 结果和媒体。这些消息进入新 run 的 `request.input`，随新快照持久化；flush 只追加新 run 产生的部分，因此清理旧 run 不会丢失续聊前缀或重复写入 worklog。超过触发线时改用上面的 worklog 重建并压到目标线。
+- 聊天（UI Session）跨轮的历史跟着模型窗口：触发线 = 窗口 × `context_yield_ratio`（0.80）− 前缀，目标线 = 窗口 × `context_target_ratio`（0.30）− 前缀（不超过触发线的一半），新 run 装配历史和 run 结束后的压缩都用它。会话显式写了 `history_budget_tokens`、窗口未知、或不是聊天时，用固定预算（装配用 `history_budget_tokens`，run 结束后超过 `compact_ratio` 就压到一半）。
+- 摘要块之后的固定行：读原文的命令（`read-session <sid> --turn <n>`）和本会话用 `ctl perceive` 记下的感知（`summary.json` 的 `perceptions`，压缩时从 worklog 取最新 40 条，带引用和 Turn），不靠摘要模型保留。
+- 提示词重新冻结（`control_applied{prompt_refrozen}`，`reason`）：压缩之后的下一个新 run；或空闲超过 `RunnerOptions.prompt_cache_idle`（1 小时，provider 的自动缓存已失效）回来而且提示词有变化时，这时历史超过目标线就先压到目标线。提示词没变不重建。
 - `history_budget_tokens` 是给新 run 装配历史时的预算；run 中途因上下文上限重写时它只是历史的下限，目标由窗口决定（§7“上下文上限中途重写”）。
 - 压缩只有一种：agent_tool `llm_compress`（见 [LLM Compress](<../../llm_context/LLM Compress.md>)）。历史超预算时，整段（head + summary + 起点之后的全部记录）交给它，压成 `head（开场输入 + 第 1 轮）+ 一块滚动合并的 summary + keep_exact + 按预算填满的原始尾巴`；结果写 summary.json（summary、keep_exact、head 的终点、尾巴的起点）并追加一条 `compaction` 条目后提交，从不改写 worklog。摘要用 AICC 别名 `llm.summarize`，不计入 Round 统计。
 - 运行时只从提交末尾反向读到 `start_offset`，预算先于起点耗尽时才把这一段完整读一次去压缩；head 是开头的有界区间。summary 与原始记录之间不留空洞：尾巴的起点就是 summary 覆盖范围的终点。

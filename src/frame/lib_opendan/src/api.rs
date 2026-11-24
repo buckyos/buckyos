@@ -386,7 +386,11 @@ pub async fn create_session(
         })?),
         _ => channels.queue_client(),
     };
-    if queue_client.is_some() && !controls_only && !spec.prompt.initial_inputs.is_empty() {
+    if queue_client.is_some()
+        && !controls_only
+        && !spec.policy.reads_messages
+        && !spec.prompt.initial_inputs.is_empty()
+    {
         return Err(OpenDanError::InvalidArgument(
             "prompt.initial_inputs is the bootstrap material of a session whose queue takes no msg; post to the queue instead".into(),
         ));
@@ -639,6 +643,89 @@ pub async fn read_session(
     Ok(view)
 }
 
+/// Which records of a session's worklog [`read_session_records`] returns.
+#[derive(Debug, Clone, Default)]
+pub struct RecordRange {
+    /// Only this Turn's.
+    pub turn: Option<u64>,
+    /// From this position on (a page's `next_after`), else from the start.
+    pub after: Option<u64>,
+    /// The ones before this position (a page's `next_before`).
+    pub before: Option<u64>,
+    /// At most this many (1-200).
+    pub limit: usize,
+}
+
+/// A page of a session's original records. Positions and Turn numbers never
+/// change: the worklog only grows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecords {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u64>,
+    pub records: Vec<WorklogEntry>,
+    /// Where to go on (`None`: nothing follows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Read a session's records by Turn and position, as an agent-side reader
+/// (`agent_access = status_only` is honoured).
+pub async fn read_session_records(
+    agent: &dyn AgentStateClient,
+    sid: &str,
+    range: &RecordRange,
+) -> Result<SessionRecords> {
+    let entry = agent
+        .sessions()
+        .lookup(sid)
+        .await?
+        .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
+    let mut out = SessionRecords {
+        session_id: sid.to_string(),
+        turn: range.turn,
+        records: Vec::new(),
+        next_after: None,
+        next_before: None,
+        note: None,
+    };
+    if entry.agent_access == AgentAccess::StatusOnly {
+        out.note = Some("session exposes its status only (agent_access = status_only)".into());
+        return Ok(out);
+    }
+    let sd = SessionDir::open(&entry.location)?;
+    let committed = sd.state()?.worklog.committed_bytes;
+    let limit = range.limit.clamp(1, 200);
+    if let Some(before) = range.before {
+        let page = sd.worklog().page(committed, range.turn, Some(before), None, limit)?;
+        out.records = page.entries;
+        out.next_before = page.next_before;
+        return Ok(out);
+    }
+    // One page reads a bounded stretch: go on until it holds something.
+    let mut after = range.after.unwrap_or(0);
+    loop {
+        let page = sd
+            .worklog()
+            .page(committed, range.turn, None, Some(after), limit - out.records.len())?;
+        let past = range.turn.is_some_and(|t| {
+            page.entries.is_empty() && out.records.last().and_then(|e| e.body.turn()) == Some(t)
+        });
+        out.records.extend(page.entries);
+        let stuck = page.next_after == after;
+        after = page.next_after;
+        if out.records.len() >= limit || after >= committed || stuck || past {
+            break;
+        }
+    }
+    out.next_after = (after < committed && out.records.len() >= limit).then_some(after);
+    Ok(out)
+}
+
 /// Post a record to a session's input bus through the registry (anyone
 /// with write access to its queue). Publishes the wake event when a waker
 /// is configured. `input_full` (64 pending records) and `queue_missing`
@@ -700,6 +787,10 @@ pub struct SubSessionSpec {
     /// updates); it still never waits for input.
     #[serde(default)]
     pub queued: bool,
+    /// Messages reach the sub session while it works
+    /// (`SessionPolicy.reads_messages`); it still never waits for one.
+    #[serde(default)]
+    pub reads_messages: bool,
     /// `(run_id, call_id)` of the creating tool call: the idempotency key.
     #[serde(default)]
     pub call: Option<(String, String)>,
@@ -1136,9 +1227,11 @@ pub async fn create_sub_session(
         spec.input_channel = Some(InputChannel::Queue);
         spec.policy.wait_user_msg = WaitPolicy::Allowed;
     }
-    if sub.queued {
+    if sub.queued || sub.reads_messages {
         spec.input_channel = Some(InputChannel::Queue);
     }
+    spec.policy.reads_messages = sub.reads_messages;
+    spec.policy.memory = policy.memory;
     // First inputs: messages of the agent itself.
     let me = parse_did(agent.agent_did())?;
     let mut texts = sub.msgs.clone();
@@ -1163,7 +1256,9 @@ pub async fn create_sub_session(
         }
         first.push(PostedInput::msg(who, msg, MsgDelivery::default())?);
     }
-    let queued = spec.input_channel == Some(InputChannel::Queue);
+    // What it starts with is there before anyone can say more: never behind
+    // a message of its queue.
+    let queued = spec.input_channel == Some(InputChannel::Queue) && !sub.reads_messages;
     if !queued {
         spec.prompt.initial_inputs = first.clone();
     }

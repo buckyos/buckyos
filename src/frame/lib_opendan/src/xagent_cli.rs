@@ -84,9 +84,9 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   <spec> = active|semi:object:<id>[#<event>] | semi:session:<sid>[:watch=f1,f2] | active|semi:timer:<name>
 
   inside a session's shell (as `agent-session`; the session comes from the environment):
-  ctl activity ... | ctl perceive <text> | sessions [--active] [--children] [--json]
+  ctl activity ... | ctl perceive <text> | sessions [--active | --finished <n>] [--children] [--json]
   recall <word|tag>... [--object <path>]... [--alias <name>]... [--limit <n>] [--json] | recall --read <ref> [--json]
-  read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
+  read-session <sid> [--report] [--worklog <n>] | read-session <sid> [--turn <n>] [--after|--before <cursor>] [--limit <n>] | artifact head <aid> | artifact list
   create-worksession --title <t> --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
         [--class <c>] [--behavior <b>] [--cmd-skill <name>]... [--workspace inherit|none|<id>] [--runtime inherit|<id>]
         [--report final|progress|none] [--interactive]
@@ -894,6 +894,7 @@ async fn cmd_post(mut a: Args) -> R<i32> {
 
 const CTL_COMMANDS: &[&str] = &[
     "stop", "pause", "resume", "decide", "subscribe", "unsubscribe", "activity", "perceive",
+    "reply-mode",
 ];
 
 async fn cmd_ctl(mut a: Args) -> R<i32> {
@@ -904,7 +905,7 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
             first,
         )
     } else {
-        (first, a.next("stop | pause | resume | decide | subscribe | unsubscribe | activity | perceive")?)
+        (first, a.next("stop | pause | resume | decide | subscribe | unsubscribe | activity | perceive | reply-mode")?)
     };
     let c = ctx(&a, None, true).await?;
     let given_key = a.get("key");
@@ -1005,6 +1006,14 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
                 mentions: a.all("mention"),
             },
         ),
+        "reply-mode" => {
+            let mode = match a.next("compat | schema")?.as_str() {
+                "compat" => ReplyMode::Compat,
+                "schema" => ReplyMode::Schema,
+                other => return Err(bad(format!("reply-mode takes compat | schema, not `{other}`"))),
+            };
+            (key("reply-mode"), ControlCommand::ReplyMode { mode })
+        }
         other => return Err(bad(format!("unknown control `{other}`"))),
     };
     let input = PostedInput::control(&c.who, key, command);
@@ -1192,6 +1201,9 @@ async fn cmd_recall(a: Args) -> R<i32> {
 fn render_query(r: &crate::memory::QueryResult) -> String {
     use crate::memory::{Change, ChangeKind, RecallStatus};
     use crate::runner::memory_batch::line;
+    if let Some(note) = &r.note {
+        return format!("nothing found: {note}\n");
+    }
     if r.status == RecallStatus::NotTriggered {
         return "nothing to look up by: give words, tags, --object or --alias\n".into();
     }
@@ -1299,6 +1311,9 @@ fn brief(e: &RegistryEntry) -> Value {
         "pending_decision": e.status.pending_decision,
         "parent": e.origin.as_ref().and_then(|o| o.parent_session.clone()),
     });
+    if e.status.run_state == RunState::Finished {
+        v["ended_at_ms"] = json!(e.status.updated_at_ms);
+    }
     // A UI session's objective is its design intent: whose conversation it
     // is shows in its route key, what it is about in its topic.
     if let Some(route) = &e.route_key {
@@ -1310,6 +1325,9 @@ fn brief(e: &RegistryEntry) -> Value {
     v
 }
 
+/// `sessions --finished <n>`: at most this many.
+const MAX_FINISHED: usize = 20;
+
 async fn cmd_sessions(a: Args) -> R<i32> {
     let c = ctx(&a, None, false).await?;
     let mut entries = if a.has("children") {
@@ -1320,6 +1338,18 @@ async fn cmd_sessions(a: Args) -> R<i32> {
     } else {
         c.agent.sessions().query(&RegistryQuery::default()).await?
     };
+    let finished: Option<usize> = a.num("finished")?;
+    if a.has("finished") {
+        if a.has("active") {
+            return Err(bad("--finished and --active exclude each other"));
+        }
+        let n = finished
+            .filter(|n| (1..=MAX_FINISHED).contains(n))
+            .ok_or_else(|| bad(format!("--finished takes how many (1-{MAX_FINISHED})")))?;
+        entries.retain(|e| e.status.run_state == RunState::Finished);
+        entries.sort_by_key(|e| std::cmp::Reverse(e.status.updated_at_ms));
+        entries.truncate(n);
+    }
     if a.has("active") {
         entries.retain(|e| e.status.run_state != RunState::Finished);
     }
@@ -1335,6 +1365,10 @@ async fn cmd_sessions(a: Args) -> R<i32> {
             println!("- {} [{}]: {}", e.session_id, status.join(", "), inline_text(&e.objective));
             if !e.status.one_line_status.trim().is_empty() {
                 println!("  Status: {}", inline_text(&e.status.one_line_status));
+            }
+            if finished.is_some() {
+                let (at, _) = crate::runner::background::local_time(e.status.updated_at_ms, None);
+                println!("  Ended: {at}");
             }
             if let Some(topic) = &e.status.topic {
                 println!("  Topic: {}", inline_text(&topic.title));
@@ -1362,6 +1396,19 @@ async fn cmd_sessions(a: Args) -> R<i32> {
 async fn cmd_read_session(mut a: Args) -> R<i32> {
     let sid = a.next("<sid>")?;
     let c = ctx(&a, None, false).await?;
+    if a.has("turn") || a.has("after") || a.has("before") {
+        let range = crate::api::RecordRange {
+            turn: a.num("turn")?,
+            after: a.num("after")?,
+            before: a.num("before")?,
+            limit: a.num("limit")?.unwrap_or(20),
+        };
+        if range.turn == Some(0) || (range.after.is_some() && range.before.is_some()) {
+            return Err(bad("read-session takes --turn <n ≥ 1> and one of --after / --before"));
+        }
+        print(&crate::api::read_session_records(c.agent.as_ref(), &sid, &range).await?);
+        return Ok(0);
+    }
     let n: usize = a.num("worklog")?.unwrap_or(0);
     // The agent's own side: `agent_access = status_only` is honoured.
     print(&crate::read_session(c.agent.as_ref(), &sid, true, a.has("report"), n).await?);
@@ -1378,6 +1425,21 @@ async fn cmd_artifact(mut a: Args) -> R<i32> {
         other => return Err(bad(format!("artifact {other}: only `head <aid>` and `list` are available"))),
     }
     Ok(0)
+}
+
+/// A simple work a conversation starts takes the user's additions while it
+/// runs.
+async fn simple_of_a_conversation(c: &Ctx, a: &Args, parent: &str) -> R<bool> {
+    if a.get("behavior").as_deref() != Some(crate::todos::WORK_BEHAVIOR)
+        || c.channels.queue_client().is_none()
+    {
+        return Ok(false);
+    }
+    Ok(c.agent
+        .sessions()
+        .lookup(parent)
+        .await?
+        .is_some_and(|e| e.kind == SessionKind::Ui))
 }
 
 async fn cmd_create_worksession(a: Args) -> R<i32> {
@@ -1448,6 +1510,7 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         report,
         interactive: a.has("interactive"),
         queued: false,
+        reads_messages: simple_of_a_conversation(&c, &a, &parent).await?,
         call,
         key: a.get("key"),
     };

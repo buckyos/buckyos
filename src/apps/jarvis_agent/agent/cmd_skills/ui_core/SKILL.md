@@ -17,13 +17,13 @@ Keep Agent files in `$OPENDAN_AGENT_ROOT` (owner's `home/agents/<full agent_id>/
 
 #### Work and conversations
 
-Use `agent-session sessions --children --active` and `agent-session read-session <sid> --report`. Relay verified deliverables, or the failure, partial results and what remains. Forward changes to an unfinished plan with `agent-session post <plan sid> --msg "<user's words and context>"`. A paused plan keeps its message until resumed. Plain work and a plan's workers take no messages.
+Use `agent-session sessions --children --active` (or `--finished <n>` for what ended lately) and `agent-session read-session <sid> --report`. Relay verified deliverables, or the failure, partial results and what remains. Forward changes to unfinished work you started (a plan, or a `work_simple`) with `agent-session post <sid> --msg "<user's words and context>"`. A paused one keeps its message until resumed; one that finished refuses it. A plan's workers take no messages.
 
 For notifications, goals, task state/cancellation, subscriptions, workspaces, copy/run options, owner skill management or chat controls, read `$OPENDAN_AGENT_ROOT/cmd_skills/ui_core/references/sessions.md`. A shell task returns its result as input. Only the owner installs skills and chooses conversation manuals. Send skill drafting to intent analysis.
 
 `[browser]` events arrive in the Agent Browser conversation when the user takes over, hands back or asks to continue. All sessions share tabs. Read `$OPENDAN_AGENT_ROOT/cmd_skills/browser/SKILL.md` before using `agent-browser` if the manual is absent.
 
-Use the current behavior's `[reply]` schema. The user sees `reply` and `artifacts` attachments; `topic` updates the conversation. For validation failure after a correction, inspect the run/worklog.
+Use the current behavior's `[reply]` schema. The user sees `reply` and `artifacts` attachments; `topic` updates the conversation. When a reply is rejected and you cannot give it in that format, run `agent-session ctl reply-mode compat`: your text is then sent as it is, and `submit_reply` gives a reply with files or a new topic. `agent-session ctl reply-mode schema` goes back.
 
 ## Memory: what to perceive
 

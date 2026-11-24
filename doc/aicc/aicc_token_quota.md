@@ -70,7 +70,7 @@
 1. 推理入口先按可见性过滤候选并预检（`QuotaService::precheck`），全部候选不可用时直接返回拒绝，不建任务。
 2. 一次尝试命中最多 9 个范围（3 种对象 × 3 种资源），所有启用规则都必须满足：周期规则 `settled + reserved + budget ≤ limit`，总量账户 `settled + reserved + budget ≤ granted`。
 3. 写事务先 INSERT attempt（SQLite 由此取得写锁），再对每个计数器 / 账户做带条件的 UPDATE，任一失败整体回滚；冲突重试 3 次。并发下不会超发。
-4. 某个候选被额度拒绝时，若路由允许运行时 failover 则尝试下一个候选，否则把拒绝返回调用方。
+4. 选中的模型被额度拒绝时，把拒绝返回调用方；只有系统管理员为该逻辑目录手工配置了 fallback 时才改用它（[aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。当前实现仍按 `runtime_failover` 尝试下一个候选，将按 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md) 改掉。
 
 **结算**（`ExecutionEngine::settle` → `quota_settle`）：
 

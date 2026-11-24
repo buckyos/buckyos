@@ -70,7 +70,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 #### 已实现
 
 - **维护模型事实基线**：当已支持的厂商发布新模型时，项目方可以更新随版本携带的 driver metadata。应补充或修正模型 ID、`api_types`、`capabilities`、上下文长度、`logical_mounts`、是否弃用、替代模型建议等逻辑上较确定的信息。
-- **维护默认运营策略基线**：项目方可以维护估算延迟、基础健康度、默认推荐权重和 fallback 建议。价格只在渠道与计费条件已确认时维护于 Provider Rules，不在 Model Driver 中保存默认价格估算；无可靠来源时保持 unknown。
+- **维护默认运营策略基线**：项目方可以维护估算延迟、基础健康度和默认推荐权重；不内置 fallback 目标（[aicc_router.md §9](../aicc_router.md#9-fallback-与失败处理)）。价格只在渠道与计费条件已确认时维护于 Provider Rules，不在 Model Driver 中保存默认价格估算；无可靠来源时保持 unknown。
 - **维护云端发布内容**：通过 NDN 发布完整、自洽的 cloud 来源文件集合，不要求同步复制或替换 builtin 全集。Manifest 必须分配更高 `revision_seq`、声明客户端兼容范围和 required features，并为仍受支持的旧客户端保留可配置的兼容版本。文件版本、可信性、完整性、防回退和 cloud 来源替换由 NDN 保证；AICC 按 `system-config > local > cloud > builtin` 对每个 catalog 身份选择完整文件，不跨来源 merge，也不维护 manifest activation 或 remote cache。
 - **维护对应测试用例**：模型事实或运营策略更新都必须同步新增或更新验收用例，并明确会影响哪些旧用例。用例应覆盖新模型出现在 inventory、能力字段正确、逻辑目录挂载正确、成本/健康度/权重策略生效、fallback 行为正确。
 - **期望效果**：新 metadata 文件下载、校验、替换完成并就绪后 NDN 才推进目标 seq；下一次推理或 Provider 定时库存刷新统一收敛全部落后库存，每个 Provider 只有在真正完成刷新后才推进自己的 applied seq。
@@ -146,7 +146,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 - **维护产品默认 Provider settings**：服务商可以预置或引导用户通过 AICC 管理 API 配置 `services/aicc/settings`，包括 Provider Instance、`provider_profile_id`、协议族、`base_url`、是否启用和模型发现策略等。`protocol_adapter_id` 由 Known Profile 固定或由自定义 Provider 接入测试解析；管理 RPC 和 Web UI DataModel 也直接使用 `base_url`。
 - **维护产品默认 routing_config**：服务商可以管理系统级 `services/aicc/settings.routing_config`，设置默认逻辑目录、Provider 权重、禁用列表、exact model 权重和 fallback 策略。
 - **维护服务商相关用例集合**：服务商跟随 BuckyOS 更新时，应把本产品启用的 Provider、模型、逻辑目录和路由策略映射到测试用例命名或 tags 上，确保能筛选出本次更新相关用例。
-- **期望效果**：产品用户配置自己的 API Key 后，就能看到服务商认可的新模型；逻辑模型调用会按服务商的默认策略路由到新模型或保留旧模型 fallback。
+- **期望效果**：产品用户配置自己的 API Key 后，就能看到服务商认可的新模型；逻辑模型调用会按服务商的默认策略路由到新模型。需要备用时由系统管理员手工配置 fallback。
 - **验收方法**：先在服务商测试环境写入 settings / routing_config，调用 `service.reload_settings` 后执行相关用例，再执行全量用例；测试环境通过后上线发布环境，并再次执行相关用例和全量用例。相关用例至少检查 Provider 是否启用、模型是否出现、逻辑目录是否符合预期、exact model 和 logical model 是否能成功返回。
 
 #### 规划中 / 未完全实现
@@ -238,8 +238,8 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 - **把新模型挂到逻辑目录**：用户可以修改系统级 `services/aicc/settings.routing_config`，把 exact model 挂到 `llm.chat`、`llm.code`、`llm.plan` 等逻辑目录，或调整 Provider 权重、禁用旧 Provider、设置 fallback。
 - **临时覆盖路由**：用户可以通过 request `session_overlay` 做单次或应用侧临时路由偏好，不需要永久修改系统级路由。
 - **补充本地 metadata**：如果新模型已经能调用，但能力、成本或逻辑目录识别不准确，用户可以添加 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 system-config override，补充 `api_types`、`capabilities`、`logical_mounts`、成本估算等。
-- **期望效果**：logical model 调用不需要写死新模型 ID，也能按配置路由到新模型；fallback 仍能在新模型不可用时回到旧模型。
-- **验收方法**：调用 `models.list` 检查 exact model 和 `logical_mounts`；发起 logical model 请求，检查 route trace 是否命中新模型；禁用或降低新模型权重后再次调用，确认 fallback 符合预期。
+- **期望效果**：logical model 调用不需要写死新模型 ID，也能按配置路由到新模型；新模型不可用时返回真实错误，管理员配置了 fallback 才回到旧模型。
+- **验收方法**：调用 `models.list` 检查 exact model 和 `logical_mounts`；发起 logical model 请求，检查 route trace 是否命中新模型；禁用或降低新模型权重后再次调用，确认按配置选择；上游故障时确认没有自动换模型。
 
 #### 规划中 / 未完全实现
 
@@ -262,7 +262,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 - **保底方法一：协议兼容时新增 Provider Instance**。如果新厂商兼容已注册 Protocol Adapter，用户选择 Provider Profile，配置 `base_url` 和 API Key，执行 `service.reload_settings` 后即可尝试使用。
 - **保底方法二：直接用 exact model 调用**。如果只是已支持 Provider 发布新模型，且 adapter 能调用该模型，用户可以先用 `new-model@provider-instance` 直接测试，不必等待逻辑目录挂载。
 - **保底方法三：写 local metadata override**。当新模型可调用但 AICC 不知道它的能力或逻辑目录时，用户写本地 metadata override，补充 `api_types`、`capabilities`、`logical_mounts`。
-- **保底方法四：写 routing_config**。用户可以把新模型临时挂到逻辑目录，并保留旧模型 fallback。这样应用侧继续使用 `llm.chat` 等逻辑名，不需要立刻改业务代码。
+- **保底方法四：写 routing_config**。用户可以把新模型临时挂到逻辑目录，需要时手工把旧模型配置为 fallback。这样应用侧继续使用 `llm.chat` 等逻辑名，不需要立刻改业务代码。
 - **验收方法**：先 exact model 调通，再 `models.list` 看 inventory 和逻辑挂载，最后用 logical model 调用验证路由。验收顺序应从“能调用”到“能被发现”再到“能被逻辑路由选中”。
 
 #### 规划中 / 未完全实现

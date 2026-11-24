@@ -26,7 +26,7 @@ use libopendan::runner::{
     drive, DriveResult, RunnerDeps, RunnerOptions, StopWhen, TurnTaskEnd, TurnTaskOpen,
     TurnTaskSink, TurnTaskStatus,
 };
-use libopendan::{SessionDir, SessionTemplate};
+use libopendan::{AgentStateClient, SessionDir, SessionTemplate};
 use llm_context::deps::LlmInferenceRequest;
 use serde_json::{json, Value};
 
@@ -1051,4 +1051,202 @@ async fn a_sub_context_out_of_time_returns_its_failure() {
     assert!(r.is_finished(), "{r:?}");
     assert!(wrap_ups(&sd).is_empty());
     assert_eq!(llm.count(), 4);
+}
+
+// ---------------------------------------------------------------------
+// The inbox of a conversation's work (chat route TODO §3, D6)
+// ---------------------------------------------------------------------
+
+async fn conversation(s: &Setup) -> SessionDir {
+    let mut spec = SessionTemplate::load("ui", None).unwrap().spec("chat");
+    spec.prompt.llm_context = json!({
+        "tools": { "enabled": true },
+        "runtime": { "task_wait_ms": 8000 }
+    });
+    spec.outbound = Some(OutboundBinding {
+        to: "did:bns:bob".into(),
+        to_session: None,
+        kind: "chat".into(),
+    });
+    s.env.create_work(spec).await
+}
+
+/// A `work_simple` of `parent` that reads messages while it works.
+async fn inbox_work(s: &Setup, parent: &SessionDir) -> SessionDir {
+    let agent = s.env.agent();
+    libopendan::api::create_sub_session(
+        agent.as_ref(),
+        APP,
+        parent.sid(),
+        libopendan::api::SubSessionSpec {
+            objective: "paint the door".into(),
+            msgs: vec!["start with the front door".into()],
+            behavior: Some("work_simple".into()),
+            workspace: libopendan::api::SubWorkspace::None,
+            reads_messages: true,
+            key: Some("k".into()),
+            ..Default::default()
+        },
+        s.env.channels().as_ref(),
+    )
+    .await
+    .unwrap()
+}
+
+fn outcome_kinds(sd: &SessionDir) -> Vec<String> {
+    read_worklog(sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::Outcome { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_addition_is_read_before_the_next_inference() {
+    let s = setup();
+    let sd = inbox_work(&s, &conversation(&s).await).await;
+    let cfg = sd.config().unwrap();
+    assert!(cfg.session.policy.reads_messages && cfg.channels.kmsg().is_some());
+    let (queue_dir, queue) = (s.env.queue_dir.clone(), queue_of(&sd));
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        0 => {
+            assert!(last_user_text(req).contains("start with the front door"));
+            post_blocking(&queue_dir, &queue, msg("use blue paint"));
+            shell("c1", "echo one", None)
+        }
+        1 => {
+            // The same run and Turn: the result, then the addition.
+            assert!(has_tool_result(req, "c1").unwrap().contains("one"));
+            let input = new_inputs(req);
+            assert!(input.contains("use blue paint") && input.contains("the newest requirement holds"), "{input}");
+            shell("c2", "echo two", None)
+        }
+        2 => {
+            assert!(!new_inputs(req).contains("use blue paint"), "read once");
+            report_end("painted it blue, as added")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let r = drive(&sd, &deps(&s, llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    let st = sd.state().unwrap();
+    assert_eq!(st.outcome, Some(Outcome::Succeeded));
+    assert_eq!((st.turn_seq, llm.count()), (1, 3));
+    assert_eq!(outcome_kinds(&sd), ["message", "done"]);
+    // It is over: an addition is refused, not swallowed.
+    let late = s.env.agent().sessions().post_input(sd.sid(), &msg("and the back door")).await;
+    assert!(matches!(late, Err(libopendan::OpenDanError::SessionFinished(_))), "{late:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_final_report_waits_for_an_unread_addition() {
+    let s = setup();
+    let sd = inbox_work(&s, &conversation(&s).await).await;
+    let (queue_dir, queue) = (s.env.queue_dir.clone(), queue_of(&sd));
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        0 => {
+            post_blocking(&queue_dir, &queue, msg("use blue paint"));
+            report_end("painted it white")
+        }
+        1 => {
+            assert!(has_tool_result(req, "rep").unwrap().contains("a message for you arrived"));
+            assert!(new_inputs(req).contains("use blue paint"));
+            tool_call("rep2", "report", json!({ "report": "painted it blue", "outcome": "succeeded", "is_end": true }))
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let r = drive(&sd, &deps(&s, llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().final_report.unwrap().report, "painted it blue");
+}
+
+/// The host keeps an artifact — and a message arrives meanwhile, after the
+/// final report was checked.
+struct PostingStore {
+    queue_dir: PathBuf,
+    queue: String,
+    posted: Mutex<bool>,
+}
+
+#[async_trait]
+impl libopendan::runner::ObjectStore for PostingStore {
+    async fn put_file(&self, _path: &Path, _name: &str) -> Result<libopendan::runner::StoredObject, String> {
+        if !std::mem::replace(&mut *self.posted.lock().unwrap(), true) {
+            post_blocking(&self.queue_dir, &self.queue, msg("use blue paint"));
+        }
+        Err("no store".into())
+    }
+
+    async fn retain_url(&self, url: &str) -> Result<libopendan::runner::StoredObject, String> {
+        let _ = self.put_file(Path::new(""), "").await;
+        Ok(libopendan::runner::StoredObject {
+            obj_id: ndn_lib::ObjId::new("cyfile:12345678901234567890123456789012").unwrap(),
+            url: Some(url.to_string()),
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_addition_that_comes_with_the_end_keeps_the_work_open() {
+    let s = setup();
+    let sd = inbox_work(&s, &conversation(&s).await).await;
+    let store = Arc::new(PostingStore {
+        queue_dir: s.env.queue_dir.clone(),
+        queue: queue_of(&sd),
+        posted: Mutex::new(false),
+    });
+    let report = |id: &str, t: &str| {
+        tool_call(
+            id,
+            "report",
+            json!({ "report": t, "outcome": "succeeded", "is_end": true, "artifacts": ["obj://bucket/user/x/y/artifacts/a"] }),
+        )
+    };
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        0 => report("rep", "painted it white"),
+        1 => {
+            assert!(has_tool_result(req, "rep").unwrap().contains("accepted"));
+            let input = new_inputs(req);
+            assert!(input.contains("use blue paint") && input.contains("report again"), "{input}");
+            report("rep2", "painted it blue")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let mut d = deps(&s, llm.clone());
+    d.objects = Some(store);
+    let r = drive(&sd, &d, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    let st = sd.state().unwrap();
+    assert_eq!(st.final_report.unwrap().report, "painted it blue");
+    assert_eq!(llm.count(), 2);
+    assert_eq!(outcome_kinds(&sd), ["message", "done"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_conversations_simple_work_gets_the_inbox() {
+    let s = setup();
+    let ui = conversation(&s).await;
+    post_blocking(&s.env.queue_dir, &queue_of(&ui), msg("do it"));
+    let create = |id: &str, more: &str| {
+        shell(id, &format!("agent-session create-worksession --title t --objective 'o {id}' {more}"), None)
+    };
+    let llm = ScriptedLlm::new(move |_, n| match n {
+        0 => create("c1", "--behavior work_simple"),
+        1 => create("c2", "--behavior explore"),
+        2 => text("started"),
+        _ => panic!("unexpected inference {n}"),
+    });
+    drive(&ui, &deps(&s, llm.clone()), StopWhen::TurnClosed).await;
+    let mut inbox: Vec<(String, bool, bool)> = Vec::new();
+    for e in s.env.agent().sessions().children_of(&[ui.sid().to_string()]).await.unwrap() {
+        let cfg = SessionDir::open(&e.location).unwrap().config().unwrap();
+        inbox.push((e.objective.clone(), cfg.session.policy.reads_messages, cfg.session.input_policy != InputPolicy::None));
+    }
+    inbox.sort();
+    assert_eq!(
+        inbox,
+        [("o c1".to_string(), true, true), ("o c2".to_string(), false, false)]
+    );
 }

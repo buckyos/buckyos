@@ -307,7 +307,8 @@ test('New Session in the session list asks for a name, an optional description a
   const dialog = page.getByRole('dialog', { name: 'New Session: CodeAssistant' })
   await expect(dialog.getByLabel('Session name', { exact: true })).toBeFocused()
   // The entity is the one whose session list this is: nothing to pick.
-  await expect(dialog.getByRole('combobox')).toHaveCount(1)
+  await expect(dialog.getByRole('combobox')).toHaveCount(2)
+  await expect(dialog.getByRole('combobox', { name: 'Memory', exact: true })).toHaveValue('normal')
   const connection = dialog.getByRole('combobox', { name: 'Connection', exact: true })
   await expect(connection).toHaveValue('native')
   await expect(connection.locator('option:checked')).toHaveText('Named Message Protocol')

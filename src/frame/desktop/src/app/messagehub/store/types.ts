@@ -22,6 +22,11 @@ export type OwnerStatus =
   | { phase: 'denied' }
   | { phase: 'error'; message: string }
 
+export interface DefaultSessionOptions {
+  /** The viewer is going to write: a native chat when an Agent's default is on a channel, which is read-only here. */
+  writable?: boolean
+}
+
 export type ManageAction = 'archive' | 'restore' | 'delete'
 
 /** Whether the background refresh of the owner's session list reaches msg-center: `connecting` after a failed refresh until one succeeds. */
@@ -67,8 +72,18 @@ export interface MessageHubStore {
    */
   addPeer(context: MessageHubContext, did: string, info?: { name?: string; type?: 'person' | 'agent' }): void
   sessions(context: MessageHubContext, entityId?: string, lifecycle?: Session['lifecycle']): Session[]
+  /** Where the entity's main entry leads. An Agent's is its stored default, as far as it is known here: null otherwise. */
   defaultSession(context: MessageHubContext, entityId: string): Session | null
-  ensureDefaultSession(context: MessageHubContext, entityId: string): Promise<Session | null>
+  /** An Agent's default, chosen or created by msg-center when none is stored, and listed here; null for any other entity. */
+  agentDefaultSession(context: MessageHubContext, entityId: string, options?: DefaultSessionOptions): Promise<Session | null>
+  /** The session the main entry opens: restored from the archive, or created when there is none. */
+  ensureDefaultSession(context: MessageHubContext, entityId: string, options?: DefaultSessionOptions): Promise<Session | null>
+  /** Reads an Agent's stored default and its conversations on channels. */
+  loadConversations(context: MessageHubContext, entityId: string): Promise<void>
+  /** Makes `session` (the owner's own or one of `channelSessions`) the default of its Agent: its main entry, and where the Agent's notifications go. */
+  setDefaultSession(context: MessageHubContext, session: Session): Promise<void>
+  /** An Agent's conversations with the owner on channels of other platforms, read from the Agent's mailbox (`readingContext`): read-only. */
+  channelSessions(context: MessageHubContext, entityId: string): Session[]
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[]
   reader(context: MessageHubContext, sessionId: string): ConversationMessageReader
   historyStatus(context: MessageHubContext, sessionId: string): 'idle' | 'loading' | 'ready' | 'error'

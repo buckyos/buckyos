@@ -275,11 +275,15 @@ pub fn session_caller(cfg: &crate::protocol::SessionConfig, goal_owner: Option<&
     }
     let mut grants: Vec<&str> = subjects.iter().map(String::as_str).collect();
     grants.push(agent.as_str());
-    Caller::new(
+    let mut caller = Caller::new(
         cfg.session_id(),
         &grants,
         &subjects.iter().map(String::as_str).collect::<Vec<_>>(),
-    )
+    );
+    if !cfg.session.policy.memory.writes() {
+        caller.record_policy = RecordPolicy::DoNotRecord;
+    }
+    caller
 }
 
 #[derive(Clone)]

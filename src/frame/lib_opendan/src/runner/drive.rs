@@ -162,9 +162,12 @@ async fn drive_locked(
     if takes_input && !session.config.prompt.initial_inputs.is_empty() {
         // Bootstrap material of a session without a queue: a read-only
         // source consumed through the same routing and receipts.
-        sources.push(Arc::new(crate::channel::BootstrapSource::new(
-            &session.config.prompt.initial_inputs,
-        )));
+        sources.insert(
+            0,
+            Arc::new(crate::channel::BootstrapSource::new(
+                &session.config.prompt.initial_inputs,
+            )),
+        );
     }
     let hints = Arc::new(super::hints::SessionHintLedger::of(&session.state));
     let sh = Arc::new(Shared {
@@ -191,6 +194,7 @@ async fn drive_locked(
         flush: tokio::sync::Mutex::new(()),
         external_stop_applied: AtomicBool::new(false),
         behavior_functions: Default::default(),
+        post_lock: Mutex::new(None),
     });
     if let Some(error) = workspace_error {
         if let Err(e) = super::goal::load(&sh).await {
@@ -618,26 +622,42 @@ pub(super) async fn ensure_frozen(sh: &Arc<Shared>, behavior: Option<&str>) -> R
     commit_and_report(sh, &mut s).await
 }
 
-/// A conversation whose history was compacted since its prompt was frozen
-/// takes the agent's current prompt for the runs that follow: identity,
+/// A conversation takes the agent's current prompt for the runs that follow
+/// when its context starts over anyway: its history was compacted since the
+/// prompt was frozen, or it comes back after the provider's cache is gone
+/// (`prompt_cache_idle`) and the prompt changed meanwhile. Identity,
 /// behaviors and manuals are frozen again (`control_applied{prompt_refrozen}`).
-/// Work sessions keep what they were created with.
-async fn refresh_frozen(sh: &Arc<Shared>) -> Result<()> {
-    let (cfg, compacted_at) = {
+/// Work sessions keep what they were created with. `true`: the context is
+/// rebuilt for the new prompt, its history brought to the target.
+async fn refresh_frozen(sh: &Arc<Shared>) -> Result<bool> {
+    let (cfg, compacted_at, last_run) = {
         let s = sh.session.lock().await;
-        (s.config.clone(), s.dir.summary_opt().ok().flatten().map(|m| m.updated_at_ms))
+        (
+            s.config.clone(),
+            s.dir.summary_opt().ok().flatten().map(|m| m.updated_at_ms),
+            s.state.last_run.clone(),
+        )
     };
-    let (Some(frozen), Some(at)) = (&cfg.prompt.frozen, compacted_at) else {
-        return Ok(());
+    let Some(frozen) = &cfg.prompt.frozen else {
+        return Ok(false);
     };
-    if cfg.session.kind != SessionKind::Ui || at <= frozen.frozen_at_ms {
-        return Ok(());
+    if cfg.session.kind != SessionKind::Ui {
+        return Ok(false);
+    }
+    let compacted = compacted_at.is_some_and(|at| at > frozen.frozen_at_ms);
+    let idle_ms = last_run
+        .and_then(|run| sh.dir.runs().record(&run).ok())
+        .map(|r| crate::now_ms().saturating_sub(r.updated_at_ms))
+        .unwrap_or(0);
+    let idle = idle_ms >= sh.deps.options.prompt_cache_idle.as_millis() as u64;
+    if !compacted && !idle {
+        return Ok(false);
     }
     let mut next = match crate::state::refrozen(&cfg, sh.agent().behaviors(), sh.agent_root.as_deref(), &sh.deps.who).await {
         Ok(next) => next,
         Err(e) => {
             log::warn!("session {}: prompt not refreshed: {e}", sh.dir.sid());
-            return Ok(());
+            return Ok(false);
         }
     };
     let changed = next
@@ -646,10 +666,19 @@ async fn refresh_frozen(sh: &Arc<Shared>) -> Result<()> {
         .as_ref()
         .map(|new| crate::state::frozen_changes(frozen, new))
         .unwrap_or_default();
+    if !compacted && changed.is_empty() {
+        return Ok(false);
+    }
+    let rebuild = !compacted;
+    let quiet = changed.is_empty();
     next.config_rev = cfg.config_rev;
     let mut s = sh.session.lock().await;
     s.config = next;
     s.write_config(&sh.lease)?;
+    if quiet {
+        // The same prompt, frozen after the compaction now.
+        return Ok(false);
+    }
     let rev = s.config.config_rev;
     s.append_worklog(
         &sh.lease,
@@ -661,10 +690,16 @@ async fn refresh_frozen(sh: &Arc<Shared>) -> Result<()> {
                 kind: INPUT_TYPE_CONTROL.into(),
             },
             command: "prompt_refrozen".into(),
-            detail: serde_json::json!({ "changed": changed, "config_rev": rev }),
+            detail: serde_json::json!({
+                "changed": changed,
+                "config_rev": rev,
+                "reason": if rebuild { "idle" } else { "compacted" },
+                "idle_ms": idle_ms,
+            }),
         }],
     )?;
-    commit_and_report(sh, &mut s).await
+    commit_and_report(sh, &mut s).await?;
+    Ok(rebuild)
 }
 
 async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
@@ -785,7 +820,7 @@ async fn end_open_work(
             )
         })?;
         let handle = lc.ctx.interrupt_handle();
-        if let ReportSource::Tool { call_id } = &report.source {
+        if let Some(call_id) = report.source.call_id() {
             if super::reports::has_result(&lc.ctx.snapshot(), call_id) {
                 handle.finish("complete accepted report before stop");
             }
@@ -1914,6 +1949,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     active: &material.active,
                     events: &views,
                     tunnel: tunnel.as_deref(),
+                    reply_mode: state.reply_mode,
+                    compacted_at_ms: sh
+                        .dir
+                        .summary_opt()
+                        .ok()
+                        .flatten()
+                        .map_or(0, |m| m.updated_at_ms),
                 })
             } else {
                 super::background::event_lines(&views)
@@ -2117,8 +2159,8 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             Some(l) => restart_clock(sh, l)?,
             None if state.live_run.is_some() => Box::pin(open_state_live_run(sh, &env)).await?,
             None => {
-                refresh_frozen(sh).await?;
-                Box::pin(new_run_context(sh, &binding, &env)).await?
+                let rebuild = refresh_frozen(sh).await?;
+                Box::pin(new_run_context(sh, &binding, &env, rebuild)).await?
             }
         };
         if state.resume_run {
@@ -2162,7 +2204,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         if !next.run_ended
             && !next.suspended
             && next.turn_end.is_none()
-            && next.kind != FinishKind::Paused
+            && !matches!(next.kind, FinishKind::Paused | FinishKind::Message)
         {
             live = Some(lc);
         }

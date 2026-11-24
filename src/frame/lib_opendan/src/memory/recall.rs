@@ -65,10 +65,11 @@ impl TopicScope {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecallStatus {
     /// No entry (objects, aliases, tags, text): nothing was looked up.
+    #[default]
     NotTriggered,
     /// Looked up; the lists may be empty (that never means "no such memory").
     Recalled,
@@ -157,8 +158,11 @@ pub struct MemoryQuery {
     pub cursor: Option<PageCursor>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct QueryResult {
+    /// Why there is nothing, when the session does not read Memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub status: RecallStatus,
     pub cognitions: Vec<Hint>,
     pub recent_perceptions: Vec<Hint>,
@@ -667,6 +671,7 @@ impl Memory {
             }
         }
         Ok(QueryResult {
+            note: None,
             status: core.status,
             cognitions: page,
             recent_perceptions: core.perceptions,

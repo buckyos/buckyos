@@ -1,4 +1,4 @@
-import { creationReason, defaultPreferences, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../../src/app/messagehub/sessionModel.ts'
+import { creationReason, defaultPreferences, isChannelSession, readingContext, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../../src/app/messagehub/sessionModel.ts'
 import { isActionMessage, isMessageActivity, relativeActivity } from '../../src/components/conversation/model/activity'
 import { ensureDefaultSession } from '../../src/app/messagehub/store/defaultSession.ts'
 import type { Entity, MessageHubContext, Session } from '../../src/app/messagehub/types.ts'
@@ -97,12 +97,24 @@ Deno.test('entity defaults follow recent activity, ignore pinning and keep agent
   equal(selectDefaultSession(entity, [{ ...session, entityId: 'another' }, { ...session, binding: { kind: 'unknown' } }]), null)
 })
 
+Deno.test('a conversation on a channel is read as an observer of the Agent', () => {
+  const channel: Session = { ...session, id: 'tg:bot:1', ownerDid: entity.id, binding: { kind: 'tunnel', tunnelInstanceId: 'tg', endpointDid: 'did:msgtunnel:1.user.tg', connectionName: 'Telegram', connected: true, canSend: false, supportsMultipleSessions: false, canCreateRemoteSession: false } }
+  equal(isChannelSession(context, channel), true)
+  equal(readingContext(context, channel), { viewerDid: context.viewerDid, ownerDid: entity.id, mode: 'observe' })
+  equal(isChannelSession(context, session), false)
+  equal(readingContext(context, session), context)
+  equal(isChannelSession(readingContext(context, channel), channel), false)
+})
+
 function defaultSessionFixture() {
-  const state = { sessions: [] as Session[], pages: [] as Session[][], creates: 0, failNext: false }
+  const state = { sessions: [] as Session[], pages: [] as Session[][], creates: 0, failNext: false, stored: null as Session | null }
   const store = {
     ensureOwner: () => Promise.resolve(),
     canView: () => true,
     ownerStatus: () => ({ phase: 'ready' as const }),
+    agentDefaultSession: () => Promise.resolve(state.stored),
+    sessions: (ctx: MessageHubContext) => state.sessions.filter(item => item.ownerDid === ctx.ownerDid),
+    manage: async (ctx: MessageHubContext, id: string) => { state.sessions = state.sessions.map(item => item.ownerDid === ctx.ownerDid && item.id === id ? { ...item, lifecycle: 'active' } : item) },
     defaultSession: (ctx: MessageHubContext) => selectDefaultSession(entity, state.sessions.filter(item => item.ownerDid === ctx.ownerDid)),
     hasMoreEntities: () => state.pages.length > 0,
     loadMoreEntities: async () => { state.sessions.push(...state.pages.shift()!) },
@@ -130,6 +142,14 @@ Deno.test('default lookup searches later pages before creating and leaves archiv
   state.sessions.pop()
   equal((await ensureDefaultSession(store, context, entity.id))?.id, 'created-1')
   equal(state.sessions[0].lifecycle, 'archived')
+})
+
+Deno.test('the stored default of an Agent is taken as it is and restored from the archive', async () => {
+  const { state, store } = defaultSessionFixture()
+  state.sessions.push({ ...session, id: 'recent', lastActiveAt: now + 1 }, { ...session, lifecycle: 'archived' })
+  state.stored = state.sessions[1]
+  const restored = await ensureDefaultSession(store, context, entity.id)
+  equal([restored?.id, restored?.lifecycle, state.creates], [session.id, 'active', 0])
 })
 
 Deno.test('concurrent default creation is deduplicated, failed requests can retry and owners stay isolated', async () => {

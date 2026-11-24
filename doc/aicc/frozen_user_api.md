@@ -62,13 +62,13 @@ Helper 接受逻辑模型，一次完成路由与推理。目前冻结三个 Hel
     "api_type": "llm",
     "logical_model": "llm.plan",
     "requirements": { "tool_call": true, "json_schema": true },
-    "policy": { "profile": "quality", "runtime_failover": true }
+    "policy": { "profile": "quality" }
   },
   "sys": [1002, "<session_token>", "trace-route-42"]
 }
 ```
 
-响应给出 `selected_exact_model`、`selected_model_uid`、Provider/adapter/driver/model identity、operation、能力、fallback candidates 和 inventory revision。随后把 `selected_exact_model` 传给 typed method：
+响应给出 `selected_exact_model`、`selected_model_uid`、Provider/adapter/driver/model identity、operation、能力和 inventory revision。随后把 `selected_exact_model` 传给 typed method：
 
 ```json
 {
@@ -193,9 +193,11 @@ typed response 共同字段为：`task_id`、`status`、业务结果、`usage?`�
 
 协议依据：[Claude Web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)、[OpenAI Web search](https://developers.openai.com/api/docs/guides/tools-web-search)、[Gemini Google Search](https://ai.google.dev/gemini-api/docs/google-search)、[OpenRouter Web Search](https://openrouter.ai/docs/guides/features/server-tools/web-search)。
 
-`RoutePolicy` 支持：`cheap | fast | balanced | quality` profile、local only、fallback、runtime failover、explain、Provider allow/block、最大成本和最大延迟。策略只能缩小候选或改变排序，不能赋予模型/adapter 不存在的能力。
+`RoutePolicy` 支持：`cheap | fast | balanced | quality` profile、local only、关闭 fallback、explain、Provider allow/block、最大成本和最大延迟。策略只能缩小候选或改变排序，不能赋予模型/adapter 不存在的能力。
 
-session overlay 是请求级临时配置，不能绕过上层 locked policy。显式 exact model 默认不隐式换模型；只有策略明确允许 exact fallback 且服务构造了候选时例外。
+**调用失败不会自动换模型或 Provider。** 返回的是 Provider 的真实错误，应据此修 Provider 配置。只有系统管理员为该逻辑目录手工配置了 fallback 模型路由时才会改用它，结果与 trace 会标出；请求只能用 `allow_fallback: false` 关闭，不能打开或指定目标。原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。现有实现仍接受 `runtime_failover` 且默认开启，将按 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md) 移除，新代码不要依赖。
+
+session overlay 是请求级临时配置，不能绕过上层 locked policy。显式 exact model 不换模型。
 
 ## 8. 管理接口
 

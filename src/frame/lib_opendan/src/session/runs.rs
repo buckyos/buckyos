@@ -510,6 +510,22 @@ impl RunHandle {
         })
     }
 
+    /// The final report is a progress report after all: the run goes on.
+    pub fn reopen_final_report(&self) -> Result<()> {
+        let mut reports = self.reports()?;
+        for r in &mut reports {
+            r.is_end = false;
+            r.outcome = None;
+        }
+        let value =
+            serde_json::to_value(reports).map_err(|e| OpenDanError::Other(e.to_string()))?;
+        self.update(|r| {
+            if let Some(h) = r.host.as_mut() {
+                h.extra["reports"] = value;
+            }
+        })
+    }
+
     pub fn set_status(
         &self,
         status: RunStatus,

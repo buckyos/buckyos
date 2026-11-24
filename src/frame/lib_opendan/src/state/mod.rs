@@ -15,6 +15,7 @@ pub mod krpc;
 mod locks;
 pub mod perception;
 mod registry;
+pub(crate) use registry::lock_posts;
 mod runtimes;
 mod workspaces;
 

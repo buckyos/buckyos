@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use crate::lock::Lease;
 use crate::protocol::{
     BehaviorEntry, BehaviorToolConfig, CallTrigger, ChildCall, Touching, BEHAVIOR_TOOL_PREFIX,
-    TOOL_CALL_BEHAVIOR, TOOL_REPORT,
+    TOOL_CALL_BEHAVIOR, TOOL_REPORT, TOOL_SUBMIT_REPLY,
 };
 use crate::session::runs::RunHandle;
 
@@ -37,7 +37,7 @@ pub fn classify_effect(tool: &str) -> &'static str {
         // The call itself changes nothing: what the sub context does is
         // tracked by its own run.
         TOOL_CALL_BEHAVIOR => "read_only",
-        TOOL_REPORT => "idempotent",
+        TOOL_REPORT | TOOL_SUBMIT_REPLY => "idempotent",
         super::consolidation::TOOL_BEGIN => "read_only",
         super::consolidation::TOOL_COMMIT => "idempotent",
         "write_file" | "edit_file" => "side_effect",
@@ -229,6 +229,11 @@ impl ToolManager for SessionToolManager {
         super::turn_task::sync_turn_task(&self.shared).await;
         if call.name == TOOL_REPORT && self.inner.has_tool(TOOL_REPORT) {
             return super::reports::call(&self.shared, &self.run, &exec)
+                .await
+                .map_err(|e| ToolDispatchError::not_started(e.to_string()));
+        }
+        if call.name == TOOL_SUBMIT_REPLY && self.inner.has_tool(TOOL_SUBMIT_REPLY) {
+            return super::reports::submit_reply(&self.shared, &self.run, &exec)
                 .await
                 .map_err(|e| ToolDispatchError::not_started(e.to_string()));
         }

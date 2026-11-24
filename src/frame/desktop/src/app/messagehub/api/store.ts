@@ -19,8 +19,8 @@ import { InMemoryConversationMessageReader } from '../../../components/conversat
 import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '../../../components/conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../../../components/conversation/history/types'
 import {
-  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
-  type Contact, type GroupDoc, type GroupDocEnvelope, type GroupMemberRecord, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
+  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getDefaultSession, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, getSessionState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listConversations, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, setDefaultSession, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
+  type Contact, type DefaultSession, type GroupDoc, type GroupDocEnvelope, type GroupMemberRecord, type GroupSessionItem, type PeerConversations, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, DEFAULT_HISTORY_BEFORE_JOIN, groupSessionId, MAX_HISTORY_BEFORE_JOIN } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../../../components/conversation/history/relations'
@@ -30,12 +30,12 @@ import { createSessionSchema, creationReason, defaultPreferences, groupSharedSta
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupProfileInput, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
-import type { ConnectionChoice, ManageAction, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
+import type { ConnectionChoice, DefaultSessionOptions, ManageAction, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
 import type { OutgoingPayload, OutgoingUpload } from '../../../components/conversation/model/outgoing'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
 import { LocalStateStore } from './local'
 import { apiObjectAccess, setObjectViewer } from './objects'
-import { parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
+import { channelSession, parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
 import { emptyHistory, itemToMessage, messageId as messageIdOf, newestRecord, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
 import { releaseAttachmentUploads, uploadAttachments } from './upload'
 import { translate } from '../translate'
@@ -93,6 +93,8 @@ interface OwnerData {
   groupLookups: Set<string>
   prefs: Record<string, { title: string; description: string; pinned: boolean; muted: boolean; pinnedMessage?: PinnedMessage | null }>
   prefsLoaded: Set<string>
+  /** Per Agent: the stored default and the conversations with it (`msg.list_conversations`); `set` counts the defaults learned otherwise. */
+  agentConversations: Map<string, PeerConversations & { set: number; loading?: Promise<void> }>
   version: number
   projected?: { version: number; value: ProjectedOwner }
   /** Enriched `entities()` per `(viewerDid, mode)`, keyed on owner + local state versions. */
@@ -271,7 +273,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), postChecks: new Set(), postGeneration: 0, receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), invitationStates: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), postChecks: new Set(), postGeneration: 0, receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), invitationStates: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), agentConversations: new Map(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -458,7 +460,10 @@ export class MessageHubApiStore implements MessageHubStore {
     let stopped = false
     const data = this.owner(context.ownerDid)
     const summaryTimer = setInterval(() => { void this.refreshSummaries(context) }, SUMMARY_POLL_MS)
-    const peopleTimer = setInterval(() => { void this.refreshPeople(context) }, CONTACT_POLL_MS)
+    const peopleTimer = setInterval(() => {
+      void this.refreshPeople(context)
+      for (const agentDid of data.agentConversations.keys()) void this.loadConversations(context, agentDid)
+    }, CONTACT_POLL_MS)
     const refreshPeople = () => { void this.refreshPeople(context) }
     const reconnect = () => { void this.refreshSummaries(context) }
     const checkIdentity = () => { void this.checkIdentity().catch(() => undefined) }
@@ -566,12 +571,107 @@ export class MessageHubApiStore implements MessageHubStore {
     return sortSessions(filtered, id => prefs.get(id) ?? this.preferences(context, id))
   }
 
-  defaultSession(context: MessageHubContext, entityId: string) {
-    const entity = this.findEntity(context, entityId)
-    return entity ? selectDefaultSession(entity, this.sessions(context, entityId, 'active')) : null
+  /** The owner's own view of an Agent: its default can be set, and its conversations on channels are listed. */
+  private isAgentOf(context: MessageHubContext, entity: Entity | undefined): boolean {
+    return entity?.type === 'agent' && context.mode === 'self' && context.ownerDid === this.selfDid
   }
 
-  ensureDefaultSession(context: MessageHubContext, entityId: string) { return ensureDefaultSession(this, context, entityId) }
+  /** The session behind a stored default, when it is listed here. */
+  private sessionOfDefault(context: MessageHubContext, entityId: string, value: DefaultSession | undefined): Session | null {
+    if (!value) return null
+    if (value.platform !== 'native') return this.channelSessions(context, entityId).find(session => session.id === value.session_id) ?? channelSession(entityId, { ...value, last_active_at_ms: value.set_at_ms })
+    return this.sessions(context, entityId).find(session => session.id === value.session_id) ?? null
+  }
+
+  defaultSession(context: MessageHubContext, entityId: string) {
+    const entity = this.findEntity(context, entityId)
+    if (!entity) return null
+    if (!this.isAgentOf(context, entity)) return selectDefaultSession(entity, this.sessions(context, entityId, 'active'))
+    return this.sessionOfDefault(context, entityId, this.owner(context.ownerDid).agentConversations.get(entityId)?.default)
+  }
+
+  async agentDefaultSession(context: MessageHubContext, entityId: string, options: DefaultSessionOptions = {}) {
+    if (!this.isAgentOf(context, this.findEntity(context, entityId))) return null
+    const data = this.owner(context.ownerDid)
+    const muted = this.entities(context).find(item => item.id === entityId)?.isMuted === true
+    const value = await getDefaultSession(context.ownerDid, entityId, options.writable === true)
+    const listed = data.summaries.some(summary => summary.session_id === value.session_id)
+    if (value.platform === 'native') await this.listSession(context, value.session_id)
+    // What a writing caller gets is the default only unless that is on a channel.
+    if (!options.writable) this.rememberDefault(data, entityId, value)
+    this.bump(data)
+    const session = this.sessionOfDefault(context, entityId, value)
+    if (!session) throw new Error('session_missing')
+    // Created just now (msg-center stores a new default as it creates it): it inherits the Agent's mute like any new session.
+    if (muted && !listed && value.platform === 'native' && Math.abs(value.set_at_ms - session.createdAt) < 1_000) await this.updatePreferences(context, session.id, { muted: true }).catch(error => console.warn('MessageHub session mute not inherited.', error))
+    return session
+  }
+
+  /** Makes sure a session of the owner is listed: one that was just created, or that is on a page not loaded yet. */
+  private async listSession(context: MessageHubContext, sessionId: string) {
+    const data = this.owner(context.ownerDid)
+    const listed = () => data.summaries.some(summary => summary.session_id === sessionId)
+    if (listed()) return
+    const state = await getSessionState(context.ownerDid, sessionId)
+    if (state?.registered && !listed()) {
+      this.mergeSummaries(data, [{ session_id: sessionId, unread_count: 0, updated_at_ms: state.updated_at_ms, last_activity_ms: state.created_at_ms, request_count: 0, lifecycle: state.lifecycle, state }])
+      return
+    }
+    // A session known only from its records has no state to list it by.
+    while (!listed() && this.hasMoreEntities(context)) await this.loadMoreEntities(context)
+  }
+
+  ensureDefaultSession(context: MessageHubContext, entityId: string, options?: DefaultSessionOptions) { return ensureDefaultSession(this, context, entityId, options) }
+
+  channelSessions(context: MessageHubContext, entityId: string): Session[] {
+    if (!this.canView(context) || !this.isAgentOf(context, this.findEntity(context, entityId))) return []
+    const conversations = this.owner(context.ownerDid).agentConversations.get(entityId)?.conversations ?? []
+    return conversations.filter(conversation => conversation.platform !== 'native').map(conversation => channelSession(entityId, conversation))
+  }
+
+  async setDefaultSession(context: MessageHubContext, session: Session) {
+    this.requireOwn(context)
+    const { to, toSession } = session.ownerDid === context.ownerDid ? { to: context.ownerDid, toSession: this.sendTarget(session).toSession }
+      : session.binding.kind === 'tunnel' ? { to: session.binding.endpointDid, toSession: session.binding.remoteContextId }
+      : { to: '', toSession: undefined }
+    if (!to) throw new Error('binding_unknown')
+    const data = this.owner(context.ownerDid)
+    this.rememberDefault(data, session.entityId, await setDefaultSession(context.ownerDid, session.entityId, to, toSession))
+    this.bump(data)
+  }
+
+  private conversationsEntry(data: OwnerData, entityId: string) {
+    let entry = data.agentConversations.get(entityId)
+    if (!entry) { entry = { conversations: [], set: 0 }; data.agentConversations.set(entityId, entry) }
+    return entry
+  }
+
+  /** The default as it was just set, answered or deleted: a read under way is older and leaves it. */
+  private rememberDefault(data: OwnerData, entityId: string, value: DefaultSession | undefined) {
+    const entry = this.conversationsEntry(data, entityId)
+    entry.default = value
+    entry.set++
+  }
+
+  /** A failed read leaves what was known (nothing at first) and is tried again with the next one. */
+  loadConversations(context: MessageHubContext, entityId: string): Promise<void> {
+    if (!this.isAgentOf(context, this.findEntity(context, entityId))) return Promise.resolve()
+    const data = this.owner(context.ownerDid)
+    const entry = this.conversationsEntry(data, entityId)
+    entry.loading ??= (async () => {
+      const { set } = entry, before = JSON.stringify([entry.conversations, entry.default])
+      try {
+        const value = await listConversations(context.ownerDid, entityId)
+        entry.conversations = value.conversations
+        if (entry.set === set) entry.default = value.default
+      } catch (error) {
+        console.warn('MessageHub conversations of the Agent unavailable.', error)
+      }
+      entry.loading = undefined
+      if (JSON.stringify([entry.conversations, entry.default]) !== before) this.bump(data)
+    })()
+    return entry.loading
+  }
 
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
     const entity = this.findEntity(context, entityId)
@@ -954,8 +1054,12 @@ export class MessageHubApiStore implements MessageHubStore {
     if (entity.type === 'group') return this.createGroupSessionFor(context, entity.id, values.title, values.description ?? '')
     const inheritMute = this.entities(context).find(item => item.id === entity.id)?.isMuted === true
     const epoch = data.epoch
-    const state = await createSession({ owner: context.ownerDid, peer_did: entity.id, title: values.title || undefined, binding: { kind: 'native', targetDid: binding.targetDid }, origin: 'manual' })
+    const agent = this.isAgentOf(context, entity)
+    const setDefault = agent && values.setDefault === true
+    const memoryMode = agent && values.memoryMode && values.memoryMode !== 'normal' ? values.memoryMode : undefined
+    const state = await createSession({ owner: context.ownerDid, peer_did: entity.id, title: values.title || undefined, binding: { kind: 'native', targetDid: binding.targetDid }, origin: 'manual', ...(setDefault ? { set_default: true } : {}), ...(memoryMode ? { memory_mode: memoryMode } : {}) })
     if (data.epoch !== epoch) throw new Error('context_changed')
+    if (setDefault) this.rememberDefault(data, entity.id, { session_id: state.session_id, platform: 'native', to: context.ownerDid, to_session: state.session_id, set_at_ms: state.created_at_ms })
     this.mergeSummaries(data, [{ session_id: state.session_id, unread_count: 0, updated_at_ms: state.updated_at_ms, last_activity_ms: state.created_at_ms, request_count: 0, lifecycle: 'active', state }])
     data.histories.set(viewerSessionKey(context, state.session_id), { ...emptyHistory, loaded: true })
     data.historyStatus.set(state.session_id, 'ready')
@@ -1002,6 +1106,9 @@ export class MessageHubApiStore implements MessageHubStore {
       data.runtime.delete(sessionId)
       delete data.prefs[sessionId]
       data.prefsLoaded.delete(sessionId)
+      for (const [agentDid, entry] of data.agentConversations) {
+        if (entry.default?.platform === 'native' && entry.default.session_id === sessionId) this.rememberDefault(data, agentDid, undefined)
+      }
       await this.local.update(next => {
         const key = viewerSessionKey(context, sessionId)
         delete next.drafts[key]; delete next.draftAttachments[key]; delete next.showActions[key]

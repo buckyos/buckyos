@@ -10,8 +10,8 @@
 2. **在多 Provider / 多实例之间做“选择与启动”**：
 
    * 根据 capability + feature + 模型别名（alias）映射，找到可用实例
-   * 在候选实例中按**成本/速度/负载/错误率 + 租户策略**进行打分选择
-   * 在“启动阶段”支持实例级 fallback（避免重复提交长任务）
+   * 在候选实例中按**配置权重、成本 + 租户策略**进行打分选择；速度、负载、错误率只用于展示与告警
+   * 失败后不自动换模型或 Provider；只执行系统管理员手工配置的 fallback（见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）
 3. **结果归一（Result Normalization）**：
 
    * 对不同 Provider 的输出做最小必要的结构归一（文本 / JSON / artifact 引用 / usage & cost 等）
@@ -52,8 +52,8 @@ AICC 内部逻辑可以抽象为 8 个核心子系统（这里按职责描述，
 
    * 将渠道原始 `provider_model_id` 唯一解析为 Model Driver 和 origin model
    * 硬过滤：结构化 capability、租户 allow/deny、逻辑目录是否可映射
-   * 打分：成本/延迟/负载/错误率（权重可配置，支持租户 override）
-   * 输出：primary + fallback 列表 + 完整模型和渠道身份
+   * 打分：配置权重与成本（权重可配置，支持租户 override）
+   * 输出：选中的模型 + 管理员配置的 fallback（如有）+ 完整模型和渠道身份
 
 5. **Provider Profile（渠道策略）**
 
@@ -200,7 +200,7 @@ AICC 对外最核心的方法是控制面 `route.resolve` 与数据面 typed inf
 **要点**：
 
 * **是否长任务由 Provider 判定**（AICC 不用耗时阈值猜测）
-* AICC 的 fallback 只发生在**启动阶段失败**，一旦某实例成功启动（尤其返回 Started/Running），就不再跨实例重试，避免重复提交产生多份费用/输出
+* AICC 不自动换模型或 Provider；管理员配置的 fallback 也只在**启动阶段失败**时执行，一旦某实例成功启动（尤其返回 Started/Running）就不再换，避免重复提交产生多份费用/输出
 
 ---
 
@@ -319,9 +319,9 @@ impl Registry {
 
 ---
 
-### 6.2 Router：硬过滤 + 打分 + fallback
+### 6.2 Router：硬过滤 + 打分 + 显式 fallback
 
-你提出的约束是：**成本/速度/负载结合自动统计 + 用户配置**，并按租户隔离。
+选择只看配置、静态库存与请求的硬约束，按租户隔离；速度、负载、错误率的自动统计只用于展示与告警（2026-11-23 修订，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。下面的结构为早期示意，以 `aicc_router.md` 为准。
 
 #### 路由配置模型（示意）
 
@@ -372,17 +372,17 @@ pub struct RouteDecision {
 3. **打分**：
 
    * `cost_est` 由统一 Pricing Resolver 计算
-   * `latency/load/error` 来自 Registry 指标
+   * `latency/load/error` 来自 Registry 指标，只用于展示与告警
    * 归一化后按权重线性组合
 4. **选择**：
 
    * primary = 最低分
-   * fallback = 后续若干候选（用于“启动阶段失败”的重试）
+   * 其余候选只用于 trace 解释，不作为失败后的切换列表
 
 > 关键执行约束：
 >
-> * fallback 只用于 **启动阶段失败**（连接失败/瞬时 5xx/鉴权失败等）。
-> * 一旦某个 provider 返回 `Started`，AICC 视为任务已提交，**停止 fallback**，避免重复提交多个长任务。
+> * 失败后只重试同一精确模型；没有管理员配置的 fallback 时返回真实错误，鉴权失败任何时候都不换模型。
+> * 一旦某个 provider 返回 `Started`，AICC 视为任务已提交，**不再执行任何 fallback**，避免重复提交多个长任务。
 
 ---
 
@@ -452,7 +452,7 @@ AICC 的隔离点应覆盖：
 ## 11. AICC 实现避坑清单（仅保留与 AICC 强相关）
 
 1. **长任务边界必须由 Provider 显式返回**：`Immediate` vs `Started`，AICC 不做耗时阈值猜测。
-2. **fallback 只发生在启动失败**：一旦返回 `Started`，立刻停止重试，避免重复提交。
+2. **不自动换模型或 Provider**：只执行管理员配置的 fallback，且只在启动失败时；一旦返回 `Started`，立刻停止，避免重复提交。
 3. **alias 映射要可观测**：alias 未映射是高频运维问题，必须清晰报错与打点。
 4. **Registry 快照化**：路由时用快照，避免实例热更新造成路由过程不一致。
 5. **资源处理安全第一**：base64 严控、绝不落日志；资源权限校验必须绑定租户 ctx。

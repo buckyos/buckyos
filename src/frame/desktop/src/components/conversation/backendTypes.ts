@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react'
 import type { DID } from 'buckyos'
+import type { ConversationMemoryMode } from 'buckyos/app-frame'
 import type { OutgoingPayload } from './model/outgoing'
 import type { ConversationSource } from './source'
+
+export type { ConversationMemoryMode }
 
 /** A conversation of the viewer as the bound parts list it. */
 export interface ConversationSessionInfo {
@@ -13,7 +16,10 @@ export interface ConversationSessionInfo {
   lifecycle: 'active' | 'archived'
   /** Runs over the native message protocol, not a tunnel to another platform. */
   native: boolean
+  memoryMode: ConversationMemoryMode
 }
+
+export interface ConversationSessionOptions { memoryMode?: ConversationMemoryMode }
 
 /** Where `SessionConversation`'s conversation stands. */
 export type BoundConversation =
@@ -46,9 +52,9 @@ export interface ConversationBackend {
   addAgent(agentDid: DID, name?: string): void
   /** Lists a person the same way (someone the viewer writes to first, such as a Workspace's owner). */
   addPerson(did: DID, name?: string): void
-  /** The viewer's default conversation with the entity, created when there is none. */
+  /** The viewer's default conversation with the entity (an Agent's: the one they can write in), created when there is none. */
   ensureDefaultSession(entityId: string): Promise<ConversationSessionInfo | null>
-  createSession(entityId: string, title: string): Promise<ConversationSessionInfo>
+  createSession(entityId: string, title: string, options?: ConversationSessionOptions): Promise<ConversationSessionInfo>
   deleteSession(sessionId: string): Promise<void>
   /** Sends a message in the viewer's name. */
   send(sessionId: string, message: { text: string; attachments?: ConversationAttachmentRef[] }): Promise<void>

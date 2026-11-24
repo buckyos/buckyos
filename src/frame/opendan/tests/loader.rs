@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     AgentSettings, AiMessage, AiResponse, AiRole, AiUsage, MailboxAddress, MailboxKind,
     MailboxRecord, MailboxRecordWithObject, MsgEditCapability, PostSendResult, RecipientState,
-    TaskWaitReason,
+    SessionMemoryMode, TaskWaitReason,
 };
 use libopendan::api::create_session;
 use libopendan::channel::{KmsgChannels, PollWaker};
@@ -145,6 +145,8 @@ struct Mail {
     /// The conversations can replace a message in place.
     editable: AtomicBool,
     seq: AtomicUsize,
+    /// How the owner created a session (by its id).
+    memory_modes: Mutex<std::collections::BTreeMap<String, SessionMemoryMode>>,
 }
 
 impl Mail {
@@ -250,6 +252,19 @@ impl MailService for Mail {
             })
             .collect();
         Ok(read[read.len().saturating_sub(limit)..].to_vec())
+    }
+
+    async fn memory_mode(&self, _owner: &DID, session_id: &str) -> Result<SessionMemoryMode, String> {
+        Ok(self.memory_modes.lock().unwrap().get(session_id).copied().unwrap_or_default())
+    }
+
+    async fn sender_of(&self, msg_id: &ObjId) -> Result<Option<DID>, String> {
+        let sent = self.sent().into_iter().map(|(_, m)| m);
+        let received = self.records.lock().unwrap().iter().filter_map(|(_, m)| m.clone()).collect::<Vec<_>>();
+        Ok(sent
+            .chain(received)
+            .find(|m| msg_key(m) == msg_id.to_string())
+            .map(|m| m.from))
     }
 
     async fn post_send(&self, msg: MsgObject, key: &str) -> Result<PostSendResult, String> {
@@ -1787,11 +1802,16 @@ async fn the_jarvis_package_loads_and_answers() {
         assert_eq!(reply.schema["required"], serde_json::json!(["reply", "topic", "artifacts"]), "{name}");
         assert_eq!(
             b.capabilities.tool_whitelist.as_deref(),
-            Some(&["group:bash_core".to_string(), "behavior:analyze_intent".to_string()][..]),
+            Some(
+                &["group:bash_core".to_string(), "submit_reply".to_string(), "behavior:analyze_intent".to_string()][..]
+            ),
             "{name}"
         );
     }
-    assert_eq!(analyze.reply.as_ref().unwrap().asks_field.as_deref(), Some("clarifications"));
+    let reply = analyze.reply.as_ref().unwrap();
+    assert_eq!(reply.asks_field.as_deref(), Some("clarifications"), "filled by the host");
+    assert_eq!(reply.contract, Some(libopendan::protocol::ReplyContract::IntentAnalysis));
+    assert!(reply.schema["properties"].get("clarifications").is_none());
     assert_eq!(loader.config.ui_rule("msg.group").unwrap().session_class, "group");
     let group = SessionTemplate::load("group", loader.agent.agent_root()).unwrap();
     assert_eq!(group.default_behavior.as_deref(), Some("groupchat_route"));
@@ -1821,9 +1841,9 @@ async fn the_jarvis_package_loads_and_answers() {
     tools.sort();
     // Without the task bridge (a Unix socket) a session follows its commands with `cancel_task`.
     let expected: &[&str] = if cfg!(unix) {
-        &["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+        &["edit_file", "read", "shell", "submit_reply", "try_analyze_user_intent", "write_file"]
     } else {
-        &["cancel_task", "edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+        &["cancel_task", "edit_file", "read", "shell", "submit_reply", "try_analyze_user_intent", "write_file"]
     };
     assert_eq!(tools, expected);
     assert_eq!(cfg_max_tokens(&loader.config.llm_context), Some(8192));
@@ -1991,9 +2011,9 @@ async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
     tools.sort();
     // Without the task bridge (a Unix socket) a session follows its commands with `cancel_task`.
     let expected: &[&str] = if cfg!(unix) {
-        &["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+        &["edit_file", "read", "shell", "submit_reply", "try_analyze_user_intent", "write_file"]
     } else {
-        &["cancel_task", "edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]
+        &["cancel_task", "edit_file", "read", "shell", "submit_reply", "try_analyze_user_intent", "write_file"]
     };
     assert_eq!(tools, expected);
     let input = last_user(first);
@@ -2163,6 +2183,223 @@ async fn group_requests_of_the_owner_carry_the_group_context() {
     assert!(second.contains("it was the cache indeed") && second.contains("anything else?"), "{second}");
     assert!(!second.contains("the build is red") && !second.contains("group answer"), "{second}");
     assert_eq!(second.matches("context=\"true\"").count(), 1, "{second}");
+    loader.shutdown().await;
+}
+
+/// Chat route TODO §4: how the owner created a chat decides how it uses
+/// memory — its own UI sessions, every generation, and no one else's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chat_uses_memory_as_the_owner_created_it() {
+    let w = World::new();
+    w.mail
+        .memory_modes
+        .lock()
+        .unwrap()
+        .insert("quiet".into(), SessionMemoryMode::NoReadWrite);
+    let llm = Llm::new(|_, n| format!("answer {n}"));
+    let loader = w.start(llm.clone()).await;
+    let say = |session: &str, text: &str| {
+        let mut m = chat(BOB, text);
+        m.to_session = Some(session.to_string());
+        w.mail.deliver(session, m);
+    };
+    let modes = |session: &str| {
+        let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.to_string()))
+            .unwrap()
+            .to_string();
+        let agent = loader.agent.clone();
+        async move {
+            let mut out = Vec::new();
+            for e in agent.sessions().query(&RegistryQuery::default()).await.unwrap() {
+                if e.route_key.as_deref() == Some(route.as_str()) {
+                    let cfg = SessionDir::open(&e.location).unwrap().config().unwrap();
+                    out.push(cfg.session.policy.memory);
+                }
+            }
+            out
+        }
+    };
+    say("quiet", "hello");
+    say("usual", "hello");
+    until("replies", || w.mail.sent().len() == 2).await;
+    assert_eq!(modes("quiet").await, [MemoryMode::NoReadWrite]);
+    assert_eq!(modes("usual").await, [MemoryMode::Normal]);
+    // A new generation of the same chat.
+    say("quiet", "/clean");
+    until("cleaned", || w.mail.sent().len() == 3).await;
+    say("quiet", "again");
+    until("again", || w.mail.sent().len() == 4).await;
+    assert_eq!(modes("quiet").await, [MemoryMode::NoReadWrite; 2]);
+    loader.shutdown().await;
+}
+
+/// Chat route TODO §3: the owner's conditions decide what starts a turn and
+/// how far back it reads; they are read again while the agent runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_conditions_decide_what_starts_a_group_turn() {
+    let mut w = World::new();
+    w.settings.allow_group = true;
+    w.settings.group_chat.context_messages = Some(3);
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let s2 = seen.clone();
+    let llm = Llm::new(move |req, n| {
+        s2.lock().unwrap().push(last_user(req));
+        format!("group answer {n}")
+    });
+    let loader = w.start(llm.clone()).await;
+    let group = "did:bns:dev-team";
+    let (carol, dave) = ("did:bns:carol", "did:bns:dave");
+    let gmsg = |from: &str, text: &str, mention: bool| group_msg(from, group, text, mention);
+    let set = |settings: &AgentSettings| {
+        let value = serde_json::to_value(settings).unwrap();
+        let records = w.records.clone();
+        async move { records.put(records::SETTINGS, value).await.unwrap() }
+    };
+    for n in 1..=5 {
+        w.mail.deliver_from(group, gmsg(dave, &format!("chatter {n}"), false), "Dave");
+    }
+    w.mail.deliver_from(group, gmsg(carol, "@jarvis are you there?", true), "Carol");
+    until("acknowledged", || w.mail.unread() == 0).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 0, "the default is the owner's mention");
+    w.mail.deliver(group, gmsg(BOB, "@jarvis sum up", true));
+    until("owner's reply", || w.mail.sent().len() == 1).await;
+    let first = seen.lock().unwrap()[0].clone();
+    assert_eq!(first.matches("context=\"true\"").count(), 3, "{first}");
+    assert!(first.contains("chatter 4") && !first.contains("chatter 3"), "{first}");
+    assert!(!first.contains("triggered_by"), "{first}");
+
+    // Any member's mention, and the owner's answer to the agent; one entry
+    // this host does not know.
+    let mut settings = w.settings.clone();
+    settings.group_chat.triggers = Some(vec![
+        serde_json::json!({"type": "office_hours", "from": "09:00"}),
+        serde_json::json!({"who": "everyone", "how": "mention"}),
+        serde_json::json!({"who": "owner", "how": "reply"}),
+    ]);
+    set(&settings).await;
+    w.mail.deliver_from(group, gmsg(carol, "@jarvis and you?", true), "Carol");
+    until("member's reply", || w.mail.sent().len() == 2).await;
+    let second = seen.lock().unwrap()[1].clone();
+    assert!(second.contains("triggered_by=\"member\"") && second.contains("and you?"), "{second}");
+    let answer = w.mail.sent()[1].1.clone();
+    let mut reply = gmsg(BOB, "go on", false);
+    reply.thread.reply_to = Some(ObjId::new(&msg_key(&answer)).unwrap());
+    let mut by_member = gmsg(carol, "go on then", false);
+    by_member.thread.reply_to = reply.thread.reply_to.clone();
+    let mut elsewhere = gmsg(BOB, "to carol", false);
+    elsewhere.thread.reply_to = Some(ObjId::new(&msg_key(&by_member)).unwrap());
+    w.mail.deliver_from(group, by_member, "Carol");
+    w.mail.deliver(group, elsewhere);
+    w.mail.deliver(group, reply);
+    until("reply to a reply", || w.mail.sent().len() == 3).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 3);
+    let third = seen.lock().unwrap()[2].clone();
+    assert!(third.contains("go on") && !third.contains("triggered_by"), "{third}");
+
+    // Each turn's worklog says what let it through.
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(group.to_string()))
+        .unwrap()
+        .to_string();
+    let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    let sd = SessionDir::open(&entry.location).unwrap();
+    let mut reasons: Vec<(String, bool)> = Vec::new();
+    let mut r = sd.worklog().reverse(sd.state().unwrap().worklog.committed_bytes, 0).unwrap();
+    while let Some((_, e)) = r.next_json::<libopendan::protocol::WorklogEntry>().unwrap() {
+        if let libopendan::protocol::WorklogBody::ControlApplied { command, detail, .. } = e.body {
+            if command == "group_trigger" {
+                reasons.push((
+                    detail["reason"].as_str().unwrap().to_string(),
+                    detail["member"].as_bool().unwrap(),
+                ));
+            }
+        }
+    }
+    reasons.reverse();
+    assert_eq!(
+        reasons,
+        [
+            ("condition 1: owner/mention".to_string(), false),
+            ("condition 2: everyone/mention".to_string(), true),
+            ("condition 3: owner/reply".to_string(), false),
+        ]
+    );
+    loader.shutdown().await;
+}
+
+/// Chat route TODO §3: what the user chose on a notification's card reaches
+/// the conversation that showed it, as background, once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_question_reaches_the_conversation_that_showed_it() {
+    use libopendan::notify::NotifyHost;
+    let mut w = World::new();
+    let notify = Arc::new(libopendan::notify::LocalNotify::enable(&w.root, AGENT).unwrap());
+    w.notify = Some(notify.clone());
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let s2 = seen.clone();
+    let llm = Llm::new(move |req, n| {
+        s2.lock().unwrap().push(req.messages.iter().map(|m| m.text_content()).collect());
+        format!("answer {n}")
+    });
+    let loader = w.start(llm.clone()).await;
+    let (here, there) = (format!("dm:{BOB}"), "topic-b".to_string());
+    w.mail.deliver(&here, chat(BOB, "hello"));
+    until("first", || w.mail.sent().len() == 1).await;
+    let mut other = chat(BOB, "another topic");
+    other.to_session = Some(there.clone());
+    w.mail.deliver(&there, other);
+    until("second", || w.mail.sent().len() == 2).await;
+
+    let mut ask = buckyos_api::NotifySendReq::input(
+        "bob",
+        "Which database?",
+        "",
+        vec![
+            buckyos_api::HumanPromptOption::new("pg", "Postgres"),
+            buckyos_api::HumanPromptOption::new("b", "SQLite, the small one"),
+        ],
+        false,
+        "ask-db",
+    );
+    ask.source = Some(buckyos_api::NotifySource {
+        session_id: Some("work-9".into()),
+        conversation: Some(buckyos_api::NotifyConversation {
+            to: BOB.into(),
+            to_session: None,
+        }),
+        ..Default::default()
+    });
+    let asked = notify.send(ask).await.unwrap();
+    notify
+        .answer(&asked.notify_id, buckyos_api::NotifyAnswer::option("b"), None)
+        .await
+        .unwrap();
+    let route = |session: &str| {
+        MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.to_string())).unwrap().to_string()
+    };
+    let pending = |loader: &Loader, session: &str| {
+        let entry = ui_entry(loader.agent.as_ref(), &route(session)).unwrap();
+        SessionDir::open(&entry.location).unwrap().state().unwrap().pending_events.len()
+    };
+    until("told", || pending(&loader, &here) == 1).await;
+    assert_eq!(pending(&loader, &there), 0, "another conversation is not told");
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 2, "it opens no turn");
+    // A restart tells it again; the session takes it once.
+    loader.shutdown().await;
+    let loader = w.start(llm.clone()).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(pending(&loader, &here), 1);
+    w.mail.deliver(&here, chat(BOB, "go on with what I just chose"));
+    until("third", || w.mail.sent().len() == 3).await;
+    let all = seen.lock().unwrap()[2].clone();
+    assert_eq!(all.matches("the user answered").count(), 1, "{all}");
+    assert!(all.contains("Which database?") && all.contains("SQLite, the small one"), "{all}");
+    let mut more = chat(BOB, "and here?");
+    more.to_session = Some(there.clone());
+    w.mail.deliver(&there, more);
+    until("fourth", || w.mail.sent().len() == 4).await;
+    assert!(!seen.lock().unwrap()[3].contains("SQLite"), "{}", seen.lock().unwrap()[3]);
     loader.shutdown().await;
 }
 

@@ -71,19 +71,19 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 
 ## 二、一级逻辑目录与 API Type 对应
 
-每个一级目录是一个 namespace,声明该 namespace 下叶子节点支持的 api_type 集合。**fallback 只能在同 api_type 内进行**。
+每个一级目录是一个 namespace,声明该 namespace 下叶子节点支持的 api_type 集合。所有目录默认 `strict`，不自动换模型；fallback 只来自系统管理员手工配置，且只能在同 api_type 内进行（原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)；代码尚未完全跟上，见 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md)）。
 
 | 一级目录 | 默认 api_type | fallback 策略 | 默认调度 profile |
 |---|---|---|---|
-| `llm` | `llm` | namespace-only；无 Parent fallback | 功能目录分别配置 |
+| `llm` | `llm` | namespace-only；各功能目录 strict | 功能目录分别配置 |
 | `embedding` | `embedding.text`、`embedding.multimodal` | **strict**(向量空间不通用) | latency_first |
 | `decision` | `decision` | strict | cost_first |
 | `rerank` | `rerank` | strict | latency_first |
-| `image` | `image.*`、`vision.*` | parent within same api_type | quality_first |
+| `image` | `image.*`、`vision.*` | strict | quality_first |
 | `audio` | `audio.*` | strict(音色/语种不能跨) | latency_first(tts/asr)、quality_first(music) |
-| `video` | `video.*` | parent within same api_type | quality_first |
+| `video` | `video.*` | strict | quality_first |
 | `multimodal` | (any-to-any,占位) | disabled | — |
-| `agent_runtime` | `agent.*` | parent | reliability_first |
+| `agent_runtime` | `agent.*` | strict | reliability_first |
 
 ### 2.1 `llm` 子目录
 
@@ -96,7 +96,7 @@ llm
 ├── swift      # 极速响应(短回复、低延迟)
 ├── summarize  # 总结/抽取，通过规格选择
 ├── translate  # 翻译
-└── fallback   # 廉价快速优先的分层兜底；上面七个用途无候选时显式回退到这里
+└── fallback   # 默认空，只接收系统管理员显式配置
 ```
 
 支持的 api_type：`llm`。纯文本 completion 由调用方转换为单条 message，不定义独立 api_type。
@@ -205,9 +205,9 @@ llm
 
 零 Provider 时只保留功能目录、声明的规格及功能到规格的引用。metadata 与有效 inventory 相交后才创建家族及预设；最后一个对应实例消失时删除动态家族和引用，规格恢复为空。官方 Provider 下线不删除其他渠道仍可提供的家族，也不删除其模型定义。
 
-选择分两阶段。阶段一逐层展开：功能目录、规格、家族预设各自只展开本层可用 item 中权重最大的一组，并列全部展开；某组没有任何可用候选（无库存、admission 不满足、运行状态或策略被硬过滤）时才尝试同层下一权重组，全部不可用则该目录为空。同权重规格不按规格 ID 提前淘汰，而是各自展开后共同进入阶段二。阶段二把展开得到的合格 instance 合并成候选池，按调度 profile（默认成本优先）选择，策略项全部相同时按默认顺序（配置书写顺序；家族按路径、instance 按 exact model 名）。`stability = experimental` 只是准入条件：请求未允许实验版时硬过滤，允许后不再被隐式排在稳定版之后。运行时 failover 只在本轮候选池内进行。
+选择分两阶段。阶段一逐层展开：功能目录、规格、家族预设各自只展开本层可用 item 中权重最大的一组，并列全部展开；某组没有任何静态可用的候选（无库存、admission 不满足、未启用、凭据未配置或被策略硬过滤）时才尝试同层下一权重组，全部不可用则该目录为空；健康、熔断、冷却等运行状态不参与，权重不是故障时的切换顺序。同权重规格不按规格 ID 提前淘汰，而是各自展开后共同进入阶段二。阶段二把展开得到的合格 instance 合并成候选池，按调度 profile（默认成本优先）选择，策略项全部相同时按默认顺序（配置书写顺序；家族按路径、instance 按 exact model 名）。`stability = experimental` 只是准入条件：请求未允许实验版时硬过滤，允许后不再被隐式排在稳定版之后。执行失败后不切换到池内其它候选。
 
-任务、规格、家族没有隐式 Parent fallback；`llm` 不收集模型。内置七个用途默认显式 `target_logical` 到 `llm.fallback`，`llm.fallback` 自身 disabled，是回退链终点。它只引用非 `direct_only` 规格，按“廉价快速 4.0 > 性价比 3.0 > 标准 2.0 > 高档/特化 1.0”分层，逐层展开规则不变；直接请求 `llm.fallback` 用 `cost_first`，从用途回退时沿用原用途的 scheduler、能力门槛和禁用项。用户替换用途 items 而未声明 fallback 时回退关闭，显式 `strict`/`disabled` 同样关闭。家族、规格直选为 disabled，使用声明的预设，不自动升级其他家族。目录回退只发生在路由阶段；运行期 failover 仍只在本轮候选池内换实例。每个规格须被功能引用或标记 `direct_only`，后者不能通过功能或 fallback 暗中接入。
+任务、规格、家族没有隐式 Parent fallback；`llm` 不收集模型。所有用途默认 strict，`llm.fallback` 默认为空；只有系统管理员为某个用途手工配置了目标，该用途才会 fallback，并沿用原用途的能力门槛和禁用项。家族、规格直选使用声明的预设，不自动升级其他家族。每个规格须被功能引用或标记 `direct_only`，后者不能通过功能或 fallback 暗中接入。
 
 以下非 LLM 家族目录保留原有设计，不套用本节的规格规则。
 
@@ -380,35 +380,24 @@ routing_config:
       items:
         - { name: gpt_standard, target: llm.gpt-standard, weight: 2.2 }
         - { name: gpt_mini, target: llm.gpt-mini, weight: 1.4 }
-      fallback: { mode: target_logical, target: llm.fallback }
 
     llm.plan:
       items:
         - { name: gpt_max, target: llm.gpt-max, weight: 3.2 }
         - { name: gpt_pro, target: llm.gpt-pro, weight: 3.1 }
-      fallback: { mode: target_logical, target: llm.fallback }
       profile: quality_first
 
     llm.code:
       items:
         - { name: gpt_codex, target: llm.gpt-codex, weight: 3.2 }
         - { name: gpt_standard, target: llm.gpt-standard, weight: 3.0 }
-      fallback: { mode: target_logical, target: llm.fallback }
+      # 管理员手工配置 fallback 的写法；默认没有这一行
+      fallback: { mode: target_logical, target: llm.gpt-mini }
 
     llm.swift:
       items:
         - { name: gpt_nano, target: llm.gpt-nano, weight: 1.1 }
-      fallback: { mode: target_logical, target: llm.fallback }
       profile: latency_first
-
-    llm.fallback:
-      items:
-        - { name: gpt_nano, target: llm.gpt-nano, weight: 4.0 }
-        - { name: claude_haiku, target: llm.claude-haiku, weight: 4.0 }
-        - { name: gemini_flash_lite, target: llm.gemini-flash-lite, weight: 4.0 }
-        - { name: gpt_standard, target: llm.gpt-standard, weight: 2.0 }
-      fallback: { mode: disabled }
-      profile: cost_first
 
     # ===== Embedding =====
     embedding.text:
@@ -416,26 +405,23 @@ routing_config:
         - { name: bge, target: bge-m3@local, weight: 2.0 }
         - { name: voyage, target: voyage-3@voyageai, weight: 2.0 }
         - { name: openai, target: text-embedding-3-large@openai, weight: 1.0 }
-      fallback: { mode: strict }   # 向量空间不通用
+      fallback: { mode: strict }   # 默认即 strict；向量空间不通用
 
     # ===== Image =====
     image.txt2img:
       items:
         - { name: seedream, target: image.seedream, weight: 2.0 }
-      fallback: { mode: parent }
       profile: quality_first
 
     image.img2img:
       items:
         - { name: kontext, target: image.flux_kontext, weight: 2.0 }
         - { name: gpt_img, target: gpt-image-1@openai, weight: 2.0 }
-      fallback: { mode: parent }
 
     image.upscale:
       items:
         - { name: topaz, target: image.topaz, weight: 2.0 }
         - { name: esrgan, target: image.real_esrgan, weight: 1.0 }
-      fallback: { mode: parent }
 
     # ===== Audio =====
     audio.tts:
@@ -443,7 +429,7 @@ routing_config:
         - { name: eleven, target: eleven-v3@elevenlabs, weight: 2.5 }
         - { name: openai, target: tts-1-hd@openai, weight: 2.0 }
         - { name: kokoro, target: kokoro-82m@local, weight: 1.0 }
-      fallback: { mode: strict }   # 音色不能换
+      fallback: { mode: strict }   # 默认即 strict；音色不能换
       profile: latency_first
 
     audio.asr:
@@ -451,7 +437,6 @@ routing_config:
         - { name: whisper_local, target: whisper-large-v3@local, weight: 2.5 }
         - { name: sensevoice, target: sensevoice-small@local, weight: 2.0 }
         - { name: whisper_api, target: whisper-1@openai, weight: 1.0 }
-      fallback: { mode: parent }
       profile: latency_first
 
     # ===== Video =====
@@ -461,7 +446,6 @@ routing_config:
         - { name: seedance, target: seedance-2.0@bytedance, weight: 2.5 }
         - { name: veo, target: veo-3@google, weight: 2.0 }
         - { name: sora, target: sora-2@openai, weight: 2.0 }
-      fallback: { mode: parent }
       profile: quality_first
 
 
@@ -478,7 +462,7 @@ LLM 目标中，功能 item 只引用已声明规格；Provider inventory 的物
 
 1. **多语种 TTS 的目录细分**:`audio.tts` 当前没有按语种区分,但 `eleven-v3` 和 `kokoro-82m` 的语种支持差异巨大。考虑在 `attributes.languages` 上做硬过滤。
 2. **图像家族中模型变体的层级**:如 `flux-dev` / `flux-schnell` / `flux-1.1-pro` 都属于 `flux` 家族,但延迟和质量差一档。应在 attributes 中加 `tier: flagship/mid/swift`。
-3. **`agent_runtime` 的 fallback 语义**:跨 sandbox 的环境状态不通用(local Docker 启动的容器在云端 E2B 看不到),实际上 strict 更合理。但 strict 会让 fallback 失效,需要在 Provider 层做"会话级 sandbox 粘性"。
+3. **`agent_runtime` 的 fallback 语义**:跨 sandbox 的环境状态不通用(local Docker 启动的容器在云端 E2B 看不到),因此只用 strict,并在 Provider 层做"会话级 sandbox 粘性"。
 4. **多模态 any-to-any 的 schema 收敛**:暂时让 OpenAI GPT 角色挂点、`llm.gemini-pro`、`llm.qwen-max` 这类逻辑挂点各自挂多个目录。等业界 API 形态收敛后再考虑合并 namespace。
 
 ## Decision 逻辑入口（2026-09-25）

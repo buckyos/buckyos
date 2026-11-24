@@ -1,4 +1,5 @@
 import type { GroupDisplayInfo, GroupHookInfo, GroupPanelRef } from './extensions/model'
+import type { ConversationMemoryMode } from '../../components/conversation/backendTypes'
 import type { GroupInvitation, GroupInvitationView, GroupRole, PinnedMessage, ReadReceipt, RuntimeState, SessionAccess, SessionPanelInfo } from '../../components/conversation/model/types'
 
 export type { GroupInvitation, GroupInvitationView, GroupRole, PinnedMessage, ReadReceipt, RuntimeState, SessionAccess, SessionPanelInfo }
@@ -72,6 +73,7 @@ export type SessionType = 'chat' | 'task' | 'workspace'
 export interface Session {
   id: string
   entityId: string
+  /** Whose mailbox it is read from; an Agent's conversation on a channel (`channelSessions`) is read from the Agent's. */
   ownerDid: string
   binding: SessionBinding
   origin: 'manual' | 'connection' | 'remote_context' | 'unknown'
@@ -92,6 +94,8 @@ export interface Session {
   lastDelivery?: 'sending' | 'delivered' | 'partial_failed' | 'failed'
   /** How the entity attribution was derived (real backend only). */
   attributionEvidence?: 'registered' | 'group_tag' | 'group_message' | 'direct' | 'message' | 'record' | 'none'
+  /** A conversation with an Agent that stays out of its long-term memory; absent: normal. */
+  memoryMode?: ConversationMemoryMode
   /** Custom content of the floating session panel (`UI_DATAMODEL.md` §3.3.6); wins over a pinned message. */
   panel?: SessionPanelInfo
 }

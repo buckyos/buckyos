@@ -76,6 +76,9 @@ pub struct BackgroundInput<'a> {
     pub events: &'a [EventView],
     /// DID of the tunnel the batch's last message came through.
     pub tunnel: Option<&'a str>,
+    pub reply_mode: ReplyMode,
+    /// When the history was last compacted: what it showed before is gone.
+    pub compacted_at_ms: u64,
 }
 
 pub(super) fn one_line(text: &str, max: usize) -> String {
@@ -201,6 +204,13 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     }
     if let Some(t) = i.tunnel.filter(|t| !t.is_empty()) {
         out.push(BackgroundLine::new("channel", format!("channel: the user writes through {t}")));
+    }
+    if i.reply_mode == ReplyMode::Compat {
+        out.push(BackgroundLine::marked(
+            "reply_mode",
+            "reply mode: compat — your final text is sent to the user as it is, no JSON (topic kept, no attachments); with files to deliver, or when the topic became clear or changed, call submit_reply instead; `agent-session ctl reply-mode schema` goes back",
+            format!("compat@{}", i.compacted_at_ms),
+        ));
     }
     // The work this session started and that still runs (its end or need
     // is its event).
@@ -392,6 +402,8 @@ mod tests {
             active,
             events: &[],
             tunnel: None,
+            reply_mode: ReplyMode::Schema,
+            compacted_at_ms: 0,
         }
     }
 

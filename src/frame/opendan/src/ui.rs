@@ -7,29 +7,33 @@
 //! UI session carries the inbox address as its `route_key`, and the current
 //! session of an inbox is the latest unfinished one with that key.
 //!
-//! Only the owner's messages reach a session; in a group only those that
-//! mention the agent, and only while the owner allows group chat. Anything
-//! else is marked read and nothing more. A group request takes the group's
-//! latest read messages along as context (`delivery.context`): their
-//! speakers are kept, they carry no request of their own.
+//! Only the owner's messages reach a session; in a group those one of the
+//! owner's conditions lets through (`libopendan::group_trigger`; by default
+//! the owner's mention of the agent), and only while the owner allows group
+//! chat. Anything else is marked read and nothing more. A group request
+//! takes the group's latest read messages along as context
+//! (`delivery.context`): their speakers are kept, they carry no request of
+//! their own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use buckyos_api::{
-    MailboxAddress, MailboxKind, MailboxRecordWithObject, MsgCenterClient, MsgEditCapability,
-    PostSendResult, RecipientState,
+    AgentSettings, GroupChatSettings, MailboxAddress, MailboxKind, MailboxRecordWithObject, MsgCenterClient, MsgEditCapability,
+    PostSendResult, RecipientState, SessionMemoryMode,
 };
 use libopendan::api::create_session;
 use libopendan::bridge::{
-    context_msg_record, outbound_base, route_msg_record, MsgBridgeCtx, MsgBridgeOutput,
-    OutboundRecord, SlashCommand,
+    context_msg_record, outbound_base, record_sender, route_msg_record, MsgBridgeCtx,
+    MsgBridgeOutput, OutboundRecord, SlashCommand,
 };
 use libopendan::channel::{InputChannelFactory, Waker};
+use libopendan::group_trigger::{
+    GroupTrigger, MessageConditions, RecentMessage, TriggerInput, TriggerVerdict,
+};
 use libopendan::host::Supervisor;
 use libopendan::protocol::*;
 use libopendan::runner::{compose_reply, ObjectStore, OutboundSink, SendResult, TurnReply};
@@ -43,9 +47,6 @@ use serde_json::{json, Value};
 use crate::browser::BrowserModule;
 use crate::config::{AgentConfig, ON_MSG_CHAT, ON_MSG_GROUP};
 use crate::records::{self, AgentRecords};
-
-/// How many of a group's latest read messages a request takes along.
-pub const GROUP_CONTEXT: usize = 20;
 
 /// What the tunnel needs from msg-center.
 #[async_trait]
@@ -63,6 +64,11 @@ pub trait MailService: Send + Sync {
         limit: usize,
     ) -> Result<Vec<MailboxRecordWithObject>, String>;
     async fn post_send(&self, msg: MsgObject, key: &str) -> Result<PostSendResult, String>;
+    /// How the owner's session `session_id` uses memory (the owner chose it
+    /// when the session was created).
+    async fn memory_mode(&self, owner: &DID, session_id: &str) -> Result<SessionMemoryMode, String>;
+    /// Who sent the message `msg_id`.
+    async fn sender_of(&self, msg_id: &ndn_lib::ObjId) -> Result<Option<DID>, String>;
     /// Whether a message on the envelope `msg` could later be replaced in
     /// place at every target it would be delivered to.
     async fn edit_capability(&self, msg: MsgObject) -> Result<MsgEditCapability, String>;
@@ -151,6 +157,31 @@ impl MailService for ZoneMailService {
             .await?
             .post_send(msg, Some(key.to_string()))
             .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn memory_mode(&self, owner: &DID, session_id: &str) -> Result<SessionMemoryMode, String> {
+        match Self::client()
+            .await?
+            .get_session_state(owner.clone(), session_id.to_string())
+            .await
+        {
+            Ok(state) => Ok(state.map(|s| s.memory_mode).unwrap_or_default()),
+            // The zone's policy keeps the agent out of its owner's sessions.
+            Err(kRPC::RPCErrors::NoPermission(e)) => {
+                log::warn!("ui: memory mode of {session_id} not readable: {e}");
+                Ok(SessionMemoryMode::Normal)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    async fn sender_of(&self, msg_id: &ndn_lib::ObjId) -> Result<Option<DID>, String> {
+        Self::client()
+            .await?
+            .get_message(msg_id.clone())
+            .await
+            .map(|msg| msg.map(|m| m.from))
             .map_err(|e| e.to_string())
     }
 
@@ -380,15 +411,32 @@ pub struct UiStatus {
     pub inboxes: Vec<InboxStatus>,
 }
 
+/// The owner's group settings.
+#[derive(Debug, Clone, Default)]
+struct GroupRules {
+    allow: bool,
+    settings: GroupChatSettings,
+    trigger: MessageConditions,
+}
+
+impl GroupRules {
+    fn new(allow: bool, settings: GroupChatSettings) -> Self {
+        let trigger = MessageConditions::new(settings.triggers.as_deref());
+        for (n, why) in &trigger.unknown {
+            log::warn!("ui: group condition {n} is never met: {why}");
+        }
+        Self { allow, settings, trigger }
+    }
+}
+
 pub struct UiModule {
     pub config: AgentConfig,
     pub agent: Arc<dyn AgentStateClient>,
     pub who: String,
     /// The agent's owner: the only sender whose messages reach a session.
     pub owner: DID,
-    /// Last known `settings.allow_group`, read again when a group message
-    /// comes in.
-    allow_group: AtomicBool,
+    /// Last known group settings, read again when a group message comes in.
+    group: Mutex<GroupRules>,
     records: Arc<dyn AgentRecords>,
     pub mail: Arc<dyn MailService>,
     pub channels: Arc<dyn InputChannelFactory>,
@@ -437,7 +485,7 @@ impl UiModule {
         agent: Arc<dyn AgentStateClient>,
         who: &str,
         owner: DID,
-        allow_group: bool,
+        settings: &AgentSettings,
         records: Arc<dyn AgentRecords>,
         mail: Arc<dyn MailService>,
         channels: Arc<dyn InputChannelFactory>,
@@ -450,7 +498,7 @@ impl UiModule {
             agent,
             who: who.to_string(),
             owner,
-            allow_group: AtomicBool::new(allow_group),
+            group: Mutex::new(GroupRules::new(settings.allow_group, settings.group_chat.clone())),
             records,
             mail,
             channels,
@@ -815,6 +863,18 @@ impl UiModule {
             }
         };
         let to_session = spec.outbound.as_ref().and_then(|o| o.to_session.clone());
+        // A native chat with the owner: how the owner created it.
+        if on == ON_MSG_CHAT && spec.outbound.as_ref().is_some_and(|o| o.to == self.owner.to_string()) {
+            let own = to_session
+                .clone()
+                .unwrap_or_else(|| format!("dm:{}", self.agent.agent_did()));
+            spec.policy.memory = self
+                .mail
+                .memory_mode(&self.owner, &own)
+                .await
+                .map_err(OpenDanError::Other)?
+                .into();
+        }
         if to_session.is_some() && to_session == self.browser.default_session() {
             libopendan::template::add_own_cmd_skills(&mut spec, &[crate::browser::sessions::CMD_SKILL]);
         }
@@ -834,7 +894,8 @@ impl UiModule {
         MsgBridgeCtx {
             agent_did: parse_did(self.agent.agent_did()).ok(),
             owner: self.owner.clone(),
-            allow_group: self.allow_group.load(Ordering::SeqCst),
+            allow_group: false,
+            group: None,
             commands: [
                 ("stop", SlashCommand::Stop),
                 ("cancel", SlashCommand::Stop),
@@ -850,18 +911,78 @@ impl UiModule {
         }
     }
 
-    /// The owner may switch group chat on or off while the agent runs.
-    async fn refresh_allow_group(&self) -> bool {
+    /// The owner may change the group settings while the agent runs.
+    async fn group_rules(&self) -> GroupRules {
         match records::settings(self.records.as_ref()).await {
             Ok(s) => {
-                self.allow_group.store(s.allow_group, Ordering::SeqCst);
-                s.allow_group
+                let mut rules = self.group.lock().expect("group rules");
+                if rules.allow != s.allow_group || rules.settings != s.group_chat {
+                    *rules = GroupRules::new(s.allow_group, s.group_chat);
+                }
+                rules.clone()
             }
             Err(e) => {
-                log::warn!("ui: agent settings not readable ({e}); allow_group stays as it was");
-                self.allow_group.load(Ordering::SeqCst)
+                log::warn!("ui: agent settings not readable ({e}); group chat stays as it was");
+                self.group.lock().expect("group rules").clone()
             }
         }
+    }
+
+    /// Whether the group message starts a turn: checked before any
+    /// inference, looking up only what the conditions need.
+    async fn group_verdict(
+        &self,
+        mailbox: &MailboxAddress,
+        msg: &MsgObject,
+        sender: &DID,
+        rules: &GroupRules,
+        ctx: &MsgBridgeCtx,
+    ) -> TriggerVerdict {
+        let trigger: &dyn GroupTrigger = &rules.trigger;
+        let needs = trigger.needs();
+        let mut input = TriggerInput::new(msg, sender, &self.owner, ctx.agent_did.as_ref());
+        if needs.reply {
+            if let (Some(target), Some(agent)) = (&msg.thread.reply_to, &ctx.agent_did) {
+                input.replies_to_agent = match self.mail.sender_of(target).await {
+                    Ok(from) => from.as_ref() == Some(agent),
+                    Err(e) => {
+                        log::warn!("ui: message {} not readable: {e}", target.to_string());
+                        false
+                    }
+                };
+            }
+        }
+        if needs.recent {
+            match self.mail.recent_read(mailbox, rules.settings.context_messages()).await {
+                Ok(read) => {
+                    input.recent = read
+                        .into_iter()
+                        .filter_map(|r| {
+                            let msg = r.msg?;
+                            Some(RecentMessage {
+                                from: msg.from.to_string(),
+                                name: r.record.from_name,
+                                text: msg.content.content,
+                                at_ms: msg.created_at_ms,
+                            })
+                        })
+                        .collect()
+                }
+                Err(e) => log::warn!("ui: latest messages of {} not readable: {e}", mailbox.to_string()),
+            }
+        }
+        if needs.budget {
+            let defaults = SessionTemplate::load("goal", self.agent.agent_root())
+                .ok()
+                .and_then(|t| t.goal)
+                .unwrap_or_default();
+            input.budget = libopendan::goal::agent_usage(self.agent.as_ref(), &defaults, input.now_ms)
+                .await
+                .ok()
+                .and_then(|u| serde_json::to_value(u).ok())
+                .unwrap_or_default();
+        }
+        trigger.check(&input).await
     }
 
     /// Post one record to a session. `false`: the session cannot take it
@@ -892,10 +1013,14 @@ impl UiModule {
         route_key: &str,
         sid: &str,
         request_key: &str,
+        context: usize,
         ctx: &MsgBridgeCtx,
     ) -> Result<bool, String> {
+        if context == 0 {
+            return Ok(true);
+        }
         let mut seen: BTreeSet<String> = [request_key.to_string()].into_iter().collect();
-        for MailboxRecordWithObject { record, msg } in self.mail.recent_read(mailbox, GROUP_CONTEXT).await? {
+        for MailboxRecordWithObject { record, msg } in self.mail.recent_read(mailbox, context).await? {
             let Some(msg) = msg else {
                 continue;
             };
@@ -925,7 +1050,7 @@ impl UiModule {
     async fn drain(&self, mailbox: &MailboxAddress) -> Result<(), String> {
         let route_key = mailbox.to_string();
         let mut ctx = self.bridge_ctx();
-        let mut settings_read = false;
+        let mut rules: Option<GroupRules> = None;
         let mut last: Option<String> = None;
         loop {
             let Some(MailboxRecordWithObject { record, msg }) = self.mail.next_unread(mailbox).await?
@@ -942,9 +1067,19 @@ impl UiModule {
                 last = Some(record.record_id);
                 continue;
             };
-            if msg.kind == MsgObjKind::GroupMsg && !settings_read {
-                ctx.allow_group = self.refresh_allow_group().await;
-                settings_read = true;
+            if msg.kind == MsgObjKind::GroupMsg {
+                let rules = match &mut rules {
+                    Some(r) => r,
+                    none => none.insert(self.group_rules().await),
+                };
+                ctx.allow_group = rules.allow;
+                ctx.group = match rules.allow {
+                    true => Some(
+                        self.group_verdict(mailbox, &msg, &record_sender(&record), rules, &ctx)
+                            .await,
+                    ),
+                    false => None,
+                };
             }
             let key = msg_key(&msg);
             let output = route_msg_record(&record, &msg, &ctx);
@@ -998,7 +1133,16 @@ impl UiModule {
                     };
                     if msg.kind == MsgObjKind::GroupMsg
                         && matches!(output, MsgBridgeOutput::Deliver { .. })
-                        && !self.post_group_context(mailbox, &route_key, &sid, &key, &ctx).await?
+                        && !self
+                            .post_group_context(
+                                mailbox,
+                                &route_key,
+                                &sid,
+                                &key,
+                                rules.as_ref().map_or(0, |r| r.settings.context_messages()),
+                                &ctx,
+                            )
+                            .await?
                     {
                         return Ok(());
                     }

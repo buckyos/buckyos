@@ -353,20 +353,22 @@ T1 Runner 必须加载 4.5 节的独立路由暴露契约，并基于 `models.li
 
 ### 7.7 Fallback 与运行时错误
 
+原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。下列要求是改造后的目标；现有 T1 用例仍断言自动切换，随 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md) 一起改。
+
 必须覆盖：
 
-- strict/no fallback。
-- parent fallback。
-- target logical 和 target exact fallback。
-- 精确模型默认不 fallback。
+- 默认 strict：无静态候选、Provider 故障、配额耗尽、模型不存在时都不换模型，其它 Provider 收到 0 次请求。
+- 连续失败后再次请求仍选中同一模型，错误是上游的真实错误而不是“没有候选”。
+- 管理员配置的 target logical 和 target exact fallback；请求与 overlay 只能关闭，不能打开或改目标。
+- 精确模型不 fallback。
 - fallback 不跨 api_type。
 - `embedding.text` 和 `embedding.multimodal` 默认 strict；指定 `embedding_space_id` 或已有向量索引时，禁止 fallback 到不同 embedding space、维度、距离度量或归一化约定的模型。
 - `rerank` 默认 strict；fallback 重跑不能把不同 reranker 的分数混排。
 - fallback loop 和最大深度。
-- 首选 Provider 429、5xx、连接失败、timeout 后的切换。
-- 400 参数/schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突及明确标记为不可重试的 Provider 错误必须停止。404 模型不存在不得重试同一 exact model；exact 调用默认停止，逻辑模型或显式允许 exact-model fallback 的调用应切换到下一候选。
+- Provider 429、5xx、连接失败、timeout：只重试同一 exact model 1 次；配置了 fallback 时执行一次，否则返回真实错误。
+- 400 参数/schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突及明确标记为不可重试的 Provider 错误必须停止。404 模型不存在不得重试同一 exact model，也不得切换到其它候选；逻辑模型只在管理员配置了 fallback 时改用它。
 - fallback 后 task、usage、trace 和 Provider 归因。
-- 多 instance 间 failover。
+- 多 instance 间不自动切换；显式配置后才切换。
 
 ### 7.8 Mock 行为
 

@@ -3,6 +3,7 @@ mod contact_mgr;
 mod contact_lookup;
 mod contact_rpc;
 mod cyfs_dispatch;
+mod default_session;
 mod friend_service;
 mod group_http;
 mod group_publication;

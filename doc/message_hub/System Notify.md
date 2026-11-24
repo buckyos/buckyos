@@ -90,7 +90,7 @@ kRPC 服务 `msg-center`（`/kapi/msg-center`）：
 ## 3. 投递（不属于契约，可能变化）
 
 - 每条通知在目标用户的分类会话（`sysnotify:todo|agent|app`）里有一条主记录，发送者是“系统通知发送者”（Zone DID）。这三个会话不能打字。
-- 来自 Agent 的通知还会按等级另投到用户与该 Agent 已有的会话里（原生或 Telegram）：`quiet` 不另投；`normal` 投到来源会话；`timely` 再加最近活跃的会话；`urgent` 投到全部会话。未读只落在用户最可能看的那一处。
+- 来自 Agent 的通知还会按等级另投到用户与该 Agent 已有的会话里（原生或 Telegram）：`quiet` 不另投；`normal` 投到来源会话，没有来源会话时投到这个 Agent 的默认会话，Goal 发的总投默认会话；`timely` 再加默认会话；`urgent` 投到全部会话和默认会话。默认会话总是存在：用户没设过时由系统选定，被删掉之后由下一次用到它的通知或主入口新建。默认会话是 Telegram 会话时，这些通知经 Telegram 到用户。未读只落在用户最可能看的那一处。
 - 非 Agent 来源的通知只有主记录（`quiet` 时为已读）。
 
 ## 4. 权限

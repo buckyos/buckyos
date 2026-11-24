@@ -1176,7 +1176,8 @@ export const mockSessions: Record<string, Session[]> = Object.fromEntries(Object
     : { kind: 'native' as const, targetDid: getMockEntityDid(id) },
   origin: 'remote_context' as const,
   lifecycle: 'active' as const,
-  createdAt: session.lastActiveAt - 86400000,
+  // The Agent's first session is the one created earliest: its main entry leads there.
+  createdAt: session.lastActiveAt - (session.id === 'session-coder-1' ? 30 : 1) * 86400000,
   shared: { title: session.title, description: '', updatedAt: session.lastActiveAt },
   members: { [MOCK_SELF_DID]: { nickname: 'Me', updatedAt: session.lastActiveAt }, [getMockEntityDid(id)]: { nickname: seedEntities.find(entity => entity.id === id)?.name ?? id, updatedAt: session.lastActiveAt } },
 }))]))

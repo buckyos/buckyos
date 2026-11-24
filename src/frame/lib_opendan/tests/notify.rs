@@ -255,3 +255,140 @@ fn first_notify_id(agent_root: &std::path::Path) -> String {
         .unwrap()
 }
 
+
+fn now_blocking<T: Send + 'static>(f: impl std::future::Future<Output = T> + Send + 'static) -> T {
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+    })
+    .join()
+    .unwrap()
+}
+
+/// The result of an intent analysis: what it claims is checked, the
+/// questions come from the notifications (chat route TODO §2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_analysis_result_is_checked_and_gets_its_questions() {
+    let schema = json!({
+        "type": "object", "additionalProperties": false,
+        "required": ["outcome", "report", "work", "goal", "forwarded"],
+        "properties": {
+            "outcome": {"type": "string"}, "report": {"type": "string"},
+            "work": {"type": ["object", "null"]}, "goal": {"type": ["object", "null"]},
+            "forwarded": {"type": ["object", "null"]}
+        }
+    });
+    let result = |outcome: &str, report: &str, work: serde_json::Value, goal: serde_json::Value, to: serde_json::Value| {
+        text(&json!({"outcome": outcome, "report": report, "work": work, "goal": goal, "forwarded": to}).to_string())
+    };
+    let null = serde_json::Value::Null;
+    // What the first result says, and the correction it gets.
+    let cases = [
+        (result("direct", " ", null.clone(), null.clone(), null.clone()), "`report` must not be empty"),
+        (result("work_created", "r", null.clone(), null.clone(), null.clone()), "needs `work`"),
+        (
+            result("work_created", "r", json!({"session_id": "work-elsewhere"}), null.clone(), null.clone()),
+            "is not a session this analysis created",
+        ),
+        (
+            result("goal_created", "r", null.clone(), json!({"goal_id": "goal-none"}), null.clone()),
+            "does not exist",
+        ),
+        (
+            result("forwarded", "r", null.clone(), null.clone(), json!({"kind": "work", "id": "work-none"})),
+            "is not a goal or a work session that takes messages",
+        ),
+    ];
+    for (first, correction) in cases {
+        let env = Env::new();
+        let mut spec = SessionTemplate::load("ui", None).unwrap().spec("chat");
+        spec.prompt.llm_context = json!({
+            "tools": { "enabled": true, "tools": [{ "groupname": "bash_core" }, { "name": "call_behavior" }] },
+            "runtime": { "task_wait_ms": 8000 }
+        });
+        spec.outbound = Some(OutboundBinding {
+            to: "did:bns:bob".into(),
+            to_session: None,
+            kind: "chat".into(),
+        });
+        spec.extensions.insert(
+            "opendan".into(),
+            json!({ "behaviors": { "analyze": { "mode": "fork", "reply": {
+                "schema": schema, "asks_field": "clarifications", "contract": "intent_analysis"
+            } } } }),
+        );
+        let sd = env.create_work(spec).await;
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg("please do it"));
+        let local = Arc::new(LocalNotify::enable(&env.agent_root, AGENT).unwrap());
+        let (asker, sid, queue, root) = (local.clone(), sd.sid().to_string(), env.queue_dir.clone(), env.agent_root.clone());
+        let correction = correction.to_string();
+        let llm = ScriptedLlm::new(move |req, n| match n {
+            0 => tool_call("f1", "call_behavior", json!({ "behavior": "analyze", "task": "do it" })),
+            1 => text("analyzing"),
+            2 => {
+                // The branch asks; the user answers on the card.
+                let (asker, sid) = (asker.clone(), sid.clone());
+                now_blocking(async move {
+                    let mut ask = buckyos_api::NotifySendReq::input(
+                        "bob",
+                        "Which color?",
+                        "",
+                        vec![
+                            buckyos_api::HumanPromptOption::new("a", "Alpha"),
+                            buckyos_api::HumanPromptOption::new("b", "Beta one"),
+                        ],
+                        true,
+                        "ask:1",
+                    );
+                    ask.source = Some(buckyos_api::NotifySource {
+                        session_id: Some(sid.clone()),
+                        ..Default::default()
+                    });
+                    let asked = asker.send(ask).await.unwrap();
+                    let mut answer = buckyos_api::NotifyAnswer::option("b");
+                    answer.text = Some("but darker".into());
+                    asker.answer(&asked.notify_id, answer, None).await.unwrap();
+                    // Another session's question is not this branch's.
+                    let mut other = buckyos_api::NotifySendReq::input("bob", "Other?", "", vec![], true, "ask:2");
+                    other.source = Some(buckyos_api::NotifySource {
+                        session_id: Some("work-other".into()),
+                        ..Default::default()
+                    });
+                    asker.send(other).await.unwrap();
+                });
+                first.clone()
+            }
+            3 => {
+                let m = last_user_text(req);
+                assert!(m.contains(&correction), "{m}");
+                shell(
+                    "w1",
+                    &format!(
+                        "agent-session create-worksession --title t --objective 'the work' --queue-dir {} --agent-root {}",
+                        queue.display(),
+                        root.display()
+                    ),
+                )
+            }
+            4 => {
+                let r = has_tool_result(req, "w1").unwrap();
+                let id = r.split("\"session_id\": \"").nth(1).expect(&r).split('"').next().unwrap();
+                text(&json!({"outcome": "work_created", "report": "started", "work": {"session_id": id}, "goal": null, "forwarded": null}).to_string())
+            }
+            5 => {
+                let last = last_user_text(req);
+                for part in ["Which color?", "Beta one\\\\nbut darker", "started", "answered"] {
+                    assert!(last.contains(part) || last.contains(&part.replace("\\\\n", "\\n")), "{part}: {last}");
+                }
+                assert!(last.contains("clarifications") && !last.contains("Other?"), "{last}");
+                text("it is under way")
+            }
+            _ => panic!("unexpected inference {n}: {}", last_user_text(req)),
+        });
+        let mut deps = env
+            .deps(llm.clone())
+            .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+        deps.notify = Some(local.clone());
+        drive(&sd, &deps, StopWhen::TurnClosed).await;
+        assert_eq!(llm.count(), 6);
+    }
+}

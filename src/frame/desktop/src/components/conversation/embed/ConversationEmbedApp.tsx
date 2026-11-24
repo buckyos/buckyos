@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { z } from 'zod'
 import { buckyos, type DID } from 'buckyos'
-import { ConversationEmbedHost, originInZone, type ConversationEmbedErrorCode, type ConversationEmbedHostInit, type ConversationEmbedSend, type ConversationEmbedTurnMode } from 'buckyos/app-frame'
+import { ConversationEmbedHost, originInZone, type ConversationMemoryMode, type ConversationEmbedErrorCode, type ConversationEmbedHostInit, type ConversationEmbedSend, type ConversationEmbedTurnMode } from 'buckyos/app-frame'
 import { fetchAppList } from '../../../api/app_mgr'
 import { I18nProvider, useI18n } from '../../../i18n/provider'
 import { matchSupportedLocale, type SupportedLocale } from '../../../models/ui'
@@ -31,7 +31,7 @@ function toLocale(locale: string): SupportedLocale {
 const didPattern = /^did:[a-z0-9]+:\S+$/i
 /** The embedding App is untrusted input: what it asks for goes through a schema like every other caller's. */
 const targetSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('agent'), agentDid: z.string().max(512).regex(didPattern).optional() }).strict(),
+  z.object({ kind: z.literal('agent'), agentDid: z.string().max(512).regex(didPattern).optional(), memoryMode: z.enum(['normal', 'no_write', 'no_read_write']).optional() }).strict(),
   z.object({ kind: z.literal('session'), sessionId: z.string().min(1).max(512) }).strict(),
 ])
 
@@ -49,7 +49,7 @@ async function appIdOfOrigin(origin: string): Promise<string | null> {
   return data?.apps.find(app => app.web_hosts.some(web => web.trim().toLowerCase() === label))?.app_id ?? null
 }
 
-type Resolved = { kind: 'session'; sessionId: string } | { kind: 'new'; agent: { did: DID; name: string } }
+type Resolved = { kind: 'session'; sessionId: string } | { kind: 'new'; agent: { did: DID; name: string }; memoryMode?: ConversationMemoryMode }
 type Phase =
   | { phase: 'waiting' }
   | { phase: 'loading' }
@@ -96,8 +96,9 @@ async function resolve(init: ConversationEmbedHostInit, parentOrigin: string) {
     } else {
       const agent = target.data.agentDid ? { did: target.data.agentDid, name: '' } : await backend.defaultAgent()
       if (!agent) { fail('not_found'); return }
-      const [latest] = await sourcedSessions(agent.did, appId)
-      resolved = latest ? { kind: 'session', sessionId: latest.id } : { kind: 'new', agent }
+      const { memoryMode } = target.data
+      const latest = (await sourcedSessions(agent.did, appId)).find(session => !memoryMode || session.memoryMode === memoryMode)
+      resolved = latest ? { kind: 'session', sessionId: latest.id } : { kind: 'new', agent, memoryMode }
     }
   } catch { fail('unavailable'); return }
   publish({ state: { phase: 'ready', appId, target: resolved } })
@@ -110,8 +111,8 @@ async function conversationSession(): Promise<string> {
   const state = view.state
   if (state.phase !== 'ready') throw Error('not ready')
   if (state.target.kind === 'session') return state.target.sessionId
-  const { agent } = state.target
-  const session = await createSourcedSession(agent.did, state.appId, '', agent.name || undefined)
+  const { agent, memoryMode } = state.target
+  const session = await createSourcedSession(agent.did, state.appId, '', agent.name || undefined, memoryMode ? { memoryMode } : undefined)
   publish({ state: { ...state, target: { kind: 'session', sessionId: session.id } } })
   host.state({ status: 'ready', sessionId: session.id })
   return session.id

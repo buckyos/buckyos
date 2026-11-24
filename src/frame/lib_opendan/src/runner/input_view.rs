@@ -103,6 +103,9 @@ pub struct MessageView {
     /// Material for the request that follows it (`delivery.context`).
     #[serde(default)]
     pub context: bool,
+    /// A request of another member than the owner (`delivery.trigger`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_member: bool,
     #[serde(default)]
     pub machine: Option<Value>,
     #[serde(default)]
@@ -349,6 +352,7 @@ pub fn message_view(key: &str, at_ms: u64, m: &SessionMsg, agent_did: &str) -> M
         relations,
         mentions,
         context: m.delivery.context,
+        by_member: m.delivery.trigger.as_ref().is_some_and(|t| t.member),
         machine: msg
             .content
             .machine
@@ -478,6 +482,9 @@ pub fn render_msg_xml(m: &MessageView) -> String {
     }
     if m.context {
         attr(&mut s, "context", "true");
+    }
+    if m.by_member {
+        attr(&mut s, "triggered_by", "member");
     }
     for r in &m.relations {
         let name = match r.rel.as_str() {

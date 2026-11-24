@@ -83,13 +83,12 @@ gen_video "prompt" result.mp4
 | `balanced` | `balanced` | 综合排序 |
 | `quality` | `quality` | 质量优先 |
 
-`--no-fallback` 等价于：
+`--no-fallback` 不接受系统管理员配置的 fallback，等价于下面的 policy（没有配置 fallback 时本来就不会换模型，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)；现有实现同时发送 `runtime_failover: false`）：
 
 ```json
 {
   "policy": {
-    "allow_fallback": false,
-    "runtime_failover": false
+    "allow_fallback": false
   }
 }
 ```
@@ -637,9 +636,7 @@ materialize_resource <resource> <output_path>
       "media_type": "image/png"
     },
     "policy": {
-      "profile": "balanced",
-      "allow_fallback": true,
-      "runtime_failover": true
+      "profile": "balanced"
     }
   }
 }

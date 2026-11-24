@@ -29,6 +29,17 @@
             "null"
           ]
         },
+        "trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MsgTrigger"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A group message that started a turn: what let it through."
+        },
         "tunnel": {
           "description": "DID of the ingress tunnel.",
           "type": [
@@ -37,6 +48,23 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "MsgTrigger": {
+      "description": "Why a group message reached the session.",
+      "properties": {
+        "member": {
+          "description": "Another member than the owner.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "The condition ([`crate::group_trigger`]).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
       "type": "object"
     }
   },

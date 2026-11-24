@@ -8,7 +8,7 @@
 //!   of the mailbox index (`UI_DATAMODEL.md` §1.4a activity ordering).
 
 use crate::msg_center::MessageCenter;
-use crate::owner_session_db::{DeleteWatermark, VisibleSessionIndexEntry};
+use crate::owner_session_db::{DeleteWatermark, VisibleSessionIndexEntry, MEMORY_MODE_KEY};
 use crate::zone_agent::{
     account_owns_agent, find_zone_agent_spec, load_agent_settings, AgentLocationHints,
 };
@@ -17,7 +17,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, token_auth_method, token_session_ceiling,
     validate_verify_hub_token_claims, AccessDenial, AgentSpec, AuthMethod, DenyReason,
     MailboxAddress, MailboxKind, MailboxRecord, MsgCenterCreateSessionReq, OwnerSessionState,
-    SessionCeiling, SessionLifecycle, SessionListLifecycleFilter, SessionListOrder,
+    SessionCeiling, SessionLifecycle, SessionListLifecycleFilter, SessionListOrder, SessionMemoryMode,
     SessionMessagePage, SessionScope, SessionSummary, SessionSummaryPage, SsoSettings,
     SystemConfigError, TokenPrincipalKind, TokenUse, UiSessionStateEntry, UserGroupDirectory,
     UserSettings, MSG_CENTER_SERVICE_NAME, SSO_SETTINGS_KEY,
@@ -26,7 +26,7 @@ use kRPC::{RPCContext, RPCErrors, RPCSessionToken};
 use log::warn;
 use name_lib::DID;
 use ndn_lib::MsgObjKind;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -1253,12 +1253,28 @@ impl MessageCenter {
             delete_watermark_sort_key: None,
             delete_watermark_record_id: None,
             deleted_at_ms: None,
+            memory_mode: SessionMemoryMode::Normal,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         }
     }
 
     pub(crate) async fn create_session_internal(
+        &self,
+        req: MsgCenterCreateSessionReq,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        let default_of = req.set_default.then(|| req.peer_did.clone());
+        let state = self.register_session(req).await?;
+        if let Some(peer) = default_of {
+            let to_session = (state.session_id != format!("dm:{}", peer.to_string()))
+                .then(|| state.session_id.clone());
+            self.store_default_session(&state.owner, &peer, &state.owner.to_string(), to_session)
+                .await?;
+        }
+        Ok(state)
+    }
+
+    async fn register_session(
         &self,
         req: MsgCenterCreateSessionReq,
     ) -> std::result::Result<OwnerSessionState, RPCErrors> {
@@ -1293,9 +1309,11 @@ impl MessageCenter {
                 binding: req.binding,
                 title,
                 archived_at_ms: None,
+                memory_mode: req.memory_mode,
                 updated_at_ms: now_ms,
                 ..existing
             };
+            self.store_memory_mode(&state).await?;
             self.msg_box_db.upsert_owner_session(&state).await?;
             return Ok(state);
         }
@@ -1305,8 +1323,29 @@ impl MessageCenter {
         state.peer_did = Some(req.peer_did);
         state.binding = req.binding;
         state.title = title;
+        state.memory_mode = req.memory_mode;
+        self.store_memory_mode(&state).await?;
         self.msg_box_db.upsert_owner_session(&state).await?;
         Ok(state)
+    }
+
+    async fn store_memory_mode(
+        &self,
+        state: &OwnerSessionState,
+    ) -> std::result::Result<(), RPCErrors> {
+        if state.memory_mode.is_normal() {
+            return Ok(());
+        }
+        self.msg_box_db
+            .upsert_owner_ui_session_state(
+                &state.owner,
+                &state.session_id,
+                MEMORY_MODE_KEY,
+                &json!(state.memory_mode),
+                state.updated_at_ms,
+            )
+            .await?;
+        Ok(())
     }
 
     async fn load_or_default_state(
@@ -1439,6 +1478,8 @@ impl MessageCenter {
         self.msg_box_db
             .delete_owner_ui_session_states(&owner, &session_id)
             .await?;
+        self.forget_default_session(&owner, &session_id).await?;
+        state.memory_mode = SessionMemoryMode::Normal;
         Ok(state)
     }
 

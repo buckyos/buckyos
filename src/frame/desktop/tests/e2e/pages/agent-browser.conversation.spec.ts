@@ -401,9 +401,12 @@ test.describe('in a window', () => {
     await page.getByTestId('ab-chat-sheet-close').click()
     await agentSays(page, browser, 'Ready in the browser.')
 
-    // MessageHub opens on the latest conversation: the browser conversation.
+    // MessageHub opens on the Agent's main conversation, not on one an App started, however recent.
     await openFromAllApps(page, 'messagehub')
     const hub = page.getByTestId('window-messagehub')
+    await expect(hub.getByTestId('conversation-history')).not.toContainText('Ready in the browser.')
+    await hub.getByRole('button', { name: 'Sessions', exact: true }).click()
+    await hub.locator(`[data-testid="session-row"][data-session-id="${browser}"] button`).first().click()
     await expect(hub.getByTestId('conversation-history')).toContainText('Ready in the browser.')
     await hub.getByTestId('agent-panel-toggle').click()
     const entry = hub.getByTestId('agent-browser-entry')

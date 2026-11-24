@@ -728,6 +728,9 @@ pub struct SessionState {
     /// (set by `resume`, cleared when it runs again).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_run: bool,
+    /// UI sessions: how the final reply is given.
+    #[serde(default, skip_serializing_if = "super::ReplyMode::is_default")]
+    pub reply_mode: super::ReplyMode,
     /// Goal Sessions: the Goal State it owns and the Activation in
     /// progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -882,6 +885,7 @@ impl SessionState {
             schema: SESSION_STATE_SCHEMA.to_string(),
             latest_report: None,
             final_report: None,
+            reply_mode: Default::default(),
             rev: 1,
             writer: None,
             run_state: RunState::Created,

@@ -78,6 +78,25 @@
             "step_index"
           ],
           "type": "object"
+        },
+        {
+          "description": "`submit_reply`: the Turn's reply, not a report of the session; its `result` is `{topic}`.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "reply"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "kind"
+          ],
+          "type": "object"
         }
       ]
     }

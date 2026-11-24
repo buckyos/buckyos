@@ -24,6 +24,11 @@ pub struct SessionSummary {
     /// by each compression, never rewritten by the summarizer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keep_exact: Vec<String>,
+    /// What the session recorded with `ctl perceive` before the compression,
+    /// one line each (reference, Turn, words): listed with the summary, not
+    /// left to the summarizer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub perceptions: Vec<String>,
     /// The head (opening input + first round) kept verbatim ahead of the
     /// summary: the worklog entries before `head_end_seq`. `0`: no head.
     #[serde(default)]
@@ -41,7 +46,7 @@ pub struct SessionSummary {
     pub renderer: String,
     #[serde(default)]
     pub made_at_seq: u64,
-    /// `context_limit | ratio | manual`.
+    /// `context_limit | ratio | prompt_refrozen | manual`.
     #[serde(default)]
     pub made_by: String,
     #[serde(default)]
@@ -59,6 +64,7 @@ impl SessionSummary {
             schema: SESSION_SUMMARY_SCHEMA.to_string(),
             history_summary: String::new(),
             keep_exact: Vec::new(),
+            perceptions: Vec::new(),
             head_end_seq: 0,
             head_end_offset: 0,
             start_seq: 0,

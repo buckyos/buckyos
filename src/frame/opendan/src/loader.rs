@@ -54,7 +54,7 @@ pub struct LoaderEnv {
     /// `None` outside a zone: no AgentDocument the AgentRoot is bound to
     /// and no runtime info to write.
     pub spec: Option<SpecRef>,
-    /// Read once at start-up; `allow_group` is read again while running.
+    /// Read once at start-up; the group settings are read again while running.
     pub settings: AgentSettings,
     /// `settings`, `profile` and `info` outside the AgentRoot.
     pub records: Arc<dyn AgentRecords>,
@@ -424,7 +424,7 @@ impl Loader {
                     agent.clone(),
                     &env.who,
                     env.owner_did.clone().expect("checked"),
-                    env.settings.allow_group,
+                    &env.settings,
                     env.records.clone(),
                     mail.clone(),
                     env.channels.clone(),
@@ -576,7 +576,8 @@ impl Loader {
                     notify.clone(),
                     env.kevent.clone(),
                     supervisor.clone(),
-                    env.agent_did.clone(),
+                    agent.clone(),
+                    env.who.clone(),
                     env.options.poll_interval.saturating_mul(6),
                 )));
             }
