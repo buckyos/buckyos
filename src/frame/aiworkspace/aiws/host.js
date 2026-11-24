@@ -115,7 +115,11 @@ function capped(declared, max) {
 }
 
 function refusal(error) {
-  const code = typeof error?.code === 'string' ? error.code : null
+  const rawCode = typeof error?.code === 'string' ? error.code : null
+  const codes = { quota_exhausted: 'AI_QUOTA_EXHAUSTED', quota_budget_exceeded: 'AI_QUOTA_BUDGET_EXCEEDED',
+    resource_not_permitted: 'AI_RESOURCE_NOT_PERMITTED', attribution_unavailable: 'AI_ATTRIBUTION_UNAVAILABLE',
+    no_candidate_model: 'AI_NO_CANDIDATE_MODEL', unsupported_operation: 'AI_UNSUPPORTED_OPERATION' }
+  const code = Object.hasOwn(codes, rawCode) ? codes[rawCode] : rawCode
   return { error: error instanceof Error ? error.message : String(error), ...(code ? { code } : {}) }
 }
 
@@ -412,7 +416,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       response = await aicc('helper.text_to_image', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
     }
     if (response?.status === 'succeeded') return response
-    if (response?.status === 'failed') throw new Error(`the AI service failed: ${JSON.stringify(response.error ?? response.message ?? response)}`)
+    if (response?.status === 'failed') throw Object.assign(new Error(`the AI service failed: ${JSON.stringify(response.error ?? response.message ?? response)}`), { code: response.error?.code })
     const id = response?.task_id
     if (typeof id !== 'string' || typeof task !== 'function') throw new Error(`the AI service answered without a result: ${JSON.stringify(response).slice(0, 500)}`)
     const secs = Number(budget.media_timeout_secs) || DEFAULT_MEDIA_TIMEOUT_SECS
@@ -421,7 +425,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       const t = await task(id)
       const rec = t && typeof t === 'object' && 'task' in t ? t.task : t
       if (rec?.phase === 'Terminal') {
-        if (rec.outcome !== 'Succeeded') throw new Error(`AICC task ${id} ${String(rec.outcome ?? 'failed').toLowerCase()}: ${rec.message ?? JSON.stringify(rec.error ?? null)}`)
+        if (rec.outcome !== 'Succeeded') throw Object.assign(new Error(`AICC task ${id} ${String(rec.outcome ?? 'failed').toLowerCase()}: ${rec.error?.message ?? rec.message ?? JSON.stringify(rec.error ?? null)}`), { code: rec.error?.code })
         return taskOutput(rec) ?? {}
       }
       if (Date.now() > deadline) throw new Error(`AICC task ${id} is still running after ${secs} s`)
@@ -450,7 +454,8 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       // the same request made this before: stage it again for this run (it may have been applied, or have expired)
       const staged = await importAsset(hit.object_id).catch(() => null)
       if (staged) {
-        const media = { ...hit, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+        const prior = kind === 'image' ? Object.fromEntries(Object.entries(hit).filter(([key]) => key !== 'width' && key !== 'height')) : hit
+        const media = { ...prior, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
         if (kind !== 'image' || !imageAspectProblem(media, request)) return media
       }
     }

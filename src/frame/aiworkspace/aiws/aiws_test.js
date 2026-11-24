@@ -465,3 +465,51 @@ Deno.test('invalid image cache regenerates once and replaces the entry', async (
   assertEquals(calls, 1)
   assertEquals(cached.object_id, id)
 })
+
+Deno.test('media refusals survive failed responses and task records through the macro bridge', async () => {
+  for (const kind of ['image', 'video']) for (const mode of ['rpc', 'failed-response', 'failed-task']) {
+    const dir = await workdir(`export default async function main(aiws) {
+      aiws.declare({ inputs: {}, ai: { ${kind}: { max_calls: 1 } } })
+      await aiws.ai.${kind}({ prompt: 'landscape', quality: 'high' })
+    }`)
+    const failure = { code: 'unsupported_operation', message: 'quality is unsupported for selected-model@test-provider' }
+    let calls = 0
+    const host = createBridgeHost({
+      tool: async () => ({}), infer: async () => ({}), importAsset: async () => { throw new Error('failed calls must not import an asset') },
+      aicc: async () => {
+        calls++
+        if (mode === 'rpc') throw Object.assign(new Error(failure.message), { code: failure.code })
+        return mode === 'failed-response' ? { status: 'failed', error: failure } : { status: 'running', task_id: 'failed-media-task' }
+      },
+      task: async () => ({ task: { phase: 'Terminal', outcome: 'Failed', message: 'task failed', error: failure } }),
+      budget: { image_max_calls: 1, video_max_calls: 1 },
+    })
+    const run = await runBridged(dir, (op, req) => host.handle(op, req))
+    assertEquals(run.code, 1, `${kind}/${mode}`)
+    assertEquals(run.results.error_code, 'AI_UNSUPPORTED_OPERATION', `${kind}/${mode}`)
+    assert(run.results.error.includes('quality') && run.results.error.includes('selected-model@test-provider'))
+    assertEquals(calls, 1)
+  }
+})
+
+Deno.test('image cache cannot use legacy dimensions when current import cannot measure the picture', async () => {
+  const oldId = 'cyfile:' + '5'.repeat(64), newId = 'cyfile:' + '6'.repeat(64)
+  let cached = { kind: 'image', object_id: oldId, width: 1920, height: 1080 }
+  let calls = 0
+  const host = createBridgeHost({
+    tool: async (name, args) => {
+      if (args.get) return { status: 'ok', hits: Object.fromEntries(args.get.map(key => [key, cached])) }
+      if (args.put) cached = args.put[0].value
+      return {}
+    }, infer: async () => ({}),
+    aicc: async () => { calls++; return { status: 'succeeded', images: [{ kind: 'named_object', obj_id: newId }] } },
+    importAsset: async object_id => ({ object_id, media_type: 'image/webp', ...(object_id === newId ? { image: { width: 1920, height: 1080 } } : {}) }),
+    budget: { image_max_calls: 1 },
+  })
+  const req = { prompt: 'landscape', aspect: '16:9', declare: { inputs: {}, ai: { image: { max_calls: 1 } } } }
+  const fresh = await host.handle('ai.image', req)
+  assertEquals([fresh.object_id, fresh.cached, calls], [newId, false, 1])
+  assertEquals((await host.handle('ai.image', req)).cached, true)
+  assertEquals(calls, 1)
+  assertEquals(cached.object_id, newId)
+})
