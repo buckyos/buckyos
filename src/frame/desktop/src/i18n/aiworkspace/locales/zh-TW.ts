@@ -2181,6 +2181,7 @@ const text: Record<string, string> = {
   'aiworkspace.framework.play.guideNamed': '導覽：{{name}}',
   'aiworkspace.framework.play.public': '公開簡報與歷次簡報…',
   'aiworkspace.framework.play.editPaths': '尚無簡報路徑：請進入路徑編輯來建立',
+  'aiworkspace.framework.play.flowPage': '流式頁面上無法播放：請先切換到自由畫布',
   'aiworkspace.framework.macro.label': '執行巨集',
   'aiworkspace.framework.macro.one': '執行巨集：{{name}}',
   'aiworkspace.framework.macro.running': '執行中',

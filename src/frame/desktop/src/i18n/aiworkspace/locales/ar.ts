@@ -3381,6 +3381,7 @@ const text: Record<string, string> = {
   "aiworkspace.framework.play.guideNamed": "دليل: {{name}}",
   "aiworkspace.framework.play.public": "العروض العامة واجتماعات الماضي…",
   "aiworkspace.framework.play.editPaths": "لا يوجد مسار عرض تقديمي بعد: إنشاء واحد في تحرير المسار",
+  "aiworkspace.framework.play.flowPage": "التشغيل غير متاح في الصفحات المتتابعة: انتقل أولاً إلى لوحة حرة",
   "aiworkspace.framework.macro.label": "تشغيل الماكرو",
   "aiworkspace.framework.macro.one": "تشغيل الماكرو: {{name}}",
   "aiworkspace.framework.macro.running": "قيد التشغيل",

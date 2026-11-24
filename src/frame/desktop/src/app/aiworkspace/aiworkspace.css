@@ -731,6 +731,12 @@
 .aiws-root .aiws-tool { min-width: 36px; height: 36px; padding: 0 8px; border: none; border-radius: 8px; background: none; color: var(--cp-text); justify-content: center; flex: none; }
 .aiws-root .aiws-tool:hover:not(:disabled) { background: var(--cp-surface-2); }
 .aiws-root .aiws-tool[aria-pressed='true'], .aiws-root .aiws-tool[aria-expanded='true'] { background: var(--aiws-pressed-bg); color: var(--cp-accent); }
+/* shown disabled, and its click opens the reason (ui/framework/ToolItem.tsx) */
+.aiws-root .aiws-tool[aria-disabled='true'] { opacity: 0.5; cursor: default; }
+.aiws-root .aiws-tool[aria-disabled='true']:hover { background: none; }
+.aiws-root .aiws-tool[aria-disabled='true'][aria-expanded='true'] { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-popover.aiws-tool-reason { min-width: 0; width: max-content; max-width: min(320px, calc(100vw - 24px)); padding: 10px 12px; font-size: 13px; line-height: 1.5; text-wrap: pretty; }
+.aiws-tool-reason p { margin: 0; }
 .aiws-root .aiws-tool.is-primary { background: var(--aiws-primary-bg); color: var(--aiws-on-primary); }
 .aiws-root .aiws-tool.is-primary:hover:not(:disabled) { background: var(--aiws-primary-hover); }
 .aiws-root .aiws-tool.is-ai { color: var(--aiws-ai); }

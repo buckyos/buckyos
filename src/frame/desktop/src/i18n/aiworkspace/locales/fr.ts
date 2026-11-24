@@ -2249,6 +2249,7 @@ const text: Record<string, string> = {
   'aiworkspace.framework.play.guideNamed': 'Guide : {{name}}',
   'aiworkspace.framework.play.public': 'Présentation publique et sessions passées…',
   'aiworkspace.framework.play.editPaths': 'Aucun parcours de présentation pour l\'instant : créez-en un dans l\'édition des parcours',
+  'aiworkspace.framework.play.flowPage': 'La lecture n’est pas disponible sur une page en flux : passez d’abord à un canevas libre',
   'aiworkspace.framework.macro.label': 'Exécuter la macro',
   'aiworkspace.framework.macro.one': 'Exécuter la macro : {{name}}',
   'aiworkspace.framework.macro.running': 'En cours d\'exécution',

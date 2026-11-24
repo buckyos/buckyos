@@ -2262,6 +2262,7 @@ const text: Record<string, string> = {
   'aiworkspace.framework.play.guideNamed': 'Экскурсия: {{name}}',
   'aiworkspace.framework.play.public': 'Публичная презентация и прошлые показы…',
   'aiworkspace.framework.play.editPaths': 'Маршрута показа пока нет: создайте его в режиме редактирования маршрутов',
+  'aiworkspace.framework.play.flowPage': 'На потоковой странице воспроизведение недоступно: сначала перейдите на свободный холст',
   'aiworkspace.framework.macro.label': 'Запустить макрос',
   'aiworkspace.framework.macro.one': 'Запустить макрос: {{name}}',
   'aiworkspace.framework.macro.running': 'Выполняется',

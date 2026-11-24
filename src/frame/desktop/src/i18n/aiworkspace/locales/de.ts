@@ -2244,6 +2244,7 @@ const text: Record<string, string> = {
   'aiworkspace.framework.play.guideNamed': 'Führung: {{name}}',
   'aiworkspace.framework.play.public': 'Öffentliche Präsentation und frühere Sitzungen …',
   'aiworkspace.framework.play.editPaths': 'Noch kein Präsentationspfad: Erstellen Sie einen in der Pfadbearbeitung',
+  'aiworkspace.framework.play.flowPage': 'Auf einer Fließseite ist Abspielen nicht möglich: Wechseln Sie zuerst zu einem freien Canvas',
   'aiworkspace.framework.macro.label': 'Makro ausführen',
   'aiworkspace.framework.macro.one': 'Makro ausführen: {{name}}',
   'aiworkspace.framework.macro.running': 'Läuft',

@@ -2181,6 +2181,7 @@ const text: Record<string, string> = {
   'aiworkspace.framework.play.guideNamed': '가이드: {{name}}',
   'aiworkspace.framework.play.public': '공개 프레젠테이션 및 지난 세션…',
   'aiworkspace.framework.play.editPaths': '아직 프레젠테이션 경로가 없습니다. 경로 편집에서 만드세요',
+  'aiworkspace.framework.play.flowPage': '플로 페이지에서는 재생할 수 없습니다. 먼저 자유 캔버스로 전환하세요',
   'aiworkspace.framework.macro.label': '매크로 실행',
   'aiworkspace.framework.macro.one': '매크로 실행: {{name}}',
   'aiworkspace.framework.macro.running': '실행 중',

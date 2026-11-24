@@ -98,7 +98,8 @@ export interface ActionDef {
   visible?: (ctx: ActionContext) => boolean
   /** Availability: disabled with this reason, or null. */
   reason?: (ctx: ActionContext) => string | null
-  /** The reason is printed in the menu (structural limits), not only in the tooltip. */
+  /** The reason is printed (structural limits), not only in the tooltip: in the menu under the entry, and by a
+   * tool item in a note its click opens — it looks disabled and still takes the click (a touch screen has no tooltip). */
   explain?: boolean
   checked?: (ctx: ActionContext) => boolean
   pressed?: (ctx: ActionContext) => boolean

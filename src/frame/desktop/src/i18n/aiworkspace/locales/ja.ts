@@ -2181,6 +2181,7 @@ const text: Record<string, string> = {
   'aiworkspace.framework.play.guideNamed': 'ガイド: {{name}}',
   'aiworkspace.framework.play.public': '公開プレゼンテーションと過去のセッション…',
   'aiworkspace.framework.play.editPaths': 'プレゼンテーションのパスがまだありません。パス編集で作成してください',
+  'aiworkspace.framework.play.flowPage': 'フローページでは再生できません。先にフリーキャンバスに切り替えてください',
   'aiworkspace.framework.macro.label': 'マクロを実行',
   'aiworkspace.framework.macro.one': 'マクロを実行: {{name}}',
   'aiworkspace.framework.macro.running': '実行中',
