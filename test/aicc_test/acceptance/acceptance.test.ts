@@ -7092,16 +7092,19 @@ test("single-image contracts reject multi-image requests before Provider dispatc
 
 test("health recovery after canonical image rejection uses a valid success request", async () => {
   const catalog = await loadProviderProtocolCatalog();
-  const rejected = buildT15Manifest(catalog).find(c => c.tags.includes("image_count_rejected"))!;
-  const recovery = buildHealthRecoveryCase(rejected);
-  assert.equal(recovery.expected_task_status, "succeeded");
-  assert.equal(recovery.expected_error_class, null);
-  assert.equal(recovery.expected_aicc_error_code, undefined);
-  assert.equal(recovery.model_selector?.value, rejected.model_selector?.value);
-  assert.ok(!recovery.tags.includes("canonical_rejection"));
-  assert.ok(!recovery.tags.includes("image_count_rejected"));
-  const params = buildT15TypedParams(recovery.api_type!, "image@temporary", "recovery", recovery.execution_mode, recovery.case_id);
-  assert.equal(params.n, 1);
+  for (const tag of ["image_count_rejected", "image_output_rejected"]) {
+    const rejected = buildT15Manifest(catalog).find(c => c.tags.includes(tag))!;
+    const recovery = buildHealthRecoveryCase(rejected);
+    assert.equal(recovery.expected_task_status, "succeeded");
+    assert.equal(recovery.expected_error_class, null);
+    assert.equal(recovery.expected_aicc_error_code, undefined);
+    assert.equal(recovery.model_selector?.value, rejected.model_selector?.value);
+    assert.ok(!recovery.tags.includes("canonical_rejection"));
+    assert.ok(!recovery.tags.includes(tag));
+    const params = buildT15TypedParams(recovery.api_type!, "image@temporary", "recovery", recovery.execution_mode, recovery.case_id);
+    assert.equal(params.n, 1);
+    assert.equal(params.output, undefined);
+  }
 });
 
 

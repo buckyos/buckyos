@@ -1187,6 +1187,7 @@ fn encode_responses_image_generate(
         request.size.as_deref(),
         request.aspect_ratio.as_deref(),
         call,
+        true,
     )?;
     let tool = image_generation_tool(
         size.as_deref(),
@@ -1235,6 +1236,7 @@ fn encode_responses_image_edit(
         request.output.as_ref().and_then(|o| o.size.as_deref()),
         request.aspect_ratio.as_deref(),
         call,
+        true,
     )?;
     let tool = image_generation_tool(
         size.as_deref(),
@@ -1261,9 +1263,11 @@ fn openai_image_size(
     size: Option<&str>,
     aspect: Option<&str>,
     call: &CodecCall<'_>,
+    responses: bool,
 ) -> ProtocolResultValue<Option<String>> {
     let model = provider_model_id(call)?;
     let dynamic = model.starts_with("gpt-image-2");
+    let fixed = (responses && !dynamic) || model.starts_with("gpt-image-1");
     let ratio = aspect
         .map(|v| {
             buckyos_api::parse_aspect_ratio(v).ok_or_else(|| {
@@ -1271,9 +1275,16 @@ fn openai_image_size(
             })
         })
         .transpose()?;
+    call.context.reject_unsupported_options(
+        "OpenAI image model",
+        &[(
+            "aspect_ratio",
+            dynamic && ratio.is_some_and(|(w, h)| w > h * 3 || h > w * 3),
+        )],
+    )?;
     let size = match (size, ratio) {
         (Some(size), _) => Some(size.to_owned()),
-        (None, Some((w, h))) if dynamic => {
+        (None, Some((w, h))) if !fixed => {
             let mut a = w;
             let mut b = h;
             while b != 0 {
@@ -1322,8 +1333,10 @@ fn openai_image_size(
                     && h <= 3840
                     && u64::from(w) <= u64::from(h) * 3
                     && u64::from(h) <= u64::from(w) * 3
-            } else {
+            } else if fixed {
                 matches!(size.as_str(), "1024x1024" | "1536x1024" | "1024x1536")
+            } else {
+                w > 0 && h > 0
             }
         });
         call.context.reject_unsupported_options(
@@ -2408,6 +2421,7 @@ fn encode_image_generation(
         request.size.as_deref(),
         request.aspect_ratio.as_deref(),
         call,
+        false,
     )?;
     insert_optional(&mut body, "size", size.map(Value::String));
     insert_optional(
@@ -2480,6 +2494,7 @@ fn encode_image_edit(
         request.output.as_ref().and_then(|o| o.size.as_deref()),
         request.aspect_ratio.as_deref(),
         call,
+        false,
     )?;
     if let Some(size) = size {
         body.push(MultipartPart::bytes("size", size))?;
@@ -4241,6 +4256,34 @@ mod tests {
         };
         assert_eq!(output.value["data"][0]["embedding"][1], 0.75);
         assert_eq!(output.usage.unwrap().input_tokens, Some(3));
+    }
+
+    #[test]
+    fn compatible_image_models_forward_explicit_pixel_sizes() {
+        let mut request = TextToImageInvokeRequest::new("custom-image@compatible", "square");
+        request.size = Some("2048x2048".into());
+        let mut input = input(AiccCall::ImagesGenerate(request));
+        input
+            .resolved_parameters
+            .insert("provider_model_id".into(), json!("custom-image"));
+        let wire = registry()
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_IMAGES_GENERATE_OPERATION_ID,
+                ApiType::ImageTextToImage,
+                &input,
+                &context(),
+            )
+            .unwrap();
+        let GoldenBody::Json(body) = ProtocolContractHarness::default()
+            .request(&wire)
+            .unwrap()
+            .body
+        else {
+            panic!("json")
+        };
+        assert_eq!(body["model"], "custom-image");
+        assert_eq!(body["size"], "2048x2048");
     }
 
     #[test]

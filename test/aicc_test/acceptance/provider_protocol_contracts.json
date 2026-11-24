@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-24.image-contract.1",
+  "revision": "2026-11-24.image-contract.2",
   "checked_at": "2026-11-16",
   "providers": [
     {
@@ -11654,14 +11654,15 @@
           "image_parameter_probes": {
             "image.txt2img": {
               "request": {
-                "aspect_ratio": "1:1",
+                "aspect_ratio": "16:9",
                 "quality": "medium",
                 "output": {
                   "media_type": "image/jpeg"
-                }
+                },
+                "size": "1536x864"
               },
               "expected_body_paths": {
-                "/size": "1024x1024",
+                "/size": "1536x864",
                 "/quality": "medium",
                 "/output_format": "jpeg"
               }
@@ -11753,14 +11754,15 @@
           "image_parameter_probes": {
             "image.img2img": {
               "request": {
-                "aspect_ratio": "1:1",
+                "aspect_ratio": "16:9",
                 "quality": "medium",
                 "output": {
-                  "media_type": "image/jpeg"
+                  "media_type": "image/jpeg",
+                  "size": "1536x864"
                 }
               },
               "expected_body_paths": {
-                "/size": "1024x1024",
+                "/size": "1536x864",
                 "/quality": "medium",
                 "/output_format": "jpeg"
               }

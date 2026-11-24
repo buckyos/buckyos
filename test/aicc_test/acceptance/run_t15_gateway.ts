@@ -1469,7 +1469,7 @@ export function buildHealthRecoveryCase(testCase: AcceptanceCase): AcceptanceCas
     expected_provider_error_code: undefined,
     expected_retriable: undefined,
     timeout_ms: 30_000,
-    tags: testCase.tags.filter(tag => !["official_error", "canonical_rejection", "image_count_rejected"].includes(tag)),
+    tags: testCase.tags.filter(tag => !["official_error", "canonical_rejection", "image_count_rejected", "image_output_rejected"].includes(tag)),
   };
 }
 

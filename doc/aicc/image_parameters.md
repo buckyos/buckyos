@@ -20,7 +20,7 @@
 
 | 渠道 | 映射与限制 |
 | --- | --- |
-| OpenAI / SN | 比例转换为 `size`。GPT Image 2 系列使用 16 倍数的像素尺寸，比例限制在 1:3–3:1；旧模型/未指定图片模型的 Responses 工具使用 1024x1024、1536x1024、1024x1536。拒绝负面提示词、种子和强度。 |
+| OpenAI / SN | 比例转换为 `size`。GPT Image 2 系列使用 16 倍数的像素尺寸，比例限制在 1:3–3:1；GPT Image 1 / 未指定图片模型的 Responses 工具使用 1024x1024、1536x1024、1024x1536。兼容渠道的其他图片模型保留显式像素尺寸，不套用 GPT Image 1 的尺寸枚举。拒绝负面提示词、种子和强度。 |
 | Gemini Interactions | 比例和尺寸映射到 `response_format`，种子到 `generation_config.seed`。尺寸仅支持 1K/2K/4K；拒绝负面提示词、质量和强度。 |
 | OpenRouter | 比例、尺寸、质量、种子和输出格式按 Image operation 映射；拒绝负面提示词和强度。 |
 | Seedream | 比例按已有尺寸表转换，显式尺寸优先；支持种子。拒绝质量、负面提示词和强度。 |
