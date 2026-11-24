@@ -2221,6 +2221,9 @@ fn normalize_media(
     usage.request_units = usage.request_units.or(Some(1));
     if kind == "image" {
         usage.image_units = Some(resources.len() as u64);
+        if usage.output_tokens.is_some() && usage.image_output_tokens.is_none() {
+            usage.cost_unknown_reason = Some("missing_usage:image_output_tokens".into());
+        }
     }
     let value = if field == "images" {
         json!({"images":resources,"provider_states":[]})
@@ -3284,6 +3287,40 @@ fn is_sse(value: Option<&HeaderValue>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_image_tokens_require_modality_details() {
+        let outputs = [
+            json!({"type":"image","uri":"https://example.com/result.png","mime_type":"image/png"}),
+        ];
+        let usage = AiUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(1290),
+            ..Default::default()
+        };
+        let missing = normalize_media(&outputs, Some(usage.clone()), "image", "images")
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            missing.cost_unknown_reason.as_deref(),
+            Some("missing_usage:image_output_tokens")
+        );
+        let complete = normalize_media(
+            &outputs,
+            Some(AiUsage {
+                image_output_tokens: Some(1290),
+                ..usage
+            }),
+            "image",
+            "images",
+        )
+        .unwrap()
+        .usage
+        .unwrap();
+        assert!(complete.cost_unknown_reason.is_none());
+    }
+
     use crate::protocol::{CodecInput, CodecLimits, ProtocolContractHarness};
     use crate::video::test_support::{channel_contract, model_contract, plan_parameters};
     use crate::video::VideoMaterialFacts;

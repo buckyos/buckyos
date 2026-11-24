@@ -426,7 +426,7 @@ interface AiccDataProvider {
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
-  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview>
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits?: Record<string, number>): Promise<UsageOverview>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   fetchRoutingWorkspace(): Promise<RoutingWorkspace>
   getRoutingState(): Promise<RoutingState>
@@ -449,7 +449,7 @@ export interface AICCMgr {
   fetchModelCatalog(): Promise<ModelCatalog>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
-  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview>
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits?: Record<string, number>): Promise<UsageOverview>
   addProvider(draft: WizardDraft): Promise<ProviderView>
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
@@ -650,8 +650,8 @@ export class AICCModelStore implements AICCMgr {
     return this.provider.getUsageTrend(granularity)
   }
 
-  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview> {
-    return this.provider.queryUsageOverview(scope, onProgress)
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits: Record<string, number> = {}): Promise<UsageOverview> {
+    return this.provider.queryUsageOverview(scope, onProgress, groupLimits)
   }
 
   async addProvider(draft: WizardDraft): Promise<ProviderView> {
@@ -891,7 +891,7 @@ class MockAiccProvider implements AiccDataProvider {
     )
   }
 
-  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview> {
+  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits: Record<string, number> = {}): Promise<UsageOverview> {
     const scopedEvents = await this.scopedUsageEvents(scope)
     const timeRange = localTrailingDaysRange(30)
     const events = scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange, limit: 0 }))
@@ -914,7 +914,7 @@ class MockAiccProvider implements AiccDataProvider {
         thisMonth: aggregateUsageEvents(scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange: localCurrentMonthRange(), limit: 0 }))),
         trailingDays: aggregateUsageEvents(events),
       },
-      breakdowns: ['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'].flatMap((group) => groupUsageEvents(events, group)),
+      breakdowns: Object.entries({ providers: 'provider_instance_name', models: 'provider_model', apps: 'caller_app_id', capabilities: 'capability' }).flatMap(([section, group]) => groupUsageEvents(events, group).slice(0, groupLimits[section] ?? 20)),
       trend: this.store.getUsageTrend(events),
       users: Array.from(users, ([user_id, userEvents]) => {
         const usage = this.store.getUsageSummary(userEvents)
@@ -1007,14 +1007,12 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   private settingsRevision = 0
 
   async fetchSnapshot(): Promise<StoreSnapshot> {
-    const [directory, providerList, routing, usageByApp, traceQuery] = await Promise.all([
+    const [directory, providerList, routing, traceQuery] = await Promise.all([
       this.call<RawModelDirectory>('models.list', {}),
       this.call<RawProviderListResponse>('provider.list', {}),
       this.call<Record<string, unknown>>('routing.get', {}),
-      this.queryUsageOrEmpty({ time_range: toRawTimeRange(localTrailingDaysRange(30)), filters: {}, group_by: ['caller_app_id'], output_mode: 'summary' }),
       this.queryRouteTracesOrEmpty({ limit: 20 }),
     ])
-    this.usageSummary = toUsageSummary({ byModel: usageByApp, byCapability: {}, byApp: usageByApp, today: {}, thisMonth: {} })
     this.settingsRevision = asNumber(providerList.settings_revision, 0)
     directory.routing_settings = asRecord(routing.routing) as RawRoutingSettings
     return toStoreSnapshot(directory, providerList, [], traceQuery.traces)
@@ -1157,7 +1155,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return this.usageTrend
   }
 
-  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void): Promise<UsageOverview> {
+  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits: Record<string, number> = {}): Promise<UsageOverview> {
     const dashboardRange = localTrailingDaysRange(30)
     const values: Record<string, RawUsageQueryResponse> = {}
     const build = (): UsageOverview => {
@@ -1173,10 +1171,10 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       }
     }
     const requests: Array<[string, UsageTimeRange, Record<string, unknown>]> = [
-      ['models', dashboardRange, { group_by: ['provider_model'], output_mode: 'groups', group_limit: 20 }],
-      ['providers', dashboardRange, { group_by: ['provider_instance_name'], output_mode: 'groups', group_limit: 20 }],
-      ['capabilities', dashboardRange, { group_by: ['capability'], output_mode: 'groups', group_limit: 20 }],
-      ['apps', dashboardRange, { group_by: ['caller_app_id'], output_mode: 'groups', group_limit: 20 }],
+      ['models', dashboardRange, { group_by: ['provider_model'], output_mode: 'groups', group_limit: groupLimits.models ?? 20 }],
+      ['providers', dashboardRange, { group_by: ['provider_instance_name'], output_mode: 'groups', group_limit: groupLimits.providers ?? 20 }],
+      ['capabilities', dashboardRange, { group_by: ['capability'], output_mode: 'groups', group_limit: groupLimits.capabilities ?? 20 }],
+      ['apps', dashboardRange, { group_by: ['caller_app_id'], output_mode: 'groups', group_limit: groupLimits.apps ?? 20 }],
       ['trend', dashboardRange, { time_bucket: 'day' }],
       ['today', localTodayRange(), {}],
       ['thisMonth', localCurrentMonthRange(), {}],
@@ -1214,7 +1212,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return {
       events: toUsageEvents(response),
       total: toUsageTotals(response.total),
-      grouped: (response.grouped ?? []).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([k,v]) => [k, String(v ?? '')])), aggregate: toUsageTotals(row.aggregate) })),
+      grouped: (response.grouped ?? []).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([k,v]) => [k, String(v ?? '') || (k === 'caller_app_id' ? 'system' : '')])), aggregate: toUsageTotals(row.aggregate) })),
       totalRequests: asNumber(response.total?.total_requests, 0),
       nextCursor: asOptionalString(response.next_cursor),
     }
@@ -1308,18 +1306,19 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     }
   }
 
-  private queryUsage(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
-    return this.call<RawUsageQueryResponse>('usage.query', params)
-  }
-
-  // Dashboard aggregates are best-effort: a failed slice must not block the whole snapshot.
-  private async queryUsageOrEmpty(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
-    try {
-      return await this.queryUsage(params)
-    } catch (error) {
-      console.error('aicc.usage.query failed', error)
-      return {}
+  private async queryUsage(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
+    const count = asNumber(params.group_limit, 0)
+    if (params.output_mode === 'groups' && count > 1000) {
+      const grouped: RawUsageGroupedRow[] = []
+      for (let offset = 0; offset < count; offset += 1000) {
+        const limit = Math.min(1000, count - offset)
+        const page = await this.queryUsage({ ...params, group_limit: limit, group_offset: asNumber(params.group_offset, 0) + offset })
+        grouped.push(...(page.grouped ?? []))
+        if ((page.grouped?.length ?? 0) < limit) break
+      }
+      return { grouped }
     }
+    return this.call<RawUsageQueryResponse>('usage.query', params)
   }
 
   async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {

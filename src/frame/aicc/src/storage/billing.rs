@@ -13,7 +13,11 @@ impl AiccStorage {
                 format!("record_json::jsonb #>> '{{{}}}'", path.replace('.', ","))
             }
         };
-        let sql = self.sql(&format!("SELECT state,record_json FROM aicc_execution_record WHERE state='succeeded' AND {} IN ('pending','local_pending') AND CAST({} AS BIGINT)<=? ORDER BY CAST({} AS BIGINT),created_at_ms,task_id LIMIT ?",json("binding.billing.status"),json("binding.billing.next_attempt_ms"),json("binding.billing.next_attempt_ms")));
+        let source = match self.backend {
+            RdbBackend::Sqlite => "aicc_execution_record INDEXED BY idx_aicc_billing_due",
+            RdbBackend::Postgres => "aicc_execution_record",
+        };
+        let sql = self.sql(&format!("SELECT state,record_json FROM {source} WHERE state='succeeded' AND {} IN ('pending','local_pending') AND CAST({} AS BIGINT)<=? ORDER BY CAST({} AS BIGINT),created_at_ms,task_id LIMIT ?",json("binding.billing.status"),json("binding.billing.next_attempt_ms"),json("binding.billing.next_attempt_ms")));
         sqlx::query(&sql)
             .bind(to_i64(now_ms)?)
             .bind(i64::from(limit.min(100)))
@@ -197,6 +201,28 @@ impl AiccStorage {
             replace_usage = true;
         } else {
             billing.last_error = Some(error.unwrap_or("not_ready").to_owned());
+            if billing.exhausted(record.created_at_ms, now_ms) {
+                billing.status = BillingStatus::Unresolved;
+                usage.cost_source = Some(
+                    if usage.cost.is_some() {
+                        "static_pricing"
+                    } else {
+                        "billing_unresolved"
+                    }
+                    .into(),
+                );
+                if usage.cost.is_none() {
+                    usage.cost_unknown_reason = Some(format!(
+                        "billing_retries_exhausted:{}",
+                        billing.last_error.as_deref().unwrap()
+                    ));
+                }
+                if let Some(output) = &mut record.output {
+                    output.usage = usage.clone();
+                    output.cost = usage.cost.clone();
+                }
+                replace_usage = true;
+            }
             let delay = if matches!(error, Some("permission_denied" | "credential_unavailable")) {
                 3_600_000
             } else {

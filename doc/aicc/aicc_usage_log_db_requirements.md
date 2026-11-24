@@ -219,3 +219,14 @@ The exact cleanup policy should be configurable later.
 ## Deferred billing enrichment
 
 Fal billing reconciliation reuses `aicc_execution_record.record_json.binding.billing` for pending/applied state, retry schedule and a CAS lease. It may revise only the matching usage event's finance and missing metering fields, preserving event identity, owner, provider and token/request totals. Explicit protocol cost wins. See [the durable schema and recovery rules](deferred_billing.md); there are no new tables or schema migrations. The completed TaskMgr result is a historical snapshot and is not rewritten by this process.
+
+## Deferred billing queue index
+
+`aicc_execution_record` uses `idx_aicc_billing_due` on the BIGINT JSON expression
+`binding.billing.next_attempt_ms`, followed by `created_at_ms, task_id`, restricted to
+`state = succeeded` and billing status `pending` or `local_pending`. SQLite uses
+`json_extract`; PostgreSQL uses the corresponding `record_json::jsonb #>>` path.
+Storage initialization creates the index inside its schema transaction for both new
+and existing version-3 databases. No table, column, or global schema version changes.
+The index removes settled records from the recurring queue scan. Terminal billing
+statuses and bounded retries are defined in [deferred_billing.md](deferred_billing.md).

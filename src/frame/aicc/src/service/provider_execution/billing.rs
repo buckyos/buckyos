@@ -263,16 +263,34 @@ impl RuntimeProviderExecutionPort {
                             }
                         }
                     };
-                    if local_pending
-                        || matches!(
-                            error,
-                            Some("permission_denied" | "billing_endpoint_unavailable")
-                        )
+                    let exhausted = claimed
+                        .binding
+                        .as_ref()
+                        .and_then(|b| b.billing.as_ref())
+                        .is_some_and(|billing| billing.exhausted(claimed.created_at_ms, now_ms()));
+                    if event.is_none()
+                        && (local_pending
+                            || exhausted
+                            || matches!(
+                                error,
+                                Some(
+                                    "permission_denied"
+                                        | "billing_endpoint_unavailable"
+                                        | "credential_unavailable"
+                                )
+                            ))
                     {
                         if !local_pending {
                             let Some(local_record) = self
                                 .storage
-                                .begin_local_billing(&claimed, error.unwrap())
+                                .begin_local_billing(
+                                    &claimed,
+                                    error.unwrap_or(if exhausted {
+                                        "billing_retries_exhausted"
+                                    } else {
+                                        "not_ready"
+                                    }),
+                                )
                                 .await?
                             else {
                                 return Ok(());

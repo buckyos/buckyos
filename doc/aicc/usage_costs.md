@@ -122,3 +122,13 @@ uv run python src/tools/repair_aicc_usage_cost.py --database /path/to/aicc-usage
 按用户要求，内置手册 `aigc_image`、`aigc_audio`、`aigc_video`、`buckyos_admin` 不作修改，用量与成本说明集中在本文。没有修改 AgentRoot、Session/Behavior、skill 安装协议、工具挂载或发布命令。没有新增服务、第三方依赖或通用组件，workspace、安装映射和 scheduler 不需新增接入。
 
 首页统计采用渐进响应：近期记录独立分页；今天、本月、趋势、用户及各分类分别展示。模型和 Provider 分组分页不影响完整时间窗口总量，Provider 费用直接取 Provider 分组，不与模型分组重复相加。
+
+## Review 修复边界
+
+- 图片模型配置了 image_output_token、却无法从请求可靠估计图片 token 时，路由费用返回未知；带费用上限的请求不会按文本 token 的低价放行。Gemini 图片响应缺少图片输出 token 明细时，静态计价保持未知；有效协议实报费用仍优先。
+- SN/OpenAI embedding 的输出 token 明确为零，输入 token 缺失仍保持未知。
+- 缓存与多模态输入可能重叠。只有相关模态输入单价均等于文本输入单价时，按总输入扣除缓存和缓存写入量后计价，不再次扣除模态 token；模态单价不同且没有可靠缓存归属时保持未知。
+- 确认可计价请求没有音频输入时，Voxtral 的音频秒 addon 在路由估价中记零；非流式与流式最终结果均补足已知零音频秒。纯文本工具调用和工具结果不阻止补零，文档或不透明内容不推断为无音频。
+- 首页模型、Provider 与路由快照不等待 Usage 聚合。配额页按需独立查询 App 用量候选。后台核账刷新保留已有统计及加载范围，终态规则见 [延迟费用核对](deferred_billing.md)。
+
+本轮核查了 `aigc_image`、`aigc_audio`、`aigc_video`、`buckyos_admin`：Agent 命令、任务恢复与制品交付协议没有变化，手册无需改动。`BillingStatus` 为 AICC 内部持久状态，不新增 SDK 字段；AiUsage 的公开维度名称不变，仅移除 dimensions() 的重复项。没有新增依赖、服务、安装映射或 scheduler 接入。

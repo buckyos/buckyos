@@ -208,6 +208,7 @@ impl RuntimeInferencePort {
             input.estimated_input_tokens,
             input.estimated_output_tokens,
             input.requirements.video.as_ref(),
+            input.no_audio,
             &access,
         )
         .await;
@@ -898,6 +899,7 @@ impl InferencePort for RuntimeInferencePort {
                     session_id: request.session_id,
                     estimated_input_tokens: request.estimated_input_tokens,
                     estimated_output_tokens: request.estimated_output_tokens,
+                    no_audio: false,
                     video_clips: Default::default(),
                 },
             )
@@ -953,6 +955,7 @@ impl InferencePort for RuntimeInferencePort {
             None,
             None,
             None,
+            false,
             &access,
         )
         .await;
@@ -1324,6 +1327,7 @@ async fn candidate_runtime_states(
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
     video: Option<&buckyos_api::VideoGenerationRequirement>,
+    no_audio: bool,
     access: &crate::visibility::Access,
 ) -> BTreeMap<String, CandidateRuntimeState> {
     let mut credentials = BTreeMap::new();
@@ -1411,6 +1415,7 @@ async fn candidate_runtime_states(
                             estimated_input_tokens,
                             estimated_output_tokens,
                             video.map(|video| video_usage_estimate(video, &model.capabilities)),
+                            no_audio,
                         )
                     })
                     .and_then(|cost| {
@@ -1452,15 +1457,20 @@ fn estimate_model_cost(
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
     video_usage: Option<buckyos_api::AiUsage>,
+    no_audio: bool,
 ) -> Option<buckyos_api::Money> {
     if let Some(amount) = pricing.estimated_cost {
         return (amount.is_finite() && amount >= 0.0)
             .then(|| buckyos_api::Money::new(amount, pricing.currency.to_ascii_uppercase()));
     }
+    if pricing.image_output_token.is_some() || pricing.video_output_token.is_some() {
+        return None;
+    }
     let usage = video_usage.unwrap_or_else(|| buckyos_api::AiUsage {
         input_tokens: Some(estimated_input_tokens.unwrap_or(1_000)),
         output_tokens: Some(estimated_output_tokens.unwrap_or(1_000)),
         request_units: Some(1),
+        audio_seconds: no_audio.then_some(0.0),
         ..Default::default()
     });
     let quote = crate::execution::PinnedPricingSnapshot::from_pricing(
@@ -1487,6 +1497,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             session_id: request.session_id.clone(),
             estimated_input_tokens: None,
             estimated_output_tokens: request.max_output_tokens,
+            no_audio: provider_execution::request_has_no_audio(call),
             video_clips: Default::default(),
         }),
         AiccCall::HelperTextToImage(request) => Ok(InferenceRouteInput {
@@ -1501,6 +1512,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             session_id: request.session_id.clone(),
             estimated_input_tokens: None,
             estimated_output_tokens: None,
+            no_audio: provider_execution::request_has_no_audio(call),
             video_clips: Default::default(),
         }),
         AiccCall::HelperVideoGenerate(request) => {
@@ -1519,6 +1531,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 session_id: request.session_id.clone(),
                 estimated_input_tokens: None,
                 estimated_output_tokens: None,
+                no_audio: provider_execution::request_has_no_audio(call),
                 video_clips: Default::default(),
             })
         }
@@ -1576,6 +1589,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                     .map(str::to_owned),
                 estimated_input_tokens: None,
                 estimated_output_tokens: None,
+                no_audio: provider_execution::request_has_no_audio(call),
                 video_clips: Default::default(),
             })
         }
@@ -1849,6 +1863,22 @@ pub(crate) trait DriverMetadataPort: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_estimates_reject_unknown_image_tokens_and_zero_unused_audio() {
+        let image: crate::catalog::Pricing = serde_json::from_value(json!({"currency":"USD","input_token":0.000002,"output_token":0.000012,"image_output_token":0.00012})).unwrap();
+        assert!(estimate_model_cost(&image, None, None, None, false).is_none());
+        let text: crate::catalog::Pricing = serde_json::from_value(json!({"currency":"USD","input_token":0.000001,"output_token":0.000002,"addons":[{"unit":"audio_second","amount":0.001}]})).unwrap();
+        assert!(estimate_model_cost(&text, None, None, None, false).is_none());
+        assert!(
+            (estimate_model_cost(&text, None, None, None, true)
+                .unwrap()
+                .amount
+                - 0.003)
+                .abs()
+                < 1e-12
+        );
+    }
 
     #[test]
     fn provider_url_input_policy_uses_instance_and_protocol_form() {

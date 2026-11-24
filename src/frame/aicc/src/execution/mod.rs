@@ -261,6 +261,12 @@ pub(crate) struct DeferredBilling {
     pub measurement: Option<Value>,
 }
 
+impl DeferredBilling {
+    pub(crate) fn exhausted(&self, created_at_ms: u64, now_ms: u64) -> bool {
+        self.attempts >= 12 || now_ms.saturating_sub(created_at_ms) >= 86_400_000
+    }
+}
+
 impl Default for DeferredBilling {
     fn default() -> Self {
         Self {
@@ -283,6 +289,7 @@ pub(crate) enum BillingStatus {
     Local,
     Applied,
     ProtocolCost,
+    Unresolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -779,15 +786,26 @@ impl TokenRates {
         let image_out = usage.image_output_tokens.unwrap_or(0);
         let video_in = usage.video_input_tokens.unwrap_or(0);
         let video_out = usage.video_output_tokens.unwrap_or(0);
-        if read > 0 && (audio_in > 0 || image_in > 0 || video_in > 0) {
+        let modality_input = audio_in.checked_add(image_in)?.checked_add(video_in)?;
+        if modality_input > input {
+            return None;
+        }
+        let cached_modalities = read > 0 && modality_input > 0;
+        if cached_modalities
+            && [
+                (audio_in, self.audio_input_token),
+                (image_in, self.image_input_token),
+                (video_in, self.video_input_token),
+            ]
+            .into_iter()
+            .any(|(tokens, rate)| tokens > 0 && (rate.is_none() || rate != self.input_token))
+        {
             return None;
         }
         let text_in = input
             .checked_sub(read)?
             .checked_sub(write)?
-            .checked_sub(audio_in)?
-            .checked_sub(image_in)?
-            .checked_sub(video_in)?;
+            .checked_sub(if cached_modalities { 0 } else { modality_input })?;
         let text_out = output
             .checked_sub(audio_out)?
             .checked_sub(image_out)?
@@ -798,11 +816,20 @@ impl TokenRates {
             (write_short, self.cache_write_input_token),
             (write_1h, self.cache_write_1h_input_token),
             (text_out, self.output_token),
-            (audio_in, self.audio_input_token),
-            (image_in, self.image_input_token),
+            (
+                if cached_modalities { 0 } else { audio_in },
+                self.audio_input_token,
+            ),
+            (
+                if cached_modalities { 0 } else { image_in },
+                self.image_input_token,
+            ),
             (audio_out, self.audio_output_token),
             (image_out, self.image_output_token),
-            (video_in, self.video_input_token),
+            (
+                if cached_modalities { 0 } else { video_in },
+                self.video_input_token,
+            ),
             (video_out, self.video_output_token),
         ]
         .into_iter()
@@ -2956,6 +2983,31 @@ impl From<ProtocolErrorKind> for ExecutionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_cached_modalities_at_equal_input_rates_are_not_double_counted() {
+        let pricing = crate::catalog::Pricing::deserialize(serde_json::json!({"currency":"USD","input_token":0.0000005,"video_input_token":0.0000005,"cache_input_token":0.00000005,"output_token":0.000003})).unwrap();
+        let snapshot =
+            PinnedPricingSnapshot::from_pricing(&pricing, None, std::time::SystemTime::now())
+                .unwrap()
+                .unwrap();
+        let usage = AiUsage {
+            input_tokens: Some(20000),
+            output_tokens: Some(500),
+            video_input_tokens: Some(15000),
+            cache_read_input_tokens: Some(12000),
+            ..Default::default()
+        };
+        assert!((snapshot.completion_cost(&usage).unwrap().amount - 0.0061).abs() < 1e-12);
+        let mut different = pricing;
+        different.video_input_token = Some(0.000002);
+        let snapshot =
+            PinnedPricingSnapshot::from_pricing(&different, None, std::time::SystemTime::now())
+                .unwrap()
+                .unwrap();
+        assert!(snapshot.completion_cost(&usage).is_none());
+    }
+
     use crate::call::{LoweringRevisions, PricingSource, ResolvedPricing};
     use crate::catalog::Pricing;
     use crate::catalog::PricingWeekday;

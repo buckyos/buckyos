@@ -240,6 +240,8 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
     lastSnapshotVersion.current = snapshotVersion
     if (previous !== snapshotVersion && previous !== 0) setRetry((value) => value + 1)
   }, [snapshotVersion])
+  const resultRef = useRef(result)
+  useEffect(() => { resultRef.current = result }, [result])
   const overviewGeneration = useRef(0)
   const [overviewStates, setOverviewStates] = useState<Record<string, string>>({})
   const [homeHasMore, setHomeHasMore] = useState<Record<string, boolean>>({})
@@ -262,20 +264,26 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
     if (isAdmin === null || mode === 'usage') return
     const generation = ++overviewGeneration.current
     let live = true
-    setError(null)
-    setOverviewStates({})
-    setHomeHasMore({})
-    setResult({ key: scopeKey, overview: emptyOverview })
+    const previous = resultRef.current?.key === scopeKey ? resultRef.current.overview : null
+    const groupLimits = Object.fromEntries(Object.entries({ models: 'provider_model', providers: 'provider_instance_name', apps: 'caller_app_id', capabilities: 'capability' }).map(([section, field]) => [section, Math.max(20, previous?.breakdowns.filter((row) => field in row.group).length ?? 0)]))
+    let initialized = Boolean(previous)
     void store.queryUsageOverview(scope, (progress) => {
       if (!live) return
-      setOverviewStates((current) => ({ ...current, [progress.section]: progress.failed ? 'error' : 'ready' }))
+      if (!initialized) {
+        initialized = true
+        setOverviewStates({})
+        setHomeHasMore({})
+        setResult({ key: scopeKey, overview: emptyOverview })
+      }
+      setOverviewStates((current) => ({ ...current, [progress.section]: progress.failed ? (previous && current[progress.section] === 'ready' ? 'ready' : 'error') : 'ready' }))
       if (progress.failed) return
+      setError(null)
       setResult((current) => ({ key: scopeKey, overview: mergeUsageOverview(current?.key === scopeKey ? current.overview : emptyOverview, progress) }))
       const field = { models: 'provider_model', providers: 'provider_instance_name', apps: 'caller_app_id', capabilities: 'capability' }[progress.section]
-      if (field) setHomeHasMore((current) => ({ ...current, [progress.section]: progress.overview.breakdowns.filter((row) => field in row.group).length === 20 }))
+      if (field) setHomeHasMore((current) => ({ ...current, [progress.section]: progress.overview.breakdowns.filter((row) => field in row.group).length === groupLimits[progress.section] }))
       if (isAdmin && progress.section === 'users') setUsers((current) => uniqueSorted([...current, ...progress.overview.users.map((user) => user.user_id)]))
-    }).catch(() => { if (live) setError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.')) })
-    return () => { live = false; if (overviewGeneration.current === generation) overviewGeneration.current++ }
+    }, groupLimits).catch(() => { if (live) setError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.')) })
+    return () => { live = false; overviewGeneration.current = generation + 1 }
   }, [isAdmin, mode, retry, scope, scopeKey, store, t, emptyOverview])
 
   const loadHomeGroup = async (key: HomeBreakdownKey) => {
@@ -292,7 +300,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
         const overview = current.overview
         const summaryField = { providers: 'by_provider', models: 'by_model', apps: 'by_app', capabilities: 'by_api_namespace' }[section] as 'by_provider' | 'by_model' | 'by_app' | 'by_api_namespace'
         const grouped: Record<string, number> = { ...overview.summary[summaryField] }
-        for (const row of page.grouped) { const label = key === 'apiType' ? row.group[field].split('.')[0] : row.group[field]; grouped[label] = (grouped[label] ?? 0) + row.aggregate.total_tokens }
+        for (const row of page.grouped) { const label = key === 'apiType' ? row.group[field].split('.')[0] : row.group[field] || (key === 'appAgent' ? 'system' : '—'); grouped[label] = (grouped[label] ?? 0) + row.aggregate.total_tokens }
         return { key: scopeKey, overview: { ...overview, summary: { ...overview.summary, [summaryField]: grouped }, breakdowns: [...overview.breakdowns, ...page.grouped] } }
       })
       setHomeHasMore((current) => ({ ...current, [section]: page.grouped.length === 20 }))
@@ -380,6 +388,8 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
   // and kept stable while paging through that series.
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [pageCursors, setPageCursors] = useState<Record<number, string | undefined>>({ 1: undefined })
+  const usageCursors = useRef(pageCursors)
+  useEffect(() => { usageCursors.current = pageCursors }, [pageCursors])
   const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
   const [consumptionPage, setConsumptionPage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
   const [consumptionLoading, setConsumptionLoading] = useState(true)
@@ -389,9 +399,13 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
   const [groupErrors, setGroupErrors] = useState<Record<string, string | null>>({})
   const consumptionPending = useRef(new Set<string>())
   const consumptionGeneration = useRef(0)
+  const consumptionRef = useRef(consumptionPage)
+  useEffect(() => { consumptionRef.current = consumptionPage }, [consumptionPage])
+  const consumptionQuery = useRef('')
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [usageRetryKey, setUsageRetryKey] = useState(0)
+  const lastUsageRetry = useRef(usageRetryKey)
   const billingPending = usagePage.events.some((event) => String(event.usage?.cost_source ?? '').includes('pending'))
   useEffect(() => {
     if (!billingPending) return
@@ -485,18 +499,18 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
 
   useEffect(() => {
     let cancelled = false
+    const refresh = lastUsageRetry.current !== usageRetryKey
+    lastUsageRetry.current = usageRetryKey
     async function loadUsagePage() {
       setUsageLoading(true)
       setUsageError(null)
       try {
-        const page = await store.queryUsageEvents({
-          scope,
-          timeRange: usageQueryRange,
-          filters: usageQueryFilters,
-          cursor: currentCursor,
-          limit: pageLimit,
-          pageOnly: true,
-        })
+        const queryPage = (cursor: string | undefined) => store.queryUsageEvents({ scope, timeRange: usageQueryRange, filters: usageQueryFilters, cursor, limit: pageLimit, pageOnly: true })
+        const pages = refresh && isUsagePage && isMobile
+          ? await Promise.all(Array.from({ length: detailPage }, (_, index) => queryPage(usageCursors.current[index + 1])))
+          : [await queryPage(currentCursor)]
+        const page = pages[pages.length - 1]
+        if (pages.length > 1) page.events = pages.flatMap((value) => value.events)
         if (cancelled) return
         setUsagePage((current) => {
           if (isUsagePage && isMobile && detailPage > 1) {
@@ -531,28 +545,29 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
     }
   }, [currentCursor, detailPage, isMobile, isUsagePage, pageLimit, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
 
-  const loadConsumption = async (groupBy?: string, append = false) => {
+  const loadConsumption = useCallback(async (groupBy?: string, append = false, background = false) => {
     const key = groupBy ?? 'total'
     if (consumptionPending.current.has(key)) return
     const generation = consumptionGeneration.current
     consumptionPending.current.add(key)
     if (groupBy) {
-      setGroupLoading((current) => ({ ...current, [groupBy]: true }))
+      if (!background) setGroupLoading((current) => ({ ...current, [groupBy]: true }))
       setGroupErrors((current) => ({ ...current, [groupBy]: null }))
     } else {
-      setConsumptionLoading(true)
+      if (!background) setConsumptionLoading(true)
       setConsumptionError(null)
     }
     try {
+      const groupLimit = groupBy && !append ? Math.max(20, consumptionRef.current.grouped.filter((row) => groupBy in row.group).length) : 20
       const page = await store.queryUsageEvents({
         scope, timeRange: usageQueryRange, filters: usageQueryFilters, limit: 1,
-        summaryOnly: true, groupBy, groupLimit: 20,
-        groupOffset: append && groupBy ? consumptionPage.grouped.filter((row) => groupBy in row.group).length : 0,
+        summaryOnly: true, groupBy, groupLimit,
+        groupOffset: append && groupBy ? consumptionRef.current.grouped.filter((row) => groupBy in row.group).length : 0,
       })
       if (generation !== consumptionGeneration.current) return
       if (groupBy) {
         setConsumptionPage((current) => ({ ...current, grouped: [...(append ? current.grouped : current.grouped.filter((row) => !(groupBy in row.group))), ...page.grouped] }))
-        setGroupHasMore((current) => ({ ...current, [groupBy]: page.grouped.length === 20 }))
+        setGroupHasMore((current) => ({ ...current, [groupBy]: page.grouped.length === groupLimit }))
       } else {
         setConsumptionPage((current) => ({ ...current, total: page.total, totalRequests: page.totalRequests }))
       }
@@ -568,18 +583,24 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
         else setConsumptionLoading(false)
       }
     }
-  }
+  }, [scope, store, t, usageQueryFilters, usageQueryRange])
 
   useEffect(() => {
     if (!isUsagePage) return
     const generation = ++consumptionGeneration.current
     consumptionPending.current = new Set()
-    setConsumptionPage({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
-    setGroupHasMore({})
-    setGroupErrors({})
-    for (const groupBy of [undefined, 'provider_instance_name', 'provider_model', 'caller_app_id', 'capability']) void loadConsumption(groupBy)
-    return () => { if (consumptionGeneration.current === generation) consumptionGeneration.current++ }
-  }, [isUsagePage, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
+    const query = JSON.stringify([scope, usageQueryFilters, usageQueryRange])
+    const background = consumptionQuery.current === query
+    consumptionQuery.current = query
+    if (!background) {
+      consumptionRef.current = { events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] }
+      setConsumptionPage(consumptionRef.current)
+      setGroupHasMore({})
+      setGroupErrors({})
+    }
+    for (const groupBy of [undefined, 'provider_instance_name', 'provider_model', 'caller_app_id', 'capability']) void loadConsumption(groupBy, false, background)
+    return () => { consumptionGeneration.current = generation + 1 }
+  }, [isUsagePage, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey, loadConsumption])
 
   const resetUsagePaging = () => {
     setDetailPage(1)
@@ -1730,15 +1751,7 @@ function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace
 }
 
 function mergeUsageEvents(current: UsageEvent[], next: UsageEvent[]): UsageEvent[] {
-  const seen = new Set(current.map((event) => event.id))
-  const merged = [...current]
-  for (const event of next) {
-    if (!seen.has(event.id)) {
-      seen.add(event.id)
-      merged.push(event)
-    }
-  }
-  return merged
+  return Array.from(new Map([...current, ...next].map((event) => [event.id, event])).values())
 }
 
 function usageFilterCount(

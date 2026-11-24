@@ -1464,7 +1464,9 @@ impl RuntimeProviderExecutionPort {
                 let provider_instance_name = call.provider_instance_name.clone();
                 let protocol_adapter_id = call.protocol_adapter_id.clone();
                 let resource_context = call.resource_access_context.clone();
+                let audio_call = Arc::new(call.clone());
                 let events = stream.events.then(move |event| {
+                    let audio_call = audio_call.clone();
                     let source = source.clone();
                     let storage = storage.clone();
                     let provider_instance_name = provider_instance_name.clone();
@@ -1484,6 +1486,12 @@ impl RuntimeProviderExecutionPort {
                             }
                         }
                         if let ProtocolEvent::Final(output) = &mut event {
+                            fill_input_audio_usage(
+                                &audio_call.input.canonical_request,
+                                &audio_call.context,
+                                audio_call.pricing.pricing.as_ref(),
+                                output,
+                            );
                             if !output.artifacts.is_empty() {
                                 let context = resource_context.as_ref().ok_or_else(|| {
                                     ProtocolError::invalid_configuration(
@@ -2033,6 +2041,30 @@ fn observed_protocol_stream(
     }
 }
 
+pub(super) fn request_has_no_audio(request: &AiccCall) -> bool {
+    let messages = match request {
+        AiccCall::ChatCompletionsCreate(request) => &request.messages,
+        AiccCall::HelperLlmChat(request) => &request.messages,
+        _ => return false,
+    };
+    messages.iter().all(|message| {
+        message.content.iter().all(|content| match content {
+            buckyos_api::AiContent::Text { .. }
+            | buckyos_api::AiContent::Image { .. }
+            | buckyos_api::AiContent::Thinking { .. }
+            | buckyos_api::AiContent::ToolUse { .. } => true,
+            buckyos_api::AiContent::ToolResult { content, .. } => content.iter().all(|content| {
+                matches!(
+                    content,
+                    buckyos_api::AiToolResultContent::Text { .. }
+                        | buckyos_api::AiToolResultContent::Image { .. }
+                )
+            }),
+            _ => false,
+        })
+    })
+}
+
 fn fill_input_audio_usage(
     request: &AiccCall,
     context: &CodecContext,
@@ -2046,6 +2078,7 @@ fn fill_input_audio_usage(
     {
         return;
     }
+    let no_audio = request_has_no_audio(request);
     let seconds = match request {
         AiccCall::AudioSpeechRecognition(request) => context
             .materialized_resource(&request.audio)
@@ -2053,28 +2086,20 @@ fn fill_input_audio_usage(
             .and_then(|resource| crate::media::probe(&resource.bytes).ok())
             .filter(|facts| facts.has_audio)
             .and_then(|facts| facts.duration_seconds),
-        AiccCall::ChatCompletionsCreate(request)
+        AiccCall::ChatCompletionsCreate(_)
             if pricing.is_some_and(|price| {
                 price.unit == Some(crate::catalog::PricingUnit::AudioSecond)
                     || price
                         .addons
                         .iter()
                         .any(|addon| addon.unit == crate::catalog::PricingUnit::AudioSecond)
-            }) && request.messages.iter().all(|message| {
-                message.content.iter().all(|content| {
-                    matches!(
-                        content,
-                        buckyos_api::AiContent::Text { .. }
-                            | buckyos_api::AiContent::Image { .. }
-                            | buckyos_api::AiContent::Thinking { .. }
-                    )
-                })
-            }) && output
-                .usage
-                .as_ref()
-                .and_then(|usage| usage.audio_input_tokens)
-                .unwrap_or(0)
-                == 0
+            }) && no_audio
+                && output
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.audio_input_tokens)
+                    .unwrap_or(0)
+                    == 0
                 && output
                     .usage
                     .as_ref()
@@ -2306,6 +2331,13 @@ mod tests {
             fill_input_audio_usage(&text, &context, None, &mut output);
             assert_eq!(output.usage.as_ref().unwrap().audio_seconds, None);
             fill_input_audio_usage(&text, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(0.0));
+            let with_tools = AiccCall::ChatCompletionsCreate(buckyos_api::LlmChatInvokeRequest::new("test", vec![
+                buckyos_api::AiMessage::new(buckyos_api::AiRole::Assistant, vec![buckyos_api::AiContent::tool_use("call", "search", HashMap::new())]),
+                buckyos_api::AiMessage::new(buckyos_api::AiRole::Tool, vec![buckyos_api::AiContent::tool_result_text("call", "result", false)]),
+            ]));
+            output.usage.as_mut().unwrap().audio_seconds = None;
+            fill_input_audio_usage(&with_tools, &context, Some(&pricing), &mut output);
             assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(0.0));
             output.usage.as_mut().unwrap().audio_seconds = None;
             output.usage.as_mut().unwrap().audio_output_tokens = Some(3);

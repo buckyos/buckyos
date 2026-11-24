@@ -47,6 +47,8 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
       assert(overview.summary.total_tokens === 120 && overview.summary.total_requests === 3, 'aggregate totals are preserved')
       assert(overview.summary.today_tokens === 120 && overview.summary.this_month_tokens === 120, 'short windows are queried in the same scope')
       assert(overview.users[0].user_id === 'bob', 'user breakdown uses user_id, not tenant_id')
+      const apps = await manager.queryUsageEvents({ scope, timeRange: overview.timeRange!, limit: 1, summaryOnly: true, groupBy: 'caller_app_id', groupLimit: 20 })
+      assert(apps.grouped[0].group.caller_app_id === 'system', 'empty app ids are normalized on paginated group responses')
       assert(overview.users[0].finance_totals.length === 2, 'per-user costs preserve separate currencies')
       assert(!overview.users[0].finance_complete, 'incomplete per-user costs remain marked incomplete')
       assert(overview.trend[0].tokens === 120, 'trend carries scoped aggregates')
@@ -58,7 +60,7 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
         filters: { providerInstanceNames: ['provider'] },
       })
       assert(page.events[0].user_id === 'bob' && page.events[0].tenant_id === 'tenant-bob', 'event ownership and tenant remain distinct')
-      assert(sent.length === 9, 'all eight independent overview slices plus events are requested')
+      assert(sent.length === 10, 'eight independent overview slices, one app group page and events are requested')
       for (const params of sent) {
         assert(params.zone_wide === (scope.zoneWide === true), 'every request carries the selected system/personal boundary')
         const filters = params.filters as Record<string, unknown>
@@ -181,4 +183,28 @@ Deno.test('home overview publishes completed slices before a slow model query fi
     assert(merged.summary.by_model.extra === 10, 'late totals do not overwrite expanded model data')
     assert(merged.summary.total_tokens === 100, 'complete totals stay independent of limited groups')
   } finally { release(); sdk.getServiceRpcClient = original }
+})
+
+Deno.test('snapshot loading never waits for usage aggregation', async () => {
+  const sdk = buckyos as unknown as { getAccountInfo: () => Promise<unknown>; getServiceRpcClient: (service: string) => unknown }
+  const originalAccountInfo = sdk.getAccountInfo
+  const originalClient = sdk.getServiceRpcClient
+  const calls: string[] = []
+  sdk.getAccountInfo = async () => ({ session_token: 'test-session' })
+  sdk.getServiceRpcClient = () => ({ call: async (method: string) => {
+    calls.push(method)
+    if (method === 'usage.query') throw new Error('snapshot must not request usage')
+    if (method === 'models.list') return { models: [], directory: {}, logical_definitions: [] }
+    if (method === 'provider.list') return { providers: [], settings_revision: 1 }
+    if (method === 'trace.query') return { traces: [] }
+    return {}
+  } })
+  try {
+    await createAICCMgr({ useMock: false }).refresh()
+    assert(calls.includes('models.list') && calls.includes('provider.list'), 'snapshot loads inventory')
+    assert(!calls.includes('usage.query'), 'usage aggregates stay independent')
+  } finally {
+    sdk.getAccountInfo = originalAccountInfo
+    sdk.getServiceRpcClient = originalClient
+  }
 })

@@ -2884,20 +2884,12 @@ impl AiUsage {
                 self.image_input_tokens.map(|value| value as f64),
             ),
             (
-                "video_input_tokens",
-                self.video_input_tokens.map(|value| value as f64),
-            ),
-            (
                 "image_output_tokens",
                 self.image_output_tokens.map(|value| value as f64),
             ),
             (
                 "video_input_tokens",
                 self.video_input_tokens.map(|value| value as f64),
-            ),
-            (
-                "video_output_tokens",
-                self.video_output_tokens.map(|value| value as f64),
             ),
             (
                 "video_output_tokens",

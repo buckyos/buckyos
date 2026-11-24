@@ -332,6 +332,15 @@ impl AiccStorage {
                 }
             }
         }
+        let status = match self.backend {
+            RdbBackend::Sqlite => "json_extract(record_json,'$.binding.billing.status')",
+            RdbBackend::Postgres => "record_json::jsonb #>> '{binding,billing,status}'",
+        };
+        let next = match self.backend {
+            RdbBackend::Sqlite => "json_extract(record_json,'$.binding.billing.next_attempt_ms')",
+            RdbBackend::Postgres => "record_json::jsonb #>> '{binding,billing,next_attempt_ms}'",
+        };
+        transaction.execute(format!("CREATE INDEX IF NOT EXISTS idx_aicc_billing_due ON aicc_execution_record (CAST({next} AS BIGINT),created_at_ms,task_id) WHERE state='succeeded' AND {status} IN ('pending','local_pending')").as_str()).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -1342,28 +1351,7 @@ impl AiccStorage {
         let mut query = usage_query(select, start, end, filters, None);
         if let Some(selected) = selected_groups {
             query.push(" AND (");
-            for (index, row) in selected.iter().enumerate() {
-                if index > 0 {
-                    query.push(" OR ");
-                }
-                query.push("(");
-                for (index, group) in groups.iter().enumerate() {
-                    if index > 0 {
-                        query.push(" AND ");
-                    }
-                    let column = group.as_key();
-                    query.push(column);
-                    match row.try_get::<Option<String>, _>(column)? {
-                        Some(value) => {
-                            query.push("=").push_bind(value);
-                        }
-                        None => {
-                            query.push(" IS NULL");
-                        }
-                    }
-                }
-                query.push(")");
-            }
+            append_selected_groups(&mut query, &selected, groups)?;
             query.push(")");
         }
         query.push(" GROUP BY ");
@@ -2155,6 +2143,40 @@ fn valid_finance(value: &Value) -> Option<(f64, String)> {
     Some((amount, currency.to_ascii_uppercase()))
 }
 
+fn append_selected_groups(
+    query: &mut QueryBuilder<'_, Any>,
+    rows: &[AnyRow],
+    groups: &[UsageQueryGroup],
+) -> StorageResult<()> {
+    if rows.len() > 1 {
+        let middle = rows.len() / 2;
+        query.push("(");
+        append_selected_groups(query, &rows[..middle], groups)?;
+        query.push(" OR ");
+        append_selected_groups(query, &rows[middle..], groups)?;
+        query.push(")");
+    } else if let Some(row) = rows.first() {
+        query.push("(");
+        for (index, group) in groups.iter().enumerate() {
+            if index > 0 {
+                query.push(" AND ");
+            }
+            let column = group.as_key();
+            query.push(column);
+            match row.try_get::<Option<String>, _>(column)? {
+                Some(value) => {
+                    query.push("=").push_bind(value);
+                }
+                None => {
+                    query.push(" IS NULL");
+                }
+            }
+        }
+        query.push(")");
+    }
+    Ok(())
+}
+
 fn limit(value: Option<u32>) -> usize {
     value
         .map(|v| v as usize)
@@ -2242,6 +2264,143 @@ fn placeholders(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn review_group_limit_1000_preserves_null_and_multicurrency_groups() {
+        let db = db().await;
+        for index in 0..1000 {
+            let mut event = usage_event(
+                &format!("group-{index}"),
+                Some(json!({"currency":"USD","amount":0.2})),
+                Some(1),
+            );
+            event.provider_instance_name = format!("provider-{index}");
+            db.write_usage(&event).await.unwrap();
+        }
+        let mut req = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+            start_time_ms: 1,
+            end_time_ms: 20_000,
+        });
+        req.group_by = vec![
+            UsageQueryGroup::ProviderInstanceName,
+            UsageQueryGroup::CallerAppId,
+        ];
+        req.output_mode = UsageQueryOutputMode::Groups;
+        req.group_limit = Some(1000);
+        let result = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(result.grouped.len(), 1000);
+    }
+
+    #[tokio::test]
+    async fn review_billing_errors_reach_a_durable_terminal_state() {
+        use crate::execution::BillingStatus;
+        let db = db().await;
+        let record = completed_fal_billing(&db, "exhausted", false).await;
+        let now = record.created_at_ms + 86_400_000;
+        let claimed = db.claim_billing(&record, now).await.unwrap().unwrap();
+        db.finish_billing(
+            &claimed,
+            None,
+            None,
+            Some("probe_download_failed"),
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .pending_billings(now + 86_400_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let saved = db.get_task(&record.task_id).await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            BillingStatus::Unresolved
+        );
+        let usage = saved.output.unwrap().usage;
+        assert!(!usage.cost_source.unwrap().contains("pending"));
+        assert_eq!(usage.cost.unwrap().amount, 0.25);
+        assert_eq!(
+            db.get_task(&record.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .binding
+                .unwrap()
+                .billing
+                .unwrap()
+                .last_error
+                .as_deref(),
+            Some("probe_download_failed")
+        );
+        let mut unknown = completed_fal_billing(&db, "unpriced-exhausted", false).await;
+        unknown
+            .binding
+            .as_mut()
+            .unwrap()
+            .billing
+            .as_mut()
+            .unwrap()
+            .attempts = 11;
+        let output = unknown.output.as_mut().unwrap();
+        output.cost = None;
+        output.usage.cost = None;
+        let usage_json = serde_json::to_string(&output.usage).unwrap();
+        sqlx::query("UPDATE aicc_usage_event SET usage_json=? WHERE event_id=?")
+            .bind(usage_json)
+            .bind(&unknown.usage_event_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE aicc_execution_record SET record_json=? WHERE task_id=?")
+            .bind(serde_json::to_string(&unknown).unwrap())
+            .bind(&unknown.task_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let claimed = db.claim_billing(&unknown, 30_000).await.unwrap().unwrap();
+        assert!(db
+            .finish_billing(
+                &claimed,
+                None,
+                None,
+                Some("probe_missing_frames"),
+                None,
+                30_000
+            )
+            .await
+            .unwrap());
+        assert!(!db
+            .finish_billing(
+                &claimed,
+                None,
+                None,
+                Some("probe_missing_frames"),
+                None,
+                30_000
+            )
+            .await
+            .unwrap());
+        let saved = db.get_task(&unknown.task_id).await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            BillingStatus::Unresolved
+        );
+        let usage = saved.output.unwrap().usage;
+        assert!(usage.cost.is_none());
+        assert_eq!(usage.cost_source.as_deref(), Some("billing_unresolved"));
+        assert_eq!(
+            usage.cost_unknown_reason.as_deref(),
+            Some("billing_retries_exhausted:probe_missing_frames")
+        );
+        let plan: Vec<sqlx::any::AnyRow> = sqlx::query("EXPLAIN QUERY PLAN SELECT task_id FROM aicc_execution_record INDEXED BY idx_aicc_billing_due WHERE state='succeeded' AND json_extract(record_json,'$.binding.billing.status') IN ('pending','local_pending') AND CAST(json_extract(record_json,'$.binding.billing.next_attempt_ms') AS BIGINT)<=100000 ORDER BY CAST(json_extract(record_json,'$.binding.billing.next_attempt_ms') AS BIGINT),created_at_ms,task_id LIMIT 32").fetch_all(&db.pool).await.unwrap();
+        assert!(plan.iter().any(|row| row
+            .try_get::<String, _>("detail")
+            .unwrap()
+            .contains("idx_aicc_billing_due")));
+    }
+
     use crate::execution::{
         NativeTaskResumeDescriptor, PinnedPricingBasis, PinnedPricingSnapshot, ResumeCredential,
         ResumeCredentialKind,

@@ -722,6 +722,7 @@ struct InferenceRouteInput {
     session_id: Option<String>,
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
+    no_audio: bool,
     /// Measured clip lengths; empty until materials are prepared.
     video_clips: crate::video::ClipSummary,
 }

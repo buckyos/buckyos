@@ -202,3 +202,71 @@ test('home summary exposes independent today, month and thirty-day token details
   }
   await summary.screenshot({ path: testInfo.outputPath('home-summary-token-details.png') })
 })
+
+async function installBillingFixture(page: Page) {
+  await expect(page.getByTestId('home-usage-summary')).toBeVisible()
+  await page.evaluate(async () => {
+    const dashboardSource = await fetch('/src/app/ai-center/components/home/UsageDashboard.tsx').then((response) => response.text())
+    const modulePath = dashboardSource.match(/from "([^" ]*\/api\/aicc_mgr\.ts[^" ]*)"/)?.[1] ?? '/src/api/aicc_mgr.ts'
+    const { AICCModelStore } = await import(modulePath)
+    const original = AICCModelStore.prototype.queryUsageEvents
+    const state = { settled: false, hold: false, releases: [] as Array<() => void>, cursors: [] as Array<string | undefined> }
+    Reflect.set(window, 'usageBillingFixture', state)
+    AICCModelStore.prototype.queryUsageEvents = async function (params: { summaryOnly?: boolean; groupBy?: string; groupLimit?: number; groupOffset?: number; cursor?: string }) {
+      const result = await original.call(this, params)
+      if (params.summaryOnly) {
+        if (state.hold) await new Promise<void>((resolve) => state.releases.push(resolve))
+        if (params.groupBy === 'provider_model') {
+          const aggregate = result.grouped[0]?.aggregate ?? (await original.call(this, { ...params, groupOffset: 0 })).grouped[0].aggregate
+          result.grouped = Array.from({ length: 40 }, (_, index) => ({ group: { provider_model: `billing-model-${String(index).padStart(2, '0')}` }, aggregate }))
+            .slice(params.groupOffset ?? 0, (params.groupOffset ?? 0) + (params.groupLimit ?? 20))
+        }
+      } else {
+        state.cursors.push(params.cursor)
+        result.events = result.events.map((event: { usage?: Record<string, unknown> }) => ({ ...event, usage: { ...event.usage, cost_source: state.settled ? 'provider_billing' : 'static_pricing_pending_billing' } }))
+      }
+      return result
+    }
+  })
+}
+
+test('billing refresh retains consumption totals and all loaded groups until replacements arrive', async ({ page }) => {
+  await page.clock.install()
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const consumption = page.getByTestId('usage-consumption')
+  const models = page.getByTestId('usage-consumption-provider_model')
+  await expect(models).toContainText('Models · 20+')
+  await models.getByRole('button', { name: 'Show more', exact: true }).click()
+  await models.getByRole('button', { name: 'Load more', exact: true }).click()
+  await expect(models).toContainText('billing-model-39')
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.settled = true; state.hold = true })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').releases.length)).toBe(5)
+  await expect(consumption).toContainText('140 matching records, all pages')
+  await expect(models).toContainText('billing-model-39')
+  await expect(consumption).not.toContainText('Loading')
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.hold = false; state.releases.forEach((release: () => void) => release()) })
+  await expect(page.getByTestId('usage-event-row').first()).not.toContainText('Awaiting billing')
+  await expect(models).toContainText('billing-model-39')
+})
+
+test('mobile billing refresh replaces records on earlier pages and stops polling after settlement', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.clock.install()
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const rows = page.getByTestId('usage-event-row').filter({ visible: true })
+  await expect(rows).toHaveCount(10)
+  await page.getByRole('button', { name: 'Load more', exact: true }).click()
+  await expect(rows).toHaveCount(20)
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.settled = true; state.cursors = [] })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(2)
+  await expect(rows).toHaveCount(20)
+  await expect(page.getByText('Awaiting billing', { exact: true })).toHaveCount(0)
+  await page.clock.fastForward(30_000)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(2)
+})

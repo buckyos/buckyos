@@ -2218,7 +2218,7 @@ fn decode_embedding_usage(value: Option<&Value>) -> ProtocolResultValue<Option<A
     Ok(Some(AiUsage {
         cache_write_1h_input_tokens: None,
         input_tokens,
-        output_tokens: None,
+        output_tokens: Some(0),
         total_tokens,
         request_units: None,
         ..AiUsage::default()
@@ -3291,6 +3291,30 @@ fn decode_video_cancel(response: HttpResponse) -> ProtocolResultValue<NativeTask
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_embedding_usage_has_zero_output_and_requires_input() {
+        for usage in [
+            json!({"prompt_tokens":42,"total_tokens":42}),
+            json!({"input_tokens":42}),
+        ] {
+            let decoded = decode_embedding_usage(Some(&usage)).unwrap().unwrap();
+            assert_eq!(decoded.input_tokens, Some(42));
+            assert_eq!(decoded.output_tokens, Some(0));
+            let pricing = crate::execution::PinnedPricingSnapshot::from_pricing(
+                &serde_json::from_value(json!({"currency":"USD","input_token":0.001})).unwrap(),
+                None,
+                std::time::SystemTime::now(),
+            )
+            .unwrap()
+            .unwrap();
+            assert!((pricing.completion_cost(&decoded).unwrap().amount - 0.042).abs() < 1e-12);
+            assert!(pricing
+                .completion_cost(&decode_embedding_usage(Some(&json!({}))).unwrap().unwrap())
+                .is_none());
+        }
+    }
+
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CodecRegistry, GoldenBody, ProtocolContractHarness,
         ResolvedCredential,
