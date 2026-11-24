@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-16.1",
+  "revision": "2026-11-24.1",
   "checked_at": "2026-11-16",
   "providers": [
     {
@@ -1749,7 +1749,10 @@
               "low",
               "medium",
               "high"
-            ]
+            ],
+            "thinking_level_values_by_model": {
+              "gemini-4-hydrogen": ["low", "medium", "high", "xhigh"]
+            }
           },
           "stream_protocol": "gemini_interactions",
           "success_fixture": {
@@ -1806,12 +1809,13 @@
             "/steps/0/content/1/data"
           ],
           "official_sources": [
+            "https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
             "https://ai.google.dev/api/interactions-api",
             "https://ai.google.dev/gemini-api/docs/function-calling",
             "https://ai.google.dev/gemini-api/docs/image-understanding",
             "https://ai.google.dev/gemini-api/docs/api-errors"
           ],
-          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call; detection uses a structured boxes schema with normalized box_2d and label, while segmentation additionally requires polygon mask coordinates."
+          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call; detection uses a structured boxes schema with normalized box_2d and label, while segmentation additionally requires polygon mask coordinates. Thinking-level enums are model-specific: gemini-4-hydrogen accepts low/medium/high/xhigh and excludes minimal (official thinking table checked 2026-11-24)."
         },
         {
           "id": "gemini.interactions.transcription.v1beta",
