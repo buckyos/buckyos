@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { notifyCategoryFromSessionId } from 'buckyos'
 import { NOTIFY_CATEGORIES } from '../../components/conversation/model/msgobj'
+import { defaultSessionPrefs, sessionTitle } from '../../shared/messagehub/session.ts'
 import type { ConversationMemoryMode } from '../../components/conversation/backendTypes'
 import type { Entity, MessageHubContext, Session, SessionAccess, SessionBinding, SessionPreferences } from './types'
 
@@ -17,7 +18,7 @@ export const groupSharedStateSchema = sharedStateSchema.extend({ announcement: z
 export const memberStateSchema = z.object({ nickname: z.string().trim().max(64) })
 export const presentationSchema = z.object({ title: z.string().trim().max(64), description: z.string().trim().max(500), pinned: z.boolean(), muted: z.boolean() })
 export const pinnedMessageSchema = z.object({ id: z.string().min(1), text: z.string().max(2000), senderDid: z.string(), createdAt: z.number() })
-export const defaultPreferences: SessionPreferences = { title: '', description: '', pinned: false, muted: false, showActions: true }
+export const defaultPreferences: SessionPreferences = { ...defaultSessionPrefs, showActions: true }
 export const sessionKey = (ownerDid: string, sessionId: string) => JSON.stringify([ownerDid, sessionId])
 export const viewerSessionKey = (context: MessageHubContext, sessionId: string) => JSON.stringify([context.viewerDid, context.ownerDid, sessionId])
 /** Rank of a notification session in the fixed category order (to-do, Agent, App); -1 for any other session. */
@@ -49,9 +50,7 @@ export function selectDefaultSession(entity: Entity, sessions: Session[]): Sessi
   if (main) return main
   return [...candidates].sort((a, b) => b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))[0] ?? null
 }
-export function sessionTitle(session: Session, preferences: SessionPreferences) {
-  return preferences.title || session.shared.title || session.title
-}
+export { sessionTitle }
 export function sessionDescription(session: Session, preferences: SessionPreferences) {
   return preferences.description || session.shared.description
 }

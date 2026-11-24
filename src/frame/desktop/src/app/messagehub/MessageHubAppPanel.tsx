@@ -1,12 +1,15 @@
 import { useMediaQuery } from '@mui/material'
 import { mobileStatusBarHeight, mobileStatusBarMode } from '../../desktop/shell'
 import { MessageHubView } from './MessageHubView'
-import { messageHubLaunchSchema } from './launch'
+import { MessageHubLink } from './MessageHubLink'
+import { messageHubLaunchSchema, messageHubLinkSchema } from './launch'
 import type { AppContentLoaderProps } from '../types'
 
 export function MessageHubAppPanel({ launch, app, layoutState, windowId }: AppContentLoaderProps) {
   const isMobile = useMediaQuery('(max-width: 768px)')
   const topInset = isMobile && mobileStatusBarMode(app) === 'compact' ? `calc(var(--sat, 0px) + ${layoutState.deadZone.top + mobileStatusBarHeight(app)}px)` : undefined
+  const link = messageHubLinkSchema.safeParse(launch?.payload)
+  if (link.success) return <div className="flex h-full flex-col" style={{ paddingTop: topInset }}><MessageHubLink key={launch?.requestId} search={new URLSearchParams(link.data.search)} windowId={windowId} /></div>
   const payload = messageHubLaunchSchema.safeParse(launch?.payload)
   // An invalid launch payload must not fall back to another identity's data:
   // it opens an observer context with an empty owner, which the store denies.

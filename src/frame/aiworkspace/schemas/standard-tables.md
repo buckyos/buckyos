@@ -22,7 +22,8 @@ columns). Rules on a standard field that a table lacks are skipped.
 | `ext` | json, nullable | extension fields, see below |
 
 `ext` keys with a meaning (others are kept as they are): `priority` (`low` \| `normal` \| `high` \| `urgent`), `tags`
-(≤ 32 strings of ≤ 64 characters), `assignee` (string ≤ 256), `reminders` (as on the calendar), `source` (object ≤ 4 KiB).
+(≤ 32 strings of ≤ 64 characters), `assignee` (string ≤ 256; an account's user id is reminded), `reminders` (as on the
+calendar, counted back from 09:00 of the due date), `source` (object ≤ 4 KiB).
 
 The add-record form asks only for missing required fields, including hidden fields. A new standard to-do needs only its title when its status has a default.
 
@@ -52,11 +53,11 @@ An event has no default start time. The form asks for a title and the start appr
 | `location` | string ≤ 1024 |
 | `color` | `#rrggbb` |
 | `busy` | boolean (absent: a timed event is busy, an all-day one free) |
-| `reminders` | ≤ 16 of `{ before_min: 0…40320, channel?: string ≤ 64 }` |
+| `reminders` | ≤ 16 of `{ before_min: 0…40320, channel?: string ≤ 64 }`: the service sends a System Notify that long before each occurrence starts (an all-day event: before 09:00 of its first day, in the zone the reminded user chose); `channel` is not read (README “Notices”) |
 | `rule_text` | string ≤ 256: a rule the subset cannot express (“每月最后一个法定工作日”), shown as is |
 | `occurrences` | ≤ 1000 starts (datetime or date) an Agent wrote for a `rule_text` series |
-| `covered_until` | datetime or date: how far `occurrences` (or the reminders an Agent scheduled) reach |
-| `maintenance` | object ≤ 4 KiB: `{ covered_until?, last_success_at?, last_error?, maintainer? }` (D4 §5.4) |
+| `covered_until` | datetime or date: how far `occurrences` (or the reminders an Agent scheduled) reach; the service leaves the reminders of such a record to the Agent |
+| `maintenance` | object ≤ 4 KiB: `{ covered_until?, last_success_at?, last_error?, maintainer? }` (D4 §5.4); as `covered_until` for reminders |
 
 ### The RRULE subset
 

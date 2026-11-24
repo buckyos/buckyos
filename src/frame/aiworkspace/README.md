@@ -417,6 +417,33 @@ empty) with `more: true` and a `next_before` to go on from. Commit messages are 
 language (the Desktop writes the label of the edit); the client says the service's own messages and every other kind
 of entry in the reader's language.
 
+## Notices (System Notify, `notepads/buckyos-app-system-client-todo.md` N8)
+
+The service tells Zone users of two things through msg-center `notify.send` (`doc/message_hub/System Notify.md`), as
+`system:aiworkspace`; `store/src/notices.rs` finds them, `server/src/notices.rs` decides who is told and sends, once a minute
+over every Workspace but the copies shows and sessions run on. Standalone mode has no msg-center: nothing is sent.
+
+**Comments** are annotations with a `target` and a body (a note without one is canvas content), written by a person or an
+Agent (Commit origin `human` / `agent`). One concerns who made the target (who wrote the record, for a comment on a record;
+the Workspace owner when nobody is recorded), who commented on the same target before, and the accounts its body names as
+`@<user id>` (there is no structured mention: the text is what counts). Never its author. After notices went out, what comes
+in the next five minutes of that Workspace goes out together; level `normal`, `timely` when the user is named. How far
+comments were told is kept in the Workspace's local state (`notify.comments_seq`), so a restart or an unreachable msg-center
+loses none (older than a day: dropped), and a Workspace starts from its head when the service first sees it.
+
+**Reminders** are `ext.reminders` of the standard to-do and calendar tables ([schemas/standard-tables.md](schemas/standard-tables.md)),
+repeating events included (`server/src/recurrence.rs`, the Rust side of buckyos-websdk `src/aiws_rrule.ts`). A record reminds
+one person: a to-do's `ext.assignee`, who wrote the record, the owner — the first that is an account and may read the table.
+Level `timely`, category `todo` for a to-do; a notice closes a day after what it reminds of. The service sends what fell due
+since it last looked, at most an hour late; the key names the record, the start and the reminder, so a moved event reminds
+again and nothing is sent twice. Not reminded: done to-dos, cancelled events, records an Agent keeps the reminders of
+(`ext.maintenance` or `ext.covered_until`), and what `ws.clone` or an import as a new Workspace brought along, until somebody
+changes that record.
+
+A recipient is an active account that may read the comment and what it is on (the table, for a reminder) at that moment.
+`source.link` is the page: the Surface with the Block showing the thing (`block=`, `record=`, `occ=`), else the Workspace.
+Texts are English: the service has no language of the recipient.
+
 ## Connector (连接线方案 C1)
 
 Design: [连接线实现方案讨论](<../../../doc/workspace/连接线实现方案讨论.md>) §4, §6, §8.3. A connector is a Cell with

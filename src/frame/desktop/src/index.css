@@ -1,3 +1,5 @@
+@import './shared/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -5,61 +7,6 @@
 .aicc-password-input::-ms-reveal,
 .aicc-password-input::-ms-clear {
   display: none;
-}
-
-/* Theme tokens. `.cp-theme-light` / `.cp-theme-dark` give a subtree a fixed theme whatever the page uses (an AI
-   Workspace stage renders its content for the stage's own background). */
-:root,
-.cp-theme-light {
-  color-scheme: light;
-  --cp-bg: #f3f3f2;
-  --cp-bg-strong: #e8e8e6;
-  --cp-surface: #fdfdfc;
-  --cp-surface-2: #f5f5f4;
-  --cp-surface-opaque: #fdfdfc;
-  --cp-surface-2-opaque: #f5f5f4;
-  --cp-surface-3: color-mix(in srgb, var(--cp-text) 4%, var(--cp-surface));
-  --cp-text: #1b1b1a;
-  --cp-muted: #6b6b69;
-  --cp-border: color-mix(in srgb, var(--cp-text) 12%, transparent);
-  --cp-border-opaque: #dcdcda;
-  --cp-accent: oklch(0.553 0.171 265);
-  --cp-accent-soft: oklch(0.78 0.045 265);
-  --cp-ink-accent: oklch(0.56 0.03 260);
-  --cp-success: oklch(0.74 0.13 160);
-  --cp-warning: oklch(0.78 0.11 65);
-  --cp-danger: oklch(0.64 0.15 25);
-  --cp-shadow: #333333;
-  --cp-wallpaper-a: #f3f3f2;
-  --cp-wallpaper-b: #ececea;
-  --cp-wallpaper-c: #efefed;
-  --cp-chart-input: var(--cp-accent);
-  --cp-chart-output: oklch(0.72 0.13 62);
-  /* The conversation stays on the graphite ramp; your own bubbles are the one brand-blue surface. */
-  --cp-message-canvas: #f6f6f5;
-  --cp-message-peer-bg: #ffffff;
-  --cp-message-peer-border: color-mix(in srgb, var(--cp-text) 8%, transparent);
-  --cp-message-self-bg: oklch(0.553 0.171 265);
-  --cp-message-self-text: #ffffff;
-  --cp-message-self-meta: rgba(255, 255, 255, 0.8);
-  --cp-message-self-link: #ffffff;
-  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 46%, transparent);
-  --cp-panel-shadow:
-    0 1px 2px color-mix(in srgb, var(--cp-shadow) 6%, transparent),
-    0 8px 24px color-mix(in srgb, var(--cp-shadow) 12%, transparent);
-  /* Two tight layers instead of one 90px blur: a large blur radius is
-     re-rasterised on every window move and dominated drag frame time. */
-  --cp-window-shadow:
-    0 1px 2px color-mix(in srgb, var(--cp-shadow) 10%, transparent),
-    0 12px 32px color-mix(in srgb, var(--cp-shadow) 16%, transparent);
-  --cp-ease-emphasis: cubic-bezier(0.22, 1, 0.36, 1);
-  --cp-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
-  --cp-app-blue: oklch(0.58 0.155 265);
-  --cp-app-green: oklch(0.6 0.115 162);
-  --cp-app-amber: oklch(0.65 0.13 60);
-  --cp-app-red: oklch(0.6 0.15 27);
-  --cp-app-violet: oklch(0.58 0.13 292);
-  --cp-app-slate: oklch(0.56 0.03 260);
 }
 
 :root {
@@ -74,8 +21,6 @@
   --label-padding-top: 6px;
   --label-max-lines: 2;
 
-  --cp-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', system-ui, sans-serif;
-
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
   --sal: env(safe-area-inset-left, 0px);
@@ -84,45 +29,6 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-:root[data-theme='dark'],
-.cp-theme-dark {
-  color-scheme: dark;
-  --cp-bg: #141415;
-  --cp-bg-strong: #0f0f10;
-  --cp-surface: color-mix(in srgb, #1c1c1e 92%, transparent);
-  --cp-surface-2: color-mix(in srgb, #242426 90%, transparent);
-  --cp-surface-opaque: #1c1c1e;
-  --cp-surface-2-opaque: #242426;
-  --cp-surface-3: color-mix(in srgb, var(--cp-text) 5%, var(--cp-surface));
-  --cp-text: #ededed;
-  --cp-muted: #a1a1a6;
-  --cp-border: color-mix(in srgb, var(--cp-text) 10%, transparent);
-  --cp-border-opaque: #36363a;
-  --cp-accent: oklch(0.74 0.11 264);
-  --cp-accent-soft: oklch(0.62 0.05 265);
-  --cp-ink-accent: oklch(0.56 0.03 260);
-  --cp-success: oklch(0.8 0.12 160);
-  --cp-warning: oklch(0.82 0.11 72);
-  --cp-danger: oklch(0.72 0.14 28);
-  --cp-shadow: #000;
-  --cp-wallpaper-a: #141415;
-  --cp-wallpaper-b: #111112;
-  --cp-wallpaper-c: #161617;
-  --cp-chart-output: oklch(0.78 0.12 65);
-  --cp-message-canvas: #18181a;
-  --cp-message-peer-bg: #262628;
-  --cp-message-peer-border: color-mix(in srgb, var(--cp-text) 7%, transparent);
-  --cp-message-self-bg: oklch(0.45 0.125 265);
-  --cp-message-self-text: #f4f4f5;
-  --cp-message-self-meta: color-mix(in srgb, #f4f4f5 72%, transparent);
-  --cp-message-self-link: #f4f4f5;
-  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 56%, transparent);
-  --cp-panel-shadow: 0 16px 40px color-mix(in srgb, var(--cp-shadow) 36%, transparent);
-  --cp-window-shadow:
-    0 1px 2px color-mix(in srgb, var(--cp-shadow) 30%, transparent),
-    0 16px 40px color-mix(in srgb, var(--cp-shadow) 36%, transparent);
 }
 
 /* Grid Slot density variants */

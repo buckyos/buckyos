@@ -5,6 +5,7 @@ import { workspaceLinkForLocale } from '../../aiworkspace/links'
 import { useI18n } from '../../../i18n/provider'
 import { pickLocalized } from '../../../presentation/model'
 import type { LocalizedText } from '../../../presentation/model'
+import { NOTIFY_PERMISSION } from '../../../shared/permissions.ts'
 import { useSettingsResource, useSettingsStore } from '../hooks/use-settings-store'
 import { ListCard, Section, SectionNote, StatusBadge } from '../components/shared/Section'
 import type { AppAccessEntry, AppAudience, AppMount, PrivacyOverview, Section as DataSection } from '../data/privacy'
@@ -17,6 +18,7 @@ const permissionLabels: Record<string, [string, string]> = {
   'kapi/task-manager': ['settings.privacy.perm.taskManager', 'Background tasks'],
   'kapi/workflow': ['settings.privacy.perm.workflow', 'Workflows'],
   'kapi/msg-center': ['settings.privacy.perm.msgCenter', 'Messages'],
+  [NOTIFY_PERMISSION]: ['permission.notify', 'Send you notifications'],
   'kapi/kmsg': ['settings.privacy.perm.kmsg', 'Message queue'],
   'kapi/repo-service': ['settings.privacy.perm.repo', 'Package repository'],
   wan: ['settings.privacy.perm.wan', 'Internet access'],

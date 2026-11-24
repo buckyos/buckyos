@@ -1,6 +1,6 @@
 # BuckyOS APP 新版本实施 TODO：常驻系统客户端
 
-日期：2026-11-23。状态：立项，未实施。owner 在 11-23 分两轮答复了 Q1–Q28，并定了 BuckyOSApp 改用 AGPL-3.0，本文已按答复改写。答复原话和落实位置在 §6.1。现在没有等 owner 答复的问题；§6.2 列的是我替 owner 选的几处做法，实施后可以再调。
+日期：2026-11-23。状态：2026-11-24 全部任务已实施，**未提交**（L1 是 BuckyOSApp 分支 `feature/system-client` 上单独的一个提交，未推送），三 Zone 环境实测通过的范围和没验证的部分见 §11。owner 在 11-23 分两轮答复了 Q1–Q28，并定了 BuckyOSApp 改用 AGPL-3.0，本文已按答复改写。答复原话和落实位置在 §6.1。§6.2 列的是立项时我替 owner 选的做法，实施中新选的和等 owner 定的在 §11.5、§11.6。
 
 依据：[BuckyOS APP 新版本系统设计](<../../BuckyOSApp/doc/buckyos app 新版本系统设计.md>)（下称设计稿）。设计稿第 3 章要求的“BuckyOS API 与现有代码 Review”就是本文 §2，后面的方案和任务都以这次 Review 为准。
 
@@ -12,7 +12,7 @@
 
 源码核对基线：BuckyOSApp `8399a73`（main）、buckyos `849bec4ee`、buckyos-websdk `16683a6`（0.7.202）。
 
-本文的结论全部来自 2026-11-23 读代码和文档。没有运行客户端，也没有在真实 Zone 上验证。标了“待验证”的结论，在 T0 里先验证再动手。
+§0 到 §10 的结论来自 2026-11-23 读代码和文档，写的时候没有运行客户端，也没有在真实 Zone 上验证。标了“待验证”的结论 T0 都已实测，结果在 §11.1，与正文不一致时以 §11 为准。
 
 用词：
 
@@ -293,7 +293,7 @@ websdk 仍是 Apache-2.0，第三方应用依赖它。buckyos 和改完许可证
 
 - 应用页面用现成的 `auth.prepare_app_launch`。
 - Zone 根域的页面不在它的范围里。先用 `auth.login` 带 `redirect_url` 的做法：它返回 `sso_nonce`，和登录页走的是同一条路，客户端有摘要就能调（T0-3 验证）。不合适再做 Z5。
-- 内容视图的 Cookie 失效后，页面会跳去 `sys.<zone>/login`。客户端拦下这个跳转，重新换回调地址再加载，用户看不到登录页。
+- 内容视图的 Cookie 失效后，页面会跳去 `sys.<zone>/login`（根域的页面跳 `<zone>/login`）。客户端拦下这个跳转，重新换回调地址再加载，用户看不到登录页。
 - 这样每个内容视图拿到的是独立的会话族，和客户端自己的会话互不影响。refresh token 每次续期都会轮换，共用一组会互相踩。
 
 **切换（Q4、Q5）。** 切换当前 Zone 后，本地界面改显示目标 Zone 的内容。
@@ -534,7 +534,7 @@ interface OpenAppRequest {
 
 ### 许可证
 
-- [ ] **L1 [App] 改许可证。** BuckyOSApp 改成 AGPL-3.0-only，写法和 `buckyos/src/frame/desktop/package.json` 一致。要改的九处见 §2.1 的“许可证”一行：两份 `LICENSE` 换成 AGPL-3.0 全文（取自 `buckyos/LICENSE`），两份 `NOTICE`、README 的 License 一节、`package.json`、`Cargo.toml`、`tauri.conf.json` 的 `bundle.license`、`node_control.rs` 的 SPDX 头。README 里“`node_control.rs` 之后不能再从 buckyos 同步”的那一段删掉。把前端和 Rust 依赖的许可证列一遍，确认没有和 AGPL-3.0 不兼容的。这一项单独一个提交，交 owner 过目后合入。
+- [x] **L1 [App] 改许可证。** BuckyOSApp 改成 AGPL-3.0-only，写法和 `buckyos/src/frame/desktop/package.json` 一致。要改的九处见 §2.1 的“许可证”一行：两份 `LICENSE` 换成 AGPL-3.0 全文（取自 `buckyos/LICENSE`），两份 `NOTICE`、README 的 License 一节、`package.json`、`Cargo.toml`、`tauri.conf.json` 的 `bundle.license`、`node_control.rs` 的 SPDX 头。README 里“`node_control.rs` 之后不能再从 buckyos 同步”的那一段删掉。把前端和 Rust 依赖的许可证列一遍，确认没有和 AGPL-3.0 不兼容的。这一项单独一个提交，交 owner 过目后合入。
 
 完成条件：仓库里不再有 Apache-2.0 的声明（第三方依赖自带的除外）；L1 合入之前，没有任何 buckyos 的代码被拷进或引用进 BuckyOSApp。
 
@@ -542,16 +542,16 @@ interface OpenAppRequest {
 
 在 BuckyOSApp 里开验证分支，做最小的试验页面和命令。结论写到本文 §11，验证代码不合入。Windows、macOS、Android 三个平台都要有结论。
 
-- [ ] **T0-1 Cookie 与顶层加载。** 把一个真实 Zone 的页面分别放在本地页面的 iframe 里和作为窗口的顶层文档加载，确认 Cookie 的推断。让窗口先访问一次性的 `/sso_callback` 地址，确认 Cookie 写入后能跳到目标页面。确认 Cookie 在客户端的多个窗口之间共享，重启客户端后还在。
-- [ ] **T0-2 远程顶层页面里的原生桥。** 注入脚本在页面脚本之前执行；远程页面调用原生命令的路径可用；确认现有 capability 下远程页面到底能调哪些命令。
-- [ ] **T0-3 客户端登录。** 在 Zone 外面用 Rust 拿摘要登录：分别试 verify-hub 的 `login_by_password` 和 control-panel 的 `auth.login`（结构化 `target`），看哪一个能拿到 control-panel 的用户会话，并用 verify-hub `refresh_token` 续期。用这个会话调 `auth.prepare_app_launch`，把回调地址交给窗口，确认应用页面登录成功。用 `auth.login` 带 `redirect_url` 给 Zone 根域的页面登录，确认可行。确认钱包返回的 `pwd_hash` 能登录一个通过客户端激活的 Zone。
-- [ ] **T0-4 系统通知与托盘事件。** 在 Windows 和 macOS 上发一条系统通知，确认能否拿到点击事件、没有前台窗口时点击能否唤起。确认托盘图标的鼠标进入、离开事件在三个桌面平台上是否可用。拿不到就评估平台原生接口和自绘小窗。
-- [ ] **T0-5 隐藏和最小化时的存活。** 主窗口隐藏到托盘后，本地页面的定时器和事件处理是否继续；应用窗口最小化后 `<audio>` 是否继续播放；Media Session 是否接上系统的媒体键和媒体面板。
-- [ ] **T0-6 长连接。** 用 Rust 对 `/kapi/kevent/stream` 保持连接，分别经直连和 SN 中转访问，记录多久被断、断开后的表现、网关 HTTP/2 下是否正常。
-- [ ] **T0-7 移动端的内容视图。** 先确认 Tauri 在 Android 上能不能再建一个 WebView；不能就用原生插件在 Activity 里加 `WebView`。要有结论的几点：顶层加载 Zone 页面并登录；注入桥脚本并把调用送到 Rust；本地界面的浮层怎么盖在内容视图上面；安全区和键盘；同时保活 3 到 5 个视图的内存。
-- [ ] **T0-8 音频。** Android 上起前台服务后，内容视图里的 `<audio>` 在切到后台、锁屏时能否持续。评估 `feature/audio_record` 移植到当前 main 的工作量，列出冲突的文件。
-- [ ] **T0-9 Android 后台长连接。** 前台服务下连接在息屏、Doze、切到后台、从最近任务里划掉之后各能活多久。Activity 进后台或被销毁后 Tauri 的 Rust 运行时是否还在跑；不在就把连接放进 Kotlin 服务。选定前台服务类型，查 Google Play 对它的审核要求。记录耗电。
-- [ ] **T0-10 共用代码的引用方式。** 分两部分，结论决定 §3.1 那张表后两行怎么落地。
+- [x] **T0-1 Cookie 与顶层加载。** 把一个真实 Zone 的页面分别放在本地页面的 iframe 里和作为窗口的顶层文档加载，确认 Cookie 的推断。让窗口先访问一次性的 `/sso_callback` 地址，确认 Cookie 写入后能跳到目标页面。确认 Cookie 在客户端的多个窗口之间共享，重启客户端后还在。
+- [x] **T0-2 远程顶层页面里的原生桥。** 注入脚本在页面脚本之前执行；远程页面调用原生命令的路径可用；确认现有 capability 下远程页面到底能调哪些命令。
+- [x] **T0-3 客户端登录。** 在 Zone 外面用 Rust 拿摘要登录：分别试 verify-hub 的 `login_by_password` 和 control-panel 的 `auth.login`（结构化 `target`），看哪一个能拿到 control-panel 的用户会话，并用 verify-hub `refresh_token` 续期。用这个会话调 `auth.prepare_app_launch`，把回调地址交给窗口，确认应用页面登录成功。用 `auth.login` 带 `redirect_url` 给 Zone 根域的页面登录，确认可行。确认钱包返回的 `pwd_hash` 能登录一个通过客户端激活的 Zone。
+- [x] **T0-4 系统通知与托盘事件。** 在 Windows 和 macOS 上发一条系统通知，确认能否拿到点击事件、没有前台窗口时点击能否唤起。确认托盘图标的鼠标进入、离开事件在三个桌面平台上是否可用。拿不到就评估平台原生接口和自绘小窗。
+- [x] **T0-5 隐藏和最小化时的存活。** 主窗口隐藏到托盘后，本地页面的定时器和事件处理是否继续；应用窗口最小化后 `<audio>` 是否继续播放；Media Session 是否接上系统的媒体键和媒体面板。
+- [x] **T0-6 长连接。** 用 Rust 对 `/kapi/kevent/stream` 保持连接，分别经直连和 SN 中转访问，记录多久被断、断开后的表现、网关 HTTP/2 下是否正常。
+- [x] **T0-7 移动端的内容视图。** 先确认 Tauri 在 Android 上能不能再建一个 WebView；不能就用原生插件在 Activity 里加 `WebView`。要有结论的几点：顶层加载 Zone 页面并登录；注入桥脚本并把调用送到 Rust；本地界面的浮层怎么盖在内容视图上面；安全区和键盘；同时保活 3 到 5 个视图的内存。
+- [x] **T0-8 音频。** Android 上起前台服务后，内容视图里的 `<audio>` 在切到后台、锁屏时能否持续。评估 `feature/audio_record` 移植到当前 main 的工作量，列出冲突的文件。
+- [x] **T0-9 Android 后台长连接。** 前台服务下连接在息屏、Doze、切到后台、从最近任务里划掉之后各能活多久。Activity 进后台或被销毁后 Tauri 的 Rust 运行时是否还在跑；不在就把连接放进 Kotlin 服务。选定前台服务类型，查 Google Play 对它的审核要求。记录耗电。
+- [x] **T0-10 共用代码的引用方式。** 分两部分，结论决定 §3.1 那张表后两行怎么落地。
   - Rust：在验证分支里把 `buckyos-api` 加成 Git 依赖（分支 `main`），在 Windows、macOS、Android 三个目标上编译。记录是否通过、编译时间和安装包大小的变化。编不过或代价太大，就只手写用到的类型（Z2、N1 两种做法都写了）。
   - 前端：让 BuckyOSApp 引用 Desktop 的一个模块，例如 `api/app_mgr.ts`。先试“同级目录检出 buckyos，Vite 和 tsconfig 配路径别名”：Desktop 引用 `../aiworkspace/` 下的源码、buckyos 的构建使用同级的 websdk，用的都是这个做法。确认类型检查和打包能过，四个 CI workflow 多检出一个仓库（分支 `main`）后也能过。走不通再试把共用部分做成 buckyos 里的一个包，BuckyOSApp 用 Git 依赖安装。两种都不行就退回拷贝，并在两边放同一份测试。
 
@@ -559,82 +559,82 @@ interface OpenAppRequest {
 
 ### 阶段 1：多 Zone 与会话
 
-- [ ] **Z1 [App] Zone 名单与当前 Zone。** 新模块 `src-tauri/src/zone/`，用独立的 store 文件，不和钱包的 vault 放在一起。命令：列出、添加、移除、设置当前、读取当前；当前 Zone 变化时发事件。名单按 DID 分开，切换 DID 时当前 Zone 跟着换。来源一：owner 文档的 Zone 列表，复用 `src/features/did/zoneBindingStatus.ts` 的 `resolveZoneBindingSnapshot`。来源二：手动添加，用 `resolve_did(…, "zone")` 取主机名，用 `zone.presentation.get` 取名称和图标；登录成功后才写入。所有命令的参数都带 Zone DID。
-- [ ] **Z2 [App] Zone 会话管理（Rust）。** 按 T0-3 选定的接口登录。凭据（用户名、摘要）和 token 对放系统钥匙串，按“DID + Zone”存。到期前续期；续期失败用摘要重新登录；摘要失效时把这个 Zone 标成“需要输入密码”并通知界面。提供一个带 token 的调用命令（Zone DID、服务、方法、参数），用 buckyos-base 的 kRPC crate。T0-10 通过的话，登录和续期直接用 `buckyos-api` 的 `VerifyHubClient`；control-panel 的 `auth.*` 没有现成的 Rust 客户端，自己拼请求。本地界面里 websdk 的 kRPC 客户端把 `fetcher` 接到这个命令，token 不进页面。
-- [ ] **Z3 [App] 登录的本地界面。** 添加 Zone 的表单：地址或 DID、用户名、密码。自己的 Zone：在用户输入钱包密码的地方（创建或导入身份、签名）顺带算出摘要并保存，第一次登录直接用；失败时问这个 Zone 的密码。任何情况下都不加载 Zone 的登录页。没有密码的账号第一版不支持（Q22）：表单上写明要用这个 Zone 的用户名和密码，登录失败的提示里说明联合登录、Google 登录的账号暂时不能用客户端。
-- [ ] **Z4 [App] 内容视图的登录。** 加载 Zone 页面前换一次性回调地址：应用页面走 `auth.prepare_app_launch`，Zone 根域的页面走 T0-3 验证过的做法。拦截内容视图里跳往 `sys.<zone>/login` 的导航，重新换回调地址再加载。客户端退出登录某个 Zone 时清掉这个 Zone 的 Cookie。
-- [ ] **Z5 [buckyos] 让 `auth.prepare_app_launch` 支持 Zone 根域的页面。** 只在 T0-3 发现 `auth.login` 带 `redirect_url` 的做法不合适时才做。补允许和拒绝两类用例。
-- [ ] **Z6 [App] 原生桥改传输。** `public/bucky-api.js` 改成直接调原生，不再依赖 `window.parent`。新增 `BuckyApi.env`、`BuckyApi.call`、`BuckyApi.on`。签名的密码输入改到原生界面：桌面用一个本地页面的小窗口，移动端用原生对话框。旧的五个方法 websdk 和激活页在用，要改签名就三处一起改。同步 `doc/BuckyApi.md`。
-- [ ] **Z7 [App] 收紧权限。** capability 拆开：本地页面可以用全部命令；内容视图（名单内 Zone 的源）只能用 `BuckyApi` 暴露的那一组；其它远程源什么都不能用。窗口 label 约定：`main`、应用窗口 `app_*`、辅助窗口 `aux_*`。
-- [ ] **Z8 [App] 账号区与 Zone 管理。** Home 的账号区列出 Zone（名称、图标、主题色、会话状态），点选切换。设置里的 Zone 管理页：添加、移除、重新登录、设主题色。
-- [ ] **Z9 [Shell、App] Zone 主题色与偏好。** 账号外观状态加 `accent`（`#RRGGBB`）和移动端动态入口的默认项两个字段（`desktop/appearance/model.ts`），Shell 的“设置 → 外观”加对应的设置项。客户端读写账号桌面状态用 Desktop 的 `api/desktop_state.ts`，先按 W1 把它改成请求通道由调用方传入。客户端登录后读取并缓存。`frame.init.theme.accent` 填上（Shell 和客户端两边）。
-- [ ] **Z10 [App] 首次使用路径与没有 Zone 时的运行。** 没有 Zone 时各 Tab 有可用的空状态。桌面端先探测 `http://127.0.0.1:3182/device`；现在的扫描把 `127.*` 过滤掉了（`src/pages/main/ScanDevice.tsx`）。激活完成后自动把新 Zone 加进名单、保存摘要、设为当前并登录。手机配合盒子的路径做回归。
-- [ ] **Z11 [App] 切换语义。** 按 §3.3 的表实现：切换前询问未保存内容；桌面的应用窗口标出所属 Zone；移动端切换前提示会结束的播放和录音。
+- [x] **Z1 [App] Zone 名单与当前 Zone。** 新模块 `src-tauri/src/zone/`，用独立的 store 文件，不和钱包的 vault 放在一起。命令：列出、添加、移除、设置当前、读取当前；当前 Zone 变化时发事件。名单按 DID 分开，切换 DID 时当前 Zone 跟着换。来源一：owner 文档的 Zone 列表，复用 `src/features/did/zoneBindingStatus.ts` 的 `resolveZoneBindingSnapshot`。来源二：手动添加，用 `resolve_did(…, "zone")` 取主机名，用 `zone.presentation.get` 取名称和图标；登录成功后才写入。所有命令的参数都带 Zone DID。
+- [x] **Z2 [App] Zone 会话管理（Rust）。** 按 T0-3 选定的接口登录。凭据（用户名、摘要）和 token 对放系统钥匙串，按“DID + Zone”存。到期前续期；续期失败用摘要重新登录；摘要失效时把这个 Zone 标成“需要输入密码”并通知界面。提供一个带 token 的调用命令（Zone DID、服务、方法、参数），用 buckyos-base 的 kRPC crate。T0-10 通过的话，登录和续期直接用 `buckyos-api` 的 `VerifyHubClient`；control-panel 的 `auth.*` 没有现成的 Rust 客户端，自己拼请求。本地界面里 websdk 的 kRPC 客户端把 `fetcher` 接到这个命令，token 不进页面。
+- [x] **Z3 [App] 登录的本地界面。** 添加 Zone 的表单：地址或 DID、用户名、密码。自己的 Zone：在用户输入钱包密码的地方（创建或导入身份、签名）顺带算出摘要并保存，第一次登录直接用；失败时问这个 Zone 的密码。任何情况下都不加载 Zone 的登录页。没有密码的账号第一版不支持（Q22）：表单上写明要用这个 Zone 的用户名和密码，登录失败的提示里说明联合登录、Google 登录的账号暂时不能用客户端。
+- [x] **Z4 [App] 内容视图的登录。** 加载 Zone 页面前换一次性回调地址：应用页面走 `auth.prepare_app_launch`，Zone 根域的页面走 T0-3 验证过的做法。拦截内容视图里跳往 `sys.<zone>/login` 的导航，重新换回调地址再加载。客户端退出登录某个 Zone 时清掉这个 Zone 的 Cookie。
+- [ ] **Z5（不需要，T0-3 的做法可行）[buckyos] 让 `auth.prepare_app_launch` 支持 Zone 根域的页面。** 只在 T0-3 发现 `auth.login` 带 `redirect_url` 的做法不合适时才做。补允许和拒绝两类用例。
+- [x] **Z6 [App] 原生桥改传输。** `public/bucky-api.js` 改成直接调原生，不再依赖 `window.parent`。新增 `BuckyApi.env`、`BuckyApi.call`、`BuckyApi.on`。签名的密码输入改到原生界面：桌面用一个本地页面的小窗口，移动端用原生对话框。旧的五个方法 websdk 和激活页在用，要改签名就三处一起改。同步 `doc/BuckyApi.md`。
+- [x] **Z7 [App] 收紧权限。** capability 拆开：本地页面可以用全部命令；内容视图（名单内 Zone 的源）只能用 `BuckyApi` 暴露的那一组；其它远程源什么都不能用。窗口 label 约定：`main`、应用窗口 `app_*`、辅助窗口 `aux_*`。
+- [x] **Z8 [App] 账号区与 Zone 管理。** Home 的账号区列出 Zone（名称、图标、主题色、会话状态），点选切换。设置里的 Zone 管理页：添加、移除、重新登录、设主题色。
+- [x] **Z9 [Shell、App] Zone 主题色与偏好。** 账号外观状态加 `accent`（`#RRGGBB`）和移动端动态入口的默认项两个字段（`desktop/appearance/model.ts`），Shell 的“设置 → 外观”加对应的设置项。客户端读写账号桌面状态用 Desktop 的 `api/desktop_state.ts`，先按 W1 把它改成请求通道由调用方传入。客户端登录后读取并缓存。`frame.init.theme.accent` 填上（Shell 和客户端两边）。
+- [x] **Z10 [App] 首次使用路径与没有 Zone 时的运行。** 没有 Zone 时各 Tab 有可用的空状态。桌面端先探测 `http://127.0.0.1:3182/device`；现在的扫描把 `127.*` 过滤掉了（`src/pages/main/ScanDevice.tsx`）。激活完成后自动把新 Zone 加进名单、保存摘要、设为当前并登录。手机配合盒子的路径做回归。
+- [x] **Z11 [App] 切换语义。** 按 §3.3 的表实现：切换前询问未保存内容；桌面的应用窗口标出所属 Zone；移动端切换前提示会结束的播放和录音。
 
 完成条件：同一个 DID 在客户端里登录两个 Zone，切换后 Home、APPS 都是目标 Zone 的内容；重启客户端后仍是上次的 Zone 且不用输密码；全程没有出现 Zone 的登录页；一个 Zone 连不上不影响另一个；没有任何 Zone 时客户端能正常打开。
 
 ### 阶段 2：Notify 与 Activity
 
-- [ ] **N1 [App] 通知连接。** Rust 侧，每个开了通知的已登录 Zone 一条。订阅 kevent 流，事件到了就拉 `notify.list{status:[open], since_ms}` 和 `msg.list_sessions`；另有低频轮询兜底。断线后退避重连，重连后先补拉。把连接状态（已连接、重连中、需要登录）报给界面和托盘。通知的类型在 T0-10 通过时用 `buckyos-api` 的 `msg_notify`，否则只手写用到的几个字段，解析时忽略不认识的字段。读 kevent HTTP 流的部分没有现成的 Rust 客户端，要自己写。
-- [ ] **N2 [App] 系统提醒。** 按 §3.4 的映射生成系统通知，标明来自哪个 Zone；同一会话的新消息合并；同一条通知不重复弹（按 `notify_id` 和消息记录去重，重连补拉时尤其要注意）。点击后交给打开规则。实现方式按 T0-4 的结论。客户端设置里加通知总开关和每个 Zone 的开关，第一次开启时申请系统许可。
-- [ ] **N3 [App] 托盘。** 未读角标、紧急通知时闪动、菜单里最近几条通知。有未读时左键打开主窗口的 Activity，右键弹菜单。有未读时悬停弹出通知内容小窗，点一条就打开，离开后收起；没有悬停事件的平台用 tooltip。同步 `doc/托盘图标需求.md`。
-- [ ] **N4 [buckyos、websdk] 汇总接口。** msg-center 加 `notify.summary`：未处理的通知数（按分类）、消息未读总数（排除免打扰和系统通知会话，口径与 `trayRuntime.ts:74-104` 一致）。websdk 加对应方法，Shell 的托盘改用它。
-- [ ] **N5 [buckyos] 应用的通知权限。** 在 AppDoc 的 `permissions` 里定义通知项；安装流程展示；设置里按应用开关；`notify.rs` 的 `notify_caller` 对普通应用检查，没有声明的拒绝。系统服务和内置应用不受限。仓库里会发通知的应用补上声明。同步 `doc/message_hub/System Notify.md` §4 和 `doc/App 安装协议.md`。
-- [ ] **N6 [Shell、App] Activity。** 把 Shell 托盘的归并（`trayModel.ts`、`trayRuntime.ts`）里不含 React 的部分整理成独立模块：合并通知、有未读的会话、带标记的任务，按时间排序。补上游标翻页和全部状态的通知，请求通道由调用方传入。Shell 的托盘继续用它，客户端的 Activity 页面引用同一份。每行点击走打开规则；支持单条已读或忽略、全部已读。
-- [ ] **N7 [App] Android 后台通知。** 按 T0-9 的结论实现：前台服务、常驻通知、长连接、网络切换后重连、系统通知权限。设置里可以关闭，并说明关闭电池优化的方法。前台服务的做法参考 `feature/audio_record` 分支里的 `AudioRecordingForegroundService.kt`，不直接合并分支。
-- [ ] **N8 [buckyos] 应用接入。** AI Workspace 的评论和提及、日程到点、待办提醒改成调 `notify.send`，`source.link` 填应用内的页面地址。`dcrontab remind` 是否改走 System Notify，和 `opendan-d4-timer-reminder-todo.md` 一起定。Message Hub 的新消息不新增通知记录，由通知连接直接产生提醒。
+- [x] **N1 [App] 通知连接。** Rust 侧，每个开了通知的已登录 Zone 一条。订阅 kevent 流，事件到了就拉 `notify.list{status:[open], since_ms}` 和 `msg.list_sessions`；另有低频轮询兜底。断线后退避重连，重连后先补拉。把连接状态（已连接、重连中、需要登录）报给界面和托盘。通知的类型在 T0-10 通过时用 `buckyos-api` 的 `msg_notify`，否则只手写用到的几个字段，解析时忽略不认识的字段。读 kevent HTTP 流的部分没有现成的 Rust 客户端，要自己写。
+- [x] **N2 [App] 系统提醒。** 按 §3.4 的映射生成系统通知，标明来自哪个 Zone；同一会话的新消息合并；同一条通知不重复弹（按 `notify_id` 和消息记录去重，重连补拉时尤其要注意）。点击后交给打开规则。实现方式按 T0-4 的结论。客户端设置里加通知总开关和每个 Zone 的开关，第一次开启时申请系统许可。
+- [x] **N3 [App] 托盘。** 未读角标、紧急通知时闪动、菜单里最近几条通知。有未读时左键打开主窗口的 Activity，右键弹菜单。有未读时悬停弹出通知内容小窗，点一条就打开，离开后收起；没有悬停事件的平台用 tooltip。同步 `doc/托盘图标需求.md`。
+- [x] **N4 [buckyos、websdk] 汇总接口。** msg-center 加 `notify.summary`：未处理的通知数（按分类）、消息未读总数（排除免打扰和系统通知会话，口径与 `trayRuntime.ts:74-104` 一致）。websdk 加对应方法，Shell 的托盘改用它。
+- [x] **N5 [buckyos] 应用的通知权限。** 在 AppDoc 的 `permissions` 里定义通知项；安装流程展示；设置里按应用开关；`notify.rs` 的 `notify_caller` 对普通应用检查，没有声明的拒绝。系统服务和内置应用不受限。仓库里会发通知的应用补上声明。同步 `doc/message_hub/System Notify.md` §4 和 `doc/App 安装协议.md`。
+- [x] **N6 [Shell、App] Activity。** 把 Shell 托盘的归并（`trayModel.ts`、`trayRuntime.ts`）里不含 React 的部分整理成独立模块：合并通知、有未读的会话、带标记的任务，按时间排序。补上游标翻页和全部状态的通知，请求通道由调用方传入。Shell 的托盘继续用它，客户端的 Activity 页面引用同一份。每行点击走打开规则；支持单条已读或忽略、全部已读。
+- [x] **N7 [App] Android 后台通知。** 按 T0-9 的结论实现：前台服务、常驻通知、长连接、网络切换后重连、系统通知权限。设置里可以关闭，并说明关闭电池优化的方法。前台服务的做法参考 `feature/audio_record` 分支里的 `AudioRecordingForegroundService.kt`，不直接合并分支。
+- [x] **N8 [buckyos] 应用接入。** AI Workspace 的评论和提及、日程到点、待办提醒改成调 `notify.send`，`source.link` 填应用内的页面地址。`dcrontab remind` 是否改走 System Notify，和 `opendan-d4-timer-reminder-todo.md` 一起定。Message Hub 的新消息不新增通知记录，由通知连接直接产生提醒。
 - [ ] **N9 [Shell] 浏览器里的 Activity 与提醒。** 本版本不做（Q27）。以后要做时：`/activity` 页面用 N6 的归并；页面开着并且用户授权后用 Web Notification。
 
 完成条件：桌面客户端隐藏在托盘时，另一个账号发来消息、一个应用调 `notify.send`，都能在几秒内弹出系统提醒；点击后打开对应的应用页面；Activity 里能看到并标记已读；断网再恢复后不丢、不重复。Android 客户端切到后台十分钟后仍能收到提醒。
 
 ### 阶段 3：Window System
 
-- [ ] **W1 [websdk、Shell、文档] 打开请求和规则。** 在 websdk 里定义 `OpenAppRequest`、窗口 ID 的拼法、§3.5 的规则函数和一份 JSON 测试向量，并补按 Zone 建一组客户端的入口。control-panel 的接口不在 websdk 里重写：把 Desktop `api/` 里客户端要用的几个模块（§2.5）改成请求通道由调用方传入，Shell 自己传全局运行时的那一个，客户端引用这些模块时传自己的。更新 `product/desktop/BuckyOS_Web_Desktop_需求文档.md` 的 §16.4 和 §21。
-- [ ] **W2 [buckyos] 窗口声明进 AppDoc。** `src/kernel/buckyos-api/src/app_doc.rs` 加 `window` 段；`apps.list` 的 `AppSummary` 带出；`app/backend-apps.ts` 用声明值替换固定默认值；同步 `doc/App 安装协议.md`。
-- [ ] **W3 [Shell] 系统应用的独立页面和清单。** 每个内置应用有一个独立页面地址，只渲染这一个应用，没有桌面外壳，支持按路径进入应用内的页面。构建时导出系统应用清单（id、各语言名称、图标图片地址、页面地址、窗口声明，Message Hub 是 `single`），放在 Zone 根域的固定地址。先做 Files、设置、Task Center、AI Center，其余按目录逐个补。
-- [ ] **W4 [App] 原生窗口管理（桌面）。** Rust 侧维护“窗口 ID → 窗口”，提供新建、置前、窗口内导航、关闭。新窗口顶层加载应用地址（先经 Z4 登录），按声明设置大小、最小尺寸、能否调整、最大化和最小化按钮。标题跟随页面。窗口上显示所属 Zone 的名称和主题色。位置大小按“Zone + 应用”记忆。点 × 先走 `frame.beforeClose`。指向名单外的链接交给系统浏览器。打开规则由本地页面调 W1 的函数算出，再调这些操作。
-- [ ] **W5 [websdk、App] app-frame 的原生传输和客户端宿主。** `AppFrameClient` 在没有父窗口而有 `BuckyApi` 时走原生通道。新增 `app.open` 消息，`AppFrameHost` 同步支持。客户端按 §3.2 的表处理各条消息；`content.open` 的解析用 websdk 已有的 `resolveContentHandlers`，客户端写把结果交给打开规则的那一层（Shell 的对应代码是 `app/content/open.ts`）。应用不改代码就能在两种传输下工作。
-- [ ] **W6 [Shell] 对齐。** 窗口 ID 改成“AppID + 路径”；`openApp` 和 `openAppWindow` 改调 W1 的规则；遵守新的声明字段（固定大小时不显示调整手柄）。`runtimeContainer` 的手动选项只留给调试。
-- [ ] **W7 [App、文档] 标准地址。** 按 §3.5 做，§3.5 是 owner 定的准绳。
+- [x] **W1 [websdk、Shell、文档] 打开请求和规则。** 在 websdk 里定义 `OpenAppRequest`、窗口 ID 的拼法、§3.5 的规则函数和一份 JSON 测试向量，并补按 Zone 建一组客户端的入口。control-panel 的接口不在 websdk 里重写：把 Desktop `api/` 里客户端要用的几个模块（§2.5）改成请求通道由调用方传入，Shell 自己传全局运行时的那一个，客户端引用这些模块时传自己的。更新 `product/desktop/BuckyOS_Web_Desktop_需求文档.md` 的 §16.4 和 §21。
+- [x] **W2 [buckyos] 窗口声明进 AppDoc。** `src/kernel/buckyos-api/src/app_doc.rs` 加 `window` 段；`apps.list` 的 `AppSummary` 带出；`app/backend-apps.ts` 用声明值替换固定默认值；同步 `doc/App 安装协议.md`。
+- [x] **W3 [Shell] 系统应用的独立页面和清单。** 每个内置应用有一个独立页面地址，只渲染这一个应用，没有桌面外壳，支持按路径进入应用内的页面。构建时导出系统应用清单（id、各语言名称、图标图片地址、页面地址、窗口声明，Message Hub 是 `single`），放在 Zone 根域的固定地址。先做 Files、设置、Task Center、AI Center，其余按目录逐个补。
+- [x] **W4 [App] 原生窗口管理（桌面）。** Rust 侧维护“窗口 ID → 窗口”，提供新建、置前、窗口内导航、关闭。新窗口顶层加载应用地址（先经 Z4 登录），按声明设置大小、最小尺寸、能否调整、最大化和最小化按钮。标题跟随页面。窗口上显示所属 Zone 的名称和主题色。位置大小按“Zone + 应用”记忆。点 × 先走 `frame.beforeClose`。指向名单外的链接交给系统浏览器。打开规则由本地页面调 W1 的函数算出，再调这些操作。
+- [x] **W5 [websdk、App] app-frame 的原生传输和客户端宿主。** `AppFrameClient` 在没有父窗口而有 `BuckyApi` 时走原生通道。新增 `app.open` 消息，`AppFrameHost` 同步支持。客户端按 §3.2 的表处理各条消息；`content.open` 的解析用 websdk 已有的 `resolveContentHandlers`，客户端写把结果交给打开规则的那一层（Shell 的对应代码是 `app/content/open.ts`）。应用不改代码就能在两种传输下工作。
+- [x] **W6 [Shell] 对齐。** 窗口 ID 改成“AppID + 路径”；`openApp` 和 `openAppWindow` 改调 W1 的规则；遵守新的声明字段（固定大小时不显示调整手柄）。`runtimeContainer` 的手动选项只留给调试。
+- [x] **W7 [App、文档] 标准地址。** 按 §3.5 做，§3.5 是 owner 定的准绳。
   - 文档部分不依赖客户端代码，可以马上做：`BuckyOSApp/doc/BuckyOS外部调用协议设计.md` 加 `app.open` 这个 action 和“只做导航的 action 可以不带 request object”；`buckyos/doc/sdk/context ext.md` §8 的 `buckyos://app/<app_id>` 改成新写法；`buckyos/doc/key url.md` §2 加一句指向《外部调用协议》。
   - 实现部分：https 应用地址与 `OpenAppRequest` 的互转。注册 `buckyos://`：桌面端由单实例插件把第二次启动的参数转给已运行的进程，Android 加 intent filter。第一版只接打开应用这一个 action，其它直接拒绝。
-- [ ] **W8 [App] 主客户端生命周期。** 托盘启用时点 × 隐藏；退出前依次询问各应用窗口后全部关闭。
+- [x] **W8 [App] 主客户端生命周期。** 托盘启用时点 × 隐藏；退出前依次询问各应用窗口后全部关闭。
 
 完成条件：从图标、Activity、系统通知、另一个应用四个入口打开同一个应用，单窗口应用始终只有一个窗口并能进入指定页面；多窗口应用按窗口路径复用；同一组操作在桌面 Web UI 和桌面 APP 里结果一致；Files 和 Zone 设置能在原生窗口里打开。
 
 ### 阶段 4：移动容器
 
-- [ ] **C1 [App] 内容视图（Android）。** 按 T0-7 的结论实现：新建、显示、隐藏、销毁、设置位置和大小；顶层加载并登录；注入 `BuckyApi` 并把调用送到 Rust；保活上限和按最近使用淘汰。
-- [ ] **C2 [App] 底部导航。** 五项。Message Hub Tab 和 Home Station Tab 各用一个内容视图，和图标、通知唤起是同一个视图。Tab 上显示 N4 的未读数。
-- [ ] **C3 [App] 系统 Header 与应用切换。** 两种风格；应用切换、返回、标题、搜索、更多、最小化；固定底色风格的第二行和搜索入口，应用通过 app-frame 声明和更新。应用切换视图列出已打开的应用。
-- [ ] **C4 [App] 返回与最小化。** Android 系统返回键先到客户端的返回栈，再到应用的 `frame.back`。最小化回到 Home，应用留在已打开列表里。
-- [ ] **C5 [Shell、websdk] Tab 里的页面形态。** `frame.init` 增加呈现方式；`/messagehub`、`/homestation` 在 Tab 里时去掉自己的外层导航。
+- [x] **C1 [App] 内容视图（Android）。** 按 T0-7 的结论实现：新建、显示、隐藏、销毁、设置位置和大小；顶层加载并登录；注入 `BuckyApi` 并把调用送到 Rust；保活上限和按最近使用淘汰。
+- [x] **C2 [App] 底部导航。** 五项。Message Hub Tab 和 Home Station Tab 各用一个内容视图，和图标、通知唤起是同一个视图。Tab 上显示 N4 的未读数。
+- [x] **C3 [App] 系统 Header 与应用切换。** 两种风格；应用切换、返回、标题、搜索、更多、最小化；固定底色风格的第二行和搜索入口，应用通过 app-frame 声明和更新。应用切换视图列出已打开的应用。
+- [x] **C4 [App] 返回与最小化。** Android 系统返回键先到客户端的返回栈，再到应用的 `frame.back`。最小化回到 Home，应用留在已打开列表里。
+- [x] **C5 [Shell、websdk] Tab 里的页面形态。** `frame.init` 增加呈现方式；`/messagehub`、`/homestation` 在 Tab 里时去掉自己的外层导航。
 - [ ] **C6 [Shell] 移动 Web UI 的保活和 Header。** 本版本不做（Q27）。
 
 完成条件：Android 客户端里打开三个应用，来回切换不重新加载；最小化回到 Home；系统返回键的行为和 Header 上的返回一致；Message Hub Tab 和从 Home 图标进入的是同一个页面状态。
 
 ### 阶段 5：后台音频
 
-- [ ] **A1 [App] 桌面播放。** 按 T0-5 的结论处理最小化时的播放；把 Media Session 的可用情况写进能力清单。
-- [ ] **A2 [App] 移动播放保活。** 能力 `audio.background`：申请保活时 Android 起前台服务和媒体通知；释放时撤掉。需要的系统权限加到 Android 清单里。
-- [ ] **A3 [App] 录音。** 把 `feature/audio_record` 的原生部分移植到当前 main，不直接合并分支。接口整理成 `audio.record.*`，走 Z6 的新桥。桌面端要么实现，要么在能力清单里不列。
-- [ ] **A4 [App] 统一采集分发的验证。** 一个原生采集源，把音频块分发给多个订阅的应用。记录各平台的后台限制、延迟、权限提示归属，给出做或不做的建议。
-- [ ] **A5 [websdk] 音频接口。** 封装保活和录音接口；不在客户端里时退回浏览器自身的能力，并通过能力清单告诉应用。
-- [ ] **A6 [App] Home 音乐小部件。** 放在音频阶段最后（Q26）。从 Shell 的 `desktop/widgets/MusicPlayerWidget.tsx` 移植。要先解决本地页面播放 Zone 文件的地址和鉴权。
+- [x] **A1 [App] 桌面播放。** 按 T0-5 的结论处理最小化时的播放；把 Media Session 的可用情况写进能力清单。
+- [x] **A2 [App] 移动播放保活。** 能力 `audio.background`：申请保活时 Android 起前台服务和媒体通知；释放时撤掉。需要的系统权限加到 Android 清单里。
+- [x] **A3 [App] 录音。** 把 `feature/audio_record` 的原生部分移植到当前 main，不直接合并分支。接口整理成 `audio.record.*`，走 Z6 的新桥。桌面端要么实现，要么在能力清单里不列。
+- [x] **A4 [App] 统一采集分发的验证。** 一个原生采集源，把音频块分发给多个订阅的应用。记录各平台的后台限制、延迟、权限提示归属，给出做或不做的建议。
+- [x] **A5 [websdk] 音频接口。** 封装保活和录音接口；不在客户端里时退回浏览器自身的能力，并通过能力清单告诉应用。
+- [x] **A6 [App] Home 音乐小部件。** 放在音频阶段最后（Q26）。从 Shell 的 `desktop/widgets/MusicPlayerWidget.tsx` 移植。要先解决本地页面播放 Zone 文件的地址和鉴权。
 
 完成条件：桌面的音乐应用窗口最小化后继续播放，点 × 后停止；Android 客户端切到后台和锁屏后继续播放，媒体通知可以暂停和继续。
 
 ### 阶段 6：两端主界面
 
-- [ ] **U1 [App] 桌面主面板。** 四个 Tab。主窗口可以调高度并记住位置。用鼠标操作，不依赖长按之类的触摸手势。样式用 Desktop 的设计 token 和明暗主题（§2.5），观感和 Shell 一致。
-- [ ] **U2 [App] Home。** 账号区和 Zone 切换（Z8）、系统状态卡片、常用应用快捷方式（可添加和移除，存在该 Zone 的账号桌面状态里，跨设备一致）。纵向滚动。第一版不带别的小部件（Q26）；以后要加，从 Shell 的 `desktop/widgets/` 移植。
-- [ ] **U3 [App] APPS。** `apps.list` 加系统应用清单，点击走打开规则。
-- [ ] **U4 [App] Settings。** 按 Q25：客户端设置（语言、明暗、通知、开机启动、Zone 管理、身份与备份），加“当前 Zone 的设置”入口。
-- [ ] **U5 [App] 移动 Home。** 应用启动器，数据同 U3。
-- [ ] **U6 [App] “＋”快速创建。** 预置四项：发消息给 Message Hub，发动态给 Home Station，传照片给 Files（Q28），加笔记给 AI Workspace 新建文档（§6.2）。四项的目标应用写成一处配置。创建发生在当前 Zone。内容处理器登记已支持 `create` 意图时菜单项从登记里取，否则先写死。
-- [ ] **U7 [App] 动态入口。** 默认 Home Station，可切到全部动态；偏好存在账号外观配置里（Z9）。
-- [ ] **U8 [App] 清理。** 删除原 Apps 页和读本机 `applist.json` 的命令；去掉“打开主页”调系统浏览器的做法；旧的三个 Tab 换成新结构；旧的 iframe 容器只留给激活页，其余改用内容视图。
-- [ ] **U9 [文档]** 更新 `BuckyOSApp/doc/当前需求文档.md`、`doc/BuckyApi.md`、`doc/目录结构.md`，`buckyos/product/desktop/` 下的 PRD，以及 websdk 的应用开发文档。
+- [x] **U1 [App] 桌面主面板。** 四个 Tab。主窗口可以调高度并记住位置。用鼠标操作，不依赖长按之类的触摸手势。样式用 Desktop 的设计 token 和明暗主题（§2.5），观感和 Shell 一致。
+- [x] **U2 [App] Home。** 账号区和 Zone 切换（Z8）、系统状态卡片、常用应用快捷方式（可添加和移除，存在该 Zone 的账号桌面状态里，跨设备一致）。纵向滚动。第一版不带别的小部件（Q26）；以后要加，从 Shell 的 `desktop/widgets/` 移植。
+- [x] **U3 [App] APPS。** `apps.list` 加系统应用清单，点击走打开规则。
+- [x] **U4 [App] Settings。** 按 Q25：客户端设置（语言、明暗、通知、开机启动、Zone 管理、身份与备份），加“当前 Zone 的设置”入口。
+- [x] **U5 [App] 移动 Home。** 应用启动器，数据同 U3。
+- [x] **U6 [App] “＋”快速创建。** 预置四项：发消息给 Message Hub，发动态给 Home Station，传照片给 Files（Q28），加笔记给 AI Workspace 新建文档（§6.2）。四项的目标应用写成一处配置。创建发生在当前 Zone。内容处理器登记已支持 `create` 意图时菜单项从登记里取，否则先写死。
+- [x] **U7 [App] 动态入口。** 默认 Home Station，可切到全部动态；偏好存在账号外观配置里（Z9）。
+- [x] **U8 [App] 清理。** 删除原 Apps 页和读本机 `applist.json` 的命令；去掉“打开主页”调系统浏览器的做法；旧的三个 Tab 换成新结构；旧的 iframe 容器只留给激活页，其余改用内容视图。
+- [x] **U9 [文档]** 更新 `BuckyOSApp/doc/当前需求文档.md`、`doc/BuckyApi.md`、`doc/目录结构.md`，`buckyos/product/desktop/` 下的 PRD，以及 websdk 的应用开发文档。
 
 完成条件：设计稿 §8、§9 描述的入口在两端都能到达，并且 §8 的验收全部通过。
 
@@ -692,3 +692,122 @@ interface OpenAppRequest {
 
 - 2026-11-23：owner 答复 Q1–Q21。Q1、Q2、Q9 改了总体结构，据此改写了 §0、§3、§5 到 §10，任务重新编号。改写时补查并写进 §2 的事实：密码摘要的算法和激活时管理员密码的来源、`auth.login` 与 `auth.prepare_app_launch` 的范围、Shell 的路由表、账号外观状态的存法、websdk 可复用的部分、`buckyos://` 的几份定义。还没有任何实现。
 - 2026-11-23（第二轮）：owner 定 BuckyOSApp 改成 AGPL-3.0，Q11 按建议并以 §3.5 为准，Q22–Q28 按建议。据此撤掉了“客户端不能用 buckyos 代码”的约束，加了 L1、T0-10 和 §3.1 的“共用代码放哪”；W7 不再等待；N9、C6 移出本版本；§6.2 改成我替 owner 选的做法。补查并写进 §2 的事实：BuckyOSApp 声明许可证的九处位置；Desktop `api/` 的封装都走 websdk 的全局运行时；`buckyos-api` 没有 Zone 外可用的 kevent 客户端，也没有 control-panel `auth.*` 的客户端，并且带 vendored openssl 等依赖。更正一处：上一版说内容解析的逻辑在 Desktop 里，实际 `resolveContentHandlers` 已经在 websdk 的 `content.ts`，Desktop 的 `app/content/open.ts` 只是接到窗口的那一层。`key url.md`、《外部调用协议》、`context ext.md` 三份文档本身还没有改，留给 W7。还没有任何实现。
+- 2026-11-24：全部任务实施完（T0 到 U9），未提交。下面按“T0 结论、落点、验证、与正文不同、替 owner 选的、等 owner 的、没验证的、提交顺序”记录。
+
+### 11.1 T0 的实测结论
+
+环境：三 Zone 环境（alice 经 SN、bob 直连、charlie 自定义域名）、Windows 10（WebView2）、macOS 26、Linux 容器（WebKitGTK）、Android 模拟器 API 35 / 36。没有真机。
+
+| 项 | 结论 |
+| --- | --- |
+| T0-1 | 本地页面里的 iframe 带不上 Zone 的 Cookie（跳登录页）；作为窗口顶层文档、先走一次性 `/sso_callback` 可行；Cookie 在客户端的多个窗口间共享，重启后还在。Android 上 Cookie 约 30 秒才落盘，要主动 flush |
+| T0-2 | 证实：不声明应用自己的 ACL 时，远程顶层页面能调全部应用命令。现在 `build.rs` 用 `AppManifest::commands` 声明，capability 按窗口拆开，远程页面只剩 `bucky_api_call` |
+| T0-3 | 选 verify-hub `login_by_password`（摘要 = Base64(SHA256(密码 + 用户名 + ".buckyos"))）拿会话、`refresh_token` 续期；应用页用 `auth.prepare_app_launch`，根域页用 `auth.login` 带 `redirect_url`，不需要 Z5。nonce 必须严格递增。钱包密码的摘要能登录通过客户端激活的 Zone（真实激活验过，§11.3） |
+| T0-4 | Windows 用 toast、macOS 用 `UNUserNotificationCenter`（要 .app），都能拿到点击并在没有窗口时唤起；托盘的进入 / 移动 / 离开在 Windows、macOS 可用，Linux 没有，退回 tooltip。Windows 上“进入”只报一次，之后靠“移动”，所以两个都认 |
+| T0-5 | Windows 不节流；macOS 默认节流并停掉音频，窗口都设 `backgroundThrottling: disabled` 后最小化继续播。Rust 发给隐藏主窗口的事件两端都到 |
+| T0-6 | kevent HTTP 流直连和经 SN 各保持 20 分钟，15 秒一个 keepalive，没有断；HTTP/2 正常 |
+| T0-7 | Tauri / wry 在 Android 不能建第二个 WebView（会顶替主 WebView）。用 Kotlin 加 `WebView`：内容视图在下，透明的主 WebView 在上，按区域穿透触摸。**每个账号 + Zone 一个 WebView Profile**，否则任何一个应用页面卡住都会卡住本地界面（忙等 5 秒：4802 ms → 3 ms） |
+| T0-8 | `mediaPlayback` 前台服务加平台 `MediaSession` 后，切后台、息屏继续播；录音原型按 `audio.record.*` 重写，没有合并分支 |
+| T0-9 | 选独立进程 `:notify` 的 `remoteMessaging` 前台服务。退后台、划掉任务、息屏、强制 Doze 610 秒后仍在 1 秒内弹出。Google Play 的审核和真机耗电没有数据 |
+| T0-10 | Rust：不引 `buckyos-api`（vendored openssl 等依赖、Android 编译代价），手写用到的字段。前端：同级检出 buckyos 加路径别名可行，CI 多检出一份到 `.buckyos/` |
+| 另外 | 未登录的根域页面跳的是 `<zone>/login`，不是 `sys.<zone>/login`，两个都拦。macOS / Linux 的导航回调不分主框架和子框架：macOS 换了导航代理的方法来区分，Linux 不区分 |
+
+### 11.2 落点
+
+| 范围 | 文件 |
+| --- | --- |
+| 客户端 Rust | `src-tauri/src/zone/`（名单、会话、钥匙串、`zonemedia` 协议）、`content/`（桌面窗口 `windows.rs`、移动视图 `mobile/`、桥、导航策略、签名小窗）、`notify/`（连接、系统通知、`:notify` 服务）、`audio/`、`tray.rs`、`lifecycle.rs`、`deeplink.rs`、`android.rs`、`did/bridge.rs`；`build.rs`、`capabilities/`、`tauri.conf.json`、`Info.plist` |
+| Android | `gen/android/app/src/main/java/com/buckyos/buckyosapp/` 的 `content/`、`notify/`、`audio/`、`NativeBridge.kt`、`Secrets.kt`、`Labels.kt` |
+| 客户端前端 | `src/features/{zone,apps,content,notify,activity,home,devices,container,create,feed,music,tray}`、`src/app/`（含 `phone/`）、`src/windows/`、`src/pages/main/`；`public/bucky-api.js` 重写 |
+| websdk | `src/{open_app,zone_clients,runtime_env,audio}.ts`、`app-frame.ts`、`msg_center_client.ts`、`cli/modules/pikg*.ts`，测试向量 `tests/open_app_vectors.json` |
+| buckyos 服务端 | msg-center（`notify.summary / list_apps / set_app`、应用的通知权限）、AppDoc `window`、AI Workspace 的评论 / 提及 / 日程 / 待办通知 |
+| Desktop | `src/shared/`（客户端引用的唯一一份）、`src/app/standalone/`（系统应用独立页面、`/system-apps.json`）、窗口规则改用 websdk、通知设置页、Zone 主题色 |
+
+各包的详细报告（落点、接口、逐条偏差）在实施机的 `/home/lzc/buckyosapp-dev/reports/`，不在仓库里。
+
+### 11.3 验证
+
+| 内容 | 结果 |
+| --- | --- |
+| 单测 | BuckyOSApp Rust 96、前端 174；websdk `pnpm test` 1401 过、2 条本机环境失败（改动前就失败）；msg_center、control_panel、aiworkspace 的相关测试；Desktop 的类型检查、单测、e2e 与基线对照没有新增失败（细节见各包报告） |
+| 桌面核心（登录、切换、内容视图、权限、通知连接、重启保持） | 29 项，Linux / Windows / macOS 全过，真实三 Zone |
+| 打开规则（图标、通知、Activity、另一个应用、内容处理器、`target=_blank`、两个 Zone、登出） | 9 项，三个桌面系统全过 |
+| 通知 | 事件到系统提醒约 0.5 秒，跨 Zone 消息约 1 秒；断开重连补报、不重复；Windows、macOS 实际点过通知、悬停过托盘小窗、点过小窗里的一行 |
+| 首次使用（PC） | Linux 上真实走完：在测试 SN 注册（含 BNS）→ 自动发现本机未激活的服务 → 激活向导 → 约 1 分钟后主窗口自动切到新 Zone 并登录，全程只在签名时输过钱包密码；解绑也验过 |
+| 生命周期 | 点 × 前问应用、退出逐个问（macOS ⌘Q 和 Dock 退出也问）、Dock 唤回、`buckyos://app.open`（Windows、macOS；名单外的 Zone 被拒并提示） |
+| 播放 | Windows、macOS 应用窗口最小化继续播、点 × 停止；Home 音乐经 `zonemedia` 播放、拖动、下一首、关到托盘继续（Windows；macOS 用 WAV 验，测试机没有声卡，MP3 放不了） |
+| Android 模拟器 | 最终版 API 35 debug：核心 29、安全 20、激活 4、身份 6、其他 16、音频 22、Home 音乐 9 + 7（长曲目）、权限 3、通知 21、退出 5、逐页走查 26，全过；API 36 debug 跑核心、安全、激活、身份、其他、走查，全过。深色走查 26 在断网恢复那处修改之前。release（R8）包只在审查修复之前跑过（核心 29、音频 22、通知 19/21 与其他 15/16，差的是测试脚本点通知的问题和下载重名，后者已改），修复之后只编译和验 16 KB 对齐 |
+| 权限 | 远程顶层页面调不到任何客户端命令；没有声明 `msg-center/notify` 的应用（text-editor）在真实 Zone 上被拒（`NOTIFY_NOT_DECLARED`） |
+| AI Workspace 通知 | 真实 Zone：日程到点后 37 秒收到 System Notify，链接指向工作区 |
+| 降级 | alice 去掉 `/system-apps.json` 后，APPS 提示需要升级，第三方应用和四个固定的系统应用仍能打开 |
+
+实测中修掉的问题，后来人要知道：
+
+1. **钱包密码摘要的泄露。** 旧桥 `signJsonWithActiveDid` 的返回里有 `pwd_hash`，它就是可以登录账号自己 Zone 的摘要。内容视图里现在恒为 `null`，只有激活页拿得到。钱包凭据也只发给 owner 来源的 Zone，不发给手动添加的。
+2. macOS 上 `cookies_for_url` 会锁着主 WebView 等主线程，和窗口事件互相等，整个客户端卡死；改用 `cookies()`。
+3. 激活页连续请求两次签名时，第二次被判成 busy（React 状态晚一拍），激活失败；改用 ref。这是旧代码就有的。
+4. 刚激活的 Zone 还没起来时被当成“要密码”；现在算连不上，30 秒一次自动再试。
+5. 会话状态以前只看 token 不看网络，Zone 连不上也显示已连接；现在跟着请求结果走。
+6. 窗口还在登录途中又被通知唤起，目标页面会丢；现在改走新的登录。
+7. macOS 的 ⌘Q 不触发 Tauri 的退出事件；给 app delegate 补了 `applicationShouldTerminate:`（注销、关机不拦）。
+8. Message Hub 页面不可见时也标已读，通知会被藏着的窗口读掉；改成可见时才标，Windows 最小化时同步 WebView 的可见性。
+
+实现完之后另做了一次独立代码审查（只读，32 条，报告在实施机 `/home/lzc/buckyosapp-dev/reports/REVIEW.md`），已全部修掉，其中影响结构的：
+
+- **一次性登录地址不经过页面脚本。** 原来用 `location.replace` 把回调地址交给当前页面，应用页面可以用 Navigation API 截到 nonce，换走根域会话。现在远程页面一律由客户端原生导航；页面自己的 `redirect_url` 只认自己的主机；`/sso_callback` 只有客户端发起的那一次放行。
+- **激活页不再是本地页面里的 iframe**（桌面、Android）。Tauri 按主机名第一段判断“本地页面”，Windows / Android 又会把脚本注入每个 frame，激活页的 frame 等于拿到主窗口的命令。现在是 `act_*` 独立窗口（Android 是独立 Profile 的原生视图），只有五个钱包方法；`aux_*` 的权限按窗口拆开；桌面的命令入口另查请求的 Origin。
+- **通知先显示再记“已见”**，中途失败会重读；先开流再补拉，流打开前的事件不丢；消息不排在任务事件后面；任务列表按新的在前取。
+- **身份切换**：同步 Zone 名单带身份参数；切换和删除身份前询问并关闭全部窗口；签名绑定请求时的身份，签名框始终显示主机地址和身份；托盘里别的身份的提醒清掉。
+- **会话**：自己退出的 Zone 不再被自动登录；被拒绝的摘要不反复试；输错密码不影响还有效的会话；换用户登录清 Cookie；后台重试不刷状态事件。
+- 应用不能替用户打开另一个 Zone 的东西（要问）；不在前台的视图不能抢屏幕。
+- **Android**：登录回调一律由 `WebView.loadUrl` 加载；桥要求文档主机等于视图的主机；表单 POST 在 `onPageStarted` 补判；系统通知的 intent 带随机令牌，伪造的忽略；签名框随视图关；最后一个 Zone 退出时 `:notify` 先注销会话再停；下载在进程内带会话进行；`clear_cookies` 按 `ZoneKey` 找 Profile（原来删身份、移除 Zone 之后找不到，网页数据没清）。
+
+Android 收尾时另外发现并修的：返回键到不了本地界面；标签页与从别的 Zone 链接打开的应用互相抢前台；Home 音乐跳转后卡住（WebView 会对拦截来的流再按 `Range` 跳一次字节）；断网恢复后第一个请求挂 20 多秒（连接池里是死连接，网络恢复时换 client）；UI 线程上同步取当前身份会死锁（`on_navigate` / `on_event` 里不要调 `active_account` / `handles`）。
+
+最后一轮（含以上全部修改）：Linux 核心 29、规则 9、通知 11、攻击 5；Windows 核心 29、规则 9、攻击 5、音乐 5；macOS 核心 29、规则 9、攻击 5，全过。Windows toast、macOS 通知、托盘、签名框的手动点击，以及 Linux 上的真实注册激活，是在这一轮之前做的，没有重做。
+
+### 11.4 与正文不同
+
+- Z2：没有用 kRPC crate，直接发 HTTP 并原样转发回答，错误码和数据不丢；`buckyos-api` 没引（T0-10）。
+- Z6：桥有三种传输：桌面走 Tauri IPC、移动走 `__buckyPort`、激活页仍经外层本地页面。
+- Z4：客户端另外预写根域的会话 Cookie，应用里嵌的文件选择器、Preview 才是登录状态。
+- W3：诊断页不在清单里（离开桌面没有内容）；老 Zone 对不存在的路径回 `200 text/html`，按“不是 JSON”判断。
+- N5：检查放在 `notify.send` 里而不是 `notify_caller`，否则关掉通知的应用连撤销都做不到。
+- N8：AI Workspace 自己展开标准日历的重复规则，和 D4“Agent 滚动安排”的方向不同；Agent 维护的记录留给 Agent。`dcrontab remind` 没改，建议随 D4 定。
+- N6：Activity 的任务看 30 天。
+- A6：Linux 上放不了（WebKitGTK 的媒体管线不认自定义协议），Linux 不在交付平台里。
+- U5：手机 Home 只有启动器，没有系统状态卡片。
+- `frame.beforeClose` 桌面等应用答复，超时当作同意；主页面 5 秒不接手就直接关。
+- U8：激活页在桌面和 Android 也不用 iframe 了，iframe 容器只剩 iOS 和开发环境的测试页。
+- W5：`app.open` 带别的 Zone 时先问用户，视图不在前台直接拒绝。
+
+### 11.5 实施中替 owner 选的（改起来都不大）
+
+- 手机动态 Tab 顶部常驻“Home Station / 全部动态”的分段控件；从图标打开 Home Station 不改已选的模式。
+- Activity 里打开一条未处理的 notice 就算已读；全部已读不动等待回答的。
+- 通知默认开，第一次有 Zone 登录成功时申请系统许可；还没接受的陌生人消息也提醒。
+- 切到需要密码的 Zone 立刻弹登录框，启动时只给提示条。
+- 移除自己的 Zone 只是从列表隐藏，与解绑分开。
+- Home 音乐：桌面切 Zone 时正在播会先问；请求偶尔连不上的 20 秒内不停；选文件夹从 `/home/<用户>` 起可以往上走。
+- 内容打开：应用没声明 `instance` 时仍按内容处理器的 `window`；窗口位置大小按“Zone + 应用”记。
+- 独立页面在浏览器里跟着账号外观。
+- AI Workspace：评论通知谁、`@用户名` 按文本解析、5 分钟合并、提醒一条记录只给一个人、日期类从 09:00 算。
+- Android：麦克风每个视图第一次由客户端先问再由系统授权，摄像头和定位一律拒绝；系统通知按 Zone 分组、已读即撤。
+- Android：客户端发起的登录到达后清空该视图的后退历史，会话过期重登后退不回之前的页面；激活页不能下载、不能用麦克风；Home 音乐暂停 10 分钟后放掉后台持有。
+- 从链接或通知进另一个 Zone：当前 Zone 有打开的应用才问，只有标签页时直接切过去；用户自己点的通知不问。
+- 麦克风统一采集分发（A4）：技术上可行，第一版不做。桌面实测 Rust → 3 个 WebView（含隐藏窗口）、20 ms 一块：不丢，延迟 p95 1 ms（macOS 偶发 640 ms 停顿）；Android 5 个视图 p95 1 ms。理由是现在没有两个应用要同时听，Android 同一客户端里多个 WebView 本来就能同时录。
+
+### 11.6 等 owner 的
+
+1. L1 的提交 `63cfdcf` 过目后合入。`buckyos-pack-installer` 的 `license.md`、`license-cn.md` 还写着 BuckyOSApp 是 Apache-2.0，没有改（不在本 TODO 的三个仓库里）。依赖树里有一个 GPL-3.0 的 crate（`ed25519_to_curve25519`，来自 name-lib），AGPL 下兼容。
+2. §11.4 的 N8 与 D4 的边界。
+3. 桌面客户端和本机 BuckyOS 共用 `/opt/buckyos/local/did_docs` 这个 DID 文档缓存目录（name-client 的缺省），没有权限时只是写不进缓存、有报错日志。要不要给客户端单独的目录。
+4. Google Play 对 `remoteMessaging` 前台服务的审核材料，上架时准备。
+
+### 11.7 没验证的
+
+真机（Android 厂商的后台限制、真机耗电、arm64）、审查修复后的 Android release 包在设备上运行、Android 上对真实 OOD 的完整激活（用的是本机假设备页）、下载重定向到 Zone 之外、Android 10 以下的下载位置、iOS（只有 `Unsupported` 的占位，本机编不了）、macOS 的正式签名与公证、Windows 安装包、Windows 11、手机配合盒子的完整路径（模拟器上只验了扫描和激活容器的代码路径）、AppDoc 声明了 `window` 的真实应用、`notify.list_apps` 之外的安装界面整条链、Safari / Firefox 上的新页面、大量工作区时 AI Workspace 每分钟扫描的开销。
+
+### 11.8 提交和发布顺序
+
+websdk 先发布（比 0.7.202 新的版本）→ buckyos 合入 main（含 `src/frame/desktop/src/shared`）→ BuckyOSApp 把 `package.json` / 锁文件里的 `buckyos` 升到那个版本再合入。开发时 `BuckyOSApp/node_modules/buckyos` 是指向同级 websdk 的符号链接，`pnpm install` 会把它换成 npm 上的旧版，编译会缺接口。

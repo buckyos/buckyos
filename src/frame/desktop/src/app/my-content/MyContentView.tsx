@@ -23,6 +23,8 @@ import { ConsumptionChart } from './ConsumptionChart'
 import { ShareDetail } from './ShareDetail'
 import { StatusChip } from './StatusChip'
 import type { MyContentLaunch } from './launch'
+import { useAppPath } from '../pathContext'
+import { appPath } from '../standalone/address'
 import './my-content.css'
 
 type Tab = 'all' | 'links' | 'apps' | 'public' | 'sites'
@@ -111,6 +113,7 @@ export function MyContentView({ launch }: { launch?: MyContentLaunch }) {
   const [error, setError] = useState<ShareError | null>(null)
   const [selected, setSelected] = useState<string | null>(launch?.shareId ?? null)
   const [version, setVersion] = useState(0)
+  useAppPath(appPath(tab === 'all' ? '' : tab, { share: selected }))
 
   useEffect(() => {
     let alive = true

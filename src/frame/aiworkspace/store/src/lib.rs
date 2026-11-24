@@ -7,6 +7,7 @@ pub mod export;
 pub mod ext;
 pub mod home;
 pub mod library;
+pub mod notices;
 pub mod objects;
 pub mod pack;
 pub mod presence;

@@ -13,7 +13,7 @@
 //! MessageHub groups it are not part of the contract.
 
 use crate::{
-    CommitResultReq, HumanPromptControl, HumanPromptOption, HumanTaskPrompt, Task, TaskDataResult,
+    AppId, AppInstanceId, CommitResultReq, HumanPromptControl, HumanPromptOption, HumanTaskPrompt, Task, TaskDataResult,
     TaskOutcome, TaskPhase, TASK_ERR_ALREADY_COMPLETED, TASK_ERR_REVISION_CONFLICT,
 };
 use ::kRPC::{RPCErrors, Result};
@@ -45,6 +45,15 @@ pub const METHOD_NOTIFY_LIST: &str = "notify.list";
 pub const METHOD_NOTIFY_ACK: &str = "notify.ack";
 pub const METHOD_NOTIFY_DISMISS: &str = "notify.dismiss";
 pub const METHOD_NOTIFY_CANCEL: &str = "notify.cancel";
+pub const METHOD_NOTIFY_SUMMARY: &str = "notify.summary";
+pub const METHOD_NOTIFY_LIST_APPS: &str = "notify.list_apps";
+pub const METHOD_NOTIFY_SET_APP: &str = "notify.set_app";
+
+/// `notify.send` of an App whose AppDoc does not declare
+/// [`crate::APP_PERMISSION_NOTIFY`] (or which is not installed).
+pub const NOTIFY_ERR_NOT_DECLARED: &str = "NOTIFY_NOT_DECLARED";
+/// `notify.send` of an App the user turned off.
+pub const NOTIFY_ERR_DISABLED: &str = "NOTIFY_DISABLED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -439,6 +448,80 @@ pub struct NotifyListResult {
     pub items: Vec<NotifyView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifySummaryReq {
+    /// Zone user to count for; only system services may name someone else
+    /// than the caller, and they have to name someone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_user: Option<String>,
+}
+
+/// `open` notifications (as in `notify.list {status: [open]}`), by category.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyOpenCounts {
+    /// All of them.
+    pub open: u64,
+    pub todo: u64,
+    pub agent: u64,
+    pub app: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageUnreadCounts {
+    /// Unread records of the user's sessions, without the muted ones and the
+    /// system notifications.
+    pub unread: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifySummary {
+    pub notify: NotifyOpenCounts,
+    pub messages: MessageUnreadCounts,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyListAppsReq {
+    /// As in [`NotifySummaryReq`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_user: Option<String>,
+}
+
+/// An App as the user's notification settings show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyApp {
+    pub app_instance_id: AppInstanceId,
+    pub app_id: AppId,
+    pub owner_user_id: String,
+    /// Absent when the App is not installed any more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_name: Option<String>,
+    /// AppDoc `presentation.links.app_icon_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_icon_url: Option<String>,
+    pub installed: bool,
+    /// The AppDoc declares [`crate::APP_PERMISSION_NOTIFY`].
+    pub declared: bool,
+    /// Declared and not turned off: what the App sends is accepted.
+    pub enabled: bool,
+    /// The last notification it sent to the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sent_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyListAppsResult {
+    pub apps: Vec<NotifyApp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifySetAppReq {
+    pub app_instance_id: AppInstanceId,
+    pub enabled: bool,
+    /// As in [`NotifySummaryReq`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_user: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

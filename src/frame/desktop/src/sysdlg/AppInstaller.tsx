@@ -28,6 +28,7 @@ import type {
 import { DetailPage } from '../app/app-service/pages/DetailPage'
 import { RuntimeSummary } from '../app/app-service/components/RuntimeSummary'
 import { isMockRuntime } from '../runtime'
+import { NOTIFY_PERMISSION } from '../shared/permissions.ts'
 import { cancelInstallTask, getInstallTaskStatus, type InstallTaskSnapshot } from '../api/app_install'
 
 const targetSchema = z
@@ -678,10 +679,20 @@ function PlanStep({
                     update()
                   }}
                 />
-                <span className="min-w-0 break-all">
-                  {permission.scope_path} · {permission.actions.join(', ')} ·{' '}
-                  {t(permission.required ? 'app22.required' : 'app22.optional')}
-                </span>
+                {permission.scope_path === NOTIFY_PERMISSION ? (
+                  <span className="min-w-0" data-testid="app-installer-permission-notify">
+                    {t('permission.notify', 'Send you notifications')} ·{' '}
+                    {t(permission.required ? 'app22.required' : 'app22.optional')}
+                    <span className="block text-xs leading-5 text-[var(--cp-muted)]">
+                      {t('permission.notifyHint', 'You can turn this off later in Settings → Notifications.')}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="min-w-0 break-all">
+                    {permission.scope_path} · {permission.actions.join(', ')} ·{' '}
+                    {t(permission.required ? 'app22.required' : 'app22.optional')}
+                  </span>
+                )}
               </label>
             ))}
           </section>
@@ -872,7 +883,7 @@ function PlanStep({
             </Row>
             <Row label={t('app22.permissions')}>
               {p.permissions
-                .map((v) => `${v.scope_path} (${v.actions.join(', ')})`)
+                .map((v) => v.scope_path === NOTIFY_PERMISSION ? t('permission.notify', 'Send you notifications') : `${v.scope_path} (${v.actions.join(', ')})`)
                 .join('; ')}
             </Row>
             <Row label={t('app22.autoStart')}>

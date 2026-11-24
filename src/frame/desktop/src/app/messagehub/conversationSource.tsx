@@ -34,6 +34,23 @@ export const messageHubClock = (store: MessageHubStore) => {
 }
 
 /** A session of the viewer's own messages, active or archived. */
+/** Nobody reads a hidden page: what it would mark is marked when it is shown again. */
+const unseen = new Map<string, { ids: Set<string>; mark: (recordIds: string[]) => void }>()
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    const waiting = [...unseen.values()]
+    unseen.clear()
+    for (const { ids, mark } of waiting) mark([...ids])
+  })
+}
+function markSeen(key: string, recordIds: string[], mark: (recordIds: string[]) => void) {
+  if (document.visibilityState !== 'hidden') return mark(recordIds)
+  const ids = unseen.get(key)?.ids ?? new Set<string>()
+  for (const id of recordIds) ids.add(id)
+  unseen.set(key, { ids, mark })
+}
+
 export function findSession(context: MessageHubContext, sessionId: string): Session | null {
   const store = getMessageHubStore()
   return (['active', 'archived'] as const).flatMap(lifecycle => store.sessions(context, undefined, lifecycle)).find(session => session.id === sessionId) ?? null
@@ -87,7 +104,7 @@ export function useMessageHubConversationSource({ context, entityId, session, co
     hasOlder: session ? store.hasOlder(reading, sessionId) : false,
     loadOlder: () => session ? store.loadOlder(reading, sessionId) : Promise.resolve(false),
     locate: (messageId) => store.locateMessage(reading, sessionId, messageId),
-    markRead: (recordIds) => { if (session) void store.markRead(reading, sessionId, recordIds) },
+    markRead: (recordIds) => { if (session) markSeen(`${reading.ownerDid}\n${sessionId}`, recordIds, (ids) => { void store.markRead(reading, sessionId, ids) }) },
     access: !session ? null : channel ? channelAccess : store.access(context, session, confirmed),
     unavailableReason: creationReason,
     canAct: isOwner,

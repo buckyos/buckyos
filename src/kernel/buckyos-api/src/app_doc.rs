@@ -583,6 +583,97 @@ pub struct AppPresentation {
     pub license: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppWindowInstance {
+    #[default]
+    Single,
+    Multi,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppWindowMode {
+    #[default]
+    Windowed,
+    Maximized,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppMobileHeader {
+    /// One row the page does not draw under.
+    #[default]
+    Standard,
+    /// Floats over the page.
+    Compact,
+}
+
+pub const APP_WINDOW_MAX_SIZE: u32 = 16384;
+
+/// How the Shell and the client show the App (`window`). An absent field is the
+/// default and stays absent: the declaration is part of the AppDoc ObjectId.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AppWindowDeclaration {
+    /// Default `single`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<AppWindowInstance>,
+    /// Default `windowed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<AppWindowMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_height: Option<u32>,
+    /// Default true; false: the size is fixed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resizable: Option<bool>,
+    /// Default true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_minimize: Option<bool>,
+    /// Default true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_maximize: Option<bool>,
+    /// Default `standard`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mobile_header: Option<AppMobileHeader>,
+}
+
+impl AppWindowDeclaration {
+    fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("width", self.width),
+            ("height", self.height),
+            ("min_width", self.min_width),
+            ("min_height", self.min_height),
+        ] {
+            if value.is_some_and(|v| v == 0 || v > APP_WINDOW_MAX_SIZE) {
+                return Err(RPCErrors::ReasonError(format!(
+                    "AppDoc window.{name} must be 1..={APP_WINDOW_MAX_SIZE}"
+                )));
+            }
+        }
+        for (min_name, min, name, value) in [
+            ("min_width", self.min_width, "width", self.width),
+            ("min_height", self.min_height, "height", self.height),
+        ] {
+            if let (Some(min), Some(value)) = (min, value) {
+                if min > value {
+                    return Err(RPCErrors::ReasonError(format!(
+                        "AppDoc window.{min_name} is larger than window.{name}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AppDocWire {
@@ -625,6 +716,8 @@ struct AppDocWire {
     pub permissions: Vec<PermissionItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content_handlers: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub window: Option<AppWindowDeclaration>,
     pub selector_type: SelectorType,
     pub service_config_tips: ServiceConfigTips,
 }
@@ -659,6 +752,8 @@ pub struct AppDoc {
     pub permissions: Vec<PermissionItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content_handlers: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<AppWindowDeclaration>,
 
     //UI 应该根据service_config_tips的提示，来构造UI，得到最终的ServiceConfig
     pub selector_type: SelectorType,
@@ -700,6 +795,7 @@ impl<'de> Deserialize<'de> for AppDoc {
             req_capbilities: wire.req_capbilities,
             permissions: wire.permissions,
             content_handlers: wire.content_handlers,
+            window: wire.window,
             selector_type: wire.selector_type,
             service_config_tips: wire.service_config_tips,
         })
@@ -846,6 +942,9 @@ impl AppDoc {
                 "AppDoc contains invalid required envelope/body fields".to_string(),
             ));
         }
+        if let Some(window) = &self.window {
+            window.validate()?;
+        }
         if self.app_type != AppType::Service && self.pkg_list.iter().is_empty() {
             return Err(RPCErrors::ReasonError(
                 "non-system AppDoc pkg_list must contain at least one package".to_string(),
@@ -977,6 +1076,7 @@ pub struct AppDocBuilder {
     req_capbilities: HashMap<String, i64>,
     permissions: Vec<PermissionItem>,
     content_handlers: Vec<serde_json::Value>,
+    window: Option<AppWindowDeclaration>,
     selector_type: Option<SelectorType>,
     service_config_tips: ServiceConfigTips,
     pkg_list: SubPkgList,
@@ -1024,6 +1124,7 @@ impl AppDocBuilder {
             req_capbilities: HashMap::new(),
             permissions: vec![],
             content_handlers: vec![],
+            window: None,
             selector_type: None,
             service_config_tips: ServiceConfigTips::default(),
             pkg_list: SubPkgList::default(),
@@ -1127,6 +1228,11 @@ impl AppDocBuilder {
 
     pub fn content_handlers(mut self, handlers: Vec<serde_json::Value>) -> Self {
         self.content_handlers = handlers;
+        self
+    }
+
+    pub fn window(mut self, window: AppWindowDeclaration) -> Self {
+        self.window = Some(window);
         self
     }
 
@@ -1457,6 +1563,7 @@ impl AppDocBuilder {
             req_capbilities: self.req_capbilities,
             permissions: self.permissions,
             content_handlers: self.content_handlers,
+            window: self.window,
             selector_type: self.selector_type.unwrap_or_default(),
             service_config_tips: self.service_config_tips,
             pkg_list: self.pkg_list,
@@ -1596,6 +1703,73 @@ mod tests {
                 &ObjId::new_by_raw("appdoc".to_string(), vec![9; 32]),
             )
             .is_err());
+    }
+
+    #[test]
+    fn app_doc_window_declaration_round_trips_and_is_checked() {
+        let owner = DID::from_str("did:web:example.com").unwrap();
+        let builder = || {
+            AppDoc::builder(
+                AppType::Web,
+                "demo-window",
+                "0.1.0",
+                "did:web:example.com",
+                &owner,
+            )
+            .show_name("Demo Window")
+            .web_pkg(pinned_package(
+                "all.web.demo-window.example.com.bns.did#0.1.0",
+            ))
+        };
+        let plain = builder().build().unwrap();
+        assert!(plain.window.is_none());
+        let plain_json = serde_json::to_value(&plain).unwrap();
+        assert!(plain_json.get("window").is_none());
+
+        let declared = json!({
+            "instance": "multi", "default_mode": "maximized",
+            "width": 960, "height": 640, "min_width": 420, "min_height": 280,
+            "resizable": false, "allow_minimize": true, "allow_maximize": false,
+            "mobile_header": "compact",
+        });
+        let mut body = plain_json.clone();
+        body["window"] = declared.clone();
+        let doc: AppDoc = serde_json::from_value(body.clone()).unwrap();
+        doc.validate().unwrap();
+        assert_eq!(doc.window.as_ref().unwrap().instance, Some(AppWindowInstance::Multi));
+        assert_eq!(serde_json::to_value(&doc).unwrap(), body);
+        assert_ne!(doc.gen_obj_id().0, plain.gen_obj_id().0);
+
+        // what is absent stays absent: the ObjectId is the one of the published body
+        let mut partial = plain_json.clone();
+        partial["window"] = json!({ "width": 960 });
+        let doc: AppDoc = serde_json::from_value(partial.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&doc).unwrap(), partial);
+
+        for bad in [
+            json!({ "instance": "many" }),
+            json!({ "default_mode": "fullscreen" }),
+            json!({ "mobile_header": "none" }),
+            json!({ "width": "960" }),
+            json!({ "opacity": 1 }),
+        ] {
+            let mut body = plain_json.clone();
+            body["window"] = bad.clone();
+            assert!(serde_json::from_value::<AppDoc>(body).is_err(), "{bad}");
+        }
+        for bad in [
+            AppWindowDeclaration { width: Some(0), ..Default::default() },
+            AppWindowDeclaration { height: Some(APP_WINDOW_MAX_SIZE + 1), ..Default::default() },
+            AppWindowDeclaration { width: Some(400), min_width: Some(500), ..Default::default() },
+            AppWindowDeclaration { height: Some(200), min_height: Some(300), ..Default::default() },
+        ] {
+            assert!(builder().window(bad.clone()).build().is_err(), "{bad:?}");
+        }
+        let built = builder()
+            .window(AppWindowDeclaration { width: Some(400), min_width: Some(400), ..Default::default() })
+            .build()
+            .unwrap();
+        assert_eq!(built.window.unwrap().min_width, Some(400));
     }
 
     #[test]

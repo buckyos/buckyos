@@ -1,7 +1,7 @@
 /* ── Agent detail page ── */
 
 import { useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Chip, CircularProgress, Switch } from '@mui/material'
 import { Bot, Home, MessageSquare, Radio, Settings2, Trash2, UserRound } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
@@ -59,7 +59,7 @@ function Rows({ rows }: { rows: Array<[string, React.ReactNode]> }) {
 export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRemoved?: () => void }) {
   const { t } = useI18n()
   const store = useUsersAgentsStore()
-  const location = useLocation(), navigate = useNavigate()
+  const navigate = useNavigate()
   const [groupPending, setGroupPending] = useState(false)
   const [groupError, setGroupError] = useState<string | null>(null)
   const [socialPending, setSocialPending] = useState<'homestation' | 'autoShare' | null>(null)
@@ -96,8 +96,7 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
     const context = observe ? { ...defaultContext, ownerDid, mode: 'observe' as const } : defaultContext
     const entityId = observe ? (hub.isMock ? 'did:buckyos:person:alice' : null) : ownerDid
     const payload = { kind: 'messagehub', entityId, context }
-    if (location.pathname === '/desktop' || location.pathname === '/') desktopUIStore.openAppWindow('messagehub', { launch: { requestId: crypto.randomUUID(), payload } })
-    else navigate(`/messagehub?${new URLSearchParams({ ...(entityId ? { entityId } : {}), ownerDid: context.ownerDid, mode: context.mode })}`)
+    if (!desktopUIStore.openAppWindow('messagehub', { launch: { requestId: crypto.randomUUID(), payload } })) navigate(`/messagehub?${new URLSearchParams({ ...(entityId ? { entityId } : {}), ownerDid: context.ownerDid, mode: context.mode })}`)
   }
 
   const toggleGroup = async (allow: boolean) => {

@@ -145,6 +145,7 @@ function PortalView({ home, feed, entryKey }: { home: PortalHome; feed: string; 
     perspective: 'visitor',
     reader,
     isDesktop,
+    inTab: false,
     navigate: () => {},
     back: () => {
       if (detail) setDetail(null)

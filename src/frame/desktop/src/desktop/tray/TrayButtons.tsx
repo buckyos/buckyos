@@ -24,18 +24,25 @@ import { globalSettingsStore } from '../../app/settings/data/store'
 import {
   badgeLabel,
   isTaskFinished,
+  mergeActivity,
+  messagePreview,
   messageSessionPath,
-  notificationCount,
+  notifyCategoryLabel,
   notifyPath,
   taskPath,
-  trayStore,
-  type TrayMessageItem,
-  type TrayNotifyItem,
-  type TraySnapshot,
-  type TrayTaskItem,
-} from './trayModel'
+  taskStateLabel,
+  type ActivityLabel,
+  type ActivityMessageItem,
+  type ActivityNotifyItem,
+  type ActivityTaskItem,
+} from '../../shared/activity/model.ts'
+import { notificationCount, trayStore, type TraySnapshot } from './trayModel'
 
 type Translate = ReturnType<typeof useI18n>['t']
+
+function labelText(label: ActivityLabel | string, t: Translate): string {
+  return typeof label === 'string' ? label : t(label.key, label.text, label.values)
+}
 
 /* ── Shared popover ── */
 
@@ -246,7 +253,7 @@ function isImageSource(value: string | undefined): value is string {
   return Boolean(value && /^(data:image\/|https?:\/\/|\/)/.test(value))
 }
 
-function ConversationAvatar({ item }: { item: TrayMessageItem }) {
+function ConversationAvatar({ item }: { item: ActivityMessageItem }) {
   const [broken, setBroken] = useState(false)
   if (isImageSource(item.avatar) && !broken) {
     return <img src={item.avatar} alt="" className="size-9 shrink-0 rounded-full object-cover" onError={() => setBroken(true)} />
@@ -258,17 +265,12 @@ function ConversationAvatar({ item }: { item: TrayMessageItem }) {
   )
 }
 
-function messagePreview(item: TrayMessageItem, showContent: boolean, t: Translate): string {
-  if (!showContent) {
-    return item.unreadCount === 1
-      ? t('tray.messages.newOne', '1 new message')
-      : t('tray.messages.newCount', '{{count}} new messages', { count: item.unreadCount })
-  }
-  const text = item.text || t('tray.messages.noPreview', 'New message')
-  return item.senderName ? `${item.senderName}: ${text}` : text
+function previewText(item: ActivityMessageItem, showContent: boolean, t: Translate): string {
+  const { sender, text } = messagePreview(item, showContent)
+  return sender ? `${sender}: ${labelText(text, t)}` : labelText(text, t)
 }
 
-function MessageRow({ item, onOpen, showContent }: { item: TrayMessageItem; onOpen: () => void; showContent: boolean }) {
+function MessageRow({ item, onOpen, showContent }: { item: ActivityMessageItem; onOpen: () => void; showContent: boolean }) {
   const { t } = useI18n()
   const relative = useRelativeTime()
   return (
@@ -281,7 +283,7 @@ function MessageRow({ item, onOpen, showContent }: { item: TrayMessageItem; onOp
         </span>
         <span className="mt-0.5 flex items-start gap-2">
           <span className="line-clamp-2 min-w-0 flex-1 break-words text-[12px] leading-[18px] text-[color:var(--cp-muted)]" data-testid="tray-row-text">
-            {messagePreview(item, showContent, t)}
+            {previewText(item, showContent, t)}
           </span>
           <span className="mt-0.5 inline-flex min-h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-[color:var(--cp-danger)] px-1 text-[9px] font-semibold leading-none text-white">
             {badgeLabel(item.unreadCount)}
@@ -357,12 +359,6 @@ export function MessageTray({
 
 const categoryIcons = { todo: ListTodo, agent: Bot, app: AppWindow } as const
 
-function categoryLabel(category: TrayNotifyItem['category'], t: Translate): string {
-  if (category === 'todo') return t('tray.notify.todo', 'To-do')
-  if (category === 'agent') return t('tray.notify.agent', 'Agent')
-  return t('tray.notify.app', 'App')
-}
-
 function RowIcon({ children, tone }: { children: ReactNode; tone: string }) {
   return (
     <span
@@ -374,7 +370,7 @@ function RowIcon({ children, tone }: { children: ReactNode; tone: string }) {
   )
 }
 
-function NotifyRow({ item, onOpen }: { item: TrayNotifyItem; onOpen: () => void }) {
+function NotifyRow({ item, onOpen }: { item: ActivityNotifyItem; onOpen: () => void }) {
   const { t } = useI18n()
   const relative = useRelativeTime()
   const Icon = categoryIcons[item.category]
@@ -390,7 +386,7 @@ function NotifyRow({ item, onOpen }: { item: TrayNotifyItem; onOpen: () => void 
           <span className="mt-0.5 line-clamp-2 break-words text-[12px] leading-[18px] text-[color:var(--cp-muted)]">{item.message}</span>
         ) : null}
         <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-[color:var(--cp-muted)]">
-          <span>{categoryLabel(item.category, t)}</span>
+          <span>{labelText(notifyCategoryLabel(item.category), t)}</span>
           {item.needsAnswer ? (
             <span className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_16%,var(--cp-surface))] px-1.5 py-0.5 font-medium text-[color:var(--cp-warning)]">
               {t('tray.notify.needsAnswer', 'Needs your answer')}
@@ -402,24 +398,7 @@ function NotifyRow({ item, onOpen }: { item: TrayNotifyItem; onOpen: () => void 
   )
 }
 
-function taskStateText(task: TrayTaskItem, t: Translate): string {
-  switch (task.state) {
-    case 'completed':
-      return t('tray.task.completed', 'Completed')
-    case 'failed':
-      return task.message ? t('tray.task.failedWith', 'Failed: {{detail}}', { detail: task.message }) : t('tray.task.failed', 'Failed')
-    case 'canceled':
-      return t('tray.task.canceled', 'Canceled')
-    case 'waiting':
-      return task.message || t('tray.task.waiting', 'Waiting')
-    case 'paused':
-      return t('tray.task.paused', 'Paused')
-    default:
-      return task.message || t('tray.task.running', 'In progress')
-  }
-}
-
-function TaskRow({ item, onDismiss, onOpen }: { item: TrayTaskItem; onDismiss: () => void; onOpen: () => void }) {
+function TaskRow({ item, onDismiss, onOpen }: { item: ActivityTaskItem; onDismiss: () => void; onOpen: () => void }) {
   const { t } = useI18n()
   const relative = useRelativeTime()
   const finished = isTaskFinished(item.state)
@@ -445,7 +424,7 @@ function TaskRow({ item, onDismiss, onOpen }: { item: TrayTaskItem; onDismiss: (
             {finished ? <span className="shrink-0 text-[10px] text-[color:var(--cp-muted)]">{relative(item.timestamp)}</span> : null}
           </span>
           <span className="mt-0.5 line-clamp-2 break-words text-[12px] leading-[18px] text-[color:var(--cp-muted)]" data-testid="tray-row-text">
-            {taskStateText(item, t)}
+            {labelText(taskStateLabel(item), t)}
           </span>
           {!finished ? (
             <span className="mt-1.5 flex items-center gap-2">
@@ -484,10 +463,6 @@ function TaskRow({ item, onDismiss, onOpen }: { item: TrayTaskItem; onDismiss: (
   )
 }
 
-type NotificationEntry =
-  | { kind: 'notify'; item: TrayNotifyItem; timestamp: number }
-  | { kind: 'task'; item: TrayTaskItem; timestamp: number }
-
 export function NotificationTray({
   onNavigate,
   snapshot,
@@ -500,12 +475,9 @@ export function NotificationTray({
   const running = tasks.filter((task) => !isTaskFinished(task.state))
   const finished = tasks.filter((task) => isTaskFinished(task.state))
   // Running tasks stay on top; notifications and finished tasks by time.
-  const entries: NotificationEntry[] = [
-    ...notifies.map((item) => ({ kind: 'notify' as const, item, timestamp: item.timestamp })),
-    ...finished.map((item) => ({ kind: 'task' as const, item, timestamp: item.timestamp })),
-  ].sort((a, b) => b.timestamp - a.timestamp)
+  const entries = mergeActivity({ notifies, tasks: finished })
 
-  const openTask = (task: TrayTaskItem, close: () => void) => {
+  const openTask = (task: ActivityTaskItem, close: () => void) => {
     if (isTaskFinished(task.state)) trayStore.dismissTask(task.taskId)
     close()
     onNavigate(taskPath(task.taskId))
@@ -546,18 +518,18 @@ export function NotificationTray({
             {entries.map((entry) =>
               entry.kind === 'notify' ? (
                 <NotifyRow
-                  key={`notify-${entry.item.notifyId}`}
+                  key={entry.key}
                   item={entry.item}
                   onOpen={() => { close(); onNavigate(notifyPath(entry.item.notifyId)) }}
                 />
-              ) : (
+              ) : entry.kind === 'task' ? (
                 <TaskRow
-                  key={`task-${entry.item.taskId}`}
+                  key={entry.key}
                   item={entry.item}
                   onOpen={() => openTask(entry.item, close)}
                   onDismiss={() => trayStore.dismissTask(entry.item.taskId)}
                 />
-              ),
+              ) : null,
             )}
             {running.length === 0 && entries.length === 0 ? (
               <EmptyState>

@@ -25,7 +25,11 @@ app.json 声明 → PIKG build 的 AppDoc → Inspect + InstallParams
 
 每项仅含 `scope_path/required/actions/exp`：scope 必须为非空字符串，required 必须为 boolean，actions 可省略并使用字符串数组，exp 可省略或为 null/uint32。有效 scope 与授权行为由 [permission.rs](../../src/kernel/buckyos-api/src/permission.rs) 和 Installer 决定。
 
+给用户发系统通知的应用声明 `{"scope_path": "msg-center/notify", "required": false, "actions": ["write"], "exp": null}`：安装时默认批准，用户可以按应用关闭；没有声明的应用调 `notify.send` 会被拒绝（[System Notify](<../message_hub/System Notify.md>) §4.1）。
+
 不要把端口或存储路径当作 permission，也不要因声明了 permission 就假定 mount 已创建。具体安装选择必须是声明范围内的有效子集。
+
+窗口的样子（单窗口或多窗口、大小、按钮、移动端标题行）在 AppDoc 的 `window` 段声明，字段和缺省见 [App 安装协议](../App%20安装协议.md) §2.5。
 
 ## 3. HTTP 服务端点
 

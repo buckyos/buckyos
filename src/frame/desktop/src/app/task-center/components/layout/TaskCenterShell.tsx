@@ -6,6 +6,8 @@ import { useI18n } from '../../../../i18n/provider'
 import { Sidebar } from './Sidebar'
 import { MobileTabBar } from './MobileTabBar'
 import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavContext'
+import { useAppPath } from '../../../pathContext'
+import { appPath } from '../../../standalone/address'
 import type { TaskCenterPage, TaskCenterNav } from './navigation'
 import { useTaskCenterStore } from '../../hooks/use-task-center-store'
 import { HomePage } from '../../pages/HomePage'
@@ -63,6 +65,7 @@ export function TaskCenterShell({ initialTaskId }: TaskCenterShellProps) {
   const close = useCallback(() => setNav((current) => ({ page: current.page })), [])
 
   useMobileBackHandler(isMobile && nav.taskId ? close : null)
+  useAppPath(appPath('', { taskid: nav.taskId }))
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // Dialogs render in portals; their Escape is theirs.

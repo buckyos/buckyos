@@ -18,6 +18,7 @@ mod msg_box_db;
 mod msg_center;
 mod msg_tunnel;
 mod notify;
+mod notify_apps;
 mod network_directory;
 mod obj_provider;
 mod object_access;

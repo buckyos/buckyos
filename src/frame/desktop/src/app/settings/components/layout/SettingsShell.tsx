@@ -3,6 +3,7 @@ import { useMediaQuery } from '@mui/material'
 import { Sidebar } from './Sidebar'
 import { MobileSettingsList } from './MobileSettingsList'
 import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavContext'
+import { useAppPath } from '../../../pathContext'
 import type { SettingsPage } from './navigation'
 
 interface SettingsShellProps {
@@ -23,6 +24,7 @@ export function SettingsShell({ initialPage, children }: SettingsShellProps) {
 
   // Register back handler with the shell status bar when on a detail page
   useMobileBackHandler(isMobile && activePage !== null ? handleBack : null)
+  useAppPath(currentPage ? `/${currentPage}` : '/')
 
   return (
     <div className="flex flex-col h-full w-full" style={{ background: 'var(--cp-bg)' }}>

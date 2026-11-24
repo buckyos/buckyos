@@ -102,6 +102,7 @@ impl ControlPanelServer {
             "expected_instance_count": spec.expected_instance_count,
             "spec_path": installation.spec_path,
             "web_hosts": app_web_hosts(installation),
+            "window": spec.app_doc.window,
         })
     }
 

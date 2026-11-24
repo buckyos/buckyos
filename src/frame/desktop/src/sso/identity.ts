@@ -29,6 +29,17 @@ export function isRestrictedIdentity(identity: CurrentIdentity | null | undefine
   return !!identity && identity.kind !== 'anonymous' && identity.restricted
 }
 
+/**
+ * The restricted shell at `/` is for External DIDs (no account here) and for sessions an exclusive
+ * invite link opened. A Limited account signed in with its password keeps the Desktop: its own
+ * settings, profile, address book and allowed Apps stay reachable, and what its session may not
+ * use answers with a `session_kind_not_allowed` denial.
+ */
+export function usesRestrictedShell(identity: CurrentIdentity): boolean {
+  return identity.kind === 'external'
+    || (identity.kind === 'account' && identity.restricted && identity.auth_method === 'exclusive_invite')
+}
+
 export function identityDisplayName(identity: CurrentIdentity): string {
   switch (identity.kind) {
     case 'account':

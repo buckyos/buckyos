@@ -16,6 +16,8 @@ import { InvitedIdentities } from '../invites/InvitedIdentities'
 import { ExclusiveInvitesPage } from '../invites/ExclusiveInvitesPage'
 import { useCanCreateAgents, useEntity, useUsersAgentsStore } from '../../hooks/use-users-agents-store'
 import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavContext'
+import { useAppPath } from '../../../pathContext'
+import { appPath } from '../../../standalone/address'
 import { useI18n } from '../../../../i18n/provider'
 import { openAgentSetup } from '../../../agent-setup/launch'
 import type { SidebarSelection } from '../../datamodel/types'
@@ -75,6 +77,7 @@ export function UsersAgentsShell({ launch }: { launch?: UsersAgentsLaunch }) {
   const [lifecycleNotice, setLifecycleNotice] = useState<string | null>(null)
   const canCreateAgents = useCanCreateAgents()
   const isMobile = useMediaQuery('(max-width: 767px)')
+  useAppPath(selection?.kind === 'self' ? appPath('self') : appPath('', { entity: selection?.kind === 'entity' ? selection.entityId : undefined }))
 
   const handleSelect = (sel: SidebarSelection) => {
     setSelection(sel)

@@ -1,70 +1,30 @@
-/* ── The desktop state of the signed-in account (control-panel `/api/desktop`) ──
+/* ── The desktop state of the signed-in account (`shared/controlPanel/desktopState.ts`) ──
  *
- * State is JSON under `users/{user}/desktop/{session}/{state_key}` in SystemConfig; every device of the user
- * uses the well-known `default` session, so what is saved here follows the account. Wallpaper pictures are
- * kept in the account's `user/control-panel/{user}/wallpapers` bucket, keyed by content hash and read back
- * straight from the bucket data plane. The mock runtime keeps both in this browser.
+ * Wallpaper pictures are kept in the account's `user/control-panel/{user}/wallpapers` bucket, keyed by content
+ * hash and read back straight from the bucket data plane. The mock runtime keeps both in this browser.
  */
 
-import { bucket, buckyos, getActiveSessionToken } from 'buckyos'
+import { bucket, buckyos } from 'buckyos'
 import { bucketObjectUrl } from '../components/preview/bucketSource'
 import { isMockRuntime } from '../runtime'
+import * as state from '../shared/controlPanel/desktopState.ts'
+import { shellChannel } from './channel.ts'
 
-export const DESKTOP_SESSION_ID = 'default'
-export const DESKTOP_API = '/api/desktop'
+export { DESKTOP_API, DESKTOP_SESSION_ID, DesktopApiError, type DesktopStateRead } from '../shared/controlPanel/desktopState.ts'
+
 export const WALLPAPER_APP_ID = 'control-panel'
 export const WALLPAPER_BUCKET = 'wallpapers'
 /** Pictures kept, the newest included: a device that has not refreshed its state yet still finds the one it shows. */
 export const KEPT_WALLPAPERS = 3
 
-export interface DesktopStateRead<T> {
-  value: T | null
-  /** False when the account never saved this state. */
-  exists: boolean
-}
+export const sendDesktopApi = <T>(url: string, init: RequestInit) => state.sendDesktopApi<T>(shellChannel, url, init)
 
-/** A failed `/api/desktop` call; `status` is the HTTP status (0 when the server was not reached). */
-export class DesktopApiError extends Error {
-  readonly status: number
-
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
-}
-
-async function authHeaders(): Promise<Record<string, string>> {
-  // The session cookie also authenticates; the header covers a browser that keeps no cookie for the page.
-  const account = await buckyos.getAccountInfo().catch(() => null)
-  const token = account?.session_token || (await getActiveSessionToken().catch(() => null))
-  return token ? { 'X-Auth': token } : {}
-}
-
-export async function sendDesktopApi<T>(url: string, init: RequestInit): Promise<T> {
-  let response: Response
-  try {
-    response = await fetch(url, { credentials: 'same-origin', ...init, headers: { ...(await authHeaders()), ...init.headers } })
-  } catch (error) {
-    throw new DesktopApiError(0, error instanceof Error ? error.message : String(error))
-  }
-  const payload = (await response.json().catch(() => null)) as { ok?: boolean; data?: T; error?: string } | null
-  if (!response.ok || !payload?.ok) {
-    throw new DesktopApiError(response.status, payload?.error ?? `${url} answered ${response.status}`)
-  }
-  return payload.data as T
-}
-
-export async function readDesktopState<T>(stateKey: string): Promise<DesktopStateRead<T>> {
+export async function readDesktopState<T>(stateKey: string): Promise<state.DesktopStateRead<T>> {
   if (isMockRuntime()) {
     const { readMockDesktopState } = await import('./desktop_state_mock')
     return readMockDesktopState<T>(stateKey)
   }
-  const data = await sendDesktopApi<{ value: T | null; exists?: boolean }>(DESKTOP_API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'state.get', session_id: DESKTOP_SESSION_ID, state_key: stateKey }),
-  })
-  return { value: data.value ?? null, exists: data.exists !== false && data.value !== null }
+  return state.readDesktopState<T>(shellChannel, stateKey)
 }
 
 /** Writes the whole state, or with `jsonPath` (dot-separated) one field of it, leaving the rest as stored. */
@@ -74,13 +34,7 @@ export async function writeDesktopState(stateKey: string, value: unknown, jsonPa
     writeMockDesktopState(stateKey, value, jsonPath)
     return
   }
-  await sendDesktopApi(DESKTOP_API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'state.set', session_id: DESKTOP_SESSION_ID, state_key: stateKey, json_path: jsonPath, value }),
-    // Finishes even when the page is closing (saved as it is hidden).
-    keepalive: true,
-  })
+  await state.writeDesktopState(shellChannel, stateKey, value, jsonPath)
 }
 
 const wallpaperExtensions: Record<string, string> = {
@@ -109,7 +63,7 @@ export function wallpapersToPrune(items: readonly { key: string; created_at: num
 
 async function accountWallpaperBucket(): Promise<string> {
   const account = await buckyos.getAccountInfo().catch(() => null)
-  if (!account?.user_id) throw new DesktopApiError(401, 'authentication required')
+  if (!account?.user_id) throw new state.DesktopApiError(401, 'authentication required')
   return bucket.userBucketId(WALLPAPER_APP_ID, account.user_id, WALLPAPER_BUCKET)
 }
 
@@ -131,7 +85,7 @@ export async function uploadWallpaper(blob: Blob): Promise<string> {
     await client.putBytes(bucketId, key, blob, { contentType: blob.type || undefined })
   } catch (error) {
     const status = error instanceof bucket.BucketError ? (error.status ?? 0) : 0
-    throw new DesktopApiError(status, error instanceof Error ? error.message : String(error))
+    throw new state.DesktopApiError(status, error instanceof Error ? error.message : String(error))
   }
   // Keeping only the newest few is this app's choice; a failed clean-up is retried by the next upload.
   void pruneWallpapers(client, bucketId, key).catch(() => {})

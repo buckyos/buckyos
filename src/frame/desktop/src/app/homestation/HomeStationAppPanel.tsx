@@ -4,5 +4,5 @@ import type { AppContentLoaderProps } from '../types'
 
 export function HomeStationAppPanel({ launch }: AppContentLoaderProps) {
   const parsed = homeStationLaunchSchema.safeParse(launch?.payload)
-  return <HomeStationView key={launch?.requestId ?? 'default'} compose={parsed.success ? parsed.data.compose : undefined} />
+  return <HomeStationView key={launch?.requestId ?? 'default'} launch={parsed.success ? parsed.data : undefined} />
 }

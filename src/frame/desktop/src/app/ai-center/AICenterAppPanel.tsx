@@ -13,6 +13,8 @@ import { PlaygroundPage } from './PlaygroundPage'
 import { QuotaPage } from './QuotaPage'
 import { VisibilityPage } from './VisibilityPage'
 import type { QuotaRuleDraft } from './datamodel/quota'
+import { aiCenterLaunchSchema } from './launch'
+import type { AppContentLoaderProps } from '../types'
 
 interface QuotaIntent {
   intent: Partial<QuotaRuleDraft> | null
@@ -48,7 +50,8 @@ function PageRouter({ page, navigate, quota }: { page: AICenterPage; navigate: (
   }
 }
 
-export function AICenterAppPanel() {
+export function AICenterAppPanel({ launch }: AppContentLoaderProps) {
+  const parsed = aiCenterLaunchSchema.safeParse(launch?.payload)
   const [store] = useState(() => createAICCMgr())
   const [quotaIntent, setQuotaIntent] = useState<Partial<QuotaRuleDraft> | null>(null)
 
@@ -58,7 +61,7 @@ export function AICenterAppPanel() {
 
   return (
     <AICCStoreContext.Provider value={store}>
-      <AICenterShell>
+      <AICenterShell key={launch?.requestId ?? 'default'} initialPage={parsed.success ? parsed.data.page : undefined}>
         {(page, navigate) => <>
           <PageRouter page={page} navigate={navigate} quota={{ intent: quotaIntent, setIntent: setQuotaIntent }} />
           <div hidden={page !== 'playground'}><PlaygroundPage active={page === 'playground'} /></div>

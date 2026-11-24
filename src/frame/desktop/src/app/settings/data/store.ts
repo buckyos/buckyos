@@ -15,6 +15,8 @@ import {
   type ZoneOverviewResponse,
 } from '../../../api/settings'
 import type { GridDensity } from '../../../models/layout'
+import { normalizeAccent, type AccentColor } from '../../../shared/appearance/accent.ts'
+import { DEFAULT_MOBILE_FEED, mobileFeeds, type MobileFeed } from '../../../shared/appearance/model.ts'
 import { loadPrivacyOverview, type PrivacyOverview } from './privacy'
 
 export interface Resource<T> {
@@ -41,6 +43,10 @@ export type SettingsSnapshot = { [K in ResourceKey]: Resource<ResourceData[K]> }
   desktopIconSize: GridDensity
   /** Whether the status-bar message tray shows message text (this device only). */
   messagePreview: boolean
+  /** The Zone's colour (`shared/appearance/accent.ts`); null is the default. */
+  accent: AccentColor | null
+  /** What the mobile client's feed tab opens on. */
+  mobileFeed: MobileFeed
 }
 
 function errorText(error: unknown, fallback: string): string {
@@ -87,6 +93,27 @@ function readMessagePreview(): boolean {
   }
 }
 
+const ACCENT_KEY = 'buckyos.desktop.accent'
+
+function readAccent(): AccentColor | null {
+  try {
+    return normalizeAccent(window.localStorage.getItem(ACCENT_KEY))
+  } catch {
+    return null
+  }
+}
+
+const MOBILE_FEED_KEY = 'buckyos.desktop.mobileFeed'
+
+function readMobileFeed(): MobileFeed {
+  try {
+    const stored = window.localStorage.getItem(MOBILE_FEED_KEY) as MobileFeed
+    return mobileFeeds.includes(stored) ? stored : DEFAULT_MOBILE_FEED
+  } catch {
+    return DEFAULT_MOBILE_FEED
+  }
+}
+
 const idle = <T,>(): Resource<T> => ({ status: 'idle', data: null, error: null })
 
 export class SettingsStore {
@@ -101,6 +128,8 @@ export class SettingsStore {
     developerSaving: false,
     desktopIconSize: readIconSize(),
     messagePreview: readMessagePreview(),
+    accent: readAccent(),
+    mobileFeed: readMobileFeed(),
   }
   private listeners = new Set<() => void>()
   private inflight = new Map<ResourceKey, Promise<void>>()
@@ -184,7 +213,26 @@ export class SettingsStore {
     }
     this.patch({ messagePreview: shown })
   }
+
+  setAccent(accent: AccentColor | null) {
+    try {
+      if (accent) window.localStorage.setItem(ACCENT_KEY, accent)
+      else window.localStorage.removeItem(ACCENT_KEY)
+    } catch {
+      // Not persisted (private window); still applies to this page.
+    }
+    this.patch({ accent })
+  }
+
+  setMobileFeed(feed: MobileFeed) {
+    try {
+      window.localStorage.setItem(MOBILE_FEED_KEY, feed)
+    } catch {
+      // Not persisted (private window); still applies to this page.
+    }
+    this.patch({ mobileFeed: feed })
+  }
 }
 
-/** Shared by the Settings app and the desktop shell (icon size, message preview). */
+/** Shared by the Settings app and the desktop shell (icon size, message preview, the Zone's colour). */
 export const globalSettingsStore = new SettingsStore()

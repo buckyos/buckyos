@@ -1,6 +1,7 @@
 use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use crate::notify::NotifyTasks;
+use crate::notify_apps::InstalledApp;
 use crate::owner_session::{serve_with_request_identity, SessionTokenVerifier, ZoneAgentInfo};
 use async_trait::async_trait;
 use buckyos_api::*;
@@ -71,6 +72,33 @@ impl SessionTokenVerifier for Verifier {
             allow_group: false,
         }))
     }
+
+    async fn installed_app(&self, id: &AppInstanceId) -> Result<Option<InstalledApp>, RPCErrors> {
+        Ok((id.app_id().as_str() != "gone.example.com").then(|| installed(id)))
+    }
+
+    async fn installed_apps(&self, user_id: &str) -> Result<Vec<InstalledApp>, RPCErrors> {
+        Ok(match user_id {
+            "alice" => ["notes", "silent", "unapproved"]
+                .iter()
+                .map(|app| installed(&format!("{app}@alice").parse().unwrap()))
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+}
+
+/// `silent…` does not declare notifications, `unapproved…` was installed
+/// without them.
+fn installed(id: &AppInstanceId) -> InstalledApp {
+    let app = id.app_id().as_str();
+    InstalledApp {
+        app_instance_id: id.clone(),
+        show_name: app.to_string(),
+        app_icon_url: None,
+        declared: !app.starts_with("silent"),
+        approved: !app.starts_with("silent") && !app.starts_with("unapproved"),
+    }
 }
 
 fn token(sub: &str, kind: TokenPrincipalKind, target: AuthTarget) -> RPCContext {
@@ -118,6 +146,15 @@ fn app_ctx(app: &str, user: &str) -> RPCContext {
 
 fn agent_ctx() -> RPCContext {
     app_ctx("jarvis.test.buckyos.io", "alice")
+}
+
+/// A user in the pages of an App.
+fn user_in_app(app: &str, owner: &str, user: &str) -> RPCContext {
+    token(
+        user,
+        TokenPrincipalKind::User,
+        AuthTarget::app(format!("{app}@{owner}").parse().unwrap()),
+    )
 }
 
 fn user_ctx(user: &str) -> RPCContext {
@@ -865,6 +902,238 @@ async fn there_always_is_a_default_session() {
         .await
         .unwrap();
     assert_eq!(other.platform, "native");
+}
+
+fn code_of<T: std::fmt::Debug>(result: Result<T, RPCErrors>) -> String {
+    match result {
+        Err(RPCErrors::Detailed(detail)) => detail.code,
+        other => panic!("expected a detailed error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_app_notifies_when_it_declares_it_and_the_user_has_not_turned_it_off() {
+    let env = env().await;
+    let c = &env.center;
+    let notice = |key: &str| NotifySendReq::notice("alice", "Hello", "", key);
+    let set = |ctx: RPCContext, app: &str, enabled: bool| {
+        let params = json!({ "app_instance_id": app, "enabled": enabled });
+        async move { call::<NotifyApp>(c, METHOD_NOTIFY_SET_APP, params, ctx).await }
+    };
+
+    send(c, notice("1"), app_ctx("notes", "alice")).await.unwrap();
+    send(c, notice("2"), user_in_app("notes", "alice", "alice")).await.unwrap();
+    for ctx in [app_ctx("silent", "alice"), user_in_app("silent", "alice", "alice")] {
+        assert_eq!(code_of(send(c, notice("3"), ctx).await), NOTIFY_ERR_NOT_DECLARED);
+    }
+    assert_eq!(
+        code_of(send(c, notice("3"), app_ctx("gone.example.com", "alice")).await),
+        NOTIFY_ERR_NOT_DECLARED
+    );
+    assert_eq!(
+        code_of(send(c, notice("3"), app_ctx("unapproved", "alice")).await),
+        NOTIFY_ERR_DISABLED
+    );
+    // System services, the pages of the system, an Agent and its own page are not checked.
+    for (key, ctx) in [
+        ("s1", system_ctx()),
+        ("s2", user_ctx("alice")),
+        ("s3", agent_ctx()),
+        ("s4", user_in_app("jarvis.test.buckyos.io", "alice", "alice")),
+    ] {
+        send(c, notice(key), ctx).await.unwrap();
+    }
+
+    let off = set(user_ctx("alice"), "notes@alice", false).await.unwrap();
+    assert!(off.declared && !off.enabled && off.last_sent_at_ms.is_some());
+    assert_eq!(
+        code_of(send(c, notice("4"), app_ctx("notes", "alice")).await),
+        NOTIFY_ERR_DISABLED
+    );
+    // Another user's choice is their own; what was sent stays readable and withdrawable.
+    let to_bob = send(
+        c,
+        NotifySendReq::notice("bob", "Hello", "", "b"),
+        user_in_app("notes", "alice", "bob"),
+    )
+    .await
+    .unwrap();
+    let listed: NotifyListResult =
+        call(c, METHOD_NOTIFY_LIST, json!({ "app_id": "notes" }), app_ctx("notes", "alice"))
+            .await
+            .unwrap();
+    assert_eq!(listed.items.len(), 2);
+    let withdrawn: NotifyView = call(
+        c,
+        METHOD_NOTIFY_CANCEL,
+        json!({ "notify_id": listed.items[0].notify_id }),
+        user_in_app("notes", "alice", "alice"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(withdrawn.status, NotifyStatus::Canceled);
+    assert_eq!(to_bob.to_user, "bob");
+
+    assert!(set(user_ctx("alice"), "notes@alice", true).await.unwrap().enabled);
+    send(c, notice("4"), app_ctx("notes", "alice")).await.unwrap();
+    assert!(set(user_ctx("alice"), "unapproved@alice", true).await.unwrap().enabled);
+    send(c, notice("5"), app_ctx("unapproved", "alice")).await.unwrap();
+    assert_eq!(
+        code_of(set(user_ctx("alice"), "silent@alice", true).await),
+        NOTIFY_ERR_NOT_DECLARED
+    );
+    // Only the user's own system pages (and system services by name) change the settings.
+    for ctx in [
+        app_ctx("notes", "alice"),
+        user_in_app("notes", "alice", "alice"),
+        agent_ctx(),
+        system_ctx(),
+    ] {
+        assert!(set(ctx, "notes@alice", false).await.is_err());
+    }
+    let by_system: NotifyApp = call(
+        c,
+        METHOD_NOTIFY_SET_APP,
+        json!({ "app_instance_id": "notes@alice", "enabled": false, "to_user": "alice" }),
+        system_ctx(),
+    )
+    .await
+    .unwrap();
+    assert!(!by_system.enabled);
+
+    let apps: NotifyListAppsResult =
+        call(c, METHOD_NOTIFY_LIST_APPS, json!({}), user_ctx("alice")).await.unwrap();
+    let rows: Vec<_> = apps
+        .apps
+        .iter()
+        .map(|a| (a.app_id.as_str(), a.installed, a.declared, a.enabled))
+        .collect();
+    assert_eq!(rows, [("notes", true, true, false), ("unapproved", true, true, true)]);
+    let of_bob: NotifyListAppsResult =
+        call(c, METHOD_NOTIFY_LIST_APPS, json!({}), user_ctx("bob")).await.unwrap();
+    assert_eq!(of_bob.apps.len(), 1, "an App of another user that notified bob");
+    assert!(of_bob.apps[0].enabled && of_bob.apps[0].last_sent_at_ms.is_some());
+    assert!(call::<NotifyListAppsResult>(
+        c,
+        METHOD_NOTIFY_LIST_APPS,
+        json!({ "to_user": "alice" }),
+        user_ctx("bob")
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn the_summary_counts_open_notifications_and_unread_messages() {
+    let env = env().await;
+    let c = &env.center;
+    let summary = |ctx: RPCContext, params: Value| async move {
+        call::<NotifySummary>(c, METHOD_NOTIFY_SUMMARY, params, ctx).await
+    };
+    let open_of = |ctx: RPCContext| async move {
+        call::<NotifyListResult>(c, METHOD_NOTIFY_LIST, json!({ "status": ["open"] }), ctx)
+            .await
+            .unwrap()
+            .items
+            .len() as u64
+    };
+    assert_eq!(summary(user_ctx("alice"), json!({})).await.unwrap(), NotifySummary::default());
+
+    let mut todo = NotifySendReq::notice("alice", "Review", "", "t1");
+    todo.category = Some(NotifyCategory::Todo);
+    let todo = send(c, todo, system_ctx()).await.unwrap();
+    let mut quiet = NotifySendReq::notice("alice", "Quiet", "", "q1");
+    quiet.level = Some(NotifyLevel::Quiet);
+    send(c, quiet, app_ctx("notes", "alice")).await.unwrap();
+    let ask = send(c, work_question("ask", NotifyLevel::Normal), app_ctx("notes", "alice"))
+        .await
+        .unwrap();
+    let read = send(c, NotifySendReq::notice("alice", "News", "", "n1"), app_ctx("notes", "alice"))
+        .await
+        .unwrap();
+    send(c, NotifySendReq::notice("alice", "From jarvis", "", "a1"), agent_ctx()).await.unwrap();
+    send(c, NotifySendReq::notice("bob", "Hi bob", "", "b1"), system_ctx()).await.unwrap();
+
+    let counts = summary(user_ctx("alice"), json!({})).await.unwrap().notify;
+    assert_eq!((counts.open, counts.todo, counts.agent, counts.app), (5, 1, 1, 3));
+    assert_eq!(counts.open, open_of(user_ctx("alice")).await);
+
+    let home = read.home.clone().unwrap();
+    let rec = record(c, &alice(), &home.record_id).await;
+    c.update_record_state_internal(rec, RecipientState::Read).await.unwrap();
+    env.tasks.answer(ask.task_id.as_ref().unwrap(), NotifyAnswer::option("pg"));
+    call::<NotifyView>(
+        c,
+        METHOD_NOTIFY_DISMISS,
+        json!({ "notify_id": todo.notify_id }),
+        user_ctx("alice"),
+    )
+    .await
+    .unwrap();
+    let counts = summary(user_ctx("alice"), json!({})).await.unwrap().notify;
+    assert_eq!((counts.open, counts.todo, counts.agent, counts.app), (2, 0, 1, 1));
+    assert_eq!(counts.open, open_of(user_ctx("alice")).await);
+
+    // Messages: not the notifications, not what is muted.
+    assert_eq!(summary(user_ctx("alice"), json!({})).await.unwrap().messages.unread, 0);
+    c.handle_grant_temporary_access(vec![bob(), zone()], "chat".into(), 3600, Some(alice()), in_process())
+        .await
+        .unwrap();
+    for (from, session) in [
+        (bob(), "work"),
+        (bob(), "work"),
+        (bob(), "noise"),
+        (zone(), "from-the-notify-sender"),
+    ] {
+        c.handle_dispatch(
+            MsgObject {
+                from,
+                to: vec![alice()],
+                to_session: Some(session.into()),
+                kind: MsgObjKind::Chat,
+                created_at_ms: next_ms(),
+                content: MsgContent {
+                    format: Some(MsgContentFormat::TextPlain),
+                    content: "hi".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+            None,
+            in_process(),
+        )
+        .await
+        .unwrap();
+    }
+    let unread = |ctx: RPCContext| async move {
+        call::<NotifySummary>(c, METHOD_NOTIFY_SUMMARY, json!({}), ctx).await.unwrap().messages.unread
+    };
+    let total = unread(user_ctx("alice")).await;
+    assert!(total >= 3, "{total}");
+    let mute = |muted: bool| async move {
+        c.update_owner_ui_session_state_internal(alice(), "noise".into(), "ui.muted".into(), json!(muted))
+            .await
+            .unwrap();
+    };
+    mute(true).await;
+    assert_eq!(unread(user_ctx("alice")).await, total - 1);
+    mute(false).await;
+    assert_eq!(unread(user_ctx("alice")).await, total);
+
+    assert_eq!(
+        summary(system_ctx(), json!({ "to_user": "alice" })).await.unwrap().notify.open,
+        2
+    );
+    for (ctx, params) in [
+        (system_ctx(), json!({})),
+        (user_ctx("bob"), json!({ "to_user": "alice" })),
+        (app_ctx("notes", "alice"), json!({})),
+        (user_in_app("notes", "alice", "alice"), json!({})),
+        (agent_ctx(), json!({})),
+    ] {
+        assert!(summary(ctx, params).await.is_err());
+    }
 }
 
 #[tokio::test]

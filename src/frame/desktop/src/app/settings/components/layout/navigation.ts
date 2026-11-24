@@ -1,4 +1,4 @@
-import { Code, FolderLock, Globe, HardDrive, KeyRound, Laptop, Network, Package, Palette, Settings, Shield } from 'lucide-react'
+import { Bell, Code, FolderLock, Globe, HardDrive, KeyRound, Laptop, Network, Package, Palette, Settings, Shield } from 'lucide-react'
 
 /** Stable id of the Agent Runtimes page; other apps open Settings on it (`openSettings`). */
 export const AGENT_RUNTIMES_SETTINGS_PAGE = 'agent-runtimes'
@@ -42,6 +42,13 @@ export const settingsPageDefinitions = [
     icon: Palette,
     labelKey: 'settings.nav.appearance',
     label: 'Appearance',
+  },
+  {
+    key: 'notifications',
+    group: 'system',
+    icon: Bell,
+    labelKey: 'settings.nav.notifications',
+    label: 'Notifications',
   },
   {
     key: 'zone',

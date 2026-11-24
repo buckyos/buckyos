@@ -26,7 +26,7 @@ export function MePage() {
   ]
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="hs-me">
-      <PageHeader title={t('homestation.me.title', 'Me')} />
+      <PageHeader title={t('homestation.me.title', 'Me')} onBack={nav.inTab ? nav.back : undefined} backLabel={t('common.back', 'Back')} />
       <ColumnBody>
         <div className="flex items-start gap-4 px-4 pb-6 pt-6">
           <div className="min-w-0 flex-1">

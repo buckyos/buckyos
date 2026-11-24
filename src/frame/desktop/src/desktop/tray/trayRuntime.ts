@@ -12,16 +12,21 @@
  * Mock mode reads the MessageHub mock store, the mock notifications and the
  * mock downloads instead.
  */
-import { buckyos, TaskOutcome, TaskPhase } from 'buckyos'
-import type { Task as TaskMgrTask, TaskSchemaDefinition, TaskSummary } from 'buckyos'
-import { getMessageHubStore } from '../../app/messagehub/store'
+import { buckyos, TaskPhase, type TaskOutcome } from 'buckyos'
+import { getMessageHubStore, isMessageHubMock } from '../../app/messagehub/store'
 import { getNotifyWatch } from '../../app/messagehub/notify'
 import { fetchAccountUsername } from '../../app/messagehub/datamodel/sessionApi'
-import type { NotifyView } from '../../app/messagehub/notify/model'
 import type { MessageHubContext } from '../../app/messagehub/types'
-import { toProgressPercent } from '../../api/task_progress'
+import { shellChannel } from '../../api/channel'
 import { isMockRuntime } from '../../runtime'
-import type { TrayMessageItem, TrayNotifyItem, TrayRuntimeSink, TrayTaskItem, TrayTaskState } from './trayModel'
+import { loop } from '../../shared/activity/loop.ts'
+import type { UnreadConversations } from '../../shared/activity/messages.ts'
+import { orderTasks, type ActivityNotifyItem, type ActivityTaskItem } from '../../shared/activity/model.ts'
+import { notifyItem } from '../../shared/activity/notifies.ts'
+import { watchSummary, type SummaryWatch } from '../../shared/activity/summary.ts'
+import { createTaskReader, taskState, TRAY_TASK_WINDOW, type TaskReader } from '../../shared/activity/tasks.ts'
+import { messageRows } from './messageRows'
+import type { TrayRuntimeSink } from './trayModel'
 
 const MAX_MESSAGE_ROWS = 30
 const MAX_NOTIFY_ROWS = 50
@@ -29,80 +34,20 @@ const NOTIFY_POLL_MS = 30_000
 /** Task reads while one is running (progress) / while none is. */
 const TASK_ACTIVE_POLL_MS = 2_000
 const TASK_IDLE_POLL_MS = 20_000
-/** Tasks created this long ago are no longer looked at. */
-const TASK_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
-/** A finished task leaves the bell after this long, dismissed or not. */
-const FINISHED_TASK_TTL_MS = 3 * 24 * 60 * 60 * 1000
-/** `presentation_schema` key of a schema whose tasks show in the bell (buckyos-api `TASK_PRESENTATION_SYSTEM_NOTIFY`). */
-const SYSTEM_NOTIFY_KEY = 'system_notify'
-
-type SystemNotifyMode = 'progress' | 'completion'
 
 function visible(): boolean {
   return typeof document === 'undefined' || document.visibilityState !== 'hidden'
 }
 
-/** Runs `run` now and then every `delay()` ms while the page is visible; `kick` runs it again at once. */
-function loop(run: () => Promise<void>, delay: () => number) {
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let running = false
-  let again = false
-  let stopped = false
-  const schedule = () => {
-    if (stopped) return
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => { timer = null; if (visible()) void tick(); else schedule() }, delay())
-  }
-  const tick = async () => {
-    if (stopped) return
-    if (running) { again = true; return }
-    running = true
-    try { await run() } finally {
-      running = false
-      if (again) { again = false; void tick() } else schedule()
-    }
-  }
-  void tick()
-  return {
-    kick: () => { void tick() },
-    stop: () => { stopped = true; if (timer) clearTimeout(timer) },
-  }
+/* ── Counts ── */
+
+/** The mock runtime counts what is listed. */
+function startSummary(onChange: () => void): SummaryWatch {
+  if (isMessageHubMock()) return { current: () => null, kick: () => undefined, stop: () => undefined }
+  return watchSummary(shellChannel, onChange)
 }
 
 /* ── Messages ── */
-
-function messageRows(context: MessageHubContext): { unread: number; items: TrayMessageItem[]; unloadedPrefs: string[] } {
-  const store = getMessageHubStore()
-  const rows: TrayMessageItem[] = []
-  let unread = 0
-  const sessionCounts = new Map<string, number>()
-  const candidates = store.sessions(context).filter((session) => session.unreadCount > 0)
-  for (const session of candidates) {
-    const entity = store.findEntity(context, session.entityId)
-    if (entity?.systemNotify) continue
-    if (store.preferences(context, session.id).muted) continue
-    unread += session.unreadCount
-    const name = entity?.name ?? store.title(context, session)
-    let count = sessionCounts.get(session.entityId)
-    if (count === undefined) {
-      count = store.sessions(context, session.entityId).length
-      sessionCounts.set(session.entityId, count)
-    }
-    rows.push({
-      sessionId: session.id,
-      entityId: session.entityId,
-      title: count > 1 ? `${name} · ${store.title(context, session)}` : name,
-      avatar: entity?.avatar,
-      isGroup: entity?.type === 'group',
-      senderName: session.lastMessage?.senderName,
-      text: session.lastMessage?.text ?? '',
-      unreadCount: session.unreadCount,
-      timestamp: session.lastMessage?.timestamp ?? session.lastActiveAt,
-    })
-  }
-  rows.sort((a, b) => b.timestamp - a.timestamp)
-  return { unread, items: rows.slice(0, MAX_MESSAGE_ROWS), unloadedPrefs: candidates.map((session) => session.id) }
-}
 
 /** The system notification sessions changed: something arrived or was read. */
 function notifySignature(context: MessageHubContext): string {
@@ -114,21 +59,33 @@ function notifySignature(context: MessageHubContext): string {
     .join('|')
 }
 
-function startMessages(sink: TrayRuntimeSink, onNotifySessionsChanged: () => void): () => void {
+function startMessages(sink: TrayRuntimeSink, summary: SummaryWatch, onNotifySessionsChanged: () => void) {
   const store = getMessageHubStore()
   let stopped = false
   let stopSync: (() => void) | null = null
   let unsubscribe: (() => void) | null = null
   let queued = false
   let lastSignature = ''
+  let lastUnread = ''
+  let rows: UnreadConversations | null = null
 
+  const show = () => {
+    if (!rows || stopped) return
+    const { unread, items } = rows
+    sink.setMessages({ status: 'ready', unread: summary.current()?.messages.unread ?? unread, items: items.slice(0, MAX_MESSAGE_ROWS) })
+  }
   const publish = (context: MessageHubContext) => {
     queued = false
     if (stopped) return
-    const { unread, items, unloadedPrefs } = messageRows(context)
-    sink.setMessages({ status: 'ready', unread, items })
+    rows = messageRows(store, context)
+    show()
+    const unreadRows = rows.items.map((item) => `${item.sessionId}:${item.unreadCount}`).join('|')
+    if (unreadRows !== lastUnread) {
+      lastUnread = unreadRows
+      summary.kick()
+    }
     // Muted state lives in per-session preferences, loaded on demand.
-    void store.loadPreferences(context, unloadedPrefs).catch(() => undefined)
+    void store.loadPreferences(context, store.sessions(context).filter((session) => session.unreadCount > 0).map((session) => session.id)).catch(() => undefined)
     const signature = notifySignature(context)
     if (signature !== lastSignature) {
       if (lastSignature) onNotifySessionsChanged()
@@ -152,39 +109,37 @@ function startMessages(sink: TrayRuntimeSink, onNotifySessionsChanged: () => voi
     if (!stopped) sink.setMessages({ status: 'error', unread: 0, items: [] })
   })
 
-  return () => {
-    stopped = true
-    stopSync?.()
-    unsubscribe?.()
+  return {
+    show,
+    stop: () => {
+      stopped = true
+      stopSync?.()
+      unsubscribe?.()
+    },
   }
 }
 
 /* ── Notifications ── */
 
-function notifyItem(view: NotifyView): TrayNotifyItem {
-  return {
-    notifyId: view.notify_id,
-    title: view.prompt.title?.trim() || view.prompt.message?.trim() || view.notify_id,
-    ...(view.prompt.title?.trim() && view.prompt.message?.trim() ? { message: view.prompt.message.trim() } : {}),
-    category: view.category,
-    needsAnswer: view.kind === 'input',
-    timestamp: view.created_at_ms,
-  }
-}
-
-function startNotifies(sink: TrayRuntimeSink) {
+function startNotifies(sink: TrayRuntimeSink, summary: SummaryWatch) {
   const watch = getNotifyWatch()
-  let items: TrayNotifyItem[] = []
+  let items: ActivityNotifyItem[] = []
+  let status: 'loading' | 'ready' | 'error' = 'loading'
+  const show = () => {
+    if (status !== 'loading') sink.setNotifies(status, items, summary.current()?.notify.open ?? items.length)
+  }
   const reader = loop(async () => {
+    summary.kick()
     try {
       const views = await watch.list({ status: ['open'], limit: MAX_NOTIFY_ROWS })
       items = views.map(notifyItem).sort((a, b) => b.timestamp - a.timestamp)
-      sink.setNotifies('ready', items)
+      status = 'ready'
     } catch (error) {
       console.warn('status tray: notify.list failed', error)
-      sink.setNotifies(items.length ? 'ready' : 'error', items)
+      status = items.length ? 'ready' : 'error'
     }
-  }, () => NOTIFY_POLL_MS)
+    show()
+  }, () => NOTIFY_POLL_MS, visible)
   // Answered / acknowledged in MessageHub: read the list again.
   let pending: ReturnType<typeof setTimeout> | null = null
   const unsubscribe = watch.subscribe(() => {
@@ -193,6 +148,7 @@ function startNotifies(sink: TrayRuntimeSink) {
   })
   return {
     kick: reader.kick,
+    show,
     stop: () => {
       reader.stop()
       unsubscribe()
@@ -203,124 +159,14 @@ function startNotifies(sink: TrayRuntimeSink) {
 
 /* ── Tasks ── */
 
-function toMillis(value: number | undefined): number {
-  if (!value) return 0
-  return value < 10_000_000_000 ? value * 1000 : value
-}
-
-function taskState(phase: TaskPhase, outcome: TaskOutcome | undefined): TrayTaskState {
-  switch (phase) {
-    case TaskPhase.Terminal:
-      return outcome === TaskOutcome.Failed ? 'failed' : outcome === TaskOutcome.Canceled ? 'canceled' : 'completed'
-    case TaskPhase.Waiting:
-      return 'waiting'
-    case TaskPhase.Paused:
-      return 'paused'
-    default:
-      return 'running'
-  }
-}
-
-function systemNotifyMode(schema: TaskSchemaDefinition): SystemNotifyMode | null {
-  const presentation = schema.presentation_schema
-  if (!presentation || typeof presentation !== 'object') return null
-  const mode = (presentation as Record<string, unknown>)[SYSTEM_NOTIFY_KEY]
-  return mode === 'progress' || mode === 'completion' ? mode : null
-}
-
-interface TaskReader {
-  /** Every task to list, running ones included. */
-  read(): Promise<TrayTaskItem[]>
-}
-
-function rpcTaskReader(): TaskReader {
-  const client = buckyos.getTaskManagerClient()
-  /** schema_id → schema_version → mode, read once per tray start. */
-  let marked: Promise<Map<string, Map<number, SystemNotifyMode>>> | null = null
-  let username: Promise<string> | null = null
-  const details = new Map<string, { revision: number; task: TaskMgrTask }>()
-
-  const loadMarked = () => {
-    marked ??= client.listTaskSchemas({ include_disabled: true }).then((schemas) => {
-      const map = new Map<string, Map<number, SystemNotifyMode>>()
-      for (const schema of schemas) {
-        const mode = systemNotifyMode(schema)
-        if (!mode) continue
-        const versions = map.get(schema.schema_id) ?? new Map<number, SystemNotifyMode>()
-        versions.set(schema.schema_version, mode)
-        map.set(schema.schema_id, versions)
-      }
-      return map
-    }).catch((error: unknown) => { marked = null; throw error })
-    return marked
-  }
-
-  const detailOf = async (summary: TaskSummary): Promise<TaskMgrTask | null> => {
-    const cached = details.get(summary.task_id)
-    if (cached && cached.revision === summary.revision) return cached.task
-    try {
-      const task = await client.getTask(summary.task_id)
-      details.set(task.task_id, { revision: task.revision, task })
-      return task
-    } catch {
-      return cached?.task ?? null
-    }
-  }
-
-  return {
-    async read() {
-      const schemas = await loadMarked()
-      username ??= fetchAccountUsername().catch((error: unknown) => { username = null; throw error })
-      const user = await username
-      const now = Date.now()
-      const items: TrayTaskItem[] = []
-      const live = new Set<string>()
-      for (const [schemaId, versions] of schemas) {
-        let cursor: string | undefined
-        for (let page = 0; page < 3; page += 1) {
-          const result = await client.listTasks({
-            schema_id: schemaId,
-            ...(user ? { creator_user_id: user } : {}),
-            created_after: now - TASK_LOOKBACK_MS,
-            limit: 200,
-            cursor,
-          })
-          for (const summary of result.tasks ?? []) {
-            const mode = versions.get(summary.schema_version)
-            if (!mode) continue
-            const terminal = summary.phase === TaskPhase.Terminal
-            if (!terminal && mode === 'completion') continue
-            const finishedAt = toMillis(summary.completed_at ?? summary.updated_at)
-            if (terminal && now - finishedAt > FINISHED_TASK_TTL_MS) continue
-            live.add(summary.task_id)
-            const detail = terminal ? null : await detailOf(summary)
-            items.push({
-              taskId: summary.task_id,
-              title: summary.name || summary.task_id,
-              message: summary.message ?? detail?.message ?? detail?.error?.message,
-              state: taskState(summary.phase, summary.outcome),
-              progress: terminal ? null : toProgressPercent(detail?.progress),
-              timestamp: terminal ? finishedAt : toMillis(summary.created_at),
-            })
-          }
-          cursor = result.next_cursor
-          if (!cursor) break
-        }
-      }
-      for (const taskId of [...details.keys()]) if (!live.has(taskId)) details.delete(taskId)
-      return items
-    },
-  }
-}
-
 async function mockTaskReader(): Promise<TaskReader> {
   const { listMockDownloads, mockDownloadState } = await import('../../api/downloads_mock')
   return {
     async read() {
       const now = Date.now()
-      return listMockDownloads().flatMap((download): TrayTaskItem[] => {
+      return listMockDownloads().flatMap((download): ActivityTaskItem[] => {
         const state = mockDownloadState(download, now)
-        if (state.phase === 'Terminal' && now - (state.completedAt ?? now) > FINISHED_TASK_TTL_MS) return []
+        if (state.phase === 'Terminal' && now - (state.completedAt ?? now) > TRAY_TASK_WINDOW.finishedTtlMs) return []
         const terminal = state.phase === 'Terminal'
         return [{
           taskId: download.taskId,
@@ -335,13 +181,6 @@ async function mockTaskReader(): Promise<TaskReader> {
   }
 }
 
-/** Running tasks first (newest first), then finished ones by when they finished. */
-function orderTasks(tasks: TrayTaskItem[]): TrayTaskItem[] {
-  const running = tasks.filter((task) => task.state === 'running' || task.state === 'waiting' || task.state === 'paused')
-  const finished = tasks.filter((task) => !running.includes(task))
-  return [...running.sort((a, b) => b.timestamp - a.timestamp), ...finished.sort((a, b) => b.timestamp - a.timestamp)]
-}
-
 function startTasks(sink: TrayRuntimeSink) {
   let active = false
   let reader: TaskReader | null = null
@@ -354,7 +193,7 @@ function startTasks(sink: TrayRuntimeSink) {
           const { subscribeMockDownloads } = await import('../../api/downloads_mock')
           detachMock = subscribeMockDownloads(() => tasks.kick())
         } else {
-          reader = rpcTaskReader()
+          reader = createTaskReader({ client: buckyos.getTaskManagerClient(), username: fetchAccountUsername })
         }
       }
       const items = orderTasks(await reader.read())
@@ -363,7 +202,7 @@ function startTasks(sink: TrayRuntimeSink) {
     } catch (error) {
       console.warn('status tray: task read failed', error)
     }
-  }, () => (active ? TASK_ACTIVE_POLL_MS : TASK_IDLE_POLL_MS))
+  }, () => (active ? TASK_ACTIVE_POLL_MS : TASK_IDLE_POLL_MS), visible)
   return {
     kick: tasks.kick,
     stop: () => {
@@ -376,9 +215,13 @@ function startTasks(sink: TrayRuntimeSink) {
 /* ── Runtime ── */
 
 export function startTrayRuntime(sink: TrayRuntimeSink): () => void {
-  const notifies = startNotifies(sink)
+  const summary = startSummary(() => {
+    notifies.show()
+    messages.show()
+  })
+  const notifies = startNotifies(sink, summary)
   const tasks = startTasks(sink)
-  const stopMessages = startMessages(sink, notifies.kick)
+  const messages = startMessages(sink, summary, notifies.kick)
   const kickAll = () => {
     notifies.kick()
     tasks.kick()
@@ -388,9 +231,10 @@ export function startTrayRuntime(sink: TrayRuntimeSink): () => void {
   window.addEventListener('online', kickAll)
   const stopRefresh = sink.onRefreshRequest(kickAll)
   return () => {
-    stopMessages()
+    messages.stop()
     notifies.stop()
     tasks.stop()
+    summary.stop()
     stopRefresh()
     document.removeEventListener('visibilitychange', onVisible)
     window.removeEventListener('online', kickAll)

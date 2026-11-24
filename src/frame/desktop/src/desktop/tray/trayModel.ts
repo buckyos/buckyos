@@ -15,104 +15,51 @@
  * TaskMgr) live in `trayRuntime.ts` and load only once the tray starts.
  */
 import { useEffect, useSyncExternalStore } from 'react'
+import {
+  dismissTasks,
+  isTaskFinished,
+  readDismissedTasks,
+  undismissedTasks,
+  type ActivityMessageItem,
+  type ActivityNotifyItem,
+  type ActivityTaskItem,
+  type DismissedTasks,
+} from '../../shared/activity/model.ts'
 
 export type TrayLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-export interface TrayMessageItem {
-  sessionId: string
-  entityId: string
-  /** The conversation: entity name, plus the session title when the entity has several. */
-  title: string
-  avatar?: string
-  isGroup: boolean
-  /** Who sent the latest message, when it is not obvious from the title (groups). */
-  senderName?: string
-  text: string
-  unreadCount: number
-  timestamp: number
-}
-
-export interface TrayNotifyItem {
-  notifyId: string
-  title: string
-  message?: string
-  category: 'todo' | 'agent' | 'app'
-  /** An `input` still waiting for the answer. */
-  needsAnswer: boolean
-  timestamp: number
-}
-
-export type TrayTaskState = 'running' | 'waiting' | 'paused' | 'completed' | 'failed' | 'canceled'
-
-export interface TrayTaskItem {
-  taskId: string
-  title: string
-  message?: string
-  state: TrayTaskState
-  /** 0–100 when the runner reports a total. */
-  progress: number | null
-  timestamp: number
-}
-
 export interface TraySnapshot {
-  messages: { status: TrayLoadStatus; unread: number; items: TrayMessageItem[] }
+  messages: { status: TrayLoadStatus; unread: number; items: ActivityMessageItem[] }
   notifications: {
     status: TrayLoadStatus
-    notifies: TrayNotifyItem[]
+    /** Open notifications, of which `notifies` lists the newest. */
+    open: number
+    notifies: ActivityNotifyItem[]
     /** Running tasks first, then finished ones the viewer has not dismissed. */
-    tasks: TrayTaskItem[]
+    tasks: ActivityTaskItem[]
   }
-}
-
-export function isTaskFinished(state: TrayTaskState): boolean {
-  return state === 'completed' || state === 'failed' || state === 'canceled'
 }
 
 /** What the bell counts: open notifications plus every task row. */
 export function notificationCount(snapshot: TraySnapshot): number {
-  return snapshot.notifications.notifies.length + snapshot.notifications.tasks.length
-}
-
-export function badgeLabel(count: number): string {
-  return count > 99 ? '99+' : String(count)
-}
-
-/** The MessageHub page of one conversation. */
-export function messageSessionPath(item: Pick<TrayMessageItem, 'entityId' | 'sessionId'>): string {
-  const params = new URLSearchParams({ entityId: item.entityId, sessionId: item.sessionId })
-  return `/messagehub?${params.toString()}`
-}
-
-/** The MessageHub card of a notification. */
-export function notifyPath(notifyId: string): string {
-  return `/messagehub?notify=${encodeURIComponent(notifyId)}`
-}
-
-/** The Task Center page of a task. */
-export function taskPath(taskId: string): string {
-  return `/taskcenter?taskid=${encodeURIComponent(taskId)}`
+  return snapshot.notifications.open + snapshot.notifications.tasks.length
 }
 
 /* ── Dismissed finished tasks (per device, like a phone's notification shade) ── */
 
 const DISMISSED_KEY = 'buckyos.desktop.tray.dismissed-tasks.v1'
-/** Dismissals are kept a little longer than a finished task stays listed. */
-const DISMISSED_RETENTION_MS = 10 * 24 * 60 * 60 * 1000
 
-function readDismissed(): Record<string, number> {
+function readDismissed(): DismissedTasks {
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(DISMISSED_KEY) ?? '{}')
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, number>) : {}
+    return readDismissedTasks(JSON.parse(window.localStorage.getItem(DISMISSED_KEY) ?? '{}'))
   } catch {
     return {}
   }
 }
 
-function writeDismissed(dismissed: Record<string, number>) {
-  const cutoff = Date.now() - DISMISSED_RETENTION_MS
-  const kept = Object.fromEntries(Object.entries(dismissed).filter(([, at]) => at >= cutoff))
+function writeDismissed(dismissed: DismissedTasks) {
   try {
-    window.localStorage.setItem(DISMISSED_KEY, JSON.stringify(kept))
+    window.localStorage.setItem(DISMISSED_KEY, JSON.stringify(dismissed))
   } catch {
     // Not persisted (private window): the dismissal lasts for this page.
   }
@@ -123,23 +70,23 @@ function writeDismissed(dismissed: Record<string, number>) {
 /** Started by `startTrayRuntime`; reports through `TrayRuntimeSink`. */
 export interface TrayRuntimeSink {
   setMessages(messages: TraySnapshot['messages']): void
-  setNotifies(status: TrayLoadStatus, notifies: TrayNotifyItem[]): void
+  setNotifies(status: TrayLoadStatus, notifies: ActivityNotifyItem[], open: number): void
   /** Every listed task; the store drops the dismissed finished ones. */
-  setTasks(tasks: TrayTaskItem[]): void
+  setTasks(tasks: ActivityTaskItem[]): void
   /** Ask the runtime to read everything again soon (a tray opened, the page came back). */
   onRefreshRequest(listener: () => void): () => void
 }
 
 const emptySnapshot: TraySnapshot = {
   messages: { status: 'idle', unread: 0, items: [] },
-  notifications: { status: 'idle', notifies: [], tasks: [] },
+  notifications: { status: 'idle', open: 0, notifies: [], tasks: [] },
 }
 
 export class TrayStore {
   private snapshot: TraySnapshot = emptySnapshot
   private listeners = new Set<() => void>()
   private refreshListeners = new Set<() => void>()
-  private allTasks: TrayTaskItem[] = []
+  private allTasks: ActivityTaskItem[] = []
   private dismissed = readDismissed()
   private users = 0
   private stopRuntime: (() => void) | null = null
@@ -160,16 +107,14 @@ export class TrayStore {
   }
 
   private publishTasks() {
-    const tasks = this.allTasks.filter(
-      (task) => !(isTaskFinished(task.state) && this.dismissed[task.taskId] !== undefined),
-    )
+    const tasks = undismissedTasks(this.allTasks, this.dismissed)
     this.patch({ notifications: { ...this.snapshot.notifications, tasks } })
   }
 
   private readonly sink: TrayRuntimeSink = {
     setMessages: (messages) => this.patch({ messages }),
-    setNotifies: (status, notifies) =>
-      this.patch({ notifications: { ...this.snapshot.notifications, status, notifies } }),
+    setNotifies: (status, notifies, open) =>
+      this.patch({ notifications: { ...this.snapshot.notifications, status, notifies, open } }),
     setTasks: (tasks) => {
       this.allTasks = tasks
       this.publishTasks()
@@ -227,18 +172,17 @@ export class TrayStore {
 
   /** Hides a finished task from the bell on this device. */
   dismissTask(taskId: string) {
-    this.dismissed = { ...this.dismissed, [taskId]: Date.now() }
-    writeDismissed(this.dismissed)
-    this.publishTasks()
+    this.dismiss([taskId])
   }
 
   /** Hides every finished task currently listed. */
   dismissFinishedTasks() {
-    const now = Date.now()
-    const next = { ...this.dismissed }
-    for (const task of this.allTasks) if (isTaskFinished(task.state)) next[task.taskId] = now
-    this.dismissed = next
-    writeDismissed(next)
+    this.dismiss(this.allTasks.filter((task) => isTaskFinished(task.state)).map((task) => task.taskId))
+  }
+
+  private dismiss(taskIds: string[]) {
+    this.dismissed = dismissTasks(this.dismissed, taskIds)
+    writeDismissed(this.dismissed)
     this.publishTasks()
   }
 }

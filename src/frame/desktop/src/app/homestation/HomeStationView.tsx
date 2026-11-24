@@ -1,8 +1,10 @@
 import { useMediaQuery } from '@mui/material'
-import { ExternalLink, Link2, PanelRight, Waypoints } from 'lucide-react'
+import { ExternalLink, Link2, PanelRight, Plus, Search, Waypoints } from 'lucide-react'
 import { type CSSProperties, useCallback, useMemo, useRef, useState } from 'react'
 import { WindowDialogProvider } from '../../desktop/windows/dialogs'
+import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
 import { useI18n } from '../../i18n/provider'
+import { useStandalonePage } from '../standalone/context'
 import './homestation.css'
 import { FollowedCandidates } from './candidates/FollowedCandidates'
 import type { ReadingQuery } from './datamodel/types'
@@ -15,9 +17,9 @@ import { COLUMN_GAP, COLUMN_MAX_WIDTH, INFO_PANEL_DEFAULT_WIDTH, INFO_PANEL_HIDE
 import { portalHref, portalShareUrl } from './links'
 import { MePage } from './MePage'
 import { installHomeStationPreviewSource } from './media'
-import { MobileTabBar, NavRail } from './NavRail'
+import { MobileTabBar, NavRail, OwnerButton } from './NavRail'
 import { HsNavContext, useHsNav, type HsNav, type HsPage } from './navContext'
-import { ComposePrefillContext, type HomeStationCompose } from './launch'
+import { ComposePrefillContext, type HomeStationCompose, type HomeStationLaunch } from './launch'
 import { PublicProfileView, type PreviewReader } from './PublicProfileView'
 import { FeedPreferences } from './prefs/FeedPreferences'
 import { MyPublications } from './publish/MyPublications'
@@ -116,8 +118,25 @@ function PublishHeader() {
   return <PageHeader title={t('homestation.publish.title', 'New post')} onBack={nav.back} backLabel={t('common.back', 'Back')} />
 }
 
-function MobileFeedHeader({ readingMode, onReadingModeChange }: { readingMode: ReadingMode; onReadingModeChange: (mode: ReadingMode) => void }) {
+/** `inTab`: without the tab bar, the places it leads to are here. */
+function MobileFeedHeader({ readingMode, onReadingModeChange, inTab, searchOpen, onSearch }: { readingMode: ReadingMode; onReadingModeChange: (mode: ReadingMode) => void; inTab: boolean; searchOpen: boolean; onSearch: () => void }) {
   const { t } = useI18n()
+  const nav = useHsNav()
+  if (inTab) {
+    return (
+      <header className="hs-column-head flex-shrink-0" data-testid="hs-tab-header">
+        <div className="flex items-center justify-start gap-1">
+          <OwnerButton />
+          <button type="button" className="hs-icon-btn" aria-label={t('homestation.nav.search', 'Search')} aria-pressed={searchOpen} onClick={onSearch} data-testid="hs-search-toggle"><Search size={20} /></button>
+        </div>
+        <span className="hs-logo flex items-center justify-center" role="img" aria-label={t('homestation.title', 'HomeStation')}><Waypoints size={26} /></span>
+        <div className="flex items-center justify-end gap-1">
+          <button type="button" className="hs-icon-btn" aria-label={t('homestation.publish.title', 'New post')} onClick={() => nav.navigate({ name: 'publish' })} data-testid="hs-publish-open"><Plus size={20} /></button>
+          <ReadingModeMenu readingMode={readingMode} onChange={onReadingModeChange} />
+        </div>
+      </header>
+    )
+  }
   return (
     <header className="hs-column-head flex-shrink-0">
       <span />
@@ -127,11 +146,13 @@ function MobileFeedHeader({ readingMode, onReadingModeChange }: { readingMode: R
   )
 }
 
-export function HomeStationView({ compose }: { compose?: HomeStationCompose } = {}) {
+export function HomeStationView({ launch }: { launch?: HomeStationLaunch } = {}) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
-  const [pages, setPages] = useState<HsPage[]>(() => (compose ? [{ name: 'feed' }, { name: 'publish' }] : [{ name: 'feed' }]))
-  const pendingCompose = useRef<HomeStationCompose | null>(compose ?? null)
+  const standalone = useStandalonePage()
+  const inTab = standalone?.presentation === 'tab'
+  const [pages, setPages] = useState<HsPage[]>(() => (launch ? [{ name: 'feed' }, { name: 'publish' }] : [{ name: 'feed' }]))
+  const pendingCompose = useRef<HomeStationCompose | null>(launch && 'compose' in launch ? launch.compose : null)
   const prefill = useMemo(() => ({ peek: () => pendingCompose.current, clear: () => { pendingCompose.current = null } }), [])
   const [query, setQuery] = useState<ReadingQuery>(DEFAULT_QUERY)
   const [readingMode, setReadingMode] = useState<ReadingMode>('standard')
@@ -160,6 +181,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
     perspective: 'owner',
     reader: OWNER_READER,
     isDesktop,
+    inTab,
     navigate: (next, options) => setPages(current => (options?.reset ? (next.name === 'feed' ? [next] : [{ name: 'feed' }, next]) : [...current, next])),
     back: () => setPages(current => (current.length > 1 ? current.slice(0, -1) : current)),
     openDetail: objId => setPages(current => [...current, { name: 'detail', objId }]),
@@ -167,7 +189,9 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
       setQuery(current => ({ ...current, showFiltered: true }))
       setPages([{ name: 'feed' }])
     },
-  }), [isDesktop, page])
+  }), [inTab, isDesktop, page])
+  // Back of a page of its own (the client's header, the system key).
+  useMobileBackHandler(standalone && pages.length > 1 ? nav.back : null)
 
   const searchOpen = showSearch && page.name === 'feed'
   const toggleSearch = () => {
@@ -210,7 +234,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
       ) : null}
     />
   ) : (
-    <MobileFeedHeader readingMode={readingMode} onReadingModeChange={setReadingMode} />
+    <MobileFeedHeader readingMode={readingMode} onReadingModeChange={setReadingMode} inTab={inTab} searchOpen={searchOpen} onSearch={toggleSearch} />
   )
 
   const content = (
@@ -238,7 +262,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
       <ComposePrefillContext.Provider value={prefill}>
       <HsNavContext.Provider value={nav}>
         <div className={isDesktop ? 'hs-root hs-shell-desktop relative flex h-full w-full overflow-hidden' : 'hs-root hs-shell-mobile relative flex h-full w-full flex-col overflow-hidden'} style={{ background: isDesktop ? 'var(--hs-page)' : 'var(--hs-column)', cursor: resizing ? 'col-resize' : undefined }} data-testid="homestation" ref={layoutRef}>
-          <ToastHost bottom={isDesktop ? 24 : 72}>
+          <ToastHost bottom={isDesktop || inTab ? 24 : 72}>
             <WindowDialogProvider surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>
               {isDesktop ? (
                 <>
@@ -273,7 +297,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
               ) : (
                 <>
                   <div className="relative min-h-0 flex-1">{content}</div>
-                  {page.name !== 'publish' ? <MobileTabBar searchOpen={searchOpen} onSearch={toggleSearch} /> : null}
+                  {page.name !== 'publish' && !inTab ? <MobileTabBar searchOpen={searchOpen} onSearch={toggleSearch} /> : null}
                 </>
               )}
               {readingMode === 'immersive' ? <ImmersiveMode query={query} onClose={() => setReadingMode('standard')} /> : null}

@@ -12,10 +12,12 @@ pub mod ext;
 pub mod media;
 pub mod mixer;
 pub mod methods;
+pub mod notices;
 pub mod obj_provider;
 pub mod pages;
 pub mod presence;
 pub mod print;
+pub mod recurrence;
 pub mod session;
 mod share;
 pub mod show;
@@ -112,6 +114,9 @@ pub struct AppState {
     pub streams: stream::Streams,
     /// Who has each Workspace open (UI 框架 PRD K2), in memory.
     pub presence: presence::Presence,
+    /// System Notify (`notices`).
+    pub notifier: Arc<dyn notices::Notifier>,
+    pub reminders: notices::Reminders,
 }
 
 impl AppState {
@@ -161,7 +166,8 @@ impl AppState {
         let library = aiworkspace_store::library::Library::open(&svc.data_dir.join("library.sqlite"), svc.objects.clone()).expect("the control library database opens");
         Arc::new(AppState { svc, auth, contacts: Arc::new(contacts::RuntimeContacts), limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, acls, ndm_gateway: std::sync::OnceLock::new(), library,
                             rooms: session::Rooms::default(), media: media::Media::default(), streams: stream::Streams::default(),
-                            presence: presence::Presence::default() })
+                            presence: presence::Presence::default(),
+                            notifier: Arc::new(notices::RuntimeNotifier), reminders: notices::Reminders::default() })
     }
 
     pub fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
@@ -209,6 +215,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             }
         }
     });
+    tokio::spawn(notices::run(Arc::downgrade(&state)));
     let krpc_limit = state.limits.max_commit_bytes + 64 * 1024;
     let zone_did = buckyos_api::get_buckyos_api_runtime()
         .map(|runtime| runtime.zone_id.clone())

@@ -6,7 +6,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { signOutToLogin } from '../../auth/signOut'
 import { useI18n } from '../../i18n/provider'
-import { useDocumentTitle } from '../../presentation/documentHead'
+import { StandalonePage } from '../standalone/StandalonePage'
 import { AIWorkspaceAppPanel, type TabHost } from './AIWorkspaceAppPanel'
 import { openWorkspaceById } from './launch'
 
@@ -15,7 +15,6 @@ export function AIWorkspaceRoute() {
   const { t } = useI18n()
   const appName = t('apps.aiworkspace')
   const [shownTitle, setShownTitle] = useState<string | null>(null)
-  useDocumentTitle(shownTitle ? `${shownTitle} · ${appName}` : appName)
 
   const tab: TabHost = {
     workspaceId: null,
@@ -28,8 +27,8 @@ export function AIWorkspaceRoute() {
   }
 
   return (
-    <main className="h-dvh w-full overflow-hidden bg-[color:var(--cp-bg)]" data-testid="aiws-tab">
-      <AIWorkspaceAppPanel tab={tab} />
-    </main>
+    <StandalonePage appId="aiworkspace" ownHeader routed title={shownTitle ? `${shownTitle} · ${appName}` : undefined}>
+      {() => <div className="min-h-0 flex-1 overflow-hidden" data-testid="aiws-tab"><AIWorkspaceAppPanel tab={tab} /></div>}
+    </StandalonePage>
   )
 }

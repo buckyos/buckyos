@@ -1,30 +1,35 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { buckyos } from 'buckyos'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { buckyos, getRuntimeEnvironment } from 'buckyos'
 import { AppFrameHost } from 'buckyos/app-frame'
-import { contentDescriptor, expandOpenPath, isOpenRequest, type OpenBinding, type OpenRequest } from 'buckyos/content'
+import { contentDescriptor, isOpenRequest, type OpenRequest } from 'buckyos/content'
 import { desktopUIStore, useDesktopRuntime } from '../../models/DesktopUIDataModel'
+import { useZoneAccent } from '../../desktop/appearance/accent'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
 import type { AppContentLoaderProps } from '../types'
 import { appFrames, openContent } from '../content/open'
+import { webAppPath } from '../launchPath'
+import { openAppRequest } from '../openApp'
 import { requestOpenWith } from '../content/OpenWithSheet'
 import { openPreview } from '../preview/launch'
 import { isMockRuntime } from '../../runtime'
 import { useI18n } from '../../i18n/provider'
 import { useAppText } from '../../presentation/appText'
+import { currentZoneHost, useZonePresentation } from '../../presentation/zone'
 import { useAppLaunch } from './launch'
 import { AppLaunchStatus } from './AppLaunchStatus'
 import { SELECT_DIALOG_PATH, useSystemDialog, type SelectDialogParams } from '../../sysdlg'
 
 /** System dialogs an App may ask the shell to show over its window (`sysdlg.open`). */
 const APP_DIALOGS: ReadonlySet<string> = new Set([SELECT_DIALOG_PATH])
-export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: AppContentLoaderProps) {
+export function WebAppFramePanel({ app, windowId, launch: requested, themeMode, locale }: AppContentLoaderProps) {
+  const [launch, setLaunch] = useState(requested)
   const iframe = useRef<HTMLIFrameElement>(null)
   const { t } = useI18n()
   const title = useAppText()(app).title
   const host = useRef<AppFrameHost | undefined>(undefined)
   const nonce = useMemo(() => crypto.randomUUID(), [])
   const runtime = useDesktopRuntime()
-  const payload = launch?.payload as { kind?: string; handlerKey?: string; request?: OpenRequest; binding?: OpenBinding } | undefined
+  const payload = launch?.payload as { kind?: string; handlerKey?: string; request?: OpenRequest } | undefined
   const request = payload?.kind === 'app-open' && isOpenRequest(payload.request) ? payload.request : undefined
   const origin = useMemo(() => {
     const hostname = app.webHosts?.[0]
@@ -34,27 +39,46 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
   }, [app.webHosts])
   const src = useMemo(() => {
     if (!origin) return undefined
+    const path = webAppPath(launch) ?? (request ? undefined : '/')
+    if (!path) return undefined
     try {
-      const path = request && payload?.binding?.entry.type === 'web' ? expandOpenPath(payload.binding.entry.path, request, payload.binding.modes) : '/'
       const url = new URL(path, origin)
       if (url.origin !== origin) return undefined
-      url.hash = `bfp=${nonce}`; return url.href
+      // The same page asked for again is another launch: the App may have moved on from it.
+      url.hash = `bfp=${nonce}${launch && !request ? `&launch=${launch.requestId}` : ''}`; return url.href
     } catch { return undefined }
-  }, [origin, nonce, request, payload])
+  }, [origin, nonce, request, launch])
   const appLaunch = useAppLaunch(app.appInstanceId ?? app.id, src)
   const frameUrl = appLaunch.outcome?.kind === 'ready' ? appLaunch.outcome.url : undefined
   const unopenable = !src || appLaunch.outcome?.kind === 'invalid_target'
   const systemDialog = useSystemDialog()
-  const latest = useRef({ request, themeMode, locale, title, systemDialog, t })
-  useEffect(() => { latest.current = { request, themeMode, locale, title, systemDialog, t } }, [request, themeMode, locale, title, systemDialog, t])
+  const zoneDid = useZonePresentation().did
+  const accent = useZoneAccent()
+  const latest = useRef({ request, themeMode, accent, locale, title, systemDialog, t, zoneDid })
+  useEffect(() => { latest.current = { request, themeMode, accent, locale, title, systemDialog, t, zoneDid } }, [request, themeMode, accent, locale, title, systemDialog, t, zoneDid])
+  // Another page in this window: the App is asked first, as when the window is closed.
+  useEffect(() => {
+    if (requested === launch) return
+    let live = true
+    const leave = async () => {
+      if (!host.current?.ready) return true
+      try { return await host.current.beforeClose('user') === 'allow' }
+      catch { return window.confirm(latest.current.t('webFrame.forceClose')) }
+    }
+    void leave().then(allowed => { if (live && allowed) setLaunch(requested) })
+    return () => { live = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once for each launch the window is given
+  }, [requested])
   useEffect(() => {
     if (unopenable && request) { desktopUIStore.setSnackbar(t('webFrame.unableToOpenWith', undefined, { app: title })); openPreview({ source: request.source, session: request.session }) }
   }, [unopenable, request, title, t])
   useEffect(() => {
     if (!origin || !windowId || !frameUrl) return
-    const { request, themeMode, locale } = latest.current
+    const { request, themeMode, accent, locale } = latest.current
+    const zoneHost = currentZoneHost()
     const frame = new AppFrameHost({ target: () => iframe.current?.contentWindow ?? null, origin,
-      init: { nonce, windowId, theme: { mode: themeMode }, locale, formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', launch: request, shellCapabilities: ['content.open', 'beforeClose', 'back', SELECT_DIALOG_PATH] },
+      init: { nonce, windowId, theme: { mode: themeMode, accent }, locale, formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', launch: request, presentation: 'window', container: getRuntimeEnvironment().container,
+        shellCapabilities: ['content.open', 'app.open', 'beforeClose', 'back', SELECT_DIALOG_PATH] },
       onTitle: (title, dirty) => desktopUIStore.updateWindow(windowId, { title: `${dirty ? '● ' : ''}${title}` }),
       onRequestClose: () => desktopUIStore.closeWindow(windowId, true),
       onContentOpen: (next, target, { newWindow, hints }) => {
@@ -63,6 +87,10 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
         if (target === 'preview') openPreview(req)
         else if (target === 'chooser') requestOpenWith({ source: next.source, session: next.session, name: hints.name ?? contentDescriptor(next.source).name ?? '', mediaType: hints.mime, size: hints.size, exclude: requester, origin: req.origin })
         else void openContent(req, { name: hints.name, mime: hints.mime, size: hints.size })
+      },
+      onAppOpen: ({ zone, ...open }) => {
+        const own = !zone || zone === latest.current.zoneDid || zone === zoneHost || zone === `did:web:${zoneHost}`
+        return own ? openAppRequest(open) : { ok: false, code: 'unsupported' }
       },
       // The App is untrusted: the path must be on the list, the parameters must pass the dialog's schema, and the
       // name shown as the requester is the system's own. One dialog at a time per window is enforced by the host.
@@ -82,7 +110,7 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
     })
     return () => { unregister(); appFrames.delete(windowId); frame.dispose(); host.current = undefined }
   }, [origin, frameUrl, windowId, app.id, app.appInstanceId, nonce, payload?.handlerKey])
-  useEffect(() => { host.current?.update({ theme: { mode: themeMode }, locale }); host.current?.send('frame.themeChanged', { mode: themeMode }); host.current?.send('frame.localeChanged', { locale }) }, [themeMode, locale])
+  useEffect(() => { host.current?.update({ theme: { mode: themeMode, accent }, locale }); host.current?.send('frame.themeChanged', { mode: themeMode, accent }); host.current?.send('frame.localeChanged', { locale }) }, [themeMode, accent, locale])
   // A click inside the (cross-origin) iframe never reaches the shell document, so the window
   // container's pointer handling cannot raise this window. What the shell does observe is that
   // its own window loses focus while the iframe element becomes the active element.

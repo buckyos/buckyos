@@ -1,7 +1,7 @@
 import { isHiddenRelationMessage } from '../history/relations'
-import type { MessageObject } from './msgobj'
+import { isActionMessage, type MessageObject } from './msgobj'
 
-export const isActionMessage = (message: MessageObject) => message.kind === 'event' && message.content.machine?.intent === 'buckyos.action_log'
+export { isActionMessage }
 export function isMessageActivity(message: MessageObject) {
   if (isActionMessage(message) || message.ui_item_kind === 'status' || isHiddenRelationMessage(message)) return false
   return message.kind === 'chat' || message.kind === 'group_msg' || (message.kind === 'notify' && message.ui_unavailable !== true) || (message.kind === 'deliver' && Boolean(message.content.content?.trim() || message.content.refs?.some(ref => ref.role === 'output')))

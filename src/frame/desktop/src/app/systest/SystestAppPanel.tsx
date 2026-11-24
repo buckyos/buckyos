@@ -8,6 +8,7 @@ import type { AppContentLoaderProps } from '../types'
 import { desktopCatalogIdForLogicalApp } from '../backend-apps'
 import { useAppLaunch } from '../web-frame/launch'
 import { AppLaunchStatus } from '../web-frame/AppLaunchStatus'
+import { useZoneAccent, zoneAccent } from '../../desktop/appearance/accent'
 
 function resolveZoneHost() {
   let sdkZoneHost: string | null = null
@@ -57,6 +58,7 @@ export function SystestAppPanel({ app, windowId, themeMode }: AppContentLoaderPr
   const isSystest = desktopCatalogIdForLogicalApp(app.logicalAppId ?? app.id) === 'systest'
   const [nonce] = useState(() => crypto.randomUUID())
   const [initialLocale] = useState(locale)
+  const accent = useZoneAccent()
   const iframe = useRef<HTMLIFrameElement>(null)
   const host = useRef<AppFrameHost | null>(null)
   const base = buildAppWebUrl(app)
@@ -68,16 +70,16 @@ export function SystestAppPanel({ app, windowId, themeMode }: AppContentLoaderPr
     const frame = new AppFrameHost({
       target: () => iframe.current?.contentWindow ?? null,
       origin: new URL(base).origin,
-      init: { nonce, windowId: windowId ?? app.id, locale: initialLocale, theme: { mode: 'light' },
+      init: { nonce, windowId: windowId ?? app.id, locale: initialLocale, theme: { mode: 'light', accent: zoneAccent() },
         formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', shellCapabilities: [] },
     })
     host.current = frame
     return () => { frame.dispose(); host.current = null }
   }, [app.id, base, initialLocale, isSystest, nonce, windowId])
   useEffect(() => {
-    host.current?.update({ locale, theme: { mode: themeMode } })
+    host.current?.update({ locale, theme: { mode: themeMode, accent } })
     host.current?.send('frame.localeChanged', { locale })
-  }, [base, isSystest, locale, themeMode])
+  }, [base, isSystest, locale, themeMode, accent])
 
   if (!src) {
     return (

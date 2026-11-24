@@ -7,6 +7,8 @@ import { useMobileNavState } from './windows/MobileNavContext'
 
 interface StandaloneAppTitleBarProps {
   titleKey: string
+  /** Shown instead of `titleKey`. */
+  title?: string
   summaryKey: string
   iconKey: string
   iconUrl?: string
@@ -17,6 +19,7 @@ interface StandaloneAppTitleBarProps {
 
 export function StandaloneAppTitleBar({
   titleKey,
+  title,
   summaryKey,
   iconKey,
   iconUrl,
@@ -65,7 +68,7 @@ export function StandaloneAppTitleBar({
 
         <div className="absolute left-1/2 top-1/2 flex min-w-0 max-w-[58vw] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center">
           <p className="truncate text-sm font-medium text-[color:var(--cp-text)]">
-            {mobileNav.titleOverride?.title ?? t(titleKey)}
+            {mobileNav.titleOverride?.title ?? title ?? t(titleKey)}
           </p>
           <p className="line-clamp-1 text-xs text-[color:var(--cp-muted)]">
             {mobileNav.titleOverride?.subtitle ?? t(summaryKey)}

@@ -282,7 +282,7 @@ export function DesktopWindowContainer({
           {children}
         </div>
 
-        {!isMaximized ? (
+        {!isMaximized && app.manifest.resizable !== false ? (
           <>
             <div
               data-testid={`window-resize-left-${app.id}`}

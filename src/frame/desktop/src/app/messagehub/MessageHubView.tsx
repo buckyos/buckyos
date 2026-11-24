@@ -33,6 +33,10 @@ import { loadSources, sessionSource } from '../../components/conversation/agentS
 import { channelAccess, creationReason, isChannelSession, latestActiveSession, readingContext, sessionDescription, sortSessions, viewerSessionKey } from './sessionModel'
 import { usePaneResizer } from './paneResize'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
+import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
+import { useAppPath } from '../pathContext'
+import { appPath } from '../standalone/address'
+import { useStandalonePage } from '../standalone/context'
 import { SessionDetails } from './SessionDetails'
 import { confirmDefaultChange } from './defaultChange'
 import { CreateSessionForm, ManageSessionForm } from './SessionDialogs'
@@ -222,8 +226,11 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   }, [resolvedInitialEntityId, resolveDefaultSession]) // eslint-disable-line react-hooks/exhaustive-deps
   const [filter, setFilter] = useState<EntityFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const standalone = useStandalonePage()
+  const inTab = standalone?.presentation === 'tab'
   const [mobileView, setMobileView] = useState<MobileView>(
-    () => (!isDesktop && resolvedInitialEntityId ? 'conversation' : 'entity-list'),
+    // A tab of the client starts on the list, unless it was opened on a conversation.
+    () => (!isDesktop && resolvedInitialEntityId && (!inTab || initialEntityId || initialSessionId) ? 'conversation' : 'entity-list'),
   )
   const [showSessionSidebar, setShowSessionSidebar] = useState(false)
   // A message link only applies to the session it names: without that session the message is not looked up elsewhere.
@@ -471,6 +478,12 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     if (detailsTarget === 'agent') setDetailsTarget(null)
     setMobileView('conversation')
   }
+
+  // Back of a page of its own (the client's header, the system key); in a window this view has its own buttons alone.
+  useMobileBackHandler(!standalone || isDesktop || mobileView === 'entity-list' ? null : mobileView === 'details' ? handleCloseDetails : handleBack)
+  const shown = isDesktop || mobileView !== 'entity-list'
+  const observed = context.mode === 'observe'
+  useAppPath(appPath('', { entityId: shown ? selectedEntityId : null, sessionId: shown ? selectedSessionId : null, ownerDid: observed ? context.ownerDid : null, mode: observed ? 'observe' : null }))
 
   const toggleAgentPanel = () => {
     if (detailsTarget === 'agent' || detailsTarget === 'worklog') { rememberAgentPanel(false); setDetailsTarget(null) }

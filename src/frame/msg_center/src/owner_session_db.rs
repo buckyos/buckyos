@@ -20,6 +20,7 @@ use name_lib::DID;
 use serde_json::Value;
 use sqlx::any::AnyRow;
 use sqlx::Row;
+use std::collections::HashSet;
 
 /// Per-session aggregate of the visible (post-watermark) records.
 #[derive(Debug, Clone)]
@@ -589,6 +590,29 @@ ORDER BY session_id ASC
                 ))
             })?;
         rows.iter().map(decode_ui_session_state_row).collect()
+    }
+
+    /// Ids of the notification records of `owner` that were read or archived.
+    pub async fn list_read_notify_records(
+        &self,
+        owner: &DID,
+    ) -> std::result::Result<HashSet<String>, RPCErrors> {
+        let sql = self.render_sql(
+            "SELECT record_id FROM mailbox_records WHERE owner = ? AND msg_kind = 'notify' AND state IN ('READ', 'ARCHIVED')",
+        );
+        let rows = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to list read notify records: {error}"))
+            })?;
+        rows.iter()
+            .map(|row| {
+                row.try_get("record_id")
+                    .map_err(|e| decode_err("record_id", &e))
+            })
+            .collect()
     }
 
     pub async fn delete_owner_ui_session_states(

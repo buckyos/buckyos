@@ -4019,6 +4019,32 @@ impl MsgCenterClient {
             .await
     }
 
+    /// Open notifications and unread messages of the caller's user.
+    pub async fn notify_summary(
+        &self,
+        req: NotifySummaryReq,
+    ) -> std::result::Result<NotifySummary, RPCErrors> {
+        self.notify_call(METHOD_NOTIFY_SUMMARY, &req, "NotifySummary")
+            .await
+    }
+
+    /// The Apps that may notify the user or did, with the user's switches.
+    pub async fn notify_list_apps(
+        &self,
+        req: NotifyListAppsReq,
+    ) -> std::result::Result<NotifyListAppsResult, RPCErrors> {
+        self.notify_call(METHOD_NOTIFY_LIST_APPS, &req, "NotifyListAppsResult")
+            .await
+    }
+
+    pub async fn notify_set_app(
+        &self,
+        req: NotifySetAppReq,
+    ) -> std::result::Result<NotifyApp, RPCErrors> {
+        self.notify_call(METHOD_NOTIFY_SET_APP, &req, "NotifyApp")
+            .await
+    }
+
     /// Mark a `notice` read; `on_behalf` names who acknowledges for the user.
     pub async fn notify_ack(
         &self,
@@ -5166,7 +5192,10 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
             | METHOD_NOTIFY_LIST
             | METHOD_NOTIFY_ACK
             | METHOD_NOTIFY_DISMISS
-            | METHOD_NOTIFY_CANCEL => {
+            | METHOD_NOTIFY_CANCEL
+            | METHOD_NOTIFY_SUMMARY
+            | METHOD_NOTIFY_LIST_APPS
+            | METHOD_NOTIFY_SET_APP => {
                 let result = self
                     .0
                     .handle_notify(req.method.as_str(), req.params, ctx)

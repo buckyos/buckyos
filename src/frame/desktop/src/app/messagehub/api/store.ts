@@ -20,12 +20,15 @@ import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '..
 import type { ConversationMessageReader } from '../../../components/conversation/history/types'
 import {
   acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getDefaultSession, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, getSessionState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listConversations, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, setDefaultSession, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
-  type Contact, type DefaultSession, type GroupDoc, type GroupDocEnvelope, type GroupMemberRecord, type GroupSessionItem, type PeerConversations, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
+  type Contact, type DefaultSession, type GroupDoc, type GroupMemberRecord, type GroupSessionItem, type MailboxRecord, type PeerConversations, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, DEFAULT_HISTORY_BEFORE_JOIN, groupSessionId, MAX_HISTORY_BEFORE_JOIN } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../../../components/conversation/history/relations'
 import { messageVoice, type MessageObject } from '../../../components/conversation/model/msgobj'
 import { isActionMessage } from '../../../components/conversation/model/activity'
+import { agentDidsOf } from '../../../shared/controlPanel/account.ts'
+import { applySessionPref, groupName, participatedGroups } from '../../../shared/messagehub/session.ts'
+import { collectUnreadRecords, markRecordsRead } from '../../../shared/messagehub/unread.ts'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'
@@ -145,16 +148,11 @@ function isUuid(value: string): boolean {
 
 function groupEntry(doc: GroupDoc, hosted: boolean): GroupSummaryEntry {
   const text = (value: unknown) => typeof value === 'string' ? value.trim() : ''
-  return { name: text(doc.profile?.name), description: text(doc.profile?.description), ownerDid: doc.owner, hostDid: typeof doc.host === 'string' ? doc.host : '', lifecycle: doc.lifecycle ?? 'active', hosted }
+  return { name: groupName(doc), description: text(doc.profile?.description), ownerDid: doc.owner, hostDid: typeof doc.host === 'string' ? doc.host : '', lifecycle: doc.lifecycle ?? 'active', hosted }
 }
 
 function groupMemberInfo(member: GroupMemberRecord): NonNullable<GroupInfo['members']>[number] {
   return { did: member.member_did, role: member.role, state: member.state, expiresAt: member.expires_at_ms ?? undefined, invitedBy: member.invited_by ?? undefined }
-}
-
-function docOf(value: GroupDocEnvelope | GroupDoc | null | undefined): GroupDoc | null {
-  if (!value || typeof value !== 'object') return null
-  return 'doc' in value && value.doc && typeof value.doc === 'object' ? value.doc : 'id' in value ? value as GroupDoc : null
 }
 
 /** A rejection the host gives for a group operation, as a reason code the UI translates. */
@@ -344,7 +342,7 @@ export class MessageHubApiStore implements MessageHubStore {
     ])
     return {
       contacts,
-      agentDids: agents.map(agent => agent.agent_did).filter(did => typeof did === 'string' && did.startsWith('did:')),
+      agentDids: agentDidsOf(agents),
     }
   }
 
@@ -928,42 +926,35 @@ export class MessageHubApiStore implements MessageHubStore {
     const unread = new Map<string, SessionMessageItem[]>()
     for (const summary of summaries.filter(item => item.unread_count > 0)) {
       try {
-        let cursor: SessionHistory['oldestCursor']
-        const boundary = summary.last_record?.record
         const targets: SessionMessageItem[] = []
         unread.set(summary.session_id, targets)
-        do {
-          const page = await listSessionMessages({ owner: context.ownerDid, session_id: summary.session_id, limit: HISTORY_PAGE_SIZE, descending: true, with_object: false, cursor_sort_key: cursor?.sortKey, cursor_record_id: cursor?.recordId })
+        await collectUnreadRecords(listSessionMessages, { owner: context.ownerDid, sessionId: summary.session_id, boundary: summary.last_record?.record }, targets, () => {
           if (data.epoch !== epoch) throw new Error('context_changed')
-          targets.push(...(page.items ?? []).filter(item => item.direction === 'in' && item.recipient_state === 'UNREAD' && (!boundary || item.sort_key < boundary.sort_key || (item.sort_key === boundary.sort_key && item.record_id <= boundary.record_id))))
-          cursor = page.next_cursor_sort_key !== undefined && page.next_cursor_record_id !== undefined ? { sortKey: page.next_cursor_sort_key, recordId: page.next_cursor_record_id } : undefined
-        } while (cursor)
+        })
       } catch (error) {
         if (data.epoch !== epoch) throw error
         failures.push(error)
       }
     }
     for (const [sessionId, targets] of unread) {
-      for (let offset = 0; offset < targets.length; offset += 8) {
-        const results = await Promise.allSettled(targets.slice(offset, offset + 8).map(item => updateRecordState(item.record_id, 'READ')))
+      await markRecordsRead(updateRecordState, targets, results => {
         if (data.epoch !== epoch) throw new Error('context_changed')
-        const records = new Map<string, Awaited<ReturnType<typeof updateRecordState>>>()
+        const records = new Map<string, MailboxRecord>()
         for (const result of results) {
           if (result.status === 'fulfilled') records.set(result.value.record_id, result.value)
           else failures.push(result.reason)
         }
         const key = viewerSessionKey(context, sessionId)
         const history = data.histories.get(key)
-        if (history && records.size > 0) {
-          const updated = history.messages.flatMap(message => {
-            const meta = recordMeta(message)
-            const record = meta && records.get(meta.recordId)
-            return record ? [{ ...message, ui_record: { ...meta, recipientState: record.state } }] : []
-          })
-          data.histories.set(key, upsertMessages(history, updated))
-          this.bump(data)
-        }
-      }
+        if (!history || records.size === 0) return
+        const updated = history.messages.flatMap(message => {
+          const meta = recordMeta(message)
+          const record = meta && records.get(meta.recordId)
+          return record ? [{ ...message, ui_record: { ...meta, recipientState: record.state } }] : []
+        })
+        data.histories.set(key, upsertMessages(history, updated))
+        this.bump(data)
+      })
     }
     try {
       this.mergeSummaries(data, await readSummaries())
@@ -1137,10 +1128,7 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   private applyPref(prefs: SessionPreferences, entry: UiSessionStateEntry) {
-    if (entry.key === 'ui.title' && typeof entry.value === 'string' && entry.value.trim().length <= 64) prefs.title = entry.value.trim()
-    if (entry.key === 'ui.description' && typeof entry.value === 'string' && entry.value.trim().length <= 500) prefs.description = entry.value.trim()
-    if (entry.key === 'ui.pinned' && typeof entry.value === 'boolean') prefs.pinned = entry.value
-    if (entry.key === 'ui.muted' && typeof entry.value === 'boolean') prefs.muted = entry.value
+    applySessionPref(prefs, entry)
     if (entry.key === 'ui.pinned_message') { const pin = pinnedMessageSchema.safeParse(entry.value); prefs.pinnedMessage = pin.success ? pin.data : null }
   }
 
@@ -1498,12 +1486,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private async fetchGroups(): Promise<Record<string, GroupSummaryEntry>> {
     const result = await listGroupsByMember()
     const groups: Record<string, GroupSummaryEntry> = {}
-    for (const joined of result.joined ?? []) {
-      if (joined.stopped) continue
-      const doc = docOf(joined.doc_cache)
-      groups[joined.group_did] = doc ? groupEntry(doc, false) : { name: '', description: '', ownerDid: '', hostDid: '', lifecycle: 'active', hosted: false }
-    }
-    for (const item of result.items ?? []) if (item.doc?.id) groups[item.doc.id] = groupEntry(item.doc, true)
+    for (const { did, doc, hosted } of participatedGroups(result)) groups[did] = doc ? groupEntry(doc, hosted) : { name: '', description: '', ownerDid: '', hostDid: '', lifecycle: 'active', hosted }
     const data = this.owner(this.selfDid)
     for (const invitation of result.invitations ?? []) {
       const groupDid = invitation.group_did ?? invitation.doc?.id

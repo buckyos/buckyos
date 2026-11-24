@@ -1,62 +1,9 @@
 import clsx from 'clsx'
-import {
-  BookOpen,
-  Bot,
-  Boxes,
-  BrainCircuit,
-  ClipboardList,
-  Clock3,
-  FolderOpen,
-  FlaskConical,
-  Globe,
-  Waypoints,
-  LayoutGrid,
-  MessageSquare,
-  Network,
-  ScanEye,
-  Share2,
-  Settings,
-  SlidersHorizontal,
-  Sparkles,
-  UserRoundPlus,
-  StickyNote,
-  NotebookTabs,
-  Store,
-  Users,
-  Workflow as WorkflowIcon,
-  Wrench,
-} from 'lucide-react'
+import { LayoutGrid } from 'lucide-react'
 import type { AppDefinition } from '../models/ui'
+import { appIcons } from './appIcons'
 import { panelToneClasses } from './DesktopVisualTokens'
 import { ObjectImage } from '../presentation/ObjectIcon'
-
-const iconMap = {
-  'ai-center': BrainCircuit,
-  'app-service': Boxes,
-  settings: Settings,
-  files: FolderOpen,
-  studio: Wrench,
-  market: Store,
-  diagnostics: LayoutGrid,
-  demos: SlidersHorizontal,
-  docs: BookOpen,
-  codeassistant: Bot,
-  messagehub: MessageSquare,
-  homestation: Waypoints,
-  systest: FlaskConical,
-  'task-center': ClipboardList,
-  workflow: WorkflowIcon,
-  aiworkspace: NotebookTabs,
-  preview: ScanEye,
-  'users-agents': Users,
-  'agent-setup': UserRoundPlus,
-  'agent-guide': Sparkles,
-  'my-network': Network,
-  'my-content': Share2,
-  'agent-browser': Globe,
-  clock: Clock3,
-  notepad: StickyNote,
-}
 
 export function TierBadge({ tier }: { tier: AppDefinition['tier'] }) {
   const tone: keyof typeof panelToneClasses =
@@ -91,7 +38,7 @@ export function AppIcon({
   className?: string
   style?: React.CSSProperties
 }) {
-  const Icon = iconMap[iconKey as keyof typeof iconMap] ?? LayoutGrid
+  const Icon = appIcons[iconKey as keyof typeof appIcons] ?? LayoutGrid
   const workspaceIcon = iconKey === 'aiworkspace'
   if (workspaceIcon && monochrome) {
     const size = fill ? '70%' : '100%'

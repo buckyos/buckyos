@@ -109,6 +109,8 @@ const local: AccountAppearance = {
   iconSize: 'medium',
   window: { titleBarOpacity: 100, backgroundOpacity: 100 },
   wallpaper: { ...defaultAccountWallpaper, image: { ref: REF, width: 1200, height: 800, name: 'a.jpg' } },
+  accent: null,
+  mobileFeed: 'homestation',
 }
 
 Deno.test('an account wallpaper names a picture in its wallpapers bucket by content hash; anything else is no picture', () => {
@@ -122,12 +124,15 @@ Deno.test('an account wallpaper names a picture in its wallpapers bucket by cont
   assertEquals(normalizeAccountWallpaper({ image: { ref: REF, width: 0, height: 20 } }).image, null, 'no size')
   assertEquals(readAppearance({ theme: 'blue', locale: 'xx', iconSize: 'huge', window: { titleBarOpacity: 300 } }), {}, 'invalid fields dropped')
   assertEquals(readAppearance({ theme: 'dark', iconSize: 'large' }), { theme: 'dark', iconSize: 'large' }, 'valid fields kept')
+  assertEquals(readAppearance({ accent: '#3366CC', mobileFeed: 'activity' }), { accent: '#3366cc', mobileFeed: 'activity' }, 'Zone colour and feed')
+  assertEquals(readAppearance({ accent: null }), { accent: null }, 'no colour is a choice of its own')
+  assertEquals(readAppearance({ accent: 'red', mobileFeed: 'inbox' }), {}, 'anything else is left out')
 })
 
 Deno.test('sync: the account wins, a setting it lacks is seeded from this device, a change made here is kept', () => {
   const plan = planSync({ remote: { theme: 'dark', iconSize: 'medium' }, local, dirty: new Set(['locale']), foreignWallpaper: false })
   assertEquals(plan.apply, { theme: 'dark' }, 'account value shown here')
-  assertEquals(Object.keys(plan.push).sort(), ['locale', 'wallpaper', 'window'], 'changed here, or missing on the account')
+  assertEquals(Object.keys(plan.push).sort(), ['accent', 'locale', 'mobileFeed', 'wallpaper', 'window'], 'changed here, or missing on the account')
   assertEquals(plan.synced.theme, 'dark', 'synced')
 
   const foreign = planSync({ remote: {}, local, dirty: new Set(), foreignWallpaper: true })
@@ -159,7 +164,7 @@ function fakeAccount(stored: Record<string, unknown> | null) {
 Deno.test('sync engine: shows the account, saves what changes here, and seeds a new account', async () => {
   ;(globalThis as { window?: unknown }).window = { localStorage: new MemoryStorage() }
 
-  const account = fakeAccount({ theme: 'dark', locale: 'zh-CN', iconSize: 'medium', window: local.window, wallpaper: local.wallpaper })
+  const account = fakeAccount({ theme: 'dark', locale: 'zh-CN', iconSize: 'medium', window: local.window, wallpaper: local.wallpaper, accent: null, mobileFeed: 'homestation' })
   const shown: Partial<AccountAppearance>[] = []
   let page = local
   const sync = new AppearanceSync('alice', page, account.io, (patch) => {
@@ -193,7 +198,7 @@ Deno.test('sync engine: shows the account, saves what changes here, and seeds a 
 
 Deno.test('sync engine: a change the account has not confirmed survives a reload and wins over the account', async () => {
   ;(globalThis as { window?: unknown }).window = { localStorage: new MemoryStorage() }
-  const account = fakeAccount({ theme: 'light', locale: 'zh-CN', iconSize: 'medium', window: local.window, wallpaper: local.wallpaper })
+  const account = fakeAccount({ theme: 'light', locale: 'zh-CN', iconSize: 'medium', window: local.window, wallpaper: local.wallpaper, accent: null, mobileFeed: 'homestation' })
 
   const first = new AppearanceSync('alice', local, account.io, () => {})
   await first.refresh(true)

@@ -20,6 +20,8 @@ export interface HsNav {
   perspective: ViewPerspective
   reader: ReaderIdentity
   isDesktop: boolean
+  /** Shown in a tab of the BuckyOS client: there is no tab bar of its own. */
+  inTab: boolean
   navigate: (page: HsPage, options?: { reset?: boolean }) => void
   back: () => void
   openDetail: (objId: ObjId) => void
@@ -33,6 +35,7 @@ export const HsNavContext = createContext<HsNav>({
   perspective: 'owner',
   reader: { kind: 'owner' },
   isDesktop: true,
+  inTab: false,
   navigate: noop,
   back: noop,
   openDetail: noop,

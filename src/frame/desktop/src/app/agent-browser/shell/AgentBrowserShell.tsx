@@ -10,6 +10,8 @@ import { LoadingOrb } from '../../../components/LoadingOrb'
 import { useI18n } from '../../../i18n/provider'
 import { openAgentSetup } from '../../agent-setup/launch'
 import { HubAvatar } from '../../messagehub/HubAvatar'
+import { useAppPath } from '../../pathContext'
+import { appPath } from '../../standalone/address'
 import { useViewerIsAdmin } from '../../settings/hooks/use-viewer-is-admin'
 import { openSettings } from '../../settings/launch'
 import { ConversationSheet } from '../conversation/ConversationSheet'
@@ -118,6 +120,7 @@ function BrowserFrame() {
   const { t } = useI18n()
   const agent = useAgentBrowser((snapshot) => snapshot.agent)
   const mode = useAgentBrowser((snapshot) => snapshot.mode)
+  useAppPath(appPath('', { agent: agent?.agentId }))
   const usable = useAgentBrowser(browserUsable)
   const operable = useAgentBrowser(canOperate)
   const loading = useAgentBrowser((snapshot) => snapshot.state?.loading ?? false)

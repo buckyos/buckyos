@@ -116,6 +116,20 @@ export function NavRail({ searchOpen, onSearch }: NavProps) {
   )
 }
 
+/** The way to "Me" where there is no tab bar. */
+export function OwnerButton() {
+  const { t } = useI18n()
+  const nav = useHsNav()
+  const sync = useStoreSelector(selectSync)
+  const owner = useStoreSelector(selectOwner)
+  return (
+    <button type="button" className="hs-icon-btn relative" aria-label={t('homestation.me.title', 'Me')} onClick={() => nav.navigate({ name: 'me' })} data-testid="hs-avatar">
+      <Avatar identity={owner} size={26} />
+      {sync.candidates > 0 ? <span className="hs-unread-dot" style={{ top: 4, right: 4 }} aria-hidden="true" /> : null}
+    </button>
+  )
+}
+
 /** Phone: five tabs along the bottom, the same five places as the desktop rail. */
 export function MobileTabBar({ searchOpen, onSearch }: NavProps) {
   const { t } = useI18n()

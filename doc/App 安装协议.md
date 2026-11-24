@@ -34,7 +34,7 @@ scheduler 从启用且未停止、未删除的 AppSpec 派生 `system/content_re
 
 ### 2.1 完整 JSON Schema
 
-`AppDoc` flatten/inherit `BaseContentObject`，因此它仍是可以通过 Named Object/NDN 流转的内容对象；但它不再 inherit `PackageMeta`。以下 schema 冻结 AppDoc body。根对象、`SubPkgDesc`、selector、presentation、permission、endpoint、mount、bash env 和 instance volume 都拒绝未知字段；`service_config_tips` 为显式自定义配置保留 additional properties。
+`AppDoc` flatten/inherit `BaseContentObject`，因此它仍是可以通过 Named Object/NDN 流转的内容对象；但它不再 inherit `PackageMeta`。以下 schema 冻结 AppDoc body。根对象、`SubPkgDesc`、selector、presentation、permission、window、endpoint、mount、bash env 和 instance volume 都拒绝未知字段；`service_config_tips` 为显式自定义配置保留 additional properties。
 
 ```json
 {
@@ -93,6 +93,7 @@ scheduler 从启用且未停止、未删除的 AppSpec 派生 `system/content_re
       "default": {}
     },
     "content_handlers": { "type": "array", "items": { "type": "object" }, "default": [] },
+    "window": { "$ref": "#/$defs/window" },
     "permissions": {
       "type": "array",
       "items": { "$ref": "#/$defs/permission" },
@@ -150,6 +151,22 @@ scheduler 从启用且未停止、未删除的 AppSpec 派生 `system/content_re
         "required": { "type": "boolean" },
         "actions": { "type": "array", "items": { "type": "string" }, "default": [] },
         "exp": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instance": { "enum": ["single", "multi"] },
+        "default_mode": { "enum": ["windowed", "maximized"] },
+        "width": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "min_width": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "min_height": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "resizable": { "type": "boolean" },
+        "allow_minimize": { "type": "boolean" },
+        "allow_maximize": { "type": "boolean" },
+        "mobile_header": { "enum": ["standard", "compact"] }
       }
     },
     "presentation": {
@@ -258,10 +275,13 @@ Serde/default 规则：
 - `name/copyright/tags/categories/base_on/directory/references` 是 `BaseContentObject` 的可选内容元数据；空 `name/tags/categories/directory/references` 序列化时省略。`name` 不是 App 身份，也不得用于推导 AppId。
 - `version_tag/presentation/sdk_version` 缺省为 `null` 且序列化时省略。
 - `req_capbilities/permissions` 缺省为空并省略。
+- `window` 缺省为没有声明并省略；其中的字段也全部可选，没写的字段不补进 AppDoc（它参与 ObjectId），由读取方按缺省处理，见 §2.5。`min_width/min_height` 不得大于同时声明的 `width/height`。
 - `SubPkgDesc.required` 缺省解释为 `true`；PIKG 的 canonical 输出必须显式写出该布尔值。
 - selector 的 `os/arch/min_kernel_version` 均可省略；`amd64/x86_64/x64` 归一为 `x86_64`，`arm64/aarch64` 归一为 `aarch64`，`darwin/apple/osx` 归一为 `macos`。
 - 已知 package key 的 selector：各平台 key 派生相应 OS/arch；`web/agent/agent_skills/script` 匹配所有平台；未知 key 必须显式提供 selector 才参与自动选择。
 - 根对象不允许 schema 之外的扩展键；`service_config_tips` 的自定义键以及所有显式 BaseContentObject 元数据仍进入 AppDoc ObjectId。
+
+`scope_path` 为 `msg-center/notify` 的权限是“给用户发系统通知”：Inspect 的建议参数默认选中它（即使 `required` 为 `false`），升级到第一个声明它的版本时也自动带上；没有声明的 App 调 `notify.send` 会被拒绝，用户按应用的开关见 [System Notify](<message_hub/System Notify.md>) §4.1。
 
 ### 2.2 App 类型约束
 
@@ -340,6 +360,21 @@ PackageMeta 分别绑进 `zone/control-panel/_/packages` 与 `package_objects`�
 删除，`documents`/`collected` 转孤儿；`--data retain` 时 `app_data` 也转孤儿）。
 32MiB 不限制整包或子包；Prepare 导入大子包时使用文件导入接口分块保存，以 SameAs
 保留 PackageMeta 中已有的内容 ChunkId。staging 配额、principal/Zone/purpose 绑定和租约继续生效。
+
+### 2.5 窗口声明
+
+`window` 告诉 Shell 和客户端怎样显示这个 App（规则见 [BuckyOS APP 新版本 TODO](../notepads/buckyos-app-system-client-todo.md) §3.5）：
+
+| 字段 | 缺省 | 含义 |
+| --- | --- | --- |
+| `instance` | `single` | `single`：只有一个窗口；`multi`：按窗口路径可以开多个 |
+| `default_mode` | `windowed` | 打开时是普通窗口还是最大化 |
+| `width`、`height`、`min_width`、`min_height` | 由 Shell / 客户端定 | 逻辑像素，1–16384 |
+| `resizable` | `true` | `false` 即固定大小 |
+| `allow_minimize`、`allow_maximize` | `true` | 窗口按钮 |
+| `mobile_header` | `standard` | 移动端标题行：`standard` 占一行，`compact` 悬浮在页面上 |
+
+control-panel `apps.list` 和 `apps.details` 的 summary 用 `window` 原样带出声明，没有声明时为 `null`。
 
 ## 3. Package namespace 与 exact 内容
 

@@ -9,6 +9,7 @@ import { GeneralPage } from './pages/GeneralPage'
 import { AppearancePage } from './pages/AppearancePage'
 import { ClusterManagerPage } from './pages/ClusterManagerPage'
 import { ExtToolsPage } from './pages/ExtToolsPage'
+import { NotificationsPage } from './pages/NotificationsPage'
 import { PrivacyPage } from './pages/PrivacyPage'
 import { FilePermissionsPage } from './pages/FilePermissionsPage'
 import { DeveloperModePage } from './pages/DeveloperModePage'
@@ -24,6 +25,8 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
       return <StoragePage />
     case 'appearance':
       return <AppearancePage appProps={appProps} />
+    case 'notifications':
+      return <NotificationsPage />
     case 'zone':
       return <ZonePage />
     case 'cluster':

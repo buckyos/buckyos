@@ -866,6 +866,7 @@ get_next_delivery(transport_did, lock_on_take, with_object)
 # 系统通知（§2.1.3；App 契约见 System Notify.md）
 notify.send(req) / notify.get(notify_id) / notify.list(filter)
 notify.ack(notify_id, on_behalf?) / notify.dismiss(notify_id) / notify.cancel(notify_id, reason?)
+notify.summary() / notify.list_apps() / notify.set_app(app_instance_id, enabled)
 ```
 
 群聊 read receipt（`MsgReceiptObj`，per-reader）见 Self-Host-Group 文档；其存储同样遵守"独立对象 + 索引"模式。

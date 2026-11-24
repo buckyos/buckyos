@@ -703,21 +703,32 @@ Layout State 是整个 Desktop Layout System 的核心数据模型。
 
 #### 窗口 ID 的组成
 
-窗口 ID 由两部分组成：
+窗口 ID 由三部分组成：
 
-1. **APP ID**：标明该窗口所属的应用；
-2. **路径（Path）**：一个在该 APP 内部唯一的路径。
+1. **Zone**：窗口属于哪个 Zone。浏览器里的 Desktop 只有当前这一个 Zone；BuckyOS APP 里可以同时有几个；
+2. **应用实例**：标明该窗口所属的应用；
+3. **窗口路径（window）**：一个在该 APP 内部唯一的名字，空路径是应用的主窗口。
 
-路径的语义完全由 APP 内部自行定义，可以是一个参数，也可以类似于 URL 后面的参数列表。只要它对该 APP 有意义即可。
+窗口路径的语义完全由 APP 内部自行定义。它只决定“是不是同一个窗口”，和窗口里显示哪个页面（`path`）是两件事。
 
-基于该结构，窗口管理系统支持通过协议调用的方式让第三方应用打开特定窗口——开发者只需传入“APP ID + 路径”即可。
+#### 打开请求与规则
+
+图标、通知、别的应用、外部链接，都先变成同一个请求：`{ zone, app, path?, window?, mode? }`。`path` 是应用内的页面地址（以 `/` 开头，含查询参数和片段），`mode` 是 `reuse`（缺省）或 `new`。规则只有一份实现（websdk `buckyos/open-app` 的 `resolveOpenApp`，测试向量 `tests/open_app_vectors.json`），Desktop 和 BuckyOS APP 都用它：
+
+| 应用声明 | 请求 | 结果 |
+| --- | --- | --- |
+| 单窗口（缺省） | 任意 | 已有窗口就置前；带 `path` 且和当前页面不同，就在这个窗口里进入该页面；没有窗口就新建 |
+| 多窗口 | 不带 `window`，`reuse` | 已有窗口就把最近用过的那个置前，带 `path` 时在其中进入该页面；没有就新建 |
+| 多窗口 | 带 `window` | 同一路径的窗口已存在就置前，否则新建 |
+| 多窗口 | `new` | 新建；没有指定 `window` 时用主窗口，主窗口开着就用 `~2`、`~3`… |
+
+- 第三方应用用 `AppFrameClient.openApp()`（app-frame 的 `app.open` 消息）打开另一个应用或页面；不在 Desktop 里的独立标签页打开 Zone 根域的 `/?open-app=<app>&path=…&window=…&mode=new`。只能打开本 Zone 的应用。
+- 系统应用自己报告当前显示的页面（`app/pathContext.ts`）。Desktop 看不到 iframe 里的地址，第三方应用的当前页面一律当作未知，带 `path` 的请求总是进入该页面；进入之前先走 `frame.beforeClose`，应用不同意就留在原处。
+- 内容打开（`content.open`、双击文件）仍按内容处理器的 `window` 声明决定开新窗口还是复用；应用在 AppDoc 里声明了单窗口时以单窗口为准。
 
 #### 状态保持
 
-升级后，窗口状态的保持基于“APP ID + 窗口路径”这一完整标识：
-
-1. **状态保存**：如果一个应用创建了两个 APP ID 相同但路径不同的窗口，系统会分别保存它们的状态；
-2. **窗口聚合**：由于仍然保有 APP ID，未来如需对同一应用的多个窗口进行聚合显示，实现也会非常方便。
+位置和大小按应用保存（同一应用的窗口共用一份）。
 
 ---
 
@@ -932,44 +943,30 @@ Title Bar 需要承担：
 - 移动端是否覆盖 Dead Zone
 - 是否允许在同一 WebView 内嵌入
 
-### 21.4 建议的 Manifest 草案
+### 21.4 应用的窗口声明
 
-```json
-{
-  "window": {
-    "defaultMode": "maximized",
-    "allowMinimize": true,
-    "allowMaximize": true,
-    "allowClose": true,
-    "allowFullscreen": false
-  },
-  "titleBar": {
-    "mode": "system",
-    "title": "Settings",
-    "subtitle": "",
-    "buttons": ["minimize", "maximize", "close"]
-  },
-  "mobile": {
-    "fullscreenBehavior": "cover_dead_zone"
-  },
-  "integration": {
-    "placement": "inplace"
-  }
+第三方应用在 AppDoc 的 `window` 段里声明，经 `apps.list` 带给 Desktop 和 BuckyOS APP；系统应用的声明写在 Desktop 的内置目录里，导出到 `system-apps.json`（§27.9）。两处字段相同：
+
+```jsonc
+"window": {
+  "instance": "single",           // single | multi
+  "default_mode": "windowed",     // windowed | maximized
+  "width": 960, "height": 640, "min_width": 420, "min_height": 280,
+  "resizable": true,              // false 即固定大小
+  "allow_minimize": true,
+  "allow_maximize": true,
+  "mobile_header": "standard"     // standard 固定底色 | compact 透明
 }
 ```
 
-说明：
-
-- 该结构仅为需求整理阶段的建议草案
-- 最终字段命名可在工程实现阶段统一
-- 需要保留版本与兼容升级空间
+- 字段都可以省略，缺省值如上（尺寸没有缺省值，由系统决定）。解析用 websdk 的 `readAppWindowDeclaration`，不认识的值按缺省处理。
+- 固定大小的窗口没有调整手柄，也不沿用上次的大小。`allow_minimize` / `allow_maximize` 为 `false` 时没有对应的按钮；`allow_maximize` 为 `false` 时双击标题栏不最大化。
+- Desktop 内部仍用 `WindowManifest`（还包括标题栏、全出血、移动端安全区等只和 Desktop 有关的字段）；两者的互转只有 `app/windowDeclaration.ts` 一份。
 
 ### 21.5 优先级规则
 
-Manifest 生效逻辑建议为：
-
-1. App 提供 Manifest，则优先使用 App 的配置
-2. App 未提供 Manifest，则系统使用默认窗口规则
+1. App 声明了 `window`，用 App 的声明
+2. App 没有声明：系统应用用内置目录里的，第三方应用用上面的缺省值
 
 ---
 
@@ -1175,21 +1172,24 @@ WinBox.js：窗口系统。⚠️ **未采用。** `winbox` 仍残留在 `packag
 - `contentPadding: 'default' | 'none'`：窗口内容是否全出血。
 - `mobileStatusBarMode: 'compact' | 'standard'`：移动端状态栏形态。`standard` 对应 §18.2 的“保留系统 UI 模式”，`compact` 更接近沉浸式。
 - `mobileRedirectPath`：移动端点击直接路由（见 §27.6）。
-- `desktopWindow: { width, height, minWidth?, minHeight? }`：桌面窗口默认 / 最小尺寸。
+- `desktopWindow: { width?, height?, minWidth?, minHeight? }`：桌面窗口默认 / 最小尺寸。
+- `instance?: 'single' | 'multi'`（缺省单窗口）、`resizable?`（缺省可调整）：见 §21.4。内置应用里只有 Preview 是多窗口。
 - `supportedFormFactors?` / `showInLauncher?`：按 form factor 过滤应用与 launcher 可见性。
 - `mobileFullscreenBehavior: 'cover_dead_zone' | 'keep_dead_zone'`：对应 §18.2 两类最大化。
 
 此外新增**窗口外观偏好** `WindowAppearancePreferences { titleBarOpacity, backgroundOpacity }`（0–100），独立持久化，作用于所有窗口的标题栏 / 背景透明度。
 
+**Zone 主题色与移动端动态入口**：“设置 → 外观”里的两项，跟着账号走（账号外观状态的 `accent`、`mobileFeed`）。主题色是每个用户给自己的每个 Zone 各设一个，只做小范围强调：BuckyOS APP 里标出这个 Zone，并作为 `frame.init` / `frame.themeChanged` 的 `theme.accent` 交给应用；明暗两套基础色不变。移动端动态入口是 BuckyOS APP 手机端动态 Tab 先显示 HomeStation 还是全部动态。
+
 ### 27.6 移动端重定向（mobileRedirectPath）
 
-移动端点击声明了 `mobileRedirectPath` 的应用时，不开窗口而是直接 `navigate()` 到对应路由（如 `files → /files`、`task-center → /taskcenter`）。这是移动端“尽量复用系统级整页应用”原则（§6.3 / §22）的落地方式。
+移动端点击声明了 `mobileRedirectPath` 的应用时，不开窗口而是直接 `navigate()` 到对应路由（如 `messagehub → /messagehub`、`task-center → /taskcenter`）。这是移动端“尽量复用系统级整页应用”原则（§6.3 / §22）的落地方式。
 
 ### 27.7 与原文若干表述的偏差
 
 - §8.1 的 `fullscreen` 显示模式、§16.2 的 fullscreen：当前仅是 manifest 能力声明，**没有独立运行态**。
 - §10.1 “不含复杂状态栏 / 系统 UI”：当前已含薄 StatusBar + SystemSidebar（见 §11.4）。
-- §16.4 窗口 ID = `APP ID + Path`：当前运行态 `WindowRecord.id` 仍为 `appId + 时间戳`，按 `appId` 复用几何信息；“APP ID + 路径”的多窗口标识尚未完全落地。
+- §16.4 已实现：`WindowRecord.id` 是 websdk `appWindowId(zone, 应用实例, 窗口路径)`（Zone 用 zone host），打开规则是 `resolveOpenApp`。位置大小仍按应用保存，没有按窗口路径分开。
 
 ### 27.8 后端 App 的名称与打开方式
 
@@ -1198,3 +1198,33 @@ Desktop 使用完整 `app_instance_id` 作为实例和窗口主键，但不得�
 AI Center、Files、Task Center、Workflow 和 Control Panel 管理面板属于 Desktop 自身提供的内建 App，即使没有 AppSpec、没有出现在 `apps.list` 中，也必须保留在默认桌面。
 
 `apps.list` 为具有 Web expose 配置的 App 返回 `web_hosts`。这类第三方 Web App 默认沿用 Systest 的承载方式，在 Desktop 管理的窗口中通过对应 Zone 子域 iframe 打开；没有 Web host 的外部 App 才进入 new-container/unsupported 回退。
+
+### 27.9 系统应用的独立页面与清单
+
+内置应用除了在 Desktop 的窗口里打开，还各有一个独立页面：只有这一个应用，没有任务栏、壁纸和窗口框。浏览器标签页可以直接打开，BuckyOS APP 的原生窗口和移动容器也加载它。地址是 `/app/<id>`；已有路由的四个用原来的：`messagehub → /messagehub`、`homestation → /homestation`、`aiworkspace → /workspace`、`task-center → /taskcenter`。登录、受限身份的处理与 `/` 相同。诊断只显示 Desktop 自己的布局和活动，没有独立页面。
+
+`OpenAppRequest.path` 拼在地址后面（`/appearance` → `/app/settings/appearance`，`/?taskid=1` → `/taskcenter?taskid=1`）。应用自己定的名字放在路径里，用户数据（目录、DID、id）放在查询参数里：Zone 的静态文件服务不接受路径段里的某些字符。不认识的 `path` 按应用平常的样子打开。
+
+| 应用 | `path` |
+| --- | --- |
+| settings | `/<设置页>`（`general`、`appearance`、`notifications`、`zone`…，同“设置”的导航） |
+| files | `/?path=<目录>`；`/upload`（手机上打开“添加到此文件夹”） |
+| task-center | `/?taskid=<任务>` |
+| ai-center | `/<页>`（`providers`、`providers/add`、`models`、`routing`、`playground`、`usage`、`quota`、`visibility`） |
+| app-service | `/install`；`/?service=<服务 id>` |
+| users-agents | `/self`；`/?entity=<用户或 Agent>` |
+| my-network | `/requests`；`/?entity=<DID>`；`/add-friend?input=…`、`/join-group?input=…` |
+| my-content | `/<页签>`（`links`、`apps`、`public`、`sites`）；`?share=<分享 id>` |
+| agent-browser | `/?agent=<Agent>&mode=page\|reflow\|chat` |
+| agent-setup | `/?source=jarvis_guide\|users_agents&agent_id=…` |
+| workflow | `/?definition=<id>`、`/?run=<id>`、`/prompt` |
+| preview | `/?open=<内容引用>&session=…`（写法同 Zone 根域的 `/?open=`，不用 `intent`） |
+| messagehub | `/?entityId=…&sessionId=…&messageId=…`、`/?notify=<通知>`、`/?ownerDid=…&mode=observe`、`/?share=<JSON>` |
+| homestation | `/?new=post`、`/?compose=<JSON>`；`/<用户>`、`/<用户>/<条目>` 是公开页面 |
+| aiworkspace、agent-guide | 没有子页面。agent-guide 转到创建向导，或转到已创建的 Agent |
+
+`/app/*` 的页面显示的位置变了，地址跟着变（`history.replaceState`），刷新后回到原处；有自己路由的四个应用只在客户端里这样做（客户端靠地址知道窗口在哪一页）。页面里打开别的应用：在 BuckyOS APP 里经 app-frame 的 `app.open` 交给客户端；在浏览器里打开那个应用的独立页面，同一个窗口 ID 用同名标签页。标题写到 `document.title`，在客户端里同时发 `window.setTitle`；手机容器的 Header 用 `header.set` 给标题和能否返回，系统返回键经 `frame.back` 走应用内的返回。
+
+**在客户端的 Tab 里**（`frame.init.presentation` 为 `tab`，或 `BuckyApi.env.presentation` 同步可读）：MessageHub 没有“返回桌面”，HomeStation 没有底部五栏，搜索、发动态、“我”移到顶栏。
+
+**清单** `https://<zone>/system-apps.json`：构建时由内置目录生成（`src/app/standalone/manifest.ts`，dev server 也能取到），每个应用给 `id`、各语言 `names`、`icon`（`/system-apps/<id>.svg`，带底色的完整图片）、`path`、`show_in_launcher`、`audience`（`all`，或 `agent_user`：能创建 Agent 的用户）、`form_factors`、`window`（§21.4）。

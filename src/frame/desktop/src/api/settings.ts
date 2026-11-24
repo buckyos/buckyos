@@ -1,4 +1,6 @@
 import { bucket, buckyos } from 'buckyos'
+import { readZonePresentation, type ZonePresentationFields, type ZonePresentationResponse } from '../shared/controlPanel/zonePresentation.ts'
+import { publicChannel } from './channel.ts'
 import { callRpc, type RpcCallOptions } from './rpc.ts'
 import { isMockRuntime } from '../runtime.ts'
 
@@ -54,19 +56,7 @@ export const setBuckyOSDevMode = async (
 ): RpcResult<BuckyOSDevConfig> =>
   callSettingsRpc<BuckyOSDevConfig>('system.dev_mode.set', { enabled }, options)
 
-export interface ZonePresentationFields {
-  display_name?: string | null
-  description?: string | null
-  icon?: string | null
-}
-
-/** `zone.presentation.get` (public): the administrator's settings and the ZoneDocument candidates. */
-export interface ZonePresentationResponse {
-  zone_did: string
-  hostname?: string | null
-  settings: ZonePresentationFields
-  document: ZonePresentationFields
-}
+export type { ZonePresentationFields, ZonePresentationResponse }
 
 /** A field left out is kept; `null` clears it back to the document / DID default. */
 export type ZonePresentationPatch = Partial<Record<keyof ZonePresentationFields, string | null>>
@@ -80,11 +70,8 @@ export const fetchZonePresentation = async (): Promise<{
     return callMockControlPanel<ZonePresentationResponse>('zone.presentation.get', {})
   }
   try {
-    // Signed-out pages (the login page) read it too, so no session token is attached.
-    const client = new buckyos.kRPCClient('/kapi/control-panel')
-    const result = await client.call('zone.presentation.get', {})
-    if (!result || typeof result !== 'object') throw new Error('Invalid zone.presentation.get response')
-    return { data: result as ZonePresentationResponse, error: null }
+    // Signed-out pages (the login page) read it too.
+    return { data: await readZonePresentation(publicChannel), error: null }
   } catch (error) {
     return { data: null, error }
   }

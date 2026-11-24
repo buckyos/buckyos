@@ -27,7 +27,7 @@
 | `file://` | 标准（RFC 8089）。host 段是 **device id**：`file://<device_id>/abs/path`；空 host 与 `localhost` 按 §3 解释。 |
 | `cyfs://` | 我们的扩展。路径型 `cyfs://<zone>/<path>` 表示传统文件系统视角下的 CYFS 逻辑路径；ObjId 型 `cyfs://<objid>[.<zone>]/<innerpath>` 表示内容寻址的 NamedObject。 |
 | `obj://` | 我们的扩展，表示 Agent 所见的 DID Object 世界。运行在 BuckyOS 上的信息都可以用 obj:// 表达（最大兼容），但 host 段只允许 §4 规定的两类值。 |
-| `buckyos://` | 我们的扩展，用来拉起 current zone / buckyos app 的特定流程。 |
+| `buckyos://` | 我们的扩展，用来拉起 BuckyOS 客户端的特定流程。语法只有一份，在 BuckyOSApp 仓库的 [《外部调用协议》](https://github.com/buckyos/BuckyOSApp/blob/main/doc/BuckyOS外部调用协议设计.md)：host 是 action，打开应用写成 `buckyos://app.open?v=1&zone=<zone 主机>&app=<app_id>&path=…&window=…`。它不是资源地址：应用页面的规范地址是它的 https 地址（见下文的稳定 URL）。 |
 
 ## 3. `file://`：设备文件
 

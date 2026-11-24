@@ -8,14 +8,16 @@
 //!   of the mailbox index (`UI_DATAMODEL.md` §1.4a activity ordering).
 
 use crate::msg_center::MessageCenter;
+use crate::notify_apps::InstalledApp;
 use crate::owner_session_db::{DeleteWatermark, VisibleSessionIndexEntry, MEMORY_MODE_KEY};
 use crate::zone_agent::{
     account_owns_agent, find_zone_agent_spec, load_agent_settings, AgentLocationHints,
 };
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, token_auth_method, token_session_ceiling,
-    validate_verify_hub_token_claims, AccessDenial, AgentSpec, AuthMethod, DenyReason,
+    get_buckyos_api_runtime, token_auth_method, token_session_ceiling, user_app_spec_key,
+    validate_verify_hub_token_claims, AccessDenial, AgentSpec, AppAvailabilityResolver,
+    AppInstanceId, AuthMethod, DenyReason,
     MailboxAddress, MailboxKind, MailboxRecord, MsgCenterCreateSessionReq, OwnerSessionState,
     SessionCeiling, SessionLifecycle, SessionListLifecycleFilter, SessionListOrder, SessionMemoryMode,
     SessionMessagePage, SessionScope, SessionSummary, SessionSummaryPage, SsoSettings,
@@ -199,6 +201,43 @@ pub trait SessionTokenVerifier: Send + Sync {
             .await?
             .load_user_groups()
             .await
+    }
+
+    /// The installation of an App as it is now; `None` when there is none.
+    async fn installed_app(
+        &self,
+        id: &AppInstanceId,
+    ) -> std::result::Result<Option<InstalledApp>, RPCErrors> {
+        let client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        client
+            .invalidate_cache(&user_app_spec_key(id.owner_user_id(), id.app_id()))
+            .await;
+        match AppAvailabilityResolver::new(client)
+            .resolve_installation(id)
+            .await
+        {
+            Ok(installation) => Ok(Some(InstalledApp::from_spec(&installation.spec))),
+            Err(RPCErrors::KeyNotExist(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The installations `user_id` can use.
+    async fn installed_apps(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<Vec<InstalledApp>, RPCErrors> {
+        let client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        Ok(AppAvailabilityResolver::new(client)
+            .list_user_installations(user_id)
+            .await?
+            .iter()
+            .map(|(installation, _)| InstalledApp::from_spec(&installation.spec))
+            .collect())
     }
 }
 
@@ -592,6 +631,20 @@ impl SessionTokenVerifier for RequestScopedVerifier {
 
     async fn user_groups(&self) -> std::result::Result<UserGroupDirectory, RPCErrors> {
         self.0.user_groups().await
+    }
+
+    async fn installed_app(
+        &self,
+        id: &AppInstanceId,
+    ) -> std::result::Result<Option<InstalledApp>, RPCErrors> {
+        self.0.installed_app(id).await
+    }
+
+    async fn installed_apps(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<Vec<InstalledApp>, RPCErrors> {
+        self.0.installed_apps(user_id).await
     }
 }
 
