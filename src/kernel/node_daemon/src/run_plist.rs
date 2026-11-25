@@ -173,6 +173,13 @@ pub fn run_plist_path() -> PathBuf {
     }
 }
 
+/// When the last round of any node_daemon on this node ended.
+pub fn last_run_plist_update() -> Option<u64> {
+    read_run_plist(&run_plist_path())
+        .ok()
+        .map(|plist| plist.updated_at)
+}
+
 pub fn update_run_item(
     item_name: &str,
     item_kind: &str,

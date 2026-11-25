@@ -255,10 +255,7 @@ function PreparedList({ onOpen, opening, principal }: { onOpen: (workspaceId: st
   return (
     <div className="aiws-home-prepared" data-testid="aiws-prepared-list">
       <div className="aiws-warning" role="status">
-        {t('aiworkspace.core.list.preparedStatus', {
-          network: navigator.onLine === false ? t('aiworkspace.core.list.browserOffline') : t('aiworkspace.core.list.backendUnreachable'),
-          prepared: prepared.length > 0 ? t('aiworkspace.core.list.preparedHint') : t('aiworkspace.core.list.noneOffline'),
-        })}
+        {t(prepared.length > 0 ? 'aiworkspace.core.list.preparedHint' : 'aiworkspace.core.list.noneOffline')}
       </div>
       <div className="aiws-home-grid">
         {prepared.map((hint) => <PreparedCard key={hint.workspace_id} hint={hint} opening={opening === hint.workspace_id} onOpen={() => onOpen(hint.workspace_id)} />)}

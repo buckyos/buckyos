@@ -10,6 +10,7 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react'
+import { onZoneRecovered } from '../api/zone_link'
 import { dictionaries, localeDictionary } from './dictionaries'
 import { browserLocale, matchSupportedLocale, type SupportedLocale } from '../../../../apps/shared/locale'
 import { savedLocale, saveLocale, showTextLocale, subscribeLocalePreference } from './language'
@@ -76,8 +77,8 @@ export function I18nProvider({ children, locale: fixed, initialLocale }: PropsWi
       } else show(preferredLocale)
     }
     load()
-    window.addEventListener('online', load)
-    return () => { current = false; window.removeEventListener('online', load) }
+    const stopRecovered = onZoneRecovered(load)
+    return () => { current = false; stopRecovered() }
   }, [preferredLocale])
 
   const setLocale = useCallback((next: SupportedLocale) => {

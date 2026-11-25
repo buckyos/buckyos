@@ -15,6 +15,10 @@ pub const VERIFY_HUB_UNIQUE_ID: &str = "verify-hub";
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
 pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60 * 10; //10 minutes
 pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
+/// Refresh token: long-lived, used to obtain new token pairs.
+pub const REFRESH_TOKEN_EXPIRE_SECONDS: u64 = 7 * 24 * 3600;
+/// How long a runtime asks again for the answer to a refresh it lost; Verify Hub keeps answering longer.
+pub const REFRESH_RECOVERY_SECONDS: u64 = 30;
 
 pub fn generate_service_login_assertion(
     subject_id: &str,

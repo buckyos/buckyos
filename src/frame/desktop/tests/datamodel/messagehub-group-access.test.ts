@@ -44,10 +44,15 @@ async function fixture(hosted: boolean, run: (store: MessageHubApiStore, backend
     release: () => { const pending = waiting; waiting = []; pending.forEach(resolve => resolve()) },
     notify: () => {},
   }
-  const saved = { getCurrentIdentity: buckyos.getCurrentIdentity, getAccountInfo: buckyos.getAccountInfo, getServiceRpcClient: buckyos.getServiceRpcClient, subscribeKEvent: buckyos.subscribeKEvent }
+  const saved = { getCurrentIdentity: buckyos.getCurrentIdentity, getAccountInfo: buckyos.getAccountInfo, getServiceRpcClient: buckyos.getServiceRpcClient, createEventReader: buckyos.createEventReader }
   buckyos.getCurrentIdentity = async () => ({ kind: 'anonymous' })
   buckyos.getAccountInfo = async () => ({ user_id: 'me', user_name: 'Me', session_token: 'test-only' })
-  buckyos.subscribeKEvent = (async (_patterns: unknown, callback: () => void) => { backend.notify = callback; subscribed = true; return { close: async () => {} } }) as unknown as typeof buckyos.subscribeKEvent
+  buckyos.createEventReader = (async () => {
+    let hint: (event: unknown) => void = () => {}
+    backend.notify = () => hint({ eventid: 'changed' })
+    subscribed = true
+    return { pullEvent: () => new Promise(resolve => { hint = resolve }), close: async () => {} }
+  }) as unknown as typeof buckyos.createEventReader
   Object.assign(globalThis, { window: globalThis })
   buckyos.getServiceRpcClient = (() => ({
     call: async (method: string, input: Record<string, unknown>) => {

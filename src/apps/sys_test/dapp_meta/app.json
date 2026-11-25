@@ -2,7 +2,7 @@
   "schema_version": 1,
   "did": "did:bns:buckyos-systest.buckyos",
   "name": "buckyos-systest",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "owner": "did:bns:buckyos",
   "author": "did:bns:buckyos",
   "show_name": "BuckyOS System Test",

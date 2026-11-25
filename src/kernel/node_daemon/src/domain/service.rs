@@ -29,7 +29,7 @@ use tokio::sync::watch;
 
 use super::check::{
     caa, certificate, delegation, entry, ownership, CheckContext, CheckItem, CheckReport,
-    DomainBinding, ItemStatus,
+    DomainBinding, ItemStatus, OFFLINE,
 };
 use super::dns::{
     addresses, ask_all, caa_report, existing_records, find_hosting, own_values, CaaReport, Hosting,
@@ -841,6 +841,16 @@ impl DomainService {
         })
     }
 
+    /// A public resolver answers, whatever it says. Without one nothing can be
+    /// told about a domain. A network that hijacks DNS is offline too: the
+    /// resolvers are asked over HTTPS.
+    pub async fn online(&self) -> bool {
+        self.lookup
+            .public(&self.names.name_server(), RecordType::A)
+            .await
+            .is_ok()
+    }
+
     pub async fn check(
         &self,
         setup: &DomainSetup,
@@ -853,14 +863,19 @@ impl DomainService {
         let pkx = match self.pkx(&setup.owner_name).await {
             Ok(pkx) => pkx,
             Err(error) if error.code == "bns_unavailable" => {
-                return Ok(unreachable_report(setup, &error.detail))
+                return Ok(unreachable_report(setup, "lookup_failed", &error.detail))
             }
             Err(error) => return Err(error),
         };
         let hosting = match self.hosting(&setup.domain).await {
             Ok(hosting) => hosting,
             Err(error) if error.code == "dns_lookup_failed" => {
-                return Ok(unreachable_report(setup, &error.detail))
+                let code = if self.online().await {
+                    "lookup_failed"
+                } else {
+                    OFFLINE
+                };
+                return Ok(unreachable_report(setup, code, &error.detail));
             }
             Err(error) => return Err(error),
         };
@@ -1323,7 +1338,7 @@ pub fn remove_other_credentials(security_root: &Path, keep: Option<&str>) {
     }
 }
 
-fn unreachable_report(setup: &DomainSetup, detail: &str) -> CheckReport {
+fn unreachable_report(setup: &DomainSetup, code: &str, detail: &str) -> CheckReport {
     let sn_mode = setup.mode == DomainHostingMode::Sn;
     let items = [
         ("ownership", true),
@@ -1335,7 +1350,7 @@ fn unreachable_report(setup: &DomainSetup, detail: &str) -> CheckReport {
     ]
     .into_iter()
     .filter(|(_, applies)| *applies)
-    .map(|(id, _)| CheckItem::waiting(id, "lookup_failed").detail(detail))
+    .map(|(id, _)| CheckItem::waiting(id, code).detail(detail))
     .collect();
     CheckReport::new(items, None, buckyos_get_unix_timestamp())
 }
@@ -1798,6 +1813,23 @@ mod tests {
             .iter()
             .filter(|item| item.id != "certificate")
             .all(|item| item.code.as_deref() == Some("lookup_failed")));
+        assert!(!report.is_offline(), "only these servers are unreachable");
+    }
+
+    #[tokio::test]
+    async fn an_offline_node_says_so_and_judges_nothing() {
+        let world = world();
+        let setup = setup(DomainHostingMode::Manual, NetId::Wan, &["203.0.113.7"]);
+        let binding = FakeBinding::default();
+        world.dns.offline.store(true, Ordering::Relaxed);
+        let report = check(&world, &setup, Some(&binding), None, None).await;
+        assert!(report.is_offline());
+        assert!(!report.ready);
+        assert!(report
+            .items
+            .iter()
+            .all(|item| state(&report, item.id)
+                == (ItemStatus::Waiting, Some("offline".to_string()))));
     }
 
     #[tokio::test]

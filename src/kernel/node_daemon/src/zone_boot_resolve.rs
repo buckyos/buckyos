@@ -5,6 +5,8 @@
 //  - First Boot：resolve 失败或结果不可接受 => Boot Failed（§8.1）；
 //  - Warm Restart：失败 / 不可平滑演进 => 忽略新结果，
 //    用 Last Known Good State 继续启动（§8.2 / §9 / §10）；
+//  - 唯一 OOD 的 Warm Restart 不等 resolve，直接用 Last Known Good State 启动，
+//    启动后在后台 resolve，接受的结果用于下一次启动（§8.3）；
 //  - Boot 永不在线 resolve Owner Document，Root Trust 只来自
 //    node_identity（§12 / §13），更新 Owner Document 必须走维护流程（§15）。
 //
@@ -28,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use buckyos_api::LocalNodeIdentityConfig;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use name_client::{
-    resolve_did, DnsProvider, LockOptions, ResolveOpts, Revision, Source, SourceRef,
-    GLOBAL_NAME_CLIENT,
+    resolve_did_ex, select_or_error, DnsProvider, LockOptions, ResolveOpts, Revision, Source,
+    SourceRef, GLOBAL_NAME_CLIENT,
 };
 use name_lib::{
     DIDDocumentTrait, DidDocType, EncodedDocument, OwnerDocument, ZoneBootDocument, ZoneDocument,
@@ -42,6 +44,10 @@ const ZONE_LKGS_SCHEMA: &str = "buckyos.zone_lkgs.v1";
 // 单步发现超时：web well-known 在 zone 未启动时是 TCP 层黑洞，必须有上限，
 // 否则 First Boot 会卡在权威源探测上。
 const DISCOVER_STEP_TIMEOUT_SECS: u64 = 10;
+// 后台刷新：运行时间越长，下一次启动用的 Last Known Good State 越不能是启动时的旧文档。
+const ZONE_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const ZONE_REFRESH_RETRY_BASE: Duration = Duration::from_secs(30);
+const ZONE_REFRESH_RETRY_MAX: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootMode {
@@ -442,14 +448,17 @@ async fn discover_zone_boot_from_dns(
 async fn discover_zone_document(
     node_identity: &LocalNodeIdentityConfig,
     owner_public_key: &DecodingKey,
+    opts: ResolveOpts,
 ) -> Result<ZoneDocument, String> {
     let zone_did = &node_identity.zone_did;
     let mut failures: Vec<String> = Vec::new();
 
-    match discover_step(
-        "resolve_did(zone)",
-        resolve_did(zone_did, Some(DidDocType::Zone)),
-    )
+    let current = Revision::current();
+    match discover_step("resolve_did(zone)", async {
+        let result =
+            resolve_did_ex(zone_did, Some(DidDocType::Zone), current.clone(), opts).await?;
+        select_or_error(&result, &current)
+    })
     .await
     .and_then(|doc| decode_signed_zone_document(&doc, node_identity, owner_public_key))
     {
@@ -512,13 +521,123 @@ pub async fn boot_resolve_zone_document(
         node_identity.zone_did.to_string()
     );
 
-    let candidate = discover_zone_document(node_identity, &owner_public_key).await;
-    let accepted = accept_zone_document(etc_dir.as_path(), node_identity, last_known, candidate)?;
+    let accepted = match last_known {
+        Some(state) if is_only_ood(&state.zone_document, &node_identity.device_name) => {
+            info!(
+                "warm restart: boot with last known good state (accepted_at={}, iat={}), refresh it in the background",
+                state.accepted_at,
+                state.zone_document.iat
+            );
+            spawn_zone_document_refresh(
+                node_identity.clone(),
+                owner_public_key,
+                state.zone_document.clone(),
+            );
+            state.zone_document
+        }
+        last_known => {
+            let candidate =
+                discover_zone_document(node_identity, &owner_public_key, default_resolve_opts())
+                    .await;
+            accept_zone_document(etc_dir.as_path(), node_identity, last_known, candidate)?
+        }
+    };
 
     // Accept 之后写入 did cache：让本进程（及 runtime 各组件）后续 resolve
     // 当前 zone 的 did 时有确定回答。cache 只是投影，Accept 决策不依赖它。
     update_zone_document_cache(&accepted).await;
     Ok(accepted)
+}
+
+fn default_resolve_opts() -> ResolveOpts {
+    GLOBAL_NAME_CLIENT
+        .get()
+        .map(|client| client.default_resolve_opts())
+        .unwrap_or_default()
+}
+
+// 唯一的 OOD 启动时不依赖任何别的设备；其它角色和多 OOD 要靠 Zone Document 里
+// 当前的 OOD 列表才能进入 Zone，仍然先 resolve。
+fn is_only_ood(zone_document: &ZoneDocument, device_name: &str) -> bool {
+    let mut oods = zone_document
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood());
+    oods.next().is_some_and(|ood| ood.name == device_name) && oods.next().is_none()
+}
+
+// 本节点已经在应答自己的 Zone（zone locker），did cache 里是启动时投影的文档，
+// 都不能当作新结果，所以绕开它们。
+fn spawn_zone_document_refresh(
+    node_identity: LocalNodeIdentityConfig,
+    owner_public_key: DecodingKey,
+    booted: ZoneDocument,
+) {
+    tokio::spawn(async move {
+        let mut failures = 0u32;
+        loop {
+            let opts = default_resolve_opts()
+                .without_zone_lock()
+                .without_local_cache();
+            let wait =
+                match discover_zone_document(&node_identity, &owner_public_key, opts).await {
+                    Ok(candidate) => {
+                        failures = 0;
+                        refresh_last_known_zone_state(
+                            get_buckyos_system_etc_dir().as_path(),
+                            &node_identity,
+                            &booted,
+                            candidate,
+                        );
+                        ZONE_REFRESH_INTERVAL
+                    }
+                    Err(err) => {
+                        let wait = ZONE_REFRESH_RETRY_BASE
+                            .saturating_mul(1 << failures.min(16))
+                            .min(ZONE_REFRESH_RETRY_MAX);
+                        failures += 1;
+                        info!(
+                            "refresh zone document failed ({}), keep last known good state, retry in {}s",
+                            err,
+                            wait.as_secs()
+                        );
+                        wait
+                    }
+                };
+            tokio::time::sleep(wait).await;
+        }
+    });
+}
+
+// 与启动时同一套 Accept 决策；只改 LKGS，运行中的系统继续用启动时的文档。
+fn refresh_last_known_zone_state(
+    etc_dir: &Path,
+    node_identity: &LocalNodeIdentityConfig,
+    booted: &ZoneDocument,
+    candidate: ZoneDocument,
+) {
+    let last_known = load_last_known_zone_state_in(etc_dir, node_identity);
+    match accept_zone_document(etc_dir, node_identity, last_known, Ok(candidate)) {
+        Ok(accepted) if accepted != *booted => warn!(
+            "zone document changed while running: iat {} -> {}, oods {:?} -> {:?}, sn {:?} -> {:?}. This node keeps running with the one it booted with; the new one is used from the next start",
+            booted.iat,
+            accepted.iat,
+            ood_names(booted),
+            ood_names(&accepted),
+            booted.sn,
+            accepted.sn
+        ),
+        Ok(_) => {}
+        Err(err) => warn!("refresh zone document: {}", err),
+    }
+}
+
+fn ood_names(zone_document: &ZoneDocument) -> Vec<&str> {
+    zone_document
+        .oods
+        .iter()
+        .map(|ood| ood.name.as_str())
+        .collect()
 }
 
 fn accept_zone_document(
@@ -948,5 +1067,48 @@ MC4CAQAwBQYDK2VwBCIEIBwApVoYjauZFuKMBRe02wKlKm2B6a1F0/WIPMqDaw5F
         std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
         replace_last_known_zone_state_in(etc_dir, &make_zone_document(400, &["ood1"]));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_document_found_while_running_is_for_the_next_start() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let etc_dir = tmp_dir.path();
+        let node_identity = LocalNodeIdentityConfig::new(
+            DID::new("web", "test.buckyos.io"),
+            DID::new("bns", "testowner"),
+            test_jwk(),
+            "ood1".to_string(),
+            DID::new("web", "ood1.test.buckyos.io"),
+            0,
+        );
+        let booted = make_zone_document(100, &["ood1"]);
+        replace_last_known_zone_state_in(etc_dir, &booted);
+        let refresh = |candidate| {
+            refresh_last_known_zone_state(etc_dir, &node_identity, &booted, candidate);
+            boot_without_network(etc_dir, &node_identity).unwrap()
+        };
+        assert_eq!(refresh(booted.clone()), booted);
+        let moved = make_zone_document(200, &["ood1@wan_dyn"]);
+        assert_eq!(refresh(moved.clone()), moved);
+        for refused in [
+            make_zone_document(150, &["ood1"]),
+            make_zone_document(200, &["ood1"]),
+            make_zone_document(300, &["ood1", "ood2", "ood3"]),
+            make_zone_document(300, &["ood2"]),
+            make_zone_document(300, &[]),
+        ] {
+            assert_eq!(refresh(refused), moved);
+        }
+    }
+
+    #[test]
+    fn only_the_single_ood_boots_before_it_resolves() {
+        let single = make_zone_document(100, &["ood1", "#gateway"]);
+        assert!(is_only_ood(&single, "ood1"));
+        assert!(!is_only_ood(&single, "gateway"));
+        assert!(!is_only_ood(&single, "laptop"));
+        let cluster = make_zone_document(100, &["ood1", "ood2", "ood3"]);
+        assert!(!is_only_ood(&cluster, "ood1"));
+        assert!(!is_only_ood(&make_zone_document(100, &[]), "ood1"));
     }
 }

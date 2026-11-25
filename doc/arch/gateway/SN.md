@@ -165,7 +165,7 @@ SN 的应答规则没有改，由激活发布的文档决定：
 - SN 作为 RTCP relay 节点，OOD 通过 `keep_tunnel: [<relay_sn>]` 与实际分配的 relay 长连接；
 - 激活完成远端发布和设备登记后，`node-active` 立即用账号 access token 调用 `SnClient::get_zone_info()`，把完整响应保存到 `$BUCKYOS_ROOT/etc/sn_zone_info.json`；
 - node-daemon 重启后的第一份 boot gateway 配置直接读取该文件：`relay_sn` 非空时使用它，为 `null` 时使用 `ZoneBootConfig.sn` 自身作为 relay，因此首次启动 cyfs-gateway 就能指向有效 relay，而不再调用旧的 `get_real_sn_host_name()` HTTP 探测；
-- 进入运行态后，node-daemon 用设备私钥生成的短期 device token 立即刷新一次，此后每小时刷新；`relay_sn` 改变会改变 keep-tunnel 配置并走现有的 cyfs-gateway restart 路径；刷新失败时继续使用上次成功保存的值；
+- 进入运行态后，node-daemon 用设备私钥生成的短期 device token 立即刷新一次，此后每小时刷新；刷新和在线态上报都在主循环之外的后台任务里，同一时间各只有一个，失败退避（刷新 15 秒到 5 分钟，上报 30 秒到 2 分钟），本机 IP 变化时从头退避；`relay_sn` 改变会改变 keep-tunnel 配置并走现有的 cyfs-gateway restart 路径；刷新失败时继续使用上次成功保存的值；
 - SN 上的 relay 可能基于自己的策略限制访问（例如只允许 OOD↔OOD 中转，不开放给任意第三方），具体策略由 SN 运营方决定。
 
 ### 7. P2P 打洞辅助（rudp call/called）

@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -93,6 +94,7 @@ copyFileSync(
 const denoConfig = JSON.parse(readFileSync(join(rootDir, "deno.json"), "utf8"));
 denoConfig.imports["@sys-test/websdk-node-types"] =
   "./node_modules/buckyos/dist/node.mjs";
+denoConfig.vendor = true;
 writeFileSync(
   join(distDir, "deno.json"),
   `${JSON.stringify(denoConfig, null, 2)}\n`,
@@ -110,4 +112,18 @@ for (const path of runtimeFiles) {
   const target = join(sdkTargetDir, "dist", path);
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(join(sdkRoot, path), target);
+}
+execFileSync("deno", ["cache", "main.ts"], { cwd: distDir, stdio: "inherit" });
+const jsrDir = join(distDir, "vendor", "jsr.io");
+for (const file of existsSync(jsrDir) ? readdirSync(jsrDir, { recursive: true }) : []) {
+  const module = file.match(/^(.+)_meta\.json$/)?.[1];
+  if (!module) continue;
+  const { manifest } = JSON.parse(readFileSync(join(jsrDir, file), "utf8"));
+  if (!manifest["/LICENSE"]) continue;
+  const url = `https://jsr.io/${module.replaceAll(sep, "/")}/LICENSE`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`license of a vendored module: ${url}: ${response.status}`);
+  }
+  writeFileSync(join(jsrDir, module, "LICENSE"), await response.text());
 }

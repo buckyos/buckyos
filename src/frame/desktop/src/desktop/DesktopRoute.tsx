@@ -37,6 +37,7 @@ import type { Swiper as SwiperInstance } from 'swiper'
 import { Pagination } from 'swiper/modules'
 import { Swiper, SwiperSlide } from 'swiper/react'
 import { globalSettingsStore } from '../app/settings/data/store'
+import { useZoneReachable } from '../api/useZoneReachable'
 import { findDesktopAppById } from '../app/registry'
 import type { DesktopAppItem } from '../app/types'
 import {
@@ -211,22 +212,8 @@ function useGridSpec(
   return { cols, rows, rowHeight }
 }
 
-function useConnectionState(runtimeContainer: string): ConnectionState {
-  const [isNavigatorOnline, setIsNavigatorOnline] = useState(() => navigator.onLine)
-
-  useEffect(() => {
-    const handleOnline = () => setIsNavigatorOnline(true)
-    const handleOffline = () => setIsNavigatorOnline(false)
-    window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
-    return () => {
-      window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
-    }
-  }, [])
-
-  if (!isNavigatorOnline) return 'offline'
-  return runtimeContainer === 'browser' ? 'degraded' : 'online'
+function useConnectionState(): ConnectionState {
+  return useZoneReachable() ? 'online' : 'offline'
 }
 
 function nextSupportedLocale(locale: SupportedLocale) {
@@ -474,7 +461,7 @@ export function DesktopRoute() {
 
   const isLoading = status === 'loading'
   const hasError = status === 'error'
-  const connectionState = useConnectionState(runtimeContainer)
+  const connectionState = useConnectionState()
 
   const resolvedDeadZone = isMobile ? store.getResolvedDeadZone() : zeroDeadZone
   const safeArea = useSafeAreaInsets()

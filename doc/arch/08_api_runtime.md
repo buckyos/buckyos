@@ -29,11 +29,11 @@ notepads 给出的分层在代码里对应为：优先兼容，逐步提速（`n
 
 1) 公网/通用：`https://$zone_host/kapi/<service_name>`
 - 典型场景：AppClient 未显式配置 NodeGateway。
-- 代码路径：`src/kernel/buckyos-api/src/runtime.rs` 的 `BuckyOSRuntime::get_zone_service_url()`，`BuckyOSRuntimeType::AppClient` 在 `BUCKYOS_HOST_GATEWAY` 缺失、为空或只有空白时返回 `https?://{zone_id.to_host_name()}/kapi/<service>`。`get_system_config_url()` 使用相同规则，不根据设备是否为 OOD 推断当前进程的网络路径。
+- 代码路径：`src/kernel/buckyos-api/src/runtime.rs` 的 `BuckyOSRuntime::get_zone_service_url()`，`BuckyOSRuntimeType::AppClient` 在 `BUCKYOS_HOST_GATEWAY` 缺失、为空或只有空白，且本机不是这个 Zone 的节点时返回 `https?://{zone_id.to_host_name()}/kapi/<service>`。`get_system_config_url()` 使用相同规则，不根据 `BUCKYOS_THIS_DEVICE` 推断当前进程的网络路径。
 
 2) 最大兼容：`http://127.0.0.1:3180/kapi/<service_name>`（NodeGateway）
 - 典型场景：AppService 运行在节点上，本机一定有 cyfs-gateway / NodeGateway。
-- AppClient 显式设置 `BUCKYOS_HOST_GATEWAY` 时，通过该 host 的 NodeGateway 访问 system-config 和其它 kRPC 服务；容器内可以继承 node-daemon 注入的网关地址，宿主机可设置为 `127.0.0.1`。
+- AppClient 显式设置 `BUCKYOS_HOST_GATEWAY` 时，通过该 host 的 NodeGateway 访问 system-config 和其它 kRPC 服务；容器内可以继承 node-daemon 注入的网关地址。没有设置、而 `$BUCKYOS_ROOT/etc/node_identity.json` 的 Zone 就是 runtime 的 Zone 时，默认用 `127.0.0.1`，断网也能访问。
 - 常量锚点：`DEFAULT_NODE_GATEWAY_PORT: u16 = 3180`（`src/kernel/buckyos-api/src/runtime.rs`）。
 - 运行时字段：`BuckyOSRuntime.node_gateway_port`（默认为 3180，可被配置覆盖）。
 
@@ -125,6 +125,8 @@ get_zone_service_url(service):
   if runtime_type == AppClient:
     if BUCKYOS_HOST_GATEWAY is nonempty after trimming:
       return http://<resolved_host_gateway>:<node_gateway_port>/kapi/<service>
+    if this host is a node of the runtime's Zone (node_identity.json):
+      return http://127.0.0.1:<node_gateway_port>/kapi/<service>
     return https?://<zone_host>/kapi/<service>
 
   if runtime_type in {AppService, FrameService}:
@@ -202,7 +204,8 @@ process_main():
 - `renew_token_from_verify_hub()`：
   - 非 Verify Hub issuer 的启动材料是一次性 LoginAssertion，只能在明确的 exchange 路径调用 `login_by_jwt`。
   - Verify Hub session/refresh token 都携带严格 `token_use + AuthTarget`；普通本地 session verifier 会拒绝 LoginAssertion 和 refresh token。
-  - 已取得 token pair 后，正常续签只用 refresh token 调用 `refresh_token`；若 refresh material 缺失，可以重新生成一份新的 LoginAssertion 走 exchange，但绝不能把 session token 重新提交到 `login_by_jwt`。
+  - 已取得 token pair 后，正常续签只用 refresh token 调用 `refresh_token`；refresh 缺失或被拒时，只有本节点的服务（Kernel / KernelService / FrameService）会用设备私钥生成新的 LoginAssertion 走 exchange；App 停在终止状态，由 node-daemon 重建。绝不能把 session token 重新提交到 `login_by_jwt`。
+  - 会话已过期时（例如休眠超过 15 分钟）读不到 system-config，verify-hub 的地址改用 NodeGateway 的 `/kapi/verify-hub`，不依赖服务发现。
   - 触发点是 keep-alive 定时任务（`login()` 启动的 5s timer）。
   - 代码路径：`src/kernel/buckyos-api/src/runtime.rs`。
 

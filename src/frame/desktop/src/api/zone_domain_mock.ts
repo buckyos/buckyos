@@ -232,6 +232,12 @@ function statusOf(state: MockDomainState): DomainStatus {
 function handle(state: MockDomainState, method: string, params: Record<string, unknown>): unknown {
   if (mockCurrentAccount()?.user_id !== mockZoneOwner()) fail('not_owner')
   if (method === 'status') return statusOf(state)
+  if (method === 'restart_certificate') {
+    const cert = state.certificates.find((item) => item.host === params.host)
+    if (!cert?.acme) fail('certificate_not_automatic')
+    cert.acme = { ...cert.acme, state: cert.loaded ? 'renewing' : 'ordering', next_retry_at: null }
+    return statusOf(state)
+  }
   if (!state.hosting) fail('default_hostname')
   const hosting = state.hosting
   switch (method) {

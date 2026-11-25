@@ -139,7 +139,7 @@ apps:
       stop.ps1: bin/stop.ps1
       stop_osx.sh: bin/stop_osx.sh
       desktop: bin/control-panel/web/
-      buckyos_systest: data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg
+      buckyos_systest: data/cache/buckyos-systest.buckyos.bns.did-0.5.2.pikg
       text_editor: data/cache/text-editor.buckyos.bns.did-0.1.0.pikg
       jarvis_agent: data/cache/jarvis.buckyos.bns.did-0.7.0.pikg
       paios_images: bin/paios-images/

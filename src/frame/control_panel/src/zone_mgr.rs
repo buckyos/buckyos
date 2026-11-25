@@ -379,7 +379,7 @@ impl ControlPanelServer {
         record_type: &str,
     ) -> Result<Vec<String>, String> {
         let mut cmd = external_command("dig");
-        cmd.arg("+short");
+        cmd.args(["+short", "+time=3", "+tries=1"]);
 
         if let Some(server) = server
             .map(|item| item.trim())
@@ -414,7 +414,7 @@ impl ControlPanelServer {
         let records = String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(|line| line.trim().to_string())
-            .filter(|line| !line.is_empty())
+            .filter(|line| !line.is_empty() && !line.starts_with(';'))
             .collect::<Vec<String>>();
 
         Ok(records)
@@ -650,11 +650,10 @@ impl ControlPanelServer {
             notes.push("SN host cannot be parsed from sn.url".to_string());
         } else {
             match Self::query_dig_short_records(None, sn_host.as_str(), "A") {
-                Ok(records) => {
-                    if let Some(first_ip) = records.first() {
-                        sn_ip = first_ip.to_string();
-                    }
-                }
+                Ok(records) => match records.first() {
+                    Some(first_ip) => sn_ip = first_ip.to_string(),
+                    None => dig_errors.push(format!("SN host {} has no address", sn_host)),
+                },
                 Err(err) => {
                     dig_available = !err.contains("dig command not found");
                     dig_errors.push(format!("resolve SN host A failed: {}", err));
@@ -663,15 +662,9 @@ impl ControlPanelServer {
         }
 
         if !zone_domain.is_empty() && dig_available {
-            let dns_server = if !sn_ip.is_empty() {
-                Some(sn_ip.as_str())
-            } else if !sn_host.is_empty() {
-                Some(sn_host.as_str())
-            } else {
-                None
-            };
-
-            if let Some(server) = dns_server {
+            // An SN that is not found (no Internet access) tells nothing about the domain.
+            if !sn_ip.is_empty() {
+                let server = sn_ip.as_str();
                 match Self::query_dig_short_records(Some(server), zone_domain.as_str(), "A") {
                     Ok(records) => {
                         sn_dns_a_records = records;

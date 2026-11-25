@@ -6,7 +6,7 @@ use ::kRPC::{RPCErrors, RPCSessionToken};
 use buckyos_api::{
     bind_token_auth_method, bind_token_ceiling, bind_token_external, AuthMethod, AuthTarget,
     SessionCeiling, SessionScope, SessionSource, TokenPrincipalKind, UserType,
-    TOKEN_SRC_APP_CLAIM, TOKEN_SRC_DEVICE_CLAIM,
+    REFRESH_RECOVERY_SECONDS, TOKEN_SRC_APP_CLAIM, TOKEN_SRC_DEVICE_CLAIM,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
@@ -15,8 +15,9 @@ use std::path::Path;
 use std::sync::Mutex;
 
 /// The rotated-away refresh token is still answered with the current pair for this long,
-/// so pages of one host refreshing over the same cookie at once do not revoke their family.
-pub const REFRESH_GRACE_SECONDS: u64 = 10;
+/// so pages of one host refreshing over the same cookie at once do not revoke their family,
+/// and a runtime that lost an answer may ask again.
+pub const REFRESH_GRACE_SECONDS: u64 = REFRESH_RECOVERY_SECONDS + 5;
 
 const SCHEMA: &str = include_str!("families.sql");
 

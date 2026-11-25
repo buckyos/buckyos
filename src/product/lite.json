@@ -11,7 +11,7 @@
     {
       "app_did": "did:bns:buckyos-systest.buckyos",
       "owner": "did:bns:buckyos",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "script_package": "all.script.buckyos-systest.buckyos.bns.did",
       "interpreter": "deno",
       "entry": "main.ts",

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { CheckCheck, ChevronRight, House, X, ImagePlay, LogIn, MessageSquare, MessageSquarePlus, PanelLeftClose, SquarePen, Users } from 'lucide-react'
 import './messagehub.css'
+import { useZoneReachable } from '../../api/useZoneReachable'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
 import { ForwardMessageForm } from './ForwardDialog'
@@ -144,19 +145,6 @@ function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessage
   </div>
 }
 
-const subscribeNetwork = (listener: () => void) => {
-  window.addEventListener('online', listener)
-  window.addEventListener('offline', listener)
-  return () => {
-    window.removeEventListener('online', listener)
-    window.removeEventListener('offline', listener)
-  }
-}
-
-function useNetworkOnline() {
-  return useSyncExternalStore(subscribeNetwork, () => navigator.onLine)
-}
-
 /** The signed-in user's own name and picture, or the observed owner's. */
 function useHubIdentity(context: MessageHubContext): HubIdentity {
   const store = useMessageHubStore()
@@ -177,7 +165,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const systemDialog = useSystemDialog()
   const mediaHost = useMessageMediaHost()
   const identity = useHubIdentity(context)
-  const networkOnline = useNetworkOnline()
+  const zoneReachable = useZoneReachable()
   useMessageHubRuntime()
   // Without an explicit entity the most recent one opens (pinned first), which
   // is what the mock route did with the CodeAssistant seed.
@@ -655,14 +643,14 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     }
   }
   const moreItems: HeaderMenuItem[] = [
-    ...(canManage ? [{ key: 'mark-all-read', label: t(markingAllRead ? 'messagehub.header.markingAllRead' : 'messagehub.header.markAllRead'), icon: <CheckCheck size={16} />, onSelect: () => { void markAllRead() }, disabled: markingAllRead || !networkOnline || (!store.hasMoreEntities(context) && !store.sessions(context).some(session => session.unreadCount > 0)), testId: 'mark-all-read' }] : []),
+    ...(canManage ? [{ key: 'mark-all-read', label: t(markingAllRead ? 'messagehub.header.markingAllRead' : 'messagehub.header.markAllRead'), icon: <CheckCheck size={16} />, onSelect: () => { void markAllRead() }, disabled: markingAllRead || (!store.hasMoreEntities(context) && !store.sessions(context).some(session => session.unreadCount > 0)), testId: 'mark-all-read' }] : []),
     ...(onHome ? [{ key: 'home', label: t('messagehub.home', 'Back to desktop'), icon: <House size={16} />, onSelect: onHome, testId: 'messagehub-home' }] : []),
     ...(mediaHost ? [{ key: 'media', label: t('messagehub.media.settings', 'Media settings'), icon: <ImagePlay size={16} />, onSelect: () => mediaHost.openSettings(), testId: 'media-settings' }] : []),
     ...(isDesktop ? [{ key: 'collapse', label: t('messagehub.collapseEntityList', 'Collapse entity list'), icon: <PanelLeftClose size={16} />, onSelect: handleCollapseEntityList, testId: 'collapse-entity-list' }] : []),
   ]
   const ownerStatus = store.ownerStatus(context)
   const refreshing = ownerStatus.phase === 'ready' && ownerStatus.refreshing
-  const syncStatus = !networkOnline ? t('messagehub.sync.offline') : refreshing ? t('states.loading') : store.syncStatus(context) === 'connecting' ? t('messagehub.sync.connecting') : undefined
+  const syncStatus = !zoneReachable ? t('messagehub.sync.offline') : refreshing ? t('states.loading') : store.syncStatus(context) === 'connecting' ? t('messagehub.sync.connecting') : undefined
   const entityListHeader = {
     identity, syncStatus, createItems, moreItems,
     onEntityPreferences: canManage ? updateEntityPreferences : undefined,

@@ -37,8 +37,6 @@ use federation::{
 const SESSION_TOKEN_EXPIRE_SECONDS: u64 = 15 * 60; // 15 minutes
 const SUDO_SESSION_TOKEN_EXPIRE_SECONDS: u64 = 3 * 60;
 const SUDO_SESSION_TOKEN_MAX_EXPIRE_SECONDS: u64 = 30 * 60;
-// Refresh token: long-lived, used to obtain new token pairs
-const REFRESH_TOKEN_EXPIRE_SECONDS: u64 = 7 * 24 * 3600; // 7 days
 const MAX_LOGIN_NONCE_AGE_SECONDS: u64 = 3600 * 8; // 8 hours
 const FAMILY_GC_INTERVAL_SECONDS: u64 = 60;
 /// Resolving the canonical zone and exchanging the code; a slower peer reads
@@ -428,30 +426,15 @@ async fn verify_delegation_source(source_session_token: &str) -> Result<Option<D
     }))
 }
 
-/// Non-user principals still stand: a device still has its config, an agent its AgentDID key.
-async fn validate_service_principal(
-    subject: &str,
-    principal_kind: SessionPrincipalKind,
-) -> Result<()> {
-    match principal_kind {
-        SessionPrincipalKind::Device => {
-            let control_panel_client = ControlPanelClient::new(get_system_config_client().await?);
-            control_panel_client.get_device_config(subject).await?;
-            Ok(())
-        }
-        SessionPrincipalKind::Agent => {
-            let trusted = load_trust_public_key_from_source(subject).await?;
-            if trusted.issuer_kind != TrustedIssuerKind::Agent {
-                return Err(RPCErrors::InvalidToken(
-                    "agent token subject is not an AgentDID".to_string(),
-                ));
-            }
-            Ok(())
-        }
-        SessionPrincipalKind::User | SessionPrincipalKind::System | SessionPrincipalKind::App => {
-            Ok(())
-        }
+/// The agent still has its AgentDID key.
+async fn validate_agent_principal(subject: &str) -> Result<()> {
+    let trusted = load_trust_public_key_from_source(subject).await?;
+    if trusted.issuer_kind != TrustedIssuerKind::Agent {
+        return Err(RPCErrors::InvalidToken(
+            "agent token subject is not an AgentDID".to_string(),
+        ));
     }
+    Ok(())
 }
 
 async fn check_app_principal_target(subject: &str, target: &AuthTarget) -> Result<()> {
@@ -1210,12 +1193,14 @@ impl VerifyHubServer {
                         .await?;
                 }
             }
-            principal_kind => {
-                validate_service_principal(&session.subject, principal_kind).await?;
-                if principal_kind == SessionPrincipalKind::App {
-                    check_app_principal_target(&session.subject, &session.target).await?;
-                }
+            SessionPrincipalKind::Device => {
+                self.require_registered_device(&session.subject).await?
             }
+            SessionPrincipalKind::Agent => validate_agent_principal(&session.subject).await?,
+            SessionPrincipalKind::App => {
+                check_app_principal_target(&session.subject, &session.target).await?
+            }
+            SessionPrincipalKind::System => {}
         }
         match &family.source {
             Some(SessionSource::ResourceShare { invite_id, did }) => {
@@ -1242,6 +1227,17 @@ impl VerifyHubServer {
             _ => {}
         }
         Ok(claims)
+    }
+
+    /// Devices log in again by themselves: one the Zone removed is refused
+    /// although its key is still cached here.
+    async fn require_registered_device(&self, device: &str) -> Result<()> {
+        if self.state.zone.device_registered(device).await? {
+            return Ok(());
+        }
+        Err(AccessDenial::new(DenyReason::AccountState)
+            .with_detail("device_not_registered")
+            .into_rpc_error())
     }
 
     async fn require_active_invite(&self, invite_id: &str) -> Result<()> {
@@ -1477,8 +1473,10 @@ impl VerifyHubApiHandler for VerifyHubServer {
         } else {
             target.clone()
         };
-        if principal_kind == SessionPrincipalKind::App {
-            check_app_principal_target(&userid, &target).await?;
+        match principal_kind {
+            SessionPrincipalKind::App => check_app_principal_target(&userid, &target).await?,
+            SessionPrincipalKind::Device => self.require_registered_device(&userid).await?,
+            _ => {}
         }
 
         // ============================================================
@@ -2849,6 +2847,7 @@ mod test {
         app_logins: HashSet<String>,
         oauth_bindings: HashMap<(String, String), String>,
         resource_grants: HashSet<(String,String,String)>,
+        removed_devices: HashSet<String>,
     }
 
     struct MemoryDirectory(std::sync::Mutex<DirectoryData>);
@@ -2941,6 +2940,10 @@ mod test {
 
         async fn list_users(&self) -> Result<Vec<String>> {
             Ok(self.data().users.keys().cloned().collect())
+        }
+
+        async fn device_registered(&self, device: &str) -> Result<bool> {
+            Ok(!self.data().removed_devices.contains(device))
         }
 
         async fn exclusive_invite(&self, invite_id: &str) -> Result<Option<ExclusiveInvite>> {
@@ -3293,6 +3296,133 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         assert_eq!(
             token_principal_kind(&refresh_token).unwrap(),
             SessionPrincipalKind::Device
+        );
+    }
+
+    /// The scheduler of node `ood1` (the device key of `setup_test_environment`),
+    /// with a pair issued at `issued`, and the hub it talks to over HTTP.
+    async fn service_of_this_node(
+        issued: u64,
+    ) -> (
+        BuckyOSRuntime,
+        Arc<MemoryDirectory>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let device_key = setup_test_environment().await;
+        let (hub, zone) = test_hub();
+        let login = generate_service_login_assertion("ood1", "scheduler", "ood1", &device_key);
+        let pair = hub
+            .handle_login_by_jwt(&login.unwrap().0, &system_target("scheduler"))
+            .await
+            .unwrap();
+        let family = hub
+            .families()
+            .get(&session_key_of(&pair.session_token))
+            .unwrap()
+            .unwrap();
+        let pair = sign_pair(&family.session, &fresh_stamp(issued, None))
+            .await
+            .unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let runner = Runner::with_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+        runner
+            .add_http_server("/kapi/verify-hub".to_string(), Arc::new(hub))
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let _ = runner.run().await;
+        });
+
+        let mut runtime =
+            BuckyOSRuntime::new("scheduler", None, BuckyOSRuntimeType::KernelService);
+        runtime.node_gateway_port = port;
+        runtime.device_config = Some(DeviceDocument::new(
+            "ood1",
+            "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
+        ));
+        runtime.device_private_key = Some(device_key);
+        *runtime.session_token.write().await = pair.session_token;
+        *runtime.refresh_token.write().await = pair.refresh_token;
+        (runtime, zone, server)
+    }
+
+    /// The machine slept past its tokens: the hub refuses the refresh token,
+    /// and the service of this node is let in with the device key.
+    #[tokio::test]
+    async fn a_service_of_this_node_returns_after_its_refresh_token_expired() {
+        let slept = buckyos_get_unix_timestamp() - 8 * 24 * 3600;
+        let (runtime, _, server) = service_of_this_node(slept).await;
+        let refused = test_server()
+            .handle_refresh_token(&runtime.refresh_token.read().await)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&refused),
+            Some((
+                DenyReason::CredentialState,
+                Some("refresh_token_expired".to_string())
+            ))
+        );
+
+        runtime.renew_token_from_verify_hub().await.unwrap();
+        let session = decoded(&runtime.get_session_token().await);
+        assert_eq!(session.sub.as_deref(), Some("ood1"));
+        assert!(session.exp.unwrap() > buckyos_get_unix_timestamp());
+        assert_eq!(
+            token_principal_kind(&session).unwrap(),
+            SessionPrincipalKind::Device
+        );
+        assert_eq!(
+            runtime.get_authentication_status().await.state,
+            RuntimeAuthState::Ready
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_removed_device_does_not_log_in_again() {
+        let slept = buckyos_get_unix_timestamp() - 8 * 24 * 3600;
+        let (runtime, zone, server) = service_of_this_node(slept).await;
+        zone.data().removed_devices.insert("ood1".to_string());
+        let error = runtime.renew_token_from_verify_hub().await.unwrap_err();
+        let removed = Some((
+            DenyReason::AccountState,
+            Some("device_not_registered".to_string()),
+        ));
+        assert_eq!(denial_reason(&error), removed);
+        let status = runtime.get_authentication_status().await;
+        assert_eq!(status.state, RuntimeAuthState::ReauthorizationRequired);
+        assert!(status.next_retry_time.is_some());
+        assert!(runtime.get_session_token().await.is_empty());
+        server.abort();
+
+        // Its running session ends with the next refresh.
+        let device_key = setup_test_environment().await;
+        let (hub, zone) = test_hub();
+        let login = generate_service_login_assertion("ood1", "scheduler", "ood1", &device_key);
+        let pair = hub
+            .handle_login_by_jwt(&login.unwrap().0, &system_target("scheduler"))
+            .await
+            .unwrap();
+        zone.data().removed_devices.insert("ood1".to_string());
+        let error = hub
+            .handle_refresh_token(&pair.refresh_token)
+            .await
+            .unwrap_err();
+        assert_eq!(denial_reason(&error), removed);
+        zone.data().removed_devices.clear();
+        let error = hub
+            .handle_refresh_token(&pair.refresh_token)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::CredentialState,
+                Some("refresh_session_invalidated".to_string())
+            ))
         );
     }
 

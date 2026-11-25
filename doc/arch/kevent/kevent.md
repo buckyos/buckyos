@@ -662,6 +662,7 @@ POST /kapi/kevent/stream
 - `ack` 对应 reader 创建成功
 - `event` 对应 native `pull_event` 返回了一个 Event
 - `keepalive` 对应 native `pull_event` 超时但连接继续保持
+- TypeScript 的 HTTP reader 连续 3 个 keepalive 周期没收到任何数据就关闭这条 stream，由订阅者重连；按周期计数，页面冻结后恢复不会误关
 - 断开连接等价于 `unregister_reader`
 
 因此浏览器侧只需要维护一个长连接，不需要自己管理三段式 reader 生命周期。

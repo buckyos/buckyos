@@ -40,7 +40,7 @@ function useConnection() {
   const status = useSessionStatus()
   const sessionMode = store.session.mode()
   const readOnlyDirect = sessionMode.kind === 'direct' && sessionMode.reason !== 'not_prepared' && status.kind === 'offline'
-  const cause = status.kind === 'offline' && status.browserOffline ? t('aiworkspace.shell.conn.browserOffline') : t('aiworkspace.shell.conn.serverUnreachable')
+  const cause = status.kind === 'offline' && status.zoneUnreachable ? t('aiworkspace.shell.conn.zoneUnreachable') : t('aiworkspace.shell.conn.serverUnreachable')
   const text = status.kind === 'live' ? t('aiworkspace.shell.conn.live')
     : status.kind === 'connecting' ? t('aiworkspace.shell.conn.connecting')
       : status.kind === 'stopped' ? t('aiworkspace.shell.conn.stopped')
@@ -64,7 +64,7 @@ function StatusSummary({ ref, open, onToggle }: { ref: Ref<HTMLButtonElement>; o
   return (
     <button ref={ref} type="button" className={`aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-expanded={open} aria-controls="aiws-status-panel" aria-label={t('aiworkspace.shell.status.label')}
       title={t(open ? 'aiworkspace.framework.status.collapse' : 'aiworkspace.framework.status.expand')} data-testid="aiws-status" onClick={onToggle}>
-      <span className={`aiws-conn aiws-conn-${status.kind}`} data-testid="aiws-conn" data-status={status.kind} data-browser-offline={status.kind === 'offline' ? String(status.browserOffline) : undefined} title={text}>
+      <span className={`aiws-conn aiws-conn-${status.kind}`} data-testid="aiws-conn" data-status={status.kind} data-zone-unreachable={status.kind === 'offline' ? String(status.zoneUnreachable) : undefined} title={text}>
         <span className="aiws-dot" aria-hidden="true" />{status.kind !== 'live' && <span>{text}</span>}
       </span>
       <span className="aiws-chip aiws-chip-warn" hidden={!modeWarning} data-testid="aiws-mode" data-mode={sessionMode.kind}

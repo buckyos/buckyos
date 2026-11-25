@@ -64,11 +64,11 @@ test('V15 prepare offline, cut the network, edit, close, cold start offline, rec
   expect(await page.evaluate(() => window.crossOriginIsolated)).toBe(false)
   const headBefore = await api.headSeq(ALICE, ws.workspace_id)
 
-  // ---- the network goes away for real: connection refused for the page, the Worker and the service worker; the browser reports offline too
+  // ---- the Zone goes away for real: connection refused for the page, the Worker and the service worker; the browser reports no network either
   await net.down()
   await context.setOffline(true)
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'offline', { timeout: 40_000 })
-  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-browser-offline', 'true')
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-zone-unreachable', 'true')
 
   // ---- edit a table cell and type into the rich text
   const cell = await editCell(page, 'task-40', '负责人', 'owner', '离线改的负责人')
@@ -141,7 +141,7 @@ test('opening the app offline without anything prepared says so; it is not a bla
   await cold.getByTestId('desktop-app-aiworkspace').click()
   await backToList(cold)
   await expect(cold.getByTestId('aiws-list-error')).toBeVisible({ timeout: 30_000 })
-  await expect(cold.getByTestId('aiws-prepared-list')).toContainText('浏览器网络在线，但连接不到 BuckyOS 后台')
+  await expect(cold.getByTestId('aiws-list-error')).toContainText('Zone 连不上')
   await expect(cold.getByTestId('aiws-prepared-list')).toContainText('本设备上没有准备过离线的工作区')
 })
 
@@ -151,7 +151,7 @@ test('V15 application resources missing from the cache: a clear state instead of
   await serviceWorkerReady(page)
   await net.down()
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'offline', { timeout: 40_000 })
-  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-browser-offline', 'false') // the browser has a network, BuckyOS is unreachable
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-zone-unreachable', 'true') // whatever the browser says of its network
   const cell = await editCell(page, 'task-40', '负责人', 'owner', '资源丢失前的输入')
   await expect(cell).toHaveAttribute('data-state', 'saved_locally')
   // the browser evicts one cached application file (here: the Replica Worker's script)

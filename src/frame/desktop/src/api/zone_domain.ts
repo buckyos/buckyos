@@ -27,7 +27,8 @@ export interface HostCertStatus {
   fingerprint: string | null
   manager: 'acme' | 'manual' | null
   acme: {
-    state: 'none' | 'ordering' | 'ready' | 'renewing' | 'manual'
+    /** `stopped`: refused too often, so it is not requested until somebody asks. */
+    state: 'none' | 'ordering' | 'ready' | 'renewing' | 'manual' | 'stopped'
     last_error: { message: string; at: TimeValue } | null
     next_retry_at: TimeValue
   } | null
@@ -171,6 +172,10 @@ export const fetchDomainStatus = () => callDomain<DomainStatus>('status')
 export const fetchDnsProviders = () => callDomain<{ providers: DnsProvider[] }>('providers')
 
 export const checkDomain = (options: RpcCallOptions) => callDomain<DomainCheck>('check', {}, options)
+
+/** Requests the certificate of a host again now. */
+export const restartCertificate = (host: string, options: RpcCallOptions) =>
+  callDomain<DomainStatus>('restart_certificate', { host }, options)
 
 export const inspectDomainCertificate = (params: { files: string[]; pfx_password?: string }, options: RpcCallOptions) =>
   callDomain<InspectResult>('inspect_certificate', params, options)

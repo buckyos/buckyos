@@ -107,7 +107,7 @@ aios entrypoint 派生或兼容变量：
 | `OPENDAN_SESSION_ID` | AgentTool runner | AgentTool runtime context | 当前 agent session id。 |
 | `OPENDAN_TRACE_ID` | AgentTool runner | AgentTool runtime context | 可选 trace id。 |
 
-Rust AppClient 的网络路径独立于设备角色和 token 来源：`BUCKYOS_HOST_GATEWAY` 缺失、为空或只有空白时，system-config 和其它 kRPC 服务都走 Zone host，协议由 runtime 的 HTTPS 策略决定。该变量非空时，复用 app/frame service 的宿主机地址解析逻辑，通过 HTTP 访问 NodeGateway；网关端口取 `BuckyOSRuntime.node_gateway_port`，默认 `3180`。容器内 AppClient 子进程应继承 `BUCKYOS_HOST_GATEWAY` 和 `BUCKYOS_THIS_DEVICE`，不需要删除设备文档。宿主机 AppClient 需要本机路径时显式设置 `BUCKYOS_HOST_GATEWAY=127.0.0.1`。
+Rust AppClient 的网络路径独立于设备角色和 token 来源：`BUCKYOS_HOST_GATEWAY` 缺失、为空或只有空白时，`$BUCKYOS_ROOT/etc/node_identity.json` 的 Zone 就是 runtime 的 Zone 则走本机 `127.0.0.1` 的 NodeGateway，否则 system-config 和其它 kRPC 服务都走 Zone host，协议由 runtime 的 HTTPS 策略决定。该变量非空时，复用 app/frame service 的宿主机地址解析逻辑，通过 HTTP 访问 NodeGateway；网关端口取 `BuckyOSRuntime.node_gateway_port`，默认 `3180`。容器内 AppClient 子进程应继承 `BUCKYOS_HOST_GATEWAY` 和 `BUCKYOS_THIS_DEVICE`，不需要删除设备文档。
 
 AgentTool 新实现目标是只依赖 `OPENDAN_AGENT_ROOT`、`OPENDAN_SESSION_ID`、`BUCKYOS_APPCLIENT_SESSION_TOKEN` 和可选 `OPENDAN_TRACE_ID`；其它 `OPENDAN_*` 应从 Agent RootFS、session state 或 BuckyOS runtime 推导。
 

@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { createTaskWatchSource, type TaskWatchSource } from '../../../api/task_mgr'
+import { onZoneRecovered } from '../../../api/zone_link'
 import { MockTaskSource } from '../mock/tasks'
 import { isMockRuntime } from '../../../runtime'
 import { TaskWatch, type TaskChildren, type TaskEvents, type TaskSnapshot } from './taskWatch'
@@ -23,7 +24,7 @@ export function getTaskWatch(): TaskWatch {
   const watch = new TaskWatch(tasks)
   instance = watch
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => watch.resync())
+    onZoneRecovered(() => watch.resync())
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') watch.resync() })
     if (import.meta.env.DEV) Object.assign(window, { __messageHubTaskWatch: watch, ...(tasks instanceof MockTaskSource ? { __messageHubMockTasks: tasks } : {}) })
   }

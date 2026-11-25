@@ -20,7 +20,7 @@ import { initialOf } from '../presentation/model'
 import { useDesktopUIStore } from '../models/DesktopUIDataModel'
 import { ObjectImage } from '../presentation/ObjectIcon'
 import type { TaskbarAppItem } from '../models/ui'
-import { connectionLabel, connectionTone, type ConnectionState } from './shell'
+import { connectionTone, sessionLabel, type ConnectionState } from './shell'
 import type { CurrentUser, SystemStatusState, useHoverCard } from './taskbarHooks'
 
 type TranslateFn = ReturnType<typeof useI18n>['t']
@@ -304,7 +304,7 @@ export function ProfileCard({
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="size-1.5 shrink-0 self-center rounded-full" style={{ background: connectionTone(connectionState) }} />
             <span className="truncate">
-              {t(`runtime.${runtimeContainer}`, runtimeContainer)} · {connectionLabel(connectionState, t)}
+              {sessionLabel(runtimeContainer, connectionState, t)}
             </span>
           </span>
         </div>
@@ -397,7 +397,7 @@ function formatUptime(seconds: number, t: TranslateFn) {
   return t('shell.status.uptimeMinutes', '{{minutes}}m', { minutes })
 }
 
-/** The taskbar's two status lines: CPU and memory, or the connection when there is no reading. */
+/** The taskbar's two status lines: CPU and memory, or the connection when the Zone is out of reach or there is no reading. */
 export function SystemStatusLines({
   connectionState,
   status,
@@ -407,20 +407,25 @@ export function SystemStatusLines({
 }) {
   const { t, locale } = useI18n()
   const { metrics } = status
-  const lines: Array<{ label: string; value: string; level: StatusLevel }> = metrics
+  const lines: Array<{ label: string; value: string; level: StatusLevel }> = connectionState === 'offline'
     ? [
-        { label: t('shell.status.cpu', 'CPU'), value: formatPercent(metrics.cpu.usagePercent, locale), level: usageLevel(metrics.cpu.usagePercent) },
-        { label: t('shell.status.memoryShort', 'MEM'), value: formatPercent(metrics.memory.usagePercent, locale), level: usageLevel(metrics.memory.usagePercent) },
+        { label: 'Zone', value: '', level: 'critical' },
+        { label: t('shell.status.unreachable', 'offline'), value: '', level: 'normal' },
       ]
-    : status.failed
+    : metrics
       ? [
-          { label: connectionLabel(connectionState, t), value: '', level: 'normal' },
-          { label: t('shell.status.noData', 'No data'), value: '', level: 'normal' },
+          { label: t('shell.status.cpu', 'CPU'), value: formatPercent(metrics.cpu.usagePercent, locale), level: usageLevel(metrics.cpu.usagePercent) },
+          { label: t('shell.status.memoryShort', 'MEM'), value: formatPercent(metrics.memory.usagePercent, locale), level: usageLevel(metrics.memory.usagePercent) },
         ]
-      : [
-          { label: t('shell.status.cpu', 'CPU'), value: '--', level: 'normal' },
-          { label: t('shell.status.memoryShort', 'MEM'), value: '--', level: 'normal' },
-        ]
+      : status.failed
+        ? [
+            { label: 'Zone', value: '', level: 'normal' },
+            { label: t('shell.status.noData', 'No data'), value: '', level: 'normal' },
+          ]
+        : [
+            { label: t('shell.status.cpu', 'CPU'), value: '--', level: 'normal' },
+            { label: t('shell.status.memoryShort', 'MEM'), value: '--', level: 'normal' },
+          ]
 
   return (
     <span className="flex w-full flex-col items-center text-[10px] leading-[13px] tabular-nums">
@@ -633,7 +638,7 @@ export function SystemStatusCard({
         <div className={rowClassName}>
           <span className="text-[color:var(--cp-muted)]">{t('shell.session', 'Session')}</span>
           <span>
-            {t(`runtime.${runtimeContainer}`, runtimeContainer)} · {connectionLabel(connectionState, t)}
+            {sessionLabel(runtimeContainer, connectionState, t)}
           </span>
         </div>
       </div>

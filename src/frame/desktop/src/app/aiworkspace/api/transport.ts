@@ -23,7 +23,7 @@
  * as a kRPC failure with `code: access_denied`; TransportError carries its denial. `{"restricted":true}` in the dev
  * override stands for such a session against the standalone backend. */
 
-import { accessDenialOf, bucket, buckyos, parseAccessDenial, ACCESS_DENIED_ERROR_CODE, type AccessDenial } from 'buckyos'
+import { accessDenialOf, bucket, buckyos, parseAccessDenial, ACCESS_DENIED_ERROR_CODE, RPCError, type AccessDenial } from 'buckyos'
 import { bucketObjectUrl } from '../../../components/preview/bucketSource'
 import { isMockRuntime } from '../../../runtime'
 import { aiwsT } from '../i18n'
@@ -379,7 +379,8 @@ export function resolveTransport(): TransportAvailability {
 function sdkFailure(error: unknown): TransportError {
   const message = error instanceof Error ? error.message : String(error)
   const denial = accessDenialOf(error)
-  return new TransportError(denial || !/fetch|network|timeout|abort/i.test(message) ? 'protocol' : 'network', message, denial)
+  const network = error instanceof RPCError ? error.code === 'transport' : /fetch|network|timeout|abort/i.test(message)
+  return new TransportError(network && !denial ? 'network' : 'protocol', message, denial)
 }
 
 /** kRPC to an Agent's own service (`/kapi/<agent_id>`) with the page's session: the owner's sync tasks (AI Native 余下任务

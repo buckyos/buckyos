@@ -1,4 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
+import { onZoneRecovered } from '../../../api/zone_link'
 import { mockWorkCardsSource, mockWorkCards } from '../mock/worksessions'
 import { isMockRuntime } from '../../../runtime'
 import { ChoiceMemory, getTaskWatchSource, useRememberedChoice } from '../tasks'
@@ -14,7 +15,7 @@ export function getWorkCardsWatch(): WorkCardsWatch {
   const watch = new WorkCardsWatch(mock ? mockWorkCardsSource : workCardsSource, getTaskWatchSource())
   instance = watch
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => watch.resync())
+    onZoneRecovered(() => watch.resync())
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') watch.resync() })
     if (import.meta.env.DEV) Object.assign(window, { __messageHubWorkCards: watch, ...(mock ? { __messageHubMockWorkCards: mockWorkCards } : {}) })
   }

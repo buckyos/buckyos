@@ -28,8 +28,8 @@ export type SessionStatus =
   | { kind: 'connecting' }
   | { kind: 'live' }
   /** The backend cannot be reached right now; the follower keeps retrying.
-   * `browserOffline`: the browser itself reports no network (as opposed to "network up, BuckyOS unreachable"). */
-  | { kind: 'offline'; detail: string; browserOffline: boolean }
+   * `zoneUnreachable`: nothing in the Zone answered (as opposed to "the Zone answers, the service does not"). */
+  | { kind: 'offline'; detail: string; zoneUnreachable: boolean }
   /** Synchronisation stopped for good (history replaced, access lost…): nothing is sent any more. */
   | { kind: 'stopped'; code: string; detail: string }
 
@@ -307,10 +307,6 @@ export function refusedVersion(code: string | undefined, detail: string | undefi
   return code === 'UNSUPPORTED_VERSION' && /protocol_version/.test(detail ?? '')
 }
 
-export function browserOffline(): boolean {
-  return typeof navigator !== 'undefined' && navigator.onLine === false
-}
-
 /** A session that follows the change stream itself and lends this one its position (the replica session). */
 export interface SessionHost {
   poke(): void
@@ -441,7 +437,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   private setStatus(status: SessionStatus) {
     if (this.currentStatus.kind === 'stopped') return
     const previous = this.currentStatus
-    const same = previous.kind === status.kind && (status.kind !== 'offline' || (previous.kind === 'offline' && previous.detail === status.detail && previous.browserOffline === status.browserOffline))
+    const same = previous.kind === status.kind && (status.kind !== 'offline' || (previous.kind === 'offline' && previous.detail === status.detail && previous.zoneUnreachable === status.zoneUnreachable))
     this.currentStatus = status
     if (!same) this.statusListeners.forEach((listener) => listener())
     if (status.kind === 'stopped') {
@@ -489,7 +485,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
       } catch (error) {
         if (this.closed || this.isStopped()) break
         if (!(error instanceof TransportError)) throw error
-        this.setStatus({ kind: 'offline', detail: error.message, browserOffline: browserOffline() })
+        this.setStatus({ kind: 'offline', detail: error.message, zoneUnreachable: error.kind === 'network' })
         await sleep(backoff)
         backoff = Math.min(backoff * 2, 8000)
       }
@@ -993,6 +989,6 @@ export function runErrorText(error: (ServiceError & { data?: unknown; missing_in
 
 export function describeError(error: unknown): string {
   if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? wishRunCodeText(error.subCode, error.data) ?? wishRunCodeText(error.code, error.data) ?? errorCodeText(error.code, error.data) ?? error.message
-  if (error instanceof TransportError) return aiwsT(browserOffline() ? 'aiworkspace.core.session.cannotConnectOffline' : 'aiworkspace.core.session.cannotConnect', { error: error.message })
+  if (error instanceof TransportError) return aiwsT(error.kind === 'network' ? 'aiworkspace.core.session.zoneUnreachable' : 'aiworkspace.core.session.cannotConnect', { error: error.message })
   return error instanceof Error ? error.message : String(error)
 }

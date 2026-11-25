@@ -3,6 +3,7 @@
 import { buckyos, objectUrl } from 'buckyos'
 import type { MsgCenterClient } from 'buckyos'
 import { fetchUserDetail } from '../../api/user_mgr'
+import { onZoneRecovered, subscribeZoneEvents } from '../../api/zone_link'
 import { GROUP_INVITATION_INTENT } from './relation'
 import type {
   GroupDocInfo,
@@ -303,13 +304,16 @@ export function createRealNetworkBackend(): NetworkBackend {
     rejectJoinRequest: async (request) => { await call<unknown>('group.reject_member', { group_did: request.groupDid, member_did: request.memberDid, idempotency_key: idempotencyKey() }) },
     subscribe: (listener) => {
       let stopped = false
-      let handle: { close(): Promise<void> } | null = null
-      const online = () => { listener('contacts'); listener('requests'); listener('mailbox'); listener('groups') }
-      window.addEventListener('online', online)
+      let stopEvents: (() => void) | null = null
+      const stopRecovered = onZoneRecovered(() => {
+        byMember = null
+        listener('contacts'); listener('requests'); listener('mailbox'); listener('groups')
+      })
       void ownerDid().then((did) => {
+        if (stopped) return
         const contacts = objectUrl.objEventKey('msg-center', ['owners', did, 'contacts'], 'changed')
         const sessions = objectUrl.objEventPattern('msg-center', ['owners', did, 'sessions'])
-        return buckyos.subscribeKEvent([contacts, sessions], (event) => {
+        stopEvents = subscribeZoneEvents([contacts, sessions], (event) => {
           if (stopped) return
           const id = String(event.eventid ?? '')
           const box = id.split('/').pop()
@@ -324,14 +328,11 @@ export function createRealNetworkBackend(): NetworkBackend {
           listener('mailbox')
           if (box === 'inbox') listener('groups')
         })
-      }).then((subscription) => {
-        if (stopped) void subscription.close()
-        else handle = subscription
       }).catch(() => { /* reloads on reconnect and on each action remain */ })
       return () => {
         stopped = true
-        window.removeEventListener('online', online)
-        if (handle) void handle.close()
+        stopRecovered()
+        stopEvents?.()
       }
     },
   }
