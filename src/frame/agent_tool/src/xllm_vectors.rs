@@ -1528,6 +1528,11 @@ async fn run_loop_case(c: LoopInput<'_>, behavior: Option<&BehaviorSetup>) -> Va
     };
     let outcome_json = outcome_summary(&outcome);
     let step = run_step(outcome, false, &[], &limits, &ProviderConfig::default());
+    if c.name == "refused_unsupported_operation" {
+        let RunStep::Error { error, .. } = &step else { panic!("expected unsupported-operation refusal") };
+        assert!(!error.recoverable);
+        assert_eq!(error.condition.as_deref(), Some("the selected model does not support the requested operation or parameters; change the parameters or explicitly select a suitable model before resuming"));
+    }
     let mut case = json!({
         "name": c.name,
         "source": c.source,
