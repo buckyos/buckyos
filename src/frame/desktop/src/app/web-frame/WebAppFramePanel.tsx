@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { buckyos, getRuntimeEnvironment } from 'buckyos'
-import { AppFrameHost } from 'buckyos/app-frame'
+import { appFrameName, AppFrameHost } from 'buckyos/app-frame'
 import { contentDescriptor, isOpenRequest, type OpenRequest } from 'buckyos/content'
 import { desktopUIStore, useDesktopRuntime } from '../../models/DesktopUIDataModel'
 import { useZoneAccent } from '../../desktop/appearance/accent'
@@ -44,11 +44,12 @@ export function WebAppFramePanel({ app, windowId, launch: requested, themeMode, 
     try {
       const url = new URL(path, origin)
       if (url.origin !== origin) return undefined
-      // The same page asked for again is another launch: the App may have moved on from it.
-      url.hash = `bfp=${nonce}${launch && !request ? `&launch=${launch.requestId}` : ''}`; return url.href
+      // Older Apps read the nonce from the fragment when their entry has none of its own.
+      if (!url.href.includes('#')) url.hash = `bfp=${nonce}`
+      return url.href
     } catch { return undefined }
   }, [origin, nonce, request, launch])
-  const appLaunch = useAppLaunch(app.appInstanceId ?? app.id, src)
+  const appLaunch = useAppLaunch(app.appInstanceId ?? app.id, src, `${nonce}/${launch?.requestId ?? ''}`)
   const frameUrl = appLaunch.outcome?.kind === 'ready' ? appLaunch.outcome.url : undefined
   const unopenable = !src || appLaunch.outcome?.kind === 'invalid_target'
   const systemDialog = useSystemDialog()
@@ -130,5 +131,5 @@ export function WebAppFramePanel({ app, windowId, launch: requested, themeMode, 
   })
   if (!src) return <p>{t('webFrame.unableToOpen', undefined, { app: title })}</p>
   if (!frameUrl) return <AppLaunchStatus outcome={appLaunch.outcome} title={title} onRetry={appLaunch.retry} />
-  return <iframe ref={iframe} className="block h-full w-full border-0" data-testid="web-app-frame" src={frameUrl} title={title} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(t('webFrame.unableToOpenWith', undefined, { app: title })); openPreview({ source: request.source, session: request.session }) } }} />
+  return <iframe ref={iframe} name={appFrameName(nonce)} className="block h-full w-full border-0" data-testid="web-app-frame" src={frameUrl} title={title} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(t('webFrame.unableToOpenWith', undefined, { app: title })); openPreview({ source: request.source, session: request.session }) } }} />
 }

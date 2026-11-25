@@ -444,7 +444,7 @@ interface OpenAppRequest {
 - 是否删除桌面 APPS（设计稿定为后续评估）。
 - 经 SN 的推送、FCM、APNs（Q9）。
 - kevent 流的鉴权，以及带鉴权的用户事件通道（Q8，owner 另行安排）。
-- iOS 的发布和通知（Q18：Android 跑顺并上架后再安排；本版本只保证工程能编译）。
+- iOS 的发布和系统通知（Q18：Android 跑顺并上架后再安排）。iOS 的内容容器已提前开发，见 [iOS 内容容器 TODO](buckyos-app-ios-container-todo.md)，说法不一致时听那一份的。
 - 用钥匙登录 Zone（Q2）。
 - 在目标 Zone 没有密码的账号进入客户端：联合登录得到的 External 身份、Google 登录的账号（Q22）。
 - 管理员给全 Zone 统一设主题色（Q23：主题色是每个用户自己设的）。
@@ -500,7 +500,7 @@ interface OpenAppRequest {
 | Q15 | 移动端 Message Hub 的 Tab、Home 里的图标、通知唤起是不是同一个实例 | 是同一个 | §3.6；C2 |
 | Q16 | 录音“统一采集再分发”做不做 | 按你的建议 | 先做 A4 的验证，再定 |
 | Q17 | 多个应用同时播放时要不要协调 | 按你的建议 | 第一版不协调 |
-| Q18 | iOS 是否进入本版本 | 按你的建议，android跑顺并上架后，我们才会安排ios版本 | §4 |
+| Q18 | iOS 是否进入本版本 | 按你的建议，android跑顺并上架后，我们才会安排ios版本 | §4。2026-11-24 的 IQ1 把开发提前（[iOS 内容容器 TODO](buckyos-app-ios-container-todo.md)），上架顺序不变 |
 | Q19 | 客户端要用的协议类型，是复用还是手写 | websdk里应该有可复用组件? | 核对结果在 §2.5：协议和数据层直接用 websdk；websdk 里没有界面组件。许可证放开以后，Desktop 的接口封装和 `buckyos-api` 也可以用 |
 | Q20 | Zone 主题色谁能设；Home Station / Activity 的偏好存在哪 | 系统外观配置 | §3.3、§3.8；Z9、U7。我对这句话的理解见 Q23 |
 | Q21 | 原 Apps 页（本机组件清单）的去留 | 先去掉吧。 | U8 |
@@ -778,7 +778,7 @@ Android 收尾时另外发现并修的：返回键到不了本地界面；标签
 - A6：Linux 上放不了（WebKitGTK 的媒体管线不认自定义协议），Linux 不在交付平台里。
 - U5：手机 Home 只有启动器，没有系统状态卡片。
 - `frame.beforeClose` 桌面等应用答复，超时当作同意；主页面 5 秒不接手就直接关。
-- U8：激活页在桌面和 Android 也不用 iframe 了，iframe 容器只剩 iOS 和开发环境的测试页。
+- U8：激活页不用 iframe 了（iOS 随内容容器一起改掉），iframe 容器只剩开发环境的测试页。
 - W5：`app.open` 带别的 Zone 时先问用户，视图不在前台直接拒绝。
 
 ### 11.5 实施中替 owner 选的（改起来都不大）
@@ -806,7 +806,7 @@ Android 收尾时另外发现并修的：返回键到不了本地界面；标签
 
 ### 11.7 没验证的
 
-真机（Android 厂商的后台限制、真机耗电、arm64）、审查修复后的 Android release 包在设备上运行、Android 上对真实 OOD 的完整激活（用的是本机假设备页）、下载重定向到 Zone 之外、Android 10 以下的下载位置、iOS（只有 `Unsupported` 的占位，本机编不了）、macOS 的正式签名与公证、Windows 安装包、Windows 11、手机配合盒子的完整路径（模拟器上只验了扫描和激活容器的代码路径）、AppDoc 声明了 `window` 的真实应用、`notify.list_apps` 之外的安装界面整条链、Safari / Firefox 上的新页面、大量工作区时 AI Workspace 每分钟扫描的开销。
+真机（Android 厂商的后台限制、真机耗电、arm64）、审查修复后的 Android release 包在设备上运行、Android 上对真实 OOD 的完整激活（用的是本机假设备页）、下载重定向到 Zone 之外、Android 10 以下的下载位置、iOS（当时只有 `Unsupported` 的占位；后来的实现和验证见 [iOS 内容容器 TODO](buckyos-app-ios-container-todo.md) §11）、macOS 的正式签名与公证、Windows 安装包、Windows 11、手机配合盒子的完整路径（模拟器上只验了扫描和激活容器的代码路径）、AppDoc 声明了 `window` 的真实应用、`notify.list_apps` 之外的安装界面整条链、Safari / Firefox 上的新页面、大量工作区时 AI Workspace 每分钟扫描的开销。
 
 ### 11.8 提交和发布顺序
 

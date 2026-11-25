@@ -57,10 +57,10 @@ function launchApp(key: string, appInstanceId: string, appUrl: string): Promise<
  * callback URL to navigate the iframe to. A new `appUrl` (re-navigation) prepares a new launch;
  * answers for an older one are dropped.
  */
-export function useAppLaunch(appInstanceId: string | undefined, appUrl: string | undefined) {
+export function useAppLaunch(appInstanceId: string | undefined, appUrl: string | undefined, launchKey = '') {
   const [attempt, setAttempt] = useState(0)
   const [settled, setSettled] = useState<{ key: string; outcome: AppLaunchOutcome }>()
-  const key = appInstanceId && appUrl ? `${attempt}\n${appInstanceId}\n${appUrl}` : undefined
+  const key = appInstanceId && appUrl ? `${attempt}\n${launchKey}\n${appInstanceId}\n${appUrl}` : undefined
   useEffect(() => {
     if (!key || !appInstanceId || !appUrl) return
     let live = true

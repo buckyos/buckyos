@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect, type Frame, type Page } from '@playwright/test'
-import { routeAppHost } from '../fixtures/desktop'
+import { routeAppHost, routeAppSdk } from '../fixtures/desktop'
 import { closeSelect, putZoneFile, selectGoto, selectRow } from '../fixtures/selectDialog'
 
 // The fixture App is fulfilled by Playwright (no address) and reaches the dev server on 127.0.0.1; see preview-embed.spec.ts.
@@ -14,8 +14,6 @@ test.use({ launchOptions: { args: ['--disable-features=LocalNetworkAccessChecks,
  * uses the SDK's `AppFrameClient.selectContent`, as any App would.
  */
 const SHELL = 'http://127.0.0.1:4173'
-// The fixture App ships the SDK build itself, as an App does.
-const SDK_DIST = join(realpathSync('node_modules/buckyos'), 'dist')
 const fixture = `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Picker fixture</title><textarea id="draft" style="width:300px;height:80px"></textarea><div style="height:3000px"></div>
 <script type="module">
   import { AppFrameClient } from '/sdk/app-frame.mjs'
@@ -38,7 +36,7 @@ const results = (app: Frame) => app.evaluate(() => (window as any).results)
 
 async function routeFixture(page: Page) {
   await routeAppHost(page, /http:\/\/(notes|reader)-fixture\.localhost:4173\//, fixture)
-  await page.route(/-fixture\.localhost:4173\/sdk\//, route => route.fulfill({ contentType: 'text/javascript', body: readFileSync(join(SDK_DIST, new URL(route.request().url()).pathname.split('/').pop()!)) }))
+  await routeAppSdk(page)
 }
 
 async function openInWindow(page: Page, query = '') {

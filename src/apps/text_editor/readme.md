@@ -331,7 +331,7 @@ Preview 首版已经完成，Preview PRD 中“首版不接入 `content_handlers
 | `window` | `"reuse"` \| `"new"`，缺省 `"new"` | `reuse`：Shell 优先把请求投递给该 Handler 最近聚焦、且已完成 App Frame 握手的窗口（由 App 自己开新标签）；`new`：每个请求一个窗口。用户显式“在新窗口中打开”时始终新建。 |
 | `multiSource` | bool | 是否接受一次打开多个 Source（File Browser 多选“打开方式”）。P0 Shell 对多选按顺序逐个投递 `frame.open`。 |
 
-**入口路径模板：** `entry.path` 相对 App 的 Web host，占位符按下表展开；Shell 另在 URL fragment 追加 `#bfp=<nonce>`（App Frame 握手用，fragment 不发往服务器）。
+**入口路径模板：** `entry.path` 相对 App 的 Web host，占位符按下表展开；Shell 通过 iframe 的 `name`（`buckyos.app-frame:<nonce>`）传入 App Frame 握手 nonce。应用自己的 fragment 会原样保留；入口没有指定 fragment 时，Shell 也提供 `#bfp=<nonce>` 供旧 SDK 读取。
 
 > App 的 Web 包由 gateway 的静态目录服务器直接按文件路径提供，**没有 SPA 回退**（`/open` 这类不存在的路径会得到 `404 Not found`）。因此 `entry.path` 的路径部分必须是包里真实存在的文件（通常就是 `/`，即 `index.html`），参数全部放在 query 里；编辑器的 `parseLaunch` 只看 query，不看路径。
 
@@ -482,7 +482,7 @@ interface AppFrameMessage<T extends string = string, P = unknown> {
 sequenceDiagram
   participant S as Shell（WebAppFrame）
   participant A as App（iframe）
-  S->>A: 加载 entry URL + #bfp=nonce
+  S->>A: 设置 iframe name，加载 entry URL
   A->>S: frame.hello {nonce, appCapabilities}
   Note over S: 校验 event.source、event.origin、nonce
   S->>A: frame.init {windowId, theme, locale, formFactor, launch?, shellCapabilities}
