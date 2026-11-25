@@ -3,12 +3,14 @@ import { T15_PROVIDER_DISCOVERY_CONTRACTS } from "./t15_mock_provider.ts";
 import {firstReusableResource} from "./payloads.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFinancialReport } from "./finance.ts";
+import { queryUsageEvents } from "./usage_audit.ts";
 import {
   type GatewaySession,
-  loginGateway,
+  loginRefreshingGateway,
   loginRefreshingSudoSystemConfig,
   openAiccArtifact,
   type RpcClient,
@@ -297,6 +299,8 @@ async function selectMock(
       contract_id: testCase.protocol_contract_id,
       api_type: testCase.api_type,
       scenario: testCase.mock_scenario,
+      billing_status: testCase.tags.includes("billing_fallback") ? 403 : undefined,
+      billing_download: testCase.tags.includes("billing_download"),
       selection_seed: `${selectionSeed ?? "t15"}:${testCase.case_id}`,
     }),
   });
@@ -709,7 +713,7 @@ async function refreshLogin(
   session: GatewaySession,
 ): Promise<GatewaySession> {
   if (!input.username || !input.password) return session;
-  return await loginGateway({
+  return await loginRefreshingGateway({
     gatewayUrl: input.gatewayUrl,
     username: input.username,
     password: input.password,
@@ -772,7 +776,9 @@ function resource(mime: string): Record<string, unknown> {
   return {
     kind: "base64",
     mime,
-    data_base64: Buffer.from("t15-fixture").toString("base64"),
+    data_base64: (mime === "audio/wav"
+      ? readFileSync(new URL("../fixtures/speech_8khz_stereo.wav", import.meta.url))
+      : Buffer.from("t15-fixture")).toString("base64"),
   };
 }
 
@@ -804,6 +810,8 @@ export function buildT15TypedParams(
         requestKey.endsWith(".sampling-forwarded");
       const providerSwitch = requestKey.endsWith(".provider-switch");
       const videoInput = requestKey.endsWith(".video-input");
+      const imageInput = requestKey.endsWith(".image-input");
+      const audioInput = requestKey.endsWith(".audio-input");
       const providerState = typedOptions.foreignProviderState;
       return {
         ...common,
@@ -943,18 +951,19 @@ export function buildT15TypedParams(
               content: [{ type: "text", text: "Return the marker now." }],
             },
           ]
-          : videoInput
+          : videoInput || audioInput || imageInput
           ? [{
             role: "user",
             content: [
-              { type: "text", text: "Describe the video." },
+              { type: "text", text: audioInput ? "Describe the audio." : imageInput ? "Describe the image." : "Describe the video." },
               {
                 type: "document",
-                source: {
+                source: typedOptions.sourceResource ?? {
                   kind: "url",
                   url: "https://example.test/media?id=4827",
-                  mime_hint: "video/mp4",
+                  mime_hint: audioInput ? "audio/wav" : imageInput ? "image/png" : "video/mp4",
                 },
+                ...(typedOptions.sourceResource ? {title:audioInput ? "audio.wav" : imageInput ? "image.png" : "video.mp4"} : {}),
               },
             ],
           }]
@@ -1426,6 +1435,33 @@ export function assertT15ResponseMapping(
       `typed ${apiType} response is missing mapped Provider usage`,
     );
   }
+  const expectedCost = contract.expected_cost_usd?.[apiType];
+  if (expectedCost !== undefined) {
+    const costs = (node: unknown): Record<string, unknown>[] => {
+      if (!node || typeof node !== "object") return [];
+      const object = node as Record<string, unknown>;
+      const direct = object.cost && typeof object.cost === "object" ? [object.cost as Record<string, unknown>] : [];
+      return [...direct, ...Object.values(object).flatMap(costs)];
+    };
+    if (!costs(value).some(cost => cost.currency === "USD" && typeof cost.amount === "number" && Math.abs(cost.amount-expectedCost)<1e-10)) {
+      throw new Error(`typed ${apiType} is missing expected cost ${expectedCost} USD`);
+    }
+  }
+  const expectedUsage = contract.expected_billable_usage?.[apiType];
+  if (expectedUsage) {
+    const usageObjects = (node: unknown): Record<string, unknown>[] => {
+      if (!node || typeof node !== "object") return [];
+      const object = node as Record<string, unknown>;
+      const direct = object.usage && typeof object.usage === "object" ? [object.usage as Record<string, unknown>] : [];
+      return [...direct, ...Object.values(object).flatMap(usageObjects)];
+    };
+    const observed = usageObjects(value);
+    for (const [field, expected] of Object.entries(expectedUsage)) {
+      if (!observed.some((usage) => typeof usage[field] === "number" && Math.abs(Number(usage[field])-expected) < 1e-9)) {
+        throw new Error(`typed ${apiType} is missing billable usage ${field}=${expected}`);
+      }
+    }
+  }
   if (
     contract.async_protocol &&
     !hasMappedField(
@@ -1525,6 +1561,15 @@ async function executeCase(
       }
       await selectMock(controlUrl, testCase, `${runId}:replay`);
     }
+    let sourceResource: Record<string,unknown> | undefined;
+    if (testCase.tags.includes('chat_document')) {
+      const audio=testCase.tags.includes('chat_document_audio');
+      const image=testCase.tags.includes('chat_document_image');
+      const mime=audio ? 'audio/wav' : image ? 'image/png' : 'video/mp4';
+      sourceResource=testCase.tags.includes('chat_document_url')
+        ? {kind:'url',url:`https://example.test/media/input.${audio ? 'wav' : image ? 'png' : 'mp4'}`,mime_hint:mime}
+        : resource(mime);
+    }
     const result = await session.aicc.call(
       testCase.method,
       {
@@ -1534,7 +1579,7 @@ async function executeCase(
           runId,
           testCase.execution_mode,
           testCase.case_id,
-          { historyMessage },
+          { historyMessage, sourceResource },
         ),
         ...(contract.canonical_request_overrides ?? {}),
         ...(testCase.tags.includes("image_count_rejected") ? {n:4} : {}),
@@ -1604,6 +1649,28 @@ async function executeCase(
             );
           }
           await downloadUrlArtifacts(resultPayload, gatewayUrl, session.sessionToken);
+        }
+        if (testCase.tags.includes("billing_events") || testCase.tags.includes("billing_fallback")) {
+          const fixture = JSON.parse(await readFile(join(here, "fixtures/fal-billing-events.json"), "utf8"));
+          const fallback = testCase.tags.includes("billing_fallback");
+          const expected = fallback ? fixture.local_estimates[testCase.api_type!] : { amount: fixture.event.cost_total };
+          const deadline = Date.now() + Math.min(timeoutMs, testCase.timeout_ms);
+          for (;;) {
+            const events = await queryUsageEvents({ aicc: session.aicc, startTimeMs: started - 1000,
+              endTimeMs: Date.now() + 1000, taskIds: [taskId!], limit: 10 });
+            if (events.length > 1) throw new Error("Billing created duplicate usage events");
+            const usage = events[0]?.usage_json;
+            if (usage?.cost_source === (fallback ? "static_pricing" : "provider_billing")) {
+              const cost = usage.cost as {amount?: number;currency?: string};
+              if (typeof cost?.amount !== "number" || Math.abs(cost.amount - expected.amount) > 1e-10 || cost.currency !== "USD") {
+                throw new Error(`Billing amount differs from expected ${expected.amount} USD: ${JSON.stringify(cost)}`);
+              }
+              if (expected.megapixels !== undefined && usage.megapixels !== expected.megapixels) throw new Error("Billing did not measure actual video pixels");
+              break;
+            }
+            if (Date.now() >= deadline) throw new Error("Billing did not reconcile the completed task");
+            await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+          }
         }
       }
     }
@@ -2147,7 +2214,7 @@ async function executeGeneratedArtifactCase(
         targetExactModel,
         runId,
         testCase.execution_mode,
-        `${testCase.case_id}.target-artifact`,
+        testCase.tags.includes("chat_document_audio") ? `${testCase.case_id}.audio-input` : `${testCase.case_id}.target-artifact`,
         { sourceResource },
       ),
     ) as Record<string, unknown>;
@@ -2446,7 +2513,7 @@ async function main(): Promise<void> {
   let cloudActive = false;
   try {
     await waitMock(input.mockControlUrl);
-    session = await loginGateway({
+    session = await loginRefreshingGateway({
       gatewayUrl: input.gatewayUrl,
       sessionToken: input.sessionToken,
       username: input.username,
@@ -2516,7 +2583,7 @@ async function main(): Promise<void> {
       try {
       phase = `provider:${driver}:setup`;
       if (input.username && input.password) {
-        session = await loginGateway({
+        session = await loginRefreshingGateway({
           gatewayUrl: input.gatewayUrl,
           username: input.username,
           password: input.password,
@@ -2941,7 +3008,7 @@ async function main(): Promise<void> {
     for (const driver of ["openai", "claude", "google-gemini"]) {
       phase = `custom:${driver}:setup`;
       if (driver === "openai") {
-        session = await loginGateway({
+        session = await loginRefreshingGateway({
           gatewayUrl: input.gatewayUrl,
           sessionToken: input.sessionToken,
           username: input.username,
@@ -3051,7 +3118,7 @@ async function main(): Promise<void> {
   } finally {
     if (session && input.username && input.password) {
       try {
-        session = await loginGateway({
+        session = await loginRefreshingGateway({
           gatewayUrl: input.gatewayUrl,
           username: input.username,
           password: input.password,
@@ -3234,6 +3301,7 @@ async function main(): Promise<void> {
     provider_driver: result.provider_driver ?? undefined,
     provider_instance: result.provider_instance,
     exact_model: result.exact_model,
+    task_id: result.task_id,
     api_type: result.api_type,
     method: result.method,
     outbound_message_ids: [],

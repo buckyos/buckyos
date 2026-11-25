@@ -3,9 +3,43 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "gemini",
-  "revision_seq": 7,
+  "revision_seq": 8,
   "required_features": [],
   "models": [
+    {
+      "id": "gemini-4-neon",
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption",
+        "vision.detect",
+        "vision.segment",
+        "audio.asr"
+      ],
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 1048576,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "gemini-pro",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "stability": "stable",
+        "weight": 40
+      }
+    },
     {
       "id": "gemini-4-carbon",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
@@ -564,8 +598,12 @@
       }
     },
     {
-      "id": "gemini-omni-1.1-flash",
-      "api_types": ["video.generate", "video.edit", "video.extend"],
+      "id": "gemini-omni-1.2-flash",
+      "api_types": [
+        "video.generate",
+        "video.edit",
+        "video.extend"
+      ],
       "logical_mounts": [
         "video.generate.gemini",
         "video.generate.{model}",
@@ -576,19 +614,115 @@
         "video.extend.{model}"
       ],
       "capabilities": {
-        "max_context_tokens": 1048576,
+        "max_context_tokens": 131072,
         "video_generation": {
           "prompt_required": true,
           "seed": true,
-          "references": {"image": {"max": 1}},
+          "references": {
+            "image": {
+              "max": 6
+            }
+          },
           "output": {
-            "durations": {"integer": false},
-            "aspect_ratios": ["16:9", "9:16"],
-            "resolutions": [{"name": "720p", "short_edge": 720}, {"name": "1080p", "short_edge": 1080}],
+            "durations": {
+              "min": 3,
+              "max": 15,
+              "integer": true
+            },
+            "aspect_ratios": [
+              "16:9",
+              "9:16"
+            ],
+            "resolutions": [
+              {
+                "name": "360p",
+                "short_edge": 360
+              },
+              {
+                "name": "720p",
+                "short_edge": 720
+              },
+              {
+                "name": "1080p",
+                "short_edge": 1080
+              },
+              {
+                "name": "4k",
+                "short_edge": 2160
+              }
+            ],
             "audio": "always",
-            "media_types": ["video/mp4"]
+            "media_types": [
+              "video/mp4"
+            ],
+            "default_duration_seconds": 10
           }
-        }
+        },
+        "max_output_tokens": 65536
+      }
+    },
+    {
+      "id": "gemini-omni-1.1-flash",
+      "api_types": [
+        "video.generate",
+        "video.edit",
+        "video.extend"
+      ],
+      "logical_mounts": [
+        "video.generate.gemini",
+        "video.generate.{model}",
+        "video.generate.gemini_omni",
+        "video.edit.gemini",
+        "video.edit.{model}",
+        "video.extend.gemini",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "video_generation": {
+          "prompt_required": true,
+          "seed": true,
+          "references": {
+            "image": {
+              "max": 1
+            }
+          },
+          "output": {
+            "durations": {
+              "min": 3,
+              "max": 10,
+              "integer": true
+            },
+            "aspect_ratios": [
+              "16:9",
+              "9:16"
+            ],
+            "resolutions": [
+              {
+                "name": "360p",
+                "short_edge": 360
+              },
+              {
+                "name": "720p",
+                "short_edge": 720
+              },
+              {
+                "name": "1080p",
+                "short_edge": 1080
+              },
+              {
+                "name": "4k",
+                "short_edge": 2160
+              }
+            ],
+            "audio": "always",
+            "media_types": [
+              "video/mp4"
+            ],
+            "default_duration_seconds": 10
+          }
+        },
+        "max_output_tokens": 65536
       }
     },
     {

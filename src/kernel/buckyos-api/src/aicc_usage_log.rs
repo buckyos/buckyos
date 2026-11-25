@@ -13,7 +13,7 @@
  *   not have to hand-roll SQL to read the log.
  */
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -285,6 +285,8 @@ pub enum UsageQueryOutputMode {
     #[default]
     Summary,
     Events,
+    Page,
+    Groups,
     SummaryAndEvents,
 }
 
@@ -297,6 +299,10 @@ pub struct QueryUsageRequest {
     pub filters: UsageQueryFilters,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_by: Vec<UsageQueryGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_offset: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_bucket: Option<UsageQueryBucket>,
     #[serde(default)]
@@ -320,6 +326,8 @@ impl QueryUsageRequest {
             time_range,
             filters: UsageQueryFilters::default(),
             group_by: Vec::new(),
+            group_limit: None,
+            group_offset: None,
             time_bucket: None,
             output_mode: UsageQueryOutputMode::default(),
             limit: None,
@@ -341,6 +349,8 @@ impl QueryUsageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UsageAggregate {
+    pub dimensions: BTreeMap<String, UsageDimensionAggregate>,
+    pub unpriced_requests: u64,
     pub total_requests: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -350,9 +360,18 @@ pub struct UsageAggregate {
     pub finance_complete: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UsageDimensionAggregate {
+    pub amount: f64,
+    pub reported_events: u64,
+}
+
 impl Default for UsageAggregate {
     fn default() -> Self {
         Self {
+            dimensions: BTreeMap::new(),
+            unpriced_requests: 0,
             total_requests: 0,
             input_tokens: 0,
             output_tokens: 0,
@@ -537,6 +556,8 @@ mod tests {
         assert_eq!(
             value,
             json!({
+                "dimensions": {},
+                "unpriced_requests": 0,
                 "total_requests": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,

@@ -70,6 +70,8 @@ Home and Usage expose an explicit usage scope. Administrators default to the ent
 
 The Home overview, breakdowns, and user table cover the last 30 local calendar days; today and current-month counters use their respective local boundaries. Recent events and Usage details retain their own time filter. The user table groups by `user_id` and shows requests, tokens, separate currency totals, and incomplete-finance status. Agent usage belongs to its owner; autonomous system calls belong to the system account. Usage events retain both `user_id` and `tenant_id`. Scope switches discard the previous detail cursor and records; query failures show an error with retry rather than zero totals.
 
+Pending billing refreshes retain existing rows and totals. On mobile, only loaded pages still containing pending billing are refreshed, with at most two page queries in flight. Each successful page publishes independently; failed pages retain their records and remain eligible for retry. Settled pages stop polling, and retries retain the paging time window and cursors.
+
 Provider account balances and the viewer's quota warning keep their own meaning. Route trace queries remain restricted to the current user's tenant, so cross-user usage rows show task identifiers without trace links. User-table rows only select the usage scope; they do not create quota rules. Breakdown quota shortcuts appear only in the personal scope because they create limits for the viewer.
 
 ## KRPC mapping
@@ -170,3 +172,21 @@ Imported JSON and builtin presets obtain per-model resolved rules through provid
 Provider files use the existing variants array exclusively. Model-specific effort changes are held only in local draft state, then serialized to variants with match.provider_model_id; the edited endpoint is excluded from inherited shared rules using existing match conditions. Preview/export/save never emit model_variants, and file import rejects it. Imported built-in variants are preserved unchanged until a model’s efforts are edited. Complex provider-model glob conditions that cannot be narrowed losslessly require editing the match in JSON instead of silently changing other models.
 
 The file audit round-trips every original top-level field of all 15 builtin provider catalogs with unchanged JSON values and nested structure. Runtime management returns the saved source catalog (or explicitly bound preset) without rewriting provider_profile_id or custom_provider_adapters. Absent task mappings do not insert an empty server_default_routes field; this field is an explicit optional schema extension, not an operation mapping. Prices retain per-token units and raw numeric values. The importer rejects unsafe revision_seq integers rather than silently rounding them.
+
+## Usage filtered consumption (#755)
+
+`UsageEventsPage` carries `total: UsageTotals` and `grouped: UsageBreakdown[]` alongside its event page. Separate `page`, `summary` and bounded single-dimension `groups` requests apply the same scope/time/filters. Event cursors and group offsets do not limit the full filtered total. Filter suggestions come from loaded results; typed text searches the full server-side scope. `UsageTotals.dimensions` preserves each reported numeric unit's amount and coverage count, with absent fields omitted and explicit zero retained. `unpriced_requests` and `finance_complete` prevent partial currency subtotals from appearing complete. Rows retain raw `usage_json` as `UsageEvent.usage`. No client-side crawl of pages.
+
+The consumption card groups the returned combinations by Provider/model/App/API; token controls open non-additive cache/modality/reasoning and media-unit details. Filtering shows loading/error state rather than stale totals. Pure media requests are never converted into token equivalents. The response size grows with distinct grouping combinations; high-cardinality million-event performance remains unverified.
+
+首页 `queryUsageOverview` 保留各分组的完整 `UsageTotals`（`breakdowns`），用于消费分布中的用量与费用明细；范围与首页 30 天汇总一致。首页近期记录与 Usage 列表复用 `UsageUnits`，只有实际上报的维度可展开。消费卡和汇总中的多币种金额默认展示 USD，点击展开各币种；无 USD 时显示实际存在的首个稳定排序币种，不换汇。
+
+`UsageOverview.periods` 保留 today / thisMonth / trailingDays 的完整 UsageTotals，使首页三个 token 总计分别展开正确时间段的明细。Fal 的 pending 费用来源标记显示待账单核对，当前页有 pending 记录时每 30 秒刷新列表及汇总（隐藏页面暂停）。最终 Provider billing 显示实报费用来源。
+
+Usage 列表通过 `page` 模式游标分页，每页 10 条，移动端按需追加；筛选总计和各分类异步独立查询。分类使用 `groups` 模式及 `group_limit/group_offset` 分批加载，各币种和计费维度完整保留。翻页不重算汇总，Usage 列表不等待首页概览。
+
+筛选总计与 Provider、模型、App、API 类型卡片各自维护加载、错误和重试状态，各响应到达后独立展示；某卡片慢或失败不阻塞其他卡片。分组加载更多的并发状态按卡片隔离，筛选变化后丢弃旧请求结果。总计尚未就绪时不展示分组比例，避免以部分分组代替完整分母。
+
+首页在身份范围确认后立即挂载，状态卡、近期 5 条记录不等待统计；8 个统计切片完成后分别发布结果。模型和 Provider 分组首批 20 项，展开后按需加载更多；近 30 天总量来自完整趋势窗口，不能累加截断分组估算。统计失败不隐藏首页其他区域，切换身份丢弃旧响应。
+
+消费展示：未知费用以 `--` 占位；金额悬停提示保留已知小计、未计价数量及未知原因；用量明细隐藏零值，底层上报数据中的零值和缺失值仍保持区分。

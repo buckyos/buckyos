@@ -103,5 +103,238 @@ test.describe('touch viewport', () => {
     await page.getByTestId('usage-by-user').getByRole('button', { name: 'bob', exact: true }).tap()
     await expect(scope).toHaveValue('user:bob')
     await expectOwner(page.getByTestId('recent-usage-row'), 'bob')
+    const period = page.getByTestId('home-usage-summary').getByLabel('用量明细', { exact: true }).first()
+    await period.tap()
+    const periodDetails = period.locator('..').locator('dl')
+    await expect(periodDetails).toBeVisible()
+    const periodBox = await periodDetails.boundingBox()
+    expect(periodBox!.x).toBeGreaterThanOrEqual(0)
+    expect(periodBox!.x + periodBox!.width).toBeLessThanOrEqual(375)
+    await period.tap()
+    const recent = page.getByTestId('recent-usage-row').first()
+    await recent.getByLabel('用量明细', { exact: true }).tap()
+    await expect(recent.locator('dl')).toBeVisible()
+    const unitsBox = await recent.locator('dl').boundingBox()
+    expect(unitsBox!.x).toBeGreaterThanOrEqual(0)
+    expect(unitsBox!.x + unitsBox!.width).toBeLessThanOrEqual(375)
+    await recent.getByLabel('用量明细', { exact: true }).tap()
+    const money = page.getByTestId('usage-currencies').filter({ visible: true }).first()
+    await expect(money.locator('summary')).toContainText('USD')
+    await money.locator('summary').tap()
+    await expect(money.locator('dl')).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('usage-mobile-currencies.png'), fullPage: true })
   })
+})
+
+test('filtered consumption totals cover all pages and token details expose only present units', async ({ page }, testInfo) => {
+  await openAiCenter(page)
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const consumption = page.getByTestId('usage-consumption')
+  await expect(consumption).toContainText('140 matching records, all pages')
+  await expect(consumption).toContainText('USD')
+  await expect(consumption).toContainText('EUR')
+  const initial = await consumption.innerText()
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await expect(page.getByText('Page 2', { exact: true })).toBeVisible()
+  await expect(consumption).toHaveText(initial, { useInnerText: true })
+  const details = consumption.locator('details').first()
+  await details.locator('summary').click()
+  await expect(details).toHaveAttribute('open', '')
+  await expect(details).toContainText('Generated images')
+  await expect(details).not.toContainText('Compute duration')
+  await page.screenshot({ path: testInfo.outputPath('usage-units.png') })
+  await details.locator('summary').press('Escape')
+  await expect(details).not.toHaveAttribute('open', '')
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
+  await page.getByPlaceholder('All models', { exact: true }).fill('sn-router-image')
+  await expect(consumption).toContainText('28 matching records, all pages')
+  await expect(consumption.locator('summary').first()).toContainText('0 tokens')
+  await consumption.locator('summary').first().click()
+  await expect(consumption.locator('details').first()).toContainText('Generated images')
+  await expect(consumption.locator('details').first()).not.toContainText('Input tokens')
+  await consumption.screenshot({ path: testInfo.outputPath('usage-filtered-media.png') })
+  await page.getByPlaceholder('All models', { exact: true }).fill('no-matching-model')
+  await expect(consumption).toContainText('0 matching records, all pages')
+})
+
+test('home and usage lists expose unit details and multi-currency totals default to USD', async ({ page }, testInfo) => {
+  await openAiCenter(page)
+  const recent = page.getByTestId('recent-usage-row').first()
+  await recent.getByLabel('Usage details', { exact: true }).click()
+  await expect(recent.locator('details')).toHaveAttribute('open', '')
+  await expect(recent.locator('dl')).toBeVisible()
+  await recent.getByLabel('Usage details', { exact: true }).press('Escape')
+  await expect(recent.locator('details')).not.toHaveAttribute('open', '')
+  const homeMoney = page.getByTestId('usage-currencies').filter({ visible: true }).first()
+  await expect(homeMoney.locator('summary')).toContainText('USD')
+  await expect(homeMoney.locator('dl')).not.toBeVisible()
+  await homeMoney.locator('summary').click()
+  await expect(homeMoney.locator('dl')).toBeVisible()
+  await expect(homeMoney.locator('dl')).toContainText('EUR')
+  await expect(homeMoney.locator('dl')).toContainText('CNY')
+  await page.screenshot({ path: testInfo.outputPath('home-currencies.png') })
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const totalMoney = page.getByTestId('usage-consumption').getByTestId('usage-currencies').first()
+  await expect(totalMoney.locator('summary')).toContainText('USD')
+  await expect(totalMoney.locator('dl')).not.toBeVisible()
+  await totalMoney.locator('summary').click()
+  await expect(totalMoney.locator('dl')).toContainText('EUR')
+  await expect(totalMoney.locator('dl')).toBeVisible()
+  const row = page.getByTestId('usage-event-row').filter({ visible: true }).first()
+  await row.getByLabel('Usage details', { exact: true }).click()
+  await expect(row.locator('dl')).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('usage-row-units-and-currencies.png') })
+})
+
+test('home summary exposes independent today, month and thirty-day token details', async ({ page }, testInfo) => {
+  await openAiCenter(page)
+  const summary = page.getByTestId('home-usage-summary')
+  const units = summary.getByLabel('Usage details', { exact: true })
+  await expect(units).toHaveCount(3)
+  for (let index = 0; index < 3; index += 1) {
+    await units.nth(index).click()
+    const details = units.nth(index).locator('..')
+    await expect(details).toHaveAttribute('open', '')
+    await expect(details.locator('dl')).toBeVisible()
+    await expect(details).toContainText('Input tokens')
+    await units.nth(index).press('Escape')
+    await expect(details).not.toHaveAttribute('open', '')
+  }
+  await summary.screenshot({ path: testInfo.outputPath('home-summary-token-details.png') })
+})
+
+async function installBillingFixture(page: Page) {
+  await expect(page.getByTestId('home-usage-summary')).toBeVisible()
+  await page.evaluate(async () => {
+    const dashboardSource = await fetch('/src/app/ai-center/components/home/UsageDashboard.tsx').then((response) => response.text())
+    const modulePath = dashboardSource.match(/from "([^" ]*\/api\/aicc_mgr\.ts[^" ]*)"/)?.[1] ?? '/src/api/aicc_mgr.ts'
+    const { AICCModelStore } = await import(modulePath)
+    const original = AICCModelStore.prototype.queryUsageEvents
+    const state = { settled: false, settledFirstPage: false, failCursors: [] as Array<string | undefined>, active: 0, maxActive: 0, holdEvents: false, eventReleases: [] as Array<() => void>, hold: false, releases: [] as Array<() => void>, cursors: [] as Array<string | undefined> }
+    Reflect.set(window, 'usageBillingFixture', state)
+    AICCModelStore.prototype.queryUsageEvents = async function (params: { summaryOnly?: boolean; groupBy?: string; groupLimit?: number; groupOffset?: number; cursor?: string }) {
+      const result = await original.call(this, params)
+      if (params.summaryOnly) {
+        if (state.hold) await new Promise<void>((resolve) => state.releases.push(resolve))
+        if (params.groupBy === 'provider_model') {
+          const aggregate = result.grouped[0]?.aggregate ?? (await original.call(this, { ...params, groupOffset: 0 })).grouped[0].aggregate
+          result.grouped = Array.from({ length: 40 }, (_, index) => ({ group: { provider_model: `billing-model-${String(index).padStart(2, '0')}` }, aggregate }))
+            .slice(params.groupOffset ?? 0, (params.groupOffset ?? 0) + (params.groupLimit ?? 20))
+        }
+      } else {
+        state.cursors.push(params.cursor)
+        state.active += 1
+        state.maxActive = Math.max(state.maxActive, state.active)
+        try {
+          if (state.holdEvents) await new Promise<void>((resolve) => state.eventReleases.push(resolve))
+          if (state.failCursors.includes(params.cursor)) throw new Error('billing page unavailable')
+        } finally {
+          state.active -= 1
+        }
+        result.events = result.events.map((event: { usage?: Record<string, unknown> }) => ({ ...event, usage: { ...event.usage, cost_source: state.settled || state.settledFirstPage && !params.cursor ? 'provider_billing' : 'static_pricing_pending_billing' } }))
+      }
+      return result
+    }
+  })
+}
+
+test('billing refresh retains consumption totals and all loaded groups until replacements arrive', async ({ page }) => {
+  await page.clock.install()
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const consumption = page.getByTestId('usage-consumption')
+  const models = page.getByTestId('usage-consumption-provider_model')
+  await expect(models).toContainText('Models · 20+')
+  await models.getByRole('button', { name: 'Show more', exact: true }).click()
+  await models.getByRole('button', { name: 'Load more', exact: true }).click()
+  await expect(models).toContainText('billing-model-39')
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.settled = true; state.hold = true })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').releases.length)).toBe(5)
+  await expect(consumption).toContainText('140 matching records, all pages')
+  await expect(models).toContainText('billing-model-39')
+  await expect(consumption).not.toContainText('Loading')
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.hold = false; state.releases.forEach((release: () => void) => release()) })
+  await expect(page.getByTestId('usage-event-row').first()).not.toContainText('Awaiting billing')
+  await expect(models).toContainText('billing-model-39')
+})
+
+test('mobile billing refresh replaces records on earlier pages and stops polling after settlement', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.clock.install()
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const rows = page.getByTestId('usage-event-row').filter({ visible: true })
+  await expect(rows).toHaveCount(10)
+  await page.getByRole('button', { name: 'Load more', exact: true }).dispatchEvent('click')
+  await expect(rows).toHaveCount(20)
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.settled = true; state.cursors = [] })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(2)
+  await expect(rows).toHaveCount(20)
+  await expect(page.getByText('Awaiting billing', { exact: true })).toHaveCount(0)
+  await page.clock.fastForward(30_000)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(2)
+})
+
+test('mobile billing refresh skips settled pages, bounds concurrency and publishes successful pages independently', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.clock.install()
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.evaluate(() => { Reflect.get(window, 'usageBillingFixture').settledFirstPage = true })
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const rows = page.getByTestId('usage-event-row').filter({ visible: true })
+  await expect(rows).toHaveCount(10)
+  for (let count = 20; count <= 40; count += 10) {
+    await page.getByRole('button', { name: 'Load more', exact: true }).dispatchEvent('click')
+    await expect(rows).toHaveCount(count)
+  }
+  await expect(rows.filter({ hasText: 'Awaiting billing' })).toHaveCount(30)
+  expect(await page.evaluate(() => [...new Set(Reflect.get(window, 'usageBillingFixture').cursors)])).toEqual([undefined, '10', '20', '30'])
+  await page.evaluate(() => {
+    const state = Reflect.get(window, 'usageBillingFixture')
+    state.failCursors = ['10']
+    state.cursors = []
+    state.settled = true
+    state.holdEvents = true
+    state.maxActive = 0
+  })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').active)).toBe(2)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(2)
+  await page.evaluate(() => {
+    const state = Reflect.get(window, 'usageBillingFixture')
+    state.holdEvents = false
+    state.eventReleases.splice(0).forEach((release: () => void) => release())
+  })
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(3)
+  await expect(rows.filter({ hasText: 'Awaiting billing' })).toHaveCount(10)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').maxActive)).toBe(2)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.includes(undefined))).toBe(false)
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.failCursors = []; state.cursors = [] })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(1)
+  await expect(rows.filter({ hasText: 'Awaiting billing' })).toHaveCount(0)
+  await page.clock.fastForward(30_000)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(1)
+})
+
+
+test('mobile retry loads a failed new page without discarding earlier records', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const rows = page.getByTestId('usage-event-row').filter({ visible: true })
+  await expect(rows).toHaveCount(10)
+  await page.evaluate(() => { Reflect.get(window, 'usageBillingFixture').failCursors = ['10'] })
+  await page.getByRole('button', { name: 'Load more', exact: true }).dispatchEvent('click')
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
+  await expect(rows).toHaveCount(10)
+  await page.evaluate(() => { Reflect.get(window, 'usageBillingFixture').failCursors = [] })
+  await page.getByRole('button', { name: 'Retry', exact: true }).dispatchEvent('click')
+  await expect(rows).toHaveCount(20)
 })

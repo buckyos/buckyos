@@ -25,7 +25,7 @@ This database is not a financial ledger. Provider or server financial data may b
 
 `aicc_usage_event`
 
-Append-only records for successful AICC provider completions. This data must survive service restart, completed task cleanup, overlay install, and upgrade.
+One immutable completion identity per provider call. Validated late provider billing may enrich its financial snapshot and missing usage dimensions in place, atomically with its durable reconciliation state; this does not insert another completion. This data must survive service restart, completed task cleanup, overlay install, and upgrade.
 
 ### Disposable Data
 
@@ -129,8 +129,11 @@ Array filter fields use exact multi-value matching. Empty arrays mean no filter 
   - no bucket
 - optional output mode
   - `summary`: aggregated rows only
-  - `events`: raw usage events
+  - `events`: raw usage events with full aggregates
+  - `page`: raw event cursor page and `total.total_requests` only; other aggregate fields are empty placeholders
+  - `groups`: grouped aggregates only; `total` is an empty placeholder and no buckets are computed
   - `summary_and_events`: both, for debugging
+- optional `group_limit` (1–1000) and `group_offset` page complete groups by total tokens descending, request count descending and group keys ascending; currencies and dimensions within a selected group are never truncated
 - pagination for raw events
   - `limit`
   - `cursor`
@@ -138,7 +141,8 @@ Array filter fields use exact multi-value matching. Empty arrays mean no filter 
 Output:
 
 - `total_requests`
-- aggregated usage values
+- aggregated usage values, including `dimensions: {field: {amount, reported_events}}` from raw numeric AiUsage fields (absent and explicitly reported zero remain distinct)
+- `unpriced_requests`: number of matching events without a valid finance snapshot
 - `finance_totals`: valid finance snapshots grouped by normalized currency and sorted by currency
 - `finance_complete`: false when any event lacks a valid finance snapshot or a currency subtotal overflows; valid subtotals remain available
 - grouped rows when grouping is set
@@ -211,3 +215,18 @@ The exact cleanup policy should be configurable later.
 - A query for `last_7d` can return usage grouped by provider.
 - Provider financial snapshot is stored when present but is not required for success.
 - Missing usage in a successful provider final result is treated as provider protocol error.
+
+## Deferred billing enrichment
+
+Fal billing reconciliation reuses `aicc_execution_record.record_json.binding.billing` for pending/applied state, retry schedule and a CAS lease. It may revise only the matching usage event's finance and missing metering fields, preserving event identity, owner, provider and token/request totals. Explicit protocol cost wins. See [the durable schema and recovery rules](deferred_billing.md); there are no new tables or schema migrations. The completed TaskMgr result is a historical snapshot and is not rewritten by this process.
+
+## Deferred billing queue index
+
+`aicc_execution_record` uses `idx_aicc_billing_due` on the BIGINT JSON expression
+`binding.billing.next_attempt_ms`, followed by `created_at_ms, task_id`, restricted to
+`state = succeeded` and billing status `pending` or `local_pending`. SQLite uses
+`json_extract`; PostgreSQL uses the corresponding `record_json::jsonb #>>` path.
+Storage initialization creates the index inside its schema transaction for both new
+and existing version-3 databases. No table, column, or global schema version changes.
+The index removes settled records from the recurring queue scan. Terminal billing
+statuses and bounded retries are defined in [deferred_billing.md](deferred_billing.md).

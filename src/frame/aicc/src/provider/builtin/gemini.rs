@@ -726,6 +726,13 @@ mod tests {
 
         for (model_id, context, output, default_effort, efforts) in [
             (
+                "gemini-4-neon",
+                1_048_576,
+                1_048_576,
+                Effort::High,
+                vec![Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh],
+            ),
+            (
                 "gemini-4-carbon",
                 1_048_576,
                 1_048_576,
@@ -869,7 +876,8 @@ mod tests {
             ("gemini-3.8-flash-lite-tts", 8_192, Some(16_384)),
             ("gemini-2.5-flash-preview-tts", 8_192, Some(16_384)),
             ("gemini-2.5-pro-preview-tts", 8_192, Some(16_384)),
-            ("gemini-omni-1.1-flash", 1_048_576, None),
+            ("gemini-omni-1.1-flash", 131_072, Some(65_536)),
+            ("gemini-omni-1.2-flash", 131_072, Some(65_536)),
             ("lyria-3.5", 131_072, None),
             ("lyria-3-pro-preview", 131_072, None),
             ("lyria-3-clip-preview", 131_072, None),

@@ -145,6 +145,17 @@ export interface ProviderView {
 
 // ========== Usage ==========
 
+export interface UsageDimension { amount: number; reported_events: number }
+export interface UsageTotals {
+  total_requests: number
+  total_tokens: number
+  finance_totals: Money[]
+  finance_complete: boolean
+  unpriced_requests: number
+  dimensions: Record<string, UsageDimension>
+}
+export interface UsageBreakdown { group: Record<string, string>; aggregate: UsageTotals }
+
 export interface UsageEvent {
   id: string
   timestamp: string
@@ -157,6 +168,7 @@ export interface UsageEvent {
   app_id?: string
   agent_id?: string
   session_id?: string
+  usage?: Record<string, unknown>
   tokens_in?: number
   tokens_out?: number
   token_equivalent?: number

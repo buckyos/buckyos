@@ -313,6 +313,8 @@ pub(crate) struct MaterializedResource {
     pub mime: String,
     pub file_name: Option<String>,
     pub provider_artifact_id: Option<String>,
+    pub audio_sample_rate: Option<u32>,
+    pub audio_channels: Option<u32>,
 }
 
 impl std::fmt::Debug for MaterializedResource {
@@ -349,6 +351,8 @@ impl MaterializedResource {
             mime,
             file_name,
             provider_artifact_id: None,
+            audio_sample_rate: None,
+            audio_channels: None,
         })
     }
 
@@ -378,7 +382,15 @@ impl MaterializedResource {
             mime,
             file_name,
             provider_artifact_id: None,
+            audio_sample_rate: None,
+            audio_channels: None,
         })
+    }
+
+    pub(crate) fn with_audio_format(mut self, sample_rate: Option<u32>, channels: Option<u32>) -> Self {
+        self.audio_sample_rate = sample_rate;
+        self.audio_channels = channels;
+        self
     }
 
     pub(crate) fn with_provider_artifact_id(mut self, artifact_id: Option<String>) -> Self {
@@ -728,6 +740,19 @@ pub(crate) trait OperationCodec: Send + Sync {
             usage.characters = usage
                 .characters
                 .or(Some(request.text.chars().count() as u64));
+        }
+        if let ProtocolExecution::Immediate(output) = &mut execution {
+            let images = match &input.canonical_request {
+                AiccCall::ImagesGenerate(_) => Some(0),
+                AiccCall::ImageToImage(request) => Some(request.images.len() as u64),
+                _ => None,
+            };
+            if let Some(count) = images {
+                output
+                    .usage
+                    .get_or_insert_with(Default::default)
+                    .reference_images = Some(count);
+            }
         }
         Ok(execution)
     }

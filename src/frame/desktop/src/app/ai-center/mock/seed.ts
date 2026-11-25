@@ -600,9 +600,9 @@ function generateUsageEvents(): UsageEvent[] {
     const row = rows[i % rows.length]
     const tokensIn = row.api === 'image.txt2img' ? undefined : 220 + ((i * 131) % 3100)
     const tokensOut = row.api === 'image.txt2img' ? undefined : 120 + ((i * 97) % 2400)
-    const tokenEquivalent = row.api === 'image.txt2img' ? 1600 + ((i * 71) % 1200) : undefined
+    const tokenEquivalent = undefined
     const billableTokens = tokenEquivalent ?? (tokensIn ?? 0) + (tokensOut ?? 0)
-    const estimatedCost = Number((billableTokens * row.cost).toFixed(4))
+    const estimatedCost = row.api === 'image.txt2img' ? 0.039 : Number((billableTokens * row.cost).toFixed(4))
 
     events.push({
       id: `evt-${i.toString().padStart(3, '0')}`,
@@ -616,6 +616,7 @@ function generateUsageEvents(): UsageEvent[] {
       app_id: apps[i % apps.length],
       agent_id: agents[i % agents.length],
       session_id: `session-${Math.floor(i / 4).toString().padStart(2, '0')}`,
+      usage: row.api === 'image.txt2img' ? { image_units: 1, request_units: 1 } : { input_tokens: tokensIn, output_tokens: tokensOut, total_tokens: billableTokens, cache_read_input_tokens: Math.floor((tokensIn ?? 0) / 5) },
       tokens_in: tokensIn,
       tokens_out: tokensOut,
       token_equivalent: tokenEquivalent,

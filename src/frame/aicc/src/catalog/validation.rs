@@ -285,6 +285,9 @@ pub(super) fn validate_provider_rules(
             reason: "requires a three-letter uppercase currency".into(),
         });
     }
+    if catalog.reported_cost.as_ref().is_some_and(|policy| policy.model_ids.iter().any(|model| model.trim().is_empty() || model.chars().any(char::is_whitespace))) {
+        return Err(CatalogBuildError::InvalidValue { owner: catalog.provider_profile_id.clone(), field: "reported_cost.model_ids", reason: "requires explicit nonempty model IDs".into() });
+    }
     validate_header(
         CatalogKind::ProviderRules,
         &catalog.provider_profile_id,
@@ -579,7 +582,7 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
         });
     }
     if !pricing.addons.is_empty()
-        && (pricing.unit.is_none()
+        && ((pricing.unit.is_none() && !pricing.has_token_rates())
             || pricing
                 .addons
                 .iter()
@@ -588,7 +591,7 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
         return Err(CatalogBuildError::InvalidValue {
             owner: owner.to_owned(),
             field: "pricing.addons",
-            reason: "add-ons extend unit billing with finite non-negative amounts".into(),
+            reason: "add-ons extend token or unit billing with finite non-negative amounts".into(),
         });
     }
     let ratio_ok = |input: Option<f64>,
@@ -676,8 +679,10 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
         ),
         ("audio_input_token", pricing.audio_input_token),
         ("image_input_token", pricing.image_input_token),
+        ("video_input_token", pricing.video_input_token),
         ("audio_output_token", pricing.audio_output_token),
         ("image_output_token", pricing.image_output_token),
+        ("video_output_token", pricing.video_output_token),
         ("estimated_cost", pricing.estimated_cost),
         ("amount", pricing.amount),
     ] {
@@ -716,8 +721,10 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
             ),
             ("audio_input_token", rule.audio_input_token),
             ("image_input_token", rule.image_input_token),
+            ("video_input_token", rule.video_input_token),
             ("audio_output_token", rule.audio_output_token),
             ("image_output_token", rule.image_output_token),
+            ("video_output_token", rule.video_output_token),
         ] {
             if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
                 return Err(CatalogBuildError::InvalidValue {
@@ -735,8 +742,10 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
             rule.cache_write_1h_input_token,
             rule.audio_input_token,
             rule.image_input_token,
+            rule.video_input_token,
             rule.audio_output_token,
             rule.image_output_token,
+            rule.video_output_token,
         ]
         .iter()
         .any(Option::is_some);
@@ -848,8 +857,10 @@ fn validate_pricing_time_windows(
                 window.cache_write_1h_input_token,
                 window.audio_input_token,
                 window.image_input_token,
+                window.video_input_token,
                 window.audio_output_token,
                 window.image_output_token,
+                window.video_output_token,
             ]
             .iter()
             .any(Option::is_some)
@@ -871,8 +882,10 @@ fn validate_pricing_time_windows(
             ),
             ("audio_input_token", window.audio_input_token),
             ("image_input_token", window.image_input_token),
+            ("video_input_token", window.video_input_token),
             ("audio_output_token", window.audio_output_token),
             ("image_output_token", window.image_output_token),
+            ("video_output_token", window.video_output_token),
             ("amount", window.amount),
         ] {
             if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
@@ -889,8 +902,10 @@ fn validate_pricing_time_windows(
             window.cache_write_1h_input_token,
             window.audio_input_token,
             window.image_input_token,
+            window.video_input_token,
             window.audio_output_token,
             window.image_output_token,
+            window.video_output_token,
         ]
         .iter()
         .any(Option::is_some);
@@ -938,8 +953,10 @@ fn validate_pricing_tiers(owner: &str, tiers: &PricingTiers) -> Result<(), Catal
             ),
             ("audio_input_token", step.audio_input_token),
             ("image_input_token", step.image_input_token),
+            ("video_input_token", step.video_input_token),
             ("audio_output_token", step.audio_output_token),
             ("image_output_token", step.image_output_token),
+            ("video_output_token", step.video_output_token),
             ("amount", step.amount),
         ] {
             if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
@@ -956,8 +973,10 @@ fn validate_pricing_tiers(owner: &str, tiers: &PricingTiers) -> Result<(), Catal
             step.cache_write_1h_input_token,
             step.audio_input_token,
             step.image_input_token,
+            step.video_input_token,
             step.audio_output_token,
             step.image_output_token,
+            step.video_output_token,
         ]
         .iter()
         .any(Option::is_some);

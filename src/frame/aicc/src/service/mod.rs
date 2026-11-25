@@ -532,6 +532,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         storage.clone(),
         model_health.clone(),
     ));
+    provider_execution.spawn_billing_reconciler();
     let directory: Arc<dyn UserDirectory> = Arc::new(SystemConfigUserDirectory::default());
     let quota_service = Arc::new(QuotaService::new(storage.clone(), directory.clone()));
     quota_service.spawn_reconciler();
@@ -721,6 +722,7 @@ struct InferenceRouteInput {
     session_id: Option<String>,
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
+    no_audio: bool,
     /// Measured clip lengths; empty until materials are prepared.
     video_clips: crate::video::ClipSummary,
 }

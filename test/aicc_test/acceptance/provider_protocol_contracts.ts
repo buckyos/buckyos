@@ -102,6 +102,7 @@ export type ProviderProtocolContract = {
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
+    thinking_level_values_by_model?: Record<string, string[]>;
   };
   thinking?: {
     allowed_types: string[];
@@ -137,6 +138,8 @@ export type ProviderProtocolContract = {
   }>;
   success_content_type?: string;
   success_fixture?: Record<string, unknown>;
+  expected_billable_usage?: Record<string, Record<string, number>>;
+  expected_cost_usd?: Record<string, number>;
   inline_artifact_success_fixture?: Record<string, unknown>;
   inline_artifact_payload_paths?: string[];
   success_chunk_fixtures?: Array<Record<string, unknown>>;
@@ -771,6 +774,10 @@ export function validateProviderProtocolCatalog(
             generationConfig.thinking_level_values,
             `${id}.generation_config.thinking_level_values`,
           );
+        }
+        if (generationConfig.thinking_level_values_by_model !== undefined) {
+          const byModel = object(generationConfig.thinking_level_values_by_model, `${id}.generation_config.thinking_level_values_by_model`);
+          for (const [model, values] of Object.entries(byModel)) stringArray(values, `${id}.generation_config.thinking_level_values_by_model.${model}`);
         }
       }
       if (contract.thinking !== undefined) {
@@ -2097,6 +2104,17 @@ function validateClaudeMessages(
   }
 }
 
+function validateGeminiMediaContent(value: unknown, path: string, errors: string[]): void {
+  const part=recordValue(value);
+  if (!part) return;
+  const type=String(part.type??'');
+  const mime=typeof part.mime_type==='string' ? part.mime_type.toLowerCase().split(';')[0] : '';
+  if (type==='document' && /^(image|audio|video)\//.test(mime)) errors.push(`${path}: document content cannot carry media MIME ${mime}`);
+  if (['image','audio','video'].includes(type) && mime && !mime.startsWith(`${type}/`)) errors.push(`${path}: ${type} content has incompatible MIME ${mime}`);
+  if (type==='audio' && ['audio/l16','audio/pcm','audio/alaw','audio/mulaw'].includes(mime) && (!Number.isInteger(part.sample_rate) || Number(part.sample_rate)<=0)) errors.push(`${path}: raw audio requires sample_rate`);
+  if (type==='audio' && part.channels!==undefined && (!Number.isInteger(part.channels) || Number(part.channels)<=0)) errors.push(`${path}: audio channels must be positive`);
+}
+
 function validateGeminiInteractionInput(
   input: unknown[],
   errors: string[],
@@ -2106,6 +2124,9 @@ function validateGeminiInteractionInput(
     const step = recordValue(value);
     if (!step || typeof step.type !== "string") return;
     const path = `body field input[${index}]`;
+    validateGeminiMediaContent(step,path,errors);
+    if (Array.isArray(step.content)) step.content.forEach((part,partIndex) => validateGeminiMediaContent(part,`${path}.content[${partIndex}]`,errors));
+    if (step.type==='function_result' && Array.isArray(step.result)) step.result.forEach((part,partIndex) => validateGeminiMediaContent(part,`${path}.result[${partIndex}]`,errors));
     if (step.type === "user_input" || step.type === "model_output") {
       if (
         !Array.isArray(step.content) || step.content.length === 0 ||
@@ -2189,7 +2210,7 @@ function validateGeminiInteractionConfig(
     }
   }
   if (generation?.thinking_level !== undefined) {
-    const allowed = new Set(contract.generation_config?.thinking_level_values);
+    const allowed = new Set(contract.generation_config?.thinking_level_values_by_model?.[String(body.model)] ?? contract.generation_config?.thinking_level_values);
     if (!allowed.has(String(generation.thinking_level))) {
       errors.push(
         `body field generation_config.thinking_level=${generation.thinking_level}; contract ${contract.id} supports ${
@@ -2586,6 +2607,22 @@ export function buildT15Manifest(
           ),
           mock_scenario: "success",
         } as AcceptanceCase);
+        if (provider.provider_driver === "fal") {
+          cases.push({
+            ...common,
+            case_id: caseId(`t1.5.fal.${contract.id}.${apiType}.billing-events`),
+            tags: [...common.tags!, "billing_events"],
+            mock_scenario: "success",
+          } as AcceptanceCase);
+          for (const download of apiType === "video.upscale" ? [false, true] : [false]) {
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.fal.${contract.id}.${apiType}.billing-fallback${download ? "-download" : ""}`),
+              tags: [...common.tags!, "billing_fallback", ...(download ? ["billing_download"] : [])],
+              mock_scenario: "success",
+            } as AcceptanceCase);
+          }
+        }
         if (apiType === "image.txt2img") {
           const scopedModels = new Set([
             ...(provider.official_first_party_model_ids?.[apiType] ?? []),
@@ -3185,5 +3222,22 @@ export function buildT15Manifest(
       });
     }
   }
+  const geminiChat=cases.find((item) => item.provider_driver==='google-gemini' && item.protocol_contract_id==='gemini.interactions.v1beta' && item.api_type==='llm' && item.mock_scenario==='success');
+  if (geminiChat) for (const media of ['image','audio','video']) for (const form of ['base64','url']) {
+    cases.push({...geminiChat,
+      case_id:`t1.5.google-gemini.gemini.interactions.v1beta.llm.${form}.${media}-input`,
+      tags:[...geminiChat.tags,'chat_document',`chat_document_${media}`,`chat_document_${form}`],
+      expected_wire_fixture:`gemini.interactions.v1beta.request.${media}-input`,
+    });
+  }
+  const tts=catalog.providers.find(p=>p.provider_driver==='google-gemini')?.contracts.find(c=>c.id==='gemini.interactions.tts.v1beta');
+  if (geminiChat && tts) cases.push({...geminiChat,
+    case_id:'t1.5.google-gemini.gemini.interactions.v1beta.llm.generated-pcm-audio',
+    tags:[...geminiChat.tags,'generated_artifact_id','same_provider_artifact_id','chat_document_audio'],
+    artifact_source_provider_driver:'google-gemini',artifact_source_contract_id:tts.id,
+    artifact_source_api_type:'audio.tts',artifact_source_model_id:String(tts.success_fixture?.model),
+    artifact_target_expect_provider_id:false,
+    expected_wire_fixture:'gemini.interactions.v1beta.request.generated-pcm-audio',
+  });
   return cases;
 }

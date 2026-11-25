@@ -2782,9 +2782,13 @@ pub struct AiUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2815,10 +2819,123 @@ pub struct AiUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub characters: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub megapixels: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_unknown_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<AiCost>,
 }
 
+pub const AI_USAGE_DIMENSIONS: &[&str] = &[
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_input_tokens",
+    "cache_write_input_tokens",
+    "cache_write_1h_input_tokens",
+    "reasoning_tokens",
+    "image_input_tokens",
+    "image_output_tokens",
+    "video_input_tokens",
+    "video_output_tokens",
+    "audio_input_tokens",
+    "audio_output_tokens",
+    "image_units",
+    "reference_images",
+    "audio_seconds",
+    "video_seconds",
+    "characters",
+    "request_units",
+    "compute_seconds",
+    "megapixels",
+];
+
 impl AiUsage {
+    pub fn dimensions(&self) -> Vec<(&'static str, f64)> {
+        [
+            ("input_tokens", self.input_tokens.map(|value| value as f64)),
+            (
+                "output_tokens",
+                self.output_tokens.map(|value| value as f64),
+            ),
+            ("total_tokens", self.total_tokens.map(|value| value as f64)),
+            (
+                "cache_read_input_tokens",
+                self.cache_read_input_tokens.map(|value| value as f64),
+            ),
+            (
+                "cache_write_input_tokens",
+                self.cache_write_input_tokens.map(|value| value as f64),
+            ),
+            (
+                "cache_write_1h_input_tokens",
+                self.cache_write_1h_input_tokens.map(|value| value as f64),
+            ),
+            (
+                "reasoning_tokens",
+                self.reasoning_tokens.map(|value| value as f64),
+            ),
+            (
+                "image_input_tokens",
+                self.image_input_tokens.map(|value| value as f64),
+            ),
+            (
+                "image_output_tokens",
+                self.image_output_tokens.map(|value| value as f64),
+            ),
+            (
+                "video_input_tokens",
+                self.video_input_tokens.map(|value| value as f64),
+            ),
+            (
+                "video_output_tokens",
+                self.video_output_tokens.map(|value| value as f64),
+            ),
+            (
+                "audio_input_tokens",
+                self.audio_input_tokens.map(|value| value as f64),
+            ),
+            (
+                "audio_output_tokens",
+                self.audio_output_tokens.map(|value| value as f64),
+            ),
+            ("image_units", self.image_units.map(|value| value as f64)),
+            (
+                "reference_images",
+                self.reference_images.map(|value| value as f64),
+            ),
+            (
+                "audio_seconds",
+                self.audio_seconds.map(|value| value as f64),
+            ),
+            (
+                "video_seconds",
+                self.video_seconds.map(|value| value as f64),
+            ),
+            ("characters", self.characters.map(|value| value as f64)),
+            (
+                "request_units",
+                self.request_units.map(|value| value as f64),
+            ),
+            (
+                "compute_seconds",
+                self.compute_seconds.map(|value| value as f64),
+            ),
+            ("megapixels", self.megapixels.map(|value| value as f64)),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| {
+            value
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .map(|value| (name, value))
+        })
+        .collect()
+    }
+
     pub fn request_units(request_units: u64) -> Self {
         Self {
             input_tokens: None,
@@ -2827,8 +2944,10 @@ impl AiUsage {
             cache_read_input_tokens: None,
             audio_input_tokens: None,
             image_input_tokens: None,
+            video_input_tokens: None,
             audio_output_tokens: None,
             image_output_tokens: None,
+            video_output_tokens: None,
             reported_cost: None,
             cache_write_input_tokens: None,
             cache_write_1h_input_tokens: None,
@@ -2839,6 +2958,10 @@ impl AiUsage {
             reference_images: None,
             request_units: Some(request_units),
             characters: None,
+            compute_seconds: None,
+            megapixels: None,
+            cost_source: None,
+            cost_unknown_reason: None,
             cost: None,
         }
     }

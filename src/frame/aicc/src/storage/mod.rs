@@ -1,8 +1,8 @@
 use crate::error::{StorageError, StorageResult};
 use crate::execution::{
     ExecutionOutput, ExecutionRecord, ExecutionState, ExecutionStore, IdempotencyClaim,
-    IdempotencyScope, PinnedProviderTask, RecoverableExecutions, RetiredExecution,
-    UsageCompletion, UsageCompletionPort,
+    IdempotencyScope, PinnedProviderTask, RecoverableExecutions, RetiredExecution, UsageCompletion,
+    UsageCompletionPort,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 use std::time::Duration;
 
+mod billing;
 mod quota;
 pub(crate) use quota::{AdmitOutcome, AttemptAdmission, QuotaWriteError, SettleOutcome};
 
@@ -244,7 +245,9 @@ impl AiccStorage {
             loop {
                 match storage.init_sqlite_file().await {
                     Ok(()) => break,
-                    Err(error) if error.is_retryable() && tokio::time::Instant::now() < deadline => {
+                    Err(error)
+                        if error.is_retryable() && tokio::time::Instant::now() < deadline =>
+                    {
                         tokio::time::sleep(delay).await;
                         delay = (delay * 2).min(Duration::from_secs(1));
                     }
@@ -329,6 +332,15 @@ impl AiccStorage {
                 }
             }
         }
+        let status = match self.backend {
+            RdbBackend::Sqlite => "json_extract(record_json,'$.binding.billing.status')",
+            RdbBackend::Postgres => "record_json::jsonb #>> '{binding,billing,status}'",
+        };
+        let next = match self.backend {
+            RdbBackend::Sqlite => "json_extract(record_json,'$.binding.billing.next_attempt_ms')",
+            RdbBackend::Postgres => "record_json::jsonb #>> '{binding,billing,next_attempt_ms}'",
+        };
+        transaction.execute(format!("CREATE INDEX IF NOT EXISTS idx_aicc_billing_due ON aicc_execution_record (CAST({next} AS BIGINT),created_at_ms,task_id) WHERE state='succeeded' AND {status} IN ('pending','local_pending')").as_str()).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -952,7 +964,12 @@ impl AiccStorage {
             .bind(finance.as_ref().map(|(_, currency)| currency.as_str()))
             .bind(i64::from(finance.is_some()))
             .bind(&e.operator_id)
-            .bind(e.attribution.as_ref().map(serde_json::to_string).transpose()?)
+            .bind(
+                e.attribution
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+            )
             .bind(e.created_at_ms)
             .execute(&self.pool)
             .await?;
@@ -1112,7 +1129,10 @@ impl AiccStorage {
             Some(object) => {
                 object.remove("binding");
                 object.remove("output");
-                object.insert("state".into(), serde_json::to_value(ExecutionState::Failed)?);
+                object.insert(
+                    "state".into(),
+                    serde_json::to_value(ExecutionState::Failed)?,
+                );
                 object.insert("error".into(), serde_json::to_value(&error)?);
                 serde_json::from_value::<ExecutionRecord>(value).ok()
             }
@@ -1148,33 +1168,66 @@ impl AiccStorage {
         now_ms: i64,
     ) -> StorageResult<QueryUsageResponse> {
         let (start, end) = time_range(&req.time_range, now_ms)?;
-        let total = self
-            .usage_aggregates(start, end, &req.filters, &[], None)
-            .await?
-            .into_iter()
-            .next()
-            .map(|row| row.aggregate)
-            .unwrap_or_default();
-        let grouped = if req.group_by.is_empty() {
-            Vec::new()
+        let page_only = req.output_mode == UsageQueryOutputMode::Page;
+        let groups_only = req.output_mode == UsageQueryOutputMode::Groups;
+        let total = if groups_only {
+            UsageAggregate::default()
+        } else if page_only {
+            let mut query = usage_query(
+                "SELECT COUNT(*) AS count FROM aicc_usage_event WHERE created_at_ms>=".into(),
+                start,
+                end,
+                &req.filters,
+                None,
+            );
+            let count: i64 = query
+                .build()
+                .fetch_one(&self.pool)
+                .await?
+                .try_get("count")?;
+            UsageAggregate {
+                total_requests: count as u64,
+                finance_complete: count == 0,
+                ..Default::default()
+            }
         } else {
-            self.usage_aggregates(start, end, &req.filters, &req.group_by, None)
+            self.usage_aggregates(start, end, &req.filters, &[], None, None, None)
                 .await?
                 .into_iter()
-                .map(|row| UsageGroupedRow {
-                    group: row.group,
-                    aggregate: row.aggregate,
-                })
-                .collect()
+                .next()
+                .map(|row| row.aggregate)
+                .unwrap_or_default()
+        };
+        let grouped = if page_only || req.group_by.is_empty() {
+            Vec::new()
+        } else {
+            self.usage_aggregates(
+                start,
+                end,
+                &req.filters,
+                &req.group_by,
+                None,
+                req.group_limit,
+                req.group_offset,
+            )
+            .await?
+            .into_iter()
+            .map(|row| UsageGroupedRow {
+                group: row.group,
+                aggregate: row.aggregate,
+            })
+            .collect()
         };
         let buckets = match req.time_bucket {
-            Some(bucket) => self
+            Some(bucket) if !page_only && !groups_only => self
                 .usage_aggregates(
                     start,
                     end,
                     &req.filters,
                     &req.group_by,
                     Some(bucket.span_ms()),
+                    None,
+                    None,
                 )
                 .await?
                 .into_iter()
@@ -1184,13 +1237,15 @@ impl AiccStorage {
                     aggregate: row.aggregate,
                 })
                 .collect(),
-            None => Vec::new(),
+            _ => Vec::new(),
         };
         let mut raw = Vec::new();
         let mut next_cursor = None;
         if matches!(
             req.output_mode,
-            UsageQueryOutputMode::Events | UsageQueryOutputMode::SummaryAndEvents
+            UsageQueryOutputMode::Events
+                | UsageQueryOutputMode::Page
+                | UsageQueryOutputMode::SummaryAndEvents
         ) {
             let cursor = req.cursor.as_deref().map(decode_cursor).transpose()?;
             let page_limit = limit(req.limit);
@@ -1235,7 +1290,30 @@ impl AiccStorage {
         filters: &UsageQueryFilters,
         groups: &[UsageQueryGroup],
         bucket_span_ms: Option<i64>,
+        group_limit: Option<u32>,
+        group_offset: Option<u32>,
     ) -> StorageResult<Vec<SqlUsageAggregateRow>> {
+        let selected_groups = if let Some(cap) = group_limit.filter(|_| !groups.is_empty()) {
+            let columns = groups
+                .iter()
+                .map(|group| group.as_key())
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut query = usage_query(
+                format!("SELECT {columns} FROM aicc_usage_event WHERE created_at_ms>="),
+                start,
+                end,
+                filters,
+                None,
+            );
+            query.push(format!(" GROUP BY {columns} ORDER BY SUM(COALESCE(total_tokens,COALESCE(input_tokens,0)+COALESCE(output_tokens,0))) DESC,COUNT(*) DESC,{columns} LIMIT ")).push_bind(limit(Some(cap)) as i64).push(" OFFSET ").push_bind(group_offset.unwrap_or_default() as i64);
+            Some(query.build().fetch_all(&self.pool).await?)
+        } else {
+            None
+        };
+        if selected_groups.as_ref().is_some_and(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
         let mut select = String::from("SELECT ");
         if let Some(span) = bucket_span_ms {
             select.push_str(&format!(
@@ -1253,10 +1331,29 @@ impl AiccStorage {
              COALESCE(SUM(COALESCE(total_tokens,COALESCE(input_tokens,0)+COALESCE(output_tokens,0))),0) AS total_tokens,\
              COALESCE(SUM(CASE WHEN request_units IS NULL OR request_units<1 THEN 1 ELSE request_units END),0) AS request_units,\
              COALESCE(SUM(CASE WHEN finance_valid=1 THEN finance_amount ELSE 0 END),0.0) AS finance_amount,\
-             COALESCE(SUM(finance_valid),0) AS valid_finance_count \
-             FROM aicc_usage_event WHERE created_at_ms>=",
+             COALESCE(SUM(finance_valid),0) AS valid_finance_count",
         );
+        for name in buckyos_api::AI_USAGE_DIMENSIONS {
+            let value = match self.backend {
+                RdbBackend::Sqlite => {
+                    format!("CAST(json_extract(usage_json, '$.{name}') AS DOUBLE PRECISION)")
+                }
+                RdbBackend::Postgres => {
+                    format!("CAST(usage_json::jsonb->>'{name}' AS DOUBLE PRECISION)")
+                }
+            };
+            let value = format!("CASE WHEN {value} >= 0 THEN {value} ELSE NULL END");
+            select.push_str(&format!(
+                ",COALESCE(SUM({value}),0.0) AS dim_{name},COUNT({value}) AS count_{name}"
+            ));
+        }
+        select.push_str(" FROM aicc_usage_event WHERE created_at_ms>=");
         let mut query = usage_query(select, start, end, filters, None);
+        if let Some(selected) = selected_groups {
+            query.push(" AND (");
+            append_selected_groups(&mut query, &selected, groups)?;
+            query.push(")");
+        }
         query.push(" GROUP BY ");
         if let Some(span) = bucket_span_ms {
             query.push(format!("(created_at_ms / {span}) * {span},"));
@@ -1936,6 +2033,24 @@ fn merge_usage_aggregate_rows(
         accumulator.aggregate.total_tokens += from_i64(row.try_get("total_tokens")?)?;
         accumulator.aggregate.consumed_request_units += from_i64(row.try_get("request_units")?)?;
         accumulator.valid_finance_count += valid_finance_count;
+        accumulator.aggregate.unpriced_requests += total_requests - valid_finance_count;
+        for name in buckyos_api::AI_USAGE_DIMENSIONS {
+            let count = from_i64(row.try_get(format!("count_{name}").as_str())?)?;
+            if count > 0 {
+                let dimension = accumulator
+                    .aggregate
+                    .dimensions
+                    .entry((*name).to_owned())
+                    .or_default();
+                dimension.amount += row.try_get::<f64, _>(format!("dim_{name}").as_str())?;
+                if !dimension.amount.is_finite() {
+                    return Err(StorageError::InvalidRecord(
+                        "usage dimension subtotal overflow".into(),
+                    ));
+                }
+                dimension.reported_events += count;
+            }
+        }
         if valid_finance_count > 0 {
             let currency: Option<String> = row.try_get("finance_currency")?;
             let amount: f64 = row.try_get("finance_amount")?;
@@ -1982,6 +2097,11 @@ fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageA
     let mut finance = BTreeMap::<String, Option<f64>>::new();
     for e in events {
         a.total_requests += 1;
+        for (name, amount) in e.usage_json.dimensions() {
+            let dimension = a.dimensions.entry(name.to_owned()).or_default();
+            dimension.amount += amount;
+            dimension.reported_events += 1;
+        }
         a.input_tokens += e.input_tokens.unwrap_or(0);
         a.output_tokens += e.output_tokens.unwrap_or(0);
         a.total_tokens += e
@@ -2001,7 +2121,10 @@ fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageA
                     }
                 }
             }
-            None => a.finance_complete = false,
+            None => {
+                a.finance_complete = false;
+                a.unpriced_requests += 1;
+            }
         }
     }
     a.finance_totals = finance
@@ -2018,6 +2141,40 @@ fn valid_finance(value: &Value) -> Option<(f64, String)> {
         return None;
     }
     Some((amount, currency.to_ascii_uppercase()))
+}
+
+fn append_selected_groups(
+    query: &mut QueryBuilder<'_, Any>,
+    rows: &[AnyRow],
+    groups: &[UsageQueryGroup],
+) -> StorageResult<()> {
+    if rows.len() > 1 {
+        let middle = rows.len() / 2;
+        query.push("(");
+        append_selected_groups(query, &rows[..middle], groups)?;
+        query.push(" OR ");
+        append_selected_groups(query, &rows[middle..], groups)?;
+        query.push(")");
+    } else if let Some(row) = rows.first() {
+        query.push("(");
+        for (index, group) in groups.iter().enumerate() {
+            if index > 0 {
+                query.push(" AND ");
+            }
+            let column = group.as_key();
+            query.push(column);
+            match row.try_get::<Option<String>, _>(column)? {
+                Some(value) => {
+                    query.push("=").push_bind(value);
+                }
+                None => {
+                    query.push(" IS NULL");
+                }
+            }
+        }
+        query.push(")");
+    }
+    Ok(())
 }
 
 fn limit(value: Option<u32>) -> usize {
@@ -2107,6 +2264,199 @@ fn placeholders(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn review_group_limit_1000_preserves_null_and_multicurrency_groups() {
+        let db = db().await;
+        for index in 0..1000 {
+            let mut event = usage_event(
+                &format!("group-{index}"),
+                Some(json!({"currency":"USD","amount":0.2})),
+                Some(1),
+            );
+            event.provider_instance_name = format!("provider-{index}");
+            db.write_usage(&event).await.unwrap();
+        }
+        let mut req = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+            start_time_ms: 1,
+            end_time_ms: 20_000,
+        });
+        req.group_by = vec![
+            UsageQueryGroup::ProviderInstanceName,
+            UsageQueryGroup::CallerAppId,
+        ];
+        req.output_mode = UsageQueryOutputMode::Groups;
+        req.group_limit = Some(1000);
+        let result = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(result.grouped.len(), 1000);
+    }
+
+    #[tokio::test]
+    async fn billing_long_retry_after_is_due_at_the_deadline() {
+        use crate::execution::{BillingStatus, DeferredBilling};
+        let db = db().await;
+        let record = completed_fal_billing(&db, "long-retry-after", false).await;
+        let now = record.created_at_ms + 1_000;
+        let deadline = record.created_at_ms + DeferredBilling::MAX_AGE_MS;
+        let claimed = db.claim_billing(&record, now).await.unwrap().unwrap();
+        db.finish_billing(
+            &claimed,
+            None,
+            None,
+            Some("rate_limited"),
+            Some(172_800_000),
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .pending_billings(deadline - 1, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let due = db.pending_billings(deadline, 10).await.unwrap();
+        assert_eq!(due.len(), 1);
+        let claimed = db.claim_billing(&due[0], deadline).await.unwrap().unwrap();
+        assert!(claimed
+            .binding
+            .as_ref()
+            .unwrap()
+            .billing
+            .as_ref()
+            .unwrap()
+            .exhausted(record.created_at_ms, deadline));
+        db.finish_billing(
+            &claimed,
+            None,
+            None,
+            Some("probe_download_failed"),
+            None,
+            deadline,
+        )
+        .await
+        .unwrap();
+        let saved = db.get_task(&record.task_id).await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            BillingStatus::Unresolved
+        );
+        assert!(db
+            .pending_billings(deadline + 172_800_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn review_billing_errors_reach_a_durable_terminal_state() {
+        use crate::execution::BillingStatus;
+        let db = db().await;
+        let record = completed_fal_billing(&db, "exhausted", false).await;
+        let now = record.created_at_ms + 86_400_000;
+        let claimed = db.claim_billing(&record, now).await.unwrap().unwrap();
+        db.finish_billing(
+            &claimed,
+            None,
+            None,
+            Some("probe_download_failed"),
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .pending_billings(now + 86_400_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let saved = db.get_task(&record.task_id).await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            BillingStatus::Unresolved
+        );
+        let usage = saved.output.unwrap().usage;
+        assert!(!usage.cost_source.unwrap().contains("pending"));
+        assert_eq!(usage.cost.unwrap().amount, 0.25);
+        assert_eq!(
+            db.get_task(&record.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .binding
+                .unwrap()
+                .billing
+                .unwrap()
+                .last_error
+                .as_deref(),
+            Some("probe_download_failed")
+        );
+        let mut unknown = completed_fal_billing(&db, "unpriced-exhausted", false).await;
+        unknown
+            .binding
+            .as_mut()
+            .unwrap()
+            .billing
+            .as_mut()
+            .unwrap()
+            .attempts = 11;
+        let output = unknown.output.as_mut().unwrap();
+        output.cost = None;
+        output.usage.cost = None;
+        let usage_json = serde_json::to_string(&output.usage).unwrap();
+        sqlx::query("UPDATE aicc_usage_event SET usage_json=? WHERE event_id=?")
+            .bind(usage_json)
+            .bind(&unknown.usage_event_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE aicc_execution_record SET record_json=? WHERE task_id=?")
+            .bind(serde_json::to_string(&unknown).unwrap())
+            .bind(&unknown.task_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let claimed = db.claim_billing(&unknown, 30_000).await.unwrap().unwrap();
+        assert!(db
+            .finish_billing(
+                &claimed,
+                None,
+                None,
+                Some("probe_missing_frames"),
+                None,
+                30_000
+            )
+            .await
+            .unwrap());
+        assert!(!db
+            .finish_billing(
+                &claimed,
+                None,
+                None,
+                Some("probe_missing_frames"),
+                None,
+                30_000
+            )
+            .await
+            .unwrap());
+        let saved = db.get_task(&unknown.task_id).await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            BillingStatus::Unresolved
+        );
+        let usage = saved.output.unwrap().usage;
+        assert!(usage.cost.is_none());
+        assert_eq!(usage.cost_source.as_deref(), Some("billing_unresolved"));
+        assert_eq!(
+            usage.cost_unknown_reason.as_deref(),
+            Some("billing_retries_exhausted:probe_missing_frames")
+        );
+        let plan: Vec<sqlx::any::AnyRow> = sqlx::query("EXPLAIN QUERY PLAN SELECT task_id FROM aicc_execution_record INDEXED BY idx_aicc_billing_due WHERE state='succeeded' AND json_extract(record_json,'$.binding.billing.status') IN ('pending','local_pending') AND CAST(json_extract(record_json,'$.binding.billing.next_attempt_ms') AS BIGINT)<=100000 ORDER BY CAST(json_extract(record_json,'$.binding.billing.next_attempt_ms') AS BIGINT),created_at_ms,task_id LIMIT 32").fetch_all(&db.pool).await.unwrap();
+        assert!(plan.iter().any(|row| row
+            .try_get::<String, _>("detail")
+            .unwrap()
+            .contains("idx_aicc_billing_due")));
+    }
+
     use crate::execution::{
         NativeTaskResumeDescriptor, PinnedPricingBasis, PinnedPricingSnapshot, ResumeCredential,
         ResumeCredentialKind,
@@ -2237,12 +2587,21 @@ mod tests {
     async fn artifact_scope_write_does_not_wait_for_a_read_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let connection = format!("sqlite://{}?mode=rwc", dir.path().join("aicc.db").display());
-        let storage = AiccStorage::open(&connection, RdbBackend::Sqlite).await.unwrap();
-        storage.remember_artifact_scope("cyfile:existing", "tenant", "user", None, 0).await.unwrap();
+        let storage = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        storage
+            .remember_artifact_scope("cyfile:existing", "tenant", "user", None, 0)
+            .await
+            .unwrap();
         let mut reader = storage.pool.begin().await.unwrap();
         let _: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM aicc_artifact_scope")
-            .fetch_one(&mut *reader).await.unwrap();
-        let result = storage.remember_artifact_scope("cyfile:new", "tenant", "user", None, 1).await;
+            .fetch_one(&mut *reader)
+            .await
+            .unwrap();
+        let result = storage
+            .remember_artifact_scope("cyfile:new", "tenant", "user", None, 1)
+            .await;
         reader.rollback().await.unwrap();
         result.unwrap();
         assert_eq!(
@@ -2941,6 +3300,7 @@ mod tests {
         let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
         PinnedProviderTask {
             reported_cost_currency: None,
+            billing: None,
             quota_attempt_id: None,
             runtime_generation: 7,
             origin_provider: "openai".into(),
@@ -2985,12 +3345,15 @@ mod tests {
             pricing: Some(PinnedPricingSnapshot {
                 currency: "USD".into(),
                 basis: PinnedPricingBasis::Tokens {
+                    addons: Vec::new(),
                     cache_write_input_token: None,
                     cache_write_1h_input_token: None,
                     audio_input_token: None,
                     image_input_token: None,
+                    video_input_token: None,
                     audio_output_token: None,
                     image_output_token: None,
+                    video_output_token: None,
                     input_token: Some(0.000_001_25),
                     cache_input_token: Some(0.000_000_125),
                     output_token: Some(0.000_01),
@@ -3154,12 +3517,14 @@ mod tests {
         let mut old_json = serde_json::to_value(&old).unwrap();
         old_json["state"] = json!("running");
         old_json["binding"] = binding;
-        sqlx::query("UPDATE aicc_execution_record SET state='running',record_json=? WHERE task_id=?")
-            .bind(old_json.to_string())
-            .bind(&old.task_id)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE aicc_execution_record SET state='running',record_json=? WHERE task_id=?",
+        )
+        .bind(old_json.to_string())
+        .bind(&old.task_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
 
         let recoverable = db.recoverable().await.unwrap();
         assert_eq!(recoverable.records, vec![current]);
@@ -3230,6 +3595,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_page_skips_dimensions_and_group_pages_preserve_currencies() {
+        let db = db().await;
+        for (id, provider, currency, tokens) in [
+            ("a", "top", "USD", 20),
+            ("b", "top", "CNY", 10),
+            ("c", "second", "USD", 15),
+        ] {
+            let mut event =
+                usage_event(id, Some(json!({"currency":currency,"amount":0.2})), Some(1));
+            event.provider_instance_name = provider.into();
+            event.total_tokens = Some(tokens);
+            event.usage_json.image_units = Some(1);
+            db.write_usage(&event).await.unwrap();
+        }
+        let mut req = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+            start_time_ms: 1,
+            end_time_ms: 20_000,
+        });
+        req.group_by = vec![UsageQueryGroup::ProviderInstanceName];
+        req.output_mode = UsageQueryOutputMode::Page;
+        req.limit = Some(1);
+        let page = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.total.total_requests, 3);
+        assert!(page.total.dimensions.is_empty());
+        assert!(page.grouped.is_empty());
+        req.cursor = page.next_cursor;
+        let next = db.query_usage(&req, 20_000).await.unwrap();
+        assert_ne!(page.events[0].event_id, next.events[0].event_id);
+        req.output_mode = UsageQueryOutputMode::Summary;
+        req.group_limit = Some(1);
+        let first = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(first.total.total_requests, 3);
+        assert_eq!(first.grouped.len(), 1);
+        assert_eq!(first.grouped[0].group["provider_instance_name"], "top");
+        assert_eq!(first.grouped[0].aggregate.finance_totals.len(), 2);
+        assert_eq!(
+            first.grouped[0].aggregate.dimensions["image_units"].amount,
+            2.0
+        );
+        req.output_mode = UsageQueryOutputMode::Groups;
+        let groups = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(groups.total.total_requests, 0);
+        assert_eq!(groups.grouped[0].aggregate, first.grouped[0].aggregate);
+        req.output_mode = UsageQueryOutputMode::Summary;
+        req.group_offset = Some(1);
+        let second = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(second.total, first.total);
+        assert_eq!(second.grouped.len(), 1);
+        assert_eq!(second.grouped[0].group["provider_instance_name"], "second");
+        req.group_offset = Some(2);
+        assert!(db
+            .query_usage(&req, 20_000)
+            .await
+            .unwrap()
+            .grouped
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn usage_dimensions_aggregate_all_filtered_pages_without_filling_missing_values() {
+        let db = db().await;
+        for (id, currency, amount, units) in [
+            ("a", Some("USD"), 0.2, Some(2)),
+            ("b", Some("EUR"), 0.3, Some(0)),
+            ("c", None, 0.0, None),
+        ] {
+            let mut event = usage_event(
+                id,
+                currency.map(|currency| json!({"currency":currency,"amount":amount})),
+                Some(1),
+            );
+            event.usage_json.image_units = units;
+            event.usage_json.video_seconds = Some(-1.0);
+            event.usage_json.audio_seconds = Some(1.25);
+            db.write_usage(&event).await.unwrap();
+        }
+        let mut excluded = usage_event("excluded", None, Some(1));
+        excluded.provider_instance_name = "other".into();
+        excluded.usage_json.image_units = Some(1000);
+        db.write_usage(&excluded).await.unwrap();
+        let mut req = QueryUsageRequest {
+            time_range: UsageQueryTimeRange::Explicit {
+                start_time_ms: 1,
+                end_time_ms: 20_000,
+            },
+            filters: UsageQueryFilters {
+                provider_instance_names: vec!["openai-primary".into()],
+                ..Default::default()
+            },
+            group_limit: None,
+            group_offset: None,
+            group_by: vec![UsageQueryGroup::ProviderInstanceName],
+            output_mode: UsageQueryOutputMode::SummaryAndEvents,
+            limit: Some(1),
+            time_bucket: None,
+            cursor: None,
+            zone_wide: false,
+        };
+        let first = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(first.events.len(), 1);
+        assert_eq!(first.total.total_requests, 3);
+        assert_eq!(first.total.unpriced_requests, 1);
+        assert!(!first.total.finance_complete);
+        assert_eq!(first.total.finance_totals.len(), 2);
+        assert_eq!(first.total.dimensions["image_units"].amount, 2.0);
+        assert_eq!(first.total.dimensions["image_units"].reported_events, 2);
+        assert_eq!(first.total.dimensions["audio_seconds"].amount, 3.75);
+        assert!(!first.total.dimensions.contains_key("video_seconds"));
+        assert_eq!(first.grouped[0].aggregate, first.total);
+        req.cursor = first.next_cursor;
+        let second = db.query_usage(&req, 20_000).await.unwrap();
+        assert_eq!(second.total, first.total);
+        assert_ne!(second.events[0].event_id, first.events[0].event_id);
+    }
+
+    #[tokio::test]
     async fn usage_is_optional_deduplicated_and_queryable() {
         let db = db().await;
         let mut missing = completion("e0", "t0", "i0", 9_000);
@@ -3265,6 +3747,8 @@ mod tests {
                 end_time_ms: 20_000,
             },
             filters: UsageQueryFilters::default(),
+            group_limit: None,
+            group_offset: None,
             group_by: vec![
                 UsageQueryGroup::ProviderInstanceName,
                 UsageQueryGroup::Method,
@@ -3306,13 +3790,27 @@ mod tests {
     async fn five_minute_usage_buckets_preserve_boundaries_and_token_totals() {
         let db = db().await;
         for (id, at, tenant, input, output, total) in [
-            ("before", 300_000, "tenant-a", Some(100), Some(50), Some(150)),
+            (
+                "before",
+                300_000,
+                "tenant-a",
+                Some(100),
+                Some(50),
+                Some(150),
+            ),
             ("start", 300_001, "tenant-a", Some(10), Some(5), Some(15)),
             ("last", 599_999, "tenant-a", Some(20), Some(7), None),
             ("next", 600_000, "tenant-a", Some(30), Some(9), None),
             ("input-only", 600_001, "tenant-a", Some(40), None, None),
             ("output-only", 600_002, "tenant-a", None, Some(11), None),
-            ("explicit-zero", 600_003, "tenant-a", Some(2), Some(3), Some(0)),
+            (
+                "explicit-zero",
+                600_003,
+                "tenant-a",
+                Some(2),
+                Some(3),
+                Some(0),
+            ),
             ("missing", 600_004, "tenant-a", None, None, None),
             ("total-only", 600_005, "tenant-a", None, None, Some(12)),
             ("other", 900_000, "tenant-b", Some(100), Some(50), None),
@@ -3476,6 +3974,8 @@ mod tests {
                 provider_instance_names: vec!["openai-primary".into()],
                 ..UsageQueryFilters::default()
             },
+            group_limit: None,
+            group_offset: None,
             group_by: vec![],
             time_bucket: None,
             output_mode: UsageQueryOutputMode::Events,
@@ -3528,6 +4028,8 @@ mod tests {
                             end_time_ms: 20_000,
                         },
                         filters,
+                        group_limit: None,
+                        group_offset: None,
                         group_by: vec![],
                         time_bucket: None,
                         output_mode: UsageQueryOutputMode::Events,
@@ -3688,5 +4190,491 @@ mod tests {
     #[test]
     fn postgres_placeholders_are_numbered() {
         assert_eq!(placeholders("a=? AND b=?"), "a=$1 AND b=$2")
+    }
+    async fn completed_fal_billing(
+        db: &AiccStorage,
+        task: &str,
+        protocol_cost: bool,
+    ) -> ExecutionRecord {
+        let initial = execution_record(task, task);
+        db.claim(initial.clone()).await.unwrap();
+        let mut binding = provider_binding();
+        binding.protocol_adapter_id = crate::protocol::FAL_QUEUE_ADAPTER_ID.into();
+        binding.provider_instance_name = "fal-main".into();
+        binding.provider_model_id = "fal-ai/video-upscaler".into();
+        binding.exact_model = "fal-ai/video-upscaler@fal-main".into();
+        binding.billing = Some(crate::execution::DeferredBilling::default());
+        db.set_running(task, ExecutionState::Running, binding.clone())
+            .await
+            .unwrap();
+        let mut event = completion(&initial.usage_event_id, task, task, 20_000);
+        event.provider_instance_name = binding.provider_instance_name.clone();
+        event.provider_model = binding.exact_model.clone();
+        let usage = event.usage.as_mut().unwrap();
+        usage.cost_source = Some(
+            if protocol_cost {
+                "provider_reported"
+            } else {
+                "static_pricing_pending_billing"
+            }
+            .into(),
+        );
+        usage.cost = Some(buckyos_api::AiCost::new(0.25, "USD"));
+        let output = ExecutionOutput {
+            value: json!({}),
+            usage: usage.clone(),
+            cost: usage.cost.clone(),
+            artifacts: vec![],
+        };
+        db.write_provider_completion(event).await.unwrap();
+        db.stage_output(task, output.clone()).await.unwrap();
+        assert!(db.pending_billings(30_000, 10).await.unwrap().is_empty());
+        db.try_complete(task, output).await.unwrap();
+        db.get_task(task).await.unwrap().unwrap()
+    }
+
+    fn fal_billing_event(amount: f64) -> crate::execution::ProviderBillingEvent {
+        crate::execution::ProviderBillingEvent {
+            request_id: "remote-1".into(),
+            endpoint_id: "fal-ai/video-upscaler".into(),
+            quantity: Some(7.5),
+            unit: Some("megapixel".into()),
+            cost: buckyos_api::AiCost::new(amount, "USD"),
+        }
+    }
+
+    #[tokio::test]
+    async fn billing_survives_shutdown_claim_loss_and_applies_once_to_usage_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("billing.db").display()
+        );
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        let record = completed_fal_billing(&db, "bill-task", false).await;
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        assert!(db.claim_billing(&record, 30_000).await.unwrap().is_none());
+        db.pool.close().await;
+        drop(db);
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        assert!(db.pending_billings(89_999, 10).await.unwrap().is_empty());
+        let due = db
+            .pending_billings(90_000, 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            due.binding
+                .as_ref()
+                .unwrap()
+                .billing
+                .as_ref()
+                .unwrap()
+                .attempts,
+            1
+        );
+        let resumed = db.claim_billing(&due, 90_000).await.unwrap().unwrap();
+        assert!(!db
+            .finish_billing(
+                &claimed,
+                Some(fal_billing_event(9.0)),
+                None,
+                None,
+                None,
+                90_000
+            )
+            .await
+            .unwrap());
+        assert!(db
+            .finish_billing(
+                &resumed,
+                Some(fal_billing_event(0.006)),
+                None,
+                None,
+                None,
+                90_000
+            )
+            .await
+            .unwrap());
+        assert!(!db
+            .finish_billing(
+                &resumed,
+                Some(fal_billing_event(0.006)),
+                None,
+                None,
+                None,
+                90_001
+            )
+            .await
+            .unwrap());
+        assert!(db
+            .pending_billings(200_000_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let row=sqlx::query("SELECT finance_amount,usage_json FROM aicc_usage_event WHERE event_id='usage-bill-task'").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(row.get::<f64, _>("finance_amount"), 0.006);
+        let usage: AiUsage = serde_json::from_str(&row.get::<String, _>("usage_json")).unwrap();
+        assert_eq!(usage.megapixels, Some(7.5));
+        assert_eq!(usage.cost_source.as_deref(), Some("provider_billing"));
+        let replay = db.get_task("bill-task").await.unwrap().unwrap();
+        assert_eq!(replay.output.as_ref().unwrap().usage, usage);
+        assert_eq!(replay.output.unwrap().cost.unwrap().amount, 0.006);
+        assert_eq!(
+            replay.binding.unwrap().billing.unwrap().status,
+            crate::execution::BillingStatus::Applied
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM aicc_usage_event")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn billing_concurrent_reconciliation_serializes_sqlite_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("concurrent-billing.db").display()
+        );
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        let mut claimed = Vec::new();
+        for index in 0..8 {
+            let record = completed_fal_billing(&db, &format!("parallel-{index}"), false).await;
+            claimed.push(db.claim_billing(&record, 30_000).await.unwrap().unwrap());
+        }
+        let barrier = tokio::sync::Barrier::new(claimed.len());
+        let results = futures_util::future::join_all(claimed.iter().map(|record| async {
+            barrier.wait().await;
+            db.finish_billing(
+                record,
+                Some(fal_billing_event(0.006)),
+                None,
+                None,
+                None,
+                30_001,
+            )
+            .await
+        }))
+        .await;
+        for result in results {
+            assert!(result.unwrap());
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM aicc_usage_event WHERE finance_amount=0.006"
+            )
+            .fetch_one(&db.pool)
+            .await
+            .unwrap(),
+            8
+        );
+        assert!(db
+            .pending_billings(200_000_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn billing_local_fallback_survives_restart_and_updates_finance_and_replay_once() {
+        use crate::execution::{BillingStatus, PinnedPricingBasis, PinnedPricingSnapshot};
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("local-billing.db").display()
+        );
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        let mut record = completed_fal_billing(&db, "local-bill", false).await;
+        record.binding.as_mut().unwrap().pricing = Some(PinnedPricingSnapshot {
+            currency: "USD".into(),
+            basis: PinnedPricingBasis::Units {
+                unit: crate::catalog::PricingUnit::Megapixel,
+                amount: 0.0008,
+                addons: vec![],
+            },
+        });
+        sqlx::query("UPDATE aicc_execution_record SET record_json=? WHERE task_id=?")
+            .bind(serde_json::to_string(&record).unwrap())
+            .bind(&record.task_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        let local = db
+            .begin_local_billing(&claimed, "permission_denied")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(db
+            .begin_local_billing(&claimed, "permission_denied")
+            .await
+            .unwrap()
+            .is_none());
+        db.pool.close().await;
+        drop(db);
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        assert!(db.pending_billings(89_999, 10).await.unwrap().is_empty());
+        let due = db
+            .pending_billings(90_000, 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            due.binding
+                .as_ref()
+                .unwrap()
+                .billing
+                .as_ref()
+                .unwrap()
+                .status,
+            BillingStatus::LocalPending
+        );
+        let resumed = db.claim_billing(&due, 90_000).await.unwrap().unwrap();
+        let mut usage = resumed.output.as_ref().unwrap().usage.clone();
+        usage.megapixels = Some(77.76);
+        let measurement = json!({"width":960,"height":540,"frames":150,"megapixels":77.76,"method":"video_header"});
+        assert!(!db
+            .finish_billing(
+                &local,
+                None,
+                Some((usage.clone(), Some(measurement.clone()))),
+                None,
+                None,
+                90_000
+            )
+            .await
+            .unwrap());
+        assert!(db
+            .finish_billing(
+                &resumed,
+                None,
+                Some((usage.clone(), Some(measurement.clone()))),
+                None,
+                None,
+                90_000
+            )
+            .await
+            .unwrap());
+        assert!(!db
+            .finish_billing(
+                &resumed,
+                None,
+                Some((usage, Some(measurement.clone()))),
+                None,
+                None,
+                90_001
+            )
+            .await
+            .unwrap());
+        assert!(db
+            .pending_billings(200_000_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let row = sqlx::query("SELECT finance_amount,finance_valid,usage_json FROM aicc_usage_event WHERE event_id='usage-local-bill'").fetch_one(&db.pool).await.unwrap();
+        assert!((row.get::<f64, _>("finance_amount") - 0.062208).abs() < 1e-12);
+        assert_eq!(row.get::<i64, _>("finance_valid"), 1);
+        let usage: AiUsage = serde_json::from_str(&row.get::<String, _>("usage_json")).unwrap();
+        assert_eq!(usage.cost_source.as_deref(), Some("static_pricing"));
+        let replay = db.get_task("local-bill").await.unwrap().unwrap();
+        assert_eq!(replay.output.as_ref().unwrap().usage, usage);
+        assert_eq!(replay.output.unwrap().cost, usage.cost);
+        let billing = replay.binding.unwrap().billing.unwrap();
+        assert_eq!(billing.status, BillingStatus::Local);
+        assert_eq!(billing.measurement, Some(measurement));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM aicc_usage_event")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn billing_local_fallback_distinguishes_free_unknown_and_interrupted_measurement() {
+        use crate::execution::{BillingStatus, PinnedPricingBasis, PinnedPricingSnapshot};
+        let db = db().await;
+        for (task, price, expected) in [
+            ("local-free", Some(0.0), Some(0.0)),
+            ("local-unknown", None, None),
+        ] {
+            let mut record = completed_fal_billing(&db, task, false).await;
+            record.binding.as_mut().unwrap().pricing = price.map(|amount| PinnedPricingSnapshot {
+                currency: "USD".into(),
+                basis: PinnedPricingBasis::Units {
+                    unit: crate::catalog::PricingUnit::Megapixel,
+                    amount,
+                    addons: vec![],
+                },
+            });
+            sqlx::query("UPDATE aicc_execution_record SET record_json=? WHERE task_id=?")
+                .bind(serde_json::to_string(&record).unwrap())
+                .bind(task)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+            let local = db
+                .begin_local_billing(&claimed, "permission_denied")
+                .await
+                .unwrap()
+                .unwrap();
+            db.finish_billing(
+                &local,
+                None,
+                None,
+                Some("probe_download_failed"),
+                None,
+                30_000,
+            )
+            .await
+            .unwrap();
+            let due = db
+                .pending_billings(200_000, 10)
+                .await
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(
+                due.binding
+                    .as_ref()
+                    .unwrap()
+                    .billing
+                    .as_ref()
+                    .unwrap()
+                    .status,
+                BillingStatus::LocalPending
+            );
+            let resumed = db.claim_billing(&due, 200_000).await.unwrap().unwrap();
+            let usage = resumed.output.as_ref().unwrap().usage.clone();
+            db.finish_billing(&resumed, None, Some((usage, None)), None, None, 200_000)
+                .await
+                .unwrap();
+            let row = sqlx::query("SELECT finance_amount,finance_valid,usage_json FROM aicc_usage_event WHERE task_id=?").bind(task).fetch_one(&db.pool).await.unwrap();
+            assert_eq!(row.get::<Option<f64>, _>("finance_amount"), expected);
+            assert_eq!(
+                row.get::<i64, _>("finance_valid"),
+                i64::from(expected.is_some())
+            );
+            let usage: AiUsage = serde_json::from_str(&row.get::<String, _>("usage_json")).unwrap();
+            assert_eq!(usage.cost.as_ref().map(|cost| cost.amount), expected);
+            assert_eq!(usage.cost_unknown_reason.is_some(), expected.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn billing_keeps_protocol_cost_and_retries_errors_without_losing_the_job() {
+        let db = db().await;
+        let record = completed_fal_billing(&db, "protocol", true).await;
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        db.finish_billing(
+            &claimed,
+            Some(fal_billing_event(5.0)),
+            None,
+            None,
+            None,
+            30_000,
+        )
+        .await
+        .unwrap();
+        let saved = db.get_task("protocol").await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            crate::execution::BillingStatus::ProtocolCost
+        );
+        assert_eq!(saved.output.unwrap().cost.unwrap().amount, 0.25);
+        let record = completed_fal_billing(&db, "retry", false).await;
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        db.finish_billing(
+            &claimed,
+            None,
+            None,
+            Some("rate_limited"),
+            Some(180_000),
+            30_000,
+        )
+        .await
+        .unwrap();
+        assert!(db.pending_billings(209_999, 10).await.unwrap().is_empty());
+        let due = db
+            .pending_billings(210_000, 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            due.binding
+                .as_ref()
+                .unwrap()
+                .billing
+                .as_ref()
+                .unwrap()
+                .last_error
+                .as_deref(),
+            Some("rate_limited")
+        );
+        let claimed = db.claim_billing(&due, 210_000).await.unwrap().unwrap();
+        let mut wrong = fal_billing_event(4.0);
+        wrong.request_id = "other-task".into();
+        assert!(db
+            .finish_billing(&claimed, Some(wrong), None, None, None, 210_000)
+            .await
+            .is_err());
+        let mut free = fal_billing_event(0.0);
+        free.quantity = None;
+        free.unit = None;
+        db.finish_billing(&claimed, Some(free), None, None, None, 210_001)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_task("retry")
+                .await
+                .unwrap()
+                .unwrap()
+                .output
+                .unwrap()
+                .cost
+                .unwrap()
+                .amount,
+            0.0
+        );
+        let record = completed_fal_billing(&db, "seconds", false).await;
+        let claimed = db.claim_billing(&record, 30_000).await.unwrap().unwrap();
+        let mut event = fal_billing_event(0.02);
+        event.unit = Some("second".into());
+        event.quantity = Some(2.0);
+        db.finish_billing(&claimed, Some(event), None, None, None, 30_000)
+            .await
+            .unwrap();
+        let saved = db.get_task("seconds").await.unwrap().unwrap();
+        assert_eq!(saved.output.unwrap().usage.compute_seconds, None);
+        assert_eq!(
+            saved
+                .binding
+                .unwrap()
+                .billing
+                .unwrap()
+                .event
+                .unwrap()
+                .quantity,
+            Some(2.0)
+        );
     }
 }

@@ -153,6 +153,12 @@ LLM 消息使用 `AiMessage { role, content[] }` 的 content-block 模型，不�
 
 输入 URL 会经过服务端策略、大小与 MIME 校验；Named Object 会做租户鉴权。Provider 协议为 `BytesOnly` 时 URL 在首次调用前下载；`UrlOrBytes` 先直传并仅在明确的 URL 拒绝后转 bytes 重试；`UrlOnly` 先直传，仅在配置了公网 Named Object 下载入口时才可在明确拒绝后落入 NDN、换用公网 URL 重试，否则不重试。异步重提保持 BuckyOS task id，替换其远端 task id。较大输出应返回 `ResourceRef`/artifact，而不是把二进制放入诊断或错误字段。
 
+LLM 的音频、视频等文件输入使用 `AiContent::Document`，由资源 MIME 表达媒体类型；Named Object 的 MIME 取物化后的资源信息。Provider 适配器负责转换成原生媒体字段，例如 Gemini Interactions 的 `audio`、`video`、`image`，仅文档使用 `document`。
+
+Gemini 裸 PCM 音频保留原生 `sample_rate` 和 `channels` 到 `AiArtifact.metadata` 与 NDN 文件属性；资源再次物化时透传给适配器。Gemini 输入使用原生采样率/声道字段，Base64 或 URL 也可用 MIME 的 `rate`/`channels` 参数表达；不从裸音频字节猜测采样率，也不改写为其他音频格式。来源：[Gemini AudioContent](https://ai.google.dev/api/interactions-api#Resource:AudioContent)。
+
+ASR 响应缺少音频时长时，AICC 从已物化输入的媒体信息补齐；协议返回的时长保留优先。按音频时长组合计费的纯文本 LLM 请求明确记录零音频秒数，其他请求无法测量时仍保留未知，不以 token 数推算时长。
+
 Provider 输出的 `ResourceRef::Url` 不保证可匿名下载。AICC 在返回结果时登记其来源，调用方通过 `open_artifact_url_reader(url, artifact_id?)` 按需读取；`artifact_id` 可省略，不使用 `task_id`。跨进程入口固定为 `POST /kapi/aicc/artifact/open`，成功响应是原始字节流。AICC 只打开已登记且属于当前 tenant/user 的 Provider URL；未登记普通 URL 不处理，跨 tenant、跨 user 或 artifact id 不匹配必须拒绝。
 
 ## 6. 响应与任务

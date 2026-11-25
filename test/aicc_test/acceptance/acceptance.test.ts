@@ -161,6 +161,7 @@ import {
   assertJudgeModelAvailable,
   judgeProviderDriver,
   outputResources,
+  JudgeError,
   parseJudgeVerdict,
   parseJudgeVerdictTexts,
   responseText,
@@ -873,7 +874,6 @@ test("Judge resource extraction includes request resources and output artifacts"
       source: {
         kind: "named_object",
         obj_id: "chunk:test",
-        mime_hint: "audio/mpeg",
       },
     }],
   );
@@ -3613,7 +3613,9 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     assert.equal(field in snVideoInput, false);
   }
   assert.deepEqual(defaults("google-gemini", "gemini-omni-*", "video.generate"), {
-    output: { duration_seconds: 4, size: { short_edge: 720 } },
+    prompt: "A paper plane moving across a desk",
+    conditions: [],
+    output: { duration_seconds: 3, size: { short_edge: 360 } },
   });
   assert.deepEqual(defaults("minimax", "MiniMax-H3", "video.generate"), {
     output: { duration_seconds: 4, size: { short_edge: 768 } },
@@ -7132,4 +7134,177 @@ test("Doubao vision Mock accepts official reasoning levels and rejects unknown v
       }
     }
   }
+});
+
+test('T1.5 billing mapping fails when media quantities are lost despite successful artifacts', async () => {
+  const { assertT15ResponseMapping } = await import('./run_t15_gateway.ts');
+  const contract = { success_fixture: {}, expected_billable_usage: { 'audio.enhance': { audio_seconds: 6.9544375, compute_seconds: 0.01 } } } as any;
+  assert.throws(() => assertT15ResponseMapping('audio.enhance', { audio: {}, artifacts: [], usage: { request_units: 1 } }, contract), /billable usage audio_seconds/);
+  assert.doesNotThrow(() => assertT15ResponseMapping('audio.enhance', { audio: {}, usage: { audio_seconds: 6.9544375, compute_seconds: 0.01 } }, contract));
+});
+
+test('Fal Billing Events Mock validates the official query and final discounted charge', async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request,response) => void handler(request,response));
+  await new Promise<void>((resolvePromise) => server.listen(0,'127.0.0.1',resolvePromise));
+  context.after(() => new Promise<void>((resolvePromise,reject) => server.close((e) => e ? reject(e) : resolvePromise())));
+  const address = server.address();assert.ok(address && typeof address === 'object');
+  const url = new URL(`http://127.0.0.1:${address.port}/v1/models/billing-events`);
+  const headers = {authorization:'Key t15-mock-fal'};
+  for (const endpoint of ['fal-ai/esrgan','fal-ai/imageutils/rembg','fal-ai/deepfilternet3','fal-ai/video-upscaler']) {
+    url.search = new URLSearchParams({request_id:'fal_mock_1',endpoint_id:endpoint,source:'billed',limit:'100',start:'2026-11-21',end:'2026-11-23'}).toString();
+    const response = await fetch(url,{headers});assert.equal(response.status,200);
+    const body = await response.json();assert.equal(body.billing_events[0].endpoint_id,endpoint);
+    assert.equal(body.billing_events[0].cost_total,0.045);assert.equal(body.billing_events[0].quantity,null);
+    url.searchParams.set('request_id','foreign');assert.deepEqual((await (await fetch(url,{headers})).json()).billing_events,[]);
+    url.searchParams.set('unknown','1');assert.equal((await fetch(url,{headers})).status,400);
+  }
+  assert.equal((await fetch(url)).status,403);
+  const cases = buildT15Manifest(catalog).filter((c) => c.tags.includes('billing_events'));
+  assert.equal(cases.length,4);assert.equal(new Set(cases.map((c) => c.api_type)).size,4);
+  const fallbacks = buildT15Manifest(catalog).filter((c) => c.tags.includes('billing_fallback'));
+  assert.equal(fallbacks.length,5);
+  assert.equal(fallbacks.filter((c) => c.tags.includes('billing_download')).length,1);
+  const target = fallbacks.find((c) => c.tags.includes('billing_download'))!;
+  const origin = `http://127.0.0.1:${address.port}`;
+  await fetch(`${origin}/__mock/select`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_driver:'fal',contract_id:target.protocol_contract_id,api_type:target.api_type,scenario:'success',billing_status:403,billing_download:true})});
+  url.searchParams.delete('unknown');
+  assert.equal((await fetch(url,{headers})).status,403);
+  const video = Buffer.from(await (await fetch(`${origin}/artifacts/result.mp4`)).arrayBuffer());
+  assert.ok(video.length > 8 * 1024 * 1024);
+  assert.equal(video.toString('ascii',36,40),'free');
+  const original = await readFile(new URL('../../jarvis_media_dv/assets/video_fresh.mp4',import.meta.url));
+  assert.deepEqual(video.subarray(video.length-original.readUInt32BE(32)),original.subarray(32,32+original.readUInt32BE(32)));
+});
+
+test('Omni minimal T2 cells use documented text generation rather than assumed first-frame input', async () => {
+  const baseline = validateProviderBaseline(JSON.parse(await readFile(join(here,'provider_capability_baseline.json'),'utf8')));
+  const rule = baseline.providers.find((p) => p.provider_driver === 'google-gemini')!.rules.find((r) => r.model_pattern === 'gemini-omni-*')!;
+  for (const model of ['gemini-omni-1.1-flash','gemini-omni-1.2-flash']) {
+    const cell = {case_id:'minimal-omni',provider_driver:'google-gemini',provider_instance:'gemini',exact_model:`${model}@gemini`,provider_model_id:model,
+      api_type:'video.generate',method:'video.generate',baseline_status:'active' as const,input_kinds:rule.input_kinds,output_kinds:rule.output_kinds,
+      source_urls:rule.source_urls,request_defaults:rule.request_defaults?.['video.generate']};
+    const request = buildExactRequest({cell,runId:'minimal-omni',fixtures:{image:{kind:'base64',mime:'image/png',data_base64:'aW1hZ2U='}}});
+    let captured:Record<string,unknown> = {};
+    await callInference({call:async (_method,params) => {captured=params;return {task_id:'task',status:'running'};}},cell.method,request);
+    assert.deepEqual(captured.conditions,[]);
+    assert.deepEqual(captured.output,{duration_seconds:3,size:{short_edge:360}});
+    assert.equal(captured.prompt,'A paper plane moving across a desk');
+  }
+});
+
+
+test('Gemini reasoning levels follow the official per-model contract', async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, 'google-gemini', 'gemini.interactions.v1beta');
+  const validate = (model: string, level: string) => validateProviderRequest(contract, {
+    method: 'POST', pathname: '/v1beta/interactions', headers: new Headers({'x-goog-api-key':'mock', 'content-type':'application/json'}),
+    query: new URLSearchParams(), body: {model, input:'Return OK', generation_config:{thinking_level:level}},
+  });
+  for (const model of ['gemini-4-hydrogen','gemini-4-neon']) {
+    for (const level of ['low','medium','high','xhigh']) assert.deepEqual(validate(model,level),[]);
+    assert.ok(validate(model,'minimal').some((error) => error.includes('thinking_level')));
+  }
+  assert.ok(validate('gemini-3.5-flash','xhigh').some((error) => error.includes('thinking_level')));
+});
+
+
+test('Gemini physical models in the official T1.5 catalog have explicit USD quotes', async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const gemini = catalog.providers.find((provider) => provider.provider_driver === 'google-gemini')!;
+  const models = new Set(Object.values(gemini.official_first_party_model_ids!).flat());
+  const metadata = JSON.parse(await readFile(new URL('../../../src/frame/aicc/driver_metadata/providers/gemini.provider.json',import.meta.url),'utf8'));
+  for (const id of models) {
+    const quote = metadata.model_pricing.find((entry: {id:string}) => entry.id === id);
+    assert.ok(quote,`Missing official Gemini quote: ${id}`);
+    assert.equal(quote.pricing.currency,'USD');
+  }
+});
+
+
+test('Judge receives canonical structured results rather than an empty text summary', async () => {
+  let prompt='';
+  await runJudge({aicc:{} as never,taskManager:{} as never,model:'judge@provider',runId:'structured',caseId:'detect',rubricVersion:'v1',rubric:['Identify visible objects'],testedModel:'tested@provider',testedProviderInstance:'provider',preferDifferentProvider:false,threshold:0.7,testedRequest:{},terminalResponse:{status:'succeeded',detections:[{label:'flower',bbox:{x:0.2,y:0.3,width:0.4,height:0.5}}],provider_io:{private:'opaque-provider-payload'}},timeoutMs:1000,invoke:async(request)=>{
+    const payload=request.payload as {input_json:{messages:Array<{content:Array<{text?:string}>}>}};
+    prompt=payload.input_json.messages[0].content[0].text??'';
+    return {task_id:'judge',status:'succeeded',result:{message:{content:'{"pass":true,"score":1,"reason":"ok"}'}}};
+  }});
+  assert.match(prompt,/"detections"/);assert.match(prompt,/"flower"/);
+  assert.ok(!prompt.includes('opaque-provider-payload'));
+});
+
+
+test('Gemini Mock rejects media mislabeled as document in every content location', async () => {
+  const catalog=await loadProviderProtocolCatalog();
+  const contract=protocolContract(catalog,'google-gemini','gemini.interactions.v1beta');
+  const errors=(input:unknown[])=>validateProviderRequest(contract,{method:'POST',pathname:'/v1beta/interactions',query:new URLSearchParams(),headers:new Headers({'x-goog-api-key':'mock','content-type':'application/json'}),body:{model:'gemini-3.5-flash',input}});
+  for (const media of ['image','audio','video']) {
+    const mime=media==='audio'?'audio/wav':media==='image'?'image/png':'video/mp4';
+    const good={type:media,mime_type:mime,data:'bWVkaWE='};
+    assert.deepEqual(errors([good]),[]);
+    assert.deepEqual(errors([{type:'user_input',content:[good]}]),[]);
+    assert.ok(errors([{...good,type:'document'}]).some(e=>e.includes('cannot carry media MIME')));
+    assert.ok(errors([{type:'user_input',content:[{...good,type:'document'}]}]).some(e=>e.includes('cannot carry media MIME')));
+  }
+  const cases=buildT15Manifest(catalog).filter(c=>c.tags.includes('chat_document'));
+  assert.equal(cases.length,6);
+});
+
+
+test('Invalid Judge verdicts retain the charged task and finance without relaxing JSON validation', async () => {
+  await assert.rejects(runJudge({aicc:{} as never,taskManager:{} as never,model:'judge@provider',runId:'invalid-verdict',caseId:'caption',rubricVersion:'v1',rubric:['Match the image'],testedModel:'tested@provider',testedProviderInstance:'provider',preferDifferentProvider:false,threshold:0.7,testedRequest:{},terminalResponse:{},timeoutMs:1000,invoke:async()=>({task_id:'charged-judge',status:'succeeded',result:{message:{content:'[{"pass":true,"score":1,"reason":"ok"}]'},usage:{input_tokens:10,output_tokens:5,total_tokens:15},cost:{amount:0.001,currency:'USD'}}})}), (error:unknown)=>{
+    assert.ok(error instanceof JudgeError);
+    assert.equal(error.taskId,'charged-judge');
+    assert.match(error.message,/invalid schema/);
+    assert.equal(extractFinance(error.terminalResponse).actualCostUsd,0.001);
+    return true;
+  });
+});
+
+test('Judge deduplicates artifact references and retains their media type', () => {
+  const ref={kind:'named_object',obj_id:'chunk:image'};
+  assert.deepEqual(outputResources({result:{output:{value:{images:[ref]},artifacts:[{mime:'image/png',resource:ref}]}}}),
+    [{type:'image',source:ref}]);
+  assert.deepEqual(outputResources({messages:[{role:'user',content:[{type:'image',source:ref}]}]}),
+    [{type:'image',source:ref}]);
+});
+
+
+test('Judge constructs canonical NamedObject references from artifact metadata', () => {
+  const resources=outputResources({artifacts:[{mime:'image/png',obj_id:'chunk:image',bucket_ref:'bucket:opaque',name:'image',extra:{diagnostic:true}}]});
+  assert.deepEqual(resources,[{type:'image',source:{kind:'named_object',obj_id:'chunk:image'}}]);
+});
+
+test('Judge invocation failures remain Judge failures without inventing a task', async () => {
+  await assert.rejects(runJudge({aicc:{} as never,taskManager:{} as never,model:'judge@provider',runId:'invoke-failed',caseId:'caption',rubricVersion:'v1',rubric:['Match the image'],testedModel:'tested@provider',testedProviderInstance:'provider',preferDifferentProvider:false,threshold:0.7,testedRequest:{},terminalResponse:{},timeoutMs:1000,invoke:async()=>{throw new Error('no permitted model is available');}}), (error:unknown)=>{
+    assert.ok(error instanceof JudgeError);
+    assert.equal(error.taskId,undefined);
+    assert.match(error.message,/no permitted model/);
+    return true;
+  });
+});
+
+
+test('T1.5 transcription requires the quoted cost as well as token dimensions', async () => {
+  const { assertT15ResponseMapping } = await import('./run_t15_gateway.ts');
+  const contract = { success_fixture: {}, expected_cost_usd: { 'audio.asr': .000044 } } as any;
+  const response = { text: 'marker', segments: [], usage: { input_tokens: 4, audio_input_tokens: 3, output_tokens: 3 } };
+  assert.throws(() => assertT15ResponseMapping('audio.asr', response, contract), /expected cost/);
+  assert.throws(() => assertT15ResponseMapping('audio.asr', { ...response, cost: { amount: .000042, currency: 'USD' } }, contract), /expected cost/);
+  assert.doesNotThrow(() => assertT15ResponseMapping('audio.asr', { ...response, cost: { amount: .000044, currency: 'USD' } }, contract));
+});
+
+
+test('Gemini Mock requires native PCM sampling metadata and generates a NamedObject reuse probe', async () => {
+  const catalog=await loadProviderProtocolCatalog();
+  const contract=protocolContract(catalog,'google-gemini','gemini.interactions.v1beta');
+  const errors=(part:unknown)=>validateProviderRequest(contract,{method:'POST',pathname:'/v1beta/interactions',query:new URLSearchParams(),headers:new Headers({'x-goog-api-key':'mock','content-type':'application/json'}),body:{model:'gemini-3.5-flash',input:[part]}});
+  const pcm={type:'audio',mime_type:'audio/l16',data:'AAAAAA=='};
+  assert.ok(errors(pcm).some(e=>e.includes('sample_rate')));
+  assert.deepEqual(errors({...pcm,sample_rate:24000,channels:1}),[]);
+  assert.ok(errors({...pcm,sample_rate:0}).some(e=>e.includes('sample_rate')));
+  const probe=buildT15Manifest(catalog).find(c=>c.case_id.endsWith('.llm.generated-pcm-audio'));
+  assert.equal(probe?.artifact_source_api_type,'audio.tts');
+  assert.ok(probe?.tags.includes('same_provider_artifact_id'));
 });

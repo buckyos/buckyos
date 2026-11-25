@@ -1,3 +1,5 @@
+mod billing;
+
 use super::*;
 
 pub(crate) struct RuntimeProviderExecutionPort {
@@ -846,7 +848,11 @@ impl RuntimeProviderExecutionPort {
                     ArtifactSpec {
                         name,
                         mime: mime.clone(),
-                        attributes: Map::new(),
+                        attributes: previous_metadata.as_ref().and_then(Value::as_object)
+                            .map(|metadata| metadata.iter().filter(|(key, value)|
+                                matches!(key.as_str(), "sample_rate" | "channels") && value.as_u64().is_some_and(|n| n > 0))
+                                .map(|(key, value)| (key.clone(), value.clone())).collect())
+                            .unwrap_or_default(),
                         embedding: None,
                     },
                 )
@@ -1374,6 +1380,8 @@ impl RuntimeProviderExecutionPort {
                 match decoded {
                     crate::protocol::ProtocolExecution::Immediate(output) => {
                         let mut output = output;
+                        fill_input_audio_usage(&call.input.canonical_request, &call.context,
+                            call.pricing.pricing.as_ref(), &mut output);
                         if let Some(usage) = continuation_usage {
                             merge_continuation_usage(output.usage.get_or_insert_with(Default::default), usage)
                                 .map_err(ProviderStartFailure::after_accept)?;
@@ -1456,7 +1464,9 @@ impl RuntimeProviderExecutionPort {
                 let provider_instance_name = call.provider_instance_name.clone();
                 let protocol_adapter_id = call.protocol_adapter_id.clone();
                 let resource_context = call.resource_access_context.clone();
+                let audio_call = Arc::new(call.clone());
                 let events = stream.events.then(move |event| {
+                    let audio_call = audio_call.clone();
                     let source = source.clone();
                     let storage = storage.clone();
                     let provider_instance_name = provider_instance_name.clone();
@@ -1476,6 +1486,12 @@ impl RuntimeProviderExecutionPort {
                             }
                         }
                         if let ProtocolEvent::Final(output) = &mut event {
+                            fill_input_audio_usage(
+                                &audio_call.input.canonical_request,
+                                &audio_call.context,
+                                audio_call.pricing.pricing.as_ref(),
+                                output,
+                            );
                             if !output.artifacts.is_empty() {
                                 let context = resource_context.as_ref().ok_or_else(|| {
                                     ProtocolError::invalid_configuration(
@@ -2025,29 +2041,131 @@ fn observed_protocol_stream(
     }
 }
 
+pub(super) fn request_has_no_audio(request: &AiccCall) -> bool {
+    let messages = match request {
+        AiccCall::ChatCompletionsCreate(request) => &request.messages,
+        AiccCall::HelperLlmChat(request) => &request.messages,
+        _ => return false,
+    };
+    messages.iter().all(|message| {
+        message.content.iter().all(|content| match content {
+            buckyos_api::AiContent::Text { .. }
+            | buckyos_api::AiContent::Image { .. }
+            | buckyos_api::AiContent::Thinking { .. }
+            | buckyos_api::AiContent::ToolUse { .. } => true,
+            buckyos_api::AiContent::ToolResult { content, .. } => content.iter().all(|content| {
+                matches!(
+                    content,
+                    buckyos_api::AiToolResultContent::Text { .. }
+                        | buckyos_api::AiToolResultContent::Image { .. }
+                )
+            }),
+            _ => false,
+        })
+    })
+}
+
+fn fill_input_audio_usage(
+    request: &AiccCall,
+    context: &CodecContext,
+    pricing: Option<&crate::catalog::Pricing>,
+    output: &mut ProtocolOutput,
+) {
+    if output
+        .usage
+        .as_ref()
+        .is_some_and(|usage| usage.audio_seconds.is_some())
+    {
+        return;
+    }
+    let no_audio = request_has_no_audio(request);
+    let seconds = match request {
+        AiccCall::AudioSpeechRecognition(request) => context
+            .materialized_resource(&request.audio)
+            .ok()
+            .and_then(|resource| crate::media::probe(&resource.bytes).ok())
+            .filter(|facts| facts.has_audio)
+            .and_then(|facts| facts.duration_seconds),
+        AiccCall::ChatCompletionsCreate(_)
+            if pricing.is_some_and(|price| {
+                price.unit == Some(crate::catalog::PricingUnit::AudioSecond)
+                    || price
+                        .addons
+                        .iter()
+                        .any(|addon| addon.unit == crate::catalog::PricingUnit::AudioSecond)
+            }) && no_audio
+                && output
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.audio_input_tokens)
+                    .unwrap_or(0)
+                    == 0
+                && output
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.audio_output_tokens)
+                    .unwrap_or(0)
+                    == 0
+                && output.artifacts.iter().all(|artifact| {
+                    !artifact
+                        .mime
+                        .as_deref()
+                        .is_some_and(|mime| mime.starts_with("audio/"))
+                }) =>
+        {
+            Some(0.0)
+        }
+        _ => None,
+    };
+    if let Some(seconds) = seconds.filter(|seconds| seconds.is_finite() && *seconds >= 0.0) {
+        output
+            .usage
+            .get_or_insert_with(Default::default)
+            .audio_seconds = Some(seconds);
+    }
+}
+
 fn merge_native_result_usage(
     output: &mut ProtocolOutput,
     status_usage: Option<buckyos_api::AiUsage>,
     fallback_video_seconds: Option<f64>,
 ) {
-    let reported_cost = status_usage.as_ref().and_then(|usage| usage.reported_cost);
-    let settled_cost = status_usage.as_ref().and_then(|usage| usage.cost.clone());
-    let video_seconds = status_usage
-        .and_then(|usage| usage.video_seconds)
-        .or(fallback_video_seconds);
-    if reported_cost.is_none() && settled_cost.is_none() && video_seconds.is_none() {
+    if status_usage.is_none() && fallback_video_seconds.is_none() {
         return;
     }
+    let mut status = status_usage.unwrap_or_default();
+    status.video_seconds = status.video_seconds.or(fallback_video_seconds);
     let usage = output.usage.get_or_insert_with(Default::default);
-    if usage.reported_cost.is_none() {
-        usage.reported_cost = reported_cost;
+    macro_rules! fill {
+        ($($field:ident),*) => {$( usage.$field = usage.$field.take().or(status.$field); )*};
     }
-    if usage.cost.is_none() {
-        usage.cost = settled_cost;
-    }
-    if usage.video_seconds.is_none() {
-        usage.video_seconds = video_seconds;
-    }
+    fill!(
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_read_input_tokens,
+        cache_write_input_tokens,
+        cache_write_1h_input_tokens,
+        reasoning_tokens,
+        audio_input_tokens,
+        image_input_tokens,
+        video_input_tokens,
+        audio_output_tokens,
+        image_output_tokens,
+        video_output_tokens,
+        image_units,
+        audio_seconds,
+        video_seconds,
+        reference_images,
+        request_units,
+        characters,
+        compute_seconds,
+        megapixels,
+        reported_cost,
+        cost,
+        cost_source,
+        cost_unknown_reason
+    );
 }
 
 fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_api::AiUsage) -> Result<(), ProtocolError> {
@@ -2060,10 +2178,25 @@ fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_a
             };
         )*};
     }
-    add!(input_tokens, output_tokens, total_tokens, cache_read_input_tokens,
-        cache_write_input_tokens, cache_write_1h_input_tokens, reasoning_tokens,
-        audio_input_tokens, image_input_tokens, audio_output_tokens, image_output_tokens,
-        image_units, request_units, characters);
+    add!(
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_read_input_tokens,
+        cache_write_input_tokens,
+        cache_write_1h_input_tokens,
+        reasoning_tokens,
+        audio_input_tokens,
+        image_input_tokens,
+        video_input_tokens,
+        audio_output_tokens,
+        image_output_tokens,
+        video_output_tokens,
+        image_units,
+        reference_images,
+        request_units,
+        characters
+    );
     macro_rules! add_float {
         ($($field:ident),*) => {$(
             if source.$field.is_some() {
@@ -2073,7 +2206,13 @@ fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_a
             }
         )*};
     }
-    add_float!(audio_seconds, video_seconds, reported_cost);
+    add_float!(
+        audio_seconds,
+        video_seconds,
+        compute_seconds,
+        megapixels,
+        reported_cost
+    );
     if let Some(cost) = source.cost {
         if let Some(target_cost) = target.cost.as_mut() {
             if target_cost.currency != cost.currency {
@@ -2117,6 +2256,112 @@ fn credential_fingerprint(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_asr_duration_preserves_protocol_usage_and_distinguishes_absent_audio() {
+        let bytes = include_bytes!("../../../../../test/aicc_test/fixtures/speech_8khz_stereo.wav");
+        let pricing: crate::catalog::Pricing = serde_json::from_value(json!({"currency":"USD","input_token":0.0000001,"output_token":0.0000003,"addons":[{"unit":"audio_second","amount":0.0001}]})).unwrap();
+        for source in [
+            buckyos_api::ResourceRef::base64(
+                "audio/wav".into(),
+                "ignored-in-favor-of-materialized-resource".into(),
+            ),
+            buckyos_api::ResourceRef::url(
+                "https://example.test/input.wav".into(),
+                Some("audio/wav".into()),
+            ),
+            buckyos_api::ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap()),
+        ] {
+            let mut context = CodecContext {
+                base_url: "https://example.test".into(),
+                state_coordinate: buckyos_api::ProviderStateCoordinate {
+                    provider_profile_id: "test".into(),
+                    adapter_type: "test".into(),
+                    origin_provider: "test".into(),
+                    origin_model: "test".into(),
+                },
+                credential: None,
+                resources: BTreeMap::new(),
+                limits: crate::protocol::CodecLimits {
+                    request_timeout: std::time::Duration::from_secs(10),
+                    max_request_bytes: 1048576,
+                    max_response_bytes: 1048576,
+                },
+            };
+            context.resources.insert(
+                crate::resource::ResourceKey::from_ref(&source).into_string(),
+                crate::protocol::MaterializedResource::new(bytes.as_slice(), "audio/wav", None)
+                    .unwrap(),
+            );
+            let request = AiccCall::AudioSpeechRecognition(
+                buckyos_api::AudioSpeechRecognitionRequest::new("test", source),
+            );
+            let mut output = ProtocolOutput {
+                value: json!({"text":"marker"}),
+                usage: Some(buckyos_api::AiUsage {
+                    input_tokens: Some(2),
+                    output_tokens: Some(3),
+                    ..Default::default()
+                }),
+                artifacts: vec![],
+            };
+            fill_input_audio_usage(&request, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(1.0));
+            let cost = crate::execution::PinnedPricingSnapshot::from_pricing(
+                &pricing,
+                None,
+                std::time::SystemTime::now(),
+            )
+            .unwrap()
+            .unwrap()
+            .completion_cost(output.usage.as_ref().unwrap())
+            .unwrap();
+            assert!((cost.amount - 0.0001011).abs() < 1e-12);
+            output.usage.as_mut().unwrap().audio_seconds = Some(2.5);
+            fill_input_audio_usage(&request, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(2.5));
+            let text = AiccCall::ChatCompletionsCreate(buckyos_api::LlmChatInvokeRequest::new(
+                "test",
+                vec![buckyos_api::AiMessage::text(
+                    buckyos_api::AiRole::User,
+                    "marker",
+                )],
+            ));
+            output.usage.as_mut().unwrap().audio_seconds = None;
+            fill_input_audio_usage(&text, &context, None, &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, None);
+            fill_input_audio_usage(&text, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(0.0));
+            let with_tools = AiccCall::ChatCompletionsCreate(buckyos_api::LlmChatInvokeRequest::new("test", vec![
+                buckyos_api::AiMessage::new(buckyos_api::AiRole::Assistant, vec![buckyos_api::AiContent::tool_use("call", "search", HashMap::new())]),
+                buckyos_api::AiMessage::new(buckyos_api::AiRole::Tool, vec![buckyos_api::AiContent::tool_result_text("call", "result", false)]),
+            ]));
+            output.usage.as_mut().unwrap().audio_seconds = None;
+            fill_input_audio_usage(&with_tools, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, Some(0.0));
+            output.usage.as_mut().unwrap().audio_seconds = None;
+            output.usage.as_mut().unwrap().audio_output_tokens = Some(3);
+            fill_input_audio_usage(&text, &context, Some(&pricing), &mut output);
+            assert_eq!(output.usage.as_ref().unwrap().audio_seconds, None);
+        }
+    }
+
+    #[test]
+    fn continuation_media_counters_are_added_exactly_once() {
+        let mut target = buckyos_api::AiUsage::default();
+        let source = buckyos_api::AiUsage { reference_images:Some(1),audio_input_tokens:Some(2),video_input_tokens:Some(3),audio_output_tokens:Some(4),video_output_tokens:Some(5),compute_seconds:Some(0.25),megapixels:Some(2.0),..Default::default() };
+        merge_continuation_usage(&mut target, source.clone()).unwrap();
+        assert_eq!(target.audio_input_tokens,Some(2));
+        assert_eq!(target.video_input_tokens,Some(3));
+        merge_continuation_usage(&mut target, source).unwrap();
+        assert_eq!(target.audio_input_tokens,Some(4));
+        assert_eq!(target.video_input_tokens,Some(6));
+        assert_eq!(target.audio_output_tokens,Some(8));
+        assert_eq!(target.video_output_tokens,Some(10));
+        assert_eq!(target.compute_seconds,Some(0.5));
+        assert_eq!(target.megapixels,Some(4.0));
+        assert_eq!(target.reference_images,Some(2));
+    }
 
     #[test]
     fn native_result_usage_keeps_result_values_and_fills_status_settlement() {

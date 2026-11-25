@@ -1,4 +1,5 @@
 use super::*;
+use super::schema::ReportedCostPolicy;
 use serde_json::json;
 
 fn file(kind: CatalogKind, value: Value) -> CurrentCatalogFile {
@@ -926,4 +927,13 @@ fn image_count_capacity_is_positive_and_channel_limits_only_narrow() {
             .capabilities["max_images"],
         4
     );
+}
+
+#[test]
+fn reported_cost_currency_can_be_scoped_to_verified_models() {
+    let policy: ReportedCostPolicy = serde_json::from_value(json!({"currency":"USD","semantics":"total_request_cost","model_ids":["kimi-k3","kimi-k3.1-pro"]})).unwrap();
+    assert_eq!(policy.currency_for("kimi-k3.1-pro"),Some("USD"));
+    assert_eq!(policy.currency_for("gpt-6.1-sol"),None);
+    let global: ReportedCostPolicy = serde_json::from_value(json!({"currency":"USD","semantics":"total_request_cost"})).unwrap();
+    assert_eq!(global.currency_for("any-openrouter-model"),Some("USD"));
 }

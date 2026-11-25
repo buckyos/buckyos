@@ -683,7 +683,7 @@ impl<'a> CallResolver<'a> {
                 .as_deref()
                 .and_then(|id| self.catalog.provider_rules(id))
                 .and_then(|rules| rules.reported_cost.as_ref())
-                .map(|policy| policy.currency.clone()),
+                .and_then(|policy| policy.currency_for(&decision.selected.provider_model_id).map(str::to_owned)),
             revisions: LoweringRevisions {
                 catalog_target_seq: self.catalog.target_revision_seq(),
                 model_driver_revision_seq: model_revision,

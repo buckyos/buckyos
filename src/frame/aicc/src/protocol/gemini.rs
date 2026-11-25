@@ -736,11 +736,7 @@ fn encode_interaction_content(
             AiContent::Text { text } => Ok(json!({"type":"text", "text":text})),
             AiContent::Image { source } => encode_resource(source, "image", call.context),
             AiContent::Document { source, title } => {
-                let mut value = encode_resource(source, "document", call.context)?;
-                if let (Some(title), Some(object)) = (title, value.as_object_mut()) {
-                    object.insert("display_name".to_string(), Value::String(title.clone()));
-                }
-                Ok(value)
+                encode_document_resource(source, title.as_deref(), call.context)
             }
             AiContent::ToolUse { .. } | AiContent::Thinking { .. } => {
                 Err(ProtocolError::invalid_request(
@@ -810,11 +806,7 @@ fn encode_assistant_steps(
                 model_content.push(encode_resource(source, "image", call.context)?);
             }
             AiContent::Document { source, title } => {
-                let mut value = encode_resource(source, "document", call.context)?;
-                if let (Some(title), Some(object)) = (title, value.as_object_mut()) {
-                    object.insert("display_name".to_string(), Value::String(title.clone()));
-                }
-                model_content.push(value);
+                model_content.push(encode_document_resource(source, title.as_deref(), call.context)?);
             }
             AiContent::ToolUse {
                 call_id,
@@ -896,11 +888,7 @@ fn encode_tool_result(
             AiToolResultContent::Text { text } => Ok(json!({"type":"text", "text":text})),
             AiToolResultContent::Image { source } => encode_resource(source, "image", call.context),
             AiToolResultContent::Document { source, title } => {
-                let mut value = encode_resource(source, "document", call.context)?;
-                if let (Some(title), Some(object)) = (title, value.as_object_mut()) {
-                    object.insert("display_name".to_string(), Value::String(title.clone()));
-                }
-                Ok(value)
+                encode_document_resource(source, title.as_deref(), call.context)
             }
         })
         .collect()
@@ -957,7 +945,7 @@ fn encode_vision_ocr(
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::Array(vec![
         json!({"type":"text", "text":"Extract all text from this document and return structured OCR JSON."}),
-        encode_resource(&request.document, resource_kind(&request.document, "document"), call.context)?,
+        encode_resource(&request.document, resource_kind(&request.document, "document", call.context), call.context)?,
     ]));
     body.insert(
         "response_format".to_string(),
@@ -1526,7 +1514,50 @@ fn validate_response_format(format: &Map<String, Value>) -> ProtocolResultValue<
     Ok(())
 }
 
-fn encode_resource(
+fn encode_document_resource(
+    source: &ResourceRef,
+    title: Option<&str>,
+    context: &CodecContext,
+) -> ProtocolResultValue<Value> {
+    let kind = resource_kind(source, "document", context);
+    let mut value = encode_resource(source, kind, context)?;
+    if kind == "document" {
+        if let Some(title) = title {
+            value["display_name"] = json!(title);
+        }
+    }
+    Ok(value)
+}
+
+fn encode_resource(source: &ResourceRef, kind: &str, context: &CodecContext) -> ProtocolResultValue<Value> {
+    let mut value = encode_resource_value(source, kind, context)?;
+    if kind == "audio" {
+        let mime = value.get("mime_type").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let materialized = context.materialized_resource(source).ok();
+        let rate = materialized.as_ref().and_then(|resource| resource.audio_sample_rate)
+            .or_else(|| audio_mime_parameter(&mime, "rate"));
+        let channels = materialized.as_ref().and_then(|resource| resource.audio_channels)
+            .or_else(|| audio_mime_parameter(&mime, "channels"));
+        if let Some(rate) = rate { value["sample_rate"] = json!(rate); }
+        if let Some(channels) = channels { value["channels"] = json!(channels); }
+        if raw_audio_mime(&mime) { value["mime_type"] = json!(mime.split(';').next().unwrap().trim().to_ascii_lowercase()); }
+    }
+    Ok(value)
+}
+
+fn raw_audio_mime(mime: &str) -> bool {
+    matches!(mime.split(';').next().unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "audio/l16" | "audio/pcm" | "audio/alaw" | "audio/mulaw")
+}
+
+fn audio_mime_parameter(mime: &str, name: &str) -> Option<u32> {
+    mime.split(';').skip(1).filter_map(|part| part.trim().split_once('='))
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+        .and_then(|(_, value)| value.trim().trim_matches('"').parse::<u32>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn encode_resource_value(
     source: &ResourceRef,
     kind: &str,
     context: &CodecContext,
@@ -1576,12 +1607,12 @@ fn provider_artifact_resource(kind: &str, artifact_id: &str) -> Value {
     Value::Object(resource)
 }
 
-fn resource_kind<'a>(source: &ResourceRef, fallback: &'a str) -> &'a str {
+fn resource_kind<'a>(source: &ResourceRef, fallback: &'a str, context: &CodecContext) -> &'a str {
     let mime = match source {
         ResourceRef::Url { mime_hint, .. } => mime_hint.as_deref(),
         ResourceRef::Base64 { mime, .. } => Some(mime.as_str()),
         ResourceRef::NamedObject { .. } => None,
-    };
+    }.or_else(|| context.materialized_resource(source).ok().map(|resource| resource.mime.as_str()));
     match mime.and_then(|mime| mime.split('/').next()) {
         Some("image") => "image",
         Some("audio") => "audio",
@@ -1831,6 +1862,17 @@ fn apply_embedding_parameters(
     Ok(())
 }
 
+fn embedding_modality_tokens(usage: &Value, modality: &str) -> Option<u64> {
+    usage
+        .get("promptTokenDetails")?
+        .as_array()?
+        .iter()
+        .filter(|entry| entry.get("modality").and_then(Value::as_str) == Some(modality))
+        .try_fold(0u64, |total, entry| {
+            total.checked_add(entry.get("tokenCount")?.as_u64()?)
+        })
+}
+
 fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>> {
     let Some(usage) = value.get("usageMetadata") else {
         return Ok(None);
@@ -1857,10 +1899,16 @@ fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>>
         reference_images: None,
         request_units: None,
         characters: None,
-        audio_input_tokens: None,
-        image_input_tokens: None,
+        compute_seconds: None,
+        megapixels: None,
+        cost_source: None,
+        cost_unknown_reason: None,
+        audio_input_tokens: embedding_modality_tokens(usage, "AUDIO"),
+        image_input_tokens: embedding_modality_tokens(usage, "IMAGE"),
+        video_input_tokens: embedding_modality_tokens(usage, "VIDEO"),
         audio_output_tokens: None,
         image_output_tokens: None,
+        video_output_tokens: None,
         reported_cost: None,
         cost: None,
     }))
@@ -2169,6 +2217,14 @@ fn normalize_media(
             "Gemini response has no {kind} output"
         )));
     }
+    let mut usage = usage.unwrap_or_default();
+    usage.request_units = usage.request_units.or(Some(1));
+    if kind == "image" {
+        usage.image_units = Some(resources.len() as u64);
+        if usage.output_tokens.is_some() && usage.image_output_tokens.is_none() {
+            usage.cost_unknown_reason = Some("missing_usage:image_output_tokens".into());
+        }
+    }
     let value = if field == "images" {
         json!({"images":resources,"provider_states":[]})
     } else {
@@ -2179,7 +2235,7 @@ fn normalize_media(
     };
     Ok(ProtocolOutput {
         value,
-        usage,
+        usage: Some(usage),
         artifacts,
     })
 }
@@ -2194,6 +2250,11 @@ fn normalize_video(
             "Gemini returned {} videos but one was requested",
             output.artifacts.len()
         )));
+    }
+    if let Some(usage) = &mut output.usage {
+        if usage.output_tokens.is_some() && usage.video_output_tokens.is_none() {
+            usage.cost_unknown_reason = Some("missing_usage:video_output_tokens".to_owned());
+        }
     }
     let artifact = &output.artifacts[0];
     let video = generated_video(
@@ -2407,6 +2468,16 @@ fn decode_resource_with_default(
         .and_then(Value::as_str)
         .unwrap_or(default_mime)
         .to_string();
+    let mime = if raw_audio_mime(&mime) {
+        let metadata = provider_artifact_metadata(value);
+        let mut mime = mime.split(';').next().unwrap().trim().to_ascii_lowercase();
+        for (field, parameter) in [("sample_rate", "rate"), ("channels", "channels")] {
+            if let Some(value) = metadata.as_ref().and_then(|metadata| metadata.get(field)).and_then(Value::as_u64) {
+                mime.push_str(&format!(";{parameter}={value}"));
+            }
+        }
+        mime
+    } else { mime };
     if let Some(data) = value
         .get("data")
         .or_else(|| value.get("videoBytes"))
@@ -2489,8 +2560,10 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         cache_read_input_tokens: object.get("total_cached_tokens").and_then(Value::as_u64),
         audio_input_tokens: modality_tokens(object, "input_tokens_by_modality", "audio"),
         image_input_tokens: modality_tokens(object, "input_tokens_by_modality", "image"),
+        video_input_tokens: modality_tokens(object, "input_tokens_by_modality", "video"),
         audio_output_tokens: modality_tokens(object, "output_tokens_by_modality", "audio"),
         image_output_tokens: modality_tokens(object, "output_tokens_by_modality", "image"),
+        video_output_tokens: modality_tokens(object, "output_tokens_by_modality", "video"),
         reasoning_tokens: reasoning,
         request_units: None,
         ..AiUsage::default()
@@ -2498,18 +2571,22 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
 }
 
 fn provider_artifact_metadata(output: &Value) -> Option<Value> {
-    let artifact_ref = provider_artifact_ref(output)?;
-    let mut metadata = Map::from_iter([(
-        "aicc_provider_artifact_id".to_string(),
-        json!(artifact_ref.id),
-    )]);
-    if let Some(expires_at_ms) = artifact_ref.expires_at_ms {
-        metadata.insert(
-            "aicc_provider_artifact_expires_at_ms".to_string(),
-            json!(expires_at_ms),
-        );
+    let mut metadata = Map::new();
+    if let Some(artifact_ref) = provider_artifact_ref(output) {
+        metadata.insert("aicc_provider_artifact_id".to_owned(), json!(artifact_ref.id));
+        if let Some(expires_at_ms) = artifact_ref.expires_at_ms {
+            metadata.insert("aicc_provider_artifact_expires_at_ms".to_owned(), json!(expires_at_ms));
+        }
     }
-    Some(Value::Object(metadata))
+    if output.get("type").and_then(Value::as_str) == Some("audio") {
+        let mime = output.get("mime_type").and_then(Value::as_str).unwrap_or_default();
+        for (field, parameter) in [("sample_rate", "rate"), ("channels", "channels")] {
+            let value = output.get(field).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).filter(|v| *v > 0)
+                .or_else(|| audio_mime_parameter(mime, parameter));
+            if let Some(value) = value { metadata.insert(field.to_owned(), json!(value)); }
+        }
+    }
+    (!metadata.is_empty()).then_some(Value::Object(metadata))
 }
 
 fn provider_artifact_ref(output: &Value) -> Option<ProviderArtifactRef> {
@@ -3210,6 +3287,40 @@ fn is_sse(value: Option<&HeaderValue>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_image_tokens_require_modality_details() {
+        let outputs = [
+            json!({"type":"image","uri":"https://example.com/result.png","mime_type":"image/png"}),
+        ];
+        let usage = AiUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(1290),
+            ..Default::default()
+        };
+        let missing = normalize_media(&outputs, Some(usage.clone()), "image", "images")
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            missing.cost_unknown_reason.as_deref(),
+            Some("missing_usage:image_output_tokens")
+        );
+        let complete = normalize_media(
+            &outputs,
+            Some(AiUsage {
+                image_output_tokens: Some(1290),
+                ..usage
+            }),
+            "image",
+            "images",
+        )
+        .unwrap()
+        .usage
+        .unwrap();
+        assert!(complete.cost_unknown_reason.is_none());
+    }
+
     use crate::protocol::{CodecInput, CodecLimits, ProtocolContractHarness};
     use crate::video::test_support::{channel_contract, model_contract, plan_parameters};
     use crate::video::VideoMaterialFacts;
@@ -4189,6 +4300,99 @@ mod tests {
     }
 
     #[test]
+    fn embedding_usage_preserves_official_modality_token_counts() {
+        let usage = decode_embedding_usage(&json!({"usageMetadata":{
+        "promptTokenCount":14,"promptTokenDetails":[
+            {"modality":"TEXT","tokenCount":2},
+            {"modality":"IMAGE","tokenCount":3},
+            {"modality":"IMAGE","tokenCount":4},
+            {"modality":"AUDIO","tokenCount":2},
+            {"modality":"VIDEO","tokenCount":3}
+        ]}}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(usage.input_tokens, Some(14));
+        assert_eq!(usage.image_input_tokens, Some(7));
+        assert_eq!(usage.audio_input_tokens, Some(2));
+        assert_eq!(usage.video_input_tokens, Some(3));
+        assert_eq!(usage.output_tokens, Some(0));
+        assert!(
+            decode_embedding_usage(&json!({"embedding":{"values":[0.1]}}))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn interaction_documents_select_native_media_types_from_mime() {
+        for (mime, kind) in [
+            ("audio/wav", "audio"),
+            ("video/mp4", "video"),
+            ("image/png", "image"),
+            ("application/pdf", "document"),
+        ] {
+            for form in 0..4 {
+                let mut context = context();
+                let source = match form {
+                    0 => ResourceRef::Base64 {
+                        mime: mime.into(),
+                        data_base64: STANDARD.encode(b"media"),
+                    },
+                    1 => ResourceRef::url(
+                        "https://media.example/asset".to_string(),
+                        Some(mime.into()),
+                    ),
+                    _ => ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap()),
+                };
+                if form >= 2 {
+                    let mut resource =
+                        crate::protocol::MaterializedResource::new(b"media".as_slice(), mime, None)
+                            .unwrap();
+                    if form == 3 {
+                        resource.url = Some("https://media.example/materialized".into());
+                    }
+                    context.resources.insert(
+                        crate::resource::ResourceKey::from_ref(&source).into_string(),
+                        resource,
+                    );
+                }
+                let input = CodecInput {
+                    canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                        "test@google",
+                        vec![AiMessage::text(AiRole::User, "inspect")],
+                    )),
+                    resolved_parameters: BTreeMap::new(),
+                };
+                let call = CodecCall {
+                    api_type: ApiType::Llm,
+                    input: &input,
+                    context: &context,
+                };
+                let content = vec![AiContent::Document {
+                    source: source.clone(),
+                    title: Some("attachment".into()),
+                }];
+                let encoded = encode_interaction_content(&content, &call).unwrap();
+                assert_eq!(
+                    encoded[0]["type"], kind,
+                    "MIME {mime}, resource form {form}"
+                );
+                assert_eq!(encoded[0].get("display_name").is_some(), kind == "document");
+                let tool = encode_tool_result(
+                    &[AiToolResultContent::Document {
+                        source,
+                        title: Some("attachment".into()),
+                    }],
+                    &call,
+                )
+                .unwrap();
+                assert_eq!(tool[0]["type"], kind);
+                assert_eq!(tool[0].get("display_name").is_some(), kind == "document");
+            }
+        }
+    }
+
+    #[test]
     fn interaction_video_input_reuses_provider_artifact_id() {
         let descriptor =
             gemini_interactions_adapter().0.operations[GEMINI_INTERACTIONS_OPERATION_ID].clone();
@@ -4545,4 +4749,40 @@ mod tests {
         .unwrap();
         assert!((pinned.completion_cost(&usage).unwrap().amount - 0.000332).abs() < 1e-12);
     }
+    #[test]
+    fn raw_audio_output_retains_native_format_for_reuse() {
+        for inline in [true, false] {
+            let mut content = json!({"type":"audio","mime_type":"audio/l16","sample_rate":24000,"channels":1});
+            if inline { content["data"] = json!("AAAAAA=="); }
+            else { content["uri"] = json!("https://media.example/audio.pcm"); }
+            let output = normalize_media(&[content], None, "audio", "audio").unwrap();
+            assert_eq!(output.artifacts[0].metadata.as_ref().unwrap()["sample_rate"], 24000);
+            assert_eq!(output.artifacts[0].metadata.as_ref().unwrap()["channels"], 1);
+            let wire = encode_resource(&output.artifacts[0].resource, "audio", &context()).unwrap();
+            assert_eq!(wire["mime_type"], "audio/l16");
+            assert_eq!(wire["sample_rate"], 24000);
+            assert_eq!(wire["channels"], 1);
+        }
+        let missing = decode_resource(&json!({"type":"audio","mime_type":"audio/l16","data":"AAAAAA=="})).unwrap();
+        assert!(encode_resource(&missing, "audio", &context()).unwrap().get("sample_rate").is_none());
+    }
+
+    #[test]
+    fn named_raw_audio_uses_stored_format_in_bytes_and_url_forms() {
+        let source = ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap());
+        for url in [false, true] {
+            let mut context = context();
+            let resource = if url {
+                crate::protocol::MaterializedResource::from_url("https://media.example/audio.pcm", "audio/l16", None).unwrap()
+            } else {
+                crate::protocol::MaterializedResource::new([0u8; 4].as_slice(), "audio/l16", None).unwrap()
+            }.with_audio_format(Some(16000), Some(2));
+            context.resources.insert(crate::resource::ResourceKey::from_ref(&source).into_string(), resource);
+            let encoded = encode_resource(&source, "audio", &context).unwrap();
+            assert_eq!(encoded["sample_rate"], 16000);
+            assert_eq!(encoded["channels"], 2);
+            assert_eq!(encoded.get("uri").is_some(), url);
+        }
+    }
+
 }

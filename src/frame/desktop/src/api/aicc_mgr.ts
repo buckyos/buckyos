@@ -1,5 +1,7 @@
 import { createCustomRulesDraft, parseProviderRulesFile, toProviderRuleOptions, type ProviderRuleOptions } from './custom_provider_rules'
 import { buckyos, getActiveSessionToken } from 'buckyos'
+import { aggregateUsageEvents, groupUsageEvents, toUsageTotals } from '../app/ai-center/datamodel/usage-units'
+import type { UsageTotals, UsageBreakdown } from '../app/ai-center/mock/types'
 import { isMockRuntime } from '../runtime'
 import type { ModelCatalog } from '../app/ai-center/datamodel/model-catalog'
 import { mockModelCatalog } from '../app/ai-center/mock/model-catalog'
@@ -320,6 +322,8 @@ interface RawRoutingSettings {
 }
 
 interface RawUsageAggregate {
+  dimensions?: unknown
+  unpriced_requests?: unknown
   total_requests?: unknown
   input_tokens?: unknown
   output_tokens?: unknown
@@ -374,6 +378,7 @@ interface RawUsageBucketedRow {
 }
 
 interface RawUsageEvent {
+  usage_json?: unknown
   event_id?: unknown
   tenant_id?: unknown
   user_id?: unknown
@@ -421,7 +426,7 @@ interface AiccDataProvider {
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
-  queryUsageOverview(scope: UsageScope): Promise<UsageOverview>
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits?: Record<string, number>): Promise<UsageOverview>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   fetchRoutingWorkspace(): Promise<RoutingWorkspace>
   getRoutingState(): Promise<RoutingState>
@@ -444,7 +449,7 @@ export interface AICCMgr {
   fetchModelCatalog(): Promise<ModelCatalog>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
-  queryUsageOverview(scope: UsageScope): Promise<UsageOverview>
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits?: Record<string, number>): Promise<UsageOverview>
   addProvider(draft: WizardDraft): Promise<ProviderView>
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
@@ -503,13 +508,34 @@ export interface UserUsageSummary {
   finance_complete: boolean
 }
 
+export interface UsageOverviewProgress { section: string; overview: UsageOverview; failed?: boolean }
+
 export interface UsageOverview {
+  timeRange?: UsageTimeRange
   summary: UsageSummary
   trend: UsageTrendPoint[]
   users: UserUsageSummary[]
+  breakdowns: UsageBreakdown[]
+  periods: { today: UsageTotals; thisMonth: UsageTotals; trailingDays: UsageTotals }
+}
+
+export function mergeUsageOverview(current: UsageOverview, { section, overview }: UsageOverviewProgress): UsageOverview {
+  current = { ...current, timeRange: overview.timeRange ?? current.timeRange }
+  const fields: Record<string, [string, 'by_model' | 'by_provider' | 'by_app' | 'by_api_namespace']> = { models: ['provider_model', 'by_model'], providers: ['provider_instance_name', 'by_provider'], apps: ['caller_app_id', 'by_app'], capabilities: ['capability', 'by_api_namespace'] }
+  const field = fields[section]
+  if (field) return { ...current, summary: { ...current.summary, [field[1]]: overview.summary[field[1]] }, breakdowns: [...current.breakdowns.filter((row) => !(field[0] in row.group)), ...overview.breakdowns.filter((row) => field[0] in row.group)] }
+  if (section === 'today') return { ...current, summary: { ...current.summary, today_tokens: overview.summary.today_tokens }, periods: { ...current.periods, today: overview.periods.today } }
+  if (section === 'thisMonth') return { ...current, summary: { ...current.summary, this_month_tokens: overview.summary.this_month_tokens }, periods: { ...current.periods, thisMonth: overview.periods.thisMonth } }
+  if (section === 'users') return { ...current, users: overview.users }
+  return { ...current, trend: overview.trend, summary: { ...current.summary, total_tokens: overview.summary.total_tokens, total_requests: overview.summary.total_requests, finance_totals: overview.summary.finance_totals, finance_complete: overview.summary.finance_complete }, periods: { ...current.periods, trailingDays: overview.periods.trailingDays } }
 }
 
 export interface UsageEventsQuery {
+  pageOnly?: boolean
+  summaryOnly?: boolean
+  groupBy?: string
+  groupLimit?: number
+  groupOffset?: number
   timeRange: UsageTimeRange
   scope?: UsageScope
   filters?: {
@@ -525,6 +551,8 @@ export interface UsageEventsQuery {
 }
 
 export interface UsageEventsPage {
+  total: UsageTotals
+  grouped: UsageBreakdown[]
   events: StoreSnapshot['usageEvents']
   totalRequests: number
   nextCursor?: string
@@ -622,8 +650,8 @@ export class AICCModelStore implements AICCMgr {
     return this.provider.getUsageTrend(granularity)
   }
 
-  queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
-    return this.provider.queryUsageOverview(scope)
+  queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits: Record<string, number> = {}): Promise<UsageOverview> {
+    return this.provider.queryUsageOverview(scope, onProgress, groupLimits)
   }
 
   async addProvider(draft: WizardDraft): Promise<ProviderView> {
@@ -863,7 +891,7 @@ class MockAiccProvider implements AiccDataProvider {
     )
   }
 
-  async queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
+  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits: Record<string, number> = {}): Promise<UsageOverview> {
     const scopedEvents = await this.scopedUsageEvents(scope)
     const timeRange = localTrailingDaysRange(30)
     const events = scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange, limit: 0 }))
@@ -878,14 +906,23 @@ class MockAiccProvider implements AiccDataProvider {
       userEvents.push(event)
       users.set(userId, userEvents)
     }
-    return {
+    const overview: UsageOverview = {
+      timeRange,
       summary,
+      periods: {
+        today: aggregateUsageEvents(scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange: localTodayRange(), limit: 0 }))),
+        thisMonth: aggregateUsageEvents(scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange: localCurrentMonthRange(), limit: 0 }))),
+        trailingDays: aggregateUsageEvents(events),
+      },
+      breakdowns: Object.entries({ providers: 'provider_instance_name', models: 'provider_model', apps: 'caller_app_id', capabilities: 'capability' }).flatMap(([section, group]) => groupUsageEvents(events, group).slice(0, groupLimits[section] ?? 20)),
       trend: this.store.getUsageTrend(events),
       users: Array.from(users, ([user_id, userEvents]) => {
         const usage = this.store.getUsageSummary(userEvents)
         return { user_id, total_tokens: usage.total_tokens, total_requests: usage.total_requests, finance_totals: usage.finance_totals, finance_complete: usage.finance_complete }
       }).sort((left, right) => right.total_tokens - left.total_tokens),
     }
+    for (const section of ['models', 'providers', 'capabilities', 'apps', 'trend', 'today', 'thisMonth', 'users']) onProgress?.({ section, overview })
+    return overview
   }
 
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
@@ -898,7 +935,9 @@ class MockAiccProvider implements AiccDataProvider {
     const page = filtered.slice(offset, offset + params.limit)
     const nextOffset = offset + page.length
     return {
-      events: page,
+      events: params.summaryOnly ? [] : page,
+      total: aggregateUsageEvents(filtered),
+      grouped: params.summaryOnly && !params.groupBy ? [] : params.summaryOnly ? groupUsageEvents(filtered, params.groupBy).sort((a,b) => b.aggregate.total_tokens - a.aggregate.total_tokens || b.aggregate.total_requests - a.aggregate.total_requests).slice(params.groupOffset ?? 0, (params.groupOffset ?? 0) + (params.groupLimit ?? Number.MAX_SAFE_INTEGER)) : groupUsageEvents(filtered),
       totalRequests: filtered.length,
       nextCursor: nextOffset < filtered.length ? nextOffset.toString() : undefined,
     }
@@ -968,57 +1007,12 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   private settingsRevision = 0
 
   async fetchSnapshot(): Promise<StoreSnapshot> {
-    const dashboardRange = localTrailingDaysRange(30)
-    const todayRange = localTodayRange()
-    const monthRange = localCurrentMonthRange()
-    const [directory, providerList, routing, usageByModel, usageByCapability, usageByApp, usageTrend, usageToday, usageThisMonth, traceQuery] = await Promise.all([
+    const [directory, providerList, routing, traceQuery] = await Promise.all([
       this.call<RawModelDirectory>('models.list', {}),
       this.call<RawProviderListResponse>('provider.list', {}),
       this.call<Record<string, unknown>>('routing.get', {}),
-      this.queryUsage({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        group_by: ['provider_model'],
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        group_by: ['capability'],
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        group_by: ['caller_app_id'],
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(dashboardRange),
-        filters: {},
-        time_bucket: 'day',
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(todayRange),
-        filters: {},
-        output_mode: 'summary',
-      }),
-      this.queryUsageOrEmpty({
-        time_range: toRawTimeRange(monthRange),
-        filters: {},
-        output_mode: 'summary',
-      }),
       this.queryRouteTracesOrEmpty({ limit: 20 }),
     ])
-    this.usageSummary = toUsageSummary({
-      byModel: usageByModel,
-      byCapability: usageByCapability,
-      byApp: usageByApp,
-      today: usageToday,
-      thisMonth: usageThisMonth,
-    })
-    this.usageTrend = toUsageTrend(usageTrend)
     this.settingsRevision = asNumber(providerList.settings_revision, 0)
     directory.routing_settings = asRecord(routing.routing) as RawRoutingSettings
     return toStoreSnapshot(directory, providerList, [], traceQuery.traces)
@@ -1161,35 +1155,43 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return this.usageTrend
   }
 
-  async queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
+  async queryUsageOverview(scope: UsageScope, onProgress?: (progress: UsageOverviewProgress) => void, groupLimits: Record<string, number> = {}): Promise<UsageOverview> {
     const dashboardRange = localTrailingDaysRange(30)
-    const query = (timeRange: UsageTimeRange, extra: Record<string, unknown> = {}) => this.queryUsage({
-      time_range: toRawTimeRange(timeRange),
-      zone_wide: scope.zoneWide === true,
-      filters: scope.userId ? { user_ids: [scope.userId] } : {},
-      output_mode: 'summary',
-      ...extra,
-    })
-    const [byModel, byCapability, byApp, trend, today, thisMonth, byUser] = await Promise.all([
-      query(dashboardRange, { group_by: ['provider_model'] }),
-      query(dashboardRange, { group_by: ['capability'] }),
-      query(dashboardRange, { group_by: ['caller_app_id'] }),
-      query(dashboardRange, { time_bucket: 'day' }),
-      query(localTodayRange()),
-      query(localCurrentMonthRange()),
-      query(dashboardRange, { group_by: ['user_id'] }),
-    ])
-    return {
-      summary: toUsageSummary({ byModel, byCapability, byApp, today, thisMonth }),
-      trend: toUsageTrend(trend),
-      users: groupedRows(byUser).map((row) => ({
-        user_id: asNonEmptyString(row.group?.user_id, ''),
-        total_tokens: aggregateTokens(row.aggregate),
-        total_requests: asNumber(row.aggregate?.total_requests, 0),
-        finance_totals: normalizeFinanceTotals(row.aggregate?.finance_totals),
-        finance_complete: asBoolean(row.aggregate?.finance_complete, true),
-      })).sort((left, right) => right.total_tokens - left.total_tokens),
+    const values: Record<string, RawUsageQueryResponse> = {}
+    const build = (): UsageOverview => {
+      const summary = toUsageSummary({ byModel: { ...values.models, total: values.trend?.total }, byCapability: values.capabilities ?? {}, byApp: values.apps ?? {}, today: values.today ?? {}, thisMonth: values.thisMonth ?? {} })
+      summary.by_provider = Object.fromEntries(groupedRows(values.providers ?? {}).map((row) => [asNonEmptyString(row.group?.provider_instance_name, ''), aggregateTokens(row.aggregate)]))
+      return {
+        timeRange: dashboardRange,
+        summary,
+        periods: { today: toUsageTotals(values.today?.total), thisMonth: toUsageTotals(values.thisMonth?.total), trailingDays: toUsageTotals(values.trend?.total) },
+        breakdowns: ['models', 'providers', 'capabilities', 'apps'].flatMap((section) => groupedRows(values[section] ?? {}).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([key,value]) => [key,asNonEmptyString(value, key === 'caller_app_id' ? 'system' : '')])), aggregate: toUsageTotals(row.aggregate) }))),
+        trend: toUsageTrend(values.trend ?? {}),
+        users: groupedRows(values.users ?? {}).map((row) => ({ user_id: asNonEmptyString(row.group?.user_id, ''), total_tokens: aggregateTokens(row.aggregate), total_requests: asNumber(row.aggregate?.total_requests, 0), finance_totals: normalizeFinanceTotals(row.aggregate?.finance_totals), finance_complete: asBoolean(row.aggregate?.finance_complete, true) })).sort((left,right) => right.total_tokens - left.total_tokens),
+      }
     }
+    const requests: Array<[string, UsageTimeRange, Record<string, unknown>]> = [
+      ['models', dashboardRange, { group_by: ['provider_model'], output_mode: 'groups', group_limit: groupLimits.models ?? 20 }],
+      ['providers', dashboardRange, { group_by: ['provider_instance_name'], output_mode: 'groups', group_limit: groupLimits.providers ?? 20 }],
+      ['capabilities', dashboardRange, { group_by: ['capability'], output_mode: 'groups', group_limit: groupLimits.capabilities ?? 20 }],
+      ['apps', dashboardRange, { group_by: ['caller_app_id'], output_mode: 'groups', group_limit: groupLimits.apps ?? 20 }],
+      ['trend', dashboardRange, { time_bucket: 'day' }],
+      ['today', localTodayRange(), {}],
+      ['thisMonth', localCurrentMonthRange(), {}],
+      ['users', dashboardRange, { group_by: ['user_id'], output_mode: 'groups' }],
+    ]
+    const results = await Promise.allSettled(requests.map(async ([section,timeRange,extra]) => {
+      try {
+        values[section] = await this.queryUsage({ time_range: toRawTimeRange(timeRange), zone_wide: scope.zoneWide === true, filters: scope.userId ? { user_ids: [scope.userId] } : {}, output_mode: 'summary', ...extra })
+        onProgress?.({ section, overview: build() })
+      } catch (error) {
+        onProgress?.({ section, overview: build(), failed: true })
+        throw error
+      }
+    }))
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+    return build()
   }
 
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
@@ -1200,12 +1202,17 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         ...toRawUsageFilters(params.filters),
         ...(params.scope?.userId ? { user_ids: [params.scope.userId] } : {}),
       },
-      output_mode: 'events',
+      output_mode: params.summaryOnly ? (params.groupBy ? 'groups' : 'summary') : params.pageOnly ? 'page' : 'summary_and_events',
+      group_by: params.summaryOnly ? (params.groupBy ? [params.groupBy] : []) : params.pageOnly ? [] : ['provider_instance_name', 'provider_model', 'caller_app_id', 'capability'],
+      group_limit: params.groupLimit,
+      group_offset: params.groupOffset,
       limit: params.limit,
       cursor: params.cursor,
     })
     return {
       events: toUsageEvents(response),
+      total: toUsageTotals(response.total),
+      grouped: (response.grouped ?? []).map((row) => ({ group: Object.fromEntries(Object.entries(row.group ?? {}).map(([k,v]) => [k, String(v ?? '') || (k === 'caller_app_id' ? 'system' : '')])), aggregate: toUsageTotals(row.aggregate) })),
       totalRequests: asNumber(response.total?.total_requests, 0),
       nextCursor: asOptionalString(response.next_cursor),
     }
@@ -1299,18 +1306,19 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     }
   }
 
-  private queryUsage(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
-    return this.call<RawUsageQueryResponse>('usage.query', params)
-  }
-
-  // Dashboard aggregates are best-effort: a failed slice must not block the whole snapshot.
-  private async queryUsageOrEmpty(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
-    try {
-      return await this.queryUsage(params)
-    } catch (error) {
-      console.error('aicc.usage.query failed', error)
-      return {}
+  private async queryUsage(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
+    const count = asNumber(params.group_limit, 0)
+    if (params.output_mode === 'groups' && count > 1000) {
+      const grouped: RawUsageGroupedRow[] = []
+      for (let offset = 0; offset < count; offset += 1000) {
+        const limit = Math.min(1000, count - offset)
+        const page = await this.queryUsage({ ...params, group_limit: limit, group_offset: asNumber(params.group_offset, 0) + offset })
+        grouped.push(...(page.grouped ?? []))
+        if ((page.grouped?.length ?? 0) < limit) break
+      }
+      return { grouped }
     }
+    return this.call<RawUsageQueryResponse>('usage.query', params)
   }
 
   async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
@@ -1574,8 +1582,7 @@ function toUsageEvents(raw: RawUsageQueryResponse): StoreSnapshot['usageEvents']
     const tokensIn = asOptionalNumber(event.input_tokens)
     const tokensOut = asOptionalNumber(event.output_tokens)
     const tokenEquivalent = asOptionalNumber(event.total_tokens)
-      ?? asOptionalNumber(event.request_units)
-      ?? ((tokensIn ?? 0) + (tokensOut ?? 0))
+      ?? (tokensIn != null || tokensOut != null ? (tokensIn ?? 0) + (tokensOut ?? 0) : undefined)
 
     return {
       id: asNonEmptyString(event.event_id, asNonEmptyString(event.task_id, `usage-${asNumber(event.created_at_ms, 0)}`)),
@@ -1588,6 +1595,7 @@ function toUsageEvents(raw: RawUsageQueryResponse): StoreSnapshot['usageEvents']
       user_id: asOptionalString(event.user_id),
       app_id: asOptionalString(event.caller_app_id),
       session_id: asOptionalString(event.task_id),
+      usage: (event.usage_json && typeof event.usage_json === "object" ? event.usage_json : {}) as Record<string, unknown>,
       tokens_in: tokensIn,
       tokens_out: tokensOut,
       token_equivalent: tokenEquivalent,
@@ -1955,7 +1963,7 @@ function aggregateTokens(raw?: RawUsageAggregate): number {
   if (!raw) return 0
   return asNumber(raw.total_tokens, 0)
     || asNumber(raw.input_tokens, 0) + asNumber(raw.output_tokens, 0)
-    || asNumber(raw.request_units, 0)
+
 }
 
 function localDayStart(value = new Date()): Date {

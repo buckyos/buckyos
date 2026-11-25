@@ -1065,11 +1065,21 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
             .and_then(|details| details.get("reasoning_tokens"))
             .and_then(Value::as_u64),
         image_units: None,
-        audio_seconds: None,
+        audio_seconds: value
+            .pointer("/prompt_tokens_details/audio_seconds")
+            .or_else(|| value.get("audio_seconds"))
+            .and_then(Value::as_f64)
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0),
         video_seconds: None,
         reference_images: None,
-        request_units: None,
+        request_units: Some(1),
+        video_input_tokens: None,
+        video_output_tokens: None,
         characters: None,
+        compute_seconds: None,
+        megapixels: None,
+        cost_source: None,
+        cost_unknown_reason: None,
         audio_input_tokens: value
             .pointer("/prompt_tokens_details/audio_tokens")
             .and_then(Value::as_u64),
@@ -1090,7 +1100,29 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
     }))
 }
 
-fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
+#[cfg(test)]
+mod duration_usage_tests {
+    use super::*;
+    #[test]
+    fn seconds_are_preserved_without_converting_audio_tokens_to_time() {
+        let mut wire = json!({"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"audio_tokens":80,"audio_seconds":2.5}});
+        let usage = decode_usage(Some(&wire)).unwrap().unwrap();
+        assert_eq!(usage.audio_seconds, Some(2.5));
+        assert_eq!(usage.request_units, Some(1));
+        wire["prompt_tokens_details"]
+            .as_object_mut()
+            .unwrap()
+            .remove("audio_seconds");
+        assert_eq!(
+            decode_usage(Some(&wire)).unwrap().unwrap().audio_seconds,
+            None
+        );
+    }
+}
+
+pub(super) fn decode_reported_cost(
+    value: &Value,
+) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
     let Some(cost) = value.get("cost") else {
         return Ok(None);
     };

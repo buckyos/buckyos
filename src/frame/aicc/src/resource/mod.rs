@@ -505,6 +505,8 @@ impl MaterializedResource {
             bytes: self.bytes,
             mime,
             file_name: self.metadata.file_name,
+            audio_sample_rate: self.metadata.attributes.get("sample_rate").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).filter(|v| *v > 0),
+            audio_channels: self.metadata.attributes.get("channels").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).filter(|v| *v > 0),
             url: self.url,
         })
     }
@@ -531,6 +533,8 @@ pub(crate) struct CodecResourceParts {
     pub mime: Option<String>,
     pub file_name: Option<String>,
     pub url: Option<String>,
+    pub audio_sample_rate: Option<u32>,
+    pub audio_channels: Option<u32>,
 }
 
 impl fmt::Debug for CodecResourceParts {
@@ -3117,6 +3121,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(system.reader(), None);
+    }
+
+    #[tokio::test]
+    async fn named_audio_metadata_reaches_codec_parts() {
+        let store = Arc::new(FakeStore::default());
+        let mut stored = stored_named(&[0u8; 4], "audio/l16");
+        stored.attributes.insert("sample_rate".to_owned(), json!(24000));
+        stored.attributes.insert("channels".to_owned(), json!(1));
+        let source = ResourceRef::named_object(stored.obj_id.clone());
+        store.insert(stored, vec![0; 4]);
+        let manager = manager(Arc::new(RecordingAuthorizer::default()), store, ResourceLimits::default());
+        let inspected = manager.inspect(&context(), &[source]).await.unwrap();
+        let materialized = manager.materialize_after_provider_selected(&context(), "audio-call", inspected).await.unwrap();
+        let parts = materialized.into_iter().next().unwrap().into_codec_parts().unwrap();
+        assert_eq!(parts.audio_sample_rate, Some(24000));
+        assert_eq!(parts.audio_channels, Some(1));
     }
 
     #[test]

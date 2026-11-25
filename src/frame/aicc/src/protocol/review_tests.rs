@@ -22,6 +22,8 @@ fn response(value: Value) -> HttpResponse {
 fn registry() -> CodecRegistry {
     let mut registry = CodecRegistry::default();
     for (descriptor, codecs) in [
+        gemini_interactions_adapter(),
+        fal_queue_adapter(),
         doubao_media_adapter(),
         qwen_media_adapter(),
         glm_media_adapter(),
@@ -481,4 +483,213 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
     assert_eq!(body["input"]["messages"][0]["content"][0]["text"], "cat");
     assert_eq!(body["parameters"]["size"], "1024*1024");
     assert_eq!(body["parameters"]["n"], 1);
+}
+
+#[tokio::test]
+async fn gemini_media_success_records_actual_images_and_music_requests() {
+    let registry = registry();
+    for (api, kind, mime, price, expected) in [
+        (
+            ApiType::ImageTextToImage,
+            "image",
+            "image/png",
+            json!({"currency":"USD","unit":"image","amount":0.039}),
+            0.078,
+        ),
+        (
+            ApiType::AudioMusic,
+            "audio",
+            "audio/wav",
+            json!({"currency":"USD","unit":"request","amount":0.08}),
+            0.08,
+        ),
+    ] {
+        let ProtocolExecution::Immediate(output) = registry.decode("gemini-interactions", "interactions.create", api, response(json!({"id":"i-1","status":"completed","outputs":[{"type":kind,"mime_type":mime,"data":"aW1hZ2U="},{"type":kind,"mime_type":mime,"data":"aW1hZ2U="}]}))).await.unwrap() else { panic!() };
+        assert_eq!(output.usage.as_ref().unwrap().request_units, Some(1));
+        if kind == "image" {
+            assert_eq!(output.usage.as_ref().unwrap().image_units, Some(2));
+        }
+        assert!((cost(price, output.usage.as_ref().unwrap()) - expected).abs() < 1e-12);
+    }
+}
+
+#[tokio::test]
+async fn fal_reports_runner_seconds_separately_from_audio_duration() {
+    let registry = registry();
+    let NativeTaskOutput::Status { result_usage, .. } = registry
+        .decode_native(
+            "fal-queue",
+            "queue.submit",
+            ApiType::ImageUpscale,
+            NativeTaskOperation::Status,
+            response(json!({"status":"COMPLETED","metrics":{"inference_time":3.42}})),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(result_usage.unwrap().compute_seconds, Some(3.42));
+    let NativeTaskOutput::Result(output) = registry.decode_native("fal-queue", "queue.submit", ApiType::AudioEnhance, NativeTaskOperation::Result, response(json!({"audio_file":{"url":"https://media.example/audio.wav","content_type":"audio/wav","duration":6.9544375}}))).await.unwrap() else { panic!() };
+    assert_eq!(
+        output.usage.as_ref().unwrap().audio_seconds,
+        Some(6.9544375)
+    );
+    assert!(
+        (cost(
+            json!({"currency":"USD","unit":"audio_second","amount":0.001}),
+            output.usage.as_ref().unwrap()
+        ) - 0.0069544375)
+            .abs()
+            < 1e-12
+    );
+}
+
+#[tokio::test]
+async fn transcription_duration_without_usage_is_billable_and_usage_duration_wins() {
+    let registry = registry();
+    for (usage, expected) in [
+        (Value::Null, 2.5),
+        (json!({"type":"duration","seconds":3.0}), 3.0),
+    ] {
+        let ProtocolExecution::Immediate(output) = registry
+            .decode(
+                "openai-responses",
+                "audio.transcriptions",
+                ApiType::AudioSpeechRecognition,
+                response(json!({"text":"hello","duration":2.5,"usage":usage})),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(output.usage.unwrap().audio_seconds, Some(expected));
+    }
+}
+
+#[tokio::test]
+async fn fal_preserves_explicit_protocol_costs_even_without_metered_units() {
+    let registry = registry();
+    let NativeTaskOutput::Status { result_usage, .. } = registry
+        .decode_native(
+            "fal-queue",
+            "queue.submit",
+            ApiType::ImageUpscale,
+            NativeTaskOperation::Status,
+            response(json!({"status":"COMPLETED","cost":{"currency":"EUR","amount":0}})),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        result_usage.unwrap().cost,
+        Some(buckyos_api::AiCost::new(0.0, "EUR"))
+    );
+    let NativeTaskOutput::Result(output) = registry.decode_native("fal-queue","queue.submit",ApiType::AudioEnhance,NativeTaskOperation::Result,response(json!({"audio_file":{"url":"https://media.example/audio.wav","content_type":"audio/wav"},"usage":{"cost":{"currency":"USD","amount":0.03}}}))).await.unwrap() else { panic!() };
+    assert_eq!(
+        output.usage.unwrap().cost,
+        Some(buckyos_api::AiCost::new(0.03, "USD"))
+    );
+    for (api, body) in [
+        (
+            ApiType::VideoUpscale,
+            json!({"video":{"url":"https://media.example/video.mp4","content_type":"video/mp4"},"cost":{"currency":"EUR","amount":0},"usage":{"megapixels":77.76}}),
+        ),
+        (
+            ApiType::AudioSpeechRecognition,
+            json!({"text":"4827","cost":{"currency":"EUR","amount":0}}),
+        ),
+    ] {
+        let NativeTaskOutput::Result(output) = registry
+            .decode_native(
+                "fal-queue",
+                "queue.submit",
+                api,
+                NativeTaskOperation::Result,
+                response(body),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        let usage = output.usage.unwrap();
+        assert_eq!(usage.cost, Some(buckyos_api::AiCost::new(0.0, "EUR")));
+        if api == ApiType::VideoUpscale {
+            assert_eq!(usage.megapixels, Some(77.76));
+        }
+    }
+}
+
+#[test]
+fn gemini_builtin_quotes_settle_multimodal_and_combined_image_usage() {
+    let catalog: Value = serde_json::from_str(include_str!(
+        "../../driver_metadata/providers/gemini.provider.json"
+    ))
+    .unwrap();
+    let quotes = catalog["model_pricing"].as_array().unwrap();
+    for quote in quotes {
+        let price = &quote["pricing"];
+        if let (Some(input), Some(output), Some(_)) = (
+            price["input_token"].as_f64(),
+            price["output_token"].as_f64(),
+            price["image_input_token"].as_f64(),
+        ) {
+            let usage = AiUsage {
+                input_tokens: Some(4),
+                output_tokens: Some(3),
+                total_tokens: Some(7),
+                image_input_tokens: Some(3),
+                ..Default::default()
+            };
+            assert!(
+                (cost(price.clone(), &usage) - (input * 4.0 + output * 3.0)).abs() < 1e-12,
+                "{}",
+                quote["id"]
+            );
+        }
+    }
+    for (id, input, output) in [
+        ("gemini-3.1-pro-preview", 4e-6, 18e-6),
+        ("gemini-2.5-pro", 2.5e-6, 15e-6),
+    ] {
+        let price = &quotes.iter().find(|quote| quote["id"] == id).unwrap()["pricing"];
+        let usage = AiUsage {
+            input_tokens: Some(200001),
+            image_input_tokens: Some(200000),
+            output_tokens: Some(1),
+            total_tokens: Some(200002),
+            ..Default::default()
+        };
+        assert!(
+            (cost(price.clone(), &usage) - (200001.0 * input + output)).abs() < 1e-12,
+            "{id}"
+        );
+    }
+    for (id, input, text_output, image_output) in [
+        ("gemini-2.5-flash-image", 0.3e-6, 2.5e-6, 30e-6),
+        ("gemini-3-pro-image", 2e-6, 12e-6, 120e-6),
+        ("gemini-3.1-flash-image", 0.5e-6, 3e-6, 60e-6),
+        ("gemini-3.1-flash-lite-image", 0.25e-6, 1.5e-6, 30e-6),
+        ("gemini-nano-banana-2.1", 1.5e-6, 7.5e-6, 30e-6),
+    ] {
+        let price = &quotes.iter().find(|quote| quote["id"] == id).unwrap()["pricing"];
+        let usage = AiUsage {
+            input_tokens: Some(257),
+            image_input_tokens: Some(256),
+            output_tokens: Some(1292),
+            image_output_tokens: Some(1290),
+            total_tokens: Some(1549),
+            image_units: Some(1),
+            ..Default::default()
+        };
+        let expected = 257.0 * input + 2.0 * text_output + 1290.0 * image_output;
+        assert!(
+            (cost(price.clone(), &usage) - expected).abs() < 1e-12,
+            "{id}"
+        );
+    }
 }

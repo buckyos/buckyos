@@ -16,8 +16,9 @@ import {
 const openrouterDecisionCatalog = JSON.parse(readFileSync(new URL("./fixtures/openrouter-jev-models.json", import.meta.url), "utf8")) as {data: Array<Record<string, unknown>>};
 // The official `/videos/models` entries of the OpenRouter video models in the catalog.
 const openrouterVideoCatalog = JSON.parse(readFileSync(new URL("./fixtures/openrouter-video-models.json", import.meta.url), "utf8")) as {data: Array<Record<string, unknown>>};
+const falBillingFixture = JSON.parse(readFileSync(new URL("./fixtures/fal-billing-events.json", import.meta.url), "utf8"));
 
-type Selection = { provider_driver: string; contract_id: string; api_type?: string; scenario: string; selection_seed?: string };
+type Selection = { provider_driver: string; contract_id: string; api_type?: string; scenario: string; selection_seed?: string; billing_status?: number; billing_download?: boolean };
 type DiscoveryContract = {
   mode: "machine_api" | "catalog_only";
   path?: string;
@@ -491,6 +492,32 @@ export function createT15MockHandler(
   ): Promise<void> => {
     try {
       const url = new URL(request.url ?? "/", "http://mock.invalid");
+      if (url.pathname === falBillingFixture.path) {
+        if (request.headers.authorization !== "Key t15-mock-fal") {
+          return json(response, 403, { error: { type: "authorization_error", message: "Access denied" } });
+        }
+        const allowed = new Set(["request_id", "endpoint_id", "source", "limit", "start", "end"]);
+        const start = Date.parse(url.searchParams.get("start") ?? "");
+        const end = Date.parse(url.searchParams.get("end") ?? "");
+        const endpoint = url.searchParams.get("endpoint_id");
+        const models = catalog.providers.find((p) => p.provider_driver === "fal")!.official_first_party_model_ids!;
+        if (request.method !== "GET" || [...url.searchParams.keys()].some((k) => !allowed.has(k)) ||
+            [...allowed].some((k) => url.searchParams.getAll(k).length !== 1) ||
+            !url.searchParams.get("request_id") || url.searchParams.get("source") !== "billed" ||
+            !Number.isInteger(Number(url.searchParams.get("limit"))) || Number(url.searchParams.get("limit")) < 1 ||
+            !Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 90 * 86400000 ||
+            !Object.values(models).flat().includes(endpoint ?? "")) {
+          return json(response, 400, { error: { type: "validation_error", message: "Invalid billing request" } });
+        }
+        if (selection?.billing_status === 403) {
+          return json(response, 403, { error: { type: "authorization_error", message: "Access denied" } });
+        }
+        return json(response, 200, {
+          billing_events: url.searchParams.get("request_id") === falBillingFixture.event.request_id
+            ? [{ ...falBillingFixture.event, endpoint_id: endpoint }] : [],
+          has_more: false,
+        });
+      }
       if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
         if (request.headers.authorization) {
           return json(response, 400, { error: "artifact request leaked Provider authorization" });
@@ -511,6 +538,25 @@ export function createT15MockHandler(
           : url.pathname.endsWith(".wav")
           ? "audio/wav"
           : "video/mp4";
+        if (mime === "video/mp4" && selection?.billing_status === 403) {
+          let video = readFileSync(new URL("../../jarvis_media_dv/assets/video_fresh.mp4", import.meta.url));
+          if (selection.billing_download) {
+            const moovOffset = 32;
+            const moovSize = video.readUInt32BE(moovOffset);
+            if (video.toString("ascii", moovOffset + 4, moovOffset + 8) !== "moov") throw new Error("Video fixture has no expected moov header");
+            const moov = Buffer.from(video.subarray(moovOffset, moovOffset + moovSize));
+            video = Buffer.from(video);
+            video.write("free", moovOffset + 4, "ascii");
+            video.fill(0, moovOffset + 8, moovOffset + moovSize);
+            const padding = Buffer.alloc(9 * 1024 * 1024);
+            padding.writeUInt32BE(padding.length, 0);
+            padding.write("free", 4, "ascii");
+            video = Buffer.concat([video, padding, moov]);
+          }
+          response.writeHead(200, { "content-type": mime, "content-length": video.length });
+          response.end(video);
+          return;
+        }
         response.writeHead(200, { "content-type": mime });
         response.end(mime === "image/jpeg"
           ? Buffer.from([0xff, 0xd8, 0xff, 0xd9])
@@ -1732,6 +1778,18 @@ export function createT15MockHandler(
         contract.id === "gemini.interactions.v1beta" &&
         Array.isArray(rawFixture.steps)
       ) {
+        if (selection.api_type === "audio.asr") {
+          rawFixture.usage = {...rawFixture.usage as Record<string,unknown>,
+            input_tokens_by_modality:[{modality:"text",tokens:1},{modality:"audio",tokens:3}]};
+        }
+        if (selection.api_type?.startsWith("image.")) {
+          rawFixture.usage = {...rawFixture.usage as Record<string,unknown>,
+            output_tokens_by_modality:[{modality:"image",tokens:3}]};
+        }
+        if (selection.api_type?.startsWith("vision.")) {
+          rawFixture.usage = {...rawFixture.usage as Record<string,unknown>,
+            input_tokens_by_modality:[{modality:"text",tokens:1},{modality:"image",tokens:3}]};
+        }
         const structuredText: Record<string, string> = {
           "vision.ocr": JSON.stringify({
             text: "BUCKYOS-AICC-4827",

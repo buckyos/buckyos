@@ -8,9 +8,13 @@ type AiMethodResponse = {
 };
 
 export class JudgeError extends Error {
-  constructor(message: string) {
+  readonly taskId?: string;
+  readonly terminalResponse?: unknown;
+  constructor(message: string, taskId?: string, terminalResponse?: unknown) {
     super(message);
     this.name = "JudgeError";
+    this.taskId = taskId;
+    this.terminalResponse = terminalResponse;
   }
 }
 
@@ -60,11 +64,14 @@ function judgeResource(
     ? "base64"
     : "url";
   const mime = source.mime_hint ?? source.mime ?? fallbackMime;
-  const normalizedSource = {
-    ...source,
-    kind,
-    ...(typeof mime === "string" && !source.mime_hint && !source.mime ? { mime_hint: mime } : {}),
-  };
+  let normalizedSource: Record<string, unknown>;
+  if (kind === "named_object" && typeof source.obj_id === "string") {
+    normalizedSource = {kind, obj_id:source.obj_id};
+  } else if (kind === "base64" && typeof source.data_base64 === "string" && typeof mime === "string") {
+    normalizedSource = {kind, mime, data_base64:source.data_base64};
+  } else if (kind === "url" && typeof source.url === "string") {
+    normalizedSource = {kind, url:source.url, ...(typeof mime === "string" ? {mime_hint:mime} : {})};
+  } else return undefined;
   return {
     type: typeof mime === "string" && mime.startsWith("image/") ? "image" : "document",
     source: normalizedSource,
@@ -155,14 +162,30 @@ export function judgeProviderDriver(model: string, inventories: ProviderInventor
   return inventories.find((inventory) => inventory.provider_instance_name === instance)?.provider_driver ?? "judge";
 }
 
+function deduplicateJudgeResources(resources: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const unique = new Map<string, Record<string, unknown>>();
+  const rank = (resource: Record<string, unknown>) => {
+    const source = object(resource.source) ?? {};
+    return (typeof (source.mime ?? source.mime_hint) === "string" ? 2 : 0) + (resource.type === "image" ? 1 : 0) + (typeof resource.title === "string" ? 1 : 0);
+  };
+  for (const resource of resources) {
+    const source = object(resource.source)!;
+    const key = JSON.stringify([source.kind, source.obj_id ?? source.url ?? source.data_base64]);
+    const previous = unique.get(key);
+    if (!previous || rank(resource) > rank(previous)) unique.set(key, resource);
+  }
+  return [...unique.values()];
+}
+
 export function outputResources(value: unknown, depth = 0): Array<Record<string, unknown>> {
   if (depth > 8 || value === null || value === undefined) return [];
-  if (Array.isArray(value)) return value.flatMap((item) => outputResources(item, depth + 1));
+  if (Array.isArray(value)) return deduplicateJudgeResources(value.flatMap((item) => outputResources(item, depth + 1)));
   const record = object(value);
   if (!record) return [];
   const resources: Array<Record<string, unknown>> = [];
   const direct = judgeResource(record);
   const source = judgeResource(record.source, record.mime);
+  if (source && record.type === "image") source.type = "image";
   const artifact = judgeResource(record.resource, record.mime);
   for (const resource of [direct, source, artifact]) if (resource) resources.push(resource);
   for (const [key, child] of Object.entries(record)) {
@@ -170,7 +193,7 @@ export function outputResources(value: unknown, depth = 0): Array<Record<string,
       resources.push(...outputResources(child, depth + 1));
     }
   }
-  return [...new Map(resources.map((resource) => [JSON.stringify(resource), resource])).values()];
+  return deduplicateJudgeResources(resources);
 }
 
 async function terminal(taskManager: RpcClient, initial: AiMethodResponse, timeoutMs: number): Promise<unknown> {
@@ -224,11 +247,16 @@ export async function runJudge(input: {
   const texts = responseText(input.terminalResponse).join("\n").slice(0, 4_000);
   const sourceResources = outputResources(input.testedRequest).slice(0, 4);
   const outputResourcesForJudge = outputResources(input.terminalResponse).slice(0, 4);
+  const structured = JSON.stringify(input.terminalResponse, (key,value) => {
+    if (["provider_io", "provider_state", "provider_states", "usage", "cost", "route_trace", "data_base64"].includes(key)) return undefined;
+    if (["provider_state", "thinking", "reasoning"].includes(String(object(value)?.type))) return undefined;
+    return value;
+  })?.slice(0,4000) ?? "<none>";
   const observations = input.observations === undefined ? "<none>" : JSON.stringify(input.observations);
   const inputSummary = `case=${input.caseId}; tested_model=${input.testedModel}; rubric_items=${input.rubric.length}; output_text_chars=${texts.length}; input_resources=${sourceResources.length}; output_resources=${outputResourcesForJudge.length}`;
   const content: Array<Record<string, unknown>> = [{
     type: "text",
-    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}. For OCR and caption cases, observed output text is the expected evidence; do not require an output attachment or fail solely because none exists.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nArtifact audit observations:\n${observations}\nFor background-removal PNG output, transparent_ratio >= 0.1 and opaque_ratio >= 0.01 are deterministic evidence that both removed background and retained foreground regions exist; also inspect subject integrity.\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
+    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}. For OCR and caption cases, observed output text is the expected evidence; do not require an output attachment or fail solely because none exists.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nObserved structured output:\n${structured}\nArtifact audit observations:\n${observations}\nFor background-removal PNG output, transparent_ratio >= 0.1 and opaque_ratio >= 0.01 are deterministic evidence that both removed background and retained foreground regions exist; PNG previews may render transparent regions as white or black; use the audited alpha values as authoritative evidence of transparency and inspect subject integrity separately.\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
   }];
   const resources = [...sourceResources, ...outputResourcesForJudge]
     .map((resource) => resource.source)
@@ -269,9 +297,20 @@ export async function runJudge(input: {
     },
     idempotency_key: `${input.runId}:${input.caseId}:judge`,
   };
-  const initial = await input.invoke(request);
-  const result = await terminal(input.taskManager, initial, input.timeoutMs);
-  const verdict = parseJudgeVerdictTexts(responseText(result), input.threshold);
+  let initial: AiMethodResponse;
+  try {
+    initial = await input.invoke(request);
+  } catch (error) {
+    throw new JudgeError(error instanceof Error ? error.message : String(error));
+  }
+  let result: unknown = initial;
+  let verdict: ReturnType<typeof parseJudgeVerdictTexts>;
+  try {
+    result = await terminal(input.taskManager, initial, input.timeoutMs);
+    verdict = parseJudgeVerdictTexts(responseText(result), input.threshold);
+  } catch (error) {
+    throw new JudgeError(`${error instanceof Error ? error.message : String(error)} [task_id=${initial.task_id}]`, initial.task_id, result);
+  }
   return {
     taskId: initial.task_id,
     terminalResponse: result,

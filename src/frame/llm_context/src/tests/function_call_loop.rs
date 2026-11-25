@@ -42,10 +42,16 @@ async fn done_without_tool_calls() {
             reference_images: None,
             request_units: Some(1),
             characters: None,
+            compute_seconds: Some(0.25),
+            megapixels: Some(4.0),
+            cost_source: None,
+            cost_unknown_reason: None,
             audio_input_tokens: None,
             image_input_tokens: None,
+            video_input_tokens: Some(0),
             audio_output_tokens: None,
             image_output_tokens: None,
+            video_output_tokens: Some(0),
             reported_cost: None,
             cost: Some(AiCost {
                 amount: 0.25,
@@ -70,6 +76,8 @@ async fn done_without_tool_calls() {
             assert_eq!(usage.image_units, Some(2));
             assert_eq!(usage.audio_seconds, Some(1.5));
             assert_eq!(usage.video_seconds, Some(2.5));
+            assert_eq!(usage.compute_seconds, Some(0.25));
+            assert_eq!(usage.megapixels, Some(4.0));
             assert_eq!(usage.request_units, Some(1));
             assert_eq!(
                 usage.cost,

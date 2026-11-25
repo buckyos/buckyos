@@ -381,7 +381,23 @@ fn decode_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput
         }
     };
     Ok(NativeTaskOutput::Status {
-        result_usage: None,
+        result_usage: {
+            let compute_seconds = value
+                .pointer("/metrics/inference_time")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v >= 0.0);
+            let cost = super::openai_chat_completions::decode_reported_cost(
+                value.get("usage").unwrap_or(&value),
+            )?
+            .or(super::openai_chat_completions::decode_reported_cost(
+                &value,
+            )?);
+            (compute_seconds.is_some() || cost.is_some()).then_some(AiUsage {
+                compute_seconds,
+                cost,
+                ..Default::default()
+            })
+        },
         state,
         retry_after,
         result_ref: None,
@@ -403,6 +419,29 @@ fn decode_result(
             None,
         ));
     }
+    let mut usage = AiUsage {
+        cost: super::openai_chat_completions::decode_reported_cost(
+            value.get("usage").unwrap_or(&value),
+        )?
+        .or(super::openai_chat_completions::decode_reported_cost(
+            &value,
+        )?),
+        audio_seconds: value
+            .pointer("/audio_file/duration")
+            .or_else(|| value.pointer("/audio/duration"))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0),
+        video_seconds: value
+            .pointer("/video/duration")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0),
+        megapixels: value
+            .pointer("/usage/megapixels")
+            .or_else(|| value.get("megapixels"))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0),
+        ..AiUsage::request_units(1)
+    };
     if api_type == ApiType::AudioSpeechRecognition {
         let text = value
             .get("text")
@@ -413,7 +452,7 @@ fn decode_result(
                 "text": text,
                 "segments": value.get("chunks").or_else(|| value.get("segments")).cloned().unwrap_or_else(|| json!([]))
             }),
-            usage: Some(AiUsage::request_units(1)),
+            usage: Some(usage),
             artifacts: Vec::new(),
         }));
     }
@@ -440,8 +479,7 @@ fn decode_result(
             })
             .collect();
         return Ok(NativeTaskOutput::Result(super::video::video_output(
-            videos,
-            AiUsage::request_units(1),
+            videos, usage,
         )?));
     }
     let normalized = Value::Object(Map::from_iter([(
@@ -456,7 +494,8 @@ fn decode_result(
             })?
         },
     )]));
-    let image_units = (field == "images").then_some(resources.len() as u64);
+    let image_units = matches!(field, "images" | "image").then_some(resources.len() as u64);
+    usage.image_units = image_units;
     let artifacts = resources
         .into_iter()
         .enumerate()
@@ -477,10 +516,7 @@ fn decode_result(
         .collect();
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: normalized,
-        usage: Some(AiUsage {
-            image_units,
-            ..AiUsage::request_units(1)
-        }),
+        usage: Some(usage),
         artifacts,
     }))
 }

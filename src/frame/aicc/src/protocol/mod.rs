@@ -70,9 +70,9 @@ pub(crate) use derived_responses::{
 };
 pub(crate) use doubao_media::{doubao_media_adapter, DOUBAO_MEDIA_ADAPTER_ID};
 pub(crate) use doubao_speech::doubao_speech_adapter;
-pub(crate) use fal_queue::fal_queue_adapter;
+pub(crate) use fal_queue::{fal_queue_adapter, FAL_QUEUE_ADAPTER_ID};
 #[cfg(test)]
-pub(crate) use fal_queue::{FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID};
+pub(crate) use fal_queue::FAL_QUEUE_OPERATION_ID;
 #[cfg(test)]
 pub(crate) use gemini::{
     gemini_api_key, GEMINI_EMBED_CONTENT_OPERATION_ID, GEMINI_INTERACTIONS_OPERATION_ID,

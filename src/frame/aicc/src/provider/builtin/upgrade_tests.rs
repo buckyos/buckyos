@@ -492,13 +492,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "/reasoning/effort",
             json!("medium"),
         ),
-        (
-            "sn",
-            "gpt-6-sol",
-            "max",
-            "/reasoning/effort",
-            json!("max"),
-        ),
+        ("sn", "gpt-6-sol", "max", "/reasoning/effort", json!("max")),
         (
             "sn",
             "gpt-6-luna",
@@ -506,13 +500,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "/reasoning/effort",
             json!("none"),
         ),
-        (
-            "sn",
-            "gpt-5.5",
-            "high",
-            "/reasoning/effort",
-            json!("high"),
-        ),
+        ("sn", "gpt-5.5", "high", "/reasoning/effort", json!("high")),
         ("sn", "glm-5", "thinking", "/reasoning/enabled", json!(true)),
         ("sn", "glm-5", "none", "/reasoning/enabled", json!(false)),
         ("sn", "glm-5.3", "high", "/reasoning/effort", json!("high")),
@@ -665,11 +653,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 )
             })
             .collect();
-        let policy = PolicyEngine::new(
-            EffectiveRoutingPolicy::merge_ordered([]).unwrap(),
-            Quota,
-        )
-        .unwrap();
+        let policy =
+            PolicyEngine::new(EffectiveRoutingPolicy::merge_ordered([]).unwrap(), Quota).unwrap();
         let route = Router::new(&models, &policy, &runtime)
             .route(&request)
             .unwrap();
@@ -751,7 +736,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                     body["reasoning"],
                     if effort == "thinking" {
                         json!({"enabled": true})
-                    } else if effort == "none" && (id.starts_with("glm-") || id.starts_with("qwen")) {
+                    } else if effort == "none" && (id.starts_with("glm-") || id.starts_with("qwen"))
+                    {
                         json!({"enabled": false})
                     } else {
                         json!({"effort": effort})
@@ -863,7 +849,11 @@ fn sn_presets_follow_model_metadata_and_discovery_restrictions() {
         .llm_models()
         .filter(|(driver, id, _)| {
             *driver == "openai"
-                && catalog.provider_rules("sn").unwrap().models.iter()
+                && catalog
+                    .provider_rules("sn")
+                    .unwrap()
+                    .models
+                    .iter()
                     .any(|rule| rule.id == *id && !rule.exclude)
         })
         .map(|(_, id, _)| id)
@@ -1116,7 +1106,10 @@ async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
             ApiType::VideoExtend,
         ])
     );
-    assert_eq!(model("doubao-seedream-5-0-flash-260915").api_types.clone(), Some(vec![ApiType::ImageTextToImage, ApiType::ImageImageToImage]));
+    assert_eq!(
+        model("doubao-seedream-5-0-flash-260915").api_types.clone(),
+        Some(vec![ApiType::ImageTextToImage, ApiType::ImageImageToImage])
+    );
     assert_eq!(
         model("retiring").availability,
         ModelAvailability::Unavailable
@@ -1350,6 +1343,94 @@ fn models_added_on_2026_11_16_close_the_discovery_to_route_loop() {
 }
 
 #[test]
+fn november_neon_and_omni_preserve_vendor_limits_and_channel_lowering() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|p| p.provider_profile_id == "gemini")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "gemini"),
+        discovery(&[
+            "gemini-4-neon",
+            "gemini-omni-1.2-flash",
+            "gemini-omni-1.1-flash",
+        ]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    assert!(inventory.unmatched_models.is_empty());
+    assert!(inventory.unavailable_presets.is_empty());
+    let neon = inventory
+        .models
+        .iter()
+        .find(|m| m.provider_model_id == "gemini-4-neon")
+        .unwrap();
+    assert_eq!(
+        neon.variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "reasoning-low",
+            "reasoning-medium",
+            "reasoning-high",
+            "reasoning-xhigh"
+        ])
+    );
+    assert_eq!(neon.capabilities["max_output_tokens"], 65536);
+    let model: Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/models/gemini.model.json"
+    ))
+    .unwrap();
+    let original = model["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "gemini-4-neon")
+        .unwrap();
+    assert_eq!(original["capabilities"]["max_output_tokens"], 1048576);
+    let omni = inventory
+        .models
+        .iter()
+        .find(|m| m.provider_model_id == "gemini-omni-1.2-flash")
+        .unwrap();
+    let video = &omni.capabilities["video_generation"];
+    assert_eq!(video["references"]["image"]["max"], 6);
+    assert_eq!(video["output"]["durations"]["min"], 3);
+    assert_eq!(video["output"]["durations"]["max"], 15);
+    assert_eq!(video["output"]["resolutions"].as_array().unwrap().len(), 4);
+    for model in inventory
+        .models
+        .iter()
+        .filter(|m| m.provider_model_id.starts_with("gemini-omni-"))
+    {
+        assert_eq!(model.capabilities["max_context_tokens"], 131072);
+        assert_eq!(model.capabilities["max_output_tokens"], 65536);
+        assert_eq!(
+            model.capabilities["video_generation"]["output"]["durations"]["integer"],
+            true
+        );
+    }
+    for api in ["video.generate", "video.edit", "video.extend"] {
+        assert_eq!(
+            omni.operations.get(api).map(String::as_str),
+            Some("interactions.create")
+        );
+    }
+    let pricing = catalog
+        .provider_rules("gemini")
+        .unwrap()
+        .model_pricing
+        .iter()
+        .find(|p| p.id.as_deref() == Some("gemini-omni-1.2-flash"))
+        .unwrap();
+    assert_eq!(pricing.pricing.video_output_token, Some(12e-6));
+}
+#[test]
 fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
@@ -1360,7 +1441,11 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
             "qwen",
             "q",
             &["qwen4-max"][..],
-            &[("qwen4-max", "qwen4-max", &["none", "low", "high", "xhigh"][..])][..],
+            &[(
+                "qwen4-max",
+                "qwen4-max",
+                &["none", "low", "high", "xhigh"][..],
+            )][..],
         ),
         (
             "kimi",
@@ -1393,9 +1478,21 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
                 "deepseek-v4-1-flash-economy-261017",
             ][..],
             &[
-                ("doubao-seed-2-1-pro-260915", "doubao-seed-2.1-pro", &["none", "low", "medium", "high"][..]),
-                ("doubao-seed-evolving", "doubao-seed-evolving", &["none", "low", "medium", "high"][..]),
-                ("doubao-seed-2-0-mini-260428", "doubao-seed-2.0-mini", &["none", "low", "medium", "high"][..]),
+                (
+                    "doubao-seed-2-1-pro-260915",
+                    "doubao-seed-2.1-pro",
+                    &["none", "low", "medium", "high"][..],
+                ),
+                (
+                    "doubao-seed-evolving",
+                    "doubao-seed-evolving",
+                    &["none", "low", "medium", "high"][..],
+                ),
+                (
+                    "doubao-seed-2-0-mini-260428",
+                    "doubao-seed-2.0-mini",
+                    &["none", "low", "medium", "high"][..],
+                ),
                 (
                     "deepseek-v4-1-flash-261017",
                     "deepseek-v4.1-flash",
@@ -1415,14 +1512,8 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
             .unwrap();
         let mut config = instance(profile, instance_name);
         config.region = matches!(profile_id, "kimi" | "minimax").then(|| "china".to_owned());
-        let inv = InventoryBuilder::build(
-            profile,
-            &config,
-            discovery(ids),
-            &catalog,
-            &codecs,
-        )
-        .unwrap();
+        let inv =
+            InventoryBuilder::build(profile, &config, discovery(ids), &catalog, &codecs).unwrap();
         assert!(
             inv.unmatched_models.is_empty(),
             "{:?}",
@@ -1484,7 +1575,10 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
             "llm.minimax-highspeed",
             &["MiniMax-M3.1-Flash:reasoning-low@m"][..],
         ),
-        ("llm.doubao-pro", &["doubao-seed-evolving:reasoning-high@d"][..]),
+        (
+            "llm.doubao-pro",
+            &["doubao-seed-evolving:reasoning-high@d"][..],
+        ),
         (
             "llm.deepseek-flash",
             &[
@@ -1508,7 +1602,13 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
         ("kimi", "kimi-k3.1-pro-highspeed", 2.6e-5, 1.36e-4, 1.3e-6),
         ("minimax", "MiniMax-M3.1-Flash", 1e-6, 4e-6, 1e-7),
         ("doubao", "doubao-seed-2-1-pro-260915", 6e-6, 3e-5, 1.2e-6),
-        ("doubao", "deepseek-v4-1-flash-economy-261017", 8e-7, 3.2e-6, 1.6e-8),
+        (
+            "doubao",
+            "deepseek-v4-1-flash-economy-261017",
+            8e-7,
+            3.2e-6,
+            1.6e-8,
+        ),
     ] {
         let pricing = catalog
             .resolve_provider_rule(provider, model, &context)
@@ -1521,7 +1621,11 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
         assert_eq!(pricing.input_token, Some(input), "{model}");
         assert_eq!(pricing.output_token, Some(output), "{model}");
         assert_eq!(pricing.cache_input_token, Some(cache), "{model}");
-        assert_eq!(pricing.verified_at.as_deref(), Some("2026-11-16"), "{model}");
+        assert_eq!(
+            pricing.verified_at.as_deref(),
+            Some("2026-11-16"),
+            "{model}"
+        );
     }
     let global = BTreeMap::from([("region".into(), json!("global"))]);
     let flash = catalog
@@ -1532,7 +1636,11 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
         .pricing
         .unwrap();
     assert_eq!(
-        (flash.currency.as_str(), flash.input_token, flash.output_token),
+        (
+            flash.currency.as_str(),
+            flash.input_token,
+            flash.output_token
+        ),
         ("USD", Some(1.5e-7), Some(6e-7))
     );
     let minimax = catalog.provider_rules("minimax").unwrap();
@@ -1642,7 +1750,10 @@ fn doubao_seed_thinking_presets_follow_official_efforts_on_both_ark_channels() {
                 .iter()
                 .find(|rule| rule.model_driver == "doubao" && rule.variant == variant)
                 .unwrap();
-            assert_eq!(rule.provider_options["reasoning"]["effort"], wire, "{profile_id}");
+            assert_eq!(
+                rule.provider_options["reasoning"]["effort"], wire,
+                "{profile_id}"
+            );
         }
     }
     for (driver, model, default) in [
@@ -2076,7 +2187,10 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
             .collect::<HashSet<_>>()
     );
     for retired_id in retired {
-        assert!(!rules.static_inventory_models.iter().any(|id| id == retired_id));
+        assert!(!rules
+            .static_inventory_models
+            .iter()
+            .any(|id| id == retired_id));
     }
     for (model_id, context, output) in [
         ("deepseek-v4.1-flash-economy", 1048576, 393216),
@@ -2189,7 +2303,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("doubao", 18),
         ("doubao-agent-plan", 0),
         ("fal", 4),
-        ("gemini", 34),
+        ("gemini", 39),
         ("glm", 101),
         ("kimi", 6),
         ("minimax", 17),
@@ -2260,7 +2374,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 334);
+    assert_eq!(pricing_count, 393);
 }
 
 #[test]
@@ -2376,14 +2490,38 @@ fn corrected_provider_prices_match_official_billing_dimensions() {
         .all(|rule| rule.id.as_deref() != Some("doubao-seed-tts-2.0")));
 
     let fal = catalog.provider_rules("fal").unwrap();
-    let rembg = fal
-        .model_pricing
-        .iter()
-        .find(|rule| rule.id.as_deref() == Some("fal-ai/imageutils/rembg"))
-        .unwrap();
-    assert_eq!(rembg.pricing.amount, Some(0.0));
+    for id in ["fal-ai/esrgan", "fal-ai/imageutils/rembg"] {
+        let pricing = &fal
+            .model_pricing
+            .iter()
+            .find(|rule| rule.id.as_deref() == Some(id))
+            .unwrap()
+            .pricing;
+        assert_eq!(pricing.amount, Some(0.000575));
+        assert_eq!(pricing.unit, Some(crate::catalog::PricingUnit::Second));
+    }
 
     let gemini = catalog.provider_rules("gemini").unwrap();
+    let robotics = &gemini
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("gemini-robotics-er-2-preview"))
+        .unwrap()
+        .pricing;
+    assert_eq!(robotics.input_token, Some(0.000001));
+    assert_eq!(robotics.output_token, Some(0.000005));
+    assert_eq!(robotics.cache_input_token, Some(0.0000001));
+    for id in ["gemma-4-26b-a4b-it", "gemma-4-31b-it"] {
+        let pricing = &gemini
+            .model_pricing
+            .iter()
+            .find(|rule| rule.id.as_deref() == Some(id))
+            .unwrap()
+            .pricing;
+        assert_eq!(pricing.input_token, Some(0.0));
+        assert_eq!(pricing.output_token, Some(0.0));
+        assert_eq!(pricing.image_input_token, Some(0.0));
+    }
     // The Veo 3.1 previews were shut down on the Gemini API on 2026-10-22; they
     // must not linger as priced entries that discovery can still advertise.
     for retired in [
@@ -2583,7 +2721,6 @@ fn custom_base_urls_override_inherited_operation_endpoints_and_policy_region_is_
 
 #[test]
 fn all_builtin_prices_with_supported_units_can_complete_finance() {
-    use crate::catalog::PricingUnit;
     let catalog = catalog();
     let usage = buckyos_api::AiUsage {
         input_tokens: Some(100),
@@ -2594,6 +2731,9 @@ fn all_builtin_prices_with_supported_units_can_complete_finance() {
         audio_seconds: Some(1.0),
         video_seconds: Some(1.0),
         characters: Some(1),
+        compute_seconds: Some(1.0),
+        megapixels: Some(1.0),
+        reference_images: Some(1),
         ..Default::default()
     };
     for provider in catalog.known_providers() {
@@ -2639,18 +2779,11 @@ fn all_builtin_prices_with_supported_units_can_complete_finance() {
             )
             .unwrap()
             .unwrap();
-            if matches!(
-                price.unit,
-                Some(PricingUnit::Second | PricingUnit::Megapixel)
-            ) {
-                assert!(pinned.completion_cost(&usage).is_none());
-            } else {
-                assert!(
-                    pinned.completion_cost(&usage).is_some(),
-                    "{} pricing[{index}] cannot be billed",
-                    provider.provider_profile_id
-                );
-            }
+            assert!(
+                pinned.completion_cost(&usage).is_some(),
+                "{} pricing[{index}] cannot be billed",
+                provider.provider_profile_id
+            );
         }
     }
 }
@@ -2920,4 +3053,220 @@ fn doubao_november_inventory_resolves_official_models_and_operations() {
             assert_eq!(video["output"]["resolutions"].as_array().unwrap().len(), 2);
         }
     }
+}
+
+#[test]
+fn sn_static_usd_prices_cover_published_offerings_and_omni_has_distinct_video_rate() {
+    let sn: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/sn.provider.json"
+    ))
+    .unwrap();
+    assert_eq!(sn["reported_cost"]["currency"], "USD");
+    let unavailable = ["gpt-4o-transcribe-diarize", "gpt-4o-mini-tts"];
+    for name in sn["model_driver_overrides"].as_object().unwrap().keys() {
+        let price = sn["model_pricing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("SN {name} has no price"));
+        assert_eq!(price["pricing"]["currency"], "USD");
+        assert!(price["pricing"]["source_url"]
+            .as_str()
+            .unwrap()
+            .starts_with(if unavailable.contains(&name.as_str()) {
+                "https://developers.openai.com/"
+            } else {
+                "https://openrouter.ai/"
+            }));
+    }
+    let gemini: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/gemini.provider.json"
+    ))
+    .unwrap();
+    let price = &gemini["model_pricing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "gemini-omni-1.1-flash")
+        .unwrap()["pricing"];
+    assert_eq!(price["image_input_token"].as_f64().unwrap(), 1.5e-6);
+    assert_eq!(price["video_output_token"].as_f64().unwrap(), 17.5e-6);
+}
+
+#[test]
+fn sn_prices_match_the_recorded_openrouter_quote_and_units() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../test/aicc_test/acceptance/sn_openrouter_prices.json"
+    )))
+    .unwrap();
+    let sn: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/sn.provider.json"
+    ))
+    .unwrap();
+    let prices = sn["model_pricing"].as_array().unwrap();
+    for (alias, slug) in fixture["model_aliases"].as_object().unwrap() {
+        let quote = fixture["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == *slug)
+            .unwrap();
+        let price = &prices
+            .iter()
+            .find(|p| p["id"].as_str() == Some(alias))
+            .unwrap()["pricing"];
+        assert_eq!(
+            price["source_url"],
+            format!("https://openrouter.ai/{}", slug.as_str().unwrap())
+        );
+        if alias == "qwen-image-3-pro" {
+            assert_eq!(price["unit"], "image");
+            assert_eq!(
+                price["amount"].as_f64().unwrap(),
+                quote["image_output_prices"]["1K"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap()
+            );
+            assert_eq!(
+                price["rules"][0]["amount"].as_f64().unwrap(),
+                quote["image_output_prices"]["2K"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap()
+            );
+            assert_eq!(
+                price["addons"][0]["amount"].as_f64().unwrap(),
+                quote["pricing"]["image"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap()
+            );
+            let pricing = serde_json::from_value(price.clone()).unwrap();
+            let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+                &pricing,
+                None,
+                std::time::SystemTime::now(),
+            )
+            .unwrap()
+            .unwrap();
+            let cost = pinned
+                .completion_cost(&buckyos_api::AiUsage {
+                    image_units: Some(2),
+                    reference_images: Some(1),
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!((cost.amount - 0.083).abs() < 1e-12);
+            continue;
+        }
+        if alias == "wan-3.0" {
+            for (sku, rate) in quote["pricing_skus"].as_object().unwrap() {
+                let rule = price["rules"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|rule| {
+                        rule["when"]["/video/resolution"]
+                            == sku.trim_start_matches("duration_seconds_")
+                    })
+                    .unwrap();
+                assert_eq!(
+                    rule["amount"].as_f64().unwrap(),
+                    rate.as_str().unwrap().parse::<f64>().unwrap()
+                );
+            }
+            continue;
+        }
+        for (upstream, local) in [
+            ("prompt", "input_token"),
+            ("completion", "output_token"),
+            ("input_cache_read", "cache_input_token"),
+            ("input_cache_write", "cache_write_input_token"),
+            ("input_cache_write_1h", "cache_write_1h_input_token"),
+            ("image_output", "image_output_token"),
+        ] {
+            if let Some(rate) = quote["pricing"][upstream].as_str() {
+                assert_eq!(
+                    price[local].as_f64().unwrap(),
+                    rate.parse::<f64>().unwrap(),
+                    "{alias}:{local}"
+                );
+            }
+        }
+        if alias == "voxtral-small-24b-2507" {
+            assert_eq!(price["addons"][0]["unit"], "audio_second");
+            assert_eq!(
+                price["addons"][0]["amount"].as_f64().unwrap(),
+                quote["pricing"]["audio"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap()
+            );
+            assert_eq!(price["audio_input_token"].as_f64().unwrap(), 0.0);
+        }
+        for (i, tier) in quote["pricing"]["overrides"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| t["min_prompt_tokens"].is_number())
+            .enumerate()
+        {
+            assert_eq!(
+                price["tiers"]["steps"][i]["up_to"],
+                tier["min_prompt_tokens"]
+            );
+        }
+    }
+    assert_eq!(
+        prices.len(),
+        fixture["model_aliases"].as_object().unwrap().len()
+            + fixture["official_fallbacks"].as_object().unwrap().len()
+    );
+    let gpt = &prices.iter().find(|p| p["id"] == "gpt-6-astra").unwrap()["pricing"];
+    assert_eq!(
+        gpt["tiers"]["steps"][1]["image_input_token"],
+        gpt["tiers"]["steps"][1]["input_token"]
+    );
+    let asr = &prices
+        .iter()
+        .find(|p| p["id"] == "gpt-4o-mini-transcribe")
+        .unwrap()["pricing"];
+    assert_eq!(asr["audio_input_token"], asr["input_token"]);
+
+    for (name, quote) in fixture["official_fallbacks"].as_object().unwrap() {
+        let price = &prices
+            .iter()
+            .find(|p| p["id"].as_str() == Some(name))
+            .unwrap()["pricing"];
+        for (field, value) in quote.as_object().unwrap() {
+            assert_eq!(price[field], *value, "{name}:{field}");
+        }
+    }
+}
+
+#[test]
+fn gemini_transcribe_prices_total_input_with_a_modality_remainder() {
+    let provider: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../driver_metadata/providers/gemini.provider.json"
+    )).unwrap();
+    let quote = provider["model_pricing"].as_array().unwrap().iter()
+        .find(|entry| entry["id"] == "gemini-3.5-transcribe").unwrap();
+    let pricing = serde_json::from_value(quote["pricing"].clone()).unwrap();
+    let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+        &pricing, None, std::time::SystemTime::now()
+    ).unwrap().unwrap();
+    let cost = pinned.completion_cost(&buckyos_api::AiUsage {
+        input_tokens: Some(90), audio_input_tokens: Some(89),
+        output_tokens: Some(9), total_tokens: Some(99),
+        ..Default::default()
+    }).unwrap();
+    assert_eq!(cost.currency, "USD");
+    assert!((cost.amount - 0.000288).abs() < 1e-12);
 }

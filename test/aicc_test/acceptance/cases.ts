@@ -242,6 +242,7 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   ["task.terminal_idempotent", "duplicate_terminal", null],
   ["task.reload_recovery", "reload_recovery", null],
   ["task.restart_recovery", "restart_recovery", null],
+  ["task.billing_restart_recovery", "restart_recovery", null],
   ["usage.success_once", "usage_success", null],
   ["usage.idempotent_no_double_charge", "usage_idempotent", null],
   ["usage.fallback_attempts_attributed", "usage_fallback", null],
@@ -272,6 +273,8 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   tags: [String(suffix).split(".")[0]],
   method: String(suffix) === "config.cloud_update_dynamic_catalog"
     ? "driver_metadata_update.set"
+    : String(suffix) === "task.billing_restart_recovery"
+    ? "image.upscale"
     : String(suffix).startsWith("config.")
     ? "service.reload_settings"
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
@@ -279,6 +282,8 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
     : "chat.completions.create",
   api_type: String(suffix).startsWith("config.")
     ? null
+    : String(suffix) === "task.billing_restart_recovery"
+    ? "image.upscale"
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
     ? "video.generate"
     : "llm",

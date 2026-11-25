@@ -4,7 +4,7 @@ import { useI18n } from '../../i18n/provider'
 import { fetchCurrentAccount } from '../../api/account'
 import { fetchUserList } from '../../api/user_mgr'
 import { useViewerIsAdmin } from '../settings/hooks/use-viewer-is-admin'
-import { useProviders, useUsageSummary } from './hooks/use-aicc-store'
+import { useAICCStore, useProviders } from './hooks/use-aicc-store'
 import { useQuotaApi } from './hooks/use-quota-api'
 import {
   EMPTY_QUOTA_FILTER,
@@ -37,7 +37,15 @@ export function QuotaPage({ intent, onIntentConsumed }: QuotaPageProps) {
   const api = useQuotaApi()
   const isAdmin = useViewerIsAdmin() === true
   const providers = useProviders()
-  const usage = useUsageSummary()
+  const store = useAICCStore()
+  const [usageApps, setUsageApps] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    void store.queryUsageEvents({ timeRange: { startTimeMs: Date.now() - 30 * 86_400_000, endTimeMs: Date.now() }, summaryOnly: true, groupBy: 'caller_app_id', groupLimit: 1000, limit: 1 })
+      .then((page) => { if (live) setUsageApps(page.grouped.map((row) => row.group.caller_app_id).filter(Boolean)) })
+      .catch(() => undefined)
+    return () => { live = false }
+  }, [store])
   const [viewerId, setViewerId] = useState('')
   const [users, setUsers] = useState<string[]>([])
   const [tab, setTab] = useState<QuotaTab>('mine')
@@ -93,7 +101,7 @@ export function QuotaPage({ intent, onIntentConsumed }: QuotaPageProps) {
       provider_instance_name: provider.config.provider_instance_name,
       exact_models: provider.inventory.models.map((model) => model.exact_model),
     })), [providers])
-  const apps = useMemo(() => [...new Set(['aiworkspace', ...Object.keys(usage.by_app ?? {})])].filter((app) => app && !app.startsWith('system:')), [usage.by_app])
+  const apps = useMemo(() => [...new Set(['aiworkspace', ...usageApps])].filter((app) => app && !app.startsWith('system:')), [usageApps])
 
   const rules = useMemo(() => {
     if (tab === 'mine') return filterRules(mine?.rules ?? [], filter)
