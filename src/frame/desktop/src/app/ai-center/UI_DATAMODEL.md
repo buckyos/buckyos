@@ -70,6 +70,8 @@ Home and Usage expose an explicit usage scope. Administrators default to the ent
 
 The Home overview, breakdowns, and user table cover the last 30 local calendar days; today and current-month counters use their respective local boundaries. Recent events and Usage details retain their own time filter. The user table groups by `user_id` and shows requests, tokens, separate currency totals, and incomplete-finance status. Agent usage belongs to its owner; autonomous system calls belong to the system account. Usage events retain both `user_id` and `tenant_id`. Scope switches discard the previous detail cursor and records; query failures show an error with retry rather than zero totals.
 
+Pending billing refreshes retain existing rows and totals. On mobile, only loaded pages still containing pending billing are refreshed, with at most two page queries in flight. Each successful page publishes independently; failed pages retain their records and remain eligible for retry. Settled pages stop polling, and retries retain the paging time window and cursors.
+
 Provider account balances and the viewer's quota warning keep their own meaning. Route trace queries remain restricted to the current user's tenant, so cross-user usage rows show task identifiers without trace links. User-table rows only select the usage scope; they do not create quota rules. Breakdown quota shortcuts appear only in the personal scope because they create limits for the viewer.
 
 ## KRPC mapping

@@ -262,8 +262,10 @@ pub(crate) struct DeferredBilling {
 }
 
 impl DeferredBilling {
+    pub(crate) const MAX_AGE_MS: u64 = 86_400_000;
+
     pub(crate) fn exhausted(&self, created_at_ms: u64, now_ms: u64) -> bool {
-        self.attempts >= 12 || now_ms.saturating_sub(created_at_ms) >= 86_400_000
+        self.attempts >= 12 || now_ms.saturating_sub(created_at_ms) >= Self::MAX_AGE_MS
     }
 }
 

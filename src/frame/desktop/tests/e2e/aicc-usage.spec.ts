@@ -210,7 +210,7 @@ async function installBillingFixture(page: Page) {
     const modulePath = dashboardSource.match(/from "([^" ]*\/api\/aicc_mgr\.ts[^" ]*)"/)?.[1] ?? '/src/api/aicc_mgr.ts'
     const { AICCModelStore } = await import(modulePath)
     const original = AICCModelStore.prototype.queryUsageEvents
-    const state = { settled: false, hold: false, releases: [] as Array<() => void>, cursors: [] as Array<string | undefined> }
+    const state = { settled: false, settledFirstPage: false, failCursors: [] as Array<string | undefined>, active: 0, maxActive: 0, holdEvents: false, eventReleases: [] as Array<() => void>, hold: false, releases: [] as Array<() => void>, cursors: [] as Array<string | undefined> }
     Reflect.set(window, 'usageBillingFixture', state)
     AICCModelStore.prototype.queryUsageEvents = async function (params: { summaryOnly?: boolean; groupBy?: string; groupLimit?: number; groupOffset?: number; cursor?: string }) {
       const result = await original.call(this, params)
@@ -223,7 +223,15 @@ async function installBillingFixture(page: Page) {
         }
       } else {
         state.cursors.push(params.cursor)
-        result.events = result.events.map((event: { usage?: Record<string, unknown> }) => ({ ...event, usage: { ...event.usage, cost_source: state.settled ? 'provider_billing' : 'static_pricing_pending_billing' } }))
+        state.active += 1
+        state.maxActive = Math.max(state.maxActive, state.active)
+        try {
+          if (state.holdEvents) await new Promise<void>((resolve) => state.eventReleases.push(resolve))
+          if (state.failCursors.includes(params.cursor)) throw new Error('billing page unavailable')
+        } finally {
+          state.active -= 1
+        }
+        result.events = result.events.map((event: { usage?: Record<string, unknown> }) => ({ ...event, usage: { ...event.usage, cost_source: state.settled || state.settledFirstPage && !params.cursor ? 'provider_billing' : 'static_pricing_pending_billing' } }))
       }
       return result
     }
@@ -260,7 +268,7 @@ test('mobile billing refresh replaces records on earlier pages and stops polling
   await page.getByRole('button', { name: 'Usage', exact: true }).click()
   const rows = page.getByTestId('usage-event-row').filter({ visible: true })
   await expect(rows).toHaveCount(10)
-  await page.getByRole('button', { name: 'Load more', exact: true }).click()
+  await page.getByRole('button', { name: 'Load more', exact: true }).dispatchEvent('click')
   await expect(rows).toHaveCount(20)
   await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.settled = true; state.cursors = [] })
   await page.clock.fastForward(30_000)
@@ -269,4 +277,64 @@ test('mobile billing refresh replaces records on earlier pages and stops polling
   await expect(page.getByText('Awaiting billing', { exact: true })).toHaveCount(0)
   await page.clock.fastForward(30_000)
   expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(2)
+})
+
+test('mobile billing refresh skips settled pages, bounds concurrency and publishes successful pages independently', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.clock.install()
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.evaluate(() => { Reflect.get(window, 'usageBillingFixture').settledFirstPage = true })
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const rows = page.getByTestId('usage-event-row').filter({ visible: true })
+  await expect(rows).toHaveCount(10)
+  for (let count = 20; count <= 40; count += 10) {
+    await page.getByRole('button', { name: 'Load more', exact: true }).dispatchEvent('click')
+    await expect(rows).toHaveCount(count)
+  }
+  await expect(rows.filter({ hasText: 'Awaiting billing' })).toHaveCount(30)
+  expect(await page.evaluate(() => [...new Set(Reflect.get(window, 'usageBillingFixture').cursors)])).toEqual([undefined, '10', '20', '30'])
+  await page.evaluate(() => {
+    const state = Reflect.get(window, 'usageBillingFixture')
+    state.failCursors = ['10']
+    state.cursors = []
+    state.settled = true
+    state.holdEvents = true
+    state.maxActive = 0
+  })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').active)).toBe(2)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(2)
+  await page.evaluate(() => {
+    const state = Reflect.get(window, 'usageBillingFixture')
+    state.holdEvents = false
+    state.eventReleases.splice(0).forEach((release: () => void) => release())
+  })
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(3)
+  await expect(rows.filter({ hasText: 'Awaiting billing' })).toHaveCount(10)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').maxActive)).toBe(2)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.includes(undefined))).toBe(false)
+  await page.evaluate(() => { const state = Reflect.get(window, 'usageBillingFixture'); state.failCursors = []; state.cursors = [] })
+  await page.clock.fastForward(30_000)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(1)
+  await expect(rows.filter({ hasText: 'Awaiting billing' })).toHaveCount(0)
+  await page.clock.fastForward(30_000)
+  expect(await page.evaluate(() => Reflect.get(window, 'usageBillingFixture').cursors.length)).toBe(1)
+})
+
+
+test('mobile retry loads a failed new page without discarding earlier records', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await openAiCenter(page)
+  await installBillingFixture(page)
+  await page.getByRole('button', { name: 'Usage', exact: true }).click()
+  const rows = page.getByTestId('usage-event-row').filter({ visible: true })
+  await expect(rows).toHaveCount(10)
+  await page.evaluate(() => { Reflect.get(window, 'usageBillingFixture').failCursors = ['10'] })
+  await page.getByRole('button', { name: 'Load more', exact: true }).dispatchEvent('click')
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
+  await expect(rows).toHaveCount(10)
+  await page.evaluate(() => { Reflect.get(window, 'usageBillingFixture').failCursors = [] })
+  await page.getByRole('button', { name: 'Retry', exact: true }).dispatchEvent('click')
+  await expect(rows).toHaveCount(20)
 })

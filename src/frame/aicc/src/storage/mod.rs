@@ -2292,6 +2292,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn billing_long_retry_after_is_due_at_the_deadline() {
+        use crate::execution::{BillingStatus, DeferredBilling};
+        let db = db().await;
+        let record = completed_fal_billing(&db, "long-retry-after", false).await;
+        let now = record.created_at_ms + 1_000;
+        let deadline = record.created_at_ms + DeferredBilling::MAX_AGE_MS;
+        let claimed = db.claim_billing(&record, now).await.unwrap().unwrap();
+        db.finish_billing(
+            &claimed,
+            None,
+            None,
+            Some("rate_limited"),
+            Some(172_800_000),
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .pending_billings(deadline - 1, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let due = db.pending_billings(deadline, 10).await.unwrap();
+        assert_eq!(due.len(), 1);
+        let claimed = db.claim_billing(&due[0], deadline).await.unwrap().unwrap();
+        assert!(claimed
+            .binding
+            .as_ref()
+            .unwrap()
+            .billing
+            .as_ref()
+            .unwrap()
+            .exhausted(record.created_at_ms, deadline));
+        db.finish_billing(
+            &claimed,
+            None,
+            None,
+            Some("probe_download_failed"),
+            None,
+            deadline,
+        )
+        .await
+        .unwrap();
+        let saved = db.get_task(&record.task_id).await.unwrap().unwrap();
+        assert_eq!(
+            saved.binding.unwrap().billing.unwrap().status,
+            BillingStatus::Unresolved
+        );
+        assert!(db
+            .pending_billings(deadline + 172_800_000, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn review_billing_errors_reach_a_durable_terminal_state() {
         use crate::execution::BillingStatus;
         let db = db().await;

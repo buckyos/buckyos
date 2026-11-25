@@ -228,7 +228,13 @@ impl AiccStorage {
             } else {
                 (10_000u64.saturating_mul(1u64 << billing.attempts.min(9))).min(3_600_000)
             };
-            billing.next_attempt_ms = now_ms.saturating_add(delay.max(retry_after_ms.unwrap_or(0)));
+            billing.next_attempt_ms = now_ms
+                .saturating_add(delay.max(retry_after_ms.unwrap_or(0)))
+                .min(
+                    record
+                        .created_at_ms
+                        .saturating_add(crate::execution::DeferredBilling::MAX_AGE_MS),
+                );
         }
         let sql = self.sql("UPDATE aicc_execution_record SET record_json=? WHERE task_id=? AND state='succeeded' AND record_json=?");
         let changed = sqlx::query(&sql)

@@ -384,12 +384,12 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
   // Free-text portion of the filters as last committed to the query (see useDebouncedEffect below).
   const [committedFilterText, setCommittedFilterText] = useState<FilterText>(EMPTY_FILTER_TEXT)
   const [detailPage, setDetailPage] = useState(1)
-  // Upper bound of the query window; refreshed whenever a new query series starts (filter change, retry)
+  // Upper bound of the query window; refreshed whenever a new query series starts (filter change)
   // and kept stable while paging through that series.
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [pageCursors, setPageCursors] = useState<Record<number, string | undefined>>({ 1: undefined })
-  const usageCursors = useRef(pageCursors)
-  useEffect(() => { usageCursors.current = pageCursors }, [pageCursors])
+  const billingPages = useRef(new Map<number, { cursor?: string; pending: boolean }>())
+  const billingQuery = useRef('')
   const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
   const [consumptionPage, setConsumptionPage] = useState<UsageEventsPage>({ events: [], totalRequests: 0, total: aggregateUsageEvents([]), grouped: [] })
   const [consumptionLoading, setConsumptionLoading] = useState(true)
@@ -501,42 +501,45 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
     let cancelled = false
     const refresh = lastUsageRetry.current !== usageRetryKey
     lastUsageRetry.current = usageRetryKey
+    const query = JSON.stringify([scope, usageQueryRange, usageQueryFilters, pageLimit, isMobile, isUsagePage])
+    const newQuery = billingQuery.current !== query
+    if (newQuery) {
+      billingQuery.current = query
+      billingPages.current.clear()
+    }
     async function loadUsagePage() {
       setUsageLoading(true)
       setUsageError(null)
-      try {
-        const queryPage = (cursor: string | undefined) => store.queryUsageEvents({ scope, timeRange: usageQueryRange, filters: usageQueryFilters, cursor, limit: pageLimit, pageOnly: true })
-        const pages = refresh && isUsagePage && isMobile
-          ? await Promise.all(Array.from({ length: detailPage }, (_, index) => queryPage(usageCursors.current[index + 1])))
-          : [await queryPage(currentCursor)]
-        const page = pages[pages.length - 1]
-        if (pages.length > 1) page.events = pages.flatMap((value) => value.events)
-        if (cancelled) return
-        setUsagePage((current) => {
-          if (isUsagePage && isMobile && detailPage > 1) {
-            return {
-              ...page,
-              events: mergeUsageEvents(current.events, page.events),
-              totalRequests: page.totalRequests,
-            }
+      const pages = refresh && !newQuery && isUsagePage && isMobile
+        ? [...billingPages.current].filter(([, page]) => page.pending).map(([number, page]) => ({ number, cursor: page.cursor }))
+        : [{ number: detailPage, cursor: currentCursor }]
+      let nextPage = 0
+      async function loadNextPages() {
+        while (!cancelled && nextPage < pages.length) {
+          const { number, cursor } = pages[nextPage++]
+          billingPages.current.set(number, { cursor, pending: true })
+          try {
+            const page = await store.queryUsageEvents({ scope, timeRange: usageQueryRange, filters: usageQueryFilters, cursor, limit: pageLimit, pageOnly: true })
+            if (cancelled) return
+            billingPages.current.set(number, { cursor, pending: page.events.some((event) => String(event.usage?.cost_source ?? '').includes('pending')) })
+            setUsagePage((current) => {
+              if (isUsagePage && isMobile && (detailPage > 1 || refresh && !newQuery)) {
+                return { ...(number === detailPage ? page : current), events: mergeUsageEvents(current.events, page.events) }
+              }
+              return page
+            })
+            setPageCursors((current) => current[number + 1] === page.nextCursor ? current : { ...current, [number + 1]: page.nextCursor })
+          } catch (error) {
+            if (cancelled) return
+            console.error('aicc.usage.query events failed', error)
+            setUsageError(t('aiCenter.home.usageLoadFailed', 'Could not load usage events.'))
           }
-          return page
-        })
-        setPageCursors((current) => {
-          if (current[detailPage + 1] === page.nextCursor) return current
-          return {
-            ...current,
-            [detailPage + 1]: page.nextCursor,
-          }
-        })
-      } catch (error) {
-        if (cancelled) return
-        console.error('aicc.usage.query events failed', error)
-        setUsageError(t('aiCenter.home.usageLoadFailed', 'Could not load usage events.'))
-      } finally {
-        if (!cancelled) {
-          setUsageLoading(false)
         }
+      }
+      try {
+        await Promise.all(Array.from({ length: Math.min(2, pages.length) }, loadNextPages))
+      } finally {
+        if (!cancelled) setUsageLoading(false)
       }
     }
     void loadUsagePage()
@@ -611,7 +614,6 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, over
 
   const retryUsagePage = () => {
     setUsageError(null)
-    setNowMs(Date.now())
     setUsageRetryKey((value) => value + 1)
   }
 
